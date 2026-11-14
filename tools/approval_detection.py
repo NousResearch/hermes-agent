@@ -14,6 +14,7 @@ import shlex
 import tempfile
 import unicodedata
 
+from agent.file_safety import SHELL_RC_FILES
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 
 logger = logging.getLogger("tools.approval")
@@ -37,7 +38,7 @@ _HERMES_CONFIG_PATH = (
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
-_SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
+_SHELL_RC_FILES = rf"(?:~|\$home|\$\{{home\}})/(?:{'|'.join(re.escape(f) for f in SHELL_RC_FILES)})\b"
 _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
 _HOME_PREFIX = r'(?:~|\$home|\$\{home\})/'
 _SECRET_FILE = (
@@ -82,6 +83,16 @@ _SENSITIVE_WRITE_TARGET = (
     rf'{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
 )
 _USER_SENSITIVE_WRITE_TARGET = rf'(?:{_SSH_SENSITIVE_PATH}|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
+# touch/mkdir/ln: the home-side targets only; /etc is out of their scope (#85321) and admin commands
+# like `mkdir -p /etc/apt/keyrings` would be mislabelled as credential/SSH/shell-rc writes.
+_HOME_SENSITIVE_WRITE_TARGET = rf'(?:{_USER_SENSITIVE_WRITE_TARGET}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH})'
+# Same set for touch/mkdir/ln, but a named FILE must end the shell word: `ln -s a ~/.bashrc.bak` /
+# `touch ~/.bashrc.d/x` name a sibling, not the startup or credential file (`~/.ssh/` is a directory: any entry).
+# A glued redirect (`touch ~/.bashrc>/dev/null`) ends the word too; the ln rule also allows trailing redirects.
+_HOME_SENSITIVE_CREATE_TARGET = (
+    rf'(?:{_SSH_SENSITIVE_PATH}|(?:{_SHELL_RC_FILES}|{_CREDENTIAL_FILES}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH})'
+    r'(?=["\'\s;&|)`<>]|$))'
+)
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 # cp/mv/install: the sensitive path is a write target only as the LAST argument (destination), so
 # `cp config.yaml backup.yaml` (config.yaml as SOURCE) stays out.
@@ -113,8 +124,17 @@ _CMDPOS = (
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
 # `) ` ; | &` so `$(rm -rf /)` is caught). A bare-token-only anchor lets quoted spellings slip past the floor.
+# A quoted path must end its shell word too, past root-collapse components (`"C:/"./`, `"$HOME"/*`):
+# `"$HOME"/build` and `"C:/"Users/me/build` name a subdirectory, not the protected root. The components
+# may be quoted too (`"$HOME"'/'`, `"/"'./'"/"*`), but a quoted `*` is a literal name, not a glob.
+# Every repeat is possessive: each piece ends at `/` or a quote, so the scan stays linear.
+_RM_COLLAPSE_SEG = r'(?:(?:\.\.?)?/)*+(?:\.\.?)?'
+_RM_ROOT_COLLAPSE_TAIL = (rf'(?:(?:\.\.?)?/|"{_RM_COLLAPSE_SEG}"|\'{_RM_COLLAPSE_SEG}\')*+'
+                          r'(?:\.\.?)?\**+(?=\s|$|[)`;|&])')
+
+
 def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
-    return rf'(?:["\'](?:{path_alt})["\']|(?:{path_alt}){tail})'
+    return rf'(?:["\'](?:{path_alt})["\']{_RM_ROOT_COLLAPSE_TAIL}|(?:{path_alt}){tail})'
 
 
 # Protected system roots whose recursive deletion has no recovery path.
@@ -638,6 +658,13 @@ DANGEROUS_PATTERNS = [
     # with auto-approve. Same unpaired-door rationale as #14639 / the sed-tee-redirect pairing on these
     # targets. `authorized_keys` after the `~/.ssh/` fragment).
     (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # touch/mkdir create, and ln plants a pointer at, the same destinations without a gated write verb
+    # (`mkdir -p ~/.ssh && touch ~/.ssh/x`, `ln -sf evil ~/.bashrc`), pairing the write_file deny (#85321).
+    # Command-position anchored so `ls -ln ~/.ssh` / `grep touch ~/.bashrc` stay out; any touch/mkdir operand
+    # counts, but for ln only the destination (last operand) does, so linking OUT of these paths stays safe.
+    # `touch -r REF` / `--reference REF` only reads REF (its timestamps), so that operand is not a create target.
+    (rf'{_CMDPOS}(?:touch|mkdir)\s(?:[^\n;&|]*\s)?(?<!\s-r\s)(?<!\s--reference\s)["\']?{_HOME_SENSITIVE_CREATE_TARGET}', "create a file in a sensitive credential/SSH/shell-rc path"),
+    (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?{_HOME_SENSITIVE_CREATE_TARGET}[^\s"\'<>;&|)`]*+["\']?(?:\s*+\d*+[<>]++&?\s*+[^\s<>;&|)`]*+)*+\s*+(?:[\n;&|)`]|$)', "link a file into a sensitive credential/SSH/shell-rc path"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
     (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
@@ -807,13 +834,23 @@ def _home_prefix_fold_regex(path: str):
     """Compile a regex matching *path* as an absolute directory prefix.
     Components match with either separator so native Windows, forward-slash, and mixed forms all
     fold; the caller normalizes the tail's backslashes to ``/``. A non-empty tail is required, so a
-    bare home is never folded. Returns ``None`` for an unset/degenerate path (fewer than two
-    components: ``/``, ``C:\\``, ``""``) so a stray HOME cannot rewrite unrelated prefixes."""
+    bare home is never folded. Returns ``None`` for an unset/degenerate path (no components, or a
+    bare root/drive: ``/``, ``C:``, ``C:\\``, ``""``) so a stray HOME cannot rewrite unrelated
+    prefixes.
+
+    A depth-1 home is NOT degenerate: ``/root`` is root's own default HOME, and skipping it left
+    ``/root/.ssh/authorized_keys`` unfolded — hence "safe" — while the identical command spelled
+    under ``/home/alice`` folded to ``~/.ssh/authorized_keys`` and was denied. A single-component
+    home must therefore match a mandatory leading separator, so a relative same-named path
+    (``root/file``) is still left alone."""
     components = [c for c in re.split(r"[/\\]+", path) if c] if path else []
-    if len(components) < 2:
+    if not components or (len(components) == 1 and re.fullmatch(r"[A-Za-z]:", components[0])):
         return None
-    # Optional leading root separator; a Windows drive letter is a component.
-    return re.compile(r"[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components) + _PATH_TAIL)
+    # Optional leading root separator; a Windows drive letter is a component. Mandatory for the
+    # single-component home above, where the optional form would also fold relative same-named paths,
+    # and anchored at a path start so a nested ``/data/root/x`` does not fold to ``/data~/x``.
+    lead = r"(?<![\w.~$}/\\-])[/\\]+" if len(components) == 1 else r"[/\\]*"
+    return re.compile(lead + r"[/\\]+".join(re.escape(c) for c in components) + _PATH_TAIL)
 
 
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:

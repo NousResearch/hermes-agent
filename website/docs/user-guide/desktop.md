@@ -440,6 +440,25 @@ desktop:
 
 The pre-window reader is a small YAML subset, not the full parser the rest of Hermes uses, because it has to run before the app loads anything. Other indentations are valid YAML but are ignored here; when that happens the app logs `desktop.electron_flags / desktop.renderer_max_old_space_mb were ignored` at startup and launches with Chromium's defaults.
 
+### Dictation and accessibility compatibility
+
+On macOS and Windows, Desktop lets Electron detect assistive technology automatically.
+If a dictation tool such as Wispr Flow cannot find the composer, force the renderer's
+accessibility tree by setting this in the **default profile's** `config.yaml`:
+
+```yaml
+desktop:
+  renderer_accessibility: true
+```
+
+Fully quit and relaunch Desktop after changing this setting. Forcing the tree can
+interfere with Magnet moving or resizing windows on macOS. Unexpected speech in
+WaveMind on Windows has also been reported while forced accessibility is active.
+To return to automatic detection, set `desktop.renderer_accessibility: false`
+(the default) and relaunch. This stops Hermes forcing the tree; it does not disable
+accessibility requested by a screen reader. Dictation tools that cannot register
+with Electron may need the explicit `true` setting.
+
 ### Settings & onboarding
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.

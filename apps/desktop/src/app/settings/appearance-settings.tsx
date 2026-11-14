@@ -1094,10 +1094,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
       )}
 
       {/* Plugin-provided appearance controls — the sanctioned seam for a
-          plugin that used to inject nodes into this page. Top-level page only:
-          a deep-link subpage shows one built-in section, and a plugin card is
-          not that section. */}
-      {subpage === undefined && <AppearanceExtraSlot />}
+          plugin that used to inject nodes into this page. Default subpage
+          only (after the built-in sections): the router resolves every visit
+          to a subpage and falls back to the FIRST one (general), so the one
+          home a plugin card is guaranteed to reach must be that fallback —
+          pinning it to pet hid the cards on a plain "open Appearance" visit.
+          A deep-link to another subpage still shows only that section. */}
+      {show('general') && <AppearanceExtraSlot />}
     </SettingsContent>
   )
 }

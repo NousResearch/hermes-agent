@@ -54,13 +54,15 @@ _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 # Per home: the subset of the snapshot a dotenv reload may re-assert — see ``AppliedVar.authoritative`` (#74265).
 _SECRET_SOURCE_RESTORE_BY_HOME: dict[str, dict[str, str]] = {}
 # Per home: what the process-global path WROTE into ``os.environ`` for an external source — name →
-# (source name, value written, value the name held before the first write or None). The per-home
+# (source name, value written, value the name held in ``os.environ`` before the write or None, value it
+# held before the source's FIRST write of this record chain or None). The last one is what the frozen
+# launch env gets back on revoke: the ``os.environ`` prior may be another writer's later value. The per-home
 # snapshot above is republished on every pass, but ``os.environ`` is not: without this record a value a
 # since-removed or disabled source injected stayed in the process env, and single-profile
 # ``get_secret()`` kept serving it through its ``os.environ`` fallback until restart. Deliberately NOT
 # cleared by a per-home ``reset_secret_source_cache``: it describes ``os.environ``, which a reset does not
 # touch, and the next pass needs it to revoke.
-_SECRET_SOURCE_WRITES_BY_HOME: dict[str, dict[str, tuple[str, str, str | None]]] = {}
+_SECRET_SOURCE_WRITES_BY_HOME: dict[str, dict[str, tuple[str, str, str | None, str | None]]] = {}
 # Per home: YAML-bridge claims a source released when it supplied the name (applied OR skipped as equal)
 # — name → (source name, bridge marker digest). Revoking that source hands the value back to the bridge
 # while it is still the bridged value, or a later YAML tightening would read it as the operator's.
@@ -942,17 +944,20 @@ def _revoke_value_writes(home_key: str, writes: dict, keep, owned_by_dotenv: set
         return
     from tui_gateway.launch_profile_policy import revoke_launch_env_write
 
-    kept: dict[str, tuple[str, str, str | None]] = {}
-    for name, (source, value, prior) in writes.items():
+    kept: dict[str, tuple[str, str, str | None, str | None]] = {}
+    for name, record in writes.items():
+        source, value, prior, launch_prior = record
         if keep(name, source):
-            kept[name] = (source, value, prior)
+            kept[name] = record
             continue
         if name not in owned_by_dotenv and os.environ.get(name) == value:
             if prior is None:
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = prior
-        revoke_launch_env_write(name, value, prior)  # activation froze a copy of the write too
+        # Activation froze a copy of the write too. It gets back its own pre-write value, never the
+        # os.environ prior: that may be a value another writer set after activation.
+        revoke_launch_env_write(name, value, launch_prior)
         still_attributed = any(
             other.get(name, ("",))[0] == source
             for key, other in _SECRET_SOURCE_WRITES_BY_HOME.items() if key != home_key)
@@ -1168,7 +1173,7 @@ def _record_secret_source_writes(home_key: str, report, supplied: set[str], envi
     The frozen launch env follows a re-applied write only to the value the source published
     (*staged*): another thread may write the same name into os.environ during the fetch, and that
     value must never enter the snapshot."""
-    from tui_gateway.launch_profile_policy import revoke_launch_env_write
+    from tui_gateway.launch_profile_policy import launch_env_entry, revoke_launch_env_write
 
     failed = {src.name for src in report.sources if not src.result.ok}
     previous = _SECRET_SOURCE_WRITES_BY_HOME.get(home_key, {})
@@ -1185,11 +1190,22 @@ def _record_secret_source_writes(home_key: str, report, supplied: set[str], envi
         # Re-applied over our own earlier write: the pre-source value is the one recorded then.
         reapplied = earlier is not None and earlier[1] == before
         prior = earlier[2] if reapplied else before
+        # What the frozen launch env gets back on revoke. Before activation os.environ IS the launch
+        # env, so that is the os.environ prior. After it, ``before`` may be another writer's value and
+        # must never reach the snapshot: while the snapshot still holds the earlier write it keeps that
+        # record's pre-write value, otherwise its own current value (a revoke then changes nothing).
+        captured, snapshot_value = launch_env_entry(name)
+        if not captured:
+            launch_prior = prior
+        elif earlier is not None and snapshot_value == earlier[1]:
+            launch_prior = earlier[3]
+        else:
+            launch_prior = snapshot_value
         # The frozen launch env follows a rotated write, so a later revoke still matches it.
         published = _published_value(name, staged)
         if reapplied and os.environ[name] == published:
             revoke_launch_env_write(name, before, published)
-        writes[name] = (applied.source, published, prior)
+        writes[name] = (applied.source, published, prior, launch_prior)
     if writes:
         _SECRET_SOURCE_WRITES_BY_HOME[home_key] = writes
     else:

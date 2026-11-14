@@ -206,6 +206,54 @@ def test_a_concurrent_write_during_the_fetch_never_enters_the_frozen_launch_env(
         set_multiplex_active(False)
 
 
+def _remove_source_in_a_launch_turn(launch_home, manager) -> None:
+    from gateway.run import _profile_runtime_scope
+
+    config = launch_home / "config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace(
+        "enabled: [fixture-secret-source]", "enabled: []"), encoding="utf-8")
+    with _profile_runtime_scope(launch_home):
+        manager.discover_and_load(force=True)
+
+
+@pytest.mark.parametrize("foreign_write", ["during_a_fetch", "between_refreshes"])
+def test_a_foreign_value_never_enters_the_frozen_launch_env_when_a_later_refresh_precedes_removal(
+        launch_home, foreign_write):
+    """Another writer puts its value in os.environ after activation (during a fetch, or between two
+    refreshes), one more refresh re-applies the source over it, then the source is removed. The
+    other writer keeps its value in os.environ, but the frozen launch env only ever loses the
+    source's own write: it must never gain the foreign value (the launch env never saw it)."""
+    from agent.secret_scope import set_multiplex_active
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, capture_launch_env
+
+    _rotating_override_source(launch_home, (
+        "        import os, pathlib\n"
+        "        foreign = pathlib.Path(home_path) / 'foreign.txt'\n"
+        "        if foreign.exists():\n"
+        "            os.environ['VAULT_ONLY_KEY'] = foreign.read_text()\n"
+        "            foreign.unlink()\n"))
+    manager = get_plugin_manager()
+    manager.discover_and_load()  # boot: the source writes v1
+    activate_multi_profile_hosting()
+    try:
+        if foreign_write == "during_a_fetch":
+            (launch_home / "foreign.txt").write_text("from-secondary", encoding="utf-8")
+            with _profile_runtime_scope(launch_home):
+                manager.discover_and_load(force=True)
+        else:
+            os.environ["VAULT_ONLY_KEY"] = "from-secondary"
+        with _profile_runtime_scope(launch_home):
+            manager.discover_and_load(force=True)  # re-applies v1 over the foreign value
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "v1"
+        _remove_source_in_a_launch_turn(launch_home, manager)
+        assert os.environ["VAULT_ONLY_KEY"] == "from-secondary"
+        assert "VAULT_ONLY_KEY" not in capture_launch_env()
+    finally:
+        set_multiplex_active(False)
+
+
 def test_a_sources_first_write_after_activation_stays_out_of_the_frozen_launch_env(launch_home):
     """A source enabled only after activation writes and then rotates: neither value is the launch
     env's, so the snapshot never gains the name (only a re-application over a pre-activation write

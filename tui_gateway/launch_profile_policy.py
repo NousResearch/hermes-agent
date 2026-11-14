@@ -43,6 +43,12 @@ def capture_launch_env() -> dict[str, str]:
         return dict(_snapshot)
 
 
+def launch_env_entry(name: str) -> tuple[bool, str | None]:
+    """``(captured, value)``: whether the launch env is frozen yet, and what it holds for *name*."""
+    with _lock:
+        return _snapshot is not None, None if _snapshot is None else _snapshot.get(name)
+
+
 def revoke_launch_env_write(name: str, written: str, prior: str | None) -> None:
     """Take a revoked secret-source write back out of the frozen launch env.
 
@@ -50,7 +56,8 @@ def revoke_launch_env_write(name: str, written: str, prior: str | None) -> None:
     if the operator had set it, and ``launch_secret_scope`` kept serving it after the source was
     removed or disabled. ``env_loader`` revokes such a write from ``os.environ`` and calls this with
     the same record: only while the snapshot still holds exactly *written*, it gets back *prior*
-    (the value before the source's first write) or loses the name. A value the operator set and a
+    (the value the name held before the source's first write, never a value another writer put in
+    ``os.environ`` after it) or loses the name. A value the operator set and a
     source merely also supplied was never written (``skipped_existing``), so it is never here."""
     with _lock:
         if _snapshot is None or _snapshot.get(name) != written:

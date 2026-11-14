@@ -55,6 +55,15 @@ def test_local_assets_resolve_only_inside_sketch_dir(tmp_path):
     assert other is None
 
 
+def test_other_origins_pass_through_untouched(tmp_path):
+    out = _node(
+        "(() => { const out = {}; m.sketchRequestHandler(" + json.dumps(str(tmp_path)) + ")({"
+        " url: () => 'https://cdn.jsdelivr.net/npm/p5/lib/p5.min.js',"
+        " continue: () => { out.continued = true; }, respond: (r) => { out.status = r.status; }}); return out; })()"
+    )
+    assert out == {"continued": True}
+
+
 def _serve(sketch_dir: Path, url_path: str) -> dict:
     """Run the interception listener on one fake request; return what it answered."""
     req = (

@@ -279,7 +279,7 @@ See `scripts/export-frames.js` for the full implementation. Basic pattern:
 ```javascript
 const puppeteer = require('puppeteer');
 const path = require('path');
-// Run from scripts/: the bundled script exports its host policy and sketch-folder request handler.
+// Save this next to scripts/export-frames.js: require() resolves from this file, not the cwd.
 const { chromeArgs, sketchRequestHandler, SKETCH_ORIGIN } = require('./export-frames.js');
 
 async function captureFrames(htmlPath, outputDir, options) {

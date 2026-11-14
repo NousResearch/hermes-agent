@@ -158,8 +158,9 @@ def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
 
 
 # Protected system roots whose recursive deletion has no recovery path.
-_HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|'
-                         r'/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*')
+# A trailing slash names the same directory (`rm -rf /etc/`, and `"/etc"/` once its quotes are removed);
+# `.` / `..` segments before the glob stay on it or climb to the root (`"/etc"/../*` is every root child).
+_HARDLINE_SYSTEM_DIRS = r'(?:/home|/root|/etc|/usr|/var|/bin|/sbin|/boot|/lib)(?:/++(?:\.\.?+/++)*+\*?)?+'
 
 # `rm` plus flag group, shared by the rm hardline rules (plain concatenation, not f-string:
 # backslashes in replacement fields are unsupported on the 3.11 floor). _CMDPOS-anchored so `rm`

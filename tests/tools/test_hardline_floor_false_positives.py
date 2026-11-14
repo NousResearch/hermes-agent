@@ -24,6 +24,16 @@ _BLOCKED = [
     "nice rm -rf " + _Q + "$HOME" + _Q + "/*",
     "nice rm -rf " + _Q + "/" + _Q + "etc",
     "rm -rf " + _Q + "/etc" + _Q + "/*",
+    # A trailing slash after a quoted (or bare) system dir is still that dir.
+    "rm -rf " + _Q + "/etc" + _Q + "/",
+    "nice rm -rf '/usr'/",
+    "rm -rf " + _Q + "/" + _Q + "etc/",
+    "rm -rf /etc/",
+    "rm -rf /usr//",
+    # `..` segments before the glob climb out to the root's children.
+    "rm -rf " + _Q + "/etc" + _Q + "/../*",
+    "rm -rf " + _Q + "/etc" + _Q + "/../../*",
+    "nice rm -rf '/usr'/../*",
     # Heredoc bodies that a shell (or a shell behind a pipe / ssh) executes stay scanned.
     "bash <<'EOF'\ntrue; " + _Q + "reboot" + _Q + "\nEOF",
     "cat <<'EOF' | sh\ntrue; " + _Q + "reboot" + _Q + "\nEOF",
@@ -42,6 +52,9 @@ _ALLOWED = [
     "nice rm -rf " + _Q + "$HOME" + _Q + "/project/build",
     "/bin/rm -rf " + _Q + "/" + _Q + "tmp/build",
     "rm -rf " + _Q + "$HOME" + _Q + "/project/build",
+    "rm -rf " + _Q + "/etc" + _Q + "/nginx/old",
+    "rm -rf /etcetera/",
+    "rm -rf /etc/../tmp/x",
     # Literal heredoc text written by cat / tee.
     "cat <<'EOF'\ntrue; " + _Q + "reboot" + _Q + "\nEOF",
     "cat <<'EOF' > notes.md\ntrue; " + _Q + "reboot" + _Q + "\nEOF",

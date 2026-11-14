@@ -1689,6 +1689,14 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+class TextOnlyReply(str):
+    """Handler reply that is delivered as text only: bare local paths in it are never promoted to
+    file attachments. For gateway-rendered catalogs (``/help``, ``/commands``) whose text embeds
+    third-party strings such as skill/plugin descriptions — a description that happens to name an
+    existing file (``~/notes/README.md``) must not make the gateway upload that file to whoever
+    typed ``/help``. Explicit ``MEDIA:`` tags are unaffected."""
+
+
 def merge_pending_message_event(pending_messages: dict[str, MessageEvent], session_key: str,
                                 event: MessageEvent, *, merge_text: bool = False) -> None:
     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
@@ -4272,10 +4280,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         return asyncio.create_task(self._keep_typing(event.source.chat_id, **kwargs))
 
     async def _extract_response_content(self, response: str, event: MessageEvent, session_key: str,
-                                        *, is_ephemeral_response: bool) -> _ExtractedResponse:
+                                        *, is_ephemeral_response: bool, text_only: bool = False) -> _ExtractedResponse:
         """Split a handler response into deliverable text + attachments. Order matters: MEDIA tags →
         image URLs → residual directives → bare local paths (skipped for ephemeral notices so config
-        paths stay text; unknown-extension MEDIA tags survive for the bare-path detector). History
+        paths stay text, and for :class:`TextOnlyReply` catalogs that embed third-party text; unknown-extension MEDIA tags survive for the bare-path detector). History
         dedup is bare-path only, off-loop, fail-open. An emptied non-empty response is recovered."""
         # Captured before extract_media strips it: images then go via send_document (no recompression).
         force_document = "[[as_document]]" in response
@@ -4293,7 +4301,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if images:
                 logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
             local_files = []
-            if not is_ephemeral_response:
+            if not (is_ephemeral_response or text_only):
                 local_files, text_content = self.extract_local_files(text_content)
                 local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
             from gateway.platforms.docker_media_paths import hand_back_unreadable_media
@@ -4380,6 +4388,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 if diagnostic_wake_muted(event):
                     response = None
             is_ephemeral_response = isinstance(response, EphemeralReply)
+            is_text_only_response = isinstance(response, TextOnlyReply)
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
             # None/empty is normal (streamed/queued). Suppress a stale response after an interrupt.
@@ -4391,7 +4400,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             else:
                 extracted = await self._extract_response_content(
-                    response, event, session_key, is_ephemeral_response=is_ephemeral_response)
+                    response, event, session_key, is_ephemeral_response=is_ephemeral_response,
+                    text_only=is_text_only_response)
                 text_content, media_files = extracted.text_content, extracted.media_files
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)

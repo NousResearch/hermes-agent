@@ -540,7 +540,7 @@ run_conversation()  →  agent 处理消息
 
 ## 状态数据库和 FTS 恢复
 
-规范 transcript 保存在 `sessions` 和 `messages` 表中。FTS5 表及其同步触发器是被派生的索引，可以在不删除规范消息的情况下分离并重建。请参见 [State DB 恢复](state-db-recovery.md)，了解有边界的实时故障模式以及显式修复流程。
+规范 transcript 保存在 `sessions` 和 `messages` 表中。FTS5 表及其同步触发器是被派生的索引，可以在不删除规范消息的情况下分离并重建。请参见 [State DB 恢复](/docs/developer-guide/state-db-recovery)，了解有边界的实时故障模式以及显式修复流程。
 
 ### 对话生命周期
 

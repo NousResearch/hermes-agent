@@ -316,7 +316,7 @@ gateway/platforms/                  # 核心 base 与 HTTP 入站适配器
 
 **延迟加载：** 捆绑的 `kind: platform` 插件通过 `hermes_cli/plugins.py` 在 `gateway/platform_registry.py` 注册廉价的 `register_deferred` 加载器，这样平台 SDK 只在 gateway 启动、投递或运行 setup/status 时才导入——不在普通的 `hermes chat` 时导入。解析时按需加载一个适配器；完整枚举只在需要每个平台的路径上运行待处理加载器。
 
-实验性的 connector 后台平台使用 `gateway/relay/` 中的通用 relay 适配器，而非直接平台模块。当配置了 `GATEWAY_RELAY_URL` 或 `gateway.relay_url` 时，gateway 注册 `relay` 平台，通过一个出站 WebSocket 拨号 connector，并在同一 socket 上接收 `descriptor`、`inbound` 和 `interrupt_inbound` 帧。connector 广告一个 `CapabilityDescriptor`；Hermes 能通过 relay 发回普通出站回复、无 token 的 `follow_up` 操作和 interrupt 帧。source-grounded 线协议契约见 [Relay ↔ Connector 契约](relay-connector-contract.md)。
+实验性的 connector 后台平台使用 `gateway/relay/` 中的通用 relay 适配器，而非直接平台模块。当配置了 `GATEWAY_RELAY_URL` 或 `gateway.relay_url` 时，gateway 注册 `relay` 平台，通过一个出站 WebSocket 拨号 connector，并在同一 socket 上接收 `descriptor`、`inbound` 和 `interrupt_inbound` 帧。connector 广告一个 `CapabilityDescriptor`；Hermes 能通过 relay 发回普通出站回复、无 token 的 `follow_up` 操作和 interrupt 帧。source-grounded 线协议契约见 [Relay ↔ Connector 契约](/docs/developer-guide/relay-connector-contract)。
 
 适配器实现统一接口：
 - `connect()` / `disconnect()` —— 生命周期管理

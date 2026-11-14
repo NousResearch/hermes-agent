@@ -138,19 +138,29 @@ def _is_sensitive_path(path: Path) -> bool:
     )
 
 
-def _is_local_sensitive_path(path: Path, stores: Optional[tuple[set[str], list[str]]] = None) -> bool:
+def _is_local_sensitive_path(
+    path: Path, stores: Optional[tuple[set[str], list[str]]] = None, real: Optional[str] = None,
+) -> bool:
     """:func:`_is_sensitive_path`, or *path* (a path on THIS host) resolves to or under a home
     credential store: names alone miss ``~/.ssh -> ~/keys`` (both ``~/.ssh/id_rsa`` and
     ``~/keys/id_rsa`` resolve into the store). *stores* lets a directory scan resolve the
-    store locations once (:func:`agent.file_safety.resolved_home_credential_stores`)."""
+    store locations once (:func:`agent.file_safety.resolved_home_credential_stores`), and
+    *real* its entries' resolved paths (:func:`_scan_entry_realpath`)."""
     if _is_sensitive_path(path):
         return True
     files, dirs = stores if stores is not None else resolved_home_credential_stores()
     try:
-        real = os.path.realpath(path)
+        real = real if real is not None else os.path.realpath(path)
     except (OSError, ValueError):
         return True  # fail closed: a path that cannot be resolved cannot be cleared
     return real in files or any(real == d or real.startswith(d.rstrip(os.sep) + os.sep) for d in dirs)
+
+
+def _scan_entry_realpath(base: str, entry: os.DirEntry) -> Optional[str]:
+    """*entry*'s realpath given its directory's (*base*): only a link needs a walk of its own,
+    so a large listing doesn't lstat every component of every entry. None: resolve it. Windows
+    always resolves: a junction is no symlink to ``DirEntry``, but realpath follows it."""
+    return None if entry.is_symlink() or os.name == "nt" else os.path.join(base, entry.name)
 
 
 _LINK_CHAIN_MAX_HOPS = 40  # the kernel's symlink loop limit
@@ -738,12 +748,12 @@ def list_managed_files(request: Request, path: Optional[str] = None):
     if not target.is_dir():
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
-    stores = resolved_home_credential_stores()
+    stores, base = resolved_home_credential_stores(), os.path.realpath(target)
     with _io_errors("Directory is not readable", "Could not read directory"), os.scandir(target) as scan:
         entries = []
         for entry in scan:
             entry_path = Path(entry.path)
-            if _is_local_sensitive_path(entry_path, stores):
+            if _is_local_sensitive_path(entry_path, stores, _scan_entry_realpath(base, entry)):
                 continue
             metadata = _managed_file_entry(policy, entry_path, skip_missing=True)
             if metadata is not None:
@@ -1120,10 +1130,11 @@ _FS_LIST_ERRNO = (
 
 
 def _fs_list_entries(target: Path) -> list[dict[str, Any]]:
-    entries, stores = [], resolved_home_credential_stores()
+    entries, stores, base = [], resolved_home_credential_stores(), os.path.realpath(target)
     with os.scandir(target) as scan:
         for entry in scan:
-            if entry.name in _FS_READDIR_HIDDEN or _is_local_sensitive_path(Path(entry.path), stores):
+            real = _scan_entry_realpath(base, entry)
+            if entry.name in _FS_READDIR_HIDDEN or _is_local_sensitive_path(Path(entry.path), stores, real):
                 continue
             entries.append({
                 "name": entry.name,

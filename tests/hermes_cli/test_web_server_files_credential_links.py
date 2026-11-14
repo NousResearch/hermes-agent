@@ -50,10 +50,11 @@ def test_symlinked_credential_dir_and_file_stay_hidden(home_client):
     (home / "notes.txt").write_text("safe")
     _link(home / ".ssh", home / "keys", is_dir=True)
     _link(home / ".netrc", home / "dotfiles" / "netrc", is_dir=False)
+    _link(home / "alias", home / ".ssh", is_dir=True)  # a scan must still walk an innocuous link
 
     names = [e["name"] for e in client.get("/api/files", params={"path": str(home)}).json()["entries"]]
     assert "notes.txt" in names and "dotfiles" in names
-    assert "keys" not in names
+    assert "keys" not in names and "alias" not in names
     dotfiles = client.get("/api/files", params={"path": str(home / "dotfiles")}).json()["entries"]
     assert [e["name"] for e in dotfiles] == []
 
@@ -65,7 +66,7 @@ def test_symlinked_credential_dir_and_file_stay_hidden(home_client):
         assert resp.status_code == 403, ("/api/fs/read-text", rel, resp.status_code)
 
     fs_names = [e["name"] for e in client.get("/api/fs/list", params={"path": str(home)}).json()["entries"]]
-    assert "keys" not in fs_names and "notes.txt" in fs_names
+    assert "keys" not in fs_names and "alias" not in fs_names and "notes.txt" in fs_names
 
     data_url = "data:text/plain;base64," + base64.b64encode(b"ssh-ed25519 AAAA").decode()
     resp = client.post("/api/files/upload", json={"path": str(home / "keys" / "authorized_keys"), "data_url": data_url})

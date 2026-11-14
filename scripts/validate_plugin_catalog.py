@@ -20,6 +20,11 @@ Usage:
 Exit codes: 0 = all files valid (warnings allowed), 1 = at least one error.
 Human output is one ``<file>: ERROR: ...`` / ``<file>: warning: ...`` line
 per finding; ``--json`` emits a machine-readable report on stdout instead.
+
+A top-level key outside :data:`KNOWN_KEYS` is an ERROR: no consumer reads it
+(``PluginCatalogEntry`` and the docs build drop it), so accepting one ships a
+contributor's field — or a typo — as dead metadata. Prefix an extension key
+with ``x-`` to carry it anyway.
 """
 
 from __future__ import annotations
@@ -56,8 +61,12 @@ CAPABILITY_KEYS = (
     "provides_middleware",
     "requires_env",
 )
-# Top-level keys the contract knows about. Unknown keys WARN (forward
-# compatibility: newer catalogs must stay valid under older validators).
+# Top-level keys the contract knows about. Anything else FAILS the gate: the loader
+# (``hermes_cli/plugin_catalog.PluginCatalogEntry``) and the docs build drop keys they
+# do not know, so an unknown key is dead metadata and a typo the contributor never sees.
+# ``x-`` prefixed keys are the escape hatch: an extension key that must ride an entry
+# stays accepted (and ignored) so a newer catalogue still validates under an older
+# validator.
 KNOWN_KEYS = {
     "name",
     "repo",
@@ -81,6 +90,9 @@ KNOWN_KEYS = {
     "known_issues",
     "attested_binaries",
 }
+# Prefix that marks a top-level key as a deliberate extension: accepted and ignored, so a
+# newer catalogue (or a vendor's own tooling) can carry fields this validator does not know.
+EXTENSION_KEY_PREFIX = "x-"
 # Cosmetic labels attached to the pin. ``version`` is never parsed; ``image`` and ``screenshots``
 # may only point at GitHub so the Desktop catalog browser and the docs site never fetch from
 # third-party hosts and a raw URL pinned to the entry's commit stays as immutable as the sha.
@@ -159,6 +171,22 @@ def _check_requires_hermes(spec: object, errors: list[str]) -> None:
             )
 
 
+def _check_known_keys(data: dict, errors: list[str]) -> None:
+    """Refuse a top-level key the contract does not define; ``x-`` keys are extensions.
+
+    The loader and the docs build silently drop unknown keys, so accepting one turns a
+    contributor's field (``homepage_url``) or a typo (``required_env`` vs ``requires_env``)
+    into dead metadata that never renders and never warns.
+    """
+    for key in sorted(set(data) - KNOWN_KEYS, key=repr):
+        if isinstance(key, str) and key.startswith(EXTENSION_KEY_PREFIX):
+            continue
+        errors.append(
+            f"unknown top-level key {key!r}: the entry contract does not define it "
+            f"(prefix an extension key with {EXTENSION_KEY_PREFIX!r})"
+        )
+
+
 def validate_entry(data: object) -> tuple[list[str], list[str]]:
     """Validate one catalog entry document. Returns (errors, warnings)."""
     errors: list[str] = []
@@ -171,8 +199,7 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
         if key not in data:
             errors.append(f"missing required key: {key}")
 
-    for key in sorted(set(data) - KNOWN_KEYS):
-        warnings.append(f"unknown top-level key {key!r} (ignored by this validator)")
+    _check_known_keys(data, errors)
 
     name = data.get("name")
     if "name" in data and (not isinstance(name, str) or not NAME_RE.match(name)):

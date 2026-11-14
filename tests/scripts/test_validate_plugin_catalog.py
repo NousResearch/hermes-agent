@@ -236,17 +236,46 @@ def test_entry_not_a_mapping_fails(tmp_path):
     assert "mapping" in (result.stdout + result.stderr)
 
 
-# ── unknown top-level keys warn but do not fail ────────────────────────
+# ── unknown top-level keys fail; x- prefixed extension keys pass ───────
 
 
-def test_unknown_key_warns_but_passes(tmp_path):
+def test_unknown_key_fails(tmp_path):
     entry = {**VALID_ENTRY, "future_field": "hello"}
     path = write_entry(tmp_path, entry)
     result = run_validator(str(path))
     combined = result.stdout + result.stderr
+    assert result.returncode == 1, combined
+    assert "unknown top-level key" in combined, combined
+    assert "future_field" in combined, combined
+    assert "x-" in combined, combined
+
+
+def test_extension_key_passes(tmp_path):
+    entry = {**VALID_ENTRY, "x-internal-id": "abc123"}
+    path = write_entry(tmp_path, entry)
+    result = run_validator(str(path))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_homepage_url_is_refused(tmp_path):
+    """The field the catalog shipped on four entries: dead in every consumer."""
+    entry = {**VALID_ENTRY, "homepage_url": "https://example.com"}
+    path = write_entry(tmp_path, entry)
+    result = run_validator(str(path))
+    combined = result.stdout + result.stderr
+    assert result.returncode == 1, combined
+    assert "homepage_url" in combined, combined
+
+
+def test_capability_typo_still_warns_with_the_known_names(tmp_path):
+    """Capability keys stay warnings (several entries declare names the runtime does not
+    consume yet), so the typo must still be visible rather than silently dropped."""
+    entry = {**VALID_ENTRY, "capabilities": {"requires_env": [], "required_env": ["A"]}}
+    path = write_entry(tmp_path, entry)
+    result = run_validator(str(path))
+    combined = result.stdout + result.stderr
     assert result.returncode == 0, combined
-    assert "future_field" in combined
-    assert "warning" in combined.lower()
+    assert "unknown capabilities key 'required_env'" in combined, combined
 
 
 # ── removed.yaml shape ─────────────────────────────────────────────────
@@ -307,8 +336,8 @@ def test_json_output_shape_on_failure(tmp_path):
     assert any("sha" in e for e in entry["errors"])
 
 
-def test_json_output_shape_on_success_with_warning(tmp_path):
-    good = write_entry(tmp_path, {**VALID_ENTRY, "future_field": 1})
+def test_json_output_shape_on_success_with_extension_key(tmp_path):
+    good = write_entry(tmp_path, {**VALID_ENTRY, "x-future_field": 1})
     result = run_validator("--json", str(good))
     assert result.returncode == 0
     payload = json.loads(result.stdout)
@@ -316,7 +345,18 @@ def test_json_output_shape_on_success_with_warning(tmp_path):
     (entry,) = payload["files"]
     assert entry["ok"] is True
     assert entry["errors"] == []
-    assert any("future_field" in w for w in entry["warnings"])
+    assert entry["warnings"] == []
+
+
+def test_json_output_shape_on_unknown_key(tmp_path):
+    bad = write_entry(tmp_path, {**VALID_ENTRY, "future_field": 1}, filename="bad.yaml")
+    result = run_validator("--json", str(bad))
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    (entry,) = payload["files"]
+    assert entry["ok"] is False
+    assert any("future_field" in e for e in entry["errors"])
 
 
 # ── directory mode ─────────────────────────────────────────────────────

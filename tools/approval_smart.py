@@ -120,8 +120,14 @@ def _smart_approve(command: str, description: str) -> str:
             'via -c flag" but is completely harmless.\n\n'
             "Respond with exactly one word: APPROVE, DENY, or ESCALATE"
         )
+        # 32, not 16: a one-word verdict needs ~2 tokens, but some providers/models emit DENY
+        # with trailing punctuation or an empty leading line, and 16 can cut mid-word — observed
+        # "DEN" with finish_reason="length" on a clear `DROP DATABASE` command. "DEN" is not in
+        # _VERDICTS, so it degrades to escalate: the conservative direction, but it silently turns
+        # a clear DENY into a human approval prompt, which is exactly the cost this guardian
+        # exists to avoid.
         response = call_llm(
-            task="approval", temperature=0, max_tokens=16, timeout=smart_timeout,
+            task="approval", temperature=0, max_tokens=32, timeout=smart_timeout,
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             reasoning_config=_verdict_reasoning(),
         )

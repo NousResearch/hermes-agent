@@ -40,9 +40,11 @@ def _write(home, layout):
 
 
 def _read(home):
-    import hermes_yaml as yaml
+    """The config as the runtime sees it: ``${VAR}`` references expanded (submitted keys live in
+    .env, #77471)."""
+    from hermes_cli.config import load_config
 
-    return yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+    return load_config()
 
 
 def _endpoint_urls(cfg):

@@ -1,0 +1,45 @@
+name: hermes-tube
+title: HermesTube
+repo: https://github.com/pedroberaldo87/hermes-tube
+sha: 4b33ae9bba78623569d63749dc791dd92afe8a0c
+subdir: plugin
+version: "0.1.0"
+description: "Take back control of what you watch. HermesTube puts your YouTube subscriptions in Hermes Desktop: tabs you make by folder, tag, channel or topic, a folder pane, a channel manager with undo, folder suggestions from your Hermes model, topic tabs it builds from YouTube search, and videos in Hermes's own player. New and still experimental: a cleanup list you approve, /tube buttons on Telegram and scheduled routines. Disclosure — the gateway fetches public www.youtube.com pages only (channel feeds and pages, uploads and Shorts playlists, video, /shorts and search pages, also in a background pass after refreshes), without login, and, for the favorites routine's Telegram message, one cover image per new video from i.ytimg.com; it connects to public addresses only and sends YouTube's anonymous consent cookie SOCS=CAI to YouTube hosts only; Desktop loads thumbnails and avatars from YouTube's image hosts and plays videos in Hermes's own embed. A separately installed Chrome extension, the only link to the YouTube account, unsubscribes only channels a person approved in Desktop or with the /tube cleanup buttons, and talks to a plugin server on 127.0.0.1 (ports 47615-47624) paired with a 6-digit code; the approve and pairing RPCs accept any client authenticated to the gateway. Organize, cleanup reasons and topic tabs send channel names and video titles to the user's model through ctx.llm, also from unattended blueprint jobs. After a button confirmation, /tube routines writes scripts to HERMES_HOME/scripts and creates cron jobs. The favorites routine sends each new video to Telegram by running hermes send with a fixed argument list; it reads cron/jobs.json read-only to find the chat and never reads the bot token. Only on a click in Desktop, Set up the extension copies the extension bundled in the plugin to a fixed HermesTube Extension folder in the home folder (refusing one it did not create) and opens the Extensions page of one Chromium browser (chosen from a closed list of those found in fixed install places; no profile is read) and the file manager with fixed argument lists and time limits; a second button only drafts a fixed help request in a new chat, which the person sends. Data in HERMES_HOME/plugin-data/hermes-tube; no shell commands, credentials or telemetry; the README lists the known limits. Formerly MyTube, by the same author; not affiliated with YouTube, Google or Nous Research."
+maintainer: pedroberaldo87
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/pedroberaldo87/hermes-tube/tree/main/plugin
+readme: true
+platforms: [macos, linux]
+image: https://raw.githubusercontent.com/pedroberaldo87/hermes-tube/4b33ae9bba78623569d63749dc791dd92afe8a0c/assets/hermes-tube.jpg
+screenshots:
+  - https://raw.githubusercontent.com/pedroberaldo87/hermes-tube/4b33ae9bba78623569d63749dc791dd92afe8a0c/docs/screenshots/home.png
+  - https://raw.githubusercontent.com/pedroberaldo87/hermes-tube/4b33ae9bba78623569d63749dc791dd92afe8a0c/docs/screenshots/folder-pane.png
+  - https://raw.githubusercontent.com/pedroberaldo87/hermes-tube/4b33ae9bba78623569d63749dc791dd92afe8a0c/docs/screenshots/manage.png
+  - https://raw.githubusercontent.com/pedroberaldo87/hermes-tube/4b33ae9bba78623569d63749dc791dd92afe8a0c/docs/screenshots/cleanup.png
+  - https://raw.githubusercontent.com/pedroberaldo87/hermes-tube/4b33ae9bba78623569d63749dc791dd92afe8a0c/docs/screenshots/theme-tab-preview.png
+  - https://raw.githubusercontent.com/pedroberaldo87/hermes-tube/4b33ae9bba78623569d63749dc791dd92afe8a0c/docs/screenshots/youtube-sidebar.png
+known_issues:
+  - "The extension is not on the Chrome Web Store: the plugin ships it built and copies it to a folder, and the person turns on Developer mode and loads that folder (Load unpacked or drag and drop) in Chrome, Edge, Brave, Chromium, Vivaldi, Opera or Arc. Hermes and the browser must run on the same computer (with Hermes inside WSL on Windows, the folder goes to the Windows user folder and the Windows browser is used)."
+  - "Reading subscriptions and unsubscribing depend on YouTube's page layout; on a mismatch the extension reports a failure and clicks nothing."
+  - "Run on macOS and, without a screen, on Debian 13 in a container. Windows (Hermes inside WSL 2, or installed natively) is covered by automated tests and a Linux container that imitates WSL, but has not yet run on a real Windows machine (Windows testers and pull requests are welcome); inside WSL the browser reaches the plugin through WSL's localhost forwarding (on by default), and natively the plugin does not hot-reload its code (restart Hermes after an update)."
+  - "English and Brazilian Portuguese only. A few validation messages of the plugin's API may still be in Portuguese; routine and blueprint keys (bom-dia, favoritos, resumo-pasta, faxina-mensal, pasta-novos) are fixed Portuguese identifiers that show up in hermes cron list."
+  - "First version: reading subscriptions, unsubscribing through the extension and the youtube.com sidebar were run on a real signed-in YouTube account with the interface in Brazilian Portuguese and one to three subscriptions; /tube status, tabs, triage buttons, routine install and the morning digest were run on one real Telegram chat. The other four routine messages, /tube topic on Telegram, chat video cards, adding a channel by link, other interface languages and long subscription lists are covered by automated tests only."
+  - "The Home on youtube.com and the Extras are not part of this version; topic tabs are not re-searched on a schedule yet (refresh one by hand)."
+  - "HermesTube does not use the official YouTube API: it reads public pages and clicks in the person's own browser. YouTube's Terms of Service may not allow this kind of automated access; use it at your own risk."
+capabilities:
+  provides_tools:
+    - tube_status
+    - tube_feed
+    - tube_channels
+    - tube_add_channel
+    - tube_organize
+    - tube_cleanup_scan
+    - tube_theme_create
+    - tube_tab
+    - tube_mark
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

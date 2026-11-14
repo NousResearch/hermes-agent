@@ -65,6 +65,19 @@ def test_version_and_image_are_cosmetic_and_offhost_images_are_dropped(tmp_path)
     assert entries["labelled"].to_dict()["version"] == "1.4.0"
 
 
+def test_non_https_docs_url_is_dropped_on_load_and_live_parse(tmp_path):
+    """docs_url becomes the dashboard's docs <a href>; the live catalog JSON is raw mappings the client
+    re-validates, so a javascript:/data: value must be dropped here (the entry itself survives)."""
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("scripted", docs_url="javascript:alert(document.domain)")))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("linked", docs_url="https://example.com/docs")))
+    entries = {e.name: e for e in pc.load_catalog(tmp_path)}
+    assert entries["scripted"].docs_url == "" and entries["scripted"].to_dict()["docs_url"] == ""
+    assert entries["linked"].docs_url == "https://example.com/docs"
+    for bad in ("data:text/html,<script>alert(1)</script>", " JavaScript:alert(1)", "http://example.com/docs", "https://["):
+        entry = pc.entry_from_mapping(_entry("live", docs_url=bad), "live#0")
+        assert entry is not None and entry.docs_url == ""
+
+
 def test_screenshots_and_readme_are_parsed_and_readme_defaults_on(tmp_path):
     shot = "https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/docs/1.png"
     (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("paged", screenshots=[shot, "https://evil.example/x.png"], readme=True)))
@@ -107,13 +120,13 @@ def test_live_catalog_falls_back_to_in_tree_and_unions_removals(tmp_path, monkey
     import httpx
 
     requests = []
-    get = httpx.get
+    stream = httpx.stream
 
-    def record_get(*args, **kwargs):
+    def record_stream(*args, **kwargs):
         requests.append(args)
-        return get(*args, **kwargs)
+        return stream(*args, **kwargs)
 
-    monkeypatch.setattr(httpx, "get", record_get)
+    monkeypatch.setattr(httpx, "stream", record_stream)
     cache = tmp_path / "cache" / "plugin-catalog.json"
     monkeypatch.setattr(pc, "_live_cache_path", lambda: cache)
     monkeypatch.setattr(pc, "LIVE_CATALOG_URL", "http://127.0.0.1:9/nope")  # unreachable
@@ -173,15 +186,8 @@ def test_live_cache_write_never_truncates_the_previous_copy(tmp_path, monkeypatc
     cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [_entry("previous")], "removed": []})
     previous = cache.read_text()
 
-    class _Resp:
-        content = json.dumps({"entries": [_entry("fresh")], "removed": []}).encode()
-        def raise_for_status(self): pass
-        def json(self): return json.loads(self.content)
-
-    import httpx
     import utils
-    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp())
-    pc._live_fetch_failed_until = 0.0
+    _serve(monkeypatch, {"entries": [_entry("fresh")], "removed": []})
 
     def _dies(*_a, **_k):
         raise OSError("disk full")
@@ -192,15 +198,23 @@ def test_live_cache_write_never_truncates_the_previous_copy(tmp_path, monkeypatc
     assert not list(cache.parent.glob("*.tmp*"))  # no leftover temp file either
 
 
-def _serve(monkeypatch, doc: dict):
-    class _Resp:
-        content = json.dumps(doc).encode()
-        def raise_for_status(self): pass
-        def json(self): return json.loads(self.content)
-
+def _serve_with(monkeypatch, handler):
+    """Answer every request at the transport: the real httpx client (redirect handling, streaming)
+    runs on top, whichever httpx entry point the fetch uses."""
     import httpx
-    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp())
+
+    def handle(self, request):
+        resp = handler(request)
+        if resp.is_stream_consumed:  # an in-memory body; the network hands back an unread stream
+            resp = httpx.Response(resp.status_code, headers=resp.headers, stream=resp.stream)
+        return resp
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle)
     monkeypatch.setattr(pc, "_live_fetch_failed_until", 0.0)
+
+
+def _serve(monkeypatch, doc: dict):
+    import httpx
+    _serve_with(monkeypatch, lambda request: httpx.Response(200, json=doc))
 
 
 def test_a_catalog_doc_past_two_mib_is_still_accepted(tmp_path, monkeypatch):
@@ -340,3 +354,130 @@ def test_treeless_checkout_still_outranks_a_doc_fetched_before_the_bump(tmp_path
         os.utime(p, (0, 0))
     monkeypatch.setattr(pc, "_in_tree_catalog_time", -1.0)
     assert {e.name: e.sha for e in pc.load_catalog_live()}["shared"] == old
+
+
+def _redirecting_to(target: str, doc: dict):
+    import httpx
+
+    def handler(request):
+        if request.url.host == "hermes-agent.nousresearch.com":
+            return httpx.Response(301, headers={"location": target})
+        return httpx.Response(200, json=doc)
+    return handler
+
+
+@pytest.mark.parametrize("target", ["https://evil.example/plugin-catalog.json",
+                                    "http://nousresearch.github.io/hermes-agent/docs/api/plugin-catalog.json"])
+def test_a_redirect_off_the_catalog_hosts_is_a_failed_fetch(tmp_path, monkeypatch, target):
+    """The doc names the repo + sha every catalog install clones: a redirect onto another host (or a
+    downgrade to http) must not let whoever answers there pick them (#127900)."""
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    monkeypatch.setattr(pc, "LIVE_CATALOG_URL", "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json")
+    _serve_with(monkeypatch, _redirecting_to(target, {"entries": [_entry("hijacked")], "removed": []}))
+    assert pc.fetch_live_catalog(force=True) is None
+    assert not cache.exists()
+    assert "hijacked" not in {e.name for e in pc.load_catalog_live()}
+
+
+def test_the_docs_host_redirect_to_github_pages_is_followed(tmp_path, monkeypatch):
+    """The published doc really lives behind a 301 to GitHub Pages; that hop must keep working."""
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    monkeypatch.setattr(pc, "LIVE_CATALOG_URL", "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json")
+    pages = "https://nousresearch.github.io/hermes-agent/docs/api/plugin-catalog.json"
+    _serve_with(monkeypatch, _redirecting_to(pages, {"entries": [_entry("published")], "removed": []}))
+    assert [e["name"] for e in pc.fetch_live_catalog(force=True)["entries"]] == ["published"]
+
+
+def test_an_endless_body_stops_at_the_cap(tmp_path, monkeypatch):
+    """The cap bounds what is read off the wire, not what is checked after buffering a whole body."""
+    import httpx
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    monkeypatch.setattr(pc, "_MAX_LIVE_BYTES", 64 * 1024)
+    sent = []
+
+    def endless():
+        while len(sent) < 10_000:  # 10 MB backstop so a buffering reader fails instead of hanging
+            sent.append(1)
+            yield b" " * 1024
+
+    _serve_with(monkeypatch, lambda request: httpx.Response(200, content=endless()))
+    assert pc.fetch_live_catalog(force=True) is None
+    assert len(sent) <= 128
+
+
+def test_a_gzip_bomb_is_refused_without_inflating_it(tmp_path, monkeypatch):
+    """httpx inflates each compressed wire chunk whole (and chains ``gzip, gzip``) before a caller
+    sees it, so the cap must be applied while inflating: 64 MiB of spaces in one ~64 KB chunk is
+    refused with peak memory near the cap, not near the decoded size."""
+    import gzip
+    import httpx
+    import tracemalloc
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    monkeypatch.setattr(pc, "_MAX_LIVE_BYTES", 1024 * 1024)
+    bomb = gzip.compress(b" " * (64 * 1024 * 1024))
+
+    class _Wire(httpx.SyncByteStream):  # an unread body, as the network hands it over
+        def __init__(self, raw: bytes):
+            self.raw = raw
+
+        def __iter__(self):
+            yield self.raw
+
+    for encoding in ("gzip", "gzip, gzip"):
+        payload = gzip.compress(bomb) if encoding == "gzip, gzip" else bomb
+        # ``content=`` would make httpx inflate the bomb while building the stub; the wire is a stream
+        _serve_with(monkeypatch, lambda request, p=payload, e=encoding: httpx.Response(
+            200, headers={"content-encoding": e}, stream=_Wire(p)))
+        tracemalloc.start()
+        try:
+            assert pc.fetch_live_catalog(force=True) is None
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert peak < 16 * 1024 * 1024, (encoding, peak)
+        assert not cache.exists()
+
+
+def test_a_gzipped_catalog_doc_is_still_read(tmp_path, monkeypatch):
+    """GitHub Pages serves the doc gzipped; inflating it ourselves must keep that path working."""
+    import gzip
+    import httpx
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    doc = json.dumps({"entries": [_entry("published")], "removed": []}).encode()
+    _serve_with(monkeypatch, lambda request: httpx.Response(
+        200, headers={"content-encoding": "gzip"}, content=gzip.compress(doc)))
+    assert [e["name"] for e in pc.fetch_live_catalog(force=True)["entries"]] == ["published"]
+
+
+@pytest.mark.parametrize("tail", [b"", b"trailing junk after the member"], ids=["never-ends", "trailing-junk"])
+def test_an_endless_gzip_stream_that_inflates_to_nothing_stops_at_the_cap(tmp_path, monkeypatch, tail):
+    """The decoded-size check can't see a gzip stream whose blocks inflate to nothing (or junk after
+    its last member), so the raw byte count is what stops it."""
+    import gzip
+    import httpx
+    import zlib
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    monkeypatch.setattr(pc, "_MAX_LIVE_BYTES", 64 * 1024)
+    sent = []
+
+    class _Wire(httpx.SyncByteStream):
+        def __iter__(self):
+            if tail:
+                yield gzip.compress(b"{}") + tail
+            else:
+                head = zlib.compressobj(wbits=16 + zlib.MAX_WBITS)
+                yield head.compress(b"") + head.flush(zlib.Z_FULL_FLUSH)
+            while len(sent) < 10_000:  # 10 MB backstop so an unbounded reader fails instead of hanging
+                sent.append(1)
+                yield (tail or b"\x00\x00\x00\xff\xff") * 200  # empty stored blocks, never final
+
+    _serve_with(monkeypatch, lambda request: httpx.Response(
+        200, headers={"content-encoding": "gzip"}, stream=_Wire()))
+    assert pc.fetch_live_catalog(force=True) is None
+    assert len(sent) <= 128

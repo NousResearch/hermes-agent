@@ -11,6 +11,7 @@ import importlib.util
 import io
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -491,21 +492,22 @@ def test_every_slow_lane_path_matches_a_tracked_file():
     """A renamed file silently stops starting its lane on pull requests.
 
     Every prefix in the slow-lane tables must still match something in the
-    tree, or the lane only ever runs on main.
+    tree, or the lane only ever runs on main. A package init listed above a routed
+    module counts when its directory does: it may be a namespace directory.
     """
     tracked = subprocess.run(
         ["git", "ls-files"], cwd=_REPO, capture_output=True, text=True, check=False,
     )
     if tracked.returncode != 0:
         pytest.skip("not a git checkout")
-    files = tracked.stdout.splitlines()
+    files = [_mod.original_path(f) for f in tracked.stdout.splitlines()]
     tables = {**_mod._E2E_LANES, "docker": _mod._DOCKER_PATHS, "nix": _mod._NIX_LANE_PATHS,
               "remote_backends": _mod._REMOTE_BACKEND_PATHS}
     dead = {
         (lane, prefix)
         for lane, prefixes in tables.items()
         for prefix in prefixes
-        if not any(f.startswith(prefix) for f in files)
+        if not any(f.startswith(prefix.removesuffix("__init__.py")) for f in files)
     }
     assert dead == set()
 
@@ -565,14 +567,14 @@ _DESKTOP_UPDATE_PATH_FILES = (
 
 @pytest.mark.parametrize("path", _UPDATE_PATH_FILES)
 def test_every_update_path_file_starts_the_real_update_suite(path):
-    assert (_REPO / path).is_file(), f"{path} moved: update the classifier and this table"
-    assert classify([path])["e2e_upgrade"], path
+    assert (_REPO / _mod.current_path(path)).is_file(), f"{path} is gone: update the classifier and this table"
+    assert classify([_mod.current_path(path)])["e2e_upgrade"], path
 
 
 @pytest.mark.parametrize("path", _DESKTOP_UPDATE_PATH_FILES)
 def test_every_desktop_update_path_file_starts_the_desktop_update_suite(path):
-    assert (_REPO / path).is_file(), f"{path} moved: update the classifier and this table"
-    assert classify([path])["e2e_desktop_update"], path
+    assert (_REPO / _mod.current_path(path)).is_file(), f"{path} is gone: update the classifier and this table"
+    assert classify([_mod.current_path(path)])["e2e_desktop_update"], path
 
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -590,6 +592,24 @@ def test_every_lane_reaches_the_composite_action():
     lanes = set(classify(["run_agent.py"]))
     action_outputs = set(_yaml(".github/actions/detect-changes/action.yml")["outputs"])
     assert lanes - action_outputs == set(), "lane(s) missing from the composite action's outputs"
+
+
+def test_classifier_runs_in_the_detect_jobs_sparse_checkout(tmp_path):
+    """The detect job checks out only its sparse list; an import outside it fails CI on every PR."""
+    steps = _yaml(".github/workflows/ci.yaml")["jobs"]["detect"]["steps"]
+    sparse = next(s["with"]["sparse-checkout"] for s in steps if "sparse-checkout" in s.get("with", {}))
+    for rel in sparse.split():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        if (_REPO / rel).is_dir():
+            shutil.copytree(_REPO / rel, tmp_path / rel, ignore=shutil.ignore_patterns("__pycache__"))
+        else:
+            shutil.copy2(_REPO / rel, tmp_path / rel)
+    # -I -S: only the sparse tree, never the repo or an installed copy, as on the runner.
+    run = subprocess.run([sys.executable, "-I", "-S", "scripts/ci/classify_changes.py"], cwd=tmp_path,
+                         input="gateway/__init__.py\n", capture_output=True, text=True, timeout=60, check=False)
+    assert run.returncode == 0, run.stderr
+    assert "python=true" in run.stdout.splitlines()
+    assert "e2e_upgrade=true" in run.stdout.splitlines()
 
 
 def test_ci_jobs_only_gate_on_detect_outputs_that_detect_actually_declares():

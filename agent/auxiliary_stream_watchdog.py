@@ -144,12 +144,12 @@ def chat_stream_windows(client: Any, kwargs: dict, task: Optional[str]) -> tuple
     from agent.auxiliary_client import (
         _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS, _RELAY_AUX_CALL_CONTEXT, _get_task_no_progress_timeout)
     from agent.chat_completion_helpers import _cloud_stale_timeout_for
-    from agent.model_metadata import is_local_endpoint
+    from agent.process_transport import waits_like_local
     window = _get_task_no_progress_timeout(task or "") or _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
     first = None
-    if not is_local_endpoint(str(getattr(client, "base_url", "") or "")):
-        route = SimpleNamespace(provider=(_RELAY_AUX_CALL_CONTEXT.get() or {}).get("stream_provider") or "",
-                                model=kwargs.get("model"))
+    provider = (_RELAY_AUX_CALL_CONTEXT.get() or {}).get("stream_provider") or ""
+    if not waits_like_local(getattr(client, "base_url", ""), provider):
+        route = SimpleNamespace(provider=provider, model=kwargs.get("model"))
         first = max(window, _cloud_stale_timeout_for(route, kwargs))
     timeout = kwargs.get("timeout")
     if isinstance(timeout, (int, float)) and timeout > 0:

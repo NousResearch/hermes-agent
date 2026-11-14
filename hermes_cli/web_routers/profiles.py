@@ -31,6 +31,7 @@ from fastapi import APIRouter, HTTPException, Query
 from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.config import get_process_hermes_home
+from hermes_cli.isolated_scope import scope_to_launch_profile
 from hermes_cli.profiles import ProfileIdentitySettlementPending
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_profiles import (
@@ -91,6 +92,8 @@ def _profile_to_dict(info) -> dict[str, Any]:
         "description_auto": bool(attr("description_auto", False)),
         "display_name": attr("display_name", "") or "",
         "bot_title": attr("bot_title", "") or "",
+        # The Desktop's roster of a SECONDARY connection takes Bot Mode sections from here.
+        "ui_meta": attr("ui_meta", {}) or {},
         "distribution_name": attr("distribution_name", None),
         "distribution_version": attr("distribution_version", None),
         "distribution_source": attr("distribution_source", None),
@@ -161,7 +164,7 @@ def _profile_targets(log_label: str) -> list[tuple[str, Path]]:
         targets = []
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))
-    return targets
+    return scope_to_launch_profile(targets, lambda target: target[0])
 
 
 def _scoped_profile_targets(log_label: str, profile: Optional[str]) -> list[tuple[str, Path]]:
@@ -729,11 +732,11 @@ def _read_profiles():
     from hermes_cli import profiles as profiles_mod
     try:
         # Polled by the Desktop on every focus/roster tick: never walk skill trees in-request.
-        profiles = profiles_mod.list_profiles(lazy_skill_count=True)
-        return {"profiles": [_profile_to_dict(p) for p in profiles]}
+        profiles = [_profile_to_dict(p) for p in profiles_mod.list_profiles(lazy_skill_count=True)]
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
-        return {"profiles": _fallback_profile_dicts(profiles_mod)}
+        profiles = _fallback_profile_dicts(profiles_mod)
+    return {"profiles": scope_to_launch_profile(profiles, lambda row: row.get("name"))}
 
 
 @router.get("/api/profiles")
@@ -753,7 +756,7 @@ async def create_profile_endpoint(body: ProfileCreate):
     else:
         clone_from = "default" if body.clone_from_default else None
         clone_config = body.clone_from_default
-    from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
+    from hermes_cli.profile_provision import CREATE_REFUSALS, ProfileCreateRequest, provision_profile
     provider = (body.provider or "").strip()
     model = (body.model or "").strip()
     request = ProfileCreateRequest(
@@ -764,7 +767,7 @@ async def create_profile_endpoint(body: ProfileCreate):
         mcp_servers=tuple(body.mcp_servers), keep_skills=tuple(body.keep_skills),
         mirror_credentials=body.mirror_credentials, share_auth=body.share_auth)
     with _profile_errors("POST /api/profiles failed", not_found=(),
-                         bad_request=(ValueError, FileExistsError, FileNotFoundError)):
+                         bad_request=CREATE_REFUSALS):
         # Off the loop: creation asks a live multiplexer to serve the profile now over its control
         # socket, and on the gateway's own listener (the Webapp) that socket answers on this loop.
         result = await asyncio.to_thread(provision_profile, request)

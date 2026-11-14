@@ -1,7 +1,7 @@
 import { Button, host, LruCache, randomUuid } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 
-import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupNotices, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive } from './canonical-group-activity'
+import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupNotices, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive, useSameValue } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
 import { offersGroupMethod, offersGroupSafetyMethod, useGroupMethods } from './canonical-group-capabilities'
 import { CanonicalGroupDetails, CanonicalPendingCard, holdCanonicalRoomLive, publishCanonicalRoomLive, useStickToBottom } from './canonical-group-details'
@@ -95,6 +95,8 @@ function confirmSend(result: unknown, eventId: string, unconfirmed: string) {
     throw new Error(unconfirmed)
   }
 }
+
+const NO_MEMBERS: CanonicalRoomMember[] = []
 
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack, onReplaced }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void; onReplaced?: (key: string) => void
@@ -631,7 +633,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
 
   const composerLocked = !restored || busy || !!pending
   const driver = state?.driver_status
-  const members = state?.room.members ?? []
+  const members = useSameValue(state?.room.members ?? NO_MEMBERS)
   const { cycle, statuses, working } = useCanonicalRoomLive(events, driver, members, reply?.thread)
   const mentionMembers = members.map(member => ({ name: member.handle, handle: member.handle, display_name: member.display_name }))
   const memberById = new Map(members.map(member => [member.member_id, member]))

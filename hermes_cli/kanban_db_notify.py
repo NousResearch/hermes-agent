@@ -31,6 +31,14 @@ _SCALAR_TYPES = (str, int, float, bool)
 # ``(task_id, platform, chat_id, thread_id or "")`` against it.
 _SUB_KEY_WHERE = "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?"
 
+# The park-clearing statement, shared by the re-subscribe re-arm
+# (:func:`add_notify_sub`) and :func:`clear_notify_failures` so the parked
+# columns can never drift apart between the two writers.
+_CLEAR_PARK_SQL = (
+    "UPDATE kanban_notify_subs SET delivery_failures = 0, retry_after = NULL "
+    + _SUB_KEY_WHERE
+)
+
 
 def _sub_key(task_id: str, platform: str, chat_id: str, thread_id: Optional[str]) -> tuple:
     return (task_id, platform, chat_id, thread_id or "")
@@ -143,6 +151,10 @@ def add_notify_sub(
                 f"UPDATE kanban_notify_subs SET {column} = ? " + _SUB_KEY_WHERE + guard,
                 (value, *key),
             )
+        # Re-subscribing is the operator's re-arm for a delivery-parked row: the
+        # destination's own session asking again proves it is reachable, so the
+        # failure count and backoff window reset (no-op on healthy rows).
+        conn.execute(_CLEAR_PARK_SQL, key)
 
 
 def _notify_profile_filter(
@@ -293,14 +305,18 @@ def retarget_notify_subs(
 
 
 def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int = 30) -> int:
-    """Delete notify subs whose task sat in ``done``/``blocked`` untouched for
-    longer than ``max_age_days`` (``<= 0`` disables); returns rows deleted.
+    """Delete notify subs whose task sat in ``done``/``blocked``/``archived``
+    untouched for longer than ``max_age_days`` (``<= 0`` disables); returns
+    rows deleted.
 
     Subs survive ``done`` because a reopened task must still notify its origin,
     which accumulates forever on never-archiving boards. ``blocked`` is
-    abandoned (unlike ``backlog``/``ready``) so it reaps on the same clock. Age
-    = latest event, else ``completed_at``, else ``created_at`` — any activity,
-    including a reopen, exempts the sub.
+    abandoned (unlike ``backlog``/``ready``) so it reaps on the same clock.
+    ``archived`` is terminal — and since delivery failures park rather than
+    unsubscribe, a dead destination on an archived task would otherwise be
+    probed on capped backoff forever with nothing else to reap it — so it
+    reaps on the same clock too. Age = latest event, else ``completed_at``,
+    else ``created_at`` — any activity, including a reopen, exempts the sub.
 
     The notifier keeps subscriptions alive through ``done`` because a completed task can be reopened (review
     corrections, continuation) and the reopened cycle must still notify its origin session. On boards that
@@ -321,7 +337,7 @@ def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int 
         cur = conn.execute(
             "DELETE FROM kanban_notify_subs WHERE task_id IN ("
             " SELECT t.id FROM tasks t"
-            " WHERE t.status IN ('done', 'blocked')"
+            " WHERE t.status IN ('done', 'blocked', 'archived')"
             " AND COALESCE("
             "  (SELECT MAX(e.created_at) FROM task_events e"
             "   WHERE e.task_id = t.id),"
@@ -440,6 +456,51 @@ def record_notify_ping(
             + _SUB_KEY_WHERE,
             (int(event_id), *_sub_key(task_id, platform, chat_id, thread_id)),
         )
+
+
+def record_notify_failure(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None, base_delay: float, cap_delay: float,
+) -> tuple[int, float]:
+    """Count one delivery failure durably and park the row on bounded backoff.
+
+    Sets ``delivery_failures = delivery_failures + 1`` and ``retry_after`` to
+    ``now + min(cap_delay, base_delay * 2 ** (failures - 1))`` inside one
+    transaction, returning ``(failures, retry_after)`` for the caller's log
+    line. Parking — not unsubscribing — bounds a dead destination to one claim
+    attempt per backoff step while keeping the row recoverable: claims skip it
+    until ``retry_after`` passes, and a successful delivery or a re-subscribe
+    clears both columns (:func:`clear_notify_failures`).
+    """
+    key = _sub_key(task_id, platform, chat_id, thread_id)
+    with _kb.write_txn(conn):
+        row = conn.execute(
+            "SELECT delivery_failures FROM kanban_notify_subs " + _SUB_KEY_WHERE, key,
+        ).fetchone()
+        if row is None:
+            return 0, 0.0
+        failures = int(row["delivery_failures"] or 0) + 1
+        # Clamp the exponent (agent/retry_utils.py guards the same way): an
+        # unclamped 2**(failures-1) raises OverflowError once failures pass
+        # ~1024 (~43 days at the 1h cap — exactly the permanently-dead
+        # destinations this counter serves), and the raised park-write would
+        # return the row to a claim/rewind attempt every tick.
+        delay = float(base_delay) * (2 ** min(failures - 1, 63))
+        retry_after = time.time() + min(float(cap_delay), delay)
+        conn.execute(
+            "UPDATE kanban_notify_subs SET delivery_failures = ?, retry_after = ? " + _SUB_KEY_WHERE,
+            (failures, retry_after, *key),
+        )
+        return failures, retry_after
+
+
+def clear_notify_failures(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None,
+) -> None:
+    """Reset the durable failure counters (successful delivery / re-subscribe)."""
+    with _kb.write_txn(conn):
+        conn.execute(_CLEAR_PARK_SQL, _sub_key(task_id, platform, chat_id, thread_id))
 
 
 def rewind_notify_cursor(

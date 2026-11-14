@@ -70,7 +70,7 @@ async def test_kanban_wake_during_restart_drain_runs_after_restart(
         )
         for delivery in deliveries:
             await _KanbanNotification(
-                runner, delivery, platform_cls=Platform, sub_fail_counts={}
+                runner, delivery, platform_cls=Platform
             ).deliver()
         await drain(adapter)
 

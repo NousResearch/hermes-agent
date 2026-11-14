@@ -135,3 +135,39 @@ def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
 
     assert len(opened) == 1
     assert closed == opened
+
+
+def test_post_open_hardening_failure_closes_connection(monkeypatch, tmp_path):
+    """The second ``_secure_state_db_files`` pass runs after the connection is open;
+    when it raises (ELOOP on a swapped-in sidecar link, PermissionError), the
+    connection must be closed, not leaked with its db/-wal/-shm descriptors."""
+    import errno
+
+    import hermes_state
+
+    _point_ledger(monkeypatch, tmp_path)
+    opened, closed = [], []
+    real_connect = sqlite3.connect
+
+    def tracking_connect(database, *args, **kwargs):
+        conn = real_connect(database, *args, **kwargs)
+        if str(database) == ":memory:":  # the reconciler's private reference shape
+            return conn
+        opened.append(id(conn))
+        return _TrackingConnection(conn, closed)
+
+    monkeypatch.setattr(ad.sqlite3, "connect", tracking_connect)
+    real_secure = hermes_state._secure_state_db_files
+
+    def secure_then_fail_after_open(path, *, create_main=False):
+        real_secure(path, create_main=create_main)
+        if not create_main:
+            raise OSError(errno.ELOOP, "simulated swapped-in sidecar link", str(path))
+
+    monkeypatch.setattr(hermes_state, "_secure_state_db_files", secure_then_fail_after_open)
+
+    with pytest.raises(OSError, match="simulated swapped-in sidecar link"):
+        ad.open_state_db(tmp_path / "state.db", "state.db (test)")
+
+    assert len(opened) == 1
+    assert closed == opened

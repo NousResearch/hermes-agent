@@ -144,7 +144,11 @@ def open_state_db(path: Path, db_label: str) -> sqlite3.Connection:
     conn = open_db(path, db_label=db_label, busy_timeout_ms=10_000,
                    wal=False, row_factory=None,
                    initialize=lambda conn: _initialize_schema(conn, identity=identity))
-    _secure_state_db_files(path)
+    try:
+        _secure_state_db_files(path)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 

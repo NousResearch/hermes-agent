@@ -8,6 +8,7 @@ store opened by a current build takes those turns out of the model context once,
 screen as greyed refused rows, and leaves alone every chat it cannot prove locked.
 """
 import json
+import os
 
 from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND
 from hermes_state import SessionDB
@@ -90,7 +91,8 @@ def test_refusal_folded_into_a_summary_is_left_alone_and_a_busy_chat_waits(tmp_p
     summary_view = _model(db, "compacted")
     db.create_session("busy", "cli")
     _refused_turn(db, "busy", "the blocked ask")
-    assert db.acquire_session_turn_lease("busy", "pid=1:turn=live", ttl_seconds=300.0)
+    live_turn = f"pid={os.getpid()}:turn=live"  # a holder alive on every host
+    assert db.acquire_session_turn_lease("busy", live_turn, ttl_seconds=300.0)
     _as_legacy_store(db)
 
     db = SessionDB(tmp_path / "state.db")
@@ -101,7 +103,7 @@ def test_refusal_folded_into_a_summary_is_left_alone_and_a_busy_chat_waits(tmp_p
         assert _model(db, "busy") == [("user", "the blocked ask"), ("assistant", _BOUNDARY)]
         assert db.get_meta(LEGACY_REFUSAL_REPAIR_DONE) is None
         assert json.loads(db.get_meta("legacy_refusal_repair_pending")) == ["busy"]
-        db.release_session_turn_lease("busy", "pid=1:turn=live")
+        db.release_session_turn_lease("busy", live_turn)
     finally:
         db.close()
     db = SessionDB(tmp_path / "state.db")

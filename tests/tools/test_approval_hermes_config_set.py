@@ -52,6 +52,14 @@ def _policy_rule_fires(command: str) -> bool:
     "python3 -m hermes_cli.main config set approvals.mode off",
     # Behind another command in a chain.
     "cd /tmp && hermes config set approvals.mode off",
+    # The spellings the issue names: an inline home override in front of the program.
+    "HERMES_HOME=/tmp/x hermes config set approvals.mode off",
+    # Other value-taking top-level flags from the real parser.
+    "hermes --resume abc config set approvals.mode off",
+    "hermes -s skill config set command_allowlist x",
+    # A quoted key reaches the CLI as the same key.
+    'hermes config set "approvals.mode" off',
+    "hermes config set 'command_allowlist' x",
 ])
 def test_a_real_config_set_invocation_is_gated(command):
     dangerous, _key, _description = detect_dangerous_command(command)
@@ -76,6 +84,8 @@ def test_a_real_config_set_invocation_is_gated(command):
     "hermes config unset display.language",
     # The module form, but not a policy write.
     "python -m hermes_cli.main config show",
+    "HERMES_HOME=/tmp/x hermes config show",
+    'hermes config set "display.language" en',
 ])
 def test_a_read_or_an_unrelated_invocation_is_not_gated(command):
     dangerous, _key, description = detect_dangerous_command(command)

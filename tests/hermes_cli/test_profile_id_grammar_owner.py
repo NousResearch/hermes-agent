@@ -94,6 +94,23 @@ def test_gate_accepts_exactly_what_the_owner_accepts(gate, monkeypatch):
     assert check(OLD_ONLY) is None
 
 
+def test_launchd_fleet_labels_follow_the_owner(monkeypatch):
+    from types import SimpleNamespace
+
+    import hermes_cli.profiles
+    from hermes_cli.gateway import launchd_gateway_labels_for_install
+
+    profiles = [SimpleNamespace(name=name, is_default=name == "default")
+                for name in ("zz.custom", "work", "default", "Bad Name!", "zz.alpha")]
+    monkeypatch.setattr(hermes_cli.profiles, "list_profiles", lambda: profiles)
+
+    assert launchd_gateway_labels_for_install() == ["ai.hermes.gateway", "ai.hermes.gateway-work"]
+    monkeypatch.setattr(hermes_constants, "PROFILE_ID_RE", SWAPPED)
+    assert launchd_gateway_labels_for_install() == [
+        "ai.hermes.gateway", "ai.hermes.gateway-zz.alpha", "ai.hermes.gateway-zz.custom",
+    ]
+
+
 def test_session_store_owner_follows_the_owner(tmp_path, monkeypatch):
     from types import SimpleNamespace
 

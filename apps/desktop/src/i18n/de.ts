@@ -4133,6 +4133,10 @@ export const deOverrides = {
         'Änderungen an dieser Datei verwerfen und sie in den committeten Zustand zurücksetzen? Das kann nicht rückgängig gemacht werden.',
       revertAllConfirm:
         'Alle Änderungen verwerfen und alle Dateien in den committeten Zustand zurücksetzen? Das kann nicht rückgängig gemacht werden.',
+      stageHunk: 'Diese Änderung stagen',
+      unstageHunk: 'Diese Änderung unstagen',
+      revertHunk: 'Diese Änderung zurücksetzen',
+      revertHunkConfirm: 'Diese Änderung verwerfen und die Zeilen in den committeten Zustand zurücksetzen? Das kann nicht rückgängig gemacht werden.',
       staged: 'Gestaged',
       noChanges: 'Keine Änderungen',
       notRepo: 'Kein git-Repository',

@@ -194,6 +194,12 @@ class GitFileBody(BaseModel):
     path: str
     file: Optional[str] = None
 
+class GitHunkBody(BaseModel):
+    path: str
+    file: str
+    hunk: str
+    action: Literal["revert", "stage", "unstage"]
+
 class GitPrListBody(BaseModel):
     path: str
     branches: list[str] = []

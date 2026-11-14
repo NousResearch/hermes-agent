@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 345
+   "undecided": 346
   },
   "rpc": {
    "authority": 111,
@@ -254,6 +254,7 @@
   {"current_path": "hermes_cli.web_routers.git:git_branch_switch_route", "decision": "undecided", "handler": "POST /api/git/branch/switch", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.git:git_commit_route", "decision": "undecided", "handler": "POST /api/git/review/commit", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.git:git_create_pr_route", "decision": "undecided", "handler": "POST /api/git/review/create-pr", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.git:git_hunk_route", "decision": "undecided", "handler": "POST /api/git/review/hunk", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.git:git_pr_list_route", "decision": "undecided", "handler": "POST /api/git/review/pr-list", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.git:git_push_route", "decision": "undecided", "handler": "POST /api/git/review/push", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.git:git_revert_route", "decision": "undecided", "handler": "POST /api/git/review/revert", "kind": "http", "ref": ""},

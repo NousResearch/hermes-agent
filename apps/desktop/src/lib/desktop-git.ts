@@ -101,6 +101,9 @@ function remoteGitVia(api: GitApi): GitBridge {
 
       revert: (repoPath, filePath) => gitPost('review/revert', { file: filePath || null, path: repoPath }),
 
+      hunk: (repoPath, filePath, hunk, action) =>
+        gitPost('review/hunk', { action, file: filePath, hunk, path: repoPath }),
+
       revParse: async (repoPath, ref) =>
         (await gitGet<{ sha: null | string }>('review/rev-parse', { path: repoPath, ref })).sha,
 

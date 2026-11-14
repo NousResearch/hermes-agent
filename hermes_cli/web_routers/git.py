@@ -23,6 +23,7 @@ from hermes_cli.web_models import (
     GitBranchSwitchBody,
     GitCommitBody,
     GitFileBody,
+    GitHunkBody,
     GitPathBody,
     GitPrListBody,
     GitWorktreeAddBody,
@@ -182,6 +183,11 @@ async def git_unstage_route(body: GitFileBody):
 @router.post("/api/git/review/revert")
 async def git_revert_route(body: GitFileBody):
     return await _git_op(_web_git.review_revert, _git_path(body.path), body.file)
+
+
+@router.post("/api/git/review/hunk")
+async def git_hunk_route(body: GitHunkBody):
+    return await _git_op(_web_git.review_hunk, _git_path(body.path), body.file, body.hunk, body.action)
 
 
 @router.post("/api/git/review/commit")

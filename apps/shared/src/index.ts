@@ -62,6 +62,7 @@ export {
   DATA_URL_READ_MIN_MAX_MB
 } from './data-url-read-max'
 export { INSTALL_ORIGIN, PACKAGE_MARKER, PLUGIN_CATALOG_NAME_RE } from './desktop-plugin-files'
+export { singleHunkPatch, type SplitDiff, splitDiffHunks } from './diff-hunks'
 export { type ExternalUrlTarget, externalUrlTarget } from './external-url'
 export { fileUrlToNativePath } from './file-url'
 export { compactNumber } from './format'

@@ -353,6 +353,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
         "moonshotai/kimi-k2.5", "minimax/minimax-m2.7", "zai-org/glm-5", "deepseek/deepseek-v3-0324",
         "deepseek/deepseek-r1-0528", "qwen/qwen3-235b-a22b-fp8",
     ],
+    # La Plateforme also hosts third-party open models (Z.ai, DeepSeek) served unmodified —
+    # ids match the live /v1/models catalog; this is the offline fallback floor.
+    "mistral": [
+        "mistral-large-latest",
+        "zai-glm-5-3",
+        "deepseek-v4-1-flash-1017",
+        "mistral-medium-latest",
+        "mistral-small-latest",
+    ],
     # Bare ids derived from the picker snapshot so both stay in sync.
     "ai-gateway": [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS],
 })

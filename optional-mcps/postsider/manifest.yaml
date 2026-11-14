@@ -1,0 +1,47 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: postsider
+description: 'PostSider: plan, schedule, publish and review social media posts across 30+ networks, with drafts and human approval.'
+source: https://docs.postsider.com/agent/mcp/overview
+
+# Vendor-hosted remote MCP (URL-only, Hermes never spawns a local process for
+# this entry). Native OAuth 2.1 + Dynamic Client Registration over Streamable
+# HTTP: RFC 9728 protected-resource metadata at
+# https://mcp.postsider.com/.well-known/oauth-protected-resource points to
+# the authorization server https://api.postsider.com (registration_endpoint,
+# PKCE S256, loopback redirect URIs accepted). Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://mcp.postsider.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - postsider
+    - social media
+    - schedule posts
+  hosts:
+    - postsider.com
+  examples:
+    - Draft a LinkedIn and X post about our release and put it in the next free slot
+    - Show what is scheduled for the next 14 days and which posts failed
+    - Check which channels need a reconnect and which posts are stuck
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to PostSider
+  (or run `hermes mcp login postsider`). Sign in and approve access, then
+  restart the session so tools load. Channels are connected in the PostSider
+  dashboard (7-day trial, no credit card).
+
+  Some tools publish to your public social accounts or delete content
+  (create_post with type now or schedule, delete_post, disconnect_channel,
+  pause_publishing). Every tool is annotated readOnlyHint or destructiveHint,
+  so you can leave the write tools unchecked in the checklist and re-run it
+  any time with:
+    hermes mcp configure postsider

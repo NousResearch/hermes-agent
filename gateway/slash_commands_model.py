@@ -498,13 +498,16 @@ class GatewayModelCommandsMixin:
         reads config/env/auth store; under multiplex it runs inside the profile's scope so the
         env-key tier sees that profile's credentials."""
         from hermes_cli.auth import resolve_provider
+        from hermes_cli.runtime_provider import resolve_requested_provider
 
         def _detect() -> str:
+            # The turn's own request order (config, then HERMES_INFERENCE_PROVIDER, else auto),
+            # resolved read-only: an env-pinned provider must be named, not auto-detect's pick.
             if profile_home is None:
-                return resolve_provider("auto")
+                return resolve_provider(resolve_requested_provider())
             from gateway.run import _profile_runtime_scope
             with _profile_runtime_scope(profile_home):
-                return resolve_provider("auto")
+                return resolve_provider(resolve_requested_provider())
 
         with contextlib.suppress(Exception):
             return await asyncio.to_thread(_detect)
@@ -517,10 +520,10 @@ class GatewayModelCommandsMixin:
         from hermes_cli.model_switch import list_authenticated_providers
         from hermes_cli.providers import get_label
 
-        # Unset ``model.provider``: ``ctx.current_provider`` still holds the ``openrouter``
-        # placeholder — display the provider the resolver actually routes through instead.
+        # Unset, empty or ``auto`` ``model.provider``: ``ctx.current_provider`` holds a placeholder
+        # (``openrouter``, ``auto``, ``""``) — display the provider the resolver routes through instead.
         display_provider = ctx.current_provider
-        if ctx.route_provider is None:
+        if str(ctx.route_provider or "").strip().lower() in ("", "auto"):
             display_provider = await self._resolve_display_provider(profile_home) or display_provider
         listing_kwargs = dict(
             current_provider=display_provider, current_base_url=ctx.current_base_url,

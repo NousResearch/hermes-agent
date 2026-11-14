@@ -34,6 +34,12 @@ class TestReadFileHandler:
         schema_default = READ_FILE_SCHEMA["parameters"]["properties"]["limit"]["default"]
         assert mock_ops.read_file.call_args.args[2] == schema_default
 
+    def test_read_schema_teaches_final_newline_contract(self):
+        from tools.file_tools import READ_FILE_SCHEMA
+        description = READ_FILE_SCHEMA["description"]
+        assert "ends_with_newline" in description
+        assert "preserve" in description.lower()
+
     @patch("tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):
         mock_get.side_effect = RuntimeError("terminal not available")
@@ -535,6 +541,35 @@ class TestSessionCwdSurvivesEnvRecreation:
                 f"Expected restored cwd='/Users/user/project', got {cwd_passed!r}"
         finally:
             tt.clear_session_cwd(task_id)
+
+
+class TestExactCopyFinalNewline:
+    def test_cross_file_copy_restores_one_final_lf(self, tmp_path):
+        import tools.file_tools as ft
+
+        task_id = f"copy-final-lf-{tmp_path.name}"
+        source = tmp_path / "source.txt"
+        target = tmp_path / "target.txt"
+        source.write_bytes(b"payload\n")
+
+        read_result = json.loads(ft.read_file_tool(str(source), task_id=task_id))
+        assert read_result["ends_with_newline"] is True
+
+        write_result = json.loads(ft.write_file_tool(str(target), "payload", task_id=task_id))
+        assert target.read_bytes() == b"payload\n"
+        assert write_result["final_newline_preserved_from"] == str(source.resolve())
+
+    def test_same_file_rewrite_can_remove_final_lf(self, tmp_path):
+        import tools.file_tools as ft
+
+        task_id = f"same-file-final-lf-{tmp_path.name}"
+        source = tmp_path / "source.txt"
+        source.write_bytes(b"payload\n")
+
+        ft.read_file_tool(str(source), task_id=task_id)
+        write_result = json.loads(ft.write_file_tool(str(source), "payload", task_id=task_id))
+        assert source.read_bytes() == b"payload"
+        assert "final_newline_preserved_from" not in write_result
 
 
 class TestSilentFileMisplacementE2E:

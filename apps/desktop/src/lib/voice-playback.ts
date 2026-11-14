@@ -13,6 +13,7 @@ import {
 } from '@/store/voice-playback'
 
 import { cutSentences, sanitizeTextForSpeech } from './speech-text'
+import { decodeAudioClip, speechRange } from './speech-trim'
 
 // Free Edge TTS occasionally hands back audio that never fires `playing`/`ended`
 // nor `error` — leaving voice mode stuck "speaking" forever. Reject if playback
@@ -243,6 +244,32 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
   let synthesizing = false
   let playing: HTMLAudioElement | null = null
 
+  // Sentence N+1 is synthesized while sentence N is still playing. Without
+  // this the caller pays a full provider round-trip at every seam, which is
+  // the stutter between sentences (see speech-trim.ts for the measured
+  // padding the provider adds on top of it). The queue holds TEXT, so a
+  // prefetch only ever runs one sentence ahead of what is playing.
+  let prefetch: null | { bytes: Promise<ArrayBuffer>; sentence: string } = null
+  let trimCtx: AudioContext | null = null
+
+  /** Decode one clip for trimming, keeping a session-scoped context warm. */
+  const decodeForTrim = async (bytes: ArrayBuffer): Promise<null | AudioBuffer> => {
+    if (!trimCtx) {
+      const Ctor =
+        window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+
+      if (Ctor) {
+        try {
+          trimCtx = new Ctor()
+        } catch {
+          trimCtx = null
+        }
+      }
+    }
+
+    return trimCtx ? decodeAudioClip(bytes, trimCtx) : null
+  }
+
   let settle: (value: 'done' | 'fallback') => void = () => undefined
 
   // stopVoicePlayback() → immediate barge-in: settle this session so its
@@ -280,13 +307,26 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
     synthesizing = true
 
     try {
-      while (queue.length > 0 && !settled) {
-        const sentence = queue.shift()!
+      while ((queue.length > 0 || prefetch) && !settled) {
+        // Take the prefetched clip when it is the sentence at the head of the
+        // queue; otherwise synthesize the head now. Either way exactly one
+        // provider call is outstanding at a time.
+        const sentence = queue[0] ?? ''
+        let pending: Promise<ArrayBuffer>
+
+        if (prefetch && prefetch.sentence === sentence) {
+          pending = prefetch.bytes
+          prefetch = null
+          queue.shift()
+        } else {
+          queue.shift()
+          pending = synthesizeSpeechClientDirect(tts, sentence)
+        }
 
         let bytes: ArrayBuffer
 
         try {
-          bytes = await synthesizeSpeechClientDirect(tts, sentence)
+          bytes = await pending
         } catch {
           // Provider rejected mid-reply. Nothing played yet → let the caller
           // fall back to the relay with the full text. Mid-playback → treat
@@ -300,20 +340,74 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
           return
         }
 
+        // Synthesize the NEXT sentence while this one plays, so the seam costs
+        // no provider round-trip.
+        if (!prefetch && queue.length > 0) {
+          const next = queue[0]
+
+          prefetch = { bytes: synthesizeSpeechClientDirect(tts, next), sentence: next }
+          // Awaiting it on the next iteration is what surfaces a rejection;
+          // without this handler an early rejection would be unhandled.
+          prefetch.bytes.catch(() => undefined)
+        }
+
         if (!started) {
           started = true
           setVoicePlaybackState(currentState('speaking', options))
         }
 
+        // Trim the provider's edge padding (see speech-trim.ts). A clip that
+        // cannot be decoded plays exactly as delivered rather than not at all.
+        const decoded = await decodeForTrim(bytes)
+
+        if (settled) {
+          return
+        }
+
         const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))
+        const range = decoded ? speechRange(decoded) : null
 
         try {
           await new Promise<void>((resolve, reject) => {
             const audio = new Audio(url)
             playing = audio
+
+            // Start at the first speech sample and resolve as soon as playback
+            // passes the last one, so neither padding edge reaches the speaker.
+            if (range) {
+              const stopAt = range.start + range.duration
+
+              audio.addEventListener(
+                'timeupdate',
+                () => {
+                  if (audio.currentTime >= stopAt) {
+                    audio.pause()
+                    resolve()
+                  }
+                },
+                { passive: true }
+              )
+            }
+
             audio.addEventListener('ended', () => resolve(), { once: true })
             audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
             void audio.play().catch(reject)
+
+            if (range && range.start > 0) {
+              const seekTo = () => {
+                try {
+                  audio.currentTime = range.start
+                } catch {
+                  // Not seekable yet — the lead padding plays, nothing is lost.
+                }
+              }
+
+              if (audio.readyState >= 1) {
+                seekTo()
+              } else {
+                audio.addEventListener('loadedmetadata', seekTo, { once: true })
+              }
+            }
           })
         } catch {
           settle(started ? 'done' : 'fallback')
@@ -331,8 +425,9 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
     } finally {
       synthesizing = false
 
-      // Deltas that arrived while the last sentence was playing.
-      if (!settled && queue.length > 0) {
+      // Deltas that arrived while the last sentence was playing, or a
+      // prefetched clip whose text is still at the queue head.
+      if (!settled && (queue.length > 0 || prefetch)) {
         void pump()
       } else if (!settled && finished && queue.length === 0) {
         settle(started ? 'done' : 'fallback')
@@ -356,7 +451,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
       }
 
       void pump()
-    } else if (flush && finished && queue.length === 0 && !synthesizing) {
+    } else if (flush && finished && queue.length === 0 && !prefetch && !synthesizing) {
       settle(started ? 'done' : 'fallback')
     }
   }

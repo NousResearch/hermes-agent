@@ -16,6 +16,10 @@ export const PROFILE_SCOPED_PREFIXES = [
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
   "/api/messaging/whatsapp/onboarding",
+  // Fork: the dashboard QR onboarding writes the selected profile's weixin
+  // credentials, so the request has to name that profile or the write lands on
+  // the launch profile's home.
+  "/api/messaging/weixin/onboarding",
   // OAuth/account state is profile-owned too: status, login sessions, polling,
   // cancellation, and disconnect must all follow the selected management
   // profile rather than silently targeting the dashboard process's profile.

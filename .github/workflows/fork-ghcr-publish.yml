@@ -1,0 +1,187 @@
+name: Fork Docker Build and Publish to GHCR
+
+# Builds the fork's source (upstream + Weixin QR onboarding + dashboard auth)
+# into a Docker image and publishes it to ghcr.io/jzkk720/hermes-agent.
+#
+# This workflow runs on every push to main so that fork-specific features
+# (weixin_qr_session.py, web onboarding endpoints, dashboard basic_auth)
+# are baked into the published image — no local build required.
+#
+# The upstream docker-publish.yml is gated on `github.repository ==
+# 'NousResearch/hermes-agent'` and pushes to Docker Hub, so it never
+# fires on this fork. This workflow fills that gap with a simpler
+# single-arch (amd64) build that pushes to GHCR using the built-in
+# GITHUB_TOKEN (no Docker Hub secrets needed).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.py'
+      - '**/*.ts'
+      - '**/*.tsx'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile'
+      - 'docker/**'
+      # Compose files carry the deployment wrapper (image ref, mounts,
+      # HERMES_WRITE_SAFE_ROOT). A change there is deployment-relevant even
+      # though it does not alter the image contents, so keep it in scope for
+      # an explicit dispatch. Note these are NOT matched by 'docker/**'.
+      - 'docker-compose*.yml'
+      - 'web/**'
+      - 'skills/**'
+      - 'optional-mcps/**'
+      - '.github/workflows/fork-ghcr-publish.yml'
+  # Manual trigger. The push trigger proved unreliable on this fork: the
+  # 2026-09-20 sync (b21f38a5dc then c97ad39bb3, both matching the path filter)
+  # produced zero workflow runs while `schedule`-driven workflows kept firing,
+  # and GHCR `:latest` stayed on the previous build. Dispatching from the
+  # Actions tab always works, so this is the reliable path to rebuild.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: fork-ghcr-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # `python -m scripts.releases.distance` counts commits from the
+          # highest reachable release tag, so the stamp needs the tag history.
+          # The default depth-1 clone has no tags and yields a commit-only
+          # identity.
+          fetch-depth: 0
+
+      # The stamp step runs on the runner's python3, whose version depends on
+      # the runner image. Pin it instead of trusting it (mirrors upstream's
+      # docker.yml).
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Fetch upstream release tags
+        # `actions/checkout` fetches tags from the FORK, and this fork publishes
+        # none (`git ls-remote --tags origin` is empty). Without a release tag
+        # the distance helper raises NoReleaseTag and the stamp falls back to a
+        # commit-only identity — the "unknown" version this step exists to fix.
+        # Blobs are filtered out: only the tag objects and their commits are
+        # needed to resolve `--merged HEAD` and the commit distance. The
+        # refspec must use a plain `*` — git rejects character classes such as
+        # `v[0-9]*` as an invalid refspec. Non-release identities (canary
+        # builds, CalVer tags, backup tags) are discarded downstream by
+        # `version_from_tag`, so fetching them is harmless.
+        #
+        # Deliberately NOT continue-on-error: a failed fetch would leave zero
+        # tags, and the distance helper would then degrade the stamp back to
+        # "unknown" with no error anywhere. The build already needs GitHub
+        # reachability, so failing here is the honest outcome.
+        run: |
+          git fetch --no-recurse-submodules --filter=blob:none --no-tags \
+            https://github.com/NousResearch/hermes-agent.git \
+            '+refs/tags/v*:refs/tags/v*'
+          echo "reachable release tags: $(git tag --merged HEAD --list 'v[0-9]*' | wc -l)"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          # Three pins, because a deployment needs to pick one and only one is
+          # reproducible: `latest`/`main` float (that is how the stack drifted a
+          # month behind), `sha-<short>` is immutable and is what a rollback
+          # should name. The digest printed at the end pins even harder.
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=short
+            type=raw,value=main
+
+      - name: Write install stamp
+        # Upstream's docker.yml does this before `docker build`; without it the
+        # image's /opt/hermes/install-stamp.json falls back to the all-zero
+        # placeholder, so `hermes --version` and the provenance marker report
+        # 0.0.0 / revision null. The Dockerfile copies the stamp into the bulk
+        # `COPY . .` layer, so it has to exist first.
+        #
+        # Passing only --commit is NOT enough: baseVersion stays null, so the
+        # runtime reports "unknown" (dashboard /api/status, and
+        # plugins_manifest.running_hermes_version). An "unknown" running version
+        # makes every `requires_hermes` gate fail OPEN, so catalog entries that
+        # need a newer core install silently and then do nothing. Derive the
+        # base release and commit distance the way upstream docker.yml does.
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          display="$(python3 -m scripts.releases.distance)"
+          identity=(--commit "$GITHUB_SHA")
+          if [ -n "$display" ]; then
+            base="${display%%+*}"
+            development="${display#*+}"
+            if [ "$development" = "$display" ]; then distance=0; else distance="${development%%.*}"; fi
+            identity+=(--base-version "$base" --display-version "$display" --distance "$distance")
+          fi
+          python3 scripts/write_install_stamp.py --output install-stamp.json \
+            --distribution docker --update-mechanism external --source ci \
+            --branch main "${identity[@]}"
+          python3 -c 'import json; s = json.load(open("install-stamp.json")); print("stamp:", s.get("displayVersion"), "base:", s.get("baseVersion"), "distance:", s.get("distance"))'
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=fork-ghcr-amd64
+          cache-to: type=gha,mode=max,scope=fork-ghcr-amd64
+
+      - name: Publish pin summary
+        # The compose lanes resolve the image from HERMES_FORK_IMAGE, so the
+        # reproducible pin is the digest (or the sha- tag). Print both, plus the
+        # exact command to deploy this build, instead of echoing a git revision.
+        run: |
+          digest="${{ steps.build.outputs.digest }}"
+          sha_tag="sha-$(git rev-parse --short=8 HEAD)"
+          {
+            echo "### Fork image published"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| immutable tag | \`${{ env.IMAGE_NAME }}:${sha_tag}\` |"
+            echo "| digest pin | \`${{ env.IMAGE_NAME }}@${digest}\` |"
+            echo "| floating tags | \`latest\`, \`main\` |"
+            echo ""
+            echo "Deploy this exact build:"
+            echo ""
+            echo '```bash'
+            echo "HERMES_FORK_IMAGE=${{ env.IMAGE_NAME }}@${digest} \\"
+            echo "  docker compose -f docker-compose.upstream.yml up -d --force-recreate --remove-orphans"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

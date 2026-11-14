@@ -5502,3 +5502,53 @@ class TestSubmittedCustomEndpointSurvivesAssignment:
         assert applied["base_url"] == "https://api.anthropic.com"
         assert applied["api_mode"] == "anthropic_messages"
         assert applied["api_key"] == "submitted-key"
+
+
+class TestPickerPickReusesConfiguredCustomEndpoint:
+    """A bare-``custom`` picker pick sends no base_url: the main slot already HAS one
+    (``model.provider: custom`` + ``model.base_url``). Seeding ``switch_model`` with an empty
+    current_base_url made ``_bare_custom_provider_def`` return None and the pick died as
+    "Unknown provider 'custom'" — with a nudge toward a providers: section the user does not
+    need. The configured endpoint is the same trust source the runtime's bare-custom ladder
+    uses (``_config_base_url_trustworthy_for_bare_custom``), so a picker pick reuses it."""
+
+    def test_no_body_base_url_falls_back_to_configured_custom_endpoint(self, monkeypatch):
+        from hermes_cli.web_server_config import _validated_main_model_selection
+
+        monkeypatch.setattr(
+            "hermes_cli.models_validate.validate_requested_model",
+            lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": None})
+        monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+        monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+        cfg = {"model": {"provider": "custom", "default": "gemma4:e4b-it-q8_0",
+                         "base_url": "http://host.docker.internal:11434/v1"}}
+        # base_url="" — exactly what a model-picker pick POSTs: provider+model only.
+        result = _validated_main_model_selection(cfg, "custom", "glm-5.3:cloud", "", "")
+
+        assert result.success, result.error_message
+        assert result.target_provider == "custom"
+        assert result.new_model == "glm-5.3:cloud"
+        assert result.base_url == "http://host.docker.internal:11434/v1"
+
+    def test_untrusted_config_base_url_is_not_adopted(self, monkeypatch):
+        """A stale non-custom base_url whose provider can't back bare custom must NOT be
+        adopted: the pick fails loudly instead of silently re-pointing an unrelated route."""
+        from hermes_cli.web_server_config import _validated_main_model_selection
+
+        monkeypatch.setattr(
+            "hermes_cli.models_validate.validate_requested_model",
+            lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": None})
+        monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+        monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+        # provider=openai + openrouter.ai base_url: not trustworthy for bare custom.
+        cfg = {"model": {"provider": "openai", "default": "m",
+                         "base_url": "https://openrouter.ai/api/v1"}}
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validated_main_model_selection(cfg, "custom", "glm-5.3:cloud", "", "")
+
+        assert exc_info.value.status_code == 400
+        assert "Unknown provider 'custom'" in str(exc_info.value.detail)

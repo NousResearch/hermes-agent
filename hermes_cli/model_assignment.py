@@ -122,6 +122,18 @@ def validated_main_model_selection(
 
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     is_bare_custom = provider.strip().lower() in BARE_CUSTOM_SELECTORS
+    if is_bare_custom and not base_url.strip():
+        # A model-picker pick names provider+model only — the body carries no endpoint. Fall back
+        # to the configured ``model.base_url`` (the same trust source the runtime's bare-custom
+        # ladder uses): without it the bare-custom completion in ``_bare_custom_provider_def``
+        # got an empty string and the pick died as "Unknown provider 'custom'" even though the
+        # configured route (model.provider=custom + model.base_url) was perfectly valid.
+        from hermes_cli.runtime_provider import _config_base_url_trustworthy_for_bare_custom
+
+        configured_url = str(model_cfg.get("base_url") or "").strip()
+        if configured_url and _config_base_url_trustworthy_for_bare_custom(
+                configured_url, str(model_cfg.get("provider") or "")):
+            base_url = configured_url
     # An explicit endpoint must not resolve through the configured providers: the legacy
     # bare-``custom`` recovery in ``resolve_custom_provider`` would bind the FIRST named entry, and
     # a ``providers.custom`` / ``providers.local`` block (same key as the bare selector) would win

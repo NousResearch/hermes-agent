@@ -8,10 +8,17 @@
 #
 # Usage:
 #   docker compose -f docker-compose.windows.yml up -d
+# Supported voice architecture for this lane:
+# - Hermes runtime comes from the published GHCR image in this compose file.
+# - Active voice provider and default voice come from mounted data/config.yaml.
+# - edge-tts and piper-tts are runtime-wired packages, not part of a repo-local build lane.
+# - Qwen3-TTS remains a separate host-side sidecar reached via host.docker.internal:17494.
 #
 services:
   gateway:
-    image: nousresearch/hermes-agent:latest
+    # Fork GHCR image — includes Weixin QR onboarding + dashboard auth fixes.
+    # Override with HERMES_FORK_IMAGE to use a different image (e.g. upstream Docker Hub).
+    image: ${HERMES_FORK_IMAGE:-ghcr.io/jzkk720/hermes-agent:latest}
     container_name: hermes
     restart: unless-stopped
     volumes:
@@ -19,10 +26,15 @@ services:
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
+      - GATEWAY_ALLOW_ALL_USERS=true
+    # Voice packages are baked into the image (Dockerfile uv pip install); the old startup
+    # `pip show …|| pip install …` prefix was dead weight (the venv ships without `pip`).
+    # Pass the subcommand directly so the s6 boot reconciler reads this container's role from
+    # argv exactly as the image expects (a shell wrapper hides it — see docker-compose.upstream.yml).
     command: ["gateway", "run"]
 
   dashboard:
-    image: nousresearch/hermes-agent:latest
+    image: ${HERMES_FORK_IMAGE:-ghcr.io/jzkk720/hermes-agent:latest}
     container_name: hermes-dashboard
     restart: unless-stopped
     depends_on:
@@ -35,4 +47,8 @@ services:
       - HERMES_DASHBOARD_HOST=0.0.0.0
     ports:
       - "127.0.0.1:9119:9119"
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
+    # Voice packages are baked into the image (Dockerfile uv pip install); the old startup
+    # `pip show …|| pip install …` prefix was dead weight (the venv ships without `pip`).
+    # Pass the subcommand directly so the s6 boot reconciler reads this container's role from
+    # argv exactly as the image expects (a shell wrapper hides it — see docker-compose.upstream.yml).
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open"]

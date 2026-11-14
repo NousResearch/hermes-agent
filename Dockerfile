@@ -274,6 +274,13 @@ FROM runtime_base AS python_deps
 # is baked so hosted/immutable images can enable the adapter without writing
 # the sealed venv.
 #
+# Fork lane ([voice], [edge-tts], [piper]): this deployment drives TTS/STT from
+# mounted data/config.yaml, so the voice stack is baked instead of installed on
+# first use. `piper-tts` now comes from upstream's own [piper] extra (1.8.0,
+# gated off win32-arm64/darwin-x64) rather than the fork's separate
+# `uv pip install piper-tts==1.6.0`, which died with the uv toolchain stage
+# this merge removed.
+#
 # [fal] is baked because the image tool's availability check imports
 # fal_client whenever a FAL backend resolves, which the Nous-managed gateway
 # always does on hosted agents. Lazy-installing it at the gateway's first boot
@@ -303,7 +310,8 @@ RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3
     --cache /opt/hermes/uv-cache \
     --out /opt/hermes/.venv --no-install-project --sealed --record-selection \
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
-    --extra azure-identity --extra matrix --extra google-chat --extra fal --extra documents
+    --extra azure-identity --extra matrix --extra google-chat --extra fal --extra documents \
+    --extra voice --extra edge-tts --extra piper
 
 # Icons render on the runtime environment: Pillow and resvg-py are core
 # dependencies. A stage of its own so the frontend stage keeps building its
@@ -384,6 +392,7 @@ RUN cd plugins/platforms/photon/sidecar && \
 COPY --from=frontend_build /opt/products/tui /opt/hermes/ui-tui
 COPY --from=frontend_build /opt/products/web /opt/hermes/hermes_cli/web_dist
 COPY --from=webapp_build /opt/hermes/apps/desktop/dist-webapp /opt/hermes/apps/desktop/dist-webapp
+
 # ---------- Bot Screen X socket directory ----------
 # Xvnc would create this itself (/tmp is 1777); pre-creating it keeps ownership
 # deterministic when HERMES_UID is remapped between boots.

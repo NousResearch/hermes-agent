@@ -4,8 +4,14 @@ A turn lost across an owner restart is fenced ``unknown`` and pauses its session
 only the person who sent it knows whether to resend it. An automation delivery has no such person:
 a cron run (``CRON_PRINCIPAL_ID``), a process completion or heartbeat (``automation:<route>``,
 ``local_automation_v1``, a native envelope's ``automation`` block) or a webhook delivery
-(``webhook_delivery``) or a Kanban card attempt (``kanban_card_v1``, set by the dispatcher). Pausing on it stalls every message queued behind it until an operator
+(``webhook_delivery``) or a Kanban card attempt (``kanban_card_v1``, set by the dispatcher) or a
+hosted-room member turn (``hosted:`` request id, submitted by the room driver on the member's
+behalf). Pausing on it stalls every message queued behind it until an operator
 notices (a Bot Chat sat ten hours behind one).
+
+A hosted-room turn is settleable but NOT ``is_unattended``: a room member is waiting for the
+result, so ``run_plugin_injection``'s wake heuristic must keep yielding to it. Only the settle
+paths (:func:`is_room_member_turn`) treat it like the automation it is.
 
 Such a row settles through the same fenced resolution a person's Discard uses
 (``resolve_unknown_session_input``): terminal ``interrupted``, never requeued or replayed, with a
@@ -34,8 +40,16 @@ def is_unattended(row) -> bool:
             or 'automation' in native or 'webhook_delivery' in native)
 
 
+def is_room_member_turn(row) -> bool:
+    """A hosted-room member turn: ``request_id`` ``hosted:<task,generation>``, committed only by
+    ``HostedRoomAuthorityRPC.submit``. A machine producer like the shapes above — the member resends
+    from the room — but counted as unattended HERE only, never by ``is_unattended``."""
+    return str(row.get('request_id') or '').startswith('hosted:')
+
+
 def _unattended_unknown(rows):
-    return [row for row in rows if row['status'] == 'unknown' and is_unattended(row)]
+    return [row for row in rows
+            if row['status'] == 'unknown' and (is_unattended(row) or is_room_member_turn(row))]
 
 
 def settle_recovered_unattended(db, epoch) -> int:

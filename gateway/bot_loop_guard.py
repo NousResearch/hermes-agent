@@ -172,7 +172,6 @@ class BotLoopGuard:
             chain = self._chains.get(conversation)
             if chain is None or now - chain.updated > settings.cooldown_seconds:
                 chain = self._chains[conversation] = _Chain()
-            chain.updated = now
             ask = (sender, hashlib.sha256(" ".join(str(text or "").split()).encode()).hexdigest())
             if ask in chain.asks:
                 return False, "duplicate"
@@ -180,6 +179,8 @@ class BotLoopGuard:
                 return False, "reply_to_reply"
             if chain.hops >= settings.max_hops:
                 return False, "max_hops"
+            # Refused traffic must not keep an otherwise idle exchange alive indefinitely.
+            chain.updated = now
             chain.hops += 1
             chain.asks.add(ask)
             return True, "ok"
@@ -194,6 +195,8 @@ class BotLoopGuard:
             chain = self._chains.get(conversation)
             if chain is not None:
                 chain.replied_to = recipient
+                # A delivered reply starts its own cooldown window, unlike a refusal.
+                chain.updated = self._clock()
 
     def _sweep(self, now: float, settings: BotLoopGuardSettings) -> None:
         """Drop idle conversations at most once per window so memory stays bounded."""

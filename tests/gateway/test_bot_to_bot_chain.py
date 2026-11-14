@@ -76,6 +76,45 @@ def test_chain_rules_follow_enabled_and_config(clock):
     assert settings_from_config({}).max_hops == 4 and settings_from_config({}).bot_replies_expect_reply is False
 
 
+@pytest.mark.parametrize("reason", ["duplicate", "reply_to_reply", "max_hops"])
+@pytest.mark.parametrize("window_seconds", [60, 3600])
+def test_refused_bot_messages_do_not_extend_chain_cooldown(clock, reason, window_seconds):
+    """Regression for #154840: repeated refusals must not keep an expired exchange alive."""
+    guard = _guard(clock, max_hops=1, window_seconds=window_seconds)
+    assert guard.chain_admit(CHAT, PEER, "question", is_bot=True) == (True, "ok")
+    if reason == "reply_to_reply":
+        guard.note_reply(CHAT, PEER)
+    text = "question" if reason == "duplicate" else "new question"
+    for seconds in (200, 200, 199):
+        clock.advance(seconds)
+        assert guard.chain_admit(CHAT, PEER, text, is_bot=True) == (False, reason)
+    clock.advance(2)
+    assert guard.chain_admit(CHAT, PEER, text, is_bot=True) == (True, "ok")
+
+
+def test_a_delivered_reply_refreshes_chain_cooldown(clock):
+    """Regression for #154840: a slow reply gets the full default cooldown after delivery."""
+    guard = BotLoopGuard(settings=BotLoopGuardSettings, clock=clock.now)
+    assert guard.chain_admit(CHAT, PEER, "please review", is_bot=True) == (True, "ok")
+    clock.advance(240)  # The agent spent four minutes preparing its delivered answer.
+    guard.note_reply(CHAT, PEER)
+    clock.advance(361)  # Past admission + 600, but only 361 s since delivery.
+    assert guard.chain_admit(CHAT, PEER, "thanks", is_bot=True) == (False, "reply_to_reply")
+    clock.advance(240)  # Past delivery + 600; that refusal must not extend the chain.
+    assert guard.chain_admit(CHAT, PEER, "new PR ready", is_bot=True) == (True, "ok")
+
+
+def test_an_admitted_bot_message_refreshes_chain_cooldown(clock):
+    guard = _guard(clock, max_hops=2, bot_replies_expect_reply=True)
+    assert guard.chain_admit(CHAT, PEER, "first", is_bot=True) == (True, "ok")
+    clock.advance(500)
+    assert guard.chain_admit(CHAT, PEER, "second", is_bot=True) == (True, "ok")
+    clock.advance(101)
+    assert guard.chain_admit(CHAT, PEER, "third", is_bot=True) == (False, "max_hops")
+    clock.advance(500)
+    assert guard.chain_admit(CHAT, PEER, "third", is_bot=True) == (True, "ok")
+
+
 @pytest.mark.asyncio
 async def test_ingress_drops_the_bot_reply_and_still_admits_the_human(monkeypatch, clock):
     from gateway.platforms.base import MessageEvent

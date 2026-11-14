@@ -776,18 +776,20 @@ _PATTERN_KEY_ALIASES.setdefault("git branch force delete", set()).add(_old_branc
 _PATTERN_KEY_ALIASES.setdefault(_old_branch_key, set()).add("git branch force delete")
 
 # The git rules now share the option-aware prefix (_GIT_GLOBAL_FLAGS), which moves their
-# regex-derived legacy key off the `git <verb>` spelling. Keep the pre-change spellings resolvable
-# so a permanent allowlist entry written by an older release still matches.
-for _old_git_key, _git_key_descriptions in (
-    (r"git\s+reset", ["git reset --hard (destroys uncommitted changes)"]),
-    (r"git\s+push", ["git force push (rewrites remote history)",
-                     "git force push short flag (rewrites remote history)"]),
-    (r"git\s+clean", ["git clean with force (deletes untracked files)"]),
-    (r"git\s+branch", ["git branch force delete", "git branch force delete (long flags)",
-                       "git branch force delete (long flags, force-first)"]),
-):
-    _PATTERN_KEY_ALIASES.setdefault(_old_git_key, set()).update(_git_key_descriptions)
-    for _description in _git_key_descriptions:
+# regex-derived legacy key off the `git <verb>` spelling. Keep every key a past release derived for
+# these rules resolvable so a permanent allowlist entry written by it still matches.
+for _description, _old_git_keys in {
+    "git reset --hard (destroys uncommitted changes)": (
+        r"git\s+reset\s+--hard", r"git\s+reset\s+--h(?:a(?:r(?:d)?)?)?"),
+    "git force push (rewrites remote history)": (r"git\s+push",),
+    "git force push short flag (rewrites remote history)": (r"git\s+push",),
+    "git clean with force (deletes untracked files)": (r"git\s+clean\s+-[^\s]*f",),
+    "git branch force delete": (r"git\s+branch\s+(?-i:-D)",),
+    "git branch force delete (long flags)": (r"git\s+branch",),
+    "git branch force delete (long flags, force-first)": (r"git\s+branch",),
+}.items():
+    for _old_git_key in _old_git_keys:
+        _PATTERN_KEY_ALIASES.setdefault(_old_git_key, set()).add(_description)
         _PATTERN_KEY_ALIASES.setdefault(_description, set()).add(_old_git_key)
 
 

@@ -84,11 +84,13 @@ def test_safe_git_global_option_forms_stay_safe(command):
 @pytest.mark.parametrize(
     "description, legacy_key",
     [
-        (RESET_HARD, r"git\s+reset"),
+        (RESET_HARD, r"git\s+reset\s+--hard"),
+        (RESET_HARD, r"git\s+reset\s+--h(?:a(?:r(?:d)?)?)?"),
         (FORCE_PUSH, r"git\s+push"),
         (FORCE_PUSH_SHORT, r"git\s+push"),
-        (CLEAN_FORCE, r"git\s+clean"),
-        (BRANCH_FORCE_DELETE, r"git\s+branch"),
+        (CLEAN_FORCE, r"git\s+clean\s+-[^\s]*f"),
+        (BRANCH_FORCE_DELETE, r"git\s+branch\s+-D"),
+        (BRANCH_FORCE_DELETE, r"git\s+branch\s+(?-i:-D)"),
         (BRANCH_FORCE_DELETE_LONG, r"git\s+branch"),
         ("git branch force delete (long flags, force-first)", r"git\s+branch"),
     ],

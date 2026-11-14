@@ -584,6 +584,23 @@ _OAUTH_SYSTEM_REPLACEMENTS = (
 # dereferences, and the rewritten form does not exist (#48860). The OPENING quote marks an
 # identifier; a sentence-final ``.`` or a possessive ``'s`` is prose.
 _OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@-]|\.\w)""")
+_OAUTH_SKILL_INDEX_PATTERN = re.compile(r"(?m)^(\s*-\s+)hermes-agent(?=:|$)")
+_OAUTH_SKILL_NAMES_ONLY_PATTERN = re.compile(r"(?m)^(\s*.+ \[names only\]: )(.*)$")
+_OAUTH_SKILL_INDEX_SENTINEL = "__HERMES_AGENT_SKILL_SLUG__"
+
+
+def _protect_oauth_skill_index_slugs(text: str) -> str:
+    """Protect real ``skill_view`` identifiers from OAuth prose rewriting."""
+    text = _OAUTH_SKILL_INDEX_PATTERN.sub(rf"\1{_OAUTH_SKILL_INDEX_SENTINEL}", text)
+
+    def protect_names_only(match: re.Match) -> str:
+        names = (
+            _OAUTH_SKILL_INDEX_SENTINEL if name == "hermes-agent" else name
+            for name in match.group(2).split(", ")
+        )
+        return f"{match.group(1)}{', '.join(names)}"
+
+    return _OAUTH_SKILL_NAMES_ONLY_PATTERN.sub(protect_names_only, text)
 
 
 def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):
@@ -600,7 +617,9 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
             text = block.get("text", "")
             for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
                 text = text.replace(old, new)
+            text = _protect_oauth_skill_index_slugs(text)
             text = _OAUTH_SLUG_PATTERN.sub("claude-code", text)
+            text = text.replace(_OAUTH_SKILL_INDEX_SENTINEL, "hermes-agent")
             block["text"] = _apply_oauth_prose_aliases(text)
     for tool in anthropic_tools or []:
         if "name" in tool:

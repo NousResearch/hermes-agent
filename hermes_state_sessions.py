@@ -1138,7 +1138,7 @@ class SessionSessionsMixin:
         the bound; a lineage that hits the ceiling before a terminal root/tip is omitted, not expanded.
         A cooperative SQLite progress deadline interrupts sustained work past ``timeout_seconds`` and raises
         ``TimeoutError`` (cheap statements may finish between callbacks). Supports only the agent-tool
-        browse filters; rich callers keep using :meth:`list_sessions_rich`."""
+        browse filters and roster summaries; rich callers keep using :meth:`list_sessions_rich`."""
         limit = max(1, int(limit))
         timeout_seconds = max(0.0, float(timeout_seconds))
         if candidate_limit is None:
@@ -1159,6 +1159,10 @@ class SessionSessionsMixin:
             candidate_clauses.append(f"s.source NOT IN ({placeholders})")
             candidate_params.extend(exclude_sources)
         candidate_where = " AND ".join(candidate_clauses)
+        from hermes_state_local import exclude_superseded_segments
+        root_clauses, root_params = [], []
+        exclude_superseded_segments(self, root_clauses, root_params)
+        root_filter = " AND " + " AND ".join(root_clauses) if root_clauses else ""
 
         # A compression continuation is an implementation edge, unlike /new
         # reset and /branch children which are independent user-visible
@@ -1172,6 +1176,7 @@ class SessionSessionsMixin:
                 COALESCE(child.model_config, '{{}}'), '$._branched_from'
             ) IS NULL
             AND {_delegate_from_json('child.model_config')} IS NULL
+            AND NOT ({_RESET_CHILD_SQL.format(a='child')})
             AND COALESCE(child.source, '') != 'tool'
         """
 
@@ -1257,6 +1262,7 @@ class SessionSessionsMixin:
               AND s.hidden = 0
               AND {_LISTABLE_CHILD_SQL}
               AND {_delegate_from_json('s.model_config')} IS NULL
+              {root_filter}
             ORDER BY rt.activity DESC, s.started_at DESC, tip.id DESC
             LIMIT ?
         """
@@ -1264,8 +1270,7 @@ class SessionSessionsMixin:
             candidate_limit,
             lineage_limit,
             lineage_limit,
-            limit,
-        ]
+        ] + root_params + [limit]
         deadline = time.monotonic() + timeout_seconds
         interrupted_by_deadline = False
 

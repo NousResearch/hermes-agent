@@ -198,7 +198,8 @@ def _latest_profile_session_rows(db):
     """
     try:
         human = worker = None
-        for s in db.list_sessions_rich(source=None, limit=20, order_by_last_active=True, compact_rows=True):
+        # The roster polls every 5s: hydrate indexed candidates, not the entire session history.
+        for s in db.list_recent_sessions_bounded(limit=20):
             title, last_active = s.get("title") or "", s.get("last_active") or s.get("started_at") or 0
             if _denied_source(s):
                 if worker is None:

@@ -818,10 +818,18 @@ class _KanbanNotification:
                 for self.synth, self.wake_diagnostic, self.wake_kinds in wake_payloads:
                     await self.wake()
                 self.clear_failures()
-            except WakeNotAccepted:
+            except WakeNotAccepted as exc:
                 # Startup / full queue is not a dead destination. Keep the durable
-                # subscription alive regardless of how long admission takes.
-                await self.rewind()
+                # subscription alive regardless of how long admission takes, unless
+                # the failure is permanent or the session receipt is missing.
+                if exc.permanent or getattr(exc, "reason", None) in ("not_found", "storage_unavailable"):
+                    await self._wake_failed(
+                        "kanban notifier: wake-only delivery refused for %s (attempt %d/%d): %s" if is_push
+                        else "kanban notifier: wake self-post refused for %s (attempt %d/%d): %s",
+                        exc,
+                    )
+                else:
+                    await self.rewind()
                 return
             except Exception as _wk_err:
                 await self._wake_failed(

@@ -290,14 +290,13 @@ describe('writeClipboardText', () => {
       expect.arrayContaining(['-NoProfile', '-NonInteractive']),
       expect.anything()
     )
-    // PowerShell uses base64-encoded UTF-8 via command argument, not stdin
-    expect(stdin.end).not.toHaveBeenCalled()
+    // PowerShell reads base64-encoded UTF-8 from stdin, never from its command line
+    expect(stdin.end).toHaveBeenCalledWith(Buffer.from('wsl text', 'utf8').toString('base64'))
     const calledArgs = start.mock.calls[0][1] as string[]
     const commandIdx = calledArgs.indexOf('-Command')
     expect(commandIdx).toBeGreaterThan(-1)
     const script = calledArgs[commandIdx + 1]
-    expect(script).toContain('FromBase64String')
-    expect(script).toContain(Buffer.from('wsl text', 'utf8').toString('base64'))
+    expect(script).toContain('FromBase64String([Console]::In.ReadToEnd())')
   })
 
   it('prefers the Windows clipboard path over wl-copy inside WSLg', async () => {
@@ -329,13 +328,8 @@ describe('writeClipboardText', () => {
       expect.arrayContaining(['-NoProfile', '-NonInteractive']),
       expect.anything()
     )
-    // PowerShell uses base64-encoded UTF-8 via command argument, not stdin
-    expect(stdin.end).not.toHaveBeenCalled()
-    const calledArgs = start.mock.calls[0][1] as string[]
-    const commandIdx = calledArgs.indexOf('-Command')
-    const script = calledArgs[commandIdx + 1]
-    expect(script).toContain('FromBase64String')
-    expect(script).toContain(Buffer.from('wslg text', 'utf8').toString('base64'))
+    // PowerShell reads base64-encoded UTF-8 from stdin, never from its command line
+    expect(stdin.end).toHaveBeenCalledWith(Buffer.from('wslg text', 'utf8').toString('base64'))
   })
 
   it('uses PowerShell on Windows', async () => {
@@ -361,8 +355,8 @@ describe('writeClipboardText', () => {
       expect.arrayContaining(['-NoProfile', '-NonInteractive']),
       expect.anything()
     )
-    // PowerShell uses base64-encoded UTF-8 via command argument, not stdin
-    expect(stdin.end).not.toHaveBeenCalled()
+    // PowerShell reads base64-encoded UTF-8 from stdin, never from its command line
+    expect(stdin.end).toHaveBeenCalledWith(Buffer.from('windows text', 'utf8').toString('base64'))
   })
 
   it('preserves CJK text via base64 encoding in PowerShell on WSL', async () => {
@@ -387,7 +381,37 @@ describe('writeClipboardText', () => {
     const calledArgs = start.mock.calls[0][1] as string[]
     const commandIdx = calledArgs.indexOf('-Command')
     const script = calledArgs[commandIdx + 1]
-    expect(script).toContain(Buffer.from(cjkText, 'utf8').toString('base64'))
+    expect(stdin.end).toHaveBeenCalledWith(Buffer.from(cjkText, 'utf8').toString('base64'))
     expect(script).toContain('UTF8.GetString')
+  })
+
+  it('copies text past the Windows command-line limit through PowerShell', async () => {
+    const stdin = { end: vi.fn() }
+
+    const child = {
+      once: vi.fn((event: string, cb: (code?: number) => void) => {
+        if (event === 'close') {
+          cb(0)
+        }
+
+        return child
+      }),
+      unref: vi.fn(),
+      stdin
+    }
+
+    // Like Node on Windows: a command line of 32,767+ characters cannot spawn.
+    const start = vi.fn((cmd: string, args: string[]) => {
+      if ([cmd, ...args].join(' ').length >= 32_767) {
+        throw Object.assign(new Error('spawn ENAMETOOLONG'), { code: 'ENAMETOOLONG' })
+      }
+
+      return child
+    })
+
+    const longText = '长文本 line 🎉\n'.repeat(4000)
+
+    await expect(writeClipboardText(longText, 'win32', start as any)).resolves.toBe(true)
+    expect(Buffer.from(stdin.end.mock.calls[0][0], 'base64').toString('utf8')).toBe(longText)
   })
 })

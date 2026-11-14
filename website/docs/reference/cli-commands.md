@@ -319,6 +319,7 @@ Subcommands:
 | `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
 | `ensure` | Discover or request a local session runtime without installing a service or replacing an existing owner. Emits JSON; see below. |
 | `attach` | Give a local client the gateway's WebSocket URL and one single-use session ticket for this profile. Emits JSON; see below. |
+| `tickets` | Mint single-use HTTP and WebSocket tickets for a client that reaches the gateway over SSH. Emits JSON; see below. |
 | `start` | Start the installed systemd/launchd background service. |
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
@@ -382,6 +383,17 @@ the JSON carries `message` (the `gateway <state>: <reason>` lines, with the reme
 one), the same text goes to stderr, and the exit code is `ensure`'s for that verdict. The Ink TUI
 attaches through the same code. Details and the dial rules:
 [Gateway internals: `hermes gateway attach`](../developer-guide/gateway-internals.md#hermes-gateway-attach).
+
+`hermes gateway tickets (--probe | --serve) [--json]` is for a client that reaches the gateway
+over SSH and calls its HTTP API through a forwarded port. `--probe` prints
+one JSON line (`protocol`, the ticket `purposes` it mints, `windows_service_session`) and touches
+no gateway. `--serve` prints a hello line with the running gateway's endpoint, then answers each
+stdin line `{"id": ..., "purpose": "native-http"}` with one stdout line holding a single-use
+ticket, until stdin closes. A line may add `"profile": "<name>"` for another profile the same
+gateway serves. `{"id": ..., "purpose": "interactive"}` gets the WebSocket's ticket for a socket
+that reaches every profile the gateway serves. It never starts a gateway, and tickets go to stdout only, never to a log. The line
+protocol and the client rules:
+[Gateway over SSH: client contract](../developer-guide/gateway-ssh-clients.md).
 
 ## `hermes lsp`
 

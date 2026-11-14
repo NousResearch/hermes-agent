@@ -623,6 +623,21 @@ owner's `instance_id`, and expires after 30 seconds. `attach` prints it to stdou
 process only; it never logs it. Run `attach` again for each new connection and each reconnect.
 A client that speaks the control socket itself gets the same verdict and ticket without the spawn:
 see [Local control socket](#local-control-socket-public-client-contract).
+A client that reaches the host over SSH also needs HTTP tickets, and a WebSocket ticket that is
+not bound to one profile (`hermes gateway tickets`): see
+[Gateway over SSH: client contract](./gateway-ssh-clients.md).
+
+Every `attach` reply, success or refusal, also carries
+`"start_context": {"windows_service_session": <bool>}`. It is `true` when the caller runs elevated
+in Windows session 0, which is what an administrator's OpenSSH login gets, and `false` everywhere
+else, including off Windows. A gateway started from such a login inherits both, so the user's own
+desktop apps are refused with `gateway_other_session` until it exits. `attach --start` still
+starts it and exits as before, and prints a one-line warning on stderr first. A remote client that
+sees `true` should run `attach` without `--start` (a gateway the user's own session started
+serves both), and when none is running ask the user to start Hermes from a normal
+(non-administrator) window on that machine's desktop. Do not suggest `hermes gateway install`
+there: approved through the administrator prompt it can start the gateway elevated, which normal
+windows are refused by as well (`gateway_elevated`).
 
 With no owner to attach, the JSON adds `message` and has no `url` or `ticket`. `message` is
 the verdict Ink shows: `gateway <state>: <reason_code>` (`not ready` when there is no code),

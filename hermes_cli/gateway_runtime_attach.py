@@ -27,6 +27,28 @@ CLIENT_LAUNCH_ENV = (
 DISCOVER_TIMEOUT = 5.0
 
 
+# One line, stderr only: ``attach --start`` still starts the gateway (see ``windows_service_session``).
+# Installing the task is not offered, as in CLIENT_ELEVATED_REMEDY: registered through the UAC hand-off it
+# can start the gateway elevated (#152218), which trades gateway_other_session for gateway_elevated.
+SERVICE_SESSION_START_WARNING = (
+    "warning: this is an elevated Windows session-0 login (e.g. an administrator OpenSSH login); a gateway "
+    "started here refuses the user's normal Hermes windows (gateway_other_session). Start Hermes from "
+    "a normal (non-administrator) window on this machine's desktop, then attach without --start")
+
+
+def windows_service_session() -> bool:
+    """True when this process runs elevated in Windows session 0 (an administrator's OpenSSH login,
+    a service): a gateway it starts inherits both, so the user's own desktop clients are refused
+    with ``gateway_other_session``. It can still attach to a gateway the user's session started.
+    False off Windows and whenever either fact cannot be read."""
+    from hermes_dir_acl import process_is_elevated
+    from hermes_platform.host import windows_session_id
+    try:
+        return windows_session_id() == 0 and process_is_elevated()
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+
 def scrub_client_launch_env() -> None:
     """Drop ``CLIENT_LAUNCH_ENV`` from this process before an attach that may start a daemon (it
     inherits ``os.environ``). Only for a process that exists to attach: the CLI command and Ink's
@@ -75,10 +97,8 @@ def attach_gateway(home: str | Path, *, start: bool, recover: bool = False, time
     discovery waits at most ``DISCOVER_TIMEOUT`` of it. A daemon this starts ends itself once idle.
     A failed mint (control socket I/O, a refused or changed grant) raises ``TicketUnavailable``.
     """
-    from hermes_cli.gateway_client import _session_ticket
     from hermes_cli.gateway_runtime import (attachable, discover_gateway_endpoint, ensure_gateway_runtime,
                                            gateway_profile_home)
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError
 
     home = gateway_profile_home(home)
     receipt = (ensure_gateway_runtime(home, timeout=timeout, idle_exit=True) if start
@@ -87,9 +107,22 @@ def attach_gateway(home: str | Path, *, start: bool, recover: bool = False, time
         receipt = ensure_gateway_runtime(home, timeout=timeout, idle_exit=True)
     if not attachable(receipt):
         return GatewayAttach(receipt)
+    return GatewayAttach(receipt, mint_ticket(home, receipt.endpoint))
+
+
+def mint_ticket(home: str | Path, endpoint, *, purpose: str = "interactive", scope: str | None = None) -> str:
+    """One single-use ``purpose`` ticket from the owner at ``endpoint`` (an attachable discovery's).
+    ``scope="host"`` (interactive only) asks for the grant Desktop's local socket gets: every
+    profile the gateway serves. A failed mint (control socket I/O, a refused or changed grant)
+    raises ``TicketUnavailable``."""
+    from hermes_cli.gateway_client import _session_ticket
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError
+
     try:
         # A profile served by the default multiplexer has no socket of its own; the host mints its ticket.
-        return GatewayAttach(receipt, _session_ticket(home, receipt.endpoint))
+        # An attach asks exactly as it always has (no ``purpose`` argument: the owner's default).
+        return _session_ticket(Path(home), endpoint, **({} if purpose == "interactive" else {"purpose": purpose}),
+                               **({"scope": scope} if scope else {}))
     except DiscoveryError as exc:
         raise TicketUnavailable(exc.reason, exc.bounded_detail(500)) from exc
     except (OSError, ValueError) as exc:

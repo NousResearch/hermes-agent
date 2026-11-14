@@ -484,6 +484,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Once per incoming non-internal message, at ingress: platform-adapter messages before auth/pairing/dispatch; webhook and relay deliveries after their authorization, before the admission commits; never for local CLI/TUI/Desktop or API turns, a retry of a committed delivery, or a queued admission when it executes. First valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
+| `pre_prompt_submit` | Directive/control | A prompt the user typed in Desktop, the dashboard chat or the TUI, after the agent is ready and before the turn; the first valid `skip`, or `allow` carrying `model`/`compress`/`reply`, controls the turn. | `session_key`, `session_id`, `text`, `platform`, `model`, `provider`, `base_url`, `context_tokens`, `last_message_at`, `ask` | Full user text; `ask` reaches the live session's client. |
 | `post_gateway_admission` | Directive/control (fail-open) | Admitted non-internal message after auth, pause/drain, pending-reply, running-session and slash-command lanes, inside the claimed session slot and the routed profile's scope; first `handled` result skips the agent turn, anything else (including a raise or timeout) runs it. | `session_key`, `platform`, `source` (dict snapshot), `message_id`, `text` | Inbound text is untrusted user data; no runner or session-store handles are passed. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). A command the classic CLI, TUI or Desktop sends to the gateway through `slash.exec` or `command.dispatch` fires it once, in the gateway, with `surface` and `platform` both `"cli"` as before (Ink and Desktop fired it through the CLI slash worker) and `session_key` the session id. A recognized command the classic CLI runs itself is reported to the gateway (`command.observe`) once it has run, and so are these TUI commands: `/help`, `/history`, `/clear`, `/new`, `/tools` (not `enable`/`disable`), `/usage` and `/reasoning` (a level once the gateway accepts it). The gateway fires it there after replying, so neither client loads plugin code; a command either client refuses fires nothing. This is a deliberate change from the classic CLI before the unified gateway, which fired it for every recognized command just before dispatch: now a command fires it only if it runs, so one that is refused or that the client has no handler for (`/handoff` in a gateway session, `/start`) fires nothing. A TUI change the gateway applies, such as `/reasoning high`, fires it once the gateway accepts the change, so after the change has taken effect. A gateway older than the client fires no hook for those commands (the classic CLI prints a one-time notice). Known gap: Desktop's own pickers, actions and dedicated RPCs (commands it answers without `slash.exec`) fire nothing yet, and neither do the other commands the TUI answers itself or through a dedicated gateway call, such as `/title`, `/undo`, `/retry`, `/model`, `/compress`, `/branch`, `/save`, `/copy`, `/queue`, `/steer`, `/bg`, `/btw`, `/skin`, `/yolo`, `/busy`, `/fast`, `/verbose`, `/rollback`, `/reload-mcp`, `/quit` and `/reasoning --global`. During a local session's turn every command that still runs fires it except `/stop`, `/approve` and `/deny`; a command that is refused (rejected while busy, or named as unavailable on the gateway) fires nothing. Each callback is timeout-bounded (`plugins.hook_callback_timeout`); each delivery waits on a thread of its own, never a worker shared with other sessions or the event loop's executor. One session's commands reach it in order, and a callback still running for that session (hung) is skipped for its later commands instead of running out of order, without holding up other sessions. Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
@@ -1442,6 +1443,56 @@ def buffer_or_rewrite(event, **kwargs):
 
 def register(ctx):
     ctx.register_hook("pre_gateway_dispatch", buffer_or_rewrite)
+```
+
+---
+
+### `pre_prompt_submit`
+
+The `pre_gateway_dispatch` counterpart for the surfaces `tui_gateway` serves: Hermes Desktop, the dashboard chat and the Ink TUI. Those have no gateway runner, adapters or session store to hand over, so this hook passes plain values, an `ask` callable and a few directives the host carries out itself.
+
+**Fires:** in `tui_gateway/prompt_hooks.py`, once per prompt the user typed (`prompt.submit`), on the submit worker thread after the agent is ready and before the turn starts. Not for hidden widget sends, hosted-room or relayed turns, rewinds/edits/regenerates, queued-prompt drains or other synthesized turns, nor for sessions on an isolated compute worker. The session is already busy while the hook runs (another submit queues behind it) and the user's message is already in the transcript. The hook is not bounded by `plugins.hook_callback_timeout`: it may wait on the user's answer.
+
+**Callback signature:**
+
+```python
+def my_callback(session_key, session_id, text, platform, model, provider, base_url,
+                context_tokens, last_message_at, ask, **kwargs):
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `session_key` | The conversation's durable key (what `ctx.inject_message(session_key=...)` routes by). |
+| `session_id` | The agent's live session id (compression rotates it). |
+| `text` | The prompt as typed. |
+| `platform` | The session source: `desktop`, `tui`, `dashboard`, ... |
+| `model`, `provider`, `base_url` | The route this turn would run on. |
+| `context_tokens` | The conversation's prompt size: the last API-reported figure, else a rough estimate. |
+| `last_message_at` | Epoch seconds of the newest earlier message, or `None`. |
+| `ask` | `ask(question, choices, timeout=None)` shows one choice card on this session (the `clarify` request) and blocks until the user picks; returns the chosen label, or `None` on timeout, cancel, or a client that cannot answer. `timeout=None` uses the clarify timeout. |
+
+**Return value:** `None` or a dict. The first `skip`, or `allow` carrying `model` / `compress` / `reply`, wins; exceptions are logged and the prompt runs as typed.
+
+| Return | Effect |
+|--------|--------|
+| `{"action": "skip", "reply": "..."}` | No turn. `reply` (optional) is shown as a notification; a prompt queued meanwhile runs next. |
+| `{"action": "allow", "model": {"model": "...", "provider": "...", "scope": "once"}}` | Switch through the `/model` path, then run. `scope` `once` reverts after this turn; `session` pins it for the chat. A failed switch does not run the prompt. |
+| `{"action": "allow", "compress": true}` | Compact the conversation (as `/compress`), then run. Combines with `model`; compaction runs first. |
+| `{"action": "allow"}` / `None` | Normal turn. |
+
+Any directive may carry `"reply"`, shown as a notification.
+
+**Example — ask before a big turn on a slow model:**
+
+```python
+def gate(text, context_tokens, ask, **kwargs):
+    if context_tokens < 60_000:
+        return None
+    pick = ask("This chat is large; the turn will be slow.", ["Compact first", "Run anyway"])
+    return {"action": "allow", "compress": True} if pick == "Compact first" else None
+
+def register(ctx):
+    ctx.register_hook("pre_prompt_submit", gate)
 ```
 
 ---

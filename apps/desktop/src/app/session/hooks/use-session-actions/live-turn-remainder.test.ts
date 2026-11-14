@@ -1,6 +1,12 @@
 import { expect, it } from 'vitest'
 
-import { type ChatMessage, type ChatMessagePart, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import {
+  type ChatMessage,
+  type ChatMessagePart,
+  chatMessageText,
+  restorePendingClarifyToolCall,
+  toChatMessages
+} from '@/lib/chat-messages'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { mergeLiveAssistantRun } from './live-turn-remainder'
@@ -328,5 +334,108 @@ it('pairs only the queue projection, preserving equal corrections and different 
     expect(current).toContainEqual(oldQueue)
     expect(current).toContainEqual(response)
     expect(new Set(current.map(row => row.id)).size).toBe(current.length)
+  }
+})
+
+it('folds past blank narration a later row persisted mid-run, leaving one open clarify bound to the request', () => {
+  // The clarify row persisted `reasoning_content: " "` that the live stream
+  // never showed: hydration makes it a reasoning part BETWEEN two covered
+  // occurrences, not at the head of a row. Unfolded, the live clarify stays
+  // beside the stored one, and the stored copy renders without a result.
+  const questions = [{ question: 'Apply the change?', choices: ['Yes', 'No'] }]
+
+  const rows: SessionMessage[] = [
+    { id: 1, role: 'user', content: 'go' },
+    {
+      id: 2,
+      role: 'assistant',
+      content: 'lead',
+      reasoning: 'Read the file first.',
+      tool_calls: [toolCall('call_one')]
+    },
+    { id: 3, role: 'tool', content: 'one', tool_call_id: 'call_one' },
+    {
+      id: 4,
+      role: 'assistant',
+      content: '',
+      reasoning: '',
+      reasoning_content: ' ',
+      tool_calls: [
+        {
+          id: 'call-clarify',
+          type: 'function',
+          function: { name: 'clarify', arguments: JSON.stringify({ questions }) }
+        }
+      ]
+    }
+  ]
+
+  const stored = toChatMessages(rows)
+  const liveParts = stored[1].parts.filter(part => !(part.type === 'reasoning' && !part.text.trim()))
+
+  let current = [stored[0], { ...stored[1], id: 'assistant-stream-live', pending: true, parts: liveParts }]
+
+  for (let resume = 0; resume < 3; resume++) {
+    current = reconcilePersistedLiveTurn(toChatMessages(rows), current, rows, resumeProjection('lead'))!
+
+    expect(current.some(row => row.id === 'assistant-stream-live')).toBe(false)
+    expect(
+      current.flatMap(row => row.parts).flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+    ).toEqual(['call_one', 'call-clarify'])
+  }
+
+  const open = restorePendingClarifyToolCall(current, { args: { questions }, tool_id: 'clarify-request' })
+    .messages.flatMap(row => row.parts)
+    .filter(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)
+
+  expect(open).toHaveLength(1)
+  expect(open[0]).toMatchObject({ toolCallId: 'call-clarify', clarifyRequestId: 'clarify-request' })
+})
+
+it('folds past consecutive stored calls a guard refused before they streamed', () => {
+  // A pre_tool_call hook refused two calls in a row: each is persisted with
+  // its error row but emits no tool.start / tool.complete, so the live run
+  // never held either call, and its reasoning deltas for the three rounds
+  // arrived as one part.
+  const refused = (id: number, call: string, reasoning: string): SessionMessage[] => [
+    { id, role: 'assistant', content: '', reasoning, tool_calls: [toolCall(call)] },
+    { id: id + 1, role: 'tool', content: '{"error": "blocked by a plugin hook"}', tool_call_id: call }
+  ]
+
+  const rows: SessionMessage[] = [
+    { id: 1, role: 'user', content: 'go' },
+    { id: 2, role: 'assistant', content: 'lead', tool_calls: [toolCall('call_one')] },
+    { id: 3, role: 'tool', content: 'one', tool_call_id: 'call_one' },
+    ...refused(4, 'call_refused_a', 'Write it now.'),
+    ...refused(6, 'call_refused_b', 'Try once more.'),
+    { id: 8, role: 'assistant', content: 'tail', reasoning: 'Answer instead.', tool_calls: [toolCall('call_three')] },
+    { id: 9, role: 'tool', content: 'three', tool_call_id: 'call_three' }
+  ]
+
+  const stored = toChatMessages(rows)
+
+  const streamed = stored[1].parts.filter(
+    part => part.type !== 'reasoning' && !(part.type === 'tool-call' && part.toolCallId?.startsWith('call_refused'))
+  )
+
+  const liveParts: ChatMessagePart[] = [
+    ...streamed.slice(0, 2),
+    { type: 'reasoning', text: 'Write it now.Try once more.Answer instead.' },
+    ...streamed.slice(2)
+  ]
+
+  let current = [stored[0], { ...stored[1], id: 'assistant-stream-live', pending: true, parts: liveParts }]
+
+  for (let resume = 0; resume < 3; resume++) {
+    current = reconcilePersistedLiveTurn(toChatMessages(rows), current, rows, resumeProjection('lead'))!
+
+    expect(current.some(row => row.id === 'assistant-stream-live')).toBe(false)
+    expect(current.map(chatMessageText).filter(text => text.includes('tail'))).toHaveLength(1)
+    expect(
+      current
+        .flatMap(row => row.parts)
+        .flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+        .sort()
+    ).toEqual(['call_one', 'call_refused_a', 'call_refused_b', 'call_three'])
   }
 })

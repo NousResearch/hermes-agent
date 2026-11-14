@@ -12,7 +12,10 @@ import contextlib
 import functools
 import json
 import logging
+import os
 import shutil
+import tempfile
+import time
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -88,15 +91,45 @@ def load_tracked() -> list[dict[str, Any]]:
         return []
 
 
+def _temporary_state_file(target: Path) -> Path:
+    """Create a unique temporary file beside a state file for atomic replacement."""
+    fd, name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+    os.close(fd)
+    return Path(name)
+
+
+def _replace_state_file(source: Path, target: Path) -> None:
+    for attempt in range(5):
+        try:
+            source.replace(target)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.01 * (attempt + 1))
+
+
 def save_tracked(tracked: list[dict[str, Any]]) -> None:
-    """Atomic write: ``.tmp`` → backup old → rename."""
+    """Atomically replace state and its backup without sharing temp paths across writers."""
     tf = _state_file("tracked.json")
     tf.parent.mkdir(parents=True, exist_ok=True)
-    tmp = tf.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(tracked, indent=2), encoding="utf-8")
-    if tf.exists():
-        shutil.copy2(tf, tf.with_suffix(".json.bak"))
-    tmp.replace(tf)
+    tmp = _temporary_state_file(tf)
+    backup_tmp: Optional[Path] = None
+    try:
+        tmp.write_text(json.dumps(tracked, indent=2), encoding="utf-8")
+        if tf.exists():
+            backup = tf.with_suffix(".json.bak")
+            backup_tmp = _temporary_state_file(backup)
+            shutil.copy2(tf, backup_tmp)
+            _replace_state_file(backup_tmp, backup)
+            backup_tmp = None
+        _replace_state_file(tmp, tf)
+        tmp = None
+    finally:
+        for temporary in (tmp, backup_tmp):
+            if temporary is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    temporary.unlink()
 
 
 ALLOWED_CATEGORIES = {

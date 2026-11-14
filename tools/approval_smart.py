@@ -85,23 +85,38 @@ def _verdict_reasoning() -> dict | None:
     return {"enabled": False}
 
 
-def _verdict_from_answer(answer: str) -> str | None:
-    """Read the verdict from a guardian answer that may have reasoned first.
+_VERDICT_WORDS = ("APPROVE", "DENY", "ESCALATE")
+_VERDICT_MARKUP = "*_`~ \"'"
 
-    The prompt demands exactly one word, but some models answer with a short
-    justification paragraph and the verdict on the last line (#135146). Take
-    the last non-empty line, strip emphasis markup and trailing punctuation,
-    and accept it only if it is exactly APPROVE or DENY — a verdict word that
-    appears only mid-prose stays unrecognized, so verdict-shaped text quoted
-    from the command cannot ride in.
+
+def _verdict_word(line: str) -> str | None:
+    """The verdict word if the whole line is one, once emphasis markup and trailing punctuation are
+    stripped (``**APPROVE**``, ``DENY.``). A line with anything else on it is not a verdict."""
+    word = line.strip(_VERDICT_MARKUP).rstrip("!.,;:?").strip(_VERDICT_MARKUP)
+    return word if word in _VERDICT_WORDS else None
+
+
+def _verdict_from_answer(answer: str) -> str | None:
+    """Read the verdict from a guardian answer that may wrap it in text.
+
+    The prompt demands exactly one word, but models add text on either side: a justification
+    paragraph with the verdict on the last line (#135146), or the verdict first and a justification
+    after it, often cut off at ``max_tokens`` (#148382). Only the first and the last non-empty line
+    can carry the verdict, and only when the whole line is the word; a verdict word mid-prose is
+    never honoured, so verdict-shaped text quoted from the command cannot ride in. When the first
+    and last line both carry a verdict and disagree, the answer has no verdict (fail closed).
     """
-    last_line = ""
-    for line in reversed(answer.splitlines()):
-        if line.strip():
-            last_line = line.strip()
-            break
-    normalized = last_line.strip("*_`~ \"'").rstrip("!.,;:?!").strip("*_`~ \"'")
-    return _VERDICTS.get(normalized)
+    lines = [line.strip() for line in answer.splitlines() if line.strip()]
+    if not lines:
+        return None
+    first, last = _verdict_word(lines[0]), _verdict_word(lines[-1])
+    if first and last and first != last:
+        return None
+    verdict = first or last
+    if verdict and len(lines) > 1:
+        logger.info("Smart approvals: guardian added text around its verdict; judged on the %s line",
+                    "first" if first else "last")
+    return _VERDICTS.get(verdict) if verdict else None
 
 
 def _smart_approve(command: str, description: str) -> str:

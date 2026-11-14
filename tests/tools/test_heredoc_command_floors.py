@@ -38,6 +38,12 @@ def test_heredoc_body_is_not_projected_as_a_denied_command(floors_off, body):
     assert approval_floors._match_user_deny_rule(command) is None
 
 
+def test_heredoc_written_then_run_keeps_its_body_on_the_deny_list(floors_off):
+    command = "cat > job.sh <<'EOF'\nrm notes.txt\nEOF\nbash job.sh"
+
+    assert approval_floors._match_user_deny_rule(command) is not None
+
+
 def test_unquoted_heredoc_keeps_command_substitution_visible_to_hardline():
     command = "cat > notes.txt <<EOF\n$(rm -rf /)\nEOF"
 

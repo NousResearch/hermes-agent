@@ -64,6 +64,16 @@ def test_code_heredoc_body_stays_visible_to_dangerous_scan(command):
     assert detect_dangerous_command(command)[0] is True
 
 
+@pytest.mark.parametrize("command", [
+    f"cat <<'EOF' > job.sh\n{RM_ROOT}\nEOF\nbash job.sh",
+    f"cat > /tmp/job <<'EOF'\n{RM_ROOT}\nEOF\nchmod +x /tmp/job && /tmp/job",
+])
+def test_heredoc_written_then_run_keeps_its_body_on_the_floors(gate_mode, command):
+    # The body lands in a file the same string runs: it is code, not data.
+    assert detect_hardline_command(command)[0] is True
+    assert approval.check_all_command_guards(command, "local")["approved"] is False
+
+
 def test_quote_in_inert_body_does_not_hide_the_next_command(gate_mode):
     command = f"cat > notes.txt <<'EOF'\nit's data\nEOF\n{RM_ROOT}"
 

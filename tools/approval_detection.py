@@ -1604,9 +1604,7 @@ def _deny_command_variants(command: str):
     """
     yield from _command_detection_variants(command)
     # Heredoc bodies are masked first, then ANSI-C expanded: `$'...'` inside a body is literal data.
-    pending = list(dict.fromkeys(
-        expand_ansi_c_quotes(mask_heredoc_bodies_for_shell_scan(command, code_consumers=code))
-        for code in (False, True)))
+    pending = list(dict.fromkeys(expand_ansi_c_quotes(source) for source in _heredoc_scan_sources(command)))
     seen = set()
     while pending:
         source = pending.pop()
@@ -1650,6 +1648,16 @@ def _deny_command_variants(command: str):
                 pending.append(payload)
 
 
+_HEREDOC_WRITE_THEN_RUN = DownloadThenRunMatcher(_SHELL_NAMES_RE, writer_re=re.compile(r"\bcat\b"))
+
+
+def _heredoc_scan_sources(command: str) -> tuple[str, ...]:
+    """Body-dropped copies, plus the raw command when a dropped body's file runs later in it."""
+    data_dropped = mask_heredoc_bodies_for_shell_scan(command, code_consumers=False)
+    raw = (command,) if data_dropped != command and _HEREDOC_WRITE_THEN_RUN.search(data_dropped) else ()
+    return tuple(dict.fromkeys((data_dropped, mask_heredoc_bodies_for_shell_scan(command, code_consumers=True), *raw)))
+
+
 def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[str] | None = None):
     """Variants of the command with provably inert heredoc bodies dropped (#140704).
 
@@ -1660,8 +1668,7 @@ def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[
     unterminated or mis-parsed `<<` (`$((a<<b))`) are never dropped.
     """
     seen: set[str] = set()
-    sources = dict.fromkeys(mask_heredoc_bodies_for_shell_scan(command, code_consumers=code) for code in (False, True))
-    for source in sources:
+    for source in _heredoc_scan_sources(command):
         for variant in _single_command_detection_variants(source, eval_depth, capped):
             if variant not in seen:
                 seen.add(variant)

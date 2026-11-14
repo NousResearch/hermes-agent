@@ -23,7 +23,8 @@ _TERMINATOR = r"(?=[\s;&|)`]|$)"
 class DownloadThenRunMatcher:
     """``search(text)`` -> a match whose span covers the run of a just-downloaded file, or None."""
 
-    def __init__(self, shell_names_re: str):
+    def __init__(self, shell_names_re: str, writer_re: re.Pattern = _FETCH_RE):
+        self._writer_re = writer_re
         self._run_re = re.compile(
             r"(?:;|&&|\|\||\n)\s*+(?:sudo\s++)?"
             rf"(?:(?:{shell_names_re})\s++(?:-\S++\s++)*+|(?:source|\.)\s++)?"
@@ -34,7 +35,7 @@ class DownloadThenRunMatcher:
     def search(self, text: str):
         targets: dict[str, int] = {}  # downloaded FILE -> where its download ends
         pos = 0
-        while (fetch := _FETCH_RE.search(text, pos)) is not None:
+        while (fetch := self._writer_re.search(text, pos)) is not None:
             end_match = _SEGMENT_END_RE.search(text, fetch.end())
             seg_end = end_match.start() if end_match else len(text)
             for target in _TARGET_RE.finditer(text, fetch.end(), seg_end):

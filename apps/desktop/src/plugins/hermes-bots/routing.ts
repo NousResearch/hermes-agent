@@ -340,19 +340,30 @@ export function beginAliasRouteIndex(): number {
 /** Rebuild the alias index from the credential-free route inventory. Only
  *  genuine aliases (route.profile !== route.targetProfile) participate. A
  *  rebuild overtaken by a newer one drops its result. */
-export function indexAliasRoutes(routes: ProfileRoute[], epoch = beginAliasRouteIndex()) {
+export function indexAliasRoutes(routes: ProfileRoute[], epoch = beginAliasRouteIndex(), scopeConnectionId?: string) {
   if (epoch < aliasRouteEpoch) {
     return
   }
 
-  const next = new Map<string, AliasIdentity | null>()
+  const next = new Map<string, AliasIdentity | null>(
+    // Profile names exclude colons; connection IDs may contain the separator.
+    scopeConnectionId
+      ? [...aliasRouteIndex].filter(([key]) => key.slice(0, key.lastIndexOf('::')) !== scopeConnectionId)
+      : []
+  )
 
   for (const route of Array.isArray(routes) ? routes : []) {
     const connectionId = String(route?.connectionId || '').trim()
     const profile = String(route?.profile || '').trim()
     const target = String(route?.targetProfile || '').trim()
 
-    if (!connectionId || !profile || !target || profile === target) {
+    if (
+      !connectionId ||
+      (scopeConnectionId && connectionId !== scopeConnectionId) ||
+      !profile ||
+      !target ||
+      profile === target
+    ) {
       continue
     }
 

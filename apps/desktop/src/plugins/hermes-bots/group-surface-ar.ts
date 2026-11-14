@@ -83,6 +83,7 @@ export const GROUP_SURFACE_AR = {
     groupChats: "محادثات المجموعات",
     emptyTitle: "لا توجد روبوتات بعد",
     emptyDesc: "أنشئ روبوتك الأول.",
+    loadingGatewayBots: "جار تحميل روبوتات البوابة",
     noMatchQuery: query => `لا توجد روبوتات أو محادثات مجموعات تطابق «${query}»`,
     noMatchQueryOn: (query, gateway) => `لا توجد روبوتات أو محادثات مجموعات تطابق «${query}» على ${gateway}`,
     noMatchFiltersOn: gateway => `لا توجد روبوتات أو محادثات مجموعات تطابق هذه المرشحات على ${gateway}`,

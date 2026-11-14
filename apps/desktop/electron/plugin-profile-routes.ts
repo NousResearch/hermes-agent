@@ -45,6 +45,24 @@ interface BuildRegistryProfileRoutesOptions {
   sources: RegistryProfileRouteSource[]
 }
 
+/** A keyed route read must not dial unrelated sources or silently change owners. */
+export function profileRouteConnections<T extends RegistryProfileRouteSource>(
+  sources: T[],
+  connectionId?: unknown
+): T[] {
+  if (connectionId === undefined) {
+    return sources
+  }
+
+  const source = typeof connectionId === 'string' && sources.find(candidate => candidate.id === connectionId)
+
+  if (!source) {
+    throw new Error('Profile route connection is unavailable')
+  }
+
+  return [source]
+}
+
 interface BuildOpaqueProfileRoutesOptions {
   getProfileConfig: (profile: string) => ProfileRouteConfig | Promise<ProfileRouteConfig>
   globalConfig: ProfileRouteConfig

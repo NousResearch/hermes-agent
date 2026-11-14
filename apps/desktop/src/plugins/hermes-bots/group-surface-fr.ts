@@ -83,6 +83,7 @@ export const GROUP_SURFACE_FR = {
     groupChats: "Discussions de groupe",
     emptyTitle: "Aucun bot pour le moment",
     emptyDesc: "Créez votre premier bot.",
+    loadingGatewayBots: "Chargement des bots de la passerelle",
     noMatchQuery: query => `Aucun bot ni discussion de groupe ne correspond à « ${query} »`,
     noMatchQueryOn: (query, gateway) => `Aucun bot ni discussion de groupe ne correspond à « ${query} » sur ${gateway}`,
     noMatchFiltersOn: gateway => `Aucun bot ni discussion de groupe ne correspond à ces filtres sur ${gateway}`,

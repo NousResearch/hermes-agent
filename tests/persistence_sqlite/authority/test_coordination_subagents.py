@@ -19,7 +19,8 @@ def _columns(conn: sqlite3.Connection) -> list[tuple]:
 
 
 def _main_columns() -> list[tuple]:
-    statement = re.search(r"CREATE TABLE IF NOT EXISTS resumable_subagents \(.*?\);", hermes_state_common.SCHEMA_SQL, re.S)
+    statement = re.search(r"CREATE TABLE IF NOT EXISTS resumable_subagents \(.*?\);", hermes_state_common.SCHEMA_SQL,
+                          re.DOTALL)
     assert statement is not None
     with sqlite3.connect(":memory:") as conn:
         conn.execute(statement.group(0))

@@ -38,12 +38,15 @@ class LocalSessionAdapter(BasePlatformAdapter):
         return detached_route_of(source) or source.chat_id
 
     def authorize_source(self, source):
+        from gateway.session_detached import detached_route_of, detached_session_id
         saved = self.sources.get(self._source_key(source))
         if saved is None:
             return False
         original, identity = saved
+        route = detached_route_of(source)
+        live = self.authority.sessions.get(detached_session_id(route) if route is not None else source.chat_id)
         return (source is original and self._identity(source) == identity
-                and any(live.source is source for live in self.authority.sessions.values()))
+                and live is not None and live.source is source)
 
     @staticmethod
     def _identity(source):

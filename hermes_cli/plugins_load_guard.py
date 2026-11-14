@@ -13,11 +13,19 @@ from __future__ import annotations
 import logging
 from functools import wraps
 
+from hermes_cli.plugins_ledger import undo_abandoned_registration
+
 logger = logging.getLogger("hermes_cli.plugins")
 
 
 def _ignore_after_abandoned_load(method):
-    """Turn one registrar into a no-op once the context's load timed out."""
+    """No-op a registrar once its load timed out, and undo one that was running when that happened.
+
+    The guard's first check covers a registrar called after the deadline. A registrar that was
+    already running when the deadline fired passed that check, so its registration lands after the
+    failure path snapshotted the ledger and is never disposed (#149326): re-check the flag once the
+    registrar returns and undo everything the abandoned load registered.
+    """
     @wraps(method)
     def wrapped(self, *args, **kwargs):
         if getattr(self, "_load_abandoned", False):
@@ -26,7 +34,10 @@ def _ignore_after_abandoned_load(method):
                 method.__name__,
             )
             return None
-        return method(self, *args, **kwargs)
+        handle = method(self, *args, **kwargs)
+        if getattr(self, "_load_abandoned", False):
+            return undo_abandoned_registration(self, method.__name__)
+        return handle
 
     return wrapped
 

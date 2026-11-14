@@ -33,13 +33,15 @@ Do not switch a same-host setup to `--code` merely because port 3000 failed. Use
 
 ## Separate-host or headless path
 
-Use this path only after the user explicitly confirms that Hermes runs on a remote host—such as a VPS, container, or cloud VM—or that it is headless and the authorization browser is on a different computer. Use the same previously resolved runner and run:
+Use this path only after the user explicitly confirms that Hermes runs on a remote host—such as a VPS, container, or cloud VM—or that it is headless and the authorization browser is on a different computer. Do not use this path when the same-host callback is available.
+
+With `--code`, the CLI waits at interactive prompts for the `code` and `state` values from the browser's final localhost address. Those values must go from the user's browser straight into those prompts, so Hermes does not start this login itself: anything Hermes relays to a process it started lands in its context and transcript. Give the user the exact command, built from the runner Hermes already resolved and verified, to run in a terminal they control on the Hermes host as the same OS user that runs Hermes (for example an SSH session):
 
 ```bash
 box login --default-box-app --code --name <ENVIRONMENT_NAME>
 ```
 
-Open the displayed URL with a browser tool only when it controls the human's authorization browser. Otherwise present the URL and pause for the user to sign in and approve access, then continue the CLI's code-and-state prompts and verify the actor. Do not use this path when the same-host callback is available.
+Tell the user that the CLI prints an authorization URL, that the browser will end on an unreachable `localhost` page (expected), and that they should copy `code` and then `state` from that page's address bar into the two CLI prompts within about five minutes. Never ask for these values or the full callback URL in chat, never send them to a Hermes-started process with process `write`/`submit`, and never put them on a command line (for example `curl` against the loopback callback). After the user reports that the CLI finished, verify the actor with `box users:get me --json --fields id,name,login`. If the user cannot open a terminal on the Hermes host as that OS user, pause the login rather than improvising another channel for these values.
 
 ## Existing environments
 
@@ -71,9 +73,9 @@ For a remote or headless Hermes runtime whose authorization browser is on a diff
 box login --platform-app --code --port 3000 --name <ENVIRONMENT_NAME>
 ```
 
-Before starting the remote flow, explain that the browser may finish on an unreachable localhost page; this is expected. The resulting URL contains both `code` and `state`, which the waiting CLI requests. Ask the user for only those two values, submit them to the existing process, and then verify the actor. Do not inspect unrelated browser tabs or switch to the local callback workflow on a remote host.
+This remote flow uses the same user-run terminal handoff as the official app's separate-host path: the user runs the command in their own terminal on the Hermes host and types `code` and `state` from the unreachable localhost page's address bar directly into the CLI prompts. Hermes never requests those values or the callback URL in chat and never passes them to a process or command line; it verifies the actor after the user reports completion. Do not inspect unrelated browser tabs or switch to the local callback workflow on a remote host.
 
-Let the CLI prompt for the Client ID and Client Secret. Do not ask the user to paste the Client Secret into chat, write it to Hermes configuration, or give the user an unverified local-runner command to copy. Authenticate the intended user in the browser, then verify the resulting actor. Keep administrator-only operations outside the normal Hermes OAuth identity.
+Let the CLI prompt for the Client ID and Client Secret. The CLI echoes the Client Secret as typed, so every `--platform-app` login, local or remote, is run by the user in a terminal they control on the Hermes host, never started through Hermes's terminal with the secret relayed by process `write`/`submit`. Do not ask the user to paste the Client Secret into chat, write it to Hermes configuration, or give the user an unverified local-runner command to copy. Authenticate the intended user in the browser, then verify the resulting actor. Keep administrator-only operations outside the normal Hermes OAuth identity.
 
 ## Official links
 

@@ -118,6 +118,26 @@ def test_atomic_write_failure_preserves_original(forced_files_client, monkeypatc
     assert set(target.parent.iterdir()) == {target}
 
 
+@pytest.mark.platforms("posix")
+def test_upload_overwrite_keeps_the_file_group(forced_files_client):
+    """The atomic replace swaps in a new inode; an overwritten file keeps its owner and group."""
+    import os
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    other = next((g for g in os.getgroups() if g != target.stat().st_gid), None)
+    if other is None:
+        pytest.skip("needs a supplementary group to tell the groups apart")
+    os.chown(target, -1, other)
+
+    response = client.post("/api/files/upload", json={
+        "path": str(target), "data_url": "data:text/plain;base64,bmV3", "overwrite": True})
+
+    assert response.status_code == 200, response.text
+    assert target.read_bytes() == b"new"
+    assert target.stat().st_gid == other
+
+
 def test_write_text_does_not_reuse_a_precreated_staging_name(forced_files_client):
     """The staging file is created exclusively under an unpredictable name: a file another user
     planted at the old ``.<name>.hermes-tmp-<pid>`` sibling is neither written through nor kept."""

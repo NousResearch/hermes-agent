@@ -328,27 +328,6 @@ class TestShellFileOpsHelpers:
         assert result == "10|def f():\n11|    return 1"
         assert "12|" not in result
 
-    def test_read_file_raw_rejects_oversized_file(self, mock_env):
-        """read_file_raw must not cat a file above _RAW_READ_MAX_BYTES into memory."""
-        big = _RAW_READ_MAX_BYTES + 1
-
-        def side_effect(command, **kwargs):
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return {"output": f"{big}\n", "returncode": 0}
-            if command.startswith("head -c"):
-                return {"output": "text\n", "returncode": 0}
-            if command.startswith("cat "):
-                raise AssertionError("cat must not run for an oversized file")
-            return {"output": "", "returncode": 0}
-
-        mock_env.execute.side_effect = side_effect
-        ops = ShellFileOperations(mock_env)
-        result = ops.read_file_raw("/tmp/test/big.log")
-
-        assert result.error is not None
-        assert "too large" in result.error
-        assert result.file_size == big
-
 
 @pytest.mark.parametrize("stale_size", [False, True])
 def test_raw_read_cap_with_real_file(tmp_path, monkeypatch, stale_size):
@@ -372,13 +351,53 @@ def test_raw_read_cap_holds_on_the_shell_transport(tmp_path, monkeypatch):
 
     monkeypatch.setattr(operations, "_RAW_READ_MAX_BYTES", 64)
     target = tmp_path / "large.log"
-    target.write_text("a" * 1024, encoding="utf-8")
+    target.write_text("a" * 65536, encoding="utf-8")
     ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
     monkeypatch.setattr(ops, "_native_read_enabled", lambda: False)
     monkeypatch.setattr(ops, "_probe_regular_file", lambda path: (1, "ok"))
+    replies = []
+    real_exec = ops._exec
+
+    def recording_exec(command, *args, **kwargs):
+        replies.append(real_exec(command, *args, **kwargs))
+        return replies[-1]
+
+    monkeypatch.setattr(ops, "_exec", recording_exec)
     result = ops.read_file_raw(str(target))
     assert result.error and "too large" in result.error
     assert not result.content
+    assert max(len(r.stdout) for r in replies) < 4096  # the transfer stopped near the cap, not at 64 KiB
+
+
+@pytest.mark.parametrize("transport", ["base64", "od"])
+def test_capped_shell_read_still_returns_files_under_the_cap(tmp_path, monkeypatch, transport):
+    target = tmp_path / "small.bin"
+    target.write_bytes(bytes(range(64)))
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    monkeypatch.setattr(ops, "_native_read_enabled", lambda: False)
+    if transport == "od":
+        real_fenced = ops._fenced_read
+        monkeypatch.setattr(ops, "_fenced_read", lambda body, *more: real_fenced(
+            body.replace("| base64", "| __hermes_no_such_base64"), *more))
+    assert ops._read_exact_bytes(str(target), max_bytes=64) == (bytes(range(64)), None)
+    data, failed = ops._read_exact_bytes(str(target), max_bytes=63)
+    assert data is None and "too large" in failed.stdout
+
+
+def test_v4a_delete_removes_an_oversized_file(tmp_path, monkeypatch):
+    """Delete needs no content, so a file past the raw-read cap is still deletable."""
+    import tools.file_operations as operations
+    from tools.patch_parser import apply_v4a_operations, parse_v4a_patch
+
+    monkeypatch.setattr(operations, "_RAW_READ_MAX_BYTES", 64)
+    target = tmp_path / "large.log"
+    target.write_text("a" * 1024, encoding="utf-8")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    operations_, err = parse_v4a_patch(f"*** Begin Patch\n*** Delete File: {target}\n*** End Patch\n")
+    assert err is None
+    result = apply_v4a_operations(operations_, ops)
+    assert result.success, result.error
+    assert not target.exists()
 
 
 def test_v4a_add_does_not_overwrite_an_oversized_file(tmp_path, monkeypatch):
@@ -647,7 +666,7 @@ class TestPatchReplacePostWriteVerification:
 
         def side_effect(command, **kwargs):
             # the byte-exact read (base64 over the transport) — both the initial read and the verify read
-            if "base64 < " in command:
+            if "base64" in command and "wc -c <" in command:
                 for path, contents in file_contents.items():
                     if path in command:
                         return {"output": _fenced_base64_reply(command, contents.encode()),
@@ -686,7 +705,7 @@ class TestPatchReplacePostWriteVerification:
             if stdin_data is not None:  # write (atomic temp-file + mv script)
                 state["content"] = stdin_data
                 return {"output": "", "returncode": 0}
-            if "base64 < " in command:  # byte-exact read
+            if "base64" in command and "wc -c <" in command:  # byte-exact read
                 call_count["read"] += 1
                 # First read (initial fetch) succeeds; second read (verify) fails
                 if call_count["read"] == 1:

@@ -205,6 +205,11 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
         r = file_ops.read_file_raw(path)
         return (None, r.error) if r.error else (r.content, None)
 
+    def _too_large(path: str) -> bool:
+        key = _overlay_key(path, file_ops)
+        return key not in removed_paths and key not in pending_content \
+            and getattr(file_ops.read_file_raw(path), "_too_large", False)
+
     def _occupied(path: str) -> Optional[str]:
         """Why an Add target or Move destination is not free, or None. Only a read that reports
         the path absent (``not_found``) frees it: a read that FAILED (no byte transport, a
@@ -268,7 +273,8 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
             continue
         real_change_count += 1
         if op.operation == OperationType.DELETE:
-            if _read(op.file_path)[1]:
+            # A file over read_file_raw's cap exists; Delete needs no content, so it stays legal.
+            if _read(op.file_path)[1] and not _too_large(op.file_path):
                 errors.append(f"{op.file_path}: file not found for deletion")
             else:
                 _remove(op.file_path)
@@ -423,10 +429,12 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> ApplyResult:
 def _apply_delete(op: PatchOperation, file_ops: Any) -> ApplyResult:
     """Delete a file, producing a real unified diff of the removed content."""
     read_result = file_ops.read_file_raw(op.file_path)  # re-read guards validate/apply races
-    if read_result.error:
+    too_large = getattr(read_result, "_too_large", False)  # exists, just past the read cap: no diff
+    if read_result.error and not too_large:
         return _fail(f"Cannot delete {op.file_path}: file not found")
     result = file_ops.delete_file(op.file_path)
-    diff = _unified_diff(op.file_path, read_result.content, None) or f"# Deleted: {op.file_path}"
+    diff = (None if too_large else _unified_diff(op.file_path, read_result.content, None)) \
+        or f"# Deleted: {op.file_path}"
     return _fail(result.error) if result.error else ApplyResult(True, diff)
 
 

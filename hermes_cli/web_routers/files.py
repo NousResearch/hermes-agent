@@ -946,7 +946,11 @@ def upload_managed_file(payload: ManagedFileUpload, request: Request):
     data, _mime_type = _decode_data_url(payload.data_url)
     with _io_errors("File is not writable", "Could not write file"):
         target.parent.mkdir(parents=True, exist_ok=True)
+        owner = target.stat() if os.name == "posix" and target.exists() else None
         atomic_write_bytes(target, data)
+        if owner is not None:  # os.replace swaps in our uid; keep an overwritten file's owner/group
+            with contextlib.suppress(OSError):
+                os.chown(target, owner.st_uid, owner.st_gid)
     return _managed_write_result(policy, target, display_path)
 
 

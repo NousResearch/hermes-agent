@@ -33,6 +33,8 @@ class ReadResult:
     _snapshot: Optional[tuple] = None
     # sha256 of the exact on-disk bytes ``read_file_raw`` decoded (BOM included).
     _content_sha256: Optional[str] = None
+    # read_file_raw refused the file for exceeding its size cap: it exists, but no content came back.
+    _too_large: bool = False
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if not k.startswith("_") and v is not None and v != []}

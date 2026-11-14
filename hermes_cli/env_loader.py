@@ -1155,6 +1155,8 @@ def _record_secret_source_writes(home_key: str, report, supplied: set[str], envi
     """Refresh ``_SECRET_SOURCE_WRITES_BY_HOME`` after one process-global pass, revoking a write its
     still-enabled source has stopped supplying (rotated out, mapping removed). A source whose fetch
     FAILED this pass keeps its earlier writes: a transient vault outage is not a revocation."""
+    from tui_gateway.launch_profile_policy import revoke_launch_env_write
+
     failed = {src.name for src in report.sources if not src.result.ok}
     previous = _SECRET_SOURCE_WRITES_BY_HOME.get(home_key, {})
     _revoke_secret_source_writes(
@@ -1168,7 +1170,10 @@ def _record_secret_source_writes(home_key: str, report, supplied: set[str], envi
         before = environ_before.get(name)
         earlier = previous.get(name)
         # Re-applied over our own earlier write: the pre-source value is the one recorded then.
-        prior = earlier[2] if earlier is not None and earlier[1] == before else before
+        reapplied = earlier is not None and earlier[1] == before
+        prior = earlier[2] if reapplied else before
+        if reapplied:  # the frozen launch env follows a rotated write, so a later revoke still matches it
+            revoke_launch_env_write(name, before, os.environ[name])
         writes[name] = (applied.source, os.environ[name], prior)
     if writes:
         _SECRET_SOURCE_WRITES_BY_HOME[home_key] = writes

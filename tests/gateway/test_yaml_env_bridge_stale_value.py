@@ -7,7 +7,8 @@ bridge used to skip ("env is set") and the reader saw env before YAML. Editing `
 then did nothing until the operator restarted from a shell outside the gateway.
 
 The bridge now records what it wrote: a value equal to the marker is its own leftover and is
-refreshed from YAML, while a different preset value belongs to the operator and still wins.
+refreshed from YAML. Any other inherited process value loses to an explicit YAML key too (#110295);
+only a ``.env`` or external-secret-source value still wins (#109032).
 """
 
 from __future__ import annotations
@@ -28,10 +29,29 @@ def test_first_bridge_writes_the_value_and_its_marker(monkeypatch):
     assert shared.os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == bridged_env_digest("true")
 
 
-def test_env_the_operator_set_is_never_overwritten(monkeypatch):
-    """#109032: an explicit ``TELEGRAM_REACTIONS=true`` beats the stock ``reactions: false``."""
+def test_an_inherited_process_value_loses_to_explicit_yaml(monkeypatch):
+    """#110295: ``TELEGRAM_REACTIONS=true`` inherited from a launcher, YAML says false: YAML wins."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     monkeypatch.delenv(bridged_env_marker("TELEGRAM_REACTIONS"), raising=False)
+
+    yaml_env_setter()("TELEGRAM_REACTIONS", "false")
+
+    assert shared.os.environ["TELEGRAM_REACTIONS"] == "false"
+    assert shared.os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == bridged_env_digest("false")
+
+
+def test_a_dotenv_value_still_beats_yaml(tmp_path, monkeypatch):
+    """#109032: ``TELEGRAM_REACTIONS=true`` in ``.env`` beats the stock ``reactions: false``."""
+    from hermes_cli import env_loader
+
+    for attr in ("_LOADED_DOTENV_KEYS", "_MANAGED_DOTENV_KEYS"):
+        monkeypatch.setattr(env_loader, attr, set())
+    monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "")  # teardown removes what .env publishes
+    monkeypatch.delenv("TELEGRAM_REACTIONS")
+    monkeypatch.delenv(bridged_env_marker("TELEGRAM_REACTIONS"), raising=False)
+    (tmp_path / ".env").write_text("TELEGRAM_REACTIONS=true\n", encoding="utf-8")
+    env_loader.load_hermes_dotenv(hermes_home=tmp_path, load_external_secrets=False)
 
     yaml_env_setter()("TELEGRAM_REACTIONS", "false")
 
@@ -47,16 +67,6 @@ def test_an_inherited_bridge_value_is_refreshed_from_yaml(monkeypatch):
 
     assert shared.os.environ["TELEGRAM_REACTIONS"] == "true"
     assert shared.os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == bridged_env_digest("true")
-
-
-def test_a_value_changed_since_the_bridge_belongs_to_the_operator(monkeypatch):
-    """Marker says we wrote ``false``; the process env says ``true`` — somebody else set it."""
-    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
-    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), bridged_env_digest("false"))
-
-    yaml_env_setter()("TELEGRAM_REACTIONS", "false")
-
-    assert shared.os.environ["TELEGRAM_REACTIONS"] == "true"
 
 
 def test_secondary_profile_scope_still_skips_the_write(monkeypatch):

@@ -85,11 +85,12 @@ class PendingControls:
                                     event_type=kind + '.settled')
                 return {'status': 'resolved', 'prompt_id': prompt_id}
             if kind == 'clarify':
-                from tools.clarify_gateway import resolve_gateway_clarify
+                from tools.clarify_gateway import SKIPPED, resolve_gateway_clarify
                 if (not isinstance(response, dict) or set(response) != {'answer'}
                         or not isinstance(response['answer'], str)):
                     raise RuntimeStoreError('invalid_params')
-                resolved = resolve_gateway_clarify(prompt_id, response['answer'])
+                # An empty answer is the documented skip; the waiter reads a bare "" as a timeout.
+                resolved = resolve_gateway_clarify(prompt_id, response['answer'] if response['answer'].strip() else SKIPPED)
                 self.snapshot(session_id, generation)
                 return {'status': 'resolved' if resolved else 'already_resolved', 'prompt_id': prompt_id}
             if not isinstance(response, dict) or set(response) != {'choice'} or response['choice'] not in prompt['choices']:

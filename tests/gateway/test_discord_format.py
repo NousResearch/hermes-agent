@@ -87,10 +87,13 @@ class TestDiscordToolPreviewFormatting:
 
     def test_structured_tool_event_uses_clickable_truncated_url(self):
         from gateway.stream_events import ToolCallChunk
+        from agent.display import truncate_middle
 
         adapter = _make_discord_adapter()
         url = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"
-        visible = url[:37] + "..."
+        # The tool-preview path now truncates via truncate_middle (head + "..." +
+        # short tail with no prev on a first event), keeping the link target clickable.
+        visible = truncate_middle(url, 40)
 
         out = adapter.format_tool_event(
             ToolCallChunk("web_extract", preview=url, args={"urls": [url]}),

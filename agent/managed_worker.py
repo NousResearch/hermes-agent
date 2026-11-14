@@ -205,16 +205,93 @@ def _die_with_owner():
     threading.Timer(ORPHAN_GRACE_SECONDS, kill).start()
 
 
+class _ControlPipeReader:
+    """Read framed controls without parking a daemon in BufferedReader.readline().
+
+    ``main`` uses one instance for the bootstrap and every control frame, so bytes read ahead by
+    the pipe can never be stranded in ``sys.stdin.buffer`` when the control reader starts.
+    """
+    POLL_SECONDS = 0.05
+
+    def __init__(self, fd):
+        self.fd = fd
+        self.pending = bytearray()
+        self.waiter = threading.Event()
+
+    def _available(self):
+        if os.name == 'nt':
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            peek = kernel32.PeekNamedPipe
+            peek.argtypes = (wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, wintypes.LPVOID,
+                             ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID)
+            peek.restype = wintypes.BOOL
+            available = wintypes.DWORD()
+            if not peek(msvcrt.get_osfhandle(self.fd), None, 0, None, ctypes.byref(available), None):
+                error = ctypes.get_last_error()
+                if error == 109:  # ERROR_BROKEN_PIPE
+                    raise EOFError('managed_worker_pipe_closed')
+                raise OSError(error, 'PeekNamedPipe failed')
+            return available.value
+        import select
+        readable, _, _ = select.select([self.fd], [], [], 0)
+        return int(bool(readable))
+
+    def read_frame(self, stopped=None):
+        while stopped is None or not stopped.is_set():
+            newline = self.pending.find(b'\n')
+            if newline >= 0:
+                length = newline + 1
+                if length > MAX_FRAME:
+                    raise ValueError('managed_worker_frame_too_large')
+                line = bytes(self.pending[:length])
+                del self.pending[:length]
+                frame = json.loads(line)
+                if not isinstance(frame, dict):
+                    raise ValueError('invalid_managed_worker_frame')
+                return frame
+            if len(self.pending) > MAX_FRAME:
+                raise ValueError('managed_worker_frame_too_large')
+            available = self._available()
+            if available:
+                limit = MAX_FRAME + 1 - len(self.pending)
+                if os.name == 'nt':
+                    limit = min(limit, available)
+                chunk = os.read(self.fd, limit)
+                if not chunk:
+                    if self.pending:
+                        raise ValueError('managed_worker_frame_too_large')
+                    raise EOFError('managed_worker_pipe_closed')
+                self.pending.extend(chunk)
+            elif stopped is None:
+                self.waiter.wait(self.POLL_SECONDS)
+            else:
+                stopped.wait(self.POLL_SECONDS)
+        return None
+
+
 class WorkerControls:
-    def __init__(self, channel, route):
+    def __init__(self, channel, route, control_reader=None):
         self.channel, self.route = channel, route
         self.agent = None
         self.stopped = threading.Event()
         self.finish = threading.Event()
+        self.reader_stopped = threading.Event()
         self.clarifications = {}
         self.lock = threading.Lock()
+        self.input_reader = control_reader or _ControlPipeReader(sys.stdin.fileno())
         self.reader = threading.Thread(target=self.read, name='managed-controls', daemon=True)
         self.reader.start()
+
+    def close(self):
+        """Stop the bounded pipe poll and join its reader without waiting on owner input."""
+        self.reader_stopped.set()
+        if self.reader.ident is not None:
+            self.reader.join(timeout=1)
+            if self.reader.is_alive():
+                logger.error('managed control reader did not stop within its close deadline')
 
     def stop(self):
         self.stopped.set()
@@ -227,10 +304,12 @@ class WorkerControls:
                 state['event'].set()
 
     def read(self):
-        from tools.approval import resolve_gateway_approval
         try:
-            while True:
-                frame = read_frame(sys.stdin.buffer)
+            from tools.approval import resolve_gateway_approval
+            while not self.reader_stopped.is_set():
+                frame = self.input_reader.read_frame(self.reader_stopped)
+                if frame is None:
+                    return
                 if frame == {'type': 'stop'}:
                     self.stop()
                     continue
@@ -252,6 +331,8 @@ class WorkerControls:
                             state['answer'] = frame['value']
                             state['event'].set()
         except (EOFError, OSError, ValueError) as exc:
+            if self.reader_stopped.is_set():
+                return
             self.stop()
             # The owner is gone (EOF/OSError) — before the hard-exit SIGKILLs this process group, give
             # in-flight background subagents a bounded chance to finish + persist a real result.
@@ -260,6 +341,8 @@ class WorkerControls:
             self.finish.set()
             if not isinstance(exc, ValueError):
                 _die_with_owner()
+        finally:
+            self.reader_stopped.set()
 
     def approval(self, data):
         from tools.approval import ack_gateway_approval
@@ -362,7 +445,7 @@ def tool_frame(call_id, name, args, *result):
     return json.loads(json.dumps(frame, default=str))
 
 
-def execute(frame, channel):
+def execute(frame, channel, control_reader=None):
     # The owner RPC below imports gateway/config modules (hermes_cli.config, providers,
     # hermes_cli.plugins) transitively; the policy must already be frozen when they load.
     bind_worker_policy(frame)
@@ -396,10 +479,12 @@ def execute(frame, channel):
     os.environ['HERMES_GATEWAY_SESSION'] = '1'
     from gateway.session_worker_construct import checkpoint_agent_kwargs, construct_kwargs, routing_agent_kwargs
     construct = {'ephemeral_system_prompt': policy.skills_prompt, **construct_kwargs(frame)}
-    controls = WorkerControls(channel, frame['route'])
-    register_gateway_notify(frame['route'], controls.approval)
+    controls = WorkerControls(channel, frame['route'], control_reader)
     agent = None
+    notify_registered = False
     try:
+        register_gateway_notify(frame['route'], controls.approval)
+        notify_registered = True
         with policy_scope(policy, home=frame['home']):
             agent = _construct_agent(frame, AIAgent, policy, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
@@ -457,14 +542,26 @@ def execute(frame, channel):
             store.finish()
             channel.send('finished')
     finally:
-        unregister_gateway_notify(frame['route'])
+        primary_error = sys.exc_info()[1]
+        cleanup_error = None
+        cleanup = [('control_reader', controls.close)]
+        if notify_registered:
+            cleanup.append(('approval_registration', lambda: unregister_gateway_notify(frame['route'])))
         if agent is not None:
-            retire_agent(agent)
-        try:
-            store.close()
-        finally:
-            with contextlib.suppress(Exception):  # a failing socket close never replaces the turn's outcome
-                rpc.close()
+            cleanup.append(('agent', lambda: retire_agent(agent)))
+        cleanup.append(('store', store.close))
+        for stage, action in cleanup:
+            try:
+                action()
+            except Exception as exc:  # health: allow BLE001 -- isolate cleanup without secrets or masking the turn error
+                if primary_error is None and cleanup_error is None:
+                    cleanup_error = exc
+                else:
+                    logger.error('managed worker cleanup failed: stage=%s error=%s', stage, type(exc).__name__)
+        with contextlib.suppress(Exception):  # a failing socket close never replaces the turn's outcome
+            rpc.close()
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 def _construct_agent(frame, factory, policy, **kwargs):
@@ -500,8 +597,9 @@ def main():
     logger.propagate = False
     try:
         channel.send('hello', **hello())
-        frame = validate_bootstrap(read_frame(sys.stdin.buffer))
-        execute(frame, channel)
+        control_reader = _ControlPipeReader(sys.stdin.fileno())
+        frame = validate_bootstrap(control_reader.read_frame())
+        execute(frame, channel, control_reader)
     except Exception:
         # Runtime exceptions can contain credentials; the owner gets no raw traceback.
         logger.exception('managed worker failed')

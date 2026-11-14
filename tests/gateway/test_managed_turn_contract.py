@@ -67,6 +67,7 @@ def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monk
             self.stopped = threading.Event()
             self.finish = threading.Event()
             self.finish.set()
+        def close(self): pass
         def approval(self, data): pytest.fail('unexpected approval')
         def clarify(self, questions): pytest.fail('unexpected question')
 

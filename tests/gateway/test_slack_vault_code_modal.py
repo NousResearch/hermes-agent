@@ -139,3 +139,32 @@ def test_a_late_submit_after_the_turn_ends_enters_nothing(loop):
     _run(loop, adapter._handle_vault_code_submit(ack, *_submission(AUTHOR, view, CODE)))
     assert ack.call_args.kwargs["response_action"] == "errors"
     assert CODE not in repr(client.mock_calls)
+
+
+def test_a_tool_worker_that_outlives_its_turn_cannot_post_a_new_card(loop, monkeypatch):
+    """A worker keeps its copied callback after the turn ends; calling it must not ask again."""
+    monkeypatch.setattr("gateway.session_vault_prompt.CODE_TIMEOUT_S", 2)
+    from gateway.session_vault_prompt import vault_prompt_scope
+    adapter, client = _adapter()
+    with vault_prompt_scope(_turn(loop, adapter), SimpleNamespace()):
+        stale_prompt = unlock.get_code_prompt_callback()
+    assert stale_prompt("login.example.com", "") == ""
+    client.chat_postMessage.assert_not_awaited()
+
+
+def test_a_stop_that_races_the_submit_enters_nothing(loop, monkeypatch):
+    monkeypatch.setattr("gateway.session_vault_prompt.CODE_TIMEOUT_S", 2)
+    from gateway.session_vault_prompt import vault_prompt_scope
+    from tools.thread_context import propagate_context_to_thread
+    adapter, client = _adapter()
+    agent, out = SimpleNamespace(_interrupt_requested=False), {}
+    with vault_prompt_scope(_turn(loop, adapter), agent):
+        worker = threading.Thread(target=propagate_context_to_thread(
+            lambda: out.update(code=unlock.get_code_prompt_callback()("login.example.com", ""))), daemon=True)
+        worker.start()
+        wait_until(lambda: client.chat_postMessage.await_count, what="vault code card")
+        token = client.chat_postMessage.call_args.kwargs["blocks"][1]["elements"][0]["value"]
+        agent._interrupt_requested = True  # /stop lands, then the author submits in the same tick
+        adapter._vault_code_cards()[token].submit(CODE)
+        worker.join(5)
+    assert out["code"] == ""

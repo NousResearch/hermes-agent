@@ -57,7 +57,8 @@ class _CodeRequest:
                 break
             heartbeat()
         self.close()
-        return self._value
+        # A /stop that raced the submit still wins: nothing is entered for a stopped turn.
+        return "" if cancelled() else self._value
 
 
 def _code_card_adapter(turn):
@@ -82,12 +83,20 @@ def code_card_scope(turn, agent):
     from gateway.session_vault_prompt import CODE_TIMEOUT_S
     from tools.approval_human_wait import activity_heartbeat, human_wait_window
     open_requests: list[_CodeRequest] = []
+    scope_lock = threading.Lock()
+    scope_open = [True]
 
     def code_prompt(site, hint):
+        # Re-read the adapter: a reconnect replaces the instance the turn started with.
+        live_adapter = _code_card_adapter(turn)
         request = _CodeRequest()
-        open_requests.append(request)
+        with scope_lock:
+            if not scope_open[0] or live_adapter is None:
+                # A tool worker that outlived its turn keeps this callback: it may not ask again.
+                return ""
+            open_requests.append(request)
         fut = turn._schedule(
-            adapter.send_vault_code_prompt(
+            live_adapter.send_vault_code_prompt(
                 ctx._status_chat_id, site, hint, user_id=user_id, submit=request.submit,
                 timeout_s=CODE_TIMEOUT_S, metadata=ctx._status_thread_metadata),
             "Vault code card failed to schedule")
@@ -106,5 +115,8 @@ def code_card_scope(turn, agent):
     finally:
         unlock.set_code_prompt_callback(previous)
         # A tool thread abandoned by its batch deadline can still be parked on a card: release it.
-        for request in open_requests:
+        with scope_lock:
+            scope_open[0] = False
+            pending = list(open_requests)
+        for request in pending:
             request.close()

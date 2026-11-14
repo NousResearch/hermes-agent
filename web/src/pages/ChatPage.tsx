@@ -41,6 +41,7 @@ import { readChatPanelCollapsed, toggleChatPanelCollapsed } from "@/lib/chat-pan
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
+import { createAndroidPtyInput } from "@/lib/pty-android-input";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
@@ -645,14 +646,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         await driveImageAttach(paths);
       })().catch(reportImageUploadError);
     };
+    let androidInput: ReturnType<typeof createAndroidPtyInput> | null = null;
+    const pasteTerminalText = (text: string) => androidInput
+      ? androidInput.native(() => term.paste(text))
+      : term.paste(text);
     const handleBrowserDropCleanup = attachChatImageDropListeners(
       host,
       uploadAndAttachImages,
-      (text) => term.paste(text),
+      pasteTerminalText,
     );
 
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
+      if (androidInput && !androidInput.beforeKey(ev)) return false;
 
       // Tab/Shift+Tab escape the terminal (WCAG 2.1.2); xterm stores one
       // key handler per Terminal, so a second registration overwrites this one.
@@ -748,7 +754,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           }
           try {
             const text = await navigator.clipboard.readText();
-            if (text) term.paste(text);
+            if (text) pasteTerminalText(text);
           } catch (err) {
             const message =
               err instanceof Error ? err.message : String(err);
@@ -797,29 +803,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
     term.open(host);
 
-    // IME composition guard (fixes #52111).
-    //
-    // React 18's root-level event delegation intercepts keydown events with
-    // keyCode 229 (the "composition in progress" signal sent by the browser
-    // during non-Latin IME input) and synthesises an onCompositionStart
-    // event.  That synthetic path sets internal composing state that
-    // interferes with xterm.js's own IME handling on its hidden textarea,
-    // causing the first keystroke of each composition chunk to be silently
-    // dropped — most visible with Cyrillic (Ukrainian/Russian) on
-    // Firefox-based browsers, but affects any locale that uses composition
-    // events (CJK, Arabic, Hebrew).
-    //
-    // xterm.js relies on native compositionstart/compositionend on its
-    // internal textarea, not on keydown, so blocking the keyCode-229
-    // keydown from reaching React's delegation layer is safe.  The listener
-    // sits in the *capture* phase on the terminal host so it fires before
-    // the event bubbles up to the React root.
+    // Block bubbling to React, but let the textarea receive keydown first.
+    // Android has an explicit DOM edit owner below: no overlapping 229 diffs
+    // and no synthetic keyboard events. Other platforms retain native xterm.
     const _imeCompositionGuard = (e: KeyboardEvent) => {
       if (e.keyCode === 229 || e.key === "Process") {
         e.stopPropagation();
       }
     };
-    host.addEventListener("keydown", _imeCompositionGuard, true);
+    host.addEventListener("keydown", _imeCompositionGuard);
 
     const textarea = term.textarea;
     if (textarea) {
@@ -831,6 +823,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const isMobileLike =
         typeof navigator !== "undefined" &&
         /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+      if (/Android/i.test(navigator.userAgent)) {
+        androidInput = createAndroidPtyInput(term, (data) => sendComposedText(data));
+      }
       const markReplacementInput = (ev: Event) => {
         const input = ev as InputEvent;
         if (
@@ -845,7 +840,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       };
       const markCompositionEnd = (ev: CompositionEvent) => {
         mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
-        compositionForwarder.onCompositionEnd(ev.data);
+        if (!androidInput) compositionForwarder.onCompositionEnd(ev.data);
       };
 
       textarea.addEventListener("beforeinput", markReplacementInput, true);
@@ -1516,6 +1511,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // normal onData path.
       sendComposedText = (data) => forwardPtyData(data, false);
       onDataDisposable = term.onData((data) => {
+        if (androidInput) {
+          if (!androidInput.suppressTerminalData(data)) forwardPtyData(data, false);
+          return;
+        }
         if (!SGR_MOUSE_RE.test(data)) {
           compositionForwarder.noteTerminalData(data);
         }
@@ -1554,6 +1553,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
       mobileInputCleanup?.();
+      androidInput?.dispose();
       compositionForwarder.dispose();
       cleanupTouchScroll();
       handleBrowserDropCleanup();
@@ -1583,7 +1583,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
       wsRef.current?.close();
       wsRef.current = null;
-      host.removeEventListener("keydown", _imeCompositionGuard, true);
+      host.removeEventListener("keydown", _imeCompositionGuard);
       // Every reconnect rebuilds this terminal; the WebGL addon leaves its GL
       // context alive on dispose, so a reconnect storm hits the browser's
       // context cap and blanks the live terminal (#111909).

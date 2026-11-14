@@ -17,6 +17,7 @@ from urllib.parse import unquote_plus
 # Shared with agent/file_safety's read-block list so the two defenses can't
 # drift: a blocked file_tools read that falls back to ``cat`` is still caught.
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
+from agent.redact_command_segments import _command_segments
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
 from agent.redact_control_split import mask_control_split_tokens
 from agent.redact_discord import _redact_discord_tokens
@@ -1277,18 +1278,37 @@ def _redact_query_string(query: str) -> str:
     )
 
 
-def _canonical_url_param_name(name: str) -> str:
-    """Decode a URL parameter name (up to 3 unquote rounds) for case-insensitive matching."""
+def _decode_url_param_name(name: str) -> str:
     decoded = name
     for _ in range(3):
         next_value = unquote_plus(decoded)
         if next_value == decoded:
             break
         decoded = next_value
-    folded = decoded.casefold()
+    return decoded
+
+
+def _canonical_url_param_name(name: str) -> str:
+    """Decode a URL parameter name (up to 3 unquote rounds) for case-insensitive matching."""
+    folded = _decode_url_param_name(name).casefold()
     # Preserve policy names that are canonically hyphenated (for example
     # x-amz-signature) before accepting underscore-normalized aliases.
     return folded if folded in _SENSITIVE_QUERY_PARAMS else folded.replace("-", "_")
+
+
+def _is_sensitive_url_param(name: str) -> bool:
+    """A query-param name that holds a credential: the URL-only names above, plus the names the JSON-field
+    rule masks (its closed list and the affixed-key policy: ``accessToken``, ``x-api-key``,
+    ``private_token``, ``secret_key``, ``passwd``, ``api_key_value``), so both passes agree on what a
+    secret is (#119852). Every ``redact_url_credentials=True`` caller shares this list, compaction
+    summaries included, so a ``pageToken`` or ``X-Amz-Credential`` value is masked there too, as the
+    JSON rule masks those fields."""
+    if _canonical_url_param_name(name) in _SENSITIVE_QUERY_PARAMS:
+        return True
+    decoded = _decode_url_param_name(name).replace("-", "_")  # camelCase kept: _key_name_words splits on it
+    # Same suffix drop as _json_affixed_key_secret: ``api_key_value`` / ``passwordValue`` hold the credential.
+    return (bool(_JSON_KEY_NAMES_FULL_RE.fullmatch(decoded))
+            or _is_python_repr_secret_key(_JSON_VALUE_SUFFIX_RE.sub("", decoded)))
 
 
 def _redact_strict_url_credentials(text: str) -> str:
@@ -1296,7 +1316,7 @@ def _redact_strict_url_credentials(text: str) -> str:
     network references); preserves keys, separators, public params, hosts, paths."""
     text = _STRICT_URL_PARAM_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}=***"
-        if _canonical_url_param_name(m.group(2)) in _SENSITIVE_QUERY_PARAMS else m.group(0), text)
+        if _is_sensitive_url_param(m.group(2)) else m.group(0), text)
     return _STRICT_URL_USERINFO_RE.sub("//***:***@", text)
 
 
@@ -1762,36 +1782,6 @@ _HERMES_HOME_PREFIXES = ("$HERMES_HOME/", "${HERMES_HOME}/")
 _HOME_PREFIXES = ("$HOME/", "${HOME}/")
 
 
-def _command_segments(command: str) -> list[str]:
-    """Pipeline/sequence segments, split only on unquoted ``| ; &`` so an
-    ``awk '{print $1; print $2}'`` program or ``grep 'foo|bar'`` pattern stays one
-    segment. Backslash is not an escape (Windows ``C:\\Users\\...``)."""
-    segments: list[str] = []
-    buf: list[str] = []
-    quote: str | None = None
-    for ch in command:
-        if quote:
-            buf.append(ch)
-            if ch == quote:
-                quote = None
-            continue
-        if ch in "'\"":
-            quote = ch
-            buf.append(ch)
-            continue
-        if ch in "|;&":
-            seg = "".join(buf).strip()
-            if seg:
-                segments.append(seg)
-            buf = []
-            continue
-        buf.append(ch)
-    seg = "".join(buf).strip()
-    if seg:
-        segments.append(seg)
-    return segments
-
-
 def _is_under_hermes_home(path: str) -> bool:
     """True when an absolute ``config.yaml`` path sits under the active Hermes home or root.
 
@@ -1896,15 +1886,20 @@ _BEARER_RESIDUE_RE = re.compile(
 )
 
 
-def redact_for_egress(text: str, *, keep_phone_numbers: bool = False) -> str:
+def redact_for_egress(text: str, *, urls: bool = False, keep_phone_numbers: bool = False) -> str:
     """The one scrub for text leaving the process for a remote reader (chat platforms, A2A peers,
     telemetry). ``redact_sensitive_text(force=True)`` — the only secret-pattern list — plus a bearer
     sweep, because a ``Bearer <opaque>`` value with no vendor prefix carries no shape the prefix
     matcher can key on. Fails CLOSED: if the redactor raises, the raw text is never returned.
-    ``keep_phone_numbers`` skips only the E.164 pass (``redact_for_chat_egress``'s opt-in)."""
+    ``keep_phone_numbers`` skips only the E.164 pass (``redact_for_chat_egress``'s opt-in).
+
+    ``urls=True`` also masks credential-named query params and URL userinfo — for archival sinks
+    (memory providers, telemetry) where no one follows the URL. Chat delivery leaves it off so a magic
+    link or OAuth URL the agent hands the user still works."""
     text = str(text or "")
     try:
-        text = redact_sensitive_text(text, force=True, keep_phone_numbers=keep_phone_numbers)
+        text = redact_sensitive_text(text, force=True, redact_url_credentials=urls,
+                                     keep_phone_numbers=keep_phone_numbers)
     except Exception:
         return REDACTION_UNAVAILABLE
     if "earer" in text.lower():  # IGNORECASE regex; the gate must fold case too (#108807)

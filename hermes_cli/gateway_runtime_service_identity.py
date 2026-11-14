@@ -397,7 +397,9 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
         _unverified("the launcher's PYTHONPATH lines are not the installer's")
     if not re.fullmatch(r'sh.CurrentDirectory = ' + literal, tail[6]):
         _unverified("the launcher's working-directory line is not the installer's")
-    run = re.fullmatch(r'sh.Run (' + literal + r'), 0, False', tail[7])
+    # Waiting changes supervision, not the account, home or gateway command being verified.
+    # Accept either literal mode without rewriting a synchronous installed launcher.
+    run = re.fullmatch(r'sh.Run (' + literal + r'), 0, (?:False|True)', tail[7])
     if not run or not env.get("HERMES_SUPERVISED_CHILD"):
         _unverified("the launcher has no Run line or does not set HERMES_SUPERVISED_CHILD")
     command = run[1][1:-1].replace('""', '"')

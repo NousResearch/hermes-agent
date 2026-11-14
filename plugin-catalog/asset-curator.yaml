@@ -1,0 +1,34 @@
+name: asset-curator
+repo: https://github.com/dev-willbird1936/Asset-Curator
+sha: 7accc32f7f6913244f76e59582089593a24bad26
+subdir: hermes/asset-curator
+description: >-
+  Find assets or create them from code with user-controlled access,
+  host-confirmed asset review and preserved licensing/provenance.
+maintainer: dev-willbird1936
+tier: community
+category: tools
+title: Asset Curator
+version: "0.3.0"
+requires_hermes: ">=0.23.1"
+readme: true
+# Earlier releases were exercised on Windows. The 0.3.0 permission revision
+# was tested in a fresh Linux Hermes profile; Windows regression is pending.
+platforms: [windows]
+screenshots: []
+known_issues:
+  - "Explicit Node >=20.18.1/npm setup after install/reinstall; no launch-time install."
+  - "Browser assistance needs an installed Chrome/Edge and saved consent."
+  - "External generator projects require deliberate runtime setup and rendering."
+  - "License filtering is not legal clearance; Pixel Search needs any mode."
+  - "Review-page selections require confirmation back in Hermes; original downloads are kept."
+  - "Hermes-managed/full modes add no plugin path sandbox; OS/host controls still apply."
+# Portable package has no native register() tools/hooks/middleware. Its separate
+# mcp.json declares one untrusted stdio server exposing 19 tools.
+# Model tools cannot change filesystem mode/workspace or the classifier URL.
+# Optional user settings use profile environment routing, not required env.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

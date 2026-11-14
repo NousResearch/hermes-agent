@@ -331,6 +331,8 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_ALLOW_MENTION_USERS` | No | `true` | When `true` (default), the bot can ping individual users by ID. |
 | `DISCORD_ALLOW_MENTION_REPLIED_USER` | No | `true` | When `true` (default), replying to a message pings the original author. |
 | `DISCORD_PROXY` | No | — | Proxy URL for Discord connections (HTTP, WebSocket, REST). Overrides `HTTPS_PROXY`/`ALL_PROXY`. Supports `http://`, `https://`, and `socks5://` schemes. |
+| `DISCORD_ACTIVITY` | No | — | Presence/activity text shown on the bot profile (e.g. `"Hermes Agent"`). Applied once the bot is ready. Without any presence the bot can show as visually offline. Can also be set with `discord.activity` in `config.yaml`; the profile's env value wins. |
+| `DISCORD_ACTIVITY_TYPE` | No | `"playing"` | Presence type: `playing`, `watching`, `listening`, or `custom`. Config equivalent: `discord.activity_type`. |
 | `DISCORD_ALLOW_ANY_ATTACHMENT` | No | `false` | When `true`, the bot accepts attachments of any file type (not just the built-in PDF/text/zip/office allowlist). Unknown types are cached to disk and surfaced to the agent as a local path with `application/octet-stream` MIME so it can inspect them with `terminal` / `read_file` / `ffprobe` / etc. |
 | `DISCORD_MAX_ATTACHMENT_BYTES` | No | `33554432` | Maximum bytes per attachment the gateway will download and cache. Default 32 MiB. Set to `0` for no cap (attachments are held in memory while being written, so unlimited carries a real memory cost). |
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | No | `0.6` | Grace window the adapter waits before flushing a queued text chunk. Useful for smoothing streamed output. |
@@ -379,6 +381,8 @@ discord:
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
+  activity: ""                    # Presence text on the bot profile, e.g. "Hermes Agent" (unset = no presence)
+  activity_type: playing          # playing | watching | listening | custom (default: playing)
   missed_message_backfill:        # Replay messages missed while disconnected (opt-in)
     enabled: false
     channels: []                  # Empty uses free_response_channels

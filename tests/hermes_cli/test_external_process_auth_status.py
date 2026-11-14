@@ -306,6 +306,7 @@ def test_cli_command_for_handlerless_plugin_is_runnable(monkeypatch):
     assert rendered == oauth_relogin_command(provider_id)
 
 
+@pytest.mark.platforms("posix")
 def test_cli_command_is_the_plugins_own_login_when_it_declares_one(monkeypatch):
     """A plugin whose ``setup_status()`` names its CLI's login gets exactly that command: signing in
     must not run ``hermes model``, which also makes the provider the default."""

@@ -193,6 +193,7 @@ def test_external_process_plugin_relogin_hint_never_names_a_failing_auth_add(ins
     assert oauth_relogin_command("nous") == "hermes portal"
 
 
+@pytest.mark.platforms("posix")
 def test_external_process_plugin_relogin_is_its_declared_login_command(monkeypatch):
     """A plugin whose ``setup_status()`` names its CLI's login gets exactly that command on every
     re-login surface: ``hermes model`` also runs that login, but then saves the provider as the

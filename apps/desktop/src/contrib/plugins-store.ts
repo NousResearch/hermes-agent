@@ -131,6 +131,24 @@ export async function enablePackageDesktopHalf(packageName: string, { keepUserCh
   await enableDesktopPlugins(record => record.packageName === packageName, keepUserChoice)
 }
 
+/** Agent-package names enabled in the profile last listed. A CLI install writes
+ *  that list without opening this app, so the desktop half has to catch up. */
+let enabledAgentPackages = new Set<string>()
+
+export function noteEnabledAgentPackages(names: Iterable<string>): void {
+  enabledAgentPackages = new Set(names)
+  void applyEnabledPackageHalves()
+}
+
+/** Turn on desktop halves whose agent half is enabled, unless the user
+ *  explicitly switched that half off. No-op until the half is inventoried;
+ *  the disk scan calls this again once the row exists. */
+export async function applyEnabledPackageHalves(): Promise<void> {
+  for (const name of enabledAgentPackages) {
+    await enablePackageDesktopHalf(name, { keepUserChoice: true })
+  }
+}
+
 /** The catalog entry a STANDALONE plugin was installed from; a package's half answers for no entry here. */
 const standaloneCatalogName = (record: PluginRecord) =>
   record.packageName ? undefined : record.packageOrigin?.catalogName

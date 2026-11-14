@@ -1,6 +1,7 @@
 import { jsonRpcErrorReason, JsonRpcGatewayError, type PluginsManageParams } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { noteEnabledAgentPackages } from '@/contrib/plugins-store'
 import { notifyError } from '@/store/notifications'
 
 /**
@@ -172,10 +173,13 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
         return
       }
 
-      $agentPlugins.set((result?.plugins ?? []).map(normalizeAgentPluginRow))
+      const rows = (result?.plugins ?? []).map(normalizeAgentPluginRow)
+
+      $agentPlugins.set(rows)
       $agentPluginsProfile.set(scope)
       $agentPluginsStatus.set('ready')
       $agentPluginsError.set(null)
+      noteEnabledAgentPackages(rows.filter(row => row.status === 'enabled').map(row => row.name))
     } catch (e) {
       if (generation !== loadGeneration) {
         return

@@ -97,7 +97,7 @@ def test_other_upgrades_are_still_refused(daemon, scopes, case):
         kwargs["headers"] = {"origin": "http://evil.example"}
     else:
         kwargs["subprotocols"] = _dial(daemon.beta, purpose="native-http")
-    with pytest.raises(WebSocketDisconnect) as refused, daemon.client.websocket_connect(path, **kwargs):
-        pass
+    with pytest.raises(WebSocketDisconnect) as refused, daemon.client.websocket_connect(path, **kwargs) as ws:
+        ws.receive_text()
     assert refused.value.code == 4401
     assert scopes == []

@@ -21,7 +21,7 @@ from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_chat import (
     _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _pty_fail, _ws_auth_ok,
-    _ws_close_reason, _ws_gate, _ws_request_is_allowed,
+    _ws_close_reason, _ws_gate, _ws_reject, _ws_request_is_allowed,
 )
 from hermes_cli.web_session_sockets import GATEWAY_SOCKET
 
@@ -100,17 +100,28 @@ def _read_active_session_file(path: Path) -> Optional[str]:
 
 
 async def _close_unless_sidecar_allowed(ws: WebSocket, *, allow_internal: bool = False,
-                                        socket: Optional[str] = None) -> bool:
-    """Pre-accept gates for the /api/ws, /api/pub and /api/events sidecars:
-    4403 when chat is disabled or the request isn't allowed, 4401 on bad auth."""
+                                        socket: Optional[str] = None, deliver_close_code: bool = False) -> bool:
+    """Gates for the /api/ws, /api/pub and /api/events sidecars:
+    4403 when chat is disabled or the request isn't allowed, 4401 on bad auth.
+
+    ``/api/ws`` keeps close-before-accept (desktop boot; see ``gateway_ws``).
+    ``/api/pub`` and ``/api/events`` pass ``deliver_close_code=True`` so the
+    client sees the 44xx close frame instead of uvicorn's bare HTTP 403.
+    """
+    async def _reject(code: int) -> None:
+        if deliver_close_code:
+            await _ws_reject(ws, code)
+        else:
+            await ws.close(code=code)
+
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        await ws.close(code=4403)
+        await _reject(4403)
         return False
     if not _ws_auth_ok(ws, allow_internal=allow_internal, socket=socket):
-        await ws.close(code=4401)
+        await _reject(4401)
         return False
     if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+        await _reject(4403)
         return False
     return True
 
@@ -649,6 +660,13 @@ def _authority_for_ticket_home(authority, home: str):
 
 @router.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
+    # Deliberately still close-before-accept (HTTP 403 to the client, no
+    # close code): JsonRpcGatewayClient.connect() resolves on `open`, and the
+    # desktop boot path treats a resolved connect() as a usable gateway
+    # (use-gateway-boot.ts). Rejecting after accept here would let boot
+    # complete on a socket that is already closed. Switch this endpoint to
+    # _ws_reject() together with the client change that settles connect() on
+    # the first frame (gateway.ready) instead of `open`.
     if not await _close_unless_sidecar_allowed(ws, allow_internal=True, socket=GATEWAY_SOCKET):
         return
     from hermes_cli.mcp_startup import start_deferred_mcp_discovery_now
@@ -715,11 +733,11 @@ async def gateway_ws(ws: WebSocket) -> None:
 
 
 async def _accept_channel_ws(ws: WebSocket, *, allow_internal: bool = False) -> Optional[str]:
-    if not await _close_unless_sidecar_allowed(ws, allow_internal=allow_internal):
+    if not await _close_unless_sidecar_allowed(ws, allow_internal=allow_internal, deliver_close_code=True):
         return None
     channel = _channel_or_close_code(ws)
     if not channel:
-        await ws.close(code=4400)
+        await _ws_reject(ws, 4400)
         return None
     await ws.accept()
     return channel

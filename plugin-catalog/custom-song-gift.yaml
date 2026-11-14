@@ -1,0 +1,17 @@
+name: custom-song-gift
+title: Custom Song Gift Studio
+repo: https://github.com/GptsApp/custom-song-gift-mcp
+sha: 2b436a21a5b68422cc009633e56dd3aa244b453e
+description: "Explore 12 gift occasions, compare 16 studio-quality musical genres, and get personalized lyric storytelling advice for custom songs directly from Hermes Agent via Custom Song Gift hosted MCP server. Compliant with Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/). Tool calls go to Custom Song Gift streamable HTTP MCP server at https://customsonggift.org/api/mcp."
+maintainer: GptsApp
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+version: "1.0.0"
+docs_url: https://customsonggift.org
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

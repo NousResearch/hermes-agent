@@ -173,6 +173,26 @@ class ConfigValueError(ConfigWriteError):
         super().__init__(message, code=code)
 
 
+def drop_other_access(path: Path) -> None:
+    """Strip world bits from a just-written config file (#59726).
+
+    The round-trip writers carry the file's existing mode across the atomic replace, so a
+    config.yaml that was ever world-readable/writable stayed that way through every writer except
+    ``save_config``. Writers that bypass ``FileBackend.write_path`` (migrations, restores,
+    clones) call this after their own write. Only the "other" bits go: group bits and setgid stay for shared-group homes.
+    Managed installs and containers keep their deliberate modes, as in ``config._secure_file``.
+    """
+    from hermes_constants import _container_or_chmod_skipped, get_managed_system
+    if get_managed_system() is not None or _container_or_chmod_skipped():
+        return
+    try:
+        mode = path.stat().st_mode & 0o7777
+        if mode & 0o007:
+            os.chmod(path, mode & ~0o007)
+    except (OSError, NotImplementedError):
+        pass
+
+
 class FileBackend:
     """The user layer is ``<home>/config.yaml`` on local disk."""
 
@@ -206,6 +226,7 @@ class FileBackend:
             atomic_roundtrip_yaml_update(path, key, value)
         for key in changes.unset:
             atomic_roundtrip_yaml_update(path, key, None)
+        drop_other_access(path)
 
     def config_path(self, home: Path) -> Path:
         return Path(home) / CONFIG_FILENAME
@@ -274,6 +295,10 @@ class FileBackend:
 
 
 _FILE_BACKEND = FileBackend()
+# Held across a config.yaml load -> mutate -> save span by writers on worker threads. ``config._CONFIG_LOCK``
+# covers each call only, and every on-loop reader takes it, so holding THAT across a span would stall
+# the event loop. Re-entrant because nested writers take it again.
+CONFIG_MUTATION_LOCK = threading.RLock()
 # Reentrant: publishing the deployment can import modules whose import-time config read selects
 # the backend again on the SAME thread (``_BOOTSTRAP_OWNER``); every other thread waits for it.
 _BOOTSTRAP_LOCK = threading.RLock()

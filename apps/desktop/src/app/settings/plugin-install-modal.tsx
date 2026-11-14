@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { Puzzle } from 'lucide-react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
@@ -342,15 +342,15 @@ function SourceMovedNotice({ copy, failure, probe, request, shown }: SourceMoved
 }
 
 /** Read the source again after a refusal. A catalog pick whose pin the backend did not read (native Desktop
- *  inspects the branch tip in Electron) also takes the catalog's current pin, or every Install would resend
- *  the one the catalog left; `repin` is that lookup, which Install waits on. */
-function useReviewAgain(request: PluginInstallRequest, start: (repo: string) => void) {
+ *  inspects it in Electron) also takes the catalog's current pin, or every Install would resend the one the
+ *  catalog left; `repin` is that lookup, which Install waits on, and a new pin is read again. */
+function useReviewAgain(request: PluginInstallRequest, start: () => void) {
   const [repin, setRepin] = useState<Promise<void>>(() => Promise.resolve())
   // Set once the source is read again: Install then waits until the new inspection AND pin are on screen.
   const [rereview, setRereview] = useState<'idle' | 'pending' | 'shown'>('idle')
 
   const reviewAgain = (current: ProbeResult) => {
-    start(request.repo)
+    start()
     const name = request.catalogName
 
     if (name && !current.catalogPin) {
@@ -457,7 +457,9 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
   const [advancedOpen, setAdvancedOpen] = useState(!verified)
   const [force, setForce] = useState(request.force ?? false)
   const [pinRef, setPinRef] = useState('')
-  const [installError, setInstallError] = useState<null | string>(null)
+  // The last install's failure, and whether Force (replacing the installed plugin) answers it.
+  const [installFailure, setInstallFailure] = useState<null | { canForce?: boolean; error: string }>(null)
+  const installError = installFailure?.error ?? null
   const [installUncertain, setInstallUncertain] = useState(false)
   // The source moved past the commit on screen: the dialog read it again and shows the new one for review.
   const [sourceMoved, setSourceMoved] = useState(false)
@@ -465,13 +467,16 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
   const [confirmUnreviewed, setConfirmUnreviewed] = useState(false)
   // The agent half installed and the desktop half could not follow it: only a replacement of both proceeds.
   const [partial, setPartial] = useState<null | string>(null)
-  const { repin, rereview, reviewAgain } = useReviewAgain(request, start)
+  // A catalog pick is read at its pin, which the install checks out: the default branch may lack the plugin.
+  const probeRef = request.catalogName ? request.sha : undefined
+  const startProbe = useCallback(() => start(request.repo, probeRef), [probeRef, request.repo, start])
+  const { repin, rereview, reviewAgain } = useReviewAgain(request, startProbe)
 
   useEffect(() => {
-    start(request.repo)
+    startProbe()
 
     return cancel
-  }, [cancel, request.repo, start])
+  }, [cancel, startProbe])
 
   const targetInfo = profiles.find(profile => normalizeProfileKey(profile.name) === targetProfile)
   const targetLabel = profileLabel(targetInfo ?? { name: targetProfile })
@@ -490,7 +495,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
 
   const install = async (withoutReviewedCommit = false) => {
     onInstallingChange(true)
-    setInstallError(null)
+    setInstallFailure(null)
     setSourceMoved(false)
     setConfirmUnreviewed(false)
     // The commit the user clicked on: a lookup finishing after the click never changes it.
@@ -535,7 +540,17 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
           reviewAgain(detected)
         },
         needsConfirm: () => setConfirmUnreviewed(true),
-        failed: () => setInstallError((outcome as Extract<InstallOutcome, { status: 'failed' }>).error)
+        // "Already exists. Enable force reinstall" points at the Force switch, which a catalog pick
+        // otherwise keeps out of sight: show it.
+        failed: () => {
+          const failed = outcome as Extract<InstallOutcome, { status: 'failed' }>
+
+          setInstallFailure({ canForce: failed.canForce, error: failed.error })
+
+          if (failed.canForce) {
+            setAdvancedOpen(true)
+          }
+        }
       }
 
       settle[outcome.status]()
@@ -548,7 +563,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
     if (installError) {
       void install()
     } else {
-      start(request.repo)
+      startProbe()
     }
   }
 
@@ -575,7 +590,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
             busy={installing}
             copy={m}
             force={force}
-            offerForce={Boolean(partial)}
+            offerForce={Boolean(partial || installFailure?.canForce)}
             onForceChange={setForce}
             pin={{ value: pinRef, invalid: pinInvalid, onChange: setPinRef }}
             probe={probe}

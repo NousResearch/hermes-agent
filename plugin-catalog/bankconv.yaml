@@ -1,0 +1,19 @@
+name: bankconv
+title: BankConv
+repo: https://github.com/wassim/bankconv-mcp
+sha: 455ecfe00ba1e84408a7ea19e4d333daa3485232
+subdir: hermes
+version: "0.1.1"
+description: "Convert PDF bank and credit card statements into transactions (ISO dates, signed amounts, running balance) or CSV, OFX, QFX, QBO and Xero CSV files with BankConv. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only: it runs the bankconv-mcp npm package pinned to 0.1.1 over npx stdio, so Node.js 20+ is required, and reads BANKCONV_API_KEY from the user's environment. Disclosure — the PDFs the user names are uploaded to bankconv.com over HTTPS and deleted after 24 hours by default; converting uses pages of the user's BankConv account; converted files are written next to the PDF, to Downloads (or the home folder), or to any path given in save_to, overwriting an existing file there. The package marks the server untrusted, so Hermes asks before convert_statement and download_statement and refuses them in unattended runs."
+maintainer: BankConv
+tier: community
+category: tools
+docs_url: https://bankconv.com/integrations/mcp
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

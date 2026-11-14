@@ -1,0 +1,38 @@
+name: homework-coach
+repo: https://github.com/andrewjsoukup/homework-coach
+sha: 79ff46a3567c72995b58acfb63d8ec7640f028ac
+title: Homework Coach
+description: "Homework photos and teacher updates become checked daily math practice PDFs and a separate parent key. Parent I/S/N feedback guides difficulty. Includes a class plan, read-back corrections, progress/history, a scheduling blueprint and a Desktop workspace. Data stays on the selected Hermes backend; photos and teacher content use the configured model provider. JSON uploads and direct downloads support remote clients. Disclosure — when you turn on Daily sheets (off by default), a once-a-minute background check inside the Hermes process builds each child's practice sheet on practice days without anyone opening the app; with \"Who writes the sheet\" set to your model, each sheet sends the child's grade, class unit, latest homework reading, your ratings and notes to your configured provider (or the homework_writer auxiliary model), names and file paths removed."
+maintainer: andrewjsoukup
+tier: community
+category: tools
+requires_hermes: '>=0.22.5'
+version: "0.2.4"
+docs_url: https://github.com/andrewjsoukup/homework-coach#readme
+image: https://raw.githubusercontent.com/andrewjsoukup/homework-coach/79ff46a3567c72995b58acfb63d8ec7640f028ac/docs/screenshots/banner.png
+screenshots:
+- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/79ff46a3567c72995b58acfb63d8ec7640f028ac/docs/screenshots/01-homework-photo.png
+- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/79ff46a3567c72995b58acfb63d8ec7640f028ac/docs/screenshots/02-child-packet-nova.png
+- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/79ff46a3567c72995b58acfb63d8ec7640f028ac/docs/screenshots/03-parent-key.png
+- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/79ff46a3567c72995b58acfb63d8ec7640f028ac/docs/screenshots/05-adapted-packet-nova-wed.png
+- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/79ff46a3567c72995b58acfb63d8ec7640f028ac/docs/screenshots/06-desktop-panel.png
+readme: true
+platforms:
+- linux
+- macos
+- windows
+known_issues:
+- Native phone-app panels are unverified; use a supported Desktop/browser renderer or enabled chat tools.
+- Cloud deployments need persistent profile storage and one long-lived plugin host; stateless or round-robin multi-worker hosting is not supported.
+capabilities:
+  provides_tools:
+  - homework_coach_intake
+  - homework_coach_generate_packet
+  - homework_coach_record_feedback
+  - homework_coach_status
+  - homework_coach_progress
+  - homework_coach_set_curriculum
+  - homework_coach_add_material
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

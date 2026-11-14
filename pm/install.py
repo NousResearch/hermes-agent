@@ -20,7 +20,8 @@ from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
 from pm.registry import get_package, walk
-from pm.store import Store, current_target, digest_matches, merge_tree, tree_digest
+from pm.store import (Store, current_target, digest_matches, entry_component, fetch_entry_name, merge_tree,
+                      tree_digest)
 
 LOG = logging.getLogger(__name__)
 
@@ -94,22 +95,28 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
     for root in search_roots:
         store = Store(root)
         facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
-        fact = facts.get(package.name)
-        if not fact or not facts.installed(package.name, None, store.root):
-            continue
-        binary = package.binary(store.entry(fact["entry"]), target)
-        if binary is not None and not binary.is_file():
-            continue
-        if binary is not None and target == current_target() and not _heal_exec_bit(binary, heal=heal):
-            continue
-        if verify and not _entry_verified(package, fact, store, target):
-            continue
-        if facts.installed(package.name, lockfile.version(package.name), store.root,
-                           _identity(lockfile, package.name, target)):
-            return facts, store
-        if (allow_outdated and fact.get("target") == target
-                and fact.get("artifacts") and fact.get("digest")):
-            fallback = facts, store
+        # Every row may hold the exact pin, but only the selected (first) row may be the outdated
+        # fallback, never an older pin another install keeps; a later root's fallback still
+        # replaces it, as before.
+        outdated = None
+        for index, fact in enumerate(facts.variants(package.name)):
+            chosen = facts.selected(package.name, fact)
+            if not chosen.installed(package.name, None, store.root):
+                continue
+            binary = package.binary(store.entry(fact["entry"]), target)
+            if binary is not None and not binary.is_file():
+                continue
+            if binary is not None and target == current_target() and not _heal_exec_bit(binary, heal=heal):
+                continue
+            if verify and not _entry_verified(package, fact, store, target):
+                continue
+            if chosen.installed(package.name, lockfile.version(package.name), store.root,
+                                _identity(lockfile, package.name, target)):
+                return chosen, store
+            if (allow_outdated and index == 0 and fact.get("target") == target
+                    and fact.get("artifacts") and fact.get("digest")):
+                outdated = chosen, store
+        fallback = outdated or fallback
     return fallback
 
 
@@ -233,7 +240,7 @@ def _remove_entry(store: Store, entry_name: str, *, attempts: int = 5) -> None:
     """
     import time
 
-    entry = store.entry(entry_name)
+    entry = store.entry(entry_component(entry_name))
     for attempt in range(attempts):
         try:
             if entry.is_symlink() or not entry.is_dir():
@@ -293,7 +300,7 @@ def _reclaim_set_aside(store: Store) -> int:
 def _remove_downloads(store: Store, artifacts: list[dict]) -> None:
     """Release this package's archives after publication, under its store lock."""
     for artifact in artifacts:
-        _discard_entry(store, f"fetch-{artifact['sha256']}")
+        _discard_entry(store, fetch_entry_name(artifact["sha256"]))
 
 
 def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> bool:
@@ -381,12 +388,20 @@ def _entry_current(package, lockfile, facts, store, entry, previous, version, pi
     return recorded == pin and not package.verify(entry, target)
 
 
-def _refresh_recorded_env(package, facts, store, entry, previous, target) -> None:
+def _refresh_recorded_env(package, facts, store, entry, previous, target, *, select=False) -> None:
     """An entry's env is derived from the package code, not its bytes: when the code changes it (a
     variable renamed or retired), re-record it so stores installed earlier match what admission
-    compares against. The recorded digest still vouches for the bytes, so nothing is re-fetched."""
+    compares against. The recorded digest still vouches for the bytes, so nothing is re-fetched.
+    ``select`` re-records it regardless, making this pin the store's selection again. In the shared
+    writable store a pin this checkout does not own yet is re-recorded too: depending on a row makes
+    it an owner, or another checkout's upgrade drops the row and gc deletes the entry (#149497).
+    A build-owned store (``prepare_tools``) keeps its facts byte-identical on a hit."""
+    from pm.lock import install_owner
+
     env = package.env(entry, target)
-    if facts.env_for(package.name, store.root) != env:
+    unclaimed = (install_owner() not in (previous.get("owners") or ())
+                 and store.root == Store(paths.writable_store_root()).root)
+    if select or unclaimed or facts.env_for(package.name, store.root) != env:
         facts.record(package.name, previous["version"], previous["entry"], env, store.root,
                      target=previous.get("target"), artifacts=previous.get("artifacts"),
                      digest=previous.get("digest"))
@@ -396,16 +411,27 @@ def _refresh_found_env(package, location, target, operation) -> None:
     """:func:`_refresh_recorded_env` for an entry ``ensure`` found installed: `hermes update` skips
     installed defaults, so no install would re-record it. Only the writable store is re-recorded, under
     its install lock (a sealed store's facts ship with the artifact)."""
+    from pm.lock import install_owner
+
     facts, store = location
-    entry = store.entry(facts.get(package.name)["entry"])
-    if (facts.env_for(package.name, store.root) == package.env(entry, target)
+    found = facts.get(package.name)
+    entry = store.entry(found["entry"])
+    # A checkout using an entry another one recorded claims it, so that one's deletion leaves
+    # it in place (#149497).
+    claimed = install_owner() in (found.get("owners") or ())
+    if ((claimed and facts.env_for(package.name, store.root) == package.env(entry, target))
             or store.root != Store(paths.writable_store_root()).root):
         return
     with nullcontext() if operation is not None else store.install_lock():
-        facts.reload()
-        previous = facts.get(package.name)
-        if previous and previous.get("entry") == entry.name:
-            _refresh_recorded_env(package, facts, store, entry, previous, target)
+        # A fresh read: ``facts`` is the caller's per-checkout view, and reloading it would hand
+        # the caller whatever another checkout selected last.
+        shared = Facts(facts.path)
+        previous = next((row for row in shared.variants(package.name)
+                         if row["entry"] == entry.name), None)
+        if previous is None:
+            return
+        _refresh_recorded_env(package, shared.selected(package.name, previous), store, entry,
+                              previous, target)
 
 
 def _copy_verified_source(package, lockfile, copy_from, staged, version, target) -> None:
@@ -460,6 +486,7 @@ def _install(
     entry = store.entry(entry_name)
     if getattr(package, "pin_only", False):
         return entry
+    entry_component(entry_name)
     artifacts = lockfile.artifacts(package.name, target)
     pin = json.dumps({"target": target, "sha256": [a["sha256"] for a in artifacts]})
 
@@ -469,13 +496,20 @@ def _install(
         if facts is not None:
             facts.reload()
         previous = facts.get(package.name) if facts is not None else None
+        if facts is not None:
+            previous = next((row for row in facts.variants(package.name)
+                             if row["entry"] == entry_name), previous)
+        selected_facts = facts.selected(package.name, previous) if previous is not None else facts
         previous_entry = store.entry(f".previous-{'stage-' if facts is None else ''}{entry_name}")
         _settle_previous_entry(package, store, entry, previous_entry, previous, target)
         _reclaim_set_aside(store)
-        if (_entry_current(package, lockfile, facts, store, entry, previous, version, pin, target)
+        if (_entry_current(package, lockfile, selected_facts, store, entry, previous, version, pin, target)
                 and not _fresh_copy):
             if facts is not None:
-                _refresh_recorded_env(package, facts, store, entry, previous, target)
+                # A hit on another pin's history row re-selects it: build admission and the
+                # staged-store prune read the selected row, not this lock's pin.
+                _refresh_recorded_env(package, selected_facts, store, entry, previous, target,
+                                      select=(facts.get(package.name) or {}).get("entry") != entry_name)
             _remove_downloads(store, artifacts)
             return entry
         if not artifacts:
@@ -816,7 +850,13 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
                      or any(not isinstance(extra, str) for extra in fact["extras"])
                      or not isinstance(fact.get("stamp"), str) or not fact["stamp"]):
             raise InstallError("venv", "recorded dependency selection is incomplete; refusing to change its graph")
-        enabled = list(fact.get("extras", frozen if frozen is not None else ["all"]))
+        if fact:
+            enabled = list(fact["extras"])
+        else:
+            from pm.extras import pre_pm_baseline
+
+            # Nothing recorded yet: a tree still on its main-era venv restores that venv's extras.
+            enabled = frozen if frozen is not None else pre_pm_baseline(package.project_root()) or ["all"]
         stamp = fact.get("stamp") or package.expected_stamp(enabled, plugin_dirs=[])
         return enabled, stamp, {"repair": True}
     # The first writable generation replaces, rather than layers on,
@@ -976,6 +1016,11 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
                        shipped=shipped, frozen=frozen, evict_incompatible_plugins=evict_incompatible_plugins)
         automatic = [*(automatic or ()), *(carried or ())]  # a carried extra is automatic too
         with _venv_install_lock(patient=explicit or repair):
+            if not repair:
+                from pm.carried_extras import with_pre_pm_baseline
+
+                extras, carried, automatic = with_pre_pm_baseline(package, extras, carried=carried,
+                                                                   automatic=automatic, plugins=plugins)
             extras = _without_new_declines(package, extras, automatic)
             _refuse_declined(package, extras, explicit=explicit)
             recover_publication(paths.repo_root())
@@ -1028,7 +1073,7 @@ def drift(*, include_venv: bool = True) -> dict[str, str]:
             package = get_package(name)
         except KeyError:
             continue
-        if package.optional or package.internal:
+        if package.is_optional(target) or package.internal:
             continue
         if package.missing_reason(target) is not None:
             continue

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
+from tui_gateway.hosted_room_lease_keeper import LeaseKeeper
 
 logger = logging.getLogger(__name__)
 
@@ -512,7 +513,7 @@ class HostedRoomRuntime:
             # keep executing, and after a restart its process-local task marker is absent.
             return True
         if not _info_is_active_for(info, task["identity"], require_exact=True):
-            return False
+            return self._interrupt_stale_admission(transport, binding, profile, session_id, info)
         result = transport.interrupt(
             **_session_kw(profile, session_id), expected_task_id=task["identity"].task_id)
         return result is not None and (
@@ -537,6 +538,35 @@ class HostedRoomRuntime:
                 and result["execution_generation"] == generation):
             return False
         return discarded_receipt(result, task) or result.get("status") == "cancelled"
+
+    def _interrupt_stale_admission(
+        self, transport: InternalSessionRPC, binding: HostedRoomBinding, profile: str,
+        session_id: str, info: Mapping[str, Any]) -> bool:
+        """Clear a session turn still held by a driver task with no live attempt.
+
+        A member turn can outlive its driver task (a deferred task whose approval never
+        arrived, for example), so ``info`` stays active under that stale identity and
+        every exact-stop retry would refuse to act on it forever. Interrupt that stale
+        turn by its own id — both sides match on the exact task id — and keep this stop
+        pending; the next retry sees the exact identity (or an inactive session) and
+        finishes. Turns of live attempts and unknown identities stay untouched.
+        """
+        stale_task_id = str(info.get("task_id") or "")
+        if not stale_task_id:
+            return False
+        live_ids = {
+            t["identity"].task_id
+            for status in ("running", "indeterminate") for t in self._tasks(binding, status)}
+        if stale_task_id in live_ids:
+            return False
+        stale = next((t for t in self._tasks(binding, None) if t["identity"].task_id == stale_task_id), None)
+        # A peer member's deferred attempt is kept on purpose: its Retry recovers that same run.
+        if stale is None or self._remote(stale):
+            return False
+        with suppress(RuntimeError, OSError, ValueError):
+            transport.interrupt(
+                **_session_kw(profile, session_id), expected_task_id=stale_task_id)
+        return False
 
     def _settle_stopping_completion(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
@@ -730,20 +760,38 @@ class HostedRoomRuntime:
             self.db_path, room_id=binding.room_id, gateway_id=binding.gateway_id,
             authority_epoch=binding.authority_epoch, process_generation=self.process_generation,
             ttl_seconds=self.lease_ttl_seconds, clock=self.clock)
+        lease = self._cache_lease(lease)
         with self._status_lock:
-            self._leases[binding.room_id] = lease
             self._recovered_leases = {k for k in self._recovered_leases if k[0] != binding.room_id}
         return lease
 
+    def _cache_lease(self, lease: state.DriverLease) -> state.DriverLease:
+        """Cache ``lease`` unless the cache already holds a later expiry of the same generation.
+
+        A LeaseKeeper thread and the turn's thread renew concurrently and commit in either order;
+        a stale write would let ``_mark_ambiguous`` defer to an expiry the row has outlived, and
+        the next scan would then renew that generation in place instead of recovering the room.
+        """
+        with self._status_lock:
+            known = self._leases.get(lease.room_id)
+            if (known is not None and (known.process_generation, known.lease_generation)
+                    == (lease.process_generation, lease.lease_generation)
+                    and known.expires_at >= lease.expires_at):
+                return known
+            self._leases[lease.room_id] = lease
+            return lease
+
     def _renew_lease_if_needed(
         self, lease: state.DriverLease, *, force: bool = False) -> state.DriverLease:
+        with self._status_lock:
+            known = self._leases.get(lease.room_id)
+        if (known is not None and known.lease_generation == lease.lease_generation
+                and known.expires_at > lease.expires_at):
+            lease = known  # a LeaseKeeper renewed this generation since the caller's copy
         if not force and self.clock() < lease.expires_at - (self.lease_ttl_seconds / 2):
             return lease
-        renewed = state.renew_lease(
-            self.db_path, lease, ttl_seconds=self.lease_ttl_seconds, clock=self.clock)
-        with self._status_lock:
-            self._leases[lease.room_id] = renewed
-        return renewed
+        return self._cache_lease(state.renew_lease(
+            self.db_path, lease, ttl_seconds=self.lease_ttl_seconds, clock=self.clock))
 
     def _drop_lease(self, room_id: str) -> None:
         with self._status_lock:
@@ -773,7 +821,13 @@ class HostedRoomRuntime:
                 raise AttachmentsUnsupportedError(
                     "attachments_unsupported_on_route: this member's route cannot carry "
                     "attached files")
-            with self.turn_lock(profile):
+            # The profile lock can be held by another turn for up to `turn_wait_seconds`, past the
+            # lease ttl, and an expired lease cannot be renewed: keep it alive through the wait
+            # and the whole turn, and fence before submit if a renewal proved it lost.
+            with LeaseKeeper(
+                    attempt.lease, lambda lease: self._renew_lease_if_needed(lease, force=True),
+                    interval=self.lease_ttl_seconds / 3) as keeper, self.turn_lock(profile):
+                keeper.renew_now()
                 session = self._resolve_or_create(transport, profile, binding.room_id)
                 # A submit should fail before admission or return after it; an unexpected
                 # exception at that boundary is ambiguous, never a proven failure.
@@ -830,8 +884,14 @@ class HostedRoomRuntime:
                 self._rooms_needing_reschedule.add(binding.room_id)
 
     def _mark_ambiguous(self, binding: HostedRoomBinding, attempt: state.TaskAttempt) -> None:
-        self._drop_lease(binding.room_id)
-        self._ambiguous_rooms[binding.room_id] = attempt.lease.expires_at
+        # Wait out the lease as last renewed (a LeaseKeeper may have extended it), so the room is
+        # reclaimed under a new generation and recovery inspects the ambiguous attempt.
+        with self._status_lock:
+            known = self._leases.pop(binding.room_id, None)
+        expires_at = attempt.lease.expires_at
+        if known is not None and known.lease_generation == attempt.lease.lease_generation:
+            expires_at = max(expires_at, known.expires_at)
+        self._ambiguous_rooms[binding.room_id] = expires_at
 
     def _on_terminal(
         self, binding: HostedRoomBinding, attempt: state.TaskAttempt, receipt: Mapping[str, Any]
@@ -845,7 +905,8 @@ class HostedRoomRuntime:
         try:
             self._publish(
                 binding,
-                state.settle_task(self.db_path, attempt, **asdict(terminal), clock=self.clock))
+                state.settle_task(
+                    self.db_path, attempt, **asdict(terminal), clock=self.clock, allow_expired_lease=True))
         except (state.StaleLeaseError, state.StaleTaskError):
             # Cancellation, disband, or authority transfer can win the durable race, and then the
             # model result is discarded; an exact attempt in recovery still takes its reply.
@@ -880,6 +941,9 @@ class HostedRoomRuntime:
     ) -> _TerminalReceipt | None:
         lease = attempt.lease
         observation_failed_at = None
+        # Sleep at most a quarter lease ttl: `_renew_lease_if_needed` must get a chance to act
+        # inside its ttl/2 renewal window however the configured cadence compares to the ttl.
+        wait_cap = min(self.active_poll_interval_seconds, self.lease_ttl_seconds / 4)
         while not self._stop.is_set():
             task = state.get_task(self.db_path, attempt.identity)
             if task["status"] in state.TERMINAL_STATUSES:
@@ -899,7 +963,7 @@ class HostedRoomRuntime:
                         return None  # the room's scan keeps this Stop going, without the profile lock
                 if self._defer_unconfirmed_stop(binding, task, lease):
                     return None
-                self._wake.wait(self.active_poll_interval_seconds)
+                self._wake.wait(wait_cap)
                 self._wake.clear()
                 continue
             if time.monotonic() >= deadline_monotonic:
@@ -926,7 +990,7 @@ class HostedRoomRuntime:
             else:
                 observation_failed_at = None
             remaining = max(0.0, deadline_monotonic - time.monotonic())
-            self._wake.wait(min(self.active_poll_interval_seconds, remaining))
+            self._wake.wait(min(wait_cap, remaining))
             self._wake.clear()
         return None
 

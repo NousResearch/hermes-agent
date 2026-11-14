@@ -462,7 +462,16 @@ def oauth_relogin_command(provider: Any) -> str:
     slug = str(provider or "").strip().lower()
     if slug == "nous":
         return f"hermes {profile_cli_selector()}portal"
+    if _login_owned_by_external_cli(slug):
+        # `auth add` refuses a plugin with no auth_handler; the model flow runs the vendor CLI's login.
+        return f"hermes {profile_cli_selector()}model"
     return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
+
+
+def _login_owned_by_external_cli(slug: str) -> bool:
+    from hermes_cli.auth_plugin_providers import plugin_auth_handler, plugin_profile
+
+    return getattr(plugin_profile(slug), "auth_type", "") == "external_process" and plugin_auth_handler(slug) is None
 
 
 def relogin_command_hint(provider: Any) -> str:
@@ -477,7 +486,7 @@ def relogin_command_hint(provider: Any) -> str:
         return f"hermes {profile_cli_selector()}auth add <provider>"
     from agent.error_surface import auth_kind
 
-    if auth_kind(slug) == "oauth":
+    if _login_owned_by_external_cli(slug) or auth_kind(slug) == "oauth":
         return oauth_relogin_command(slug)
     return f"hermes {profile_cli_selector()}auth add {slug}"
 

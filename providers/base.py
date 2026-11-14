@@ -241,6 +241,8 @@ class ProviderProfile:
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
+    # Opt-in: auxiliary calls forward an explicit max_tokens only on routes known to honor it (#139778).
+    forwards_max_tokens: bool = field(default=False, kw_only=True)
     # ``response_format`` types the API rejects outright (e.g. ("json_schema",)); aux requests omit them up front.
     unsupported_response_formats: tuple = ()
     default_aux_model: str = (

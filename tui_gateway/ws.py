@@ -390,6 +390,11 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
     local Desktop runs as work for it (the welcome trial and onboarding key on that), and so do the
     threads it hands off to: ``to_thread`` and the legacy pool copy this context."""
     from hermes_cli.process_identity import serving_local_desktop
+    from tui_gateway.server_requests import resolve_pinned_response
+    if authority_connection is not None and resolve_pinned_response(req, transport):
+        # The answer to a request a sidecar RPC sent back to THIS socket (vault.preview.fill's page
+        # scripts); the authority's own registry never holds those ids.
+        return None
     with serving_local_desktop(getattr(transport, "desktop_local", False)):
         if authority_connection is None:
             return await asyncio.to_thread(server.dispatch, req, transport)

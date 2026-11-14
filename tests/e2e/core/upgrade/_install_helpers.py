@@ -72,11 +72,19 @@ def updater_generation(tag: str) -> str:
     raise AssertionError(f"no updater generation matches {tag}")
 
 
-def release_tags(ref: str = "HEAD") -> list[str]:
-    """Release tags reachable from ``ref``, newest first; none when ``ref`` is absent (a depth-1 checkout)."""
-    if git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", cwd=H.WORKTREE, check=False) == "":
+def release_tags(ref: str = "HEAD", *, before: bool = False) -> list[str]:
+    """Release tags reachable from ``ref``, newest first; none when ``ref`` is absent (a depth-1 checkout).
+
+    ``before``: only the releases behind ``ref``, not on it. They are taken from every parent, so a
+    release cut as a merge (v0.22.2: first parent the release branch tip, second parent the published
+    v0.22.1) still has its predecessor, which ``ref~1``'s history does not hold. The depth-1 guard is
+    then on ``ref~1``: a depth-1 checkout has ``ref`` but none of its history.
+    """
+    probe = f"{ref}~1" if before else ref
+    if git("rev-parse", "--verify", "--quiet", f"{probe}^{{commit}}", cwd=H.WORKTREE, check=False) == "":
         return []
-    out = git("tag", "--merged", ref, "--sort=-creatordate", "--list", "v[0-9]*", cwd=H.WORKTREE)
+    scope = ["--merged", ref, "--no-contains", ref] if before else ["--merged", ref]
+    out = git("tag", *scope, "--sort=-creatordate", "--list", "v[0-9]*", cwd=H.WORKTREE)
     return [t for t in out.split() if not any(Path(t).match(p) for p in _RELEASE_TAG_EXCLUDES)]
 
 
@@ -95,18 +103,23 @@ def upgrade_base(generation: str | None = None) -> UpgradeBase | None:
     ``pre-handoff``): the newest release that ships it. Otherwise ``HERMES_E2E_UPGRADE_BASE`` picks
     it: a tag, a commit, or a generation name. Unset, it is N-1, the newest release before HEAD.
     ``HERMES_E2E_N1_REF`` is an older name for the same variable.
+
+    No release on CI raises instead: the e2e-upgrade job checks out full history and tags, so an
+    empty answer there is a broken checkout, and returning None would skip every suite green.
     """
     override = os.environ.get("HERMES_E2E_UPGRADE_BASE") or os.environ.get("HERMES_E2E_N1_REF") or ""
     chosen = generation or override
     generations = {name for name, _ in UPDATER_GENERATIONS}
     if chosen and chosen not in generations:
         return UpgradeBase(chosen, git("rev-parse", f"{chosen}^{{commit}}", cwd=H.WORKTREE))
-    tags = release_tags("HEAD~1")
-    if chosen:
-        tags = [t for t in tags if updater_generation(t) == chosen]
+    releases = release_tags(before=True)
+    tags = [t for t in releases if updater_generation(t) == chosen] if chosen else releases
     if not tags:
-        if chosen and release_tags("HEAD~1"):
+        if releases:
             raise AssertionError(f"{chosen}: no release before HEAD ships that updater")
+        if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+            raise AssertionError(f"no release tag reachable before HEAD in {H.WORKTREE} on CI: "
+                                 "the e2e-upgrade job needs full history and tags (fetch-depth: 0)")
         return None
     return UpgradeBase(tags[0], git("rev-parse", f"{tags[0]}^{{commit}}", cwd=H.WORKTREE))
 

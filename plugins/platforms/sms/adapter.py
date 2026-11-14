@@ -262,7 +262,7 @@ class SmsAdapter(BasePlatformAdapter):
         if from_number == self._from_number:  # echo prevention
             logger.debug("[sms] ignoring echo from own number %s", redact_phone(from_number))
             return _twiml_response()
-        logger.info("[sms] inbound from %s -> %s: %s", redact_phone(from_number), redact_phone(to_number), text[:80])
+        logger.info("[sms] inbound from %s -> %s (%d chars)", redact_phone(from_number), redact_phone(to_number), len(text))
         source = self.build_source(
             chat_id=from_number, chat_name=from_number, chat_type="dm", user_id=from_number, user_name=from_number,
             message_id=message_sid)
@@ -310,21 +310,21 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     from_number = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")  # scoped like account_sid: never the default's number
     if not account_sid or not auth_token or not from_number:
         return send_error("SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)")
-    message = _strip_markdown_for_sms(message)
+    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    proxy = resolve_proxy_url()
     try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url())
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(proxy)
         url, headers = _messages_endpoint(account_sid, auth_token)
         async with _new_session(**_sess_kw) as session:
-            form_data = _twilio_form(from_number, chat_id, message)
+            form_data = _twilio_form(from_number, chat_id, _strip_markdown_for_sms(message))
             async with session.post(url, data=form_data, headers=headers, **_req_kw) as resp:
                 body = await resp.json()
                 if resp.status >= 400:
                     error_msg = body.get("message", str(body))
                     return send_error(f"Twilio API error ({resp.status}): {error_msg}")
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": body.get("sid", "")}
-    except Exception as e:
-        return send_error(f"SMS send failed: {e}")
+    except Exception as e:  # the text may echo the proxy URL: it reaches the model
+        return send_error(f"SMS send failed: {describe_proxy_error(e, proxy) or e}")
 
 
 _is_connected = _env_is_connected("TWILIO_ACCOUNT_SID")

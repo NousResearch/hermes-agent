@@ -1,0 +1,19 @@
+name: acrylic
+title: Acrylic
+repo: https://github.com/Saderius/hermes-acrylic
+sha: 8362eab5e499e5ef27c4681a7c92601af4eb7659
+description: 'Acrylic glass for Hermes Desktop: a frosted, see-through theme with four presets (Acrylic, Frosted, Sanded, Expressive). Tested mostly on Windows 11, where it uses the system''s real acrylic blur; elsewhere it falls back to a CSS version.'
+maintainer: Saderius
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Saderius/hermes-acrylic#readme
+version: 1.1.0
+platforms: []
+known_issues:
+- Real acrylic blur needs Windows 11 22H2+ with Settings → Appearance → Window Translucency set to Glass. Without Glass, and on Linux, it shows a CSS stand-in that does not blur other windows.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

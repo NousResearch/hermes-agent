@@ -183,6 +183,7 @@ export class GatewayClient extends EventEmitter {
       onHeartbeatFailure: () => this.onHeartbeatFailure(),
       onRequestHandlerError: (error, req) =>
         this.pushLog(`[protocol] server request handler crashed: ${req.method} (${error.message})`),
+      onUncorrelatedError: error => this.pushLog(`[protocol] error frame with no request id: ${error.code ?? 'none'} ${error.message}`),
       onUnhandledRequest: req => this.pushLog(`[protocol] unhandled server request: ${req.method}`),
       requestTimeoutMs: options.requestTimeoutMs ?? 120_000,
       unrefTimers: true

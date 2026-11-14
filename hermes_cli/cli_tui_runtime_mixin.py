@@ -235,7 +235,7 @@ class CLITuiRuntimeMixin:
             self._drain_process_notifications("cli-post-turn")
 
     def _tui_signal_handler(self, signum, frame):
-        """SIGHUP/SIGTERM -> graceful shutdown.
+        """SIGHUP/SIGTERM -> graceful shutdown; a gateway viewer only disconnects (the session lives on).
 
         The agent is hard-interrupted first so its daemon thread can kill the tool's
         setsid subprocess group before the main thread unwinds (else an orphan child).
@@ -253,7 +253,14 @@ class CLITuiRuntimeMixin:
         # Arm the exit backstop now that shutdown intent is unambiguous — covers wedges in the unwind below
         # that would otherwise leave the process alive with no watchdog (#65998 class).
         _arm_exit_watchdog_on_shutdown_signal()
-        if self._agent_running:
+        from hermes_cli.cli_shutdown import _is_gateway_viewer
+        if _is_gateway_viewer(self):
+            # A lost terminal (SIGHUP, or the emulator's SIGTERM) is a disconnect, not /exit: the
+            # gateway keeps the turn and its background subagents, as for a dropped socket. A signal
+            # landing after /exit or Ctrl+D already asked to close keeps that close (and --delete).
+            if not self._should_exit:
+                self._viewer_disconnected = self._detach_on_exit = True
+        elif self._agent_running:
             _interrupt_agent_for_signal(self.agent, signum)
         # Prefer app.exit() over raising KeyboardInterrupt: a KBI from a signal handler
         # lands in a pt Task ("Unhandled exception in event loop" + "Press ENTER to
@@ -285,8 +292,12 @@ class CLITuiRuntimeMixin:
                 print("\n" * (_term_lines - 1), end="", flush=True)
 
         from hermes_cli.gateway_client import GatewayClientError
+        from hermes_cli.gateway_owner_restart import SuccessorWaitStopped
         try:
             self._ensure_gateway_session()  # the banner shows the gateway session's id and inventory
+        except SuccessorWaitStopped as exc:  # Ctrl+C while the gateway restarted: nothing was opened
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(130) from None
         except GatewayClientError as exc:
             # A refused open (a changed launch flag on --resume) is a startup error, not a traceback.
             print(f"Error: {exc}", file=sys.stderr)
@@ -411,8 +422,8 @@ class CLITuiRuntimeMixin:
 
     def _run_startup_maintenance(self):
         with suppress(Exception):
-            from agent.curator import maybe_run_curator
-            maybe_run_curator(
+            from hermes_cli.plugins_idle_tasks import run_idle_jobs
+            run_idle_jobs(
                 idle_for_seconds=float("inf"),  # CLI startup = fully idle
                 on_summary=lambda msg: self._console_print(f"[dim #6b7684]💾 {msg}[/]"),
             )
@@ -538,6 +549,10 @@ class CLITuiRuntimeMixin:
         self._persist_active_session_before_close()
 
         _closing_sid = self._closing_session_id()
+        if self._viewer_disconnected:
+            # No detach: the socket drops at exit and the owner treats that as an orphaned viewer
+            # (``ws_orphan_reap`` after its grace), never as a close that stops delegations.
+            _closing_sid = None
         if self._session_db and _closing_sid:
             try:
                 self._session_db.end_session(_closing_sid, "cli_close")

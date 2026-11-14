@@ -10,6 +10,9 @@
 /** Characters beyond which a plain-text paste becomes a `.txt` attachment. */
 export const LARGE_PASTE_ATTACHMENT_THRESHOLD = 3_000
 
+/** savePastedText's byte cap (`electron/hardening.ts` COMPOSER_PASTE_MAX_BYTES); a paste kept inline honours it too. */
+export const LARGE_PASTE_MAX_BYTES = 64 * 1024 * 1024
+
 /** Maximum source text retained exclusively for automatic title generation. */
 export const LARGE_PASTE_TITLE_PREVIEW_CHARS = 1_000
 

@@ -72,7 +72,6 @@ def test_local_session_authoring_commands_run_the_gateway_handler(tmp_path):
                 assert time.monotonic() < deadline, ('warm turn never settled', snap)
                 await asyncio.sleep(.1)
             out['admitted before'] = admissions()
-            # Before /moa: its one-shot model swap evicts the cached agent (messaging behaviour).
             out['refine focus on naming'] = await exec_(ws, 'refine focus on naming')
             for command in ('plan add a cache', 'learn', 'init', 'moa', 'moa compare',
                             'blueprint', 'egress', 'curator', 'goal ship the cache', 'subgoal add tests',
@@ -110,7 +109,8 @@ def test_local_session_authoring_commands_run_the_gateway_handler(tmp_path):
     assert send('learn')['notice'], out['learn']
     init = send('init')
     assert str(work) in init['message'] and 'UPDATE the existing AGENTS.md' in init['message'], init
-    assert send('moa compare')['message'] == 'compare', out['moa compare']
+    # /moa comes back as typed: the submitted turn binds the preset when it runs (#147510).
+    assert send('moa compare')['message'] == '/moa compare', out['moa compare']
     assert out['moa']['type'] == 'exec' and '/moa' in out['moa']['output'], out['moa']
     assert out['blueprint']['type'] == 'exec' and out['blueprint']['output'], out['blueprint']
     assert out['egress']['type'] == 'exec' and out['egress']['output'], out['egress']

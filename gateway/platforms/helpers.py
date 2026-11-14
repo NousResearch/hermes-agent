@@ -4,13 +4,21 @@ compilation, and fence-aware markdown chunking."""
 
 import asyncio
 import contextlib
+import contextvars
+import hashlib
+import hmac
+import itertools
 import json
 import logging
+import os
 import re
+import secrets
 import threading
 import time
+import unicodedata
 from pathlib import Path
-from typing import Any, MutableMapping, Optional
+from typing import Any, Iterator, MutableMapping, Optional
+from urllib.parse import urljoin, urlsplit
 from gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
 
@@ -109,6 +117,135 @@ async def cancel_task(task: Optional[asyncio.Task]) -> None:
             await task
 
 
+def tag_safe_display_name(value: Any) -> str:
+    """A sender display name made safe to sit inside a gateway-built ``[name]`` / ``[name|id]`` tag.
+
+    Display names are set by the sender. On top of the one-line neutralization, the tag's own
+    delimiters (``[``, ``]`` and the ``|`` that precedes a trusted id) are dropped, so a name can
+    neither end the tag early nor forge a second id or mention span inside it."""
+    from gateway.session import neutralize_untrusted_inline_text
+    text = neutralize_untrusted_inline_text(value)
+    return " ".join("".join(ch for ch in text if ch not in "[]|").split())
+
+
+def display_width(text: str) -> int:
+    """Terminal-style display columns: East-Asian wide/full-width characters count as two.
+    Chat clients clip button labels by rendered width, not by codepoints, so a 25-character
+    Korean label is as wide as 50 Latin ones."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def numbered_clarify_choices(choices, *, max_label_cols: int, escape=None,
+                             max_chars: Optional[int] = None, len_fn=len) -> Optional[str]:
+    """``"1. <choice>\n2. <choice>"`` when any choice is wider than ``max_label_cols`` display
+    columns, else ``None``. Button-capable adapters put this in the message body and switch to
+    positional (``1``, ``2``, …) button labels: a clipped label with no tooltip is unanswerable
+    (#78115), and the body is the only place a long option renders in full. Over ``max_chars``
+    every line stays (a button whose line was cut is unanswerable): the long options lose their
+    middle (start and end kept, so options sharing a long opening still differ) before escaping,
+    so a cut never splits an escape. An option whose first difference from its nearest sibling
+    falls in that cut middle keeps a window around it too, so options sharing both a long
+    opening and a long ending still read differently."""
+    texts = [str(c).strip() for c in choices]
+    if all(display_width(t) <= max_label_cols for t in texts):
+        return None
+    esc = escape or (lambda s: s)
+
+    def _render(items) -> str:
+        return "\n".join(f"{i}. {esc(t)}" for i, t in enumerate(items, start=1))
+    out, each = _render(texts), max(map(len, texts))
+    prefix = [[len(os.path.commonprefix([a, b])) for b in texts] for a in texts]
+    while max_chars is not None and len_fn(out) > max_chars and each > 1:
+        each = min(each - 1, each * 4 // 5) or 1
+        out = _render(_distinct_shortenings(texts, each, prefix))
+    return out
+
+
+def _distinct_shortenings(texts: list, each: int, prefix: list) -> list:
+    """Every text shortened to about *each* characters, distinct options kept distinct where the
+    room allows: each first keeps a window around where it differs from its nearest sibling, and
+    options whose windows still read the same (repeated wording shifts them) are re-cut with one
+    shared window around the group's earliest difference until they part."""
+    out = [_shorten_choice(t, each, max((p for j, p in enumerate(prefix[i]) if j != i), default=0))
+           for i, t in enumerate(texts)]
+    for _ in texts:
+        groups: dict = {}
+        for i, line in enumerate(out):
+            groups.setdefault(line, []).append(i)
+        clashes = [g for g in groups.values() if len(g) > 1 and len({texts[i] for i in g}) > 1]
+        if not clashes:
+            break
+        for group in clashes:
+            shared = min(prefix[a][b] for a in group for b in group if texts[a] != texts[b])
+            for i in group:
+                out[i] = _shorten_choice(texts[i], each, shared)
+    return out
+
+
+def _shorten_choice(text: str, each: int, anchor: int) -> str:
+    """*text* in about *each* characters: start and end kept around a ``…``, or, when *anchor*
+    (where it first differs from its nearest sibling) would fall in the cut, start, a window
+    around *anchor* and end."""
+    if len(text) <= each:
+        return text
+    head, tail = (each + 1) // 2, each // 2
+    if anchor < head or anchor >= len(text) - tail:
+        return f"{text[:head].rstrip()}…{text[len(text) - tail:].lstrip()}"
+    head = tail = each // 4
+    width = each - head - tail
+    start = min(max(anchor - width // 2, head + 1), len(text) - tail - width - 1)
+    if start <= head:
+        return f"{text[:(each + 1) // 2].rstrip()}…{text[len(text) - each // 2:].lstrip()}"
+    return (f"{text[:head].rstrip()}…{text[start:start + width].strip()}…"
+            f"{text[len(text) - tail:].lstrip()}")
+
+
+def _clip_text(text: str, limit: int, len_fn=len) -> str:
+    """*text* within *limit* units of *len_fn*, a cut marked with ``…``."""
+    if len_fn(text) <= limit:
+        return text
+    cut = text[: max(0, limit - 1)]
+    while cut and len_fn(cut) > limit - 1:
+        cut = cut[:-1]
+    return cut + "…"
+
+
+def clarify_text_with_choices(head: str, choices, *, limit: int, max_label_cols: int, escape=None,
+                              len_fn=len) -> tuple[str, bool]:
+    """``(text, numbered)`` for a button clarify within *limit*: *head* alone when every option fits
+    its button, else *head* plus the numbered list (see :func:`numbered_clarify_choices`). The list
+    is reserved first (at least half of *limit*) and the head is cut to what is left, so every
+    positional button keeps its line however long the question is."""
+    if numbered_clarify_choices(choices, max_label_cols=max_label_cols) is None:
+        return _clip_text(head, limit, len_fn), False
+    room = max(limit - 2 - len_fn(head), limit // 2)
+    listed = numbered_clarify_choices(choices, max_label_cols=0, escape=escape, max_chars=room, len_fn=len_fn)
+    return f"{_clip_text(head, max(0, limit - 2 - len_fn(listed)), len_fn)}\n\n{listed}", True
+
+
+def prompt_id_counter() -> Iterator[int]:
+    """Ids for buttons a chat keeps after a restart (approval cards, confirmations, pickers).
+
+    Starts at a random point instead of 1: an old card still visible after a restart would
+    otherwise carry the same id as the first new card and answer it."""
+    return itertools.count(secrets.randbelow(10**12) + 1)
+
+def caption_is_command(caption: Optional[str]) -> bool:
+    """A file's caption that is a slash command (``/goal summarize this``). Adapters skip inlining
+    such a file's text: prepended, it hides the command; appended, it becomes the command's
+    arguments. The agent still gets the cached path with a note to read it. Parsed by
+    :meth:`MessageEvent.get_command`, so attachment-ref prefixes and paths follow the one rule."""
+    return MessageEvent(text=caption or "").get_command() is not None
+
+
+def inline_document_text(caption: str, injection: Optional[str], inlined: list) -> tuple[str, list]:
+    """Prepend a document's inlined text to its caption: ``(text, inlined flags)``. Under a command
+    caption the text is left out and the flags cleared, so the agent is told to read the file."""
+    if not injection or caption_is_command(caption):
+        return caption, [False] * len(inlined)
+    return (f"{injection}\n\n{caption}" if caption else injection), inlined
+
+
 def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int) -> None:
     """Insert into an insertion-ordered mapping with a hard size bound, evicting the oldest keys. A
     re-put moves the key to the newest position so live entries outlast stale ones."""
@@ -128,6 +265,13 @@ def typing_metadata_for_turn(adapter: Any, chat_id: Any, anchor: Any, metadata: 
     if anchor is None or not callable(hook):
         return metadata
     return hook(adapter, str(chat_id), str(anchor), metadata)
+
+
+def typing_pause_key(chat_id: Any, metadata: Optional[dict]) -> tuple:
+    """``_typing_paused`` entry that pauses ONE turn's keep-alive: the chat plus the thread its
+    typing metadata (``typing_metadata_for_turn``) targets. A bare ``chat_id`` entry still pauses
+    every loop in the chat (approval waits); this one leaves a concurrent topic's typing alone."""
+    return chat_id, (metadata or {}).get("thread_id")
 
 
 # Inline markdown-stripping rules, applied in order: bold, italic, bold/italic
@@ -281,6 +425,76 @@ async def send_chunks(chunks: list, send_one) -> Any:
     return result
 
 
+_LOG_HASH_SALT_FILE = "log_hash_salt"
+_LOG_HASH_SALTS: dict[str, bytes] = {}
+_PROCESS_LOG_HASH_SALT = secrets.token_bytes(32)
+
+
+def _read_or_create_log_hash_salt(home: Path) -> bytes:
+    path = home / _LOG_HASH_SALT_FILE
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        # Atomic create: write a private temp file, hard-link it into place; the loser of a race
+        # reads the winner's salt. A crash can never leave a short salt file behind.
+        data = secrets.token_bytes(32)
+        temporary = home / f".{_LOG_HASH_SALT_FILE}.{os.getpid()}.{secrets.token_hex(8)}"
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                data = path.read_bytes()
+            except OSError:  # no hard links (Android SELinux, exFAT): exclusive create, first wins
+                data = _create_log_hash_salt_exclusive(path, data)
+        finally:
+            temporary.unlink(missing_ok=True)
+    if len(data) != 32:
+        raise ValueError("log hash salt is invalid")
+    return data
+
+
+def _create_log_hash_salt_exclusive(path: Path, data: bytes) -> bytes:
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return path.read_bytes()
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
+    return data
+
+
+def _log_hash_salt() -> bytes:
+    from hermes_constants import get_hermes_home, hermes_home_key
+    try:
+        home = get_hermes_home()
+        key = hermes_home_key(home)
+    except (OSError, ValueError):
+        return _PROCESS_LOG_HASH_SALT
+    if (cached := _LOG_HASH_SALTS.get(key)) is None:
+        try:
+            cached = _read_or_create_log_hash_salt(home)
+        except (OSError, ValueError):
+            # Must never raise into a log call; a process-random salt still correlates within this
+            # run. Cached so an unwritable home doesn't retry file I/O on every log line.
+            cached = _PROCESS_LOG_HASH_SALT
+        _LOG_HASH_SALTS[key] = cached
+    return cached
+
+
+def hash_for_log(value: object) -> str:
+    """A short stable digest of an identifier (chat id, address) for INFO logs: lines about the
+    same chat still correlate, but the log never carries the identifier itself. Keyed with a
+    per-install salt so low-entropy ids (phone numbers, guessable emails) can't be recovered from
+    a shared log by hashing candidates."""
+    if value is None or value == "":
+        return "<none>"
+    data = str(value).encode("utf-8", "surrogatepass")
+    return "h:" + hmac.new(_log_hash_salt(), data, hashlib.sha256).hexdigest()[:10]
+
+
 def redact_phone(phone: str) -> str:
     """Redact a phone number for logging, preserving country code and last 4."""
     if not phone:
@@ -356,6 +570,123 @@ def convert_table_to_bullets(text: str) -> str:
     return '\n'.join(out)
 
 
+def voice_mention_gate_enabled(extra: Optional[dict]) -> bool:
+    """``voice_mention_patterns``: opt-in, because it sends unaddressed members' voice notes to STT."""
+    from utils import is_truthy_value
+    return is_truthy_value((extra or {}).get("voice_mention_patterns"), default=False)
+
+
+def _gate_stt_scope(adapter: Any, source: Any) -> Any:
+    """The routed profile's runtime scope for *source*, as the turn will enter it, so the gate's STT
+    reads that profile's ``stt`` config and secrets; a no-op outside a runner."""
+    runner = getattr(adapter, "gateway_runner", None)
+    enter = getattr(runner, "_async_profile_scope_for_source", None)
+    if source is None or not callable(enter):
+        return contextlib.nullcontext()
+    adapter._canonicalize(source)
+    return enter(source)
+
+
+def _sender_may_use_bot(adapter: Any, source: Any) -> bool:
+    """The runner's own allowlist verdict for *source*, checked BEFORE gate STT: a sender the turn
+    would refuse must not spend the operator's STT provider. True outside a runner."""
+    authorize = getattr(getattr(adapter, "gateway_runner", None), "_is_user_authorized_for_source", None)
+    if source is None or not callable(authorize):
+        return True
+    adapter._canonicalize(source)
+    return bool(authorize(source))
+
+
+def bypasses_chat_order(text: Any) -> bool:
+    """A running-agent escape hatch (``/stop``, ``/approve``, ``/deny``): it acts on work already in
+    flight, so it skips :class:`ChatOrderedWork`'s per-chat wait and never waits on an earlier voice
+    note's gate STT. Every other command (``/new``, ``/undo``, ``/status``) keeps its place behind it."""
+    from gateway.session_commands import _ESCAPE_HATCHES
+    from hermes_cli.commands import resolve_command
+    head = str(text or "").lstrip().split(maxsplit=1)
+    if not head or not head[0].startswith("/"):
+        return False
+    cmd = resolve_command(head[0][1:].split("@", 1)[0])
+    return cmd is not None and cmd.name in _ESCAPE_HATCHES
+
+
+async def spoken_mention_clips(paths: list[str], patterns, *, adapter: Any = None, source: Any = None,
+                               keep: frozenset = frozenset()) -> list[str]:
+    """Transcribe a group voice note that only a spoken wake word could admit and match ``patterns``
+    against the transcript (the text gate runs before STT, so it never sees one: #102330). STT runs
+    in the profile *source* routes to (``adapter.gateway_runner``) and never when that profile
+    disables it. On a match, the clips to attach; the turn reuses their transcripts, one STT call
+    per clip. Otherwise ``[]``, and the clips fetched only for this check are deleted (never those
+    in *keep*, which another owner still references)."""
+    from gateway.run_inbound_transcription import (remember_gate_transcript, stt_enabled_for_turn,
+                                                   transcribe_one_clip)
+    results: dict = {}
+    try:
+        async with _gate_stt_scope(adapter, source):
+            from tools.transcription_tools import is_stt_enabled
+            enabled = stt_enabled_for_turn(getattr(adapter, "gateway_runner", None)) \
+                and _sender_may_use_bot(adapter, source) and await asyncio.to_thread(is_stt_enabled)
+            for path in paths if enabled else ():
+                try:
+                    results[path] = await transcribe_one_clip(path)
+                except Exception as exc:  # health: allow BLE001 -- an STT failure is a non-match, never a crash
+                    logger.warning("Spoken mention check could not transcribe %s: %s", path, exc)
+            if any(text and any(p.search(text) for p in patterns) for text, _note in results.values()):
+                for path, (text, _note) in results.items():
+                    if text is not None:
+                        remember_gate_transcript(path, text)
+                return list(paths)
+    except Exception as exc:  # health: allow BLE001 -- an unroutable source is dropped by ingress anyway
+        logger.warning("Spoken mention check could not enter the routed profile: %s", exc)
+    for path in paths:
+        if path not in keep:
+            with contextlib.suppress(OSError):
+                os.remove(path)
+    return []
+
+
+class ChatOrderedWork:
+    """Inbound work that may wait on gate-time STT runs off the platform's single reader, FIFO per
+    chat: a slow voice note delays only its own chat, and a message sent after it in that chat
+    still arrives after it. At most ``limit`` gate transcriptions run at once."""
+
+    def __init__(self, adapter: Any, limit: int = 4):
+        self._adapter, self._tails, self._slots = adapter, {}, asyncio.Semaphore(limit)
+
+    def busy(self, chat: str) -> bool:
+        tail = self._tails.get(chat)
+        return tail is not None and not tail.done()
+
+    def submit(self, chat: str, work, *, transcribes: bool) -> asyncio.Task:
+        prev = self._tails.get(chat)
+
+        async def run():
+            if prev is not None and not prev.done():
+                await asyncio.wait([prev])
+            try:
+                if transcribes:
+                    async with self._slots:
+                        await work()
+                else:
+                    await work()
+            except Exception:  # health: allow BLE001 -- one message's failure must not stall its chat
+                logger.exception("[%s] inbound work for chat %s failed", getattr(self._adapter, "name", "?"), chat)
+
+        task = asyncio.create_task(run())
+        self._tails[chat] = task
+        task.add_done_callback(lambda t: self._tails.pop(chat, None) if self._tails.get(chat) is t else None)
+        tasks = getattr(self._adapter, "_background_tasks", None)
+        if isinstance(tasks, set):
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+        return task
+
+
+def chat_ordered_work(adapter: Any) -> ChatOrderedWork:
+    """The adapter's :class:`ChatOrderedWork`, created on first use."""
+    return adapter.__dict__.setdefault("_chat_ordered_work", ChatOrderedWork(adapter))
+
+
 def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None = None,
                              display_label: str | None = None, defaults: list[str] | None = None,
                              logger_: logging.Logger | None = None) -> list[re.Pattern]:
@@ -411,7 +742,8 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
 
 # ─── Fence-Aware Markdown Chunking ───────────────────────────────────────────
 # Shared core for gateway/stream_consumer.py (``prefer_paragraphs=False, balance_fences=True``),
-# yuanbao (``prefer_paragraphs=True, balance_fences=False``) and weixin (``greedy_pack_blocks``).
+# paragraph mode (``prefer_paragraphs=True, balance_fences=False``, derived from the Yuanbao adapter,
+# now a plugin) and weixin (``greedy_pack_blocks``).
 
 
 def text_has_unclosed_fence(text: str) -> bool:
@@ -545,6 +877,68 @@ def balance_fences_across_chunks(chunks: list[str]) -> list[str]:
         carry_lang = lang if in_code else None
         out.append(body + "\n```" if in_code else body)
     return out
+
+
+def _table_header_above(lines: list[str], i: int) -> int:
+    """Index of the header row of the pipe table containing ``lines[i]``, else -1. Same rules as
+    :func:`convert_table_to_bullets`: a header with a ``|`` over a separator row, then rows with a
+    ``|`` (outer pipes optional)."""
+    while i >= 1 and is_table_row(lines[i]):
+        if TABLE_SEPARATOR_RE.match(lines[i]) and is_table_row(lines[i - 1]):
+            return i - 1
+        i -= 1
+    return -1
+
+
+def _split_inside_table(head: str, tail: str) -> bool:
+    return (is_table_row(head.rstrip('\n').rsplit('\n', 1)[-1])
+            and is_table_row(tail.lstrip().split('\n', 1)[0]))
+
+
+def table_row_start(text: str, split_at: int) -> int:
+    """The newline before the table row a mid-line *split_at* falls in, so a row that fits a fresh
+    chunk is never cut inside a cell; *split_at* unchanged when the line is not a table row (or is
+    the first line, which only an oversized row reaches)."""
+    newline = text.rfind('\n', 0, split_at)
+    if newline < 1 or text[split_at:split_at + 1] in ('\n', ''):
+        return split_at
+    line_end = text.find('\n', split_at)
+    lines = text[:line_end if line_end >= 0 else len(text)].split('\n')
+    return newline if _table_header_above(lines, len(lines) - 1) >= 0 else split_at
+
+
+def table_rollback_point(text: str, split_at: int, fits) -> int:
+    """When ``text[:split_at]`` ends inside a pipe table that *fits* whole in a fresh chunk,
+    return the offset of its header line so the table moves intact; else *split_at*."""
+    if not _split_inside_table(text[:split_at], text[split_at:]):
+        return split_at
+    head_lines = text[:split_at].split('\n')
+    lines = head_lines + [text[split_at:].lstrip().split('\n', 1)[0]]  # sees a separator just past the cut
+    header = _table_header_above(lines, len(lines) - 1)
+    if header <= 0:
+        return split_at
+    start = len('\n'.join(lines[:header])) + 1
+    if header >= len(head_lines) - 2:  # header (+ separator) with no rows never ends a chunk
+        return start
+    end = start
+    for line in text[start:].split('\n'):
+        if not is_table_row(line):
+            break
+        end += len(line) + 1
+    return start if fits(text[start:end].rstrip('\n')) else split_at
+
+
+def table_header_to_repeat(chunk: str, rest: str, max_units: int, len_fn=len):
+    """Header + separator lines to prepend to *rest* when *chunk* ended mid-table, else None
+    (also None when the header alone exceeds *max_units*, so a huge header can't stall)."""
+    if not _split_inside_table(chunk, rest):
+        return None
+    lines = chunk.rstrip('\n').split('\n')
+    header = _table_header_above(lines, len(lines) - 1)
+    if header < 0:
+        return None
+    block = f"{lines[header]}\n{lines[header + 1]}"
+    return block if len_fn(block) <= max_units else None
 
 
 def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> tuple[bool, str]:
@@ -717,3 +1111,237 @@ def platform_http_client(**kwargs: Any) -> Any:
     elif kwargs["limits"] is None:
         del kwargs["limits"]
     return create_ssrf_safe_async_client(event_hooks=hooks, **kwargs)
+
+
+_AIOHTTP_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_AIOHTTP_MAX_REDIRECTS = 10
+
+
+def _origin(url: str) -> tuple:
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    return scheme, parts.hostname, parts.port or (443 if scheme == "https" else 80)
+
+
+def _sends_credentials(session: Any, kwargs: dict) -> bool:
+    """Whether a ``session.get(**kwargs)`` would carry an ``Authorization`` header or basic auth."""
+    headers = [*getattr(session, "headers", {}), *(kwargs.get("headers") or {})]
+    return (getattr(session, "_default_auth", None) is not None or kwargs.get("auth") is not None
+            or any(str(name).lower() == "authorization" for name in headers))
+
+
+@contextlib.asynccontextmanager
+async def ssrf_checked_aiohttp_get(session: Any, url: str, *, first_hop_vetted: bool = False, **kwargs: Any):
+    """``session.get(url)`` on an aiohttp session with every redirect hop checked by
+    ``tools.url_safety.async_is_safe_url``. aiohttp follows redirects by default, so a pre-flight
+    check alone lets a public URL 302 to loopback or cloud metadata. Raises ``ValueError`` on a
+    blocked hop, a credential-bearing cross-origin hop, or too many redirects. ``first_hop_vetted``
+    skips the check on ``url`` itself for a caller that vetted it another way (a host allowlist);
+    redirect targets are always checked."""
+    from tools.url_safety import async_is_safe_url
+    # aiohttp spends one ``total`` across its own redirect loop and the body read; each hop here
+    # is a fresh request, so the whole chain shares one deadline or ``total`` multiplies per hop.
+    total = getattr(kwargs.get("timeout") or getattr(session, "timeout", None), "total", None)
+    async with asyncio.timeout(total if isinstance(total, (int, float)) else None):
+        source_origin, current_url = _origin(url), url
+        for hop in range(_AIOHTTP_MAX_REDIRECTS + 1):
+            if (hop or not first_hop_vetted) and not await async_is_safe_url(current_url):
+                raise ValueError("Blocked URL targeting a private or internal address")
+            # aiohttp strips Authorization on a cross-origin redirect; a fresh session.get() re-applies
+            # session defaults, so refuse the hop rather than hand the first origin's credentials on.
+            if _origin(current_url) != source_origin and _sends_credentials(session, kwargs):
+                raise ValueError("Blocked credential-bearing cross-origin redirect")
+            async with session.get(current_url, allow_redirects=False, **kwargs) as response:
+                location = response.headers.get("Location")
+                if response.status in _AIOHTTP_REDIRECT_STATUSES and location:
+                    current_url = urljoin(current_url, location)
+                    continue
+                yield response
+                return
+        raise ValueError("Too many redirects")
+
+# The slowest uplink a media upload's budgets still cover, and the wall-clock ceiling they grow to.
+MIN_MEDIA_UPLOAD_RATE = 128 * 1024  # B/s
+MEDIA_UPLOAD_DEADLINE_MAX = 3600.0
+
+
+def _on_disk_size(value: Any) -> int:
+    if isinstance(value, (str, os.PathLike)):
+        try:
+            return os.stat(value).st_size
+        except (OSError, ValueError):
+            return 0  # a URL or platform file id
+    try:  # an open file handle
+        return os.fstat(value.fileno()).st_size
+    except (AttributeError, OSError, ValueError):
+        return 0
+
+
+def media_upload_seconds(sources: Any) -> float:
+    """Seconds the on-disk payloads in ``sources`` (paths, open files; URLs and ids count 0) take
+    at ``MIN_MEDIA_UPLOAD_RATE``."""
+    return sum(_on_disk_size(source) for source in sources) / MIN_MEDIA_UPLOAD_RATE
+
+
+def scaled_upload_deadline(deadline: float, upload_seconds: float) -> float:
+    """A media send's wall-clock cap widened by 1.5x its upload time (at most
+    ``MEDIA_UPLOAD_DEADLINE_MAX``, never below ``deadline``): a platform answers an upload only once
+    the file has arrived, so a fixed cap reports a slow-but-delivered file as failed (#133093)."""
+    if upload_seconds <= 0:
+        return deadline
+    return max(deadline, min(MEDIA_UPLOAD_DEADLINE_MAX, deadline + 1.5 * upload_seconds))
+
+
+# ── Long reply handoff (#152012) ─────────────────────────────────────────────────────────────────
+# A reply that needs more than an adapter's ``MAX_SPLIT_MESSAGES`` goes out whole as a document:
+# a runaway reply sent as hundreds of messages gets the bot flood-banned, and cutting it loses text.
+
+
+def reply_file_parts(text: str, limit_bytes: int) -> list[bytes]:
+    """``text`` as UTF-8 parts of at most ``limit_bytes`` each, cut at a line break when one is in the
+    back half of a part and never inside a character; one part when it fits."""
+    data = text.encode("utf-8")
+    parts: list[bytes] = []
+    while len(data) > limit_bytes:
+        cut = data.rfind(b"\n", 0, limit_bytes) + 1
+        if cut < limit_bytes // 2:
+            cut = limit_bytes
+            while cut and (data[cut] & 0xC0) == 0x80:  # a UTF-8 continuation byte: back up to its lead byte
+                cut -= 1
+        parts.append(data[:cut])
+        data = data[cut:]
+    return [*parts, data] if data or not parts else parts
+
+
+def reply_document_sender(adapter: Any) -> Any:
+    """The adapter's upload for a reply file: ``send_reply_document`` (an upload whose failure is a
+    failed result, never a text notice reported as sent), else a native ``send_document``; None when
+    it has neither (the base ``send_document`` only posts a failure notice)."""
+    from gateway.platforms.base import BasePlatformAdapter
+    if callable(getattr(type(adapter), "send_reply_document", None)):
+        return adapter.send_reply_document
+    native = getattr(type(adapter), "send_document", None) not in (None, BasePlatformAdapter.send_document)
+    return adapter.send_document if native else None
+
+
+async def send_reply_as_file(adapter: Any, chat_id: str, text: str, *, reply_to: Optional[str] = None,
+                             metadata: Optional[dict] = None) -> Optional[list[str]]:
+    """Upload ``text`` whole as ``reply-<id>.md`` (numbered files when it is over the adapter's
+    ``REPLY_FILE_MAX_BYTES``), the localized caption on the first. Returns the files' message ids, or
+    ``None`` when the adapter cannot upload or an upload was not confirmed: the caller then delivers
+    the text as messages and deletes nothing, so no text is lost."""
+    import shutil
+    import tempfile
+    from agent.i18n import t
+
+    send = reply_document_sender(adapter)
+    if send is None:
+        return None
+    parts = reply_file_parts(text, int(getattr(adapter, "REPLY_FILE_MAX_BYTES", 8 * 1024 * 1024)))
+    stem, ids = f"reply-{secrets.token_hex(4)}", []
+    folder = await asyncio.to_thread(tempfile.mkdtemp, prefix="hermes-reply-")
+    try:
+        for index, part in enumerate(parts, 1):
+            name = f"{stem}.md" if len(parts) == 1 else f"{stem}-{index}.md"
+            path = os.path.join(folder, name)
+            await asyncio.to_thread(Path(path).write_bytes, part)
+            result = await send(chat_id, path, caption=t("platform.shared.response_as_file") if index == 1 else None,
+                                file_name=name, reply_to=reply_to if index == 1 else None, metadata=metadata)
+            raw = getattr(result, "raw_response", None)
+            if not getattr(result, "success", False) or (isinstance(raw, dict) and raw.get("ambiguous")):
+                logger.warning("Long reply file %s was not confirmed delivered: %s", name, getattr(result, "error", None))
+                return None
+            if getattr(result, "message_id", None):
+                ids.append(str(result.message_id))
+    finally:
+        await asyncio.to_thread(shutil.rmtree, folder, True)
+    return ids
+
+
+def reply_message_cap(adapter: Any) -> Optional[int]:
+    """How many messages one reply may take on ``adapter`` before it goes out as a file
+    (``MAX_SPLIT_MESSAGES``); None when it has no cap or cannot upload one."""
+    cap = getattr(adapter, "MAX_SPLIT_MESSAGES", None)
+    if type(cap) is not int or cap <= 1 or reply_document_sender(adapter) is None:
+        return None
+    return cap
+
+
+def _over_reply_cap(adapter: Any, content: str, metadata: Optional[dict]) -> bool:
+    """``content`` needs more messages than the adapter's per-reply cap (``reply_message_count``)."""
+    cap, count = reply_message_cap(adapter), getattr(type(adapter), "reply_message_count", None)
+    if cap is None or not callable(count) or not content:
+        return False
+    # Fast path for ordinary messages: escaping, UTF-16 units and line-break splits grow a text by
+    # at most 8x, so one this short always fits the cap and is never formatted twice.
+    if len(content) * 8 <= cap * int(getattr(adapter, "MAX_MESSAGE_LENGTH", 0) or 0):
+        return False
+    return adapter.reply_message_count(content, metadata) > cap
+
+
+async def send_long_reply_as_file(adapter: Any, chat_id: str, content: str, *, reply_to: Optional[str] = None,
+                                  metadata: Optional[dict] = None) -> Any:
+    """A whole reply that needs more than the adapter's ``MAX_SPLIT_MESSAGES`` messages goes out as
+    one file instead: the ``SendResult`` of that upload, or ``None`` to send it as messages as usual
+    (under the cap, no upload support, or the upload failed: nothing is lost either way)."""
+    return (await try_reply_file(adapter, chat_id, content, reply_to=reply_to, metadata=metadata))[1]
+
+
+async def try_reply_file(adapter: Any, chat_id: str, content: str, *, reply_to: Optional[str] = None,
+                         metadata: Optional[dict] = None) -> tuple[bool, Any]:
+    """``(tried, result)`` for :func:`send_long_reply_as_file`: ``tried`` says an upload was attempted,
+    so a caller that recounts later (``hand_off_split``) never uploads the same reply twice. A piece
+    of a streamed reply (``reply_file_off``) is never filed on its own."""
+    if _REPLY_FILE_OFF.get() or not _over_reply_cap(adapter, content, metadata):
+        return False, None
+    return True, await _file_result(adapter, chat_id, content, reply_to, metadata)
+
+
+async def _file_result(adapter: Any, chat_id: str, content: str, reply_to: Optional[str],
+                       metadata: Optional[dict]) -> Any:
+    ids = await send_reply_as_file(adapter, chat_id, content, reply_to=reply_to, metadata=metadata)
+    if ids is None:
+        logger.warning("Long reply could not be sent as a file; sending it as messages")
+        return None
+    from gateway.platforms.base import SendResult
+    return SendResult(success=True, message_id=ids[0] if ids else None,
+                      raw_response={"message_ids": ids, "sent_as_file": True})
+
+
+# Sends that must not become a reply file: the stream consumer sends one reply as many pieces
+# (``adapter.send`` per preview, seal and tail) and counts them itself, so no piece is filed on its own;
+# and once a reply's upload failed, its message fallback must not try the upload again. A complete
+# message the consumer sends (commentary) opts back in with ``reply_file_off(False)``.
+_REPLY_FILE_OFF: contextvars.ContextVar[bool] = contextvars.ContextVar("hermes_reply_file_off", default=False)
+
+
+@contextlib.contextmanager
+def reply_file_off(on: bool = True) -> Iterator[None]:
+    token = _REPLY_FILE_OFF.set(on)
+    try:
+        yield
+    finally:
+        _REPLY_FILE_OFF.reset(token)
+
+
+async def hand_off_split(adapter: Any, chat_id: str, content: str, messages: Any, landed: tuple = (), *,
+                         reply_to: Optional[str] = None, metadata: Optional[dict] = None) -> Any:
+    """An adapter's send is about to post ``messages`` (a count, or a callable computing it) for
+    ``content`` after the ``landed`` message ids it already posted for it, a count its preflight did
+    not predict (a refused rich send going out as MarkdownV2 chunks). Past ``MAX_SPLIT_MESSAGES`` the
+    whole reply goes out as one file and ``landed`` is deleted once the upload is confirmed: the
+    file's ``SendResult``. ``None`` sends the messages as planned (under the cap, a stream piece, or
+    the upload failed: nothing deleted)."""
+    cap = reply_message_cap(adapter)
+    if cap is None or _REPLY_FILE_OFF.get() or not content:
+        return None
+    if len(content) * 8 <= (cap - len(landed)) * int(getattr(adapter, "MAX_MESSAGE_LENGTH", 0) or 0):
+        return None  # same fast path as ``_over_reply_cap``: this short a text always fits
+    if len(landed) + (messages() if callable(messages) else messages) <= cap:
+        return None
+    result = await _file_result(adapter, chat_id, content, reply_to, metadata)
+    if result is not None:
+        for message_id in landed:
+            if not await adapter.delete_message(chat_id, str(message_id)):
+                logger.warning("Long reply: could not delete earlier part %s", message_id)
+    return result

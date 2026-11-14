@@ -1,0 +1,43 @@
+name: worktree-sandbox
+repo: https://github.com/mahammadbakr/hermes-worktree-sandbox
+sha: 115d5145ad73c741ce674768bd4410074316e1ea
+subdir: plugin
+version: "0.1.5"
+title: Worktree Sandbox
+description: >-
+  Transactional Git-worktree terminal backend and speculative execution arena: every
+  terminal, execute_code and file-tool call runs inside its own isolated Git worktree with
+  the credential environment stripped, so the user's checkout is untouched until they
+  promote; worktree_race runs two to five competing solutions in parallel worktrees,
+  verifies each with the project's own test command and scores them on pass/fail, speed and
+  diff size, and Hermes Desktop shows a docked pane, a status-bar diff chip and an inline
+  ::worktree-card race card with one-click promote and a timestamped backup.
+  Disclosure - no network calls, no telemetry, no credentials and no API keys; it runs the
+  local `git` binary you already have (macOS/Linux) with a scrubbed environment, writes
+  managed worktrees, promotion backups, shadow repositories (only when the folder is not a
+  Git repository) and a SQLite ledger under $HERMES_HOME/plugin-data/worktree-sandbox/,
+  exposes a read/write FastAPI router at /api/plugins/worktree-sandbox/ in the gateway, and
+  ships a desktop/plugin.js that runs in the Desktop renderer inside the plugin SDK surface.
+maintainer: mahammadbakr
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/mahammadbakr/hermes-worktree-sandbox#readme
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools:
+    - worktree_create
+    - worktree_status
+    - worktree_diff
+    - worktree_promote
+    - worktree_race
+  provides_hooks:
+    - pre_tool_call
+    - on_session_start
+    - post_tool_call
+    - pre_verify
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

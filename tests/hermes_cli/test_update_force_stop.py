@@ -62,3 +62,18 @@ def test_force_stop_names_what_it_interrupted(monkeypatch, tmp_path, capsys, no_
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+def test_force_kills_the_unit_when_its_stop_job_outlives_the_gateway(monkeypatch, tmp_path, no_record):
+    """The gateway exits but its unit's stop job hangs on another process: the force deadline
+    still kills the unit and waits for the job, instead of reporting failure (and rolling back)."""
+    import threading
+    released, kills = threading.Event(), []
+    monkeypatch.setattr(force_stop, "FORCE_KILL_AFTER_S", 0.5)
+    monkeypatch.setattr(force_stop, "_live_work", lambda entry: [])
+    monkeypatch.setattr(posix_pause, "_stop_at_once", lambda entry: released.wait(10))
+    monkeypatch.setattr(force_stop, "_kill", lambda entry: (kills.append(entry["unit"]), released.set()))
+    gone = {"pid": 2 ** 22 + 7, "home": str(tmp_path), "ct": None, "kind": "systemd", "scope": "user",
+            "unit": "hermes-gateway.service"}
+    force_stop.force_stop_gateways({}, [gone])
+    assert kills == ["hermes-gateway.service"]

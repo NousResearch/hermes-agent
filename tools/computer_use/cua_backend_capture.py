@@ -255,6 +255,11 @@ class _CaptureMixin:
         from tools.computer_use import cua_backend as _cb  # lazy: cua_backend imports this module at import time
         if capped := _cb._cua_configured_ax_max_elements():
             args["max_elements"] = capped
+        # cua-driver 0.38+ defaults `tree_format` to "markdown" only: no `structuredContent.elements`, so no
+        # per-element `element_token` and no frames — and its input tools accept ONLY `element_token`. Ask for
+        # both shapes whenever the live schema offers the switch (older drivers never see the property).
+        if self._session.supports_input_property("get_window_state", "tree_format"):
+            args["tree_format"] = "both"
         return args
 
     def _capture_vision(self) -> tuple[Optional[str], Optional[str], list[UIElement], str]:
@@ -300,6 +305,12 @@ class _CaptureMixin:
                     else _parse_elements_from_tree(tree) if tree else [])
         # Tokens are tied to this snapshot: overwrite the whole map (and clear it when the new capture carries none).
         self._snapshot_tokens = {e.index: e.element_token for e in elements if e.element_token}
+        # Markdown-only reads (no structured array) still name their snapshot: the driver's documented
+        # addressing for row `[N]` is `<snapshot_id>:N`, so derive the tokens instead of leaving every
+        # element unaddressable.
+        snapshot_id = (gws_out.get("structuredContent") or {}).get("snapshot_id")
+        if not self._snapshot_tokens and isinstance(snapshot_id, str) and snapshot_id:
+            self._snapshot_tokens = {e.index: f"{snapshot_id}:{e.index}" for e in elements}
         return *_image_from_tool_result(gws_out), elements, window_title
 
     def capture(self, mode: str = "som", app: Optional[str] = None, pid: Optional[int] = None,

@@ -458,6 +458,17 @@ class CLIStreamMixin:
         for ln in block.split("\n"):
             self._emit_stream_line(ln)
 
+    def _strip_stream_line(self, line: str) -> str | None:
+        """Strip markdown from one streamed line, None for a fence line (dropped, as in a whole
+        message). Lines inside a fenced code block are emitted as they are."""
+        from cli import _strip_markdown_syntax
+        from hermes_cli.cli_render import markdown_fence_step
+        fence = getattr(self, "_stream_fence", None)
+        is_delimiter, self._stream_fence = markdown_fence_step(line, fence)
+        if is_delimiter:
+            return None
+        return line if fence is not None else _strip_markdown_syntax(line)
+
     def _emit_stream_text(self, text: str) -> None:
         """Emit filtered text to the streaming display."""
         from agent.markdown_tables import is_table_divider, looks_like_table_row
@@ -518,7 +529,9 @@ class CLIStreamMixin:
                 self._in_stream_table = True
                 continue
             if self.final_response_markdown == "strip":
-                line = _strip_markdown_syntax(line)
+                line = self._strip_stream_line(line)
+                if line is None:
+                    continue
             self._emit_stream_line(line)
 
         # Partial lines are emitted ONLY at real newlines (no hard-wrapping — the terminal
@@ -561,9 +574,11 @@ class CLIStreamMixin:
         if getattr(self, "_stream_table_buf", None):
             self._flush_stream_table_buf()
         if self._stream_buf:
-            line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
-            self._emit_stream_line(line)
+            line = self._strip_stream_line(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
+            if line is not None:
+                self._emit_stream_line(line)
             self._stream_buf = ""
+        self._stream_fence = None
         if self._stream_box_opened and getattr(self, "_stream_box_live", False):
             if getattr(self, "_modern_layout", False):
                 from hermes_cli.cli_modern_layout import closing_separator
@@ -576,6 +591,7 @@ class CLIStreamMixin:
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
+        self._stream_fence = None
         self._stream_buf = ""
         self._stream_started = False
         self._stream_box_opened = False

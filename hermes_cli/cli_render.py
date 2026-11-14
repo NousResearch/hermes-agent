@@ -378,16 +378,30 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
-def _strip_markdown_syntax(text: str) -> str:
-    """Best-effort markdown marker removal for plain-text display."""
-    from cli import _rich_text_from_ansi
-    plain = _rich_text_from_ansi(text or "").plain
+_FENCE_LINE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+
+
+def markdown_fence_step(line: str, fence: str | None) -> tuple[bool, str | None]:
+    """Track fenced code blocks one line at a time.
+
+    Returns whether ``line`` is a fence delimiter and the fence open after it (None outside a
+    block). A block closes on a line holding only the same marker character, at least as long.
+    """
+    match = _FENCE_LINE_RE.match(line)
+    if fence is None:
+        return (True, match.group(1)) if match else (False, None)
+    marker = match.group(1) if match else ""
+    if marker[:1] == fence[0] and len(marker) >= len(fence) and line.strip() == marker:
+        return True, None
+    return False, fence
+
+
+def _strip_prose_markdown(plain: str) -> str:
     # HR markers: "-"/"_" runs of 3+, but "*" only when exactly 3 (cron schedules "* * * * *").
     plain = re.sub(r"^\s{0,3}(?:[-_]\s*){3,}$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}(?:\*\s*){3}\s*$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}#{1,6}\s+", "", plain, flags=re.MULTILINE)
     # Blockquotes, lists, and checkboxes are preserved because they carry structure.
-    plain = re.sub(r"(```+|~~~+)", "", plain)
     plain = re.sub(r"`([^`]*)`", r"\1", plain)
     plain = re.sub(r"!\[([^\]]*)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", plain)
@@ -399,8 +413,33 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"\*([^\s*][^*]*?[^\s*])\*", r"\1", plain)
     plain = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", plain)
     plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
-    plain = re.sub(r"\n{3,}", "\n\n", plain)
-    return plain.strip("\n")
+    return re.sub(r"\n{3,}", "\n\n", plain)
+
+
+def _strip_markdown_syntax(text: str) -> str:
+    """Best-effort markdown marker removal for plain-text display.
+
+    Fenced code blocks lose only their fence lines: their contents stay byte-exact, since a
+    ``#`` comment or ``__init__`` in code is not markup and is what the user copies.
+    """
+    from cli import _rich_text_from_ansi
+    plain = _rich_text_from_ansi(text or "").plain
+    out: list[str] = []
+    prose: list[str] = []
+    fence: str | None = None
+    for line in plain.split("\n"):
+        is_delimiter, next_fence = markdown_fence_step(line, fence)
+        if not is_delimiter and fence is None:
+            prose.append(line)
+        elif not is_delimiter:
+            out.append(line)
+        elif prose:
+            out.extend(_strip_prose_markdown("\n".join(prose)).split("\n"))
+            prose = []
+        fence = next_fence
+    if prose:
+        out.extend(_strip_prose_markdown("\n".join(prose)).split("\n"))
+    return "\n".join(out).strip("\n")
 
 
 _WINDOWS_PATH_WITH_DOT_SEGMENT_RE = re.compile(r"(?i)(?:\b[a-z]:\\|\\\\)[^\s`]*\\\.[^\s`]*")

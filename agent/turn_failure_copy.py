@@ -492,10 +492,11 @@ def declared_login_command(profile: Any) -> str:
     import sys
 
     if sys.platform == "win32":
-        # cmd.exe and PowerShell do not read POSIX single quotes; list2cmdline double-quotes a path with spaces.
+        # No POSIX quotes on Windows, and a quoted path runs in cmd.exe but not PowerShell (it needs `&`): keep the fallback.
         import subprocess
 
-        return subprocess.list2cmdline(argv)
+        line = subprocess.list2cmdline(argv)
+        return "" if line.startswith('"') else line
     import shlex
 
     return shlex.join(argv)

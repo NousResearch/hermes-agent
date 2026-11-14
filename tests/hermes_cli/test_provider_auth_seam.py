@@ -216,16 +216,20 @@ def test_external_process_plugin_relogin_is_its_declared_login_command(monkeypat
 
 
 @pytest.mark.platforms("windows")
-def test_declared_login_command_is_quoted_for_the_windows_shell():
-    """On Windows the Copy button's command runs in cmd.exe or PowerShell: a POSIX single-quoted path
-    (what ``shlex.join`` gives every backslash path) does not run there."""
+def test_declared_login_command_runs_in_both_windows_shells():
+    """The Copy button's command runs in cmd.exe or PowerShell. Neither reads POSIX single quotes, and
+    PowerShell runs a leading quoted path only behind ``&``, so a spaced path keeps the caller's fallback."""
     from providers.base import ProviderProfile
 
-    class _Declares(ProviderProfile):
-        def setup_status(self, **kwargs):
-            return {"login_command": [r"C:\Users\Jane Doe\.local\bin\claude.exe", "auth", "login"]}
+    def declares(path):
+        class _Declares(ProviderProfile):
+            def setup_status(self, **kwargs):
+                return {"login_command": [path, "auth", "login"]}
+
+        return _Declares(name="cli-declares", auth_type="external_process", process_command="claude")
 
     from agent.turn_failure_copy import declared_login_command
 
-    profile = _Declares(name="cli-declares", auth_type="external_process", process_command="claude")
-    assert declared_login_command(profile) == r'"C:\Users\Jane Doe\.local\bin\claude.exe" auth login'
+    assert declared_login_command(declares(r"C:\Users\Jane Doe\.local\bin\claude.exe")) == ""
+    plain = r"C:\Users\jane\.local\bin\claude.exe"
+    assert declared_login_command(declares(plain)) == plain + " auth login"

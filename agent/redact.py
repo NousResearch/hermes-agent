@@ -747,13 +747,14 @@ _URL_BARE_TOKEN_RE = re.compile(
 # parameter; Slack workflow triggers live under hooks.slack.com/triggers/.
 # Hermes stores one as ``incoming_webhook_url`` for Teams delivery and ships Slack and Discord
 # adapters, so these land in config dumps, tool output and logs. Telegram's is already covered
-# by _TELEGRAM_RE, which masks the bot token inside its API URL.
+# by _TELEGRAM_RE, which masks the bot token inside its API URL. ``http://`` is matched too: a
+# mistyped scheme still carries the same secret in the path.
 _WEBHOOK_URL_RE = re.compile(
-    r"(https://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Z0-9]+/[A-Z0-9]+/)([A-Za-z0-9]{8,})"
-    r"|(https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/(?:v\d+/)?webhooks/\d+/)([\w-]{8,})"
-    r"|(https://[A-Za-z0-9.-]*\.?(?:webhook\.office\.com/webhookb2|outlook\.office\.com/webhook)/)"
+    r"(https?://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Z0-9]+/[A-Z0-9]+/)([A-Za-z0-9]{8,})"
+    r"|(https?://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/(?:v\d+/)?webhooks/\d+/)([\w-]{8,})"
+    r"|(https?://[A-Za-z0-9.-]*\.?(?:webhook\.office\.com/webhookb2|outlook\.office\.com/webhook)/)"
     r"([^\s\"'<>]+)"
-    r"|(https://[A-Za-z0-9.-]+\.(?:logic\.azure\.com|api\.powerplatform\.com)(?::\d+)?/"
+    r"|(https?://[A-Za-z0-9.-]+\.(?:logic\.azure\.com|api\.powerplatform\.com)(?::\d+)?/"
     r"(?:[^\s?#\"'<>]*/)?workflows/[^\s?#\"'<>]+\?(?:[^\s#\"'<>]*?&)?sig=)([A-Za-z0-9_%-]{8,})",
     re.IGNORECASE,
 )

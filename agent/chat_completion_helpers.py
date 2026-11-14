@@ -28,7 +28,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
-    _extract_status_code)
+    _extract_status_code, server_forbids_retry)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
@@ -3646,7 +3646,7 @@ class _StreamingCall(StreamingWaitMonitor):
             # Same error either way, and the router can't cancel this probe once its watchdog gives up.
             return False
         status = _extract_status_code(e)
-        if status is None or status < 500 or self.deltas_were_sent["yes"]:
+        if status is None or status < 500 or self.deltas_were_sent["yes"] or server_forbids_retry(e):
             return False
         if getattr(self.agent, "api_mode", "") not in ("", "chat_completions"):
             return False  # replay handles chat-completions shapes only

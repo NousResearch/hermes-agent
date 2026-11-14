@@ -1068,6 +1068,9 @@ def _by_transport(c: _Ctx) -> Optional[Verdict]:
     ssl = _first_match(msg, ((_SSL_CERT_VERIFY_PATTERNS, _V_SSL_CERT), (_SSL_TRANSIENT_PATTERNS, _V_TIMEOUT)))
     if ssl is not None:
         return ssl
+    # The vendor SDKs raise the cert failure as the CAUSE of a bare "Connection error.".
+    if _from_cause_chain(c.error, _cert_verify_failure, False):
+        return _V_SSL_CERT
     # Disconnect + large session → probable overflow rejection, not a hiccup.
     if any(p in msg for p in _SERVER_DISCONNECT_PATTERNS) and not c.status_code:
         # Reasoning models: far more likely the gateway idle-killed a long
@@ -1140,6 +1143,8 @@ def classify_api_error(
         anonymous=is_anonymous_request(provider, api_key),
     )
     stage, verdict = next(((s, v) for s in _STAGES if (v := s(c)) is not None), (None, _V_UNKNOWN))
+    if verdict["reason"] in _REPLAY_ONLY_REASONS and _header_forbids_retry(c.headers):
+        verdict = _V_SERVER_REFUSED_RETRY
     extra = _shape_context(c, verdict, hooked=stage in (_plugin_verdict, _profile_verdict))
     if extra:
         verdict = {**verdict, "error_context": {**(verdict.get("error_context") or {}), **extra}}
@@ -1609,6 +1614,10 @@ def _body_message_candidates(body: dict) -> Iterator[Any]:
     yield detail.get("message") if isinstance(detail, dict) else detail if isinstance(detail, str) else None
 
 
+def _cert_verify_failure(exc: Any) -> Optional[bool]:
+    return True if any(p in str(exc).lower() for p in _SSL_CERT_VERIFY_PATTERNS) else None
+
+
 def _from_cause_chain(error: Exception, pick: Callable[[Any], Any], default: Any) -> Any:
     """First non-None ``pick(exc)`` over the error and its __cause__/__context__ chain (max 5 deep)."""
     current = error
@@ -1652,6 +1661,27 @@ def _body_of(exc: Any) -> Optional[dict]:
 def _headers_of(exc: Any) -> Any:
     headers = getattr(getattr(exc, "response", None), "headers", None)
     return headers if headers and hasattr(headers, "get") else None
+
+
+# Verdicts whose only recovery is replaying the identical request. A server (or a gateway that
+# already ran its own retries) answering ``x-should-retry: false`` has ruled that out, as the
+# vendor Python SDKs honour at their layer (``_base_client._should_retry``); our own loop sets their ``max_retries=0`` and
+# must honour it too. Hermes' API server sends it for ``admission_queued``
+# (``gateway/platforms/api_server_authority_runs.py::store_error_response``). Rate-limit,
+# rotation and compression verdicts change the next request, so they keep their own recovery.
+_REPLAY_ONLY_REASONS = frozenset({_R.overloaded, _R.server_error, _R.timeout, _R.unknown})
+# ``server_error`` rather than ``overloaded``: the retry loop keeps backing off on
+# ``RETRYABLE_CLIENT_REASONS`` even when ``retryable`` is False. The fallback chain still runs.
+_V_SERVER_REFUSED_RETRY = _v(_R.server_error, **_ABORT_FALLBACK)
+
+
+def _header_forbids_retry(headers: Any) -> bool:
+    return bool(headers) and str(headers.get("x-should-retry") or "").strip().lower() == "false"
+
+
+def server_forbids_retry(error: Exception) -> bool:
+    """True when the response behind ``error`` (or its cause chain) carries ``x-should-retry: false``."""
+    return _header_forbids_retry(_from_cause_chain(error, _headers_of, None))
 
 
 def _status_code_from_body(body: Any) -> Optional[int]:

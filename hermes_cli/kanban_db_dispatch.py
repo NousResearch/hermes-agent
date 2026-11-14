@@ -2122,7 +2122,7 @@ def _review_skill_preflight(
     forced = _forced_skills_for_claim(conn, task_id)
     try:
         _loaded, missing = _resolve_skills_as_worker(assignee, forced)
-    except Exception as exc:  # noqa: BLE001 - never let the guard block reviews
+    except Exception as exc:  # never let the guard block reviews
         _kb._log.warning(
             "kanban dispatcher: review skill preflight for %s could not run (%s: %s); claiming anyway",
             task_id,
@@ -2435,7 +2435,7 @@ def _any_spawnable_review(
                 # Preflight refuses this claim (unresolvable forced skill), so
                 # it cannot consume the reservation either.
                 continue
-        except Exception:  # noqa: BLE001 - fail open, mirror of the preflight
+        except Exception:  # fail open, mirror of the preflight
             pass
         if check_respawn_guard(conn, row["id"], lane="review") is None:
             return True

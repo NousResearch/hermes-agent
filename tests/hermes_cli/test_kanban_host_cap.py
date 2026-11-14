@@ -29,9 +29,20 @@ from hermes_cli import kanban_db_connect as kbc
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME with an empty kanban DB."""
+    """Isolated HERMES_HOME with an empty kanban DB.
+
+    Installs ``sdlc-review``: the review lane force-loads it and the dispatcher
+    refuses a claim it cannot resolve, so these cap/reservation tests need the
+    skill present to exercise the lane itself.
+    """
     home = tmp_path / ".hermes"
     home.mkdir()
+    skill_dir = home / "skills" / "sdlc-review"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: sdlc-review\ndescription: Review kanban handoffs and route verified outcomes.\n---\n\nReview body.\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()

@@ -36,13 +36,30 @@ from hermes_cli import kanban_ops
 
 @pytest.fixture
 def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Isolated HERMES_HOME with an empty kanban DB."""
+    """Isolated HERMES_HOME with an empty kanban DB.
+
+    The review lane force-loads ``sdlc-review`` onto every claim and the
+    dispatcher preflights it before claiming, so the skill must resolve here
+    for these lane-mechanics tests to be about mechanics rather than a missing
+    install (the refusal path is covered by
+    ``test_kanban_review_skill_preflight.py``).
+    """
     home = tmp_path / ".hermes"
     home.mkdir()
+    _install_skill(home, "sdlc-review")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
+
+
+def _install_skill(home: Path, name: str) -> None:
+    skill_dir = home / "skills" / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Review kanban handoffs and route verified outcomes.\n---\n\nReview body.\n",
+        encoding="utf-8",
+    )
 
 
 def _row(conn, tid):
@@ -639,6 +656,9 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     import hermes_cli.config as cfgmod
     import hermes_cli.profiles as profmod
 
+    # The card carries its own skill, and the dispatcher preflights every skill
+    # the claim would force-load -- so it has to exist for the claim to be made.
+    _install_skill(kanban_home, "domain-specific-review")
     monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
     monkeypatch.setattr(
         cfgmod,

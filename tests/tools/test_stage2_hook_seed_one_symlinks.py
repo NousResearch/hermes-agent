@@ -1,10 +1,8 @@
 """Regression tests for symlink-safe Docker stage2 first-boot seeds.
 
-Also guards the auth.json env-seed's permission posture (#126950): the
-credential write must be wrapped in a restrictive umask so the file is
-owner-only from the first instant (no 0644-then-tighten window under the
-ambient umask), and the re-tightening chmod must be non-fatal so a failing
-one cannot abort the boot with the credential stranded.
+Also covers the auth.json env-seed's permission posture (#126950): the
+credential is owner-only from the first instant, and a failing re-tighten
+chmod does not abort the boot.
 """
 from __future__ import annotations
 
@@ -128,27 +126,49 @@ def _auth_seed_block(text: str) -> str:
     return m.group(0)
 
 
-def test_auth_seed_write_is_wrapped_in_umask_077(stage2_text: str) -> None:
-    """The auth.json seed must create the credential owner-only from the first
-    instant: the write runs inside a `umask 077` subshell (the .env seed's
-    pattern), never as a bare root-context redirect that lands 0644 under the
-    ambient umask until a later chmod catches up (#126950)."""
-    block = _auth_seed_block(stage2_text)
-    assert re.search(
-        r"\(umask 077 && printf '%s' \"\$HERMES_AUTH_JSON_BOOTSTRAP\" "
-        r'> "\$HERMES_HOME/auth\.json"\)',
-        block,
-    ), "auth.json seed write must be a single printf under `umask 077`"
+def _run_auth_seed(stage2_text: str, tmp_path: Path, chmod_stub: str) -> tuple:
+    """Run the real auth.json seed block under ``set -eu`` and umask 022.
+
+    ``chmod_stub`` replaces the chmod command so the test can observe the
+    mode the write itself produced (no-op) or a failing re-tighten.
+    """
+    sh = shutil.which("sh")
+    if sh is None:
+        pytest.skip("sh not available")
+    home = tmp_path / "home"
+    home.mkdir()
+    script = (
+        "set -eu\n"
+        "umask 022\n"
+        f'HERMES_HOME="{home}"\n'
+        "HERMES_AUTH_JSON_BOOTSTRAP='{\"providers\":{}}'\n"
+        f"{chmod_stub}\n"
+        f"{_path_guard_functions(stage2_text)}\n"
+        f"{_auth_seed_block(stage2_text)}"
+        "echo SEED_DONE\n"
+    )
+    script_path = tmp_path / "harness.sh"
+    script_path.write_text(script)
+    proc = subprocess.run([sh, str(script_path)], capture_output=True, text=True, check=False)
+    return proc, home / "auth.json"
 
 
-def test_auth_seed_chmod_failure_is_non_fatal(stage2_text: str) -> None:
-    """The re-tightening chmod must be silenced-or-warn, never a bare command:
-    under `set -eu` a failing chmod aborted the boot with the seeded credential
-    left behind — 0600 from creation now, so the failure only downgrades to a
-    warning (#126950's durable case)."""
-    block = _auth_seed_block(stage2_text)
-    assert re.search(
-        r'chmod 600 "\$HERMES_HOME/auth\.json" 2>/dev/null \\\n'
-        r'\s*\|\| echo "\[stage2\] Warning: could not tighten auth\.json permissions"',
-        block,
-    ), "the auth.json re-tighten must warn and continue instead of aborting"
+@pytest.mark.platforms("posix")
+def test_auth_seed_creates_credential_owner_only(stage2_text: str, tmp_path: Path) -> None:
+    """The write itself must produce a 0600 file under a 022 ambient umask;
+    with chmod neutralised, a bare redirect would leave it 0644 (#126950)."""
+    proc, auth = _run_auth_seed(stage2_text, tmp_path, "chmod() { :; }")
+    assert proc.returncode == 0, proc.stderr
+    assert auth.read_text() == '{"providers":{}}'
+    assert auth.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.platforms("posix")
+def test_auth_seed_survives_failing_chmod(stage2_text: str, tmp_path: Path) -> None:
+    """A failing re-tighten warns and boot continues under ``set -eu``,
+    with the credential already owner-only."""
+    proc, auth = _run_auth_seed(stage2_text, tmp_path, "chmod() { return 1; }")
+    assert proc.returncode == 0, proc.stderr
+    assert "SEED_DONE" in proc.stdout
+    assert "could not tighten auth.json permissions" in proc.stderr
+    assert auth.stat().st_mode & 0o777 == 0o600

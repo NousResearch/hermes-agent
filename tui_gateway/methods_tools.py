@@ -367,6 +367,10 @@ def _(rid, params: dict) -> dict:
                 str(params.get("session_id") or ""), request_id=f"reload-mcp-{rid}")
         except Exception as exc:
             return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")
+        response = ack.get("response") if isinstance(ack.get("response"), dict) else {}
+        if ack.get("type") != "reload_mcp.ack" or "error" in response:
+            failure = (response.get("error") or {}).get("message") if "error" in response else ack.get("message")
+            return _err(rid, 5019, f"compute-host reload_mcp failed: {failure or ack.get('type')}")
         return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": ack})
     _mcp_agent, _mcp_lifecycle, _mcp_discovery = (
         _tools_mod("tools.mcp_tool_agent"), _tools_mod("tools.mcp_tool_lifecycle"), _tools_mod("tools.mcp_tool_discovery"))

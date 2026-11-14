@@ -39,6 +39,9 @@ _RESPAWN_WINDOW_SECS = 300.0
 _SHUTDOWN_TIMEOUT_SECS = 10.0
 # A cold host imports the agent stack before its hello (~1.3s idle, 5s+ on a loaded box).
 _HELLO_TIMEOUT_SECS = 10.0
+# An exited host's last frames (an ack written just before it exited) are read before its waiters
+# fail; bounded because a grandchild can hold the stdout pipe open.
+_EXIT_DRAIN_SECS = 2.0
 # Late control-ack handlers: a compress that outlives its RPC waiter can run for the full
 # compression ceiling plus a stall-fallback retry, so keep registrations past that — bounded.
 # See #97948.
@@ -168,7 +171,8 @@ class HostSupervisor:
         self._stopped_respawning = False
         self._restart_times: list[float] = []
         self._pending_turns: dict[str, tuple[str, Callable[[dict], None] | None]] = {}
-        self._pending_controls: dict[str, queue.Queue[dict]] = {}
+        # request_id -> (reply queue, the error frame type that answers it if the host exits).
+        self._pending_controls: dict[str, tuple[queue.Queue[dict], str]] = {}
         # request_id -> (registered_at, handler) for control waiters that timed out while their
         # host work still runs, so the eventual control.ack is not silently dropped.
         # The host emits its control.ack whenever it finishes; without this the ack matched no queue and was
@@ -275,10 +279,12 @@ class HostSupervisor:
         takes over in the same locked step that retires the waiter's queue, so a reply landing at any moment
         reaches exactly one of them (a dropped ack would leak whatever the handler releases)."""
         q: queue.Queue[dict] = queue.Queue(maxsize=1)
-        with self._lock:
-            self._pending_controls[request_id] = q
         try:
-            self._send_frame(frame)
+            # One locked step with the send: a crash cleanup can't detach this waiter before its frame
+            # reaches the host it was registered for.
+            with self._lock:
+                self._pending_controls[request_id] = (q, "respond.error" if frame["type"] == "respond" else "control.error")
+                self._send_frame(frame)
             return q.get(timeout=timeout)
         except queue.Empty:
             dropped: list = []
@@ -355,7 +361,7 @@ class HostSupervisor:
 
     def _deliver_control_frame(self, request_id: str, frame: dict[str, Any]) -> None:
         with self._lock:
-            q = self._pending_controls.get(request_id)
+            q = self._pending_controls.get(request_id, (None, ""))[0]
             late = None if q is not None else self._late_control_handlers.pop(request_id, None)
         if q is not None:
             with contextlib.suppress(queue.Full):
@@ -381,10 +387,11 @@ class HostSupervisor:
             # detached-spawn: ok — compute host exits on its own parent-guard (compute_host._parent_guard_loop) and flushes sessions; a supervisor KILL could cut that flush short
             start_new_session=True)
         self._proc = proc
-        for target, name in ((self._drain_stdout, "compute-host-stdout"),
-                             (self._drain_stderr, "compute-host-stderr"),
-                             (self._wait_for_exit, "compute-host-wait")):
-            threading.Thread(target=target, args=(proc,), name=name, daemon=True).start()
+        stdout_drain = threading.Thread(target=self._drain_stdout, args=(proc,), name="compute-host-stdout", daemon=True)
+        stdout_drain.start()
+        for target, args, name in ((self._drain_stderr, (proc,), "compute-host-stderr"),
+                                   (self._wait_for_exit, (proc, stdout_drain), "compute-host-wait")):
+            threading.Thread(target=target, args=args, name=name, daemon=True).start()
         if not self._hello_event.wait(timeout=_HELLO_TIMEOUT_SECS):
             self._terminate_process(proc)
             raise RuntimeError(f"compute host did not send hello; stderr={self._stderr_tail[-5:]}")
@@ -466,7 +473,7 @@ class HostSupervisor:
             if pending is not None and pending[1] is not None:
                 _call_logged(pending[1], frame, "compute host turn completion callback failed")
 
-    def _wait_for_exit(self, proc: subprocess.Popen[str]) -> None:
+    def _wait_for_exit(self, proc: subprocess.Popen[str], stdout_drain: threading.Thread | None = None) -> None:
         code = proc.wait()
         if self._closing:
             return
@@ -474,29 +481,40 @@ class HostSupervisor:
             if self._proc is not proc:
                 return
             self._proc = None
+            # Owned by the exited process: anything registered after this belongs to a replacement host.
+            owned = {*self._pending_turns, *self._pending_controls, *self._late_control_handlers}
         self._remove_registry()
-        self._fail_pending_turns(reason="crash", message=f"compute host exited with code {code}")
+        if stdout_drain is not None:
+            # Frames the host wrote before it exited still answer their own waiters.
+            stdout_drain.join(timeout=_EXIT_DRAIN_SECS)
+        with self._lock:
+            waiters = self._detach_waiters_locked(owned)
+        self._fail_pending_turns(reason="crash", message=f"compute host exited with code {code}", waiters=waiters)
         self._maybe_respawn_after_crash()
 
-    def _fail_pending_turns(self, *, reason: str, message: str) -> None:
-        with self._lock:
-            pending = self._pending_turns
-            self._pending_turns = {}
+    def _detach_waiters_locked(self, owned: set[str]) -> tuple[dict, dict, dict]:
+        tables = (self._pending_turns, self._pending_controls, self._late_control_handlers)
+        pending, waiting, late = ({rid: table.pop(rid) for rid in table.keys() & owned} for table in tables)
+        return pending, waiting, late
+
+    def _fail_pending_turns(self, *, reason: str, message: str, waiters: tuple[dict, dict, dict]) -> None:
+        pending, waiting, late = waiters
         failure = {"reason": reason, "message": message}
+        # A crashed host never answers controls still waiting or the late acks timed-out waiters
+        # expect. Answer them before the turn callbacks, which can run long or start a new host:
+        # a waiter that timed out meanwhile would register its late handler past this cleanup.
+        for request_id, (q, error_type) in waiting.items():
+            with contextlib.suppress(queue.Full):
+                q.put_nowait({"type": error_type, "request_id": request_id, **failure})
+        for request_id, (_registered_at, handler) in late.items():
+            frame = {"type": "control.error", "request_id": request_id, **failure}
+            _call_logged(handler, frame, "compute host late control error handler failed")
         for request_id, (sid, cb) in pending.items():
             self.rpc_sink({"jsonrpc": "2.0", "method": "event",
                            "params": {"type": "error", "session_id": sid, "payload": dict(failure)}})
             if cb is not None:
                 frame = {"type": "turn.error", "sid": sid, "request_id": request_id, **failure}
                 _call_logged(cb, frame, "compute host error callback failed")
-        # A crashed host never emits the late acks timed-out control waiters still expect; fail
-        # them too so the client's "still running" notice can't hang.
-        with self._lock:
-            late = self._late_control_handlers
-            self._late_control_handlers = {}
-        for request_id, (_registered_at, handler) in late.items():
-            frame = {"type": "control.error", "request_id": request_id, **failure}
-            _call_logged(handler, frame, "compute host late control error handler failed")
 
     def _maybe_respawn_after_crash(self) -> None:
         now = time.monotonic()

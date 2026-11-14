@@ -330,3 +330,44 @@ def test_both_completion_children_run_in_utf8_mode(tmp_path, monkeypatch):
     assert len(calls) == 2
     for command in calls:
         assert command[command.index("-I"):].count("utf8") == 1 and "-X" in command, command
+
+
+def test_owed_restart_deduplicates_mapped_pid_from_stopped_unmapped_and_discharges(tmp_path, monkeypatch):
+    from hermes_cli import update_cmd_fleet as fleet
+    from hermes_cli import update_cmd_fleet_verify as fleet_verify
+    from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    sha = "bf0203a794a07aac3ff764972ab9087baa4e4f4e"
+    monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: sha)
+    fleet._write_fleet_restart_pending_marker(expected_sha=sha)
+
+    # 1. Write-time deduplication: stopped_unmapped_pids containing a mapped gateway PID (912)
+    # drops the duplicate unmapped obligation while preserving genuinely unmapped PIDs (999).
+    plan = UpdatePlan(runtimes=[RuntimeRecord(kind="gateway", profile="default", pid=912)])
+    fleet_verify._record_owed_gateway_inventory(plan, stopped_unmapped_pids={912, 999})
+    inventory = json.loads(fleet._obligation_fields()["inventory"])
+    assert inventory["runtimes"] == [
+        {**inventory["runtimes"][0], "kind": "gateway", "profile": "default", "pid": 912},
+        {"kind": "gateway", "profile": None, "pid": 999, "stopped_unmapped": True},
+    ]
+
+    # 2. Read-time discharge: an existing inventory recording the same PID (912) both mapped and
+    # stopped_unmapped settles once the mapped profile gateway is proven current on target_sha.
+    fleet._write_fleet_restart_pending_marker(
+        expected_sha=sha,
+        runtimes=[
+            {"kind": "gateway", "profile": "default", "pid": 912, "supervisor": "launchd",
+             "code_sha": "4d04303818b61bf3aa09278af48356315515965b", "code_version": "0.22.4",
+             "restart_via": "launchd", "detail": {}},
+            {"kind": "gateway", "profile": None, "pid": 912, "stopped_unmapped": True},
+        ],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [{"kind": "gateway", "profile": "default", "pid": 8555, "state": "current", "code_sha": sha}],
+    )
+    assert fleet._marker_only_restart_obsolete() is True
+    assert not fleet._fleet_restart_obligation_armed()
+

@@ -210,13 +210,26 @@ def _record_owed_gateway_inventory(plan, stopped_unmapped_pids=()) -> None:
             return
         recorded = inventory["runtimes"]
     from dataclasses import asdict
-    rows = [
+    mapped = [
         asdict(runtime) for runtime in getattr(plan, "runtimes", ()) or ()
         if getattr(runtime, "kind", None) == "gateway"
         and isinstance(getattr(runtime, "profile", None), str)
         and runtime.profile.strip() and runtime.profile != "unknown"
-    ] + [{"kind": "gateway", "profile": None, "pid": pid, "stopped_unmapped": True}
-         for pid in sorted(stopped_unmapped_pids)]
+    ]
+    mapped_pids = {
+        row.get("pid") for row in (recorded + mapped)
+        if row.get("kind") == "gateway"
+        and isinstance(row.get("profile"), str)
+        and row["profile"].strip()
+        and row["profile"] != "unknown"
+        and isinstance(row.get("pid"), int)
+        and not isinstance(row.get("pid"), bool)
+    }
+    rows = mapped + [
+        {"kind": "gateway", "profile": None, "pid": pid, "stopped_unmapped": True}
+        for pid in sorted(stopped_unmapped_pids)
+        if pid not in mapped_pids
+    ]
     rows = [row for row in rows if row not in recorded]
     if rows:
         # Not armed any more (a pre-restart probe settled an inventory-less record): re-arm, the

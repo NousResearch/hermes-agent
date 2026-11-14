@@ -117,7 +117,8 @@ class TestParseResponse:
         """Every combination of Hermes, nested and flat permission parts: the result is the most severe
         directive present (block > approve > modify), so no shape can hide another's veto or approval ask."""
         import itertools
-        hermes = [{}, {"action": "approve", "message": "ask-h"}, {"action": "modify", "args": {"x": 1}},
+        hermes = [{}, {"action": "approve", "message": "ask-h", "rule_key": "terminal:migration"},
+                  {"action": "modify", "args": {"x": 1}},
                   {"action": "block", "message": "veto-h"}, {"decision": "approve"}]
         nested = [{}, {"permissionDecision": "allow", "updatedInput": {"x": 2}},
                   {"permissionDecision": "ask", "permissionDecisionReason": "ask-n"},
@@ -130,12 +131,14 @@ class TestParseResponse:
                      {"deny": "block", "ask": "approve"}.get(f.get("permission"))}
             got = shell_hooks._parse_response("pre_tool_call", json.dumps(reply)) or {}
             want = next((v for v in ("block", "approve") if v in verbs), None)
-            if want:
-                assert got.get("action") == want, reply
-            elif any((h.get("action") == "modify", "updatedInput" in n, "updated_input" in f)):
-                assert got.get("action") == "modify", reply
-            else:
+            want = want or ("modify" if any((h.get("action") == "modify", "updatedInput" in n,
+                                              "updated_input" in f)) else None)
+            if want is None:
                 assert got == {}, reply
+                continue
+            assert got.get("action") == want, reply
+            if h.get("action") == want:  # a tie keeps the Hermes directive's own fields
+                assert got == shell_hooks._parse_response("pre_tool_call", json.dumps(h)), reply
 
 # ── _serialize_payload ────────────────────────────────────────────────────
 

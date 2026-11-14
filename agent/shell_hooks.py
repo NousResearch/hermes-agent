@@ -739,11 +739,13 @@ def _flatten_reply_dialects(event: str, data: dict[str, Any]) -> dict[str, Any]:
     uses its own keys: ``{"permission", "agent_message", "user_message", "updated_input"}``, ``additional_context``,
     ``continue: false`` to refuse a submitted prompt, and a stop hook's ``followup_message`` to keep going.
     A reply mixing shapes yields exactly one directive: the most severe of every directive it carries
-    (block > approval escalation > continue > modify), Hermes-native ones included. Contexts are kept."""
+    (block > approval escalation > continue > modify), Hermes-native ones included; a tie goes to the
+    Hermes directive so its own fields (``message``, ``rule_key``, ``args``) survive. Contexts are kept."""
     if not _FOREIGN_KEYS & data.keys():
         return data
     native = _RESPONSE_PARSERS.get(event, _parse_context)({k: v for k, v in data.items() if k not in _FOREIGN_KEYS})
-    candidates = _lowered_directives(event, data) + ([native] if native and _directive_rank(native) < len(_DIRECTIVE_RANK) else [])
+    # Native first: on a tie the reply's own directive (with its message, rule_key, args) wins.
+    candidates = ([native] if native and _directive_rank(native) < len(_DIRECTIVE_RANK) else []) + _lowered_directives(event, data)
     winner = {k: v for k, v in min(candidates, key=_directive_rank, default={}).items() if k != "context"}
     nested = data.get("hookSpecificOutput")
     contexts = [c for c in ((native or {}).get("context"),

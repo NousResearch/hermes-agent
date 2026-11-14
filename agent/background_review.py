@@ -1443,13 +1443,27 @@ def spawn_background_review_thread(
     # Per-agent overrides (agent._MEMORY_REVIEW_PROMPT etc.) keep working.
     name = _PROMPT_NAME_BY_SCOPE[(review_memory, review_skills)]
     prompt = getattr(agent, name, globals()[name])
+    has_focus = focus is not None
     if focus := (focus or "").strip():
         prompt = (
-            f"{prompt}\n\nThe user explicitly requested this review with the following "
+            f"{prompt}\n\n"
+            f"The user explicitly requested this review with the following "
             f"focus — prioritize it over the general instructions above:\n{focus}"
         )
+    # Attribution for the one thing the ledger cannot say: ``/refine`` and the automatic post-turn
+    # review both fork with ``write_origin='background_review'``, so ``actor: curator`` covers both
+    # (plus the scheduled curator). Logged here, after the caller's run guard accepted the spawn and
+    # before the worker starts, so every path that reaches the fork is covered exactly once.
+    entry = "explicit" if explicit else ("focus_only" if has_focus else "automatic")
+    gate = "bypassed" if (explicit or has_focus) else "passed"
 
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)
+        logger.info(
+            "Background review spawn: session=%s entry=%s gate=%s focused=%s review_memory=%s "
+            "review_skills=%s",
+            getattr(agent, "session_id", None) or "none", entry, gate, bool(focus),
+            review_memory, review_skills,
+        )
         _run_review_in_thread(
             agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run,
             review_memory=review_memory, explicit=explicit)

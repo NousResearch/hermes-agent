@@ -770,10 +770,16 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
     clear, curator telemetry (which fires ``on_skill_lifecycle`` for plugins)."""
     with suppress(Exception):
         from tools import skill_ledger as _ledger
+        from tools.skill_provenance import is_background_review, is_unattended_review
         _post = _find_skill(name)
         # delete: consolidation vs prune, and whether the recoverable archive handled it
         _evidence = ({"absorbed_into": absorbed_into, "archived": bool(result.get("_archived"))}
                      if action == "delete" else {})
+        # Which door the review fork came through: ``/refine`` and the automatic post-turn review
+        # share ``write_origin='background_review'`` (so both record ``actor: curator``), and the
+        # trigger lived only in the rotating agent log. The ledger is permanent, so stamp it here.
+        if is_background_review():
+            _evidence["review_trigger"] = "automatic" if is_unattended_review() else "refine"
         _evidence.update({k: v for k, v in (("session_id", session_id), ("file_path", file_path)) if v})
         _ledger.record_mutation(
             action, name, before=ledger_before if ledger_before is not None else [],

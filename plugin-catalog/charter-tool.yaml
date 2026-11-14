@@ -1,0 +1,31 @@
+name: charter-tool
+repo: https://github.com/drew-dot-com/hermes-toon
+sha: c8b743485ba9c7c327d91d97264d2761ad9e6566
+version: "0.5.0"
+subdir: src/charter_tool
+description: >-
+  Rent compute on Charter (charter.mainnet.toonprotocol.dev) from the agent's own toon node:
+  charter_rent rents one short lease and runs one job in it, a fetch of 1 to 5 URLs or a Python 3
+  script of at most 8 KiB with no network, and returns the output with what the call spent.
+  Disclosure: every call spends real USDC from the operator's toon node wallet, each behind a
+  Hermes approval prompt (denied in cron and other unattended runs by default): 0.001 USDC to
+  open plus 0.007 USDC per one hour interval plus 0.0001 USDC a status read (about 0.0083 USDC
+  for a short job at the default cap of 1 interval, 5 leases a day); CHARTER_MAX_INTERVALS and
+  CHARTER_DAILY_LEASES are the operator's controls, with CHARTER_ALLOWED_IDS to limit who may call
+  it. The plugin runs the operator's charter CLI (or CHARTER_BRIDGE_CMD) as a subprocess and hands
+  it the TOON_PASSPHRASE_FILE path, or pays through a local charter payer service at
+  CHARTER_PAYER_URL; it never reads the passphrase or any .env file itself. The day counter lives
+  under HERMES_HOME/plugin-data/charter-tool.
+maintainer: drew-dot-com
+tier: community
+category: tools
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/drew-dot-com/hermes-toon#third-plugin-charter-tool
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - charter_rent
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

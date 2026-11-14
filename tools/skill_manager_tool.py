@@ -35,7 +35,7 @@ from tools.skill_manager_guards import (
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skill_manager_scan import (
-    _background_origin, _introduced_findings, _replaying_background_write, _scan_baseline)
+    _background_origin, _introduced_findings, _replaying_background_write, _scan_baseline, _scan_scope)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
 logger = logging.getLogger(__name__)
@@ -56,14 +56,15 @@ def _scan_required() -> bool:
     return _guard_agent_created_enabled() or _background_origin()
 
 
-def _security_scan_skill(skill_dir: Path, baseline: Optional[Counter] = None) -> Optional[str]:
+def _security_scan_skill(skill_dir: Path, baseline: Optional[Counter] = None,
+                         files: Optional[list[Path]] = None) -> Optional[str]:
     """Post-write scan; error string if blocked, else None. An "ask" verdict
     (dangerous findings) is surfaced as an error so the agent can retry without them.
-    With a *baseline*, only findings absent from it count."""
+    With a *baseline* (taken over *files*), only findings absent from it count."""
     if not _scan_required():
         return None
     try:
-        result = scan_skill(skill_dir, source="agent-created")
+        result = scan_skill(skill_dir, source="agent-created", files=files)
         if baseline is not None:
             result = _introduced_findings(skill_dir, result, baseline)
         allowed, reason = should_allow_install(result)
@@ -429,13 +430,14 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         original = target.read_text(encoding="utf-8-sig")
     if target == skill_dir / "SKILL.md" and (err := _description_budget_error(content, before=original)):
         return _err(err)
-    baseline, scan_error = _scan_baseline(skill_dir)
+    scope = _scan_scope(skill_dir, target)
+    baseline, scan_error = _scan_baseline(skill_dir, scope)
     if scan_error:
         return _err(scan_error)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
-    scan_error = _security_scan_skill(skill_dir, baseline)
+    scan_error = _security_scan_skill(skill_dir, baseline, scope)
     if not scan_error:
         return None
     if original is not None:

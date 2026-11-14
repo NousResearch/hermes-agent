@@ -45,14 +45,27 @@ def _finding_keys(skill_dir: Path, findings) -> list[tuple[str, str, str, str]]:
     return keys
 
 
-def _scan_baseline(skill_dir: Path) -> tuple[Optional[Counter], Optional[str]]:
-    """Pre-write findings for a background-origin write, so only findings the write introduces block
-    it (bundled skills already carry flagged examples the fork did not write). (baseline, error)."""
+def _scan_scope(skill_dir: Path, target: Path) -> Optional[list[Path]]:
+    """Files a background-origin write's two scans cover: *target* plus every in-skill path that resolves
+    to the same file (symlinks, each scanned under its own name's rules). Every other file reads the
+    same before and after the write (a hardlinked sibling keeps the old inode: the write replaces the
+    target), so its findings would cancel against the baseline; scanning it only cost time. Structural
+    checks still cover the whole dir. None (full scan) outside background origin."""
     if not _background_origin():
+        return None
+    real = target.resolve()  # the atomic write lands here when *target* is an in-skill symlink
+    return [target] + [f for f in skill_dir.rglob("*") if f != target and f.resolve() == real]
+
+
+def _scan_baseline(skill_dir: Path, scope: Optional[list[Path]]) -> tuple[Optional[Counter], Optional[str]]:
+    """Pre-write findings over *scope* for a background-origin write, so only findings the write
+    introduces block it (bundled skills already carry flagged examples the fork did not write).
+    (baseline, error)."""
+    if scope is None:
         return None, None
     from tools import skill_manager_tool
     try:
-        findings = skill_manager_tool.scan_skill(skill_dir, source="agent-created").findings
+        findings = skill_manager_tool.scan_skill(skill_dir, source="agent-created", files=scope).findings
         return Counter(_finding_keys(skill_dir, findings)), None
     except Exception as e:  # a required scan that cannot finish must not allow the write
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)

@@ -204,3 +204,52 @@ def test_background_write_escalating_preexisting_finding_is_judged_on_new_severi
     if not allowed:
         assert "Security scan" in result["error"]
         assert script.read_bytes() == before
+
+
+def _spy_scanned_files(monkeypatch):
+    from tools import skills_guard
+    scanned, real = [], skills_guard.scan_file
+    def spy(path, rel_path="", **kw):
+        scanned.append(rel_path)
+        return real(path, rel_path, **kw)
+    monkeypatch.setattr(skills_guard, "scan_file", spy)
+    return scanned
+
+
+@pytest.mark.parametrize("new_string,allowed", [("Check the inputs first.", True), (NEW_FINDING, False)],
+                         ids=["benign", "new_finding"])
+def test_background_write_scans_only_the_written_file(skills, monkeypatch, new_string, allowed):
+    """Untouched files read the same before and after, so neither scan reads them; a finding the
+    write adds to the target still blocks."""
+    with _origin(BACKGROUND_REVIEW):
+        _seed_flagged(skills)
+        ref = skills / "bg-skill" / "references" / "workflow.md"
+        before = ref.read_bytes()
+        mark_background_review_skill_read(ref)
+        scanned = _spy_scanned_files(monkeypatch)
+        result = _dispatch({"action": "patch", "name": "bg-skill", "file_path": "references/workflow.md",
+                            "old_string": "Do the thing.", "new_string": new_string})
+    assert result["success"] is allowed, result
+    assert scanned == ["references/workflow.md"] * 2
+    if not allowed:
+        assert "Security scan" in result["error"] and ref.read_bytes() == before
+
+
+HIDDEN = "Notes.\n" + " " * 240 + "echo loaded the helper module from the cache here\n"
+
+
+def test_background_write_through_a_symlinked_alias_scans_the_alias(skills):
+    """A .md is exempt from the padded-code rule but an in-skill .sh symlink to it is not: the alias
+    is in scope even though only the .md was named."""
+    with _origin(BACKGROUND_REVIEW):
+        _seed(skills)
+        alias = skills / "bg-skill" / "scripts" / "run.sh"
+        alias.parent.mkdir()
+        alias.symlink_to("../references/workflow.md")
+        ref = skills / "bg-skill" / "references" / "workflow.md"
+        before = ref.read_bytes()
+        mark_background_review_skill_read(ref)
+        result = _dispatch({"action": "write_file", "name": "bg-skill", "file_path": "references/workflow.md",
+                            "file_content": HIDDEN})
+    assert result["success"] is False, result
+    assert "scripts/run.sh" in result["error"] and ref.read_bytes() == before

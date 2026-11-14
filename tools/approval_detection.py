@@ -113,8 +113,17 @@ _CMDPOS = (
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
 # `) ` ; | &` so `$(rm -rf /)` is caught). A bare-token-only anchor lets quoted spellings slip past the floor.
+# A quoted path must end its shell word too, past root-collapse components (`"C:/"./`, `"$HOME"/*`):
+# `"$HOME"/build` and `"C:/"Users/me/build` name a subdirectory, not the protected root. The components
+# may be quoted too (`"$HOME"'/'`, `"/"'./'"/"*`), but a quoted `*` is a literal name, not a glob.
+# Every repeat is possessive: each piece ends at `/` or a quote, so the scan stays linear.
+_RM_COLLAPSE_SEG = r'(?:(?:\.\.?)?/)*+(?:\.\.?)?'
+_RM_ROOT_COLLAPSE_TAIL = (rf'(?:(?:\.\.?)?/|"{_RM_COLLAPSE_SEG}"|\'{_RM_COLLAPSE_SEG}\')*+'
+                          r'(?:\.\.?)?\**+(?=\s|$|[)`;|&])')
+
+
 def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
-    return rf'(?:["\'](?:{path_alt})["\']|(?:{path_alt}){tail})'
+    return rf'(?:["\'](?:{path_alt})["\']{_RM_ROOT_COLLAPSE_TAIL}|(?:{path_alt}){tail})'
 
 
 # Protected system roots whose recursive deletion has no recovery path.
@@ -134,6 +143,10 @@ HARDLINE_PATTERNS = [
     # or "..", so "/tmp", "/.ssh", even "/..." are literal dirs that fall through to the softer
     # DANGEROUS rules. The "/ \*" alt covers `rm -rf / *` (two args: "/" plus the glob).
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
+    # Drive-letter root (`C:/`, `c:/*`; `C:\` reaches here as `C:/` via the Windows-path variant): same floor as "/".
+    # A quoted bare `"C:"` counts only when the next quoted/bare segment starts the root slash (`"C:"'/'`).
+    (_RM_FLAG_PREFIX + _hardline_rm_path(r'[a-z]:/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|[a-z]:/ \*|[a-z]:(?=["\']["\']?/)'),
+     "recursive delete of drive root"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
     # Command-name rules (mkfs, dd, kill, shutdown...) are _CMDPOS-anchored so quoted prose
@@ -421,7 +434,8 @@ _PS_EXE_AT_COMMAND_POSITION = (
 )
 
 DANGEROUS_PATTERNS = [
-    (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
+    # A drive letter is a root too (`rm X:/f`; `X:\f` arrives as `X:/f` via the Windows-path variant).
+    (r'\brm\s+(-[^\s]*\s+)*(?:[a-z]:)?/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     # GNU rm permutes options, so flags may FOLLOW operands (`rm build/ -rf`). The operand run
@@ -748,11 +762,14 @@ for _canonical_key, _legacy_key in [
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _legacy_key})
     _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
 
-# Scoping the force-delete flag to (?-i:-D) changed this pattern's regex-derived legacy key;
-# keep the pre-change spelling resolvable so approvals stored under it still match.
-_old_branch_key = r"git\s+branch\s+-D"
-_PATTERN_KEY_ALIASES.setdefault("git branch force delete", set()).add(_old_branch_key)
-_PATTERN_KEY_ALIASES.setdefault(_old_branch_key, set()).add("git branch force delete")
+# Regex edits change a pattern's regex-derived legacy key; keep each pre-change spelling resolvable so
+# approvals stored under it still match: (?-i:-D) scoping, and the optional drive letter (#38964).
+for _canonical_key, _old_key in [
+    ("git branch force delete", r"git\s+branch\s+-D"),
+    ("delete in root path", r"rm\s+(-[^\s]*\s+)*/"),
+]:
+    _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).add(_old_key)
+    _PATTERN_KEY_ALIASES.setdefault(_old_key, set()).add(_canonical_key)
 
 
 def _approval_key_aliases(pattern_key: str) -> set[str]:
@@ -1697,6 +1714,13 @@ def _command_detection_variants(command: str):
         win_variant = _normalize_command_for_detection(_mask_quoted_newlines(command.replace("\\", "/")))
         if fresh(win_variant):
             yield win_variant
+        # The marked variants below see the backslash-stripped text (`a && rm -rf C:\*` -> `C:*`), so the
+        # command-start-anchored rm floor needs a marked copy of the flattened path too. Mark on the RAW
+        # command (faithful quote state, see `faithful` below), then flatten.
+        marked_win = _normalize_command_for_detection(
+            _mark_command_starts(_mask_quoted_newlines(command), marker=" \n").replace("\\", "/"))
+        if fresh(marked_win):
+            yield marked_win
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
     pending = [normalized]

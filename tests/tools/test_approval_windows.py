@@ -13,7 +13,8 @@ import time
 
 import pytest
 
-from tools.approval import detect_dangerous_command
+from tools import approval
+from tools.approval import detect_dangerous_command, detect_hardline_command
 
 
 def _is_dangerous(cmd: str) -> bool:
@@ -223,3 +224,94 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         start = time.perf_counter()
         assert not _is_dangerous(command)
         assert time.perf_counter() - start < 2, command[:30]
+
+
+class TestDriveLetterRoots:
+    """A drive letter is a filesystem root: `rm X:/f` and `rm -rf C:\\` must gate like `rm /f` / `rm -rf /` (#38964)."""
+
+    @pytest.mark.parametrize("cmd", [
+        "rm X:/PROJECTs/test/test.txt",
+        r"rm X:\test.txt",
+        "rm -f c:/notes.txt",
+    ])
+    def test_delete_under_drive_root_needs_approval(self, cmd):
+        assert detect_dangerous_command(cmd)[2] == "delete in root path", cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -rf C:/",
+        "rm -rf C:\\",
+        "rm -rf c:/*",
+        "rm -rf 'D:/'",
+        "rm -rf 'C:/'*",
+        "rm -rf \"C:/\"../",
+        "rm -rf 'C:/'..",
+        "(rm -rf 'C:/')",
+        "rm -rf C:/ *",
+        "sudo rm -rf C:/./",
+        # Backslash root after a separator: only the marked Windows-path variant keeps both the
+        # command start and the root slash.
+        r"echo ready && rm -rf C:\*",
+        r"echo ready; rm -rf C:\ ",
+        r"(rm -rf C:\)",
+    ])
+    def test_drive_root_wipe_is_hardline(self, cmd):
+        assert detect_hardline_command(cmd) == (True, "recursive delete of drive root"), cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -rf C:/Users/me/build",
+        "rm -rf c:",
+        "git commit -m 'rm -rf C:/'",
+        # A quoted root prefix glued to the rest of the word deletes a subdirectory.
+        'rm -rf "C:/"Users/me/build',
+        "rm -rf 'C:/'Users/me/build",
+        'rm -rf "$HOME"/build',
+        'rm -rf "/"tmp/x',
+        'rm -rf "/usr"/local/build',
+    ])
+    def test_drive_subdirectory_or_prose_is_not_hardline(self, cmd):
+        assert detect_hardline_command(cmd) == (False, None), cmd
+
+    @pytest.mark.parametrize("cmd, rule", [
+        # Quoted root-collapse segments glued after a quoted root still name the root.
+        ("rm -rf \"$HOME\"'/'", "recursive delete of home directory"),
+        ("rm -rf '/root'\"/\"", "recursive delete of system directory"),
+        ("rm -rf \"C:\"'/'", "recursive delete of drive root"),
+        ("rm -rf \"C:/\"'./'\"..\"", "recursive delete of drive root"),
+        ("rm -rf \"/\"'/'", "recursive delete of root filesystem"),
+        ("rm -rf \"/\"'./'\"/\"'/'*", "recursive delete of root filesystem"),
+    ])
+    def test_quoted_root_collapse_segments_stay_hardline(self, monkeypatch, cmd, rule):
+        monkeypatch.setenv("HOME", "/root")
+        assert detect_hardline_command(cmd) == (True, rule), cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -rf \"$HOME\"'/build'",
+        "rm -rf \"C:\"'/build'",
+        "rm -rf \"C:\"",
+        # A quoted `*` is a literal file name, not a glob.
+        'rm -rf "$HOME"/"*"',
+        "rm -rf \"/\"'*'",
+    ])
+    def test_quoted_subdirectory_segments_are_not_hardline(self, cmd):
+        assert detect_hardline_command(cmd) == (False, None), cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -rf \"/\"" + "'/'" * 1300 + "x",
+        "rm -rf \"/\"" + "'./" * 1300 + "x",
+        "rm -rf \"C:\"" + "\"/." * 1300 + "x",
+    ])
+    def test_quoted_collapse_tail_scans_in_linear_time(self, cmd):
+        start = time.perf_counter()
+        assert detect_hardline_command(cmd) == (False, None)
+        assert time.perf_counter() - start < 2, cmd[:30]
+
+    def test_pre_drive_letter_root_approval_key_still_matches(self, monkeypatch):
+        """An "always" saved under the old regex-derived key keeps approving `rm /tmp/file`."""
+        monkeypatch.setattr(approval, "_permanent_approved", set())
+        approval.load_permanent({"rm" + r"\s+(-[^\s]*\s+)*/"})
+        _, key, _ = detect_dangerous_command("rm /tmp/file")
+        assert approval.is_approved("drive-root-legacy", key)
+
+    @pytest.mark.parametrize("cmd", ["rm build/C:/x", "rm foo:/bar", "rm a:b"])
+    def test_relative_paths_with_colons_stay_quiet(self, cmd):
+        assert not _is_dangerous(cmd), cmd

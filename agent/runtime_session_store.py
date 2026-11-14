@@ -302,8 +302,10 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             raise WorkerPersistenceError('outbox_closed')
         encoded = json.dumps(journal, ensure_ascii=True, allow_nan=False, separators=(',', ':')).encode()
         if len(encoded) > self.max_bytes:
-            self.failure = 'outbox_full'
-            raise WorkerPersistenceError(self.failure)
+            # Capacity rejection is per-payload, not per-store: a too-large message must
+            # not pin ``self.failure`` and thereby veto unrelated metadata ops (turn.renew),
+            # which would lose the turn lease and hard-interrupt the whole turn.
+            raise WorkerPersistenceError('outbox_full')
         from utils import atomic_write_bytes
         # Owner-only journal (the dir is 0700 too); the rename and its directory entry are durable.
         atomic_write_bytes(self.path, encoded, tmp_prefix='.pending-', mode=0o600, fsync_dir=True)
@@ -324,6 +326,10 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             candidate['next_sequence'] += 1
             try:
                 self._save(candidate)
+            except WorkerPersistenceError as exc:
+                if str(exc) != 'outbox_full':
+                    self.failure = str(exc)
+                raise
             except Exception as exc:
                 self.failure = str(exc)
                 raise
@@ -343,6 +349,10 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
                     self.scope = candidate['scope']
                     self.journal = candidate
                     results.append(result)
+            except WorkerPersistenceError as exc:
+                if str(exc) != 'outbox_full':
+                    self.failure = str(exc)
+                raise
             except Exception as exc:
                 self.failure = str(exc)
                 raise

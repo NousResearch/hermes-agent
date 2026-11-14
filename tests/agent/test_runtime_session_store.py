@@ -57,10 +57,41 @@ def test_outbox_capacity_failure_does_not_advance_or_discard(tmp_path):
         with pytest.raises(WorkerPersistenceError, match='outbox_full'):
             store.append_messages_batch('s', [{'role': 'user', 'content': 'x' * 1000}])
         assert store.path.read_bytes() == before
-        assert store.failure == 'outbox_full'
-    finally:
+        # A capacity rejection is per-payload, not per-store: pinning ``self.failure``
+        # here would also veto unrelated metadata ops (``turn.renew``), losing the turn
+        # lease and hard-interrupting a whole turn over one oversized message.
+        assert store.failure is None
+        # The capacity guard itself is unchanged: a second oversized payload is still
+        # refused, and nothing advanced or was discarded either time.
         with pytest.raises(WorkerPersistenceError, match='outbox_full'):
-            store.close()
+            store.append_messages_batch('s', [{'role': 'user', 'content': 'x' * 1000}])
+        assert store.path.read_bytes() == before
+    finally:
+        store.close()
+
+
+def test_outbox_capacity_rejection_keeps_the_turn_lease_renewable(tmp_path):
+    """A capacity rejection is per-payload: the store and its lease stay usable.
+
+    Pinning ``self.failure`` on a capacity rejection made every later operation
+    raise, ``turn.renew`` included. The turn lease then expired (TTL 300s, renewed
+    every 60s) and the whole turn was hard-interrupted over one oversized message.
+    """
+    seen = []
+
+    def rpc(method, **params):
+        seen.append(method)
+        return {'value': True}
+
+    store = RuntimeSessionStore(rpc, {'session_id': 's'}, tmp_path / 'private', max_bytes=500)
+    try:
+        with pytest.raises(WorkerPersistenceError, match='outbox_full'):
+            store.append_messages_batch('s', [{'role': 'user', 'content': 'x' * 1000}])
+        # The rejected payload left the journal untouched, so the lease is still renewable.
+        assert store.refresh_session_turn_lease('s', 'holder', ttl_seconds=300.0) is True
+        assert 'worker.persist' in seen
+    finally:
+        store.close()
 
 
 def test_worker_turn_wait_callbacks_remain_local(tmp_path):

@@ -14,6 +14,7 @@ import shlex
 import time
 import uuid
 from tools import approval_context as _ctx
+from tools.approval_ansi_c import expand_ansi_c_quotes
 from utils import unlink_files_older_than
 from tools.approval_detection import (
     _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants)
@@ -157,7 +158,7 @@ _PREFIX_WORDS = frozenset(("builtin", "command", "time", "!"))
 def _evaluates_quoted_subscript(command: str) -> bool:
     # Dequote like bash does, so `'test' '-v'`, `t"es"t`, `\test` cannot dodge the table.
     try:
-        words = shlex.split(command, posix=True)
+        words = shlex.split(command.replace("\\\n", ""), posix=True)  # bash joins line continuations first
     except ValueError:
         return True
     while words:
@@ -166,8 +167,8 @@ def _evaluates_quoted_subscript(command: str) -> bool:
             return True
         if word in _PREFIX_WORDS:
             words = words[1:]
-            while word in ("command", "time") and words and words[0].startswith("-"):
-                words = words[1:]  # command -p, time -p
+            while word in ("builtin", "command", "time") and words and words[0].startswith("-"):
+                words = words[1:]  # builtin --, command -p, time -p
         elif _ASSIGNMENT_WORD_RE.match(word):
             words = words[1:]
         else:
@@ -175,7 +176,8 @@ def _evaluates_quoted_subscript(command: str) -> bool:
     if not words or words[0] not in _SUBSCRIPT_EVALUATING_BUILTINS:
         return False
     required = _SUBSCRIPT_EVALUATING_BUILTINS[words[0]]
-    return required is None or any(w.startswith(required) for w in words[1:])  # printf -vNAME
+    # printf -vNAME; a glob (-?, -[v]) expands to -v when such a file exists in the cwd
+    return required is None or any(w.startswith(required) or fnmatch.fnmatchcase(required, w) for w in words[1:])
 
 
 def _has_allowlist_shell_operator(command: str) -> bool:
@@ -188,7 +190,7 @@ def _has_allowlist_shell_operator(command: str) -> bool:
     hand the quoted text to another interpreter, or is a builtin that
     evaluates an operand as an array subscript (``test -v``, ``[[``, ...),
     or contains an unquoted ``${``/``$[`` whose subscript/offset re-expands it."""
-    command = command or ""
+    command = expand_ansi_c_quotes(command or "")  # $'-v' / $"-v" -> '-v' / "-v", so quote tracking matches bash
     quote = None  # None | "'" | '"'
     has_reinterpretable = False
     param_expansion = False  # unquoted ${...} / $[...] re-expand quoted text in subscripts/offsets
@@ -219,6 +221,8 @@ def _has_allowlist_shell_operator(command: str) -> bool:
                 return True
             if i + 1 < n and command[i + 1] in "{[":
                 param_expansion = True
+        elif ch == "{":
+            param_expansion = True  # brace expansion: test {-v,} 'a[$(cmd)]'
         elif ch in _SHELL_CONTROL_CHARS and ch not in "()":
             return True
         i += 1

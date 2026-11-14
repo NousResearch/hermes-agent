@@ -187,6 +187,14 @@ class TestSubscriptEvaluationSpellings:
         f"ls ${{#a['{_SUB}']}}",
         f"echo ${{x:0:'a[{_SUB}]'}}",
         f"echo $['a[{_SUB}]']",
+        f"builtin -- test -v 'a[{_SUB}]'",
+        f"test -\\\nv 'a[{_TICK}]'",
+        f"test $'-v' 'a[{_SUB}]'",
+        f'test $"-v" \'a[{_SUB}]\'',
+        f"test -$'v' 'a[{_SUB}]'",
+        f"test {{-v,}} 'a[{_SUB}]'",
+        f"test -? 'a[{_SUB}]'",
+        f"test -[v] 'a[{_SUB}]'",
     ])
     def test_reexpanded_quoted_substitution_is_compound(self, cmd):
         assert _has_allowlist_shell_operator(cmd)
@@ -199,9 +207,14 @@ class TestSubscriptEvaluationSpellings:
         "ls ${HOME}",
         "echo ${x:-'a b'}",
         "a[0]=1",
+        "cargo bench \\\n  -- '^a(b|c)$'",
+        "test -f foo -a -n '(x)'",
     ])
     def test_common_forms_stay_simple(self, cmd):
         assert not _has_allowlist_shell_operator(cmd)
+
+    def test_ansi_c_escaped_quote_cannot_hide_a_separator(self):
+        assert _has_allowlist_shell_operator("echo $'\\'' ; touch x #'")
 
     def test_glob_allowlist_refuses_reexpanded_subscripts(self, monkeypatch):
         import tools.approval as mod

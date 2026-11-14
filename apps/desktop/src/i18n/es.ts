@@ -83,6 +83,7 @@ export const esOverrides = {
         serverNeedsAuth: 'Requiere autenticación',
         serverOff: 'Desactivado',
         serverOn: 'Activado',
+        serverOnDemand: 'Bajo demanda',
         serverOnUnused: 'Activado, sin usar'
       },
       fact: {

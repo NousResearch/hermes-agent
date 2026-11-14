@@ -333,7 +333,8 @@ class _PipeRemoteToShellMatcher:
 
 _DEV_SOCKET_RE = re.compile(r"/dev/(?:tcp|udp)/", re.IGNORECASE)
 # Redirect operators bash opens a /dev/tcp target for (`<<` is a heredoc delimiter, `>&N` a dup).
-_DEV_SOCKET_REDIRECT_OP_RE = re.compile(r"&>>?|[0-9]*(?:<>|>>|>&|<&|>\||(?<!<)<(?!<)|>)")
+# No leading fd digits: search() only reads op.end(), and a `[0-9]*` prefix rescans a digit run from every offset.
+_DEV_SOCKET_REDIRECT_OP_RE = re.compile(r"&>>?|<>|>>|>&|<&|>\||(?<!<)<(?!<)|>")
 
 
 class _DevSocketRedirectMatcher:
@@ -342,8 +343,7 @@ class _DevSocketRedirectMatcher:
     target (`> "/dev/tcp/h/1"`, `3<>'/dev/udp/h/53'`, `> /dev/"tcp"/h/1`) still counts."""
 
     def search(self, text: str):
-        if "/dev/" not in text.lower():
-            return None
+        # No literal "/dev/" prefilter: the operand is dequoted below, so `> /"dev"/tcp/h/1` must reach it.
         for op in _DEV_SOCKET_REDIRECT_OP_RE.finditer(_mask_quoted_prose(text)):
             _, _, word = _read_shell_word(text, op.end())
             if _DEV_SOCKET_RE.match(_deobfuscate_shell_word_for_detection(word)):
@@ -559,10 +559,10 @@ DANGEROUS_PATTERNS = [
     # _DevSocketRedirectMatcher, which dequotes the redirect operand; nc/socat are command-position anchored.
     (r'[<>]&?\s*/dev/(?:tcp|udp)/', _DEV_TCP_REDIRECT_DESCRIPTION),
     # The flag may be quoted (`nc "-e" sh h 1` still passes -e); a whitespace-led `#` starts a shell comment, so
-    # the span stops there and `nc -z h 80 # -e note` stays quiet.
-    (_CMDPOS + r'(?:\S*/)?(?:nc|ncat|netcat)(?:\.\w+)?\b(?:[^\n;&|#]|(?<!\s)#)*\s["\']?(?:-[a-z]*[ec]\b|--(?:sh-)?exec\b)',
+    # the span stops there and `nc -z h 80 # -e note` stays quiet. The flag is case-sensitive (`-C` is CRLF).
+    (_CMDPOS + r'(?:\S*/)?(?:nc|ncat|netcat)(?:\.\w+)?(?=\s)(?:[^\n;&|#]|(?<!\s)#)*\s["\']?(?:(?-i:-[a-zA-Z]*[ec])\b|--(?:sh-)?exec\b)',
      "reverse shell via netcat -e/-c"),
-    (_CMDPOS + r'(?:\S*/)?socat\b[^\n;&|]*\b(?:exec|system):', "reverse shell via socat EXEC:/SYSTEM:"),
+    (_CMDPOS + r'(?:\S*/)?socat\b(?:[^\n;&|#]|(?<!\s)#)*\b(?:exec|system):', "reverse shell via socat EXEC:/SYSTEM:"),
     # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
     # detection. On a cloud VM these serve live IAM/service-account credentials to ANY local
     # process with no auth, so a fetch is credential exfiltration unless the operator expects it.

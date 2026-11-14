@@ -254,6 +254,137 @@ def test_a_foreign_value_never_enters_the_frozen_launch_env_when_a_later_refresh
         set_multiplex_active(False)
 
 
+def _foreign_fetch_source(launch_home) -> None:
+    """The rotating override source; a fetch also writes foreign.txt's value (once) into os.environ,
+    standing in for another writer racing the fetch, and fails while fail.txt exists."""
+    _rotating_override_source(launch_home, (
+        "        import os, pathlib\n"
+        "        from agent.secret_sources.base import ErrorKind\n"
+        "        foreign = pathlib.Path(home_path) / 'foreign.txt'\n"
+        "        if foreign.exists():\n"
+        "            os.environ['VAULT_ONLY_KEY'] = foreign.read_text()\n"
+        "            foreign.unlink()\n"
+        "        if (pathlib.Path(home_path) / 'fail.txt').exists():\n"
+        "            return FetchResult().fail('vault down', ErrorKind.NETWORK)\n"))
+
+
+def _refresh(launch_home, manager) -> None:
+    from gateway.run import _profile_runtime_scope
+
+    with _profile_runtime_scope(launch_home):
+        manager.discover_and_load(force=True)
+
+
+@pytest.mark.parametrize("scenario", [
+    "foreign_during_fetch_reapply_rotate",   # foreign value in a fetch, re-apply, rotate, remove
+    "foreign_between_refreshes_rotate",      # foreign value, then rotation to v2, then remove
+    "foreign_then_failed_fetch",             # foreign value, a refresh whose fetch fails, remove
+    "rotate_twice",                          # v1 -> v2 -> v3, then remove
+])
+def test_the_frozen_launch_env_loses_an_override_sources_value_however_os_environ_diverged(
+        launch_home, scenario):
+    """However os.environ diverged from the source's write after activation, removing the source
+    takes its value out of the frozen launch env, and the snapshot never holds a foreign value."""
+    from agent.secret_scope import set_multiplex_active
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, capture_launch_env
+
+    _foreign_fetch_source(launch_home)
+    manager = get_plugin_manager()
+    manager.discover_and_load()  # boot: the source writes v1
+    activate_multi_profile_hosting()
+    seen = []
+    try:
+        if scenario == "foreign_during_fetch_reapply_rotate":
+            (launch_home / "foreign.txt").write_text("from-secondary", encoding="utf-8")
+            _refresh(launch_home, manager)
+            seen.append(capture_launch_env().get("VAULT_ONLY_KEY"))
+            _refresh(launch_home, manager)  # re-applies v1 over the foreign value
+            seen.append(capture_launch_env().get("VAULT_ONLY_KEY"))
+            (launch_home / "vault.txt").write_text("v2", encoding="utf-8")
+            _refresh(launch_home, manager)
+        elif scenario == "foreign_between_refreshes_rotate":
+            os.environ["VAULT_ONLY_KEY"] = "from-secondary"
+            (launch_home / "vault.txt").write_text("v2", encoding="utf-8")
+            _refresh(launch_home, manager)
+        elif scenario == "foreign_then_failed_fetch":
+            os.environ["VAULT_ONLY_KEY"] = "from-secondary"
+            (launch_home / "fail.txt").write_text("", encoding="utf-8")
+            _refresh(launch_home, manager)
+            assert os.environ["VAULT_ONLY_KEY"] == "from-secondary"
+        else:
+            for value in ("v2", "v3"):
+                (launch_home / "vault.txt").write_text(value, encoding="utf-8")
+                _refresh(launch_home, manager)
+                seen.append(capture_launch_env().get("VAULT_ONLY_KEY"))
+            assert seen == ["v2", "v3"]
+        seen.append(capture_launch_env().get("VAULT_ONLY_KEY"))
+        assert "from-secondary" not in seen
+        _remove_source_in_a_launch_turn(launch_home, manager)
+        if scenario != "rotate_twice":
+            assert os.environ["VAULT_ONLY_KEY"] == "from-secondary"  # the other writer keeps os.environ
+        assert "VAULT_ONLY_KEY" not in capture_launch_env()
+    finally:
+        set_multiplex_active(False)
+
+
+@pytest.mark.parametrize("foreign_cleared_and_reapplied", [False, True])
+def test_a_displaced_default_sources_boot_write_leaves_the_frozen_launch_env(
+        launch_home, foreign_cleared_and_reapplied):
+    """A default (non-override) source's boot write is frozen at activation, then another writer
+    displaces it in os.environ and a refresh runs. Optionally the foreign value is then cleared and
+    one more refresh re-applies the source. Removal must take from-plugin out of the frozen launch
+    env either way, and the snapshot never holds the foreign value."""
+    from agent.secret_scope import set_multiplex_active
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, capture_launch_env
+
+    manager = get_plugin_manager()
+    manager.discover_and_load()  # boot: the source writes from-plugin
+    activate_multi_profile_hosting()
+    try:
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "from-plugin"
+        os.environ["VAULT_ONLY_KEY"] = "from-secondary"
+        _refresh(launch_home, manager)
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "from-plugin"
+        if foreign_cleared_and_reapplied:
+            del os.environ["VAULT_ONLY_KEY"]
+            _refresh(launch_home, manager)
+            assert os.environ["VAULT_ONLY_KEY"] == "from-plugin"
+            assert capture_launch_env()["VAULT_ONLY_KEY"] == "from-plugin"
+        _remove_source_in_a_launch_turn(launch_home, manager)
+        assert os.environ.get("VAULT_ONLY_KEY") == (None if foreign_cleared_and_reapplied else "from-secondary")
+        assert "VAULT_ONLY_KEY" not in capture_launch_env()
+    finally:
+        set_multiplex_active(False)
+
+
+def test_removal_gives_the_frozen_launch_env_back_its_own_pre_write_value(launch_home, monkeypatch):
+    """The operator had VAULT_ONLY_KEY=operator before the override source wrote v1 at boot. After
+    a foreign write, a re-apply and a rotation, removal restores the snapshot's own pre-write value,
+    never the foreign one and never the rotated value."""
+    from agent.secret_scope import set_multiplex_active
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, capture_launch_env
+
+    monkeypatch.setenv("VAULT_ONLY_KEY", "operator")
+    _foreign_fetch_source(launch_home)
+    manager = get_plugin_manager()
+    manager.discover_and_load()  # boot: v1 over the operator's value
+    activate_multi_profile_hosting()
+    try:
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "v1"
+        os.environ["VAULT_ONLY_KEY"] = "from-secondary"
+        _refresh(launch_home, manager)  # re-applies v1 over the foreign value
+        (launch_home / "vault.txt").write_text("v2", encoding="utf-8")
+        _refresh(launch_home, manager)
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "v2"
+        _remove_source_in_a_launch_turn(launch_home, manager)
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "operator"
+    finally:
+        set_multiplex_active(False)
+
+
 def test_a_sources_first_write_after_activation_stays_out_of_the_frozen_launch_env(launch_home):
     """A source enabled only after activation writes and then rotates: neither value is the launch
     env's, so the snapshot never gains the name (only a re-application over a pre-activation write
@@ -279,6 +410,36 @@ def test_a_sources_first_write_after_activation_stays_out_of_the_frozen_launch_e
                 manager.discover_and_load(force=True)
             assert os.environ["VAULT_ONLY_KEY"] == value
             assert "VAULT_ONLY_KEY" not in capture_launch_env()
+    finally:
+        set_multiplex_active(False)
+
+
+def test_a_source_enabled_after_activation_never_revokes_an_equal_operator_value(launch_home, monkeypatch):
+    """The operator's VAULT_ONLY_KEY=from-plugin is frozen at activation; another writer then sets
+    late-foreign in os.environ, and an override source enabled only now writes the same string and
+    is removed again. The snapshot holds no write of that source, so it keeps the operator's value:
+    matching the string is not ownership."""
+    from agent.secret_scope import set_multiplex_active
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, capture_launch_env
+
+    monkeypatch.setenv("VAULT_ONLY_KEY", "from-plugin")
+    config = launch_home / "config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace(
+        "enabled: true\n", "enabled: true\n    override_existing: true\n").replace(
+        "enabled: [fixture-secret-source]", "enabled: []"), encoding="utf-8")
+    manager = get_plugin_manager()
+    manager.discover_and_load()
+    activate_multi_profile_hosting()
+    try:
+        os.environ["VAULT_ONLY_KEY"] = "late-foreign"
+        config.write_text(config.read_text(encoding="utf-8").replace(
+            "enabled: []", "enabled: [fixture-secret-source]"), encoding="utf-8")
+        _refresh(launch_home, manager)
+        assert os.environ["VAULT_ONLY_KEY"] == "from-plugin"
+        _remove_source_in_a_launch_turn(launch_home, manager)
+        assert os.environ["VAULT_ONLY_KEY"] == "late-foreign"
+        assert capture_launch_env()["VAULT_ONLY_KEY"] == "from-plugin"
     finally:
         set_multiplex_active(False)
 

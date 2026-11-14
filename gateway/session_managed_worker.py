@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-from agent.managed_worker import ACTIVITY_FRAME, accept_result, encode_frame, read_frame
+from agent.managed_worker import ACTIVITY_FRAME, accept_result, activity_interval, encode_frame, read_frame
 from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
 from hermes_state_runtime import RuntimeStoreError
 
@@ -80,7 +80,9 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
         **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {})})
     from gateway.session_worker_construct import construct_inputs
     request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id, live.source)
-    request['activity_frames_v1'] = True  # this owner consumes the worker's ACTIVITY_FRAME
+    # This owner consumes the worker's ACTIVITY_FRAME, often enough for its wedge timeout.
+    from gateway.run import _float_env
+    request['activity_frames_v1'] = {'interval': activity_interval(_float_env("HERMES_AGENT_TIMEOUT", 1800))}
     config = _worker_config(authority, policy)
     hydrated = replace(policy, config_json=json.dumps(config), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)

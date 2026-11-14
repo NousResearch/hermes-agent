@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # which keeps ticking (ACTIVE=1) or stopped when the tool began (ACTIVE=0).
 CHILD = """
 import os, sys, threading, time
-from agent.managed_worker import WorkerChannel, forward_activity
+from agent.managed_worker import WorkerChannel, activity_interval, forward_activity
 from agent.session_activity import build_activity_snapshot
 began = time.time()
 class Agent:
@@ -26,7 +26,8 @@ class Agent:
         return build_activity_snapshot(last_activity_at=time.time() if os.environ['ACTIVE'] == '1' else began,
                                        last_activity_description='sequential tool running')
 channel = WorkerChannel(os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0))
-forward_activity(Agent(), channel, threading.Event(), interval=0.2)
+# The interval the owner sends for its wedge timeout (WEDGE), as in production.
+forward_activity(Agent(), channel, threading.Event(), interval=activity_interval(float(os.environ['WEDGE'])))
 """
 
 
@@ -37,7 +38,7 @@ def test_a_quiet_tool_holds_the_restart_only_while_its_agent_is_active(active):
     from gateway.session_runtime_workers import wedged_managed_turn_count
     process = subprocess.Popen([sys.executable, '-c', CHILD], cwd=ROOT, stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                               env={**os.environ, 'ACTIVE': '1' if active else '0'})
+                               env={**os.environ, 'ACTIVE': '1' if active else '0', 'WEDGE': '1.0'})
     worker = ManagedWorker(process)
     runner = SimpleNamespace(session_authority=SimpleNamespace(_managed_workers={'s1': worker}, sessions={}))
 

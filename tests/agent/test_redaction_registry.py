@@ -242,3 +242,27 @@ def test_registered_narrow_body_pattern_masks_underscore_suffix():
     out = redact_sensitive_text(f"failed: {token}_RETRY", force=True)
     assert token not in out, out
     assert "_RETRY" in out  # delimiter-joined suffix survives the mask
+
+
+@pytest.mark.parametrize("pattern,token,after", [
+    (r"zzkey-[A-Za-z0-9]{10,}(?=[\s.,])", "zzkey-Ab3dE5gH7jK9mN1pQ3sT5vX7", " here"),  # delimiter lookahead
+    (r"wwkey-[A-Za-z0-9+/]{20}", "wwkey-Ab3dE5gH7jK9mN1pQ3s", "/+next"),  # fixed length, body char after
+])
+def test_registered_pattern_keeps_matching_where_the_shared_guard_did(pattern, token, after):
+    """The per-pattern guard may only accept more than the shared ``(?![A-Za-z0-9_-])``: a pattern
+    whose last class is not its token body, or whose body is followed by a non-alnum body char,
+    must still mask what it masked before (#142852)."""
+    assert register_redaction_patterns([pattern], source="test") == 1
+    out = redact_sensitive_text(f"failed: {token}{after}", force=True)
+    assert token not in out, out
+
+
+@pytest.mark.parametrize("pattern,text", [
+    (r"qqkey-[a-z0-9-]{8}", "see qqkey-abcd-efg-hijk-lmno for details"),
+    (r"qqkey_[a-z0-9_]{8}", "see qqkey_abcd_efg_hijk_lmno for details"),
+])
+def test_registered_bounded_body_does_not_mask_a_prefix_of_a_longer_run(pattern, text):
+    """When the body class admits ``_``/``-``, the guard still rejects them after a bounded body,
+    as the shared guard did: the 8-char window is a prefix of a longer run, not a token (#142852)."""
+    assert register_redaction_patterns([pattern], source="test") == 1
+    assert redact_sensitive_text(text, force=True) == text

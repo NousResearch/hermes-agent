@@ -852,10 +852,13 @@ def _last_char_class(pattern: str) -> "str | None":
 
 
 def _trailing_guard(pattern: str) -> str:
-    """Lookahead ending ``pattern``: reject a following alphanumeric (word boundary) or a char of
-    the pattern's own body class. ``_``/``-`` are rejected only when the body admits them."""
+    """Lookahead ending ``pattern``: reject a following alphanumeric (word boundary), and ``_``/``-``
+    only when the pattern's body class admits them. Never stricter than the shared guard, so a
+    plugin pattern whose last class is a delimiter check (``(?=[\\s.,])``) still matches."""
     body_class = _last_char_class(pattern)
-    return f"(?![A-Za-z0-9]|{body_class})" if body_class is not None else r"(?![A-Za-z0-9_-])"
+    if body_class is None:
+        return r"(?![A-Za-z0-9_-])"
+    return "(?![A-Za-z0-9" + "".join(c for c in "_-" if re.fullmatch(body_class, c)) + "])"
 
 
 def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:

@@ -748,6 +748,11 @@ class ChatCompletionsTransport(ProviderTransport):
                 content = refusal
                 if finish_reason in (None, "stop"):
                     finish_reason = "content_filter"
+        # An Anthropic refusal relayed through an OpenAI-shaped adapter (MoA aggregator, aux client)
+        # keeps its reason, the same ``stop_details`` the native transport exposes.
+        stop_details = _attr_or_model_extra(msg, "stop_details")
+        if isinstance(stop_details, dict):
+            provider_data["stop_details"] = stop_details
 
         return NormalizedResponse(
             content=content, tool_calls=tool_calls, finish_reason=finish_reason,

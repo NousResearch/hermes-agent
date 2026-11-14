@@ -16,7 +16,7 @@ def _send(monkeypatch, **kwargs):
                         lambda client, api_kwargs, **_: sent.update(api_kwargs) or types.SimpleNamespace(content=[]))
     monkeypatch.setattr("agent.transports.get_transport", lambda name: types.SimpleNamespace(
         normalize_response=lambda r, **_: types.SimpleNamespace(content="OK", tool_calls=None, reasoning=None,
-                                                               finish_reason="stop")))
+                                                               finish_reason="stop", provider_data=None)))
     adapter = aux._AnthropicCompletionsAdapter(object(), "claude-x", base_url="http://h")
     adapter.create(model="claude-x", messages=[{"role": "user", "content": "hi"}], max_tokens=8, **kwargs)
     return sent

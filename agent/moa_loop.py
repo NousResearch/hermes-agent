@@ -1008,7 +1008,7 @@ def _completed_response_as_stream_chunk(response: Any) -> Any:
         ]
     delta = SimpleNamespace(
         content=getattr(message, "content", None), tool_calls=tool_call_deltas,
-        **{k: getattr(message, k, None) for k in ("reasoning_content", "reasoning", "reasoning_details")},
+        **{k: getattr(message, k, None) for k in ("reasoning_content", "reasoning", "reasoning_details", "stop_details")},
     )
     choice = SimpleNamespace(
         index=getattr(first_choice, "index", 0), delta=delta, finish_reason=getattr(first_choice, "finish_reason", None) or "stop",

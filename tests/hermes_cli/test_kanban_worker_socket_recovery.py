@@ -194,7 +194,9 @@ async def test_connecting_is_not_an_answer(monkeypatch, _worker_env, clock):
     # budget, so this still ends at OWNER_WAIT_S instead of redialling forever.
     owner = _Owner(receipts=["pending"] + [_disconnect()] * 200)
 
-    with pytest.raises(gateway_client.GatewayClientError, match=r"owner silent for 1[89]\ds"):
+    # The give-up is the host's verdict: OwnerUnavailableError, booked with the infrastructure
+    # exit instead of the counted client error (#139612).
+    with pytest.raises(kanban_worker_client.OwnerUnavailableError, match=r"owner silent for 1[89]\ds"):
         await _run(owner, monkeypatch, _worker_env)
     assert owner.calls.count("kanban.run") == 1
 
@@ -207,10 +209,12 @@ async def test_connecting_is_not_an_answer(monkeypatch, _worker_env, clock):
     gateway_client.GatewayRPCError("runtime_draining"),
 ], ids=["refused", "starting", "control-reset", "draining"])
 async def test_an_owner_silent_for_the_whole_budget_fails_the_worker(monkeypatch, _worker_env, clock, fault):
-    # Every restart shape still ends at OWNER_WAIT_S when it never clears.
+    # Every restart shape still ends at OWNER_WAIT_S when it never clears — as the host's
+    # infrastructure verdict (#139612), the never-admitted case named by the absence of admission.
     owner = _Owner(connects=[None], receipts=["pending", _disconnect()], after=fault)
 
-    with pytest.raises(gateway_client.GatewayClientError, match=rf"owner silent for 1[89]\ds: {fault}"):
+    with pytest.raises(kanban_worker_client.OwnerUnavailableError,
+                       match=rf"owner silent for 1[89]\ds after admission: {fault}"):
         await _run(owner, monkeypatch, _worker_env)
     assert clock.now >= kanban_worker_client.OWNER_WAIT_S
     # Jittered exponential backoff (capped at 8-16 s) between dials, not one dial a second.
@@ -224,7 +228,7 @@ async def test_giving_up_on_a_refused_handshake_names_the_status(monkeypatch, _w
     refused = InvalidStatus(SimpleNamespace(status_code=403, headers={}, body=b"remote body"))
     owner = _Owner(connects=[None] + [refused] * 60, receipts=["pending", _disconnect()])
 
-    with pytest.raises(gateway_client.GatewayClientError, match=r"InvalidStatus \(HTTP 403\)$"):
+    with pytest.raises(kanban_worker_client.OwnerUnavailableError, match=r"InvalidStatus \(HTTP 403\)$"):
         await _run(owner, monkeypatch, _worker_env)
 
 

@@ -121,8 +121,12 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # applet selection (busybox --help reboot must remain harmless).
 # A path-spelled verb (/sbin/reboot, ./rm, C:/.../shutdown.exe) is still that verb. A segment never crosses
 # the `)` closing a substitution that _CMDPOS anchored inside: `ls $(pwd)/reboot` is data.
-_CMD_PATH = r'(?:/?(?:[^\s/)]+/)*)?'
-_MULTI_CALL_PREFIX = r'(?:' + _CMD_PATH + r'(?:busybox|toybox)\b\s+)?'
+# Every run is possessive: a failed command-name match must not re-split a whitespace run, a
+# directory path or a busybox run (cubic on a long blank-line run, and re.search holds the GIL).
+# Only the last newline of a whitespace run starts a match: an earlier one consumes the same run and
+# reaches the same command word, so trying each would rescan the run once per newline.
+_CMD_PATH = r'(?:/?+(?:[^\s/)]++/)*+)?+'
+_MULTI_CALL_PREFIX = r'(?:' + _CMD_PATH + r'(?:busybox|toybox)\b\s++)?+'
 
 # Every run is possessive: a failed command-name match must not re-split a whitespace run between the
 # leading and trailing \s (cubic on a long blank-line run, and re.search holds the GIL while it runs).

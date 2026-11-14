@@ -109,6 +109,10 @@ def test_include_filtered_recursive_delete_stays_approvable(cmd):
     "Remove-Item -Recurse C:" + B + " -Exclude 'a -Include *.tmp'",
     "Remove-Item -Recurse C:" + B + ' -Exclude "a -Include *.tmp"',
     "Remove-Item -Recurse C:" + B + " -Include *.tmp , *",
+    # The -Include belongs to the outer command, not to the delete inside the substitution/subshell.
+    "echo $(rm -rf C:/) -Include x",
+    "ls $(rm -rf C:/*) -Include *.tmp",
+    "echo $(Remove-Item -Recurse C:/*) -Include x",
 ])
 def test_include_that_matches_everything_stays_hardline(cmd):
     assert detect_hardline_command(cmd)[0], cmd

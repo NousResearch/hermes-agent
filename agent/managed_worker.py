@@ -157,10 +157,18 @@ class WorkerChannel:
             self.stream.flush()
 
 
-# While a turn runs, the worker tells the owner its agent is still active this often: a quiet
-# tool sends no other frame, and the owner's restart wait reads frame silence as a wedged turn.
+# While a turn runs, the worker tells the owner its agent is still active: a quiet tool sends no
+# other frame, and the owner's restart wait reads frame silence past agent.gateway_timeout as a
+# wedged turn. The owner picks the interval from that timeout (``activity_interval``).
 ACTIVITY_FRAME_SECONDS = 30
 ACTIVITY_FRAME = {'type': 'activity'}
+
+
+def activity_interval(wedge_timeout):
+    """Several frames inside one wedge window, so no gap between two of them reads as silence."""
+    if wedge_timeout <= 0:
+        return ACTIVITY_FRAME_SECONDS  # wedge detection off: the frames only keep the clock fresh
+    return max(0.05, min(ACTIVITY_FRAME_SECONDS, wedge_timeout / 4))
 
 
 def forward_activity(agent, channel, done, interval=ACTIVITY_FRAME_SECONDS):
@@ -176,10 +184,13 @@ def forward_activity(agent, channel, done, interval=ACTIVITY_FRAME_SECONDS):
                 return  # the channel closed under a finishing turn
 
 
-def wants_activity_frames(frame):
-    """An owner that consumes ``ACTIVITY_FRAME`` says so in the hydrated request; an older owner
-    rejects unknown frames, so it never receives one."""
-    return json.loads(frame['policy'].get('request_json') or '{}').get('activity_frames_v1') is True
+def activity_frame_interval(frame):
+    """Seconds between ``ACTIVITY_FRAME``s the owner asked for in the hydrated request, or None: an
+    older owner rejects unknown frames, so it never asks and never receives one."""
+    asked = json.loads(frame['policy'].get('request_json') or '{}').get('activity_frames_v1')
+    if isinstance(asked, dict) and isinstance(asked.get('interval'), (int, float)) and asked['interval'] > 0:
+        return float(asked['interval'])
+    return None
 
 
 _INTERRUPTED = object()
@@ -447,10 +458,11 @@ def execute(frame, channel):
                 tool_complete_callback=lambda call_id, name, args, result: channel.send('tool.complete',
                                                                                          **tool_frame(call_id, name, args, result)))
             controls.agent = agent
-            if wants_activity_frames(frame):
+            interval = activity_frame_interval(frame)
+            if interval is not None:
                 from agent.memory_provider import spawn_context_thread
                 spawn_context_thread(forward_activity, name='managed-activity',
-                                     args=(agent, channel, turn_done)).start()
+                                     args=(agent, channel, turn_done, interval)).start()
             if controls.stopped.is_set():
                 from agent.interrupt_compat import request_hard_interrupt
                 request_hard_interrupt(agent)

@@ -1389,6 +1389,48 @@ class TestSenderAuthentication(unittest.TestCase):
             self.assertTrue(ok, (ar, reason))
 
 
+    def test_smtp_auth_requires_exact_identity_and_pinned_server(self):
+        for clause in (
+            'auth=pass smtp.auth=admin@example.com smtp.mailfrom=admin@example.com',
+            'auth=pass smtp.auth="admin@example.com" smtp.mailfrom="admin@example.com"',
+        ):
+            with self.subTest(clause=clause):
+                ok, reason = self._verify('admin@example.com', ['mx.example.com; ' + clause], 'mx.example.com')
+                self.assertTrue(ok, reason)
+                self.assertFalse(self._verify('admin@example.com', ['mx.example.com; ' + clause])[0])
+
+    def test_smtp_auth_rejects_spoofs_and_ambiguous_results(self):
+        for clause in (
+            'auth=pass smtp.mailfrom=admin@example.com',
+            'auth=pass smtp.auth=other@example.com smtp.mailfrom=admin@example.com',
+            'auth=pass smtp.auth=other@example.com; dmarc=pass header.from=example.com',
+            'auth=fail smtp.auth=admin@example.com',
+            'auth=pass smtp.auth=admin@example.com.evil.test',
+            'auth=pass smtp.auth=admin@example.com smtp.auth=other@example.com',
+            'auth=pass smtp.auth=admin@example.com; auth=fail smtp.auth=admin@example.com',
+            'auth=pass (smtp.auth=admin@example.com) smtp.auth=other@example.com',
+            'auth=pass smtp.auth=other@example.com; spf=pass smtp.auth=admin@example.com',
+            'auth=pass smtp.auth="admin@example.com; auth=pass"',
+        ):
+            with self.subTest(clause=clause):
+                self.assertFalse(self._verify('admin@example.com', ['mx.example.com; ' + clause], 'mx.example.com')[0])
+
+    def test_authserv_id_must_match_exactly_and_be_first(self):
+        for server in ('example.com', 'sub.mx.example.com', 'mx.example.com.evil.test', 'other.test'):
+            with self.subTest(server=server):
+                headers = [server + '; dmarc=pass', 'mx.example.com; auth=pass smtp.auth=admin@example.com']
+                self.assertFalse(self._verify('admin@example.com', headers, 'mx.example.com')[0])
+
+    def test_duplicate_from_rejected(self):
+        from plugins.platforms.email.adapter import _verify_sender_authentication
+        msg = self._msg('admin@example.com', ['mx.example.com; auth=pass smtp.auth=admin@example.com'])
+        msg['From'] = 'other@example.com'
+        self.assertFalse(_verify_sender_authentication(msg, 'admin@example.com', authserv_id='mx.example.com')[0])
+
+    def test_multiple_from_addresses_rejected(self):
+        self.assertFalse(self._verify('admin@example.com, other@example.com', ['mx.example.com; dmarc=pass'], 'mx.example.com')[0])
+
+
     def test_dkim_pass_aligned_authenticates(self):
         ok, reason = self._verify(
             "admin@example.com",

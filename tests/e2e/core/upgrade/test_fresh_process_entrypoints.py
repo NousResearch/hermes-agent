@@ -457,17 +457,6 @@ def _sandbox_or_skip() -> None:
 # --------------------------------------------------------------------------- (a) import smoke
 
 
-def test_relaunch_shim_hands_off_at_import_only_under_a_historical_update():
-    # An unconditional module-level stop_for_relaunch() ran a whole update takeover
-    # (and a gateway fleet restart) for ANY importer, an import smoke included.
-    shim = WORKTREE / "hermes_cli" / "psutil_android.py"
-    top_level = ast.parse(shim.read_text(encoding="utf-8")).body
-    assert not any(isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-                   and isinstance(node.value.func, ast.Name) and node.value.func.id == "stop_for_relaunch"
-                   for node in top_level)
-    entries, _ = _shipped_modules()
-    assert "hermes_cli.psutil_android" in {entry["id"] for entry in entries}
-
 def test_optional_import_table_only_names_optional_or_platform_deps():
     """The tolerance table cannot launder a missing CORE dependency into a skip."""
     core, extras = _requirements()

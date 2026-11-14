@@ -24,6 +24,72 @@ Each plugin's `register(ctx)` function calls `ctx.register_image_gen_provider(..
 
 The `image_generate` tool wrapper asks the registry for the active provider and dispatches there. If no provider is registered, the tool surfaces a helpful error pointing at `hermes tools`.
 
+## OpenAI-compatible Images endpoints
+
+The bundled `openai-compatible` provider targets the Images generations endpoint
+of a local service or gateway. Configure behavioral settings in the active
+profile's `config.yaml`:
+
+```yaml
+image_gen:
+  provider: openai-compatible
+  model: your-image-model
+  openai_compatible:
+    base_url: http://localhost:8000/v1
+    timeout: 300
+```
+
+The backend also appears in `hermes tools` → Image Generation. Set the API root
+and model in the configuration above before selecting it. Its credential prompt
+can save `OPENAI_COMPATIBLE_IMAGE_API_KEY` into the profile's `.env`; omit the key
+for an unauthenticated local service. External secret sources are supported by
+Hermes' normal profile-secret loader. Literal `api_key` values in `config.yaml`
+are rejected with a migration message.
+
+`base_url` may be a host root (the provider adds `/v1/images/generations`), an API
+root such as `/v1` or `/proxy/v1` (it adds `/images/generations`), or the complete
+generations endpoint. Trailing slashes are accepted. Redirects are rejected;
+configure the destination API root directly. `timeout` must be finite and positive
+and is the Requests connect/read timeout, not a total generation deadline.
+
+Model precedence is `image_gen.openai_compatible.model`, then the legacy
+`OPENAI_COMPATIBLE_IMAGE_MODEL` setting, then the model forwarded by Hermes from
+`image_gen.model`, then `gpt-image-1`. The original
+`OPENAI_COMPATIBLE_IMAGE_BASE_URL` remains a fallback when the configured API root
+is absent; prefer `config.yaml` for both behavioral settings. Legacy environment
+fallbacks honor the active profile scope when multiplexing is enabled.
+
+The provider requests one image. It accepts JSON `data[0].b64_json` or
+`data[0].url` and saves the result in the shared image cache. Aspect ratios map
+to `1024x1024` (square), `1536x1024` (landscape), and `1024x1536` (portrait).
+Image editing and reference inputs return `modality_unsupported`.
+
+For endpoints returning `text/event-stream`, the provider consumes SSE frames
+and returns one final image. This does not display live previews or progress.
+Supported frames contain a JSON Images response or top-level `b64_json` / `url`:
+
+```text
+event: partial_image
+data: {"b64_json": "preview-base64"}
+
+event: done
+data: {"data": [{"b64_json": "final-image-base64"}]}
+
+data: {"usage": {"total_tokens": 1}}
+
+data: [DONE]
+
+```
+
+Multiple `data:` lines are joined within one event. `done` image data takes
+precedence over other image-bearing frames; usage/heartbeat frames do not erase
+it. `partial_image` is never treated as a completed image, even at EOF or `[DONE]`.
+An `error` event or JSON `error` field fails the request. A missing final image
+also fails. The parser tolerates an EOF immediately after the last data line.
+These are gateway response conventions; support does not imply compatibility
+with the separate Responses/Codex image-generation protocol or every vendor's
+stream event schema.
+
 ## Directory structure
 
 ```

@@ -194,7 +194,9 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
     """The stripped URL if valid http(s); else InvalidMcpUrlError naming the server (non-string, other scheme —
     stdio servers use ``command`` — or empty host)."""
     def _bad(detail: str) -> InvalidMcpUrlError:
-        return InvalidMcpUrlError(f"Invalid MCP URL for '{server_name}': {detail}")
+        from agent.redact import redact_sensitive_text  # the detail echoes the URL, which can carry a credential
+        return InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': {redact_sensitive_text(detail, redact_url_credentials=True)}")
     if not isinstance(url, str):
         raise _bad(f"expected a string, got {type(url).__name__}")
     stripped = url.strip()

@@ -127,6 +127,14 @@ def _ref_exists(cwd: str, ref: str, *, run: _GitRunner = _git) -> bool:
     return run(cwd, ["rev-parse", "--verify", "--quiet", ref])[0] == 0
 
 
+def _review_cwd(cwd: str) -> str:
+    """Normalize a cwd already inside Git to the repository top level."""
+    if not _is_dir(cwd):
+        return cwd
+    root = _git_out(cwd, ["rev-parse", "--show-toplevel"]).strip()
+    return os.path.normpath(root) if root else cwd
+
+
 # ── shared helpers ───────────────────────────────────────────────────────────
 
 
@@ -281,6 +289,7 @@ def _review_result(cwd: str, files: list[dict], base: str | None) -> dict:
 
 def review_list(cwd: str, scope: str, base_ref: str | None) -> dict:
     """Changed files for a scope. Mirrors the Electron reviewList shapes."""
+    cwd = _review_cwd(cwd)
     if not _is_dir(cwd):
         return {"files": [], "base": None}
     if scope in ("branch", "lastTurn"):
@@ -336,6 +345,7 @@ def _single_file_diff(cwd: str, args: list[str], file_path: str) -> str:
 
 
 def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, staged: bool) -> str:
+    cwd = _review_cwd(cwd)
     if not _is_dir(cwd):
         return ""
     if scope == "branch":
@@ -363,20 +373,23 @@ def file_diff_vs_head(cwd: str, file_path: str) -> str:
 
 
 def review_stage(cwd: str, file_path: str | None) -> dict:
+    cwd = _review_cwd(cwd)
     _git_ok(cwd, ["add", "--", file_path] if file_path else ["add", "-A"])
     return {"ok": True}
 
 
 def review_unstage(cwd: str, file_path: str | None) -> dict:
+    cwd = _review_cwd(cwd)
     _git_ok(cwd, ["reset", "-q", "HEAD", *(["--", file_path] if file_path else [])])
     return {"ok": True}
 
 
 def review_revert(cwd: str, file_path: str | None) -> dict:
     """Discard changes back to the committed state (restore tracked, remove untracked)."""
+    cwd = _review_cwd(cwd)
     target = ["--", file_path or "."]
-    _git_write(cwd, ["checkout", "HEAD", *target])
-    _git_write(cwd, ["clean", "-fd", *target])
+    _git_ok(cwd, ["checkout", "HEAD", *target])
+    _git_ok(cwd, ["clean", "-fd", *target])
     return {"ok": True}
 
 

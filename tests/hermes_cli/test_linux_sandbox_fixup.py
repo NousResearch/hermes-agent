@@ -235,6 +235,41 @@ class TestDesktopLinuxSandboxFixupNoTty:
                 assert "-n" in cmd, state
                 assert kwargs.get("stdin") == subprocess.DEVNULL, state
 
+    def test_sudo_is_non_interactive_when_isatty_raises_or_is_absent(self, monkeypatch, tmp_path):
+        """A stdin that cannot answer ``isatty()`` is non-interactive, never a crash (#123927 review).
+
+        The guard must fail closed on every unusable-stdin shape: a detached
+        replacement stream whose ``isatty()`` raises ``OSError`` (EBADF — the fd
+        was pulled away, e.g. a double-close by a GUI spawn) and a stdin object
+        with no ``isatty`` at all both escaped the function as a traceback,
+        skipping the caller's ``--no-sandbox`` fallback.
+        """
+        exe = self._fake_packaged_app(tmp_path)
+
+        class _RaisesOSError:
+            def isatty(self):
+                raise OSError(9, "Bad file descriptor")
+
+        for state, stdin in (("oserror", _RaisesOSError()), ("no_isatty", object())):
+            calls = []
+
+            def fake_run(cmd, **kwargs):
+                calls.append((cmd, kwargs))
+                return Mock(returncode=0)
+
+            monkeypatch.setattr(sys, "stdin", stdin)
+            monkeypatch.setattr(sys, "platform", "linux")
+            monkeypatch.setattr(
+                main_desktop, "_desktop_linux_userns_sandbox_available", lambda: False)
+            monkeypatch.setattr(main_desktop.shutil, "which", lambda _name: "/usr/bin/sudo")
+            monkeypatch.setattr(main_desktop.subprocess, "run", fake_run)
+            assert main_desktop._desktop_linux_sandbox_fixup(exe) is True, state
+            assert len(calls) == 2, state
+            for cmd, kwargs in calls:
+                assert "-n" in cmd, state
+                assert kwargs.get("stdin") == subprocess.DEVNULL, state
+                assert kwargs.get("timeout") is not None, state
+
     def test_sudo_stays_interactive_with_a_tty(self, monkeypatch, tmp_path):
         """A terminal launch keeps the password prompt (no -n)."""
         exe = self._fake_packaged_app(tmp_path)

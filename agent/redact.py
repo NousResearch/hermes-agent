@@ -1789,6 +1789,35 @@ def redact_terminal_output(output: str, command: str | None = None, *, force: bo
     return redacted
 
 
+
+# execute_code output is script stdout, not a command line, so redact_terminal_output's command
+# classifier never sees an env dump there (#95509). A whole line of ``NAME=value`` (optionally
+# ``export``-prefixed, no space around ``=``) is the ``.env`` / ``env`` shape; source assignments
+# (``MAX_TOKENS = 100``, indented or embedded code) do not match and keep the code_file behaviour.
+_ENV_DUMP_LINE_RE = re.compile(r"^((?:export[ \t]+)?)([A-Z][A-Z0-9_]*)=(\S.*)$", re.MULTILINE)
+
+
+def _mask_env_dump_line(m: "re.Match[str]", mask_env) -> str:
+    # The whole line is one assignment, so its value is the rest of the line: ``env`` prints
+    # ``DB_PASSWORD=first second`` raw and a .env quotes it. _ENV_ASSIGN_RE's ``\S+`` would stop at
+    # the first space and leave the remaining words visible.
+    prefix, key, value = m.groups()
+    quote = value[0] if len(value) > 1 and value[0] in "'\"" and value[-1] == value[0] else ""
+    inner = value[1:-1] if quote else value
+    if _should_redact_assignment(key, inner, check_keyword=True):
+        return f"{prefix}{key}={quote}{_mask_token(inner)}{quote}"
+    return _ENV_ASSIGN_RE.sub(mask_env, m.group(0))
+
+
+def redact_code_output(output: str, *, force: bool = False) -> str:
+    """Redaction for execute_code stdout/stderr: code_file=True, plus the ENV-assignment pass on
+    lines shaped like an env dump so opaque prefix-less credentials are masked."""
+    redacted = redact_sensitive_text(output, force=force, code_file=True)
+    if not redacted or "=" not in redacted or not (force or _redact_enabled()):
+        return redacted
+    mask_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{_mask_token(g[2])}{g[1]}", check_keyword=True)
+    return _ENV_DUMP_LINE_RE.sub(lambda m: _mask_env_dump_line(m, mask_env), redacted)
+
 # --- Prefix pre-screen: derived from _PREFIX_PATTERNS so a new prefix can't
 # silently break the gate (every match contains its pattern's literal prefix).
 

@@ -521,12 +521,12 @@ def _format_interrupted_output(stdout_text: str) -> str:
 
 
 def _clean_output(stdout_text: str, env: Any = None) -> tuple[str, dict[str, Any]]:
-    """Shared output pipeline: byte-cap (with spill), ANSI strip, secret redaction. code_file=True:
-    output often echoes source/config — skip ENV/JSON/f-string false positives, still mask credentials."""
+    """Shared output pipeline: ANSI strip, secret redaction, then byte-cap (with spill). Output often
+    echoes source/config, so redact_code_output keeps code_file=True except on env-dump-shaped lines.
+    Redact before the cap, as the local kernel does: a cut can separate ``DB_PASSWORD=`` from its value."""
     from tools.ansi_strip import strip_ansi
-    from agent.redact import redact_sensitive_text
-    stdout_text, metadata = _truncate_stdout_text(stdout_text, env)
-    return redact_sensitive_text(strip_ansi(stdout_text), code_file=True), metadata
+    from agent.redact import redact_code_output
+    return _truncate_stdout_text(redact_code_output(strip_ansi(stdout_text)), env)
 
 
 def _with_timeout_notice(stdout_text: str, timeout_msg: str) -> str:

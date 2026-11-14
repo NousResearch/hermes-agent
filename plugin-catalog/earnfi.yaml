@@ -1,0 +1,25 @@
+
+name: earnfi
+repo: https://github.com/earnfidotfun/earnfi-hermes-plugin
+sha: "3d595e97d46f70c2e21b17e4d9fb816de41ea385"
+description: >-
+  Work, Money & Execution Layer for Hermes — hire humans and agents, fund
+  real-world work via x402, escrow, and receipts across Solana, Base, NEAR,
+  and OKX X Layer.
+maintainer: EarnFi
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "1.5.2"
+title: EarnFi - Work, Money & Execution Layer
+docs_url: https://docs.earnfi.fun
+readme: true
+image: https://raw.githubusercontent.com/earnfidotfun/earnfi-hermes-plugin/3d595e97d46f70c2e21b17e4d9fb816de41ea385/assets/earnfi-banner.jpg
+capabilities:
+  provides_tools:
+    - earnfi_doctor
+    - earnfi_sign_x402
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

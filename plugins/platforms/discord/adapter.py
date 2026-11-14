@@ -215,7 +215,10 @@ _DISCORD_MODEL_SELECT_CAPACITY = (_DISCORD_SELECT_MAX_ROWS - 2) * _DISCORD_SELEC
 _DISCORD_BUTTON_LABEL_LIMIT = 80
 # Embed titles cap at 256 chars.
 _DISCORD_EMBED_TITLE_LIMIT = 256
-_DISCORD_ELLIPSIS = "\u2026"
+# Clarify choice list: embed field values cap at 1024, the whole embed at ~6000 (title included).
+_DISCORD_CHOICE_FIELD_VALUE_LIMIT = 1000
+_DISCORD_CHOICE_FIELDS_TOTAL_LIMIT = 5000
+_DISCORD_CHOICE_LIST_TRUNCATED = "… [list truncated]"
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational", "non_conversational_history",
 })
@@ -5349,6 +5352,23 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             pass
         return thread
 
+    @staticmethod
+    def _auto_thread_archive_minutes(channel: Any, fallback: int = 1440) -> int:
+        """Auto-archive window for a thread Hermes opens: inherit the parent channel's default.
+
+        A hardcoded 1440 (24 h) contradicted the channel's own default, so a thread the agent
+        opened on a channel set to 10080 (7 d) dropped out of the sidebar a day after its last
+        message while a thread a human opened in the SAME channel survived a week — two lifetimes
+        for identical content. An absent or non-conforming channel default still falls back, so
+        the value passed to ``create_thread`` is always one Discord accepts.
+        """
+        default = getattr(channel, "default_auto_archive_duration", None)
+        try:
+            default = int(default) if default is not None else None
+        except (TypeError, ValueError):
+            default = None
+        return default if default in VALID_THREAD_AUTO_ARCHIVE_MINUTES else fallback
+
     async def _auto_create_thread(self, message: DiscordMessage) -> Optional[Any]:
         """Create an auto-thread from a user message; returns the thread or ``None``.
         Primary path and seed-message fallback each retry once after a short backoff (transient errors).
@@ -5359,17 +5379,18 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
+        archive_minutes = self._auto_thread_archive_minutes(getattr(message, "channel", None))
         last_direct_error: Exception | None = None
         last_fallback_error: Exception | None = None
         for attempt in range(2):
             try:
-                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+                thread = await message.create_thread(name=thread_name, auto_archive_duration=archive_minutes)
                 return self._stamp_auto_thread_name(thread, thread_name)
             except Exception as direct_error:
                 last_direct_error = direct_error
                 try:
                     seed_msg = await message.channel.send(t("platform.discord.thread.seed_message", name=thread_name))
-                    thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=1440, reason=reason)
+                    thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=archive_minutes, reason=reason)
                     return self._stamp_auto_thread_name(thread, thread_name)
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
@@ -5463,10 +5484,11 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             return None
         thread_name = (name or "handoff").strip()[:80] or "handoff"
         reason = "Hermes session handoff"
+        archive_minutes = self._auto_thread_archive_minutes(parent)
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(name=thread_name, auto_archive_duration=1440, reason=reason)
+                thread = await create(name=thread_name, auto_archive_duration=archive_minutes, reason=reason)
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
@@ -5479,7 +5501,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 return None
             seed_msg = await send(t("platform.discord.thread.handoff_seed", name=thread_name))
             thread = await seed_msg.create_thread(
-                name=thread_name, auto_archive_duration=1440, reason=reason,
+                name=thread_name, auto_archive_duration=archive_minutes, reason=reason,
             )
             return str(thread.id)
         except Exception as fallback_error:
@@ -5643,13 +5665,54 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             return {"content": content, "embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build)
 
+    @staticmethod
+    def _embed_body(text: str, limit: int = 4088) -> str:
+        """Trim to Discord's 4096-char embed description limit (conservatively)."""
+        return text if len(text) <= limit else text[: limit - 3] + "..."
+
+    @staticmethod
+    def _numbered_choice_lines(choices: list) -> list:
+        """``"N. <choice>"`` for every choice — the full option text, never truncated."""
+        return [f"{index}. {choice}" for index, choice in enumerate(choices, 1)]
+
+    @classmethod
+    def _numbered_choice_fields(cls, choices: list) -> list:
+        """The numbered choice list chunked into embed-field-sized values.
+
+        The buttons carry only their number, so this body text is the only carrier of the option
+        text: chunk at the 1024-char field cap, then stop at the whole-embed budget rather than
+        letting a pathological list make ``channel.send`` reject the message outright."""
+        limit = _DISCORD_CHOICE_FIELD_VALUE_LIMIT
+        chunks: list = []
+        for line in cls._numbered_choice_lines(choices):
+            line = cls._embed_body(line, limit)
+            if chunks and len(chunks[-1]) + len(line) + 1 <= limit:
+                chunks[-1] = f"{chunks[-1]}\n{line}"
+            else:
+                chunks.append(line)
+        kept: list = []
+        used = 0
+        for chunk in chunks:
+            if used + len(chunk) > _DISCORD_CHOICE_FIELDS_TOTAL_LIMIT:
+                if kept and len(kept[-1]) + len(_DISCORD_CHOICE_LIST_TRUNCATED) + 1 <= limit:
+                    kept[-1] = f"{kept[-1]}\n{_DISCORD_CHOICE_LIST_TRUNCATED}"
+                else:
+                    kept.append(_DISCORD_CHOICE_LIST_TRUNCATED)
+                break
+            kept.append(chunk)
+            used += len(chunk)
+        return kept or [_DISCORD_CHOICE_LIST_TRUNCATED]
+
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
         session_key: str, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Clarify prompt: one button per choice plus ``✏️ Other`` (text-capture); with no choices the
-        gateway's text-intercept captures the next message. Dict choices (LLMs emit
-        ``[{"description": ...}]``) are unwrapped via ``label``/``description``/``text``/``title``."""
+        gateway's text-intercept captures the next message. Buttons carry only their number (Discord
+        draws every button at one width, so a long label is cut mid-word), so the numbered option list
+        prints in full in the embed fields and — for clients where embeds are invisible/detached — in
+        the plain content too. Dict choices (LLMs emit ``[{"description": ...}]``) are unwrapped via
+        ``label``/``description``/``text``/``title``."""
         def _flatten_choice(c):
             if c is None:
                 return ""
@@ -5667,8 +5730,6 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             return str(c).strip()
 
         def _build(_channel):
-            # Header-only card (same rule as the exec approval prompt): the question and hint live
-            # in content only, so embed-rendering clients don't see them twice (#114693).
             clarify_title = t("platform.discord.prompt.clarify_title")
             embed = discord.Embed(
                 title=_truncate_discord_component_text(f"❓ {clarify_title}", _DISCORD_EMBED_TITLE_LIMIT), color=discord.Color.orange())
@@ -5676,8 +5737,23 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             clean_choices = [s for s in (_flatten_choice(c) for c in (choices or [])) if s][:24]
             if clean_choices:
                 hint = t("platform.discord.prompt.clarify_hint_buttons")
-                # Button labels clip past ~40 columns on mobile with no tooltip (#78115): when
-                # any option is that long, the numbered full text goes in the content too.
+                # The question and hint stay content-only (#114693: embed-rendering clients would
+                # see them twice), but the buttons are bare numbers now, so the FULL numbered list
+                # rides the embed too — chunked at the 1024-char field cap, budgeted against the
+                # ~6000-char embed cap, so a pathological list can't make channel.send reject.
+                fields = self._numbered_choice_fields(clean_choices)
+                if len(fields) == 1:
+                    embed.add_field(name=t("platform.discord.prompt.clarify_choices_field"), value=fields[0], inline=False)
+                else:
+                    for field_index, field_value in enumerate(fields):
+                        embed.add_field(
+                            name=t("platform.discord.prompt.clarify_choices_field_part",
+                                   index=field_index + 1, total=len(fields)),
+                            value=field_value, inline=False,
+                        )
+                embed.add_field(name=t("platform.discord.prompt.clarify_reply_field"), value=hint, inline=False)
+                # Content mirror (#78115): embeds are invisible/detached on some clients, so when
+                # any option is over ~40 columns the numbered text goes in the content as well.
                 # Capped at half the 2000-char content so the question keeps the rest; every
                 # option keeps its line (shortened) so each button still has one to match.
                 numbered = numbered_clarify_choices(clean_choices, max_label_cols=40, max_chars=1000,
@@ -6667,7 +6743,9 @@ def _define_discord_view_classes() -> None:
                     pass
 
     class ClarifyChoiceView(_HermesView):
-        """One button per clarify choice (max 24) plus ``✏️ Other``. A numeric click resolves the
+        """One button per clarify choice (max 24) plus ``✏️ Other``. Buttons carry only their
+        number — Discord draws every button at one width, so a long label is cut mid-word — and
+        the option text lives in the message body (``send_clarify``). A numeric click resolves the
         gateway clarify entry immediately; ``Other`` flips to text-capture (next message answers).
         Single-use: after the first valid click all buttons disable."""
 
@@ -6677,7 +6755,7 @@ def _define_discord_view_classes() -> None:
             self.clarify_id = clarify_id
             for index, choice in enumerate(self.choices):
                 button = discord.ui.Button(
-                    label=self._button_label(index, choice), style=discord.ButtonStyle.primary,
+                    label=str(index + 1), style=discord.ButtonStyle.primary,
                     custom_id=f"clarify:{clarify_id}:{index}",
                 )
                 button.callback = self._make_choice_callback(index, choice)
@@ -6688,28 +6766,6 @@ def _define_discord_view_classes() -> None:
             )
             other_btn.callback = self._on_other
             self.add_item(other_btn)
-
-        @staticmethod
-        def _button_label(index: int, choice: str) -> str:
-            """``"N. <choice>"`` within Discord's 80-char (UTF-16) label cap.
-            Mobile wraps early, so long choices cut at a word boundary in the trailing half, else a
-            soft boundary (``- , . )``, inclusive), else hard."""
-            prefix = f"{index + 1}. "
-            budget = _DISCORD_BUTTON_LABEL_LIMIT - utf16_len(prefix)
-            if utf16_len(choice) <= budget:
-                return f"{prefix}{choice}"
-            truncated = _prefix_within_utf16_limit(choice, max(0, budget - utf16_len(_DISCORD_ELLIPSIS))).rstrip()
-            cut_at = -1
-            space = truncated.rfind(" ")
-            if space >= len(truncated) // 2:
-                cut_at = space
-            if cut_at < 0:
-                latest_soft = max((truncated.rfind(s) for s in ("-", ",", ".", ")")), default=-1)
-                if latest_soft >= len(truncated) // 2:
-                    cut_at = latest_soft + 1
-            if cut_at > 0:
-                truncated = truncated[:cut_at]
-            return f"{prefix}{truncated.rstrip() + _DISCORD_ELLIPSIS}"
 
         def _make_choice_callback(self, index: int, choice: str):
             async def _callback(interaction: discord.Interaction):

@@ -289,7 +289,7 @@ Two inputs drive the edit:
 |---|---|---|---|
 | **FAL.ai** (edit-capable models below) | ✓ | up to 16 (per model) | routes to the model's `/edit` endpoint |
 | **OpenAI** (GPT Image 2 / 2.5 Flare / Sunburst) | ✓ | up to 16 | `images.edit()` |
-| **xAI** (Grok Imagine) | ✓ | 1 | `/v1/images/edits` (`grok-imagine-image-quality`) |
+| **xAI** (Grok Imagine) | ✓ | up to 4 (5 source images in total) | `/v1/images/edits` (`grok-imagine-image-quality`) |
 | **Krea** (`Krea 3`) | ✓ | up to 4 | instruction-following edit of the pictures given (`image_urls`); local files are embedded in the request, up to 3 MB in total |
 | **Krea** (`Krea 2`) | ✓ | up to 10 | reference-guided generation (`image_style_references`); local files are embedded in the request, up to 3 MB in total |
 | **OpenAI (Codex auth)** | ✓ | up to 16 | `POST /backend-api/codex/images/edits` with inline `images[]` data URLs (remote URLs are fetched client-side) |

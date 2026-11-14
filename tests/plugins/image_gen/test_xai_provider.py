@@ -387,6 +387,25 @@ class TestGenerate:
         assert result["error_type"] == "invalid_image_url"
         mock_post.assert_not_called()
 
+    @pytest.mark.parametrize("count,sent", [(5, True), (6, False)])
+    def test_edit_source_cap_matches_api(self, count, sent):
+        """/v1/images/edits takes up to 5 sources (live: 6 → 400 "at most 5")."""
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"data": [{"url": "https://xai.image/edited.png"}]}
+        urls = [f"https://example.com/{i}.png" for i in range(count)]
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen._common.save_url_image", return_value="edited.png"):
+            result = XAIImageGenProvider().generate(
+                prompt="collage", image_url=urls[0], reference_image_urls=urls[1:])
+
+        assert result["success"] is sent
+        if sent:
+            assert len(mock_post.call_args.kwargs["json"]["images"]) == 5
+        else:
+            assert result["error_type"] == "too_many_references"
+            mock_post.assert_not_called()
 
     def test_storage_options_are_sent_by_default(self):
         from plugins.image_gen.xai import XAIImageGenProvider
@@ -405,6 +424,23 @@ class TestGenerate:
         assert payload["storage_options"]["public_url"] is True
         assert "expires_after" not in payload["storage_options"]
         assert payload["storage_options"]["filename"].endswith(".png")
+        assert "response_format" not in payload
+
+    def test_storage_disabled_requests_inline_bytes(self, tmp_path):
+        """Storage off → ``response_format=b64_json``: xAI 400s URL output for Zero Data Retention teams."""
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        (tmp_path / "config.yaml").write_text("image_gen:\n  xai:\n    storage:\n      enabled: false\n")
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post, \
+             patch("plugins.image_gen._common.save_b64_image", return_value="test.png"):
+            result = XAIImageGenProvider().generate(prompt="test")
+
+        payload = mock_post.call_args.kwargs["json"]
+        assert result["success"] is True
+        assert payload["response_format"] == "b64_json"
+        assert "storage_options" not in payload
 
     def test_public_url_file_output_wins_over_temporary_url(self):
         from plugins.image_gen.xai import XAIImageGenProvider

@@ -631,11 +631,34 @@ export function appendReasoningPart(parts: ChatMessagePart[], delta: string, tim
   return appendStreamPart(parts, 'reasoning', delta, timestamp).parts
 }
 
+/** `delta` less what the tail part's adopted stored reply already shows, and the parts after that. */
+function consumeStoredTail(parts: ChatMessagePart[], delta: string): { delta: string; parts: ChatMessagePart[] } {
+  const tail = parts.at(-1)
+
+  if (tail?.type !== 'text' || !tail.storedTail) {
+    return { delta, parts }
+  }
+
+  const covered = tail.storedTail
+  const rest = covered.startsWith(delta) ? covered.slice(delta.length) : ''
+  // A delta that diverges from the stored reply is new text: it applies whole.
+  const unseen = covered.startsWith(delta) ? '' : delta.startsWith(covered) ? delta.slice(covered.length) : delta
+  const { storedTail: _covered, ...plain } = tail
+
+  return { delta: unseen, parts: [...parts.slice(0, -1), rest ? { ...tail, storedTail: rest } : plain] }
+}
+
 export function appendAssistantTextPart(
-  parts: ChatMessagePart[],
-  delta: string,
+  streamParts: ChatMessagePart[],
+  streamDelta: string,
   timestamp?: number
 ): ChatMessagePart[] {
+  const { delta, parts } = consumeStoredTail(streamParts, streamDelta)
+
+  if (!delta) {
+    return parts
+  }
+
   const { index, parts: next } = appendStreamPart(parts, 'text', delta, timestamp)
   const part = next[index]
 

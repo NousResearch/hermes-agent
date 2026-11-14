@@ -70,7 +70,7 @@ import type { ClientSessionState } from '../../../types'
 import {
   committedReplyCovers,
   isStrictAnswerTextExtension,
-  pageReplyCommittingLiveRow,
+  livePlaceOnCommittedPage,
   replyAfterLastTool
 } from './committed-reply'
 import { chatMessageArraysEquivalent, chatMessagesEquivalent } from './message-equivalence'
@@ -1526,11 +1526,11 @@ export function overlayConcurrentMessageChanges(
 
     // The page caught this turn's reply committed before its completion
     // reached the live row: the live row takes that bubble's place.
-    const committedIndex = pageReplyCommittingLiveRow(overlaid, committedNewRow, current, currentMessages)
+    const committed = livePlaceOnCommittedPage(overlaid, committedNewRow, current, currentMessages)
 
-    if (committedIndex >= 0) {
-      nextIndexById.set(current.id, committedIndex)
-      overlaid[committedIndex] = current
+    if (committed) {
+      nextIndexById.set(current.id, committed.index)
+      overlaid[committed.index] = committed.row
       changed = true
 
       continue

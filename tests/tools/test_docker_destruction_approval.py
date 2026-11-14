@@ -22,6 +22,8 @@ from tools.approval import detect_dangerous_command
     "docker container prune",
     "docker system prune",
     "docker system prune -af",
+    "podman system reset",
+    "podman system reset -f",
     "docker container stop web",
     "docker container kill web",
     "docker container restart web",
@@ -50,3 +52,20 @@ def test_container_destruction_requires_approval(command):
 ])
 def test_reads_and_recreatable_objects_stay_ungated(command):
     assert detect_dangerous_command(command) == (False, None, None), command
+
+
+@pytest.mark.parametrize("command", [
+    "docker rm web",
+    "docker compose rm web",
+    "docker volume prune -f",
+    "docker container prune -f",
+    "docker system prune -af",
+    "podman system prune",
+    "podman system reset -f",
+])
+def test_destruction_classes_are_never_proposed_for_the_allowlist(command):
+    # `hermes approvals suggest` filters on the class description; a destruction class it lets
+    # through comes back as a `docker system *` glob that also waves through `prune --volumes`.
+    from hermes_cli.approvals_suggest import build_proposals
+
+    assert build_proposals([(command, detect_dangerous_command(command)[1])] * 3) == []

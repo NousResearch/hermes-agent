@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import tempfile
 import stat
 import subprocess
 import sys
@@ -793,6 +794,7 @@ _SKILL_COUNT_LOCK = threading.Lock()
 # One scan lock per skills dir so concurrent cold scans of the SAME profile share one walk
 # while different profiles' scans still run in parallel.
 _SKILL_COUNT_SCAN_LOCKS: dict[str, threading.Lock] = {}
+_PROFILE_CREATE_LOCKS: dict[str, threading.Lock] = {}
 
 
 def _skills_dir_signature(skills_dir: Path) -> float:
@@ -1415,7 +1417,11 @@ def create_profile(
             if stripped:
                 logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
         finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description, soul=soul)
-        os.rename(staging, profile_dir)
+        publish_lock = _PROFILE_CREATE_LOCKS.setdefault(canon, threading.Lock())
+        with publish_lock:
+            if profile_dir.exists():
+                raise _profile_exists_error(canon)
+            os.rename(staging, profile_dir)
     except BaseException:
         discard_unpublished_vault_key(clone_key)
         shutil.rmtree(staging, ignore_errors=True)

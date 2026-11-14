@@ -228,6 +228,7 @@ class TestModelStateIncludesNamedProviders:
             for m in resp.models.available_models
             if m.model_id == "custom:bedrock-mantle:openai.gpt-5.5"
         )
+        assert named.name == "AWS Bedrock Mantle · openai.gpt-5.5"
         assert "AWS Bedrock Mantle" in (named.description or "")
 
     @pytest.mark.asyncio

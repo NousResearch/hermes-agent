@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 from tools.environments.base import BaseEnvironment, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
@@ -129,6 +129,42 @@ class _AsyncWorker:
             self._thread.join(timeout=10)
 
 
+# Profile home key -> (token pair, modal.Client built from it): one client per routed profile, like
+# the routed FAL, Bedrock and Entra clients, replaced when that profile's pair changes. A replaced
+# client is not closed: a sandbox created through it keeps running its RPCs on it.
+_profile_clients: dict[str, tuple[tuple[str, str], Any]] = {}
+_profile_clients_lock = threading.Lock()
+
+
+def _routed_token_pair() -> tuple[str, str] | None:
+    """The serving profile's own ``(MODAL_TOKEN_ID, MODAL_TOKEN_SECRET)`` when it is a routed
+    profile, else None: a single-profile process keeps the SDK's own resolution (process env, then
+    the ``modal`` CLI login in ``~/.modal.toml``). Without an explicit client the SDK uses one
+    process-wide client built from ``os.environ``, which holds the launch profile's tokens."""
+    from agent.secret_scope import get_secret, serves_routed_profile
+
+    if not serves_routed_profile():
+        return None
+    token_id, token_secret = ((get_secret(name) or "").strip()
+                              for name in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"))
+    if not (token_id and token_secret):
+        raise ValueError("MODAL_TOKEN_ID and MODAL_TOKEN_SECRET are not both set for this profile: add "
+                         "them to this profile's .env (or its secret source). Another profile's Modal "
+                         "tokens and the shared ~/.modal.toml login are never used for it.")
+    return token_id, token_secret
+
+
+async def _profile_client(modal: Any, home: str, pair: tuple[str, str]) -> Any:
+    with _profile_clients_lock:
+        cached = _profile_clients.get(home)
+    if cached is not None and cached[0] == pair:
+        return cached[1]
+    client = await modal.Client.from_credentials.aio(*pair)
+    with _profile_clients_lock:
+        _profile_clients[home] = (pair, client)
+    return client
+
+
 class ModalEnvironment(BaseEnvironment):
     """Modal cloud execution via native Modal sandboxes: spawn-per-call via _ThreadedProcessHandle
     wrapping async SDK calls, cancel_fn wired to sandbox.terminate for interrupt support."""
@@ -154,16 +190,21 @@ class ModalEnvironment(BaseEnvironment):
             _get_snapshot_restore_candidate(self._task_id) if self._persistent else (None, False))
         if restored_snapshot_id:
             logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
+        # Read in the caller's thread: the SDK coroutines run on the worker loop, outside the turn's
+        # profile scope.
+        pair = _routed_token_pair()
+        home = hermes_home_key() if pair else ""
         ensure_lazy_dep("modal")
         import modal as _modal
         self._worker.start()
 
         def _create(image_spec: Any) -> None:
             async def _create_sandbox():
-                app = await _modal.App.lookup.aio("hermes-agent", create_if_missing=True)
+                client = await _profile_client(_modal, home, pair) if pair else None
+                app = await _modal.App.lookup.aio("hermes-agent", create_if_missing=True, client=client)
                 create_kwargs = dict(modal_sandbox_kwargs or {})
                 sandbox = await _modal.Sandbox.create.aio(
-                    "sleep", "infinity", image=image_spec, app=app,
+                    "sleep", "infinity", image=image_spec, app=app, client=client,
                     timeout=int(create_kwargs.pop("timeout", 3600)), **create_kwargs)
                 return app, sandbox
             self._app, self._sandbox = self._worker.run_coroutine(_create_sandbox(), timeout=300)

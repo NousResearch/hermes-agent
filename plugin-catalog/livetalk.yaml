@@ -1,0 +1,32 @@
+name: livetalk
+repo: https://github.com/cruzlxyz/livetalk
+sha: 9c648638574c67fd4ebdad334cdb6a234fc80073
+description: >-
+  Realtime duplex voice chat with the Hermes agent — a composer mini-bar for the Hermes
+  desktop app. The voice model answers small talk itself and delegates real work through a
+  declared `talk` tool to a dedicated Hermes agent session (acknowledge-first, context-first
+  routing); the answer is spoken back in one of the 30 documented HD prebuilt voices. Native
+  config_schema settings (provider, live model, voice, transcription languages, spoken-answer
+  detail, transcript/log visibility). Full-proxy architecture: the plugin backend owns the
+  upstream Live WebSocket and the user's key (requires_env GOOGLE_API_KEY); the desktop UI only
+  talks to localhost. No Hermes agent tools registered; dashboard tab hidden. Disclosure —
+  pressing Start captures microphone audio and streams it through the local backend to
+  generativelanguage.googleapis.com using GOOGLE_API_KEY (or GEMINI_API_KEY) from the
+  environment; input/output transcripts are held in backend memory for the session, and a
+  Gemini session-resumption handle is written to .resume.json inside the plugin's install
+  directory. Formerly gemini-live-bridge — renamed for a provider-neutral roadmap; the old
+  repository URL redirects.
+maintainer: cruzlxyz
+tier: community
+version: "2.0.0"
+requires_hermes: ">=0.22.0"
+category: voice
+docs_url: https://github.com/cruzlxyz/livetalk#readme
+image: https://raw.githubusercontent.com/cruzlxyz/livetalk/9c648638574c67fd4ebdad334cdb6a234fc80073/assets/cover.jpg
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - GOOGLE_API_KEY

@@ -291,7 +291,10 @@ async function captureFrames(htmlPath, outputDir, options) {
     deviceScaleFactor: 1
   });
 
-  await page.goto(`file://${path.resolve(htmlPath)}`, {
+  // The real script serves the sketch from http://p5-sketch.localhost via request
+  // interception confined to the sketch folder; never load it over file://.
+  const sketchUrl = `http://p5-sketch.localhost/${path.basename(htmlPath)}`;
+  await page.goto(sketchUrl, {
     waitUntil: 'networkidle0'
   });
 

@@ -111,8 +111,11 @@ def _make_http_rejection_recorder(sink: dict):
                 body = " ".join(raw[:_HTTP_REJECTION_BODY_CHARS * 4].decode("utf-8", "replace").split())
             except Exception:  # the failure itself is still reported, just without the body
                 body = ""
+        # The URL lands in WARNING / ConnectionError text: a ``?token=`` credential must not ride along.
+        from agent.redact import redact_sensitive_text
         sink.update(status=response.status_code, method=response.request.method,
-                    url=str(response.request.url), body=body[:_HTTP_REJECTION_BODY_CHARS])
+                    url=redact_sensitive_text(str(response.request.url), redact_url_credentials=True),
+                    body=body[:_HTTP_REJECTION_BODY_CHARS])
 
     return _record
 

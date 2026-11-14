@@ -101,6 +101,7 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "client_secret", "password", "auth", "jwt", "session", "secret", "key",
     "code", "signature", "x-amz-signature",
     "x-goog-signature", "sig",  # GCS V4 signed URLs, Azure SAS tokens
+    "usertoken",  # Penpot MCP: the key can only travel as ``?userToken=`` (#133713)
 })
 
 # Snapshot at import time so runtime env mutations (e.g. an LLM-generated
@@ -1216,7 +1217,7 @@ def redact_log_urls(text: str) -> str:
     it, a remote MCP server configured as ``https://mcp.example.com/mcp?token=…``
     lands its API key on every log line that mentions the URL (issue #133713).
     """
-    if not text or "://" not in text:
+    if not text or "://" not in text or not _redact_enabled():
         return text
     return _redact_strict_url_credentials(text)
 

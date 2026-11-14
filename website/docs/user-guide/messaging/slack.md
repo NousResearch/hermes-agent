@@ -565,6 +565,29 @@ streaming:
   enabled: true       # transport auto/draft lights up Slack native streaming
 ```
 
+### Slack Code channels
+
+[Slack Code](https://docs.slack.dev/ai/slack-code/) channels are channels dedicated to one task
+with an agent: Slack shows the session status, a context bar and view tabs, and a Stop button. The
+Agent manifest (`hermes slack manifest --agent-view`) enables them: `features.code_channels`, the
+`code_channels:manage` scope, and the `agent_session_stopped` event. Reinstall the app after adding
+the scope.
+
+In a code channel, Hermes:
+
+- recognises the channel from `conversations.info`
+  (`properties.record_channel.record_type == "agent_channel"`);
+- answers without an @mention and keeps the whole channel as one session; a thread a user starts
+  keeps its own session;
+- replies top-level (not in a thread), including streamed replies;
+- shows the channel-level status: `processing` while working, `active` when the turn ends;
+- treats the Stop button as `/stop` for that session.
+
+The app also needs `message.channels` / `message.groups`, or `message.session` to receive only
+code-channel and agent-session messages. With `group_sessions_per_user: true` (the default) each
+participant gets their own session in a code channel; set it to `false` if several people work in
+the same channel with the agent.
+
 ### Native Task Cards (live tool progress)
 
 With `platforms.slack.extra.native_task_cards: true`, live tool calls render

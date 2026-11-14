@@ -92,7 +92,7 @@ def list_context_file_sources(
         home = Path(home_override) if home_override is not None else _pb.get_hermes_home()
         soul_path = home / "SOUL.md"
         if _pb._exists_or_denied(soul_path):
-            content = _pb._read_context_file(soul_path)
+            content = _pb._read_context_file(soul_path) or ""  # None only with a containment root
             status = (_loaded_status(content, len(content), max_chars, user_authored=True) if content
                       else _empty_status(soul_path))
             sources.append(_entry("SOUL.md", soul_path, content, status))

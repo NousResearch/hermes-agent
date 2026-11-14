@@ -1604,7 +1604,11 @@ def _project_root(cwd_path: Path, directory: Optional[Path] = None) -> Path:
     return _containment_root(_find_git_root(cwd_path) or cwd_path.resolve(), (directory or cwd_path).resolve())
 
 
-def _hermes_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+# ``(label, path, content)``; content None = refused by containment (``_read_context_file``).
+_ContextCandidate = tuple[str, Path, Optional[str]]
+
+
+def _hermes_md_candidates(cwd_path: Path) -> list[_ContextCandidate]:
     """.hermes.md / HERMES.md — nearest match walking up to the git root."""
     path = _find_hermes_md(cwd_path)
     if path is None:
@@ -1623,11 +1627,11 @@ def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
     return [root] + [root.joinpath(*parts[: i + 1]) for i in range(len(parts))]
 
 
-def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+def _agents_md_candidates(cwd_path: Path) -> list[_ContextCandidate]:
     """AGENTS.md chain from git root down to cwd; per directory the first NON-EMPTY of ``AGENTS.override.md`` /
     ``AGENTS.md`` / ``agents.md`` wins (empty or unreadable files are listed but fall through)."""
     cwd_resolved = cwd_path.resolve()
-    found: list[tuple[str, Path, str]] = []
+    found: list[_ContextCandidate] = []
     for directory in _agents_md_directory_chain(cwd_resolved):
         root = _project_root(cwd_resolved, directory)
         for name in ("AGENTS.override.md", "AGENTS.md", "agents.md"):
@@ -1642,10 +1646,10 @@ def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     return found
 
 
-def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+def _claude_md_candidates(cwd_path: Path) -> list[_ContextCandidate]:
     """CLAUDE.md / claude.md — cwd only, first non-empty wins."""
     root = _project_root(cwd_path)
-    found: list[tuple[str, Path, str]] = []
+    found: list[_ContextCandidate] = []
     for name in ("CLAUDE.md", "claude.md"):
         candidate = cwd_path / name
         if not _exists_or_denied(candidate):
@@ -1657,7 +1661,7 @@ def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     return found
 
 
-def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+def _cursorrules_candidates(cwd_path: Path) -> list[_ContextCandidate]:
     """.cursorrules + .cursor/rules/*.mdc — cwd only; every non-empty file is concatenated."""
     candidates: list[tuple[str, Path]] = [(".cursorrules", cwd_path / ".cursorrules")]
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
@@ -1678,7 +1682,7 @@ _CONTEXT_FILE_CANDIDATES = {
 }
 
 
-def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, str]]:
+def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, Optional[str]]]:
     """Every project-context file on disk as ``(kind, label, path, content)`` in priority order.
     ``content == ""`` means empty or unreadable, ``None`` refused by containment; neither is ever loaded."""
     return [(kind, label, path, content)

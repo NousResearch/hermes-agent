@@ -12,6 +12,8 @@ import importlib.util
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 
+import pytest
+
 _PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "timings_report.py"
 _spec = importlib.util.spec_from_file_location("timings_report", _PATH)
 if _spec is None or _spec.loader is None:
@@ -84,6 +86,61 @@ def test_large_regression_is_warning():
     # +33% — above the 25% threshold
     assert result["kind"] == "warning"
     assert "+33" in result["summary"]
+
+
+@pytest.mark.parametrize("current,previous", [
+    ([_job("tests", 80), _job("extra-lane", 10)], [_job("tests", 60)]),
+    ([_job("tests", 20)], [_job("tests", 60), _job("extra-lane", 10)]),
+    ([_job("tests", 80), _job("tests", 10)], [_job("tests", 60)]),
+    ([_job("tests", 80)], [_job("tests", 60), _job("extra-lane", 10)]),
+    ([], [_job("tests", 60)]),
+])
+def test_different_workloads_do_not_claim_aggregate_regression(current, previous):
+    cur, bl = _timings(current), _timings(previous)
+    result = _result(_mod.generate_review_status(cur, bl, report_url="https://example.test/report"))
+    assert result["kind"] == "debug"
+    assert "different workloads" in result["summary"].lower()
+    assert "%" not in result["summary"]
+    assert result["link"] == "https://example.test/report"
+    stats = _mod.compute_stats(cur, bl)
+    cards = _mod._stats_cards(stats)
+    assert 'class="stat-delta' not in cards
+    assert "Baseline: " + _mod.fmt_dur(stats["bl_wall"]) in cards
+    summary = _mod.generate_summary(cur, bl)
+    for line in summary.splitlines():
+        if line.startswith(("| Wall time |", "| Total compute |", "| Total wait |")):
+            assert line.split("|")[-2].strip() == ""
+    for rendered in (summary, _mod.generate_html(cur, bl)):
+        assert "different workloads" in rendered.lower()
+        assert "Added jobs:" in rendered and "Removed jobs:" in rendered
+
+
+@pytest.mark.parametrize("jobs", [
+    [_job("tests", 80), _job("optional", 0, conclusion="skipped")],
+    [_job("tests", 80)],
+])
+def test_skipped_and_reordered_jobs_preserve_existing_comparison(jobs):
+    cur = _timings([_job("lint", 10), *jobs])
+    bl = _timings([_job("tests", 60), _job("lint", 10)])
+    assert _mod.compute_stats(cur, bl)["workload_note"] == ""
+    assert _result(_mod.generate_review_status(cur, bl))["kind"] == "warning"
+    assert 'class="stat-delta' in _mod._stats_cards(_mod.compute_stats(cur, bl))
+
+
+def test_workload_names_are_literal_in_each_output():
+    name = "build <linux> [click](https://example.test) `x`\n# heading"
+    cur = _timings([_job("tests", 80), _job(name, 10)])
+    bl = _timings([_job("tests", 60)])
+    html = _mod.generate_html(cur, bl)
+    assert "build &lt;linux&gt;" in html
+    assert "build <linux>" not in html
+    detail = _result(_mod.generate_review_status(cur, bl))["detail"]
+    for notice in (_mod.generate_summary(cur, bl).splitlines()[2], detail.splitlines()[0]):
+        assert "&lt;linux&gt;" in notice
+        assert r"\[click\]\(https://example\.test\)" in notice
+        assert r"\`x\`" in notice
+        assert r"\# heading" in notice
+        assert "[click](" not in notice
 
 
 def test_detail_shows_top_deltas():

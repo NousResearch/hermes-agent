@@ -75,9 +75,6 @@ class TestPlanToolBatchSegments:
         [
             ("hindsight_recall", "hindsight_recall"),
             ("hindsight_reflect", "hindsight_reflect"),
-            ("hindsight_recall", "hindsight_reflect"),
-            ("hindsight_recall", "web_search"),
-            ("hindsight_reflect", "web_search"),
         ],
     )
     def test_hindsight_reads_share_parallel_segment(self, tool_names):

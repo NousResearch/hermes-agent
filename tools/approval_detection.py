@@ -109,6 +109,34 @@ _CMDPOS = (
     r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
 )
 
+# Top-level `hermes` flags that consume a SEPARATE word before the subcommand (`--profile work`).
+# The set is the value-taking subset of the real top-level parser (see
+# `hermes_cli._parser.top_level_value_flag_sets`): the approval rule needs to know which flag
+# swallows the next word, or `hermes --profile work config set ...` would read "work" as the
+# subcommand. A flag that is NOT in this set is a bare token (`--json`, `--flag=value`).
+_HERMES_TOP_LEVEL_VALUE_FLAGS = (
+    r'(?:--profile|-p|--config|--model|-m|--provider|--reasoning|--toolsets|-t)'
+)
+
+# `hermes config set|unset <key>` — the invocations that rewrite the agent's own approval
+# policy. Anchored to the INVOCATION (program word at a command position, then the `config
+# set`/`config unset` subcommand chain, then the policy key), so a plain read of the same
+# text (`grep -r 'hermes config set' docs/approvals.md`) is a plain read again.
+# The optional global-option run sits in an ATOMIC group with possessive quantifiers: a plain
+# nested `(?:\s+...)*` backtracks exponentially on a long flag run (measured 0.34s per pattern
+# at 30 flags, doubling every 2 more) and this rule is scanned on every terminal command.
+_HERMES_CONFIG_SET_APPROVAL_POLICY = (
+    # The program: the `hermes` binary (or the macOS `ai.hermes`), or the module form
+    # `python -m hermes_cli.main` that the updater and the cron lifecycle guard invoke.
+    r'(?:(?:[^\s:]*?/)?(?:ai\.)?hermes\b'
+    r'|(?:[^\s:]*?/)?python[0-9.]*(?:\.exe)?\b[ \t]+(?:-[^\s]+[ \t]+)*?-m[ \t]+hermes_cli\.main\b)'
+    r'(?>(?:[ \t]+(?:' + _HERMES_TOP_LEVEL_VALUE_FLAGS + r'[ \t]+[^\s]++'
+    r'|--?[\w-]++(?:=[^\s]++)?))*)'  # global options before the subcommand
+    r'[ \t]+config[ \t]+(?:set|unset)\b[ \t]*'  # the `config set` / `config unset` subcommand
+    r'(?>(?:--?[\w-]++[ \t]+)*)'  # `config set`'s own flags (`--force`)
+    r'(?:approvals(?:\.[\w.-]++)*|command_allowlist)\b'  # the approval-policy key
+)
+
 
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
@@ -666,6 +694,15 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
     (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    # `hermes config set` can rewrite the agent's own approval policy (approvals.mode, approvals.deny,
+    # command_allowlist) — gate it like the file-tool path so a default empty deny list is not an open door.
+    # Anchored to a real INVOCATION: the command must BE `hermes config set <policy key>`. The
+    # `\bhermes\b.*\bconfig\b.*\bset\b` form matched that TEXT anywhere in the command, so a plain
+    # read of it (`grep -r 'hermes config set' docs/approvals.md`) demanded an approval it has no
+    # business demanding. The global-option run uses possessive quantifiers inside an atomic group,
+    # so it cannot backtrack exponentially the way a plain nested `*` does.
+    (_CMDPOS + _HERMES_CONFIG_SET_APPROVAL_POLICY,
+     "hermes config set approval settings"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
     # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed

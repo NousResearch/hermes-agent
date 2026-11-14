@@ -14,7 +14,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from agent.i18n import t
 from gateway.platforms.base import SendResult
 
 logger = logging.getLogger("plugins.platforms.slack.adapter")
@@ -38,6 +37,12 @@ class _CodeCard:
     message_ts: str = ""
     text: str = ""
     expires_at: float = 0.0
+
+
+def t(key: str, **kwargs: Any) -> str:
+    """The adapter facade's ``t``: plugins reach core i18n only through the facade's baselined import."""
+    from plugins.platforms.slack.adapter import t as facade_t
+    return facade_t(key, **kwargs)
 
 
 def _mrkdwn_escape(text: str) -> str:

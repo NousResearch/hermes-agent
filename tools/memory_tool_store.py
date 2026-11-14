@@ -258,13 +258,26 @@ class MemoryStore:
             self._system_prompt_snapshot[target] = self._render_block(target, [_sanitize(e, path.name) for e in entries])
 
     @staticmethod
+    def _lock_path_for(path: Path) -> Path:
+        """``<publish target>.lock`` — the identity of the file :func:`utils.atomic_replace` renames onto.
+
+        A profile can share ``USER.md`` through a symlink: the write lands on the resolved target
+        while each profile holds its own pathname, so a lock taken beside the local name serialized
+        nothing and two concurrent read-modify-writes of the whole file could drop one another's
+        entry (#154699). Resolution is ``realpath`` (not ``utils._publish_path``) so a symlinked
+        parent directory counts too — the rename follows it just the same.
+        """
+        resolved = Path(os.path.realpath(path))
+        return resolved.with_suffix(resolved.suffix + ".lock")
+
+    @staticmethod
     @contextmanager
     def _file_lock(path: Path):
         """Exclusive lock on a separate .lock file so the memory file itself can
         still be atomically replaced."""
         from tools import memory_tool as _mt  # fcntl/msvcrt live (and are patched) there
         fcntl, msvcrt = _mt.fcntl, _mt.msvcrt
-        lock_path = path.with_suffix(path.suffix + ".lock")
+        lock_path = MemoryStore._lock_path_for(path)
         from hermes_constants import mkdir_under_hermes_home
 
         mkdir_under_hermes_home(lock_path.parent)

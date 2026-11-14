@@ -76,7 +76,7 @@ def test_routed_turns_sign_with_their_own_profile_key(two_profiles, monkeypatch,
             assert submit(module, monkeypatch) == "handle"
 
     assert signed == ["B", "A", "B"]
-    # One client per key, reused across turns rather than rebuilt (and leaked) per request.
+    # One client per profile, reused across turns rather than rebuilt (and leaked) per request.
     assert constructed == ["B", "A"]
 
 

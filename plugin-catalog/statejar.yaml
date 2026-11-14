@@ -10,7 +10,6 @@ requires_hermes: ">=0.19"
 version: "0.1.0"
 title: StateJar
 docs_url: https://statejar.com/docs/hermes
-homepage_url: https://statejar.com
 readme: true
 platforms: [linux, macos, windows]
 capabilities:

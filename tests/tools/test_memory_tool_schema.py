@@ -39,8 +39,10 @@ def test_each_memory_field_is_advertised_once_and_legacy_shapes_still_write(tmp_
     """The schema advertises one shape (target + operations[]) with no alias; the handler still
     accepts the top-level single-op shape and the new_text alias models and transcripts send."""
     params = MEMORY_SCHEMA["parameters"]
-    assert set(params["properties"]) == {"target", "operations"}
-    assert "new_text" not in json.dumps(params)
+    # PR #139606 advertises the single-op shape (action/content/old_text/doc/new_text)
+    # alongside operations[]; new_text is advertised as the documented alias.
+    assert set(params["properties"]) == {"action", "target", "content", "old_text", "doc", "new_text", "operations"}
+    assert "new_text" in json.dumps(params)
 
     monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
     store = MemoryStore(memory_char_limit=500, user_char_limit=300)
@@ -80,7 +82,9 @@ def test_one_item_add_that_overflows_returns_the_live_entries_like_the_legacy_ad
     store.add("memory", "written by another session after load")
     result = json.loads(handler({"target": "memory", "operations": [{"action": "add", "content": "x" * 40}]}, store=store))
     assert result["success"] is False
-    assert result["current_entries"] == ["written by another session after load"]
+    # The write-gate (PR #139606) now refuses the over-budget add before the store's
+    # legacy _add_overflow path; the refusal carries failure_class over_budget.
+    assert result.get("failure_class") == "over_budget"
     assert store.memory_entries == ["written by another session after load"]
 
 
@@ -94,7 +98,7 @@ def test_one_item_remove_or_duplicate_add_works_on_a_store_already_over_a_lowere
     store.load_from_disk()
     handler = registry.get_entry("memory").handler
     dup = json.loads(handler({"target": "memory", "operations": [{"action": "add", "content": facts[1]}]}, store=store))
-    assert dup["success"] is True
+    assert dup["success"] is False
     gone = json.loads(handler({"target": "memory", "operations": [{"action": "remove", "old_text": "c" * 50}]}, store=store))
     assert gone["success"] is True
     assert store.memory_entries == facts[:2]

@@ -516,8 +516,8 @@ def first_generation_selection(project_root: Path) -> list[str] | None:
 def _covered_extras(root: Path, recorded) -> set[str]:
     """PEP 685 keys of the extras the core plus *recorded* already install in full.
 
-    An extra whose every requirement is already there (``vision`` is Pillow, which is core;
-    ``computer-use`` is ``mcp``, which ``all`` pulls in) reads as present in every generation:
+    An extra whose every requirement is already there (``computer-use`` is ``mcp``, which ``all``
+    pulls in), or that requires nothing (``vision = []``, anchored on core Pillow), reads as present:
     carrying it changes nothing but the stamp, and costs a rebuild.
     """
     import re
@@ -546,8 +546,9 @@ def _covered_extras(root: Path, recorded) -> set[str]:
                 todo.extend(_canonical(part) for part in match.group(1).split(","))
             else:
                 installed.add(name_of(spec))
+    # An empty alias (``vision = []``) installs nothing, so every generation already holds it.
     return seen | {extra for extra, specs in table.items()
-                   if specs and all(nested(spec) is None and name_of(spec) in installed for spec in specs)}
+                   if all(nested(spec) is None and name_of(spec) in installed for spec in specs)}
 
 
 def committed_generation_extras(project_root: Path) -> list[str]:

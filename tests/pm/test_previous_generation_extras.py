@@ -21,8 +21,16 @@ from tests.hermes_cli import test_first_generation_carries_legacy_extras as _leg
 legacy_tree = pytest.fixture(_legacy.legacy_tree.__wrapped__)
 
 
+# Real-shaped extras: an SDK extra names its package; ``vision`` is the empty alias it is upstream.
+PYPROJECT = (
+    '[project]\nname="hermes-agent"\nversion="1"\ndependencies=["Pillow==12.0.0"]\n'
+    '[project.optional-dependencies]\nall=[]\ntelegram=["python-telegram-bot==22.8"]\n'
+    'discord=["discord.py==2.6.4"]\nfal=["fal-client==0.14.1"]\nslack=["slack-sdk==3.45.0"]\nvision=[]\n')
+
+
 def _committed(root, *anchors, recorded):
     shutil.rmtree(root / "venv")  # past the migration: only PM generations remain
+    (root / "pyproject.toml").write_text(PYPROJECT, encoding="utf-8")
     venv = install_state_dir(root) / "environments" / "previous" / "venv"
     site = venv / "lib" / "python3.11" / "site-packages"
     site.mkdir(parents=True)
@@ -67,3 +75,14 @@ def test_a_ledger_that_matches_its_environment_is_unchanged(legacy_tree):
 
     assert sorted(_recorded(legacy_tree)) == ["all", "slack", "telegram"]
     assert json.loads(runtime_facts_path(legacy_tree).read_text())["packages"]["venv"]["extras"]
+
+
+def test_an_empty_alias_whose_anchor_is_core_does_not_rebuild_a_healthy_generation(legacy_tree):
+    """``vision = []`` anchors on Pillow, which is core: carrying it would change only the stamp."""
+    import pm
+
+    _committed(legacy_tree, "PIL", "telegram", recorded=["all", "telegram"])
+
+    pm.sync_venv([], explicit=True)
+
+    assert sorted(_recorded(legacy_tree)) == ["all", "telegram"]

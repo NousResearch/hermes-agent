@@ -1,13 +1,14 @@
 name: oc-free-provider
 repo: https://github.com/anpicasso/hermes-oc-free-provider
-sha: ae705c692dd83c5eb0e871053722838af39e213e
-description: "Unofficial OpenCode Zen free-model transport for Hermes. Discovers live zero-cost tool-capable models by intersecting OpenCode Zen and models.dev over HTTPS, persists only the last successful intersection for restart fallback, and bidirectionally translates compatible OpenCode and Hermes tool schemas, calls, choices, and replayed history while Hermes executes tools locally. No OpenCode CLI, Node.js, npm, or npx dependency. Disclosure — prompts, tool schemas, tool results, and other conversation content leave the machine for OpenCode and the selected model provider; model availability, retention, data use, and permission are governed by their current terms."
+sha: 7492876cae926c8b33c76fc32ab6560c26922c12
+description: "Unofficial OpenCode free-model transport for Hermes. Discovers live zero-cost tool-capable models from OpenCode's /inference/v1/models catalog, refreshing the relay list at most every 10 minutes and models.dev metadata every 6 hours, persists the last successful discovery for restart fallback, and pins the provider's picker floor to the discovered set. Inference posts through a bundled Bun transport (oc_transport.js) carrying OpenCode's session header, environment preamble, and streaming tool-call shape; Hermes keeps the agent loop and executes tools locally, translating compatible OpenCode and Hermes tool schemas, calls, choices, and replayed history, and failing closed when an advertised compatibility alias has no Hermes target. Requires Bun; no OpenCode CLI, Node.js, npm, or npx dependency. OpenCode restricts free-tier chat models to use from within OpenCode and its gateway enforces that restriction, so this undocumented compatibility transport may be changed or disabled at any time; it does not grant access to any model and no free-tier availability is guaranteed. Disclosure — prompts, tool schemas, tool results, and other conversation content leave the machine for OpenCode and the selected model provider; model availability, retention, data use, and permission are governed by their current terms."
 maintainer: anpicasso
 tier: community
 category: models
-requires_hermes: ">=0.21.3"
+requires_hermes: ">=0.23.1"
 docs_url: https://github.com/anpicasso/hermes-oc-free-provider#readme
-version: "3.0.0"
+version: "4.0.0"
+image: https://raw.githubusercontent.com/anpicasso/hermes-oc-free-provider/7492876cae926c8b33c76fc32ab6560c26922c12/docs/banner.png
 platforms: []
 capabilities:
   provides_tools: []

@@ -517,9 +517,9 @@ except Exception:
 
 # PM runs after profile resolution but before application dependency imports.
 if sys.argv[1:2] == ["pm"]:
-    from pm.cli import main as _pm_main
+    from hermes_cli.main_pm_dispatch import dispatch_pm
 
-    raise SystemExit(_pm_main(sys.argv[2:]))
+    raise SystemExit(dispatch_pm(sys.argv[2:], PROJECT_ROOT))
 
 # Windows launcher self-heal: the ``hermes`` command is a COPY of the venv console script staged into
 # the managed bin dir, outside the checkout because ``hermes update``'s autostash (``git stash push

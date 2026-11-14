@@ -1,6 +1,10 @@
 """Credential-store reads (#124999): ``~/.aws/credentials``, ``.netrc``, ``.pgpass``, ``.npmrc``,
 ``.pypirc`` and ``.git-credentials`` are secret-bearing sources whatever their line format."""
 
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from agent.redact import _is_secret_file_arg, redact_sensitive_text, redact_terminal_output
@@ -81,3 +85,11 @@ class TestCredentialStoreReads:
         # The store formats never fire on ordinary secret-file lines.
         rc = "# password manager setup\nexport PATH=/a:/b:/c:/d:/e\nexport EDITOR=vim\n"
         assert redact_terminal_output(rc, "cat ~/.bashrc", force=True) == rc
+
+
+def test_ini_pass_is_linear_on_a_long_keyword_line():
+    # A secret word repeated with no ``=``: the INI key run backtracked O(n^2) (12s at 80k chars).
+    # A subprocess with a hard timeout, because an in-process regex cannot be interrupted.
+    code = "import sys; from agent.redact import redact_terminal_output as r; r(sys.stdin.read(), 'cat ~/.pypirc', force=True)"
+    subprocess.run([sys.executable, "-c", code], input="token" * 16000, text=True, check=True, timeout=5,
+                   cwd=Path(__file__).resolve().parents[2])

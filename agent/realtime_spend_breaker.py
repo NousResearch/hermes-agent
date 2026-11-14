@@ -339,6 +339,7 @@ def record_realtime_llm_call(
                         prompt >= prev_prompt
                         and prev_cached >= 35_000
                         and (prev_cached - cached) >= 16_384
+                        and cached < prompt * 0.50
                     ):
                         cache_reset = 1
                         row_info["cache_reset"] = 1

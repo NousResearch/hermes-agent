@@ -248,6 +248,31 @@ def test_pruned_system_prompt_38k_floor_and_per_session_15m_reset_aggregation(tm
     summary2 = rsb.get_realtime_spend_summary()
     assert summary2["cache_resets_15m"] == 1
 
+    # Regional hybrid hop where cached_in >= 50% of prompt (94,284 / 141,852 = 66.5%) is not a reset
+    rsb.record_realtime_llm_call(
+        session_id="desk_turn1_1",
+        source="desktop",
+        provider="vertex",
+        model="google/gemini-4-argon",
+        prompt_tokens=130_541,
+        uncached_input_tokens=8_649,
+        cache_read_tokens=121_892,
+        output_tokens=400,
+        request_id="rid_reg_a",
+    )
+    r_reg_b = rsb.record_realtime_llm_call(
+        session_id="desk_turn1_1",
+        source="desktop",
+        provider="vertex",
+        model="google/gemini-4-argon",
+        prompt_tokens=141_852,
+        uncached_input_tokens=47_568,
+        cache_read_tokens=94_284,
+        output_tokens=400,
+        request_id="rid_reg_b",
+    )
+    assert r_reg_b["cache_reset"] == 0
+
 
 
 

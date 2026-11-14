@@ -224,7 +224,89 @@ function cachedScriptPath(hermesHome, cacheKey) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${cacheKey}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
+const MAX_DOWNLOAD_ATTEMPTS = 3
+
+function isTransientInstallScriptHttpStatus(status) {
+  return status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504
+}
+
+function httpStatusFromDownloadError(err) {
+  const match = /HTTP (\d{3})\b/.exec(String(err && err.message ? err.message : err))
+
+  return match ? Number(match[1]) : null
+}
+
+function isTransientInstallScriptTransport(err) {
+  // Not every rejection is an Error instance (Node core sometimes rejects
+  // with strings/objects): read `code` only when it is actually there.
+  const code = err && typeof err === 'object' && 'code' in err ? err.code : undefined
+
+  return (
+    code === 'EAI_AGAIN' ||
+    code === 'ECONNREFUSED' ||
+    code === 'ECONNRESET' ||
+    code === 'ENETUNREACH' ||
+    code === 'ENOTFOUND' ||
+    code === 'EPIPE' ||
+    code === 'ETIMEDOUT'
+  )
+}
+
+function shouldRetryInstallScriptDownload(err, attempt) {
+  return shouldRetryInstallScriptDownloadForRef(err, attempt, /*immutable=*/ true)
+}
+
+// #121615: on the mutable-ref path (branch / non-SHA fallback stamp) a raw-CDN
+// cache purge right after a push can briefly 404 an existing file, and a
+// first-run install has no stale cache — retry it once, bounded. An immutable
+// commit pin stays fatal on 404: a bad pin must not look like a blip.
+function shouldRetryInstallScriptDownloadForRef(err, attempt, immutable) {
+  if (attempt >= MAX_DOWNLOAD_ATTEMPTS) {
+    return false
+  }
+
+  const status = httpStatusFromDownloadError(err)
+
+  if (status !== null) {
+    if (status === 404 && !immutable) {
+      return true
+    }
+
+    return isTransientInstallScriptHttpStatus(status)
+  }
+
+  return isTransientInstallScriptTransport(err)
+}
+
+function downloadBackoffMs(attempt) {
+  return 200 * 2 ** Math.min(attempt - 1, 3)
+}
+
 function downloadInstallScript(ref, destPath) {
+  const immutable = isPinnedCommit(ref)
+
+  return (async () => {
+    let lastError
+
+    for (let attempt = 1; attempt <= MAX_DOWNLOAD_ATTEMPTS; attempt += 1) {
+      try {
+        return await downloadInstallScriptOnce(ref, destPath)
+      } catch (err) {
+        lastError = err
+
+        if (!shouldRetryInstallScriptDownloadForRef(err, attempt, immutable)) {
+          throw err
+        }
+
+        await new Promise(resolve => setTimeout(resolve, downloadBackoffMs(attempt)))
+      }
+    }
+
+    throw lastError
+  })()
+}
+
+function downloadInstallScriptOnce(ref, destPath) {
   // Fetch from GitHub raw at the install ref: the packaged SHA for a fresh
   // install, the branch for an existing checkout or a non-git fallback stamp
   // (never the all-zero placeholder, which is not a real GitHub commit).
@@ -1038,11 +1120,14 @@ export {
   hasExistingGitCheckout,
   installRefForStamp,
   isPinnedCommit,
+  isTransientInstallScriptHttpStatus,
   // Exposed for testability
   parseStageResult,
   resolveCheckoutHead,
   resolveInstallScript,
   resolveLocalInstallScript,
   resolveMarkerPinnedCommit,
-  runBootstrap
+  runBootstrap,
+  shouldRetryInstallScriptDownload,
+  shouldRetryInstallScriptDownloadForRef
 }

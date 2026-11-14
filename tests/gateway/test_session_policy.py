@@ -40,6 +40,60 @@ def test_policy_selects_surface_and_isolates_cwd(tmp_path):
             build_policy(params, {})
 
 
+def test_launch_skill_preload_uses_requested_project_cwd_not_daemon_cwd(tmp_path, monkeypatch):
+    """One-shot skill preloads must resolve trusted project skills in the launch cwd."""
+    import asyncio
+    from agent import skill_utils
+    from agent.runtime_cwd import scoped_session_cwd
+    from gateway.session_policy import render_launch_skills
+    from hermes_state_runtime import RuntimeStoreError
+
+    home = tmp_path / "home"
+    home.mkdir()
+    launcher = tmp_path / "gateway-launch"
+    launcher.mkdir()
+    projects = []
+    for name in ("alpha", "beta"):
+        repo = tmp_path / name
+        (repo / ".git").mkdir(parents=True)
+        skill = repo / ".agents" / "skills" / (name + "-release")
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            f"---\nname: {name}-release\ndescription: Scoped project release gate\n---\n\n"
+            f"ONLY_{name.upper()}_RELEASE_EVIDENCE\n",
+            encoding="utf-8",
+        )
+        projects.append(repo)
+    home.joinpath("config.yaml").write_text(
+        "skills:\n  external_dirs: []\n  trusted_project_dirs:\n"
+        + "".join(f"    - '{repo.as_posix()}'\n" for repo in projects),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TERMINAL_CWD", str(launcher))
+    monkeypatch.chdir(launcher)
+    skill_utils._external_dirs_cache_clear()
+    try:
+        assert not scoped_session_cwd()
+        for repo, name in zip(projects, ("alpha", "beta")):
+            prompt = asyncio.run(asyncio.to_thread(
+                render_launch_skills,
+                {"cwd": str(repo), "skills": [name + "-release"]},
+                "fixture-" + name,
+            ))
+            assert f"ONLY_{name.upper()}_RELEASE_EVIDENCE" in prompt
+            assert not scoped_session_cwd()
+        with pytest.raises(RuntimeStoreError, match="unknown_skill"):
+            asyncio.run(asyncio.to_thread(
+                render_launch_skills,
+                {"cwd": str(projects[1]), "skills": ["alpha-release"]},
+                "wrong-project",
+            ))
+        assert not scoped_session_cwd()
+    finally:
+        skill_utils._external_dirs_cache_clear()
+
+
 @pytest.mark.asyncio
 async def test_launch_options_reach_the_owner_frozen_and_hooks_consented(tmp_path, monkeypatch):
     """`-s/--skills`, `--checkpoints`, `--pass-session-id`, `--accept-hooks` (and an exported

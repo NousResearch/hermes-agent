@@ -122,6 +122,9 @@ print(result.answer)  # 150.0
 **Reasoning + Acting** - Agent that uses tools iteratively.
 
 ```python
+import ast
+import operator
+
 from dspy.predict import ReAct
 
 # Define tools
@@ -130,9 +133,51 @@ def search_wikipedia(query: str) -> str:
     # Your search implementation
     return search_results
 
+# Tool input is model-generated text: never pass it to eval(). eval() allows
+# names, attribute access, calls and unbounded work such as huge powers or
+# container repetition. Walk a whitelisted AST with explicit budgets instead.
+_BIN_OPS = {
+    ast.Add: operator.add, ast.Sub: operator.sub,
+    ast.Mult: operator.mul, ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+_UNARY_OPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+_ALLOWED_NODES = (ast.Expression, ast.Constant, ast.BinOp, ast.UnaryOp,
+                  *_BIN_OPS, *_UNARY_OPS)
+_MAX_CHARS = 256       # input length budget
+_MAX_DEPTH = 50        # operator nesting budget
+_MAX_EXPONENT = 100    # |right operand| budget for **
+_MAX_ABS = 10 ** 100   # |literal / intermediate / result| budget
+
+def _arith(node, depth=0):
+    if depth > _MAX_DEPTH:
+        raise ValueError("expression nested too deeply")
+    if isinstance(node, ast.Constant):
+        value = node.value  # type is checked below (rejects str, bool, complex)
+    elif isinstance(node, ast.UnaryOp):
+        value = _UNARY_OPS[type(node.op)](_arith(node.operand, depth + 1))
+    else:  # ast.BinOp; every other node type was rejected before evaluation
+        left = _arith(node.left, depth + 1)
+        right = _arith(node.right, depth + 1)
+        if isinstance(node.op, ast.Pow) and abs(right) > _MAX_EXPONENT:
+            raise ValueError("exponent too large")
+        value = _BIN_OPS[type(node.op)](left, right)
+    if type(value) not in (int, float) or abs(value) > _MAX_ABS:
+        raise ValueError("value out of range or not a real number")
+    return value
+
 def calculate(expression: str) -> float:
-    """Evaluate a mathematical expression."""
-    return eval(expression)
+    """Evaluate arithmetic: numbers, + - * / // % ** and parentheses."""
+    if not isinstance(expression, str) or len(expression) > _MAX_CHARS:
+        raise ValueError(f"expression must be a string of at most {_MAX_CHARS} chars")
+    tree = ast.parse(expression.strip(), mode="eval")
+    for node in ast.walk(tree):  # reject names, attributes, calls, containers...
+        if not isinstance(node, _ALLOWED_NODES):
+            raise ValueError(f"unsupported syntax: {type(node).__name__}")
+    # Invalid input raises (ValueError, SyntaxError, ZeroDivisionError, ...);
+    # ReAct records a tool exception as that step's observation.
+    return _arith(tree.body)
 
 # Create ReAct agent
 class ResearchQA(dspy.Signature):

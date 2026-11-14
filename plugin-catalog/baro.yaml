@@ -1,0 +1,26 @@
+name: baro
+repo: https://github.com/jigjoy-ai/hermes-baro
+sha: "b8555ac81564f9b153489c64c0106674dd6ebcfc"
+subdir: ""
+description: "Hand a software goal to Baro and watch it run as a live, dependency-aware kanban: baro_plan returns the plan as stories with dependency edges, baro_run starts a run, baro_status shows each story as blocked, ready, running, done or failed with what it waits on and what it blocks, and baro_cancel stops the run and its process tree. Disclosure — every baro_run and baro_plan call is sent to Hermes's human-approval gate by the plugin's pre_tool_call hook, whatever the approval mode, because once approved Baro's coding agents execute shell commands in the target repository without further prompts (each in its own git worktree; on Baro's default Claude backend inside Claude Code's OS sandbox, which allows writes only to that worktree and Baro's package cache, denies reading credential stores and limits network to package registries; with --llm openai only shell writes are OS-confined on macOS and Linux relies on Baro's command guard; no push or pull request; agents run with the user's account); baro_run starts one long-running background process per run (baro-ai@0.132.0 through npx, pinned exactly) via Hermes's terminal tool; Baro's agents make network calls to the model provider the user configured for Baro, or to the Hermes subscription proxy on this machine when the plugin's opt-in setting is on (the plugin first checks that the proxy answers on its local /models route; it calls nothing off the machine); a tool call cannot name a backend, base URL or model, and the approval message says where a run's model calls go; boards, and a tee'd copy of each run's event stream for the live board, are stored only in the plugin's own Hermes plugin data; the plugin reads no credentials and no files outside that state, has no telemetry, and refuses to start or stop runs under cron and the messaging gateway."
+maintainer: JigJoy
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/jigjoy-ai/hermes-baro/blob/b8555ac81564f9b153489c64c0106674dd6ebcfc/README.md
+version: "0.1.1"
+readme: true
+platforms: []
+title: "Baro"
+onboarding: false
+known_issues: []
+capabilities:
+  provides_tools:
+    - baro_plan
+    - baro_run
+    - baro_status
+    - baro_cancel
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

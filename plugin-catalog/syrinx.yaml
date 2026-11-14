@@ -1,0 +1,35 @@
+name: syrinx
+title: Syrinx
+repo: https://github.com/cstljuan/syrinx
+sha: d9dcb4c6290a8d144ece5eceab220ea950c9143f
+description: "Your agent is fast; Syrinx makes it wait for the right moment. In a focus block (/flow 45) the agent's questions are parked with the default it took and it keeps working; when you return you get a catch-up, a list counted by code from the tool calls (files changed, commands run, anything that left your machine, and how much work rests on unconfirmed defaults), and every question in one card. During the block a fixed list of outward actions (git push, publish, send, deploy) is held before it runs and offered back on that card. Settle a question once with /always and it is never asked again. Late-night requests become a morning brief. Deep-work hours, a question budget, a time receipt, a Desktop pane and Argus, a pet whose pose shows the state. Disclosure: pre_tool_call can block the built-in clarify tool (during a focus block, over the question budget you set, or when a standing answer covers it) and tells the agent which default to use, and during a focus block only it blocks tool calls that match a fixed list of outward actions (push, publish, gh create, curl with a body, ssh, docker push, kubectl, terraform, send/post/deploy/upload/pay tools), storing a label, never the command (a guard, not a sandbox: scripts, execute_code and browser or MCP tools still run); hold_outward: false turns that off; parked questions, held actions and queued requests are handed back only to the session that created them; pre_llm_call appends short blocks to your message (standing answers, focus notes, the hand-back, the morning brief) and, after your cutoff and only on cli, tui and desktop (or platforms you add with night_platforms), ends the turn to queue the request; post_tool_call stores tool names, file basenames and program names, never arguments, plus your answers to clarify cards; with auto_focus on (macOS, off by default) it runs ioreg and lsappinfo read-only; /syrinx pet writes the bundled sprite sheet through Hermes' pet store. No network calls of its own, approvals untouched; cron runs, subagents, the API server, kanban workers and messaging users are never refused at night."
+maintainer: cstljuan
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/cstljuan/syrinx#readme
+version: "1.1.1"
+image: https://raw.githubusercontent.com/cstljuan/syrinx/d9dcb4c6290a8d144ece5eceab220ea950c9143f/docs/hero.jpg
+screenshots:
+  - https://raw.githubusercontent.com/cstljuan/syrinx/d9dcb4c6290a8d144ece5eceab220ea950c9143f/docs/screenshots/flow-parked.jpg
+  - https://raw.githubusercontent.com/cstljuan/syrinx/d9dcb4c6290a8d144ece5eceab220ea950c9143f/docs/screenshots/hold-return.jpg
+  - https://raw.githubusercontent.com/cstljuan/syrinx/d9dcb4c6290a8d144ece5eceab220ea950c9143f/docs/screenshots/return-card.jpg
+  - https://raw.githubusercontent.com/cstljuan/syrinx/d9dcb4c6290a8d144ece5eceab220ea950c9143f/docs/screenshots/receipt-card.jpg
+  - https://raw.githubusercontent.com/cstljuan/syrinx/d9dcb4c6290a8d144ece5eceab220ea950c9143f/docs/screenshots/argus-poses.jpg
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - syrinx_park
+    - syrinx_interrupt
+    - syrinx_status
+    - syrinx_flow
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+    - post_llm_call
+    - on_human_input_request
+    - on_human_input_resolved
+  provides_middleware: []
+  requires_env: []

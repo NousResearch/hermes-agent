@@ -359,6 +359,18 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
 
+def service_path_prefix_entries() -> list[str]:
+    """The Hermes-owned PATH entries a generated definition puts BEFORE the invoking shell's PATH.
+
+    Both sources are deterministic — the venv/node bin dirs that exist on disk, and the pm-managed Node
+    the target home's ``facts.json`` records — so the staleness check may compare them; only the shell
+    tail is environment-derived (#144735).
+    """
+    entries = _gw()._build_service_path_dirs()
+    _gw()._append_node_dir_for_service(entries)
+    return list(dict.fromkeys(entries))
+
+
 def generate_launchd_plist() -> str:
     from html import escape
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
@@ -370,9 +382,11 @@ def generate_launchd_plist() -> str:
 
     # launchd's default PATH misses Homebrew, nvm, cargo…; prepend venv/bin + node dirs (as in the
     # systemd unit) so node stays resolvable even if the shell PATH changes, then the shell PATH.
-    priority_dirs = _gw()._build_service_path_dirs()
-    _gw()._append_node_dir_for_service(priority_dirs)
-    sane_path = ":".join(dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]))
+    priority_dirs = service_path_prefix_entries()
+    # Only the prefix may carry a store Node: a refresh run inside the gateway inherits the old plist PATH.
+    store_node = str(_gw().get_hermes_home() / "tools" / "node-")
+    shell_dirs = [p for p in os.environ.get("PATH", "").split(":") if p and not p.startswith(store_node)]
+    sane_path = ":".join(dict.fromkeys(priority_dirs + shell_dirs))
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping
     # stderr; the osascript wrapper gives the job a Local Network identity (see launchd_program_arguments).
@@ -466,6 +480,37 @@ def generate_launchd_plist() -> str:
 </dict>
 </plist>
 """
+
+
+# The generated PATH is ``<Hermes-owned prefix> + $PATH``; only the tail is environment-derived.
+_PLIST_PATH_PATTERN = r"(<key>PATH</key>\s*<string>)(.*?)(</string>)"
+_PLIST_PATH_TAIL = "__HERMES_SHELL_PATH__"
+
+
+def normalize_plist_path_for_comparison(text: str) -> str:
+    """Mask only the shell-derived PATH tail so the Hermes-owned prefix stays comparable.
+
+    Blanking the whole payload (the previous rule) also hid the pm-managed Node dir, so a Node update
+    left the installed plist "current" forever (#144735).
+    """
+    import re
+    from html import unescape
+
+    keep = len(service_path_prefix_entries())
+    managed_node_prefix = str(_gw().get_hermes_home() / "tools" / "node-")
+
+    def _mask(match: re.Match[str]) -> str:
+        entries = [part for part in match.group(2).split(":") if part]
+        # When facts.json loses its Node entry, the current prefix gets shorter.
+        # Do not relabel a previously managed Node path as disposable shell PATH.
+        protected = keep
+        while protected < len(entries) and unescape(entries[protected]).startswith(managed_node_prefix):
+            protected += 1
+        tail = f":{_PLIST_PATH_TAIL}" if len(entries) > protected else ""
+        return f"{match.group(1)}{':'.join(entries[:protected])}{tail}{match.group(3)}"
+
+    normalized = _gw()._normalize_service_definition(text)
+    return re.sub(_PLIST_PATH_PATTERN, _mask, normalized, flags=re.DOTALL)
 
 
 def launchd_plist_is_current() -> bool:

@@ -148,10 +148,28 @@ def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     nothing in the files shadows them.
     """
     from agent.secret_scope import _is_global_env, build_profile_secret_scope
+    from gateway.bridged_env import follow_bridged_env
     scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
+    # The frozen env's config.yaml-bridged lists follow the live bridge, or a user removed from the
+    # launch profile's config.yaml stays admitted until a restart; operator values stay frozen.
+    follow_bridged_env(scope)
     scope.update(build_profile_secret_scope(Path(launch_home)))
     return scope
 
+
+def follow_launch_bridged_env() -> None:
+    """After the launch profile's live allowlist reload re-bridged its lists, bring the INSTALLED launch
+    mapping (built at the body's entry, before the reload) up to date, so the rest of this body reads
+    the edited lists. The caller runs this only with the launch scope bound (``_owner_scope``) and its
+    bridge not skipped, so the mapping is never another profile's."""
+    from agent.secret_scope import build_profile_secret_scope, current_secret_scope
+    from gateway.bridged_env import follow_bridged_env
+    from hermes_constants import get_hermes_home
+
+    scope = current_secret_scope()
+    if isinstance(scope, dict):
+        follow_bridged_env(scope)
+        scope.update(build_profile_secret_scope(get_hermes_home()))  # .env / sources still win, as at build
 
 
 def owner_secret_scope(home: str | Path) -> dict[str, str]:
@@ -196,24 +214,16 @@ def launch_profile_runtime_scope(launch_home: str | Path) -> Iterator[None]:
     override), so a launch-profile turn without it was indistinguishable from no turn at all and
     every plugin hook it fired saw an unscoped process (#118538). Routed turns already bind theirs
     (``gateway/run.py::_profile_runtime_scope``); the launch profile is a tenant like any other."""
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    from agent.runtime_scope import bind_state, scope_for_profile
 
     home = Path(launch_home)
-    home_token = secret_token = terminal_token = None
+    # Own home: secrets unstamped (no foreign-home stamp), terminal policy over the frozen overlay.
+    tokens = bind_state(scope_for_profile(home), secrets=launch_secret_scope(home), stamp_home=False,
+                        env_overlay=launch_terminal_env())
     try:
-        home_token = set_hermes_home_override(str(home))
-        secret_token = set_secret_scope(launch_secret_scope(home))  # own home: no foreign stamp
-        terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
         yield
     finally:
-        if terminal_token is not None:
-            reset_terminal_scope(terminal_token)
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
+        tokens.reset()
 
 
 @contextlib.contextmanager

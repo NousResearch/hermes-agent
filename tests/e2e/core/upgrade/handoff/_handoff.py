@@ -4,7 +4,7 @@ from it, and the real ``hermes update`` to the next commit, all in one shared PI
 Two columns, both git-mode installs over a local bare ``origin`` (the official URL rewritten to it,
 so the updater takes the normal non-fork path and never touches the network):
 
-* ``n1``: ``main`` parked at release N-1 (``git describe --tags --abbrev=0 HEAD~1``, overridable with
+* ``n1``: ``main`` parked at release N-1 (``_install_helpers.upgrade_base``, overridable with
   ``HERMES_E2E_UPGRADE_BASE``), its venv built from N-1's own ``uv.lock`` (the installer's tier 0),
   then ``main`` moves to HEAD;
 * ``head``: HEAD's ``scripts/install.sh`` into an empty HOME, then ``main`` gets NEXT, a synthetic

@@ -1,0 +1,35 @@
+name: keryx
+repo: https://github.com/hsyvy/keryx
+sha: 6c5cd7fc468a314eef0b524a29b1f12c68c0e569
+subdir: keryx
+title: Keryx
+description: >-
+  Outbound phone calls from your own phone. Hermes writes a brief and calls place_call; after
+  you approve (every call, single use), your phone dials over Bluetooth hands-free through
+  PipeWire's telephony API, the plugin plays an AI-disclosure line, and a realtime voice model
+  (OpenAI Realtime or GPT-Live) holds the conversation, asking you mid-call when it needs a
+  decision. The outcome, details and transcript go back to Hermes; /calls lists recent calls.
+  Guardrails in code: emergency, short-code and premium numbers blocked, quiet hours, hourly
+  rate limit, hard 5-minute cap. Linux only (PipeWire >= 1.4, a paired phone). Disclosure —
+  places real calls on the user's SIM; call audio streams to OpenAI (wss://api.openai.com
+  realtime or live sessions) plus OpenAI TTS for the disclosure line and, for GPT-Live, one
+  Responses request per call; runs busctl, pw-dump, pw-record, pw-play, pw-link, pw-cli and
+  espeak-ng; audio processes and two temporary virtual PipeWire nodes exist only during an
+  approved call; stores a call log (and recordings only if `record: true`) under
+  plugin-data/keryx; reads OPENAI_API_KEY through Hermes secrets only.
+maintainer: hsyvy
+tier: community
+category: voice
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/hsyvy/keryx#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/hsyvy/keryx/6c5cd7fc468a314eef0b524a29b1f12c68c0e569/assets/banner.png
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - place_call
+  provides_hooks:
+    - pre_tool_call
+    - agent_loop_stopped
+  provides_middleware: []
+  requires_env: []

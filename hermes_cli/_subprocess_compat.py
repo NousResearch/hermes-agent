@@ -59,9 +59,9 @@ _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exe
 
 def run(cmd, **kwargs) -> NoReturn:
     # Shim to suppress old updater work until relaunch. Do not start its installer.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli._subprocess_compat.run")
 
 
 def harden_git_argv(args: Sequence[str]) -> list[str]:
@@ -286,6 +286,9 @@ NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1"}
 # GIT_CONFIG_KEY_n/VALUE_n overrides for internal git children: no credential/askpass prompts, no
 # repo-configured fsmonitor/hooks/pager/editor/external-diff programs.
 _GIT_CONFIG_INJECT_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+# Variables that point git at a repository other than its cwd (credential/ssh variables stay).
+_GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
 _GIT_CONFIG_OVERRIDES = {
     "credential.helper": "",
     "core.askPass": "",
@@ -465,6 +468,11 @@ def noninteractive_git_env(base: Mapping[str, str] | None = None) -> dict[str, s
         if key == "GIT_CONFIG_PARAMETERS" or key.startswith(_GIT_CONFIG_INJECT_PREFIXES):
             env.pop(key, None)
     env.pop("GIT_CONFIG_COUNT", None)
+    # An inherited GIT_DIR/GIT_WORK_TREE (a dotfiles alias, a git hook) retargets the call at the
+    # user's other repo instead of the cwd the caller names; a plugin's stash/reset would act on
+    # it (#146032). A caller that needs one sets it on the returned env.
+    for key in _GIT_LOCATION_ENV:
+        env.pop(key, None)
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -549,10 +557,7 @@ def noninteractive_repo_git_env(
             return None
         origin_path = Path(origin[len("file:"):])
         if not origin_path.is_absolute():
-            # git prints repo-local origins relative to the worktree top level, not to *cwd*; with a
-            # caller-set GIT_DIR/GIT_WORK_TREE they are relative to something else, so refuse.
-            if env.get("GIT_DIR") or env.get("GIT_WORK_TREE"):
-                return None
+            # git prints repo-local origins relative to the worktree top level, not to *cwd*.
             if toplevel is None:
                 top = bounded_probe_run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
                                         timeout=2, env=env)
@@ -599,6 +604,11 @@ def noninteractive_repo_git_env(
 
     start = int(env["GIT_CONFIG_COUNT"])  # always set by noninteractive_git_env
     overrides = [(key, "") for key in keys] + [(key, "false") for key in required]
+    if keys:
+        # With the filters emptied a stat refresh hashes raw bytes: `status` and `diff` must not write
+        # it back to the index, or a file that only the clean filter changes reads clean to the user.
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+        overrides.append(("diff.autoRefreshIndex", "false"))
     for offset, (key, value) in enumerate(overrides):
         env[f"GIT_CONFIG_KEY_{start + offset}"] = key
         env[f"GIT_CONFIG_VALUE_{start + offset}"] = value

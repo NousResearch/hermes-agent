@@ -1,0 +1,24 @@
+name: polydesk
+repo: https://github.com/clatsonhacks/hermes-polydesk
+sha: 190d38e2cda2bfd8509b73bbdf17e88887c094c9
+description: "Agent paper-trading desk for Polymarket: research a market, quote a trade against the live CLOB order book (fills sweep real book levels, so slippage is realistic), confirm with a single-use 5-minute ticket that is re-priced at execution, then track mark-to-market P&L with automatic settlement when markets resolve. Risk limits (max trade, max % of equity per outcome, max slippage, liquidity checks), a persistent ledger, a /desk command and a bundled workflow skill. The paper bankroll can be backed 1:1 by testnet USDC in a linked Base Sepolia wallet. Disclosure — HTTPS GETs only to gamma-api.polymarket.com and clob.polymarket.com (the client refuses other hosts); when polydesk_wallet is used, JSON-RPC eth_chainId/eth_getBalance/eth_call (USDC balanceOf) to sepolia.base.org or the configured rpc_url, which receives the linked public address; stores a SQLite ledger in the profile's plugin-data/polydesk/desk.db; no keys, signing, transactions or real orders. Paper trading only; not financial advice."
+maintainer: clatsonhacks
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/clatsonhacks/hermes-polydesk#readme
+version: "1.0.0"
+readme: true
+platforms: []
+known_issues:
+  - "Polymarket's API is blocked by some ISPs and regions; tools then return a 'could not reach Polymarket' error instead of stale data."
+capabilities:
+  provides_tools:
+    - polydesk_markets
+    - polydesk_trade
+    - polydesk_portfolio
+    - polydesk_history
+    - polydesk_wallet
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

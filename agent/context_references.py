@@ -15,9 +15,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from agent.file_safety import HOME_CREDENTIAL_DIRS
+from agent.file_safety import HOME_CREDENTIAL_DIRS, deny_key, deny_path_under
 from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
-from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    FILTER_DISCOVERY_FAILED,
+    IS_WINDOWS,
+    harden_git_argv,
+    noninteractive_repo_git_env,
+    windows_hide_flags,
+)
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.sizefmt import format_bytes
 
@@ -227,6 +233,10 @@ async def preprocess_context_references_async(
     refs = parse_context_references(message, plugins=plugins)
     if not refs:
         return ContextReferenceResult(message=message, original_message=message)
+    from tools.hosted_tool_policy import host_feature_refusal
+    if refusal := host_feature_refusal("context_references", "@-references"):
+        return ContextReferenceResult(message=message, original_message=message, references=refs,
+                                      warnings=[refusal], blocked=True)
     cwd_path = Path(cwd).expanduser().resolve()
     # Default root = cwd so @ references cannot escape the workspace unless a caller widens it.
     allowed_root_path = Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
@@ -464,9 +474,14 @@ def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None)
 
 
 def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], label: str) -> Expansion:
+    # The repository's named clean/smudge/process filters run during `diff` on a stat-dirty file:
+    # their commands are emptied, and git is not spawned when they cannot be discovered.
+    env = noninteractive_repo_git_env(cwd)
+    if env is None:
+        return f"{ref.raw}: {FILTER_DISCOVERY_FAILED}", None
     try:
         # Repo-supplied config/attributes must never execute code (GHSA-7x36-8jrh-v4pw).
-        result = _run_quiet(["git", *harden_git_argv(args)], cwd, 30, env=noninteractive_git_env())
+        result = _run_quiet(["git", *harden_git_argv(args)], cwd, 30, env=env)
     except subprocess.TimeoutExpired:
         return f"{ref.raw}: git command timed out (30s)", None
     if result.returncode != 0:
@@ -550,9 +565,10 @@ def _ensure_reference_path_allowed(path: Path) -> None:
     home, hermes_home = Path(os.path.expanduser("~")).resolve(), get_hermes_home().resolve()
     blocked_exact = {home / rel for rel in _SENSITIVE_HOME_FILES} | {hermes_home / ".env"}
     blocked_dirs = [home / rel for rel in HOME_CREDENTIAL_DIRS] + [hermes_home / rel for rel in _SENSITIVE_HERMES_DIRS]
-    if path in blocked_exact:
+    # deny_key: macOS/Windows open ~/.ssh for ~/.SSH while resolve() keeps the typed case (#51474).
+    if deny_key(path) in {deny_key(p) for p in blocked_exact}:
         raise ValueError("path is a sensitive credential file and cannot be attached")
-    if any(_is_under(path, blocked_dir) for blocked_dir in blocked_dirs):
+    if any(deny_path_under(path, blocked_dir) for blocked_dir in blocked_dirs):
         raise ValueError("path is a sensitive credential or internal Hermes path and cannot be attached")
     # Anchor to the canonical read deny-list (agent/file_safety.get_read_block_error): the
     # narrow list above never caught auth.json, .anthropic_oauth.json, mcp-tokens/, webhook

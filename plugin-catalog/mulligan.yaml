@@ -1,0 +1,28 @@
+name: mulligan
+title: Mulligan
+repo: https://github.com/onyebuchidaniel60/mulligan
+sha: fef894a4552d72204c84665f67042467901f135a
+description: "Counterfactual replay for Hermes: record a run, rewind to any step, edit one tool decision, replay forward in a fresh child session, and diff the branch against the original. Replay-to-point reproduces the recorded steps with zero provider calls and zero tool side effects; the branch runs live with normal approvals. Uses llm_execution, tool_execution and tool_request middleware, pre/post_tool_call hooks and ctx.subagent_lifecycle.launch; stdlib only, no dependencies. Stores append-only JSONL traces (prompts, tool arguments and tool results) under $HERMES_HOME/replay-traces/. Disclosure — while enabled it records every session automatically (full model responses, tool arguments and tool results, and the last user message) as append-only JSONL under $HERMES_HOME/replay-traces/, which are sensitive, not rotated and persist until you delete them; mg_play launches a child session whose live tail spends provider tokens and runs tools with normal approvals; no network calls, no credential access, no shell execution, no self-update, and no approvals are bypassed or auto-answered."
+maintainer: onyebuchidaniel60
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/onyebuchidaniel60/mulligan#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - mg_list
+    - mg_inspect
+    - mg_rewind
+    - mg_edit
+    - mg_play
+    - mg_diff
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware:
+    - llm_execution
+    - tool_execution
+    - tool_request
+  requires_env: []

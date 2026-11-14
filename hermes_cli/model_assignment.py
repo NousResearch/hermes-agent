@@ -194,6 +194,44 @@ def apply_main_model_assignment(model_cfg: Any, result: ModelSwitchResult, api_k
     return model_cfg
 
 
+def apply_inherited_model_assignment(model_cfg: Any, inherited: dict) -> dict:
+    """Pin another profile's raw ``model`` block over *model_cfg* without revalidating it: the same
+    cleanup, Remote Config masks and lock guard as :func:`apply_main_model_assignment`. The source's
+    endpoint-bound keys (inline credential, credential pointer, context pin) stay behind: the new
+    profile's own environment can route the same references to a different endpoint, and the
+    validated assignment never carried them either. Call it in the new profile's config scope: routes
+    are compared as this profile resolves them, so two spellings of one endpoint keep its own keys.
+
+    Returns a new dict."""
+    from hermes_cli.config import _expand_env_vars
+    from hermes_cli.config_backend import supports_file_tooling
+    from hermes_cli.model_switch import apply_model_selection, remote_model_selection_guard
+    from hermes_cli.route_identity import ENDPOINT_CREDENTIAL_KEYS, ENDPOINT_KEY_POINTER_KEYS
+
+    current = dict(model_cfg) if isinstance(model_cfg, dict) else {}
+    here = str(_expand_env_vars(current.get("base_url") or ""))
+    there = str(_expand_env_vars(inherited.get("base_url") or ""))
+    result = ModelSwitchResult(
+        success=True, target_provider=inherited["provider"], new_model=inherited["default"],
+        base_url=there, api_mode=inherited.get("api_mode") or "")
+    mask = not supports_file_tooling()
+    compared = {**current, "base_url": here} if "base_url" in current else current
+    selected = apply_model_selection(compared, result, mask_cleared=mask)
+    bound = {*ENDPOINT_CREDENTIAL_KEYS, *ENDPOINT_KEY_POINTER_KEYS, "context_length"}
+    if not (here and there):
+        # Without both URLs the endpoint may come from a replaced endpoint entry or the
+        # environment, so the destination's own endpoint-bound keys cannot be shown to apply.
+        for key in bound & current.keys():
+            if mask:
+                selected[key] = None
+            else:
+                selected.pop(key, None)
+    carried = {k: v for k, v in inherited.items() if k not in bound}
+    assigned = {**selected, **carried}
+    remote_model_selection_guard(model_cfg, assigned)
+    return assigned
+
+
 def drop_model_key(model_cfg: dict, key: str) -> None:
     """Remove *key* from a ``model`` block an assignment is building. Under Remote Config the block
     is the EFFECTIVE one, so a key it holds may be inherited from an upper level that a profile

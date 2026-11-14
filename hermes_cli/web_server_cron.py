@@ -68,6 +68,53 @@ def _validate_dashboard_cron_effective_job(job: dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="agent cron jobs require a prompt, skill, or script")
 
 
+def _validate_dashboard_cron_security(
+    profile: str, effective: dict[str, Any], updates: Optional[dict[str, Any]] = None,
+) -> None:
+    """Prompt-scan and credential-safety guards the agent tool path applies
+    (``tools/cronjob_tools.py``). A dashboard-created or -edited job must not
+    bypass them.
+
+    ``updates=None`` (create, blueprint instantiate) validates every field
+    present. A mapping scopes the prompt/deliver checks to touched fields —
+    mirroring the tool's update path — while ``base_url`` always checks the
+    EFFECTIVE pair so an unrelated edit cannot leave an unsafe
+    provider+endpoint combination schedulable. A ``pinned`` update is resolved
+    into ``updates`` here (popped, provider/model written), so the pair checked
+    is the pair ``update_job`` stores.
+
+    The base_url check reads ``providers:`` and stored secrets, so it runs in the
+    OWNING profile's config+secret scope: the launch profile's same-named provider
+    must not vouch for an endpoint that would receive another profile's key.
+    """
+    from hermes_cli.web_server_profiles import _config_profile_scope
+    from tools.cronjob_job_args import (
+        _normalize_deliver_param, _validate_bot_chat_deliver, _validate_cron_base_url)
+    from tools.cronjob_prompt_scan import _scan_cron_prompt
+
+    def _touched(key: str) -> bool:
+        return updates is None or key in updates
+
+    prompt = _cron_optional_text(effective.get("prompt"))
+    with _config_profile_scope(profile):
+        if updates and "pinned" in updates:
+            # Resolve ``pinned`` into provider/model HERE, in the owning profile's scope, so
+            # update_job stores exactly the pair checked below instead of re-resolving it unscoped.
+            from cron.jobs import _apply_pin_update
+            _apply_pin_update(effective, updates)
+            effective = {**effective, **updates}
+        base_url_error = _validate_cron_base_url(effective.get("provider"), effective.get("base_url"))
+    error = (
+        (_touched("prompt") and prompt and _scan_cron_prompt(prompt))
+        or base_url_error
+        or (_touched("deliver") and _validate_bot_chat_deliver(
+            _normalize_deliver_param(effective.get("deliver"))))
+        or (_touched("failure_deliver") and _validate_bot_chat_deliver(
+            _normalize_deliver_param(effective.get("failure_deliver")))))
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+
+
 def _validate_dashboard_cron_context_from(refs: Optional[list[str]], profile_name: str) -> None:
     for ref in refs or ():
         # "self" (the continuity toggle) resolves to the job's own id at run time — it can't be
@@ -262,6 +309,12 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             repeat = normalize_repeat_value(repeat)
         _validate_dashboard_cron_effective_job(
             {"prompt": body.prompt, "skills": skills, "script": script, "no_agent": no_agent})
+        _validate_dashboard_cron_security(profile_name, {
+            "prompt": body.prompt,
+            "provider": _cron_optional_text(body.provider),
+            "base_url": _cron_optional_text(body.base_url, strip_trailing_slash=True),
+            "deliver": _cron_optional_text(body.deliver) or "local",
+        })
         return _mutate_cron_for_profile(
             profile_name,
             "create_job",
@@ -319,10 +372,12 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
 
 
 def _profile_env_value(home: Path, key: str) -> str:
-    """One value from a profile's .env (``""`` when absent/unreadable)."""
-    from agent.secret_scope import load_env_file
+    """One value from a profile's own secret scope (``""`` when absent): ``build_profile_secret_scope``
+    expands ``${VAR}`` references the way that profile's gateway does, so a templated
+    ``API_SERVER_PORT=${PORT}`` is the port it listens on, not the literal template (#137080)."""
+    from agent.secret_scope import build_profile_secret_scope
 
-    return load_env_file(home / ".env").get(key, "")
+    return build_profile_secret_scope(home).get(key, "")
 
 
 def _gateway_listener(profile: str, home: Path) -> tuple[bool, str, Path]:

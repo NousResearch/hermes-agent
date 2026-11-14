@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { Puzzle } from 'lucide-react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
@@ -342,15 +342,15 @@ function SourceMovedNotice({ copy, failure, probe, request, shown }: SourceMoved
 }
 
 /** Read the source again after a refusal. A catalog pick whose pin the backend did not read (native Desktop
- *  inspects the branch tip in Electron) also takes the catalog's current pin, or every Install would resend
- *  the one the catalog left; `repin` is that lookup, which Install waits on. */
-function useReviewAgain(request: PluginInstallRequest, start: (repo: string) => void) {
+ *  inspects it in Electron) also takes the catalog's current pin, or every Install would resend the one the
+ *  catalog left; `repin` is that lookup, which Install waits on, and a new pin is read again. */
+function useReviewAgain(request: PluginInstallRequest, start: () => void) {
   const [repin, setRepin] = useState<Promise<void>>(() => Promise.resolve())
   // Set once the source is read again: Install then waits until the new inspection AND pin are on screen.
   const [rereview, setRereview] = useState<'idle' | 'pending' | 'shown'>('idle')
 
   const reviewAgain = (current: ProbeResult) => {
-    start(request.repo)
+    start()
     const name = request.catalogName
 
     if (name && !current.catalogPin) {
@@ -467,13 +467,16 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
   const [confirmUnreviewed, setConfirmUnreviewed] = useState(false)
   // The agent half installed and the desktop half could not follow it: only a replacement of both proceeds.
   const [partial, setPartial] = useState<null | string>(null)
-  const { repin, rereview, reviewAgain } = useReviewAgain(request, start)
+  // A catalog pick is read at its pin, which the install checks out: the default branch may lack the plugin.
+  const probeRef = request.catalogName ? request.sha : undefined
+  const startProbe = useCallback(() => start(request.repo, probeRef), [probeRef, request.repo, start])
+  const { repin, rereview, reviewAgain } = useReviewAgain(request, startProbe)
 
   useEffect(() => {
-    start(request.repo)
+    startProbe()
 
     return cancel
-  }, [cancel, request.repo, start])
+  }, [cancel, startProbe])
 
   const targetInfo = profiles.find(profile => normalizeProfileKey(profile.name) === targetProfile)
   const targetLabel = profileLabel(targetInfo ?? { name: targetProfile })
@@ -560,7 +563,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
     if (installError) {
       void install()
     } else {
-      start(request.repo)
+      startProbe()
     }
   }
 

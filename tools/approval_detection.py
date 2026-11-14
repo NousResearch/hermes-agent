@@ -380,8 +380,9 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
 
 def detect_hardline_command(command: str) -> tuple:
     """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description). The size
-    and real-nesting limits refuse. A scan that runs out of its step budget is NOT a refusal: it returns
-    (False, None) and :func:`detect_dangerous_command` reports it as a one-shot approval finding."""
+    and real-nesting limits refuse. A scan that runs out of its step budget refuses only when the
+    linear :func:`_hardline_fallback` matches a rule; otherwise it returns (False, None) and
+    :func:`detect_dangerous_command` reports it as a finding only a human may approve, once."""
     complete = True
     try:
         with _parser_budget.parser_budget(command):
@@ -389,9 +390,34 @@ def detect_hardline_command(command: str) -> tuple:
     except RecursionError:
         verdict = (True, _PARSER_LIMIT_DESCRIPTION)
     except _parser_budget.ParserBudgetExceeded:
-        verdict, complete = (False, None), False
+        fallback = _hardline_fallback(command)
+        verdict, complete = ((True, fallback) if fallback else (False, None)), False
     _parser_budget.record_scan(command, complete)
     return verdict
+
+
+# Where a command may start, for the fallback below: separators, grouping, substitution openers,
+# quotes (so `sh -c "mkfs …"` exposes its payload) and the compound-command keywords.
+_FALLBACK_COMMAND_START_RE = re.compile(
+    r"\$\(|[;&|(){}`'\"\n]|(?<![\w./-])(?:if|then|else|elif|do|while|until|!)(?=\s)")
+
+
+def _hardline_fallback(command: str) -> str | None:
+    """The hardline rule a budget-tripped command may hold, from a linear over-approximation.
+
+    The full scan finds command positions with a quote-aware walk; when it runs out of budget, a
+    verb it never reached (`true; reboot`, `(reboot)`, `sudo reboot`, `bash -c 'rm -rf /'` after a
+    few hundred benign lines) must still refuse, not become an approvable prompt. Every rule runs
+    over the raw and the normalized text, as is and with every possible command start turned into a
+    line break. That treats quoted prose as code (a false refusal, never a miss) and adds no
+    super-linear pattern: one substitution and the existing rules per text."""
+    for text in (command, _normalize_command_for_detection(command)):
+        lowered = text.lower()
+        for variant in (lowered, _FALLBACK_COMMAND_START_RE.sub("\n", lowered)):
+            for pattern_re, description, _quote_masked in HARDLINE_PATTERNS_COMPILED:
+                if pattern_re.search(variant):
+                    return description
+    return None
 
 
 def hardline_scan_incomplete(command: str) -> bool:

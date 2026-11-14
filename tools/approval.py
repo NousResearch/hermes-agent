@@ -659,6 +659,25 @@ def _blocked(message: str, *, pattern_key: str, description: str) -> dict:
     return {"approved": False, "message": message, "pattern_key": pattern_key, "description": description}
 
 
+_SCAN_INCOMPLETE_BLOCK_MESSAGE = (
+    "BLOCKED: this command is too long or complex for the approval guard to read to the end, so "
+    "only a human may approve it, and {why}. Split it into smaller commands the guard can read, "
+    "or ask the user to run it themselves. Do not run it from a file to get around this check."
+)
+
+
+def _scan_incomplete_block(why: str) -> dict:
+    """Refusal for a command the hardline scan could not finish where no human reviews it (YOLO,
+    ``approvals.mode: off``, cron / -q / unattended approve-mode, no prompt surface). Its hardline
+    coverage is only the linear fallback, so nothing but a person may wave it through."""
+    return _blocked(_SCAN_INCOMPLETE_BLOCK_MESSAGE.format(why=why),
+                    pattern_key=_SCAN_INCOMPLETE_DESCRIPTION, description=_SCAN_INCOMPLETE_DESCRIPTION)
+
+
+_NO_REVIEWER_BYPASS = "approvals are bypassed (--yolo, /yolo or approvals.mode: off)"
+_NO_REVIEWER_PRESENT = "no human is present to review it"
+
+
 def _user_approved(session_key: str, description: str) -> dict:
     """A human approval (incl. ESCALATE-then-approve or a smart-DENY owner
     override) resets the consecutive-denial tally."""
@@ -681,8 +700,11 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
     ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
     ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``.
-    A gateway background child that no chat can show a prompt to fails closed instead (#133514)."""
+    A command the scanners could not read to the end is refused instead (only a human may approve it),
+    and a gateway background child that no chat can show a prompt to fails closed (#133514)."""
     from tools.approval_notify_lease import stranded_denial
+    if _SCAN_INCOMPLETE_DESCRIPTION in pattern_keys:
+        return _scan_incomplete_block(_NO_REVIEWER_PRESENT)
     if (denied := stranded_denial(session_key, gateway, spec.noun, pattern_key, description)) is not None:
         return denied
     pending = {"command": command, "pattern_key": pattern_key}
@@ -1328,9 +1350,14 @@ def check_dangerous_command(command: str, env_type: str,
     blocked = _floor_block(command)
     if blocked is not None:
         return blocked
+    unread = hardline_scan_incomplete(command)
     if _yolo_active() or approval_context._get_approval_mode() == "off":
-        return _approved()
-    if _command_matches_permanent_allowlist(command):
+        return _scan_incomplete_block(_NO_REVIEWER_BYPASS) if unread else _approved()
+    if unread:
+        _approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
+        if not (is_cli or is_gateway or is_ask):
+            return _scan_incomplete_block(_NO_REVIEWER_PRESENT)
+    elif _command_matches_permanent_allowlist(command):
         return _allowlisted(command)
     session_key = get_current_session_key()
     findings = _command_findings(command)
@@ -1397,15 +1424,20 @@ def check_all_command_guards(command: str, env_type: str,
         return prepared
 
     approval_mode = approval_context._get_approval_mode()
+    # A command the hardline scan could not finish is human-only: no bypass, allowlist glob,
+    # unattended approve-mode or guardian LLM approves it (see _human_decision).
+    unread = hardline_scan_incomplete(command)
     if _yolo_active() or approval_mode == "off":
-        return _approved()
-    if _command_matches_permanent_allowlist(command):
+        return _scan_incomplete_block(_NO_REVIEWER_BYPASS) if unread else _approved()
+    if not unread and _command_matches_permanent_allowlist(command):
         return _allowlisted(command)
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
     # Outside CLI/gateway/ask flows we never block on approvals: each
     # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:
+        if unread:
+            return _scan_incomplete_block(_NO_REVIEWER_PRESENT)
         for ctx in _unattended_contexts():
             result = _unattended_deny(command, ctx)
             if result is not None:
@@ -1424,7 +1456,8 @@ def check_all_command_guards(command: str, env_type: str,
         _COMMAND_GATE, command=command, description=description,
         pattern_key=keys[0], pattern_keys=keys,
         session_key=session_key, approval_callback=approval_callback,
-        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
+        # The guardian LLM never approves a command the scanners could not read to the end: a person must.
+        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart" and not unread,
     )
 
 

@@ -1,8 +1,9 @@
 """A command the scanners run out of budget on asks for approval; it is not a hardline refusal.
 
-Hardline refusals stay for the real limits (size, segment count, real ``$(`` nesting) and for a
-hardline rule the scan matched before its budget ran out. An approval for an unread command
-covers that one run only: a session or always grant would wave every later unread command through.
+Hardline refusals stay for the real limits (size, segment count, real ``$(`` nesting) and for any
+hardline rule, whether the full scan reached it or only the linear fallback did (see
+test_approval_scan_incomplete_human_only.py). An approval for an unread command covers that one
+run only: a session or always grant would wave every later unread command through.
 """
 from unittest.mock import MagicMock
 

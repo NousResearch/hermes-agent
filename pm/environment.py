@@ -380,11 +380,11 @@ class PythonEnvironment:
                 return subprocess.run(command, cwd=native(cwd), env=env, capture_output=True,
                                       text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
             except subprocess.TimeoutExpired as exc:
-                from pm.index_config import TIMEOUT_HINT
+                from pm.index_config import ISOLATED_TIMEOUT_HINT, TIMEOUT_HINT
 
-                # A silent stall against an unreachable index is the #95608 shape;
-                # name the mirror knobs instead of surfacing a raw TimeoutExpired.
-                raise InstallError("venv", f"uv {args[0]} timed out after {timeout}s", TIMEOUT_HINT) from exc
+                # Recommend mirror knobs only when this operation forwards them.
+                hint = ISOLATED_TIMEOUT_HINT if self.no_config else TIMEOUT_HINT
+                raise InstallError("venv", f"uv {args[0]} timed out after {timeout}s", hint) from exc
 
     def create(self) -> None:
         """Create at the final destination; callers must not move a live venv."""

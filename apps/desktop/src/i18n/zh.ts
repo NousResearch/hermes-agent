@@ -1026,6 +1026,7 @@ export const zhOverrides = {
       },
       compression: {
         enabled: '自动压缩',
+        mode: '压缩模式',
         threshold: '压缩阈值',
         codexGpt55Autoraise: 'Codex 压缩自动提高',
         targetRatio: '压缩目标',
@@ -1098,6 +1099,7 @@ export const zhOverrides = {
       },
       compression: {
         enabled: '当对话变大时对较早的上下文进行摘要。',
+        mode: '仅在 context.engine=compressor（内置 ContextCompressor）时生效。标准 LLM 摘要、抽取式目录或混合。提供方原生 Codex 压缩可能绕过此设置。',
         codexGpt55Autoraise: '为受支持的 ChatGPT Codex OAuth 模型将压缩阈值提高到 85%。'
       },
       auxiliary: {

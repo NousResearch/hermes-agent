@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from tools.session_search_hints import SESSION_SEARCH_DISCOVERY_CALL, SESSION_SEARCH_DISCOVERY_HINT
+
 # Demote tool results older than the newest N rounds so the tail budget binds
 # (the tool-group alignment floor otherwise keeps ~32K of tool output alive).
 _LEAN_TAIL_KEEP_TOOL_ROUNDS = 6
@@ -45,7 +47,7 @@ def is_demoted_stub(content: str) -> bool:
 
 def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:
     """One-line replacement for a demoted tail tool result."""
-    hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
+    hint = f" Recover with {SESSION_SEARCH_DISCOVERY_CALL} — {SESSION_SEARCH_DISCOVERY_HINT}" if session_id else ""
     return (
         f"[{tool_name or 'tool'} output demoted at compaction — {content_len:,} "
         f"chars preserved in session history.{hint}]"

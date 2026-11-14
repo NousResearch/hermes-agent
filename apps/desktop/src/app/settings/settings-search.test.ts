@@ -88,6 +88,40 @@ describe('settings search index', () => {
     expect(filterSettingsSearchEntries(entries, 'gateway traffic')[0]?.id).toBe('credential:FUTURE_GATEWAY_URL')
   })
 
+  it('indexes Compression Mode from Memory & Context field copy', () => {
+    const schema: Record<string, ConfigFieldSchema> = {
+      'compression.mode': { type: 'select' },
+      'compression.enabled': { type: 'boolean' }
+    }
+
+    const config = {
+      compression: { mode: 'standard', enabled: true }
+    } as unknown as HermesConfigRecord
+
+    const copy = {
+      fieldDescriptions: {
+        'compression.mode': 'How older turns are compacted.'
+      },
+      fieldLabels: {
+        'compression.mode': 'Compression Mode'
+      },
+      sections: {
+        memory: 'Memory & Context'
+      }
+    }
+
+    const entries = buildConfigSearchEntries(schema, config, copy)
+    const mode = entries.find(entry => entry.id === 'config-field:compression.mode')
+
+    expect(mode).toMatchObject({
+      context: 'Memory & Context',
+      label: 'Compression Mode',
+      target: { field: 'compression.mode', view: 'config:memory' }
+    })
+    expect(filterSettingsSearchEntries(entries, 'compression mode')).toHaveLength(1)
+    expect(filterSettingsSearchEntries(entries, 'catalog residual')).toHaveLength(0)
+  })
+
   it('shares the Tools and Settings category boundary with the rendered page', () => {
     expect(credentialSettingsView(envVar('tool'))).toBe('tools')
     expect(credentialSettingsView(envVar('setting'))).toBe('settings')

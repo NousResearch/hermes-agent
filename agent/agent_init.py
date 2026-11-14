@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
+from agent.catalog_residual import normalize_compression_mode
 from agent.context_compressor import ContextCompressor
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
@@ -1404,6 +1405,9 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         # "lean" keeps a clamped 2.5%/10K-25K verbatim tail (continuity rides the summary);
         # "legacy" restores the 0.20*threshold tail. Unknown → lean inside the compressor.
         tail_mode=str(cfg.get("tail_mode", "lean")).strip().lower(),
+        # Compaction residual (compression.mode): "standard" LLM summary, "catalog" extractive
+        # replacement, or "hybrid" Standard plus one unique-handle index. Unknown → standard.
+        mode=normalize_compression_mode(cfg.get("mode", "standard")),
         # Actionable user messages guaranteed to survive in the tail (default 1, floor 1).
         min_tail_users=max(1, _parse_config_int(cfg.get("min_tail_user_messages", 1), 1)),
         max_attempts=min(max_attempts, 10),
@@ -1859,6 +1863,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
+            mode=cs.mode,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

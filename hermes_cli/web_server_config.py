@@ -136,6 +136,14 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
     "stt.mistral.model": _select("Mistral Voxtral transcription model", *STT_MODEL_CATALOG["mistral"]),
     "stt.xai.model": _select("xAI transcription model", *STT_MODEL_CATALOG["xai"]),
     "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", *STT_MODEL_CATALOG["elevenlabs"]),
+    "compression.mode": _select(
+        "Applies when context.engine=compressor (built-in ContextCompressor). "
+        "How compacted turns are represented: standard LLM summary, "
+        "extractive catalog (no summarizer), or hybrid (summary plus a "
+        "unique-handle index). Provider-native Codex compaction may bypass "
+        "this setting. Invalid values fall back to standard.",
+        "standard", "catalog", "hybrid",
+    ),
     "display.skin": _select("CLI visual theme", "default", "ares", "mono", "slate"),
     "dashboard.theme": _select(
         "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"

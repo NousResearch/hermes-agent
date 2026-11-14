@@ -141,6 +141,16 @@ class TestExtractCacheBustingConfig:
     """Verify _extract_cache_busting_config pulls the documented subset of
     config values that must invalidate the cached agent on change."""
 
+    def test_reads_compression_mode_subkeys(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {"compression": {"mode": "catalog", "tail_mode": "lean", "some_other_key": "ignored"}}
+        )
+        assert out["compression.mode"] == "catalog"
+        assert out["compression.tail_mode"] == "lean"
+        assert "compression.some_other_key" not in out
+
     def test_missing_keys_yield_the_shipped_default(self):
         """An absent key carries the value in force — DEFAULT_CONFIG's — for every documented key."""
         from gateway.run import GatewayRunner

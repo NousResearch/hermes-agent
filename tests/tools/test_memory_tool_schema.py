@@ -39,7 +39,7 @@ def test_each_memory_field_is_advertised_once_and_legacy_shapes_still_write(tmp_
     """The schema advertises one shape (target + operations[]) with no alias; the handler still
     accepts the top-level single-op shape and the new_text alias models and transcripts send."""
     params = MEMORY_SCHEMA["parameters"]
-    assert set(params["properties"]) == {"target", "operations"}
+    assert set(params["properties"]) == {"target", "operations", "user_requested"}
     assert "new_text" not in json.dumps(params)
 
     monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
@@ -117,3 +117,23 @@ def test_background_review_one_item_remove_of_the_last_entry_is_staged_not_appli
         reset_current_write_origin(token)
     assert result["staged"] is True
     assert store.user_entries == ["Name: Alice"]
+
+
+def test_memory_store_accepts_explicit_task_progress_writes(tmp_path, monkeypatch):
+    """Guidance routes autonomous writes; MemoryStore stays permissive."""
+    from tools.memory_tool import MemoryStore
+
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+    store = MemoryStore(memory_char_limit=2000, user_char_limit=1000)
+    store.load_from_disk()
+    result = store.add("memory", "Phase 3 done — submitted PR #4242 at abcdef123")
+    assert result["success"] is True
+    assert any("Phase 3 done" in entry for entry in store.memory_entries)
+
+
+def test_memory_schema_routes_autonomous_writes_and_marks_user_requests():
+    description = MEMORY_SCHEMA["description"]
+    assert "session_search" in description
+    assert "explicit user-authored memory writes are still accepted" in description
+    assert "user_requested=true" in description
+    assert MEMORY_SCHEMA["parameters"]["properties"]["user_requested"]["default"] is False

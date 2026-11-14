@@ -126,6 +126,13 @@ def resolve_client_socket_path(home: Path) -> Optional[Path]:
     direct = Path(home) / _SOCKET_FILENAME
     with contextlib.suppress(OSError):  # an un-stat-able stale inode (#123761) is absent, not an error
         if direct.exists():
+            if not _IS_WINDOWS and direct.lstat().st_mode & 0o077:
+                # A shared mount can retain the unusable direct inode after fallback.
+                from hermes_cli.gateway_runtime_discovery import resolve_private_socket_path
+                try:
+                    return resolve_private_socket_path(Path(home).resolve())
+                except (OSError, ValueError):
+                    return None
             return direct
     with contextlib.suppress(OSError):
         pointer = Path(home) / _POINTER_FILENAME
@@ -248,7 +255,12 @@ class GatewayControlServer:
             # #123761): listen on the same private temp-dir socket + pointer an over-long home uses.
             if pointer_file is not None or exc.errno not in _SOCKET_UNSUPPORTED_ERRNOS:
                 raise
-            logger.warning("Control socket cannot be created in %s (%s); listening in a private temp directory",
+            if self._server is not None:
+                self._server.close()
+                await self._server.wait_closed()
+                self._server = None
+                self.cleanup_files()
+            logger.warning("Control socket cannot be used in %s (%s); listening in a private temp directory",
                            self._home, exc.strerror or exc)
             pointer_file = Path(self._home) / _POINTER_FILENAME
             bind_path = await self._bind_posix(_fallback_socket_path(self._home), pointer_file)
@@ -281,17 +293,37 @@ class GatewayControlServer:
         # We only get here after winning the PID-file O_EXCL race, so any existing
         # file is stale or a collision — never a live sibling.
         if bind_path.exists():
-            if bind_path.lstat().st_uid != os.getuid():  # windows-footgun: ok — POSIX listener
+            node = bind_path.lstat()
+            if node.st_uid != os.getuid():  # windows-footgun: ok — POSIX listener
                 raise PermissionError("control socket belongs to another user")
-            bind_path.unlink()
+            try:
+                bind_path.unlink()
+            except OSError as exc:
+                if exc.errno != errno.EINVAL or not stat.S_ISSOCK(node.st_mode):
+                    raise
+                raise OSError(errno.EOPNOTSUPP, "filesystem cannot remove stale control socket", str(bind_path)) from exc
         # Restrictive umask so the socket is never world-connectable, even for the instant before chmod.
         old_umask = os.umask(0o177)
         try:
-            self._server = await asyncio.start_unix_server(self._handle_connection, path=str(bind_path))
+            # Our inode-checked cleanup tolerates a mount refusing unlink on close.
+            # Before 3.13 asyncio leaves socket cleanup to its caller already.
+            cleanup_options = {"cleanup_socket": False} if sys.version_info >= (3, 13) else {}
+            self._server = await asyncio.start_unix_server(
+                self._handle_connection, path=str(bind_path), **cleanup_options
+            )
         finally:
             os.umask(old_umask)
         with contextlib.suppress(OSError):
             os.chmod(bind_path, 0o600)
+        node = bind_path.lstat()
+        if not stat.S_ISSOCK(node.st_mode) or node.st_uid != os.getuid():  # windows-footgun: ok -- POSIX listener
+            raise PermissionError("control socket must be a socket owned by the gateway user")
+        if node.st_mode & 0o077:
+            # chmod can fail or silently do nothing on a shared mount. Keep the identity
+            # so fallback closes this listener and removes only the inode we just bound.
+            self._bind_path = bind_path
+            self._file_identities[bind_path] = (node.st_dev, node.st_ino)
+            raise OSError(errno.EOPNOTSUPP, "filesystem cannot keep control socket private", str(bind_path))
         return bind_path
 
     async def _start_windows(self) -> bool:

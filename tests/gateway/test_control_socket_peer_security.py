@@ -24,7 +24,7 @@ def test_symlinked_home_still_authenticates_same_uid_peers(tmp_path):
 def test_restart_heals_a_world_readable_pointer_left_by_an_older_gateway(tmp_path):
     import asyncio
     from gateway.control_socket import GatewayControlServer
-    from hermes_cli.gateway_runtime_discovery import _socket_path
+    from hermes_cli.gateway_runtime_discovery import resolve_private_socket_path
     home = tmp_path / ("p" * 90) / ".hermes"
     home.mkdir(parents=True, mode=0o700)
     pointer = home / "gateway.sock.path"
@@ -35,7 +35,7 @@ def test_restart_heals_a_world_readable_pointer_left_by_an_older_gateway(tmp_pat
         server = GatewayControlServer(home)
         assert await server.start()
         try:
-            assert _socket_path(home).name == "control.sock"
+            assert resolve_private_socket_path(home).name == "control.sock"
         finally:
             await server.stop()
     asyncio.run(run())
@@ -48,7 +48,7 @@ def test_a_client_polling_during_pointer_publication_never_sees_an_invalid_point
     import asyncio
     import sys
     from gateway.control_socket import GatewayControlServer
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError, _socket_path
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError, resolve_private_socket_path
     home = tmp_path / ("p" * 90) / ".hermes"
     home.mkdir(parents=True, mode=0o700)
     seen, state = [], {"armed": False}
@@ -58,7 +58,7 @@ def test_a_client_polling_during_pointer_publication_never_sees_an_invalid_point
             return
         state["armed"] = False  # discovery's own syscalls must not recurse
         try:
-            seen.append(_socket_path(home).name)
+            seen.append(resolve_private_socket_path(home).name)
         except FileNotFoundError:
             seen.append("absent")
         except DiscoveryError as exc:
@@ -85,7 +85,7 @@ def test_group_bits_that_are_an_acl_mask_never_count_as_a_private_group(tmp_path
     import grp
     import pwd
     from gateway.control_socket import GatewayControlServer
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError, _socket_path
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError, resolve_private_socket_path
     home = tmp_path / "home"
     home.mkdir()
     home.chmod(0o770)
@@ -94,7 +94,7 @@ def test_group_bits_that_are_an_acl_mask_never_count_as_a_private_group(tmp_path
     monkeypatch.setattr(grp, "getgrgid", lambda _gid: grp.struct_group((user.pw_name, "x", user.pw_gid, [])))
     monkeypatch.setattr(os, "listxattr", lambda *_a, **_k: ["system.posix_acl_access"])
     with pytest.raises(DiscoveryError, match="unsafe_control_permissions"):
-        _socket_path(home)
+        resolve_private_socket_path(home)
     ours, _theirs = socket.socketpair(socket.AF_UNIX)
 
     class Writer:
@@ -123,9 +123,9 @@ def test_clients_refuse_a_control_listener_run_by_another_uid(tmp_path, monkeypa
             home, verb_handlers={"identify": lambda: answered.append("identify") or {"pid": 1}})
         assert await server.start()
         try:
-            path = discovery._socket_path(home)
+            path = discovery.resolve_private_socket_path(home)
             monkeypatch.setattr(discovery.os, "getuid", lambda: real_uid + 1)
-            monkeypatch.setattr(discovery, "_socket_path", lambda _home: path)
+            monkeypatch.setattr(discovery, "resolve_private_socket_path", lambda _home: path)
             with pytest.raises(discovery.DiscoveryError, match="unsafe_control_peer"):
                 await asyncio.to_thread(discovery.query_identify, home, timeout=2)
             with pytest.raises(discovery.DiscoveryError, match="unsafe_control_peer"):
@@ -148,7 +148,7 @@ def test_long_home_survives_a_squatted_shared_fallback_directory(tmp_path, monke
     # gateway from publishing its control socket (the bootstrap treats that as fatal).
     import asyncio
     from gateway.control_socket import GatewayControlServer, resolve_server_socket_path
-    from hermes_cli.gateway_runtime_discovery import _socket_path
+    from hermes_cli.gateway_runtime_discovery import resolve_private_socket_path
     monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
     home = tmp_path / ("p" * 90) / ".hermes"
     home.mkdir(parents=True, mode=0o700)
@@ -159,7 +159,7 @@ def test_long_home_survives_a_squatted_shared_fallback_directory(tmp_path, monke
         server = GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 1}})
         assert await server.start()
         try:
-            assert _socket_path(home).parent.parent != squatted.parent
+            assert resolve_private_socket_path(home).parent.parent != squatted.parent
         finally:
             await server.stop()
     try:

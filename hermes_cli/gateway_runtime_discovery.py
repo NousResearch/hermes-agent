@@ -126,7 +126,7 @@ def connect_private(home: Path, timeout: float) -> socket.socket:
     The path is validated by lstat first, but connect() follows a symlink swapped in afterwards,
     so the listening process itself is authenticated. Platforms without a peer-credential API
     (neither SO_PEERCRED nor getpeereid) fall back to the path checks alone."""
-    path = _socket_path(home)
+    path = resolve_private_socket_path(home)
     peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         peer.settimeout(timeout)
@@ -140,12 +140,27 @@ def connect_private(home: Path, timeout: float) -> socket.socket:
         raise
 
 
-def _socket_path(home: Path) -> Path:
+def resolve_private_socket_path(home: Path) -> Path:
+    """Resolve a control socket only after validating its home, node and pointer."""
     _private_node(home, kind="directory", home=True)
     direct = home / "gateway.sock"
     if os.path.lexists(direct):
-        _private_node(direct, kind="socket")
+        try:
+            _private_node(direct, kind="socket")
+        except DiscoveryError as exc:
+            if exc.reason != "unsafe_control_permissions":
+                raise
+            # A mount can leave an owned, unprivate inode that cannot be removed.
+            # Only the fully validated private pointer may replace that path.
+            try:
+                return _pointer_socket_path(home)
+            except (OSError, ValueError):
+                raise exc from None
         return direct
+    return _pointer_socket_path(home)
+
+
+def _pointer_socket_path(home: Path) -> Path:
     pointer = home / "gateway.sock.path"
     # Reject non-regular metadata before a FIFO can wait for a writer.
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK  # windows-footgun: ok — POSIX socket discovery only

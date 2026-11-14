@@ -901,15 +901,16 @@ def _community_note(f: Finding) -> Finding:
     return f
 
 
-def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
+def scan_skill(skill_path: Path, source: str = "community", *, files: list[Path] | None = None) -> ScanResult:
     """Structural checks + pattern scan of every file in a skill dir (or a single file). Bundle-supplied ignore
     files (`.skillignore` / `.clawhubignore`) are NOT honored: they are authored by the publisher being scanned,
-    so a `*` would mask every payload. *source* (e.g. "openai/skills") sets the trust level."""
+    so a `*` would mask every payload. *source* (e.g. "openai/skills") sets the trust level. *files* (paths
+    inside the skill dir) limits the per-file pattern scan to them; the structural checks still cover the dir."""
     name, trust = skill_path.name, _resolve_trust_level(source)
     findings: list[Finding] = []
     if skill_path.is_dir():
         findings.extend(_check_structure(skill_path))
-        for f in skill_path.rglob("*"):
+        for f in skill_path.rglob("*") if files is None else files:
             if f.is_file():
                 findings.extend(scan_file(f, str(f.relative_to(skill_path)), skill=True))
     elif skill_path.is_file():

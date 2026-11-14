@@ -45,18 +45,53 @@ def _finding_keys(skill_dir: Path, findings) -> list[tuple[str, str, str, str]]:
     return keys
 
 
-def _scan_baseline(skill_dir: Path) -> tuple[Optional[Counter], Optional[str]]:
-    """Pre-write findings for a background-origin write, so only findings the write introduces block
-    it (bundled skills already carry flagged examples the fork did not write). (baseline, error)."""
+def _same_file_key(path: Path) -> Optional[tuple[int, int]]:
+    try:
+        st = path.stat()
+    except (OSError, RuntimeError):  # missing, dangling or looping: cannot share the target's inode
+        return None
+    return st.st_dev, st.st_ino
+
+
+def _aliases(path: Path, target: Path, real: Path, key: Optional[tuple[int, int]]) -> bool:
+    if path == target:
+        return False
+    try:
+        if path.resolve() == real:
+            return True
+    except (OSError, RuntimeError):  # resolve() raises RuntimeError on a loop on 3.11/3.12
+        return False
+    return key is not None and _same_file_key(path) == key
+
+
+def _scan_scope(skill_dir: Path, target: Path) -> list[Path]:
+    """Files a background-origin write's two scans cover: *target* plus every in-skill path that is the
+    same file: a symlink resolving to it (scanned under its own name's rules) or a hardlink sharing its
+    inode. The normal atomic replace gives the target a new inode, so a hardlinked sibling keeps the old
+    bytes and cancels against the baseline, but the EXDEV/EBUSY copy fallback and the Windows in-place
+    rewrite write through the existing inode and change the sibling too. Every other file reads the same
+    before and after the write, so its findings would cancel; scanning it only cost time. Structural
+    checks still cover the whole dir."""
+    real = target.resolve()  # the atomic write lands here when *target* is an in-skill symlink
+    key = _same_file_key(target)  # None for a new target: nothing can be hardlinked to it yet
+    return [target] + [f for f in skill_dir.rglob("*") if _aliases(f, target, real, key)]
+
+
+def _scan_baseline(skill_dir: Path, target: Path) -> tuple[Optional[list[Path]], Optional[Counter], Optional[str]]:
+    """Pre-write findings over the scan scope of *target* for a background-origin write, so only findings
+    the write introduces block it (bundled skills already carry flagged examples the fork did not write).
+    (scope, baseline, error); scope None (full scan) outside background origin."""
     if not _background_origin():
-        return None, None
+        return None, None, None
     from tools import skill_manager_tool
     try:
-        findings = skill_manager_tool.scan_skill(skill_dir, source="agent-created").findings
-        return Counter(_finding_keys(skill_dir, findings)), None
+        scope = _scan_scope(skill_dir, target)
+        findings = skill_manager_tool.scan_skill(skill_dir, source="agent-created", files=scope).findings
+        return scope, Counter(_finding_keys(skill_dir, findings)), None
     except Exception as e:  # a required scan that cannot finish must not allow the write
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
-        return None, f"Security scan could not complete, so this skill was blocked: {e}"
+        return None, None, f"Security scan could not complete, so this skill was blocked: {e}"
+
 
 
 def _introduced_findings(skill_dir: Path, result, baseline: Counter):

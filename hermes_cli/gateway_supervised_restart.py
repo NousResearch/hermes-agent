@@ -92,6 +92,9 @@ def restart_externally_supervised_gateway(supervised_pid: int) -> None:
             return
         print("⚠ Supervisor did not relaunch the gateway after its graceful exit")
     else:
+        from hermes_cli.update_cmd_drain_report import leave_restart_pending
+        if leave_restart_pending(supervised_pid, f"Gateway PID {supervised_pid}"):
+            return  # still working: its supervisor relaunches it once it is idle
         print(f"⚠ Gateway did not exit within {wait_budget:.0f}s of SIGUSR1 (or the signal could not be sent)")
     _print_lines(
         "",

@@ -1,6 +1,6 @@
 name: ghostbox
 repo: https://github.com/arjunbagga-xyz/hermes-ghostbox
-sha: 732b54f47d00f817153d60d1fed8cbcdd8f51394
+sha: 151574878391416e0c5b6b21d9b3114af0fe4103
 title: Ghost-Box
 description: Speculative shadow-execution sandbox and blast-radius verifier
   for autonomous agent tools using ephemeral Git worktrees.

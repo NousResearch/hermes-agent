@@ -246,3 +246,20 @@ assert detect_content_rule_keys(command) == []
 assert detect_hardline_command(command) == (False, None)
 assert _SCAN_INCOMPLETE_DESCRIPTION in [key for key, _ in _command_findings(command)]
 ''', timeout=60)
+
+
+def test_quoted_heredoc_following_an_unquoted_one_is_inert():
+    # With two redirections the shell reads both heredoc bodies in order. The second delimiter
+    # is quoted, so a nested-looking script in that body is literal data, not a shell expansion.
+    from tools.approval_detection import (
+        _PARSER_LIMIT_DESCRIPTION, detect_dangerous_command, detect_hardline_command,
+    )
+
+    nested = "$(" * 40 + "x" + ")" * 40
+    literal_second = "cat <<DATA <<'CODE'\nplain\nDATA\n" + nested + "\nCODE"
+    assert detect_hardline_command(literal_second) == (False, None)
+    assert detect_dangerous_command(literal_second) == (False, None, None)
+
+    # The same nesting in the unquoted first body really expands and must still fail closed.
+    expanding_first = "cat <<DATA <<'CODE'\n" + nested + "\nDATA\nplain\nCODE"
+    assert detect_hardline_command(expanding_first) == (True, _PARSER_LIMIT_DESCRIPTION)

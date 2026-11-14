@@ -120,10 +120,17 @@ def recorded_scan(command: str) -> bool | None:
 _HEREDOC_RE = re.compile(r"""<<(-?)[ \t]*((?:'[^'\n]*'|"[^"\n]*"|\\.|[^\s;&|<>()'"\\])+)""")
 
 
-def _skip_quoted_heredoc_bodies(command: str, newline: int, pending: list) -> int:
-    """Index of the newline ending the last body of *pending* quoted-delimiter heredocs whose
-    bodies start after *newline* (the end of the command when a delimiter never comes, as in bash)."""
-    for delimiter, strip_tabs in pending:
+def _quoted_heredoc_body_spans(
+    command: str, newline: int, pending: list[tuple[str, bool, bool]]
+) -> list[tuple[int, int]]:
+    """Bodies of quoted-delimiter heredocs, even after earlier unquoted bodies.
+
+    Heredoc bodies follow their redirections in order. Only quoted ones are skipped by the
+    substitution-depth walk: unquoted bodies still expand command substitutions.
+    """
+    spans: list[tuple[int, int]] = []
+    for delimiter, strip_tabs, quoted in pending:
+        body_start = newline + 1
         while newline < len(command):
             end = command.find("\n", newline + 1)
             end = len(command) if end < 0 else end
@@ -131,8 +138,11 @@ def _skip_quoted_heredoc_bodies(command: str, newline: int, pending: list) -> in
             newline = end
             if (line.lstrip("\t") if strip_tabs else line) == delimiter:
                 break
-    return newline
-
+        if quoted:
+            spans.append((body_start, newline))
+        if newline == len(command):
+            break
+    return spans
 
 def substitution_depth(command: str) -> int:
     """Deepest ``$(`` nesting under shell quoting of the raw command: a quoted ``)`` or ``$(``
@@ -142,9 +152,13 @@ def substitution_depth(command: str) -> int:
     the body of a quoted-delimiter heredoc (``<<'E'``, ``<<"E"``, ``<<\\E``) are data too; an
     unquoted-delimiter body expands ``$(`` and is counted."""
     frames = [[None, 0, False]]  # per open `$(`: [quote state, unquoted `(` count, is `$((`]
-    heredocs: list[tuple[str, bool] | None] = []  # this line's heredocs; None = unquoted delimiter
+    heredocs: list[tuple[str, bool, bool]] = []  # delimiter, strip-tabs flag, quoted flag
+    skip_spans: list[tuple[int, int]] = []
     deepest, i, n = 0, 0, len(command)
     while i < n:
+        if skip_spans and i == skip_spans[0][0]:
+            i = skip_spans.pop(0)[1]
+            continue
         char, frame = command[i], frames[-1]
         # A `#` glued to a `)` that closes `$(`/`$((` is inside the same word, so it is literal and
         # what follows runs. Not telling that `)` from a subshell or case `)` here only over-counts.
@@ -163,16 +177,13 @@ def substitution_depth(command: str) -> int:
             word = match[2]
             quoted = any(c in word for c in "'\"\\")
             delimiter = re.sub(r"\\(.)", r"\1", word).replace("'", "").replace('"', "")
-            heredocs.append((delimiter, bool(match[1])) if quoted else None)
+            heredocs.append((delimiter, bool(match[1]), quoted))
             i = match.end()
             continue
         if char == "\n" and frame[0] is None and heredocs:
-            # Bodies follow in operator order; skip the leading quoted ones (an unquoted body is counted).
-            pending = heredocs[:heredocs.index(None)] if None in heredocs else heredocs
-            heredocs = []
-            if pending:
-                i = _skip_quoted_heredoc_bodies(command, i, pending)
-                continue
+            # A quoted body stays inert even if an earlier heredoc delimiter was unquoted.
+            skip_spans.extend(_quoted_heredoc_body_spans(command, i, heredocs))
+            heredocs.clear()
         if char == "'" and frame[0] is None:
             end = command.find("'", i + 1)
             end = n if end < 0 else end

@@ -81,7 +81,10 @@ the gallery. There is no separate listing to maintain.
    self-updater lets an installed copy move to a commit nobody reviewed.
    Updates reach users only through a SHA-bump PR here plus
    `hermes plugins update <name>`. Keep the updater in the standalone
-   distribution if you want one; strip it from the catalog build.
+   distribution if you want one; strip it from the catalog build. Downloading
+   a separate third-party tool pinned by checksum is not a self-updater; a
+   maintainer allows such a file by repo, pinned sha and file hash in
+   `scripts/ci/catalog_self_updater_allowlist.json`.
 4. **SHA bumps are new PRs.** Updating an entry's pin is a new PR whose diff
    (old SHA → new SHA) is re-reviewed like any other change — reviewers are
    expected to look at the upstream commit range being adopted.

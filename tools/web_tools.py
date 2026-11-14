@@ -132,8 +132,11 @@ def _autodetect_backend() -> Optional[str]:
             return backend
 
     # Plugin-contributed providers (built-ins are covered above); probe the held object directly.
+    # Server-side-only declarations (supports_client_side() False) never serve client-side calls,
+    # so they are unreachable by autodetect — only an explicit config pin selects them (#137475).
     for provider in _list_registered_web_providers():
-        if provider.name not in _LEGACY_WEB_BACKENDS and _probe(provider, "is_available"):
+        if provider.name not in _LEGACY_WEB_BACKENDS and _probe(provider, "supports_client_side") is not False \
+                and _probe(provider, "is_available"):
             return provider.name
     return None
 

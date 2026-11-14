@@ -42,7 +42,8 @@ def _entry(*, origin=True) -> SessionEntry:
 
 def _runner(entry: SessionEntry | None, adapter=None) -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
-    runner.session_store = SimpleNamespace()
+    # The scheduler's synchronous profile check reads the store; dispatch reads the async facade.
+    runner.session_store = SimpleNamespace(lookup_by_session_key=lambda _key: None)
     runner._async_session_store = SimpleNamespace(
         _store=runner.session_store, lookup_by_session_key=AsyncMock(return_value=entry)
     )
@@ -109,7 +110,6 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
     runner._running = True
     runner._draining = False
     runner._background_tasks = set()
-    runner._queued_events = {}
     runner._is_user_authorized = MagicMock(return_value=True)
     adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
 
@@ -135,7 +135,7 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
         await asyncio.sleep(0)
 
         assert adapter._pending_messages[entry.session_key] is pending_user_event
-        queued = runner._queued_events[entry.session_key][0]
+        queued = runner._session_state(entry.session_key).conversation.queued_events[0]
         assert pending_user_event.text == "human follow-up"
         assert pending_user_event.media_urls == ["human.jpg"]
         assert pending_user_event.allow_gateway_control is True

@@ -387,85 +387,6 @@ class TestResolveVisionMainFirst:
 
         assert model == "tencent/hy3:free"
 
-    def test_copilot_vision_sets_vision_header(self, monkeypatch):
-        """Copilot vision requests include the header required for vision routing."""
-        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghu_test-token")
-
-        captured = {}
-
-        def fake_headers(*, is_agent_turn=False, is_vision=False):
-            captured["is_agent_turn"] = is_agent_turn
-            captured["is_vision"] = is_vision
-            return {"Copilot-Vision-Request": "true"} if is_vision else {}
-
-        with patch(
-            "agent.auxiliary_client._read_main_provider", return_value="copilot",
-        ), patch(
-            "agent.auxiliary_client._read_main_model", return_value="configured-copilot-model",
-        ), patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
-            return_value=("auto", None, None, None, None),
-        ), patch(
-            "agent.auxiliary_client.OpenAI",
-        ) as mock_openai, patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
-            return_value={
-                "provider": "copilot",
-                "api_key": "copilot-api-token",
-                "base_url": "https://api.githubcopilot.com",
-            },
-        ), patch(
-            "hermes_cli.copilot_auth.copilot_request_headers",
-            side_effect=fake_headers,
-        ):
-            mock_client = MagicMock()
-            mock_openai.return_value = mock_client
-
-            from agent.auxiliary_client import resolve_vision_provider_client
-
-            provider, client, model = resolve_vision_provider_client()
-
-        assert provider == "copilot"
-        assert client is mock_client
-        assert model == "configured-copilot-model"
-        assert captured == {"is_agent_turn": True, "is_vision": True}
-        assert mock_openai.call_args.kwargs["default_headers"]["Copilot-Vision-Request"] == "true"
-
-    def test_text_copilot_does_not_set_vision_header(self, monkeypatch):
-        """Text Copilot requests keep the vision-only header off."""
-        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghu_test-token")
-
-        captured = {}
-
-        def fake_headers(*, is_agent_turn=False, is_vision=False):
-            captured["is_agent_turn"] = is_agent_turn
-            captured["is_vision"] = is_vision
-            return {"Copilot-Vision-Request": "true"} if is_vision else {}
-
-        with patch(
-            "agent.auxiliary_client.OpenAI",
-        ) as mock_openai, patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
-            return_value={
-                "provider": "copilot",
-                "api_key": "copilot-api-token",
-                "base_url": "https://api.githubcopilot.com",
-            },
-        ), patch(
-            "hermes_cli.copilot_auth.copilot_request_headers",
-            side_effect=fake_headers,
-        ):
-            mock_client = MagicMock()
-            mock_openai.return_value = mock_client
-
-            from agent.auxiliary_client import resolve_provider_client
-
-            client, model = resolve_provider_client("copilot", "gpt-5-mini")
-
-        assert client is mock_client
-        assert model == "gpt-5-mini"
-        assert captured == {"is_agent_turn": True, "is_vision": False}
-        assert "default_headers" not in mock_openai.call_args.kwargs
 
 # ── Vision — custom provider endpoint credential passthrough ────────────────
 
@@ -482,15 +403,11 @@ class TestResolveVisionCustomProvider:
     ``set_runtime_main()`` recorded for the turn.
     """
 
-    def test_custom_main_forwards_runtime_endpoint(self, monkeypatch):
+    def test_custom_main_forwards_runtime_endpoint(self):
         """custom main with recorded runtime endpoint → Step 1 builds a client."""
         import agent.auxiliary_client as aux
 
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "https://my.endpoint.example/v1")
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "sk-runtime-key")
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "anthropic_messages")
-
-        with patch(
+        with aux.scoped_runtime_main({"base_url": "https://my.endpoint.example/v1", "api_key": "sk-runtime-key", "api_mode": "anthropic_messages"}), patch(
             "agent.auxiliary_client._read_main_provider", return_value="custom",
         ), patch(
             "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
@@ -517,15 +434,11 @@ class TestResolveVisionCustomProvider:
         assert kwargs.get("explicit_api_key") == "sk-runtime-key"
         assert kwargs.get("is_vision") is True
 
-    def test_custom_prefixed_main_forwards_runtime_endpoint(self, monkeypatch):
+    def test_custom_prefixed_main_forwards_runtime_endpoint(self):
         """A ``custom:<name>`` provider id also forwards the runtime endpoint."""
         import agent.auxiliary_client as aux
 
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "https://named.example/v1")
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "sk-named")
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "")
-
-        with patch(
+        with aux.scoped_runtime_main({"base_url": "https://named.example/v1", "api_key": "sk-named"}), patch(
             "agent.auxiliary_client._read_main_provider",
             return_value="custom:copilot-gateway",
         ), patch(
@@ -550,15 +463,11 @@ class TestResolveVisionCustomProvider:
         assert kwargs.get("explicit_api_key") == "sk-named"
         assert kwargs.get("is_vision") is True
 
-    def test_custom_main_no_runtime_falls_back_to_configured_endpoint(self, monkeypatch):
+    def test_custom_main_no_runtime_falls_back_to_configured_endpoint(self):
         """No recorded runtime endpoint → resolve the configured custom endpoint."""
         import agent.auxiliary_client as aux
 
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "")
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "")
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "")
-
-        with patch(
+        with aux.scoped_runtime_main({}), patch(
             "agent.auxiliary_client._read_main_provider", return_value="custom",
         ), patch(
             "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",

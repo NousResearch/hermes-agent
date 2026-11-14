@@ -14,7 +14,10 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from agent.prompt_cache_scope import conversation_id
 from tools.arg_coercion import coerce_tool_args
+from tools.arg_validation import call_with_arg_checks
+from tools.registry import registry
 
 
 def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> dict[str, str]:
@@ -25,6 +28,7 @@ def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) ->
         "tool_call_id": tool_call_id or "",
         "turn_id": getattr(agent, "_current_turn_id", "") or "",
         "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+        "conversation_id": conversation_id(agent),
     }
 
 
@@ -129,7 +133,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
     return _call_tool(
         "tools.session_search_tool", "session_search", args,
         (
-            ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit", 3),
+            ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit"),
             ("session_id", "session_id"), ("around_message_id", "around_message_id"),
             ("window", "window", 5), ("sort", "sort"), ("profile", "profile"),
             ("detail", "detail", "adaptive"), ("after", "after"), ("before", "before"),
@@ -176,6 +180,42 @@ def _desktop_preview(agent, args: dict, ctx: InlineToolContext) -> Any:
     from tools.preview_tool import _handle_preview
 
     return _handle_preview(args)
+
+
+def _preview_is_default_vault_target(agent, task_id: str) -> bool:
+    """An omitted ``browser_vault`` target means the in-app browser when this session can drive it (its
+    ``drive_preview``, eager or deferred behind ``tool_call``) and has no managed browser page of its own:
+    a Desktop agent that opened a page with browser_exec keeps filling that page."""
+    names = getattr(agent, "valid_tool_names", ()) or ()
+    preview = "drive_preview" in names
+    if not preview and "tool_call" in names:
+        from agent.tool_executor import _tool_search_scoped_names
+
+        preview = "drive_preview" in _tool_search_scoped_names(agent)
+    if not preview:
+        return False
+    from agent.browser_page_registry import backend_for_task
+    from tools.browser_session import session_for_task
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    # A plugin backend (e.g. Camofox) holding the task's live page owns the fill: browser_vault's own
+    # backend selection already picks it, so an omitted target must NOT be forced to preview over it.
+    # Fall to preview only when nothing else owns the page.
+    return (not session_for_task(task_id) and SUPERVISOR_REGISTRY.get(task_id) is None
+            and backend_for_task(task_id) is None)
+
+
+def _browser_vault(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # The preview transport is the agent's GUI callback, which registry dispatch never forwards.
+    import tools.browser_vault_tool  # registers the real handler
+    from tools.registry import registry
+
+    task_id = ctx.effective_task_id or "default"
+    if "target" not in args and (args.get("action") in ("fill", "save_login", "enter_code")
+                                 and _preview_is_default_vault_target(agent, task_id)):
+        args = {**args, "target": "preview"}
+    return registry.dispatch("browser_vault", args, task_id=ctx.effective_task_id,
+                             preview_callback=getattr(agent, "drive_preview_callback", None))
 
 
 def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
@@ -259,6 +299,8 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
     # Chat session carries the schema, and the tool re-gates on the title.
     "message_agent": _tool(
         "tools.bot_mode_dm", "message_agent_tool", ("target", "target", ""), ("message", "message", ""),
+        ("expects_reply", "expects_reply", True), ("cancel", "cancel", ""),
+        ("constraints", "constraints", ""), ("expecting", "expecting", ""),
         task_id=lambda agent, ctx: ctx.effective_task_id, agent=lambda agent, ctx: agent,
     ),
     "session_search": _session_search,
@@ -272,6 +314,7 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
         ("start_line", "start_line"), ("count", "count"),
     ),
     "desktop_preview": _desktop_preview,
+    "browser_vault": _browser_vault,
     "drive_preview": _callback_tool(
         "tools.drive_preview_tool", "drive_preview_tool", "drive_preview_callback",
         ("action", "action", ""), ("ref", "ref"), ("selector", "selector"), ("text", "text"),
@@ -304,7 +347,11 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
 
 def _coerced(name: str, executor: InlineToolExecutor) -> InlineToolExecutor:
     def _exec(agent, args: dict, ctx: InlineToolContext) -> Any:
-        return executor(agent, coerce_tool_args(name, args), ctx)
+        from tools.hosted_tool_policy import hosted_tool_refusal
+        if refusal := hosted_tool_refusal(name):  # the table is an execution primitive: same allowlist
+            return json.dumps({"error": refusal}, ensure_ascii=False)
+        return call_with_arg_checks(
+            registry.get_entry(name), coerce_tool_args(name, args), lambda checked: executor(agent, checked, ctx))
     return _exec
 
 
@@ -326,9 +373,48 @@ def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineTo
     """
     if function_name in INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES:
         return INLINE_TOOL_EXECUTORS[function_name]
-    memory_manager = agent._memory_manager
-    if memory_manager and memory_manager.has_tool(function_name):
-        return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(function_name, args)
+    if is_memory_provider_tool(agent, function_name):
+        return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(
+            function_name, args,
+            caller_gsk=(getattr(agent, "_gateway_session_key", "") or ""),
+        )
     if function_name == "message_agent":
         return None
     return INLINE_TOOL_EXECUTORS.get(function_name)
+
+
+def is_memory_provider_tool(agent, function_name: str) -> bool:
+    """``function_name`` is served by the agent's memory provider (both paths, before the registry)."""
+    memory_manager = getattr(agent, "_memory_manager", None)
+    return bool(memory_manager) and memory_manager.has_tool(function_name)
+
+
+def is_context_engine_tool(agent, function_name: str) -> bool:
+    """``function_name`` is served by the agent's context engine (sequential path, before the registry)."""
+    names = getattr(agent, "_context_engine_tool_names", None)
+    return bool(names) and function_name in names
+
+
+def pre_registry_route(function_name: str, agent: Any = None) -> Optional[str]:
+    """Which seam dispatches ``function_name`` instead of its tool-registry handler on some path
+    (``model_tools.handle_function_call``, the sequential path, ``invoke_tool``), or None when every
+    path reaches the registry handler: ``alias``, ``bridge``, ``inline``, ``connector``, and with
+    ``agent`` also ``context_engine`` / ``memory_provider``. Each test is the one the dispatcher
+    runs, so a registration under such a name never runs its own handler there."""
+    from model_tools import _AGENT_LOOP_TOOLS, _LEGACY_TOOL_ALIASES
+    from tools.connectors import is_connector_name
+    from tools.tool_search import is_bridge_tool
+
+    if function_name in _LEGACY_TOOL_ALIASES:
+        return "alias"
+    if is_bridge_tool(function_name):
+        return "bridge"
+    if function_name in INLINE_TOOL_EXECUTORS or function_name in _AGENT_LOOP_TOOLS:
+        return "inline"
+    if is_connector_name(function_name):
+        return "connector"
+    if agent is not None and is_context_engine_tool(agent, function_name):
+        return "context_engine"
+    if agent is not None and is_memory_provider_tool(agent, function_name):
+        return "memory_provider"
+    return None

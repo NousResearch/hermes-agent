@@ -16,7 +16,7 @@ import pytest
 
 from hermes_cli import anon_auth
 from hermes_cli.auth import _load_auth_store, resolve_provider
-from tests.hermes_cli.anon_portal import PORTAL, WELCOME, claimed_trial, install_portal, make_jwt as _jwt
+from tests.hermes_cli.anon_portal import PORTAL, WELCOME, claimed_trial, install_portal, make_jwt as _jwt, off_local_desktop
 
 
 @pytest.fixture
@@ -88,13 +88,11 @@ class TestIdentityLifecycle:
         with pytest.raises(anon_auth.AuthError):
             resolve_provider("auto")
 
-    def test_a_claimed_trial_carries_inference_only_on_the_local_desktop_backend(self, portal, monkeypatch):
+    def test_a_claimed_trial_carries_inference_on_every_surface(self, portal, monkeypatch):
         claimed_trial(monkeypatch)
+        off_local_desktop(monkeypatch)     # a CLI shell beside the desktop
+        assert anon_auth.free_inference_active() is True
         assert resolve_provider("auto") == "nous"
-        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN")     # a CLI shell beside the desktop
-        assert anon_auth.free_inference_active() is False
-        with pytest.raises(anon_auth.AuthError):
-            resolve_provider("auto")
 
 
 class TestExplicitProvision:
@@ -376,7 +374,7 @@ class TestIdentityOfRecordIsTheSharedStore:
         from hermes_cli.auth_nous import _write_shared_nous_state
         _write_shared_nous_state({"access_token": _jwt(client_id="hermes-cli", account_tier="free"),
                                   "refresh_token": "rt-sibling", "expires_at": "2030-01-01T00:00:00+00:00",
-                                  "auth_method": "oauth_device_code"})
+                                  "auth_method": "oauth_device_code"}, renewal=False)
         state = anon_auth.ensure_portal_identity(explicit=True)
         assert not anon_auth.is_guest_state(state)
         assert state["refresh_token"] == "rt-sibling"
@@ -397,7 +395,8 @@ class TestIdentityOfRecordIsTheSharedStore:
         anon_auth.ensure_portal_identity(explicit=True)
         from hermes_cli.auth_nous import _write_shared_nous_state
         _write_shared_nous_state({"access_token": _jwt(client_id="hermes-cli"), "refresh_token": "rt-sibling",
-                                  "expires_at": "2030-01-01T00:00:00+00:00", "auth_method": "oauth_device_code"})
+                                  "expires_at": "2030-01-01T00:00:00+00:00", "auth_method": "oauth_device_code"},
+                                 renewal=False)
         anon_auth.clear_dead_guest("test")
         assert "nous" not in _load_auth_store().get("providers", {})
         assert _shared_store(tmp_path)["refresh_token"] == "rt-sibling"

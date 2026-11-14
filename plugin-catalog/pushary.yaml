@@ -1,16 +1,19 @@
 name: pushary
 repo: https://github.com/Pushary/hermes-plugin-pushary
-sha: cd3a9a4d78a9ef8a1c279d27100cb1e462273362
+sha: 37aa7ebc2f57627d8b2134ea110609e6e7e2d164
 subdir: pushary_plugin
-description: "Phone notifications, questions and approvals through Pushary's native Hermes approval transport, with optional per-tool gates. Disclosure — approval transport and per-tool gates hand dangerous-command approvals to whoever holds the devices or Slack channel paired to your Pushary account (fails closed); messages queued in the Pushary app or Mac notch are injected into the next turn as operator instructions; sends session events with a hashed hostname on every turn, redacted tool-error text (max 3 per session) and redacted gated-tool arguments to pushary.com."
+description: "Phone notifications, questions and approvals through Pushary's native Hermes approval transport, with optional per-tool gates and a Hermes Desktop status-bar panel. Disclosure — approval transport and per-tool gates hand dangerous-command approvals to whoever holds the devices or Slack channel paired to your Pushary account, or to the approvers a Pushary Team route names (fails closed); the Hermes Desktop panel answers an approval this Hermes is carrying by withdrawing it on pushary.com and uses the answer only when Pushary confirms that withdrawal won; each approval is recorded owner-only in plugin-data/pushary/approvals (redacted command, choices, outcome; removed after a day); messages queued in the Pushary app or Mac notch are injected into the next turn as operator instructions and wait in ~/.pushary/run/hermes-commands; when the user has turned on Pushary's encrypted conversation history and installed Pushary's helper, a background thread reads the session through Hermes's SessionDB, keeps owner-only snapshots in ~/.pushary/hermes-history (removed after 48 hours unchanged) and runs that helper (pushary-native-transcripts or pushary-transcript-register) with the API key so Pushary's uploader can encrypt and send them; sends session events with a machine id (~/.pushary/machine-id when present, else a hashed hostname) on every turn, the redacted command and description of each approval it carries, the redacted reason when Hermes marks a turn failed (max 200 characters), redacted gated-tool arguments and pushary_remind reminder text to pushary.com; reads PUSHARY_API_KEY only through Hermes."
 maintainer: Pushary
 tier: community
 category: automation
 docs_url: https://github.com/Pushary/hermes-plugin-pushary#readme
-version: "0.5.9"
+version: "1.0.1"
 readme: false
+known_issues:
+  - "Updating from 0.5.9: this release reads PUSHARY_API_KEY only through Hermes. If Pushary setup or the Pushary app gave the old copy its key, save it once with: hermes config set PUSHARY_API_KEY <your key>"
 capabilities:
   provides_tools:
+    - pushary_remind
     - pushary_notify
     - pushary_ask
     - pushary_wait
@@ -25,5 +28,7 @@ capabilities:
     - on_session_start
     - on_session_end
     - on_session_finalize
+    - post_approval_response
   provides_middleware: []
-  requires_env: []
+  requires_env:
+    - PUSHARY_API_KEY

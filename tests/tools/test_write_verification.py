@@ -40,7 +40,8 @@ class TestWriteVerification:
         assert r.get("verified") is True
         assert b"\r\n" in f.read_bytes()
 
-    def test_hash_mismatch_is_hard_error(self, workdir):
+    def test_hash_mismatch_is_hard_error(self, workdir, monkeypatch):
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")  # the shell sha256sum transport
         f = workdir / "bad.txt"
         import tools.file_operations as fo
         real_sha = fo.hashlib.sha256
@@ -55,8 +56,16 @@ class TestWriteVerification:
             r = json.loads(write_file_tool(str(f), "actual content\n", task_id="t-wv"))
         assert "error" in r
 
-    def test_verification_failure_never_breaks_write(self, workdir):
+    @pytest.mark.platforms("posix")  # the native write path is POSIX-only (_native_read_enabled)
+    def test_native_hash_mismatch_is_hard_error(self, workdir):
+        f = workdir / "bad_native.txt"
+        with mock_patch("tools.file_operations_native.sha256_of", return_value="0" * 64):
+            r = json.loads(write_file_tool(str(f), "actual content\n", task_id="t-wv3"))
+        assert "error" in r and "verification failed" in r["error"]
+
+    def test_verification_failure_never_breaks_write(self, workdir, monkeypatch):
         # sha256sum unavailable/failing -> verified omitted, write still ok.
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")  # the shell sha256sum transport
         f = workdir / "ok.txt"
         import tools.file_operations as fo
 

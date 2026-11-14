@@ -1,17 +1,28 @@
-"""Fresh membership checks for owner-held durable native inputs."""
+"""Author classification and fresh membership checks for owner-held durable native inputs."""
 import asyncio
+
+
+def is_automated_message(message) -> bool:
+    """True for bot- or webhook-authored messages. Discord only guarantees ``webhook_id`` on
+    webhook posts (the author object is the webhook's id/name/avatar, with ``bot`` optional), so
+    ``author.bot`` alone admits a flagless webhook as a person and bypasses DISCORD_ALLOW_BOTS."""
+    return bool(getattr(getattr(message, "author", None), "bot", False)
+                or isinstance(getattr(message, "webhook_id", None), int))
 
 
 class DiscordAuthorizationMixin:
     async def reauthorize_native_roles(self, source):
-        from plugins.platforms.discord.adapter import _read_dm_role_auth_guild, _scoped_gate_env
-        from hermes_cli.config import read_raw_config
+        from plugins.platforms.discord.adapter import _read_dm_role_auth_guild
+        from gateway.config import Platform, PlatformConfig, load_gateway_config
         from discord import HTTPException
 
-        # Unlike ingress caches, recovery reads current transport-scoped policy.
+        # Recovery reads current transport-scoped policy, resolved like ingress: the same gate
+        # resolver over the Discord config the loader builds now. An operator's env/.env value
+        # still wins; a YAML-bridged env copy is refreshed by that load, so a role removed from
+        # config.yaml is revoked at once, as for ingress (DiscordLiveGatesMixin).
         def policy():
-            cfg = (read_raw_config() or {}).get('discord', {}) or {}
-            raw = _scoped_gate_env('DISCORD_ALLOWED_ROLES') or cfg.get('allowed_roles', [])
+            current = load_gateway_config().platforms.get(Platform.DISCORD) or PlatformConfig()
+            raw = self._gate_raw('allowed_roles', 'DISCORD_ALLOWED_ROLES', config=current)
             roles = {int(str(item).strip()) for item in self._gate_csv_set(raw)
                      if str(item).strip().isdigit()}
             guild_id = _read_dm_role_auth_guild() if source.chat_type == 'dm' else source.scope_id

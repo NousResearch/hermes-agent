@@ -9,7 +9,8 @@ _REPLAY_BUFFER_MAX events AND _REPLAY_BUFFER_BYTES_MAX frozen UTF-8 payload byte
 _REPLAY_PROCESS_BYTES_MAX frozen UTF-8 payload bytes across at most _REPLAY_SESSIONS_MAX sessions,
 oldest evicted FIFO (their seq/truncation counters are retained so a revisited session stays
 monotonic within the epoch, #100122). Evicted or never-retained (oversized) frames leave a truncation watermark so a
-reconnecting client refetches instead of trusting a replay with holes.
+reconnecting client refetches instead of trusting a replay with holes. A torn-down session's ring is freed at
+teardown (``forget_session``) and never rebuilt by late frames.
 """
 
 from __future__ import annotations
@@ -43,6 +44,10 @@ _replay_buffer_bytes: dict[str, int] = {}
 _replay_evicted_through: dict[str, int] = {}
 _replay_total_bytes = 0
 _replay_next_seq: dict[str, int] = {}
+# Torn-down sids (forget_session). A frame stamped later (a turn thread that outlived the teardown join, a
+# compute-host bridge echo) still gets a seq and a watermark but is never retained, so it cannot rebuild a
+# ring that nothing would free until FIFO eviction. One str per closed session, like _replay_next_seq.
+_replay_forgotten: set[str] = set()
 
 
 def replay_epoch() -> str:
@@ -82,29 +87,19 @@ def _stamp_event(obj: dict) -> None:
     size = len(payload)
     with _replay_lock:
         global _replay_total_bytes
+        _drain_released_locked()
         seq = _replay_next_seq.get(sid, 0) + 1
         _replay_next_seq[sid] = seq
         params["seq"] = seq
+        if sid in _replay_forgotten:
+            _replay_evicted_through[sid] = seq
+            return
         buf = _replay_buffers.get(sid)
         if buf is None:
             buf = _replay_buffers[sid] = deque()
             _replay_buffer_bytes[sid] = 0
             while len(_replay_buffers) > _REPLAY_SESSIONS_MAX:
-                oldest_sid, _oldest_buf = _replay_buffers.popitem(last=False)
-                _replay_total_bytes -= _replay_buffer_bytes.pop(oldest_sid, 0)
-                # FIFO eviction drops the ring, not the session's seq numbering
-                # (#100122). Keep the counter so a revisited session continues
-                # from its high seq instead of restarting at 1 under clients'
-                # still-held watermarks (a reset seq is invisible to
-                # dispatchIfNewer — replay AND live frames silently vanish).
-                # Retain the truncation watermark too, raised to the latest
-                # stamped seq: the whole retained ring is gone, so a client
-                # holding any older watermark has a gap and must refetch
-                # history instead of trusting the new tail. Both counters are
-                # one int per session id seen this process (bounded by distinct
-                # sessions, not by traffic).
-                _replay_evicted_through[oldest_sid] = max(
-                    _replay_evicted_through.get(oldest_sid, 0), _replay_next_seq.get(oldest_sid, 0))
+                _drop_ring_locked(next(iter(_replay_buffers)))
         if size > _REPLAY_BUFFER_BYTES_MAX or size > _REPLAY_PROCESS_BYTES_MAX:
             _replay_evicted_through[sid] = seq
             return
@@ -126,6 +121,69 @@ def _stamp_event(obj: dict) -> None:
                         _replay_evicted_through.get(evict_sid, 0), evicted_seq
                     )
                     break
+
+
+def _drop_ring_locked(sid: str) -> None:
+    """Free one session's retained frames (FIFO cap eviction and teardown). Caller holds ``_replay_lock``.
+
+    The ring goes, the session's seq numbering stays (#100122): a revisited session continues from its high
+    seq instead of restarting at 1 under clients' still-held watermarks (a reset seq is invisible to
+    dispatchIfNewer, so replay AND live frames silently vanish). The truncation watermark is raised to the
+    latest stamped seq: a client holding any older watermark has a gap and must refetch history instead of
+    trusting the new tail. Both counters are one int per session id seen this process."""
+    global _replay_total_bytes
+    if _replay_buffers.pop(sid, None) is None:
+        return
+    _replay_total_bytes -= _replay_buffer_bytes.pop(sid, 0)
+    _replay_evicted_through[sid] = max(_replay_evicted_through.get(sid, 0), _replay_next_seq.get(sid, 0))
+
+
+def forget_session(sid: str) -> None:
+    """Release a torn-down session's replay ring. A runtime sid is never reattached after teardown
+    (resume mints a new one), so its frames can only be replayed to nobody."""
+    if not sid:
+        return
+    with _replay_lock:
+        _replay_forgotten.add(sid)
+        _drop_ring_locked(sid)
+
+
+# Private keys whose owner is gone (release_key from a GC finalizer that could not take the lock),
+# purged by the next lock holder. list.append/pop are atomic, so a finalizer never needs the lock.
+_released_keys: list[str] = []
+
+
+def _purge_key_locked(key: str) -> None:
+    global _replay_total_bytes
+    if _replay_buffers.pop(key, None) is not None:
+        _replay_total_bytes -= _replay_buffer_bytes.pop(key, 0)
+    _replay_evicted_through.pop(key, None)
+    _replay_next_seq.pop(key, None)
+    _replay_forgotten.discard(key)
+
+
+def _drain_released_locked() -> None:
+    while _released_keys:
+        _purge_key_locked(_released_keys.pop())
+
+
+def release_key(key: str, *, blocking: bool = True) -> None:
+    """Drop everything recorded under a PRIVATE lookup key (ring AND counters) once its session ended.
+
+    Unlike :func:`forget_session` (a public sid that late frames and #100122's monotonic numbering
+    still name), a private key is only ever stamped and read through its owner
+    (``gateway.session_events.SessionEvents``): that owner re-reads :func:`latest_seq` before every
+    publish and starts a new epoch when it finds 0, exactly as after FIFO eviction, so nothing needs
+    the old counters. ``blocking=False`` is for GC finalizers, which can run on a thread that already
+    holds ``_replay_lock``: the key is queued and the next lock holder purges it."""
+    if not key:
+        return
+    _released_keys.append(key)
+    if _replay_lock.acquire(blocking=blocking):
+        try:
+            _drain_released_locked()
+        finally:
+            _replay_lock.release()
 
 
 def events_since(sid: str, last_seen: int) -> list[dict]:
@@ -162,12 +220,15 @@ def reset_replay_state() -> None:
         _replay_buffer_bytes.clear()
         _replay_evicted_through.clear()
         _replay_next_seq.clear()
+        _replay_forgotten.clear()
+        _released_keys.clear()
         _replay_total_bytes = 0
 
 
 def replay_stats() -> dict:
     """Telemetry: buffer occupancy for the ops/debug surface."""
     with _replay_lock:
+        _drain_released_locked()
         return {
             "sessions": len(_replay_buffers),
             "events": sum(len(buffer) for buffer in _replay_buffers.values()),

@@ -1,13 +1,13 @@
 """Copy the model and its selected custom endpoint into a new profile, and merge that endpoint
 over same-identity entries the new profile already has."""
 
-from hermes_cli.config import _expand_env_vars, find_provider_entry
-from hermes_cli.config_providers import _normalize_custom_provider_entry
+from hermes_cli.config import _expand_env_vars
 from hermes_cli.providers import custom_provider_aliases
 from hermes_cli.runtime_provider_custom import (
     _get_named_custom_provider,
     _normalize_custom_provider_name,
     _shadowed_by_builtin,
+    named_custom_provider_config_path,
 )
 
 
@@ -46,44 +46,28 @@ def _resolve(provider: str, view: dict):
     return _get_named_custom_provider(provider, config=view, resolve_credentials=False)
 
 
-def _source_of(cfg: dict, resolved: dict):
-    """Where in *cfg* the resolver found *resolved*: ``("providers", key)`` or
-    ``("custom_providers", index)``. Keyed results carry ``provider_key``; legacy results do not
-    (their normalizer runs without one), so they are located by normalized name and URL."""
-    key, entry = find_provider_entry(cfg.get("providers"), resolved.get("provider_key"))
-    if entry is not None:
-        return "providers", key
-    custom = cfg.get("custom_providers")
-    for index, entry in enumerate(custom if isinstance(custom, list) else ()):
-        normalized = _normalize_custom_provider_entry(entry)
-        if normalized and (normalized["name"], normalized["base_url"]) == (
-            resolved["name"],
-            resolved["base_url"],
-        ):
-            return "custom_providers", index
-    return None
-
-
 def launch_model_seed(source_cfg: dict) -> dict:
     """The config a fresh profile needs to run the launch profile's model: its ``model`` block plus
     the endpoint definition it points at. ``model.provider: custom:lab`` alone is "Unknown provider"
     on the first turn. The selected ``providers:`` or ``custom_providers:`` entry is copied as
     written (``${VAR}`` refs stay refs), and an exact ``providers.<built-in>`` / ``providers.custom``
     key travels for its tuning even without a URL. ``{}`` when the launch profile has no model."""
+    return _selected_model_seed(source_cfg)[0]
+
+
+def _selected_model_seed(source_cfg: dict) -> tuple[dict, bool]:
     model_cfg = source_cfg.get("model")
     if not model_cfg:
-        return {}
+        return {}, False
     seed = {"model": model_cfg}
     provider = _requested_provider(model_cfg)
     if provider is None:
-        return seed
+        return seed, False
     requested = _normalize_custom_provider_name(provider)
     providers = source_cfg.get("providers")
     providers = providers if isinstance(providers, dict) else {}
-    # Resolve and locate on ONE view so the found key/index addresses the raw entry.
-    view = _routing_view(source_cfg)
-    selected = _resolve(provider, view)
-    if selected is None:
+    found = named_custom_provider_config_path(provider, _routing_view(source_cfg))
+    if found is None:
         exact = providers.get(provider)
         # Bare ``custom`` runs as provider ``custom`` and reads ``providers.custom`` tuning too.
         if (
@@ -92,16 +76,14 @@ def launch_model_seed(source_cfg: dict) -> dict:
             and (requested == "custom" or _shadowed_by_builtin(requested))
         ):
             seed["providers"] = {provider: exact}
-        return seed
-    found = _source_of(view, selected)
-    if found is not None:
-        section, where = found
-        seed[section] = (
-            {where: providers[where]}
-            if section == "providers"
-            else [source_cfg["custom_providers"][where]]
-        )
-    return seed
+        return seed, False
+    section, where = found
+    seed[section] = (
+        {where: providers[where]}
+        if section == "providers"
+        else [source_cfg["custom_providers"][where]]
+    )
+    return seed, True
 
 
 def _aliases(entry, key: str = "") -> frozenset[str]:
@@ -113,7 +95,7 @@ def _aliases(entry, key: str = "") -> frozenset[str]:
     return custom_provider_aliases(str(entry.get("name") or key), key)
 
 
-def merge_endpoint_seed(dst_cfg: dict, seed: dict) -> dict:
+def merge_endpoint_seed(dst_cfg: dict, seed: dict, *, claimed: frozenset[str] | None = None) -> dict:
     """Return a copy of *dst_cfg* with the seeded endpoint written first; a same-key destination
     entry is replaced whole. When the seed is an endpoint (it resolves), destination entries that
     claim any of its identities are dropped in both sections: Hermes has several name lookups with
@@ -121,29 +103,61 @@ def merge_endpoint_seed(dst_cfg: dict, seed: dict) -> dict:
     same-identity entry guarantees each of them lands on the inherited endpoint. A URL-less tuning
     seed (``providers.custom``) claims no identity and replaces only its own key. Dropped entries
     include URL-less or disabled ones sharing a name (e.g. ``providers.openrouter`` tuning under a
-    custom endpoint named OpenRouter); this only runs for a new profile without a model."""
+    custom endpoint named OpenRouter); this only runs for a new profile without a model.
+
+    *claimed*: identities captured in the source scope (:func:`prepare_inherited_endpoint_seed`);
+    the seed is then never re-resolved here, where a different .env could hide a collision."""
+    if claimed is None:
+        provider = _requested_provider(seed.get("model"))
+        selected = bool(provider) and _resolve(provider, _routing_view(seed)) is not None
+        claimed = _claimed_aliases(seed) if selected else frozenset()
+    return _merge_endpoint_seed(dst_cfg, seed, claimed)
+
+
+def _claimed_aliases(seed: dict) -> frozenset[str]:
+    return frozenset().union(
+        *(_aliases(e, str(k)) for k, e in (seed.get("providers") or {}).items()),
+        *(_aliases(e) for e in seed.get("custom_providers") or []),
+    )
+
+
+def prepare_inherited_endpoint_seed(source_cfg: dict) -> tuple[dict, frozenset[str]]:
+    """``(seed, claimed)`` prepared in the source scope for :func:`merge_endpoint_seed`:
+    identity/eligibility fields are expanded here, URL and credential refs stay raw.
+
+    Unlike fresh seeding, inheritance can retain a different destination .env. Capture claims
+    now: resolving again there would let an empty URL or disabled selector hide collisions.
+    """
+    seed, selected = _selected_model_seed(source_cfg)
+    if not selected:
+        return seed, frozenset()
+
+    def freeze(entry):
+        return {k: _expand_env_vars(v) if k in {"name", "provider_key", "enabled"} else v
+                for k, v in entry.items()}
+
+    if "providers" in seed:
+        seed["providers"] = {k: freeze(v) for k, v in seed["providers"].items()}
+    if "custom_providers" in seed:
+        seed["custom_providers"] = [freeze(v) for v in seed["custom_providers"]]
+    return seed, _claimed_aliases(seed)
+
+
+def _merge_endpoint_seed(dst_cfg: dict, seed: dict, claimed: frozenset[str]) -> dict:
     seed_providers = seed.get("providers") or {}
     seed_custom = seed.get("custom_providers") or []
-    provider = _requested_provider(seed.get("model"))
-    claimed: frozenset[str] = frozenset()
-    if provider and _resolve(provider, _routing_view(seed)) is not None:
-        claimed = frozenset().union(
-            *(_aliases(e, str(k)) for k, e in seed_providers.items()),
-            *(_aliases(e) for e in seed_custom),
-        )
-
     merged = dict(dst_cfg)
     dst_providers = dst_cfg.get("providers")
     if isinstance(dst_providers, dict) or seed_providers:
         kept = {
             k: v for k, v in (dst_providers if isinstance(dst_providers, dict) else {}).items()
-            if k not in seed_providers and not claimed & _aliases(v, str(k))
+            if k not in seed_providers and not (claimed and claimed & _aliases(v, str(k)))
         }
         merged["providers"] = {**seed_providers, **kept}
     dst_custom = dst_cfg.get("custom_providers")
     if isinstance(dst_custom, list) or seed_custom:
         merged["custom_providers"] = seed_custom + [
             e for e in (dst_custom if isinstance(dst_custom, list) else [])
-            if not claimed & _aliases(e)
+            if not (claimed and claimed & _aliases(e))
         ]
     return merged

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import type { Translations } from '@/i18n'
 
 interface SessionSliceStore<T> {
@@ -14,20 +15,29 @@ export function useSessionValue<T>(store: SessionSliceStore<T>, sessionId: strin
   return useSyncExternalStore(subscribe, () => (sessionId ? store.get()[sessionId] : undefined))
 }
 
-/** Wall clock that re-renders once a second while ``active``, for the heartbeat and loop countdowns. */
+/** Wall clock that re-renders once a second while ``active``, for the heartbeat and loop countdowns.
+ * Keep-alive keeps every ever-active tab mounted, so it also stops for a hidden pane or window
+ * (same gate as the background-process poll in ./index.tsx); a shown pane re-reads the clock. */
 export function useCountdownClock(active: boolean): number {
   const [now, setNow] = useState(() => Date.now())
+  const paneVisible = usePaneVisible()
 
   useEffect(() => {
-    if (!active) {
+    if (!active || !paneVisible) {
       return
     }
 
-    const tick = () => setNow(Date.now())
+    const tick = () => {
+      if (document.visibilityState === 'visible') {
+        setNow(Date.now())
+      }
+    }
+
+    tick()
     const interval = window.setInterval(tick, 1_000)
 
     return () => window.clearInterval(interval)
-  }, [active])
+  }, [active, paneVisible])
 
   return now
 }

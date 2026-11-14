@@ -7,8 +7,8 @@ duplicate-credential finding per platform.
 The inventory is OWNERSHIP-based and evaluated in the SOURCE profile's plugin scope: every adapter
 (built-in ``Platform`` member, a platform that left core — its ``LEFT_CORE`` row, plugin installed or
 not — or a plugin registered under the source's ``HERMES_HOME``) owns the env
-keys it declares outright (``required_env``, allowlist / allow-all / home-channel names, the gateway
-env-override table ``gateway.config_env._ENV_STEPS`` / ``_ENV_ENABLE_CREDENTIALS``) plus every key
+keys it declares outright (``required_env``, allowlist / allow-all / home-channel names, its
+``env_overrides`` / ``env_enable_credentials``, core's ``config_env._ENV_ENABLE_CREDENTIALS``) plus every key
 under its canonical ``<PLATFORM>_`` prefix and its historical alias prefixes. Gateway-wide channel
 policy (``GATEWAY_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOWED_USERS``) and relay enrollment identity
 (``GATEWAY_RELAY_*``) are channel settings too. A prefix an adapter SHARES with a non-channel
@@ -120,7 +120,7 @@ def platform_ids(source_dir: Optional[Path] = None) -> list[str]:
 
 
 def _cred_row_envs(row) -> set[str]:
-    """Every env name a ``gateway.config_env._Cred`` row reads."""
+    """Every env name a ``gateway.platform_env.EnvCred`` row reads."""
     names: set[str] = set()
 
     def _flatten(spec) -> None:
@@ -142,18 +142,27 @@ def _cred_row_envs(row) -> set[str]:
     return names
 
 
-def config_env_table_keys() -> dict[str, str]:
-    """``{ENV_KEY: platform_id}`` for the names the gateway env-override table reads outright: the
-    enable-credential sets and every ``_Cred`` row. Registry-free, so it is cheap at import time;
-    raises if the table cannot be read (callers decide whether that is fatal)."""
+def config_env_table_keys(entries: Iterable = ()) -> dict[str, str]:
+    """``{ENV_KEY: platform_id}`` for the names the gateway env overrides read outright: core's
+    enable-credential sets plus, for each given registry entry, its ``env_enable_credentials`` and
+    every ``EnvCred`` row of its ``env_overrides``. With no *entries* it is registry-free (core rows
+    only), so it stays cheap at import time; raises if the core table cannot be read."""
     from gateway import config_env
+    from gateway.platform_env import EnvCred
     keys: dict[str, str] = {}
     for platform, names in config_env._ENV_ENABLE_CREDENTIALS.items():
         keys.update(dict.fromkeys(names, platform.value))
-    for step in config_env._ENV_STEPS:
-        if isinstance(step, config_env._Cred):
-            keys.update(dict.fromkeys(_cred_row_envs(step), step.platform.value))
+    for entry in entries:
+        keys.update(dict.fromkeys(getattr(entry, "env_enable_credentials", ()) or (), entry.name))
+        for step in getattr(entry, "env_overrides", ()) or ():
+            if isinstance(step, EnvCred):
+                keys.update(dict.fromkeys(_cred_row_envs(step), step.platform.value))
     return keys
+
+
+def _env_override_steps(entries: Iterable) -> list:
+    """Every step a registry entry declares in ``env_overrides``."""
+    return [step for entry in entries for step in getattr(entry, "env_overrides", ()) or ()]
 
 
 def declared_channel_env_keys(source_dir: Optional[Path] = None) -> dict[str, str]:
@@ -164,14 +173,14 @@ def declared_channel_env_keys(source_dir: Optional[Path] = None) -> dict[str, st
     for feature in _left_core_platforms():
         keys.update(dict.fromkeys(feature.enable_env, feature.platform))
     with _plugin_scope(source_dir):
-        for entry in _registry_entries():
+        entries = _registry_entries()
+        for entry in entries:
             for name in (*entry.required_env, entry.allowed_users_env, entry.allow_all_env, entry.cron_deliver_env_var):
                 if name:
                     keys[name] = entry.name
     with contextlib.suppress(Exception):
-        from gateway import config_env
-        keys.update(config_env_table_keys())
-        for step in config_env._ENV_STEPS:
+        keys.update(config_env_table_keys(entries))
+        for step in _env_override_steps(entries):
             if isinstance(step, partial):
                 platform = step.keywords.get("platform")
                 for kw in ("env", "env_base"):
@@ -184,12 +193,13 @@ def _policy_env_keys(source_dir: Optional[Path] = None) -> set[str]:
     """Allowlist / allow-all / home-channel names adapters declare — channel-only by nature."""
     names: set[str] = set(_GATEWAY_POLICY_KEYS)
     with _plugin_scope(source_dir):
-        for entry in _registry_entries():
+        entries = _registry_entries()
+        for entry in entries:
             names.update(n for n in (entry.allowed_users_env, entry.allow_all_env, entry.cron_deliver_env_var) if n)
     with contextlib.suppress(Exception):
-        from gateway import config_env
-        for step in config_env._ENV_STEPS:
-            if isinstance(step, config_env._Cred) and step.home:
+        from gateway.platform_env import EnvCred
+        for step in _env_override_steps(entries):
+            if isinstance(step, EnvCred) and step.home:
                 names.update({step.home, f"{step.home}_NAME", f"{step.home}_THREAD_ID"})
             elif isinstance(step, partial) and step.keywords.get("env_base"):
                 base = step.keywords["env_base"]
@@ -211,14 +221,18 @@ def credential_env_keys() -> dict[str, str]:
     keys: dict[str, str] = {}
     for feature in _left_core_platforms():
         keys.update(dict.fromkeys(feature.enable_env, feature.platform))
-    for entry in _registry_entries():
+    entries = _registry_entries()
+    for entry in entries:
         keys.update(dict.fromkeys(entry.required_env, entry.name))
     with contextlib.suppress(Exception):
         from gateway import config_env
+        from gateway.platform_env import EnvCred
         for platform, names in config_env._ENV_ENABLE_CREDENTIALS.items():
             keys.update(dict.fromkeys(names, platform.value))
-        for step in config_env._ENV_STEPS:
-            if isinstance(step, config_env._Cred):
+        for entry in entries:
+            keys.update(dict.fromkeys(entry.env_enable_credentials, entry.name))
+        for step in _env_override_steps(entries):
+            if isinstance(step, EnvCred):
                 creds: set[str] = set()
                 for group in step.creds:
                     creds.update((group,) if isinstance(group, str) else group)
@@ -254,11 +268,12 @@ def _explicit_enabled(raw: dict, pid: str) -> Optional[bool]:
 def _shared_adapters_active(source_dir: Optional[Path], shared: dict[str, tuple[str, ...]]) -> set[str]:
     """Shared-prefix platforms the SOURCE runs as a channel: explicitly enabled in its config.yaml, or
     auto-enabled by a complete credential set in its ``.env`` and not explicitly disabled — the same
-    gate ``gateway.config_env._Cred`` applies at gateway start."""
+    gate ``gateway.platform_env.EnvCred`` applies at gateway start."""
+    from hermes_cli.config_backend import config_exists
     if source_dir is None:
         return set(shared)  # no source to consult: the historical (strip) behaviour
     raw: dict = {}
-    if (source_dir / "config.yaml").is_file():
+    if config_exists(source_dir / "config.yaml"):
         from hermes_cli.config import read_user_config_raw
         with contextlib.suppress(Exception):
             raw = read_user_config_raw(source_dir / "config.yaml") or {}
@@ -268,11 +283,16 @@ def _shared_adapters_active(source_dir: Optional[Path], shared: dict[str, tuple[
         from gateway import config_env
         for platform, names in config_env._ENV_ENABLE_CREDENTIALS.items():
             creds_by_platform[platform.value] = set(names)
+    with _plugin_scope(source_dir):
+        entries = _registry_entries()
+    # A declared enable-credential set beats a left-core row and the manifest ``required_env``.
+    for entry in entries:
+        if entry.env_enable_credentials:
+            creds_by_platform.setdefault(entry.name, set(entry.env_enable_credentials))
     for feature in _left_core_platforms():
         creds_by_platform.setdefault(feature.platform, set(feature.enable_env))
-    with _plugin_scope(source_dir):
-        for entry in _registry_entries():
-            creds_by_platform.setdefault(entry.name, set(entry.required_env))
+    for entry in entries:
+        creds_by_platform.setdefault(entry.name, set(entry.required_env))
     active: set[str] = set()
     for pid in shared:
         explicit = _explicit_enabled(raw, pid)
@@ -367,7 +387,8 @@ def _channel_config_paths(raw: dict, platforms: Iterable[str]) -> list[tuple[str
 
 def strip_channel_config(config_path: Path, index: Optional[ChannelKeyIndex] = None) -> list[str]:
     """Remove platform sections from a raw ``config.yaml`` in place. Returns the dotted paths removed."""
-    if not config_path.is_file():
+    from hermes_cli.config_backend import config_exists
+    if not config_exists(config_path):
         return []
     from hermes_cli.config import atomic_config_replace, read_user_config_raw
     index = index or ChannelKeyIndex()
@@ -431,6 +452,7 @@ def strip_channel_settings(profile_dir: Path, *, include_state: bool, source_dir
 def channel_platforms_configured(profile_dir: Path) -> list[str]:
     """Platform ids with any channel setting in ``profile_dir`` (.env keys or config.yaml sections) —
     what a channel-less clone of it leaves behind. Pure read, in ``profile_dir``'s plugin scope."""
+    from hermes_cli.config_backend import config_exists
     index = ChannelKeyIndex(profile_dir)
     found: set[str] = set()
     env_path = profile_dir / ".env"
@@ -441,7 +463,7 @@ def channel_platforms_configured(profile_dir: Path) -> list[str]:
             if platform and platform != GATEWAY_POLICY_ID:
                 found.add(platform)
     config_path = profile_dir / "config.yaml"
-    if config_path.is_file():
+    if config_exists(config_path):
         from hermes_cli.config import read_user_config_raw
         raw = read_user_config_raw(config_path)
         for path in _channel_config_paths(raw, index.platforms):
@@ -480,8 +502,9 @@ def clone_channels_refusal(source_dir: Path, source_label: str) -> Optional[str]
 
 def _config_platform_tokens(config_path: Path) -> dict[str, str]:
     """``{platform: token}`` from ``platforms.<p>.token|api_key`` (both nesting spellings)."""
+    from hermes_cli.config_backend import config_exists
     tokens: dict[str, str] = {}
-    if not config_path.is_file():
+    if not config_exists(config_path):
         return tokens
     from hermes_cli.config import read_user_config_raw
     raw = read_user_config_raw(config_path)

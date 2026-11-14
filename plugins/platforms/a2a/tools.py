@@ -296,8 +296,8 @@ def _str(description: str) -> dict:
 # name -> (handler, description, properties, required)
 _TOOLS: dict[str, tuple[Any, str, dict, list[str]]] = {
     "a2a_discover": (a2a_discover,
-                     "Fetch and summarize another agent's A2A Agent Card from a URL (its name, description, "
-                     "capabilities, and skills). Use this to find out what a remote agent can do before calling it.",
+                     "Fetch a remote agent's A2A Agent Card (name, capabilities, skills) from a URL. "
+                     "Use this to find out what a remote agent can do before calling it.",
                      {"url": _str("Base URL of the remote A2A agent, e.g. http://localhost:9999")}, ["url"]),
     "a2a_call": (a2a_call,
                  "Send a natural-language task to a remote A2A agent and return its reply. The agent is a peer "
@@ -309,8 +309,8 @@ _TOOLS: dict[str, tuple[Any, str, dict, list[str]]] = {
                  ["agent", "message"]),
     "a2a_list": (a2a_list, "List configured A2A peer agents, persisted A2A conversations, and metrics.", {}, []),
     "a2a_history": (a2a_history,
-                    "Recall a persisted A2A conversation transcript by context_id (survives restarts and "
-                    "context compaction). Use a2a_list to see known context ids.",
+                    "Recall a persisted A2A conversation transcript by context_id. It survives restarts and "
+                    "context compaction; use a2a_list to see known context ids.",
                     {"context_id": _str("Context id of the conversation to recall."),
                      "limit": {"type": "integer", "description": "Max messages to return (default 50, max 200)."}},
                     ["context_id"]),

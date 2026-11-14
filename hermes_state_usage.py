@@ -3,6 +3,7 @@ per-model usage rows, and billing-route columns. Writer thread state lives on th
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import contextlib
 import logging
@@ -135,14 +136,26 @@ class SessionUsageMixin:
             # close() ran: enqueueing would drop the delta silently, so apply inline.
             self.update_token_counts(session_id, **kwargs)
 
-    def _apply_claimed_batch(self, batch) -> None:
-        """Apply a batch whose ``busy`` flag the caller already claimed, then release."""
+    def _apply_claimed_batch(self, batch) -> bool:
+        """Apply a batch whose ``busy`` flag the caller already claimed, then release. False when part
+        of it was requeued (see ``_apply_token_batch``)."""
         try:
-            self._apply_token_batch(batch)
+            return self._apply_token_batch(batch)
         finally:
             with self._token_queue_cond:
                 self._token_writer_busy = False
                 self._token_queue_cond.notify_all()
+
+    def flush_for_read(self) -> bool:
+        """Read-side token barrier. On a thread running an asyncio loop it never waits: the writer can sit
+        behind another connection's write lock, and a gateway handler reading a session there froze every
+        socket for up to the 5 s flush budget (#141966). That read sees totals stale by the queued deltas,
+        which the next read picks up; write barriers keep calling ``flush_token_counts`` and still wait."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return self.flush_token_counts()
+        return self.flush_token_counts(timeout=0.0)
 
     def flush_token_counts(self, timeout: float = 5.0) -> bool:
         """Block until every queued token delta has been applied. False on timeout (callers
@@ -169,7 +182,7 @@ class SessionUsageMixin:
                     return False
                 self._token_queue_cond.wait(remaining)
         if batch:
-            self._apply_claimed_batch(batch)
+            return self._apply_claimed_batch(batch)
         return True
 
     def _token_writer_loop(self) -> None:
@@ -194,20 +207,31 @@ class SessionUsageMixin:
                 self._token_queue.clear()
             self._apply_claimed_batch(batch)
 
-    def _apply_token_batch(self, batch: list[tuple[str, dict[str, Any]]]) -> None:
-        """Apply queued deltas in order, coalescing where safe. Never raises."""
+    def _apply_token_batch(self, batch: list[tuple[str, dict[str, Any]]]) -> bool:
+        """Apply queued deltas in order, coalescing where safe. Never raises. False when a delta was
+        handed back to the queue: a write refused on the in-process writer mutex (``WriterMutexTimeout``
+        is raised before BEGIN, so nothing ran) goes back to the FRONT with everything after it, in
+        order, for the next pass. Dropping it would lose usage the old unbounded mutex wait kept."""
+        from hermes_state_write import WriterMutexTimeout
         try:
             coalesced = self._coalesce_token_deltas(batch)
         except Exception as exc:
             # Coalescing must never kill the writer; the merge is only an optimization.
             logger.warning("async token accounting: coalesce failed, applying raw batch: %s", exc)
             coalesced = batch
-        for session_id, kwargs in coalesced:
+        for index, (session_id, kwargs) in enumerate(coalesced):
             try:
                 self.update_token_counts(session_id, **kwargs)
+            except WriterMutexTimeout:
+                with self._token_queue_cond:
+                    self._token_queue.extendleft(reversed(coalesced[index:]))
+                logger.debug("async token accounting: writer mutex busy; %d delta(s) requeued",
+                             len(coalesced) - index)
+                return False
             except Exception as exc:
                 # Accounting loss is logged, never raised into a turn.
                 logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc)
+        return True
 
     def _coalesce_token_deltas(self, batch: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, dict[str, Any]]]:
         """Merge adjacent incremental deltas with an identical route, so ordering across
@@ -264,7 +288,16 @@ class SessionUsageMixin:
                 self._token_writer_busy = True
                 self._token_queue.clear()
         if batch:
-            self._apply_claimed_batch(batch)
+            # A requeue here means the writer mutex stayed busy past the write patience; close()
+            # takes that same mutex next without a bound, so retrying keeps the old wait-it-out
+            # behaviour instead of dropping the deltas at shutdown.
+            while not self._apply_claimed_batch(batch):
+                with self._token_queue_cond:
+                    if self._token_writer_busy or not self._token_queue:
+                        return
+                    self._token_writer_busy = True
+                    batch = list(self._token_queue)
+                    self._token_queue.clear()
 
     def _drain_token_queue_at_exit(self) -> None:
         with contextlib.suppress(Exception):  # never fatal at interpreter shutdown
@@ -396,10 +429,21 @@ class SessionUsageMixin:
         if not session_id or not task:
             return
         usage["api_call_count"] = 1 if api_call_count is None else int(api_call_count)
-        # FK to sessions.id: same guard as update_token_counts; the aux path carries no surface, so
-        # the placeholder stays repairable by the creator's upsert (_insert_session_row).
-        self._insert_session_row(session_id, "unknown")
-        self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
+        # FK to sessions.id. A missing row is inserted as the ``unknown`` placeholder, which
+        # the creator upsert later replaces. An existing row keeps source and created_source,
+        # including a NULL surface update_token_counts can still fill; the UPDATE below only
+        # fills a NULL profile_name, without writing ``unknown`` anywhere.
+        from hermes_state_worker_lifecycle import insert_session_row_in_transaction
+
+        def _write(conn):
+            if conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone() is None:
+                insert_session_row_in_transaction(self, conn, session_id, "unknown")
+            elif own_profile := self._own_profile_name():
+                conn.execute(
+                    "UPDATE sessions SET profile_name=? WHERE id=? AND profile_name IS NULL",
+                    (own_profile, session_id))
+            self._record_model_usage(conn, session_id, task=task, **usage)
+        self._execute_write(_write, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def auxiliary_usage_by_task(self, session_id: str) -> dict[str, dict[str, float]]:
         """Per-task auxiliary usage (``task != ''``: vision, compression, title_generation, ...) summed

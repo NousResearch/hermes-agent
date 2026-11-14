@@ -127,13 +127,10 @@ def test_picker_path_falls_back_to_model_info_when_resolver_empty(monkeypatch):
 
 def test_global_switch_clears_context_pin_owned_by_previous_route(monkeypatch):
     import cli as cli_mod
+    import hermes_yaml as yaml
+    from hermes_cli.config import get_config_path, read_user_config_raw
 
-    writes = []
     monkeypatch.setattr(cli_mod, "_cprint", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        "utils.atomic_roundtrip_yaml_update",
-        lambda path, key, value: writes.append((key, value)),
-    )
     cli = _StubCLI()
     cli.model = "shared-model"
     cli.provider = "custom"
@@ -163,13 +160,11 @@ def test_global_switch_clears_context_pin_owned_by_previous_route(monkeypatch):
             "context_length": 1_048_576,
         }
     }
-    with (
-        patch(
-            "agent.model_metadata.get_model_context_length",
-            return_value=256_000,
-        ),
-        patch("hermes_cli.config.read_user_config_raw", return_value=configured),
-    ):
+    config_path = get_config_path()
+    config_path.write_text(yaml.safe_dump(configured), encoding="utf-8")
+    with patch("agent.model_metadata.get_model_context_length", return_value=256_000):
         cli_mod.HermesCLI._apply_model_switch_result(cli, result, True)
 
-    assert ("model.context_length", None) in writes
+    model = read_user_config_raw(config_path)["model"]
+    assert "context_length" not in model
+    assert model["base_url"] == result.base_url

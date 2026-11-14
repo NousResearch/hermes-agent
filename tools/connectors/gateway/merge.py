@@ -91,7 +91,11 @@ def render_remote_entry(planned: PlannedCall, remote: Mapping[str, Any]) -> dict
     account = _opt_str(remote.get("account")) if isinstance(remote, Mapping) else None
     if not isinstance(error, Mapping):
         data = remote.get("data") if isinstance(remote, Mapping) else None
-        return _with_account({"index": planned.position, "name": planned.name, "response": data}, account)
+        entry = _with_account({"index": planned.position, "name": planned.name, "response": data}, account)
+        # Message metadata, never model content: dispatch lifts it off before the result is rendered.
+        if isinstance(remote, Mapping) and remote.get("data_use"):
+            entry["data_use"] = list(remote["data_use"])
+        return entry
 
     code = str(error.get("code") or "PROVIDER_ERROR")
     message = str(error.get("message") or "The gateway reported an error.")

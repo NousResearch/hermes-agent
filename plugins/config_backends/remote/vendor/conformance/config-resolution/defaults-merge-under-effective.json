@@ -1,0 +1,107 @@
+{
+  "fixtureVersion": 1,
+  "name": "defaults-merge-under-effective",
+  "description": "Proves rule-5: The agent's DEFAULT_CONFIG step deep-merges the effective document over defaults: mappings merge, lists replace, null over a default scalar stays null.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "terminal": {
+          "backend": "docker",
+          "docker_volumes": [
+            "/a"
+          ]
+        },
+        "display": {
+          "skin": null
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "terminal": {
+        "backend": "docker",
+        "docker_volumes": [
+          "/a"
+        ]
+      },
+      "display": {
+        "skin": null
+      }
+    },
+    "provenance": {
+      "terminal.backend": "global",
+      "terminal.docker_volumes": "global",
+      "display.skin": "global"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "display.skin",
+      "value": "ares",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ],
+  "defaultsMerge": {
+    "defaults": {
+      "terminal": {
+        "backend": "local",
+        "timeout": 60,
+        "docker_volumes": [
+          "/x",
+          "/y"
+        ]
+      },
+      "display": {
+        "skin": "default",
+        "compact": false
+      },
+      "model": {
+        "default": ""
+      }
+    },
+    "expect": {
+      "terminal": {
+        "backend": "docker",
+        "timeout": 60,
+        "docker_volumes": [
+          "/a"
+        ]
+      },
+      "display": {
+        "skin": null,
+        "compact": false
+      },
+      "model": {
+        "default": ""
+      }
+    }
+  }
+}

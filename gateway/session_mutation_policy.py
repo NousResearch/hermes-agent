@@ -20,13 +20,17 @@ def _rebind(authority, prepared, old, policy, **extra):
 
 
 async def prepare_reasoning(authority, live, payload, prepared):
-    """``/reasoning <level>`` for this session: the level ``build_policy`` freezes at creation."""
-    from gateway.session_policy import restore_policy
+    """``/reasoning <level>`` for this session: the level ``build_policy`` freezes at creation. ``None``
+    (``/reasoning reset``) gives the level back to the profile."""
+    from gateway.session_policy import pin_reasoning_effort, profile_config, restore_policy, unpin_reasoning
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     frozen = old.config()
-    frozen.setdefault('agent', {})['reasoning_effort'] = payload['effort']
-    # An explicit session level wins over a per-model default, as at creation.
-    frozen['agent'].pop('reasoning_overrides', None)
+    if payload['effort'] is not None:
+        pin_reasoning_effort(frozen, payload['effort'], session=True)
+    else:
+        # A bypass launch never reads the profile: its reset is the built-in default.
+        profile = {} if old.ignore_user_config else await asyncio.to_thread(profile_config, authority)
+        unpin_reasoning(frozen, profile)
     return _rebind(authority, prepared, old, replace(old, config_json=json.dumps(frozen)))
 
 
@@ -51,4 +55,17 @@ async def prepare_workspace(authority, live, payload, prepared):
     return _rebind(authority, prepared, old, policy, git={'branch': branch, 'root': root})
 
 
-PREPARE = {'reasoning': prepare_reasoning, 'workspace': prepare_workspace}
+async def prepare_edit_policy(authority, live, payload, prepared):
+    """Main's ACP modes (Default / Accept Edits / Don't Ask) as the session's frozen edit approval
+    policy. Only an ACP session's edits ask an editor; selecting the current policy writes nothing."""
+    from gateway.session_policy import restore_policy
+    old = restore_policy(prepared['snapshot']['receipt']['policy'])
+    if old.source != 'acp':
+        raise RuntimeStoreError('invalid_params', field='payload.policy',
+                                detail='only an ACP session has an editor edit approval policy')
+    if old.edit_approval_policy == payload['policy']:
+        return {'status': 'noop', 'edit_approval_policy': old.edit_approval_policy}
+    return _rebind(authority, prepared, old, replace(old, edit_approval_policy=payload['policy']))
+
+
+PREPARE = {'reasoning': prepare_reasoning, 'workspace': prepare_workspace, 'edit_policy': prepare_edit_policy}

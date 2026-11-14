@@ -85,6 +85,14 @@ class ModelProfile:
     # Compute-buffer bytes per window token at the launch posture (plan_launch sets it from
     # window_compute_bytes, the microbatch and the context count); zero prices none.
     window_compute_per_token: int = 0
+    # One copy of one sequence's recurrent state, exact from the SSM shape (0 = unknown). The
+    # window price keeps its per-layer allowance; this prices the extra copies speculative
+    # decoding keeps.
+    recurrent_state_bytes: int = 0
+    # False when the architecture's head dims forbid q8_0 KV blocks (q8_0 blocks are 32
+    # elements; llama.cpp refuses dims like Kimi-Linear's head_dim_v=72) — launch_args must
+    # fall back to f16 and the estimator prices the doubled KV.
+    kv_q8_ok: bool = True
 
     @property
     def window_compute_bytes(self) -> int:
@@ -117,6 +125,10 @@ class HardwareBudget:
     # except integrated GPUs (b11370 #28160); Hermes passes --lazy-mode on to NVIDIA's, so only
     # AMD/Intel integrated GPUs load them up front.
     lazy_reads: bool = True
+    # Windows unified memory, live budgets only: commit the server may take for the models and
+    # their prompt caches. Windows charges every GPU allocation to commit (RAM it can see plus
+    # the page file), so this is the real ceiling there. None everywhere else.
+    commit_room_bytes: int | None = None
 
 
 def as_loaded(profile: ModelProfile, budget: HardwareBudget) -> ModelProfile:
@@ -165,25 +177,30 @@ def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
         layers.append((LayerKind.SWA if is_swa else LayerKind.FULL, per_token))
         n_attn_seen += 1
 
+    kv_dims = (dk, dv, dk_swa, dv_swa)
+    kv_q8_ok = all(d > 0 for d in kv_dims) and all(d % 32 == 0 for d in kv_dims)
+
     return ModelProfile(
         name=header.path, weights_bytes=header.tensor_bytes - header.lazy_bytes,
         embd_table_bytes=header.embd_table_bytes,
         n_ctx_train=header.n_ctx_train, layers=layers, swa_window=header.sliding_window,
         moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab,
-        ffn_block_bytes=dict(header.ffn_block_bytes), lazy_bytes=header.lazy_bytes)
+        ffn_block_bytes=dict(header.ffn_block_bytes), lazy_bytes=header.lazy_bytes,
+        recurrent_state_bytes=header.recurrent_state_bytes, kv_q8_ok=kv_q8_ok)
 
 
-def kv_dtype_factor(flash_attention: bool) -> float:
-    """q8_0 with FA (every backend we ship); f16 on exotic non-FA fallbacks — the 64K guarantee
+def kv_dtype_factor(flash_attention: bool, kv_q8_ok: bool = True) -> float:
+    """q8_0 with FA when the architecture's head dims allow it (every backend we ship); f16 on
+    exotic non-FA fallbacks and on head dims q8_0 blocks cannot divide — the 64K guarantee
     stands either way, the physics check just prices the doubled KV."""
-    return (_Q8_BYTES_PER_ELEM / _F16_BYTES_PER_ELEM) if flash_attention else 1.0
+    return (_Q8_BYTES_PER_ELEM / _F16_BYTES_PER_ELEM) if (flash_attention and kv_q8_ok) else 1.0
 
 
 def ctx_bytes(profile: ModelProfile, window: int, *, flash_attention: bool = True) -> int:
     """Memory that grows with the window: full layers linear in T, SWA layers capped at the sliding
     window, recurrent layers constant, KV scaled by profile.kv_scale (MTP draft context), plus the
     posture's window-scaled compute buffers."""
-    factor = kv_dtype_factor(flash_attention)
+    factor = kv_dtype_factor(flash_attention, profile.kv_q8_ok)
     total = 0.0
     for kind, per_token_f16 in profile.layers:
         if kind == LayerKind.RECURRENT:

@@ -25,13 +25,14 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, seed_extra_from_env as _seed_extra_from_env
 )
+from gateway.platforms.send_targets import parse_nonempty
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ class NtfyAdapter(BasePlatformAdapter):
     """ntfy adapter: HTTP-streaming subscription in, HTTP POST publish out."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    serial_receive_loop = True  # the stream loop awaits each message before reading the next line
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config=config, platform=Platform("ntfy"))
@@ -351,13 +353,16 @@ async def _standalone_send(
             return send_error(f"ntfy HTTP {resp.status_code}: {resp.text[:200]}")
         return {"success": True, "platform": "ntfy", "chat_id": publish_topic, "message_id": _response_message_id(resp)}
     except Exception as e:
-        return send_error(f"ntfy standalone send failed: {e}")
+        return send_error(f"ntfy standalone send failed: {describe_proxy_error(e, env_proxy_for_redaction(server)) or e}")  # httpx reads HTTPS_PROXY
 
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system at startup."""
     ctx.register_platform(
+        target_ref_syntax_fn=parse_nonempty,
         name="ntfy", label="ntfy", adapter_factory=lambda cfg: NtfyAdapter(cfg),
+        dashboard_description="Chat with Hermes over ntfy push topics (ntfy.sh or self-hosted).",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/ntfy",
         check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,
         required_env=["NTFY_TOPIC"], install_hint="pip install httpx   # already a Hermes dependency",
         env_enablement_fn=_env_enablement,  # env-only setups show in `gateway status`

@@ -13,7 +13,8 @@ from unittest.mock import patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
-from agent.conversation_compression import CompressionCheckpointUnavailable, compress_context
+from agent.conversation_compression import compress_context
+from agent.conversation_compression_checkpoint import CompressionCheckpointUnavailable
 from agent.transports.codex_app_server_session import TurnResult
 from hermes_cli.observability import shared_metrics_events
 from hermes_cli.observability.shared_metrics_fields import compression_fields

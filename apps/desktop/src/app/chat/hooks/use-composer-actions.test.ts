@@ -13,6 +13,7 @@ import {
   HERMES_PATHS_MIME,
   partitionDroppedFiles,
   resolveImageAttachmentPreview,
+  stageDroppedFilePath,
   useComposerActions
 } from './use-composer-actions'
 
@@ -268,6 +269,18 @@ describe('extractDroppedFiles', () => {
     expect(result[0]?.url).toBeUndefined()
   })
 
+  // The browser Webapp has no host path for a dropped folder: report it, never drop it silently.
+  it('keeps a path-less dropped folder on the attach pipeline, where it is reported', async () => {
+    const transfer = stubTransfer([{ path: 'my-repo', isDirectory: true }])
+    stubBridge(transfer)
+
+    const result = extractDroppedFiles(transfer)
+
+    expect(result).toEqual([{ file: expect.any(File), isDirectory: true, path: '' }])
+    expect(partitionDroppedFiles(result).osDrops).toHaveLength(1)
+    await expect(stageDroppedFilePath(result[0]!)).rejects.toThrow("Folders can't be attached by dropping them")
+  })
+
   it('does not duplicate a folder that appears in both items and files', () => {
     // Chromium lists a dropped folder in transfer.files too (as a size-0 File);
     // the items pass claims its path first so the files fallback skips it.
@@ -495,6 +508,55 @@ describe('useComposerActions generated paste title metadata', () => {
         titlePreview: pasted.slice(0, 1_000)
       })
     )
+  })
+})
+
+describe('useComposerActions oversized paste rejection', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    vi.clearAllMocks()
+  })
+
+  const renderWithSave = (savePastedText: () => Promise<string>) => {
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { savePastedText } })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/test',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'main',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
+    return { add, result }
+  }
+
+  it('consumes a paste the main process rejects for size instead of inlining it', async () => {
+    const { add, result } = renderWithSave(async () => {
+      throw new Error(
+        "Error invoking remote method 'hermes:savePastedText': Error: savePastedText: text is too large (70000000 bytes; limit 67108864)."
+      )
+    })
+
+    await expect(result.current.attachPastedText('x'.repeat(2_000))).resolves.toBe(true)
+    expect(add).not.toHaveBeenCalled()
+  })
+
+  it('still falls back to inline insertion on an ordinary write failure', async () => {
+    const { add, result } = renderWithSave(async () => {
+      throw new Error("Error invoking remote method 'hermes:savePastedText': Error: EACCES: permission denied")
+    })
+
+    await expect(result.current.attachPastedText('x'.repeat(2_000))).resolves.toBe(false)
+    expect(add).not.toHaveBeenCalled()
   })
 })
 

@@ -90,8 +90,14 @@ class AgentPluginPackage:
     diagnostics: tuple[AgentPluginDiagnostic, ...]
 
 
+_SERVER_DECLARATION_KEYS = frozenset({"app", "requires", "liveness", "trust", "timeout", "costs", "spend_limit", "cost_unit"})
+# Hermes call-policy keys: alone they configure a server, they do not declare an application.
+_SERVER_POLICY_KEYS = frozenset({"trust", "timeout", "costs", "spend_limit", "cost_unit"})
+
+
 def _server_declarations(
-    manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict[str, Any]]
+    manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict[str, Any]],
+    diagnostics: list[AgentPluginDiagnostic] | None = None,
 ) -> dict[str, AgentPluginServerDeclaration]:
     namespace = manifest.get("extensions", {}).get(_HERMES_EXTENSION, {})
     raw_servers = namespace.get("servers", {})
@@ -103,13 +109,23 @@ def _server_declarations(
             raise AgentPluginError(f"server declaration '{name}' has no matching mcp.json server")
         if not isinstance(raw, dict):
             raise AgentPluginError(f"server declaration '{name}' must be an object")
+        # A key added by a newer Hermes must not make the package uninstallable here: the older
+        # release ignores it with a diagnostic, like unknown top-level fields. A key whose absence
+        # would be unsafe needs the catalog entry's requires_hermes, not a hard failure on every release:
+        # plugin.json has no version floor, and install/update by catalog name enforce the entry's
+        # (plugins_cmd_catalog.refuse_incompatible_catalog_entry / repin_catalog_plugin).
+        unknown = set(raw) - _SERVER_DECLARATION_KEYS
+        if unknown:
+            if diagnostics is not None:
+                diagnostics.append(AgentPluginDiagnostic(
+                    f"server:{name}", f"ignored unknown keys {sorted(unknown)} (needs a newer Hermes)"))
+            raw = {key: value for key, value in raw.items() if key not in unknown}
+            if not raw:
+                continue
         if "liveness" in raw and "app" not in raw and "requires" not in raw:
             raise AgentPluginError(f"server declaration '{name}' has liveness without app or requires")
-        unknown = set(raw) - {"app", "requires", "liveness", "trust", "timeout"}
-        if unknown:
-            raise AgentPluginError(f"server declaration '{name}' has unknown keys {sorted(unknown)}")
-        if raw and set(raw) <= {"trust", "timeout"}:
-            continue  # transport settings alone do not declare an application
+        if raw and set(raw) <= _SERVER_POLICY_KEYS:
+            continue  # transport/policy settings alone do not declare an application
         try:
             declaration = parse_declaration(
                 name, raw.get("app"), raw.get("requires"),
@@ -160,6 +176,30 @@ def _server_timeouts(manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict
             raise AgentPluginError(f"server declaration '{name}' timeout must be positive seconds within the platform wait limit")
         timeouts[name] = float(value)
     return timeouts
+
+
+def _server_costs(manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Translate ``costs``/``spend_limit``/``cost_unit`` into the native ``tool_costs``/``spend_limit``/``cost_unit``
+    keys (``tools.mcp_tool_costs``). A malformed table disables the package: a budget the author declared must
+    never be dropped while the server still spends."""
+    from tools.mcp_tool_costs import parse_cost_policy
+    raw_servers = manifest.get("extensions", {}).get(_HERMES_EXTENSION, {}).get("servers", {})
+    translated: dict[str, dict[str, Any]] = {}
+    for name, raw in (raw_servers.items() if isinstance(raw_servers, dict) else ()):
+        if not isinstance(raw, dict) or name not in mcp_servers:
+            continue
+        declared = {key: raw[key] for key in ("costs", "spend_limit", "cost_unit") if key in raw}
+        if not declared:
+            continue
+        try:
+            parse_cost_policy(declared.get("costs"), declared.get("spend_limit"), declared.get("cost_unit"),
+                              where=f"server declaration '{name}'")
+        except ValueError as exc:
+            raise AgentPluginError(str(exc)) from exc
+        if "costs" in declared:
+            declared["tool_costs"] = declared.pop("costs")
+        translated[name] = declared
+    return translated
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -468,13 +508,31 @@ def load_agent_plugin(plugin_root: Path, data_root: Path) -> AgentPluginPackage:
         mcp_servers[name] = {**mcp_servers[name], "trust": tier}
     for name, timeout in _server_timeouts(manifest, mcp_servers).items():
         mcp_servers[name] = {**mcp_servers[name], "timeout": timeout}
+    for name, costs in _server_costs(manifest, mcp_servers).items():
+        mcp_servers[name] = {**mcp_servers[name], **costs}
+    server_declarations = _server_declarations(manifest, mcp_servers, diagnostics)
     return AgentPluginPackage(
         name=manifest["name"], version=manifest.get("version", ""),
         description=manifest.get("description", ""), root=root, data_root=resolved_data,
         manifest=dict(manifest), skills=skills, mcp_servers=mcp_servers,
-        server_declarations=_server_declarations(manifest, mcp_servers),
+        server_declarations=server_declarations,
         diagnostics=tuple(diagnostics),
     )
+
+
+def manifest_hermes_extension(manifest: Any) -> dict:
+    """``extensions.com.nousresearch.hermes`` of a parsed ``plugin.json`` (Agent Plugins v1 forbids
+    unknown top-level fields, so Hermes-specific fields such as ``config_keys`` live here), else ``{}``."""
+    extensions = manifest.get("extensions") if isinstance(manifest, dict) else None
+    hermes = extensions.get(_HERMES_EXTENSION) if isinstance(extensions, dict) else None
+    return hermes if isinstance(hermes, dict) else {}
+
+
+def manifest_config_schema(manifest: Any) -> Any:
+    """Raw ``extensions.com.nousresearch.hermes.config_schema`` of a parsed ``plugin.json``, else
+    ``None``. Unvalidated: the settings form filters it, the loader and ``plugins validate`` report
+    what is malformed."""
+    return manifest_hermes_extension(manifest).get("config_schema")
 
 
 def read_agent_plugin_manifest(plugin_root: Path) -> tuple[dict, tuple[AgentPluginDiagnostic, ...]]:

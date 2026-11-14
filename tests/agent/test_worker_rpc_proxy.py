@@ -1,7 +1,9 @@
 """Private loopback worker persistence does not use ambient HTTP proxies."""
-from contextlib import contextmanager
 import json
+import queue
 from types import SimpleNamespace
+
+from websockets.exceptions import ConnectionClosed
 
 
 def test_worker_persistence_explicitly_bypasses_proxy(tmp_path, monkeypatch):
@@ -17,12 +19,21 @@ def test_worker_persistence_explicitly_bypasses_proxy(tmp_path, monkeypatch):
     monkeypatch.setattr('hermes_cli.gateway_runtime_discovery.query_identify', lambda *a, **k: {'pid': -1})
     monkeypatch.setattr('hermes_cli.gateway_client._session_ticket', lambda *a, **k: 'ticket')
     calls = []
-    @contextmanager
     def connect(url, **kwargs):
         calls.append(kwargs)
-        yield SimpleNamespace(send=lambda value: None, recv=lambda **k: json.dumps({'id': 1, 'result': {'ok': True}}))
+        frames = queue.SimpleQueue()
+        def recv():
+            frame = frames.get()
+            if frame is None:
+                raise ConnectionClosed(None, None)
+            return frame
+        def send(value):
+            frames.put(json.dumps({'id': json.loads(value)['id'], 'result': {'ok': True}}))
+            frames.put(None)  # then the owner drops the idle connection: the next call redials (draining)
+        return SimpleNamespace(send=send, recv=recv, close=lambda: frames.put(None))
     monkeypatch.setattr('websockets.sync.client.connect', connect)
     rpc = WorkerRPC(tmp_path)
     assert rpc('worker.persist') == {'ok': True}
+    rpc.link.reader.join(5)
     assert rpc('worker.persist') == {'ok': True}
-    assert all(call['proxy'] is None for call in calls)
+    assert len(calls) == 2 and all(call['proxy'] is None for call in calls)

@@ -262,3 +262,19 @@ def test_a_route_that_drops_the_backups_query_is_not_the_backup(home):
         swapped = agent(url)
         attach_primary_auth_failure(swapped, failure())
         assert swapped._primary_auth_failure is None, url
+
+
+def test_the_backup_keeps_the_lead_however_its_query_is_escaped(home):
+    """AIAgent decodes the base_url's query into default_query; the backup it runs is the same route
+    whether the configured URL escaped a space, a slash or a hex digit."""
+    from agent.primary_auth_fallback import PrimaryAuthFailure, attach_primary_auth_failure
+    from run_agent import AIAgent
+
+    for url in ("https://proxy.test/v1?account=team%20backup", "https://proxy.test/v1?route=org/team",
+                "https://proxy.test/v1?route=org%2fteam", "https://proxy.test/v1?account=%62ackup"):
+        agent = AIAgent(api_key="k", base_url=url, provider="custom", model="m", quiet_mode=True,
+                        skip_context_files=True, skip_memory=True, enabled_toolsets=[])
+        failure = PrimaryAuthFailure(provider="nous", error="expired", relogin="hermes portal", backup="custom",
+                                     backup_base_url=url)
+        attach_primary_auth_failure(agent, failure)
+        assert agent._primary_auth_failure is failure, url

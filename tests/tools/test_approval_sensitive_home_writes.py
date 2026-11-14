@@ -65,6 +65,11 @@ class TestCreateAndLinkIntoSensitivePaths:
         "ln -sf /tmp/evil ~/.bashrc",
         "ln -s /tmp/evil ~/.ssh/authorized_keys",
         "ln /tmp/e ~/.ssh/authorized_keys && echo ok",
+        "ln -s /tmp/e ~/.bashrc;",
+        "touch -r ~/.bashrc ~/.zshrc",
+        "touch -d now ~/.bashrc",
+        'touch "$HOME/.bashrc"',
+        "touch ~/.hermes/.env",
     ])
     def test_flagged(self, command):
         assert detect_dangerous_command(command)[0] is True, command
@@ -80,6 +85,13 @@ class TestCreateAndLinkIntoSensitivePaths:
         "sudo mkdir -p /etc/apt/keyrings",
         "sudo touch /etc/hosts",
         "ln -sf /etc/nginx/sites-available/x /etc/nginx/sites-enabled/x",
+        # -r / --reference only read the rc file's timestamps; a sibling name is not the rc file.
+        "touch -r ~/.bashrc newfile",
+        "touch --reference ~/.bashrc newfile",
+        "ln -sfn ~/.bashrc ~/.bashrc.bak",
+        "ln -s a ~/.bashrc.d/x",
+        "touch ~/.profile.d/x",
+        "touch ~/.netrc.example",
     ])
     def test_not_flagged(self, command):
         assert detect_dangerous_command(command) == (False, None, None), command

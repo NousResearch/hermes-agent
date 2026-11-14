@@ -440,7 +440,9 @@ class ACPClient:
             for line in stream or ():
                 sink(line)
 
-        threading.Thread(target=_pump, args=(proc.stdout, lambda line: inbox.put(_decode(line))), daemon=True).start()
+        stdout_pump = threading.Thread(
+            target=_pump, args=(proc.stdout, lambda line: inbox.put(_decode(line))), daemon=True)
+        stdout_pump.start()
         stderr_pump = threading.Thread(
             target=_pump, args=(proc.stderr, lambda line: stderr_tail.append(line.rstrip("\n"))), daemon=True)
         stderr_pump.start()
@@ -463,10 +465,19 @@ class ACPClient:
                 if proc.poll() is None:  # alive but deaf: fail now, not after the whole request timeout
                     raise
             deadline = session_deadline
-            while time.monotonic() < deadline and proc.poll() is None:
+            exit_deadline = None
+            while time.monotonic() < min(deadline, exit_deadline or deadline):
+                if exit_deadline is None and proc.poll() is not None:
+                    # A CLI that replies and exits can be seen dead before the pump queues its
+                    # last lines; keep reading what it wrote before calling it an early exit.
+                    exit_deadline = time.monotonic() + 1.0
                 try:
                     msg = inbox.get(timeout=0.1)
                 except queue.Empty:
+                    # Check the queue only after seeing the pump finish: its last put can land
+                    # between this get's timeout and is_alive(), so a dead pump alone is not EOF.
+                    if exit_deadline is not None and not stdout_pump.is_alive() and inbox.empty():
+                        break
                     continue
                 if self._handle_server_message(
                     msg, process=proc, cwd=self._acp_cwd, text_parts=text_parts,

@@ -4,6 +4,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
+import { isSubmitEnter } from '@/lib/ime'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import type { ConfigFieldSchema } from '@/types/hermes'
@@ -286,7 +287,7 @@ function ListField({
         focusedRef.current = true
       }}
       onKeyDown={e => {
-        if (e.key === 'Enter') {
+        if (isSubmitEnter(e)) {
           e.currentTarget.blur()
         }
       }}

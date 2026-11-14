@@ -30,9 +30,8 @@ from agent.iteration_budget import IterationBudget, normalize_budget_warning_rat
 from agent.memory_context import StreamingContextScrubber
 from agent.memory_provider import is_core_memory_provider
 from agent.session_activity import ActivityProvenance
-from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint
-)
+from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, fetch_model_metadata
+from agent.process_transport import is_local_server
 from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
 from agent.agent_init_compression_notice import _emit_compression_summary
 from agent.primary_runtime_snapshot import _snapshot_primary_runtime
@@ -490,7 +489,7 @@ _SESSION_STATE: dict[str, Any] = {
     "_session_messages": list,
     # Responses encrypted-reasoning replay. The first ``invalid_encrypted_content`` rejection only
     # strips the stale blobs (a rotated sealing key); a second one means the route cannot round-trip
-    # its own fresh blobs, so replay is disabled for the session (stateless continuity).
+    # its own fresh blobs, so replay is disabled until the route changes (stateless continuity).
     "_codex_reasoning_replay_enabled": True,
     "_codex_reasoning_replay_rejected": False,
     "_memory_write_origin": "assistant_tool",
@@ -543,7 +542,7 @@ _STREAM_STATE: dict[str, Any] = {
     "_stream_writer_token": 0,
     "_stream_writer_tls": threading.local,
     "_stream_writer_dropped": 0,
-    # Set once a strict endpoint 400/422s on ``stream_options``; later streams omit it (#9705).
+    # Set once a strict endpoint 400/422s on ``stream_options``; later streams on that route omit it (#9705).
     "_stream_options_unsupported": False,
     # API-facing user message override when it differs from the persisted transcript (voice).
     "_persist_user_message_idx": None,
@@ -1131,10 +1130,10 @@ def _apply_display_config(agent, _agent_cfg, platform):
             _model_section.get("lmstudio_load_mode"),
         )
 
-    # model.streaming=false seeds _disable_streaming (the loop's runtime fallback) for
-    # backends with broken streaming tool calls. Session-scoped; orthogonal to display.streaming.
+    # model.streaming=false seeds _disable_streaming (the loop's runtime fallback) for backends with broken
+    # streaming tool calls; a route change resets to this seed (route_verdicts). Orthogonal to display.streaming.
     _streaming = str(_model_section.get("streaming", "true")).strip().lower()
-    agent._disable_streaming = _streaming in {"false", "0", "no", "off"}
+    agent._disable_streaming = agent._disable_streaming_seed = _streaming in {"false", "0", "no", "off"}
     if not agent._disable_streaming and _streaming not in {"true", "1", "yes", "on"}:
         logger.warning(
             "Invalid model.streaming=%r; expected a boolean. Using streaming (default).",
@@ -1161,8 +1160,8 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
     from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
+    from tools.hosted_tool_policy import host_feature_enabled
+    if safe_worker_enabled() or not host_feature_enabled("builtin_memory"):  # hosted: not the agent's memory
         agent._memory_manager = None
         return
     # skip_memory skips the external *provider*; enabled_toolsets=["memory"] still gets the
@@ -1909,7 +1908,7 @@ def _enforce_minimum_context(agent):
     # A local Ollama server serves num_ctx, not the GGUF's advertised window: a Modelfile or
     # model.ollama_num_ctx at 64K+ is a usable window even when the metadata says 40K (#100437).
     # Only a local endpoint can honour num_ctx, so a stale override never admits a hosted model.
-    if agent._ollama_num_ctx and agent.base_url and is_local_endpoint(agent.base_url):
+    if agent._ollama_num_ctx and is_local_server(agent.base_url, agent.provider):
         _ctx = max(_ctx or 0, agent._ollama_num_ctx)
     _allow_lmstudio_explicit_below_floor = (
         str(agent.provider or "").strip().lower() == "lmstudio"
@@ -1919,7 +1918,7 @@ def _enforce_minimum_context(agent):
     )
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and not _allow_lmstudio_explicit_below_floor:
         floor_k = MINIMUM_CONTEXT_LENGTH // 1000
-        if agent.base_url and is_local_endpoint(agent.base_url):
+        if is_local_server(agent.base_url, agent.provider):
             # Any OpenAI-compatible local server (llama.cpp, vLLM, Ollama, ...) — the window is the
             # server's runtime setting, not the model's; never assume Ollama here (#87075).
             remedy = (

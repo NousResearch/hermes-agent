@@ -22,6 +22,7 @@ from hermes_cli.process_identity import release_process_group_once_empty, spawn_
 from hermes_constants import get_hermes_home
 
 from .method_ctx import bind_module
+from hermes_cli._startup_fast import project_root_str
 
 
 def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
@@ -45,17 +46,19 @@ class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
     def __init__(self, session_key: str, model: str, profile_home: str | None = None,
-                 provider: str | None = None):
+                 provider: str | None = None, base_url: str | None = None):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
         # ``--provider`` pins the child to the parent agent's virtual provider: without it the
         # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
-        # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
+        # dispatched its preset NAME to the configured real provider and 402/503'd (#57283). ``--base-url``
+        # likewise: else the worker seeds model.base_url, the default provider's endpoint (#141953).
         argv = [sys.executable, "-P", "-m", "tui_gateway.slash_worker", "--session-key", session_key] \
             + (["--model", model] if model else []) \
-            + (["--provider", provider] if provider else [])
+            + (["--provider", provider] if provider else []) \
+            + (["--base-url", base_url] if base_url else [])
         self._closed = False
         from hermes_cli._subprocess_compat import windows_hide_flags
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
@@ -75,7 +78,7 @@ class _SlashWorker:
             target_home=profile_home or (_hermes_home if is_multiplex_active() else None),
             inherit_credentials=True))
         # Internal slash workers must import the same checkout as their parent; -P keeps their cwd off sys.path.
-        module_root = str(Path(__file__).resolve().parent.parent)
+        module_root = project_root_str()
         env["PYTHONPATH"] = os.pathsep.join(
             part for part in (module_root, env.get("PYTHONPATH", "")) if part
         )

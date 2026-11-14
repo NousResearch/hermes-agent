@@ -20,6 +20,8 @@ from tests.gateway.test_prompt_queued_controls import Turn, _call, _completions,
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
 from tests.waiting import async_wait_until, wait_until
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 async def _drained(authority):
     task = authority.sessions['s'].task

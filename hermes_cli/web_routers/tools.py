@@ -18,8 +18,9 @@ from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     TerminalBackendSelect, ToolsetEnvUpdate, ToolsetModelSelect, ToolsetPostSetup,
     ToolsetProviderSelect, ToolsetToggle)
+from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
 from hermes_cli.web_routers._common import (
-    _CONFIG_MUTATION_LOCK, _profile_cli_args, _profile_scope, _spawn_hermes_action,
+    _profile_cli_args, _profile_scope, _spawn_hermes_action,
     config_write_scope, log as _log, scoped_to_thread, spawn_profile_action)
 
 router = APIRouter()
@@ -523,7 +524,7 @@ async def select_toolset_provider(
     def _run():
         with _profile_scope(body.profile or profile):
             _require_known_toolset(name)
-            with _CONFIG_MUTATION_LOCK:
+            with CONFIG_MUTATION_LOCK:
                 config = load_config()
                 if body.capability is not None:
                     # Per-capability path writes web.<capability>_backend only —

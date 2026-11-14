@@ -157,7 +157,9 @@ def _docker_has_host_access(config: dict[str, Any]) -> bool:
     """Return True when a Docker sandbox exposes host paths through bind mounts."""
     if config.get("env_type") != "docker":
         return False
-    if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
+    # With the flag on, a session's own workspace is bound at /workspace even when the launch dir
+    # is not (a backend launched under /root has no config host_cwd): never assume an empty sandbox.
+    if config.get("docker_mount_cwd_to_workspace"):
         return True
     return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
 
@@ -178,8 +180,7 @@ TERMINAL_TOOL_DESCRIPTION = """Run shell commands on the OS/shell/backend named 
 
 Use read_file, search_files, patch and write_file instead of cat/head/tail, grep/find/ls, sed/awk and echo/heredoc. Output is auto-truncated with the full text saved to a file; never pipe through head/tail to shorten it.
 
-Foreground (default) returns as soon as the command finishes. To wait a fixed time, run the wait in the foreground; never background a sleep or polling loop. Background is only for commands that must keep running after this call returns; health-check a server in a separate call and manage jobs with process_manage. When a command changes directory, trust the result's "cwd" instead of prefixing later commands with cd.
-"""
+Foreground (default) returns as soon as the command finishes. To wait a fixed time, run the wait in the foreground; never background a sleep or polling loop. Health-check a background server in a separate call and manage jobs with process_manage. When a command changes directory, trust the result's "cwd" instead of prefixing later commands with cd."""
 
 # Environment lifecycle state.
 _active_environments: dict[str, Any] = {}
@@ -353,9 +354,12 @@ def register_task_env_overrides(task_id: str, overrides: dict[str, Any]):
         # Live env may be cached under the raw task_id (per-session surfaces)
         # or the collapsed container id (isolation-keyed rollouts); try both so
         # a CWD-only override (which collapses to "default") still finds it.
+        from tools.environments.sandbox_scope import hosted_scope
         container_id = _resolve_container_task_id(task_id)
         with _env_lock:
-            env = _active_environments.get(task_id) or _active_environments.get(container_id)
+            # A hosted scope's only environment is its sandbox; a raw task id may name anyone's.
+            env = (_active_environments.get(container_id) if hosted_scope() is not None
+                   else _active_environments.get(task_id) or _active_environments.get(container_id))
         if env is not None and getattr(env, "cwd", None) is not None:
             sanitized = _sanitize_cwd_for_live_env(env, new_cwd)
             if sanitized is not None:
@@ -388,6 +392,19 @@ def _resolve_container_alias(task_id: str) -> str:
             seen.add(key)
             key = _container_aliases[key]
     return key
+
+
+def _shell_state_chain(task_id: Optional[str]) -> tuple[str, ...]:
+    """*task_id* plus its aliased ancestors, root excluded: a delegated child reads and
+    writes its own shell snapshot, seeded from the nearest ancestor's (the root's is the
+    environment's own). Empty for a task with no alias (#84536)."""
+    chain: list[str] = []
+    key = task_id
+    with _container_alias_lock:
+        while key and key in _container_aliases and key not in chain:
+            chain.append(key)
+            key = _container_aliases[key]
+    return tuple(chain)
 
 
 def _is_isolation_override_key(key: str) -> bool:
@@ -507,10 +524,12 @@ def _qualify_task_key(key: str) -> str:
     profile-unique (a header-less API client's ``api-<digest>`` fingerprint, a DM chat id
     shared by two bots), so raw session keys in ``_active_environments`` / ``_session_cwd``
     would hand profile B the sandbox and cwd profile A created (#123989). Persistent Docker
-    already keys the profile (branches 3/4); this covers the per-session keys. CLI and
+    already keys the profile (branches 3/4); this covers the per-session keys. A hosted scope
+    qualifies with its sandbox key, so two agents' identical task ids never share a record. CLI and
     single-profile gateways (no routed home) keep the historical raw key.
     """
-    scope = _routed_home_task_key(profile_scoped=True)
+    from tools.environments.sandbox_scope import current_sandbox_key
+    scope = current_sandbox_key() or _routed_home_task_key(profile_scoped=True)
     return f"{scope}:{key}" if scope else key
 
 
@@ -536,7 +555,14 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        routed multiplexed profile keys its own home; persistent Docker on a
        named-profile process reuses ``profile:<name>`` (same sandbox as that
        profile's session-bound work); else ``"default"``.
+
+    A hosted scope overrides all four: its key is the agent's sandbox identity
+    (``tools.environments.sandbox_scope``), whatever task id the call carries.
     """
+    from tools.environments.sandbox_scope import current_sandbox_key
+    hosted_key = current_sandbox_key()
+    if hosted_key:
+        return hosted_key
     if task_id and _has_isolation_overrides(task_id):
         return _qualify_task_key(task_id)
     scope = _session_scope()
@@ -622,7 +648,12 @@ def resolve_task_overrides(task_id: Optional[str]) -> dict[str, Any]:
     session's override is silently dropped. Single source of that lookup so
     the terminal and file layers can't drift apart.
     """
+    from tools.environments.sandbox_scope import hosted_scope
     raw = task_id or "default"
+    if hosted_scope() is not None:
+        # The collapsed id is the agent's bare sandbox key, which only an unscoped registration
+        # could have written: a hosted agent reads only overrides registered under its own scope.
+        return _task_env_overrides.get(_qualify_task_key(raw)) or {}
     return (
         _task_env_overrides.get(_qualify_task_key(raw))
         or _task_env_overrides.get(_resolve_container_task_id(raw))
@@ -654,26 +685,58 @@ def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
     Caller holds ``_env_lock``. Per-session surfaces (ACP/gateway/dashboard)
     with a CWD-only override collapse to ``"default"`` for container sharing,
     yet an env may already be cached under the originating task_id; honor it
-    instead of spawning a duplicate. Refreshes ``_last_activity`` on a hit.
+    instead of spawning a duplicate. Refreshes ``_last_activity`` on a hit. A hosted scope reads
+    only its sandbox key and is refused anything but its own sandbox there.
     """
-    for key in (effective_task_id, task_id):
+    from tools.environments.sandbox_scope import admit_env, hosted_scope
+    for key in (effective_task_id, task_id) if hosted_scope() is None else (effective_task_id,):
         if key and key in _active_environments:
             _last_activity[key] = time.time()
-            return _active_environments[key]
+            return admit_env(_active_environments[key])
     return None
 
 
+def _session_workspace_mount_source(task_id: Optional[str]) -> Optional[str]:
+    """The host directory THIS session chose as its workspace, or None.
+
+    The workspace picker records the user's choice as a ``cwd`` override tagged
+    ``cwd_source: "session"``. A ``"process"``-tagged override is a launch artifact
+    (a ``TERMINAL_CWD``/``terminal.cwd`` fallback that outlives the session that set
+    it), never a workspace the user picked. Untagged overrides (ACP ``session/load``
+    project-root switching, RL/benchmark envs) are the session's own, matching the
+    rule the isolation branch already applies.
+    """
+    overrides = resolve_task_overrides(task_id)
+    candidate = overrides.get("cwd")
+    if overrides.get("cwd_source") == "process" or not isinstance(candidate, str) or not candidate.strip():
+        return None
+    candidate = os.path.abspath(os.path.expanduser(candidate))
+    # Must exist on the host and not already be an in-container path.
+    if not os.path.isdir(candidate) or any(
+            candidate == root or candidate.startswith(root + "/") for root in ("/workspace", "/root")):
+        return None
+    return candidate
+
+
 def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Optional[str]:
-    """Host directory to bind into *task_id*'s container.
+    """Host directory to bind-mount at ``/workspace`` for *task_id*'s container.
 
     Single owner of the cwd-mount policy for every creation site. Shared-
-    container mode: the ``TERMINAL_CWD``-derived ``config["host_cwd"]``.
-    Per-session isolation (docker + ``container_persistent: false``): only
-    the SESSION's own registered workspace may mount — the process env var is
-    a launch artifact that outlives the session that set it, so deriving a
-    fresh session's mount from it would leak the previous session's directory.
+    container mode: the ``TERMINAL_CWD``-derived ``config["host_cwd"]``, unless the
+    container is keyed to the session's own workspace (below). Per-session isolation
+    (docker + ``container_persistent: false``): only the SESSION's own registered
+    workspace may mount — the process env var is a launch artifact that outlives
+    the session that set it, so deriving a fresh session's mount from it would
+    leak the previous session's directory.
     Overrides tagged ``cwd_source: "process"`` are refused for the same reason;
     ``cwd_source: "session"`` or untagged (ACP/RL) overrides mount.
+
+    Shared mode keys a session that registered a workspace to its own ``:ws:<digest>``
+    container (:func:`_workspace_container_key`); that container must bind the workspace it
+    is keyed to, not the backend process cwd (a desktop backend launched from ``$HOME``
+    bound the whole home, ``~/.ssh`` included). Any other shared key is reused by every
+    session landing on it, so it keeps the process cwd.
+
     A Windows drive path is not a mount source while the cwd-to-/workspace flag
     is off. A raw host override must stay out of ``docker run -w`` and fall
     back to the sanitized config cwd. The Windows bind, including when
@@ -683,16 +746,23 @@ def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Op
         return None
     # Top-level CLI parent ("default") is a single-session process — legacy behavior.
     if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
+        # A shared container is reused by every session resolving to its key: bind a session's
+        # workspace only into the container keyed to that workspace (a delegate child resolves
+        # its parent's), or a sibling session in another folder would be handed this one's files.
+        # Match the exact shape _workspace_container_key derives: an operator's shared key may
+        # contain ":ws:" too, and stays a shared container keeping the launch dir.
+        key = _resolve_container_task_id(task_id)
+        workspace_prefix = f"{profile_container_key(_container_profile())}:ws:"
+        for owner in dict.fromkeys((task_id, _resolve_container_alias(task_id) if task_id else None)):
+            source = _session_workspace_mount_source(owner)
+            if source and key == workspace_prefix + workspace_key_for(source):
+                return source
+        # A workspace-keyed container whose workspace is refused (deleted, in-container path)
+        # mounts nothing: the launch dir is exactly what it must never get.
+        if key.startswith(workspace_prefix):
+            return None
         return config.get("host_cwd")
-    overrides = resolve_task_overrides(task_id)
-    candidate = overrides.get("cwd")
-    if overrides.get("cwd_source") == "process" or not isinstance(candidate, str) or not candidate.strip():
-        return None
-    candidate = os.path.abspath(os.path.expanduser(candidate))
-    # Must exist on the host and not already be an in-container path.
-    if not os.path.isdir(candidate) or candidate.startswith(("/workspace", "/root")):
-        return None
-    return candidate
+    return _session_workspace_mount_source(task_id)
 
 
 # One-shot guard for the config-fallback bridge: after the first attempt
@@ -775,8 +845,10 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     default_cwd = _backend_default_cwd(env_type)
     cwd = _tenv("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
-    # The backend's own default is an in-sandbox path: its ``~`` is the sandbox home, not ours.
-    if cwd and cwd != default_cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
+    from tools.environments.sandbox_scope import hosted_scope
+    # The backend's own default is an in-sandbox path: its ``~`` is the sandbox home, not ours. So is a
+    # hosted scope's ``~``: it names that agent's sandbox home, never this host's HOME.
+    if cwd and cwd != default_cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd) and hosted_scope() is None:
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
@@ -1071,21 +1143,25 @@ def _error_json(error: str, *, exit_code: int = -1, status: Optional[str] = None
 
 
 def _fatal_error_json(e: BaseException) -> str:
-    """Log the traceback and return the redacted error+traceback envelope.
+    """Log the traceback and return the redacted error+traceback envelope (no traceback in a hosted scope).
 
     Exception text can embed the failing command line (and any secrets inline
     in it), so both fields are force-redacted before reaching the model.
     """
     import traceback
+    from tools.environments.sandbox_scope import hosted_scope
     tb_str = traceback.format_exc()
     logger.error("terminal_tool exception:\n%s", tb_str)
-    return json.dumps({
+    body = {
         "output": "",
         "exit_code": -1,
         "error": _redact_terminal_error_text(f"Failed to execute command: {e}"),
-        "traceback": _redact_terminal_error_text(tb_str),
-        "status": "error"
-    }, ensure_ascii=False)
+    }
+    # A hosted agent gets no traceback: it names this host's checkout and interpreter paths.
+    if hosted_scope() is None:
+        body["traceback"] = _redact_terminal_error_text(tb_str)
+    body["status"] = "error"
+    return json.dumps(body, ensure_ascii=False)
 
 
 class _Rejected(Exception):
@@ -1172,7 +1248,7 @@ _PROMOTED_NOTE = (
     "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
     "tracked background process with notify_on_complete=true instead of being refused. Do NOT re-run it. "
     "Its completion (exit code + output tail) arrives as a notification; poll with "
-    "process(action=\"poll\", session_id=...) if you need it sooner."
+    "process_manage(action=\"poll\", session_id=...) if you need it sooner."
 )
 
 
@@ -1270,7 +1346,7 @@ def _plan_execution(
 _PROMOTED_NOTE_POLL_ONLY = (
     "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
     "tracked background process instead of being refused. Do NOT re-run it. This session cannot receive "
-    "completion notifications, so poll it with process(action=\"poll\", session_id=...) until it exits."
+    "completion notifications, so poll it with process_manage(action=\"poll\", session_id=...) until it exits."
 )
 
 
@@ -1341,7 +1417,7 @@ def _yield_kwargs(command: str, **ctx) -> dict:
 
 def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
-    task_id: Optional[str], session_id: Optional[str], session_key: str,
+    task_id: Optional[str], session_id: Optional[str], session_key: str, cwd_key: str,
     workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
     metered: bool = True,
 ) -> str:
@@ -1363,7 +1439,7 @@ def _run_foreground(
     for retry_count in range(max_retries + 1):
         try:
             command_cwd = _resolve_command_cwd(
-                workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
+                workdir=workdir, default_cwd=plan.cwd, session_key=cwd_key, env_type=env_type,
                 mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
                 env=env,
             )
@@ -1402,7 +1478,7 @@ def _run_foreground(
         record_terminal_outcome(command, env_type, result)
     return finalize_foreground_result(
         command=command, result=result, env=env, env_type=env_type, effective_task_id=eff,
-        task_id=task_id, session_id=session_id, session_key=session_key, workdir=workdir,
+        task_id=task_id, session_id=session_id, session_key=cwd_key, workdir=workdir,
         command_cwd=command_cwd, approval_note=approval_note,
     )
 
@@ -1443,7 +1519,7 @@ def _pre_exec_block(
 _PTY_DISABLED_REASON = (
     "PTY disabled for this command because it expects piped stdin/EOF "
     "(for example gh auth login --with-token). For local background "
-    "processes, call process(action='close') after writing so it receives "
+    "processes, call process_manage(action='close') after writing so it receives "
     "EOF."
 )
 
@@ -1519,7 +1595,8 @@ def terminal_tool(
             command, background = auto_bg, True
         env = _acquire_env(plan, task_id)
         # _lookup_active_env stamps whichever of the two keys holds the env.
-        with _call_in_flight(plan.effective_task_id, task_id):
+        from tools.environments.base import shell_state_scope
+        with _call_in_flight(plan.effective_task_id, task_id), shell_state_scope(_shell_state_chain(task_id)):
             env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
 
             # Session key for cwd records: the contextvar doesn't cross tool-worker
@@ -1528,6 +1605,13 @@ def terminal_tool(
             from tools.approval import get_current_session_key
 
             session_key = get_current_session_key(default="") or (task_id or "")
+            # A delegated child inherits its parent's session key (approvals, completion routing),
+            # but its cwd is its own: seed_workspace records it under the child's task id, and
+            # sibling children share the parent's key, so reading cwd by that key runs one child
+            # in another's directory (its isolation worktree).
+            from agent.delegation_context import is_delegated_child_context
+
+            cwd_key = (task_id or session_key) if is_delegated_child_context() else session_key
 
             # The supervised-gateway identity probe ends in a kernel process query
             # (psutil create_time) that has wedged for the better part of an hour on
@@ -1547,7 +1631,7 @@ def terminal_tool(
             try:
                 bounded_guard = run_bounded_sync(
                     lambda: _pre_exec_block(
-                        command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
+                        command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=cwd_key,
                     ),
                     guard_timeout,
                     label="terminal.pre-exec-guard",
@@ -1572,7 +1656,7 @@ def terminal_tool(
             if background:
                 result = spawn_background_process(
                     command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
-                    task_id=task_id, session_key=session_key, workdir=workdir, cwd=cwd,
+                    task_id=task_id, session_key=session_key, cwd_key=cwd_key, workdir=workdir, cwd=cwd,
                     mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
                     effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                     watch_patterns=watch_patterns, approval_note=verdict.note,
@@ -1587,7 +1671,7 @@ def terminal_tool(
                 return _metered(None if _host_local else plan, result)
             return _metered(None if _host_local else plan, _run_foreground(
                 command, env, plan,
-                task_id=task_id, session_id=session_id, session_key=session_key,
+                task_id=task_id, session_id=session_id, session_key=session_key, cwd_key=cwd_key,
                 workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
                 metered=not _host_local,
             ))
@@ -1620,13 +1704,10 @@ TERMINAL_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "command": {
-                "type": "string",
-                "description": "The shell command to execute"
-            },
+            "command": {"type": "string"},
             "background": {
                 "type": "boolean",
-                "description": "Keep running after this call returns; returns a session_id.",
+                "description": "Only for commands that must keep running after this call returns; returns a session_id.",
                 "default": False
             },
             "timeout": {
@@ -1708,7 +1789,7 @@ def _handle_terminal(args, **kw):
         if args.get("pty", False):
             return tool_error(
                 "pty requires background=true (a PTY session is interacted "
-                "with via process(action='write'/'submit'), which needs a "
+                "with via process_manage(action='write'/'submit'), which needs a "
                 "tracked background process). Retry as terminal(command=..., "
                 "background=true, pty=true)."
             )
@@ -1755,4 +1836,6 @@ registry.register(
     check_fn=check_terminal_requirements,
     emoji="💻",
     max_result_size_chars=100_000,
+    # ``code`` is the wrong-tool guard (points at execute_code); the other two are the legacy notify interface.
+    compat_args=("code", "notify_on_complete", "watch_patterns"),
 )

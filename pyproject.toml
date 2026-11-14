@@ -43,8 +43,9 @@ dependencies = [
   # a corporate/internal root installed on the machine just works. certifi
   # above stays a direct pin because httpx/requests/openai each depend on
   # it regardless; it is no longer OUR trust source.
-  # ssl_verify uses truststore's private original SSLContext for explicit CA overrides.
-  # Keep this exact until that path has a public-API replacement.
+  # ssl_verify uses truststore's private original SSLContext for explicit CA
+  # overrides, and memoizes the OpenSSL backend's per-connection CA reload.
+  # Keep this exact until those paths have a public-API replacement.
   "truststore==0.10.5; python_version >= '3.14'",
   "python-dotenv==1.2.4; python_version >= '3.14'",
   "fire==0.7.1; python_version >= '3.14'",
@@ -611,7 +612,8 @@ update-startup-files = [
   "hermes_cli/update_handoff.py", "hermes_cli/venv_sync.py", "pm/__init__.py", "pm/environments.py",
   "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
   "hermes_cli/web_server.py", "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
-  "hermes_constants.py",
+  "hermes_constants.py", "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py",
+  "hermes_agent/compat/finder.py", "hermes_agent/compat/moves.py",
 ]
 
 # Per-extra platform gates (settled 2026-09-02): an extra listed here is

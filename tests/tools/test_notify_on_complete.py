@@ -254,6 +254,50 @@ class TestCompletionConsumed:
         assert not registry.is_completion_consumed("proc_gw")
 
 
+    def test_short_id_poll_dedupes_cli_completion_without_consuming_gateway_turn(self, registry):
+        """#94455: a short process ID should not duplicate the CLI completion turn.
+
+        Gateway/TUI watchers still deliver after read-only polls (#10156).
+        """
+        s = _make_session(sid="proc_a1b2c3d4", notify_on_complete=True, output="done")
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)
+
+        assert registry.completion_queue.qsize() == 1
+        result = registry.poll("a1b2")
+        assert result["status"] == "exited" and result["session_id"] == s.id
+        assert not registry.is_completion_consumed(s.id)  # only CLI is deduped
+        assert registry.drain_notifications() == []
+
+
+    @pytest.mark.parametrize("consume", [
+        lambda r, sid: r.poll(sid, acknowledge=True),
+        lambda r, sid: r.wait(sid, timeout=1),
+        lambda r, sid: r.read_log(sid),
+        lambda r, sid: r.kill_process(sid),
+    ], ids=["poll_ack", "wait", "read_log", "kill"])
+    @pytest.mark.parametrize("sid_arg", ["a1b2", "proc_a1b2", "proc_a1b2c3d4"])
+    def test_every_consuming_path_marks_the_resolved_id(self, registry, consume, sid_arg):
+        """#94455 class: a path that hands the agent an exited completion marks it consumed by the
+        full session id, whatever unique prefix the caller passed, so the drain never replays it.
+        An ambiguous or too-short prefix resolves to nothing and consumes no session."""
+        s = _make_session(sid="proc_a1b2c3d4", notify_on_complete=True, output="done")
+        twins = [_make_session(sid=f"proc_ffff{n}", notify_on_complete=True, output="done") for n in ("0000", "1111")]
+        for proc in (s, *twins):
+            proc.exited, proc.exit_code = True, 0
+            registry._running[proc.id] = proc
+            with patch.object(registry, "_write_checkpoint"):
+                registry._move_to_finished(proc)
+        consume(registry, sid_arg)
+        assert registry.is_completion_consumed(s.id)
+        assert sorted(evt["session_id"] for evt, _ in registry.drain_notifications()) == [t.id for t in twins]
+        for unresolved in ("ffff", "f"):  # ambiguous, too short: no guess
+            assert consume(registry, unresolved)["status"] == "not_found"
+        assert not any(registry.is_completion_consumed(t.id) for t in twins)
+
     def test_wait_and_log_still_skip_cli_drain(self, registry):
         """wait()/read_log() consume the output, so the CLI drain skips their
         completions via _completion_consumed (the original #8228 contract)."""
@@ -345,6 +389,8 @@ def test_background_without_notify_emits_silent_process_hint(monkeypatch, tmp_pa
 
     assert result["session_id"] == "proc_silent_test"
     hint = result.get("hint", "")
+    from tools.process_registry import PROCESS_SCHEMA
+    assert f"{PROCESS_SCHEMA['name']}(action=" in hint
     assert hint, "Silent background process must include a hint field"
     assert "notify_on_complete" in hint, (
         "Hint must name the corrective flag so the agent can self-correct"

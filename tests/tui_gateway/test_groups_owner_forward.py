@@ -51,7 +51,7 @@ def owner(monkeypatch):
             return {"driver": True, "methods": ["groups.list", "groups.create", "groups.not-forwarded"]}
         if method == "groups.list":
             return {"rooms": [{"room_id": "room-webapp"}], "next_offset": None}
-        return {"room": {"room_id": params.get("room_id")}}
+        return {"room": {"room_id": params.get("room_id")}, "change_events": True}
     monkeypatch.setattr(owner_forward, "forward_rpc", forward_rpc)
     return calls
 
@@ -70,6 +70,14 @@ def test_room_calls_go_to_the_owning_gateway_and_nothing_lands_locally(home, own
 def test_capabilities_advertise_only_what_this_wire_carries(home, owner):
     result = srv._methods["groups.capabilities"](1, {})["result"]
     assert result["methods"] == ["groups.list", "groups.create"]
+
+
+def test_a_forwarded_room_state_keeps_the_full_rate_poll(home, owner):
+    """groups.changed on this wire comes from THIS backend's watcher, which cannot see the owning gateway's
+    live status (an approval prompt, the tool a member is in): the view must not demote its poll."""
+    result = srv._methods["groups.state"](1, {"room_id": "room-desk"})["result"]
+    assert result["room"] == {"room_id": "room-desk"}
+    assert "change_events" not in result
 
 
 def test_owner_refusal_is_returned_not_run_locally(home, monkeypatch):

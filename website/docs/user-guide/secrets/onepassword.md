@@ -157,6 +157,7 @@ Successful, complete pulls are cached in-process and on disk at `<hermes_home>/o
 
 - A 1Password service-account token can read every secret the account has access to. Store it in `~/.hermes/.env` (not `config.yaml`), and revoke + regenerate from 1Password if it leaks.
 - Hermes refuses to let a resolved value overwrite the token env var itself, even with `override_existing: true`.
+- `OP_SERVICE_ACCOUNT_TOKEN` is stripped from the processes the agent and its tools spawn (terminal, `execute_code`, background processes, cron scripts, CLI helpers). `terminal.env_passthrough` and skill `required_environment_variables` cannot re-allow it, so `op` run by the agent never sees the token. Hermes's own processes for the same profile still get it: its `op` child, a gateway it starts or restarts, and `key_cmd` helpers such as `op read`. To run `op` with the service account yourself, use your own shell; for `op` in the agent's terminal, use the desktop app integration or a Connect server.
 - The `op` child process gets a minimal allowlisted environment (auth/session vars + `PATH`/`HOME` and the `op` config-location vars `OP_CONFIG_DIR`/`XDG_CONFIG_HOME`), not a copy of the full `os.environ`, so post-dotenv provider credentials aren't all inherited by the child. Set `OP_CONFIG_DIR` when `~/.config` is not writable by the Hermes user (common in containers).
 - References are validated to start with `op://`, and the reference is passed after a `--` option terminator so a crafted value can't be parsed as an `op` flag.
 

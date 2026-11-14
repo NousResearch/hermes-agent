@@ -86,11 +86,25 @@ export function isAuthWall(input: { body: string; effectiveUrl: string; title: s
  *
  * `title` is tier 1's title after `usableTitle` — '' for both "nothing found"
  * and "found an error/captcha title". `authWall` is tier 1's proof that the page
- * it landed on is a sign-in wall.
+ * it landed on is a sign-in wall. `refused` is tier 1's proof that the
+ * destination guard said no mid-chain (a redirect hop onto a private target):
+ * Chromium would follow the same chain without the per-hop admission, so the
+ * renderer must not try either.
  */
-export function needsRendererFallback(input: { authWall: boolean; title: string; url: string }): boolean {
+export function needsRendererFallback(input: {
+  authWall: boolean
+  refused?: boolean
+  title: string
+  url: string
+}): boolean {
   // Tier 1 resolved a usable title — nothing left to escalate for.
   if (input.title) {
+    return false
+  }
+
+  // Tier 1's ladder refused a hop; tier 2 would re-walk the same redirects with
+  // only the synchronous literal check to stop them (#126885 follow-up).
+  if (input.refused) {
     return false
   }
 
@@ -110,15 +124,15 @@ export function needsRendererFallback(input: { authWall: boolean; title: string;
  * the I/O, this owns the decision.
  */
 export async function resolveLinkTitle(input: {
-  curl: () => Promise<{ authWall: boolean; title: string }>
+  curl: () => Promise<{ authWall: boolean; refused?: boolean; title: string }>
   renderer: () => Promise<string>
   url: string
 }): Promise<string> {
-  const tier1 = await input.curl().catch(() => ({ authWall: false, title: '' }))
+  const tier1 = await input.curl().catch(() => ({ authWall: false, refused: false, title: '' }))
   // A wall's own title ("Sign in - Google Accounts") is not the document's.
   const title = tier1.authWall ? '' : usableTitle((tier1.title || '').slice(0, TITLE_MAX_CHARS))
 
-  if (!needsRendererFallback({ authWall: tier1.authWall, title, url: input.url })) {
+  if (!needsRendererFallback({ authWall: tier1.authWall, refused: tier1.refused, title, url: input.url })) {
     return title
   }
 

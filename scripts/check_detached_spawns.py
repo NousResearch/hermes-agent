@@ -47,6 +47,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT))
+from hermes_agent.compat.paths import current_path, original_path
 MARKER = "detached-spawn: ok"
 # The helper itself: the one place a detached spawn is the point.
 HELPER_FILES = {"hermes_cli/process_identity.py"}
@@ -120,7 +122,7 @@ def _marked(src_lines: list[str], lineno: int) -> bool:
 
 def _tracked_files(root: Path) -> list[Path]:
     try:
-        out = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", *SCAN_TREES, *SCAN_ROOT_FILES],
+        out = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", *map(current_path, (*SCAN_TREES, *SCAN_ROOT_FILES))],
                              capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL, timeout=60).stdout
     except (OSError, subprocess.SubprocessError) as exc:
         # Fail closed: scanning nothing would report "no detached spawns".
@@ -130,7 +132,7 @@ def _tracked_files(root: Path) -> list[Path]:
 
 def _in_scope(rel: str) -> bool:
     parts = Path(rel).parts
-    return not (SKIP_PARTS & set(parts)) and not Path(rel).name.startswith("test_") and rel not in HELPER_FILES
+    return not (SKIP_PARTS & set(parts)) and not Path(rel).name.startswith("test_") and original_path(rel) not in HELPER_FILES
 
 
 def scan(paths=None, root: Path | None = None) -> dict[str, list[tuple[int, str]]]:
@@ -163,7 +165,7 @@ _BASELINE: dict[str, int] = {
 
 
 def _format_baseline(hits: dict[str, list]) -> str:
-    body = "".join(f'    "{rel}": {len(found)},\n' for rel, found in sorted(hits.items()))
+    body = "".join(f'    "{rel}": {len(found)},\n' for rel, found in sorted((original_path(r), h) for r, h in hits.items()))
     return "_BASELINE: dict[str, int] = {\n" + body + "}"
 
 
@@ -187,13 +189,14 @@ def main(argv: list[str] | None = None) -> int:
     problems: list[str] = []
     advisories: list[str] = []
     for rel in sorted(hits):
-        allowed = baseline.get(rel)
+        allowed = baseline.get(original_path(rel))
         if allowed is not None and len(hits[rel]) <= allowed:
             if len(hits[rel]) < allowed:
                 advisories.append(f"{rel}: {len(hits[rel])} detached spawn(s) left, _BASELINE says {allowed}")
             continue
         problems.extend(f"{rel}:{n}: {line.strip()[:160]}" for n, line in hits[rel])
-    advisories.extend(f"{rel}: listed in _BASELINE but clean (or gone)" for rel in sorted(baseline) if rel not in hits)
+    current = {original_path(rel) for rel in hits}
+    advisories.extend(f"{rel}: listed in _BASELINE but clean (or gone)" for rel in sorted(baseline) if rel not in current)
     if advisories:
         print("advisory — _BASELINE in scripts/check_detached_spawns.py is stale; regenerate it with "
               "--print-baseline (fewer hits than listed is progress, not a failure):")

@@ -1,0 +1,30 @@
+name: augur
+title: Augur
+repo: https://github.com/Bruno-coder21/augur
+sha: 6e775b23e2a322c8eee32db4074a44cb85e86e89
+version: "0.1.0"
+description: >-
+  Your agent knows your 3 priorities for the week, notices when you drift, parks the detour,
+  and on Friday clears what it can and shows where your attention actually went. Labels each
+  request in the background, asks one short question on the 2nd detour in a row ("Park it" or
+  "Do it now", buttons on Telegram), runs a guarded research-and-draft Friday cron job over the
+  Queue, and sends a weekly report image with planned vs actual per goal and a hidden 4th priority.
+  Disclosure: one short model call per message through its own auxiliary task (augur_classifier),
+  one per weekly report (augur_insight); stores only model-written 60-char summaries, goals and
+  parked items, redacted, in its own data folder; a pre_tool_call guard limits its own cron run to
+  its Queue tools, web_search and file work inside its drafts folder. No network of its own, no
+  shell, no telemetry, no self-update, no binaries.
+maintainer: Bruno-coder21
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/Bruno-coder21/augur#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/Bruno-coder21/augur/6e775b23e2a322c8eee32db4074a44cb85e86e89/docs/report-demo.png
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [augur_park, augur_queue, augur_done, augur_report]
+  provides_hooks: [pre_llm_call, post_llm_call, post_api_request, post_auxiliary_call, pre_tool_call, transform_llm_output]
+  provides_middleware: []
+  requires_env: []

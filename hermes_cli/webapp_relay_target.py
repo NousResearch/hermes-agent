@@ -1,12 +1,18 @@
 """The Webapp proxy's async view of :mod:`hermes_cli.gateway_connections_reach`.
 
 That module answers, per saved connection, where to dial and with which credentials, exactly as
-native Desktop sends them (session token, refreshed native bearer, SSH tunnel). It blocks (token
-refresh, tunnel start), so every call here runs off the event loop.
+native Desktop sends them (session token, refreshed native bearer, SSH tunnel). It blocks for as
+long as the gateway takes to answer (token refresh, tunnel start: an SSH connect waits out its 15 s
+timeout), so every call here runs on this module's own pool, never the loop's default executor
+this gateway's own sockets and routes share. Requests for one connection that arrive while its
+target is being resolved wait for that resolution rather than each queueing another.
 """
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -21,6 +27,9 @@ from hermes_cli.gateway_connections_ssh_transport import SshReachError
 _OWN_TICKET_PATHS = {"/api/host-terminal": "host-terminal"}
 #: What resolving a saved connection can refuse with: a reason the browser is shown.
 _REACH_ERRORS = (store.ConnectionStoreError, oauth.NotSignedIn, oauth.OAuthSignInError, SshReachError)
+_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="gateway-reach")
+_resolving: dict[tuple[str, str], Future] = {}
+_resolving_lock = threading.Lock()
 
 
 class Unreachable(LookupError):
@@ -64,10 +73,30 @@ def _resolve(connection_id: str, rejected_token: str) -> Optional[Target]:
     return Target(connection_id=connection_id, label=entry["label"], base_url=base_url, headers=headers)
 
 
+def _submit(fn, *args) -> Future:
+    return _POOL.submit(contextvars.copy_context().run, fn, *args)
+
+
+def _settled(key: tuple[str, str], done: Future) -> None:
+    with _resolving_lock:
+        if _resolving.get(key) is done:
+            del _resolving[key]
+
+
 async def resolve_target(connection_id: str, *, rejected: Optional[Target] = None) -> Optional[Target]:
     """*connection_id*'s target; None for no such saved connection or this machine's own (``local``).
-    With *rejected* (the target the remote just answered 401), one forced sign-in refresh."""
-    return await asyncio.to_thread(_resolve, connection_id, rejected.bearer if rejected else "")
+    With *rejected* (the target the remote just answered 401), one forced sign-in refresh. A caller
+    that arrives while the same resolution is in flight gets its answer."""
+    key = (connection_id, rejected.bearer if rejected else "")
+    with _resolving_lock:
+        work = _resolving.get(key)
+        started = work is None
+        if started:
+            work = _resolving[key] = _submit(_resolve, *key)
+    if started:
+        work.add_done_callback(lambda done: _settled(key, done))
+    # Shielded: one caller giving up must not cancel the resolution the others wait on.
+    return await asyncio.shield(asyncio.wrap_future(work))
 
 
 def _socket_credential(target: Target, path: str) -> tuple[str, str]:
@@ -91,4 +120,4 @@ def _socket_credential(target: Target, path: str) -> tuple[str, str]:
 async def socket_credential(target: Target, path: str) -> tuple[str, str]:
     """The ``(query name, value)`` that opens *path*'s socket on *target* for one dial: the session
     token (token mode, SSH), or a one-use ticket (oauth mode, and the host terminal everywhere)."""
-    return await asyncio.to_thread(_socket_credential, target, path)
+    return await asyncio.wrap_future(_submit(_socket_credential, target, path))

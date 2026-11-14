@@ -38,28 +38,33 @@ def _manual(bin_name: str) -> dict[str, Any]:
 
 # TypeScript 7+ is the Go-native port and ships no ``lib/tsserver.js`` /
 # ``lib/typescript.js``, so JS-based servers cannot load it as their SDK.
-TYPESCRIPT_SDK_PKG = "typescript@6"
+TYPESCRIPT_SDK_PKG = "typescript@6.0.3"
 
+# Every installer spec is an exact version: auto-install fetches from the
+# registry on first use, so a bare name or a range takes whatever upstream
+# published last.  Bump by hand to a release at least 14 days old (the JS
+# minimum-release-age rule in pm/AGENTS.md).  Transitive deps still float
+# (there is no lockfile under ``<HERMES_HOME>/lsp``).
 # Recipe key → {strategy, pkg, bin[, extra_pkgs]}.  After install we look for
 # ``bin`` in ``<HERMES_HOME>/lsp/bin/`` first, then on PATH.  ``extra_pkgs``
 # are sibling npm packages a server needs in the same node_modules tree.
 INSTALL_RECIPES: dict[str, dict[str, Any]] = {
-    "pyright": _npm("pyright", "pyright-langserver"),
+    "pyright": _npm("pyright@1.1.414", "pyright-langserver"),
     # tsserver must be importable from the same node_modules tree or
     # initialize() fails with "Could not find a valid TypeScript installation".
-    "typescript-language-server": _npm("typescript-language-server", "typescript-language-server", extra_pkgs=[TYPESCRIPT_SDK_PKG]),
+    "typescript-language-server": _npm("typescript-language-server@6.0.2", "typescript-language-server", extra_pkgs=[TYPESCRIPT_SDK_PKG]),
     # 3.x forwards every TypeScript request to a client-hosted tsserver
     # (``tsserver/request`` tunnel) that a generic LSP client does not run, so
     # it never publishes diagnostics; 2.x self-hosts TypeScript from
     # ``initializationOptions.typescript.tsdk`` (see servers._spawn_vue).
-    "@vue/language-server": _npm("@vue/language-server@2", "vue-language-server", extra_pkgs=[TYPESCRIPT_SDK_PKG]),
-    "svelte-language-server": _npm("svelte-language-server", "svelteserver"),
-    "@astrojs/language-server": _npm("@astrojs/language-server", "astro-ls"),
-    "yaml-language-server": _npm("yaml-language-server", "yaml-language-server"),
-    "bash-language-server": _npm("bash-language-server", "bash-language-server"),
-    "intelephense": _npm("intelephense", "intelephense"),
-    "dockerfile-language-server-nodejs": _npm("dockerfile-language-server-nodejs", "docker-langserver"),
-    "gopls": _recipe("go", "golang.org/x/tools/gopls@latest", "gopls"),
+    "@vue/language-server": _npm("@vue/language-server@2.2.12", "vue-language-server", extra_pkgs=[TYPESCRIPT_SDK_PKG]),
+    "svelte-language-server": _npm("svelte-language-server@0.18.5", "svelteserver"),
+    "@astrojs/language-server": _npm("@astrojs/language-server@2.17.3", "astro-ls"),
+    "yaml-language-server": _npm("yaml-language-server@2.0.0", "yaml-language-server"),
+    "bash-language-server": _npm("bash-language-server@5.8.1", "bash-language-server"),
+    "intelephense": _npm("intelephense@1.18.5", "intelephense"),
+    "dockerfile-language-server-nodejs": _npm("dockerfile-language-server-nodejs@0.15.0", "docker-langserver"),
+    "gopls": _recipe("go", "golang.org/x/tools/gopls@v0.24.0", "gopls"),
     # Manual: rust-analyzer (via rustup) and clangd (ships with LLVM) are far too
     # heavy to bootstrap; LuaLS is platform-specific GitHub release binaries.
     "rust-analyzer": _manual("rust-analyzer"),

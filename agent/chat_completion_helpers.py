@@ -38,18 +38,17 @@ from agent.transports.chat_completions import is_router_timeout_shim, router_tim
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
-# Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
-# boxes. Non-Ollama remotes (sglang, vLLM, OpenAI-compat) expose Ollama-compat endpoints that can
-# misidentify and, without an api_key, return 401 on every leg (issue #89863).
+# Never fingerprint a remote endpoint: Ollama-compat routes misidentify and 401 without a key (#89863).
 from agent.model_metadata import is_local_endpoint
+from agent.process_transport import waits_like_local
 from agent.message_content import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, data_use_requirement, stamp_message_timestamp
 from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
     normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
-from agent.reasoning_summaries import (
-    append_streamed_reasoning_detail, separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
+from agent.reasoning_summaries import (append_streamed_reasoning_detail, redact_reasoning_fields,
+    separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
@@ -625,10 +624,9 @@ def _stream_env_stale_base() -> tuple[float, bool]:
     return env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), "HERMES_STREAM_STALE_TIMEOUT" in os.environ
 
 
-def _configured_stale_base(agent) -> float:
-    """Per-provider ``stale_timeout_seconds`` config, else HERMES_STREAM_STALE_TIMEOUT (180s)."""
-    cfg = get_provider_stale_timeout(agent.provider, agent.model)
-    return cfg if cfg is not None else _stream_env_stale_base()[0]
+def _stream_stale_timeout_is_explicit(agent) -> bool:
+    """A per-provider ``stale_timeout_seconds`` or HERMES_STREAM_STALE_TIMEOUT is set, whatever its value."""
+    return get_provider_stale_timeout(agent.provider, agent.model) is not None or _stream_env_stale_base()[1]
 
 
 def _local_stream_stale_timeout_default() -> float:
@@ -1295,15 +1293,15 @@ def _reasoning_config_for_wire(agent):
 
     Once the route has answered a disable with "reasoning is mandatory"
     (``agent._reasoning_disable_rejected``), every disable — configured or
-    the one-shot continuation override — is dropped for the rest of the
-    session: the request goes out without a reasoning config and the route
+    the one-shot continuation override — is dropped until the route
+    changes: the request goes out without a reasoning config and the route
     applies its own default.
     """
     cfg = agent.reasoning_config
     ephemeral_off = _consume_ephemeral_reasoning_off(agent)
     if getattr(agent, "_reasoning_effort_rejected", False):
         # The route rejected the configured reasoning LEVEL itself (#100536: ``reasoning.effort:
-        # max`` on an enabled config). Omit the reasoning fields for the rest of the session —
+        # max`` on an enabled config). Omit the reasoning fields until the route changes —
         # the route default — as the auxiliary ladder does; resending would 400 identically.
         agent._wire_reasoning_config = None
         return None
@@ -1444,15 +1442,6 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"
     _profile_endpoint = agent._reasoning_endpoint_profile() is not None
 
-    # _fixed_temperature_for_model may return the OMIT_TEMPERATURE sentinel
-    # (temperature omitted entirely), a numeric override, or None.
-    _omit_temp, _fixed_temp = False, None
-    with contextlib.suppress(Exception):
-        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
-        _ft = _fixed_temperature_for_model(agent.model, agent.base_url)
-        _omit_temp = _ft is OMIT_TEMPERATURE
-        _fixed_temp = None if _omit_temp else _ft
-
     _prefs = _provider_preferences_for_agent(agent)
 
     _qwen_meta = {"sessionId": agent.session_id or "hermes", "promptId": str(uuid.uuid4())} if _is_qwen else None
@@ -1485,16 +1474,8 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         **_common,
         model_lower=(agent.model or "").lower(),
         is_openrouter=_is_or,
-        is_nous=base_url_host_matches(_host, "nousresearch.com"),
-        is_qwen_portal=_is_qwen,
-        is_nvidia_nim=base_url_host_matches(_host, "integrate.api.nvidia.com"),
         is_kimi=any(base_url_host_matches(agent.base_url, h) for h in ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
         is_tokenhub=base_url_host_matches(_host, "tokenhub.tencentmaas.com"),
-        is_custom_provider=agent.provider == "custom",
-        qwen_prepare_fn=agent._qwen_prepare_chat_messages if _is_qwen else None,
-        qwen_prepare_inplace_fn=agent._qwen_prepare_chat_messages_inplace if _is_qwen else None,
-        fixed_temperature=_fixed_temp,
-        omit_temperature=_omit_temp,
         profile_endpoint=_profile_endpoint, endpoint_reasoning=agent._endpoint_reasoning_payload() if _profile_endpoint else None,
         provider_name=agent.provider,
     )
@@ -1682,8 +1663,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         msg["reasoning_content"] = reasoning_text
 
     if getattr(assistant_message, "reasoning_details", None):
-        # Preserve reasoning_details exactly (opaque signature /
-        # encrypted_content fields) for cross-turn reasoning continuity.
+        # Signed/opaque entries are replayed byte-exact; only unsigned text is redacted below.
         preserved = []
         for d in assistant_message.reasoning_details:
             if isinstance(d, dict):
@@ -1694,6 +1674,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                 preserved.append(_model_dump_safe(d))
         if preserved:
             msg["reasoning_details"] = preserved
+    redact_reasoning_fields(msg)  # storage boundary, as for content (#43666)
 
     # Provider-native carriers replayed verbatim on later turns:
     # anthropic_content_blocks keeps interleaved thinking + tool_use order
@@ -1885,8 +1866,8 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             agent._credential_pool = agent._credential_pool_entry_id = None
     if getattr(agent, "_credential_pool", None) is None:
         try:
-            from agent.credential_pool import load_pool
-            fallback_pool = load_pool(fb_provider)
+            from agent.custom_entry_pool import load_route_pool
+            fallback_pool = load_route_pool(fb_provider, getattr(agent, "base_url", None))
             if fallback_pool and fallback_pool.has_credentials():
                 agent._credential_pool = fallback_pool
                 logger.info("Fallback to %s/%s: attached fallback credential pool", fb_provider, fb_model)
@@ -2420,8 +2401,8 @@ _SSE_CONN_PHRASES = ("connection lost", "connection reset", "connection closed",
 def _rejects_stream_options(exc: BaseException) -> bool:
     """A 400/422 whose body names ``stream_options`` as an unknown/extra field: strict
     OpenAI-compatible endpoints (Azure AI Foundry MaaS, Pydantic ``extra_forbidden``) reject
-    the usage extension outright (#9705). Distinct from "stream not supported", which flips
-    the whole session to non-streaming."""
+    the usage extension outright (#9705). Distinct from "stream not supported", which turns
+    streaming off on this route (``_disable_streaming`` is a route verdict)."""
     if getattr(exc, "status_code", None) not in (400, 422):
         return False
     body = f"{getattr(exc, 'body', '') or ''} {exc}".lower()
@@ -2578,7 +2559,7 @@ class _BedrockStream:
             "falling back to non-streaming InvokeModel.\n"
             "   Grant that action to restore streaming output.\n", diagnostic=True)
         logger.info("bedrock: converse_stream denied by IAM (%s) — "
-            "using non-streaming converse() for this session.", type(exc).__name__)
+            "using non-streaming converse() on this route.", type(exc).__name__)
         return normalize_converse_response(client.converse(**final_kwargs))
 
     def _worker(self):
@@ -2904,7 +2885,7 @@ class _StreamingCall(StreamingWaitMonitor):
             return base, cfg, min(base, 60.0)
         read = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)
         stale = self._stream_stale_timeout
-        if read == 120.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
+        if read == 120.0 and waits_like_local(self.agent.base_url, self.agent.provider):
             read = base  # local providers prefill for minutes
             logger.debug("Local provider detected (%s) — stream read timeout raised to %.0fs", self.agent.base_url, read)
         elif read == 120.0 and stale is not None and stale != float("inf") and stale > read:
@@ -2942,7 +2923,7 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _open_chat_stream(self, stream_kwargs: dict[str, Any]):
         # Native Gemini rejects OpenAI's usage-streaming extension; so do strict endpoints that
-        # already 4xx'd on it this session (``_stream_options_unsupported``, see #9705).
+        # already 4xx'd on it on this route (``_stream_options_unsupported``, #9705; see route_verdicts).
         if not is_native_gemini_base_url(self.agent.base_url) and not getattr(self.agent, "_stream_options_unsupported", False):
             stream_kwargs["stream_options"] = {"include_usage": True}
         request_client = self._attempt_request_client = self.clients.set_client(
@@ -3224,10 +3205,10 @@ class _StreamingCall(StreamingWaitMonitor):
             getattr(self.agent, "provider", "") or "unknown")
 
     def _adopt_final_response(self, final_response):
-        """Adapter returned a completed response for ``stream=True``: switch the
-        session to non-streaming and replay its content as deltas."""
+        """Adapter returned a completed response for ``stream=True``: switch this
+        route to non-streaming and replay its content as deltas."""
         logger.info("Streaming request returned a final response object instead of an iterator; "
-            "switching %s/%s to non-streaming for this session.", self.agent.provider or "unknown",
+            "switching %s/%s to non-streaming on this route.", self.agent.provider or "unknown",
             self.agent.model or "unknown")
         self.agent._disable_streaming = True
         return self._replay_final_response(final_response)
@@ -3525,14 +3506,14 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent._disable_streaming = True
             logger.warning(
                 "Provider stream returned an empty SSE frame (keepalive, no payload) before any "
-                "delta — switching %s/%s to non-streaming for this session.",
+                "delta — switching %s/%s to non-streaming on this route.",
                 self.agent.provider or "unknown", self.agent.model or "unknown")
             # Durable channel, not _buffer_status: this recovery is expected to SUCCEED, and
             # buffered retry chatter is dropped on successful recovery. Fires at most once per
-            # session (streaming is off from here on).
+            # route (streaming is off on this route from here on).
             self.agent._emit_warning(
                 "⚠️ Provider stream returned an empty keepalive frame — retrying this turn "
-                "without streaming (streaming stays off for this session).")
+                "without streaming (streaming stays off on this route).")
             return
         from agent.anthropic_adapter import _is_stream_unavailable_error
         if not _is_stream_unavailable_error(e):
@@ -3584,10 +3565,10 @@ class _StreamingCall(StreamingWaitMonitor):
         _is_transient = _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err
 
         if not self.deltas_were_sent["yes"] and not getattr(self.agent, "_stream_options_unsupported", False) and _rejects_stream_options(e):
-            # Nothing streamed yet: drop the usage extension for this session and re-open.
+            # Nothing streamed yet: drop the usage extension on this route and re-open.
             self.agent._stream_options_unsupported = True
             self._compat_retries = 1
-            logger.info("Endpoint rejected stream_options (HTTP %s); retrying without it for this session.",
+            logger.info("Endpoint rejected stream_options (HTTP %s); retrying without it on this route.",
                         getattr(e, "status_code", None))
             self._cancel_current_stream_attempt("stream_options_rejected_retry")
             self.clients.close_once("stream_options_rejected_retry")
@@ -3858,13 +3839,14 @@ class _StreamingCall(StreamingWaitMonitor):
     # ── orchestration ───────────────────────────────────────────────────
 
     def _resolve_stale_timeout(self) -> None:
-        """Set ``_stream_stale_timeout``. Local endpoints (unless the env is set) get
+        """Set ``_stream_stale_timeout``. Local endpoints (unless a stale timeout is set) get
         long but FINITE patience — 900s / ``agent.local_stream_stale_timeout`` /
         HERMES_LOCAL_STREAM_STALE_TIMEOUT — an infinite one stalled sessions on a
         crashed endpoint forever. Cloud values scale with context size and are
         floored for known reasoning models (else BrokenPipeError from the gateway)."""
-        base = _configured_stale_base(self.agent)
-        if base == 180.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
+        # Presence, not value: an explicit 180 is the operator's deadline, not the unset default.
+        if (not _stream_stale_timeout_is_explicit(self.agent)
+                and waits_like_local(self.agent.base_url, self.agent.provider)):
             self._stream_stale_timeout = _local_stream_stale_timeout_default()
             logger.debug("Local provider detected (%s) — stale stream timeout set to %.0fs",
                 self.agent.base_url, self._stream_stale_timeout)

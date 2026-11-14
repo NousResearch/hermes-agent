@@ -176,6 +176,19 @@ def webhook_command(args):
         return handler(args)
 
 
+def _route_signature(args, existing: dict, is_update: bool) -> dict:
+    """The ``signature`` key for the saved route. New routes are pinned to timestamp-bound generic
+    signatures; an update keeps the route's pin (or its absence), so re-running subscribe never breaks a
+    provider route created before pins existed. An invalid stored pin (false, "") is kept too: the gateway
+    refuses that route, whereas dropping it would republish it unpinned and accept body-only GitHub/Linear
+    MACs again."""
+    if getattr(args, "signature", None) is not None:
+        return {"signature": args.signature}
+    if not is_update:
+        return {"signature": "generic"}
+    return {"signature": existing["signature"]} if "signature" in existing else {}
+
+
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
@@ -218,6 +231,7 @@ def _cmd_subscribe(args):
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
         "deliver": args.deliver or "log",
         "profile": profile,
+        **_route_signature(args, existing, is_update),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     if getattr(args, "deliver_only", False):
@@ -264,8 +278,12 @@ def _cmd_subscribe(args):
     print(f"\n  {'Updated' if is_update else 'Created'} webhook subscription: {name}")
     print(f"  URL:    {_route_url(name, route)}")
     print(f"  Profile: {profile}")
-    print(f"  Secret: {secret}")
+    # Masked: the full secret would otherwise land in scrollback, agent transcripts and CI logs.
+    from agent.redact import mask_secret
+    from hermes_constants import display_hermes_home
+    print(f"  Secret: {mask_secret(secret)} (full value in {display_hermes_home()}/{_SUBSCRIPTIONS_FILENAME})")
     print(f"  Events: {', '.join(events) or '(all)'}")
+    print(f"  Signature: {route.get('signature', 'any supported scheme (unpinned)')!s}")
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
@@ -279,7 +297,7 @@ def _cmd_subscribe(args):
     if route.get("script"):
         print(f"  Script: {route['script']}")
     print("\n  Configure your service to POST to the URL above.")
-    print("  Use the secret for HMAC-SHA256 signature validation.")
+    print("  Use the route's stored secret for HMAC-SHA256 signature validation.")
     print("  The gateway must be running to receive events (hermes gateway run).\n")
 
 
@@ -351,20 +369,31 @@ def _cmd_test(args):
     secret = subs[name].get("secret", "")
     url = _route_url(name, subs[name])
     payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
-    sig = "sha256=" + hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    headers = {"Content-Type": "application/json",
+               **_test_signature_headers(subs[name].get("signature"), secret, payload.encode())}
     print(f"  Sending test POST to {url}")
     try:
-        req = urllib.request.Request(
-            url,
-            data=payload.encode(),
-            headers={"Content-Type": "application/json", "X-Hub-Signature-256": sig, "X-GitHub-Event": "test"},
-            method="POST")
+        req = urllib.request.Request(url, data=payload.encode(), headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = resp.read().decode()
             print(f"  Response ({resp.status}): {body}")
     except Exception as e:
         print(f"  Error: {e}")
         print("  Is the gateway running? (hermes gateway run)")
+
+
+def _test_signature_headers(scheme, secret: str, body: bytes) -> dict[str, str]:
+    """Sign like the route's pinned provider would; generic and unpinned routes get timestamp-bound V2."""
+    body_mac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    if scheme == "github":
+        return {"X-Hub-Signature-256": "sha256=" + body_mac, "X-GitHub-Event": "test"}
+    if scheme == "linear":
+        return {"Linear-Signature": body_mac}
+    if scheme == "gitlab":
+        return {"X-Gitlab-Token": secret, "X-Gitlab-Event": "test"}
+    timestamp = str(int(time.time()))
+    v2 = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
+    return {"X-Webhook-Signature-V2": v2, "X-Webhook-Timestamp": timestamp}
 
 
 _ACTIONS = {

@@ -7,16 +7,15 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import ipaddress
 import json
 import logging
-import os
 import re
 import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Optional
 from agent.proxy_bypass import is_loopback_host
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms._shared import profile_scoped as _profile_scoped
 
 logger = logging.getLogger(__name__)
@@ -24,11 +23,14 @@ logger = logging.getLogger(__name__)
 
 def _startup_env(name: str) -> str:
     """One A2A setting from the active profile's scope, else the env. Inside a secondary
-    profile's scope a miss yields "" and never falls through to the default profile's env."""
+    profile's scope a miss yields "" and never falls through to the default profile's env.
+    Unscoped, a miss in ``os.environ`` falls back to the profile's own secret scope (``.env``
+    plus external secret sources, via ``external_fallback``). A token that exists nowhere still
+    yields "" — localhost-only stays fail-closed."""
     if _profile_scoped():
         from agent.secret_scope import get_secret
         return (get_secret(name) or "").strip()
-    return os.getenv(name, "").strip()
+    return str(_get_scoped_secret(name, "", external_fallback=True) or "").strip()
 
 
 def _parse_peer_tokens(raw: str) -> dict[str, str]:
@@ -67,24 +69,30 @@ class A2ASecurityContext:
     allow_all_users: bool
     requested_host: str
     push_secret: str
+    # A2A_PEER_TOKENS is set but holds no ``name:token`` pair (a bare token): the operator asked for
+    # auth, so this never reads as "no token configured" — every request is refused instead (#148961).
+    unusable_peer_tokens: bool = False
 
     @classmethod
     def capture(cls) -> A2ASecurityContext:
         bearer_token = _startup_env("A2A_BEARER_TOKEN")
-        return cls(bearer_token=bearer_token, peer_tokens=tuple(_parse_peer_tokens(_startup_env("A2A_PEER_TOKENS")).items()),
+        raw_peer_tokens = _startup_env("A2A_PEER_TOKENS")
+        peer_tokens = _parse_peer_tokens(raw_peer_tokens)
+        return cls(bearer_token=bearer_token, peer_tokens=tuple(peer_tokens.items()),
+                   unusable_peer_tokens=bool(raw_peer_tokens) and not peer_tokens,
                    trusted_peers=_configured_trusted_peers(),
                    allow_all_users=_startup_env("A2A_ALLOW_ALL_USERS").lower() in {"1", "true", "yes"},
                    requested_host=_unbracket(_startup_env("A2A_HOST")) or "127.0.0.1", push_secret=_startup_env("A2A_PUSH_SECRET") or bearer_token)
 
     def localhost_only(self) -> bool:
-        return not (self.bearer_token or self.peer_tokens)
+        return not (self.bearer_token or self.peer_tokens or self.unusable_peer_tokens)
 
     def resolve_bind_host(self) -> str:
         """Localhost unless a token is configured AND a wider host was asked for."""
         if self.requested_host in {"127.0.0.1", "localhost", "::1"}:
             return self.requested_host
-        if self.localhost_only():
-            logger.warning("A2A: A2A_HOST=%s ignored — no A2A_BEARER_TOKEN or A2A_PEER_TOKENS set; "
+        if not (self.bearer_token or self.peer_tokens):  # no usable credential: never widen the bind
+            logger.warning("A2A: A2A_HOST=%s ignored — no usable A2A_BEARER_TOKEN or A2A_PEER_TOKENS; "
                            "binding to 127.0.0.1. Configure a token to expose A2A remotely.", self.requested_host)
             return "127.0.0.1"
         return self.requested_host
@@ -198,12 +206,6 @@ def redact_outbound(text: str) -> str:
     return _EMAIL_RE.sub("[redacted-email]", redact_for_egress(text))
 
 
-# Blocked even in localhost-only mode — a remote peer must not make us probe internal services
-# (link-local/AWS metadata, RFC1918, unspecified, IPv6 link-local/ULA). Loopback only in localhost mode.
-_BLOCKED_PREFIXES = ("169.254.", "127.", "10.", *(f"172.{i}." for i in range(16, 32)), "192.168.",
-                     "0.0.0.0", "::1", "fe80:", "fc00:", "fd00:")
-
-
 def is_loopback_host_header(host_header: Optional[str], public_url: str = "") -> bool:
     """True when an HTTP ``Host`` value names a loopback address or the ``A2A_PUBLIC_URL`` host
     (any port); malformed fails closed."""
@@ -222,29 +224,47 @@ def is_loopback_host_header(host_header: Optional[str], public_url: str = "") ->
 
 
 def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> bool:
-    """True when a push callback URL is http(s) and not internal/private/loopback."""
+    """True when a push callback URL is http(s) and may be dialed. Literal loopback only in
+    localhost-only mode; everything else goes through the shared SSRF policy
+    (``tools.url_safety.is_safe_url``), which resolves the host and checks every answer, so a DNS
+    name or an integer/hex IPv4 spelling of a metadata/RFC1918 address is refused as the dotted
+    form is. ``security.allow_private_urls`` lifts that refusal for private and loopback answers
+    (never metadata), as it does for the agent's other fetches."""
     if localhost_mode is None:
         localhost_mode = localhost_only()
-    try:
-        parsed = urllib.parse.urlparse(url) if url and isinstance(url, str) else None
-    except Exception:
+    if not url or not isinstance(url, str):
         return False
-    hostname = (parsed.hostname or "") if parsed and parsed.scheme in ("http", "https") else ""
-    if not hostname:
-        return False
-    hostname_lower = hostname.lower()
-    if hostname_lower == "localhost":
-        return localhost_mode
-    for prefix in _BLOCKED_PREFIXES:
-        if hostname_lower.startswith(prefix.lower()):
-            return bool(localhost_mode and prefix in ("127.", "::1"))
     try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved:
-            return bool(localhost_mode and ip.is_loopback)
+        parsed = urllib.parse.urlparse(url)
     except ValueError:
-        pass  # a hostname, not an IP
-    return True
+        return False
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    if is_loopback_host(parsed.hostname):
+        return localhost_mode
+    from tools.url_safety import is_safe_url
+
+    return is_safe_url(url)
+
+
+def post_callback(url: str, body: bytes, headers: dict, *, localhost_mode: bool, timeout: float = 10.0) -> int:
+    """POST *body* to a callback URL that passed ``is_safe_callback_url``; returns the HTTP status.
+
+    Redirects are not followed: the check covered this URL only, and a 302 from a public host
+    would otherwise land the request on metadata or an internal service. Non-loopback targets go
+    through ``create_ssrf_safe_client``, which re-resolves and validates at connect time and dials
+    the vetted IP, so a name cannot answer public for the check and loopback for the socket. With
+    ``HTTP(S)_PROXY`` set, the operator's proxy resolves and dials the target instead, as for the
+    other callers of the shared guard."""
+    import httpx
+    from tools.url_safety import create_ssrf_safe_client
+
+    if localhost_mode and is_loopback_host(httpx.URL(url).host):
+        client = httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False)
+    else:
+        client = create_ssrf_safe_client(timeout=timeout, follow_redirects=False)
+    with client, client.stream("POST", url, content=body, headers=headers) as response:
+        return response.status_code  # the peer's body is never read: only the status matters
 
 
 def audit(direction: str, peer: str, task_id: str, summary: str) -> None:

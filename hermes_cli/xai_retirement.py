@@ -179,4 +179,6 @@ def apply_migration(
     buf = io.StringIO()
     yaml.dump(doc, buf)
     atomic_write_text(config_path, buf.getvalue(), preserve_mode=True)  # config-reader: ok — file tooling (gated above)
+    from hermes_cli.config_backend import drop_other_access
+    drop_other_access(config_path)
     return ApplyResult(file_path=config_path, backup_path=backup_path, issues_resolved=resolved, config_changed=True)

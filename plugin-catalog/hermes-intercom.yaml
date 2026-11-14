@@ -1,0 +1,23 @@
+name: hermes-intercom
+title: "Hermes Intercom"
+repo: https://github.com/greqone/hermes-intercom
+sha: "aae0ddc917429eb3a3f280516ea7378465ac5620"
+subdir: ""
+description: "Discover and message existing Hermes sessions within one profile using session_list and session_send. Delivery uses only the public ctx.inject_message API with attributed native notices, hop limits, per-sender duplicate detection, bounded retry identities and per-target rate limits. CLI and unknown sender surfaces are refused. Unverified routes and dormant targets that the public API cannot reach are refused; there is no private gateway transport or automatic mounting. A scheduled result confirms scheduling, not execution or durable delivery. Disclosure — lets the model list sessions in the active profile (titles, sources, working directories and routing metadata, read from `state.db` read-only) and inject attributed messages that start model/tool turns in other sessions, including other users' Discord/Telegram chats on a shared gateway, once `plugins.entries.hermes-intercom.allow_gateway_injection: true` is set; bounded by `max_hops` and per-target rate limits; restrict the `intercom` toolset to owner-only platforms on shared gateways; writes a metadata-only audit log (no message text) to `$HERMES_HOME/cache/hermes-intercom/audit.jsonl`."
+maintainer: greqone
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/greqone/hermes-intercom#readme
+version: "0.1.1"
+platforms: []
+readme: true
+screenshots: []
+capabilities:
+  provides_tools:
+    - session_list
+    - session_send
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

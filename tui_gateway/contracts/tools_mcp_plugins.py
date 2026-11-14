@@ -768,7 +768,9 @@ class PluginActivation(Result):
     note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)
     apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a
     running process cannot import (installed after it booted, or never); ``missing_in`` names which
-    processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them."""
+    processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them.
+    ``activated_now.provider``: a model-provider plugin whose current tree serves new sessions. ``load_error``: a
+    model-provider plugin's updated tree failed to import (the previous version keeps serving)."""
 
     name: str
     key: str
@@ -777,6 +779,7 @@ class PluginActivation(Result):
     deferred: dict[str, list[str]] = Field(default_factory=dict)
     missing_dependencies: list[str] = Field(default_factory=list)
     missing_in: list[PluginRestartTarget] = Field(default_factory=list)
+    load_error: str | None = None
 
 
 class OnboardingCatalogPlugin(Result):

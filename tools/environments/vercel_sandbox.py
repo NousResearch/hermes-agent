@@ -180,6 +180,9 @@ class VercelSandboxEnvironment(BaseEnvironment):
     """Vercel cloud sandbox backend."""
 
     _stdin_mode = "payload"
+    # The askpass prologue checks sudo ``-A`` support inside each command, so no capability probe
+    # runs here (a timed-out probe could only be cancelled by stopping the sandbox).
+    _sudo_askpass_runtime_checked = True
 
     def __init__(self, runtime: str | None = None, cwd: str = DEFAULT_VERCEL_CWD, timeout: int = 60,
                  cpu: float = 1, memory: int = 5120, disk: int = _DEFAULT_CONTAINER_DISK_MB,
@@ -305,7 +308,14 @@ class VercelSandboxEnvironment(BaseEnvironment):
         if not snapshot_id:
             logger.warning("Vercel: filesystem snapshot for task %s did not return a snapshot id", self._task_id)
             return
-        _store_snapshot(self._task_id, snapshot_id)
+        # snapshot() already stopped the sandbox: a failed metadata write must not escape cleanup
+        # (it would skip the stop below and leave the closed env's processes unsettled).
+        try:
+            _store_snapshot(self._task_id, snapshot_id)
+        except Exception as exc:
+            logger.warning("Vercel: saving snapshot %s for task %s failed: %s", snapshot_id, self._task_id, exc,
+                           exc_info=True)
+            return
         logger.info("Vercel: saved filesystem snapshot %s for task %s", snapshot_id, self._task_id)
 
     def _ensure_sandbox_ready(self) -> None:

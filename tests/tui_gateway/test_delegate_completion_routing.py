@@ -65,7 +65,8 @@ def test_parent_completion_never_delivered_to_delegate_child(
         monkeypatch.setattr(server, "_emit", emit)
         monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claim")
         monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: None)
-        registry = SimpleNamespace(completion_queue=queue.Queue(), is_completion_consumed=lambda _sid: False)
+        registry = SimpleNamespace(completion_queue=queue.Queue(), is_completion_consumed=lambda _sid: False,
+                                   is_completion_notice_retired=lambda _sid: False)
         event = {"type": event_type, "session_key": "parent"}
         if event_type == "async_delegation":
             # The original tab is gone, so the durable lineage must decide who

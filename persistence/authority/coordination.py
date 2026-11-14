@@ -19,7 +19,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Callable, Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Optional, Protocol, runtime_checkable
 
 from ..core.errors import StoreContention
 from ..core.identity import DelegationId, JsonValue, SessionId
@@ -27,6 +27,7 @@ from ..core.identity import DelegationId, JsonValue, SessionId
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "COMPLETION_DELIVERIES",
     "DELEGATION_CLAIM_STALE_SECONDS",
     "DELEGATION_COMPLETION_STATUSES",
     "DELEGATION_EVENT_KEYS",
@@ -94,6 +95,8 @@ DELEGATION_FAILURE_WINDOW_SECONDS = 24 * 3600.0
 DELEGATION_ORIGIN_SOURCES = ("cli", "tui", "gui", "tool", "oneshot")
 #: The terminal statuses a completion may carry; the stored state becomes this value.
 DELEGATION_COMPLETION_STATUSES = ("completed", "success", "error", "interrupted", "stalled", "unknown")
+#: The delivery a completion is recorded with: ``pending`` is offered to the parent; ``delivered`` is never offered (every child of the unit waits on a promised automatic resume, which reports on its own).
+COMPLETION_DELIVERIES = ("pending", "delivered")
 #: The task payload keys a worker dispatch carries.
 DELEGATION_TASK_KEYS = frozenset({"goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes"})
 #: Event route key -> ledger column.
@@ -371,7 +374,7 @@ class InflightDelegation:
 
 @dataclass(frozen=True, slots=True)
 class DelegationRecovery:
-    """One abandoned delegation to mark ``unknown``, built outside the store: written only while the row still has ``expected_state`` and ``expected_updated_at``."""
+    """One abandoned delegation to mark ``unknown``, built outside the store: written only while the row still has ``expected_state`` and ``expected_updated_at``. ``delivery`` is one of :data:`COMPLETION_DELIVERIES` (``delivered`` when every child of the unit waits on a promised automatic resume)."""
 
     delegation_id: DelegationId
     expected_state: str
@@ -379,6 +382,11 @@ class DelegationRecovery:
     completed_at: float
     event: JsonValue
     result: JsonValue
+    delivery: Literal["pending", "delivered"] = "pending"
+
+    def __post_init__(self) -> None:
+        if self.delivery not in COMPLETION_DELIVERIES:
+            raise ValueError(f"DelegationRecovery.delivery must be one of {COMPLETION_DELIVERIES}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -524,8 +532,8 @@ class CoordinationRepository(Protocol):
         """Delete delivered rows not updated for :data:`DELEGATION_RETENTION_SECONDS`, then cap terminal rows at :data:`DELEGATION_MAX_RETAINED_TERMINAL` (delivered, then oldest first) and terminal pending rows at :data:`DELEGATION_MAX_DURABLE_PENDING` (oldest first), in one write."""
         ...
 
-    def record_delegation_completion(self, *, delegation_id: DelegationId, state: str, completed_at: float, event: JsonValue, result: JsonValue) -> None:
-        """Store the state, completion time, ``updated_at`` now, the caller-redacted event and result, and delivery ``pending``; a missing row writes nothing."""
+    def record_delegation_completion(self, *, delegation_id: DelegationId, state: str, completed_at: float, event: JsonValue, result: JsonValue, delivery: Literal["pending", "delivered"] = "pending") -> None:
+        """Store the state, completion time, ``updated_at`` now, the caller-redacted event and result, and ``delivery`` (``delivered``: recorded, never offered); a missing row writes nothing. A delivery outside :data:`COMPLETION_DELIVERIES` is refused ``invalid_params`` with nothing written."""
         ...
 
     def record_unit_child(self, *, delegation_id: DelegationId, entry: JsonValue) -> None:
@@ -533,7 +541,7 @@ class CoordinationRepository(Protocol):
         ...
 
     def recover_abandoned_delegations(self, *, recoveries: Sequence[DelegationRecovery]) -> int:
-        """One write: each recovery whose row still has its expected state and ``updated_at`` becomes ``unknown`` with the given event, result and completion time, ``updated_at`` now and delivery ``pending``; others are skipped. Returns the rows written."""
+        """One write: each recovery whose row still has its expected state and ``updated_at`` becomes ``unknown`` with the given event, result and completion time, ``updated_at`` now and the recovery's delivery; others are skipped. Returns the rows written."""
         ...
 
     def take_replayable_completions(self) -> tuple[PendingCompletion, ...]:

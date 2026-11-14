@@ -23,6 +23,38 @@ from agent.i18n import t
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 
+def _turn_allows_skill_triggers(message, images, *, system_authored: bool = False) -> bool:
+    """Only user-authored text may load a skill by trigger.
+
+    ``system_authored`` is the explicit provenance every synthetic turn carries: background
+    notifications, the kanban recovery nudge and goal-judge prompts. Their bodies are not the
+    person's words, so they never match a trigger, whatever the text says. An image turn is
+    excluded too (text routing turns it into a string).
+    """
+    from tools.process_registry_notifications import TimelineNotification
+
+    return not images and not system_authored and not isinstance(message, TimelineNotification)
+
+
+def _resolve_skill_trigger_message(message, session_id):
+    """Expand a plain turn matching a skill's trigger phrase into that skill's invocation message."""
+    from agent.skill_commands import build_skill_invocation_message, find_triggered_skill_command
+    from cli import _DIM, _RST, _cprint
+    matched = find_triggered_skill_command(message)
+    if not matched:
+        return message
+    cmd_key, skill_info, trigger = matched
+    expanded = build_skill_invocation_message(
+        cmd_key, user_instruction=message, task_id=session_id,
+        runtime_note=f'Auto-activated from skill trigger "{trigger}".',
+    )
+    if not expanded:
+        return message
+    name = skill_info.get("name") or cmd_key.lstrip("/")
+    _cprint(f"  {_DIM}⚡ {t('cli.skills.loading_skill', name=name)} · \"{trigger}\"{_RST}")
+    return expanded
+
+
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
 
@@ -46,7 +78,8 @@ class CLIChatTurnMixin:
             return
         GatewayRunner._apply_fallback_chain_to_agent(agent, self._fallback_model)
 
-    def chat(self, message, images: list | None = None, voice_input: bool = False) -> Optional[str]:
+    def chat(self, message, images: list | None = None, voice_input: bool = False,
+             *, system_authored: bool = False) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
 
         Input typed while the agent runs goes to ``_interrupt_queue`` (separate from
@@ -56,7 +89,9 @@ class CLIChatTurnMixin:
 
         Args: message: The user's message (str or multimodal content list) images: Optional list of Path
         objects for attached images voice_input: True when the message came from voice transcription (gates
-        the concise voice-response prefix, #65827)
+        the concise voice-response prefix, #65827) system_authored: True when the turn was not written by the
+        person (background notification, recovery nudge, goal-judge prompt); such a turn never loads a skill
+        by trigger.
         """
         from cli import ChatConsole, _ChatTurn, _DIM, _RST, _accent_hex, _cprint, set_secret_capture_callback
         from tools.process_registry_notifications import TimelineNotification
@@ -97,6 +132,7 @@ class CLIChatTurnMixin:
             message = _sanitize_surrogates(message)
 
         self._chat_stage_user_message(agent, message)
+        allow_skill_triggers = _turn_allows_skill_triggers(message, images, system_authored=system_authored)
         if isinstance(message, TimelineNotification):
             message = str(message)  # UI metadata is on the staged row, never in model content.
 
@@ -107,6 +143,7 @@ class CLIChatTurnMixin:
         from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
         with notification_policy_snapshot(agent, "cli", notification_config_snapshot()):
             turn = _ChatTurn()
+            turn.skill_triggers = allow_skill_triggers
             from gateway.warning_notifications import diagnostic_turn_muted
             turn.mute_notification_reply = diagnostic_turn_muted(
                 agent._pending_cli_user_message.get("display_metadata"), "cli", agent._notification_config)
@@ -312,7 +349,9 @@ class CLIChatTurnMixin:
         except Exception:
             reset_current_session_key = None  # type: ignore[assignment]
             _approval_session_token = None
-        agent_message = turn.voice_prefix + message if turn.voice_prefix else message
+        agent_message = (_resolve_skill_trigger_message(message, self.session_id)
+                         if getattr(turn, "skill_triggers", True) else message)
+        agent_message = turn.voice_prefix + agent_message if turn.voice_prefix else agent_message
         self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
         # multimodal content-part lists (string concat raised TypeError with an image).

@@ -92,7 +92,7 @@ def test_forged_kid_does_not_help_when_key_is_trusted_under_another_kid():
 
 
 def test_unsigned_card_refused_only_when_required():
-    priv, jwk, _ = _keypair()
+    _priv, jwk, _ = _keypair()
     assert cs.verify_card_signatures(CARD, {"k": jwk}, require=False)[0] is True
     ok, reason = cs.verify_card_signatures(CARD, {"k": jwk}, require=True)
     assert not ok and "no signatures" in reason
@@ -115,7 +115,7 @@ def test_symmetric_and_none_algs_are_never_accepted():
 
 
 def test_malformed_signature_entries_are_refused():
-    priv, jwk, _ = _keypair()
+    _priv, jwk, _ = _keypair()
     for bad in ([{"protected": "!!", "signature": "!!"}], ["notadict"], [{}]):
         card = {**CARD, "signatures": bad}
         assert cs.verify_card_signatures(card, {"signer-1": jwk}, require=False)[0] is False

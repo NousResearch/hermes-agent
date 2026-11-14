@@ -146,9 +146,13 @@ def strip_rejected_thinking(message: Any, rejected: set[str] | None) -> int:
 
     # Once a signed carrier is rejected, do not let its canonical readable mirror
     # re-enter native conversion as unsigned reasoning after context replacement.
+    # The stored mirror is masked at build time (redact_reasoning_fields); the signed carrier is not.
     if removed and mirror is not None:
+        from agent.redact import redact_sensitive_text
+
+        mirrors = (mirror, redact_sensitive_text(mirror))
         for key in ("reasoning", "reasoning_content"):
-            if message.get(key) == mirror:
+            if message.get(key) in mirrors:
                 message.pop(key, None)
     return removed
 

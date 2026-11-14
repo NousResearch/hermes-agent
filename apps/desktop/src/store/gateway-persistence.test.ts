@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 const released: string[] = []
 const keepRoute = vi.fn((connectionId: string, _profile: string) => () => released.push(connectionId))
@@ -24,6 +25,7 @@ vi.mock('@/store/gateway-kept-routes', () => ({ keepRoute }))
 const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 const { $primaryGatewayRoute } = await import('@/store/gateway-primary-route')
 const { startPersistentGateways } = await import('./gateway-persistence')
+const { installBrowserDesktopBridge } = await import('@/lib/browser-desktop-bridge')
 
 const registry = (ids: string[]): DesktopConnectionsRegistry => ({
   connections: ids.map(id => ({
@@ -63,6 +65,9 @@ afterEach(() => {
   stop()
   vi.useRealTimers()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  clearWebappSession()
+  delete document.documentElement.dataset.hermesDesktopHost
+  vi.unstubAllGlobals()
 })
 
 it('keeps every registered gateway the primary socket does not serve connected, and lets a removed one go', () => {
@@ -99,6 +104,20 @@ it('with a remote primary, keeps This device only where Hermes is installed (nev
   stop()
   openGatewayForAgent.mockClear()
   installProbe(false)
+  stop = startPersistentGateways()
+  await vi.advanceTimersByTimeAsync(0)
+
+  expect(openGatewayForAgent.mock.calls).toEqual([
+    ['vps', 'default'],
+    ['local', 'default']
+  ])
+})
+
+it('in the browser-hosted Webapp, keeps the serving gateway as This device beside a remote primary', async () => {
+  seedWebappSession('served-token')
+  vi.stubGlobal('fetch', vi.fn())
+  expect(installBrowserDesktopBridge()).toBe(true)
+  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
   stop = startPersistentGateways()
   await vi.advanceTimersByTimeAsync(0)
 

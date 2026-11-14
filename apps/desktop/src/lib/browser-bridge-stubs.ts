@@ -82,6 +82,8 @@ export const BROWSER_BRIDGE_STUBS = {
     reachable: false,
     version: null
   }),
+  // This device is the gateway serving this page, so its Hermes is installed and running.
+  probeLocalBackend: async () => ({ bootstrapNeeded: false }),
   revealLogs: async () => ({
     error: 'Native log reveal is unavailable in browser-hosted Desktop',
     ok: false,

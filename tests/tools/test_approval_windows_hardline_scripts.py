@@ -1,5 +1,7 @@
 """Windows hardline rules inside PowerShell -Command scripts and around attached redirects (#87419)."""
 
+import time
+
 import pytest
 
 from tools.approval import detect_dangerous_command, detect_hardline_command
@@ -244,3 +246,25 @@ def test_drive_root_as_a_later_list_element_is_hardline(cmd):
 def test_later_list_element_below_the_root_stays_approvable(cmd):
     assert not detect_hardline_command(cmd)[0], cmd
     assert detect_dangerous_command(cmd)[0], cmd
+
+
+@pytest.mark.parametrize("command", [
+    "Get-Date" + "\r" * 8000 + "; x",
+    "Get-Date" + " \r" * 4000 + "; x",
+    "Get-Date" + "\rri -r" * 2000 + "; x",
+    "Get-Date" + "\rpwsh -a" * 1500 + "; x",
+], ids=["cr", "space-cr", "cr-delete-verb", "cr-launcher"])
+def test_bare_cr_runs_scan_in_linear_time(command):
+    # A bare CR starts a PowerShell statement; a run of them must not make each CR rescan the rest of the run.
+    start = time.perf_counter()
+    assert not detect_hardline_command(command)[0]
+    assert time.perf_counter() - start < 2
+
+
+@pytest.mark.parametrize("cmd", [
+    "Get-Date\r  Clear-Disk -Number 1",
+    "Get-Date\r \r\tStop-Computer",
+    "x\r pwsh -NoProfile -c \"Format-Volume -DriveLetter D\"",
+])
+def test_command_after_a_cr_run_with_blanks_is_hardline(cmd):
+    assert detect_hardline_command(cmd)[0], cmd

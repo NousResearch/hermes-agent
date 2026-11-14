@@ -16,7 +16,7 @@ _PS_RECURSE_HL = r'-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b'
 # Vetoes the drive-root rules when THIS PowerShell delete carries a literal -Include that narrows it (`*.tmp`):
 # not after cmd `/s` or GNU `--` (a file name there), not inside quotes/comments, not `*`/`*.*`/a list/`$x`,
 # and never past a `)` that closes rm's own `$(...)`/subshell (`echo $(rm -rf C:/) -Include x` is echo's flag).
-_PS_INCLUDE_NARROWS = r'(?!(?!(?:[^\n;&|]*\s)?(?:/s\b|--(?:\s|$)))(?:[^\n;&|#"\'`)]|"[^"\n]*"|\'[^\'\n]*\')*\s-inc[a-z]*(?::|\s+)["\']?(?=[^\s,;&|"\'$`(){}@]*[^\s,;&|"\'$`(){}@*?.])[^\s,;&|"\'$`(){}@]+["\']?(?!\s*,)(?:[\s;&|)]|$))'
+_PS_INCLUDE_NARROWS = r'(?!(?!(?:[^\r\n;&|]*\s)?(?:/s\b|--(?:\s|$)))(?:[^\r\n;&|#"\'`)]|"[^"\n]*"|\'[^\'\n]*\')*\s-inc[a-z]*(?::|\s+)["\']?(?=[^\s,;&|"\'$`(){}@]*[^\s,;&|"\'$`(){}@*?.])[^\s,;&|"\'$`(){}@]+["\']?(?!\s*,)(?:[\s;&|)]|$))'
 # A cmdlet name ends its token: `Stop-Computer.ps1` / `Clear-Disk-Report` name other commands.
 _CMDLET_END = r'(?![\w.\\/-])'
 # A bare `-WhatIf` of the same invocation only previews; a quote/variable/splat/subexpression/comment before it, a
@@ -55,8 +55,8 @@ def _win_cmdpos(cmdpos: str) -> str:
     # take one bare value: `-ExecutionPolicy Bypass`) and an opening quote around the script.
     # `-File` is not skipped: its operand is a script path (`pwsh -File Stop-Computer.ps1`), not code.
     # PowerShell's tokenizer also reads a bare CR as a statement break (bash does not, so only here).
-    return (r'(?:\r\s*|' + cmdpos + r')(?:(?:[^\s;&|"\'`]*[\\/])?(?:powershell|pwsh|cmd)(?:\.exe)?'
-            r'(?:\s+(?:-(?!f(?:i(?:le?)?)?(?:[\s:]|$))|/)[^\s"\']+(?:\s+\w+(?=\s+[-/"\']))?)*\s+["\']?)?')
+    return (r'(?:\r[^\S\r]*|' + cmdpos + r')(?:(?:[^\s;&|"\'`]*[\\/])?(?:powershell|pwsh|cmd)(?:\.exe)?'
+            r'(?:[^\S\r\n]+(?:-(?!f(?:i(?:le?)?)?(?:[\s:]|$))|/)[^\s"\']+(?:[^\S\r\n]+\w+(?=[^\S\r\n]+[-/"\']))?)*[^\S\r\n]+["\']?)?')
 
 
 def windows_hardline_patterns(cmdpos: str) -> list[tuple[str, str]]:
@@ -72,7 +72,7 @@ def windows_hardline_patterns(cmdpos: str) -> list[tuple[str, str]]:
         (win_cmdpos + r'clear-disk' + _CMDLET_END + _PS_NOT_WHATIF, "wipe disk (Clear-Disk)"),
         # Recursive delete of a drive ROOT (`C:\`, `C:\*`, `C:/*.*`; a PowerShell/cmd `,` starts or ends it, as does a glued `>nul`). `C:\build`, `C:` (the drive's cwd)
         # and a literal PowerShell `-Include *.tmp` (only matching items; `*`, a list, `"*$x"`, cmd `/s`, after `--`/`#` still wipe) fall through.
-        (win_cmdpos + r'(?:remove-item|ri|rm|rd|rmdir|del|erase)\b(?=[^\n;&|]*\s(?:/s\b|' + _PS_RECURSE_HL + r'))' + _PS_INCLUDE_NARROWS +
-         r'[^\n;&|]*[\s,](?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&"\'<>,]))', "recursive delete of drive root"),
+        (win_cmdpos + r'(?:remove-item|ri|rm|rd|rmdir|del|erase)\b(?=[^\r\n;&|]*\s(?:/s\b|' + _PS_RECURSE_HL + r'))' + _PS_INCLUDE_NARROWS +
+         r'[^\r\n;&|]*[\s,](?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&"\'<>,]))', "recursive delete of drive root"),
         (cmdpos + r'rm\s+' + _PS_INCLUDE_NARROWS + r'(?:-[^\s]*\s+)*(?:' + _HARDLINE_DRIVE_QUOTED + '|' + _HARDLINE_DRIVE_ROOT + r'(?:\s|$|[)`;|&<>]))', "recursive delete of drive root"),
     ]

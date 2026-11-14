@@ -19,6 +19,7 @@ from urllib.parse import unquote_plus
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
 from agent.redact_control_split import mask_control_split_tokens
+from agent.redact_discord import _redact_discord_tokens
 from agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
@@ -26,6 +27,7 @@ from agent.redact_headers import (
 )
 from agent.redact_pattern_shape import _pattern_structure
 from agent.redact_spaced_cfg import redact_spaced_cfg_assignments
+from agent.redact_zhipu import _ZHIPU_API_KEY_RE
 
 logger = logging.getLogger(__name__)
 
@@ -955,16 +957,6 @@ def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
         return m.group(0)
     return mask(token)
 
-# Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
-# provider-shaped instead of applying a generic high-entropy dotted-token rule:
-# the ID is exactly 32 lowercase hex chars and the credential suffix is a run of
-# at least 16 alphanumerics, so content-hash filenames (``<sha>.bundle``,
-# ``<md5>.sqlite3``) never match.
-_ZHIPU_API_KEY_RE = re.compile(
-    r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
-)
-
-
 # mask_secret strips EVERY control char (incl. \n/\t, C1, DEL, zero-width) so a
 # masked secret never emits multiline or invisible bytes into display output.
 _DISPLAY_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f\x80-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2064]")
@@ -1629,8 +1621,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _PREFIX_SUB_RE.sub(lambda m: _mask_prefix_match(m, _prefix_sub), text)
 
     if "." in text:
-        _zhipu_sub = _mask_token_nonreusable if file_read else _mask_token
-        text = _ZHIPU_API_KEY_RE.sub(lambda m: _zhipu_sub(m.group(1)), text)
+        _mask = _mask_token_nonreusable if file_read else _mask_token
+        text = _ZHIPU_API_KEY_RE.sub(lambda m: _mask(m.group(1)), text)
+        text = _redact_discord_tokens(text, _mask)
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)

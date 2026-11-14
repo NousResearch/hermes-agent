@@ -74,8 +74,8 @@ class TelegramVaultCodeMixin:
         return replies
 
     def _retired_vault_code_cards(self) -> dict:
-        """Cards that ended, ``(chat_id, card message_id) -> True`` in retirement order: a late reply to one
-        is still a code and must never become chat text."""
+        """Cards that ended, ``(chat_id, card message_id) -> author user_id`` in retirement order: the author's
+        late reply to one is still a code and must never become chat text."""
         retired = getattr(self, "_vault_code_retired_state", None)
         if retired is None:
             retired = self._vault_code_retired_state = {}
@@ -121,7 +121,7 @@ class TelegramVaultCodeMixin:
         if reply is not None:
             _DropPendingCodeUpdates.pending = max(0, _DropPendingCodeUpdates.pending - 1)
             retired = self._retired_vault_code_cards()
-            retired[key] = True
+            retired[key] = reply.user_id
             while len(retired) > _RETIRED_MAX:
                 retired.pop(next(iter(retired)))
         return reply
@@ -142,7 +142,10 @@ class TelegramVaultCodeMixin:
             logger.debug("[%s] vault code card edit failed", getattr(self, "name", "Telegram"), exc_info=True)
 
     def _match_vault_code_card(self, msg) -> tuple[Optional[tuple], bool]:
-        """``(live card key or None, is a reply to an ended card)`` for an inbound text."""
+        """``(live card key or None, is the author's reply to an ended card)`` for an inbound text.
+
+        One rule: only the card's author can answer it. A reply aimed at a known card (live or ended) counts
+        only from that author; any other private-chat text from the author answers their newest live card."""
         chat_id = str(getattr(msg, "chat_id", "") or "")
         user_id = str(getattr(getattr(msg, "from_user", None), "id", "") or "")
         replied_to = getattr(getattr(msg, "reply_to_message", None), "message_id", None)
@@ -150,10 +153,10 @@ class TelegramVaultCodeMixin:
         if replied_to is not None:
             key = (chat_id, str(replied_to))
             reply = self._vault_code_replies().get(key)
-            if reply is not None:
-                return (key if reply.user_id == user_id and now < reply.expires_at else None), reply.user_id == user_id
-            return None, key in self._retired_vault_code_cards()
-        # A private chat has no one else to answer: the author's next text answers their newest live card.
+            if reply is not None and reply.user_id == user_id:
+                return (key if now < reply.expires_at else None), now >= reply.expires_at
+            if self._retired_vault_code_cards().get(key) == user_id:
+                return None, True
         if str(getattr(getattr(msg, "chat", None), "type", "")) != "private":
             return None, False
         live = [k for k, r in self._vault_code_replies().items()
@@ -177,7 +180,7 @@ class TelegramVaultCodeMixin:
             await self._mark_vault_code_card(reply, "submitted" if accepted else "ended")
         notice_card = reply or _CodeReply(submit=lambda _c: False, user_id="", chat_id=chat_id,
                                           prompt_message_id=str(msg.reply_to_message.message_id), prompt_text="",
-                                          expires_at=0.0)
+                                          expires_at=0.0)  # an ended-card reply always carries reply_to_message
         if not deleted:
             await self._vault_code_notice(notice_card, "platform.telegram.vault_code.delete_failed")
         if not accepted:

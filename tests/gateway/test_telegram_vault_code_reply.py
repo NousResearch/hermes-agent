@@ -164,3 +164,22 @@ def test_each_card_has_its_own_timer_and_an_old_timer_never_ends_a_newer_card(lo
     assert asyncio.run_coroutine_threadsafe(
         adapter.consume_vault_code_reply(_update(CODE, reply_to=701).message), loop).result(5) is True
     assert got == [CODE]
+
+
+def test_only_the_card_author_is_captured_whatever_their_reply_points_at(loop):
+    """Private chat: the author's code sent as a reply to some other message still answers the live card.
+    Group: another member's reply to an ended card is their own message and is left alone."""
+    adapter = _adapter()
+    got = []
+
+    async def post():
+        await adapter.send_vault_code_prompt(str(CHAT), "a.example", "", user_id=str(AUTHOR),
+                                             submit=lambda c: got.append(c) is None, timeout_s=30)
+    asyncio.run_coroutine_threadsafe(post(), loop).result(5)
+    consume = adapter.consume_vault_code_reply
+    assert asyncio.run_coroutine_threadsafe(consume(_update(CODE, reply_to=555).message), loop).result(5) is True
+    assert got == [CODE]
+    # The card has ended now; another member's reply to it is ordinary chat, never deleted.
+    other = _update("what is this?", user=OTHER, chat_type="group", reply_to=700, message_id=902).message
+    assert asyncio.run_coroutine_threadsafe(consume(other), loop).result(5) is False
+    assert adapter._bot.delete_message.await_count == 1

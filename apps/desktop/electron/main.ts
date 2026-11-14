@@ -98,8 +98,7 @@ import {
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure,
   shouldLatchSshAuthFailure,
-  shouldLatchSshClientFailure,
-  sshClientFailedError
+  shouldLatchSshClientFailure
 } from './backend-start-failure'
 import { describeBootstrapFailure } from './bootstrap-failure-copy'
 import {
@@ -580,6 +579,7 @@ import { registerSpellcheckDictionaryIpc } from './spellcheck-dictionary-ipc'
 import { resolveSshBinary } from './ssh-binary'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
+import { SshConfigProbe } from './ssh-config-probe'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { managedSshConfig, resolveSharedSshProfileBackend, sharedSshProfiles } from './ssh-shared-profile-backend'
@@ -6209,6 +6209,9 @@ function registerPowerResumeListeners() {
     powerMonitor.on('resume', sendPowerResume)
     powerMonitor.on('suspend', () => keepAwake.noteSuspend(powerMonitor.getSystemIdleTime()))
     powerMonitor.on('resume', () => keepAwake.noteResume())
+    // A fresh wake starts a fresh `ssh -G` timeout run: one bad night must not
+    // carry into the morning and latch the boot as a broken ssh client.
+    powerMonitor.on('resume', () => sshConfigProbe.reset())
     powerMonitor.on('unlock-screen', sendPowerResume)
     powerMonitor.on('on-battery', () => broadcastBatteryState(true))
     powerMonitor.on('on-ac', () => broadcastBatteryState(false))
@@ -9377,6 +9380,9 @@ function desktopSshBinary(): string {
   })
 }
 
+const SSH_CONFIG_PROBE_TIMEOUT_MS = 10_000
+const sshConfigProbe = new SshConfigProbe()
+
 async function effectiveSshConfigFingerprint(sshConfig) {
   const ssh = desktopSshBinary()
 
@@ -9391,17 +9397,15 @@ async function effectiveSshConfigFingerprint(sshConfig) {
   }
 
   args.push('--', sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host)
-  let output: string
 
-  try {
-    output = await execText(ssh, args, { timeout: 10_000 })
-  } catch (error) {
-    // `ssh -G` only parses local config, so a failure here is the local client
-    // itself (missing, broken, or a bad ssh_config) and retrying cannot fix
-    // it. Tag it terminal so boot lands on the failure overlay instead of
-    // re-driving the same probe every ~2s (#103288).
-    throw sshClientFailedError(ssh, error)
-  }
+  // `ssh -G` only parses local config, so a real failure here is the local
+  // client itself (missing, broken, or a bad ssh_config) and retrying cannot
+  // fix it: SshConfigProbe tags that terminal so boot lands on the failure
+  // overlay instead of re-driving the same probe every ~2s (#103288). A probe
+  // killed by its own timeout (the Mac slept mid-boot) is retried instead.
+  const output = await sshConfigProbe.run(ssh, SSH_CONFIG_PROBE_TIMEOUT_MS, () =>
+    execText(ssh, args, { timeout: SSH_CONFIG_PROBE_TIMEOUT_MS })
+  )
 
   return crypto.createHash('sha256').update(output).digest('hex')
 }

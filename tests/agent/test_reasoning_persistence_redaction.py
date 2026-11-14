@@ -7,6 +7,9 @@ signed and opaque replay material stays byte-exact and redaction-off is a no-op.
 
 import sqlite3
 
+import pytest
+
+from agent.anthropic_thinking_replay import strip_rejected_thinking
 from agent.chat_completion_helpers import build_assistant_message
 from hermes_state import SessionDB
 
@@ -102,3 +105,18 @@ def test_redaction_off_keeps_reasoning_verbatim(tmp_path, monkeypatch):
     assert stored["reasoning"] == _THOUGHT
     assert stored["reasoning_content"] == _THOUGHT
     assert stored["reasoning_details"][0]["summary"] == _THOUGHT
+
+
+@pytest.mark.parametrize("row", ["masked-row", "pre-redaction-row", "redaction-off-since"])
+def test_rejected_signed_thinking_drops_its_masked_mirror(monkeypatch, row):
+    """A rejected signed block's readable mirror is dropped whether it was stored masked or raw."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True, raising=False)
+    signed = {"type": "thinking", "thinking": _THOUGHT, "signature": "sig-anthropic"}
+    msg = build_assistant_message(_Agent(), _Msg(reasoning=_THOUGHT, reasoning_details=[signed]), "stop")
+    if row == "pre-redaction-row":
+        msg["reasoning"] = msg["reasoning_content"] = _THOUGHT
+    elif row == "redaction-off-since":
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False, raising=False)
+    assert strip_rejected_thinking(msg, None) == 1
+    assert "reasoning" not in msg
+    assert "reasoning_content" not in msg

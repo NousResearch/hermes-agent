@@ -149,4 +149,6 @@ def test_safe_mode_session_freezes_the_managed_backend(tmp_path, managed):
 def test_bypass_scope_without_managed_terminal_is_the_code_default(managed):
     _write_managed(managed, "terminal:\n  backend:\n")
 
-    assert default_terminal_scope()["TERMINAL_ENV"] == "local"
+    scope = default_terminal_scope()
+    assert scope["TERMINAL_ENV"] == "local"
+    assert scope.get("TERMINAL_DOCKER_IMAGE_PINNED", "0") == "0"  # no managed docker_image, no pin

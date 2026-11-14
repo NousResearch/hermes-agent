@@ -80,11 +80,12 @@ describe('composer text entry on a touch host (#145166)', () => {
     expect(editor.ownerDocument.activeElement).toBe(editor)
   })
 
-  it('desktop keeps the attributes off and leaves taps to the browser', () => {
+  it('desktop checks spelling with casing and substitution off, and leaves taps to the browser', () => {
     const editor = render(<Editor touch={false} />).getByTestId('editor')
 
     expect(editor.getAttribute('autocapitalize')).toBe('off')
-    expect(editor.getAttribute('spellcheck')).toBe('false')
+    expect(editor.getAttribute('autocorrect')).toBe('off')
+    expect(editor.getAttribute('spellcheck')).toBe('true')
 
     tap(editor, [10, 10])
     expect(editor.ownerDocument.activeElement).not.toBe(editor)

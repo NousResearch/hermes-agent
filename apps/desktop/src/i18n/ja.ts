@@ -2543,6 +2543,8 @@ export const jaOverrides = {
     stop: '停止',
     dismiss: '閉じる',
     exit: code => `終了コード ${code}`,
+    quietFor: duration => `${duration} 出力なし`,
+    runningFor: duration => `稼働 ${duration}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `ターン ${turn}/${maxTurns}`,
       goalDoneTurns: turns => `${turns} ターン`,

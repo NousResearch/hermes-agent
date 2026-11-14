@@ -30020,6 +30020,18 @@
             "default": null,
             "title": "Uptime Seconds"
           },
+          "idle_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idle Seconds"
+          },
           "status": {
             "default": "running",
             "title": "Status",

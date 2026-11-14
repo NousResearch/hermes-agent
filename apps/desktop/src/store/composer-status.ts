@@ -39,6 +39,11 @@ export interface ComposerStatusItem {
   id: string
   /** background process: captured stdout/stderr tail for the inline viewer. */
   output?: string
+  /** running background process: whole minutes since it last printed. Whole
+   *  minutes so a per-poll snapshot leaves an unchanged row's identity alone. */
+  quietMinutes?: number
+  /** running background process: whole minutes since it was spawned. */
+  runtimeMinutes?: number
   /** subagent: its own stored session id — row click opens that session window
    *  (livestreamed by the gateway's child-session mirror). */
   sessionId?: string
@@ -312,10 +317,15 @@ const writeBackground = (sid: string, items: ComposerStatusItem[], snapshotAt: n
 interface GatewayProcessEntry {
   command?: string
   exit_code?: number
+  idle_seconds?: number
   output_tail?: string
   session_id?: string
   status?: string
+  uptime_seconds?: number
 }
+
+const wholeMinutes = (seconds: number | undefined) =>
+  typeof seconds === 'number' && seconds >= 0 ? Math.floor(seconds / 60) : undefined
 
 const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
   const exited = proc.status === 'exited'
@@ -325,6 +335,8 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
     exitCode,
     id: proc.session_id ?? '',
     output: proc.output_tail || undefined,
+    quietMinutes: exited ? undefined : wholeMinutes(proc.idle_seconds),
+    runtimeMinutes: exited ? undefined : wholeMinutes(proc.uptime_seconds),
     state: exited ? (exitCode ? 'failed' : 'done') : 'running',
     title: (proc.command ?? '').split('\n')[0]!.trim() || 'background process',
     type: 'background'
@@ -332,7 +344,12 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
 }
 
 const sameItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
-  a.state === b.state && a.title === b.title && a.output === b.output && a.exitCode === b.exitCode
+  a.state === b.state &&
+  a.title === b.title &&
+  a.output === b.output &&
+  a.exitCode === b.exitCode &&
+  a.quietMinutes === b.quietMinutes &&
+  a.runtimeMinutes === b.runtimeMinutes
 
 /**
  * Layout-stable sync of the registry snapshot into the store: existing rows

@@ -4030,6 +4030,8 @@ export const frOverrides = {
     stop: 'Arrêter',
     dismiss: 'Rejeter',
     exit: code => `sortie ${code}`,
+    quietFor: duration => `aucune sortie depuis ${duration}`,
+    runningFor: duration => `actif depuis ${duration}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `Tour ${turn}/${maxTurns}`,
       goalDoneTurns: turns => `${turns} tour${turns === 1 ? '' : 's'}`,

@@ -3472,6 +3472,8 @@ export const zhOverrides = {
     stop: '停止',
     dismiss: '关闭',
     exit: code => `退出码 ${code}`,
+    quietFor: duration => `${duration} 无输出`,
+    runningFor: duration => `已运行 ${duration}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `第 ${turn}/${maxTurns} 轮`,
       goalDoneTurns: turns => `共 ${turns} 轮`,

@@ -319,13 +319,16 @@ def _configured_engine():
     """The engine the probes below run: the managed server's own when one is up or booting, else
     the installed engine for ``local_runtime.backend``."""
     from hermes_cli.config import load_config_readonly
-    from hermes_cli.local_runtime.binaries import installed_engine
+    from hermes_cli.local_runtime.binaries import configured_engine, installed_engine
     from hermes_cli.local_runtime.bootstrap import serving_engine
 
     engine = serving_engine()
     if engine is not None:
         return engine
     section = load_config_readonly().get("local_runtime") or {}
+    configured = configured_engine(section.get("binary"))
+    if configured is not None:
+        return configured
     return installed_engine(section.get("backend") or "auto")
 
 

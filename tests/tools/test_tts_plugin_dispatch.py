@@ -28,6 +28,8 @@ helpers.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Optional
 
 import pytest
@@ -175,6 +177,37 @@ class TestPluginDispatch:
             tts_config={},
         )
         assert result is None
+
+    def test_unknown_provider_fallback_reports_edge(self, tmp_path, monkeypatch):
+        """Legacy fallback remains available, but its response names Edge.
+
+        Before this regression, the unknown configured name fell through to
+        Edge synthesis while the success payload incorrectly claimed that the
+        unknown provider generated the audio.
+        """
+        monkeypatch.setattr(
+            tts_tool,
+            "_load_tts_config",
+            lambda: {"provider": "missing-provider"},
+        )
+        monkeypatch.setattr(
+            tts_tool,
+            "_dispatch_to_plugin_provider",
+            lambda *args: None,
+        )
+        monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: object())
+
+        async def fake_edge(text, output_path, tts_config):
+            Path(output_path).write_bytes(b"fake edge audio")
+
+        monkeypatch.setattr(tts_tool, "_generate_edge_tts", fake_edge)
+        result = json.loads(
+            tts_tool.text_to_speech_tool("hello", output_path=str(tmp_path / "out.mp3"))
+        )
+
+        assert result["success"] is True
+        assert result["provider"] == "edge"
+        assert result["fallback_from"] == "missing-provider"
 
 
     def test_provider_exception_bubbles_up(self):

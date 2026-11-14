@@ -23,9 +23,10 @@ from persistence.core.errors import HandoffUnsettled
 from persistence.authority.coordination import (
     COMPLETION_DELIVERIES, DELEGATION_CLAIM_STALE_SECONDS, DELEGATION_FAILURE_WINDOW_SECONDS,
     DELEGATION_MAX_DELIVERY_ATTEMPTS, DELEGATION_MAX_DURABLE_PENDING, DELEGATION_MAX_RETAINED_TERMINAL,
-    DELEGATION_ORPHAN_STALE_SECONDS, DELEGATION_REPLAY_MAX_AGE_SECONDS, DELEGATION_RETENTION_SECONDS, TURN_LEASE_SWEEP_GRACE_SECONDS, DelegationRecord,
-    DelegationRecovery, DeliveryState, FinishedDelegationRow, HandoffState, HandoffStatus, InflightDelegation,
-    OrphanCompletion, OwnerStamp, PendingCompletion, PendingHandoff, RecordedOwner,
+    DELEGATION_ORPHAN_STALE_SECONDS, DELEGATION_REPLAY_MAX_AGE_SECONDS, DELEGATION_RETENTION_SECONDS,
+    TURN_LEASE_SWEEP_GRACE_SECONDS, DelegationRecord, DelegationRecovery, DeliveryState, FinishedDelegationRow,
+    HandoffState, HandoffStatus, InflightDelegation, OrphanCompletion, OwnerStamp, PendingCompletion, PendingHandoff,
+    RecordedOwner,
 )
 from persistence.authority.subagents import SubagentLimits, SubagentRecovery
 
@@ -34,7 +35,7 @@ from ..conversation._store.compression import _session_turn_lease_key_on_conn
 from ..conversation._store.core import _compression_lock_holder_process_is_dead
 from ..conversation._store.write_guards import _guarded_ids, _write_guards_reject
 from ..gateway._delivery_ledger import LEDGER_PATIENCE_S, DeliveryObligationVerbs
-from .subagents import SubagentLedgerVerbs, recover_subagents
+from .subagents import KEEP_WAITING_UNITS_SQL, SubagentLedgerVerbs, recover_subagents
 
 __all__ = ["SQLiteCoordinationRepository"]
 
@@ -442,17 +443,20 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             self._ledger_write(_do)
 
     def prune_delegation_ledger(self) -> None:
-        """Bound terminal history, preferring delivered records for deletion."""
+        """Bound terminal history, preferring delivered records for deletion. A unit a waiting child reports on is
+        kept out of the retention and the terminal cap (``KEEP_WAITING_UNITS_SQL``), not the pending cap."""
         cutoff = time.time() - DELEGATION_RETENTION_SECONDS
+        keep = KEEP_WAITING_UNITS_SQL
         def _do(conn):
             conn.execute(
-                "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?", (cutoff,))
+                "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?" + keep, (cutoff,))
             terminal_count = conn.execute(
-                "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')").fetchone()[0]
+                "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')" + keep
+            ).fetchone()[0]
             if terminal_count > DELEGATION_MAX_RETAINED_TERMINAL:
-                conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
+                conn.execute(f"""DELETE FROM async_delegations WHERE delegation_id IN (
                          SELECT delegation_id FROM async_delegations
-                         WHERE state NOT IN ('running','finalizing')
+                         WHERE state NOT IN ('running','finalizing'){keep}
                          ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
                                   updated_at ASC LIMIT ?
                        )""", (terminal_count - DELEGATION_MAX_RETAINED_TERMINAL,))

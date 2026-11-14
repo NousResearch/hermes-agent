@@ -32,7 +32,7 @@ from persistence.authority.subagents import (
 from .._backend import translated
 from ..conversation._store.compression import _CHAIN_STEP_SQL, _walk_compression_chain
 
-__all__ = ["SubagentLedgerVerbs", "recover_subagents"]
+__all__ = ["KEEP_WAITING_UNITS_SQL", "SubagentLedgerVerbs", "recover_subagents"]
 
 T = TypeVar("T")
 
@@ -49,6 +49,11 @@ _CANCEL_STATES = (SubagentState.SUPERSEDED, SubagentState.STOPPED)
 OWED_SQL = "json_extract(record_json, '$.auto_promised') AND json_extract(record_json, '$.auto_gave_up') IS NULL"
 # The one marker of a debt the parent cleared: ``auto_promised`` false, set in the same write as the cancel.
 CANCEL_DEBT = "'$.auto_promised', json('false')"
+# The ledger prune keeps the unit row a waiting child reports on: a silent unit is 'delivered', the first kind the
+# count cap deletes, and the child's give-up failure is routed through that row.
+KEEP_WAITING_UNITS_SQL = (
+    " AND delegation_id NOT IN (SELECT json_extract(record_json, '$.unit_id') FROM resumable_subagents WHERE "
+    f"state IN ('resumable','expired') AND {OWED_SQL} AND json_extract(record_json, '$.unit_id') IS NOT NULL)")
 
 
 def _record(row) -> SubagentRecord:

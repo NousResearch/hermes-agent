@@ -173,3 +173,53 @@ async def test_busy_follow_up_goal_notice_keeps_its_bubble_cleanup_without_adapt
     assert adapter.deleted == ["102"]
     assert notices == ["goal reached"]
     assert KEY not in adapter._post_delivery_callbacks
+
+
+@pytest.mark.asyncio
+async def test_busy_follow_up_loop_notice_keeps_its_bubble_cleanup_without_adapter_guard(monkeypatch):
+    """A /loop tick's verdict notice from a queued authority turn keeps the same generation, so
+    the chained slot still runs both the notice and the bubble cleanup."""
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.session_ingress import _run_own_post_delivery
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = CleanupAdapter()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    event = _event("tick")
+    event._hermes_run_generation = 7
+    notices = []
+
+    async def session(*_args, **_kwargs):
+        return SimpleNamespace(session_id="loop-test")
+
+    async def manager(_entry, label, *_a, **_kw):
+        if label != "loop completion":
+            return None
+        return SimpleNamespace(state=SimpleNamespace(awaiting_response=True),
+                               complete_tick=lambda _text: {"message": "loop done"})
+
+    async def executor(fn, *args):
+        return fn(*args)
+
+    async def notice(_source, message):
+        notices.append(message)
+
+    monkeypatch.setattr(runner.async_session_store, "get_or_create_session", session)
+    monkeypatch.setattr(runner, "_post_turn_manager", manager)
+    monkeypatch.setattr(runner, "_run_in_executor_with_context", executor)
+    monkeypatch.setattr(runner, "_send_goal_status_notice", notice)
+    monkeypatch.setattr(runner, "_session_key_for_source", lambda _source: KEY)
+    monkeypatch.setattr(runner, "_goal_notice_adapter", lambda _source: adapter)
+
+    _register_cleanup(adapter, 7, ["103"])
+    assert not adapter._active_sessions
+    await runner._run_post_turn_hooks(
+        agent_result={"final_response": "done"}, source=event.source,
+        is_internal=False, event=event,
+    )
+    assert notices == []
+    await _run_own_post_delivery(adapter, KEY, event)
+    assert adapter.deleted == ["103"]
+    assert notices == ["loop done"]
+    assert KEY not in adapter._post_delivery_callbacks

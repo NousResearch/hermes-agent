@@ -87,6 +87,23 @@ QUEUED_PROMPT_METADATA_KEY = "_queued_prompt"
 _MERGE_DISPLAY_META = "json_patch(CASE WHEN json_valid(display_metadata) THEN display_metadata ELSE '{}' END, COALESCE(?, '{}'))"
 
 
+def rewrite_user_row(db, conn, session_id: str, row_id: int, content: Any,
+                     display_metadata: Any = None) -> tuple[int, str | None]:
+    """``SessionDB.set_user_message_content``'s UPDATE on *conn* (the worker op runs the same one): rows changed,
+    and the row's new CAS digest (``DB_ROW_SNAPSHOT``) so the dict that asked for the write can own the result."""
+    from agent.transcript_repair import transcript_row_snapshot
+
+    params: tuple[Any, ...] = (db._encode_content(content), row_id, session_id)
+    assignments = "content = ?"
+    if display_metadata is not None:
+        assignments += f", api_content = NULL, display_metadata = {_MERGE_DISPLAY_META}"
+        params = (params[0], db._encode_display_metadata(display_metadata), *params[1:])
+    if not conn.execute(f"UPDATE messages SET {assignments} WHERE id = ? AND session_id = ? AND role = 'user' "
+                        "AND active = 1", params).rowcount:
+        return 0, None
+    return 1, transcript_row_snapshot(conn.execute("SELECT * FROM messages WHERE id = ?", (row_id,)).fetchone())
+
+
 def _sql_json_extract(expression: str, path: str) -> str:
     """Build a non-throwing JSON marker lookup for a JSON TEXT column."""
 

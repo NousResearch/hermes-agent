@@ -109,6 +109,27 @@ class TestBranchCommandCLI:
         messages = session_db.get_messages_as_conversation(cli_instance.session_id)
         assert len(messages) == 4  # All 4 messages copied
 
+    def test_an_image_result_is_copied_as_the_flush_text(self, cli_instance, session_db):
+        """The branch stores what the per-tool flush stores (#148146): the vision result's row holds the text
+        projection, never the base64, while the live history keeps the image."""
+        from agent.session_persistence import _durable_content
+        from cli import HermesCLI
+
+        image = [{"type": "text", "text": "Image loaded into your context."},
+                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo"}}]
+        cli_instance.conversation_history = [
+            {"role": "user", "content": "what is on this label?"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "vision_analyze", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "tool_name": "vision_analyze", "content": image},
+            {"role": "assistant", "content": "The label says 42."},
+        ]
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        messages = session_db.get_messages_as_conversation(cli_instance.session_id)
+        assert [m["content"] for m in messages if m["role"] == "tool"] == [_durable_content(image)]
+        assert cli_instance.conversation_history[2]["content"] == image
 
 
     def test_branch_with_custom_name(self, cli_instance, session_db):

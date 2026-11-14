@@ -8,16 +8,19 @@ def compress_in_transaction(db, conn, session_id, payload, prepared):
     policy = snapshot['receipt']['policy']
     target = snapshot['target']
     from hermes_state_worker_compression import archive_on_connection, publish_on_connection
+    from agent.session_persistence import durable_row
+    # Rows as the agent's own writers store them: a row an older build stored with image parts is copied as text.
+    messages = [durable_row(m) for m in prepared['messages']]
     # No worker/turn/compactor can be active: validate_prepared checks those
     # obligations on this exact connection. No separate legacy transaction runs.
     if prepared['in_place']:
         child = target
-        archive_on_connection(db, conn, target, prepared['messages'])
+        archive_on_connection(db, conn, target, messages)
         affected = {session_id, target}
     else:
         child = uuid.uuid4().hex
         publish_on_connection(db, conn, parent_session_id=target, child_session_id=child,
-            source=policy['source'], model=policy['model'], messages=prepared['messages'],
+            source=policy['source'], model=policy['model'], messages=messages,
             model_config={'_compressed_from': target}, cwd=policy['cwd'], require_compression_lease=False)
         affected = set()  # Rotation publication already advances the logical revision.
     conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (session_id,))

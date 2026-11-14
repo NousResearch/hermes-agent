@@ -416,6 +416,7 @@ class MicroCompactionMixin:
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
         if not session_db or not session_id:
             return True
+        from agent.session_persistence import durable_row, durable_rows
         from hermes_state_errors import HeldRowRewrittenError
         try:
             # Micro-compaction is prefix + marker + suffix, not a contiguous tail. Identify the exact
@@ -433,10 +434,13 @@ class MicroCompactionMixin:
                 watermark = _cc()._archive_watermark_for(session_db, session_id, held, start_watermark)
                 from agent.conversation_compression_archive import coverage_for_commit
                 covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, held)
-            session_db.archive_and_compact(
-                session_id, compacted_messages, carried_messages=carried_messages, watermark=watermark,
-                covered_ids=covered_ids, unresolved_held=unresolved_held,
-                held_for_cas=held)
+            # The originals were stored as the flush's text rows, so the copies are too; the live dicts
+            # keep their parts.
+            with durable_rows(compacted_messages) as rows:
+                session_db.archive_and_compact(
+                    session_id, rows, carried_messages=[durable_row(m) for m in carried_messages],
+                    watermark=watermark, covered_ids=covered_ids, unresolved_held=unresolved_held,
+                    held_for_cas=held)
             # Shared post-commit stamp site with batch commit and proactive prune.
             # See #98450.
             _cc().stamp_db_persisted_markers(compacted_messages)

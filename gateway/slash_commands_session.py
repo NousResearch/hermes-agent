@@ -37,7 +37,7 @@ _RESET_CLEANUP_TIMEOUT_S = 30.0
 # be either scope, so ownership proofs require both the DM and the non-DM reading to hold.
 _DM_CHAT_TYPES = {"dm", "direct", "private"}
 
-_BRANCH_COPIED_FIELDS = ("content", "tool_calls", "tool_call_id", "finish_reason", "reasoning",
+_BRANCH_COPIED_FIELDS = ("tool_calls", "tool_call_id", "finish_reason", "reasoning",
                          "reasoning_content", "reasoning_details", "codex_reasoning_items",
                          "codex_message_items", "timestamp", "data_use")
 
@@ -129,9 +129,13 @@ def _reset_process_scoped_tool_state() -> None:
 
 def _branch_row(msg: dict) -> dict:
     """/branch child row; keeps the api_content sidecar so the branch's first turn replays the
-    parent's exact wire bytes (warm provider prompt cache) instead of a cold prefill."""
+    parent's exact wire bytes (warm provider prompt cache) instead of a cold prefill. The content is
+    the flush's text, so a row an older build stored with image parts is copied without the base64."""
+    from agent.session_persistence import _durable_content
+
     row = {k: msg.get(k) for k in _BRANCH_COPIED_FIELDS}
     row["role"] = msg.get("role", "user")
+    row["content"] = _durable_content(msg.get("content"))
     row["tool_name"] = msg.get("tool_name") or msg.get("name")
     row["api_content"] = extract_api_content_sidecar(msg)
     return row
@@ -657,9 +661,12 @@ class GatewaySessionCommandsMixin:
                                       expected_active_ids=plan.expected_active_ids,
                                       expected_target_content=plan.expected_target_content)
         else:
-            def write(conn):
-                db.replace_messages_in_transaction(conn, session_id, [dict(m) for m in truncated], active_only=True,
-                                                   reject_active_turn_lease=True, expected_active_ids=pinned)
+            from agent.session_persistence import durable_row
+
+            def write(conn):  # a kept row an older build stored with image parts is written back as text
+                db.replace_messages_in_transaction(conn, session_id, [dict(durable_row(m)) for m in truncated],
+                                                   active_only=True, reject_active_turn_lease=True,
+                                                   expected_active_ids=pinned)
 
         def committed():
             self.session_store._clear_dirty_transcript(session_id)

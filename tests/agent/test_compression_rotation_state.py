@@ -32,6 +32,7 @@ from agent.conversation_compression import (
     _is_real_user_message,
 )
 from agent.message_metadata import DB_ROW_SNAPSHOT
+from agent.session_persistence import _durable_content
 from hermes_state import SessionDB
 import itertools
 
@@ -898,14 +899,14 @@ class TestRotationChildFlushDedup:
             )
             == 0
         )
-        # Exactly one merged row with the concatenated parts list.
+        # Exactly one merged row, stored as the flush stores the concatenated parts list.
         assert (
             _count_rows(
                 child_rows,
-                content=[
+                content=_durable_content([
                     {"type": "text", "text": "live question"},
                     {"type": "text", "text": "scaffolding"},
-                ],
+                ]),
             )
             == 1
         )
@@ -1363,11 +1364,9 @@ class TestTodoSnapshotMergedNotDuplicated:
         db_msgs = db.get_messages(agent.session_id)
         persisted_tail = db_msgs[-1]
         assert persisted_tail["role"] == "user"
-        assert persisted_tail["content"][: len(original_parts)] == original_parts
-        assert any(
-            isinstance(part, dict) and "inspect image" in (part.get("text") or "")
-            for part in persisted_tail["content"]
-        )
+        # Stored as the flush stores the merged parts: text, the image a [screenshot] line.
+        assert persisted_tail["content"] == _durable_content(tail["content"])
+        assert "inspect image" in persisted_tail["content"]
         assert not any(
             previous.get("role") == current.get("role") == "user"
             for previous, current in itertools.pairwise(db_msgs)

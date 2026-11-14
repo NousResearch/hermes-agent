@@ -503,7 +503,7 @@ class TapsManager(_JsonStateFile):
         """Add a tap. Returns False if already exists."""
         def append(data: dict) -> bool:
             taps = data.setdefault("taps", [])
-            if any(t["repo"] == repo for t in taps):
+            if any(isinstance(t, dict) and t.get("repo") == repo for t in taps):
                 return False
             taps.append({"repo": repo, "path": path})
             return True
@@ -514,7 +514,7 @@ class TapsManager(_JsonStateFile):
         """Remove a tap by repo name. Returns False if not found."""
         def drop(data: dict) -> bool:
             taps = data.get("taps", [])
-            kept = [t for t in taps if t["repo"] != repo]
+            kept = [t for t in taps if not (isinstance(t, dict) and t.get("repo") == repo)]
             data["taps"] = kept
             return len(kept) != len(taps)
 

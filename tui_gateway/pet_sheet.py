@@ -17,7 +17,7 @@ def _pet_sheet_revision(spritesheet) -> str:
 def _clone_pet_payload(payload: dict) -> dict:
     """Shallow-clone cached payloads so callers can't mutate shared state."""
     out = dict(payload)
-    for key, kind in (("framesByState", dict), ("framesByRow", dict), ("stateRows", list)):
+    for key, kind in (("framesByState", dict), ("framesByRow", dict), ("stateRows", list), ("behaviors", dict)):
         if isinstance(payload.get(key), kind):
             out[key] = kind(payload[key])
     return out
@@ -33,7 +33,8 @@ def _pet_row_frame_counts(spritesheet) -> dict:
         W, H = constants.FRAME_W, constants.FRAME_H
         cols = max(1, image.width // W)
         row_count = max(1, image.height // H)
-        rows = constants.state_rows_for_grid(row_count)
+        from agent.pet.behaviors import pet_spec
+        rows = pet_spec(spritesheet, row_count).rows
         out: dict[str, int] = {}
         for row_idx, name in enumerate(rows[:row_count]):
             top = row_idx * H
@@ -50,5 +51,12 @@ def _pet_state_rows(spritesheet) -> list[str]:
         from PIL import Image
         with Image.open(spritesheet) as image:
             row_count = max(1, image.height // constants.FRAME_H)
-        return list(constants.state_rows_for_grid(row_count))
+        from agent.pet.behaviors import pet_spec
+        return list(pet_spec(spritesheet, row_count).rows)
     return list(constants.STATE_ROWS)
+
+
+def _pet_behaviors(spritesheet) -> dict:
+    """``pet.json`` behaviors for the renderer (state → row overrides, sleep delay); ``{}`` when none."""
+    from agent.pet.behaviors import pet_spec
+    return pet_spec(spritesheet).payload()

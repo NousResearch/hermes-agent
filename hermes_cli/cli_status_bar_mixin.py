@@ -758,11 +758,27 @@ class CLIStatusBarMixin:
             or self._sudo_state
             or self._secret_state
             or getattr(self, "_slash_confirm_state", None))
+        running = getattr(self, "_agent_running", False)
         return derive_pet_state(
             awaiting_input=awaiting_input,
-            busy=getattr(self, "_agent_running", False),
+            busy=running,
             reasoning=self._pet_reasoning,
+            sleepy=self._pet_sleepy(running or awaiting_input),
         ).value
+
+    def _pet_sleepy(self, active: bool) -> bool:
+        """At rest longer than the pet's ``pet.json`` ``sleep.afterSeconds`` (never for pets without one)."""
+        now = time.monotonic()
+        if active or getattr(self, "_pet_last_active", None) is None:
+            self._pet_last_active = now
+            return False
+        renderer = self._pet_renderer
+        if renderer is None:
+            return False
+        from agent.pet.behaviors import pet_spec  # never raises
+
+        after = pet_spec(renderer.spritesheet).sleep_after
+        return bool(after) and now - self._pet_last_active > after
 
     def _pet_frames_for(self, state: str) -> list:
         """Return (and cache) the half-block grids for one state."""

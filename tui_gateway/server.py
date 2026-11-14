@@ -33,7 +33,7 @@ from hermes_cli.config_backend import Changes, ConfigBackendUnavailable, config_
 from hermes_cli.env_loader import load_hermes_dotenv
 # The slash-worker client (slash_worker_client.py) runs on these globals; tests patch them here.
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
-from tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
+from tui_gateway.pet_sheet import _clone_pet_payload, _pet_behaviors, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
 from utils import is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
@@ -1710,6 +1710,7 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
         "framesByState": frames_by_state,
         "framesByRow": _pet_row_frame_counts(pet.spritesheet), "loopMs": constants.LOOP_MS,
         "scale": scale, "stateRows": _pet_state_rows(pet.spritesheet),
+        "behaviors": _pet_behaviors(pet.spritesheet),
     }
     if cache_key is not None:
         with _pet_payload_cache_lock:

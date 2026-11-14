@@ -22,8 +22,8 @@ the agent's behavior** — the sprite is a display concern only. The feature is
   own set.
 - Selecting a pet writes `display.pet.slug` and `display.pet.enabled` to
   `config.yaml` — nothing is stored as a secret or env var.
-- Each surface watches the activity it already tracks and maps it to one of six
-  animation states. The mapping lives in one place so every surface behaves the
+- Each surface watches the activity it already tracks and maps it to an
+  animation state. The mapping lives in one place so every surface behaves the
   same:
 
   | Agent activity | Pet state |
@@ -36,6 +36,7 @@ the agent's behavior** — the sprite is a display concern only. The feature is
   | Turn in flight (unspecified) | `run` |
   | Blocked on you (a clarify/approval prompt is open) | `waiting` (falls back to `idle` on legacy 8-row sheets) |
   | Nothing happening | `idle` |
+  | Nothing happening for a while (only pets that [opt in](#custom-rows-and-behaviors-petjson)) | `sleep` |
 
 ## Rendering
 
@@ -82,7 +83,7 @@ hermes pets doctor
 `hermes pets show` flags:
 
 - `--state` — play a single state (`idle`, `wave`, `run`, `failed`, `review`,
-  `jump`).
+  `jump`, or `sleep` for pets that opt in).
 - `--cycle` — cycle through every state.
 - `--once` — play once instead of looping.
 - `--mode` — override the render protocol (`kitty`, `iterm`, `sixel`,
@@ -208,6 +209,34 @@ display:
   terminal rendering while keeping the pet on the desktop.
 - **`unicode_cols`** pins the terminal column width independently of `scale`;
   leave it at `0` to derive width from `scale`.
+
+## Custom rows and behaviors (`pet.json`)
+
+A pet can ship extra rows and choose which states use them. Both fields are
+optional; without them a pet renders exactly as before.
+
+```json
+{
+  "stateRows": ["idle", "running-right", "running-left", "waving", "jumping",
+                "failed", "waiting", "running", "review",
+                "sleeping", "crying", "thinking", "dancing"],
+  "behaviors": {
+    "failed": { "row": "crying" },
+    "run":    { "rows": ["thinking", "dancing"] },
+    "sleep":  { "row": "sleeping", "afterSeconds": 300 }
+  }
+}
+```
+
+- **`stateRows`** names every row, top to bottom. If it doesn't fit the sheet,
+  Hermes infers the rows from the sheet height as usual.
+- **`behaviors`** maps a state to one row, or to a list (`rows`) the desktop
+  cycles through every few loops; terminals show the first. Unknown rows are
+  ignored.
+- **`sleep`** is opt-in: the pet dozes off after `afterSeconds` at rest
+  (10 s–24 h) and wakes on any activity.
+- Roaming always uses the `running-left` / `running-right` rows, so a pet whose
+  `run` points at stationary rows only runs while it moves.
 
 ## Troubleshooting
 

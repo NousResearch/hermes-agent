@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 
-import { setPetActivity } from '@/store/pet'
+import { $petActivity, $petInfo, setPetActivity } from '@/store/pet'
 import { setPetScale } from '@/store/pet-gallery'
 import { setPetOverlayOpenAppHandler, setPetOverlayScaleHandler, setPetOverlaySubmitHandler } from '@/store/pet-overlay'
 import { $sessions } from '@/store/session'
@@ -90,5 +90,47 @@ export function usePetBridge({ requestGateway, resumeSession, submitText }: PetB
     syncPetBusyFromSessions()
 
     return $workingSessionIds.listen(syncPetBusyFromSessions)
+  }, [])
+
+  // Opt-in nap: pets whose pet.json declares `behaviors.sleep` doze off after
+  // `sleepAfterSeconds` at rest. Any real activity change (busy / waiting /
+  // tool / beats) re-arms the timer and wakes the pet; `sleepy` itself is left
+  // out of the change key so setting it can't re-arm the timer.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let lastKey = ''
+
+    const arm = () => {
+      clearTimeout(timer)
+
+      if ($petActivity.get().sleepy) {
+        setPetActivity({ sleepy: false })
+      }
+
+      const after = $petInfo.get().behaviors?.sleepAfterSeconds
+
+      if (after && after > 0) {
+        timer = setTimeout(() => setPetActivity({ sleepy: true }), after * 1000)
+      }
+    }
+
+    const onActivity = () => {
+      const { sleepy: _sleepy, ...rest } = $petActivity.get()
+      const key = JSON.stringify(rest)
+
+      if (key !== lastKey) {
+        lastKey = key
+        arm()
+      }
+    }
+
+    arm()
+
+    const offs = [$petActivity.listen(onActivity), $petInfo.listen(arm)]
+
+    return () => {
+      clearTimeout(timer)
+      offs.forEach(off => off())
+    }
   }, [])
 }

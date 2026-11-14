@@ -52,6 +52,9 @@ function useDevicePixelRatio(): number {
   return ratio
 }
 
+/** A state mapped to several rows (pet.json `behaviors.<state>.rows`) holds each for this many loops, in order. */
+export const ROW_ROTATION_LOOPS = 4
+
 // Mirrors agent.pet.constants.CODEX_STATE_ROWS (Petdex current taxonomy).
 export const DEFAULT_STATE_ROWS = [
   'idle',
@@ -72,7 +75,9 @@ const STATE_ALIASES: Record<PetState, string[]> = {
   run: ['run', 'running'],
   failed: ['failed'],
   review: ['review'],
-  waiting: ['waiting']
+  waiting: ['waiting'],
+  // Opt-in (pet.json `behaviors.sleep`); without it the idle row shows.
+  sleep: ['sleep', 'idle']
 }
 
 const ROW_TO_STATE: Record<string, PetState> = {
@@ -99,6 +104,14 @@ const ROW_TO_STATE: Record<string, PetState> = {
  * travel is mirrored. Returns no `row` in that fallback case so the caller lets
  * `$petState` resolve it (and applies `mirror`).
  */
+/**
+ * Row for a roam hop: the sheet's own jump row, so a pet.json remap of the
+ * celebrate `jump` state (e.g. to a smile) never fires mid-wander.
+ */
+export function roamHopRow(motion: string | null, stateRows?: string[]): string | undefined {
+  return motion === 'jump' ? (stateRows ?? DEFAULT_STATE_ROWS).find(r => r === 'jumping' || r === 'jump') : undefined
+}
+
 export function roamWalkRow(dir: -1 | 0 | 1, stateRows?: string[]): { row?: string; mirror: boolean } {
   if (dir === 0) {
     return { mirror: false }
@@ -186,6 +199,7 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
   const loopMs = info.loopMs ?? DEFAULT_LOOP_MS
   const scale = (info.scale ?? DEFAULT_SCALE) * zoom
   const rows = info.stateRows ?? DEFAULT_STATE_ROWS
+  const rowOverrides = info.behaviors?.rows
   const pixelRatio = useDevicePixelRatio()
 
   const drawW = Math.round(frameW * scale)
@@ -293,6 +307,15 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
       kickAnimation()
     }
 
+    // pet.json `behaviors` can point a state at one of the pet's own rows, or at several it cycles through.
+    const overrideRow = (s: PetState, now: number): string | undefined => {
+      const raw = rowOverrides?.[s]
+      const names = (Array.isArray(raw) ? raw : raw ? [raw] : []).filter(name => rows.includes(name))
+
+      // Wall-clock slots, so remounts and every surface stay in step.
+      return names.length ? names[Math.floor((Date.now() || now) / (loopMs * ROW_ROTATION_LOOPS)) % names.length] : undefined
+    }
+
     const rowIndexForState = (s: PetState): number => {
       for (const key of STATE_ALIASES[s] ?? [s]) {
         const idx = rows.indexOf(key)
@@ -308,7 +331,13 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
     // Resolve a state to the row it draws and its real frame count. A state
     // with no real frames (ragged sheet, empty row) falls back to idle rather
     // than flashing blank padding.
-    const resolve = (s: PetState): { row: number; count: number } => {
+    const resolve = (s: PetState, now: number): { row: number; count: number } => {
+      const override = overrideRow(s, now)
+
+      if (override) {
+        return resolveRow(override)
+      }
+
       const real = framesByState?.[s] ?? frames
 
       if (real > 0) {
@@ -338,7 +367,7 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
       }
 
       const forcedRow = rowOverrideRef.current
-      const { row, count } = forcedRow ? resolveRow(forcedRow) : resolve(overrideRef.current ?? stateRef.current)
+      const { row, count } = forcedRow ? resolveRow(forcedRow) : resolve(overrideRef.current ?? stateRef.current, now)
 
       if (row !== activeRow || count !== activeCount) {
         activeRow = row
@@ -400,7 +429,7 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
       pauseController?.dispose()
       unsubState()
     }
-  }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, backingW, backingH, rows, pauseWhenUnfocused])
+  }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, backingW, backingH, rows, rowOverrides, pauseWhenUnfocused])
 
   return (
     <canvas

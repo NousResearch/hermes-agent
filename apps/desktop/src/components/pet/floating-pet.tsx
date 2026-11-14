@@ -11,6 +11,7 @@ import { $changeEventsAvailable, $petChange } from '@/store/live-sync'
 import {
   $petAtRest,
   $petInfo,
+  $petMotion,
   $petRoam,
   $petRoamDir,
   clearPetUnread,
@@ -28,7 +29,7 @@ import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { PET_STARTUP_RETRY_MS, petInfoPollIntervalMs } from './pet-info-poll'
-import { PetSprite, roamWalkRow } from './pet-sprite'
+import { PetSprite, roamHopRow, roamWalkRow } from './pet-sprite'
 import { usePetRoam } from './use-pet-roam'
 import { type PetZoomAnchor, usePetZoomGesture } from './use-pet-zoom-gesture'
 
@@ -111,6 +112,7 @@ export function FloatingPet() {
   const roamEnabled = useStore($petRoam)
   const atRest = useStore($petAtRest)
   const roamDir = useStore($petRoamDir)
+  const roamMotion = useStore($petMotion)
   const routeOverlayOpen = useRouteOverlayActive()
 
   const [position, setPosition] = useState<Point>(loadPosition)
@@ -457,6 +459,7 @@ export function FloatingPet() {
   // While roaming, drive the directional run row + mirror from the travel
   // direction; at rest, fall back to the inward-facing static mascot.
   const walk = roamWalkRow(roamDir, info.stateRows)
+  const hopRow = roamHopRow(roamMotion, info.stateRows)
 
   // While popped out, the desktop overlay window owns the mascot — hide the
   // in-window one so there aren't two.
@@ -504,7 +507,7 @@ export function FloatingPet() {
           zIndex: 1
         }}
       >
-        <PetSprite info={info} rowOverride={walk.row} />
+        <PetSprite info={info} rowOverride={walk.row ?? hopRow} />
       </div>
       {/* Hearts puff off the pet; its celebrate ("yay"/jump) pose is driven by
           burstVibeHearts's router. */}

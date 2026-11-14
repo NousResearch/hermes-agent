@@ -13,7 +13,18 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
  * `agent/pet/state.py` so the Python and TS surfaces never drift.
  */
 
-export type PetState = 'idle' | 'wave' | 'run' | 'failed' | 'review' | 'jump' | 'waiting'
+export type PetState = 'idle' | 'wave' | 'run' | 'failed' | 'review' | 'jump' | 'waiting' | 'sleep'
+
+/**
+ * Optional per-pet behaviors from the pet's `pet.json` (mirrors
+ * `agent.pet.behaviors.PetSpec.payload`): state → row override (one row, or a
+ * list the canvas rotates through), and the opt-in `sleep` delay. Absent for
+ * pets that declare none.
+ */
+export interface PetBehaviors {
+  rows?: Partial<Record<PetState, string | string[]>>
+  sleepAfterSeconds?: number
+}
 
 export interface PetInfo {
   enabled: boolean
@@ -37,6 +48,7 @@ export interface PetInfo {
   loopMs?: number
   scale?: number
   stateRows?: string[]
+  behaviors?: PetBehaviors
 }
 
 export interface PetInfoMeta {
@@ -94,6 +106,8 @@ export interface PetActivity {
   error?: boolean
   justCompleted?: boolean
   celebrate?: boolean
+  /** At rest past the pet's declared sleep delay (only pets whose pet.json opts in). */
+  sleepy?: boolean
 }
 
 /**
@@ -101,7 +115,7 @@ export interface PetActivity {
  *
  * Priority (highest first) mirrors `agent.pet.state.derive_pet_state`:
  * error → celebrate → justCompleted → awaitingInput → toolRunning → reasoning →
- * busy → idle. `awaitingInput` (a clarify/approval blocking on the user) outranks
+ * busy → sleepy → idle. `awaitingInput` (a clarify/approval blocking on the user) outranks
  * the in-flight signals because the turn is paused on you, not working.
  */
 export function derivePetState(activity: PetActivity): PetState {
@@ -133,7 +147,7 @@ export function derivePetState(activity: PetActivity): PetState {
     return 'run'
   }
 
-  return 'idle'
+  return activity.sleepy ? 'sleep' : 'idle'
 }
 
 export const $petInfo = atom<PetInfo>({ enabled: false })
@@ -205,7 +219,8 @@ function deriveLivePetState(activity: PetActivity, busy: boolean): PetState {
     reasoning: live && activity.reasoning,
     error: activity.error,
     justCompleted: activity.justCompleted,
-    celebrate: activity.celebrate
+    celebrate: activity.celebrate,
+    sleepy: activity.sleepy
   })
 }
 
@@ -246,9 +261,12 @@ export const $petRoamDir = atom<-1 | 0 | 1>(0)
 // session-view.tsx explains why the global `$busy` mirror can't be trusted:
 // #84434 / #84438). The pop-out overlay push reads the same atom so both
 // surfaces derive the pose from one signal.
+/** Idle or napping: the agent isn't doing anything, so the roam wander may show. */
+const isRestingPose = (state: PetState) => state === 'idle' || state === 'sleep'
+
 export const $petAtRest = computed(
   [$petActivity, PRIMARY_SESSION_VIEW.$busy],
-  (activity, busy): boolean => deriveLivePetState(activity, busy) === 'idle'
+  (activity, busy): boolean => isRestingPose(deriveLivePetState(activity, busy))
 )
 
 /**
@@ -261,6 +279,6 @@ export const $petState = computed(
   (activity, busy, motion): PetState => {
     const base = deriveLivePetState(activity, busy)
 
-    return base === 'idle' && motion ? motion : base
+    return isRestingPose(base) && motion ? motion : base
   }
 )

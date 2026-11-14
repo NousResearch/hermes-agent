@@ -17,7 +17,8 @@ from functools import lru_cache
 from itertools import takewhile
 from pathlib import Path
 
-from agent.pet.constants import DEFAULT_SCALE, FRAME_H, FRAME_W, FRAMES_PER_STATE, PetState, state_row_index
+from agent.pet.behaviors import pet_spec
+from agent.pet.constants import DEFAULT_SCALE, FRAME_H, FRAME_W, FRAMES_PER_STATE, PetState
 from agent.terminal_image import (
     CELL_H,
     CELL_W,
@@ -70,7 +71,8 @@ def _raw_frames(sheet_path: str, state_value: str, frame_w: int, frame_h: int, f
         sheet = Image.open(Path(sheet_path)).convert("RGBA")
         cols, rows = max(1, sheet.width // frame_w), max(1, sheet.height // frame_h)
         # Clamp to the sheet: some pets ship fewer rows than the taxonomy reserves.
-        top = min(state_row_index(state_value, rows) * frame_h, max(0, sheet.height - frame_h))
+        # pet.json may name extra rows / remap states (agent.pet.behaviors); default = inferred taxonomy.
+        top = min(pet_spec(sheet_path, rows).row_index(state_value) * frame_h, max(0, sheet.height - frame_h))
         crops = (sheet.crop((i * frame_w, top, (i + 1) * frame_w, top + frame_h)) for i in range(min(frames_per_state, cols)))
         return tuple(takewhile(lambda f: not _frame_is_blank(f), crops))
     except Exception as exc:

@@ -273,9 +273,9 @@ def run_sign_in(
     *replace_account* lets a signed-in install sign in again (the desktop's "connect another
     account"); without it a signed-in install yields ``AlreadySignedIn`` before any network.
     *persist_guard* lets a surface make its own cancel check and the save atomic under its own lock.
-    *scope* is entered only around the two non-network blocks (precondition, persist/settle), never
-    across a ``yield``: ``run_in_executor`` does not carry contextvars, so the scope has to be
-    entered inside the generator, on whichever thread is advancing it.
+    *scope* is entered around the precondition, the account state and the persist/settle, never
+    across a ``yield`` or the token wait: ``run_in_executor`` does not carry contextvars, so the
+    scope has to be entered inside the generator, on whichever thread is advancing it.
     *client_factory* is the HTTP client seam, ``client_factory(timeout_seconds, verify)``.
     """
     from hermes_cli import anon_auth as _core
@@ -324,9 +324,10 @@ def run_sign_in(
                 client=client, portal_base_url=portal, client_id=client_id,
                 device_code=str(device["device_code"]), expires_in=max(1, int(deadline - time.monotonic())),
                 poll_interval=interval, cancelled=is_cancelled)
-        account_state = _core._account_state_from_token(
-            token_data, portal_base_url=portal, client_id=client_id, scope=scope_str,
-            verify=verify, timeout_seconds=timeout_seconds)
+        with open_scope():  # the inference URL allowlist reads the profile's NOUS_INFERENCE_BASE_URL
+            account_state = _core._account_state_from_token(
+                token_data, portal_base_url=portal, client_id=client_id, scope=scope_str,
+                verify=verify, timeout_seconds=timeout_seconds)
     except DeviceFlowCancelled:
         yield Cancelled()
         return

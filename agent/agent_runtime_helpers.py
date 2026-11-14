@@ -2350,6 +2350,9 @@ def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None
     agent._fallback_index = 0
+    from agent.chat_completion_helpers import _FALLBACK_IDENTITY_RE
+    if isinstance(getattr(agent, "_cached_system_prompt", None), str):
+        agent._cached_system_prompt = _FALLBACK_IDENTITY_RE.sub("", agent._cached_system_prompt)
     agent._credential_pool_revert_id = None
     # On a deliberate provider swap, prune fallback entries targeting the OLD or NEW primary;
     # otherwise a failed turn silently re-activates the provider the user just rejected.

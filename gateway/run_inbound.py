@@ -793,7 +793,6 @@ class GatewayInboundMixin(
         self, event: MessageEvent, source: SessionSource, running_agent: Any, _quick_key: str
     ) -> None:
         """Interrupt path: redirect text-only corrections when supported, else ``agent.interrupt()``."""
-        from gateway.run import _build_media_placeholder
         # Text-only corrections redirect the live turn (preserving displayed context) when the
         # runtime supports it; media/voice and older runtimes use the interrupt path below.
         _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True
@@ -802,17 +801,11 @@ class GatewayInboundMixin(
                 logger.debug("PRIORITY redirect for session %s", _quick_key)
                 return
         logger.debug("PRIORITY interrupt for session %s", _quick_key)
-        _interrupt_text = event.text
         if self._pending_event_audio_paths(event):
-            _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
-                event, self._delivery_adapter_for(source), source, event.text or "",
-                log_context="Voice-priority-interrupt",
-            )
-        elif not _interrupt_text and getattr(event, "media_urls", None):
-            _interrupt_text = _build_media_placeholder(event)
-        # Delivered via adapter._pending_messages (read by _run_agent); never also buffered on self
-        # — that copy was never consumed and grew unbounded.
-        running_agent.interrupt(_interrupt_text)
+            # Queued like the demoted interrupt below: the follow-up turn transcribes it, so the
+            # interrupt never waits for STT (#143961).
+            self._queue_or_replace_pending_event(_quick_key, event)
+        running_agent.interrupt(self._busy_interrupt_text(event))
 
     def _clarify_takeover(self, event: MessageEvent, _quick_key: str) -> bool:
         """True while the turn whose clarify this message cancelled still owns the session."""

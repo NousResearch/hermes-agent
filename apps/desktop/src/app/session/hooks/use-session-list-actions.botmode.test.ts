@@ -32,6 +32,7 @@ import {
   $messagingSessions,
   $sessions,
   ownerLookupSessionRows,
+  setConnection,
   setMessagingSessions,
 } from '@/store/session'
 
@@ -58,6 +59,7 @@ beforeEach(() => {
   $messagingSessions.set([])
   $workspaceMode.set('sessions')
   $workspaceNewSessionTarget.set(null)
+  setConnection({ mode: 'local' } as never)
 })
 
 describe('botModeFetchScope', () => {
@@ -97,6 +99,8 @@ describe('botModeFetchScope', () => {
       kind: 'route',
       route: { connectionId: 'remote-a', mode: 'remote', profile: 'moxie', targetProfile: 'default' },
     } as never)
+    // The window is on the bot's source: its list reads land where the bot lives.
+    setConnection({ connectionId: 'remote-a', mode: 'remote' } as never)
 
     // Fetch routes through the alias override; rows carry the backend stamp.
     expect(botModeFetchScope('default')).toEqual({ displayProfile: 'default', fetchProfile: 'moxie' })

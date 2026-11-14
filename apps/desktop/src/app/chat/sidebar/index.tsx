@@ -517,7 +517,7 @@ export function ChatSidebar({
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
-  const [displayScope, messagingProfile] = useSidebarDisplayScope(profileScope)
+  const [displayScope, messagingProfile, searchScope] = useSidebarDisplayScope(profileScope)
   const agentOrderIds = useStore($sidebarSessionOrderIds)
   const agentOrderManual = useStore($sidebarSessionOrderManual)
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
@@ -741,7 +741,7 @@ export function ChatSidebar({
     [isPinnedSession, filtersNarrow, sessionMatchesFilters]
   )
 
-  const { searchPending, serverMatches } = useServerSessionSearch(trimmedQuery, profileScope)
+  const { searchPending, serverMatches } = useServerSessionSearch(trimmedQuery, searchScope)
 
   const searchResults = useMemo(
     () => mergeSearchResults(sortedSessions, trimmedQuery, serverMatches, sessionByAnyId, searchPending),

@@ -36,7 +36,9 @@ import {
   $connection,
   $currentCwd,
   $currentModelSource,
+  $messagingSessions,
   $selectedStoredSessionId,
+  $sessions,
   getSessionOwnerHint,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
@@ -225,10 +227,15 @@ function tileRowFingerprintKey(storedSessionId: string): string {
 }
 
 /** The session row backing a tile, if it is listed in the sidebar slices.
- *  Hidden bot chats have no row — they keep fetching every tick. Searches
- *  every slice: a telegram tile's row lives only in messaging (#126732). */
+ *  Hidden bot chats have no row — they keep fetching every tick. Listed
+ *  slices only, never ownerLookupSessionRows(): its owner-only stubs include
+ *  parked hidden rows no list page refreshes, so their fingerprint would
+ *  freeze the tile. */
 function tileListRow(storedSessionId: string) {
-  return ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedSessionId))
+  return (
+    $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
+    $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+  )
 }
 
 /**

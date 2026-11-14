@@ -96,6 +96,35 @@ export function botWorkspaceOwnerKey(bot: RosterRow) {
   return `bot:${route ? botRouteKey(route) : String(bot?.name || 'default')}`
 }
 
+function botWorkspaceTarget(
+  bot: null | RosterRow,
+  blockedMessage: string
+): { kind: 'blocked'; message: string } | { kind: 'route'; route: ProfileRoute } {
+  const resolved = bot ? resolveBotConnectionRoute(bot) : null
+
+  if (resolved?.route) {
+    return { kind: 'route', route: resolved.route }
+  }
+
+  const connectionId = resolved?.status === 'not_scoped' ? String(host.state.connectionId?.get?.() || '').trim() : ''
+
+  if (!bot || !connectionId) {
+    return { kind: 'blocked', message: blockedMessage }
+  }
+
+  const name = String(bot.name || '').trim() || 'default'
+
+  return {
+    kind: 'route',
+    route: {
+      connectionId,
+      mode: connectionId === 'local' ? 'local' : 'remote',
+      profile: name,
+      targetProfile: String(bot.targetProfile || name).trim() || name
+    }
+  }
+}
+
 export function setBotsWorkspaceOwner(
   ownerKey: string,
   bot: null | RosterRow = null,
@@ -103,42 +132,15 @@ export function setBotsWorkspaceOwner(
 ) {
   // Render-reachable (sidebar listener fires on visibility flips). An
   // orphaned row degrades to the blocked target instead of throwing.
-  // Local (non-source-scoped) bots have no captured route — resolve returns
-  // `not_scoped` — but they DO own a profile (their name) on the active
-  // connection. Publish that as a route so Bot Mode surfaces (sessions
-  // sidebar fetch, "+" target) resolve against the bot's own profile instead
-  // of the ambient gateway profile (#126732: a bot's Telegram DM-topic
-  // sessions live in its profile's state.db, invisible under the ambient
-  // scope). An owner_removed row (connection gone) stays blocked: there is
-  // no backend to fetch from.
-  let target: { kind: 'blocked'; message: string } | { kind: 'route'; route: ProfileRoute }
-
-  if (!bot) {
-    target = { kind: 'blocked', message: blockedMessage }
-  } else {
-    const resolved = resolveBotConnectionRoute(bot)
-
-    if (resolved.route) {
-      target = { kind: 'route', route: resolved.route }
-    } else if (resolved.status === 'not_scoped') {
-      const name = String(bot?.name || '').trim() || 'default'
-
-      const connectionId = String(
-        bot?.connectionId || bot?.route?.connectionId || 'local'
-      ).trim() || 'local'
-
-      const route: ProfileRoute = {
-        connectionId,
-        mode: connectionId === 'local' ? 'local' : 'remote',
-        profile: name,
-        targetProfile: String(bot?.targetProfile || bot?.route?.targetProfile || name).trim() || name,
-      }
-
-      target = { kind: 'route', route }
-    } else {
-      target = { kind: 'blocked', message: blockedMessage }
-    }
-  }
+  // A non-source-scoped bot (`not_scoped`) has no captured route, but it IS
+  // a profile on the window's ACTIVE source — the rich profiles.list rows come
+  // from that gateway. Publish that as a route so Bot Mode surfaces (sidebar
+  // fetch, "+" target) aim at the bot's own profile, where its Telegram
+  // threads live (#126732). The connection is the active source's, never a
+  // guessed `local`: on a remote window a `local` owner would start the "+"
+  // chat on this device. No known active source, or an owner_removed row,
+  // stays blocked.
+  const target = botWorkspaceTarget(bot, blockedMessage)
 
   host.setWorkspaceScope?.('bots', ownerKey, target)
 }

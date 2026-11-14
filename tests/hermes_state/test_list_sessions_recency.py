@@ -9,6 +9,7 @@ import time
 import pytest
 
 from hermes_state import SessionDB
+import hermes_state_runtime as rt
 
 
 @pytest.fixture
@@ -47,3 +48,66 @@ def test_chained_and_childless_sessions_share_one_recency_order(db):
     rows = db.list_sessions_rich(order_by_last_active=True)
 
     assert [s["id"] for s in rows] == ["tip", "fresh", "stale"]
+
+
+def test_compression_tip_list_uses_tip_mutation_fence(db):
+    """A listed tip id must carry the same durable counters the mutation fence checks."""
+    db.create_session("root", source="cli")
+    db.append_message(session_id="root", role="user", content="before compression")
+    db.end_session("root", "compression")
+    db.create_session("tip", source="cli", parent_session_id="root")
+    db.append_message(session_id="tip", role="user", content="after compression")
+    db._conn.execute(
+        "UPDATE sessions SET runtime_revision = 1, runtime_generation = 1 WHERE id = 'root'"
+    )
+    db._conn.execute(
+        "UPDATE sessions SET runtime_revision = 7, runtime_generation = 8 WHERE id = 'tip'"
+    )
+    db._conn.commit()
+
+    rows = db.list_sessions_rich(compact_rows=True)
+    assert len(rows) == 1
+    listed = rows[0]
+    tip = db.get_session("tip")
+    assert listed["id"] == "tip"
+    assert (listed["runtime_revision"], listed["runtime_generation"]) == (
+        tip["runtime_revision"], tip["runtime_generation"]
+    )
+
+    result = rt.mutate_runtime_session(
+        db, epoch=rt.begin_runtime_epoch(db, instance_id="owner"),
+        principal_id="human", session_id=listed["id"], request_id="rename-tip",
+        expected_revision=listed["runtime_revision"],
+        expected_generation=listed["runtime_generation"],
+        operation="sidebar", payload={"title": "Renamed after compression"},
+    )
+    assert result["revision"] == 8
+    assert db.get_session("tip")["title"] == "Renamed after compression"
+
+
+
+@pytest.mark.parametrize("compact_rows", [True, False])
+def test_every_projected_tip_row_names_one_rows_fence(db, compact_rows):
+    """Full rows (dashboard ``?full=1``) and the pinned back-fill go through the same projector:
+    whatever id a listed row carries, its counters are that row's own (#151582)."""
+    db.create_session("root", source="cli")
+    db.append_message(session_id="root", role="user", content="before compression")
+    db.end_session("root", "compression")
+    db.create_session("tip", source="cli", parent_session_id="root")
+    db.append_message(session_id="tip", role="user", content="after compression")
+    db.create_session("fresh", source="cli")
+    db.append_message(session_id="fresh", role="user", content="newer, unpinned")
+    for sid, started, rev, gen in (("root", 1000.0, 3, 2), ("tip", 1001.0, 9, 5), ("fresh", 5000.0, 4, 4)):
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, runtime_revision = ?, runtime_generation = ? WHERE id = ?",
+            (started, rev, gen, sid))
+    db._conn.commit()
+    db.set_session_pinned("root", True)
+
+    # limit=1 fills the page with "fresh"; the pinned lineage arrives only through the back-fill.
+    rows = db.list_sessions_rich(compact_rows=compact_rows, include_pinned=True, limit=1)
+    assert [r["id"] for r in rows] == ["fresh", "tip"]
+    for row in rows:
+        own = db.get_session(row["id"])
+        assert (row["runtime_revision"], row["runtime_generation"]) == (
+            own["runtime_revision"], own["runtime_generation"])

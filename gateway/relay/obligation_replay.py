@@ -8,7 +8,10 @@ from gateway.config import Platform
 logger = logging.getLogger("gateway.run")
 
 RELAY_NOT_CONNECTED = "relay transport not connected"
+# What the transport's own guards answer before writing a frame.
+RELAY_LOCAL_REFUSALS = frozenset({RELAY_NOT_CONNECTED, "relay transport closed"})
 SETTLE_RETRY_DELAYS = (0.05, 0.25, 1.0)
+RELAY_WROTE_NOTHING = "_relay_wrote_nothing"  # set on a claimed row by send_relay_obligation
 
 
 def relay_obligation_adapter(runner, platform, profile=None):
@@ -39,13 +42,18 @@ def relay_fronted_platforms(adapter):
     return platforms
 
 
-def relay_refused_before_sending(adapter, row, error) -> bool:
-    """The local transport returned this error before any frame went out, so the claim's
-    attempt bought nothing and is refunded. Any other failure may have reached the platform."""
+def relay_refused_before_sending(adapter, row, result) -> bool:
+    """The transport's own guard refused this send and wrote no frame while it ran, so the
+    claim's attempt bought nothing and is refunded. The words alone prove nothing: a connector
+    can answer with them after the frame arrived. A write that raised, a lost or ambiguous
+    acknowledgement, a remote rejection or a message id may all mean the reply was delivered."""
+    raw = getattr(result, "raw_response", None)
     return (
         getattr(adapter, "platform", None) is Platform.RELAY
-        and row.get("platform") != Platform.RELAY.value
-        and error == RELAY_NOT_CONNECTED
+        and row.get(RELAY_WROTE_NOTHING) is True
+        and str(getattr(result, "error", "") or "") in RELAY_LOCAL_REFUSALS
+        and not getattr(result, "message_id", None)
+        and not (isinstance(raw, dict) and raw.get("ambiguous"))
     )
 
 
@@ -133,13 +141,17 @@ async def send_relay_obligation(runner, adapter, row, content, metadata):
     # The specific failed send owns its routing. Session creation origins and
     # live caches may now describe another author in this same thread.
     metadata = {**(metadata or {}), **routing}
-    return await adapter.send_for_platform(
+    transport = getattr(adapter, "_transport", None)
+    written = getattr(transport, "write_attempts", None)
+    result = await adapter.send_for_platform(
         platform,
         row["chat_id"],
         content,
         metadata=metadata,
         replay=True,
     )
+    row[RELAY_WROTE_NOTHING] = type(written) is int and getattr(transport, "write_attempts", None) == written
+    return result
 
 
 def _schedule_replay(runner, adapter, platform):

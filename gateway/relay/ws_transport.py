@@ -393,6 +393,9 @@ class WebSocketRelayTransport:
         self._reader: Optional[asyncio.Task[None]] = None
         self._inbound: Optional[InboundHandler] = None
         self._on_platform_ready: Optional[Callable[[str], None]] = None
+        # Frames this transport has tried to write. Unchanged across a send, it proves that
+        # send wrote nothing; nothing read off the wire can assert that.
+        self.write_attempts = 0
         self._inbound_acks: set[asyncio.Task[None]] = set()  # ACKs of off-reader admissions
         self._interrupt_inbound_handler: Any = None
         self._passthrough_handler: Any = None
@@ -732,6 +735,7 @@ class WebSocketRelayTransport:
     async def _send(self, frame: dict[str, Any]) -> None:
         if self._ws is None:
             raise RuntimeError("relay transport not connected")
+        self.write_attempts += 1
         await self._ws.send(json.dumps(frame) + "\n")
 
     async def _read_loop(self) -> None:

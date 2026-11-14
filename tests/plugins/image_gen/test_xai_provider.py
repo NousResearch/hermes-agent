@@ -183,10 +183,10 @@ class TestLiveCatalog:
         monkeypatch.setattr(xai_mod, "_LIVE_CACHE", None)
         monkeypatch.delenv("XAI_IMAGE_MODEL", raising=False)
         assert xai_mod._resolve_edit_model("grok-imagine-image-2.0") == "grok-imagine-image-2.0"
-        # Text-only caller model must not hijack the edit path.
-        live["grok-imagine-image-2.0"]["input_modalities"] = ["text"]
+        # Text-only caller model must not hijack the edit path; the fallback is 2.0, not the retiring quality slug.
+        live["grok-imagine-image-quality"]["input_modalities"] = ["text"]
         monkeypatch.setattr(xai_mod, "_LIVE_CACHE", None)
-        assert xai_mod._resolve_edit_model("grok-imagine-image-2.0") == "grok-imagine-image-quality"
+        assert xai_mod._resolve_edit_model("grok-imagine-image-quality") == "grok-imagine-image-2.0"
 
 
 # ---------------------------------------------------------------------------

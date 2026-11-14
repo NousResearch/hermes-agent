@@ -2,7 +2,7 @@
 
 ``hermes migrate`` (bare) and ``hermes migrate <agent>`` move a user over from another agent through
 the agent-importers plugin; ``hermes migrate xai`` diagnoses and (with --apply) rewrites references to
-xAI models retired on May 15, 2026.
+retired xAI models.
 """
 from __future__ import annotations
 
@@ -51,17 +51,17 @@ def _fail(message: str) -> int:
 
 
 def cmd_migrate_xai(args: Any) -> int:
-    """Run xAI May-15 model migration in dry-run or apply mode."""
+    """Run xAI model-retirement migration in dry-run or apply mode."""
     from hermes_cli.config_backend import config_exists
     from hermes_cli.xai_retirement import (
-        MIGRATION_GUIDE_URL, RETIREMENT_DATE, apply_migration, find_retired_xai_refs, format_issue)
+        apply_migration, find_retired_xai_refs, format_issue, guide_urls)
 
     apply = bool(getattr(args, "apply", False))
     no_backup = bool(getattr(args, "no_backup", False))
     issues = find_retired_xai_refs(load_config())
 
     print()
-    print(color(f"◆ xAI Model Retirement Migration ({RETIREMENT_DATE})", Colors.CYAN, Colors.BOLD))
+    print(color("◆ xAI model retirements", Colors.CYAN, Colors.BOLD))
     print()
 
     if not issues:
@@ -73,7 +73,8 @@ def cmd_migrate_xai(args: Any) -> int:
     for issue in issues:
         print(f"    {color('⚠', Colors.YELLOW)} {format_issue(issue)}")
     print()
-    print(f"    {color('→', Colors.CYAN)} Migration guide: {MIGRATION_GUIDE_URL}")
+    for guide_url in guide_urls(issues):
+        print(f"    {color('→', Colors.CYAN)} Migration guide: {guide_url}")
     print()
 
     config_path = _resolve_config_path()

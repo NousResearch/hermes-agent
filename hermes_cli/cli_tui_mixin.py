@@ -20,7 +20,8 @@ from agent.interrupt_compat import request_hard_interrupt
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, cli_slash_completer
 from pathlib import Path
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.history import FileHistory
+from hermes_cli.safe_history import SafeFileHistory
+from hermes_cli.input_sanitize import replace_lone_surrogates
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
     ConditionalContainer,
@@ -1420,7 +1421,7 @@ class CLITuiMixin:
     def _tui_submit_buffer(self, event, buf):
         """Submit the composer: inline commands, busy routing or ``_pending_input``."""
         from cli import _looks_like_slash_command
-        text = buf.text.strip()
+        text = replace_lone_surrogates(buf.text.strip())
         has_images = bool(self._attached_images)
         if not (text or has_images):
             return
@@ -1568,7 +1569,7 @@ class CLITuiMixin:
             return True
         if self._slash_confirm_state:
             # Typed choice wins over the highlighted one.
-            text = buf.text.strip()
+            text = replace_lone_surrogates(buf.text.strip())
             choices = self._slash_confirm_state.get("choices") or []
             choice = self._normalize_slash_confirm_choice(text, choices) if text else None
             if choice is None:
@@ -1602,7 +1603,7 @@ class CLITuiMixin:
     def _tui_enter_clarify_freetext(self, event) -> None:
         """Clarify "Other": lock the typed answer; empty input skips the question."""
         buf = event.app.current_buffer
-        text = buf.text.strip()
+        text = replace_lone_surrogates(buf.text.strip())
         state = self._clarify_state
         base = getattr(self, '_clarify_multi_base', None)
         if not text:
@@ -2194,7 +2195,7 @@ class CLITuiMixin:
             multiline=True,
             wrap_lines=True,
             read_only=Condition(lambda: bool(cli_ref._command_blocks_input)),
-            history=FileHistory(str(self._history_file)),
+            history=SafeFileHistory(str(self._history_file)),
             # The completer does blocking work (fuzzy @-file indexing shells out to rg/fd with a 2s timeout;
             # path completion hits os.listdir/stat), so complete_while_typing inline would stall the render
             # loop per keystroke (WSL2/slow FS). ThreadedCompleter moves it off the UI event loop.

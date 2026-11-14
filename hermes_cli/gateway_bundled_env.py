@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import plistlib
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 from xml.sax.saxutils import escape
 import os
 
@@ -57,7 +58,8 @@ def systemd_bundled_env_block(unit_path: Path) -> str:
 def _prior_launchd_env(plist_path: Path) -> dict[str, str]:
     try:
         data = plistlib.loads(plist_path.read_bytes())
-    except (OSError, plistlib.InvalidFileException, ValueError):  # absent or hand-mangled plist
+    # ExpatError is not a ValueError: plistlib raises it unwrapped for malformed XML (a raw ``&``).
+    except (OSError, plistlib.InvalidFileException, ValueError, ExpatError):  # absent or hand-mangled
         return {}
     env = data.get("EnvironmentVariables") if isinstance(data, dict) else None
     if not isinstance(env, dict):

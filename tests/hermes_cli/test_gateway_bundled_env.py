@@ -113,3 +113,14 @@ class TestBundledResourceEnvPropagation:
         monkeypatch.delenv("HERMES_BUNDLED_PLUGINS")
         env = plistlib.loads(generate_launchd_plist().encode("utf-8"))["EnvironmentVariables"]
         assert env["HERMES_BUNDLED_PLUGINS"] == "/opt/plugins"
+
+    def test_malformed_on_disk_plist_does_not_block_regeneration(self, monkeypatch, tmp_path):
+        # A hand-edited plist with a raw ``&`` makes plistlib raise ExpatError (not a ValueError);
+        # regeneration (and so ``gateway install --force``) must replace it, not crash on it.
+        self._clear_bundled_env(monkeypatch)
+        plist_path = tmp_path / "gw.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        plist_path.write_text("<plist><dict><key>A</key><string>a & b</string></dict></plist>", encoding="utf-8")
+        monkeypatch.setenv("HERMES_TUI_DIR", "/opt/tui")
+        env = plistlib.loads(generate_launchd_plist().encode("utf-8"))["EnvironmentVariables"]
+        assert env["HERMES_TUI_DIR"] == "/opt/tui"

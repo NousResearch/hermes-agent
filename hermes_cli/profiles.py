@@ -2238,41 +2238,41 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         _stop_gateway_process(old_dir)
     _stop_bot_desktop(old_dir)
 
-    # 1b. Unroute the old name from a live multiplexer BEFORE the rename (same protocol as
-    # delete_profile). A multiplexed secondary has no gateway.pid of its own, so the check above
-    # reports it stopped while the default gateway still holds its adapters, cron ticker, logging
-    # and SQLite handles; one that creates directories outside ``mkdir_under_hermes_home`` can
-    # re-create the old home after it moves, and the periodic reconcile could re-adopt that dir as
-    # a ghost served profile (#109267).
-    live_mux = _live_default_multiplexer()
-    if live_mux:
-        mark_named_profile_deleted(old_dir)
-        _notify_multiplexer(old_canon)
-
-    # 1c. Release this process's cached MCP stderr handle into the old home (same as
-    # delete_profile): Windows refuses to rename a directory holding an open file, and the
-    # handle would otherwise stay cached under the old key after the move.
+    # 1b. Unroute the old name from a live multiplexer BEFORE the move (same protocol as
+    # delete_profile): it serves a multiplexed secondary that has no gateway.pid; a writer outside
+    # ``mkdir_under_hermes_home`` can re-create the moved-away home, which the reconcile could re-adopt
+    # as a ghost served profile (#109267). 1c. Release this process's MCP stderr handle into the old
+    # home: Windows refuses to rename a directory holding an open file.
+    # 2. The move is the commit point, read from the filesystem (an interrupt can land just after
+    # it). Before it, undo the unroute so the profile never stays tombstoned-but-present (Ctrl-C in
+    # the owner wait, EXDEV, a racing writer); after it, never re-serve the old name.
     from hermes_constants import hermes_home_key
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    shutdown_mcp_servers(scope=hermes_home_key(old_dir))
-
-    # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing writer),
-    # undo the unroute so the profile is never stranded tombstoned-but-present.
+    live_mux = _live_default_multiplexer()
+    old_identity = old_dir.lstat()
     try:
+        if live_mux:
+            mark_named_profile_deleted(old_dir)
+            _notify_multiplexer(old_canon)
+        shutdown_mcp_servers(scope=hermes_home_key(old_dir))
         if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
             raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
         old_dir.rename(new_dir)
-    except Exception:
-        if live_mux:
+    finally:
+        moved = False
+        with contextlib.suppress(OSError):  # no new_dir: the move never landed
+            moved = os.path.samestat(new_dir.lstat(), old_identity)
+        if moved:
             clear_named_profile_deleted(old_dir)
-            _notify_multiplexer(old_canon)
-        _maybe_register_gateway_service(old_canon)
-        if service_removed:
-            print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
-        raise
+            clear_named_profile_deleted(new_dir)
+        else:
+            if live_mux:
+                clear_named_profile_deleted(old_dir)
+                _notify_multiplexer(old_canon)
+            _maybe_register_gateway_service(old_canon)
+            if service_removed:
+                print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
-    clear_named_profile_deleted(old_dir)
-    clear_named_profile_deleted(new_dir)
 
     # 2b. Record the rename so Bot Mode group chats can re-link persisted
     # member descriptors to the new slug (#110200). Best-effort: a metadata

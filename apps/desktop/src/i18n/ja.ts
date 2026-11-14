@@ -3149,6 +3149,7 @@ export const jaOverrides = {
       'このゲートウェイにはシェルアクセスがないため、このターミナルは再度開けません。このタブを閉じてください。',
     terminalDisconnectedBody:
       'ターミナルが切断されました。Enter キーで新しいシェルを開始します。スクロールバックは保持されます。',
+    terminalExitedBody: (status: string) => `シェルが終了しました (${status})。Enter キーで新しいシェルを開始します。スクロールバックは保持されます。`,
     addToChat: 'チャットに追加'
   },
 

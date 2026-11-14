@@ -4731,6 +4731,7 @@ export const esOverrides = {
       'Este gateway no ofrece acceso a shell, así que esta terminal no puede reabrirse. Cierra esta pestaña.',
     terminalDisconnectedBody:
       'Terminal desconectada. Pulsa Intro para iniciar una nueva shell; el historial se conserva.',
+    terminalExitedBody: (status: string) => `La shell terminó (${status}). Pulsa Intro para iniciar una nueva shell; el historial se conserva.`,
     addToChat: 'Añadir al chat'
   },
   preview: {

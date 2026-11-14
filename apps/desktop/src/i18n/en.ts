@@ -4311,6 +4311,7 @@ export const en: Translations = {
       'This gateway has no shell access, so this terminal can\'t reopen. Close this tab.',
     terminalDisconnectedBody:
       'Terminal disconnected. Press Enter to start a new shell; scrollback is preserved.',
+    terminalExitedBody: status => `Shell ended (${status}). Press Enter to start a new shell; scrollback is preserved.`,
     terminalDropUploadFailed: name => `Could not upload ${name}`,
     terminalDropTooLargeTitle: 'Too large to upload',
     terminalDropTooLarge: (names, limit) => `Each file can be up to ${limit}. Not uploaded: ${names}`,

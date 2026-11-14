@@ -4757,6 +4757,7 @@ export const frOverrides = {
       'Cette passerelle n’offre pas d’accès shell ; ce terminal ne peut pas être rouvert. Fermez cet onglet.',
     terminalDisconnectedBody:
       'Terminal déconnecté. Appuyez sur Entrée pour démarrer un nouveau shell ; l’historique est conservé.',
+    terminalExitedBody: (status: string) => `Le shell s’est arrêté (${status}). Appuyez sur Entrée pour démarrer un nouveau shell ; l’historique est conservé.`,
     addToChat: 'Ajouter à la conversation'
   },
   preview: {

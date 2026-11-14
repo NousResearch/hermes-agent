@@ -574,3 +574,34 @@ it('native Desktop: a removed gateway shows the exited state and never attaches'
   expect(attach).not.toHaveBeenCalled()
   expect($terminals.get().some(tab => tab.id === id)).toBe(true)
 })
+
+// A shell that ends cleanly (`exit`, Ctrl-D) closes its tab; one that fails or is killed keeps
+// its scrollback, since the error is usually the last thing it printed, and Enter opens a new shell.
+it.each([
+  [{ code: 0, signal: null }, false, null],
+  [{ code: 2, signal: null }, true, 'Shell ended (exit code 2)'],
+  [{ code: null, signal: '9' }, true, 'Shell ended (signal 9)']
+])('native Desktop: shell exit %j keeps the tab: %s', async (payload, kept, message) => {
+  let exit: ((value: { code: null | number; signal: null | string }) => void) | null = null
+  const start = vi.fn(async () => ({ id: `pty-${start.mock.calls.length}`, shell: 'bash' }))
+  nativeTerminalApi(start)
+  window.hermesDesktop!.terminal.onExit = vi.fn((_id: string, callback: typeof exit) => {
+    exit = callback
+
+    return () => {}
+  }) as never
+  const id = createTerminal('/work')
+  render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+
+  act(() => exit!(payload))
+
+  expect($terminals.get().some(tab => tab.id === id)).toBe(kept)
+
+  if (message) {
+    expect(emulator.output).toContain(message)
+    expect(screen.getByText('closed')).toBeTruthy()
+    act(() => emulator.input('\r'))
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(2))
+  }
+})

@@ -4747,6 +4747,7 @@ export const deOverrides = {
       'Dieser Gateway bietet keinen Shell-Zugang; dieses Terminal kann nicht wieder geöffnet werden. Schließe diesen Tab.',
     terminalDisconnectedBody:
       'Terminal getrennt. Drücke Enter, um eine neue Shell zu starten; der Verlauf bleibt erhalten.',
+    terminalExitedBody: (status: string) => `Shell beendet (${status}). Drücke Enter, um eine neue Shell zu starten; der Verlauf bleibt erhalten.`,
     addToChat: 'Zum Chat hinzufügen'
   },
   preview: {

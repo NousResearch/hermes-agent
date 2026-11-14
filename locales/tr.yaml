@@ -164,10 +164,13 @@ gateway:
     upload_failed: "✗ Hata ayıklama raporu yüklenemedi: {error}"
     header: "**Hata ayıklama raporu yüklendi:**"
     auto_delete: "⏱ Paste'ler 6 saat içinde otomatik olarak silinecek."
-    full_logs_hint: "Tam günlük yüklemeleri için CLI'dan `hermes debug share` kullanın."
+    full_logs_hint: "Tam günlük yüklemeleri için CLI'dan `hermes debug share --nous` kullanın."
     share_hint: "Destek için bu bağlantıları Hermes ekibiyle paylaşın."
     report_label: "Rapor"
-    local_refused: "`/debug local` raporu Hermes'in çalıştığı makinede tutar, bu yüzden sohbetten kullanılamaz. Özet raporu yüklemek için `/debug` gönderin."
+    local_refused: "`/debug local` raporu Hermes'in çalıştığı makinede tutar, bu yüzden sohbetten kullanılamaz. Özet raporu yüklemek için `/debug upload` gönderin."
+    upload_hint: "Hiçbir şey yüklenmedi. Özet raporu yüklemek için `/debug upload` gönderin."
+    upload_hint_local: "Hiçbir şey yüklenmedi. Özet raporu yüklemek için `/debug upload`, burada görüntülemek için `/debug local` gönderin."
+    nous_refused: "Hiçbir şey yüklenmedi. Özel Nous yüklemeleri buradan kullanılamaz: bir terminalde `hermes debug share --nous` çalıştırın veya masaüstü uygulamasındaki Send diagnostics seçeneğini kullanın. `/debug upload` bunun yerine özeti herkese açık bir paste'e yükler."
   deny:
     stale: "❌ Komut reddedildi (onay geçersizdi)."
     no_pending: "Reddedilecek bekleyen komut yok."
@@ -332,6 +335,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — oturum başlıksız başlatıldı."
     title_empty_untitled: "\n⚠️ Temizlik sonrası başlık boş — oturum başlıksız başlatıldı."
     tip: "\n✦ İpucu: {tip}"
+    paused_left: "\n⚠️ Önceki konuşma duraklatılmışken gönderdiğin {count} mesaj hâlâ önceki konuşmada kayıtlı ve yanıtlanmadı. Çalıştırmak için: /resume {session_id}, ardından {discard}."
   restart:
     in_progress: "⏳ Gateway yeniden başlatma zaten sürüyor..."
     restarting: "♻ Gateway yeniden başlatılıyor. 60 saniye içinde bildirim almazsanız konsoldan `hermes gateway restart` ile yeniden başlatın."
@@ -600,6 +604,7 @@ gateway:
     disabled: "⚠️ Bu oturumda YOLO modu **KAPALI** — tehlikeli komutlar onay gerektirecek."
     enabled: "⚡ Bu oturumda YOLO modu **AÇIK** — tüm komutlar otomatik onaylanır. Dikkatli kullanın."
   shared:
+    fallback_model_suffix: " — yedek, asıl model `{primary}`"
     session_db_unavailable: "Oturum veritabanı kullanılamıyor."
     session_db_unavailable_prefix: "Oturum veritabanı kullanılamıyor"
     session_not_found: "Oturum veritabanında bulunamadı."
@@ -646,8 +651,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ {kind} eki iletilemedi ({file_name})."
     delivery_failed_retry: "⚠️ Mesaj birkaç denemeye rağmen iletilemedi. Lütfen yeniden deneyin — isteğiniz işlendi ancak yanıt gönderilemedi."
     plain_fallback_prefix: "(Yanıt biçimlendirilemedi, düz metin:)\n\n{content}"
-    turn_error_no_details: "ayrıntı yok"
-    turn_error_detailed: "Üzgünüm, bir hatayla karşılaştım ({error_type}).\n{error_detail}\nYeniden deneyin veya yeni bir oturum başlatmak için /reset kullanın."
     turn_error: "Üzgünüm, bir hatayla karşılaştım."
     context_injection_refused: "Bağlam eklemesi reddedildi."
     no_home_channel: "📬 {platform} için ana kanal ayarlanmamış. Ana kanal, Hermes'in cron işi sonuçlarını ve platformlar arası mesajları ilettiği yerdir.\n\nBu sohbeti ana kanalınız yapmak için {sethome_cmd} yazın veya atlamak için yoksayın."
@@ -746,6 +749,8 @@ gateway:
     reject_loop: "Ajan çalışıyor — çalışma sırasında /loop status / pause / stop kullanın ya da yeni bir döngü başlatmadan önce /stop kullanın."
     draining_maintenance: "⏳ Bu ajan bir bakım işlemi için boşaltılıyor ve şu anda yeni tur kabul etmiyor. Kısa süre içinde geri dönecek — lütfen biraz sonra yeniden gönderin."
     another_turn_running: "⏳ Bu oturumda başka bir tur hâlâ çalışıyor. Transkripti korumak için bu mesaj işlenmedi. Aktif turun bitmesini bekleyin, ardından yeniden gönderin."
+    setup_timeout: "⏳ Tur hazırlığı ajan etkinliği olmadan takıldı ve iptal edildi. Lütfen mesajını yeniden gönder."
+    setup_waiting: "⏳ Bu tur hâlâ başlıyor ({minutes} dk, henüz ajan etkinliği yok). Mesajın sırada. Bunu ve sıradaki her şeyi iptal etmek için /stop kullan."
     behavior_queue_short: "sonraki tur için sıraya alır"
     behavior_queue_long: "Hermes meşgulken mesajlar sonraki tur için sıraya alınır."
     behavior_steer_short: "mevcut çalışmaya yönlendirir (sonraki araç çağrısından sonra)"
@@ -804,6 +809,7 @@ gateway:
     ack_generate: "AGENTS.md proje taramasından oluşturuluyor…"
   moa:
     prepare_failed: "MoA turu hazırlanamadı."
+    managed_session: "/moa bu oturumda kullanılamaz: güvenli mod, yapılandırmasız, kanban ve yönetilen worker oturumları her turu kendi modelinde çalıştırır. İstemi /moa olmadan gönderin."
   quick_command:
     no_output: "Komut çıktı döndürmedi."
     timed_out: "Hızlı komut zaman aşımına uğradı (30 sn)."
@@ -979,6 +985,17 @@ platform:
     denied: "❌ Reddedildi."
     approval_expired: "⌛ Onay süresi doldu — komut çalıştırılmadı (zaten zaman aşımına uğradı veya başka bir yerde sonuçlandı)."
   shared:
+    vault_code:
+      title: "🔐 {site} doğrulama kodu"
+      body: "{site} tek kullanımlık bir kod istiyor (SMS veya e-posta). Düğmeye bas ve açılan forma yaz: kod doğrudan sayfaya girilir, buraya asla gönderilmez."
+      button: "Kodu gir"
+      modal_title: "{site} kodu"
+      input_label: "Tek kullanımlık kod"
+      submitted: "Kod gönderildi; sayfaya giriliyor."
+      ended: "Bu kod isteği sona erdi; hiçbir şey girilmedi."
+      not_author: "Kodu yalnızca bu isteği başlatan kişi girebilir."
+      submitted_footer: "✓ Kod gönderildi"
+    response_as_file: "📎 Uzun yanıt: metnin tamamı ekte."
     truncated_suffix: "\n...(kısaltıldı)"
     unknown: "bilinmiyor"
     approval_expired: "⌛ Onay süresi doldu — komut çalıştırılmadı (zaten zaman aşımına uğradı veya başka bir yerde sonuçlandı)."
@@ -1169,8 +1186,6 @@ platform:
         unknown: "Bilinmeyen skill: `{name}`. Otomatik tamamlama önerileri için yazmaya başlayın."
       auto_args_description: "Argümanlar: {args_hint}"
       auto_description_fallback: "/{name} komutunu çalıştır"
-    limits:
-      response_truncated: "⚠️ **Yanıt kısaltıldı** — bu yanıt teslim sınırını ({max_messages} mesaj) aştı. {dropped_chars} karakter teslim edilmedi; yanıtın tamamı oturum günlüklerinde."
     forum:
       default_title: "Yeni Gönderi"
     voice:
@@ -1192,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ `{filename}` eklenemedi — {size_mb} MB, Discord'un bu kanal için {limit_mb} MB yükleme sınırını aşıyor. Dosyayı sıkıştırın veya bunun yerine bir bağlantı paylaşın."
       image_skipped_too_large: "⚠️ `{filename}` atlandı — {size_mb} MB, Discord'un {limit_mb} MB yükleme sınırını aşıyor."
   telegram:
+    vault_code:
+      body: "Bu mesajı kodla yanıtla. Hermes yanıtını hemen siler ve kodu sayfaya girer; model kodu hiç görmez."
+      delete_failed: "Yanıtın burada silinemedi. Lütfen kendin sil."
     approval:
       action_once: "✅ Bir Kez"
       action_session: "✅ Oturum"
@@ -1249,6 +1267,11 @@ platform:
       affirm: "✓ Evet"
       negate: "✗ Hayır"
       other: "✏️ Diğer (yanıt yazın)"
+      multi_hint: "Bir veya daha fazla seçin, ardından Gönder'e dokunun."
+      send: "✅ Gönder"
+      selected_count: "Seçilen: {count}"
+      select_one: "Önce en az bir seçenek seçin."
+      toggle_failed: "Seçim güncellenemedi — tekrar dokunun."
       expired_toast: "⚠️ Bu istemin süresi doldu — lütfen /retry kullanın."
       expired_body: "⚠️ Bu sorunun süresi doldu veya oturum sıfırlandı — lütfen /retry kullanın."
       type_answer: "✏️ Yanıtınızı sohbete yazın."
@@ -1706,7 +1729,7 @@ slash:
   version:
     description: "Hermes Agent sürümünü göster"
   debug:
-    description: "Hata ayıklama raporunu (sistem bilgisi + günlükler) yükle ve paylaşılabilir bağlantılar al"
+    description: "Hata ayıklama raporu (sürümler, yapılandırma anahtarları, hata sayıları; günlük metni yok): önce gizlilik bildirimini gösterir; /debug upload bağlantı paylaşır"
   quit:
     description: "CLI'dan çık (oturum geçmişini de silmek için --delete kullanın)"
 cli:
@@ -3820,7 +3843,7 @@ tips:
   t246: "HERMES_HOME_MODE ortam değişkeni (sekizlik, örn. 0701), web sunucusu erişimi için özel dizin izinleri belirler."
   t247: "Container modu: HERMES_HOME içine .container-mode koyun; ana makine CLI'sı otomatik olarak container içine geçer."
   t248: "Ctrl+C'nin 5 öncelik kademesi vardır: kaydı iptal et → istemleri iptal et → seçiciyi iptal et → ajanı kes → çık."
-  t249: "Ajan çalışması sırasındaki her kesme, zaman damgasıyla ~/.hermes/interrupt_debug.log dosyasına kaydedilir."
+  t249: "Ajan çalışması sırasındaki kesmeler agent.log dosyasına kaydedilir (`hermes logs` ile görüntüleyin); ayrıntılı izleme için HERMES_DEBUG_INTERRUPT=1 ayarlayın."
   t250: "BROWSER_CDP_URL, tarayıcı araçlarını çalışan herhangi bir Chromium ailesi tarayıcıya bağlar — WebSocket, HTTP veya host:port kabul eder."
   t251: "BROWSERBASE_ADVANCED_STEALTH=true, özel Chromium ile gelişmiş tespit önlemeyi etkinleştirir (Scale Plan)."
   t252: "CLI, 80 sütundan dar terminallerde otomatik olarak kompakt moda geçer."
@@ -3917,7 +3940,7 @@ tips:
   t343: "/voice tts, yalnızca TTS modunu açıp kapatır — ajan yanıtlarını sesli okur ama istemlerinizi yine siz yazarsınız."
   t344: "/reload-skills, ~/.hermes/skills/ dizinini yeniden tarar; böylece eklenen skill'ler oturumu yeniden başlatmadan görünür."
   t345: "/indicator kaomoji|emoji|unicode|ascii, ajan çalışırken TUI'de gösterilen meşgul göstergesi stilini seçer."
-  t346: "/debug, bir destek paketi (sistem bilgisi + günlükler) yükler ve paylaşılabilir bağlantılar döndürür — sohbette de çalışır."
+  t346: "/debug upload bir özet (sürümler, yapılandırma anahtarları, hata sayıları; günlük metni yok) yükler ve paylaşılabilir bir bağlantı döndürür — sohbette de çalışır."
   t347: "hermes -z \"<prompt>\" en saf tek seferlik kullanımdır: stdout'a yalnızca nihai yanıt, başka hiçbir şey yok — betiklerde borulamak için idealdir."
   t348: "hermes chat --pass-session-id, oturum kimliğini sistem istemine ekler; böylece ajan kendi oturumuna atıfta bulunabilir."
   t349: "hermes chat --image path/to/pic.png, ayrı bir yükleme adımı olmadan tek bir -q sorgusuna yerel bir görüntü ekler."

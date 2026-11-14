@@ -239,6 +239,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `pkill`/`killall` hermes/gateway | Self-termination prevention |
 | `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
 | `docker stop/kill/restart`, `docker compose down/stop/kill/restart` | Container lifecycle (also catches global flags and `docker-compose`) |
+| `docker`/`podman` `rm`, `container rm/remove`, `volume rm/remove/prune`, `container/system prune`; `podman system reset`; `docker compose rm` / `docker-compose rm` | Container and volume destruction (`image rm`/`rmi`/`network rm` stay ungated: a pull or recreate restores them) |
 | `docker -H`/`--host`/`--context`, `DOCKER_HOST=`/`DOCKER_CONTEXT=` | Docker daemon redirect — the command targets a different (often remote) daemon |
 | `docker context use` | Switches the default daemon for all future docker commands |
 | `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
@@ -321,6 +322,8 @@ When both are set, a narrowed `approvers` takes precedence: it is the explicit a
 | `approvers` narrowed (with or without `allow_admin_from`) | the requester, the listed ids, the scope's admins |
 
 A DM with the bot's owner keeps working when the owner is on the DM admin list. Clarify questions are not commands and only follow `approvers`.
+
+Discord interactions through the relay are checked more tightly. The relay forwards a Discord button press or application command (such as `/approve` or `/deny`) without checking who sent it. So under `approvers: ["*"]`, a member answers with one only once the relay has delivered one of their messages to this gateway (since it last started); anyone else must be the requester or one of the scope's admins, on top of the rules above. Other senders get the same note and the prompt stays pending. Any other Discord interaction (an application command such as `/status` or `/new`, a modal) from a sender the relay has not delivered a message from is dropped unless they are one of the scope's admins. When Hermes starts again, a member's application commands do nothing until they have sent a message. Ordinary messages, and button presses on the relay's other platforms, keep the rules above.
 
 Picker cards (`/model`, `/reasoning`, `/fast` and the usage-limit switch offer) and the `/update` Yes/No prompt always belong to the member who opened them, whatever `approvers` says: only that member and the chat scope's admins can tap them or, for `/update`, answer by typing. Anyone else gets the same private note and the card stays open; their typed text is an ordinary message. A member refused an admin-only command therefore cannot apply an admin's open card instead.
 
@@ -418,7 +421,7 @@ These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
 | Category | Examples |
 |----------|----------|
 | OS credential stores | `~/.ssh/` (keys, `authorized_keys`), `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc` |
-| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden and 1Password caches (`bws_cache.json`, `bws_cache.enc.json`, `op_cache.json`), the Photon sidecar token (`photon-sidecar.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root). Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
+| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden and 1Password caches (`bws_cache.json`, `bws_cache.enc.json`, `op_cache.json`), the Photon sidecar token (`photon-sidecar.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME: the active profile, every profile under `profiles/`, and the global root. Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
 | Windows NT/device-namespace paths | `\??\...`, `\\.\...`, `\\?\UNC\...`, `\\?\GLOBALROOT...` — rejected for both reads and writes on every platform. On Windows, merely *resolving* such a path (e.g. `\??\UNC\host\share`) triggers outbound SMB authentication and can leak the user's NTLM hash; the prefixes also bypass normal path normalization. Ordinary extended-length local paths (`\\?\C:\...`) and plain UNC shares (`\\server\share`) are unaffected. |
 
 Project-local `.env`, `.env.local`, `.env.production` and `.envrc` files are **read-denied** anywhere on disk (the file tools refuse to read them) but remain writable: the agent can create or edit them for you, it just cannot read the values back.
@@ -768,6 +771,8 @@ PATH, HOME, USER, LANG, LC_ALL, TERM, SHELL, TMPDIR
 
 Plus any `XDG_*` variables. All other environment variables (API keys, tokens, secrets) are **stripped**.
 
+Variables supplied by an [external secret source](secrets/index.md) (Bitwarden, 1Password, a command helper) are also passed, except Hermes-managed credentials: model-provider keys, tool keys Hermes uses itself, and bot, gateway and relay tokens. That covers every name Hermes reads such a credential by: the numbered rotation keys (`DEEPSEEK_API_KEY_2`), any variable a [credential pool](features/credential-pools.md) entry points at (`source: env:MY_KEY`), any variable the profile's `config.yaml` names as a provider key (`key_env` / `api_key_env` on `model`, `custom_providers`, `providers`, `auxiliary` or fallback entries, or a credential field such as `api_key` written as `${VAR}` / `${env:VAR}`), and the profile-suffixed form the active profile uses (`TELEGRAM_BOT_TOKEN_<PROFILE>`). Those are stripped wherever they are stored. If a server needs one, declare it in that server's `env` (for example `OPENAI_API_KEY: "${OPENAI_API_KEY}"`).
+
 Variables explicitly defined in the MCP server's `env` config are passed through:
 
 ```yaml
@@ -804,7 +809,7 @@ security:
       - "/etc/hermes/blocked-sites.txt"
 ```
 
-When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_exec`, and all URL-capable tools.
+When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced on `web_extract`, browser navigation, `vision_analyze` and `video_analyze` URLs, and skills hub downloads. A `web_extract` redirect to a blocked host is caught after the provider has fetched it, so the page is withheld from the agent but the host still saw the request. `web_search` takes a query, not a URL, so it is not gated, and its result list is not filtered. Kanban URL attachments, cron URL monitors and gateway media downloads apply only the private-address SSRF check.
 
 See [Website Blocklist](./configuration.md#website-blocklist) in the configuration guide for full details.
 
@@ -832,7 +837,7 @@ security:
   allow_private_urls: true   # default: false
 ```
 
-When on, web tools, the browser, vision URL fetches, and gateway media downloads no longer reject RFC 1918 / loopback / link-local / CGNAT destinations. Cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`, and the like) stay blocked even with this on. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
+When on, web tools, the browser, vision URL fetches, gateway media downloads, cron `monitor_url` fetches, and A2A push callbacks no longer reject RFC 1918 / loopback / link-local / CGNAT destinations. Cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`, and the like) stay blocked even with this on. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
 

@@ -159,7 +159,10 @@ def cmd_update(name: str, *, interactive: bool = True, force: bool = False) -> N
     console = _pc()._console()
     target = _pc()._require_installed_plugin(name, _pc()._plugins_dir(), console)
     try:
-        update_one(name, target, console, interactive=interactive, force=force)
+        if update_one(name, target, console, interactive=interactive, force=force):
+            # Like install/enable: load it in the running gateway and say what is live (#153300).
+            from hermes_cli.plugins_activation import report_activation
+            report_activation(console, target.name)
     except RepinConsentRequired as exc:
         _pc()._fail(console, f"[yellow]Update of {name} not applied:[/yellow] {exc}")
     except _pc().PluginScanBlocked as exc:

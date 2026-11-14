@@ -19,6 +19,11 @@ const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 // after base64 + framing. Preview stays on the Settings-configurable path.
 const ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
+// Renderer-supplied composer writes (pasted/dropped images, large text pastes)
+// land on disk under userData/HERMES_HOME; cap them like the attach reader so
+// one IPC call can't allocate or write unbounded bytes in the main process.
+const COMPOSER_IMAGE_MAX_BYTES = ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES
+const COMPOSER_PASTE_MAX_BYTES = TEXT_PREVIEW_SOURCE_MAX_BYTES
 
 function dataUrlReadMaxBytesFromMb(maxMb) {
   return clampDataUrlReadMaxMb(maxMb) * 1024 * 1024
@@ -26,6 +31,28 @@ function dataUrlReadMaxBytesFromMb(maxMb) {
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
+
+// Credential stores under a Hermes home or a profile home, relative POSIX paths.
+// Mirrors agent/file_safety.py _CREDENTIAL_FILE_NAMES / _READ_DENIED_DIRS (the
+// canonical read guard) plus hermes_cli/home_data_layout.py SECRET_CACHE_STORES.
+const HERMES_CREDENTIAL_FILES = new Set([
+  '.env',
+  'auth.json',
+  'auth.lock',
+  '.anthropic_oauth.json',
+  'webhook_subscriptions.json',
+  'auth/google_oauth.json',
+  'bws_cache.json',
+  'bws_cache.enc.json',
+  'op_cache.json',
+  'photon-sidecar.json',
+  'cache/bws_cache.json',
+  'cache/bws_cache.enc.json',
+  'cache/op_cache.json',
+  'runtime/photon-sidecar.json'
+])
+
+const HERMES_CREDENTIAL_DIRS = ['mcp-tokens', 'browser-profile', 'vault', 'webapp']
 
 // Owner-only mode for userData files that carry credentials (the encrypted
 // gateway token in connection.json, and the URL/SSH fields alongside it).
@@ -282,10 +309,119 @@ function resolveRemoteTokenPlainText({ envOverride, token, secureTokenStorage }:
   return token?.encoding === 'plain' && secureTokenStorage === false
 }
 
-function sensitiveFileBlockReason(filePath) {
-  const normalized = String(filePath || '')
+function normalizeSensitivePath(filePath) {
+  return String(filePath || '')
     .replace(/\\/g, '/')
     .toLowerCase()
+}
+
+let hermesHomes: string[] = []
+// Store targets only move when a home, profile or store is re-linked, so the
+// realpath sweep runs at most once per window instead of on every preview,
+// media-stream and image read (~17 realpaths per home and profile).
+const RELOCATED_STORES_TTL_MS = 1000
+let relocatedStoresCache: null | { at: number; stores: string[] } = null
+
+/** Register the Hermes home whose credential stores (and every profile's under
+ *  `profiles/<name>/`) preview reads must refuse. Both the given spelling and
+ *  its realpath are kept, since callers check the requested and the real path. */
+function setSensitiveHermesHome(hermesHome: null | string | undefined) {
+  relocatedStoresCache = null
+
+  if (!hermesHome) {
+    hermesHomes = []
+
+    return
+  }
+
+  const homes = [path.resolve(hermesHome)]
+  const real = realpathOrNull(hermesHome)
+
+  if (real) {
+    homes.push(real)
+  }
+
+  hermesHomes = [...new Set(homes)]
+}
+
+function realpathOrNull(filePath: string): null | string {
+  try {
+    return fs.realpathSync.native(filePath)
+  } catch {
+    return null
+  }
+}
+
+function credentialStoreRel(normalized: string, root: string): null | string {
+  if (!normalized.startsWith(`${root}/`)) {
+    return null
+  }
+
+  const fromRoot = normalized.slice(root.length + 1)
+
+  return fromRoot.match(/^profiles\/[^/]+\/(.+)$/)?.[1] ?? fromRoot
+}
+
+function isCredentialStoreRel(rel: string): boolean {
+  return HERMES_CREDENTIAL_FILES.has(rel) || HERMES_CREDENTIAL_DIRS.some(dir => rel === dir || rel.startsWith(`${dir}/`))
+}
+
+// Where each home's and profile's stores really live: a symlinked profile home,
+// vault/ or auth.json puts the secret outside every registered root, so the
+// lexical match alone would let its real path through (Python's read guard
+// resolves the same targets).
+function relocatedCredentialStores(): string[] {
+  const now = Date.now()
+
+  if (relocatedStoresCache && now - relocatedStoresCache.at < RELOCATED_STORES_TTL_MS) {
+    return relocatedStoresCache.stores
+  }
+
+  const stores: string[] = []
+
+  for (const home of hermesHomes) {
+    let profiles: string[] = []
+
+    try {
+      profiles = fs.readdirSync(path.join(home, 'profiles')).map(name => path.join(home, 'profiles', name))
+    } catch {
+      // No profiles directory.
+    }
+
+    for (const base of [home, ...profiles]) {
+      for (const rel of [...HERMES_CREDENTIAL_FILES, ...HERMES_CREDENTIAL_DIRS]) {
+        const real = realpathOrNull(path.join(base, rel))
+
+        if (real) {
+          stores.push(normalizeSensitivePath(real).replace(/\/+$/, ''))
+        }
+      }
+    }
+  }
+
+  relocatedStoresCache = { at: now, stores }
+
+  return stores
+}
+
+function hermesCredentialStoreReason(normalized: string): null | string {
+  const reason = 'Hermes credential stores are blocked.'
+
+  for (const home of hermesHomes) {
+    const rel = credentialStoreRel(normalized, normalizeSensitivePath(home).replace(/\/+$/, ''))
+
+    if (rel !== null && isCredentialStoreRel(rel)) {
+      return reason
+    }
+  }
+
+  return relocatedCredentialStores().some(store => normalized === store || normalized.startsWith(`${store}/`))
+    ? reason
+    : null
+}
+
+function sensitiveFileBlockReason(filePath) {
+  const normalized = normalizeSensitivePath(filePath)
 
   const basename = path.basename(normalized)
   const ext = path.extname(basename)
@@ -330,7 +466,7 @@ function sensitiveFileBlockReason(filePath) {
     return `${basename} is blocked because it may include auth credentials.`
   }
 
-  return null
+  return hermesCredentialStoreReason(normalized)
 }
 
 function ipcPathError(code: any, message: string): Error & { code: any } {
@@ -339,6 +475,44 @@ function ipcPathError(code: any, message: string): Error & { code: any } {
   ;(error as any).code = code
 
   return error
+}
+
+/** Validate saveImageBuffer's payload: raw bytes only, non-empty, size-capped. */
+function composerImageBufferFromIpc(data: unknown, maxBytes = COMPOSER_IMAGE_MAX_BYTES): Buffer {
+  let buffer: Buffer | null = null
+
+  if (Buffer.isBuffer(data)) {
+    buffer = data
+  } else if (ArrayBuffer.isView(data)) {
+    buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+  } else if (data instanceof ArrayBuffer) {
+    buffer = Buffer.from(data)
+  }
+
+  if (!buffer || buffer.byteLength === 0) {
+    throw ipcPathError('invalid-image-data', 'saveImageBuffer: missing data')
+  }
+
+  if (buffer.byteLength > maxBytes) {
+    throw ipcPathError('EFBIG', `saveImageBuffer: image is too large (${buffer.byteLength} bytes; limit ${maxBytes}).`)
+  }
+
+  return buffer
+}
+
+/** Validate savePastedText's payload: a non-empty string under the paste cap. */
+function composerPasteTextFromIpc(text: unknown, maxBytes = COMPOSER_PASTE_MAX_BYTES): string {
+  if (typeof text !== 'string' || !text) {
+    throw ipcPathError('invalid-text', 'savePastedText: missing text')
+  }
+
+  const size = Buffer.byteLength(text, 'utf8')
+
+  if (size > maxBytes) {
+    throw ipcPathError('EFBIG', `savePastedText: text is too large (${size} bytes; limit ${maxBytes}).`)
+  }
+
+  return text
 }
 
 function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
@@ -630,6 +804,10 @@ export {
   assertExistingPathForOpen,
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   clampDataUrlReadMaxMb,
+  COMPOSER_IMAGE_MAX_BYTES,
+  COMPOSER_PASTE_MAX_BYTES,
+  composerImageBufferFromIpc,
+  composerPasteTextFromIpc,
   DATA_URL_READ_DEFAULT_MAX_MB,
   DATA_URL_READ_MAX_MAX_MB,
   DATA_URL_READ_MIN_MAX_MB,
@@ -651,6 +829,7 @@ export {
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,
   sensitiveFileBlockReason,
+  setSensitiveHermesHome,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   tightenSecretFileMode,
   writeSecretFileAtomic

@@ -56,11 +56,12 @@ from tui_gateway.user_messages import (
     resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
 _hermes_home = _HERMES_HOME_AT_IMPORT = get_hermes_home()
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / ".env")
 
 
 # ── Panic logger: crashes otherwise leave no forensics (stdout is the JSON-RPC pipe, stderr doesn't
@@ -741,13 +742,6 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     if not (body := (text if text is not None else kind).strip()):
         return
     out_kind = kind if text is not None else "status"
-    # Auto-compaction arrives as a generic "lifecycle" status; re-tag so drivers can show a
-    # summarizing indicator — otherwise idle/preflight compaction looks like a hung turn.
-    # See #97239.
-    if out_kind == "lifecycle":
-        from agent.conversation_compression import is_compaction_progress_status
-        if is_compaction_progress_status(body):
-            out_kind = "compacting"
     _emit("status.update", sid, {"kind": out_kind, "text": body})
 
 
@@ -1486,7 +1480,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     reasoning_effort_wire = ""
     if reasoning_effort and reasoning_effort != "none":
         reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(
-            pending_provider or provider, model, getattr(agent, "api_mode", None))) or "")
+            pending_provider or provider, model, getattr(agent, "api_mode", None), getattr(agent, "base_url", None))) or "")
     info: dict = {
         "model": model,
         "provider": pending_provider or provider,

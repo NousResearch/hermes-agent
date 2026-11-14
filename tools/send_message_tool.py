@@ -16,9 +16,9 @@ from tools.send_message_targets import (
 )
 from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
-    _adapter_media_method, _error, _live_adapter, _media_caption_split, _optional_sender_kwargs,
-    _plugin_standalone_sender, _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text,
-    _send_matrix_via_adapter)
+    SharedBotTargetRefused, _adapter_media_method, _error, _live_adapter, _media_caption_split,
+    _optional_sender_kwargs, _plugin_standalone_sender, _registry_standalone_send, _resolve_slack_user_target,
+    _sanitize_error_text, _send_matrix_via_adapter)
 from tools.registry import tool_error
 
 # A bare Slack user id (session metadata / home-channel config) is opened as a DM; same shape the
@@ -187,7 +187,10 @@ def _handle_react(args, remove=False):
     if _relay_denial:
         return tool_error(_relay_denial)
 
-    _, adapter = _live_adapter(platform)
+    try:
+        _, adapter = _live_adapter(platform, chat_id, _thread_id)
+    except SharedBotTargetRefused as e:
+        return tool_error(str(e))
     if adapter is None:
         return tool_error(f"Reactions require a live {platform_name} adapter in the running "
                           "gateway (not available from cron/standalone contexts).")
@@ -558,7 +561,10 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
     """Live in-process gateway adapter first, else the plugin's ``standalone_sender_fn`` (cron),
     else an error naming both; media uses the adapter's native media APIs under the same rules."""
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
-    runner, adapter = _live_adapter(platform)
+    try:
+        runner, adapter = _live_adapter(platform, chat_id, thread_id)
+    except SharedBotTargetRefused as e:
+        return {"error": str(e)}  # no standalone fallback: that would be the same refusal's bypass
     if adapter is not None:
         try:
             metadata = {**({"thread_id": thread_id} if thread_id else {}),
@@ -604,7 +610,12 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
 
 
 async def _send_chunks(chunks, send_one):
-    """``send_one(chunk, is_last)`` in order; stop at the first error dict, else last result."""
+    """``send_one(chunk, is_last)`` in order; stop at the first error dict, else last result. An
+    error after a chunk landed is a PARTIAL delivery (``gateway.platforms._shared`` contract): it
+    loses ``retryable`` (replaying the whole payload would post the landed head twice) and carries
+    the landed chunks' ids."""
+    from gateway.platforms._shared import DeliveryOutcome
+    outcome = DeliveryOutcome()
     result = None
     # --- Matrix: route ALL sends through the native adapter so text is encrypted in E2EE rooms too (issue:
     # text-only sends arrived with a red padlock because they took the raw-HTTP standalone path). The
@@ -613,7 +624,12 @@ async def _send_chunks(chunks, send_one):
     for i, chunk in enumerate(chunks):
         result = await send_one(chunk, i == len(chunks) - 1)
         if isinstance(result, dict) and result.get("error"):
+            if outcome.has_landed:
+                result = outcome.failure(result)
             break
+        outcome.landed(result.get("message_id") if isinstance(result, dict) else None)
+    if isinstance(result, dict) and not result.get("error"):
+        result = {**result, **outcome.split_fields()}
     return result
 
 
@@ -659,12 +675,41 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
             return await sender(pconfig, chat_id, "", thread_id=thread_id, media_files=media_files,
                                 caption=caption, **extra, **first_only)
 
+    if policy.reply_file_over and not media_files and len(chunks) > policy.reply_file_over:
+        as_file = await _send_reply_file_standalone(sender, pconfig, chat_id, message, thread_id, extra)
+        if as_file is not None:
+            return as_file
+
     def send_one(chunk, is_last):
         kwargs = {**extra, **first_only}
         first_only.clear()
         return sender(pconfig, chat_id, chunk, thread_id=thread_id,
                       media_files=media_files if is_last else empty_media, **kwargs)
     return await _send_chunks(chunks, send_one)
+
+
+async def _send_reply_file_standalone(sender, pconfig, chat_id, message, thread_id, extra):
+    """The whole ``message`` as one ``reply-<id>.md`` upload with the localized caption, before any
+    split (#152012): the sender's result, or ``None`` when the upload failed (sent as messages)."""
+    import secrets
+    import shutil
+    import tempfile
+    from agent.i18n import t
+    folder = await asyncio.to_thread(tempfile.mkdtemp, prefix="hermes-reply-")
+    try:
+        path = os.path.join(folder, f"reply-{secrets.token_hex(4)}.md")
+        def write() -> None:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(message)
+        await asyncio.to_thread(write)
+        result = await sender(pconfig, chat_id, "", thread_id=thread_id, media_files=[(path, False)],
+                              caption=t("platform.shared.response_as_file"), **extra)
+    finally:
+        await asyncio.to_thread(shutil.rmtree, folder, True)
+    if not isinstance(result, dict) or result.get("error") or result.get("warnings"):
+        logger.warning("Long message could not be sent as a file; sending it as messages")
+        return None
+    return {**result, "warnings": ["Message was longer than the split cap; sent it as a file"]}
 
 
 def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):

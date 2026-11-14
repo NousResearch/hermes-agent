@@ -63,6 +63,14 @@ def read_config_version_stamp(*, raise_on_parse_error: bool = False) -> tuple[Op
     return _coerce_config_version(config.get("_config_version")), latest
 
 
+def newer_stamp_message(stamp: int) -> str:
+    """Why a config stamped *stamp* by a newer build gets no migration."""
+    latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
+    return (f"config.yaml is at version {stamp}, written by a newer Hermes (this build knows up to "
+            f"{latest}). No migration runs on it, so this build does not rewrite settings the newer one "
+            "wrote. Update Hermes to migrate it.")
+
+
 def check_config_version(*, raise_on_parse_error: bool = False) -> tuple[int, int]:
     """Return ``(current_version, latest_version)`` from the raw on-disk config.
     Reads the raw file rather than ``load_config()``: the deep-merge would make a file lacking

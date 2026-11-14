@@ -679,36 +679,18 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     def _handoff_validate_target(self, platform_name: str):
         """Resolve the destination home channel via the live gateway config; None (after printing
-        the reason) when the platform is unknown, disabled, or has no home channel."""
+        the reason) when the platform is unknown, disabled, or has no home channel. UX pre-check
+        only: the gateway watcher re-checks before dispatch."""
+        from gateway.handoff_target import HandoffTargetError, resolve_handoff_home
         try:
-            from gateway.config import load_gateway_config, Platform
-        except Exception as exc:  # pragma: no cover — gateway pkg always shipped
-            return _cp(f"  {_t('handoff.config_load_failed', error=exc)}")
-        try:
-            platform = Platform(platform_name)
-        except (ValueError, KeyError):
-            return _cp(f"  {_t('handoff.unknown_platform', platform=platform_name)}")
-        try:
-            gw_config = load_gateway_config()
+            return resolve_handoff_home(platform_name)
+        except HandoffTargetError as exc:
+            if exc.reason == 'no_home_channel':
+                return _cp(f"  {_t('handoff.no_home_channel', platform=platform_name)}",
+                           f"  {_t('handoff.set_home_hint')}")
+            return _cp(f"  {_t('handoff.' + exc.reason, platform=platform_name)}")
         except Exception as exc:
             return _cp(f"  {_t('handoff.config_load_failed', error=exc)}")
-        pcfg = gw_config.platforms.get(platform)
-        if not pcfg or not pcfg.enabled:
-            # Relay aliasing: a relay-fronted gateway has only a RELAY block yet /handoff discord
-            # is deliverable. UX pre-check only — the gateway watcher re-checks before dispatch.
-            relay_fronts = False
-            with suppress(Exception):
-                from gateway.relay import relay_platform_identities
-                relay_cfg = gw_config.platforms.get(Platform.RELAY)
-                if relay_cfg and relay_cfg.enabled:
-                    relay_fronts = platform_name in {p for p, _ in relay_platform_identities()}
-            if not relay_fronts:
-                return _cp(f"  {_t('handoff.platform_not_enabled', platform=platform_name)}")
-        home = gw_config.get_home_channel(platform)
-        if not home or not home.chat_id:
-            return _cp(f"  {_t('handoff.no_home_channel', platform=platform_name)}",
-                       f"  {_t('handoff.set_home_hint')}")
-        return home
 
     def _handoff_prepare_session(self):
         """Refuse mid-turn, make sure a SessionDB handle + session row exist, and return the
@@ -734,18 +716,24 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             session_title = (self._session_db.get_session(self.session_id) or {}).get("title") or ""
         return session_title or self.session_id[:8]
 
-    def _handoff_wait(self, platform_name: str, session_title: str) -> bool:
+    def _handoff_wait(self, platform_name: str, session_title: str, read_state=None, fail_pending=None) -> bool:
         """Two-phase 0.5s poll. PENDING (unclaimed): 60s, then CAS-fail the row so the user can
         retry (a claim racing this instant wins). RUNNING (claimed): the gateway replays the
         transcript via a synthetic turn (routinely >60s) — wait 15 min with heartbeats and on
-        timeout do NOT touch the row; failing it here was the split-brain bug."""
+        timeout do NOT touch the row; failing it here was the split-brain bug.
+
+        ``read_state`` / ``fail_pending`` read and CAS-fail the row; by default this process's own
+        store, the shared gateway's ``handoff.state`` / ``handoff.fail`` when it owns the session."""
+        read_state = read_state or (lambda: self._session_db.get_handoff_state(self.session_id))
+        fail_pending = fail_pending or self._handoff_fail_pending
         pending_deadline = time.time() + self._HANDOFF_PENDING_TIMEOUT
         running_deadline = None
         next_heartbeat = None
         last_state = "pending"
+        recovered = None  # the row read right after a pending timeout's CAS-fail
         while True:
             try:
-                state_row = self._session_db.get_handoff_state(self.session_id)
+                state_row, recovered = (recovered or read_state()), None
             except Exception:
                 state_row = None
             current = (state_row or {}).get("state") or "pending"
@@ -772,6 +760,14 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             now = time.time()
             if current == "pending":
                 if now >= pending_deadline:
+                    with suppress(Exception):  # unclaimed: CAS-clear so the user can retry
+                        fail_pending("timed out waiting for gateway")
+                    # A claim that won the race goes through the branches above (running starts
+                    # its own deadline); our own failed row, or an unreadable one, is the timeout.
+                    with suppress(Exception):
+                        recovered = read_state()
+                    if ((recovered or {}).get("state") or "") in ("running", "completed"):
+                        continue
                     break
             else:  # running
                 if next_heartbeat is not None and now >= next_heartbeat:
@@ -784,16 +780,14 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                         f"  {_t('handoff.check_platform', platform=platform_name)}",
                         f"  {_t('handoff.no_longer_waiting')}", f"  {_t('handoff.retry_when_settled')}")
             time.sleep(0.5)
-        try:  # pending timed out: CAS-clear so the user can retry
-            self._session_db.fail_handoff(
-                self.session_id, "timed out waiting for gateway", only_states=("pending",))
+        return self._handoff_keep(f"  {_t('handoff.timed_out')}", f"  {_t('handoff.session_intact')}")
+
+    def _handoff_fail_pending(self, reason: str) -> None:
+        try:
+            self._session_db.fail_handoff(self.session_id, reason, only_states=("pending",))
         except TypeError:
             # Older SessionDB without only_states (mixed installs): legacy unconditional fail.
-            with suppress(Exception):
-                self._session_db.fail_handoff(self.session_id, "timed out waiting for gateway")
-        except Exception:
-            pass
-        return self._handoff_keep(f"  {_t('handoff.timed_out')}", f"  {_t('handoff.session_intact')}")
+            self._session_db.fail_handoff(self.session_id, reason)
 
     # ---- /resume, /sessions, /branch ------------------------------------------------------
     def _handle_resume_command(self, cmd_original: str) -> None:
@@ -2095,16 +2089,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     # ---- /debug, /update, /voice, /wake ---------------------------------------------------
     def _handle_debug_command(self, cmd_original: str = ""):
-        """Handle /debug [nous|local] — upload debug report + logs and print share URLs.
-        Default: public paste service; ``nous``: Nous-internal (staff-only); ``local``: render to
-        stdout, no upload. ``local`` wins if both are given (never touches the network)."""
-        from hermes_cli.debug import run_debug_share
-        from types import SimpleNamespace
-        words = {w.lower() for w in cmd_original.split()[1:]}
-        local = "local" in words
-        # Typing /debug is the upload consent (yes=True); input() would hang in prompt_toolkit anyway.
-        run_debug_share(SimpleNamespace(
-            lines=200, expire=7, local=local, nous="nous" in words and not local, yes=True))
+        """Handle /debug [upload|nous upload|local] (see ``hermes_cli.debug.run_debug_slash``)."""
+        from hermes_cli.debug import run_debug_slash
+        run_debug_slash(cmd_original)
 
     def _handle_update_command(self) -> bool:
         """Handle /update — exit the session and relaunch as ``hermes update``. Returns True when

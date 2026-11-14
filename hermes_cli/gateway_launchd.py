@@ -359,6 +359,18 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
 
+def service_path_prefix_entries() -> list[str]:
+    """The Hermes-owned PATH entries a generated definition puts BEFORE the invoking shell's PATH.
+
+    Both sources are deterministic — the venv/node bin dirs that exist on disk, and the pm-managed Node
+    the target home's ``facts.json`` records — so the staleness check may compare them; only the shell
+    tail is environment-derived (#144735).
+    """
+    entries = _gw()._build_service_path_dirs()
+    _gw()._append_node_dir_for_service(entries)
+    return list(dict.fromkeys(entries))
+
+
 def generate_launchd_plist() -> str:
     from html import escape
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
@@ -370,9 +382,11 @@ def generate_launchd_plist() -> str:
 
     # launchd's default PATH misses Homebrew, nvm, cargo…; prepend venv/bin + node dirs (as in the
     # systemd unit) so node stays resolvable even if the shell PATH changes, then the shell PATH.
-    priority_dirs = _gw()._build_service_path_dirs()
-    _gw()._append_node_dir_for_service(priority_dirs)
-    sane_path = ":".join(dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]))
+    priority_dirs = service_path_prefix_entries()
+    # Only the prefix may carry a store Node: a refresh run inside the gateway inherits the old plist PATH.
+    store_node = str(_gw().get_hermes_home() / "tools" / "node-")
+    shell_dirs = [p for p in os.environ.get("PATH", "").split(":") if p and not p.startswith(store_node)]
+    sane_path = ":".join(dict.fromkeys(priority_dirs + shell_dirs))
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping
     # stderr; the osascript wrapper gives the job a Local Network identity (see launchd_program_arguments).
@@ -381,6 +395,9 @@ def generate_launchd_plist() -> str:
     prog_args_xml = "\n        ".join(
         f"<string>{escape(part)}</string>" for part in launchd_program_arguments(command, stdout_log, stderr_log)
     )
+
+    from hermes_cli.gateway_bundled_env import launchd_bundled_env_xml
+    bundled_env_xml = launchd_bundled_env_xml(_gw().get_launchd_plist_path())  # #85357
 
     # Persist the configured RLIMIT_NOFILE floor: launchd defaults to soft 256, and every plist
     # rewrite would otherwise strip a manual limit and reintroduce EMFILE crashes.
@@ -422,7 +439,7 @@ def generate_launchd_plist() -> str:
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
         <key>HERMES_SUPERVISED_CHILD</key>
-        <string>1</string>
+        <string>1</string>{bundled_env_xml}
     </dict>
 
     <key>LimitLoadToSessionType</key>
@@ -466,6 +483,37 @@ def generate_launchd_plist() -> str:
 </dict>
 </plist>
 """
+
+
+# The generated PATH is ``<Hermes-owned prefix> + $PATH``; only the tail is environment-derived.
+_PLIST_PATH_PATTERN = r"(<key>PATH</key>\s*<string>)(.*?)(</string>)"
+_PLIST_PATH_TAIL = "__HERMES_SHELL_PATH__"
+
+
+def normalize_plist_path_for_comparison(text: str) -> str:
+    """Mask only the shell-derived PATH tail so the Hermes-owned prefix stays comparable.
+
+    Blanking the whole payload (the previous rule) also hid the pm-managed Node dir, so a Node update
+    left the installed plist "current" forever (#144735).
+    """
+    import re
+    from html import unescape
+
+    keep = len(service_path_prefix_entries())
+    managed_node_prefix = str(_gw().get_hermes_home() / "tools" / "node-")
+
+    def _mask(match: re.Match[str]) -> str:
+        entries = [part for part in match.group(2).split(":") if part]
+        # When facts.json loses its Node entry, the current prefix gets shorter.
+        # Do not relabel a previously managed Node path as disposable shell PATH.
+        protected = keep
+        while protected < len(entries) and unescape(entries[protected]).startswith(managed_node_prefix):
+            protected += 1
+        tail = f":{_PLIST_PATH_TAIL}" if len(entries) > protected else ""
+        return f"{match.group(1)}{':'.join(entries[:protected])}{tail}{match.group(3)}"
+
+    normalized = _gw()._normalize_service_definition(text)
+    return re.sub(_PLIST_PATH_PATTERN, _mask, normalized, flags=re.DOTALL)
 
 
 def launchd_plist_is_current() -> bool:
@@ -835,7 +883,9 @@ def _wait_for_launchd_service_pid(
     return poll_until(_fresh_pid, max(timeout, 0.5), 0.5)
 
 
-def launchd_restart():
+def launchd_restart() -> int | None:
+    """Restart the invoking profile's launchd gateway. Returns the PID left running with its restart
+    pending (live work outlived the drain wait; KeepAlive relaunches it once idle), else None."""
     gateway_service_owner.refuse_foreign_launchd_plist("restart")
     label = _gw().get_launchd_label()
     domain = _gw()._launchd_domain()
@@ -850,9 +900,10 @@ def launchd_restart():
     # bootout/bootstrap-retry path, which is bounded and reports its own
     # failure instead of stalling the update for 90s.
     refresh_ok = _gw().refresh_launchd_plist_if_needed()
-    from gateway.status import get_running_pid
+    from gateway.status import get_process_start_time, get_running_pid
     try:
         pid = get_running_pid()
+        born = get_process_start_time(pid) if pid is not None else None  # the identity signalled
         if pid is not None and _gw()._request_gateway_self_restart(pid):
             _launchd_ok("✓ Service restart requested")
             return
@@ -862,6 +913,10 @@ def launchd_restart():
             print(f"⚠ Gateway PID {pid} event loop is unresponsive — " "skipping drain and forcing a bounded stop...")
             _gw()._escalate_wedged_gateway(pid)
             pid = None
+        from hermes_cli.update_cmd_drain_report import leave_restart_pending
+        from hermes_cli.update_cmd_posix_pause import is_left_pending
+        if pid is not None and is_left_pending(pid) and leave_restart_pending(pid, f"Gateway PID {pid}", start_time=born):
+            return pid  # the update's pause already waited it out
         if pid is not None:
             # Graceful in-band restart via SIGUSR1 (mirrors systemd); the budget covers both the idle wait
             # and the drain. A bare SIGTERM would lose the resume_pending handoff. Announce BEFORE waiting:
@@ -877,6 +932,8 @@ def launchd_restart():
                     return
                 print("⚠ launchd did not revive the gateway after its graceful exit — forcing restart")
             else:
+                if leave_restart_pending(pid, f"Gateway PID {pid}", start_time=born):
+                    return pid  # the budget bounds the wait, never the work: KeepAlive relaunches it once idle
                 print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart")
         if not refresh_ok and _gw().get_launchd_plist_path().exists() and not _gw().launchd_plist_is_current():
             # The refresh attempted a reload and launchd never re-registered

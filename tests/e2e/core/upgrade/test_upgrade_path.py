@@ -3,7 +3,7 @@
 Class C6 (bricked installs, stale code, lost state after `hermes update`). Each leg:
 
 1. stages a local bare ``origin`` (``--shared`` onto this repository, so no network and no
-   object copy) with ``main`` parked at release N-1 (``git describe --tags --abbrev=0 HEAD~1``);
+   object copy) with ``main`` parked at release N-1 (``_install_helpers.upgrade_base``);
 2. clones it as a git-mode install with its own venv (``uv sync --locked --extra all`` from N-1's
    own uv.lock and the warm uv cache: the installer's tier 0 and its editable layout; the installer
    script itself is covered by ``.github/workflows/install-e2e*.yml``);

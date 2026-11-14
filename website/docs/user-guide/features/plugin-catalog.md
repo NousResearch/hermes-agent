@@ -57,6 +57,7 @@ directory of the hermes-agent repository, declaring:
 | `platforms` | OS restrictions, empty = all (optional) |
 | `title` | Human name shown on cards, e.g. `NVIDIA App` (optional; defaults to `name`) |
 | `onboarding` | `true` offers the plugin on the desktop onboarding card, beside the hosted connectors, on the platforms it lists. Curated: official or verified entries only (optional, default `false`) |
+| `default` | `true` installs and enables the plugin in every Hermes home, once: at the end of an install (or on first start for Desktop, Docker, Nix and Termux), on `hermes update` when it became a default since, and when a profile is created. Removing or disabling it sticks. Official or verified entries only; nothing is fetched where `security.allow_lazy_installs` is off (optional, default `false`) |
 | `docs_url` | External documentation link (optional) |
 | `known_issues` | Short notes shown at the install prompt, e.g. an unsupported install mode. Informational; they never block the install (optional) |
 | `version` | Human-readable label for the pinned sha, e.g. `"1.4.0"`; shown as `1.4.0 @ abcd1234` in the CLI, on the catalog card and on the Desktop **Update to** button (optional, cosmetic) |

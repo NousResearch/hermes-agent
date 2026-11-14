@@ -55,6 +55,7 @@ from agent.delegation_context import (
 from agent.memory_provider import ctx_bound
 from agent.session_activity import AwakeIdleMeter
 from agent.turn_failure_copy import is_max_iteration_handoff
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -1811,9 +1812,9 @@ def _load_credential_pool(runtime: dict, job_id: str):
     if not runtime_provider:
         return None
     try:
-        from agent.credential_pool import load_pool
-        pool = load_pool(runtime_provider)
-        if pool.has_credentials():
+        from agent.custom_entry_pool import load_route_pool
+        pool = load_route_pool(runtime_provider, runtime.get("base_url"), runtime.get("requested_provider"))
+        if pool is not None and pool.has_credentials():
             logger.info(
                 "Job '%s': loaded credential pool for provider %s with %d entries",
                 job_id, runtime_provider, len(pool.entries()))
@@ -2301,13 +2302,13 @@ def _prepare_job_prompt(
             f"**Job ID:** {job_id}\n"
             f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"**Status:** BLOCKED\n\n"
-            "The assembled prompt (user prompt + loaded skill content) tripped "
-            "the cron injection scanner and the agent was NOT run.\n\n"
+            "The assembled prompt (job prompt, plus any skill content or run data) "
+            "tripped the cron injection scanner and the agent was NOT run.\n\n"
             f"**Scanner result:** {block_exc}\n\n"
-            "Audit the skill(s) attached to this job for prompt-injection "
-            "payloads or invisible-unicode markers. If the skill is legitimate "
-            "and the match is a false positive, rephrase the content to avoid "
-            "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
+            "Edit the job prompt, or audit the skill(s) attached to this job, for "
+            "the pattern named above or invisible-unicode markers. If the content is "
+            "legitimate and the match is a false positive, rephrase it to avoid the "
+            "threat pattern (`tools/cronjob_prompt_scan.py`)."
         )
         return (False, blocked_doc, "", str(block_exc)), None
     if prompt is None:
@@ -3414,9 +3415,12 @@ def _run_one_job_body(
         from cron.scheduler_authority import CronExecutionUnknown
         if isinstance(e, CronExecutionUnknown):
             from cron.executions import give_up_execution
+            from cron.jobs_error_text import sanitize_persisted_error
             from cron.scheduler_authority import pause_for_unknown
-            pause_for_unknown(job["id"], execution_id, str(e))
-            give_up_execution(execution_id, reason=str(e))
+            # One sanitized string for both stores: _lift_pause matches the pause by its reason.
+            reason = sanitize_persisted_error(str(e)) or "unverified admission"
+            pause_for_unknown(job["id"], execution_id, reason)
+            give_up_execution(execution_id, reason=reason)
             logger.error("Cron %s paused with unverified admission: %s", job["id"], e)
             return False
         # BaseException, not Exception: CancelledError/KeyboardInterrupt/SystemExit propagate here.
@@ -3710,7 +3714,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # dependency generation (#122222), and mark it so its own entry runs the PM dependency
     # boot. See cron/scheduler_worker_env.py and cron/worker_bootstrap.py.
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = Path(project_root_str())
     worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     worker_env[WORKER_MARKER] = "1"
     try:
@@ -4036,7 +4040,7 @@ def _worktree_maintenance_repos() -> list[str]:
 
     # Hermes source checkout (git installs only; wheel installs have no .git).
     with contextlib.suppress(Exception):
-        install_root = Path(__file__).resolve().parent.parent
+        install_root = Path(project_root_str())
         if (install_root / ".git").exists():
             repos.add(str(install_root))
 
@@ -4410,4 +4414,7 @@ if __name__ == "__main__":
         raise SystemExit(
             0 if _run_external_worker_payload(args.external_worker_file, args.ack_file) else 1
         )
+    from hermes_agent.compat import install as _install_compat
+
+    _install_compat()
     tick(verbose=True, headless=True)

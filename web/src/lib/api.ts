@@ -8,6 +8,7 @@ import { createDashboardSessionMutations } from "./session-mutations";
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
 import type { AuxiliaryModelsResponse, ModelAssignmentResponse } from "./api-aux";
+import type { ProfileCreateResponse } from "./api-profiles";
 import type {
   AgentPluginUpdateResponse,
   AgentPluginsUpdateAllResponse,
@@ -26,6 +27,19 @@ export type {
   WhatsAppOnboardingStartResponse,
   WhatsAppOnboardingStatusResponse,
 } from "./api-whatsapp";
+import type {
+  WebhookCreate,
+  WebhookEnableResponse,
+  WebhookRoute,
+  WebhooksResponse,
+} from "./api-webhooks";
+export type {
+  WebhookCreate,
+  WebhookEnableResponse,
+  WebhookRoute,
+  WebhookSignature,
+  WebhooksResponse,
+} from "./api-webhooks";
 import type {
   MessagingPlatform,
   RelayLinkCode,
@@ -739,15 +753,7 @@ export const api = {
     keep_skills?: string[];
     hub_skills?: string[];
   }) =>
-    fetchJSON<{
-      ok: boolean;
-      name: string;
-      path: string;
-      model_set?: boolean;
-      mcp_written?: number;
-      skills_disabled?: number;
-      hub_installs?: Array<{ identifier: string; pid: number | null }>;
-    }>("/api/profiles", {
+    fetchJSON<ProfileCreateResponse>("/api/profiles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -1399,11 +1405,11 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        consent: true, // sent only after the confirm dialog; the backend refuses its absence
         redact: opts?.redact ?? true,
         lines: opts?.lines ?? 200,
       }),
     }),
-
 
   getCheckpoints: () => fetchJSON<CheckpointsResponse>("/api/ops/checkpoints"),
   pruneCheckpoints: () =>
@@ -1696,48 +1702,6 @@ export interface PairingUser {
 export interface PairingResponse {
   pending: PairingUser[];
   approved: PairingUser[];
-}
-
-export interface WebhookRoute {
-  name: string;
-  description: string;
-  events: string[];
-  deliver: string;
-  deliver_only: boolean;
-  prompt: string;
-  skills: string[];
-  created_at: string | null;
-  url: string;
-  secret_set: boolean;
-  enabled: boolean;
-}
-
-export interface WebhooksResponse {
-  enabled: boolean;
-  base_url: string;
-  subscriptions: WebhookRoute[];
-}
-
-export interface WebhookEnableResponse {
-  ok: boolean;
-  platform: "webhook";
-  enabled: true;
-  needs_restart: boolean;
-  restart_started?: boolean;
-  restart_action?: string;
-  restart_pid?: number | null;
-  restart_error?: string;
-}
-
-export interface WebhookCreate {
-  name: string;
-  description?: string;
-  events?: string[];
-  prompt?: string;
-  skills?: string[];
-  deliver?: string;
-  deliver_only?: boolean;
-  deliver_chat_id?: string;
 }
 
 export interface CredentialPoolEntry {

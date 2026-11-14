@@ -1,0 +1,27 @@
+name: radar
+repo: https://github.com/Dieguezar/hermes-radar
+sha: 80435faed9ced7c48523f125d4f05ed806ef6efb
+subdir: ""
+title: Radar
+description: "Radar — real-time Multi-Agent Squad Mission Control for Hermes across all profiles: live Bot Squad Roster with 1-click filtering, aggregate and per-session telemetry (tokens, tool calls, child subagents, git branch), safe 2-click session.interrupt RPC for runaway turns, always-on-top OS Picture-in-Picture, and English-first UI with EN/ES i18n. Strictly read-only SQLite (?mode=ro), zero external dependencies, Linux and Windows support. Disclosure — reads every local profile's state.db read-only (session titles, working directories, git branches, token and cost counts) to show them in one panel, and its stop button sends session.interrupt to a session in any profile through the Desktop's profile routes (two clicks, never automatic). No network, credentials or telemetry."
+maintainer: Dieguezar
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Dieguezar/hermes-radar#readme
+version: "0.8.0"
+image: https://raw.githubusercontent.com/Dieguezar/hermes-radar/80435faed9ced7c48523f125d4f05ed806ef6efb/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Dieguezar/hermes-radar/80435faed9ced7c48523f125d4f05ed806ef6efb/docs/fullpage-en.png
+  - https://raw.githubusercontent.com/Dieguezar/hermes-radar/80435faed9ced7c48523f125d4f05ed806ef6efb/docs/floating-hud.png
+  - https://raw.githubusercontent.com/Dieguezar/hermes-radar/80435faed9ced7c48523f125d4f05ed806ef6efb/docs/pip-os.png
+  - https://raw.githubusercontent.com/Dieguezar/hermes-radar/80435faed9ced7c48523f125d4f05ed806ef6efb/docs/fullpage-es.png
+platforms:
+  - linux
+  - windows
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

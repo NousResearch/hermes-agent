@@ -327,6 +327,45 @@ class TestSlowLLMPostbackRegression:
         assert adapter._client.reply.await_args.args[1][0]["text"] == adapter.expired_text
         assert "Uchat" not in adapter._pending_buttons
 
+    @staticmethod
+    def _tap(adapter, chat_id, rid):
+        asyncio.run(adapter._handle_postback_event({
+            "replyToken": f"reply-{chat_id}", "source": {"type": "user", "userId": chat_id},
+            "postback": {"data": json.dumps({"action": "show_response", "request_id": rid})}}))
+
+    @staticmethod
+    def _entry_in(adapter, state):
+        rid = adapter._cache.register_pending("Uchat-a")
+        if state is State.ERROR:
+            adapter._cache.set_error(rid, "private error for A")
+        elif state is not State.PENDING:
+            adapter._cache.set_ready(rid, "private answer for A")
+            if state is State.DELIVERED:
+                adapter._cache.mark_delivered(rid)
+        return rid
+
+    @pytest.mark.parametrize("state", list(State))
+    def test_request_id_from_another_chat_is_treated_as_unknown(self, adapter, state):
+        # #38628: a request id is a routing handle — chat B replaying chat A's id
+        # must not receive A's cached output nor settle A's entry.
+        rid = self._entry_in(adapter, state)
+        adapter._pending_buttons["Uchat-a"] = rid
+        self._tap(adapter, "Uchat-b", rid)
+        adapter._client.push.assert_not_awaited()
+        adapter._client.reply.assert_awaited_once()
+        assert adapter._client.reply.await_args.args == ("reply-Uchat-b", [{"type": "text", "text": adapter.expired_text}])
+        assert adapter._cache.get(rid).state is state
+        assert adapter._pending_buttons == {"Uchat-a": rid}
+
+    def test_originating_chat_still_receives_its_cached_answer(self, adapter):
+        rid = self._entry_in(adapter, State.READY)
+        adapter._pending_buttons["Uchat-a"] = rid
+        self._tap(adapter, "Uchat-a", rid)
+        assert adapter._client.reply.await_args.args[0] == "reply-Uchat-a"
+        assert adapter._client.reply.await_args.args[1][0]["text"] == "private answer for A"
+        assert adapter._cache.get(rid).state is State.DELIVERED
+        assert "Uchat-a" not in adapter._pending_buttons
+
 
 class TestEnvEnablement:
 

@@ -6,6 +6,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _interaction_senders_admitted(monkeypatch):
+    """These tests cover how a Discord interaction is decoded and routed, so its sender counts as
+    admitted; admission itself: test_relay_discord_command_answer_authority.py."""
+    from gateway.relay import admitted_authors
+
+    monkeypatch.setattr(admitted_authors, "interaction_admitted", lambda *_args, **_kwargs: True)
+
+
 _MODAL = {"id": "i1", "type": 5, "channel_id": "c1", "guild_id": "g1",
           "member": {"user": {"id": "u1", "username": "ben"}},
           "data": {"custom_id": "feedback", "components": [

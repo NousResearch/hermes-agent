@@ -281,7 +281,8 @@ class TestOutboundRedaction:
 
         bodies = ("Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "QQ7ZP2MX9VLK4NRT", "b-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
                   ".Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "1-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
-                  "Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0.Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0")
+                  "Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0.Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
+                  ".Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0")
         tokens = []
         for pattern in R._PREFIX_PATTERNS + R._plugin_patterns():
             prefix = R._extract_literal_prefix(pattern)

@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
@@ -751,6 +752,21 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     -- ever run, breaking rebuild/replay pipelines that reconstruct state.db
     -- from the canonical schema (#94691).
     origin_session_id TEXT NOT NULL DEFAULT ''
+);
+
+-- Durable subagent records (tools/delegate_tool_resumable.py): what delegate_task(action='continue') rebuilds a
+-- child from after a restart or crash, and the worktree pin the startup sweep honours (``pinned``).
+CREATE TABLE IF NOT EXISTS resumable_subagents (
+    subagent_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    stop_cause TEXT,
+    owner_pid INTEGER,
+    owner_started_at INTEGER,
+    record_json TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    expires_at REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -1503,3 +1519,14 @@ def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
     except (json.JSONDecodeError, TypeError):
         logger.warning(warning)
         return fallback
+
+
+def path_is_under(path: Path, root: Path) -> bool:
+    """True when *path* is *root* or a file inside it (normcase, resolved)."""
+    try:
+        path_key = os.path.normcase(str(path.resolve()))
+        root_key = os.path.normcase(str(root.resolve()))
+    except OSError:
+        path_key = os.path.normcase(str(path))
+        root_key = os.path.normcase(str(root))
+    return path_key == root_key or path_key.startswith(root_key + os.sep)

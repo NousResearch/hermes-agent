@@ -29,6 +29,7 @@ from hermes_cli.plugin_validate_desktop import check_desktop_surface
 from hermes_cli.plugin_validate_private_imports import check_private_imports
 from hermes_cli.plugin_validate_locales import check_language_packs
 from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
+from hermes_cli._startup_fast import project_root_str
 
 _UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 # Admission accepts exactly the ``config_schema`` types the loader type-checks at load time (and the
@@ -206,13 +207,17 @@ def _check_oauth(report: ValidationReport, manifest: dict, plugin_dir: Path) -> 
 # module using the same file-location mechanics PluginManager uses, calls
 # register() against a recording stub ctx, and prints a sentinel-prefixed
 # JSON line of what was actually registered. Deliberately imports NOTHING
-# from hermes so a hostile plugin only sees a bare interpreter — the one
-# exception is `providers` for `kind: model-provider`, whose contract IS
-# calling providers.register_provider at import.
+# from hermes so a hostile plugin only sees a bare interpreter — the exceptions are the
+# stdlib-only compat finder (old module names keep resolving) and `providers` for
+# `kind: model-provider`, whose contract IS calling providers.register_provider at import.
 _PROBE_SCRIPT = r"""
 import importlib.util
 import json
 import sys
+
+from hermes_agent.compat import install
+
+install()
 
 plugin_dir = sys.argv[1]
 sentinel = sys.argv[2]
@@ -269,9 +274,30 @@ class RecordingContext:
                 return None
 
             return _noop
+        if name == "state":
+            return _ProbeState()
         if name in context_properties:
             return _InertService()
         raise AttributeError(name)
+
+
+class _ProbeState:
+    # Same shape as PluginState (real Path values, get() returns the default) over an empty store
+    # in the probe's scratch HERMES_HOME, which the parent deletes after the run.
+    def __init__(self):
+        import os
+        from pathlib import Path
+        self.data_dir = Path(os.environ["HERMES_HOME"]) / "plugin-data" / "probe"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.path = self.data_dir / "state.json"
+        self.quota_bytes = 1024 * 1024
+        self._data = {}
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def set(self, key, value):
+        self._data[key] = value
 
 
 class _InertService:
@@ -373,7 +399,7 @@ def _run_capability_probe(
         env = dict(probe[1] if probe else os.environ)
         env["HERMES_HOME"] = scratch
         # The probe imports this tree's ``providers``; name the tree instead of relying on the cwd.
-        repo_root = str(Path(__file__).resolve().parents[1])
+        repo_root = project_root_str()
         env["PYTHONPATH"] = os.pathsep.join(p for p in (repo_root, env.get("PYTHONPATH", "")) if p)
         python, *options = probe[0] if probe else [sys.executable]
         try:

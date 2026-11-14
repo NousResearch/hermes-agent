@@ -10,12 +10,14 @@ from typing import Any, Callable, Dict, Mapping, Optional
 from hermes_platform.resolver.app import LOCATION_KINDS, AppDef, AppLocation
 
 __all__ = [
+    "KEY_NAME_RE",
     "AppSpec",
     "Declaration",
     "DeclarationError",
     "RequiresSpec",
     "clear",
     "gpu_label",
+    "location_is_rooted",
     "lookup",
     "parse_app",
     "parse_declaration",
@@ -77,6 +79,12 @@ _APP_PRESENCE = ("executable", "bundle")
 _APP_VERSION_KINDS = {"pe_resource": "win32", "uninstall_registry": "win32", "plist": "darwin", "none": None}
 _APP_LIVENESS_KINDS = ("server_json", "none")
 _VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
+# A manifest endpoint_path is concatenated onto "http://<loopback>:<port>" and re-parsed:
+# only a plain path is safe -- no '@' userinfo, '?'/'#' fragments, whitespace, or schemes.
+ENDPOINT_PATH_RE = re.compile(r"/[A-Za-z0-9._~/-]*")
+# server-json keys are looked up verbatim in a file the manifest names; keep them
+# identifier-shaped so a manifest can't smuggle lookups outside flat json keys.
+KEY_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
 # `requires.gpu` values and how a sentence names them. Only NVIDIA: `facts.gpu_class()` reports the
 # highest-priority vendor present, which answers "is an NVIDIA GPU here" exactly and would not answer
 # it for AMD or Intel on a machine that also has an NVIDIA GPU.
@@ -94,7 +102,7 @@ def _require_mapping(where: str, key: str, raw: Any) -> dict:
     return raw
 
 
-def _location_is_rooted(location: str, osf: str) -> bool:
+def location_is_rooted(location: str, osf: str) -> bool:
     if ".." in location.replace("\\", "/").split("/") or "://" in location:
         return False
     if location.startswith(("~", "%", "$")):
@@ -118,7 +126,7 @@ def _parse_location(where: str, osf: str, presence: str, label: str, raw: Any) -
         path = raw.strip()
         if not path:
             raise DeclarationError(f"{where}: {label} is required")
-        if not _location_is_rooted(path, osf) or "**" in path:
+        if not location_is_rooted(path, osf) or "**" in path:
             raise DeclarationError(
                 f"{where}: {label} must be absolute or start with ~ / %VAR% / $VAR, without '..', '**' or a URL scheme")
         return AppLocation("path", path)
@@ -171,16 +179,33 @@ def _parse_app_os(where: str, name: str, osf: str, raw: Any) -> AppDef:
     if lkind not in _APP_LIVENESS_KINDS:
         raise DeclarationError(f"{where}: app.{osf}.liveness.kind must be one of {_APP_LIVENESS_KINDS}")
     lpath = str(liveness.get("path") or "")
-    if lkind == "server_json" and not lpath:
-        raise DeclarationError(f"{where}: app.{osf}.liveness.path is required for server_json")
+    if lkind == "server_json":
+        if not lpath:
+            raise DeclarationError(f"{where}: app.{osf}.liveness.path is required for server_json")
+        if not location_is_rooted(lpath.strip(), osf):
+            raise DeclarationError(
+                f"{where}: app.{osf}.liveness.path must be absolute or start with ~ / %VAR% / $VAR,"
+                " without '..' or a URL scheme")
+    # The resolver re-checks loopback at dial time too, but a hostile tail rejected here
+    # never reaches it. '..' segments cannot move the URL authority but are rejected for
+    # consistency with location_is_rooted.
+    epath = str(liveness.get("endpoint_path") or "/mcp")
+    if not ENDPOINT_PATH_RE.fullmatch(epath) or ".." in epath.split("/"):
+        raise DeclarationError(
+            f"{where}: app.{osf}.liveness.endpoint_path must be a plain path starting with '/' "
+            "(no userinfo, query, scheme, or whitespace)")
+    for key_name in ("pid_key", "url_key", "token_key"):
+        key_val = str(liveness.get(key_name) or "")
+        if key_val and not KEY_NAME_RE.fullmatch(key_val):
+            raise DeclarationError(f"{where}: app.{osf}.liveness.{key_name} must be a simple key name")
     return AppDef(
         app_id=name, os_family=osf, presence=presence, locations=locations,
         version_kind=vkind, version_arg=varg,
-        liveness_kind=lkind, liveness_path=lpath,
+        liveness_kind=lkind, liveness_path=lpath.strip(),
         liveness_pid_key=str(liveness.get("pid_key") or "pid"),
         liveness_url_key=str(liveness.get("url_key") or "http"),
         liveness_token_key=str(liveness.get("token_key") or "token"),
-        endpoint_path=str(liveness.get("endpoint_path") or "/mcp"),
+        endpoint_path=epath,
     )
 
 

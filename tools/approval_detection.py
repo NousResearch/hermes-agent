@@ -14,19 +14,26 @@ import shlex
 import tempfile
 import unicodedata
 
+from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
+
 logger = logging.getLogger("tools.approval")
 
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
 # home is folded into these forms at detection time by _normalize_command_for_detection(), so no
 # import-time path snapshot (stale once HERMES_HOME is set after import) lives in the patterns.
 _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
+# A Hermes home: the default root or a named profile under it (profiles/<name>/ has its own config.yaml/.env).
+_HERMES_HOME_DIR = (
+    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'(?:profiles/[^/\s"\'`]+/)?'
+)
 _HERMES_ENV_PATH = (
-    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)' r'\.env\b'
+    _HERMES_HOME_DIR + r'\.env\b'
 )
 # ~/.hermes/config.yaml IS the security policy (approvals.mode, yolo, allowlist) and the config cache is mtime-keyed,
 # so a write takes effect mid-session. Terminal-side coverage (sed -i, tee, >, cp) pairs the file_tools deny.
 _HERMES_CONFIG_PATH = (
-    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)' r'config\.yaml\b'
+    _HERMES_HOME_DIR + r'config\.yaml\b'
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
@@ -63,9 +70,12 @@ _CREDENTIAL_UPLOAD_DESCRIPTION = "upload a secret or credential file via curl/wg
 # flag, so a long run that never reaches the subcommand fails in linear time instead of holding the
 # GIL for minutes (#129281). Whole groups still backtrack to expose the target flag or verb.
 _GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
-# Same grammar for the docker/podman rules, which have always taken a separate value only after exactly
-# one whitespace character; keeping that means this fix changes no approval decision.
-_CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s(?!-\S)\S++)?\s++)*'
+# Same grammar for the docker/podman rules. The container flags historically took a separate value
+# only after exactly one whitespace character, which let a value behind a whitespace run (collapsed
+# by the shell before docker sees it) end the flag group and hide the verb (#130511); the value
+# separator is now the same whitespace run as _GLOBAL_FLAGS, so e.g. `docker --log-level  warn stop
+# web` reaches the lifecycle verb again. Single-space commands match exactly as before.
+_CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
@@ -370,7 +380,7 @@ def detect_hardline_command(command: str) -> tuple:
     # (`\"` -> `"`), so a shell-valid pattern like `grep -o "[^\"]*"` lexed as unterminated and was
     # reported as a hardline block (118 of 125 hardline blocks in one week of real use, every one a
     # benign grep). Only quoted newlines are masked: they are data, and masking keeps quoting intact.
-    _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(command))
+    _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(expand_ansi_c_quotes(command)))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
@@ -601,7 +611,16 @@ DANGEROUS_PATTERNS = [
     # consent. Global flags between docker/compose and the verb and the legacy `docker-compose`
     # binary are allowed so a flag can't slip past.
     (r'\bdocker(?:-compose|\s+compose)\s+' + _CONTAINER_GLOBAL_FLAGS + r'(restart|stop|kill|down)\b', "docker compose restart/stop/kill/down (container lifecycle)"),
-    (r'\bdocker\s+' + _CONTAINER_GLOBAL_FLAGS + r'(restart|stop|kill)\b', "docker restart/stop/kill (container lifecycle)"),
+    (r'\bdocker\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:container\s+)?(restart|stop|kill)\b', "docker restart/stop/kill (container lifecycle)"),
+    # Removing a container or volume is strictly more destructive than stopping it, and the canonical
+    # `container` spelling and the prunes (every stopped container, unused volume/image data) are the same
+    # verbs (#132483). `docker image rm`/`rmi`/`network rm` stay ungated: a pull or a recreate restores them.
+    # Descriptions must name a word `hermes approvals suggest` treats as destructive (`rm`, `delete`), or
+    # it offers the class for the permanent allowlist.
+    (r'\b(?:docker|podman)\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:rm|container\s+(?:rm|remove))\b', "docker/podman rm (container destruction)"),
+    (r'\bdocker(?:-compose|\s+compose)\s+' + _CONTAINER_GLOBAL_FLAGS + r'rm\b', "docker compose rm (container destruction)"),
+    (r'\b(?:docker|podman)\s+' + _CONTAINER_GLOBAL_FLAGS + r'volume\s+(?:rm|remove|prune)\b', "docker/podman volume rm/prune (volume data destruction)"),
+    (r'\b(?:docker|podman)\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:container\s+prune|system\s+(?:prune|reset))\b', "docker/podman container/system prune, podman system reset (deletes stopped containers and unused data)"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
@@ -759,6 +778,9 @@ def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command before pattern matching so ANSI escapes, null bytes, Unicode fullwidth
     forms, and shell splicing tricks cannot bypass detection."""
     from tools.ansi_strip import strip_ansi
+    # Decode $'...' first: the escape strip below would turn $'\x72\x6d' into $'x72x6d', and the
+    # home fold must see the decoded absolute path.
+    command = expand_ansi_c_quotes(command)
     command = unicodedata.normalize('NFKC', strip_ansi(command).replace('\x00', ''))
     # Collapse backslash-newline continuations (`rm -rf \<newline>/` runs as `rm -rf /`). MUST
     # precede the generic escape strip below, whose [^\n] class skips newlines and would leave the
@@ -1398,11 +1420,6 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
     return word
 
 
-def _is_shell_comment_start(command: str, index: int) -> bool:
-    return command[index] == "#" and (index == 0 or command[index - 1].isspace()
-                                      or command[index - 1] in ";&|()<>")
-
-
 def _iter_shell_command_starts(command: str):
     starts = [0]
 
@@ -1628,7 +1645,7 @@ def _deny_command_variants(command: str):
     executable basename (never arbitrary argument paths).
     """
     yield from _command_detection_variants(command)
-    pending, seen = [command], set()
+    pending, seen = [expand_ansi_c_quotes(command)], set()
     while pending:
         source = pending.pop()
         if source in seen:
@@ -1667,7 +1684,9 @@ def _deny_command_variants(command: str):
 def _command_detection_variants(command: str):
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
-    # afterwards could swallow a REAL unquoted newline separator. The raw command carries faithful quote state.
+    # afterwards could swallow a REAL unquoted newline separator. The raw command carries faithful quote state
+    # once $'...' is rewritten as plain single quotes (`$'\''` otherwise desyncs every quote-aware scanner).
+    command = expand_ansi_c_quotes(command)
     normalized = _normalize_command_for_detection(_mask_quoted_newlines(command))
     # Quote-aware grep parsing hides only structurally identified pattern operands; malformed or
     # ambiguous input stays byte-for-byte intact.
@@ -1703,6 +1722,14 @@ def _command_detection_variants(command: str):
                 if marked_payload != payload and fresh(marked_payload):
                     yield marked_payload
                 pending.append(payload)
+    # Payloads parsed from NORMALIZED text lost their escapes before their own quote expansion ran
+    # (`bash -c "$'\\x72\\x6d' -rf /"` reached the patterns as `$'x72x6d'`). Parse the raw argument
+    # too and treat it as new shell input; each payload is a strict substring, so recursion ends.
+    for _, payload in _execution_flag_findings(_mask_quoted_newlines(command)):
+        if payload and payload != command:
+            for variant in _command_detection_variants(payload):
+                if fresh(variant):
+                    yield variant
     # Subshell `(cmd)` / brace-group `{ cmd; }` openers put `cmd` at a real command position the flat `_CMDPOS`
     # patterns can't see (adding `(`/`{` there would match quoted prose like `--title "(reboot)"`). Insert a newline
     # at each start the QUOTE-AWARE tokenizer found instead; this covers every `_CMDPOS` rule in one place.

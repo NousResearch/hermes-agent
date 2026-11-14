@@ -157,7 +157,30 @@ def looks_like_table_row(row: str) -> bool:
     return bool(stripped) and (stripped.startswith("|") or stripped.count("|") >= 2)
 
 
-def _render_block(rows: list[list[str]], available_width: int | None = None) -> list[str]:
+def _cell_align(divider_cell: str) -> str:
+    """``"left"``/``"right"``/``"center"`` from a divider cell's colons, ``""`` when it has none."""
+    c = divider_cell.strip()
+    return {(True, True): "center", (True, False): "left", (False, True): "right"}.get(
+        (c.startswith(":"), c.endswith(":")), "")
+
+
+def _pad(cell: str, width: int, align: str) -> str:
+    gap = max(0, width - _disp_width(cell))
+    if align == "right":
+        return " " * gap + cell
+    if align == "center":
+        return " " * (gap // 2) + cell + " " * (gap - gap // 2)
+    return cell + " " * gap
+
+
+def _divider_cell(width: int, align: str) -> str:
+    """A ``width + 2`` dash run that keeps the column's alignment colons."""
+    left = ":" if align in ("left", "center") else "-"
+    right = ":" if align in ("right", "center") else "-"
+    return left + "-" * width + right
+
+
+def _render_block(rows: list[list[str]], available_width: int | None = None, aligns: list[str] | None = None) -> list[str]:
     """Render ``rows`` (header + body, divider implied) at uniform widths.
 
     When the horizontal table would exceed ``available_width`` fall back to a
@@ -171,10 +194,12 @@ def _render_block(rows: list[list[str]], available_width: int | None = None) -> 
     if available_width is not None and sum(widths) + 3 * ncols + 1 > max(available_width, 20):
         return _render_vertical(rows, ncols, available_width)
 
-    def _row(cells: list[str]) -> str:
-        return "| " + " | ".join(c + " " * max(0, widths[k] - _disp_width(c)) for k, c in enumerate(cells)) + " |"
+    aligns = (aligns or [])[:ncols] + [""] * (ncols - len(aligns or []))
 
-    out = [_row(rows[0]), "|" + "|".join("-" * (w + 2) for w in widths) + "|"]
+    def _row(cells: list[str]) -> str:
+        return "| " + " | ".join(_pad(c, widths[k], aligns[k]) for k, c in enumerate(cells)) + " |"
+
+    out = [_row(rows[0]), "|" + "|".join(_divider_cell(w, a) for w, a in zip(widths, aligns)) + "|"]
     out.extend(_row(r) for r in rows[1:])
     return out
 
@@ -278,6 +303,7 @@ def realign_markdown_tables(text: str, available_width: int | None = None) -> st
         # A table starts with a header row whose next line is a divider.
         if "|" in line and i + 1 < n and is_table_divider(lines[i + 1]):
             header = split_table_row(line)
+            aligns = [_cell_align(c) for c in split_table_row(lines[i + 1])]
             body: list[list[str]] = []
             j = i + 2
             while j < n and "|" in lines[j] and lines[j].strip():
@@ -285,7 +311,7 @@ def realign_markdown_tables(text: str, available_width: int | None = None) -> st
                     body.append(split_table_row(lines[j]))
                 j += 1
             if any(header) or body:
-                out.extend(_render_block([header] + body, available_width))
+                out.extend(_render_block([header] + body, available_width, aligns))
                 i = j
                 continue
         out.append(line)

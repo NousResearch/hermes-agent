@@ -1871,3 +1871,118 @@ async def test_update_cron_job_pins_the_main_model_of_the_jobs_profile(isolated_
     stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
     assert (stored["provider"], stored["model"]) == ("openrouter", "some-model")
     assert "pinned" not in stored
+
+
+# --- Dashboard edit must not widen an explicit zero-tool allowlist (#148886) ---
+
+def _dashboard_form_payload(**overrides):
+    """The payload the dashboard's cron editor PUTs: every form field, always.
+
+    ``web/src/lib/cron-job.ts::buildCronJobPayload`` sends the whole form, and an
+    empty toolset picker becomes ``None`` — it cannot tell "no restriction" from
+    "the stored restriction is the zero-tool list this picker cannot render".
+    """
+    payload = {
+        "name": "zero-tool job", "prompt": "format the input", "schedule": "every 1h",
+        "deliver": "local", "skills": [], "provider": None, "model": None,
+        "base_url": None, "script": None, "no_agent": False, "context_from": None,
+        "enabled_toolsets": None, "workdir": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_dashboard_normalizer_keeps_an_explicit_empty_toolset_list(tmp_path):
+    """[] is the documented zero-tool spelling; only context_from collapses to null."""
+    normalized = _rt_cron._normalize_dashboard_cron_updates(
+        {"enabled_toolsets": [], "context_from": []}, tmp_path)
+    assert normalized["enabled_toolsets"] == []
+    assert normalized["context_from"] is None
+
+
+@pytest.mark.asyncio
+async def test_dashboard_prompt_edit_preserves_a_zero_tool_allowlist(isolated_profiles):
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job", prompt="format the input", schedule="every 1h",
+        name="zero-tool job", enabled_toolsets=[])
+    assert job["enabled_toolsets"] == []
+
+    updated = await _rt_cron.update_cron_job(
+        job["id"],
+        _web_models.CronJobUpdate(updates=_dashboard_form_payload(prompt="format the input text")),
+        profile="worker_alpha",
+    )
+
+    assert updated["prompt"] == "format the input text"
+    # A prompt-only edit must leave the strictest possible allowlist intact: null here
+    # reads back as "no restriction" and hands the job every tool.
+    assert updated["enabled_toolsets"] == []
+    stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert stored["enabled_toolsets"] == []
+
+
+@pytest.mark.asyncio
+async def test_dashboard_cleared_picker_still_clears_a_non_empty_allowlist(isolated_profiles):
+    """A restriction the picker CAN render is still removable by emptying the picker."""
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job", prompt="format the input", schedule="every 1h",
+        name="web-only job", enabled_toolsets=["web"])
+    assert job["enabled_toolsets"] == ["web"]
+
+    updated = await _rt_cron.update_cron_job(
+        job["id"],
+        _web_models.CronJobUpdate(updates=_dashboard_form_payload()),
+        profile="worker_alpha",
+    )
+
+    assert updated["enabled_toolsets"] is None
+
+
+def test_dashboard_create_keeps_an_explicit_empty_toolset_list(isolated_profiles):
+    """The same collapse on the create route: [] must not become "unrestricted"."""
+    job = _web_server_cron._create_cron_job_sync(
+        _web_models.CronJobCreate(
+            prompt="format the input", schedule="every 1h", name="created zero-tool",
+            enabled_toolsets=[]),
+        profile="worker_alpha")
+
+    assert job["enabled_toolsets"] == []
+
+
+@pytest.mark.asyncio
+async def test_dashboard_invalid_toolsets_cannot_widen_allowlist(isolated_profiles):
+    """A non-list-shaped form value must fail, not silently replace the restriction with None.
+
+    ``CronJobUpdate.updates`` is a free-form dict, so pydantic does not vet the field on this
+    route the way ``CronJobCreate`` does; ``_cron_string_list`` answered None for an object,
+    which update_job merges as "no restriction".
+    """
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job", name="web-only job",
+        prompt="format text", schedule="every 1h", enabled_toolsets=["web"])
+
+    with pytest.raises(HTTPException) as exc:
+        await _rt_cron.update_cron_job(
+            job["id"],
+            _web_models.CronJobUpdate(updates={
+                "prompt": "edited text",
+                "enabled_toolsets": {"unexpected": "web"},
+            }),
+            profile="worker_alpha",
+        )
+
+    assert exc.value.status_code == 400
+    assert "enabled_toolsets" in str(exc.value.detail)
+    # The refused edit wrote nothing: the restriction and the prompt both survive.
+    stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert stored["enabled_toolsets"] == ["web"]
+    assert stored["prompt"] == "format text"
+
+
+def test_dashboard_normalizer_rejects_a_non_list_context_from(tmp_path):
+    """Same guard on the sibling list field: a malformed shape cannot clear a chained context."""
+    with pytest.raises(HTTPException) as exc:
+        _rt_cron._normalize_dashboard_cron_updates({"context_from": {"id": "other-job"}}, tmp_path)
+
+    assert exc.value.status_code == 400
+    assert "context_from" in str(exc.value.detail)

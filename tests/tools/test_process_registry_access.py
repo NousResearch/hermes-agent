@@ -110,3 +110,16 @@ def test_foreign_task_cannot_touch_stdin(reg, monkeypatch, action):
     assert _call(monkeypatch, action, "task-b", "key-b", data="x") == pr._not_found("proc_owned1")
     sess.process.stdin.write.assert_not_called()
     sess.process.stdin.close.assert_not_called()
+
+
+def test_allowed_short_id_acts_on_the_session_that_was_checked(reg, monkeypatch):
+    """The action runs on the checked session's FULL id: a prefix that later resolves to another
+    conversation's process (the first one finished and was pruned) cannot be retargeted."""
+    mine = _session()
+    mine.id = "proc_abcd1111aaaa"
+    reg._finished[mine.id] = mine
+    seen = []
+    monkeypatch.setitem(pr._SESSION_ACTIONS, "poll", (lambda sid, args: seen.append(sid) or {"status": "exited"}, False))
+    monkeypatch.setattr(ac, "get_current_session_key", lambda default="": "key-a")
+    pr._handle_process({"action": "poll", "session_id": "abcd1111"}, task_id="task-a")
+    assert seen == ["proc_abcd1111aaaa"]

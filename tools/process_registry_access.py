@@ -41,9 +41,15 @@ def session_action_allowed(session, task_id: str, session_key: str) -> bool:
     return not (task_id or session_key) or not (owner or session.session_key)
 
 
-def caller_may_act(session_id: str, task_id) -> bool:
-    """False only for a session that exists and belongs to someone else; the caller then answers
-    with the same ``not_found`` shape as a miss, so foreign ids are not enumerable."""
+def resolve_actionable(session_id: str, task_id) -> tuple[bool, str]:
+    """``(allowed, id_to_act_on)``. A session that exists but belongs to someone else is refused (the
+    caller then answers with the same ``not_found`` shape as a miss, so foreign ids are not
+    enumerable). An allowed session is acted on by its FULL id, so a short prefix that becomes
+    unique to another conversation's process between check and action cannot retarget it."""
     from tools.process_registry import process_registry
     session = process_registry.get(session_id)
-    return session is None or session_action_allowed(session, str(task_id or ""), caller_session_key())
+    if session is None:
+        return True, session_id
+    if not session_action_allowed(session, str(task_id or ""), caller_session_key()):
+        return False, session_id
+    return True, session.id

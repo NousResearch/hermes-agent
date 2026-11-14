@@ -478,7 +478,7 @@ This replaces a hand-rolled helper that read `~/.codex/auth.json`, POSTed to
 `auth.openai.com/oauth/token` when the token was near expiry and wrote the
 result back. Delete that code; there is no refresh step left for the plugin.
 
-`credentialed_provider_request(provider, method, url, *, json=None, headers=None, timeout=30.0)`
+`credentialed_provider_request(provider, method, url, *, json=None, data=None, files=None, headers=None, timeout=30.0)`
 returns a `ProviderResponse` (`status`, `headers`, `body`, `.text`, `.json()`).
 The rules:
 
@@ -501,6 +501,43 @@ The rules:
   names the sign-in command.
 - Your own `headers` are sent too, except any that would replace the
   `Authorization` (or account) headers Hermes attaches.
+
+#### xAI Grok sign-in and multipart uploads
+
+`requires_auth: [xai-oauth]` gives a plugin the profile's xAI Grok sign-in
+(`hermes auth add xai-oauth`) for `https://api.x.ai` only. Pass a multipart
+form with `data=` (fields, sent first) and `files=` (httpx's file format)
+instead of `json=`; passing both raises `ValueError`:
+
+```python
+from hermes_cli.plugin_provider_requests import (
+    ProviderNotSignedIn, ProviderRequestNotSent, credentialed_provider_request)
+
+with open(path, "rb") as audio:
+    resp = credentialed_provider_request(
+        "xai-oauth", "POST", "https://api.x.ai/v1/stt",
+        data={"model": model}, files={"file": ("audio.wav", audio, "audio/wav")}, timeout=600)
+```
+
+`xai-oauth` is stricter than `openai-codex`:
+
+- **No API-key fallback.** Without the sign-in you get `ProviderNotSignedIn`
+  even when `XAI_API_KEY` is set, so a plugin never bills the API key by
+  surprise.
+- **No caller credentials.** A URL with `user:password@`, or an
+  `Authorization`, `Proxy-Authorization`, `Cookie` or `Host` header, raises
+  `PermissionError` before the sign-in is read.
+- **Typed outcome.** `ProviderRequestNotSent` means nothing reached xAI (the
+  sign-in could not be resolved or refreshed, or the connection failed), so a
+  retry cannot duplicate work. A plain `RuntimeError` means the request may
+  have reached xAI. Hermes never retries it, and you should not retry an
+  upload or paid job blindly. Neither carries the token, the request or a
+  chained exception.
+
+`provider_request_capabilities()` returns `{"providers": [...], "multipart": True}`
+without reading any credential, so a settings screen can check that this
+Hermes supports a provider before offering it. It does not tell you whether
+the profile is signed in.
 
 `requires_auth` appears in `hermes plugins show <name>` and at install time, and
 a catalog re-pin that adds it asks the user before updating. Like capabilities,

@@ -158,3 +158,17 @@ def test_a_different_account_on_the_backup_endpoint_does_not_inherit_the_primary
     lead_failed_turn_with_primary_auth(agent, visible)
     assert visible["final_response"] == "Backup API key rejected"
     assert "primary_auth_failure" not in visible
+
+
+def test_a_route_moved_to_another_url_of_the_backups_provider_drops_the_primary_failure():
+    """``/model --once`` keeps the backup's provider and key but sends to another endpoint: that endpoint's
+    refusals are its own. The turn compares the route it resolved with the one it runs, field by field."""
+    runner = _runner_with_real_runtime_resolution()
+
+    def once_to_another_url(_turn, _policy, model, runtime_kwargs):
+        return model, {**runtime_kwargs, "base_url": "https://other-gateway.test/v1"}
+
+    agent = _run(runner, _ctx(_AgentWithRoute),
+                 patch("gateway.session_cli_turn.one_turn_route", side_effect=once_to_another_url))
+    assert (agent.provider, agent.base_url) == ("anthropic", "https://other-gateway.test/v1")
+    assert agent._primary_auth_failure is None

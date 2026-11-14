@@ -170,6 +170,30 @@ class TestSupportsFilter:
             assert not unsupported, \
                 f"{mid} payload has unsupported keys: {unsupported}"
 
+    def test_flux3_and_ideogram45_payloads_stay_inside_the_vendor_schemas(self, image_tool):
+        """FLUX 3 Image and Ideogram 4.5 payloads carry only keys their FAL OpenAPI schemas
+        declare (seed does not exist on FLUX 3), and their edit paths let the endpoint size
+        from the source: FLUX 3 omits aspect_ratio ("auto"), Ideogram omits image_size and
+        takes a singular `image_url`."""
+        flux_keys = {"prompt", "aspect_ratio", "resolution", "output_format", "safety_tolerance",
+                     "enable_prompt_expansion", "sync_mode", "version", "image_urls"}
+        ideo_keys = {"prompt", "image_size", "quality", "num_images", "seed", "enable_prompt_expansion",
+                     "sync_mode", "image_url", "mask_url", "reference_image_urls", "edit_precision"}
+        flux, ideo = "blackforestlabs/flux-3/text-to-image", "ideogram/v4.5"
+        t2i = image_tool._build_fal_payload(flux, "p", "portrait", seed=7)
+        edit = image_tool._build_fal_edit_payload(flux, "p", ["https://x/a.png", "https://x/b.png"], "portrait")
+        assert set(t2i) <= flux_keys and set(edit) <= flux_keys, (t2i, edit)
+        assert t2i["aspect_ratio"] == "9:16" and t2i["resolution"] == "1k" and "seed" not in t2i
+        assert "aspect_ratio" not in edit and edit["image_urls"] == ["https://x/a.png", "https://x/b.png"]
+        assert image_tool.FAL_MODELS[flux]["edit_endpoint"] == "blackforestlabs/flux-3/edit-image"
+
+        t2i = image_tool._build_fal_payload(ideo, "p", "landscape", seed=7)
+        edit = image_tool._build_fal_edit_payload(ideo, "p", ["https://x/a.png", "https://x/b.png"], "landscape")
+        assert set(t2i) <= ideo_keys and set(edit) <= ideo_keys, (t2i, edit)
+        assert t2i["image_size"] == "landscape_16_9" and t2i["quality"] == "medium" and t2i["seed"] == 7
+        assert edit["image_url"] == "https://x/a.png" and "image_urls" not in edit and "image_size" not in edit
+        assert image_tool.FAL_MODELS[ideo]["edit_endpoint"] == "ideogram/v4.5/edit"
+
 
 
 

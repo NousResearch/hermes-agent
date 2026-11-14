@@ -113,10 +113,12 @@ INVISIBLE_CHARS = frozenset(
     "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
 ) | frozenset(map(chr, range(0xE0000, 0xE0080)))
 
-# Subdivision-flag emoji (TR51: U+1F3F4 + 2-7 lowercase/digit tags + CANCEL TAG, e.g. Scotland) are
-# the one legitimate use of TAG chars. Spaces and punctuation are excluded so the exemption cannot
-# carry a smuggled sentence.
-EMOJI_TAG_SEQUENCE_RE = re.compile("\U0001F3F4[\U000E0030-\U000E0039\U000E0061-\U000E007A]{2,7}\U000E007F")
+# The RGI subdivision flags (England, Scotland, Wales: U+1F3F4 + tag letters + CANCEL TAG) are the one
+# legitimate use of TAG chars. Only those three are exempt: a generic "flag-shaped" exemption lets a
+# run of fake flags carry a smuggled sentence a few tag letters at a time.
+_RGI_SUBDIVISION_FLAGS = ("gbeng", "gbsct", "gbwls")
+EMOJI_TAG_SEQUENCE_RE = re.compile(
+    "|".join("\U0001F3F4" + "".join(chr(0xE0000 + ord(c)) for c in code) + "\U000E007F" for code in _RGI_SUBDIVISION_FLAGS))
 
 # Compiled per scope at import; inclusion is cumulative (all ⊂ context ⊂ strict).
 _SCOPE_SETS = {"all": ("all", "context", "strict"), "context": ("context", "strict"), "strict": ("strict",)}

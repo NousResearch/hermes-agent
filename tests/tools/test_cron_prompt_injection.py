@@ -50,3 +50,8 @@ class TestInvisibleUnicodeParity:
     def test_subdivision_flag_emoji_allowed(self):
         scotland = "\U0001F3F4" + "".join(chr(0xE0000 + ord(c)) for c in "gbsct") + "\U000E007F"
         assert _scan_cron_prompt(f"Post the {scotland} match score") == ""
+
+    def test_chained_fake_flags_blocked(self):
+        payload = "".join("\U0001F3F4" + "".join(chr(0xE0000 + ord(c)) for c in chunk) + "\U000E007F"
+                          for chunk in ("ig", "nore", "previo", "us"))
+        assert "Blocked" in _scan_cron_prompt("Meeting notes " + payload)

@@ -36,6 +36,8 @@ _UNSAFE_CLASS_PATTERNS = [
     r"\bsudo\b", r"privilege", r"credential", r"\bssh\b", r"shell.rc", r"system config", r"system file",
     # data & permissions: SQL DROP/TRUNCATE/DELETE-without-WHERE, chown/chmod, world-writable, overwrite
     r"\bsql\b", r"\bchown\b", r"\bchmod\b", r"writable", r"overwrite", r"in-place edit",
+    # Windows registry writes outlive the session that approved them (reg add, setx, Set-ItemProperty)
+    r"registry",
     # remote/obfuscated execution: pipe-to-shell, encoded PowerShell, heredoc, substitutions
     r"pipe", r"obfuscation", r"remote content", r"remote script", r"heredoc", r"encoded",
     r"command substitution", r"process substitution",

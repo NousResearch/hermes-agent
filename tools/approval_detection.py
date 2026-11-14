@@ -420,6 +420,9 @@ _PS_EXE_AT_COMMAND_POSITION = (
     r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
 )
 
+# PowerShell verbs/aliases that write a registry key when given a provider path.
+_REG_WRITE_VERB = r'(?:sp|si|ni|set-item|new-item)'
+
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -493,6 +496,17 @@ DANGEROUS_PATTERNS = [
     # Registry deletion with force flag.
     (r'\breg(?:\.exe)?\s+delete\b', "registry delete (reg delete)"),
     (r'\bremove-itemproperty\b[^\n]*\s' + _PS_FORCE, "registry value delete (Remove-ItemProperty -Force)"),
+    # Registry writes persist past the session (Run keys, HKCU\Environment, policies), so they prompt
+    # like the deletes above; the read verbs (`reg query`/`export`, Get-ItemProperty) stay quiet.
+    # `\s+` after setx keeps a shell assignment (`setx=1`) out.
+    (r'\breg(?:\.exe)?\s+(?:add|import|copy|restore|load|unload)\b', "registry write (reg add/import/copy/restore/load/unload)"),
+    (r'\bregedit(?:\.exe)?\s+[/-]s\b', "registry write (regedit /s silent .reg import)"),
+    # The short aliases are common words, so they only count when aimed at a registry provider path,
+    # which may sit after any other parameter (`-Force`, `-Name`, `-LiteralPath`, `-Path:`) within the
+    # same segment. The scan stops at the next verb token so a run of `si si si ...` stays linear.
+    (r'\b' + _REG_WRITE_VERB + r'\s(?:(?!\b' + _REG_WRITE_VERB + r'\s)[^\n;|&])*?(?:hk(?:cu|lm|cr|u|cc):|registry::)', "registry write (sp/ni/Set-Item/New-Item on a registry path)"),
+    (r'\bsetx(?:\.exe)?\s+[^\s;&|]', "registry write (setx persistent environment variable)"),
+    (r'\b(?:set|new)-itemproperty\b', "registry value write (Set-ItemProperty / New-ItemProperty)"),
     # Windows service/system stop — analogue of systemctl stop.
     (r'\bstop-service\b[^\n]*\s' + _PS_FORCE_ONLY_F, "force stop service (Stop-Service -Force)"),
     (r'\bsc(?:\.exe)?\s+(?:stop|delete)\b', "stop/delete service (sc)"),

@@ -1360,6 +1360,7 @@ def _reclaim_fds_best_effort() -> None:
 def drain_delivery_queue(adapters, loop) -> int:
     """Send queued worker results through this gateway's live adapters."""
     from cron.delivery_queue import _path, drain
+    from cron.scheduler_delivery_readiness import queued_delivery_ready
 
     # Only restart-safe workers create the queue file.  Every gateway (macOS,
     # Windows, launchd, Docker) runs this housekeeping tick, so skip the sqlite
@@ -1378,7 +1379,7 @@ def drain_delivery_queue(adapters, loop) -> int:
             _mark_incident_alerted(queued_job.get("_failure_incident_id"))
         return error
 
-    return drain(send)
+    return drain(send, ready=queued_delivery_ready)
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
@@ -3117,25 +3118,8 @@ def _save_compose_deliver(
         _normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)) == "origin"
         and not _resolve_delivery_targets(job, for_failure=not d.success)
     )
-    execution_id = job.get('execution_id')
-    if execution_id and not job.get('no_agent'):
-        from cron.delivery_queue import enqueue
-        # Nothing to send: an origin-less job is ``not_configured``, never a queued "delivery".
-        if d.unresolved_origin or _normalize_deliver_value(
-                _delivery_lane_value(job, for_failure=not d.success)) == "local":
-            return
-        queued_job = dict(job)
-        if d.failure_incident_id:
-            queued_job["_failure_incident_id"] = d.failure_incident_id
-        # The queue row IS the send: publish it under the same fence as a direct send, so a claim
-        # stolen after the lost() sample above cannot leave this stale fire's notice queued.
-        with fence.side_effect_fence() as owns_delivery:
-            if not owns_delivery:
-                raise _FireClaimLostDuringSideEffect
-            queued = enqueue(execution_id, queued_job, deliver_content, for_failure=not d.success)
-            # The queue owns this send even if subsequent bookkeeping fails.
-            d.delivery_attempted = True
-        job['last_delivery_queued'] = {'canonical': {'status': queued['status'], 'execution_id': execution_id}}
+    from cron.scheduler_delivery_readiness import queue_run_delivery
+    if queue_run_delivery(d, fence, deliver_content):
         return
     try:
         with fence.side_effect_fence() as owns_delivery:

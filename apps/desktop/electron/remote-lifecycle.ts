@@ -29,6 +29,7 @@ import crypto from 'node:crypto'
 
 import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
+import { stoppedOwnerProbeProgram, stoppedOwnerReservationProgram } from './pooled-ssh-dispatch-recovery'
 import { backendProfileArg } from './profile-id-guard'
 import { REMOTE_MARKER_GATE_PY } from './remote-update-marker-programs'
 import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
@@ -875,6 +876,30 @@ function lockMatchesManagedUpdateScope(lock, expected) {
   )
 }
 
+// A failed HTTP or kill -0 probe is not proof of death (EPERM also fails).
+// Compare the captured generation on both sides of the read-only observation;
+// leave reclamation to the spawn reservation, never unlink this snapshot here.
+async function isOwnedDashboardStopped(ssh, expected) {
+  if (!expected?.creationTime) {
+    return false
+  }
+
+  try {
+    const lock = await readLockfile(ssh, expected.ownershipId)
+
+    if (!lock || isLockfileSkew(lock) || !lockMatchesManagedUpdateScope(lock, expected)) {
+      return false
+    }
+
+    const verdict = String(await ssh.exec(`python3 -c ${shq(stoppedOwnerProbeProgram(lock.pid))}`)).trim()
+    const current = await readLockfile(ssh, expected.ownershipId)
+
+    return verdict === 'DEAD' && JSON.stringify(current) === JSON.stringify(lock)
+  } catch {
+    return false
+  }
+}
+
 function buildOwnedTerminationCommand(lock, ownershipId) {
   const pid = Number(lock.pid)
   const py = value => JSON.stringify(String(value || ''))
@@ -1182,6 +1207,18 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const metadata = JSON.stringify({ schemaVersion: LOCKFILE_SCHEMA_VERSION, ...opts.lockMetadata, pid: '__PID__' })
   const reservationNonce = validateSpawnNonce(opts.reservationNonce || crypto.randomBytes(8).toString('hex'))
 
+  const reservationOwnerDead = opts.automaticRecovery
+    ? `[ "$(python3 -c ${shq(stoppedOwnerProbeProgram())} "$owner_pid")" = DEAD ] &&`
+    : 'kill -0 "$owner_pid" 2>/dev/null ||'
+
+  const reclaimRecord = opts.automaticRecovery
+    ? `verdict=$(python3 -c ${shq(stoppedOwnerReservationProgram(opts.stoppedOwner))} "$lock"); ` +
+      `case "$verdict" in DEAD) rm -f "$lock";; ABSENT) ;; *) exit 75;; esac; `
+    : `if [ -f "$lock" ]; then ` +
+      `existing_pid=$(sed -n 's/.*"pid":\\([0-9][0-9]*\\).*/\\1/p' "$lock" | head -n 1); ` +
+      `case "$existing_pid" in ''|*[!0-9]*) rm -f "$lock";; *) ` +
+      `if kill -0 "$existing_pid" 2>/dev/null; then ${tokenPath ? `rm -f ${tokenPath}; ` : ''}printf EXISTING; exit 0; fi; rm -f "$lock";; esac; fi; `
+
   return withRemoteUpdateMutex(
     `(umask 077 && mkdir -p "$(dirname ${reservation})"); ` +
       // reservation/lockPath/ownerPath are expandRemotePath() output — already
@@ -1192,14 +1229,11 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
       `reservation_nonce=${shq(reservationNonce)}; ` +
       `i=0; while ! mkdir "$reservation" 2>/dev/null; do ` +
       `owner_data=$(cat "$owner_file" 2>/dev/null || true); owner_pid=${'${owner_data%%:*}'}; ` +
-      `case "$owner_pid" in ''|*[!0-9]*) ;; *) kill -0 "$owner_pid" 2>/dev/null || { rm -rf "$reservation"; continue; };; esac; ` +
+      `case "$owner_pid" in ''|*[!0-9]*) ;; *) ${reservationOwnerDead} { rm -rf "$reservation"; continue; };; esac; ` +
       `i=$((i+1)); [ "$i" -ge 600 ] && exit 75; sleep 0.05; done; ` +
       `printf '%s:%s' "$$" "$reservation_nonce" > "$owner_file"; ` +
       `trap 'rm -rf "$reservation"' EXIT; ` +
-      `if [ -f "$lock" ]; then ` +
-      `existing_pid=$(sed -n 's/.*"pid":\\([0-9][0-9]*\\).*/\\1/p' "$lock" | head -n 1); ` +
-      `case "$existing_pid" in ''|*[!0-9]*) rm -f "$lock";; *) ` +
-      `if kill -0 "$existing_pid" 2>/dev/null; then ${tokenPath ? `rm -f ${tokenPath}; ` : ''}printf EXISTING; exit 0; fi; rm -f "$lock";; esac; fi; ` +
+      reclaimRecord +
       `mkdir -p "$(dirname ${logPath})" && ` +
       `${detachedSpawn}; ` +
       `${markerAbsent} || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; ` +
@@ -1307,6 +1341,8 @@ async function spawnRemoteDashboard(
     ownershipId,
     hermesHome = '~/.hermes',
     devServer = '',
+    stoppedOwner = null,
+    automaticRecovery = false,
     assertInstallClear = async () => {}
   }
 ) {
@@ -1381,6 +1417,8 @@ async function spawnRemoteDashboard(
         devServer,
         ownershipId,
         reservationNonce: spawnNonce,
+        stoppedOwner,
+        automaticRecovery,
         lockMetadata: {
           ownershipId,
           spawnNonce,
@@ -1532,6 +1570,32 @@ function lockServesConnect(lock, { profile, reuseToken, hermesPath, hermesHome, 
   )
 }
 
+function assertRecoveryRecord(deps, lock) {
+  if (lock && !isLockfileSkew(lock)) {
+    deps.onOwnerObserved?.()
+  }
+
+  if (deps.automaticRecovery && deps.requireOwnerRecord && !lock) {
+    throw Object.assign(new Error('The remote SSH ownership record is unavailable; automatic recovery refused.'), {
+      kind: 'remote-owner-preserved'
+    })
+  }
+}
+
+async function cleanupConnectOwner(deps, lock, pidAlive?: boolean) {
+  if (deps.automaticRecovery) {
+    if (!(await isOwnedDashboardStopped(deps.ssh, lock))) {
+      throw Object.assign(new Error('The remote SSH owner may still have work; automatic recovery refused.'), {
+        kind: 'remote-owner-preserved'
+      })
+    }
+
+    return
+  }
+
+  await cleanupStale(deps.ssh, deps.ownershipId, lock, pidAlive)
+}
+
 async function connect(deps) {
   const {
     ssh,
@@ -1573,6 +1637,7 @@ async function connect(deps) {
 
   const reuseToken = deps.reuseToken || ''
   const lock = await readLockfile(ssh, ownershipId)
+  assertRecoveryRecord(deps, lock)
 
   if (isLockfileSkew(lock)) {
     // #95532: the lockfile exists but was written by a different (fork) build
@@ -1641,7 +1706,7 @@ async function connect(deps) {
           assertBootstrapNotSuperseded(signal)
           await cancelForwardSafe(deps, localPort, lock.port)
           await assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
-          await cleanupStale(ssh, ownershipId, lock)
+          await cleanupConnectOwner(deps, lock)
         } else if (reuseClassification === 'authenticated-ok') {
           const token = await adoptOwnedServedToken(
             adoptServedToken,
@@ -1685,7 +1750,7 @@ async function connect(deps) {
     } else {
       assertBootstrapNotSuperseded(signal)
       await assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
-      await cleanupStale(ssh, ownershipId, lock, pidAlive)
+      await cleanupConnectOwner(deps, lock, pidAlive)
     }
   }
 
@@ -1700,6 +1765,8 @@ async function connect(deps) {
     ownershipId,
     hermesHome,
     devServer,
+    stoppedOwner: lock,
+    automaticRecovery: Boolean(deps.automaticRecovery),
     assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
   })
 
@@ -1838,6 +1905,7 @@ export {
   fingerprintToken,
   isForwardBindCollision,
   isLockfileSkew,
+  isOwnedDashboardStopped,
   listRemoteHermesProfiles,
   locateHermes,
   LOCKFILE_SCHEMA_VERSION,

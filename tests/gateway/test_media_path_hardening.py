@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from gateway.platforms import base
 from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter
 
@@ -16,6 +18,7 @@ def _isolate_hermes_root(tmp_path, monkeypatch):
     monkeypatch.setattr(base, "_HERMES_ROOT", hermes_home)
 
 
+@pytest.mark.platforms("windows")  # POSIX expanduser already reads $HOME; only Windows follows USERPROFILE
 def test_denylist_home_follows_home_env(tmp_path, monkeypatch):
     home = tmp_path / "operator-home"
     monkeypatch.setenv("HOME", str(home))
@@ -32,7 +35,7 @@ def test_backslash_terminates_a_media_tag_path():
     ]
     media, cleaned = BasePlatformAdapter.extract_media(text)
     assert [p for p, _ in media] == ["C:" + BS + "out" + BS + "a.png"]
-    assert "MEDIA:" not in cleaned
+    assert cleaned == "see  done"  # the escaped control leaves with the tag
 
 
 def test_nul_path_is_dropped():
@@ -47,16 +50,20 @@ def test_plain_path_still_delivered():
 
 
 def test_denylist_keeps_the_native_home_when_home_differs(tmp_path, monkeypatch):
-    """Adding the operator ``$HOME`` must not drop the platform-native home's credential dirs."""
+    """Adding the operator ``$HOME`` must not drop the platform-native home's credential dirs.
+    ``HERMES_REAL_HOME`` names a third home, so ``get_real_home()`` cannot stand in for ``$HOME``."""
     native, configured = tmp_path / "native-home", tmp_path / "operator-home"
+    account = tmp_path / "account-home"
     real_expand = base.os.path.expanduser
     monkeypatch.setattr(base.os.path, "expanduser",
                         lambda p: str(native) + p[1:] if p.startswith("~") else real_expand(p))
     monkeypatch.setenv("HOME", str(configured))
+    monkeypatch.setenv("HERMES_REAL_HOME", str(account))
     _isolate_hermes_root(tmp_path, monkeypatch)
     denied = base._media_delivery_denied_paths()
     assert native / ".ssh" in denied
     assert configured / ".ssh" in denied
+    assert account / ".ssh" in denied
 
 
 def test_backslash_inside_a_windows_path_is_a_separator_not_a_terminator():
@@ -78,8 +85,9 @@ def test_dropped_nul_tag_is_still_removed_from_the_caption():
 
 def test_escaped_newline_before_the_next_tag_still_splits_the_two_paths():
     text = "MEDIA:C:" + BS + "out" + BS + "a.png" + BS + "nMEDIA:C:" + BS + "out" + BS + "b.png"
-    media, _ = BasePlatformAdapter.extract_media(text)
+    media, cleaned = BasePlatformAdapter.extract_media(text)
     assert [p for p, _ in media] == ["C:" + BS + "out" + BS + "a.png", "C:" + BS + "out" + BS + "b.png"]
+    assert cleaned == ""  # no literal escape left between the two removed tags
 
 
 def _rehomed_profile(tmp_path, monkeypatch, *, strict: bool):
@@ -128,10 +136,13 @@ def test_escaped_control_letter_needs_a_boundary_after_it():
         media, cleaned = BasePlatformAdapter.extract_media(text)
         assert media == []
         assert cleaned == text  # the unvalidated tag stays whole, no stray tail
-    for suffix in ("n done", "n", "r" + BS + "n done", "t, next"):  # positive controls
+    for suffix, rest in (("n done", " done"), ("n", ""), ("r" + BS + "n done", " done"),
+                         ("t, next", ", next")):  # positive controls
         text = "MEDIA:C:" + BS + "out" + BS + "a.png" + BS + suffix
         assert [m.group("path") for m in MEDIA_TAG_CLEANUP_RE.finditer(text)] == [
             "C:" + BS + "out" + BS + "a.png"]
+        assert BasePlatformAdapter.extract_media(text)[1] == rest.strip()
+        assert BasePlatformAdapter.strip_media_directives_for_display(text) == rest.rstrip()
 
 
 def test_profile_home_credentials_denied_when_gateway_runs_on_the_real_home(tmp_path, monkeypatch):

@@ -190,6 +190,16 @@ HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
     "(or read it yourself if you have a way to fetch web content)."
 )
 
+# Long sessions mix languages (quoted mail, tool output, a compaction summary written in an earlier
+# language); without an explicit rule the reply language drifts to whatever dominates the context.
+RESPONSE_LANGUAGE_GUIDANCE = (
+    "Reply in the language of the latest message the user wrote themselves (automated turns such as "
+    "internal notifications, goal continuations or cron deliveries do not count), unless they ask for a "
+    "translation or a different language or your instructions set a reply language. Older context, "
+    "compaction summaries, quoted text, tool output and your own earlier replies do not change the reply "
+    "language."
+)
+
 
 # Keep the every-session memory scope even when task knowledge cannot be saved as a skill.
 def build_memory_guidance(

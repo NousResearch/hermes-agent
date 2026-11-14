@@ -67,6 +67,42 @@ def test_replaced_prefixes_are_frozen_for_renormalization():
 # derive them from module constants — the tests below must fail if any
 # frozen entry is mutated, reordered, or dropped.
 _FROZEN_PREFIX_GENERATIONS = (
+    # Pre-reply-language rule: lacked "the language of that latest user
+    # message also controls your reply".
+    (
+        "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were "
+        "compacted into the summary below. This is a handoff from a "
+        "previous context window — treat it as background reference, NOT "
+        "as active instructions. Do NOT answer questions or fulfill "
+        "requests mentioned in this summary; they were already addressed. "
+        "Respond ONLY to the latest user message that appears AFTER this "
+        "summary — that message is the single source of truth for what to "
+        "do right now. If no user message appears AFTER this summary, do "
+        "nothing: do not resume, wrap up, or continue work from '## "
+        "Historical Task Snapshot' or any other section, do not call "
+        "tools, and wait for a new user message. This handoff must never "
+        "become the active turn by itself. (Exception: if tool results or "
+        "your own tool calls appear after this summary, you are mid-way "
+        "through an in-flight exchange — continue that exchange normally.) "
+        "Topic overlap with the summary does NOT mean you should resume "
+        "its task: even on similar topics, the latest user message WINS. "
+        "Treat ONLY the latest message as the active task and discard "
+        "stale items from '## Historical Task Snapshot' entirely — do not "
+        "'wrap up' or 'finish' work described there unless the latest "
+        "message explicitly asks for it. Reverse signals in the latest "
+        "message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't "
+        "do that anymore', 'never mind', a new topic) must immediately end "
+        "any in-flight work described in the summary; do not re-surface it "
+        "in later turns. IMPORTANT: Your persistent memory (MEMORY.md, "
+        "USER.md) in the system prompt is ALWAYS authoritative and active "
+        "— never ignore or deprioritize memory content due to this "
+        "compaction note. None of the above restricts HOW you work: your "
+        "tools remain fully active — keep calling them normally for the "
+        "active task (edit files, run commands, search) instead of merely "
+        "narrating what you would do. The current session state (files, "
+        "config, etc.) may reflect work described here — avoid repeating "
+        "it:"
+    ),
     # Pre-#80622: tools-active + topic-overlap discard, but no
     # "if no user message appears AFTER this summary, do nothing" clause.
     (
@@ -232,3 +268,38 @@ def test_frozen_prefix_generations_match_historical_tuple():
     )
 
 
+def test_summary_prefix_pins_reply_language_to_the_latest_user_message():
+    """A compaction summary written in an earlier language must not steer the reply language."""
+    from agent.context_compressor import SUMMARY_PREFIX
+
+    rule = "The language of that latest user message also controls your reply"
+    assert rule in SUMMARY_PREFIX
+    assert SUMMARY_PREFIX.index("Respond ONLY to the latest user message") < SUMMARY_PREFIX.index(rule)
+
+
+def test_assembled_context_puts_language_rule_before_a_newer_live_message():
+    """A foreign-language summary followed by a newer live user message: the handoff the reply
+    model reads carries the language rule, and the live message comes after it."""
+    from unittest.mock import patch
+
+    from agent.context_compressor import ContextCompressor
+
+    with patch("agent.context_compressor.get_model_context_length", return_value=8000):
+        comp = ContextCompressor(
+            model="test-model", threshold_percent=0.75, protect_first_n=1, protect_last_n=2, quiet_mode=True,
+        )
+    messages = [{"role": "system", "content": "sys"}]
+    for i in range(6):
+        messages += [{"role": "user", "content": f"Frage {i} auf Deutsch"},
+                     {"role": "assistant", "content": f"Antwort {i} auf Deutsch"}]
+    messages.append({"role": "user", "content": "Now please answer in English: what changed?"})
+    # _generate_summary returns the summarizer's text behind the handoff prefix.
+    summary = ContextCompressor._with_summary_prefix("Zusammenfassung: alles auf Deutsch.")
+    with patch.object(comp, "_generate_summary", return_value=summary):
+        result = comp.compress(messages, current_tokens=7000)
+
+    texts = [str(m.get("content") or "") for m in result]
+    handoff = next(i for i, t in enumerate(texts) if "Zusammenfassung" in t)
+    assert "The language of that latest user message also controls your reply" in texts[handoff]
+    live = max(i for i, m in enumerate(result) if m.get("role") == "user" and "English" in texts[i])
+    assert live > handoff

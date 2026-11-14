@@ -1453,6 +1453,26 @@ class TestPruneSessionFilters:
         assert {r["id"] for r in db.list_prune_candidates(title_like="smoke")} == {"smoke"}
         assert {r["id"] for r in db.list_prune_candidates(title_like=r"c:\tmp")} == {"winpath"}
 
+    def test_title_like_matches_non_ascii_letters(self, db):
+        """SQLite's LOWER() folds ASCII letters only, while ``str.lower()`` folds
+        every alphabet: the folded pattern was compared against an unfolded
+        column, so a title in any non-ASCII script matched NOTHING — and a
+        ``--title`` filter with ``--yes`` deletes (or archives) on that same
+        WHERE clause, so it reported "no sessions match" instead of a warning.
+        """
+        self._mk(db, "cyr", title="Телефония")
+        self._mk(db, "mixed", title="Hermes настройки")
+        self._mk(db, "latin", title="Strata 3090")
+
+        assert {r["id"] for r in db.list_prune_candidates(title_like="Телефония")} == {"cyr"}
+        assert {r["id"] for r in db.list_prune_candidates(title_like="настройки")} == {"mixed"}
+        # ASCII filters keep folding in both directions, exactly as before.
+        assert {r["id"] for r in db.list_prune_candidates(title_like="STRATA")} == {"latin"}
+
+        assert db.prune_sessions(older_than_days=None, title_like="Телефония") == 1
+        assert db.get_session("cyr") is None
+        assert db.get_session("mixed") is not None
+
     def test_cwd_prefix_underscore_is_literal_not_a_wildcard(self, db):
         """``_`` is a LIKE wildcard but an ordinary character in a path, so an
         unescaped prefix also matched a same-length sibling directory — and

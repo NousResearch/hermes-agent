@@ -21,8 +21,29 @@ _TOKENS_SQL = "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0))"
 _COST_SQL = "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0)"
 
 
-def _like(value: str) -> str:
-    return f"%{_escape_like(value.lower())}%"
+def _like_filter(column: str):
+    """Builder for a case-insensitive substring filter on ``sessions.<column>``.
+
+    SQLite's ``LOWER()`` folds ASCII letters only, while ``str.lower()`` folds every
+    alphabet, so a folded pattern compared against an unfolded column matches NOTHING as
+    soon as the pattern carries a non-ASCII letter: ``--title Телефония`` never matched a
+    session titled "Телефония". Prune, archive and delete select on this same WHERE, so a
+    Cyrillic, Greek or CJK filter reported "no sessions match" and the operator widened it
+    until something matched. When the pattern is non-ASCII, the raw pattern is matched
+    against the raw column too — the exact text the operator typed, which SQLite can
+    compare without a Unicode-aware fold. ASCII patterns keep the single folded
+    comparison, so their behaviour is unchanged.
+    """
+    folded_clause = f"LOWER(COALESCE(s.{column}, '')) LIKE ? ESCAPE '\\'"
+    exact_clause = f"COALESCE(s.{column}, '') LIKE ? ESCAPE '\\'"
+
+    def build(value):
+        escaped = f"%{_escape_like(value)}%"
+        if value.isascii():
+            return [folded_clause], [escaped.lower()]
+        return [f"({exact_clause} OR {folded_clause})"], [escaped, escaped.lower()]
+
+    return build
 
 
 def _cwd_prefix_filter(value: str) -> tuple[list[str], list]:
@@ -55,17 +76,17 @@ _PRUNE_FILTERS = (
     ("started_before", "notnone", _one("s.started_at < ?")),
     ("started_after", "notnone", _one("s.started_at >= ?")),
     ("source", "truthy", _one("s.source = ?")),
-    ("title_like", "truthy", _one("LOWER(COALESCE(s.title, '')) LIKE ? ESCAPE '\\'", _like)),
+    ("title_like", "truthy", _like_filter("title")),
     ("end_reason", "truthy", _one("s.end_reason = ?")),
     ("cwd_prefix", "truthy", _cwd_prefix_filter),
     ("min_messages", "notnone", _one("s.message_count >= ?")),
     ("max_messages", "notnone", _one("s.message_count <= ?")),
-    ("model_like", "truthy", _one("LOWER(COALESCE(s.model, '')) LIKE ? ESCAPE '\\'", _like)),
+    ("model_like", "truthy", _like_filter("model")),
     ("provider", "truthy", _one("LOWER(COALESCE(s.billing_provider, '')) = ?", str.lower)),
     ("user_id", "truthy", _one("s.user_id = ?")),
     ("chat_id", "truthy", _one("s.chat_id = ?")),
     ("chat_type", "truthy", _one("s.chat_type = ?")),
-    ("branch_like", "truthy", _one("LOWER(COALESCE(s.git_branch, '')) LIKE ? ESCAPE '\\'", _like)),
+    ("branch_like", "truthy", _like_filter("git_branch")),
     ("min_tokens", "notnone", _one(_TOKENS_SQL + " >= ?")),
     ("max_tokens", "notnone", _one(_TOKENS_SQL + " <= ?")),
     ("min_cost", "notnone", _one(_COST_SQL + " >= ?")),

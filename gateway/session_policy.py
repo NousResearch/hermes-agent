@@ -6,6 +6,7 @@ from functools import cached_property
 import contextlib
 import json
 import logging
+import ntpath
 from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
@@ -1001,6 +1002,20 @@ def route_launch_key(authority, policy, config):
     return launch_key(authority, policy)
 
 
+def _stored_cwd_is_absolute(cwd: str) -> bool:
+    """Whether a RECEIPT's cwd is absolute in the spelling the machine that wrote it used.
+
+    A stored cwd records where the session was created, not where this host may run it: a Windows
+    install keeps ``C:\\Users\\<user>`` (not ``Path.is_absolute()`` on POSIX) and a POSIX install keeps
+    ``/home/<user>`` (not absolute to ``WindowsPath``). Judging it with this host's ``Path`` rejected
+    the whole otherwise-valid policy, so every control on a migrated session answered
+    ``storage_unavailable``; ``ntpath.isabs`` covers the foreign spelling while still refusing a
+    relative or drive-relative (``C:hermes``) path. Running a turn in that folder stays refused, by
+    name, through :func:`workspace_ready` -> ``workspace_unavailable``.
+    """
+    return Path(cwd).is_absolute() or ntpath.isabs(cwd)
+
+
 def restore_policy(data):
     """Reject incomplete private policy rather than rebuilding from current defaults."""
     try:
@@ -1009,7 +1024,7 @@ def restore_policy(data):
         surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
         if ((not is_forward_policy(policy) and
              (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
-                or not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute()
+                or not isinstance(policy.cwd, str) or not _stored_cwd_is_absolute(policy.cwd)
                 or not isinstance(policy.model, str) or not policy.model.strip()
                 or not isinstance(policy.toolsets, (list, tuple))
                 or any(not isinstance(name, str) for name in policy.toolsets)

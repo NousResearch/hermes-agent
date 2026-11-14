@@ -128,6 +128,34 @@ describe('PendingApprovalStack', () => {
     expect(screen.getByText('Approve config change: allow SSH tunnel')).toBeTruthy()
   })
 
+  it('renders the guardian reason above the command when the request carries one', () => {
+    setRequest('python3 -c "import json; ..."')
+    setApprovalRequest({
+      command: 'python3 -c "import json; ..."',
+      description: 'script execution via -e/-c flag',
+      sessionId: 'sess-1',
+      smartReason: 'writes outside the workspace'
+    })
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText(/writes outside the workspace/)).toBeTruthy()
+    expect(screen.getByText('python3 -c "import json; ..."')).toBeTruthy()
+  })
+
+  it('offers a copy button for the command text', () => {
+    setRequest('rm -rf /tmp/x')
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByRole('button', { name: /copy/i })).toBeTruthy()
+  })
+
+  it('renders no guardian row when the request carries no reason', () => {
+    setRequest('chmod -R 777 /tmp/x')
+    render(<PendingApprovalStack />)
+
+    expect(document.querySelector('[data-slot="tool-approval-reason"]')).toBeNull()
+  })
+
   it('answers the live approval request with {choice: "once"} and clears the request on Run', async () => {
     const request = mockGateway()
     const respond = liveApproval()

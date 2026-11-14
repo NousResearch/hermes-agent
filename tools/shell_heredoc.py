@@ -73,6 +73,8 @@ def _parse_heredoc_operator(command: str, index: int):
     quoted = False
     while cursor < len(command) and not (command[cursor].isspace() or command[cursor] in ";&|<>()"):
         char = command[cursor]
+        if char == "$":  # ``$'E'`` / ``$"E"``: bash ends at ``E``, not ``$E`` — never guess, mask nothing
+            return None
         if char == "\\":  # backslash-escaped char: quoted, literal
             if cursor + 1 >= len(command) or command[cursor + 1] in "\r\n":
                 return None

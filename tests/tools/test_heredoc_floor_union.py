@@ -37,6 +37,10 @@ EXECUTED_BODIES = [
     # `<<` that is an arithmetic shift, not a heredoc: the next line is a real command.
     f"echo $((1<<2))\n{RM_ROOT}",
     f"x=$((a<<b))\n{RM_ROOT}\nb",
+    # ANSI-C / locale-quoted delimiters: bash ends the body at ``E``, so the next line runs.
+    f"cat <<$'E'\nx\nE\n{RM_ROOT}\n$E",
+    f"cat <<$\"E\"\nx\nE\n{RM_ROOT}\n$E",
+    f"cat <<'E'$'F'\nx\nEF\n{RM_ROOT}\nE$F",
 ]
 
 

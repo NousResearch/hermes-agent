@@ -451,15 +451,24 @@ export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: s
   const profile = (/^[a-z]+:\/\//.test(urlOrProfile) ? scopedProfileOf(new URL(urlOrProfile), method) : urlOrProfile)?.trim()
 
   if (!profile || profile === 'current') {return endpoint}
-  const own = path.basename(endpoint.profile_id)
-  const ownName = path.basename(path.dirname(endpoint.profile_id)) === 'profiles' ? own : 'default'
+  const named = path.basename(path.dirname(endpoint.profile_id)) === 'profiles'
+  const shapeRoot = named ? path.dirname(path.dirname(endpoint.profile_id)) : endpoint.profile_id
+  // A served profile whose own path roots anywhere but the control socket it answers through (a linked
+  // `profiles/<name>`, or `profiles/` itself linked into another tree) is routed by that advertised root,
+  // and no name shortcuts to its target: the target's path names neither the profile nor its siblings' root.
+  const fold = (home: string) => (process.platform === 'win32' ? home.toLowerCase() : home)
+
+  const linkedRoot = endpoint.control_home && endpoint.control_home !== endpoint.profile_id
+    && fold(endpoint.control_home) !== fold(shapeRoot) ? endpoint.control_home : null
+
+  const ownName = linkedRoot ? null : named ? path.basename(endpoint.profile_id) : 'default'
 
   if (profile === ownName) {return endpoint}
 
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profile)) {throw new Error('Invalid profile route')}
   // The root home is the endpoint's own profile_id (Python resolved it); the raw launch HERMES_HOME
   // may be a symlink, and a ticket for an unresolved sibling home fails 'Noncanonical' (B2-17).
-  const root = path.basename(path.dirname(endpoint.profile_id)) === 'profiles' ? path.dirname(path.dirname(endpoint.profile_id)) : endpoint.profile_id
+  const root = linkedRoot ?? shapeRoot
   const home = profile === 'default' ? root : path.join(root, 'profiles', profile)
 
   return { ...endpoint, profile_id: home, control_home: endpoint.control_home || endpoint.profile_id }

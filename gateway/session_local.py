@@ -457,6 +457,7 @@ def local_session_info(authority, ref):
     from gateway.session_authorities import served_profile_name
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, live.source)
+    registry = getattr(authority.runner, 'session_authorities', None)
     if live.source is None:  # a history mount: what its stored row says
         source = authority.db.get_session(ref.session_id)['source']
     else:
@@ -466,8 +467,11 @@ def local_session_info(authority, ref):
                       else _lazy_model(authority, policy)),
             'lazy': agent is None,
             'profile_id': authority.profile_id, 'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL,
-            # Main's TUI labels a named profile's composer (``alpha ❯``) from this field.
-            'profile_name': served_profile_name(authority.profile_id),
+            # Main's TUI labels a named profile's composer (``alpha ❯``) from this field, and Desktop routes
+            # the session by it: the name this gateway reserved the home under, never one read off its path
+            # (a linked profiles/<name> is served at its target).
+            'profile_name': (registry.profile_name(authority) if registry is not None else None)
+                            or served_profile_name(authority.profile_id),
             **({'cwd': policy.cwd} if policy else {}),
             # An ACP session's edit approval policy: every attached surface reads the same one.
             **({'edit_approval_policy': policy.edit_approval_policy} if policy and policy.source == 'acp' else {})}

@@ -139,7 +139,7 @@ hermes webhook subscribe github-prs \
   --events "pull_request" \
   --signature github \
   --prompt "PR #{pull_request.number} {action}: {pull_request.title}\nBy: {pull_request.user.login}\nBranch: {pull_request.head.ref}\n\n{pull_request.body}" \
-  --skills "github-code-review" \
+  --skills "github" \
   --deliver github_comment
 ```
 

@@ -79,7 +79,7 @@ Empty, loading and error are not edge cases in a product; they are the first thi
 
 **7. Density is a decision, not an accident.** Tables stay tables — sticky header, `tabular-nums`,
 right-aligned numerals, a real sort affordance — never card-ified into unscannability. Decide rows
-per screen deliberately. Charts route to the `dataviz` skill, which owns that craft; do not improvise
+per screen deliberately. Charts follow a dedicated charting pass with its own palette; do not improvise
 a palette for series colour here.
 
 > **The sticky-header trap.** Every dense table also needs `overflow-x: auto` on narrow viewports,

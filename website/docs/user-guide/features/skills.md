@@ -99,7 +99,7 @@ Parsing stops at the first token that isn't an installed skill, so arguments
 that happen to start with `/` (like file paths) are never swallowed:
 
 ```bash
-/ocr-and-documents ~/.hermes/cache/scratch/scan.pdf extract the tables   # loads one skill; ~/.hermes/cache/scratch/scan.pdf is the argument
+/pdf ~/.hermes/cache/scratch/scan.pdf extract the tables   # loads one skill; ~/.hermes/cache/scratch/scan.pdf is the argument
 ```
 
 For combinations you use repeatedly, prefer a [skill bundle](#skill-bundles) —

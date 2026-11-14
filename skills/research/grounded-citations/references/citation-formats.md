@@ -17,7 +17,7 @@ Inline `[n]` immediately after the sentence. Block at the end:
 `--style plain` gives a bare `Sources:` header for chat replies where a
 markdown heading would be noise.
 
-## PDF via LaTeX (`latex-pdf-report` skill)
+## PDF via LaTeX
 
 Use `--style footnotes` and map each id to `\footnote{}` at first use, or keep
 numeric markers and emit an endnotes section. For a bibliography-shaped report,

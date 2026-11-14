@@ -34,7 +34,7 @@ skills/
 │       └── scripts/              # 可选：辅助脚本
 │           └── search_arxiv.py
 ├── productivity/
-│   └── ocr-and-documents/
+│   └── pdf/
 │       ├── SKILL.md
 │       ├── scripts/
 │       └── references/

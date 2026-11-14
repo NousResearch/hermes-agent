@@ -3521,6 +3521,15 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             await self._edit_text(chat_id, message_id, plain)
         return False
 
+    async def _after_legacy_edit(
+        self, chat_id: str, message_id: str, content: str, plain: str, finalize: bool, saturated_preview: bool) -> None:
+        """Bookkeeping once a legacy edit landed: remember a saturated preview (dedup), index a final."""
+        if saturated_preview:
+            self._last_overflow_preview[(str(chat_id), str(message_id))] = content
+        if finalize:
+            # The finalized text is what the user sees and quotes: keep it resolvable (#147287).
+            await self._record_sent_text(chat_id, message_id, plain or "")
+
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False, metadata: Optional[dict[str, Any]] = None,
    ) -> SendResult:
@@ -3590,11 +3599,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         warn = "[%s] MarkdownV2 edit failed, falling back to plain text: %s"
         try:
             await self._edit_markdown_or_plain(chat_id, message_id, formatted, plain, warn)
-            if _saturated_preview:
-                self._last_overflow_preview[_preview_key] = content
-            if finalize:
-                # The finalized text is what the user sees and quotes — keep it resolvable.
-                await self._record_sent_text(chat_id, message_id, plain or "")
+            await self._after_legacy_edit(chat_id, message_id, content, plain, finalize, _saturated_preview)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()

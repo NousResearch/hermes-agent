@@ -171,14 +171,33 @@ def scan_for_threats(content: str, scope: str = "context") -> list[str]:
     found_ids: set[str] = set()
     step = MAX_SCAN_CHARS - _CHUNK_OVERLAP
     for start in range(0, len(normalised), step):
-        chunk = normalised[start:start + MAX_SCAN_CHARS]
+        end = start + MAX_SCAN_CHARS
         for compiled, pid in patterns:
-            if pid in found_ids:
-                continue
-            if compiled.search(chunk):
+            if pid not in found_ids and _window_has_match(compiled, normalised, start, end):
                 found_ids.add(pid)
                 findings.append(pid)
     return findings
+
+
+def _window_has_match(compiled: re.Pattern, text: str, start: int, end: int) -> bool:
+    """Whether ``compiled`` has a real match starting in ``text[start:end]``.
+
+    ``pos`` keeps the preceding text visible to ``\\b`` and lookbehinds, but
+    ``endpos`` makes the window end look like end-of-string, so a trailing
+    ``\\b`` or a negative lookahead can accept a match the full text rejects
+    (``$MONKEY`` cut from ``$MONKEY_URL``) — a lookahead can read up to the
+    window end even when the match itself ends earlier.  Unless the window
+    reaches the end of the text, each candidate is re-matched at its absolute
+    position against the complete text (cheap: widths are bounded); a rejected
+    one resumes the search one char later so a real match behind it is not
+    skipped.
+    """
+    pos = start
+    while (m := compiled.search(text, pos, end)) is not None:
+        if end >= len(text) or compiled.match(text, m.start()):
+            return True
+        pos = m.start() + 1
+    return False
 
 
 def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:

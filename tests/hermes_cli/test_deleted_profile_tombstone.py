@@ -8,6 +8,7 @@ lock the tombstone + no-mkdir contract without depending on Desktop.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,8 @@ from hermes_cli.profiles import (
     backfill_profile_envs,
     create_profile,
     delete_profile,
+    export_profile,
+    import_profile,
     list_profile_names,
     list_profiles,
     profile_exists,
@@ -27,7 +30,10 @@ from hermes_cli.profiles import (
     set_active_profile,
 )
 from hermes_constants import (
+    mark_named_profile_deleted,
     named_profile_home,
+    named_profile_is_live,
+    profile_tombstone_path,
     reset_hermes_home_override,
     set_hermes_home_override,
 )
@@ -317,3 +323,31 @@ class TestNamedProfileHome:
         (profiles_dir / ".deleted").mkdir(parents=True)
         worker = profiles_dir / "worker"
         assert named_profile_home(worker / "logs") == worker
+
+
+class TestRefusedImportKeepsDeletedTombstone:
+    """Only a published import may clear the marker.
+
+    Every publish path clears the target name's tombstone (``create_profile``,
+    ``install_distribution`` and, since 7af51a75, ``import_profile`` / ``rename_profile``).
+    The clear is deliberately the LAST step of ``import_profile``: the function refuses plenty
+    of archives and targets, and clearing the marker on any of those paths would resurrect a
+    deleted name over a tree that was never published.
+    """
+
+    def test_an_import_refused_over_a_stale_shell_keeps_the_tombstone(self, profile_env, tmp_path):
+        # `profile delete` leaves the marker; a stale serve/logging process then mkdirs an
+        # empty shell (the ghost this module already covers). The import is refused because
+        # the directory exists — and that ghost must stay non-live, so the marker survives.
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        archive = export_profile("worker", str(tmp_path / "worker.tar.gz"))
+        shutil.rmtree(profile_dir)
+        mark_named_profile_deleted(profile_dir)
+        profile_dir.mkdir()
+        assert not named_profile_is_live(profile_dir)
+
+        with pytest.raises(FileExistsError, match="already exists"):
+            import_profile(str(archive), name="worker")
+
+        assert profile_tombstone_path(profile_dir).exists()
+        assert not named_profile_is_live(profile_dir)

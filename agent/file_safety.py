@@ -436,7 +436,7 @@ _DID_SUFFIX = (
 # Exact-file credential stores under HERMES_HOME / <root>. The agent never
 # needs these directly — provider tools consume them through internal channels.
 _CREDENTIAL_FILE_NAMES = (
-    "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
+    "auth.json", "auth.json.corrupt", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
     os.path.join("auth", "google_oauth.json"), *SECRET_CACHE_STORES,
 )
 

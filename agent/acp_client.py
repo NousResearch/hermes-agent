@@ -71,6 +71,8 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
     if (cached := _ACP_PROBE_CACHE.get(command)) is not None:
         return cached
     try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         probe = subprocess.run(
             [command, "--help"],
             # Explicit codec because text=True alone decodes with the
@@ -79,6 +81,10 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=5,
             stdin=subprocess.DEVNULL,
+            # No console for the child: wrapper shims on PATH (e.g. VS Code Copilot Chat's
+            # copilot.bat -> PowerShell) otherwise write prompts like "Install GitHub Copilot
+            # CLI? (y/N)" straight to the user's console on every startup warm-up.
+            creationflags=windows_hide_flags(),
             check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):

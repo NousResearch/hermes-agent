@@ -3,8 +3,11 @@
 Every event frame through :func:`server.write_json` (hence ``_emit``) gets a per-session monotonic
 ``seq`` and lands in a small ring per session; a reconnecting client calls ``session.events.since``
 with its last seen seq and gets everything newer. Invariants: stdio TUI unaffected (``seq`` only on
-event frames; Ink ignores unknown keys); one lock guards counters + buffers, and write_json already
-serializes per-transport writes so stamping cannot reorder frames; memory bound =
+event frames; Ink ignores unknown keys); one lock guards counters + buffers, and a per-session
+stamp lock (:func:`emit_frame_lock`) holds the stamp→enqueue window so frames cannot leave a
+session's transport in an order its seq contradicts (callers are worker threads — parallel tool
+callbacks — and the transport enqueue alone does not serialize two callers against each other);
+memory bound =
 _REPLAY_BUFFER_MAX events AND _REPLAY_BUFFER_BYTES_MAX frozen UTF-8 payload bytes per session,
 _REPLAY_PROCESS_BYTES_MAX frozen UTF-8 payload bytes across at most _REPLAY_SESSIONS_MAX sessions,
 oldest evicted FIFO (their seq/truncation counters are retained so a revisited session stays
@@ -48,6 +51,34 @@ _replay_next_seq: dict[str, int] = {}
 # compute-host bridge echo) still gets a seq and a watermark but is never retained, so it cannot rebuild a
 # ring that nothing would free until FIFO eviction. One str per closed session, like _replay_next_seq.
 _replay_forgotten: set[str] = set()
+
+# sid -> lock covering one frame's stamp→enqueue window (see emit_frame_lock). Never pruned,
+# not even at forget_session: a late frame for a torn-down sid still stamps under this lock, and
+# dropping it would hand that frame a second lock. One idle lock per session seen, like _replay_next_seq.
+_emit_locks: dict[str, threading.Lock] = {}
+_emit_locks_guard = threading.Lock()
+
+
+def emit_frame_lock(sid: str) -> threading.Lock:
+    """Per-session lock covering one frame's stamp→enqueue window.
+
+    Callers are worker threads (parallel tool callbacks emit a session's frames
+    concurrently), and the client drops any same-session frame whose seq does not
+    advance its watermark. A transport's enqueue order is its call order, so two
+    callers racing between stamp and write can enqueue an inverted pair — and the
+    earlier frame, already counted in the replay ring, silently never reaches the
+    wire. Hold this lock across both steps.
+
+    Holding it across ``transport.write`` costs only same-session emitters, and no
+    caller waits on the event loop while holding it: WS RPC handlers run on pool
+    threads (``asyncio.to_thread``) and the loop's own frames bypass write_json,
+    so the loop never takes this lock.
+    """
+    with _emit_locks_guard:
+        lock = _emit_locks.get(sid)
+        if lock is None:
+            lock = _emit_locks[sid] = threading.Lock()
+        return lock
 
 
 def replay_epoch() -> str:

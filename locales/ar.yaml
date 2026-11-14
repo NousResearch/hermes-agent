@@ -1,5 +1,7 @@
 approval:
   dangerous_header: "⚠️  أمر خطير: {description}"
+  tool_title: "🔐 الموافقة على الأداة: {tool}"
+  command_title: "🔐 الموافقة على الأمر"
   choose_long: "      [o] مرة  |  [s] الجلسة  |  [a] دائمًا  |  [d] رفض"
   choose_short: "      [o] مرة  |  [s] الجلسة  |  [d] رفض"
   prompt_long: "      الاختيار [o/s/a/D]: "

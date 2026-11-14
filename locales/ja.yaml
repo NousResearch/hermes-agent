@@ -1,5 +1,7 @@
 approval:
   dangerous_header: "⚠️  危険なコマンド: {description}"
+  tool_title: "🔐 ツールの承認: {tool}"
+  command_title: "🔐 コマンドの承認"
   choose_long: "      [o]今回のみ  |  [s]セッション中  |  [a]常に許可  |  [d]拒否"
   choose_short: "      [o]今回のみ  |  [s]セッション中  |  [d]拒否"
   prompt_long: "      選択 [o/s/a/D]: "

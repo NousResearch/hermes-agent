@@ -12,7 +12,8 @@ from typing import Callable, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from hermes_cli.web_deps import LateState, late
+from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+from hermes_cli.web_deps import late
 from hermes_cli.config import cfg_get
 from hermes_cli.web_routers._common import config_scoped_to_thread
 from hermes_cli.web_server_dashboard import (
@@ -21,7 +22,8 @@ from hermes_cli.web_server_dashboard import (
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
 from hermes_cli.web_models import (
-    FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginProvidersPutBody, _PluginVisibilityBody,
+    FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginAutoUpdateBody, _PluginProvidersPutBody,
+    _PluginVisibilityBody,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -36,12 +38,11 @@ save_config = late("save_config", "hermes_cli.config")
 # network and hold the scope for their whole duration, and ``_profile_scope`` also holds the
 # process-global skills lock.
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
-_CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 
 def _set_dashboard_key(key: str, value, profile: Optional[str] = None) -> None:
     """Write ``dashboard.<key>`` to the profile's config.yaml under the config mutation lock."""
-    with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
+    with _config_profile_scope(profile), CONFIG_MUTATION_LOCK:
         config = load_config()
         if "dashboard" not in config:
             config["dashboard"] = {}
@@ -232,6 +233,41 @@ async def _named_plugin_action(request: Request, name: str, action: Callable[[st
         action(_validate_plugin_name(name)), fallback_error, rescan=rescan, client_decides=client_decides))
 
 
+@router.post("/api/dashboard/agent-plugins/update-all")
+async def post_agent_plugins_update_all(request: Request):
+    """Update every plugin with an update, unattended: a widened pin or a git update's caution scan comes back
+    ``needs_review`` (nothing changed) for the plugin's own Update action to walk."""
+    _require_token(request)
+    from hermes_cli.plugins_auto_update import update_all_unattended
+
+    def _run() -> dict:
+        outcome = update_all_unattended()
+        if any(r["status"] == "updated" for r in outcome["results"]):
+            _get_dashboard_plugins(force_rescan=True)
+        _invalidate_plugins_hub_cache()
+        return outcome
+
+    return await _plugin_mutation(_run)
+
+
+@router.get("/api/dashboard/plugins/auto-update")
+async def get_plugins_auto_update(request: Request):
+    _require_token(request)
+    from hermes_cli.plugins_auto_update import auto_update_state
+    return await _plugin_mutation(auto_update_state)
+
+
+@router.put("/api/dashboard/plugins/auto-update")
+async def put_plugins_auto_update(request: Request, body: _PluginAutoUpdateBody):
+    _require_token(request)
+    from hermes_cli.plugins_auto_update import set_auto_update
+    from hermes_cli.plugins_cmd import PluginOperationError
+    try:
+        return await _plugin_mutation(lambda: set_auto_update(body.enabled))
+    except PluginOperationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/api/dashboard/agent-plugins/{name:path}/enable")
 async def post_agent_plugin_enable(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
@@ -309,7 +345,7 @@ async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody,
         # whatever home the scope names. Unlike plugin INSTALLATION (host venv, pinned to the
         # serving profile), these two keys are per-profile settings — `memory.provider` is the
         # same key PUT /api/memory/provider scopes — so they follow ``?profile=``.
-        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
+        with _config_profile_scope(profile), CONFIG_MUTATION_LOCK:
             if body.memory_provider is not None:
                 memory_provider = _normalize_memory_provider_name(body.memory_provider)
                 # Readiness resolves through load_config(); inside the scope so the answer is
@@ -332,7 +368,7 @@ async def post_plugin_visibility(request: Request, name: str, body: _PluginVisib
     name = _validate_plugin_name(name)
 
     def _run():
-        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
+        with _config_profile_scope(profile), CONFIG_MUTATION_LOCK:
             config = load_config()
             if "dashboard" not in config or not isinstance(config.get("dashboard"), dict):
                 config["dashboard"] = {}

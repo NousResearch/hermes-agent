@@ -209,6 +209,24 @@ def test_project_list_reports_no_project_for_a_detached_session(gui_sessions, tm
     assert _tool("list")["active_id"] == active
 
 
+def test_project_list_keeps_the_sessions_project_on_unmounted_docker(gui_sessions, tmp_path, monkeypatch):
+    """Unmounted Docker registers no host cwd for the terminal, but the chat is still in its folder."""
+    from tui_gateway import server
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
+    folder = tmp_path / "project"
+    folder.mkdir()
+    with pdb.connect_closing() as conn:
+        project = pdb.create_project(conn, name="Project", folders=[str(folder)])
+    session = gui_sessions("docker-tab", str(folder))
+    session["explicit_cwd"] = True
+    server._register_session_cwd(session)
+
+    assert terminal_tool.resolve_task_overrides("docker-tab")["cwd"] == ""
+    assert _tool("list", "docker-tab")["active_id"] == project
+
+
 def test_idempotent_create_from_a_session_keeps_profile_active_pointer(gui_sessions, tmp_path):
     folders = {name: tmp_path / name for name in ("foreground", "existing")}
     for folder in folders.values():

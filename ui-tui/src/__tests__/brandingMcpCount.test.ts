@@ -1,13 +1,14 @@
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
+import type { SessionInfo } from '@hermes/shared/gateway-types'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { SessionPanel } from '../components/branding.js'
 import { messages } from '../i18n/runtime.js'
 import { DEFAULT_THEME } from '../theme.js'
-import type { McpServerStatus, SessionInfo } from '../types.js'
+import type { McpServerStatus } from '../types.js'
 
 // Invariant under test: the TUI banner's MCP headline counts *connected*
 // servers, never configured-but-disabled ones. This mirrors the classic CLI

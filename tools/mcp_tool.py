@@ -93,8 +93,22 @@ if not _MCP_AVAILABLE:
     logger.debug("mcp package not installed -- MCP tool support disabled")
 
 ClientSession: Any = None
+# True once the probe settled: every SDK import either loaded or is genuinely absent from this
+# SDK build. A transient failure (a concurrent import's _DeadlockError, a partially initialized
+# module, a dependency mid-swap during an update) leaves it False so the next call probes again.
 _MCP_SDK_IMPORT_ATTEMPTED = False
 _MCP_SDK_IMPORT_LOCK = threading.Lock()
+# The ClientSession the probe itself published; any other non-None value is a pre-installed mock.
+_MCP_SDK_PROBED_SESSION: Any = None
+# Why the HTTP transport did not load (shown in the "requires HTTP transport" error); None if it did.
+_MCP_HTTP_IMPORT_ERROR: Optional[str] = None
+# Why the core SDK import failed on the last probe (shown in connect errors); None if it loaded.
+_MCP_SDK_IMPORT_ERROR: Optional[str] = None
+# CPython raises this (a RuntimeError, not an ImportError) when two threads import modules of a
+# circular package such as ``mcp.client`` at once. It clears once the other thread finishes, so
+# the probe retries it in place a few times before treating the import as failed for this call.
+_DeadlockError = getattr(getattr(importlib, "_bootstrap", None), "_DeadlockError", RuntimeError)
+_SDK_DEADLOCK_RETRIES, _SDK_DEADLOCK_RETRY_DELAY = 5, 0.02
 
 # Optional SDK type families (module, names, debug message when absent), bound in this order to
 # _MCP_SAMPLING_TYPES / _MCP_ELICITATION_TYPES / _MCP_NOTIFICATION_TYPES; an older SDK only
@@ -126,66 +140,132 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _import_sdk_names(module: str, names: tuple, missing_msg: Optional[str] = None) -> bool:
-    """Bind ``names`` from SDK ``module`` into this module's globals; False (nothing bound,
-    optional debug line) when this SDK build lacks the module or any of the names."""
-    try:
-        mod = importlib.import_module(module)
-        values = {n: getattr(mod, n) for n in names}
-    except (ImportError, AttributeError):
-        if missing_msg:
-            logger.debug(missing_msg)
-        return False
-    globals().update(values)
-    return True
+def _load_sdk_names(module: str, names: tuple) -> tuple[Optional[dict], Optional[BaseException], bool]:
+    """``(values, None, _)`` for ``names`` from SDK ``module``, else ``(None, error, definitive)``.
+    ``definitive`` means this SDK build lacks the module or name (safe to remember); anything
+    else -- a dependency missing mid-update, a partially initialized module -- is retried by the
+    next probe. Nothing is published: the probe binds every value at once after its flags, so a
+    concurrent caller never observes a half-probed SDK. A racing import's ``_DeadlockError`` is
+    retried briefly in place, since it clears as soon as the other thread finishes the module."""
+    for attempt in range(_SDK_DEADLOCK_RETRIES + 1):
+        partial = None  # stays None when the import itself raised
+        try:
+            mod = importlib.import_module(module)
+            # Read before the lookups: a module still initializing may not have bound the name yet,
+            # and the other thread can finish it before the failure is classified.
+            partial = bool(getattr(getattr(mod, "__spec__", None), "_initializing", False))
+            return {n: getattr(mod, n) for n in names}, None, True
+        except _DeadlockError as exc:
+            if attempt == _SDK_DEADLOCK_RETRIES:
+                return None, exc, False
+            time.sleep(_SDK_DEADLOCK_RETRY_DELAY * (attempt + 1))
+        except ModuleNotFoundError as exc:
+            missing = exc.name
+            return None, exc, missing is not None and (module == missing or module.startswith(missing + "."))
+        except AttributeError as exc:  # definitive only for a name missing from a finished module
+            return None, exc, partial is False
+        except ImportError as exc:  # partially initialized module / broken dependency: transient
+            return None, exc, False
+    return None, None, False  # pragma: no cover — the loop always returns
+
+
+def _describe_import_error(exc: Optional[BaseException]) -> Optional[str]:
+    return f"{type(exc).__name__}: {exc}" if exc is not None else None
 
 
 def _ensure_mcp_sdk() -> bool:
-    """Import the optional ``mcp`` SDK on first use; return availability. Idempotent and
-    thread-safe; honors a test-patched ``_MCP_AVAILABLE=False`` (no import) and pre-installed
-    mocks (``ClientSession`` already set means no re-import)."""
+    """Import the optional ``mcp`` SDK on first use; return availability. Thread-safe: callers
+    block on the lock until the holder has published every flag. A transient import failure is
+    reported for that call and retried on the next one; only a definitive outcome is remembered.
+    Honors a test-patched ``_MCP_AVAILABLE=False`` (no import) and pre-installed mocks (a
+    ``ClientSession`` the probe did not bind means no re-import)."""
     global _MCP_SDK_IMPORT_ATTEMPTED, _MCP_AVAILABLE, _MCP_HTTP_AVAILABLE, _MCP_NEW_HTTP, _MCP_LEGACY_HTTP
     global _MCP_SAMPLING_TYPES, _MCP_NOTIFICATION_TYPES, _MCP_ELICITATION_TYPES, sse_client
     global _MCP_MESSAGE_HANDLER_SUPPORTED, _MCP_LOGGING_CALLBACK_SUPPORTED, LATEST_HANDSHAKE_VERSION
-    global _JSONRPC_METHOD_NOT_FOUND
+    global _JSONRPC_METHOD_NOT_FOUND, _MCP_SDK_PROBED_SESSION, _MCP_HTTP_IMPORT_ERROR, _MCP_SDK_IMPORT_ERROR
     if not _MCP_AVAILABLE:
         return False
-    if _MCP_SDK_IMPORT_ATTEMPTED or ClientSession is not None:
+    if _MCP_SDK_IMPORT_ATTEMPTED or (ClientSession is not None and ClientSession is not _MCP_SDK_PROBED_SESSION):
         return _MCP_AVAILABLE
     with _MCP_SDK_IMPORT_LOCK:
-        if _MCP_SDK_IMPORT_ATTEMPTED or ClientSession is not None:
+        if _MCP_SDK_IMPORT_ATTEMPTED or (ClientSession is not None and ClientSession is not _MCP_SDK_PROBED_SESSION):
             return _MCP_AVAILABLE
-        if (_import_sdk_names("mcp", ("ClientSession", "StdioServerParameters"))
-                and _import_sdk_names("mcp.client.stdio", ("stdio_client",))):
-            _MCP_AVAILABLE = True
-            # mcp >= 1.24 ships streamable_http_client; 2.0 dropped the deprecated
-            # streamablehttp_client alias. Either one gives HTTP.
-            _MCP_NEW_HTTP = _import_sdk_names("mcp.client.streamable_http", ("streamable_http_client",))
-            _MCP_LEGACY_HTTP = _import_sdk_names("mcp.client.streamable_http", ("streamablehttp_client",))
-            _MCP_HTTP_AVAILABLE = _MCP_NEW_HTTP or _MCP_LEGACY_HTTP
-            _import_sdk_names("mcp.types", ("LATEST_PROTOCOL_VERSION",),
-                              "mcp.types.LATEST_PROTOCOL_VERSION not available -- using fallback protocol version")
-            if not _import_sdk_names("mcp.client.session", ("LATEST_HANDSHAKE_VERSION",)):
-                # Pre-2.x SDKs: newest revision IS the handshake revision.
-                LATEST_HANDSHAKE_VERSION = LATEST_PROTOCOL_VERSION
-            if not _import_sdk_names("mcp.client.sse", ("sse_client",),
-                                     "mcp.client.sse.sse_client not available -- SSE transport disabled"):
-                sse_client = None
-            _MCP_SAMPLING_TYPES, _MCP_ELICITATION_TYPES, _MCP_NOTIFICATION_TYPES = [
-                _import_sdk_names(*family) for family in _OPTIONAL_TYPE_FAMILIES]
-        else:
-            logger.debug("mcp package not installed -- MCP tool support disabled")
-        if _MCP_AVAILABLE:
-            try:
-                _JSONRPC_METHOD_NOT_FOUND = importlib.import_module("mcp.types").METHOD_NOT_FOUND
-            except Exception:  # pragma: no cover — SDK without the constant
-                pass
+        # A re-probe (an earlier pass was unsettled) only ever upgrades: a value a previous pass
+        # bound stays bound even if this pass's import of it fails transiently.
+        reprobe = ClientSession is not None
+        settled = True
+        bound: dict = {}
+        errors: dict = {}
+
+        def load(module: str, names: tuple, missing_msg: Optional[str] = None) -> bool:
+            nonlocal settled
+            values, exc, definitive = _load_sdk_names(module, names)
+            if values is not None:
+                bound.update(values)
+                return True
+            errors.setdefault(module, exc)
+            if not definitive:
+                settled = False
+                logger.debug("MCP SDK import of %s failed transiently (%s) -- will retry",
+                             module, _describe_import_error(exc))
+            elif missing_msg:
+                logger.debug(missing_msg)
+            return False
+
+        if not (load("mcp", ("ClientSession", "StdioServerParameters"))
+                and load("mcp.client.stdio", ("stdio_client",))):
+            if reprobe:
+                return True  # an earlier pass already bound a working core SDK
+            _MCP_SDK_IMPORT_ERROR = _describe_import_error(errors.get("mcp") or errors.get("mcp.client.stdio"))
+            if settled:
+                logger.debug("mcp package not installed -- MCP tool support disabled")
+                _MCP_AVAILABLE = False
+                _MCP_SDK_IMPORT_ATTEMPTED = True
+            else:
+                logger.warning("MCP SDK import failed (%s) -- MCP servers are unavailable until it "
+                               "imports; retrying on the next connect", _MCP_SDK_IMPORT_ERROR)
+            return False
+        # mcp >= 1.24 ships streamable_http_client; 2.0 dropped the deprecated
+        # streamablehttp_client alias. Either one gives HTTP.
+        new_http = load("mcp.client.streamable_http", ("streamable_http_client",)) or (reprobe and _MCP_NEW_HTTP)
+        legacy_http = (load("mcp.client.streamable_http", ("streamablehttp_client",))
+                       or (reprobe and _MCP_LEGACY_HTTP))
+        http_error = None
+        if not (new_http or legacy_http):
+            http_error = (_describe_import_error(errors.get("mcp.client.streamable_http"))
+                          or "the SDK exports no streamable HTTP client")
+        load("mcp.types", ("LATEST_PROTOCOL_VERSION",),
+             "mcp.types.LATEST_PROTOCOL_VERSION not available -- using fallback protocol version")
+        has_handshake = load("mcp.client.session", ("LATEST_HANDSHAKE_VERSION",))
+        has_sse = load("mcp.client.sse", ("sse_client",),
+                       "mcp.client.sse.sse_client not available -- SSE transport disabled")
+        type_families = [load(*family) or (reprobe and bool(previous)) for family, previous in
+                         zip(_OPTIONAL_TYPE_FAMILIES,
+                             (_MCP_SAMPLING_TYPES, _MCP_ELICITATION_TYPES, _MCP_NOTIFICATION_TYPES))]
+        values, _exc, _definitive = _load_sdk_names("mcp.types", ("METHOD_NOT_FOUND",))
+
+        # Publish: flags first, then symbols, ClientSession last (it gates the mock fast path).
+        _MCP_NEW_HTTP, _MCP_LEGACY_HTTP = new_http, legacy_http
+        _MCP_HTTP_AVAILABLE, _MCP_HTTP_IMPORT_ERROR = new_http or legacy_http, http_error
+        _MCP_SAMPLING_TYPES, _MCP_ELICITATION_TYPES, _MCP_NOTIFICATION_TYPES = type_families
+        _MCP_SDK_IMPORT_ERROR = None
+        if values is not None:
+            _JSONRPC_METHOD_NOT_FOUND = values["METHOD_NOT_FOUND"]
+        session = bound.pop("ClientSession")
+        globals().update(bound)
+        if not has_handshake and not reprobe:
+            # Pre-2.x SDKs: newest revision IS the handshake revision.
+            LATEST_HANDSHAKE_VERSION = LATEST_PROTOCOL_VERSION
+        if not has_sse and not reprobe:
+            sse_client = None
+        _MCP_SDK_PROBED_SESSION = session
+        globals()["ClientSession"] = session
         _MCP_MESSAGE_HANDLER_SUPPORTED = _client_session_accepts("message_handler")
-        if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
+        if not _MCP_MESSAGE_HANDLER_SUPPORTED:
             logger.debug("MCP SDK does not support message_handler -- dynamic tool discovery disabled")
         _MCP_LOGGING_CALLBACK_SUPPORTED = _client_session_accepts("logging_callback")
-        _MCP_SDK_IMPORT_ATTEMPTED = True
-        return _MCP_AVAILABLE
+        _MCP_SDK_IMPORT_ATTEMPTED = settled
+        return True
 
 
 _SDK_HTTPX_MOD = None
@@ -200,18 +280,20 @@ def sdk_httpx():
     if _SDK_HTTPX_MOD is not None:
         return _SDK_HTTPX_MOD
     try:
-        from mcp.client import streamable_http as _transport
-        _SDK_HTTPX_MOD = getattr(_transport, "httpx2", None) or getattr(_transport, "httpx", None)
-    except ImportError:
-        _SDK_HTTPX_MOD = None
+        _transport = importlib.import_module("mcp.client.streamable_http")
+        found = getattr(_transport, "httpx2", None) or getattr(_transport, "httpx", None)
+    except (ImportError, _DeadlockError):  # absent transport, or a racing import (a RuntimeError)
+        found = None
+    if found is not None:
+        _SDK_HTTPX_MOD = found  # only the SDK's own answer is cached
+        return found
+    # Fallback: not cached, so the SDK's own module wins once its transport imports.
     for fallback in ("httpx2", "httpx"):
-        if _SDK_HTTPX_MOD is not None:
-            break
         try:
-            _SDK_HTTPX_MOD = importlib.import_module(fallback)
+            return importlib.import_module(fallback)
         except ImportError:
             pass
-    return _SDK_HTTPX_MOD
+    return None
 
 
 def _client_session_accepts(kwarg: str) -> bool:

@@ -1,0 +1,28 @@
+name: genui
+repo: https://github.com/agenticatech/genui-hermes-hackathon
+sha: 9465bec650ec4ad78e517575822858e5c133033b
+subdir: plugin
+title: GenUI
+description: "Live cards for Hermes Desktop: the agent shows a long task as a pre-designed card (a pull request, a release, a slow machine, files to clean up, a study session), updates it in place after every tool result, and asks for a decision with a button only when one is needed; the click (and what you ticked or answered in the card) goes back to the agent as one turn. Disclosure — no network calls, no telemetry, no credentials; writes one small JSON file per shown card in the plugin's data directory, removed after 30 days untouched; adds a short turn hint to Hermes Desktop turns only; cards run in a sandboxed frame, a click on a decision posts one visible message from the user, and a click on an http(s) link in a card (link targets come from the agent) opens it in the user's browser."
+maintainer: agenticatech
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "0.2.1"
+docs_url: https://github.com/agenticatech/genui-hermes-hackathon/tree/9465bec650ec4ad78e517575822858e5c133033b/plugin#readme
+image: https://raw.githubusercontent.com/agenticatech/genui-hermes-hackathon/9465bec650ec4ad78e517575822858e5c133033b/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/agenticatech/genui-hermes-hackathon/9465bec650ec4ad78e517575822858e5c133033b/docs/screenshots/pr_conflicts.png
+  - https://raw.githubusercontent.com/agenticatech/genui-hermes-hackathon/9465bec650ec4ad78e517575822858e5c133033b/docs/screenshots/pr_merged.png
+  - https://raw.githubusercontent.com/agenticatech/genui-hermes-hackathon/9465bec650ec4ad78e517575822858e5c133033b/docs/screenshots/release_rollback.png
+  - https://raw.githubusercontent.com/agenticatech/genui-hermes-hackathon/9465bec650ec4ad78e517575822858e5c133033b/docs/screenshots/study_quiz.png
+readme: true
+platforms: []
+known_issues:
+  - "A click in a card shows up in the chat as a JSON message from you: the Desktop SDK has no hidden send."
+  - "Cards render in Hermes Desktop; on other platforms the agent works in text as usual."
+capabilities:
+  provides_tools: [show_component, update_component, ask_user]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

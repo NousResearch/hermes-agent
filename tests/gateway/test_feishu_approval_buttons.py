@@ -212,12 +212,13 @@ class TestResolveApproval:
             "session_key": "agent:main:feishu:group:oc_12345",
             "message_id": "msg_001",
             "chat_id": "oc_12345",
+            "request_id": "req-1",
         }
 
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
             await adapter._resolve_approval(1, "once", "Norbert", open_id="ou_user1", chat_id="oc_12345")
 
-        mock_resolve.assert_called_once_with("agent:main:feishu:group:oc_12345", "once")
+        mock_resolve.assert_called_once_with("agent:main:feishu:group:oc_12345", "once", request_id="req-1")
         assert 1 not in adapter._approval_state
 
 
@@ -248,6 +249,7 @@ class TestNonApprovalCardAction:
     @pytest.mark.asyncio
     async def test_routes_as_synthetic_command(self):
         adapter = _make_adapter()
+        adapter._allowed_group_users = frozenset({"ou_user1"})  # clicker passes the group allowlist
 
         data = _make_card_action_data(
             action_value={"custom_action": "something_else"},
@@ -669,3 +671,23 @@ class TestResolveUpdatePrompt:
         assert 3 in adapter._update_prompt_state
 
 
+
+
+def test_resolved_card_keeps_the_request(_patch_callback_card_types):
+    """Clicking a button replaces the card; the replacement still shows the command and reason."""
+    import asyncio
+    adapter = _make_adapter()
+    response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="msg_9"))
+    with patch.object(adapter, "_feishu_send_with_retry", new_callable=AsyncMock, return_value=response):
+        asyncio.run(adapter.send_exec_approval(chat_id="oc_12345", command="rm -rf ./build",
+                                               session_key="sess-9", description="dangerous deletion"))
+    approval_id = next(iter(adapter._approval_state))
+    adapter._loop = MagicMock()
+    adapter._loop.is_closed = MagicMock(return_value=False)
+    adapter._allowed_group_users = {"ou_bob"}
+    adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+    data = _make_card_action_data({"hermes_action": "approve_once", "approval_id": approval_id}, open_id="ou_bob")
+    with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+        card = adapter._on_card_action_trigger(data).card.data
+    content = card["elements"][0]["content"]
+    assert "rm -rf ./build" in content and "dangerous deletion" in content and "Bob" in content

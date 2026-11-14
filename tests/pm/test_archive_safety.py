@@ -294,6 +294,26 @@ class TestTransientHolds:
 
         assert len(calls) == (1 if error.errno == 18 else len(filesystem._HELD_RETRY_DELAYS) + 1)
 
+    def test_a_held_duplicate_metadata_unlink_is_retried(self, tmp_path, monkeypatch):
+        dest = tmp_path / "dest"
+        members = {".DS_Store": b"outer", "pkg/.DS_Store": b"inner", "pkg/bin/tool": b"x"}
+        extract(_tar(tmp_path / "meta.tar.gz", members), dest)
+        calls = []
+        real = Path.unlink
+
+        def unlink(self, *args, **kwargs):
+            if self.name == ".DS_Store":
+                calls.append(self)
+                if len(calls) == 1:
+                    raise PermissionError(13, "Access is denied")
+            return real(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+        flatten_single_dir(dest)
+
+        assert len(calls) == 2
+        assert (dest / ".DS_Store").read_bytes() == b"inner" and (dest / "bin" / "tool").is_file()
+
 
 class TestStoreIsolation:
     def test_extract_replaces_only_its_own_entry_directory(self, tmp_path):

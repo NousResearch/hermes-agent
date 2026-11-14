@@ -23,7 +23,8 @@ def main() -> None:
     root = Path(os.environ["HERMES_HOME"]) / "hermes-agent"
     root.mkdir(parents=True)
     for name in (
-        "hermes_cli", "hermes_platform", "pm", "agent", "tools", "gateway", "tui_gateway", "cron", "plugins",
+        "hermes_agent", "hermes_cli", "hermes_platform", "pm", "agent", "tools", "gateway", "tui_gateway", "cron",
+        "plugins",
     ):
         shutil.copytree(repository / name, root / name,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))

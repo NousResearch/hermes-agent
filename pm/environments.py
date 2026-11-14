@@ -108,7 +108,7 @@ def runtime_facts_path(project_root: Path) -> Path:
 
 # The files that decide the dependency set. `scripts/run-in-hermes-env` re-syncs
 # when any of them differs in mtime from its stamp under activation_inputs_dir.
-ACTIVATION_INPUTS = ("uv.lock", "pyproject.toml", "pm/lock.json")
+ACTIVATION_INPUTS = ("uv.lock", "pyproject.toml", "setup.py", "pm/lock.json")
 
 
 def activation_inputs_dir(project_root: Path) -> Path:
@@ -299,7 +299,8 @@ def committed_venv(project_root: Path) -> Path | None:
 
     Unlike ``selected_venv`` this never answers with the in-tree ``venv``/``.venv``: that tree
     predates PM and is built for whichever interpreter created it, so loading it from PM's store
-    Python mixes ABIs (compiled modules vanish) and PM deletes it once a generation is committed.
+    Python mixes ABIs (compiled modules vanish). PM never deletes it: ``legacy_selection`` reads its
+    site-packages again whenever this install has no dependency facts.
     """
     return _recorded_venv(project_root) or payload_venv(project_root)
 

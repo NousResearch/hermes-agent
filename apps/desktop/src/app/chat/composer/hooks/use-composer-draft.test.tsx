@@ -623,6 +623,7 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
   afterEach(() => {
     cleanup()
     mainComposerScope.clear()
+    clearSessionDraft('keyboard-focus')
     markActiveComposer('main')
   })
 
@@ -666,6 +667,37 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
     )
 
     expect(getActiveComposer()).toBe('tile:fg')
+  })
+
+  it('preserves session-tab focus through mount and activation while allowing an explicit composer focus request', () => {
+    let focusInput!: () => void
+
+    function Draft({ focusKey }: { focusKey: string }) {
+      const draft = useComposerDraft({
+        activeQueueSessionKey: 'keyboard-focus',
+        focusKey,
+        inputDisabled: false,
+        queueEditRef: { current: null },
+        sessionId: 'keyboard-focus'
+      })
+
+      focusInput = draft.focusInput
+
+      return (
+        <>
+          <div ref={element => element?.focus()} role="tab" tabIndex={0}>Session tab</div>
+          <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} role="textbox" tabIndex={0} />
+        </>
+      )
+    }
+
+    const { getByRole, rerender } = render(<Draft focusKey="first" />)
+    const tab = getByRole('tab')
+    expect(globalThis.document.activeElement).toBe(tab)
+    rerender(<Draft focusKey="second" />)
+    expect(globalThis.document.activeElement).toBe(tab)
+    act(() => focusInput())
+    expect(globalThis.document.activeElement).toBe(getByRole('textbox'))
   })
 
   it('claims the bus on mount when visible', () => {

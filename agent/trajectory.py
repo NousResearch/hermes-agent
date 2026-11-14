@@ -11,14 +11,14 @@ from agent.redact import redact_sensitive_text
 logger = logging.getLogger(__name__)
 
 
-def _redact_trajectory_value(value: Any) -> Any:
+def redact_trajectory_value(value: Any) -> Any:
     """Redact string leaves without allowing redaction markers to change JSON syntax."""
     if isinstance(value, str):
         return redact_sensitive_text(value, force=True)
     if isinstance(value, list):
-        return [_redact_trajectory_value(item) for item in value]
+        return [redact_trajectory_value(item) for item in value]
     if isinstance(value, dict):
-        return {key: _redact_trajectory_value(item) for key, item in value.items()}
+        return {key: redact_trajectory_value(item) for key, item in value.items()}
     return value
 
 
@@ -55,7 +55,7 @@ def save_trajectory(trajectory: list[dict[str, Any]], model: str, completed: boo
     try:
         # Trajectories are durable files and may contain tool arguments or user text.  Apply the
         # central redactor at this persistence boundary regardless of the display/config toggle.
-        safe_entry = _redact_trajectory_value(entry)
+        safe_entry = redact_trajectory_value(entry)
         line = json.dumps(safe_entry, ensure_ascii=False) + "\n"  # serialize before taking the lock
         with open(filename, "a", encoding="utf-8") as f:
             # Gateway sessions and batch workers append to the SAME default file; without an

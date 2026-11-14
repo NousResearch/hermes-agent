@@ -1321,7 +1321,17 @@ def _live_send_text(
         _warn_live_lane_failure(job, msg, t.is_relay)
         target_errors.append(msg)
         return False, False, None
-    if send_raw_response and t.thread_id and send_raw_response.get("thread_fallback"):
+    # ``send_raw_response`` is the adapter's raw transport response and is a plain dict only
+    # for adapters that implement the thread_fallback contract; some adapters (the Feishu
+    # reply path) return an SDK object instead. Calling .get() on that object raises
+    # AttributeError, which unwinds out of this lane *after* a successful send and lands as a
+    # delivery failure — the scheduler then re-delivers the same result standalone, so the
+    # user receives the message twice.
+    if (
+        send_raw_response and t.thread_id
+        and isinstance(send_raw_response, dict)
+        and send_raw_response.get("thread_fallback")
+    ):
         requested_thread_id = send_raw_response.get("requested_thread_id") or t.thread_id
         _note_target_error(
             job,

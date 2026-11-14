@@ -711,8 +711,17 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         discover_plugins()
-        portable = get_plugin_manager().get_portable_mcp_servers()
-        for name, cfg in _filter_suspicious_mcp_servers(_render_portable_mcp_servers(portable)).items():
+        portable = _render_portable_mcp_servers(get_plugin_manager().get_portable_mcp_servers())
+        # A native entry replaces the package's command, which never spawns: only its budget is merged, so
+        # only the budget is checked (a suspicious unused command must not strip the replacement's limits).
+        replaced = {n: c for n, c in portable.items() if n in safe_servers and n not in rejected}
+        for name, cfg in replaced.items():
+            if (bad_costs := _malformed_cost_table(name, cfg)) is not None:
+                logger.error("Portable MCP server '%s' declares an unusable budget (%s); the native entry runs "
+                             "without it", name, bad_costs)
+                replaced[name] = {}
+        kept = _filter_suspicious_mcp_servers({n: c for n, c in portable.items() if n not in replaced})
+        for name, cfg in {**kept, **replaced}.items():
             if name in rejected:  # the user's own entry for this name has a malformed budget: stay off
                 logger.warning("Portable MCP server '%s' skipped: the native entry of that name was rejected", name)
             elif name in safe_servers:
@@ -740,6 +749,11 @@ def _load_mcp_config() -> dict[str, dict]:
         from utils import env_var_enabled as _env_enabled
         if _env_enabled("HERMES_SAFE_MODE"):
             return {}
+        try:  # native and package filters both need it, even with no native entries: fail closed, visibly
+            import hermes_cli.mcp_security
+        except ImportError as exc:
+            logger.warning("MCP server validator unavailable; no MCP servers started: %s", exc)
+            return {}
         servers = load_config().get("mcp_servers")
         try:  # ensure .env vars are available for interpolation
             from hermes_cli.env_loader import load_hermes_dotenv
@@ -759,9 +773,6 @@ def _load_mcp_config() -> dict[str, dict]:
         rejected = frozenset(n for n in servers if n not in kept and _malformed_cost_table(n, servers[n]) is not None)
         _portable_mcp_servers(safe_servers, rejected)
         return safe_servers
-    except ImportError as exc:  # the safety validator is missing: fail closed, but visibly
-        logger.warning("MCP server validator unavailable; no MCP servers started: %s", exc)
-        return {}
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}

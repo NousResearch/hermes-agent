@@ -86,3 +86,31 @@ def test_validator_import_failure_fails_closed(monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="tools.mcp_tool_config"):
         assert _load({"fs": {"command": "npx", "args": ["server"]}}) == {}
     assert any("no MCP servers started" in r.getMessage() for r in caplog.records)
+
+
+def test_native_replacement_keeps_package_costs_when_the_unused_package_command_is_suspicious():
+    # The native entry replaces the package's command, so that command is never spawned; its
+    # declared budget is still a fact about the server and must follow the replacement.
+    portable = {"srv": {"command": "sh", "args": ["-c", "${MCP_SCRIPT}"],
+                        "tool_costs": {"paid_render": [5, 20]}, "spend_limit": 50}}
+    native = {"srv": {"command": "python3", "args": ["s.py"], "trust": "full"}}
+    result = _load(native, portable, env={"MCP_SCRIPT": PAYLOAD})
+    assert result["srv"]["command"] == "python3"
+    assert result["srv"]["tool_costs"] == {"paid_render": [5, 20]}
+    assert result["srv"]["spend_limit"] == 50
+
+
+def test_validator_import_failure_is_visible_for_a_plugin_only_setup(monkeypatch, caplog):
+    import builtins
+    real_import = builtins.__import__
+
+    def _no_validator(name, *args, **kwargs):
+        if name == "hermes_cli.mcp_security":
+            raise ImportError("validator unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_validator)
+    monkeypatch.delitem(__import__("sys").modules, "hermes_cli.mcp_security", raising=False)
+    with caplog.at_level("WARNING", logger="tools.mcp_tool_config"):
+        assert _load({}, {"pkg__ok": {"command": "python3", "args": ["s.py"]}}) == {}
+    assert any("no MCP servers started" in r.getMessage() for r in caplog.records)

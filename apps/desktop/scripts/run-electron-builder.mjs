@@ -80,6 +80,9 @@ function toolsetArguments(inputs) {
     const destination = path.join(tools, name)
     fs.rmSync(destination, { recursive: true, force: true })
     fs.cpSync(directory, destination, { recursive: true, verbatimSymlinks: true })
+    // The packaged icon-tool.js is CommonJS; running it from apps/desktop (type: module)
+    // treats it as ESM on Node >=20 unless the toolset directory declares CommonJS.
+    fs.writeFileSync(path.join(destination, 'package.json'), JSON.stringify({ type: 'commonjs' }) + '\n')
     // Upstream parses this as a literal path after slicing file:// (not URL decoding).
     return `-c.toolsets.${name}.url=file://${destination}`
   })

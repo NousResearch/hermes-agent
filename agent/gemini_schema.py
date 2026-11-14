@@ -71,6 +71,16 @@ def sanitize_gemini_schema(schema: Any) -> dict[str, Any]:
     ``properties`` / ``items`` / ``anyOf``."""
     if not isinstance(schema, dict):
         return {}
+    # The legacy subset has no ``prefixItems``: fold the positional schemas (plus any trailing
+    # ``items`` rule) into one ``items`` union so no position inherits only the trailing rule.
+    prefix = schema.get("prefixItems")
+    if isinstance(prefix, list) and prefix:
+        branches: list = []
+        for branch in [*prefix, schema.get("items")]:
+            if isinstance(branch, dict) and branch not in branches:
+                branches.append(branch)
+        if branches:
+            schema = {**schema, "items": branches[0] if len(branches) == 1 else {"anyOf": branches}}
     cleaned: dict[str, Any] = {}
     for key, value in schema.items():
         if key not in _GEMINI_SCHEMA_ALLOWED_KEYS:

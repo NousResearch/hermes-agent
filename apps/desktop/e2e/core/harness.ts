@@ -81,7 +81,7 @@ export function createCoreSandbox(label: string): CoreSandbox {
       stopSandboxGatewayDaemons(root, hermesHome)
 
       if (!process.env.HERMES_E2E_CORE_KEEP) {
-        fs.rmSync(root, { recursive: true, force: true })
+        fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
       }
     }
   }

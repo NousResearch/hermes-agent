@@ -41,8 +41,10 @@ function python(): string {
     return selected
   }
 
+  const suffix = process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python']
+
   for (const venv of ['.venv', 'venv']) {
-    const candidate = path.join(REPO_ROOT, venv, 'bin', 'python')
+    const candidate = path.join(REPO_ROOT, venv, ...suffix)
 
     if (fs.existsSync(candidate)) {
       return candidate

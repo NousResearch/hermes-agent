@@ -226,19 +226,21 @@ def _notif_refusal_backoff(session: dict) -> None:
 
 
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> bool:
-    """Only the execution gate can acknowledge a claimed notification turn."""
+    """Only the execution gate can acknowledge a claimed notification turn. Every caller claimed ``running`` just
+    before, so the token read here is its own; nothing else can claim while ``running`` stays True."""
+    claim = session.get("_notif_turn_claim")
     try:
         accepted = _run_prompt_submit(rid, sid, session, text, **kwargs)
         if accepted:
             session.pop("_notif_refusal_delay", None)
         else:
-            # Admission can refuse even after the local running flag was claimed. A caller that
-            # requeues the notice backs off first (_notif_refusal_backoff); the rest return at once.
-            _notif_release_turn(session)
+            # A refusing admission already released ``running``, and a user prompt may own it since. A caller
+            # that requeues the notice backs off first (_notif_refusal_backoff); the rest return at once.
+            _notif_release_claim(session, claim)
         return accepted
     except Exception as exc:
         _notif_log_failure(what, exc)
-        _notif_release_turn(session)
+        _notif_release_claim(session, claim)
         raise
 
 
@@ -316,6 +318,7 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
         return  # not due, or the gateway poller owns the routed conversation — stays due there
     if not _notif_claim_turn(session):
         return  # busy — the tick coalesces to the next idle poll
+    claim = session.get("_notif_turn_claim")
     if not (prompt := mgr.due_prompt()):
         _notif_release_turn(session)
         return
@@ -326,8 +329,8 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     except Exception as exc:
         _notif_log_failure("heartbeat dispatch failed", exc)
     if not started:
-        # _run_prompt_submit releases ``running`` itself when it refuses the turn; make it unconditional.
-        _notif_release_turn(session)
+        # A refusing admission already released ``running`` (a user prompt may own it since): release only our claim.
+        _notif_release_claim(session, claim)
         with contextlib.suppress(Exception):
             mgr.abandon_fire()
 
@@ -645,6 +648,7 @@ def _background_notifications_off(session: dict) -> bool:
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
     """Run the claimed (running=True) agent turn for one notification event."""
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+    turn_claim = session.get("_notif_turn_claim")
     try:
         claim = claim_event_delivery(evt, "tui-poller")
     except Exception as exc:  # shared ledger busy/unreadable: the durable row stays pending and replays
@@ -654,7 +658,7 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         # Another consumer holds the durable row — a gateway sharing this home claims before it verifies
         # the target. No turn will run, and nothing else clears ``running``: a busy session is exempt
         # from the reaper, keeps its lease, and never reaches its bot mailbox again.
-        _notif_release_turn(session)
+        _notif_release_claim(session, turn_claim)
         return
     evt_type = evt.get("type")
     kwargs: dict = {}

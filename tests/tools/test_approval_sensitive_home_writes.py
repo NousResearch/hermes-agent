@@ -133,6 +133,43 @@ class TestQuotedHomePrefixHardline:
         monkeypatch.setenv("HOME", "/root")
         assert detect_hardline_command(command)[0] is True, command
 
+    @pytest.mark.parametrize("command, rule", [
+        # Quoted root-collapse segments glued after a quoted root still name the root.
+        ("rm -rf \"$HOME\"'/'", "recursive delete of home directory"),
+        ("rm -rf \"$HOME\"'./'\"..\"", "recursive delete of home directory"),
+        ("rm -rf '/root'\"/\"", "recursive delete of system directory"),
+        ("rm -rf \"/\"'/'", "recursive delete of root filesystem"),
+        ("rm -rf \"/\"'./'\"/\"'/'*", "recursive delete of root filesystem"),
+    ])
+    def test_quoted_root_collapse_segments_stay_hardline(self, monkeypatch, command, rule):
+        from tools.approval import detect_hardline_command
+
+        monkeypatch.setenv("HOME", "/root")
+        assert detect_hardline_command(command) == (True, rule), command
+
+    @pytest.mark.parametrize("command", [
+        "rm -rf \"$HOME\"'/build'", "rm -rf '/root'\"/projects\"",
+        # A quoted `*` is a literal file name, not a glob.
+        'rm -rf "$HOME"/"*"', "rm -rf \"/\"'*'",
+    ])
+    def test_quoted_subtree_segments_are_not_hardline(self, monkeypatch, command):
+        from tools.approval import detect_hardline_command
+
+        monkeypatch.setenv("HOME", "/root")
+        assert detect_hardline_command(command) == (False, None), command
+
+    @pytest.mark.parametrize("command", [
+        "rm -rf \"$HOME\"" + "'/'" * 1300 + "x",
+        "rm -rf \"/\"" + "'./" * 1300 + "x",
+        "rm -rf \"/root\"" + "\"/." * 1300 + "x",
+    ])
+    def test_quoted_collapse_tail_scans_in_linear_time(self, command):
+        from tools.approval import detect_hardline_command
+
+        start = time.monotonic()
+        assert detect_hardline_command(command) == (False, None)
+        assert time.monotonic() - start < 2.0, command[:30]
+
 
 class TestFileToolShellRcGate:
     @pytest.fixture()

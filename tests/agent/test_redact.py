@@ -409,7 +409,7 @@ class TestJsonFields:
     def test_json_field_inside_json_encoded_string_is_masked_and_stays_valid(self, depth):
         # A tool result wrapping a config dump escapes its quotes; the plain JSON rule never saw the value.
         import json
-        key = "AQ.Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+        key = "Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
         text = json.dumps({"api_key": key, "token": "CPU", "model": "gemini"})
         for _ in range(depth):
             text = json.dumps({"output": text})

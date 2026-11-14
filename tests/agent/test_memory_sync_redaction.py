@@ -94,7 +94,7 @@ def test_scrub_holds_with_redact_secrets_off(monkeypatch):
 def test_key_detected_in_a_json_tool_result_is_also_masked_where_the_model_repeats_it_bare():
     # The #115104 incident shape: an opaque (no vendor prefix) key in an ov.conf dump inside a JSON tool result,
     # then echoed by the assistant in prose where no pattern alone could recognise it.
-    key = "AQ.Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+    key = "Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
     tool = json.dumps({"output": json.dumps({"embedding": {"api_key": key}, "model": "gemini"})})
     mgr, provider = _manager()
     mgr.sync_all("show my ov.conf", f"Your key is {key}.", messages=[{"role": "tool", "content": tool}])

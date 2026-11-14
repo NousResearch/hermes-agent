@@ -808,7 +808,7 @@ security:
       - "/etc/hermes/blocked-sites.txt"
 ```
 
-When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_exec`, and all URL-capable tools.
+When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced on `web_extract`, browser navigation, `vision_analyze` and `video_analyze` URLs, and skills hub downloads. A `web_extract` redirect to a blocked host is caught after the provider has fetched it, so the page is withheld from the agent but the host still saw the request. `web_search` takes a query, not a URL, so it is not gated, and its result list is not filtered. Kanban URL attachments, cron URL monitors and gateway media downloads apply only the private-address SSRF check.
 
 See [Website Blocklist](./configuration.md#website-blocklist) in the configuration guide for full details.
 

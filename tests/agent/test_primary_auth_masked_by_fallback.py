@@ -218,3 +218,23 @@ def test_a_fallback_on_the_primarys_provider_but_another_endpoint_still_leads_wi
     primary_route = SimpleNamespace(provider="anthropic", base_url="https://api.anthropic.com",
                                     _primary_auth_failure=serving_again)
     assert "primary_auth_failure" not in failed_turn(primary_route)
+
+
+def test_a_fallback_whose_base_url_carries_a_query_keeps_the_primary_failure(home):
+    """AIAgent moves a base_url's query (Azure's ``?api-version=``) into the client's default_query, so
+    the agent's base_url has none; the backup it runs is still the one the failure names."""
+    from agent.primary_auth_fallback import PrimaryAuthFailure, attach_primary_auth_failure
+    from run_agent import AIAgent
+
+    url = "https://resource.openai.azure.test/openai/v1?api-version=2025-04-01"
+    agent = AIAgent(api_key="k", base_url=url, provider="custom", model="m", quiet_mode=True,
+                    skip_context_files=True, skip_memory=True, enabled_toolsets=[])
+    failure = PrimaryAuthFailure(provider="nous", error="expired", relogin="hermes portal", backup="custom",
+                                 backup_base_url=url)
+    attach_primary_auth_failure(agent, failure)
+    assert agent._primary_auth_failure is failure
+
+    other = PrimaryAuthFailure(provider="nous", error="expired", relogin="hermes portal", backup="custom",
+                               backup_base_url="https://resource.openai.azure.test/openai/v1?api-version=2024-01-01")
+    attach_primary_auth_failure(agent, other)
+    assert agent._primary_auth_failure is None

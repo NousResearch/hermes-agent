@@ -1,30 +1,42 @@
 name: hermes-unlimited
-repo: https://github.com/nsolland/hermes-unlimited
-sha: 09cd80374b994fa38abc5ed6b8904b98ac9b3554
-description: "Create and operate AI-native provider organizations with scoped services and Hermes tasks. Disclosure — Creates and reads Hermes Kanban tasks (run by your Hermes workers as the current profile) through the local `hermes kanban` CLI on a per-tenant board, and stores company, service and request records in a local SQLite file you configure; sends your JustYou session token only to a loopback JustYou validator you configure."
-maintainer: nsolland
+repo: https://github.com/rrglab/hermes-unlimited
+sha: c13d81003124165cb69189eac68cc49a8e906cfc
+description: "AI-native company operating tools with scoped Hermes Kanban tasks, missions, memory and economic evaluation. Disclosure — Uses the local Hermes Kanban CLI, configured SQLite storage, a loopback JustYou validator, and optional opt-in feedback recording. Optional live worker uses in-process Hermes runtime imports, subprocess and provider network APIs; see known issues. No live settlement or independently verified customer fulfillment."
+maintainer: rrglab
 tier: community
 category: platform
 requires_hermes: ">=0.21.5"
-version: "0.1.0-alpha.4"
+version: "0.1.0-alpha.6"
 title: "Hermes Unlimited"
 readme: true
 known_issues:
-  - "Experimental public core; no live billing, payment settlement or independently attested customer fulfillment."
-  - "Requires a configured JustYou session validator, signed Ed25519 profile bindings and provisioned tenant boards."
+  - "DRAFT CANDIDATE — not release-approved. Optional live worker imports Hermes internals and currently sets HERMES_YOLO_MODE; must be removed or replaced before admission."
+  - "Requires configured JustYou validator, signed Ed25519 profile bindings and isolated tenant boards."
+  - "No live payment settlement or independently attested customer fulfillment."
+  - "Opt-in feedback observer registers three runtime hooks; verify disclosure, consent and hook compatibility before release."
 capabilities:
   provides_tools:
     - hermes_unlimited_status
-    - unlimited_company_create
-    - unlimited_company_list
-    - unlimited_service_publish
-    - unlimited_service_request
     - unlimited_company_task
     - unlimited_company_result
+    - unlimited_company_create
+    - unlimited_service_publish
+    - unlimited_service_request
+    - unlimited_company_list
     - unlimited_a2ui_surface
     - unlimited_service_dispatch
     - unlimited_service_result
-  provides_hooks: []
+    - unlimited_connection_manage
+    - unlimited_mission_run
+    - unlimited_economic_evaluate
+    - unlimited_memory_recall
+    - unlimited_service_factory
+    - unlimited_socratic_council
+    - unlimited_company_cycle
+  provides_hooks:
+    - post_api_request
+    - post_tool_call
+    - on_session_end
   provides_middleware: []
   requires_env:
     - HERMES_UNLIMITED_JUSTYOU_SESSION_TOKEN

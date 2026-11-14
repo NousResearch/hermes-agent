@@ -17,6 +17,21 @@ _SYNTHETIC_PROMPT = re.compile(
     r"A background subagent you dispatched earlier has finished\.)",
     re.IGNORECASE,
 )
+# Machine-injected prompts persisted without a display_kind (cron runs and deliveries, kanban
+# notices). They stay on the timeline, marked ``author: system``. Keep in step with
+# MACHINE_PROMPT_RE in apps/desktop/src/components/assistant-ui/thread/timeline-data.ts.
+_MACHINE_PROMPT = re.compile(
+    r"^\s*(?:\[IMPORTANT: You are running as a scheduled cron job\b|"
+    r'\[Cronjob "|\[kanban\b|\[IMPORTANT: Background process )'
+)
+# Typed user rows that are still the user's own words; every other kind is injected.
+_HUMAN_DISPLAY_KINDS = frozenset({"steer", "skill_invocation"})
+
+
+def _prompt_author(display_kind, preview):
+    if display_kind:
+        return "human" if display_kind in _HUMAN_DISPLAY_KINDS else "system"
+    return "system" if _MACHINE_PROMPT.match(preview) else "human"
 
 
 def _prompt_preview(db, content, display_kind, summary):
@@ -145,14 +160,14 @@ def get_session_timeline(db, session_id, *, limit=500, after_row_id=0):
         _register_functions(db, conn)
         sql = _display_rows_sql(conn, session_id, users_only=True) + """,
             prompts AS MATERIALIZED (
-                SELECT row_id, sort_id, m.timestamp,
+                SELECT row_id, sort_id, m.timestamp, m.display_kind,
                        timeline_preview(m.content, m.display_kind, m._compressed_summary) AS preview
                 FROM display_rows JOIN messages m ON m.id = row_id
             ), eligible AS MATERIALIZED (SELECT * FROM prompts WHERE preview <> '')
         """
         params = {"sid": session_id, "after": after_row_id, "limit": limit + 1}
         rows = conn.execute(sql + """
-            SELECT row_id, sort_id, timestamp, preview, (SELECT COUNT(*) FROM eligible) AS total
+            SELECT row_id, sort_id, timestamp, display_kind, preview, (SELECT COUNT(*) FROM eligible) AS total
             FROM eligible WHERE sort_id > :after ORDER BY sort_id LIMIT :limit
         """, params).fetchall()
         total = rows[0]["total"] if rows else conn.execute(
@@ -160,7 +175,9 @@ def get_session_timeline(db, session_id, *, limit=500, after_row_id=0):
     has_more = len(rows) > limit
     page = rows[:limit]
     return {
-        "entries": [{"row_id": row["row_id"], "preview": row["preview"], "timestamp": row["timestamp"]}
+        "entries": [{"row_id": row["row_id"], "preview": row["preview"], "timestamp": row["timestamp"],
+                     "display_kind": row["display_kind"] or None,
+                     "author": _prompt_author(row["display_kind"], row["preview"])}
                     for row in page],
         "pagination": {"limit": limit, "after_row_id": after_row_id, "returned": len(page),
                        "total": total, "has_more": has_more,

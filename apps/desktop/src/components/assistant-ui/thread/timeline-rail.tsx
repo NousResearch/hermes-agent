@@ -7,6 +7,15 @@ import { Tip } from '@/components/ui/tooltip'
 
 import { timelineBarWidth, type TimelineEntry } from './timeline-data'
 
+/** Hover label: `12 · preview` for a numbered human prompt, a robot mark for an injected one. */
+export function timelineTickLabel(entry: TimelineEntry): string {
+  if (entry.author === 'system') {
+    return `🤖 ${entry.preview}`
+  }
+
+  return entry.number === undefined ? entry.preview : `${entry.number} · ${entry.preview}`
+}
+
 interface TimelineRailProps {
   activeIndex: number
   entries: TimelineEntry[]
@@ -161,20 +170,17 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
       <div className="thread-timeline-track" style={{ height: virtualizer.getTotalSize() }}>
         {items.map(item => {
           const entry = entries[item.index]
+          const label = timelineTickLabel(entry)
 
           return (
-            <Tip
-              key={entry.id}
-              label={entry.preview}
-              placement="right-rail"
-              sideOffset={8}
-              style={{ textAlign: 'right' }}
-            >
+            <Tip key={entry.id} label={label} placement="right-rail" sideOffset={8} style={{ textAlign: 'right' }}>
               <button
                 aria-busy={loadingId === entry.id || undefined}
                 aria-current={item.index === activeIndex ? 'location' : undefined}
-                aria-label={entry.preview}
+                aria-label={label}
                 className="thread-timeline-tick"
+                data-author={entry.author}
+                data-prompt-number={entry.number}
                 data-timeline-id={entry.id}
                 data-timeline-index={item.index}
                 onClick={() => onJump(entry.id)}

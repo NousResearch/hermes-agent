@@ -40,6 +40,8 @@ const COMPARED_FIELDS = [
   // changing it (resume replay) must repaint, like errorSurface.
   'contentRefused',
   'hidden',
+  // Marks a prompt Hermes injected; the timeline rail paints it apart from typed ones.
+  'displayKind',
   'branchGroupId',
   'interim',
   'interrupted',

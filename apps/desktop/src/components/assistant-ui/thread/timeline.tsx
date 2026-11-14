@@ -13,6 +13,7 @@ import { messageContentText } from './content'
 import {
   deriveTimelineEntries,
   EARLIER_TIMELINE_ID,
+  numberTimelineEntries,
   sameTimelineEntries,
   TIMELINE_REVEAL_EVENT,
   type TimelineEntry,
@@ -72,7 +73,13 @@ const ActiveThreadTimeline: FC = () => {
     const rows: TimelineSourceMessage[] = all.length
       ? all
           .filter(m => m.role === 'user')
-          .map(m => ({ id: m.id, rowId: m.rowId, role: m.role, text: messageContentText(m.parts) }))
+          .map(m => ({
+            id: m.id,
+            rowId: m.rowId,
+            role: m.role,
+            text: messageContentText(m.parts),
+            displayKind: m.displayKind
+          }))
       : auiRef.current
           .thread()
           .getState()
@@ -101,7 +108,8 @@ const ActiveThreadTimeline: FC = () => {
             id: message.id,
             rowId: message.rowId,
             role: message.role,
-            text: messageContentText(message.parts)
+            text: messageContentText(message.parts),
+            displayKind: message.displayKind
           }))
         )
       : []
@@ -117,9 +125,22 @@ const ActiveThreadTimeline: FC = () => {
       ...entries.filter(entry => entry.rowId === undefined || !seen.has(entry.rowId))
     ]
 
+    // Numbers count from the session's first prompt. The index pages oldest-first,
+    // so its marks are exact; prompts past an incomplete index (or a store tail
+    // with older turns unloaded and no index) stay unnumbered until it reaches them.
+    const known = indexComplete
+      ? merged.length
+      : indexedEntries
+        ? indexed.length
+        : history.olderAvailable
+          ? 0
+          : merged.length
+
+    const numbered = numberTimelineEntries(merged, known)
+
     return (history.olderAvailable || indexedEntries) && !indexComplete
-      ? [{ id: EARLIER_TIMELINE_ID, preview: t.assistant.thread.showEarlier }, ...merged]
-      : merged
+      ? [{ id: EARLIER_TIMELINE_ID, preview: t.assistant.thread.showEarlier }, ...numbered]
+      : numbered
   }, [
     entries,
     indexedEntries,

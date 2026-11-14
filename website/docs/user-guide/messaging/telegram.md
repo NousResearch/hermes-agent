@@ -1310,7 +1310,7 @@ Behavior:
 - `TELEGRAM_GROUP_ALLOWED_USERS` only authorizes the listed senders in groups/forums. They still can't DM the bot unless listed in `TELEGRAM_ALLOWED_USERS`.
 - A chat in `TELEGRAM_GROUP_ALLOWED_CHATS` authorizes every member of that chat, regardless of sender.
 - Use `*` in any of these to allow any sender/chat.
-- Edits to these lists in `config.yaml` apply to the next message with no gateway restart: a user you remove is refused from their next message or button tap. This holds for every profile a multiplexed gateway (`gateway.multiplex_profiles`) serves, including the host profile it was started with. A value set in `.env`, an external secret source or the gateway's own environment still wins over `config.yaml`.
+- Edits to these lists in `config.yaml` apply to the next message with no gateway restart: a user you remove is refused from their next message or button tap. This holds for every profile a multiplexed gateway (`gateway.multiplex_profiles`) serves, including the host profile it was started with. A value set in `.env` or an external secret source still wins over `config.yaml`; one only inherited from the gateway's process environment does not.
 - This layers on top of existing mention/pattern triggers and on top of `group_topics` + `ignored_threads`.
 
 ### Migration from before PR #17686

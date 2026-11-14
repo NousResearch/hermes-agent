@@ -1,15 +1,15 @@
 name: game-lab
 title: Game Lab
 repo: https://github.com/flabanabba8/game-lab
-sha: 5d6a86ebceb2d5182b033ef8adfe53c203a03e87
+sha: 623cb1e75e177fbe98ae74e2edfe2f9b0d3be985
 version: 0.3.2
 description: "Game Lab combines ModLab, Game Localization Studio, Sprites and experimental Playtest Pilot. ModLab works on a private game copy and invokes separately installed tools; localization drafts and exports RPG Maker text; Sprites inspects and previews character sheets. Playtest Pilot uses approved X11 input, captures screen pixels within the selected window, stores private evidence frames and returns reduced previews and optional local OCR hints; for a failed check it can build a short captioned MP4 from those frames with your FFmpeg, or cut one from a recording file you point to (that asks for approval). On first use ModLab reads Steam's library list and app manifests to find installed games, lists the files in the chosen game folder, runs read-only hardware checks, and asks which modding route to use. It never fills a disk: a free-space reserve, a total cap, pruning of old revisions and a confirm-first cleanup tool. The Universal Modder and REA programs are the ones you set in the plugin settings or find on PATH (the model cannot name a program), and each toolkit call and each playtest check asks for your approval. Every program it starts gets a minimal environment, never your provider keys. The plugin makes no network calls of its own. Disclosure — Playtest Pilot sends synthetic key presses and clicks to the X11 window you select (via xdotool and Hermes computer_use, each check or batch approved), captures that window's pixels and stores evidence frames in the plugin's data folder; ModLab reads your Steam library and app-manifest files to list installed games, copies the game folder you choose into plugin data (with a disk cap), and, after your approval of each call, runs the Universal Modder / REA programs set in the plugin settings or found on PATH."
 maintainer: flabanabba8
 tier: community
 category: tools
 requires_hermes: ">=0.22.3"
-docs_url: https://github.com/flabanabba8/game-lab/blob/5d6a86ebceb2d5182b033ef8adfe53c203a03e87/README.md
-image: https://raw.githubusercontent.com/flabanabba8/game-lab/5d6a86ebceb2d5182b033ef8adfe53c203a03e87/assets/thumbnail.jpg
+docs_url: https://github.com/flabanabba8/game-lab/blob/623cb1e75e177fbe98ae74e2edfe2f9b0d3be985/README.md
+image: https://raw.githubusercontent.com/flabanabba8/game-lab/623cb1e75e177fbe98ae74e2edfe2f9b0d3be985/assets/thumbnail.jpg
 platforms:
 - linux
 capabilities:

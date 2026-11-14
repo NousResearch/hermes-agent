@@ -360,3 +360,35 @@ def test_the_scope_is_entered_for_the_precondition_and_the_persist_but_never_aro
     assert states[-1].kind == "completed"
     kinds = [kind for kind, _ in events]
     assert kinds == ["enter", "exit", "yield", "yield", "poll", "enter", "exit", "yield"]
+
+
+@pytest.mark.parametrize("portal_url", [
+    "https://attacker.example.com/v1",
+    "http://inference-api.nousresearch.com/v1",
+])
+def test_a_refused_portal_inference_url_is_not_stored(portal, free_account, monkeypatch, portal_url):
+    # The URL receives the account bearer: off-allowlist / non-https falls back to the registry default.
+    monkeypatch.delenv("NOUS_INFERENCE_BASE_URL", raising=False)
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.config import load_config
+    _seed_free_tier()
+    _write_model_config({"provider": "nous", "default": anon_auth.GUEST_MODEL, "base_url": WELCOME})
+    portal.token_inference_url = portal_url
+
+    assert _drain()[-1].kind == "completed"
+
+    default = PROVIDER_REGISTRY["nous"].inference_base_url.rstrip("/")
+    assert _load_auth_store()["providers"]["nous"]["inference_base_url"] == default
+    assert portal_url not in _auth_bytes().decode()
+    assert load_config()["model"]["base_url"] == default
+
+
+def test_an_allowlisted_portal_inference_url_is_stored(portal, free_account, monkeypatch):
+    monkeypatch.delenv("NOUS_INFERENCE_BASE_URL", raising=False)
+    _seed_free_tier()
+    portal.token_inference_url = "https://inference-api.nousresearch.com:8443/v2"
+
+    assert _drain()[-1].kind == "completed"
+
+    assert _load_auth_store()["providers"]["nous"]["inference_base_url"] == (
+        "https://inference-api.nousresearch.com:8443/v2")

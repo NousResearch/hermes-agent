@@ -445,6 +445,7 @@ def _raise_fs_backend_error(exc: Exception) -> None:
     status = {
         "EACCES": 403,
         "ECONN": 503,
+        "EUNSUPPORTED": 503,
         "EFBIG": 413,
         "EINVAL": 400,
         "EIO": 502,
@@ -454,6 +455,7 @@ def _raise_fs_backend_error(exc: Exception) -> None:
     detail = {
         "EACCES": "File is not readable",
         "ECONN": "SSH workspace is unavailable",
+        "EUNSUPPORTED": "Workspace filesystem backend is unavailable",
         "EFBIG": "File too large",
         "EINVAL": "Invalid path",
         "EIO": "SSH workspace request failed",

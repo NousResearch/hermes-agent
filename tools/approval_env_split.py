@@ -1,4 +1,4 @@
-"""GNU ``env -S`` / ``--split-string`` argv projection for approval detection (moved from approval_detection)."""
+"""GNU ``env -S`` argv projection for :mod:`tools.approval_detection` (pure, no approval state)."""
 
 
 def _split_env_string(payload: str) -> list[str] | None:

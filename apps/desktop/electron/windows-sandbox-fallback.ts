@@ -26,7 +26,11 @@
  *    the sandbox is re-probed once (a new Electron, an installer-applied
  *    ACL grant, or a kernel/driver update may have fixed the host). If the
  *    re-probe boot aborts, the next launch goes straight back to
- *    `--no-sandbox`.
+ *    `--no-sandbox`. A successful launch-time ACL repair re-uses that same
+ *    one-shot re-probe, so a host healed between launches returns to full
+ *    sandboxing without waiting for the next app update — while a host the
+ *    repair could not fix still gets exactly one probe attempt, then sticky
+ *    `--no-sandbox` again.
  * 4. Windows-only extras (renderer crash-loop relaunch, ACL repair) stay
  *    win32-gated: Linux has no ACL model, and its renderer crash loops carry
  *    no sandbox-specific signature.
@@ -74,6 +78,11 @@ export interface SandboxMarker {
   /** This boot is a sandbox re-probe after an app update; an abort returns
    *  straight to fallback instead of restarting the two-strike count. */
   reprobe?: boolean
+  /** The one-shot ACL-repair re-probe for this fallback episode has been
+   *  consumed. Set on the re-probe booting marker, and carried into the
+   *  fallback marker if that probe aborts, so a still-broken host returns to
+   *  sticky --no-sandbox instead of re-probing (and re-crashing) every launch. */
+  aclRepairProbed?: boolean
 }
 
 export function sandboxMarkerPath(userDataDir: string): string {
@@ -135,6 +144,10 @@ export function parseSandboxMarker(raw: unknown): SandboxMarker | null {
 
   if (record.reprobe === true) {
     marker.reprobe = true
+  }
+
+  if (record.aclRepairProbed === true) {
+    marker.aclRepairProbed = true
   }
 
   return marker
@@ -200,6 +213,11 @@ export function decideWindowsSandboxLaunch(
     env?: NodeJS.ProcessEnv
     marker?: SandboxMarker | null
     appVersion?: string
+    /** True when the launch-time ACL repair (recovery ladder line 1) just
+     *  succeeded. While the fallback is engaged this triggers the same one-shot
+     *  sandbox re-probe as a version change: the host may have healed, so the
+     *  degraded --no-sandbox launch gets one chance to come back. */
+    aclRepairSucceeded?: boolean
   } = {}
 ): SandboxLaunchDecision {
   const appVersion = String(options.appVersion || '')
@@ -234,6 +252,20 @@ export function decideWindowsSandboxLaunch(
       }
     }
 
+    if (options.aclRepairSucceeded && !marker.aclRepairProbed) {
+      // The launch-time ACL repair just succeeded while the fallback is
+      // engaged — the host may be fixed, so re-probe the sandbox once exactly
+      // like a version change. One-shot per fallback episode: the probe marker
+      // records aclRepairProbed, so if the probe aborts the next launch goes
+      // straight back to sticky --no-sandbox instead of re-probing (and
+      // re-crashing) on every launch.
+      return {
+        enable: false,
+        reason: null,
+        nextMarker: { state: 'booting', reprobe: true, bootAborts: 0, aclRepairProbed: true }
+      }
+    }
+
     return {
       enable: true,
       reason: 'sticky-fallback',
@@ -246,11 +278,15 @@ export function decideWindowsSandboxLaunch(
 
     if (marker.reprobe) {
       // The one post-update sandboxed re-probe aborted → back to fallback.
-      return {
-        enable: true,
-        reason: 'reprobe-failed',
-        nextMarker: fallbackMarker('boot-loop', appVersion)
+      const nextMarker = fallbackMarker('boot-loop', appVersion)
+
+      if (marker.aclRepairProbed) {
+        // The aborted probe was the one-shot ACL-repair re-probe — keep it
+        // consumed so a still-broken host does not re-probe every launch.
+        nextMarker.aclRepairProbed = true
       }
+
+      return { enable: true, reason: 'reprobe-failed', nextMarker }
     }
 
     if (abortsObserved >= BOOT_ABORTS_BEFORE_FALLBACK) {
@@ -285,18 +321,28 @@ export function fallbackMarker(reason: SandboxFallbackReason, appVersion?: strin
 /**
  * After the main window reaches ready-to-show: keep the sticky fallback when
  * we launched with `--no-sandbox`, otherwise mark a clean boot so future
- * launches trust the sandbox again.
+ * launches trust the sandbox again. When a fallback episode has already
+ * consumed its one-shot ACL-repair re-probe, `aclRepairProbed` is carried
+ * through so a later launch does not re-probe (and re-crash) on a host the
+ * repair could not fix.
  */
 export function markerAfterSuccessfulBoot(options: {
   fallbackActive: boolean
   reason?: SandboxFallbackReason
   appVersion?: string
+  aclRepairProbed?: boolean
 }): SandboxMarker {
   if (!options.fallbackActive) {
     return { state: 'ok' }
   }
 
-  return fallbackMarker(options.reason ?? 'boot-loop', options.appVersion)
+  const marker = fallbackMarker(options.reason ?? 'boot-loop', options.appVersion)
+
+  if (options.aclRepairProbed) {
+    marker.aclRepairProbed = true
+  }
+
+  return marker
 }
 
 /**

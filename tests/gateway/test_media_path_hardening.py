@@ -146,6 +146,15 @@ def test_escaped_control_letter_needs_a_boundary_after_it():
         assert BasePlatformAdapter.strip_media_directives_for_display(text) == rest.rstrip()
 
 
+def test_closing_wrapper_after_a_plain_boundary_leaves_with_the_tag():
+    """The wrapper eater runs only on the plain-boundary branch; it must still take the tag's own
+    closing ``**`` / ``_`` / quote and a sentence-final period with it."""
+    for text, rest in (("**MEDIA:/tmp/a.png** done", "done"), ("_MEDIA:/tmp/a.png_ x", "x"),
+                       ("Here: MEDIA:/tmp/a.png.", "Here:")):
+        assert BasePlatformAdapter.extract_media(text)[1] == rest
+        assert BasePlatformAdapter.strip_media_directives_for_display(text).strip() == rest
+
+
 def test_profile_home_credentials_denied_when_gateway_runs_on_the_real_home(tmp_path, monkeypatch):
     """``terminal.home_mode: profile`` puts tool logins under ``{HERMES_HOME}/home`` (and each
     ``profiles/<name>/home``) while the gateway itself keeps ``HOME`` = the account home."""

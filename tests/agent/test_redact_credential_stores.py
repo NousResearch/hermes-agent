@@ -56,6 +56,14 @@ class TestCredentialStoreReads:
         assert value in redact_sensitive_text(text, force=True, file_read=True, secret_file=True)
         assert value in redact_terminal_output(text, "cat .npmrc", force=True)
 
+    def test_every_netrc_password_on_one_line_is_masked(self):
+        # netrc is whitespace-separated tokens: several ``machine`` entries may share one line.
+        text = f"machine a login u password {self.WEAK}1 machine b login v password {self.WEAK}2\n"
+        for out in (redact_sensitive_text(text, force=True, file_read=True, secret_file=True),
+                    redact_terminal_output(text, "cat ~/.netrc", force=True)):
+            assert self.WEAK not in out
+            assert "machine b login v password" in out
+
     def test_lookalikes_and_shell_rc_lines_are_left_alone(self):
         # ``credentials`` alone is too generic: only the ``.aws`` parent makes it a store.
         for path in ("docs/credentials", "~/credentials", "~/config", "notes/netrc.md"):

@@ -1491,11 +1491,12 @@ def _redact_userinfo_passwords(text: str) -> str:
 # They run only for a source already classified as secret-bearing. Each is shaped so ``.env``,
 # shell rc and config.yaml lines do not match: ``PATH=/a:/b:/c:/d:/e`` carries ``=`` in its first
 # field and a ``# password ...`` comment does not start with a netrc keyword.
+# A netrc line is ``keyword value`` pairs, several ``machine`` entries may share one line.
+_NETRC_LINE_RE = re.compile(
+    rf"^([ \t]*{_LINE_NUMBER_GUTTER})((?:machine|default|login|account|port|password)\b[^\r\n]*)", re.MULTILINE,
+)
+_NETRC_TOKEN_RE = re.compile(r'"[^"\r\n]*"?|\S+')
 _CREDENTIAL_STORE_RES = (
-    re.compile(
-        rf'(^[ \t]*{_LINE_NUMBER_GUTTER}(?:(?:machine|default|login|account|port)\b[^\n]*?[ \t])?password[ \t]+)(?![=:])("[^"\r\n]*"?|\S+)',
-        re.MULTILINE,
-    ),
     re.compile(rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:[^:\s=#]*:){{4}})(\S[^\r\n]*)", re.MULTILINE),
     # npm expands ``${NAME}`` / ``${NAME?}`` here: that reference names a variable, it is not the secret.
     re.compile(r'(:_(?:authToken|auth|password)[ \t]*=[ \t]*)(?!"?\$\{\w+\??\}"?(?:\s|$))(\S+)'),
@@ -1521,6 +1522,17 @@ def _redact_credential_store_lines(text: str, *, mask_nonreusable: bool) -> str:
             return m.group(0)
         return m.group(1) + mask(value)
 
+    def _netrc_sub(m):
+        line, out, pos, after_password = m.group(2), [], 0, False
+        for tok in _NETRC_TOKEN_RE.finditer(line):
+            value = tok.group(0)
+            if after_password and value[0] not in "=:" and value != "***" and not value.startswith("«redacted"):
+                out.append(line[pos:tok.start()] + mask(value))
+                pos = tok.end()
+            after_password = not after_password and value == "password"
+        return m.group(1) + "".join(out) + line[pos:]
+
+    text = _NETRC_LINE_RE.sub(_netrc_sub, text)
     for pattern in _CREDENTIAL_STORE_RES:
         text = pattern.sub(_sub, text)
     return _INI_SPACED_ASSIGN_RE.sub(_assignment_sub(lambda g: f"{g[0]}{mask(g[1])}", check_keyword=True), text)

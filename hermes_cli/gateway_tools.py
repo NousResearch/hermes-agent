@@ -40,6 +40,7 @@ class _Proc:
         self.output_buffer = row.get("output_tail") or ""
         self.completion_reason = row.get("completion_reason") or "exited"
         self.exited = row.get("status") == "exited"
+        self.watch_patterns = list(row.get("watch_patterns") or [])
 
 
 class GatewayProcessView:
@@ -52,6 +53,7 @@ class GatewayProcessView:
         self._polled = 0.0
         self._lock = threading.Lock()
         self.subagents: list = []
+        self.delegating = 0  # delegate_task calls in flight (tool.start minus tool.complete)
         self._subagents_polled = 0.0
         self._subagents_seen = 0.0
         self._subagents_lock = threading.Lock()
@@ -143,16 +145,17 @@ class GatewayProcessView:
 
     def subagent_rows(self, *, busy):
         """The session's live children (``subagent.list``). Asks at most once a second, and only
-        while a turn runs (``busy``), children were listed last time, the gateway counts some, or
+        while a turn runs (``busy``), a ``delegate_task`` call is in flight (a synchronous
+        delegation lives inside it), children were listed last time, the gateway counts some, or
         an off-turn spawn asked to be watched."""
         now = time.time()
-        wanted = (busy or self.subagents or now < self._subagents_watch_until
+        wanted = (busy or self.delegating > 0 or self.subagents or now < self._subagents_watch_until
                   or self.active_delegations())
         if wanted and now - self._subagents_polled >= _POLL_SECONDS and self._subagents_lock.acquire(blocking=False):
             try:
                 self._subagents_polled = now
                 result = self.connection.call("subagent.list", session_id=self.session_id, timeout=5)
-                self.subagents = list((result or {}).get("subagents") or [])
+                self.subagents = [row for row in (result or {}).get("subagents") or [] if row.get("subagent_id")]
                 self._subagents_seen = now
             except (GatewayClientError, RuntimeError) as exc:
                 logger.debug("subagent.list failed: %s", exc)
@@ -191,13 +194,13 @@ class GatewayProcessView:
         try:
             if action == "steer":
                 result = self.connection.call("subagent.steer", session_id=self.session_id,
-                                              subagent_id=subagent_id, text=message, timeout=5) or {}
+                                              subagent_id=subagent_id, text=message or "", timeout=5) or {}
                 ok = result.get("status") == "queued"
             else:
                 result = self.connection.call("subagent.interrupt", session_id=self.session_id,
                                               subagent_id=subagent_id, timeout=5) or {}
                 ok = bool(result.get("found"))
-        except GatewayClientError as exc:
+        except (GatewayClientError, RuntimeError) as exc:
             return {"error": str(exc)}
         self._subagents_polled = 0.0  # the next tick re-reads the roster
         if ok:
@@ -264,6 +267,15 @@ def bind_session(cli, connection):
 def mark_dirty():
     if _view is not None:
         _view.mark_dirty()
+
+
+def note_tool(name, started):
+    """Tool start/complete from the session's event stream: a ``delegate_task`` in flight makes the
+    dock poll ``subagent.list`` (provider adapters may prefix tool names, e.g. ``mcp__``)."""
+    view = _view
+    if view is not None and str(name or "").endswith("delegate_task"):
+        view.delegating = max(0, view.delegating + (1 if started else -1))
+        view._subagents_polled = 0.0
 
 
 def process_view():

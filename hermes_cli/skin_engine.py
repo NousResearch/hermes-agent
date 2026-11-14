@@ -524,6 +524,10 @@ _STYLE_TEMPLATES = {
     "subagent-dock": "bg:{status_bg} {status_text}",
     "subagent-dock.heading": "bg:{status_bg} {status_strong} bold",
     "subagent-dock.selected": "bg:{menu_current_bg} {text} bold",
+    # Live-work footer under the composer (cli_dock_footer): terminal background, skin accents.
+    "live-dock.agent": "{title} bold", "live-dock.count": "{label}", "live-dock.dim": "{dim}",
+    "live-dock.hint": "{dim} italic", "live-dock.selected": "{title} bold",
+    "live-dock.ok": "{ok}", "live-dock.bad": "{error}",
     "input-rule": "{input_rule}", "image-badge": "{label} bold",
     "completion-menu": "bg:{menu_bg} {text}", "completion-menu.completion": "bg:{menu_bg} {text}",
     "completion-menu.completion.current": "bg:{menu_current_bg} {title}",

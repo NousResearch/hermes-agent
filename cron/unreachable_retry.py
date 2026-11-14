@@ -62,6 +62,14 @@ def retry_enabled(cfg: Optional[dict] = None) -> bool:
     return cron_cfg.get("retry_unreachable") is not False
 
 
+def failed_turn_error(result: dict[str, Any], final_response_text: str = "") -> RuntimeError:
+    """The exception the scheduler raises for a failed turn: the same text as before, plus the
+    turn's classified ``failure_reason`` for ``is_model_unreachable_failure``."""
+    error = RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+    error.failure_reason = result.get("failure_reason")
+    return error
+
+
 def is_model_unreachable_failure(exc: BaseException, agent: Any = None) -> bool:
     """True when *agent* (may be ``None``) never completed a model call — the run consumed
     nothing and executed nothing — and *exc* is a transient network/DNS failure or a failed
@@ -77,8 +85,12 @@ def is_model_unreachable_failure(exc: BaseException, agent: Any = None) -> bool:
 
 
 def _ladder_applies(job: dict[str, Any]) -> bool:
-    """The ladder's applicability gate: recurring, not paused, and enabled in config."""
-    return is_recurring(job) and job.get("state") != "paused" and retry_enabled()
+    """The ladder's applicability gate: recurring, not paused, enabled in config, and no pre-run
+    ``script``. The script runs before the provider is reached (``_prepare_job_prompt``), so a
+    re-run would run it again: it may consume queued work or flip a wake gate that then drops
+    the original fire."""
+    return (is_recurring(job) and job.get("state") != "paused" and not job.get("script")
+            and retry_enabled())
 
 
 def _ladder_instant(job: dict[str, Any], natural_next: Optional[datetime],

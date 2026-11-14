@@ -559,7 +559,9 @@ model's server answers every attempt with a 5xx error, an overload (529/503) or 
 timeout, and the agent's own retries run out without a single completed model
 call, the run is re-run on the same schedule. Rate limits and usage walls are
 handled by the quota hold below; authentication, billing and policy refusals are
-never re-run.
+never re-run. Jobs with a pre-run `script` are not re-run either: the script
+runs before the provider is reached, and running it twice could consume or
+skip work.
 
 While a re-run is pending, the interim failure notice is suppressed — you get
 the real result when a re-run succeeds, or a normal failure alert once the

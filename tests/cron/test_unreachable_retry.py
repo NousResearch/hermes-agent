@@ -214,3 +214,13 @@ def test_failed_turn_with_transient_provider_verdict_enters_ladder(reason, calls
     assert str(raised.value) == "HTTP 500: boom"  # user-visible error text unchanged
     agent = SimpleNamespace(session_api_calls=calls)
     assert ur.is_model_unreachable_failure(raised.value, agent) is expected
+
+
+def test_job_with_pre_run_script_never_enters_ladder(tmp_cron_home):
+    """The script runs before the provider is reached, so a re-run would run it a second time
+    (it may consume queued work, or flip a wake gate that then drops the original fire)."""
+    job = create_job("inbox digest", "every 24h", script="collect.py")
+    assert mark_job_run(job["id"], False, "HTTP 500: boom", model_unreachable=True)
+    j = get_job(job["id"])
+    assert j.get(ur.STATE_KEY) is None
+    assert datetime.fromisoformat(j["next_run_at"]) - datetime.now(UTC) > timedelta(hours=23)

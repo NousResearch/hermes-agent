@@ -636,7 +636,8 @@ def _apply_cron(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dict[st
                 # Journaled first: a resumed step finds these jobs already here and adds nothing.
                 ctx["undo"]["added_jobs"] = sorted(set(ctx["undo"]["added_jobs"]) | {str(j["id"]) for j in incoming})
                 ctx["journal"]()
-                cron_jobs._save_jobs_unlocked(current + incoming)
+                if incoming:  # nothing new leaves the scheduler's file untouched, timestamp included
+                    cron_jobs._save_jobs_unlocked(current + incoming)
     added = [str(j["id"]) for j in incoming]
     return {"added": added, "removed": removed, "paused": True}
 

@@ -8,11 +8,12 @@ a "Gateway online" on the next boot once it was delivered.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from contextlib import nullcontext
 from typing import Optional
+
+from agent.deadline import run_bounded_async
 
 logger = logging.getLogger("gateway.run")
 
@@ -71,17 +72,17 @@ class GatewayHomeShutdownNoticeMixin:
             from gateway.run_shutdown import _effective_watchdog_leash
             self._shutdown_notice_deadline = time.monotonic() + _effective_watchdog_leash(self) / 2
         budget = min(self._shutdown_notice_deadline - time.monotonic(), _SHUTDOWN_NOTICE_SEND_TIMEOUT_S)
-        try:
-            if budget <= 0:
-                raise TimeoutError
-            sent = await asyncio.wait_for(
-                self._send_notice_logged(adapter, chat_id, msg, platform_str, fail_fmt, **send_kwargs), timeout=budget,
-            )
-        except TimeoutError:
+        if budget <= 0:
+            return False
+        result = await run_bounded_async(
+            self._send_notice_logged(adapter, chat_id, msg, platform_str, fail_fmt, **send_kwargs),
+            timeout=budget, label="gateway-shutdown-notice", dump_on_blocked_loop=False,
+        )
+        if result.timed_out:
             logger.info("Shutdown notification to %s%s:%s not delivered within the stop budget; continuing",
                         where, platform_str, chat_id)
             return False
-        if not sent:
+        if not result.value:
             return False
         logger.info("Sent shutdown notification to %s %s:%s", kind, platform_str, chat_id)
         return True

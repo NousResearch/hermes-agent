@@ -6,6 +6,7 @@ prompting live here.
 
 import bisect
 import fnmatch
+import functools
 import logging
 import os
 import re
@@ -18,12 +19,13 @@ from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 from tools.approval_git_options import _GIT, _GIT_PUSH, _GIT_PUSH_ARGS, _join_escaped_word_chars
 from tools.approval_config_set import _HERMES_CONFIG_SET_APPROVAL_POLICY
+from tools.approval_env_split import _env_split_payload
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
-from tools.approval_env_split import _split_env_string
 from tools.approval_shell_tokens import _shell_tokens_with_spans
 from tools.approval_windows_hardline import whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns
 from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_RISKY_DESCRIPTION, classify_osascript
 from tools.approval_pipe_launchers import _PIPE_LAUNCHER_VALUE_FLAGS, _pipe_launcher_re
+from tools.approval_quoted_newlines import _mask_quoted_newlines
 
 logger = logging.getLogger("tools.approval")
 
@@ -115,6 +117,15 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # sudo/env/exec/nohup/setsid/time wrappers. Keeps shutdown/reboot rules from firing on "echo reboot" / "grep
 # 'shutdown' log". Real ;/&/| separators are converted to newlines by the quote-aware _mark_command_starts pass;
 # keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
+# The verb is argv[1] for multi-call binaries; options before it are not applet selection (busybox --help reboot).
+# A path-spelled verb (/sbin/reboot, ./rm, C:/.../shutdown.exe) is still that verb. A segment never crosses the `)`
+# closing a substitution that _CMDPOS anchored inside: `ls $(pwd)/reboot` is data. Every run is possessive so a failed
+# match never re-splits a whitespace / path / busybox run (cubic on blank-line runs; re.search holds the GIL), and only
+# the last newline of a whitespace run starts a match (earlier ones reach the same word, rescanning once per newline).
+# A segment holds no `=` / `<` / `>`: `HERMES_HOME=/tmp/x hermes` and `socat>/tmp/log` are not program paths.
+_CMD_PATH = r'(?:/?+(?:[^\s/)=<>]++/)*+)?+'
+_MULTI_CALL_PREFIX = r'(?:' + _CMD_PATH + r'(?:busybox|toybox)\b\s++)?+'
+
 # Every run is possessive: a failed command-name match must not re-split a whitespace run between the
 # leading and trailing \s (cubic on a long blank-line run, and re.search holds the GIL while it runs).
 # Only the last newline of a whitespace run starts a match: an earlier one consumes the same run and
@@ -123,6 +134,8 @@ _CMDPOS = (
     r'(?:^|\n(?![^\S\n]*+\n)|`|\$\()' r'\s*+'  # start position, optional whitespace
     r'(?:sudo\s++(?:-[^\s]++\s++)*+)?' r'(?:env\s++(?:\w+=\S*+\s++)*+)?'  # optional sudo with flags, env VAR=VAL pairs
     r'(?:(?:exec|nohup|setsid|time)\s++)*+' r'\s*+'  # optional wrapper commands
+    + _MULTI_CALL_PREFIX  # other wrappers (nice, timeout, command ...) are peeled by tools.approval_wrappers
+    + _CMD_PATH
 )
 
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
@@ -143,13 +156,13 @@ def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
 
 
 # Protected system roots whose recursive deletion has no recovery path.
-_HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|'
-                         r'/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*')
+# A trailing slash names the same dir (`/etc/`, dequoted `"/etc"/`); `.`/`..` before the glob climb (`/etc/../*` is `/*`).
+_HARDLINE_SYSTEM_DIRS = r'(?:/home|/root|/etc|/usr|/var|/bin|/sbin|/boot|/lib)(?:/++(?:\.\.?+/++)*+\*?)?+'
 
 # `rm` plus flag group, shared by the rm hardline rules (plain concatenation, not f-string:
 # backslashes in replacement fields are unsupported on the 3.11 floor). _CMDPOS-anchored so `rm`
-# must be an actual command word — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
-_RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
+# must be an actual command word (Git Bash's `rm.exe` too) — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
+_RM_FLAG_PREFIX = _CMDPOS + r'rm(?:\.exe)?\s+(-[^\s]*\s+)*'
 # Vetoes the drive-root rules when THIS PowerShell delete carries a literal -Include that narrows it (`*.tmp`):
 # not after cmd `/s` or GNU `--` (a file name there), not inside quotes/comments, not `*`/`*.*`/a list/`$x`,
 # and never past a `)` that closes rm's own `$(...)`/subshell (`echo $(rm -rf C:/) -Include x` is echo's flag).
@@ -193,7 +206,7 @@ HARDLINE_PATTERNS = [
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
     (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b(?!-|\.(?!exe\b))', "system shutdown/reboot"),
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
@@ -469,13 +482,15 @@ def _detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(expand_ansi_c_quotes(command)))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
+    from tools.approval_wrappers import hardline_detection_variants
+
     # The -WhatIf preview exemption holds only when every guarded statement previews on its own (judged on the raw
     # command: masking a quoted newline joins statements); otherwise those rules apply without it.
     patterns = HARDLINE_PATTERNS_COMPILED
     if "whatif" in command.lower() and not whatif_preview_is_real(command):
         patterns = _HARDLINE_PATTERNS_NO_WHATIF
     capped: list[str] = []
-    for command_variant in _command_detection_variants(command, capped=capped):
+    for command_variant in hardline_detection_variants(command, capped=capped):
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
         for pattern_re, description, quote_masked in patterns:
@@ -992,7 +1007,10 @@ _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
 _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
     "command": {"-v", "-V"}, "chrt": {"-p", "--pid"},
     "ionice": {"-p", "--pid", "--pgid", "--uid"}, "taskset": {"-p", "--pid"},
+    # sudo's list / validate / remove-timestamp modes take no command (`sudo -k cmd` does run it).
+    "sudo": {"-l", "--list", "-v", "--validate", "-K", "--remove-timestamp"},
 }
+
 _COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1}
 _SHELL_COMMAND_TRANSITIONS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
 _SHELL_REDIRECTION_RE = re.compile(r"(?:[0-9]+)?(?:>>|<<|<>|>&|<&|>\||[<>])")
@@ -1514,53 +1532,21 @@ def _iter_shell_command_starts(command: str):
             starts.append(end)
 
 
-def _mark_command_starts(command: str, marker: str = "\n") -> str:
+def _mark_command_starts(command: str, marker: str = "\n", skip=()) -> str:
     """Insert *marker* (a newline) before each real (quote-aware) command start.
     ``\\n`` is already a ``_CMDPOS`` separator, so this exposes subshell ``(cmd)`` and brace-group
     ``{ cmd; }`` openers — which the flat pattern class omits — to the anchored patterns WITHOUT the
     quoted-prose false positives that adding ``(`` / ``{`` to ``_CMDPOS`` would cause: starts inside
     quotes are never produced, so ``--title "block (reboot)"`` is left as-is."""
-    offsets = sorted(o for o in _iter_shell_command_starts(command) if o > 0)
+    skip_starts = [a for a, _ in skip]  # sorted, non-overlapping spans
+    offsets = sorted(o for o in _iter_shell_command_starts(command) if o > 0 and not (
+        (k := bisect.bisect_right(skip_starts, o) - 1) >= 0 and o < skip[k][1]))
     return _splice(command, [(o, o, marker) for o in offsets]) if offsets else command
-
-
-def _mask_quoted_newlines(command: str) -> str:
-    """Replace raw newlines inside single/double quotes with a space (detection-only).
-    A quoted newline is DATA to the shell, yet the flat ``_CMDPOS`` class treats every raw ``\\n``
-    as a command start, so multi-line quoted arguments (commit messages, heredoc text) tripped the
-    hardline blocklist when a data line began with e.g. ``sudo reboot``. Quote tracking mirrors
-    ``_iter_shell_command_starts``. Unquoted newlines pass through and ``_mark_command_starts``
-    still re-inserts newlines at genuine starts; an unclosed quote absorbs following newlines
-    exactly as the shell would, so masking them cannot hide a runnable command."""
-    if "\n" not in command and "\r" not in command:
-        return command
-    return _mask_quoted_newlines_span(command, 0, len(command))
-
-
-def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
-    """``_mask_quoted_newlines`` over ``command[start:end]``. A ``$(...)`` / backtick substitution
-    inside double quotes is EXECUTABLE, not data: its body is re-scanned with a fresh quote state so a
-    newline that separates commands inside it survives as a command boundary. Masking it as quoted
-    data turned ``"$(grep x f\nreboot)"`` into ``... f reboot)``, which no later stage can tell from an
-    operand; the pre-fix scanner only caught it by refusing the whole command as malformed."""
-    out: list[str] = []
-    for kind, i, j, quote in _scan_shell(command, start, end, subst="q"):
-        if kind == "subst":
-            # j is the index just past the closer; keep the opener and closer, recurse into the body.
-            body_start = i + (2 if command.startswith("$(", i) else 1)
-            body_end = j - 1
-            out.append(command[i:body_start])
-            out.append(_mask_quoted_newlines_span(command, body_start, body_end))
-            out.append(command[body_end:j])
-        elif quote and kind == "char" and command[i] in "\r\n":  # a CR too: PowerShell rules treat it as a break
-            out.append(" ")
-        else:
-            out.append(command[i:j])
-    return "".join(out)
 
 
 def _iter_shell_command_word_spans(command: str):
     """Yield command-position words that may be executable names."""
+    from tools.approval_wrappers import _is_query_option
     for pos in _iter_shell_command_starts(command):
         wrapper, positionals = None, 0
         options, skip_arg = True, False
@@ -1589,7 +1575,8 @@ def _iter_shell_command_word_spans(command: str):
                     break
                 queries = _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS.get(wrapper, set())
                 if option in queries or (wrapper == "command" and not option.startswith("--")
-                                         and set(option[1:]) & {"v", "V"}):
+                                         and set(option[1:]) & {"v", "V"}) or (
+                        wrapper == "sudo" and _is_query_option("sudo", option)):  # `-nl`, not `-ul`
                     break
                 skip_arg = "=" not in deobfuscated and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(wrapper, set())
                 continue
@@ -1618,27 +1605,6 @@ def _shell_command_segment(command: str, start: int) -> str:
             end = i
             break
     return command[start:end].strip()
-
-
-def _env_split_payload(tokens: list[str]) -> str | None:
-    index = 1
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "--" or not token.startswith("-"):
-            return None
-        option, equals, value = token.partition("=")
-        if option == "--split-string" or token.startswith("-S"):
-            attached = equals if option == "--split-string" else len(token) > 2
-            if not attached:
-                index += 1
-            payload = (value if option == "--split-string" else token[2:]) if attached else (
-                tokens[index] if index < len(tokens) else "")
-            args = _split_env_string(payload)
-            # Protect literal separators when reusing command-position detection;
-            # only a real shell -c carrier may turn these argv bytes into code.
-            return shlex.join(args + tokens[index + 1:]) if args is not None else None
-        index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
-    return None
 
 
 def _dequoted_escape(char: str, quote: str | None) -> str:
@@ -1700,6 +1666,7 @@ def _deny_command_variants(command: str):
 
 
 def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[str] | None = None):
+    from tools.approval_wrappers import literal_heredoc_bodies
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
     # afterwards could swallow a REAL unquoted newline separator. The raw command carries faithful quote state
@@ -1800,8 +1767,9 @@ def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[
                 applied.append(span)
                 cursor = span[1]
         variant = _splice(normalized, applied)
-        if fresh(variant):
-            yield variant
+        # A dequoted verb after a separator (`ls; "reboot"`) reaches _CMDPOS only once its start is marked; not inside
+        # a quoted-delimiter heredoc fed to a non-shell (that body is literal data).
+        yield from filter(fresh, (variant, _mark_command_starts(variant, skip=literal_heredoc_bodies(variant))))
         pending = carry
 
 

@@ -16,6 +16,7 @@ import shlex
 import signal
 import stat
 import sys
+from itertools import pairwise
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
@@ -870,19 +871,78 @@ def _kill_targets_pid(args: list[str], pid: int) -> bool:
 
 
 _STOP_PROCESS_VALUE_PARAMS = frozenset({"-id", "-name", "-n", "-processname", "-inputobject"})
+_WHATIF_SWITCHES = frozenset({"-whatif", "-wi", "-whatif:$true", "-wi:$true"})
+# Stop-Process parameters that take no argument: a `-WhatIf` right after one of these (or after a
+# colon-bound `-X:v`) is a switch; after any other `-X` it may be X's value (`-ErrorVariable -WhatIf`).
+_STOP_PROCESS_SWITCHES = _WHATIF_SWITCHES | frozenset(
+    {"-force", "-passthru", "-confirm", "-cf", "-verbose", "-vb", "-debug", "-db"}
+)
+_WHATIF_PREVIEW_COMMANDS = frozenset({"stop-process", "spps", "kill"})
+# Fail-closed: any of these ANYWHERE in the raw command, quoted or not, turns the preview exemption
+# off. Line breaks other than space/tab (CR, LF, NEL, U+2028/U+2029, NBSP, ...), statement and pipeline
+# separators, call/background `&`, blocks, (sub)expressions, splats, backtick escapes, comments,
+# redirections, `--`/`--%`, Unicode dashes/quotes, and a nested powershell/pwsh (-c / -EncodedCommand).
+_WHATIF_PREVIEW_DISQUALIFIER_RE = re.compile(r"(?i)[^\S \t]|[;|&{}()@$#`,%\\<>\u2010-\u201f]|--|powershell|pwsh")
+# A colon-bound WhatIf (or a prefix of it): only `:$true` is a preview, `:$false` / `:0` run the stop.
+_WHATIF_BOUND_RE = re.compile(r"(?i)-(?:wh[a-z]*|wi):")
 
 
-def _windows_killer_targets_pid(name: str, args: list[str], pid: int) -> bool:
+def _preview_words(command: str) -> Optional[list[tuple[str, bool]]]:
+    """Space/tab-separated words of *command*, each with whether it contains a quote; None when a
+    quote is unbalanced."""
+    words: list[tuple[str, bool]] = []
+    current: list[str] = []
+    quote, quoted = "", False
+    for ch in command:
+        if quote or ch not in " \t":
+            if not quote and ch in "'\"":
+                quote, quoted = ch, True
+            elif ch == quote:
+                quote = ""
+            current.append(ch)
+        elif current:
+            words.append(("".join(current), quoted))
+            current, quoted = [], False
+    if quote:
+        return None
+    if current:
+        words.append(("".join(current), quoted))
+    return words
+
+
+def _is_stop_process_whatif_preview(command: str) -> bool:
+    """Whether the WHOLE raw *command* is one ``Stop-Process … -WhatIf`` statement, i.e. a preview that
+    signals nothing. Exempt only when: no disqualifier (``_WHATIF_PREVIEW_DISQUALIFIER_RE``) appears
+    anywhere; the first word is Stop-Process/spps/kill; every colon-bound WhatIf is ``:$true``; and
+    ``-WhatIf`` / ``-wi`` (optionally ``:$true``) is an unquoted word that does not follow a
+    parameter which takes a value. ``$`` is a disqualifier too, so ``-WhatIf:$true`` is the only word
+    that may carry one."""
+    words = _preview_words(command)
+    if not words or words[0][1] or words[0][0].lower() not in _WHATIF_PREVIEW_COMMANDS:
+        return False
+    # Words split on space/tab only, so every other separator stays inside a word and is seen here.
+    others = [word for word, _ in words if word.lower() not in _WHATIF_SWITCHES]
+    if any(_WHATIF_BOUND_RE.search(word) or _WHATIF_PREVIEW_DISQUALIFIER_RE.search(word) for word in others):
+        return False
+    for (previous, _), (word, quoted) in pairwise(words):
+        previous = previous.lower()
+        after_value_param = previous[:1] == "-" and ":" not in previous and previous not in _STOP_PROCESS_SWITCHES
+        if not quoted and word.lower() in _WHATIF_SWITCHES and not after_value_param:
+            return True
+    return False
+
+
+def _windows_killer_targets_pid(name: str, args: list[str], pid: int, *, whatif_preview: bool = False) -> bool:
     """``taskkill /PID n`` (local only: ``/S`` names another host) or ``Stop-Process -Id n`` —
-    also ``/PID:n`` / ``-Id:n``, comma lists split across spaces, and Stop-Process's positional Id."""
+    also ``/PID:n`` / ``-Id:n``, comma lists split across spaces, and Stop-Process's positional Id.
+    *whatif_preview*: the whole command is a ``-WhatIf`` preview (``_is_stop_process_whatif_preview``)."""
     # `-Id 1, 2` tokenizes as `1,` `2`: rejoin comma lists before reading values.
     args = re.sub(r"\s*,\s*", ",", " ".join(args)).split()
     lowered = [arg.lower() for arg in args]
-    # PowerShell's WhatIf switch previews Stop-Process without signaling the target.
-    # An explicit -WhatIf:$false does execute, so it must still reach the PID check.
-    if name == "stop-process" and any(
-        arg in {"-whatif", "-wi", "-whatif:$true", "-wi:$true"} for arg in lowered
-    ):
+    # PowerShell's WhatIf switch previews Stop-Process without signaling the target. Decided on the
+    # raw command, not these shlex args: shlex drops quotes and `{`/`}`/CR boundaries, so a -WhatIf
+    # bound to a scriptblock, a later CR statement or a -ErrorVariable value would look like a switch.
+    if name == "stop-process" and whatif_preview:
         return False
     if name == "taskkill" and "/s" in lowered:
         return False
@@ -935,6 +995,8 @@ def _targets_gateway_pid(
     from tools.shell_heredoc import strip_inert_heredoc_bodies
 
     rescan = rescan or (lambda text: _targets_gateway_pid(text, gateway_pid, depth=depth + 1))
+    # Only the top-level command can be a preview: a nested payload / script / substitution never is.
+    whatif_preview = depth == 0 and _is_stop_process_whatif_preview(command)
     command = strip_inert_heredoc_bodies(command)
     if depth < _MAX_REFERENCED_SCRIPT_DEPTH:
         for match in _PID_SCAN_SUBSTITUTION_RE.finditer(command):
@@ -959,7 +1021,9 @@ def _targets_gateway_pid(
         args = segment[index + 1:]
         if name == "kill" and _kill_targets_pid(args, gateway_pid):
             return True
-        if name in ("taskkill", "stop-process") and _windows_killer_targets_pid(name, args, gateway_pid):
+        if name in ("taskkill", "stop-process") and _windows_killer_targets_pid(
+            name, args, gateway_pid, whatif_preview=whatif_preview,
+        ):
             return True
         if name in _PID_SCAN_STRING_RUNNERS and depth < _MAX_REFERENCED_SCRIPT_DEPTH:
             payload = _string_runner_payload(name, args)

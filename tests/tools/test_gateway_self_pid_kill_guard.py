@@ -123,7 +123,10 @@ def test_pid_check_is_scoped_to_local_supervised_gateway(run, monkeypatch):
     "Stop-Process -Id {pid} -WhatIf",
     "Stop-Process -Id {pid} -wi",
     "Stop-Process -Id {pid} -WhatIf:$true",
-    "powershell -c 'Stop-Process -Id {pid} -WhatIf'",
+    "stop-process -id {pid} -WHATIF",
+    "Stop-Process -Id {pid} -Force -WhatIf",
+    "Stop-Process -WhatIf -Id {pid}",
+    "Stop-Process -Name hermes -WhatIf",
 ])
 def test_stop_process_whatif_preview_is_safe_but_disabled_switch_is_blocked(run, command):
     # A preview must be allowed without weakening the literal-PID guard for real kills.
@@ -139,6 +142,55 @@ def test_stop_process_whatif_preview_is_safe_but_disabled_switch_is_blocked(run,
     "powershell -c 'Stop-Process -Id {pid}\nGet-Item x -WhatIf'",
     "Stop-Process -Id {pid} <# -WhatIf #>",
     "Stop-Process -Id {pid} -wi:$false",
+    # The exemption is Stop-Process's own: POSIX kill and taskkill have no -WhatIf.
+    "kill {pid} -WhatIf", "kill -Id {pid} -WhatIf", "taskkill /PID {pid} -WhatIf",
 ])
 def test_stop_process_whatif_only_previews_its_own_statement(run, command):
+    assert run(command.format(pid=PID)) is not None
+
+
+@pytest.mark.parametrize("command", [
+    # The -WhatIf goes to the invoked scriptblock ($args), not to the Stop-Process inside it.
+    "& {{ Stop-Process -Id {pid} }} -WhatIf",
+    "& {{ param() Stop-Process -Id {pid} }} -WhatIf",
+    "{{ Stop-Process -Id {pid} }} -WhatIf",
+    "if ($true) {{ Stop-Process -Id {pid} }} -WhatIf",
+    "powershell -c '& {{ Stop-Process -Id {pid} }} -WhatIf'",
+    "pwsh -Command \"& {{ Stop-Process -Id {pid} -Force }} -WhatIf\"",
+    # A nested PowerShell payload is never exempt, even a plain preview.
+    "powershell -c 'Stop-Process -Id {pid} -WhatIf'",
+    "pwsh -Command Stop-Process -Id {pid} -WhatIf",
+    # PowerShell ends a statement at a bare CR; other line breaks are refused too.
+    "Stop-Process -Id {pid} -WhatIf\rStop-Process -Id {pid}",
+    "powershell -c \"Stop-Process -Id {pid} -WhatIf\rStop-Process -Id {pid}\"",
+    "Stop-Process -Id {pid} -WhatIf\u2028Stop-Process -Id {pid}",
+    "Stop-Process -Id {pid} -WhatIf\u2029Stop-Process -Id {pid}",
+    "Stop-Process -Id {pid} -WhatIf\x85Stop-Process -Id {pid}",
+    "Stop-Process -Id {pid} -WhatIf\x0bStop-Process -Id {pid}",
+    "Stop-Process -Id {pid} -WhatIf\x0cStop-Process -Id {pid}",
+    # A quoted '-WhatIf' is a string value bound to the preceding parameter, not the switch.
+    "Stop-Process -Id {pid} -ErrorVariable '-WhatIf'",
+    "Stop-Process -Id {pid} -ErrorVariable '-WhatIf'\r",
+    "Stop-Process -Id {pid} -ErrorVariable '-WhatIf:$true'",
+    "Stop-Process -Id {pid} -OutVariable \"-WhatIf\"",
+    "Stop-Process -Id {pid} -ev '-wi'",
+    "Stop-Process -Id {pid} -ov '-WhatIf'",
+    "Stop-Process -Id {pid} -Force -WarningVariable '-wi'",
+    "Stop-Process -Id {pid} -InformationVariable '-WhatIf'",
+    "Stop-Process -Id {pid} -PipelineVariable '-WhatIf'",
+    "powershell -c \"Stop-Process -Id {pid} -ErrorVariable '-WhatIf'\"",
+    "Stop-Process -Id {pid} '-WhatIf'",
+    # Unquoted, but still the value of a parameter that takes an argument.
+    "Stop-Process -Id {pid} -ErrorVariable -WhatIf",
+    "Stop-Process -Id {pid} -ErrorAction -WhatIf",
+    "Stop-Process -Id {pid} -ea -WhatIf",
+    "Stop-Process -Id {pid} -OutVariable -WhatIf",
+    "Stop-Process -Name -WhatIf -Id {pid}",
+    # Fail-closed: any `$` other than `-WhatIf:$true` turns the exemption off, even where
+    # PowerShell would still only preview (duplicate binding, -Confirm:$false).
+    "Stop-Process -Id {pid} -WhatIf:$true -WhatIf:$false",
+    "Stop-Process -Id {pid} -WhatIf -WhatIf:$false",
+    "Stop-Process -Id {pid} -WhatIf -Confirm:$false",
+])
+def test_stop_process_whatif_exempts_only_a_single_plain_statement(run, command):
     assert run(command.format(pid=PID)) is not None

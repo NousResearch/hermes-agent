@@ -55,7 +55,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes egress` | Outbound credential-injection firewall for remote terminal sandboxes (iron-proxy). Disabled by default. See [Egress proxy](../user-guide/egress/iron-proxy.md). |
 | `hermes lsp` | Manage Language Server Protocol integration (semantic diagnostics for write_file/patch). |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
-| `hermes move` | Carry this profile to another Hermes (a Hermes Cloud agent, a new computer), merged or replacing the parts you name, and undoable. See [Backup & Move](../user-guide/move-to-hermes-cloud.md). |
+| `hermes move` | Carry this profile to another Hermes (a Hermes Cloud agent, a new computer), merged or replacing the parts you name, and undoable. See [Move an agent](../user-guide/move-to-hermes-cloud.md). |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
 | `hermes whatsapp-cloud` | Configure the official Meta WhatsApp Business Cloud API adapter (Business account + public webhook required). Distinct from `hermes whatsapp` (Baileys personal-account bridge). |
 | `hermes slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
@@ -661,7 +661,7 @@ hermes move undo MOVE_ID
 hermes move list
 ```
 
-Carries one profile to another Hermes. Hermes Desktop's **Backup & Move** runs the same code over `/api/move/*`; these verbs are the scriptable path.
+Carries one profile to another Hermes. `hermes serve` exposes the same code over `/api/move/*`; these verbs are the scriptable path.
 
 `export` writes a move bundle of the active profile: config with credential-shaped keys and this-computer sections (`terminal`, `browser`, `gateway`, …) removed, `SOUL.md`, memory, your own and hub-installed skills (unchanged built-in skills stay behind), cron job definitions, and the most recent conversations (200 by default). It never includes `.env`, `auth.json` or `state.db`, and any credential value from `.env` or `auth.json` that appears inside a transcript or skill is replaced with `[redacted NAME]`. The manifest lists the names of keys to enter again on the other side.
 

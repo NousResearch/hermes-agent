@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import List, Optional, Tuple
+from typing import Optional
 
 # Hard cap on scanned text: scanners are advisory, so bound worst-case runtime.
 # The whole input is still scanned — just in bounded chunks of this size — so a

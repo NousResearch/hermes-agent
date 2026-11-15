@@ -52,6 +52,17 @@ _STDIN_RE = re.compile(r"(?<![<\S])0?<(?![<(&])\s*+([^\s<>]++)")
 _LOOKUP_ONLY_RE = re.compile(r"\bcommand(?:\s+-[a-uw-zA-UW-Z]+)*\s+-[a-zA-Z]*[vV]", re.IGNORECASE)
 _CURL_REMOTE_NAME_RE = re.compile(r"\s(?:-([A-Za-z]++)|--remote-name(?:-all)?)(?=\s|$)")
 _URL_RE = re.compile(r"(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*+://[^\s;&|<>'\"`()]++", re.IGNORECASE)
+# PowerShell runs FILE's content through Invoke-Expression or a script block built from it
+# (`iex (gc f -Raw)`, `Get-Content f | iex`, `[scriptblock]::Create((gc f -Raw))`), or dot-sources or
+# calls FILE inside a -Command string (`pwsh -c ". ./f.ps1"`). Printing it (`Write-Output (gc f)`) runs nothing.
+_PS_READ = r"\b(?:gc|get-content|cat|type)(?:[^\S\n]++-\w++)*+[^\S\n]++['\"]?(?P<{}>[^\s;&|<>'\"`()]++)"
+_PS_READ_RUN_RE = re.compile(
+    rf"\b(?:iex|invoke-expression)\b(?:[^\S\n]++-command\b)?(?:[($'\"]|[^\S\n])*+{_PS_READ.format('iex')}"
+    rf"|\[scriptblock\]::create\((?:[($'\"]|[^\S\n])*+{_PS_READ.format('block')}"
+    rf"|{_PS_READ.format('piped')}['\"]?(?:[^\S\n]++-\w++)*+[^\S\n]*+\|[^\S\n]*+(?:iex|invoke-expression)\b"
+    rf"|(?<=[\"'{{;(])[^\S\n]*+[.&][^\S\n]++['\"]?(?P<sourced>[^\s;&|<>'\"`()]++)",
+    re.IGNORECASE,
+)
 
 
 def _base(path: str) -> str:
@@ -67,10 +78,13 @@ class DownloadThenRunMatcher:
         # A command starts after a list/pipe operator or `(`, past `{`, `!`, compound
         # keywords and `VAR=value` words. Launchers (shared with the pipe sink: path-qualified, valued
         # options such as `sudo -u USER`, `timeout 60`), script interpreters and `shell < FILE` run FILE too.
+        # A command string handed to a shell or su (`bash -c 'bash job.sh'`, `cmd /c "call j.bat"`) is a command line too.
+        carrier = (rf"(?:['\"]?{_PIPE_PATH_PREFIX_RE}(?:{shell_names_re}|pwsh|powershell|cmd|su)(?:\.exe)?['\"]?"
+                   rf"(?:{_H}++[^\s'\";&|)`]++)*?{_H}++[-/](?:[a-z]*c|command){_H}++['\"]{_H}*+{_LINE_WRAPPERS_RE})?")
         self._run_re = re.compile(
             rf"[;&|\n(]\s*+(?:(?:[{{!]|if|then|do|else|elif|while|until){_H}++)*+(?:\w++=\S*+{_H}++)*+"
-            rf"{_LINE_WRAPPERS_RE}(?:(?P<prog>['\"]?{_PIPE_PATH_PREFIX_RE}(?P<tool>{shell_names_re}|{_SCRIPT_INTERPRETERS_RE})(?:\.exe)?['\"]?){_H}++"
-            rf"(?P<flags>(?:-\S++{_H}++)*+)(?:<{_H}*+)?|(?:source|\.){_H}++)?"
+            rf"{_LINE_WRAPPERS_RE}{carrier}(?:(?P<prog>['\"]?{_PIPE_PATH_PREFIX_RE}(?P<tool>{shell_names_re}|{_SCRIPT_INTERPRETERS_RE})(?:\.exe)?['\"]?){_H}++"
+            rf"(?P<flags>(?:-\S++{_H}++)*+)(?:<{_H}*+)?|(?:source|\.|call){_H}++)?"
             rf"['\"]?(?:\./)?(?P<file>[^\s;&|<>'\"`()]++){_TERMINATOR}",
             re.IGNORECASE,
         )
@@ -82,7 +96,7 @@ class DownloadThenRunMatcher:
         tool = rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?P<{{}}>{shell_names_re}|{_SCRIPT_INTERPRETERS_RE})(?:\.exe)?['\"]?"
         self._read_run_re = re.compile(
             rf"[;&|\n(]\s*+(?:(?:[{{!]|if|then|do|else|elif|while|until){_H}++)*+(?:\w++=\S*+{_H}++)*+"
-            rf"{_LINE_WRAPPERS_RE}(?:(?:(?:eval|source|\.|{tool.format('rtool')}(?P<rflags>(?:{_H}++(?![$`<'\"])[^\s;&|)`]++)*?)){_H}++)?"
+            rf"{_LINE_WRAPPERS_RE}{carrier}(?:(?:(?:eval|source|\.|{tool.format('rtool')}(?P<rflags>(?:{_H}++(?![$`<'\"])[^\s;&|)`]++)*?)){_H}++)?"
             rf"['\"]?{read}|cat{_H}++['\"]?(?:\./)?(?P<piped>[^\s;&|<>'\"`()]++)['\"]?{_H}*+\|(?!\|)&?\s*+"
             rf"{_LINE_WRAPPERS_RE}{tool.format('ptool')}{_TERMINATOR}(?P<pargs>(?:{_H}++[^\s;&|)`]++)*+))",
             re.IGNORECASE,
@@ -161,6 +175,9 @@ class DownloadThenRunMatcher:
         for read in self._read_run_re.finditer(text, min(targets.values())):
             written = read.start() >= targets.get(_base(read.group("file") or read.group("piped")), len(text))
             if written and self._runs_content(read):
+                return read
+        for read in _PS_READ_RUN_RE.finditer(text, min(targets.values())):
+            if read.start() >= targets.get(_base(read.group(read.lastgroup).replace("\\", "/")), len(text)):
                 return read
         return None
 

@@ -123,6 +123,50 @@ def test_option_value_or_powershell_run_keeps_written_script_on_the_deny_list(fl
     assert approval_floors._match_user_deny_rule(command) is not None, runner
 
 
+@pytest.mark.parametrize("script,runner", [
+    ("job.sh", "bash -c 'bash job.sh'"), ("job.sh", 'sudo sh -c "sh job.sh"'), ("job.sh", 'bash -lc "source job.sh"'),
+    ("job.sh", "bash -euo pipefail -c 'bash job.sh'"), ("job.sh", "timeout 60 bash -c 'bash -o pipefail job.sh'"),
+    ("job.sh", "bash -c 'cat job.sh | bash'"), ("j.bat", 'cmd /c "call j.bat"'), ("job.sh", "su -c 'bash job.sh' root"),
+    ("job.sh", "sh -c 'sudo bash job.sh'"), ("job.sh", "bash -c ' bash job.sh'"), ("job.sh", "bash -c ' cat job.sh | bash'"),
+])
+def test_command_string_handed_to_a_shell_keeps_written_script_on_the_deny_list(floors_off, script, runner):
+    command = f"cat > {script} <<'EOF'\nrm notes.txt\nEOF\n{runner}"
+
+    assert approval_floors._match_user_deny_rule(command) is not None, runner
+
+
+@pytest.mark.parametrize("runner", [
+    "bash -c 'wc -l job.sh'", "bash -c 'bash other.sh'", "python3 -c 'print(1)' job.sh", "grep -c 'job.sh' list.txt",
+])
+def test_command_string_that_does_not_run_the_written_file_stays_quiet(floors_off, runner):
+    command = f"cat > job.sh <<'EOF'\nrm notes.txt\nEOF\n{runner}"
+
+    assert approval_floors._match_user_deny_rule(command) is None, runner
+
+
+@pytest.mark.parametrize("runner", [
+    'pwsh -c "iex (gc ps/j.ps1 -Raw)"', 'pwsh -Command "Invoke-Expression -Command (Get-Content -Path ps/j.ps1 -Raw)"',
+    'powershell -NoProfile -Command "Get-Content ps/j.ps1 | Invoke-Expression"', 'pwsh -c "gc -Raw .\\ps\\j.ps1 | iex"',
+    "pwsh -c 'iex $(type ps/j.ps1)'", 'pwsh -c "& ([scriptblock]::Create((gc ps/j.ps1 -Raw)))"', 'pwsh -c ". ./ps/j.ps1"',
+    'pwsh -c ". .\\ps\\j.ps1"', 'pwsh -c "iex ( gc ps/j.ps1 -Raw )"', 'pwsh -c "& ([scriptblock]::Create( (gc ps/j.ps1) ))"',
+])
+def test_powershell_running_a_written_file_s_content_keeps_it_on_the_deny_list(floors_off, runner):
+    command = f"cat > ps/j.ps1 <<'EOF'\nrm notes.txt\nEOF\n{runner}"
+
+    assert approval_floors._match_user_deny_rule(command) is not None, runner
+
+
+@pytest.mark.parametrize("reader", [
+    'pwsh -c "gc ps/j.ps1 | Select-String rm"', 'pwsh -c "Write-Output (gc ps/j.ps1 -Raw)"',
+    'pwsh -c "iex (gc other.ps1 -Raw)"', 'pwsh -c "Get-Content ps/j.ps1 | Out-File copy.txt"',
+    "tar czf out.tgz -C . ps/j.ps1",
+])
+def test_powershell_reading_a_written_file_without_running_it_stays_quiet(floors_off, reader):
+    command = f"cat > ps/j.ps1 <<'EOF'\nrm notes.txt\nEOF\n{reader}"
+
+    assert approval_floors._match_user_deny_rule(command) is None, reader
+
+
 @pytest.mark.parametrize("runner", [
     "bash -o pipefail other.sh", "pwsh -File other.ps1", "pwsh -Command Get-Date", "cmd /c other.bat",
 ])

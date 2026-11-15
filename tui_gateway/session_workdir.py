@@ -450,10 +450,13 @@ def _local_session_process_cwd(session: dict | None) -> str | None:
 def _move_session_cwd(sid: str, session: dict, cwd: str) -> str:
     """``_set_session_cwd``, then respawn a live slash worker right away when the project actually
     moved: the worker and its stdio MCP children snapshotted the old project at spawn. A session with
-    no worker yet gets one on the new cwd at first use; a path that only normalised changes nothing."""
-    before = _local_session_process_cwd(session)
+    no worker yet gets one on the new cwd at first use; a path that only normalised changes nothing.
+    The move decision compares the RAW stored cwds — the healing display getter persists a dead
+    cwd's fallback, and reading it here would write the DB once more than the move itself
+    (review finding 8a)."""
+    before = session.get("cwd")
     resolved = _set_session_cwd(session, cwd)
-    if session.get("slash_worker") is not None and _local_session_process_cwd(session) != before:
+    if session.get("slash_worker") is not None and session.get("cwd") != before:
         _restart_slash_worker(sid, session)
     return resolved
 

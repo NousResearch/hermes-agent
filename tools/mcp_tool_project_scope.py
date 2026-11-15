@@ -80,9 +80,13 @@ def _clear_clone_connect_failure(clone_key: tuple) -> None:
 
 def _caller_cwd() -> str:
     """The caller's canonical project dir; must run on the CALLER's thread (the session cwd is a
-    ContextVar the MCP loop cannot see). ``resolve_agent_cwd`` only accepts real local dirs, so a
-    remote-backend path or a deleted worktree falls back to the host default instead of reaching
-    ``Popen(cwd=...)``. realpath: ``/p``, ``/p/`` and a symlink to it are one project."""
+    ContextVar the MCP loop cannot see). A non-local terminal backend's cwd names a path in the
+    target environment, never on this host — the worker side gates on the backend too — so it
+    clones nothing rather than resolving a coincidental host path (review finding 8c).
+    realpath: ``/p``, ``/p/`` and a symlink to it are one project."""
+    from tools.terminal_scope import terminal_env
+    if (terminal_env("TERMINAL_ENV", "local") or "local").strip().lower() != "local":
+        return ""
     from agent.runtime_cwd import resolve_agent_cwd
     try:
         return os.path.realpath(str(resolve_agent_cwd()))
@@ -96,7 +100,7 @@ def _clone_cwd(baseline: Any) -> str:
     and a caller already in the baseline child's dir uses it. ``isinstance``: tests inject Mock
     stand-ins into ``_servers``, and a Mock would answer every attribute truthily."""
     if (not isinstance(baseline, _core.MCPServerTask) or baseline._is_http()
-            or "cwd" in (baseline._config or {}) or not baseline._spawn_cwd):
+            or (baseline._config or {}).get("cwd") is not None or not baseline._spawn_cwd):
         return ""
     want = _caller_cwd()
     return "" if not want or want == os.path.realpath(baseline._spawn_cwd) else want

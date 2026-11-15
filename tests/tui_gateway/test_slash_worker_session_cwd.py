@@ -108,6 +108,23 @@ def test_a_session_without_a_worker_does_not_spawn_one(live_session):
     assert restarts == []
 
 
+def test_a_project_move_persists_the_cwd_exactly_once(live_session, monkeypatch, tmp_path):
+    """The pre-move process-cwd read must not route through the healing display getter: on a dead
+    cwd it persisted the healed fallback + scheduled a git-meta probe BEFORE the real set, so one
+    move wrote the DB twice (review finding 8a). The restart decision compares the raw stored
+    values; the move persists exactly the final one."""
+    import os as _os
+    session, _restarts, tmp = live_session
+    persists = []
+    monkeypatch.setattr(server, "_persist_session_cwd_and_schedule_git_meta",
+                        lambda s, cwd, **k: persists.append(cwd))
+    session["cwd"] = str(tmp / "deleted")  # a removed worktree: the healing getter would persist
+    server._move_session_cwd("ui", session, str(tmp / "new"))
+    assert persists == [str(tmp / "new")], \
+        f"the move persisted more than the final cwd: {persists}"
+    assert session["cwd"] == str(tmp / "new")
+
+
 def test_worker_argv_carries_the_session_cwd(spawned):
     """The child must receive the project as ``--session-cwd`` so it can re-pin after its cli
     import; off the local backend there is no project and the flag stays absent (review finding 7)."""

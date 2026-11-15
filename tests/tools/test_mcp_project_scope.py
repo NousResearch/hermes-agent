@@ -650,6 +650,41 @@ def test_eviction_never_shuts_a_victim_down_on_the_callers_thread(root, probe, m
         worker.join(timeout=30)
 
 
+def test_a_null_cwd_is_not_an_explicit_cwd_opt_out(root):
+    """``cwd: null`` in the config means "unset" everywhere else (_stdio_launch treats it so);
+    the clone opt-out must read it the same way, or a server configured with ``cwd: null`` never
+    clones and every project shares the launch-dir child (review finding 8b)."""
+    from tools import mcp_tool
+    from tools.mcp_tool_discovery import register_mcp_servers
+
+    name = "cwdprobe_nullcwd"
+    register_mcp_servers({name: {"command": sys.executable, "args": [str(root / "probe.py")],
+                                 "connect_timeout": 30, "timeout": 30, "cwd": None}})
+    assert name in mcp_tool._servers
+    try:
+        clone_cwd, clone_pid = _call(name, cwd=str(root / "a"))
+        _baseline_cwd, baseline_pid = _call(name)
+        assert clone_cwd == str(root / "a") and clone_pid != baseline_pid, \
+            "a cwd: null server never cloned; every project shares the baseline child"
+    finally:
+        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+        shutdown_mcp_servers(scope=None, names={name})
+
+
+def test_a_remote_backend_caller_never_clones(root, monkeypatch):
+    """A remote backend's cwd names a path in the TARGET environment. When that path COINCIDENTALLY
+    exists on this host, resolving it spawns a clone in an unrelated host dir; when it doesn't,
+    every call logs a resolve warning. The worker side already gates on the backend; the clone
+    side must too (review finding 8c)."""
+    name = "cwdprobe_remote"
+    _register(root, name)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    _call(name, cwd=str(root / "a"))  # an existing host dir the remote session happens to name
+
+    assert not _clones(name), "a remote-backend session spawned a host clone for a remote path"
+    assert _call(name)[0] != str(root / "a")  # the launch-dir baseline still serves it
+
+
 def _reap_bare_keyed_clones() -> None:
     """Reap clones stranded under a bare baseline key (the rekey bug's signature), so a run of
     these tests never leaks its children into the next one."""

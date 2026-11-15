@@ -97,7 +97,17 @@ def _discussion_events(tables: HostedTables, *, room_id: str, thread_id: str, di
     if len(joined) > transcript_bound:
         raise PolicyProjectionError("thread policy transcript exceeded its bound")
     by_seq = {int(event["seq"]): event for event in (*map(event_from_row, joined), *(json.loads(row["event_json"]) for row in active))}
+    for event in _settled_source_users(tables, room_id=room_id, thread_id=thread_id, events=by_seq):
+        by_seq[int(event["seq"])] = event
     return [by_seq[seq] for seq in sorted(by_seq)]
+
+
+def _settled_source_users(tables: HostedTables, *, room_id: str, thread_id: str, events: Mapping[int, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The thread's ``message.user`` events that retained non-pass settlements name as their source and the merge lacks."""
+    source_ids = {_text(event["payload"], "discussion_event_id") for event in events.values() if event["kind"] == "turn.settled" and not event["payload"].get("passed")}
+    source_ids.difference_update(_text(event, "event_id") for event in events.values())
+    sources = (event_from_row(row) for row in room_events(tables, room_id) if row["kind"] == "message.user" and row["event_id"] in source_ids)
+    return [event for event in sources if isinstance(event["payload"], dict) and event["payload"].get("thread_id") == thread_id]
 
 
 def _apply_user_message(tables: HostedTables, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:

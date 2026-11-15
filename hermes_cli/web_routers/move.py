@@ -104,9 +104,11 @@ async def build_move_bundle(body: MoveBundleRequest, profile: Optional[str] = No
 
     def _build():
         from hermes_cli.move_bundle import build_bundle
+        from utils import unlink_files_older_than
         outbox = _outbox(home)
-        for old in outbox.glob("move-*.zip"):
-            old.unlink(missing_ok=True)
+        # Age-based only: another window's inventory call must not delete a bundle a transfer
+        # is still reading.
+        unlink_files_older_than(outbox, "move-*.zip*", 24 * 3600)
         out = outbox / f"move-{uuid.uuid4().hex[:16]}.zip"
         report = build_bundle(home, name, out, include_history=body.include_history,
                               history_limit=body.history_limit, dry_run=body.dry_run)

@@ -1,0 +1,22 @@
+name: canary-trap
+repo: https://github.com/Tarekkharsa/hermes-canary-trap
+sha: cbef2f98aee69cfacf59402e3d4fe98427d10b84
+subdir: canary-trap
+description: "Catch prompt injection by the secret it tries to steal. Every turn the agent is shown a decoy credential (HERMES_DEPLOY_KEY=hdk_live_…) with the instruction never to send it; no real task needs it, so if it shows up in a tool call — plain, URL-encoded, base64, hex, reversed, spaced out or as a 16+ character fragment, in any nested argument — the call is blocked (pre_tool_call), every later tool call in that session goes to your approval until /canary reset, and the reply opens with an alert (transform_llm_output). /canary shows status and incidents, rotates the decoy, or tests text. Disclosure — adds a ~60-token paragraph with the decoy to each turn's user message (pre_llm_call; Hermes may persist the API-bound message for cache replay; the decoy grants nothing). Stores in its own plugin state: the decoy, up to 200 incidents (time, tool name, how the decoy was hidden, platform, session id — never tool arguments or conversation content) and locked session ids. Lockdown only adds approval prompts through Hermes' approval gate (auto-approved under YOLO, so advisory there; the leaking call is always blocked). No network, subprocesses, tools, credentials, telemetry or background work."
+maintainer: Tarekkharsa
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Tarekkharsa/hermes-canary-trap/tree/cbef2f98aee69cfacf59402e3d4fe98427d10b84#readme
+version: "0.1.0"
+title: "canary-trap — prompt-injection tripwire"
+image: https://raw.githubusercontent.com/Tarekkharsa/hermes-canary-trap/cbef2f98aee69cfacf59402e3d4fe98427d10b84/docs/banner.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

@@ -73,4 +73,41 @@ exit $LASTEXITCODE
     },
     40_000
   )
+
+  it('tags every line of a multi-line script error with its attempt', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relaunch-log-'))
+    const wrapper = path.join(root, 'run.ps1')
+
+    fs.writeFileSync(
+      wrapper,
+      `
+function Get-AppxPackage { throw "first line\`nsecond line\`nthird line" }
+& ${quote(scriptPath)} -ProcessId $PID -ProcessStartTimeMs 1 -IdentityName audit-only -ReadyFile ${quote(path.join(root, 'ready.txt'))} -TimeoutSeconds 10
+exit $LASTEXITCODE
+`,
+      'utf8'
+    )
+
+    try {
+      const result = spawnSync(POWERSHELL_PATH, ['-NoProfile', '-NonInteractive', '-File', wrapper], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, TEMP: root, TMP: root },
+        windowsHide: true,
+        timeout: 30_000
+      })
+
+      expect(result.status, result.stdout + result.stderr).toBe(1)
+
+      const lines = fs
+        .readFileSync(path.join(root, 'hermes-relaunch-waiter.log'), 'utf8')
+        .split('\n')
+        .filter(line => line.trim())
+
+      expect(lines.some(line => line.includes('third line'))).toBe(true)
+      expect(lines.every(line => line.includes(`[${path.basename(root)}]`))).toBe(true)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }, 40_000)
 })

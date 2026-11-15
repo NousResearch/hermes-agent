@@ -37,7 +37,7 @@ export function LocalModelsSettings(): ReactElement {
 function ScopedLocalModelsSettings(): ReactElement {
   const owner: LocalModelsOwner = useScopedLocalModelsOwner()
   const installStarting: boolean = useIsMutating({ mutationKey: localModelsKey(owner, 'install') }) > 0
-  const { data: status } = useLocalModelsStatus(owner)
+  const { data: status } = useLocalModelsStatus(owner, true, true)
   const { data: hardware } = useQuery(localModelsHardwareOptions(owner))
   const { data: catalog } = useQuery(localModelsCatalogOptions(owner))
   // Quickstart escape hatch: true once the user asks for the full pane

@@ -1,8 +1,8 @@
 """Rate-limited heap release for long-lived Hermes gateway processes.
 
-On Linux/glibc, ``malloc_trim(0)`` can return pages from freed Python/C allocations to the OS. Other
-platforms and allocators are safe no-ops. Behavior is configured under ``context.memory_trim`` in
-``config.yaml``.
+On Linux/glibc, ``malloc_trim(0)`` can return pages from freed Python/C allocations to the OS. Every
+platform runs the rate-limited ``gc.collect()``; only the page release is glibc-only. Behavior is configured
+under ``context.memory_trim`` in ``config.yaml``.
 """
 
 from __future__ import annotations
@@ -30,6 +30,9 @@ _DEFAULT_INFO_LOG_MIN_DELTA_MB = 0.0
 _FORCE_FLOOR_SECONDS = 5.0
 _trim_lock = threading.Lock()
 _last_trim_monotonic = 0.0
+# ``_last_trim_monotonic`` stamps collecting trims only, so an allocator-only trim (housekeeping tick, agent
+# close) never pushes a later forced collection (cache-pressure eviction) inside its floor.
+_last_alloc_trim_monotonic = 0.0
 _probe_done = False
 _malloc_trim: Callable[[int], int] | None = None
 _trim_call_count = 0
@@ -140,35 +143,47 @@ def _probe_glibc_malloc_trim() -> Callable[[int], int] | None:
 
 
 def trim_memory(
-    *, force: bool = False, reason: str = "", cooldown_seconds: float | None = None) -> bool:
+    *, force: bool = False, reason: str = "", cooldown_seconds: float | None = None,
+    collect: bool = True) -> bool:
     """Collect cycles and ask glibc to release free heap pages.
 
     Returns ``True`` only when ``malloc_trim(0)`` ran and reported success. Unsupported allocators,
     the config kill switch, cooldown suppression, and all runtime errors return ``False`` without
     affecting the caller.
+
+    ``collect=False`` drops the forced full ``gc.collect()`` and only asks the allocator to return
+    already-free pages. Every call site on a busy path of a long-lived process passes it (gateway
+    housekeeping tick, agent close, TUI turn completion, post-compression): a full collection walks
+    the whole shared heap with the GIL held, 250-750 ms on a multi-million-object gateway, freezing
+    every thread (adapters, streams, API requests) while it runs. Most of what those paths free goes
+    by reference counting; cycles wait for ``trim_memory_when_idle``, the timer lanes' one full
+    collection per quiet period. The forced collection otherwise stays only where memory is the
+    emergency (agent-cache pressure eviction) or the process is single-session (slash worker).
     """
     enabled, configured_cooldown, log_every_n, info_log_min_delta_mb = _config_settings()
     if not enabled:
         return False
 
-    global _last_trim_monotonic, _trim_call_count
+    global _last_trim_monotonic, _last_alloc_trim_monotonic, _trim_call_count
     with _trim_lock:
         trim = _probe_glibc_malloc_trim()
-        if trim is None:
-            return False
         now = time.monotonic()
         cooldown = configured_cooldown if cooldown_seconds is None else _cooldown_seconds(cooldown_seconds)
-        since_last = now - _last_trim_monotonic
-        if _last_trim_monotonic and since_last < (_FORCE_FLOOR_SECONDS if force else cooldown):
+        last = _last_trim_monotonic if collect else max(_last_trim_monotonic, _last_alloc_trim_monotonic)
+        if last and now - last < (_FORCE_FLOOR_SECONDS if force else cooldown):
             return False
         # Record the attempt before calling into libc so repeated failures do not
         # turn every turn boundary into an expensive full collection.
-        _last_trim_monotonic = now
+        _last_alloc_trim_monotonic = now
+        if collect:
+            _last_trim_monotonic = now
         try:
             before = collect_memory_snapshot()
             started = time.perf_counter()
-            gc.collect()
-            trim_result = trim(0)
+            if collect:
+                gc.collect()
+            # Cycle collection is allocator-independent; only the page release needs glibc.
+            trim_result = trim(0) if trim is not None else 0
             released = bool(trim_result)
             after = collect_memory_snapshot()
             duration_ms = (time.perf_counter() - started) * 1000
@@ -177,9 +192,9 @@ def trim_memory(
                 force=force, log_every_n=log_every_n, call_count=_trim_call_count,
                 before=before, after=after, info_log_min_delta_mb=info_log_min_delta_mb):
                 logger.info(
-                    "memory trim: reason=%s malloc_trim=%s rss_kib=%s->%s "
+                    "memory trim: reason=%s malloc_trim=%s collected=%s rss_kib=%s->%s "
                     "rss_anon_kib=%s->%s threads=%s duration_ms=%.1f",
-                    reason or "cleanup", trim_result,
+                    reason or "cleanup", trim_result, collect,
                     before.get("rss_kib"), after.get("rss_kib"),
                     before.get("rss_anon_kib"), after.get("rss_anon_kib"),
                     after.get("thread_count"), duration_ms)
@@ -188,3 +203,39 @@ def trim_memory(
             logger.warning(
                 "memory trim failed after %s: %s: %s", reason or "cleanup", type(exc).__name__, exc)
             return False
+
+
+# A gateway that has been turn-free this long has nobody waiting on it, so the full collection the busy-path
+# trims skip can run here without freezing anyone. Python 3.14's incremental collector advances only on new
+# allocations, so a quiet process otherwise keeps closed agents' reference cycles (and their pages) forever.
+IDLE_COLLECT_AFTER_SECONDS = 300.0
+_idle_collect_lock = threading.Lock()
+_idle_collected_for: float | None = None  # quiet-period stamp the last idle collection covered
+_agent_closed_since_idle_collect = False
+
+
+def note_agent_closed() -> None:
+    """A closed agent may leave reference cycles: re-arm the idle collection even within one quiet period."""
+    global _agent_closed_since_idle_collect
+    _agent_closed_since_idle_collect = True
+
+
+def trim_memory_when_idle(*, reason: str) -> bool:
+    """Timer-lane trim: allocator release only, plus ONE full collection per quiet period once no turn has run
+    in this process for ``IDLE_COLLECT_AFTER_SECONDS`` (again only after a later agent close)."""
+    global _idle_collected_for, _agent_closed_since_idle_collect
+    from agent.review_idle_queue import QUEUE
+
+    quiet_for, quiet_since = QUEUE.quiet_period()
+    with _idle_collect_lock:
+        due = quiet_since is not None and quiet_for >= IDLE_COLLECT_AFTER_SECONDS and (
+            quiet_since != _idle_collected_for or _agent_closed_since_idle_collect)
+        if due:
+            _idle_collected_for, _agent_closed_since_idle_collect = quiet_since, False
+    if not due or not _config_settings()[0]:
+        return trim_memory(reason=reason, collect=False)
+    started = time.perf_counter()
+    freed = gc.collect()
+    logger.info("idle full collection: reason=%s quiet_s=%d unreachable=%d duration_ms=%.1f",
+                reason, quiet_for, freed, (time.perf_counter() - started) * 1000)
+    return trim_memory(force=True, reason=f"{reason} after idle collection", collect=False)

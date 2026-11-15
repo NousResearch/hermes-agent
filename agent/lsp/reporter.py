@@ -40,7 +40,7 @@ def _sanitize_field(value: Any, *, limit: int) -> str:
     return html.escape(raw.strip()[:limit], quote=False)
 
 
-def format_diagnostic(d: Dict[str, Any]) -> str:
+def format_diagnostic(d: dict[str, Any]) -> str:
     """One-line representation of a single diagnostic (fields sanitized)."""
     sev = SEVERITY_NAMES.get(d.get("severity") or 1, "ERROR")
     start = (d.get("range") or {}).get("start") or {}
@@ -54,7 +54,7 @@ def format_diagnostic(d: Dict[str, Any]) -> str:
 
 def report_for_file(
     file_path: str,
-    diagnostics: List[Dict[str, Any]],
+    diagnostics: list[dict[str, Any]],
     *,
     severities: frozenset = DEFAULT_SEVERITIES,
     max_per_file: int = MAX_PER_FILE,
@@ -77,4 +77,4 @@ def truncate(s: str, *, limit: int = MAX_TOTAL_CHARS) -> str:
     return elide(s, limit)
 
 
-__all__ = ["SEVERITY_NAMES", "DEFAULT_SEVERITIES", "MAX_PER_FILE", "format_diagnostic", "report_for_file", "truncate"]
+__all__ = ["DEFAULT_SEVERITIES", "MAX_PER_FILE", "SEVERITY_NAMES", "format_diagnostic", "report_for_file", "truncate"]

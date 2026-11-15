@@ -1,0 +1,27 @@
+name: proving-ground
+repo: https://github.com/dmustapha/hermes-proving-ground
+sha: "7e2d489b51e53a2b572bdb3a933633e7935e4dea"
+description: "A wiring test for your plugin stack: known, harmless test calls go through every installed plugin in a throwaway child Hermes home with the model never called, and each cell shows which plugin blocked, rewrote, changed the result, gated for approval, or passed it through. Disclosure — Runs every enabled directory plugin's own code in child Hermes processes under the system temp dir with your file permissions (approvals forced to deny, model never called, plugin settings with secret-shaped names withheld); the first warm-up copies your local Hermes runtime or, if none exists, lets Hermes's installer download about 650 MB."
+maintainer: dmustapha
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+version: "0.1.1"
+title: "Proving Ground"
+image: "https://raw.githubusercontent.com/dmustapha/hermes-proving-ground/7e2d489b51e53a2b572bdb3a933633e7935e4dea/docs/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/dmustapha/hermes-proving-ground/7e2d489b51e53a2b572bdb3a933633e7935e4dea/docs/matrix.png"
+  - "https://raw.githubusercontent.com/dmustapha/hermes-proving-ground/7e2d489b51e53a2b572bdb3a933633e7935e4dea/docs/cell-detail.png"
+readme: true
+platforms: [macos, linux]
+known_issues:
+  - "Spawns child hermes processes with throwaway homes under the temp dir; the first run copies Hermes's runtime from your local installs (no network); only without any does Hermes's own installer download ~650 MB once (up to 15 min)."
+  - "Subject plugins run with your own file permissions; a call that leaves the temp dir is detected after it ran, not prevented."
+  - "A session-level /yolo toggle has no public API, so only HERMES_YOLO_MODE and approvals.mode: off are detected."
+  - "Other plugins' own network code cannot be blocked by a plugin; it would only see synthetic test data."
+  - "On macOS, Hermes's finished launchd job labels for the child homes stay listed until its next gateway start; the parent hermes process may write Hermes's own bytecode into the Hermes install; each drill child installs a process-wide audit hook (sys.addaudithook) to count non-loopback connects."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call, transform_tool_result, transform_terminal_output, pre_verify, post_api_request, pre_llm_call, transform_llm_output, post_llm_call]
+  provides_middleware: [llm_execution, tool_execution]
+  requires_env: []

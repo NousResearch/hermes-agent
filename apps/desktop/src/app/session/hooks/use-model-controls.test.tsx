@@ -52,7 +52,8 @@ vi.mock('@/i18n', async importOriginal => ({
     t: {
       desktop: {
         modelSwitchFailed: 'Model switch failed'
-      }
+      },
+      shell: { modelMenu: { pickDeferred: (model: string) => `${model} applies from your next message` } }
     }
   })
 }))
@@ -307,6 +308,22 @@ describe('useModelControls', () => {
     expect($currentProvider.get()).toBe('xai')
     expect(invalidate).not.toHaveBeenCalled()
     expect(notifyError).not.toHaveBeenCalled()
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'grok-4.5 applies from your next message' }))
+  })
+
+  it('names the owner refusal of a pick in the failure toast', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('old')
+    setCurrentProvider('xai')
+    const refusal = Object.assign(new Error('model_resolution_failed'), { data: { reason: 'model_resolution_failed' } })
+    const requestGateway = vi.fn(async () => { throw refusal })
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'nope', provider: 'xai' })).resolves.toBe(false)
+    expect(notifyError).toHaveBeenCalledWith(refusal, 'Model switch failed')
+    expect($currentModel.get()).toBe('old')
   })
 
   it('still refetches after a switch that applied immediately', async () => {

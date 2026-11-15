@@ -15,6 +15,7 @@ from typing import Any, Dict, Mapping, MutableMapping, Optional
 TURN_AUTHOR_ENV = "HERMES_TURN_AUTHOR"
 
 _MAX_FIELD_LEN = 200
+_MAX_CHAIN_HOPS = 1000
 
 
 _DROPPED_CATEGORIES = frozenset({"Cc", "Cs", "Cn", "Co"})
@@ -55,7 +56,7 @@ def local_origin() -> str:
     return (_clean_text(host) or "").replace("/", "")
 
 
-def parse_turn_author(raw: Any) -> Optional[Dict[str, Any]]:
+def parse_turn_author(raw: Any) -> Optional[dict[str, Any]]:
     """Normalize a dict or JSON string into ``{"id", "name", "is_bot"}``; None for anything else or without id and name.
     The id is whatever the transport knows the sender by: ``bot:<profile>`` on a bot-mode delivery inside one
     install, ``bot:<connection>/<profile>`` when the Desktop relayed it from another machine,
@@ -73,6 +74,10 @@ def parse_turn_author(raw: Any) -> Optional[Dict[str, Any]]:
         }
         if author["id"] is None and author["name"] is None:
             return None
+        # Runtime-written chain fields of a bot-to-bot delivery (agent/bot_chain.py); never model input.
+        hops = raw.get("hops")
+        if isinstance(hops, int) and not isinstance(hops, bool) and 0 < hops <= _MAX_CHAIN_HOPS:
+            author["hops"] = hops
         origin = _clean_text(raw.get("origin"))
         if origin and author["id"] and author["id"].startswith("bot:") and "/" not in author["id"]:
             author["id"] = _clean_text(bot_author_id(author["id"][len("bot:"):], origin))
@@ -81,22 +86,22 @@ def parse_turn_author(raw: Any) -> Optional[Dict[str, Any]]:
         return None
 
 
-def turn_author_from_env(environ: Mapping[str, str] = os.environ) -> Optional[Dict[str, Any]]:
+def turn_author_from_env(environ: Mapping[str, str] = os.environ) -> Optional[dict[str, Any]]:
     """The author the dispatcher placed in ``HERMES_TURN_AUTHOR``, or None."""
     return parse_turn_author(environ.get(TURN_AUTHOR_ENV))
 
 
-def take_turn_author_from_env(environ: MutableMapping[str, str] = os.environ) -> Optional[Dict[str, Any]]:
+def take_turn_author_from_env(environ: MutableMapping[str, str] = os.environ) -> Optional[dict[str, Any]]:
     """Read and remove ``HERMES_TURN_AUTHOR`` so subprocesses started during the turn do not inherit it."""
     return parse_turn_author(environ.pop(TURN_AUTHOR_ENV, None))
 
 
-def turn_author_env(author: Dict[str, Any]) -> Dict[str, str]:
+def turn_author_env(author: dict[str, Any]) -> dict[str, str]:
     """The environment entry a dispatcher merges into a child's env."""
     return {TURN_AUTHOR_ENV: json.dumps(author, separators=(",", ":"))}
 
 
-def a2a_key(author: Optional[Dict[str, Any]]) -> Optional[str]:
+def a2a_key(author: Optional[dict[str, Any]]) -> Optional[str]:
     """``a2a:<bot id>``, the shared name for a bot author's turns. None for a human or an id-less bot."""
     if not isinstance(author, dict) or not author.get("is_bot") or not author.get("id"):
         return None

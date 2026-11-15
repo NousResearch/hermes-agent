@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
-import hermes_cli.gateway_windows as gateway_windows
+from hermes_cli import gateway_windows
 import hermes_cli.main as hm
 
 

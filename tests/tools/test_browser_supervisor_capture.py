@@ -33,7 +33,7 @@ class _FakeCDP:
 
         async def main():
             async with serve(self._handle, "127.0.0.1", 0) as server:
-                self.url = f"ws://127.0.0.1:{list(server.sockets)[0].getsockname()[1]}/devtools/browser/x"
+                self.url = f"ws://127.0.0.1:{next(iter(server.sockets)).getsockname()[1]}/devtools/browser/x"
                 ready.set()
                 await asyncio.Event().wait()
 
@@ -141,6 +141,6 @@ def test_handle_never_follows_a_reconnect_or_replacement(cdp, registry):
 def _raises(fn) -> BaseException | None:
     try:
         fn()
-    except BaseException as exc:  # noqa: BLE001 — handed back to the asserting thread
+    except BaseException as exc:
         return exc
     return None

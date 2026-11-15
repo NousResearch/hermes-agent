@@ -25,6 +25,9 @@
 #     [--no-ui] [--no-marker-cleanup] [--self-test-ui] [--self-test-gate]
 #     [--self-test-marker] [--self-test-refresh-every <seconds>]  (tests only:
 #                              line-2 refresh cadence, default 300)
+#     [--self-test-swap-interrupt]  (tests only: kill the macOS bundle swap at
+#                              every step, prove mac_bundle_recover; see
+#                              swap-selftest.sh)
 #     [-- <args...>]           linux: filtered launch args to replay
 #
 # The shim (ui.html in a chromeless browser app window) is decoration: it
@@ -50,7 +53,7 @@ BRANCH_EXPLICIT=0
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_GATEWAY=0
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
-SELF_TEST_TCC_HEAL=0
+SELF_TEST_TCC_HEAL=0 SELF_TEST_SWAP=0
 HANDOFF_DAEMONIZED=0 HANDOFF_RUN="" MARKER_OP=""
 MARKER_REFRESH_EVERY_S=300
 while [ $# -gt 0 ]; do
@@ -75,6 +78,7 @@ while [ $# -gt 0 ]; do
     --self-test-ui) SELF_TEST_UI=1; shift ;;
     --self-test-gate) SELF_TEST_GATE=1; shift ;;
     --self-test-tcc-heal) SELF_TEST_TCC_HEAL=1; shift ;;
+    --self-test-swap-interrupt) SELF_TEST_SWAP=1; NO_UI=1; shift ;;
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
     --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
     --self-test-refresh-every) MARKER_REFRESH_EVERY_S="$2"; shift 2 ;;
@@ -82,7 +86,7 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
 done
-[ "$SELF_TEST_UI" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
+[ "$SELF_TEST_UI" -eq 1 ] || [ "$SELF_TEST_SWAP" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
 case "$DESKTOP_PID" in ''|*[!0-9]*) echo "--desktop-pid must be a pid" >&2; exit 64 ;; esac
 case "$MARKER_REFRESH_EVERY_S" in ''|0|*[!0-9]*) echo "--self-test-refresh-every must be a positive number of seconds" >&2; exit 64 ;; esac
 [ -z "$HANDOFF_RUN" ] || [[ "$HANDOFF_RUN" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || { echo "--handoff-run must match [A-Za-z0-9._-]{1,128}" >&2; exit 64; }
@@ -124,6 +128,19 @@ owed_followup_steps() { # $OUT -> the distinct owed steps, space-separated, in p
   # hermes_cli/update_receipt.record_followup prints each as one whole line.
   printf '%s\n' "$OUT" | sed -n "s/^.*Update follow-up '\([A-Za-z0-9_]*\)' did not finish: .*$/\1/p" \
     | awk '!seen[$0]++' | tr '\n' ' ' | sed 's/ *$//'
+}
+
+update_output_tail() { # $OUT -> the updater's last non-empty output lines, one line each
+  # The shim window and the next-boot result dialog are the only surfaces a
+  # user can reach when the update failed; the exit code alone never names
+  # the failing layer (#137327). $OUT is the run's slice of the hand-off log,
+  # which interleaves our own log() lines (a leading ISO timestamp) with the
+  # updater's output — keep only the updater's, strip progress escapes (ANSI;
+  # of a CR-overwritten progress line only the final state the terminal
+  # showed), and bound it: three lines of at most 120 characters each.
+  printf '%s' "$OUT" | awk '{ sub(/\r+$/, ""); n = split($0, seg, "\r"); print seg[n] }' | sed "s/$(printf '\033')\[[0-9;?]*[A-Za-z]//g" \
+    | grep -v -e '^[[:space:]]*$' -e '^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}T' | tail -n 3 \
+    | while IFS= read -r _tail_line; do printf '%s\n' "${_tail_line:0:120}"; done
 }
 
 # The marker (contract C1/C2 + the A7 lock): parsing, identity, claim, delegate,
@@ -593,6 +610,16 @@ mac_bundle_recover() { # bundle path -- finish or roll back an interrupted swap
   done
 }
 
+# Test seams of mac_swap, inert in a real run: --self-test-swap-interrupt
+# points the copy at `cp -R` where ditto is absent (Linux) and names the step
+# boundary at which the swapper SIGSTOPs itself so the self-test can SIGKILL it
+# there (or resume it and kill it mid-copy / mid-cleanup).
+MAC_DITTO=/usr/bin/ditto SWAP_PAUSE_AT=""
+swap_checkpoint() { # step
+  [ "$SWAP_PAUSE_AT" = "$1" ] || return 0
+  kill -STOP "$(exec sh -c 'echo "$PPID"')"  # this (sub)shell: bash 3.2 has no BASHPID
+}
+
 mac_swap() {
   local rebuilt="" c
   for c in "$INSTALL_ROOT/apps/desktop/release/mac-arm64/Hermes.app" \
@@ -609,7 +636,8 @@ mac_swap() {
       && [ -d "$RELAUNCH_TARGET" ] && [ "$rebuilt" != "$RELAUNCH_TARGET" ]; then
     publish_stage "Installing the new app"
     mac_bundle_recover "$RELAUNCH_TARGET"
-    if ! /usr/bin/ditto "$rebuilt" "$RELAUNCH_TARGET.new"; then
+    swap_checkpoint start
+    if ! "$MAC_DITTO" "$rebuilt" "$RELAUNCH_TARGET.new"; then
       rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
       DONE_NOTE="Hermes was updated, but the new app could not be staged; the previous app was kept. Run the update again."
       add_warning "app-swap" "bundle copy failed; previous app kept"
@@ -619,11 +647,12 @@ mac_swap() {
     # leave no app at the user's path. Defer HUP/INT/QUIT/TERM across it;
     # SIGKILL there is finished by mac_bundle_recover on the next run.
     trap '' HUP INT QUIT TERM
+    swap_checkpoint staged
     if ! mv "$RELAUNCH_TARGET" "$RELAUNCH_TARGET.old"; then
       rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
       DONE_NOTE="Hermes was updated, but the new app could not replace the old one; the previous app was kept. Run the update again."
       add_warning "app-swap" "could not move the old bundle aside; previous app kept"
-    elif ! mv "$RELAUNCH_TARGET.new" "$RELAUNCH_TARGET"; then
+    elif swap_checkpoint aside; ! mv "$RELAUNCH_TARGET.new" "$RELAUNCH_TARGET"; then
       if mv "$RELAUNCH_TARGET.old" "$RELAUNCH_TARGET"; then
         rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
         DONE_NOTE="Hermes was updated, but the new app could not be installed; the previous app was restored. Run the update again."
@@ -633,6 +662,7 @@ mac_swap() {
         add_warning "app-swap" "bundle install failed AND rollback failed"
       fi
     else
+      swap_checkpoint installed
       rm -rf "$RELAUNCH_TARGET.old" 2>/dev/null || true
       log "swapped app bundle"
     fi
@@ -653,6 +683,20 @@ deliver_outcome() { # the truth-determining half: swap bundles / gate the relaun
   fi
 }
 
+restore_user_proxy_env() { # port of restoreUserProxyEnv (electron/updater/system-proxy-env.ts):
+  # the Desktop gave its system proxy to the update only; the relaunched app gets the user's own env.
+  local key saved keys
+  IFS=, read -r -a keys <<< "${HERMES_UPDATE_SYSTEM_PROXY:-}"
+  for key in ${keys[@]+"${keys[@]}"}; do
+    case "$key" in HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|NO_PROXY|no_proxy) unset "$key" ;; esac
+  done
+  for key in NO_PROXY no_proxy; do
+    saved="HERMES_UPDATE_USER_$key"
+    if printenv "$saved" >/dev/null; then export "$key=$(printenv "$saved")"; unset "$saved"; fi
+  done
+  unset HERMES_UPDATE_SYSTEM_PROXY
+}
+
 launch_app() { # attempted BEFORE the terminal event (launch acceptance is
   # part of the outcome — gille's review). Returns nonzero when a launch
   # was due but did not verifiably happen; caller downgrades to manual.
@@ -670,7 +714,7 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
     /usr/bin/xattr -dr com.apple.quarantine "$RELAUNCH_TARGET" 2>/dev/null || true
     # `open` talks to launchd and FAILS LOUDLY on a broken/unlaunchable
     # bundle — its exit code IS launch acceptance here.
-    /usr/bin/open "$RELAUNCH_TARGET" || { log "WARNING: open rejected the app"; return 1; }
+    ( restore_user_proxy_env; /usr/bin/open "$RELAUNCH_TARGET" ) || { log "WARNING: open rejected the app"; return 1; }
   elif [ "$GATE" = "relaunch" ]; then
     # setsid only proves the wrapper shell started, so verify acceptance:
     # spawn, then confirm the child is still alive shortly after — an
@@ -678,6 +722,7 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
     # within the window and downgrades to manual instead of lying.
     (cd "${RELAUNCH_CWD:-/}" 2>/dev/null || cd /
      # The relaunched app must not inherit the hand-off's update env.
+     restore_user_proxy_env
      env -u HERMES_UPDATE_STATUS_FILE -u HERMES_UPDATE_STARTED_AT -u HERMES_UPDATE_HANDOFF_PID -u PYTHONUNBUFFERED \
        setsid "$RELAUNCH_TARGET" ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"} >/dev/null 2>&1 &
      echo $! > "$STATUS.launchpid") || { log "WARNING: relaunch spawn failed"; return 1; }
@@ -910,6 +955,18 @@ if [ "$SELF_TEST_TCC_HEAL" -eq 1 ]; then
   exit 0
 fi
 
+if [ "$SELF_TEST_SWAP" -eq 1 ]; then
+  # Kills the REAL mac_swap at every step against a fixture bundle tree and
+  # checks the REAL mac_bundle_recover; never touches an installed app.
+  # tests/scripts/desktop_update/test_desktop_update_mac_swap_interrupt.py runs
+  # it on Linux and on the macOS lane of tests-os.yml.
+  trap - EXIT
+  # shellcheck source=swap-selftest.sh
+  . "$SCRIPT_DIR/swap-selftest.sh"
+  swap_selftest
+  exit $?
+fi
+
 if [ "$SELF_TEST_GATE" -eq 1 ]; then
   # Prints the gate decision for the given --install-root/--relaunch-target
   # and exits; scripts/desktop-update/repro.sh gate asserts the matrix.
@@ -1130,7 +1187,14 @@ export PYTHONUNBUFFERED=1
 # absent and the helper no-ops.
 export HERMES_UPDATE_STATUS_FILE="$STATUS"
 # `hermes update` runs under OUR marker claim (contract C1 rule 4/6).
-export HERMES_UPDATE_HANDOFF_PID="$$"
+# The claim's owner is not this script. marker_refresher_start hands line 1 to a custodian
+# subshell that outlives us, so the owner is a *sibling* of this script: never our own pid,
+# and never an ancestor of the `hermes update` we spawn. update_lock._is_partner can only
+# match it through this variable, so exporting `$$` left the custodian unrecognisable and
+# every desktop-initiated update refused its own claim with exit code 2
+# ("Another Hermes update is already running (started Ns ago, process <custodian>)").
+# $MY_PID is the custodian once the handover succeeded, and our own pid when it did not.
+export HERMES_UPDATE_HANDOFF_PID="$MY_PID"
 # The update's receipt carries this id (update_receipt._launcher_correlation_id),
 # which is how update_committed_after_exit finds THIS run's receipt.
 export HERMES_UPDATE_CORRELATION_ID="$UPDATE_CORRELATION"
@@ -1242,7 +1306,16 @@ if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete." UPDATE_COMM
   # end as a plain "Update complete." (review regression 1).
   OWED_STEPS="$(owed_followup_steps)"
   if [ -n "$OWED_STEPS" ]; then
+    # A gateway_restart owed only for serve/dashboard units (the reason then starts with
+    # "serve/dashboard ", hermes_cli/update_cmd_fleet_verify.SERVE_ONLY_REASON_PREFIX) names their own
+    # command in the log. The hint drops only when EVERY gateway_restart line is serve-only; any other
+    # reason, including a raw restart-phase error, keeps it (#141071).
     case " $OWED_STEPS " in *" gateway_restart "*) OWED_HINT=" Run hermes gateway restart to move the messaging gateway onto the new code now." ;; *) OWED_HINT="" ;; esac
+    GW_REASONS="$(printf '%s\n' "$OUT" | grep "Update follow-up 'gateway_restart' did not finish: ")"
+    if [ -n "$GW_REASONS" ] && ! printf '%s\n' "$GW_REASONS" | grep -vq "did not finish: serve/dashboard " \
+      && ! printf '%s\n' "$GW_REASONS" | grep -q "hermes gateway restart"; then
+      OWED_HINT=""
+    fi
     if [ -n "$DONE_NOTE" ]; then DONE_NOTE="$DONE_NOTE Follow-up steps still owed: $OWED_STEPS.$OWED_HINT"
     else DONE_NOTE="Hermes was updated, but some follow-up steps did not finish ($OWED_STEPS). The next launch or hermes update retries them; the update log has the details.$OWED_HINT"; fi
     add_warning "followup" "owed by the committed update: $OWED_STEPS"
@@ -1258,6 +1331,11 @@ elif [ "$CODE" -ne 2 ] && update_committed_after_exit; then
   add_warning "update" "hermes update exited $CODE after the commit point (receipt outcome: $RECEIPT_OUTCOME)"
 else
   FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run hermes debug share in a terminal to send a report."
+  # Name the failing layer where the user can see it: the updater's own tail
+  # rides the result file and the shim message (empty output keeps the
+  # original generic copy, byte-identical).
+  FAIL_EXCERPT="$(update_output_tail | tr '\n' ' ' | sed 's/ *$//')"
+  [ -z "$FAIL_EXCERPT" ] || FINAL_MSG="$FINAL_MSG Last output: $FAIL_EXCERPT"
   # The bricked-venv class is fixable and must not read as a generic exit 1:
   # a dead interpreter with a failed/impossible heal means retrying can never
   # succeed — tell the user what is actually wrong (#95759).

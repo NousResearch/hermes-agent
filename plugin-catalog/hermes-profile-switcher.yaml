@@ -1,0 +1,36 @@
+name: hermes-profile-switcher
+title: "Profile Switcher & Handoff"
+repo: https://github.com/Vsemagush/hermes-profile-switcher
+sha: 2870396031642ff5a1181a8fc11471adcaf047d4
+description: >-
+  Composer profile picker with explicit context handoff into a new chat and
+  verified single-folder project inheritance. Disclosure — reads focused
+  session/project metadata; may read the live roster and transcript to verify
+  empty sources, even for Start fresh. Copy context and Brief handoff store
+  selected source text in a new target-profile session.
+  No automatic submission or model call. Cross-gateway handoffs have no inherited
+  project; source chat, composer drafts and profile configuration are not modified.
+maintainer: Vsemagush
+tier: community
+category: desktop
+version: "0.1.0"
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/Vsemagush/hermes-profile-switcher#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/Vsemagush/hermes-profile-switcher/2870396031642ff5a1181a8fc11471adcaf047d4/docs/images/composer-control.png
+  - https://raw.githubusercontent.com/Vsemagush/hermes-profile-switcher/2870396031642ff5a1181a8fc11471adcaf047d4/docs/images/profile-menu.png
+  - https://raw.githubusercontent.com/Vsemagush/hermes-profile-switcher/2870396031642ff5a1181a8fc11471adcaf047d4/docs/images/handoff-dialog.png
+platforms: []
+onboarding: false
+known_issues:
+  - "Experimental Desktop UI plugin; v0.22.2 source contracts and user-reported smoke checks, not automated Electron certification or every OS/topology."
+  - "Project inheritance requires a verified same-gateway single-folder checkout. Multi-folder/worktree/ambiguous structures are refused; another gateway opens without an inherited project."
+  - "An unpersisted source draft requires live and transcript emptiness checks to agree and opens without inherited project context; unavailable or contradictory evidence refuses. The different-profile choice dialog is retained even when there is nothing to carry."
+  - "Media-text filtering is best-effort: untyped HTTP links are kept; flattened unpadded data URI/caption boundaries may be ambiguous. Read the README before transferring private context."
+  - "Known-chat recovery lasts only while the originating control is mounted. Source-drift guards cannot cancel a host openSession call already accepted by the SDK."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

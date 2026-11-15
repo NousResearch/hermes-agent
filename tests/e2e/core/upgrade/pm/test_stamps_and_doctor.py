@@ -83,7 +83,12 @@ def test_managed_env_hermes_can_check_for_updates(updated):
     sb = updated["sb"]
     exe = _venv_hermes(sb)
     assert Path(exe).is_file(), f"harness: selected generation ships no hermes console script: {exe}"
-    cp = sb.run([exe, "update", "--check"], timeout=300)
+    # A dead proxy: a read of the GitHub API fails here every run instead of drawing on the
+    # runner's shared anonymous quota. The sandbox origin is a local path, so git never uses it.
+    dead = "http://127.0.0.1:9"
+    cp = sb.run([exe, "update", "--check"], timeout=300,
+                env={**sb.env, "HTTPS_PROXY": dead, "https_proxy": dead, "HTTP_PROXY": dead, "http_proxy": dead})
+    assert "Update channel: main" in cp.stdout, "harness: the check left the pinned main channel\n" + I.describe(cp)
     assert cp.returncode == 0 and "Not a git repository" not in cp.stdout + cp.stderr, (
         "`hermes update --check` from the managed environment: " + (cp.stdout + cp.stderr).strip()[-400:]
         + "\n" + I.describe(cp))

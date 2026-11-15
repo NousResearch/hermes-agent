@@ -1,0 +1,18 @@
+name: viajante
+repo: https://github.com/felipebasurto/viajante
+sha: 9a004462616bd6efa9d1e725e45c59f915234f18
+subdir: integrations/hermes
+description: Flight and hotel search from your own machine through a local MCP server and one skill that tells the agent how to read the results. Portable Agent Plugins v1 package (mcp.json + skills/). No API keys and no account. Disclosure — mcp.json runs `npx -y @viajante/mcp@1.5.2`, which downloads the pinned npm shim and then `uvx` installs the same-version `viajante` package from PyPI on first start, so it needs Node.js, uv and Python 3.10+. Searches read Google Flights and Google Hotels public pages from your IP address (Booking.com and Skiplagged are opt-in). Optional local state (price-history log, cooldown file) is written under the viajante state directory. Nothing is booked and no credentials are stored.
+maintainer: felipebasurto
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/felipebasurto/viajante/tree/9a004462616bd6efa9d1e725e45c59f915234f18/integrations/hermes
+version: "1.5.2"
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

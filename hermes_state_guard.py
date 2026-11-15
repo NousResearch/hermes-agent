@@ -63,6 +63,11 @@ def _running_under_pytest() -> bool:
 #: pytest launcher names, matched against each argv token's *basename* so
 #: ``/tmp/pytest-of-dev/...`` paths cannot false-positive.
 _PYTEST_LAUNCHER_NAMES = frozenset({"pytest", "py.test", "pytest.exe", "py.test.exe"})
+#: The repo's test runner: under its fork server (HERMES_TEST_FORKSERVER) a test
+#: process has no ``python -m pytest`` ancestor, only ``python .../run_tests_parallel.py``.
+#: It counts only as the script a Python interpreter runs: a prompt or an editor
+#: naming the file (``hermes chat -q "fix scripts/run_tests_parallel.py"``) is no test.
+_TEST_RUNNER_SCRIPT = "run_tests_parallel.py"
 
 #: Memoised ancestry answer: the tree above us doesn't change; keep the hot path free.
 _PYTEST_ANCESTOR: Optional[bool] = None
@@ -75,15 +80,19 @@ def _process_looks_like_pytest(proc: Any) -> bool:
         cmdline = proc.cmdline() or []
     except Exception:
         return False
+    names = []
     for arg in cmdline:
         try:
             # Split on both separators on every host so the answer is platform-independent.
-            name = str(arg).strip('"').strip("'").replace("\\", "/").rsplit("/", 1)[-1].lower()
+            names.append(str(arg).strip('"').strip("'").replace("\\", "/").rsplit("/", 1)[-1].lower())
         except Exception:
-            continue
-        if name in _PYTEST_LAUNCHER_NAMES:
-            return True
-    return False
+            names.append("")
+    if any(name in _PYTEST_LAUNCHER_NAMES for name in names):
+        return True
+    if not names or not names[0].startswith("python"):
+        return False
+    script = next((name for name in names[1:] if not name.startswith("-")), "")
+    return script == _TEST_RUNNER_SCRIPT
 
 
 def _has_pytest_ancestor() -> bool:
@@ -138,7 +147,7 @@ def _is_production_state_db(resolved: Path, root: Path) -> bool:
 # Population is gated on the isolation marker (exported by tests/conftest.py
 # before any test module imports). Production processes never populate it;
 # do not "simplify" the gate away. WeakSet membership never pins an instance.
-_test_instance_registry: "weakref.WeakSet[Any]" = weakref.WeakSet()
+_test_instance_registry: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 def _register_test_instance(db: Any) -> None:

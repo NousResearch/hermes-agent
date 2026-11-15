@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from hermes_platform.declaration import DeclarationError, parse_declaration
-from hermes_platform.resolver.app import AppDef, AppResolver
+from hermes_platform.resolver.app import AppDef, AppLocation, AppResolver
 from hermes_platform.resolver.availability import Availability, availability, version_at_least
 
 WHERE = "test-plugin/plugin.yaml"
@@ -64,10 +64,83 @@ def test_app_block_parses_into_one_appdef_per_os():
     ({"darwin": {"presence": "bundle", "location": "https://example.test/Thing.app"}}, None, "must be absolute"),
     ({"win32": {"presence": "executable", "location": "Thing/thing.exe"}}, None, "must be absolute"),
     (None, {"gpu": "amd"}, "requires.gpu must be one of"),
+    ({"darwin": {"presence": "bundle", "location": "/Applications/Thing */**/Thing.app"}}, None, "must be absolute"),
+    ({"linux": {"presence": "executable", "location": []}}, None, "location is required"),
+    ({"linux": {"presence": "executable", "location": [{"kind": "registry", "name": "thing"}]}}, None,
+     "must be a path or a mapping with kind one of"),
+    ({"linux": {"presence": "executable", "location": [{"kind": "app_bundle", "name": "Thing.app"}]}}, None,
+     "only valid under app.darwin"),
+    ({"darwin": {"presence": "bundle", "location": [{"kind": "command", "name": "thing"}]}}, None,
+     "needs app.darwin.presence executable"),
+    ({"linux": {"presence": "executable", "location": [{"kind": "snap", "name": "../thing"}]}}, None,
+     "location\\[0\\].name must be a bare name"),
+    ({"win32": {"presence": "executable", "location": [{"kind": "uninstall_registry", "display_name_prefix": "Thing"}]}},
+     None, "location\\[0\\].file must be a relative path"),
+    ({"linux": {"presence": "executable", "location": "/usr/bin/thing"}}, {"app": True, "min_version": "1.0"},
+     "needs a version source under app.linux"),
 ])
 def test_invalid_blocks_name_the_rule(raw_app, raw_requires, message):
     with pytest.raises(DeclarationError, match=message):
         parse_declaration("thing-mcp", raw_app, raw_requires, where=WHERE)
+
+
+def _win_liveness(liveness: dict) -> dict:
+    """One win32 app block with the given liveness override (host app itself is valid)."""
+    return {"win32": {
+        "presence": "executable", "location": "C:/x/y.exe",
+        "version": {"kind": "uninstall_registry", "display_name_prefix": "Thing"},
+        "liveness": liveness,
+    }}
+
+
+@pytest.mark.parametrize("epath", [
+    "@attacker.example/",  # userinfo hijack: the re-parsed hostname is the attacker's
+    "mcp",                 # missing leading slash
+    "http://evil.test/x",  # absolute URI
+    "/mcp?token=1",        # query smuggling
+    "/mcp#frag",
+    "/mcp x",
+    "/mcp\tx",
+    " /mcp",
+    "/a/../../b",   # '..' segments: cannot move authority but rejected like liveness.path
+    "/..",
+])
+def test_endpoint_path_must_be_a_plain_path(epath):
+    live = {"kind": "server_json", "path": "%LOCALAPPDATA%/Thing/server.json", "endpoint_path": epath}
+    with pytest.raises(DeclarationError, match="endpoint_path"):
+        parse_declaration("thing-mcp", _win_liveness(live), None, where=WHERE)
+
+
+def test_endpoint_path_empty_falls_back_to_default():
+    live = {"kind": "server_json", "path": "%LOCALAPPDATA%/Thing/server.json", "endpoint_path": ""}
+    decl = parse_declaration("thing-mcp", _win_liveness(live), None, where=WHERE)
+    assert decl.app_for("win32").endpoint_path == "/mcp"
+
+
+@pytest.mark.parametrize("epath", ["/mcp", "/rpc/v1", "/a/b-c_d.e~f"])
+def test_endpoint_path_plain_paths_accepted(epath):
+    live = {"kind": "server_json", "path": "%LOCALAPPDATA%/Thing/server.json", "endpoint_path": epath}
+    decl = parse_declaration("thing-mcp", _win_liveness(live), None, where=WHERE)
+    assert decl.app_for("win32").endpoint_path == epath
+
+
+@pytest.mark.parametrize("path, match", [
+    ("../secrets/server.json", "liveness.path"),
+    ("relative/server.json", "liveness.path"),
+    ("http://evil.test/server.json", "liveness.path"),
+])
+def test_liveness_path_is_rooted_like_location(path, match):
+    live = {"kind": "server_json", "path": path}
+    with pytest.raises(DeclarationError, match=match):
+        parse_declaration("thing-mcp", _win_liveness(live), None, where=WHERE)
+
+
+@pytest.mark.parametrize("key_field", ["pid_key", "url_key", "token_key"])
+def test_liveness_key_names_must_be_identifiers(key_field):
+    live = {"kind": "server_json", "path": "%LOCALAPPDATA%/Thing/server.json",
+            key_field: "a b\"c"}
+    with pytest.raises(DeclarationError, match=key_field):
+        parse_declaration("thing-mcp", _win_liveness(live), None, where=WHERE)
 
 
 def test_availability_no_requirements_does_no_io():
@@ -129,6 +202,50 @@ def test_availability_missing_then_present_then_version_gate(tmp_path):
     assert availability(decl, os_family="darwin").state == "version_too_old"
 
 
+def test_location_list_parses_each_kind_in_order():
+    decl = parse_declaration("thing-mcp", {
+        "win32": {"presence": "executable", "location": [
+            {"kind": "uninstall_registry", "display_name_prefix": "Thing", "file": "bin/thing.exe"},
+            "%ProgramFiles%/Thing */thing.exe",
+        ]},
+        "linux": {"presence": "executable", "location": [
+            {"kind": "command", "name": "thing"}, {"kind": "flatpak", "app_id": "org.thing.Thing"},
+        ]},
+    }, None, where=WHERE)
+    win, linux = decl.app_for("win32"), decl.app_for("linux")
+    assert win is not None and linux is not None
+    assert win.locations == (AppLocation("uninstall_registry", "Thing", "bin/thing.exe"),
+                             AppLocation("path", "%ProgramFiles%/Thing */thing.exe"))
+    assert linux.locations == (AppLocation("command", "thing"), AppLocation("flatpak", "org.thing.Thing"))
+
+
+def test_min_version_lets_a_linux_block_go_without_a_version_source():
+    decl = parse_declaration("thing-mcp", {
+        "darwin": {"presence": "bundle", "location": "/Applications/Thing.app", "version": {"kind": "plist"}},
+        "linux": {"presence": "executable", "location": [{"kind": "command", "name": "thing"}]},
+    }, {"app": True, "min_version": "2.0"}, where=WHERE)
+    linux = decl.app_for("linux")
+    assert decl.min_version == "2.0" and linux is not None and linux.version_kind == "none"
+
+
+@pytest.mark.platforms("macos")
+def test_min_version_picks_a_newer_copy_found_after_an_old_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("THINGROOT", str(tmp_path))
+    _bundle(tmp_path / "old", "1.0")
+    _bundle(tmp_path / "new", "2.4")
+    decl = parse_declaration("thing-mcp", {"darwin": {
+        "presence": "bundle",
+        "location": ["$THINGROOT/old/Applications/Thing.app", "$THINGROOT/new/Applications/Thing.app"],
+        "version": {"kind": "plist"},
+    }}, {"app": True, "min_version": "2.0"}, where=WHERE)
+    ok = availability(decl, os_family="darwin")
+    assert ok.state == "available" and ok.version == "2.4" and str(tmp_path / "new") in (ok.path or "")
+    too_old = parse_declaration("thing-mcp", {"darwin": {
+        "presence": "bundle", "location": "$THINGROOT/old/Applications/Thing.app", "version": {"kind": "plist"},
+    }}, {"app": True, "min_version": "2.0"}, where=WHERE)
+    assert availability(too_old, os_family="darwin").version == "1.0"
+
+
 def test_availability_is_not_a_boolean():
     with pytest.raises(TypeError):
         bool(Availability("available"))
@@ -152,7 +269,7 @@ def test_unexpanded_locations_are_missing_even_when_cwd_contains_them(tmp_path, 
         path = tmp_path / location
         path.parent.mkdir(exist_ok=True)
         path.write_text("fixture", encoding="utf-8")
-        definition = AppDef("thing", sys.platform, "executable", location)
+        definition = AppDef("thing", sys.platform, "executable", (AppLocation("path", location),))
         assert AppResolver(definition).locate().kind == "missing"
 
 

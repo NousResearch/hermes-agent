@@ -38,10 +38,10 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from pm.downloader import Download  # noqa: E402
-from pm.artifact_mirror import pinned_source  # noqa: E402
-from pm.package import DebPackage  # noqa: E402
-from pm.termux_libs import load_table  # noqa: E402
+from pm.downloader import Download
+from pm.artifact_mirror import pinned_source
+from pm.package import DebPackage
+from pm.termux_libs import load_table
 
 PREFIX_REL = DebPackage.prefix_rel
 MANIFEST_NAME = "manifest.json"
@@ -222,7 +222,7 @@ def main() -> int:
     table = load_table()
     try:
         stage(payload, table["libs"], table.get("licenses"))
-    except Exception as exc:  # noqa: BLE001 -- CLI boundary reports and exits
+    except Exception as exc:
         print(f"runtime-lib staging failed: {exc}", file=sys.stderr)
         return 1
     return 0

@@ -37,7 +37,7 @@ def format_message(content: str) -> str:
     """
     if not content:
         return content
-    placeholders: Dict[str, str] = {}
+    placeholders: dict[str, str] = {}
 
     def _ph(value: str) -> str:
         key = f"\x00GC{len(placeholders)}\x00"
@@ -63,7 +63,7 @@ def format_message(content: str) -> str:
     return text
 
 
-def _required_str(mapping: Dict[str, Any], key: str, context: str) -> str:
+def _required_str(mapping: dict[str, Any], key: str, context: str) -> str:
     value = mapping.get(key)
     value = str(value).strip() if value is not None else ""
     if not value:
@@ -71,7 +71,7 @@ def _required_str(mapping: Dict[str, Any], key: str, context: str) -> str:
     return value
 
 
-def _copy_opt(dst: Dict[str, Any], src: Dict[str, Any], *keys: tuple[str, str]) -> Dict[str, Any]:
+def _copy_opt(dst: dict[str, Any], src: dict[str, Any], *keys: tuple[str, str]) -> dict[str, Any]:
     """Copy truthy ``src[src_key]`` into ``dst[dst_key]`` as str, in the given order."""
     for src_key, dst_key in keys:
         if src.get(src_key):
@@ -79,14 +79,14 @@ def _copy_opt(dst: Dict[str, Any], src: Dict[str, Any], *keys: tuple[str, str]) 
     return dst
 
 
-def _required_list(mapping: Dict[str, Any], key: str, error: str) -> list:
+def _required_list(mapping: dict[str, Any], key: str, error: str) -> list:
     items = mapping.get(key) or []
     if not isinstance(items, list) or not items:
         raise ValueError(error)
     return items
 
 
-def _button_to_chat(button: Dict[str, Any]) -> Dict[str, Any]:
+def _button_to_chat(button: dict[str, Any]) -> dict[str, Any]:
     text = _required_str(button, "text", "button")
     action = _required_str(button, "action", "button")
     raw_params = button.get("parameters") or {}
@@ -96,28 +96,28 @@ def _button_to_chat(button: Dict[str, Any]) -> Dict[str, Any]:
     return {"text": text, "onClick": {"action": {"function": action, "parameters": parameters}}}
 
 
-def _text_widget(widget: Dict[str, Any]) -> Dict[str, Any]:
+def _text_widget(widget: dict[str, Any]) -> dict[str, Any]:
     return {"textParagraph": {"text": format_message(_required_str(widget, "text", "widget"))}}
 
 
-def _decorated_text_widget(widget: Dict[str, Any]) -> Dict[str, Any]:
-    decorated: Dict[str, Any] = {
+def _decorated_text_widget(widget: dict[str, Any]) -> dict[str, Any]:
+    decorated: dict[str, Any] = {
         "text": format_message(_required_str(widget, "text", "widget")),
         "wrapText": bool(widget.get("wrap_text", True))}
     return {"decoratedText": _copy_opt(decorated, widget, ("top_label", "topLabel"), ("bottom_label", "bottomLabel"))}
 
 
-def _image_widget(widget: Dict[str, Any]) -> Dict[str, Any]:
+def _image_widget(widget: dict[str, Any]) -> dict[str, Any]:
     image = {"imageUrl": _required_str(widget, "image_url", "widget")}
     return {"image": _copy_opt(image, widget, ("alt_text", "altText"))}
 
 
-def _buttons_widget(widget: Dict[str, Any]) -> Dict[str, Any]:
+def _buttons_widget(widget: dict[str, Any]) -> dict[str, Any]:
     raw_buttons = _required_list(widget, "buttons", "button widgets require at least one button")
     return {"buttonList": {"buttons": [_button_to_chat(btn) for btn in raw_buttons]}}
 
 
-def _selection_item(item: Any) -> Dict[str, Any]:
+def _selection_item(item: Any) -> dict[str, Any]:
     if not isinstance(item, dict):
         raise ValueError("selection items must be objects")
     return {
@@ -126,7 +126,7 @@ def _selection_item(item: Any) -> Dict[str, Any]:
         "selected": bool(item.get("selected", False))}
 
 
-def _selection_widget(widget: Dict[str, Any]) -> Dict[str, Any]:
+def _selection_widget(widget: dict[str, Any]) -> dict[str, Any]:
     name = _required_str(widget, "name", "widget")
     raw_items = _required_list(widget, "items", "selection widgets require at least one item")
     return {
@@ -137,7 +137,7 @@ def _selection_widget(widget: Dict[str, Any]) -> Dict[str, Any]:
             "items": [_selection_item(item) for item in raw_items]}}
 
 
-_WIDGET_RENDERERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
+_WIDGET_RENDERERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "text": _text_widget,
     "text_paragraph": _text_widget,
     "decorated_text": _decorated_text_widget,
@@ -150,7 +150,7 @@ _WIDGET_RENDERERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
 }
 
 
-def _widget_to_chat(widget: Dict[str, Any]) -> Dict[str, Any]:
+def _widget_to_chat(widget: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(widget, dict):
         raise ValueError("card widgets must be objects")
     widget_type = str(widget.get("type") or "").strip()
@@ -160,18 +160,18 @@ def _widget_to_chat(widget: Dict[str, Any]) -> Dict[str, Any]:
     return renderer(widget)
 
 
-def _section_to_chat(section: Any) -> Dict[str, Any]:
+def _section_to_chat(section: Any) -> dict[str, Any]:
     if not isinstance(section, dict):
         raise ValueError("card sections must be objects")
     widgets = _required_list(section, "widgets", "card section widgets must contain at least one widget")
-    rendered: Dict[str, Any] = {"widgets": [_widget_to_chat(w) for w in widgets]}
+    rendered: dict[str, Any] = {"widgets": [_widget_to_chat(w) for w in widgets]}
     return _copy_opt(rendered, section, ("header", "header"))
 
 
-def _header_to_chat(header: Any) -> Dict[str, Any]:
+def _header_to_chat(header: Any) -> dict[str, Any]:
     if not isinstance(header, dict):
         raise ValueError("card.header must be an object")
-    rendered: Dict[str, Any] = {"title": _required_str(header, "title", "card.header")}
+    rendered: dict[str, Any] = {"title": _required_str(header, "title", "card.header")}
     _copy_opt(rendered, header, ("subtitle", "subtitle"))
     if header.get("image_url"):
         rendered["imageUrl"] = str(header["image_url"])
@@ -179,11 +179,11 @@ def _header_to_chat(header: Any) -> Dict[str, Any]:
     return _copy_opt(rendered, header, ("image_alt_text", "imageAltText"))
 
 
-def card_spec_to_cards_v2(card_spec: Dict[str, Any]) -> Dict[str, Any]:
+def card_spec_to_cards_v2(card_spec: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(card_spec, dict):
         raise ValueError("card must be an object")
     raw_sections = _required_list(card_spec, "sections", "card.sections must contain at least one section")
-    card: Dict[str, Any] = {"sections": [_section_to_chat(s) for s in raw_sections]}
+    card: dict[str, Any] = {"sections": [_section_to_chat(s) for s in raw_sections]}
     header = card_spec.get("header")
     if header:
         card["header"] = _header_to_chat(header)

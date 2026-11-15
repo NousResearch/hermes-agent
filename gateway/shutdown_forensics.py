@@ -18,10 +18,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from gateway.restart import DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, resolve_systemd_timeout_stop_sec
+from gateway.restart import DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, launchd_job_label, resolve_systemd_timeout_stop_sec
 import contextlib
 
-_SIGNAL_NAME_BY_NUM: Dict[int, str] = {
+_SIGNAL_NAME_BY_NUM: dict[int, str] = {
     int(getattr(signal, _name)): _name
     for _name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT", "SIGUSR1", "SIGUSR2")
     if getattr(signal, _name, None) is not None
@@ -48,10 +48,10 @@ def _read_proc_field(pid: int, key: str) -> Optional[str]:
     return None
 
 
-def _proc_summary(pid: int) -> Dict[str, Any]:
+def _proc_summary(pid: int) -> dict[str, Any]:
     """Compact /proc/<pid> identity (pid, name, state, ppid, uid). Never reads cmdline/argv —
     those bytes are not safe to persist (tokens, URIs, ``-e KEY=`` overlays)."""
-    summary: Dict[str, Any] = {"pid": pid}
+    summary: dict[str, Any] = {"pid": pid}
     if pid <= 0:
         return summary
     for out_key, proc_key in (("name", "Name"), ("state", "State")):
@@ -73,23 +73,27 @@ def _read_marker(path: Path) -> Optional[str]:
         return None
 
 
-def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
+def snapshot_shutdown_context(received_signal: Any = None) -> dict[str, Any]:
     """Fast (<10ms) snapshot of who/what is asking us to shut down: signal name/number, own + parent
     /proc summaries, systemd parentage, takeover/planned-stop markers, TracerPid, 1-min load,
     timestamps. Pure stdlib, never raises, never blocks."""
     pid, ppid = os.getpid(), os.getppid()
-    ctx: Dict[str, Any] = {
+    ctx: dict[str, Any] = {
         "ts": time.time(), "ts_monotonic": time.monotonic(),
         "signal": _signal_name(received_signal),
         "signal_num": int(received_signal) if received_signal is not None else None,
         "pid": pid, "ppid": ppid, "parent": _proc_summary(ppid), "self": _proc_summary(pid),
     }
-    # INVOCATION_ID is set by systemd units; ppid==1 also suggests systemd forwarded the SIGTERM.
     for ctx_key, env_key in (("systemd_invocation_id", "INVOCATION_ID"),
                              ("systemd_journal_stream", "JOURNAL_STREAM")):
         if os.environ.get(env_key):
             ctx[ctx_key] = os.environ[env_key]
-    ctx["under_systemd"] = bool(os.environ.get("INVOCATION_ID")) or ppid == 1
+    # Supervision is read from what the supervisor stamps (systemd: INVOCATION_ID; our launchd
+    # plist: the ai.hermes job label), never from ppid==1: on macOS every orphan (a Desktop- or
+    # terminal-started gateway whose parent quit) is reparented to launchd, pid 1, so ppid==1 read
+    # "under_systemd=yes" on a gateway nothing would revive (#103236).
+    ctx["under_systemd"] = bool(os.environ.get("INVOCATION_ID"))
+    ctx["supervisor"] = "systemd" if ctx["under_systemd"] else ("launchd" if launchd_job_label() else "none")
     # High load points at "something crushing the box" rather than an external killer.
     with contextlib.suppress(OSError, AttributeError):
         ctx["loadavg_1m"] = os.getloadavg()[0]
@@ -101,7 +105,7 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     # Race hint: a takeover marker on disk that does NOT name us is a smoking gun for "another
     # --replace instance is killing us". Filenames mirror gateway.status; literals keep the signal-
     # handler path import-light.
-    with contextlib.suppress(Exception):  # noqa: BLE001 — never raise from a signal handler
+    with contextlib.suppress(Exception):
         hermes_home_str = os.path.expanduser(os.environ.get("HERMES_HOME", ""))
         if hermes_home_str:
             raw = _read_marker(Path(hermes_home_str) / ".gateway-takeover.json")
@@ -160,6 +164,7 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
     try:  # start_new_session: outlive systemd killing our cgroup (KillMode=control-group) to flush
         return subprocess.Popen(
             [*bound, "bash", "-c", script], stdout=fd,
+            # detached-spawn: ok — forensics dump runs while the gateway dies; bounded by timeout(1)
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
             close_fds=True).pid
     except OSError:
@@ -169,11 +174,11 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
             os.close(fd)
 
 
-def format_context_for_log(ctx: Dict[str, Any]) -> str:
+def format_context_for_log(ctx: dict[str, Any]) -> str:
     """Render a shutdown context dict as one scannable log line (parent identity, never argv)."""
     parent = ctx.get("parent") or {}
     load_str = f"{load:.2f}" if isinstance(load := ctx.get("loadavg_1m"), (int, float)) else "?"
-    extras: List[str] = []
+    extras: list[str] = []
     if ctx.get("takeover_marker") is not None:
         who = 'self' if ctx.get('takeover_marker_for_self') else 'other'
         extras.append(f"takeover_marker_present={who}")
@@ -184,12 +189,13 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     extras_str = (" " + " ".join(extras)) if extras else ""
     return (
         f"signal={ctx.get('signal', '?')} under_systemd={'yes' if ctx.get('under_systemd') else 'no'} "
+        f"supervisor={ctx.get('supervisor') or '?'} "
         f"parent_pid={parent.get('pid') or '?'} parent_name={parent.get('name') or '?'} "
         f"loadavg_1m={load_str}{extras_str}"
     )
 
 
-def context_as_json(ctx: Dict[str, Any]) -> str:
+def context_as_json(ctx: dict[str, Any]) -> str:
     """JSON-serialise a context dict for structured ingestion.  Never raises."""
     try:
         return json.dumps(ctx, default=str, sort_keys=True)
@@ -199,7 +205,7 @@ def context_as_json(ctx: Dict[str, Any]) -> str:
 
 def check_systemd_timing_alignment(
     drain_timeout: float, cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """At startup, sanity-check that systemd's TimeoutStopSec covers stop. A stale unit file
     (upgraded without re-running ``hermes setup``) can have ``TimeoutStopSec`` below the stop
     budget, so systemd SIGKILLs the cgroup mid-drain (a phantom ``code=killed status=9`` in the
@@ -232,6 +238,7 @@ def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
             result = subprocess.run(
                 ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
+                check=False,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue

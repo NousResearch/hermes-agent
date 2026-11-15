@@ -32,3 +32,17 @@ test('an already-focused window never pumps the OS foreground path', () => {
   // runs SetForegroundWindow on Windows, dismissing another app's dialog.
   assert.equal(shouldFocusToTakeKeyboard({ isFocused: () => true }), false)
 })
+
+test('the policy calls isFocused as a method, the way BrowserWindow needs it', () => {
+  // BrowserWindow.isFocused reads its native handle from `this`; destructuring
+  // it threw "Object has been destroyed" and dropped every deep link.
+  class NativeLikeWindow {
+    private readonly focused = false
+
+    isFocused(): boolean {
+      return this.focused
+    }
+  }
+
+  assert.equal(shouldFocusToTakeKeyboard(new NativeLikeWindow()), true)
+})

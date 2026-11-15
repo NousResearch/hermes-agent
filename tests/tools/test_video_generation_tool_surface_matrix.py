@@ -41,8 +41,8 @@ def matrix_env(tmp_path, monkeypatch):
     # required nor permitted by the hermetic test runner.
     monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
 
-    fal_calls: List[Dict[str, Any]] = []
-    xai_calls: List[Dict[str, Any]] = []
+    fal_calls: list[dict[str, Any]] = []
+    xai_calls: list[dict[str, Any]] = []
 
     # fal_client stub
     fake_fal = types.ModuleType("fal_client")
@@ -52,6 +52,8 @@ def matrix_env(tmp_path, monkeypatch):
     fake_fal.subscribe = _subscribe  # type: ignore
 
     class _FalHandle:
+        def iter_events(self, **_):
+            return iter(())
         def __init__(self, result):
             self._result = result
         def get(self):
@@ -60,7 +62,7 @@ def matrix_env(tmp_path, monkeypatch):
     def _submit(endpoint, arguments=None, headers=None):
         fal_calls.append({"endpoint": endpoint, "arguments": arguments})
         return _FalHandle({"video": {"url": f"https://fake-fal/{endpoint.replace('/','_')}.mp4"}})
-    fake_fal.submit = _submit  # type: ignore
+    fake_fal.SyncClient = lambda key=None: types.SimpleNamespace(submit=_submit)  # type: ignore
 
     monkeypatch.setitem(__import__("sys").modules, "fal_client", fake_fal)
 
@@ -117,7 +119,7 @@ def matrix_env(tmp_path, monkeypatch):
 
 def _invoke_tool(home, cfg: dict, args: dict, tool_name: str = "video_generate") -> dict:
     """Write config, invoke the registered tool handler, return parsed JSON."""
-    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
     import hermes_cli.config as cfg_mod
     if hasattr(cfg_mod, "_invalidate_load_config_cache"):
         cfg_mod._invalidate_load_config_cache()

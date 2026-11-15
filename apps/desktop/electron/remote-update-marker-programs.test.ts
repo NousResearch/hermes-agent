@@ -52,38 +52,59 @@ $script:live=@{};foreach($p in $case.live.PSObject.Properties){$script:live[[int
 }
 `
 
-const powershell = ['pwsh', 'powershell'].find(shell => spawnSync(shell, ['-NoProfile', '-Command', 'exit 0']).status === 0)
+const powershell = ['pwsh', 'powershell'].find(
+  shell => spawnSync(shell, ['-NoProfile', '-Command', 'exit 0']).status === 0
+)
 
-test.skipIf(!powershell)('the Windows remote marker judge agrees with every corpus judge case', async () => {
-  const corpus = JSON.parse(readFileSync(corpusPath, 'utf8'))
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'hermes-remote-ps-judge-'))
-  const script = path.join(dir, 'replay.ps1')
+test.skipIf(!powershell)(
+  'the Windows remote marker judge agrees with every corpus judge case',
+  async () => {
+    const corpus = JSON.parse(readFileSync(corpusPath, 'utf8'))
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'hermes-remote-ps-judge-'))
+    const script = path.join(dir, 'replay.ps1')
 
-  try {
-    writeFileSync(script, `${WINDOWS_MARKER_JUDGE_PS}\n${PS_DRIVER}`)
-    const { stdout } = await execFile(powershell!, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, corpusPath])
-    const verdicts = Object.fromEntries(stdout.trim().split(/\r?\n/).map(line => line.split('\t')))
+    try {
+      writeFileSync(script, `${WINDOWS_MARKER_JUDGE_PS}\n${PS_DRIVER}`)
 
-    // Only the host shell is "us" to this judge (never a marker owner), so the
-    // corpus cases about the reader's own pid do not apply.
-    const cases = corpus.judge.filter((c: any) => {
-      const marker = parseUpdateMarker(c.text)
+      const { stdout } = await execFile(powershell!, [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        script,
+        corpusPath
+      ])
 
-      return ![marker?.pid, marker?.delegate?.pid].includes(c.our_pid ?? corpus.our_pid)
-    })
+      const verdicts = Object.fromEntries(
+        stdout
+          .trim()
+          .split(/\r?\n/)
+          .map(line => line.split('\t'))
+      )
 
-    const verdict = (c: any) =>
-      ({ malformed: 'UNCERTAIN', dead: 'CLEAR', live: `LIVE:${c.expect.owner}` })[c.expect.verdict as string]
+      // Only the host shell is "us" to this judge (never a marker owner), so the
+      // corpus cases about the reader's own pid do not apply.
+      const cases = corpus.judge.filter((c: any) => {
+        const marker = parseUpdateMarker(c.text)
 
-    assert.ok(cases.length >= 40)
-    assert.deepEqual(
-      Object.fromEntries(cases.map((c: any) => [c.name, verdicts[c.name]])),
-      Object.fromEntries(cases.map((c: any) => [c.name, verdict(c)]))
-    )
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
+        return ![marker?.pid, marker?.delegate?.pid].includes(c.our_pid ?? corpus.our_pid)
+      })
+
+      const verdict = (c: any) =>
+        ({ malformed: 'UNCERTAIN', dead: 'CLEAR', live: `LIVE:${c.expect.owner}` })[c.expect.verdict as string]
+
+      assert.ok(cases.length >= 40)
+      assert.deepEqual(
+        Object.fromEntries(cases.map((c: any) => [c.name, verdicts[c.name]])),
+        Object.fromEntries(cases.map((c: any) => [c.name, verdict(c)]))
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+    // pwsh cold start alone can take seconds on a loaded runner; same budget as the other subprocess tests.
+  },
+  20_000
+)
 
 // A dead claim whose checkout lock is still flocked (a killed updater's completion
 // child) must be kept: the gate answers HELD instead of unlinking it (review G1).

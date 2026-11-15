@@ -34,8 +34,25 @@ class _SshFsConfig:
     timeout: int
 
 
-_CACHE_LOCK = threading.RLock()
-_BACKENDS: dict[str, tuple[_SshFsConfig, "SshWorkspaceFs"]] = {}
+# ``_CACHE_LOCK`` guards only the dicts and is never held across a dial or cleanup, so one
+# unreachable host cannot stall file requests on every other SSH profile. A dial or cleanup holds
+# its profile's lock plus that endpoint's lock: profiles on one user@host:port share a control
+# socket, and one profile's cleanup would otherwise unlink the socket another profile's dial just
+# created. At most one endpoint lock is held at a time, always inside the profile's lock.
+_CACHE_LOCK = threading.Lock()
+_BACKENDS: dict[str, tuple[_SshFsConfig, SshWorkspaceFs]] = {}
+_DIAL_LOCKS: dict[str, threading.Lock] = {}
+_ENDPOINT_LOCKS: dict[tuple[str, str, int], threading.Lock] = {}
+
+
+def _lock_for(locks: dict, key) -> threading.Lock:
+    with _CACHE_LOCK:
+        return locks.setdefault(key, threading.Lock())
+
+
+def _endpoint(config: _SshFsConfig) -> tuple[str, str, int]:
+    """The key ``SSHEnvironment`` derives its control socket from."""
+    return config.user, config.host, config.port
 
 
 class SshWorkspaceFs:
@@ -47,9 +64,9 @@ class SshWorkspaceFs:
 
     @property
     def cwd(self) -> str:
-        return self._normalize(self._env.cwd)
+        return self.normalize(self._env.cwd)
 
-    def _normalize(self, path: str) -> str:
+    def normalize(self, path: str) -> str:
         raw = str(path or "").strip()
         if not raw:
             raise SshWorkspaceFsError("EINVAL", "Path is required")
@@ -61,7 +78,12 @@ class SshWorkspaceFs:
             raw = posixpath.join(self._env._remote_home, raw[2:])
         elif not raw.startswith("/"):
             raw = posixpath.join(self._env.cwd, raw)
-        return posixpath.normpath(raw)
+        # Folding ``..`` can expose a component's trailing whitespace ('/a/.env /x/..'); strip to a
+        # fixed point so normalize is idempotent and a path judged once is the path written.
+        path = posixpath.normpath(raw)
+        while (stripped := path.strip()) != path:
+            path = posixpath.normpath(stripped)
+        return path
 
     def _execute(self, command: str, *, stdin_data: str | None = None, timeout: int | None = None) -> dict:
         with self._lock:
@@ -81,7 +103,7 @@ class SshWorkspaceFs:
         return fallback
 
     def list_dir(self, path: str, hidden_names: set[str] | frozenset[str]) -> dict[str, Any]:
-        target = self._normalize(path)
+        target = self.normalize(path)
         quoted = shlex.quote(target)
         command = f"""
 p={quoted}
@@ -125,7 +147,7 @@ done
         max_bytes: int,
         read_limit: int | None = None,
     ) -> tuple[bytes, int, str]:
-        target = self._normalize(path)
+        target = self.normalize(path)
         quoted = shlex.quote(target)
         read_command = (
             f"set -o pipefail; head -c {int(read_limit)} < \"$p\" | base64"
@@ -161,7 +183,7 @@ printf '__HERMES_FS_SIZE__:%s\\n' "$size"
 
     def inspect_file(self, path: str) -> tuple[str, int]:
         """Return a regular file's resolved remote path and size without reading it."""
-        target = self._normalize(path)
+        target = self.normalize(path)
         command = f"""
 p={shlex.quote(target)}
 target=$(realpath "$p" 2>/dev/null || readlink -f "$p" 2>/dev/null) || {{ printf '__HERMES_FS_ERROR__:ENOENT\\n'; exit 44; }}
@@ -183,13 +205,27 @@ printf '__HERMES_FS_SIZE__:%s\\n' "$size"
             size = int(size_line.split(":", 1)[1])
         except (ValueError, UnicodeError, binascii.Error) as exc:
             raise SshWorkspaceFsError("EIO", "SSH filesystem returned invalid file metadata") from exc
+        # Callers vet this path, then read or stream it through normalize; a name it rewrites
+        # (``.env `` loses its trailing space) would be vetted as one file and served as another.
+        if self.normalize(resolved) != resolved:
+            raise SshWorkspaceFsError("EINVAL", "Invalid path")
         return resolved, size
 
-    def stream_file(self, path: str, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
-        """Stream an already-authorized remote file without buffering it in memory."""
-        target = self._normalize(path)
+    def stream_file(
+        self, path: str, chunk_size: int = 64 * 1024, *, offset: int = 0, length: int | None = None,
+    ) -> Iterator[bytes]:
+        """Stream an already-authorized remote file without buffering it in memory. ``offset`` and
+        ``length`` read one byte range of it instead (a media element's ``Range`` request)."""
+        target = self.normalize(path)
+        source = f"< {shlex.quote(target)}"
+        if offset or length is not None:
+            script = f"tail -c +{int(offset) + 1} {source}"
+            if length is not None:
+                script += f" | head -c {int(length)}"
+        else:
+            script = f"exec cat {source}"
         command = self._env._build_ssh_command()
-        command.extend(["bash", "-c", shlex.quote(f"exec cat < {shlex.quote(target)}")])
+        command.extend(["bash", "-c", shlex.quote(script)])
         process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
@@ -207,7 +243,7 @@ printf '__HERMES_FS_SIZE__:%s\\n' "$size"
             process.wait()
 
     def write_text(self, path: str, content: str, *, max_bytes: int) -> tuple[str, int]:
-        target = self._normalize(path)
+        target = self.normalize(path)
         encoded_size = len(content.encode("utf-8"))
         if encoded_size > max_bytes:
             raise SshWorkspaceFsError("EFBIG")
@@ -231,7 +267,7 @@ cat > "$tmp" && mv -f "$tmp" "$target"
         return target, encoded_size
 
     def git_root(self, path: str) -> str | None:
-        target = self._normalize(path)
+        target = self.normalize(path)
         quoted = shlex.quote(target)
         command = f"""
 p={quoted}
@@ -249,7 +285,7 @@ exit 1
         return (result.get("output") or "").strip() or None
 
     def git_branch(self, path: str) -> str:
-        target = self._normalize(path)
+        target = self.normalize(path)
         result = self._execute(f"git -C {shlex.quote(target)} branch --show-current 2>/dev/null")
         return (result.get("output") or "").strip() if result.get("returncode") == 0 else ""
 
@@ -270,24 +306,31 @@ def get_ssh_workspace_fs(profile_key: str, terminal_config: dict[str, Any]) -> S
     if not config.host or not config.user:
         raise SshWorkspaceFsError("ECONN", "SSH host and user are required")
 
-    with _CACHE_LOCK:
-        cached = _BACKENDS.get(profile_key)
-        if cached and cached[0] == config:
-            return cached[1]
+    with _lock_for(_DIAL_LOCKS, profile_key):
+        with _CACHE_LOCK:
+            cached = _BACKENDS.get(profile_key)
+            if cached and cached[0] == config:
+                return cached[1]
+            _BACKENDS.pop(profile_key, None)
+        # Close the replaced connection before dialing: the control socket is keyed on
+        # user@host:port only, so a dial with new credentials would otherwise ride the old master.
         if cached:
-            cached[1]._env.cleanup()
+            with _lock_for(_ENDPOINT_LOCKS, _endpoint(cached[0])):
+                cached[1]._env.cleanup()
         try:
-            env = SSHEnvironment(
-                host=config.host,
-                user=config.user,
-                cwd=config.cwd,
-                timeout=config.timeout,
-                port=config.port,
-                key_path=config.key_path,
-                sync_files=False,
-            )
+            with _lock_for(_ENDPOINT_LOCKS, _endpoint(config)):
+                env = SSHEnvironment(
+                    host=config.host,
+                    user=config.user,
+                    cwd=config.cwd,
+                    timeout=config.timeout,
+                    port=config.port,
+                    key_path=config.key_path,
+                    sync_files=False,
+                )
         except Exception as exc:
             raise SshWorkspaceFsError("ECONN", "Could not connect to the SSH workspace") from exc
         backend = SshWorkspaceFs(env)
-        _BACKENDS[profile_key] = (config, backend)
+        with _CACHE_LOCK:
+            _BACKENDS[profile_key] = (config, backend)
         return backend

@@ -337,6 +337,80 @@ describe("ChatPage", () => {
     }
   });
 
+  // #52471: a native/DOM paste (context-menu paste, middle-click, or any
+  // Ctrl+V route that bypasses the keydown interception) must deliver its
+  // text through term.paste() exactly once — never through the browser's
+  // default insertion into xterm's hidden textarea, which leaves a stale
+  // value there and duplicates the next typed character.
+  async function renderChat() {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    return container.querySelector(".hermes-chat-xterm-host")!;
+  }
+
+  function textPasteEvent(text: string) {
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        files: [],
+        getData: (type: string) => (type === "text/plain" ? text : ""),
+        items: [],
+      },
+    });
+    return paste;
+  }
+
+  it("delivers a native text paste through term.paste exactly once (#52471)", async () => {
+    const host = await renderChat();
+    const pasteSpy = vi.spyOn(FakeTerminal.prototype, "paste");
+    try {
+      const paste = textPasteEvent("abc");
+      await act(async () => {
+        host.dispatchEvent(paste);
+      });
+      // Exactly one delivery, via the terminal paste path that resets the
+      // hidden textarea — a paste of "abc" yields "abc", never a stale-value
+      // double send of the last character on the next keystroke.
+      expect(pasteSpy).toHaveBeenCalledTimes(1);
+      expect(pasteSpy).toHaveBeenCalledWith("abc");
+      expect(paste.defaultPrevented).toBe(true);
+      expect(uploadChatImage).not.toHaveBeenCalled();
+    } finally {
+      pasteSpy.mockRestore();
+    }
+  });
+
+  it("keeps the image-paste route working: image pastes upload instead of pasting text", async () => {
+    const host = await renderChat();
+    const pasteSpy = vi.spyOn(FakeTerminal.prototype, "paste");
+    try {
+      const paste = new Event("paste", { bubbles: true, cancelable: true });
+      const file = new File([new Uint8Array([1, 2, 3])], "shot.png", {
+        type: "image/png",
+      });
+      Object.defineProperty(paste, "clipboardData", {
+        value: {
+          files: [file],
+          getData: () => "",
+          items: [{ getAsFile: () => file, kind: "file", type: "image/png" }],
+        },
+      });
+      await act(async () => {
+        host.dispatchEvent(paste);
+      });
+      await vi.waitFor(() => expect(uploadChatImage).toHaveBeenCalledTimes(1));
+      expect(pasteSpy).not.toHaveBeenCalled();
+      expect(paste.defaultPrevented).toBe(true);
+    } finally {
+      pasteSpy.mockRestore();
+    }
+  });
+
   it("reconnects on tab return after a hidden-tab close even when a stale upload banner is showing", async () => {
     const { default: ChatPage } = await import("./ChatPage");
     await render(

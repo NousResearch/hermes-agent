@@ -99,7 +99,7 @@ if mode == "owner":
     result["rc"], result["out"] = update("home-a")
     result["marker_kept"] = marker.exists() and marker.read_text(encoding="utf-8") == body
     owner.kill()
-elif mode == "kill-mid-completion":
+elif mode in ("kill-mid-completion", "orphan-reader"):
     first = subprocess.Popen(ARGV, env=envs["home-a"], cwd=checkout, stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     child = None
@@ -108,33 +108,28 @@ elif mode == "kill-mid-completion":
         child = completion_child(envs["home-a"]["HERMES_HOME"])
         time.sleep(0.05)
     result["child_seen"] = child is not None
-    os.kill(first.pid, signal.SIGKILL)
-    first.wait()
-    result["child_alive_before"] = child is not None and alive(child)
-    result["rc"], result["out"] = update("home-b")
-    result["child_alive_after"] = child is not None and alive(child)
-    if child is not None and alive(child):
-        os.kill(child, signal.SIGKILL)
-elif mode == "orphan-reader":
-    first = subprocess.Popen(ARGV, env=envs["home-a"], cwd=checkout, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    child = None
-    deadline = time.time() + 240
-    while child is None and time.time() < deadline and first.poll() is None:
-        child = completion_child(envs["home-a"]["HERMES_HOME"])
-        time.sleep(0.05)
-    result["child_seen"] = child is not None
-    os.kill(first.pid, signal.SIGKILL)
-    first.wait()
-    # The killed owner's marker is gone (any reader compare-and-deletes a dead claim).
-    (Path(envs["home-a"]["HERMES_HOME"]) / ".hermes-update-in-progress").unlink(missing_ok=True)
-    reader = subprocess.run([sys.executable, "-c", READER, checkout], env=envs["home-b"], cwd=checkout,
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
-    result["reader_out"] = reader.stdout[-2000:] + reader.stderr[-2000:]
-    result["reader"] = json.loads(reader.stdout.strip().splitlines()[-1]) if reader.returncode == 0 else None
-    result["child_alive_after"] = child is not None and alive(child)
-    if child is not None and alive(child):
-        os.kill(child, signal.SIGKILL)
+    try:
+        # Freeze the child (it keeps its fds) so it cannot finish its real work and free the lock
+        # before the probe below reaches it: on a fast runner it otherwise exits first.
+        if child is not None:
+            os.kill(child, signal.SIGSTOP)
+        os.kill(first.pid, signal.SIGKILL)
+        first.wait()
+        result["child_alive_before"] = child is not None and alive(child)
+        if mode == "kill-mid-completion":
+            result["rc"], result["out"] = update("home-b")
+        else:
+            # The killed owner's marker is gone (any reader compare-and-deletes a dead claim).
+            (Path(envs["home-a"]["HERMES_HOME"]) / ".hermes-update-in-progress").unlink(missing_ok=True)
+            reader = subprocess.run([sys.executable, "-c", READER, checkout], env=envs["home-b"], cwd=checkout,
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+            result["reader_out"] = reader.stdout[-2000:] + reader.stderr[-2000:]
+            result["reader"] = json.loads(reader.stdout.strip().splitlines()[-1]) if reader.returncode == 0 else None
+        result["child_alive_after"] = child is not None and alive(child)
+    finally:
+        # A stopped child never exits on its own: a failed probe must not leave it holding the lock.
+        if child is not None and alive(child):
+            os.kill(child, signal.SIGKILL)
 result["out"] = result.get("out", "")[-4000:]
 print(json.dumps(result))
 '''
@@ -151,7 +146,7 @@ class Rig:
         wrap = root / "wrap"
         wrap.mkdir()
         real_git = subprocess.run(["sh", "-c", "command -v git"], text=True, encoding="utf-8",
-                                  capture_output=True).stdout.strip()
+                                  capture_output=True, check=False).stdout.strip()
         (wrap / "git").write_text(
             "#!/usr/bin/env bash\n"
             'for a in "$@"; do if [ "$a" = fetch ]; then\n'
@@ -174,7 +169,7 @@ class Rig:
         argv = H.sandbox_argv([sys.executable, str(self.root / "driver.py"), str(self.root), str(self.checkout), *args],
                               writable=[self.root])
         cp = subprocess.run(argv, env=envs["home-a"], cwd=self.checkout, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=timeout)
+                            capture_output=True, text=True, timeout=timeout, check=False)
         assert cp.returncode == 0, f"driver failed:\n{cp.stdout[-3000:]}\n{cp.stderr[-3000:]}"
         return json.loads(cp.stdout.strip().splitlines()[-1])
 

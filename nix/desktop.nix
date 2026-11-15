@@ -31,19 +31,36 @@
   ...
 }:
 let
-  # Each flag goes on its own continued line, and the leading backslash is
-  # inside the generated string. An empty attribute set then adds no text at
-  # all, and cannot leave a backslash above a blank line. That fault ends the
-  # makeWrapper command early, and the next flag runs as a shell command.
-  extraEnvFlags = lib.concatMapStrings (
-    name: " \\\n      --set ${name} ${lib.escapeShellArg (toString extraEnv.${name})}"
-  ) (lib.attrNames extraEnv);
+  wrapperEnv = {
+    # set HERMES_DESKTOP_HERMES to the absolute path of the nix-built `hermes`
+    # binary so the deployment override selects our fully wrapped hermes install.
+    HERMES_DESKTOP_HERMES = lib.getExe hermesAgent;
+    ELECTRON_IS_DEV = "0";
+  }
+  # extraEnv overrides the defaults
+  // extraEnv;
 
-  extraRunFlags = lib.concatMapStrings (line: " \\\n      --run ${lib.escapeShellArg line}") extraRun;
+  wrapperArgs = [
+    "--add-flags"
+    "--enable-features=WaylandWindowDecorations"
+    "--add-flags"
+    "${placeholder "out"}/share/hermes-desktop"
+  ]
+  ++ lib.concatLists (
+    lib.mapAttrsToList (name: value: [
+      "--set"
+      name
+      (toString value)
+    ]) wrapperEnv
+  )
+  ++ lib.concatMap (line: [
+    "--run"
+    line
+  ]) extraRun;
 
   # node-pty ships no Electron-tagged prebuild we can trust to match this
   # exact nixpkgs electron version, so it's always compiled from source
-  # against Electron's own headers (not whatever Node ran `npm`).
+  # against Electron's own headers (not whatever Node ran `pnpm`).
   targetPlatform =
     if stdenv.hostPlatform.isDarwin then
       "darwin"
@@ -61,7 +78,7 @@ let
       throw "hermes-desktop: unsupported host arch for node-pty staging";
 
   # Build the renderer (dist/ + electron/ + package.json).
-  renderer = hermesNpmLib.buildNpmPackage {
+  renderer = hermesNpmLib.buildPnpmPackage {
     dirs = [
       "apps/desktop"
       "apps/shared"
@@ -74,6 +91,9 @@ let
       "scripts/release-content-types.json"
     ];
     pname = "hermes-desktop-renderer";
+
+    # node-gyp's build interpreter.
+    nativeBuildInputs = [ python3 ];
 
     doCheck = true;
 
@@ -91,7 +111,7 @@ let
       # the --nodedir layout. Same pattern as signal-desktop / github-desktop /
       # session-desktop / rstudio in nixpkgs.
       ${lib.getExe hermesNpmLib.node-gyp} rebuild \
-        --directory=node_modules/node-pty \
+        --directory=apps/desktop/node_modules/node-pty \
         --build-from-source \
         --runtime=electron \
         --target=${electron.version} \
@@ -172,17 +192,9 @@ stdenv.mkDerivation {
     substituteInPlace $out/share/hermes-desktop/dist/electron-main.mjs \
       --replace-fail "process.resourcesPath" "'$out/share/hermes-desktop'"
 
-    # Wrap the nixpkgs electron binary to launch our app.  Set
-    # HERMES_DESKTOP_HERMES to the absolute path of the nix-built `hermes`
-    # binary so the deployment override selects our fully wrapped binary
-    # before any mutable managed install — venv with all deps,
-    # bundled skills/plugins, runtime PATH (ripgrep/git/ffmpeg/etc).
-    # No reimplementation of the agent resolver in the wrapper.
+    # Wrap the nixpkgs electron binary to launch our app.
     makeWrapper ${lib.getExe electron} $out/bin/hermes-desktop \
-      --add-flags "$out/share/hermes-desktop" \
-      --set HERMES_DESKTOP_HERMES "${lib.getExe hermesAgent}" \
-      --set-default ELECTRON_OZONE_PLATFORM_HINT auto \
-      --set ELECTRON_IS_DEV 0${extraEnvFlags}${extraRunFlags}
+      ${lib.escapeShellArgs wrapperArgs}
 
     # XDG launcher entry
     mkdir -p $out/share/applications $out/share/icons/hicolor/1024x1024/apps

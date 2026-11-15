@@ -95,7 +95,10 @@ test('stable run identity outranks heartbeat time; only legacy receipts use time
     assert.ok(readAndConsumeHandoffResult(home, { expectedRunId: 'own-run', expectedStartedAt: started_at }))
     // ...and line 2 from a run that began after this result finished is not this run.
     write(home, receipt)
-    assert.equal(readAndConsumeHandoffResult(home, { expectedRunId: 'own-run', expectedStartedAt: finished_at + 60 }), null)
+    assert.equal(
+      readAndConsumeHandoffResult(home, { expectedRunId: 'own-run', expectedStartedAt: finished_at + 60 }),
+      null
+    )
     // Older markers and post-update boots have no expected stable identity.
     write(home, { ...receipt, run_id: 'own-run' })
     assert.ok(readAndConsumeHandoffResult(home, { expectedStartedAt: started_at }))
@@ -112,10 +115,25 @@ test('a result from a run that finished before the parked one is discarded; a ma
   const home = tempHome()
   const now = Math.floor(Date.now() / 1000)
   const parked = now - 300
-  write(home, { ok: false, exit_code: 1, message: 'old run', branch: 'main', started_at: now - 900, finished_at: now - 800 })
+  write(home, {
+    ok: false,
+    exit_code: 1,
+    message: 'old run',
+    branch: 'main',
+    started_at: now - 900,
+    finished_at: now - 800
+  })
   assert.equal(readAndConsumeHandoffResult(home, { expectedStartedAt: parked }), null)
 
-  write(home, { ok: true, exit_code: 0, message: '', branch: 'main', started_at: parked, finished_at: now, warnings: ['gateway restart'] })
+  write(home, {
+    ok: true,
+    exit_code: 0,
+    message: '',
+    branch: 'main',
+    started_at: parked,
+    finished_at: now,
+    warnings: ['gateway restart']
+  })
   assert.deepEqual(readAndConsumeHandoffResult(home, { expectedStartedAt: parked })?.warnings, ['gateway restart'])
 })
 
@@ -126,7 +144,15 @@ test('line 2 moved by the heartbeat inside the run still correlates its result',
   const home = tempHome()
   const now = Math.floor(Date.now() / 1000)
   const started_at = now - 900
-  const result = { ok: false, exit_code: 3, message: 'failed after 15 min', branch: 'main', started_at, finished_at: now }
+
+  const result = {
+    ok: false,
+    exit_code: 3,
+    message: 'failed after 15 min',
+    branch: 'main',
+    started_at,
+    finished_at: now
+  }
 
   for (const heartbeat of [started_at + 300, started_at + 600, now]) {
     write(home, { ...result, run_id: 'script-run' })

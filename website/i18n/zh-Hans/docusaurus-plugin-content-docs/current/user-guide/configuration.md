@@ -58,6 +58,26 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # 保存到 .env
 机密（API 密钥、bot token、密码）放入 `.env`。其他所有内容（模型、终端后端、压缩设置、内存限制、工具集）放入 `config.yaml`。当两者都设置时，`config.yaml` 对非机密设置优先。
 :::
 
+### Hermes 写入的凭据
+
+当 Hermes 自身为某个配置字段写入凭据时，值保存到当前 profile 的 `.env`，`config.yaml` 中只写入对它的引用。适用于对下列字段执行的 `hermes config set`、dashboard / 桌面端的模型与辅助模型选择器，以及 `hermes model` 的自定义端点和辅助模型流程：
+
+| 字段 | `.env` 中的变量名 | `config.yaml` 中保存 |
+|---|---|---|
+| `model.api_key`（`hermes config set`） | `HERMES_MODEL_API_KEY` | `${HERMES_MODEL_API_KEY}` |
+| dashboard 中选择的自定义端点的 `model.api_key` | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_<HASH>_API_KEY` | `${...}` |
+| `auxiliary.<task>.api_key` | `AUXILIARY_<TASK>_API_KEY` | `${AUXILIARY_<TASK>_API_KEY}` |
+| `delegation.api_key` | `HERMES_DELEGATION_API_KEY` | `${HERMES_DELEGATION_API_KEY}` |
+| 新增的 `custom_providers` 条目 | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_<HASH>_API_KEY` | `key_env: <该变量名>` |
+| `custom_providers.<N>.api_key`（`hermes config set`） | 该条目的 `HERMES_CUSTOM_..._API_KEY`（没有 `base_url` 的条目按名称：`HERMES_PROVIDER_<NAME>_<HASH>_API_KEY`） | `${...}` |
+| `providers.<name>.api_key`（`hermes config set`）、dashboard 自定义端点条目 | `HERMES_PROVIDER_<NAME>_<HASH>_API_KEY` | `${...}` |
+
+路径部分只在不是 `/v1` 时才加入变量名。不全是小写的插件任务键（如 `My_Task`）也会追加 `_<HASH>`，因此不会与 `my_task` 共用变量。`<HASH>` 是由完整端点 URL（或提供商名称）计算出的 8 位十六进制字符，因此名称相近的端点（如 `my-host.com` 与 `my.host.com`）不会共用同一个变量。若 `config.yaml` 中另一个端点已读取某个变量且其值不同，Hermes 会拒绝覆盖它。以引用形式输入的值（`hermes config set model.api_key '${MY_KEY}'`）按原样保存。这些变量总会从终端和子进程环境中移除，即使 `env_passthrough` 列出了它们或启用了 `inherit_credentials`。使用远程配置后端时（不同主机之间不共享 `.env`），值按原样保存。
+
+正在运行的网关会在每轮开始时重新读取 `.env`，因此下一条消息无需重启即可使用新保存的密钥。只在启动时读取 `.env`、且不由网关轮次驱动的进程，需要执行 `/reload` 或重启后才会读取新密钥；在此之前，刚保存密钥的辅助任务会把未展开的 `${VAR}` 文本当作密钥发送。
+
+`config.yaml` 中已有的内联凭据仍然有效，不会被迁移，但不推荐使用。可用 `hermes config set <字段> <值>` 手动迁移，它会把值改写为引用。
+
 ## 环境变量替换
 
 可以在 `config.yaml` 中使用 `${VAR_NAME}` 语法引用环境变量：
@@ -74,7 +94,7 @@ delegation:
 
 单个值中可以有多个引用：`url: "${HOST}:${PORT}"`。如果引用的变量未设置，占位符将保持原样（`${UNDEFINED_VAR}` 保持不变）。仅支持 `${VAR}` 语法 —— 裸 `$VAR` 不会被展开。
 
-关于 AI provider 设置（OpenRouter、Anthropic、Copilot、自定义端点、自托管 LLM、回退模型等），请参阅 [AI Providers](../integrations/providers.md)。
+关于 AI provider 设置（OpenRouter、Anthropic、自定义端点、自托管 LLM、回退模型等），请参阅 [AI Providers](../integrations/providers.md)。
 
 ### Provider 超时
 
@@ -654,8 +674,9 @@ auxiliary:
   compression:
     model: glm-4.7
     base_url: https://api.z.ai/api/coding/paas/v4
+    api_key: ${GLM_API_KEY}
 ```
-指向自定义 OpenAI 兼容端点。使用 `OPENAI_API_KEY` 进行认证。
+指向自定义 OpenAI 兼容端点，使用 `api_key` 认证。未设置时，Hermes 仅在与主端点源完全相同时重用主模型的密钥，`OPENAI_API_KEY` 仅发送到 OpenAI 主机或与之配对的 `OPENAI_BASE_URL`。
 
 ### 三个旋钮的交互方式
 
@@ -790,7 +811,7 @@ Qwen Cloud（阿里巴巴 DashScope）上游将缓存 TTL 限制为 5 分钟，�
 
 不存在禁用此功能的旋钮 —— 缓存始终开启，即使在单轮对话中也能节省费用，因为仅系统提示词就占输入 token 数的相当大比例。
 
-## 辅助模型
+## 辅助模型 {#auxiliary-models}
 
 Hermes 使用"辅助"模型处理图像分析、浏览器截图分析、会话标题生成和上下文压缩等附带任务。默认情况下（`auxiliary.*.provider: "auto"`），Hermes 将每个辅助任务路由到您的**主聊天模型** —— 与您在 `hermes model` 中选择的相同 provider/模型。您无需配置任何内容即可开始，但请注意，在昂贵的推理模型（Opus、MiniMax M2.7 等）上，辅助任务会增加显著成本。如果您希望无论主模型如何都使用便宜且快速的附带任务，请显式设置 `auxiliary.<task>.provider` 和 `auxiliary.<task>.model`（例如，在 OpenRouter 上使用 Gemini Flash 进行视觉分析）。（网页提取不是辅助任务：`web_extract` 和浏览器快照会确定性截断长内容，并将完整文本存储供 `read_file` 分页读取 —— 不涉及 LLM。）
 
@@ -839,9 +860,9 @@ Hermes 中的每个模型槽位 —— 辅助任务、压缩、回退 —— 使
 | `model` | 请求的模型 | provider 的默认值 |
 | `base_url` | 自定义 OpenAI 兼容端点（覆盖 provider） | 未设置 |
 
-当设置 `base_url` 时，Hermes 忽略 provider 并直接调用该端点（使用 `api_key` 或 `OPENAI_API_KEY` 进行认证）。当仅设置 `provider` 时，Hermes 使用该 provider 的内置认证和基础 URL。
+当设置 `base_url` 时，Hermes 忽略 provider 并直接调用该端点（使用 `api_key` 认证；`OPENAI_API_KEY` 仅用于 OpenAI 主机或与之配对的 `OPENAI_BASE_URL`）。当仅设置 `provider` 时，Hermes 使用该 provider 的内置认证和基础 URL。
 
-辅助任务的可用 providers：`auto`、`main`，以及[provider 注册表](../reference/environment-variables.md)中的任何 provider —— `openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`qwen-oauth`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`alibaba`、`bedrock`、`huggingface`、`arcee`、`xiaomi`、`kilocode`、`opencode-zen`、`opencode-go`、`ai-gateway`、`azure-foundry` —— 或您 `custom_providers` 列表中任何命名的自定义 provider（例如 `provider: "beans"`）。
+辅助任务的可用 providers：`auto`、`main`，以及[provider 注册表](../reference/environment-variables.md)中的任何 provider —— `openrouter`、`nous`、`openai-codex`、`anthropic`、`gemini`、`qwen-oauth`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`alibaba`、`bedrock`、`huggingface`、`arcee`、`xiaomi`、`kilocode`、`opencode-zen`、`opencode-go`、`ai-gateway`、`azure-foundry` —— 或您 `custom_providers` 列表中任何命名的自定义 provider（例如 `provider: "beans"`）。
 
 :::tip MiniMax OAuth
 `minimax-oauth` 通过浏览器 OAuth 登录（无需 API 密钥）。运行 `hermes model` 并选择 **MiniMax (OAuth)** 进行认证。辅助任务自动使用 `MiniMax-M2.7-highspeed`。参阅 [MiniMax OAuth 指南](../guides/minimax-oauth.md)。
@@ -868,7 +889,7 @@ auxiliary:
     provider: "auto"           # "auto"、"openrouter"、"nous"、"codex"、"main" 等
     model: ""                  # 例如 "openai/gpt-4o"、"google/gemini-2.5-flash"
     base_url: ""               # 自定义 OpenAI 兼容端点（覆盖 provider）
-    api_key: ""                # base_url 的 API 密钥（回退到 OPENAI_API_KEY）
+    api_key: ""                # base_url 的 API 密钥（OPENAI_API_KEY 回退：仅限 OpenAI 主机）
     timeout: 120               # 秒 —— LLM API 调用超时；视觉负载需要宽裕的超时
     download_timeout: 30       # 秒 —— 图像 HTTP 下载；慢速连接请增加
 
@@ -890,14 +911,6 @@ auxiliary:
     #     model: google/gemini-2.5-flash
     #     base_url: ""
     #     api_key: ""
-
-  # 技能中心 —— 技能匹配和搜索
-  skills_hub:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 30
 
   # MCP 工具调度
   mcp:
@@ -954,7 +967,7 @@ auxiliary:
 | `model` | 该 provider 的模型名称 |
 | `base_url` | （可选）自定义 OpenAI 兼容端点 |
 
-`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`approval`、`skills_hub`、`mcp` 等。
+`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`approval`、`mcp` 等。
 
 ### OpenRouter 路由和辅助任务的 Pareto Code
 
@@ -1030,7 +1043,7 @@ auxiliary:
     model: "qwen2.5-vl"
 ```
 
-`base_url` 优先于 `provider`，因此这是将辅助任务路由到特定端点的最明确方式。对于直接端点覆盖，Hermes 使用配置的 `api_key` 或回退到 `OPENAI_API_KEY`；它不会为该自定义端点重用 `OPENROUTER_API_KEY`。两者都未设置时，只有当 `base_url` 与主端点的源（scheme、主机和端口）完全相同时，才会重用主模型的密钥。主端点是会话当前运行的端点（`/model` 切换后即为切换后的端点），并且只与它自己的密钥配对，绝不会使用另一个端点的密钥。
+`base_url` 优先于 `provider`，因此这是将辅助任务路由到特定端点的最明确方式。对于直接端点覆盖，Hermes 使用配置的 `api_key`；它不会为该自定义端点重用 `OPENROUTER_API_KEY`。未设置时，只有当 `base_url` 与主端点的源（scheme、主机和端口）完全相同时，才会重用主模型的密钥。主端点是会话当前运行的端点（`/model` 切换后即为切换后的端点），并且只与它自己的密钥配对，绝不会使用另一个端点的密钥。`OPENAI_API_KEY` 是最后的回退，仅发送到 OpenAI 主机（`*.openai.com`、`*.openai.azure.com`）或与之配对的 `OPENAI_BASE_URL`；其他端点需要自己的 `api_key`。
 
 **使用 OpenAI API 密钥进行视觉：**
 ```yaml
@@ -1411,7 +1424,7 @@ streaming:
 **新的最终消息（Telegram）：** Telegram 的 `editMessageText` 保留原始消息时间戳，因此长时间运行的流式回复即使在完成后也会保留第一个 token 的时间戳。设置 `fresh_final_after_seconds > 0` 可选择将旧预览作为全新的最终消息传递，并尽力删除旧预览。默认值为 `0`，始终就地最终化流式回复，避免某些客户端短暂显示重复消息再删除其中一条。
 
 :::note
-主开关 `streaming.enabled` 默认为 `false`——在你启用之前不会有任何流式传输。启用后，是否流式传输按**平台**决定：Telegram 默认带有 `display.platforms.telegram.streaming: true`（流式传输），Discord 为 `display.platforms.discord.streaming: false`（不流式传输）。因此启用流式传输后，Telegram 开箱即用地流式传输，Discord 在你修改其开关之前仍使用整条消息回复。你可以在仪表盘的 **Channels** 开关中或直接在 `~/.hermes/config.yaml` 中调整这些按平台的开关。
+主开关 `streaming.enabled` 默认为 `false`——在你启用之前不会有任何流式传输。启用后，是否流式传输按**平台**决定：Telegram 默认带有 `display.platforms.telegram.streaming: true`（流式传输），Discord 为 `display.platforms.discord.streaming: false`（不流式传输）。因此启用流式传输后，Telegram 开箱即用地流式传输，Discord 在你修改其开关之前仍使用整条消息回复。你可以在仪表盘的 **Channels** 开关中或直接在 `~/.hermes/config.yaml` 中调整这些按平台的开关；这些按平台的开关会在每条消息时重新读取，因此无需重启即可生效。而 `streaming:` 配置段本身（`enabled`、`transport`、`edit_interval`、`buffer_threshold`、`cursor`、`fresh_final_after_seconds`）只在网关启动时读取一次：修改其中任何键后，需要重启网关才能生效。注意按平台的开关只能在主开关范围内收窄，不能独自启用流式传输。
 :::
 
 ## 群聊会话隔离
@@ -1539,37 +1552,44 @@ web:
 
 ## 浏览器
 
-配置浏览器自动化行为：
+配置浏览器自动化行为。所有浏览器键都位于 `browser:` 下；各浏览器来源（本地 Chromium、云端提供商、Lightpanda、`/browser connect`、真实 profile）如何配合，请参阅[浏览器功能页面](./features/browser.md)。
 
 ```yaml
 browser:
-  inactivity_timeout: 120        # 自动关闭空闲会话前的秒数
-  command_timeout: 30             # 浏览器命令超时（截图、导航等）（秒）
-  record_sessions: false         # 自动将浏览器会话录制为 WebM 视频到 ~/.hermes/browser_recordings/
-  # 可选 CDP 覆盖 —— 设置后，Hermes 直接附加到您自己的
-  # Chromium 系浏览器（通过 /browser connect），而不是启动无头浏览器。
+  inactivity_timeout: 120        # 关闭空闲浏览器前的秒数
+  command_timeout: 30            # Chromium 启动超时下限（秒）
+  headed: false                  # true = 显示 Chromium 窗口（本地）；轮次之间保持浏览器打开
+  engine: auto                   # auto（Chromium）| lightpanda（"chrome" 视为 auto）
+  # Hermes 启动的本地 Chromium
+  executable_path: ""            # 覆盖 Chromium 程序；"" = 打包的 Chromium
+  user_data_dir: ""              # 所有会话共享的持久 profile；"" = 每个会话使用全新 profile
+  chromium_args: []              # 额外的 Chromium 命令行参数，例如 ["--lang=de-DE"]
+  # 云端浏览器选择（由 `hermes tools` → Browser Automation 写入）
+  cloud_provider: local          # local | browserbase | browser-use | firecrawl | nous | <提供商插件>；未设置 = 根据凭据自动检测
+  auto_local_for_private_urls: true  # 使用云端提供商时，在本地 Chromium 中打开 LAN/localhost URL
+  allow_private_urls: false      # 允许私有/内部地址（localhost、192.168.x.x 等）
+  # 可选 CDP 覆盖 —— 设置后，浏览器工具附加到您自己的
+  # Chromium 系浏览器（与 /browser connect 相同），而不是自行启动。
   cdp_url: ""
-  # 对话框监督器 —— 控制当 CDP 后端附加时（Browserbase、本地 Chromium 系
-  # 浏览器通过 /browser connect）如何处理原生 JS 对话框（alert/confirm/prompt）。
-  # 在 Camofox 和默认本地 agent 浏览器模式下忽略。
+  use_real_profile: false        # 在您真实浏览器 profile 的托管副本上浏览（需主动开启）
+  # 对话框监督器 —— 如何处理原生 JS 对话框（alert / confirm / prompt / beforeunload）
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
   dialog_timeout_s: 300          # must_respond 下的安全自动关闭（秒）
-  camofox:
-    managed_persistence: false   # 为 true 时，Camofox 会话跨重启持久化 cookie/登录
-    user_id: ""                  # 可选的外部管理 Camofox userId
-    session_key: ""              # Hermes 创建标签页时发送的可选会话密钥
-    adopt_existing_tab: false    # 在创建新标签页之前重用此身份的现有标签页
 ```
+
+**可执行文件解析顺序。** Hermes 启动它找到的第一个 Chromium：`browser.executable_path` → Hermes 包管理器安装的 Chromium（`hermes pm install chromium`）→ `/etc/hermes/chromium-executable-path`（官方 Docker 镜像）→ `PATH` 上的系统 `chromium` / `chromium-browser`（Termux 以及没有打包构建的平台）。都找不到时，浏览器工具会给出提示，而不是静默失败。
+
+**关闭浏览功能。** 浏览器没有配置开关：通过 `hermes tools`（或 `hermes tools disable browser [--platform NAME]`）禁用 `browser` 工具集。
 
 **对话框策略：**
 
-- `must_respond`（默认）—— 捕获对话框，在 `browser_snapshot.pending_dialogs` 中显示，等待 agent 调用 `browser_dialog(action=...)`。在 `dialog_timeout_s` 秒内无响应后，对话框被自动关闭以防止页面的 JS 线程永久停滞。
-- `auto_dismiss` —— 捕获，立即关闭。Agent 仍然在事后的 `browser_snapshot.recent_dialogs` 中看到对话框记录，`closed_by="auto_policy"`。
+- `must_respond`（默认）—— 捕获对话框，等待 agent 调用 `browser_dialog(action=...)`。在 `dialog_timeout_s` 秒内无响应后，对话框被自动关闭以防止页面的 JS 线程永久停滞。
+- `auto_dismiss` —— 捕获，立即关闭。
 - `auto_accept` —— 捕获，立即接受。适用于有激进 `beforeunload` 提示的页面。
 
 完整对话框工作流请参阅[浏览器功能页面](./features/browser.md#browser_dialog)。
 
-浏览器工具集支持多个 provider。有关 Browserbase、Browser Use 和本地 Chromium 系 CDP 设置的详细信息，请参阅[浏览器功能页面](./features/browser.md)。
+**已移除的键（自动迁移）。** `browser.backend` 已移除——`browser_exec` 是唯一的浏览器路径。旧的 `backend: "off"` 会在更新时被删除，并一次性提示改为禁用 `browser` 工具集；其他值会被静默删除。`snapshot_threshold`、`record_sessions`、`allow_unsafe_evaluate` 和 `restrict_evaluate` 属于已移除的内置浏览器工具，不再生效。`browser.camofox.*` 键由 Camofox 插件（`hermes plugins install camofox`）读取，而非核心。旧的 `AGENT_BROWSER_*` 环境变量不再被读取；更新时，若对应键未设置，会把 profile 的 `.env` 中的值复制过去（`AGENT_BROWSER_EXECUTABLE_PATH` → `executable_path`、`AGENT_BROWSER_PROFILE` → `user_data_dir`、`AGENT_BROWSER_ARGS` → `chromium_args`、`AGENT_BROWSER_HEADED` → `headed`、`AGENT_BROWSER_ENGINE` → `engine`）。
 
 ## 时区
 
@@ -1600,15 +1620,11 @@ discord:
 
 ## 安全
 
-预执行安全扫描和机密脱敏：
+机密脱敏和网站黑名单：
 
 ```yaml
 security:
   redact_secrets: false          # 在工具输出和日志中脱敏 API 密钥模式（默认关闭）
-  tirith_enabled: true           # 为终端命令启用 Tirith 安全扫描
-  tirith_path: "tirith"          # tirith 二进制文件路径（默认：$PATH 中的 "tirith"）
-  tirith_timeout: 5              # 等待 tirith 扫描的秒数
-  tirith_fail_open: true         # 如果 tirith 不可用，允许命令执行
   website_blocklist:             # 参见下方网站黑名单部分
     enabled: false
     domains: []
@@ -1616,10 +1632,8 @@ security:
 ```
 
 - `redact_secrets` —— 为 `true` 时，自动检测并脱敏工具输出中看起来像 API 密钥、token 和密码的模式，然后再进入对话上下文和日志。**默认关闭** —— 如果您经常在工具输出中处理真实凭据并希望有安全网，请启用。显式设置为 `true` 以开启。
-- `tirith_enabled` —— 为 `true` 时，终端命令在执行前由 [Tirith](https://github.com/sheeki03/tirith) 扫描以检测潜在危险操作。
-- `tirith_path` —— tirith 二进制文件的路径。如果 tirith 安装在非标准位置，请设置此项。
-- `tirith_timeout` —— 等待 tirith 扫描的最大秒数。如果扫描超时，命令继续执行。
-- `tirith_fail_open` —— 为 `true`（默认）时，如果 tirith 不可用或失败，允许命令执行。设置为 `false` 以在 tirith 无法验证时阻止命令。
+
+使用 tirith 扫描命令现在是可选插件，参见[内容级命令检查](security.md#内容级命令检查)。
 
 ## 网站黑名单
 
@@ -1637,7 +1651,7 @@ security:
       - "/etc/hermes/blocked-sites.txt"
 ```
 
-启用后，任何匹配被阻止域名模式的 URL 在 web 或浏览器工具执行之前都会被拒绝。这适用于 `web_search`、`web_extract`、`browser_navigate` 以及任何访问 URL 的工具。
+启用后，任何匹配被阻止域名模式的 URL 在 web 或浏览器工具执行之前都会被拒绝。这适用于 `web_search`、`web_extract`、浏览器导航以及任何访问 URL 的工具。
 
 域名规则支持：
 - 精确域名：`admin.example.com`
@@ -1702,7 +1716,7 @@ delegation:
 
 **线路协议（`api_mode`）：** Hermes 从 `delegation.base_url` 自动检测线路协议（例如以 `/anthropic` 结尾的路径 → `anthropic_messages`；Codex/原生 Anthropic/Kimi-coding 主机名保留其现有检测）。对于启发式无法分类的端点 —— 例如 Azure AI Foundry、MiniMax、Zhipu GLM 或前置 Anthropic 形状后端的 LiteLLM 代理 —— 请将 `delegation.api_mode` 显式设置为 `chat_completions`、`codex_responses` 或 `anthropic_messages` 之一。留空（默认）以保持自动检测。
 
-委托 provider 使用与 CLI/gateway 启动相同的凭据解析。所有配置的 provider 均受支持：`openrouter`、`nous`、`copilot`、`zai`、`kimi-coding`、`minimax`、`minimax-cn`。设置 provider 时，系统自动解析正确的基础 URL、API 密钥和 API 模式 —— 无需手动凭据连接。
+委托 provider 使用与 CLI/gateway 启动相同的凭据解析。所有配置的 provider 均受支持：`openrouter`、`nous`、`zai`、`kimi-coding`、`minimax`、`minimax-cn`。设置 provider 时，系统自动解析正确的基础 URL、API 密钥和 API 模式 —— 无需手动凭据连接。
 
 **优先级：** 配置中的 `delegation.base_url` → 配置中的 `delegation.provider` → 父 provider（继承）。配置中的 `delegation.model` → 父模型（继承）。仅设置 `model` 而不设置 `provider` 仅更改模型名称，同时保留父级凭据（适用于在同一 provider（如 OpenRouter）内切换模型）。
 

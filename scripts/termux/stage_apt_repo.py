@@ -32,6 +32,9 @@ import time
 from pathlib import Path
 from typing import NoReturn
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from scripts.releases.versioning import parse_attempt_ref
 
 ARCH = "aarch64"
@@ -386,6 +389,7 @@ def _gpg_run(
                 input=stdin,
                 stdin=subprocess.DEVNULL if stdin is None else None,
                 stdout=fo, stderr=fe, env=env,
+                check=False,
             )
         result.stdout = out_path.read_bytes()
         result.stderr = err_path.read_bytes()

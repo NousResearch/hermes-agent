@@ -53,7 +53,7 @@ def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monke
     for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
         sys.modules.pop(mod, None)
 
-    import cli  # noqa: F401  (module under test)
+    import cli
 
     stub = _make_stub_cli([
         {"role": "user", "content": "hi"},

@@ -24,6 +24,17 @@ export function routeTargetFromToken(token: string): RouteTarget {
   return routeSessionId(pathname) ?? (isNewChatRoute(pathname) ? '__new__' : null)
 }
 
+/**
+ * Whether a resume begun under `startRouteToken` still owns the view. The route
+ * arriving at the resumed session itself is not a switch: create/branch call
+ * navigate(target) and then resume(target) before the token re-renders, so the
+ * token captured at entry can still name the previous chat. Reading that commit
+ * as drift abandoned the branch child's resume and left its pane on the loader.
+ */
+export function resumeRouteStillCurrent(startRouteToken: string, nowRouteToken: string, storedSessionId: string) {
+  return nowRouteToken === startRouteToken || routeTargetFromToken(nowRouteToken) === storedSessionId
+}
+
 interface SessionContextDriftArgs {
   startRouteToken: string
   nowRouteToken: string

@@ -17,6 +17,7 @@ import os
 import shutil
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,9 @@ _CRASH_CLASSES = (
     (MemoryError, "memory_error"), (ImportError, "import_error"), (OSError, "os_error"),
     (RuntimeError, "runtime_error"),
 )
+#: Ceiling on ``flush_before_hard_exit``: a wedged flush costs its pending rows, never the exit.
+EXIT_FLUSH_TIMEOUT_S = 3.0
+_DRAIN_MARGIN_S = 0.1
 _STATE: dict[str, Any] = {}
 _STATE_LOCK = threading.Lock()
 
@@ -62,6 +66,43 @@ def stamp_exit(exit_kind: str, crash: str = "none") -> None:
         logger.debug("Process exit marker not stamped", exc_info=True)
 
 
+def flush_before_hard_exit(timeout_s: float = EXIT_FLUSH_TIMEOUT_S) -> bool:
+    """For a graceful stop about to ``os._exit``: run the shared-metrics exit flush its skipped atexit
+    hooks would have run (close each live runtime's sessions under its own profile, write queued rows,
+    and write every store's deferred rows, the root profile's host-level store included, each into
+    the store that deferred it).
+
+    Bounded by ``timeout_s`` on a daemon thread, because the Relay flush waits on every managed call
+    still in flight and a wedged one must not hold the exit. Never imports the runtime module:
+    collection off (or never started) means nothing to flush and nothing created. Never raises; True
+    when the flush finished in time."""
+    runtimes = sys.modules.get("hermes_cli.observability.relay_shared_metrics")
+    stores = sys.modules.get("hermes_cli.observability.shared_metrics")
+    if runtimes is None and stores is None:
+        return True
+    deadline = time.monotonic() + max(0.0, timeout_s)
+
+    def _flush() -> None:
+        if runtimes is not None:
+            runtimes.shutdown_runtimes()
+        if stores is not None:  # every store that deferred a write, root/Desktop ones included
+            stores.drain_deferring_stores(deadline - _DRAIN_MARGIN_S)  # done before the join gives up
+
+    try:
+        from agent.memory_provider import spawn_context_thread
+
+        worker = spawn_context_thread(_flush, name="hermes-shared-metrics-exit-flush")
+        worker.start()
+        worker.join(max(0.0, deadline - time.monotonic()))
+    except Exception:
+        logger.debug("Shared-metrics exit flush not started", exc_info=True)
+        return False
+    if worker.is_alive():
+        logger.warning("Shared-metrics exit flush still running after %.1fs; exiting without it", timeout_s)
+        return False
+    return True
+
+
 def _excepthook(previous: Any) -> Any:
     def hook(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
         if not issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
@@ -71,6 +112,20 @@ def _excepthook(previous: Any) -> Any:
     return hook
 
 
+def purge_pending_receipts(home: Path) -> None:
+    """Collection is off: drop the files kept for a later start to count (parked update receipts,
+    installer receipts). Every opt-out answer calls this too, not only an opted-out start, so a
+    receipt never survives a "No" to be counted after a later opt-in. Never raises."""
+    try:
+        from .shared_metrics_install_run import purge_pending_installs
+        from .shared_metrics_update import purge_pending_updates
+
+        purge_pending_updates(home)
+        purge_pending_installs(home)
+    except Exception:
+        logger.debug("Pending shared-metrics receipts not purged", exc_info=True)
+
+
 def begin_process(kind: str) -> None:
     """Mark this process as a running ``kind`` and report dead predecessors. Once per process."""
     try:
@@ -78,14 +133,14 @@ def begin_process(kind: str) -> None:
 
         from .shared_metrics_desktop import ONBOARDING_LATCH_DIRNAME
         from .shared_metrics_setup import markers_dir as setup_markers_dir
-        from .shared_metrics_update import _collection_on, purge_pending_updates
+        from .shared_metrics_update import _collection_on
 
         if _STATE:
             return
         _STATE["kind"] = kind  # watchdog turn rows name the surface even when this home is off
         if not _collection_on():
             home = get_hermes_home()
-            purge_pending_updates(home)  # parked while on, never to be counted once off
+            purge_pending_receipts(home)  # parked while on / left by the installer, never counted once off
             latches = home / "telemetry" / "shared_metrics" / ONBOARDING_LATCH_DIRNAME  # an opt-out outside Desktop
             for directory in (markers_dir(home), setup_markers_dir(home), latches):  # likewise pending exits/setups
                 shutil.rmtree(directory, ignore_errors=True)
@@ -200,6 +255,11 @@ def _report_dead_markers(home: Path, own: Path) -> None:
 
         report_pending_updates()
         report_abandoned_setups(home)
+        # ---- iuf c2 ----
+        from .shared_metrics_install_run import report_pending_installs
+
+        report_pending_installs(home)
+        # ---- end iuf c2 ----
     except Exception:
         logger.debug("Dead process markers not reported", exc_info=True)
     finally:

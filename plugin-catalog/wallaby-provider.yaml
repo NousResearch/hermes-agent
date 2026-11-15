@@ -1,0 +1,16 @@
+name: wallaby-provider
+repo: https://github.com/Dawncoral/wallaby-hermes-plugin
+sha: 097d84bab8eb4cf1d837ab2a244bd5c9dfded3a4
+description: Wallaby Token — curated open-weight inference (Kimi K3, K3.1 Pro); adds Wallaby to the hermes model provider list.
+maintainer: Dawncoral
+tier: community
+category: models
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/Dawncoral/wallaby-hermes-plugin#readme
+version: "1.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - WALLABY_API_KEY

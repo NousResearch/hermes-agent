@@ -30,19 +30,17 @@ test('a settled remote descriptor is not backend work that requires a deferred q
   assert.equal(
     backendQuitNeedsWait({
       connectionPending: false,
-      poolPending: false,
       processAttached: false,
       shutdownPending: false
     }),
     false
   )
 
-  for (const key of ['connectionPending', 'poolPending', 'processAttached', 'shutdownPending'] as const) {
+  for (const key of ['connectionPending', 'processAttached', 'shutdownPending'] as const) {
     assert.equal(
       backendQuitNeedsWait({
         connectionPending: false,
-        poolPending: false,
-        processAttached: false,
+          processAttached: false,
         shutdownPending: false,
         [key]: true
       }),

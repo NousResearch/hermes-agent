@@ -7,7 +7,8 @@ Get-PinnedGit now stages the PortableGit self-extractor, which needs
 neither tar nor bzip2. The driver below runs the real Get-PinnedGit
 against the real pinned archive with a PATH that carries no bzip2 (or
 anything else to fall back on) and demands a working git.exe plus the
-bundled bash contract pm/shell.py relies on.
+bundled bash contract pm/shell.py relies on. Deleting git-remote-https
+and calling Get-PinnedGit again must restore that helper.
 """
 import subprocess
 import textwrap
@@ -34,13 +35,73 @@ def test_pinned_git_extracts_without_a_bzip2_capable_tar(tmp_path):
             if ($LASTEXITCODE) {{ exit 9 }}
             $entry = Split-Path (Split-Path $git)
             if (-not (Test-Path (Join-Path $entry 'usr\\bin\\bash.exe'))) {{ exit 9 }}
+            # cmd\\git.exe without git-remote-https is the tree a sharing
+            # violation leaves behind. The next call has to replace it.
+            $execPath = (& $git --exec-path 2>$null)
+            if ($LASTEXITCODE -or -not $execPath) {{ exit 8 }}
+            $helper = Join-Path ("$execPath".Trim()) 'git-remote-https.exe'
+            if (-not (Test-Path -LiteralPath $helper)) {{ exit 8 }}
+            Remove-Item -LiteralPath $helper -Force
+            $again = Get-PinnedGit
+            if (-not $again) {{ exit 7 }}
+            $execPath = (& $again --exec-path 2>$null)
+            if ($LASTEXITCODE -or -not $execPath) {{ exit 7 }}
+            $helper = Join-Path ("$execPath".Trim()) 'git-remote-https.exe'
+            if (-not (Test-Path -LiteralPath $helper)) {{ exit 7 }}
         """),
         encoding="ascii",
     )
     result = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
          "-File", str(driver)],
-        capture_output=True, timeout=900,
+        capture_output=True, timeout=1800,
+        check=False,
+    )
+    out = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+    assert result.returncode == 0, out
+
+
+@pytest.mark.platforms("windows")
+def test_held_file_never_leaves_a_partial_git_tree(tmp_path):
+    """Move-Item copied file by file when the rename was refused, so a held
+    git-remote-https left cmd\\git.exe alone at the destination. The tree
+    either arrives whole once the hold clears or not at all."""
+    driver = tmp_path / "driver.ps1"
+    driver.write_text(
+        textwrap.dedent(f"""
+            . '{INSTALLER}' -HermesHome '{tmp_path / "home"}'
+            function New-Tree($Root) {{
+                foreach ($rel in 'cmd\\git.exe', 'mingw64\\libexec\\git-core\\git-remote-https.exe') {{
+                    $p = Join-Path $Root $rel
+                    New-Item -ItemType Directory -Force (Split-Path $p) | Out-Null
+                    [IO.File]::WriteAllText($p, 'x')
+                }}
+                Join-Path $Root 'mingw64\\libexec\\git-core\\git-remote-https.exe'
+            }}
+            # Held for good: the move fails and nothing lands.
+            $held = New-Tree '{tmp_path / "a"}'
+            $h = [IO.File]::Open($held, 'Open', 'Read', 'Read')
+            $failed = $false
+            try {{ Invoke-WhileHeld {{ [IO.Directory]::Move('{tmp_path / "a"}', '{tmp_path / "a-dest"}') }} }} catch {{ $failed = $true }}
+            $h.Close()
+            if (-not $failed) {{ exit 9 }}
+            if (Test-Path '{tmp_path / "a-dest"}') {{ exit 8 }}
+            # Held briefly (an AV scan): the move waits and lands whole.
+            $held = New-Tree '{tmp_path / "b"}'
+            $ready = '{tmp_path / "held"}'
+            $job = Start-Job {{ param($f, $r) $h = [IO.File]::Open($f, 'Open', 'Read', 'Read'); [IO.File]::WriteAllText($r, ''); Start-Sleep 3; $h.Close() }} -ArgumentList $held, $ready
+            while (-not (Test-Path $ready)) {{ Start-Sleep -Milliseconds 100 }}
+            Invoke-WhileHeld {{ [IO.Directory]::Move('{tmp_path / "b"}', '{tmp_path / "b-dest"}') }}
+            $job | Wait-Job | Remove-Job
+            if (-not (Test-Path '{tmp_path / "b-dest"}\\mingw64\\libexec\\git-core\\git-remote-https.exe')) {{ exit 7 }}
+        """),
+        encoding="ascii",
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(driver)],
+        capture_output=True, timeout=300,
+        check=False,
     )
     out = (result.stdout + result.stderr).decode("utf-8", errors="replace")
     assert result.returncode == 0, out

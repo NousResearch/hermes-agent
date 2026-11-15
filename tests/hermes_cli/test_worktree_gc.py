@@ -34,6 +34,7 @@ def _git(args, cwd, env=None):
         e.update(env)
     result = subprocess.run(
         ["git", *args], capture_output=True, text=True, cwd=str(cwd), env=e,
+        check=False,
     )
     assert result.returncode == 0, f"git {args} failed: {result.stderr}"
     return result.stdout.strip()
@@ -209,6 +210,7 @@ class TestReclaim:
         probe = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", branch],
             capture_output=True, text=True, cwd=str(repo),
+            check=False,
         )
         assert probe.returncode != 0, "branch should be gone with its tree"
 
@@ -357,7 +359,7 @@ class TestExternalTrees:
         external = worktree_gc.audit_external_trees(str(repo))
         paths = [record.path for record in external]
         assert any("elsewhere-tree" in p for p in paths)
-        record = [r for r in external if "elsewhere-tree" in r.path][0]
+        record = next(r for r in external if "elsewhere-tree" in r.path)
         assert record.branch == "ext/branch"
         assert not record.missing
 
@@ -380,7 +382,7 @@ class TestExternalTrees:
         _shutil.rmtree(ext)
 
         external = worktree_gc.audit_external_trees(str(repo))
-        record = [r for r in external if "vanished-tree" in r.path][0]
+        record = next(r for r in external if "vanished-tree" in r.path)
         assert record.missing
 
         planned = worktree_gc.prune_missing_registrations(str(repo), dry_run=True)
@@ -418,10 +420,10 @@ class TestCmdWorktreeJson:
         _add_worktree(repo, "hermes-json")
         assert cmd_worktree(self._ns(repo, "list")) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert set(payload) == {"repo", "trees", "external_trees", "branches"}
+        assert set(payload) == {"repo", "trees", "external_trees", "branches", "archives"}
         names = [t["name"] for t in payload["trees"]]
         assert "hermes-json" in names
-        tree = [t for t in payload["trees"] if t["name"] == "hermes-json"][0]
+        tree = next(t for t in payload["trees"] if t["name"] == "hermes-json")
         assert {"verdict", "reason", "age_days", "branch"} <= set(tree)
 
     def test_prune_dry_run_json(self, repo, capsys):

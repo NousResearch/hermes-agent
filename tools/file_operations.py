@@ -516,8 +516,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def _is_image(self, path: str) -> bool:
         return os.path.splitext(path)[1].lower() in IMAGE_EXTENSIONS
 
-    @staticmethod
-    def _add_line_numbers(content: str, start_line: int = 1, add_line_numbers: bool = True) -> str:
+    def _add_line_numbers(self, content: str, start_line: int = 1, add_line_numbers: bool = True) -> str:
         """Prefix each line with a compact ``<n>|`` gutter, clamping long lines. Not
         fixed-width: padding cost ~16% more tokens per line for no accuracy gain in
         A/B, while dropping numbers regressed line-referencing."""
@@ -846,7 +845,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         max_line_length = get_max_line_length()
         truncated_lines = any(len(line) > max_line_length for line in content.split('\n'))
         return ReadResult(
-            content=self._add_line_numbers(content, offset, add_line_numbers), total_lines=total_lines,
+            content=(self._add_line_numbers(content, offset) if add_line_numbers else
+                     ShellFileOperations._add_line_numbers(self, content, offset, False)), total_lines=total_lines,
             file_size=file_size, truncated=truncated, hint=" ".join(hint_parts),
             truncated_lines=True if truncated_lines else None)
 
@@ -1203,7 +1203,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         max_line_length = get_max_line_length()
         truncated_lines = any(len(line) > max_line_length for line in read_output.split('\n'))
         return ReadResult(
-            content=self._add_line_numbers(read_output, offset, add_line_numbers), total_lines=total_lines,
+            content=(self._add_line_numbers(read_output, offset) if add_line_numbers else
+                     ShellFileOperations._add_line_numbers(self, read_output, offset, False)), total_lines=total_lines,
             file_size=file_size, truncated=truncated, hint=hint,
             truncated_lines=True if truncated_lines else None)
 

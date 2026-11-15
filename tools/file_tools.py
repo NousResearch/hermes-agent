@@ -107,7 +107,7 @@ def _apply_char_budget(result_dict: dict, content: str, offset: int, total_lines
         f"Output truncated at the {max_chars:,}-char read budget after "
         f"{lines_kept} line(s) (showing lines {offset}-{next_offset - 1} of "
         f"{total_lines}). Use offset={next_offset} to continue.")
-    if len(trimmed.split("\n", 1)[0]) >= max_chars:
+    if len(content.split("\n", 1)[0]) > max_chars:
         result_dict["truncated_lines"] = True
         result_dict["hint"] += (
             " Note: the first line alone exceeded the budget and was "
@@ -465,7 +465,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
     result_dict = {
         "content": (file_ops._add_line_numbers(page_text, offset) if add_line_numbers
-                    else ShellFileOperations._add_line_numbers(page_text, offset, False)) if page_text else "",
+                    else ShellFileOperations._add_line_numbers(file_ops, page_text, offset, False)) if page_text else "",
         "total_lines": total_lines,
         "file_size": binary.file_size,
         "truncated": total_lines > end_line,

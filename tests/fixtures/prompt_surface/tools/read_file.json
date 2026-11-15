@@ -3,6 +3,11 @@
   "name": "read_file",
   "parameters": {
     "properties": {
+      "add_line_numbers": {
+        "default": true,
+        "description": "Prefix lines with line numbers (default true); false returns unnumbered paginated text, still subject to truncation and safety limits.",
+        "type": "boolean"
+      },
       "limit": {
         "default": 2000,
         "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.",

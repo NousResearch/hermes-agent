@@ -50,3 +50,32 @@ def test_unnumbered_reads_keep_line_and_output_budgets(tmp_path, monkeypatch, do
     limited = json.loads(_handle_read_file({"path": str(path), "add_line_numbers": False}, task_id="budget"))
     assert limited["truncated"] and limited["truncated_by"] == "bytes"
     assert len(limited["content"]) <= 50
+
+
+def test_budget_exact_line_boundary_can_continue(tmp_path, monkeypatch):
+    from tools import file_tools
+
+    path = tmp_path / "boundary.txt"
+    path.write_text("abcde\nnext", encoding="utf-8")
+    monkeypatch.setattr(file_tools, "_get_max_read_chars", lambda: 5)
+    args = {"path": str(path), "add_line_numbers": False}
+    first = json.loads(_handle_read_file(args, task_id="boundary"))
+    assert first["content"] == "abcde"
+    assert first["next_offset"] == 2
+    assert not first.get("truncated_lines")
+    second = json.loads(_handle_read_file({**args, "offset": 2}, task_id="boundary"))
+    assert second["content"] == "next"
+
+
+def test_default_read_supports_legacy_formatter_override(tmp_path):
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+
+    class LegacyFileOperations(ShellFileOperations):
+        def _add_line_numbers(self, content, start_line=1):
+            return super()._add_line_numbers(content, start_line)
+
+    path = tmp_path / "legacy.txt"
+    path.write_text("first\nsecond", encoding="utf-8")
+    result = LegacyFileOperations(LocalEnvironment(str(tmp_path))).read_file(str(path))
+    assert result.content == "1|first\n2|second"

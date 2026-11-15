@@ -730,11 +730,6 @@ def env_float(key: str, default: float = 0.0) -> float:
     return _env_number(key, default, float)
 
 
-def env_bool(key: str, default: bool = False) -> bool:
-    """Read an environment variable as a boolean."""
-    return is_truthy_value(os.getenv(key, ""), default=default)
-
-
 _PROXY_ENV_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
 _NO_PROXY_ENV_KEYS = ("NO_PROXY", "no_proxy")
 
@@ -861,6 +856,15 @@ def base_url_origin(base_url: str) -> tuple[str, str, int]:
     except ValueError:  # out-of-range or non-numeric port — not a usable origin
         return ("", "", 0)
     return (scheme, hostname, {"https": 443, "http": 80}.get(scheme, 0) if port is None else port)
+
+
+def same_base_url_origin(a: str, b: str) -> bool:
+    """True when both URLs parse to one origin, so a credential stored for *a* may go to *b*.
+
+    Hostnames are compared literally: ``localhost`` and ``127.0.0.1`` are different origins.
+    """
+    origin = base_url_origin(a)
+    return bool(origin[1]) and origin == base_url_origin(b)
 
 
 def base_url_host_matches(base_url: str, domain: str) -> bool:

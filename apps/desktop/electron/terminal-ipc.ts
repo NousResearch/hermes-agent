@@ -171,10 +171,12 @@ export function registerTerminalIpc({
   function terminalShellEnv() {
     const env = { ...process.env }
 
-    // Electron is commonly launched through `npm run dev`; do not leak npm's
-    // managed prefix into a user's interactive shell (nvm/proto warn loudly).
+    // Electron is commonly launched through `pnpm run dev`; do not leak the
+    // package manager's settings into a user's interactive shell (nvm/proto warn
+    // loudly, and the user's own pnpm would inherit them). Package managers inject
+    // lowercase names: a user's own NPM_CONFIG_REGISTRY stays.
     for (const key of Object.keys(env)) {
-      if (key === 'npm_config_prefix' || key.startsWith('npm_config_') || key.startsWith('npm_package_')) {
+      if (key.startsWith('npm_config_') || key.startsWith('npm_package_') || key.startsWith('pnpm_config_')) {
         delete env[key]
       }
     }

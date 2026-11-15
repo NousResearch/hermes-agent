@@ -11,61 +11,27 @@ standard library and third-party packages are never flagged; neither are ``TYPE_
 from __future__ import annotations
 
 import ast
+import json
 import tomllib
 from functools import lru_cache
 from pathlib import Path
 
+from hermes_agent.compat.moves import MOVES
+from hermes_agent.compat.paths import current_globs, current_module, original_module
 from hermes_cli.plugin_validate_core_override import _hermes_top_level, _python_files
+from hermes_cli._startup_fast import project_root_str
 
-# WHY: "public" must mean what Hermes documents for plugin authors, not a reviewer's taste.
-# Derived from every Hermes-module ``import`` in website/docs/developer-guide/**/*.md and
-# website/docs/user-guide/features/plugins*.md code blocks (plus extending-the-dashboard.md, which
-# desktop-plugin-sdk.md names as the plugin backend reference), and what PluginContext hands out in
-# hermes_cli/plugins.py (property/return types, base classes its ``register_*`` methods check), and
-# the names those plugin pages tell authors to call, raise, return or subclass in prose. ``module`` entries allow the module (underscore names excepted);
-# ``module:Name`` entries allow one name. Re-harvest when those docs or PluginContext change.
-_PUBLIC = frozenset({
-    # developer-guide / plugins docs
-    "agent.account_usage", "agent.acp_client", "agent.browser_provider", "agent.context_engine", "agent.credential_pool",
-    "agent.delegation_backends", "agent.delegation_provider", "hermes_cli.auth_model_picker:prompt_model_selection",
-    "hermes_cli.auth:resolve_external_process_provider_credentials", "hermes_cli.model_setup",
-    "agent.image_gen_provider", "agent.memory_manager", "agent.memory_provider", "agent.secret_scope",
-    "agent.secret_sources.base", "agent.subagent_lifecycle", "agent.terminal_env_provider",
-    "agent.transports", "agent.transports.chat_completions", "agent.video_gen_provider",
-    "agent.web_search_provider", "cli", "gateway.config", "gateway.platform_registry",
-    "gateway.platforms._shared", "gateway.platforms.base", "gateway.platforms.event",
-    "gateway.platforms.helpers", "gateway.status", "hermes_cli.auth_oauth_pkce_plugin",
-    "hermes_cli.config", "hermes_cli.plugin_events", "hermes_cli.plugin_provider_requests",
-    "hermes_constants", "hermes_platform", "hermes_state", "plugins.plugin_storage", "plugins.plugin_utils", "pm",
-    "providers", "providers.base", "tools.browser_supervisor", "tools.browser_supervisor_capture",
-    "tools.computer_use.backend", "tools.registry",
-    # PluginContext (hermes_cli/plugins.py)
-    "agent.context_references", "agent.plugin_llm", "agent.transcription_provider", "agent.tts_provider",
-    "cron.execution_identity",
-    "hermes_cli.dashboard_auth", "hermes_cli.platform_actions", "hermes_cli.plugins:PluginContext",
-    "hermes_cli.plugins_ledger:PluginRegistration", "hermes_cli.plugins_state:PluginState",
-    # prose in memory-provider / model-provider / terminal-environment plugin pages
-    "agent.runtime_cwd:resolve_agent_cwd", "agent.usage_pricing:CostResult", "hermes_cli.auth_constants:AuthError",
-    "tools.environments.base:BaseEnvironment", "tools.environments:BaseEnvironment",  # package ``__all__``
-    "utils:atomic_json_write", "utils:read_json_or_empty",
-    # adding-platform-adapters.md § Public helpers for platform plugins
-    "gateway.platforms.access_policy_mixin:OwnAccessPolicyMixin", "tools.approval:resolve_gateway_approval",
-    "tools.approval:resolve_gateway_approval_card",
-    "tools.clarify_gateway:get_pending", "tools.clarify_gateway:resolve_gateway_clarify",
-    "tools.clarify_gateway:mark_awaiting_text", "tools.clarify_gateway:SKIPPED",
-    "tools.url_safety:is_safe_url", "tools.url_safety:create_ssrf_safe_async_client",
-    "gateway.platforms._http_client_limits:platform_httpx_limits",
-    "hermes_cli.gateway_setup_wizard:print_setup_header", "hermes_cli.gateway_setup_wizard:confirm_reconfigure",
-    "hermes_cli.gateway_setup_wizard:offer_home_channel", "hermes_cli.gateway_setup_wizard:save_env_values",
-    "hermes_cli.gateway_setup_wizard:prompt_csv", "hermes_cli.setup:prompt", "hermes_cli.setup:prompt_choice",
-    "hermes_cli.setup:prompt_yes_no", "hermes_cli.cli_output",
-    # plugins/index.md § Read the skill catalog
-    "tools.skills_tool:find_all_skills", "tools.skills_tool:sort_skills", "tools.skills_tool:skill_search_dirs",
-    "tools.skills_tool:locate_skill", "tools.skills_tool:skill_lookup_path_error",
-    "tools.skills_sync:dir_hash", "tools.skill_usage:read_skill_name",
-    # plugins/index.md § platform plugins: read session identity through the task-local context
-    "gateway.session_context:get_session_env",
-})
+_PLUGIN_API = Path(__file__).resolve().parent / "data" / "plugin_api.json"
+
+
+@lru_cache(maxsize=1)
+def _public_api() -> frozenset:
+    """The published plugin API (``hermes_cli/data/plugin_api.json``): ``module`` entries allow the
+    module (underscore names excepted), ``module:Name`` entries allow one name. The docs page
+    ``developer-guide/plugins/public-api.md`` is generated from the same file."""
+    data = json.loads(_PLUGIN_API.read_text(encoding="utf-8-sig"))
+    return frozenset(entry for group in data["groups"] for entry in group["entries"])
+
 
 _SHOWN = 10
 
@@ -74,13 +40,14 @@ _SHOWN = 10
 def _hermes_packages() -> frozenset:
     """Hermes-owned top-level names: pyproject's ``packages.find`` includes plus the root modules
     setup.py ships as ``py-modules`` (every root ``*.py``)."""
-    root = Path(__file__).resolve().parents[1]
+    root = Path(project_root_str())
     try:
         pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8-sig"))
         packages = {name.split(".")[0] for name in pyproject["tool"]["setuptools"]["packages"]["find"]["include"]}
     except (OSError, KeyError, ValueError):
         packages = set(_hermes_top_level()) - {"hermes_plugins", "tests", "evals"}
-    return frozenset((packages | {p.stem for p in root.glob("*.py")}) - {"setup", "conftest"})
+    moved = {name.split(".")[0] for name in MOVES}
+    return frozenset((packages | moved | {p.stem for p in root.glob("*.py")}) - {"setup", "conftest"})
 
 
 def _local_modules(rels) -> set[str]:
@@ -116,7 +83,7 @@ def _imported(node: ast.AST) -> list[tuple[str, str]]:
 
 @lru_cache(maxsize=512)
 def _core_module_exists(module: str) -> bool:
-    path = Path(__file__).resolve().parents[1].joinpath(*module.split("."))
+    path = Path(project_root_str()).joinpath(*current_module(module).split("."))
     return path.with_suffix(".py").is_file() or path.is_dir()
 
 
@@ -133,8 +100,9 @@ def _private_target(module: str, name: str, core: frozenset, local: set[str]) ->
     target = f"{module}.{name}" if name else module
     own = _is_own_module_path(module, local) or bool(name) and _is_own_module_path(target, local)
     hermes = module.split(".")[0] in core and module not in local and not own
-    public = target in _PUBLIC or f"{module}:{name}" in _PUBLIC \
-        or (module in _PUBLIC and not name.startswith("_"))  # ``from gateway.platforms import base`` too
+    public_api, old = _public_api(), original_module(module)
+    public = original_module(target) in public_api or f"{old}:{name}" in public_api \
+        or (old in public_api and not name.startswith("_"))  # ``from gateway.platforms import base`` too
     return target if hermes and not public else ""
 
 
@@ -186,9 +154,9 @@ _CORE_HANDLE_SOURCES = ("hermes_state.py", "hermes_state_*.py", "run_agent.py", 
 
 @lru_cache(maxsize=1)
 def _core_private_methods() -> frozenset:
-    root = Path(__file__).resolve().parents[1]
+    root = Path(project_root_str())
     names: set[str] = set()
-    for pattern in _CORE_HANDLE_SOURCES:
+    for pattern in (found for source in _CORE_HANDLE_SOURCES for found in current_globs(source)):
         for path in root.glob(pattern):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8-sig"))

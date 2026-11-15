@@ -173,6 +173,26 @@ class ConfigValueError(ConfigWriteError):
         super().__init__(message, code=code)
 
 
+def drop_other_access(path: Path) -> None:
+    """Strip world bits from a just-written config file (#59726).
+
+    The round-trip writers carry the file's existing mode across the atomic replace, so a
+    config.yaml that was ever world-readable/writable stayed that way through every writer except
+    ``save_config``. Writers that bypass ``FileBackend.write_path`` (migrations, restores,
+    clones) call this after their own write. Only the "other" bits go: group bits and setgid stay for shared-group homes.
+    Managed installs and containers keep their deliberate modes, as in ``config._secure_file``.
+    """
+    from hermes_constants import _container_or_chmod_skipped, get_managed_system
+    if get_managed_system() is not None or _container_or_chmod_skipped():
+        return
+    try:
+        mode = path.stat().st_mode & 0o7777
+        if mode & 0o007:
+            os.chmod(path, mode & ~0o007)
+    except (OSError, NotImplementedError):
+        pass
+
+
 class FileBackend:
     """The user layer is ``<home>/config.yaml`` on local disk."""
 
@@ -206,6 +226,7 @@ class FileBackend:
             atomic_roundtrip_yaml_update(path, key, value)
         for key in changes.unset:
             atomic_roundtrip_yaml_update(path, key, None)
+        drop_other_access(path)
 
     def config_path(self, home: Path) -> Path:
         return Path(home) / CONFIG_FILENAME
@@ -274,6 +295,10 @@ class FileBackend:
 
 
 _FILE_BACKEND = FileBackend()
+# Held across a config.yaml load -> mutate -> save span by writers on worker threads. ``config._CONFIG_LOCK``
+# covers each call only, and every on-loop reader takes it, so holding THAT across a span would stall
+# the event loop. Re-entrant because nested writers take it again.
+CONFIG_MUTATION_LOCK = threading.RLock()
 # Reentrant: publishing the deployment can import modules whose import-time config read selects
 # the backend again on the SAME thread (``_BOOTSTRAP_OWNER``); every other thread waits for it.
 _BOOTSTRAP_LOCK = threading.RLock()
@@ -355,7 +380,7 @@ def _backend_for(kind: str) -> ConfigBackend:
         try:
             module = importlib.import_module(name)
         except ImportError as exc:
-            if exc.name not in (name, _BACKENDS_PACKAGE, "plugins"):
+            if exc.name != name and not name.startswith(f"{exc.name}."):
                 raise  # the backend exists but is broken: show that, not "unknown"
             raise ConfigBackendUnavailable(unknown) from exc
     get_backend = getattr(module, "get_backend", None)
@@ -486,9 +511,24 @@ def write_config_keys(config_path: PathLike, updates: Mapping[str, Any]) -> None
     A remote backend sends them as one CAS PATCH, so a refusal of any of them (a lock, a value
     check) changes none of them: a grouped edit such as a model switch (default + provider + ...)
     never lands half-applied. The file backend applies them key by key, as before."""
+    _refuse_redacted_sets(config_path, {k: v for k, v in updates.items() if v is not None})
     backend, home = _route(config_path)
     backend.write_changes(home, Changes(set={k: v for k, v in updates.items() if v is not None},
                                         unset=tuple(k for k, v in updates.items() if v is None)))
+
+
+def _refuse_redacted_sets(config_path: PathLike, sets: Mapping[str, Any]) -> None:
+    """A keyed write never stores a redacted display mask as a credential (#42727): the same
+    check the document writer (``hermes_cli.config._write_config_state``) runs."""
+    from hermes_cli.config_credential_values import refuse_redacted_config_sets
+
+    def read_old() -> Any:  # a guard read: never the read base a Remote Config edit diffs against
+        try:
+            return keeping_read_base(lambda: read_config_doc(config_path)) or {}
+        except FileNotFoundError:
+            return {}
+
+    refuse_redacted_config_sets(sets, read_old)
 
 
 def keeping_read_base(read):
@@ -548,6 +588,7 @@ def write_changes(config_path: PathLike, changes: Changes) -> None:
     """One :class:`Changes` write. Unlike :func:`write_config_keys`, a ``None`` in ``set`` stores
     an explicit null (Remote Config: "no value", masking an inherited scalar); the file backend
     writes it as YAML null."""
+    _refuse_redacted_sets(config_path, changes.set)
     backend, home = _route(config_path)
     backend.write_changes(home, changes)
 

@@ -174,6 +174,24 @@ def _normalize_choice(value: Any, choices: set, default: str) -> str:
     return normalized if normalized in choices else default
 
 
+_REPLY_TO_MODES = frozenset({"off", "first", "all"})
+
+
+def _reply_to_mode_choice(value: Any) -> str:
+    """``reply_to_mode`` as one of off/first/all. YAML 1.1 reads a bare ``off`` as ``False`` (and
+    ``hermes config set ... off`` writes it that way), so ``False`` means ``off``; an unknown value
+    warns and keeps the ``first`` default rather than passing a non-mode to the adapters."""
+    if value is None:
+        return "first"
+    if value is False:
+        return "off"
+    mode = value.strip().lower() if isinstance(value, str) else None
+    if mode in _REPLY_TO_MODES:
+        return mode
+    logger.warning("Ignoring invalid reply_to_mode %r (expected one of: off, first, all); using 'first'", value)
+    return "first"
+
+
 def _dict_slot(container: dict, key: str) -> dict:
     """Get-or-create ``container[key]`` as a dict, replacing a non-dict value with ``{}``."""
     value = container.setdefault(key, {})
@@ -238,7 +256,6 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
-    YUANBAO = "yuanbao"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
 
     @classmethod
@@ -281,7 +298,8 @@ class Platform(Enum):
         manifest ``name:`` keys that differ from their directory (alias -> directory name). Aliases
         never shadow a directory name, so the directory stays the canonical platform value."""
         try:
-            platforms_dir = Path(__file__).parent.parent / "plugins" / "platforms"
+            from hermes_cli.plugins import get_bundled_plugins_dir
+            platforms_dir = get_bundled_plugins_dir() / "platforms"
             dirs = [
                 child for child in (platforms_dir.iterdir() if platforms_dir.is_dir() else ())
                 if child.is_dir() and (child / "__init__.py").exists()
@@ -313,6 +331,9 @@ PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {"feishu": "webhook"}
 # Port-binders whose /p/<profile>/ surface is a MIRROR served by the default's own adapter; a secondary
 # never gets an instance of these (api_server: /p/<profile>/v1/..., webhook: profile-bound routes).
 SHARED_LISTENER_MIRROR_PLATFORMS = frozenset({"api_server", "webhook"})
+# Everything a served profile reads from the default's own entry: the listener mirrors plus Relay,
+# process-level shared ingress whose one adapter serves every profile (no per-profile URL).
+SERVED_PROFILE_MIRROR_PLATFORMS = SHARED_LISTENER_MIRROR_PLATFORMS | frozenset({"relay"})
 # Path a client appends to ``<default listener>/p/<profile>`` to reach each mirror.
 SHARED_LISTENER_MIRROR_PATHS: dict[str, str] = {"api_server": "/v1", "webhook": "/webhooks/<route>"}
 
@@ -423,6 +444,9 @@ class PlatformConfig:
     # Runtime-only, never serialized: set when the GATEWAY_RELAY_URL relay-exclusive rule
     # (config_env._relay) switched an enabled platform off, so surfaces can say why (#141175).
     disabled_by_relay: bool = False
+    # Runtime-only: the config.yaml version this copy was loaded from (taken before the read), so the
+    # live-allowlist baseline names the file that produced the adapter's gates, not a later edit.
+    loaded_version: Optional[tuple] = field(default=None, compare=False, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         result = {
@@ -471,7 +495,7 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=HomeChannel.from_dict(home) if isinstance(home, dict) else None,
-            reply_to_mode=data.get("reply_to_mode", "first"),
+            reply_to_mode=_reply_to_mode_choice(data.get("reply_to_mode")),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
             typing_status_text=toplevel_or_extra("typing_status_text"),  # string passthrough, no coercion
@@ -826,15 +850,35 @@ class GatewayConfig:
         return "public" if choice is None else choice
 
 
-def load_gateway_config() -> GatewayConfig:
-    """Load gateway configuration. Priority: env > ~/.hermes/config.yaml > legacy gateway.json > defaults."""
+def load_gateway_config(*, strict: bool = False) -> GatewayConfig:
+    """Load gateway configuration. Priority: env > ~/.hermes/config.yaml > legacy gateway.json > defaults.
+
+    ``strict=True`` raises a config.yaml failure instead of falling back to env + gateway.json: a live
+    allowlist refresh keeps its last good lists rather than apply an env-only config."""
     from gateway import config_loader
+    from gateway.platforms._shared import gate_config_version, yaml_env_transaction
 
     _home = get_hermes_home()
+    version = gate_config_version()
     gw_data = config_loader.load_legacy_gateway_json(_home)
+    # One transaction through typed construction, overrides and validation: the runner's authorization
+    # reads the bridged env, so a load that fails after the YAML overlay must not leave its writes.
+    with yaml_env_transaction():
+        config = _load_gateway_config_layers(_home, gw_data, strict)
+    for platform_config in config.platforms.values():
+        platform_config.loaded_version = version
+    return config
+
+
+def _load_gateway_config_layers(_home: Path, gw_data: dict, strict: bool) -> GatewayConfig:
+    from gateway import config_loader
+    from gateway.platforms._shared import abort_yaml_env_refresh
     try:
         config_loader.load_yaml_layer(_home, gw_data)
     except Exception as e:
+        if strict:
+            raise
+        abort_yaml_env_refresh()
         logger.warning(
             # DingTalk settings → env vars: migrated to the dingtalk plugin's apply_yaml_config_fn hook
             # (plugins/platforms/dingtalk/adapter.py). #41112 / #3823.

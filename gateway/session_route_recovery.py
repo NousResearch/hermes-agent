@@ -184,6 +184,14 @@ async def conversation_head(runner, session_id):
     return (authority, *await asyncio.to_thread(handoff_head, db, session_id))
 
 
+async def settled_handoff_db(runner, authority, session_id):
+    """Refuse the watcher's repoint while durable work still owns *session_id*
+    (``gateway.session_handoff.require_settled``), on the store ``conversation_head`` reads."""
+    from gateway.session_handoff import check_settled
+    db = authority.db if authority is not None else getattr(runner._session_db, '_db', runner._session_db)
+    await check_settled(db, session_id)
+
+
 def follow_hand_off(authority, source, route, owner, local_owner):
     """After ``/handoff`` repointed *route* at *owner* (the lane's logical id of the conversation's
     head): the local mount a viewer still holds (*local_owner*, the Desktop that ran it) moves onto

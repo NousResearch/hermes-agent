@@ -16,8 +16,8 @@
  * Webapp turn raised, and the Webapp stops a turn Electron started. A third puts the Webapp behind
  * the sign-in gate: `hermes webapp --sign-out` signs out a browser that signed in with a password.
  *
- * Linux (the /proc ancestry walk); needs the Webapp renderer (`npm run build:webapp`) and a
- * Chromium Playwright can launch (`npx playwright install chromium`, or HERMES_E2E_CHROMIUM).
+ * Linux (the /proc ancestry walk); needs the Webapp renderer (`pnpm run build:webapp`) and a
+ * Chromium Playwright can launch (`pnpm exec playwright install chromium`, or HERMES_E2E_CHROMIUM).
  */
 
 import { spawnSync } from 'node:child_process'
@@ -100,7 +100,7 @@ test('the gateway serves the Webapp and runs every turn its browser sends', asyn
   test.skip(process.platform !== 'linux', 'walks /proc to prove which process ran the tool')
   expect(
     fs.existsSync(path.join(DESKTOP_ROOT, 'dist-webapp', 'index.html')),
-    'the Webapp renderer is built (npm run build:webapp)'
+    'the Webapp renderer is built (pnpm run build:webapp)'
   ).toBe(true)
 
   const provider = await startScriptedProvider()
@@ -218,7 +218,7 @@ test('a Webapp tab opened on a named profile runs and reads that profile', async
   test.setTimeout(420_000)
   expect(
     fs.existsSync(path.join(DESKTOP_ROOT, 'dist-webapp', 'index.html')),
-    'the Webapp renderer is built (npm run build:webapp)'
+    'the Webapp renderer is built (pnpm run build:webapp)'
   ).toBe(true)
 
   const provider = await startScriptedProvider()
@@ -298,7 +298,7 @@ test("the Webapp and Electron Desktop answer and stop each other's turns on one 
   test.setTimeout(480_000)
   expect(
     fs.existsSync(path.join(DESKTOP_ROOT, 'dist-webapp', 'index.html')),
-    'the Webapp renderer is built (npm run build:webapp)'
+    'the Webapp renderer is built (pnpm run build:webapp)'
   ).toBe(true)
 
   const provider = await startScriptedProvider()
@@ -448,7 +448,7 @@ test('signing out of a Webapp behind sign-in signs the browser out', async () =>
   test.skip(process.platform !== 'linux', 'runs with the other Webapp journeys (Linux CI)')
   expect(
     fs.existsSync(path.join(DESKTOP_ROOT, 'dist-webapp', 'index.html')),
-    'the Webapp renderer is built (npm run build:webapp)'
+    'the Webapp renderer is built (pnpm run build:webapp)'
   ).toBe(true)
 
   const provider = await startScriptedProvider()

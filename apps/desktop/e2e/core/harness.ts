@@ -204,7 +204,7 @@ export function webappLaunchLink(sandbox: CoreSandbox, profile?: string): string
 
 export async function launchCoreApp(env: Record<string, string>): Promise<{ app: ElectronApplication; page: Page }> {
   if (!fs.existsSync(path.join(DESKTOP_ROOT, 'dist', 'electron-main.mjs'))) {
-    throw new Error("Desktop dist not built: run 'npm run build' in apps/desktop first")
+    throw new Error("Desktop dist not built: run 'pnpm run build' in apps/desktop first")
   }
 
   const app = await _electron.launch({

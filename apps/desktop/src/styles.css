@@ -97,7 +97,7 @@
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url('../../../node_modules/@nous-research/ui/dist/fonts/Collapse-Bold.woff2') format('woff2');
+  src: url('@nous-research/ui/fonts/Collapse-Bold.woff2') format('woff2');
 }
 
 /* JetBrains Mono — bundled terminal font (Apache-2.0) so bold/italic share the

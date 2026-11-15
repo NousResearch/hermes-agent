@@ -66,7 +66,7 @@ on:
         type: string
         default: ''
       bundle-arch:
-        description: 'Architecture of the bundled pair. Only arm64 (macos-15) runs: there is no Intel macOS leg.'
+        description: 'Architecture of the bundled pair. Only arm64 (blacksmith-12vcpu-macos-15) runs: there is no Intel macOS leg.'
         required: false
         type: string
         default: arm64
@@ -134,7 +134,7 @@ jobs:
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: just js-install-tests
 
       - name: Start screen recording
         uses: ./.github/actions/e2e-screen-record
@@ -225,7 +225,8 @@ jobs:
   bundled-e2e:
     name: packaged bundle (open-app-update)
     if: inputs.install-method == 'packaged-app' && inputs.update-method == 'open-app-update'
-    runs-on: macos-15
+    # Not macos-15: v0.22.0 gives Squirrel.Mac 120 s to unpack and verify an update, and macos-15 takes 112-149 s.
+    runs-on: blacksmith-12vcpu-macos-15
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     steps:
@@ -241,7 +242,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit || github.sha }}
 
@@ -256,7 +257,7 @@ jobs:
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+        run: just js-install-tests
 
       - name: Start screen recording
         uses: ./.github/actions/e2e-screen-record

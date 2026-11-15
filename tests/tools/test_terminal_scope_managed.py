@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import managed_scope
-from tools.terminal_scope import TerminalPolicyUnavailable, build_profile_terminal_scope
+from hermes_cli.config_defaults import DEFAULT_CONFIG
+from tools.terminal_scope import TerminalPolicyUnavailable, build_profile_terminal_scope, default_terminal_scope
 
 
 @pytest.fixture
@@ -121,3 +122,33 @@ def test_unreadable_env_fails_closed_without_a_pinned_backend(tmp_path, managed,
 
     with pytest.raises(TerminalPolicyUnavailable):
         build_profile_terminal_scope(home)
+
+
+def test_bypass_scope_takes_the_managed_terminal_mapping(managed):
+    _write_managed(managed, "terminal:\n  backend: docker\n  docker_image: lab/image:1\n  timeout:\n")
+
+    scope = default_terminal_scope()
+
+    assert scope["TERMINAL_ENV"] == "docker"
+    assert scope["TERMINAL_DOCKER_IMAGE"] == "lab/image:1"
+    assert scope["TERMINAL_DOCKER_IMAGE_PINNED"] == "1"
+    assert scope["TERMINAL_TIMEOUT"] == str(DEFAULT_CONFIG["terminal"]["timeout"])  # null pins nothing
+
+
+def test_safe_mode_session_freezes_the_managed_backend(tmp_path, managed):
+    """A --safe-mode session bypasses the user's config, never the administrator's terminal pin."""
+    from gateway.session_local import _bypass_policy
+
+    _write_managed(managed, "terminal:\n  backend: docker\n")
+    for flag in ("safe_mode", "ignore_user_config"):
+        policy = _bypass_policy({"cwd": str(tmp_path), "model": "safe-fixture", "provider": "custom",
+                                 "base_url": "http://127.0.0.1:9/v1", flag: True}, private_secrets={})
+        assert json.loads(policy.terminal_json)["TERMINAL_ENV"] == "docker"
+
+
+def test_bypass_scope_without_managed_terminal_is_the_code_default(managed):
+    _write_managed(managed, "terminal:\n  backend:\n")
+
+    scope = default_terminal_scope()
+    assert scope["TERMINAL_ENV"] == "local"
+    assert scope.get("TERMINAL_DOCKER_IMAGE_PINNED", "0") == "0"  # no managed docker_image, no pin

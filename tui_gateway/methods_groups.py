@@ -235,21 +235,25 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS, _owner=_for
     from gateway.hosted_rooms import MAX_LOG_LIMIT, PROTOCOL_VERSION, local_authority_gateway_id
     service = get_hosted_room_service()
     driver_ready = bool(service and service.runtime.status()["running"])
+    # The first missing piece, named as gateway/session_group_peers.py::room_link names it: an
+    # approvals-off profile is a policy refusal, not a missing room key.
+    reason = "gateway_roomlink_secret_unavailable"
     try:
         from gateway.hosted_room_peer import gateway_room_grant_secret
         profile = _requested_profile(params)
+        reason = "durable_run_storage_required"
         if not _room_link_run_storage_durable():
             raise ValueError("durable run idempotency storage is required")
+        reason = "gateway_roomlink_secret_unavailable"
         gateway_room_grant_secret()
+        reason = "execution_policy_unsupported"
         policy = _profile_execution_policy(profile)
         catalog = _catalog(local_authority_gateway_id(), profile, policy)
         room_link = {
             "enabled": True, "profile": profile, "catalog": catalog,
             "endpoint": catalog["endpoint"]}
     except Exception:
-        room_link = {"enabled": False, "reason": (
-            "durable_run_storage_required" if not _room_link_run_storage_durable()
-            else "gateway_roomlink_secret_unavailable")}
+        room_link = {"enabled": False, "reason": reason}
     return _ok(rid, {
         "protocol_version": PROTOCOL_VERSION, "driver": driver_ready,
         "persistent_process": bool(room_link.get("catalog", {}).get("persistent_process", False)),
@@ -312,10 +316,13 @@ def _(rid, params: dict, db_path, _expiry=_grant_expiry) -> dict:
 def _(rid, params: dict, service) -> dict:
     """Register and probe one scoped target route on the room home."""
     from gateway.hosted_room_peer import (
-        GatewayRoomCatalog, PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION, validate_room_link_url)
-    from gateway.hosted_rooms import local_authority_gateway_id, room_state
+        GatewayRoomCatalog, PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION,
+        room_grant_matches_scope, validate_room_link_url)
+    from gateway.hosted_rooms import (
+        AuthorityConflictError, OwedRevokesFullError, RoomNotFoundError,
+        local_authority_gateway_id, room_state)
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
-    from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
+    from tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity
     target_url, transport_security = validate_room_link_url(params.get("target_url"))
     catalog = GatewayRoomCatalog.from_mapping(params.get("catalog"))
     if ROOM_LINK_PROTOCOL_VERSION not in catalog.protocol_versions:
@@ -324,15 +331,55 @@ def _(rid, params: dict, service) -> dict:
         raise ValueError("target does not support a direct RoomLink")
     target_profile = str(params.get("target_profile") or "")
     grant = str(params.get("grant") or "")
+    room_id = str(params.get("room_id") or "")
+    member_id = str(params.get("member_id") or "")
+
+    def owe() -> None:
+        # Owed at the URL this handler probes (``hermes serve`` takes the caller's URL, as it always
+        # has), so a grant it was handed is never forgotten while it could still pass.
+        service.owe_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant)
+    from tui_gateway.hosted_room_service import route_publication_lock
+
+    def check_grant_scope(room) -> None:
+        if not room_grant_matches_scope(
+                grant, room_id=room_id, member_id=member_id, home_install_id=local_authority_gateway_id(),
+                authority_gateway_id=room["authority_gateway_id"], authority_epoch=room["authority_epoch"]):
+            raise ValueError("group chat grant scope does not match this route")
+
+    @contextlib.contextmanager
+    def publication():
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            with route_publication_lock(service):
+                yield
+        except RuntimeStoreError as exc:
+            if exc.reason == "room_disbanding_retry":
+                check_grant_scope(room_state(service.db_path, room_id=room_id, include_disbanded=True))
+                # After releasing the lock: an ended room at capacity revokes at the member now.
+                service.hold_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant)
+            raise
+
+    def authorize_publication():
+        check = getattr(service, "route_authority", None)
+        if check is not None:
+            check(room_id)
+
+    try:
+        with publication():
+            authorize_publication()
+            home_room = room_state(service.db_path, room_id=room_id)
+    except RoomNotFoundError:
+        ended = getattr(service, "ended_room", None)
+        if ended is not None and (room := ended(room_id)) is not None:  # disbanded first: owed, never probed
+            check_grant_scope(room)
+            owe()
+        raise
     client = PeerRunsHTTPClient(base_url=target_url, api_key="", receipt_db_path=service.db_path)
     probe = client.probe(grant=grant)
     # Frozen dataclass equality: an equal live catalog already passed the checks above.
     if GatewayRoomCatalog.from_mapping(probe.get("catalog")) != catalog:
         raise ValueError("target capability catalog changed during setup")
-    room_id = str(params.get("room_id") or "")
-    member_id = str(params.get("member_id") or "")
     home_install_id = local_authority_gateway_id()
-    home_room = room_state(service.db_path, room_id=room_id)
     expected_scope = {
         "room_id": room_id, "home_install_id": home_install_id,
         "authority_gateway_id": home_room.get("authority_gateway_id"),
@@ -340,18 +387,38 @@ def _(rid, params: dict, service) -> dict:
     if (any(probe.get(k) != v for k, v in expected_scope.items())
             or int(probe.get("authority_epoch") or 0)
             != int(home_room.get("authority_epoch") or 0)):
-        raise ValueError("room grant scope does not match this route")
+        raise ValueError("group chat grant scope does not match this route")
+    # A caller may still choose the identity; otherwise the route keeps one across re-registration.
+    cancellation_scope_id, trace_id = route_identity(
+        db_path=service.db_path, home_install_id=home_install_id, room_id=room_id, member_id=member_id)
     route = PeerMemberRoute(
         home_install_id=home_install_id, member_id=member_id,
         target_install_id=catalog.installation_id, target_profile=target_profile,
         capability_digest=catalog.catalog_digest,
         execution_policy_digest=catalog.execution_policy.policy_digest,
-        cancellation_scope_id=str(
-            params.get("cancellation_scope_id") or f"cancel-{params.get('room_id') or ''}"),
-        trace_id=str(params.get("trace_id") or f"trace-{os.urandom(16).hex()}"), grant=grant)
-    service.register_peer_route(
-        room_id=room_id, member_id=member_id, route=route, client=client, target_url=target_url,
-        catalog=catalog)
+        cancellation_scope_id=str(params.get("cancellation_scope_id") or cancellation_scope_id),
+        trace_id=str(params.get("trace_id") or trace_id), grant=grant)
+    refused = None
+    with publication():
+        # The probe took time: publish only while the room is still the one it was checked against.
+        try:
+            authorize_publication()
+            live = room_state(service.db_path, room_id=room_id)
+        except (RoomNotFoundError, AuthorityConflictError):
+            live = None
+        if live is not None and (live["authority_gateway_id"], live["authority_epoch"]) == (
+                home_room["authority_gateway_id"], home_room["authority_epoch"]):
+            try:
+                service.register_peer_route(
+                    room_id=room_id, member_id=member_id, route=route, client=client, target_url=target_url,
+                    catalog=catalog)
+            except OwedRevokesFullError as exc:  # the replaced grant's revoke found no room
+                refused = exc
+        else:  # ended or moved after the probe, which showed the member this grant
+            refused = RoomNotFoundError("hosted room ended or moved during registration")
+    if refused is not None:
+        owe()  # outside the lock: with no room left to record it, the grant is revoked now
+        raise refused
     return _ok(rid, {
         "registered": True, "mode": "direct", "transport_security": transport_security,
         "target_install_id": catalog.installation_id, "target_profile": target_profile})
@@ -388,14 +455,8 @@ def _(rid, params: dict, db_path) -> dict:
     room = room_state(
         db_path, room_id=params.get("room_id"),
         include_disbanded=params.get("include_disbanded") is True)
-    service = get_hosted_room_service()
-    result = {"room": room}
-    if room.get("disbanded_at") is None:
-        from gateway.hosted_room_context import room_context
-        result["context"] = room_context(db_path, room_id=room["room_id"])
-        if service is not None:
-            result["driver_status"] = service.status(str(room["room_id"]))
-    return _ok(rid, result)
+    from gateway.hosted_room_context import groups_state_result
+    return _ok(rid, groups_state_result(db_path, room, get_hosted_room_service()))
 
 
 @_room_method(
@@ -440,31 +501,46 @@ def _(rid, params: dict, service) -> dict:
 def _(rid, params: dict, service) -> dict:
     """Permanently tombstone a hosted room id."""
     from gateway.hosted_rooms import (
-        AuthorityConflictError, RoomHistoryExpiredError, disband_room, local_authority_gateway_id,
-        room_state)
-    room_id = str(params.get("room_id") or "")
+        AuthorityConflictError, RoomHeldGrantsPendingError, RoomHistoryExpiredError, disband_room, local_authority_gateway_id,
+        _room_id, room_state)
+    room_id = _room_id(params.get("room_id"))
 
     def disband_with_state(state: dict | None = None) -> dict:
         local_gateway_id = local_authority_gateway_id()
         if state is not None and str(state["authority_gateway_id"]) != local_gateway_id:
             raise AuthorityConflictError("This Group Chat is managed by another gateway.")
         tombstone = disband_room(
-            service.db_path, room_id=params.get("room_id"),
+            service.db_path, room_id=room_id,
             expected_gateway_id=str(local_gateway_id),
             expected_epoch=int(state["authority_epoch"] if state is not None else 1))
         return _ok(rid, {"tombstone": tombstone})
     try:
         existing = room_state(
-            service.db_path, room_id=params.get("room_id"), include_disbanded=True)
+            service.db_path, room_id=room_id, include_disbanded=True)
     except RoomHistoryExpiredError:
         return disband_with_state()
     if existing.get("disbanded_at") is not None:
         return disband_with_state(existing)
-    service.stop_room(
-        room_id, cancel_id=str(params.get("cancel_id") or "room-disbanded"),
-        require_acknowledged=True)
-    service.revoke_room_routes(room_id)
-    return disband_with_state(existing)
+    from tui_gateway.hosted_room_service import disband_fence, route_publication_lock
+    with disband_fence(service, room_id):
+        service.stop_room(
+            room_id, cancel_id=str(params.get("cancel_id") or "room-disbanded"),
+            require_acknowledged=True)
+        from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+        from tui_gateway.hosted_room_service import RoomDisbandRefusedError
+        for attempt in range(3):
+            try:
+                service.revoke_room_routes(room_id)
+            except PeerRunsHTTPError as exc:
+                raise RoomDisbandRefusedError(
+                    "peer_unreachable", "The member could not be reached; retry Disband when it is available.") from exc
+            try:
+                with route_publication_lock(service):
+                    existing = room_state(service.db_path, room_id=room_id, include_disbanded=True)
+                    return disband_with_state(existing)
+            except RoomHeldGrantsPendingError:
+                if attempt == 2:
+                    raise
 
 
 @_room_method("groups.stop", code=5116, service_code=4115)

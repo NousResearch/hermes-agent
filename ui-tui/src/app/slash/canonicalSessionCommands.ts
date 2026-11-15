@@ -3,19 +3,19 @@
 // `session.mutate` rename / rewind (`gateway/session_mutations.py`), the committed admission
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
-import type { SessionStats } from '@hermes/shared/gateway-events'
+import type { SessionAccountUsage, SessionStats } from '@hermes/shared/gateway-events'
+import type { RollbackListResponse } from '@hermes/shared/gateway-types'
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
+import { CANONICAL_REASONING_EFFORTS } from '@hermes/shared/slash-input'
 
-import { CANONICAL_REASONING_EFFORTS } from '../../domain/slash.js'
 import { usageFromTick } from '../../domain/usage.js'
-import type { BillingStateResponse } from '../../gatewayTypes.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
 import { patchUiState } from '../uiStore.js'
 
 import { mutateCanonical, type MutationSnapshot } from './canonicalSessionControls.js'
 import type { SlashRunCtx } from './types.js'
-import { planUsageLines, usageTotalsSections } from './usagePanel.js'
+import { usageTotalsSections } from './usagePanel.js'
 
 const COMPACTION_MARKERS = ['[CONTEXT COMPACTION', '[CONTEXT SUMMARY]:', '[END OF PRIOR CONTEXT']
 
@@ -166,9 +166,11 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
       ctx.transcript.setHistoryItems(prev => ctx.transcript.trimLastExchange(prev))
 
       if (intent === 'undo') {
-        return ctx.transcript.sys(
+        ctx.transcript.sys(
           t(removed === 1 ? 'slashCmd.core.undo.undidOne' : 'slashCmd.core.undo.undidOther', String(removed))
         )
+
+        return showUndoRollbackHint(ctx, sid, result.target_message as undefined | { id?: unknown; timestamp?: unknown })
       }
 
       // Main's /retry: the rewound user turn's own text, not whatever this view typed last.
@@ -187,6 +189,25 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
         ctx.transcript.sys(busy)
       }
     })
+}
+
+/** `/undo`'s line naming the files the undone turns changed (and pointing at `/rollback`); silent when none. */
+function showUndoRollbackHint(ctx: SlashRunCtx, sid: string, target?: { id?: unknown; timestamp?: unknown }) {
+  if (typeof target?.timestamp !== 'number') {
+    return
+  }
+
+  // The rewound row's id pins the span to the rewind's own boundary: a turn started since cannot move it.
+  const undoMessageId = typeof target.id === 'number' ? { undo_message_id: target.id } : {}
+
+  void ctx.gateway
+    .rpc<RollbackListResponse>('rollback.list', { session_id: sid, undo_since: target.timestamp, ...undoMessageId })
+    .then(r => {
+      if (r?.undo_hint?.text && !ctx.stale()) {
+        ctx.transcript.sys(r.undo_hint.text)
+      }
+    })
+    .catch(() => undefined) // advisory: an older owner refuses `undo_since`, and main printed nothing
 }
 
 /** Main's busy text for a refused rewind: wait for a running /compress, else stop the reply; null otherwise. */
@@ -213,16 +234,23 @@ interface CommittedResult {
   total_tokens?: number
 }
 
+const NO_ROUTE: SessionAccountUsage = { lines: [], nous_lines: [], nous_route: false }
+
 /** `/usage`: main's session totals panel. The owner's `session.stats` is the same session-cumulative
  * dict its `session.usage` ticks carry (`gateway/session_usage.py`), mapped onto main's `Usage` shape
- * and rendered exactly as main's sidecar `/usage` did (Usage panel, or "no API calls yet", then the
- * plan CTA). */
+ * and rendered as the classic CLI's `/usage` is (Usage panel, or "no API calls yet", then the provider
+ * plan limits and the Nous section from `session.account_usage`, then the plan CTA on a Nous route). */
 export function canonicalUsage(ctx: SlashRunCtx) {
   const sid = ctx.sid!
 
+  // A failed read says nothing about the route, so it shows no plan bars and no Nous CTA.
+  const limits = ctx.gateway.gw
+    .request<SessionAccountUsage>('session.account_usage', { session_id: sid })
+    .catch((): SessionAccountUsage => NO_ROUTE)
+
   void ctx.gateway.gw
     .request('session.stats', { session_id: sid })
-    .then(raw => {
+    .then(async raw => {
       if (ctx.stale()) {
         return
       }
@@ -231,22 +259,25 @@ export function canonicalUsage(ctx: SlashRunCtx) {
 
       if (!usage?.calls) {
         ctx.transcript.sys(t('slashCmd.session.usage.noCalls'))
-        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
       } else {
         patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
         ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
-        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
       }
 
-      // Usage-window plans: the allowance bars, after the lines above (every other account: nothing).
-      void ctx.gateway
-        .rpc<BillingStateResponse>('billing.state', {})
-        .then(r => {
-          if (!ctx.stale()) {
-            planUsageLines(r?.plan_usage).forEach(line => ctx.transcript.sys(line))
-          }
-        })
-        .catch(() => undefined)
+      const account = await limits
+
+      if (ctx.stale()) {
+        return
+      }
+
+      // The route's provider limits, then the Nous section (signed in only; its own heading off a Nous route).
+      for (const line of [...(account.lines ?? []), ...(account.nous_lines ?? [])]) {
+        ctx.transcript.sys(line)
+      }
+
+      if (account.nous_route) {
+        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
+      }
     })
     .catch(ctx.guardedErr)
 }

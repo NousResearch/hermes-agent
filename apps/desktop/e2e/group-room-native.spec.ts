@@ -149,7 +149,7 @@ async function createRoom(page: Page, bots: [string, string][], roomName: string
   }
 
   await dialog.getByRole('textbox', { name: 'Group name' }).fill(roomName)
-  await dialog.getByRole('button', { name: `Create Group (${bots.length})` }).click()
+  await dialog.getByRole('button', { name: `Create group (${bots.length})` }).click()
   await expect(dialog).toBeHidden({ timeout: 30_000 })
 }
 

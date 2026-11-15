@@ -61,6 +61,16 @@ _KV_SEMICOLON_FIELD_RE = re.compile(
 _FORMAT_SLOT_RE = re.compile(r"\{\s*+(?:[A-Za-z0-9_](?:[^;{}@$&#!]|![rsa](?=\s*+[:}]))*+)?\}")
 
 
+# A quote inside an unquoted value is literal (``Password=it's-secret``) unless it closes the
+# string that wraps the connection string: then end of line, a delimiter or an operator
+# (``'…'.format(a)``, ``"…"+suffix``, ``'…'&& echo``) follows it.
+_WRAPPER_CLOSE_FOLLOWERS = frozenset(" \t\r\n,;)]}>/.+&|")
+
+
+def _closes_wrapper(line: str, j: int) -> bool:
+    return j + 1 >= len(line) or line[j + 1] in _WRAPPER_CLOSE_FOLLOWERS
+
+
 def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
     """End index of the value starting at ``line[i]``; the scan never backtracks."""
     n = len(line)
@@ -89,7 +99,7 @@ def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
                 j += 1
             return n
         j = i
-        while j < n and line[j] not in ";\"'\r\n":
+        while j < n and line[j] not in ";\r\n" and not (line[j] in "\"'" and _closes_wrapper(line, j)):
             j += 1
         while j > i and line[j - 1] in " \t":  # trailing padding stays visible
             j -= 1
@@ -110,7 +120,8 @@ def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
         if line[j] == "\\":
             j += 2
             continue
-        if line[j] in " \t\r\n\"'":  # quotes: the shell quoting that wraps the conninfo
+        # A closing quote is the shell quoting that wraps the conninfo.
+        if line[j] in " \t\r\n" or (line[j] in "\"'" and _closes_wrapper(line, j)):
             break
         j += 1
     return min(j, n)
@@ -190,9 +201,10 @@ def _redact_kv_connection_line(line: str, code_file: bool) -> str:
         companion_state, states = None, []
     # Preserve rejection of incomplete padded ODBC values without scanning a suffix per match.
     last_brace = line.rfind("}")
-    out, pos = [], 0
+    # Skipped templates are scanned too, so later keys cannot rescan their suffix.
+    out, pos, scanned = [], 0, 0
     for i, m in enumerate(matches):
-        if m.start() < pos:  # inside a value already masked
+        if m.start() < scanned:  # inside a value already scanned
             continue
         if assigned and states[i] != companion_state:
             continue
@@ -215,12 +227,16 @@ def _redact_kv_connection_line(line: str, code_file: bool) -> str:
         value = line[vstart:vend]
         if not value:
             continue
+        scanned = vend  # after the prose check: ``the pwd= password=x`` still masks ``x``
         bare = value.strip("\"'")
         # Templates, not credentials: ``Password={0}``, ``Password=${DB_PASS}``, ``{pw}``. ODBC braces a
         # literal value (``PWD={Zq7x;LmP2}``), so on a ``;`` line only a format slot or an identifier
         # counts as a template; ``cat appsettings.json`` output is read as code_file.
+        # A value that holds another key (``${a'Password=x}``) is not a template: skipping it would
+        # also skip that key, as ``scanned`` now covers the whole value.
         if code_file and bare.startswith(("{", "${")) and bare.endswith("}") and (
-                not field_semicolon or bare.startswith("${") or _FORMAT_SLOT_RE.fullmatch(bare)):
+                not field_semicolon or bare.startswith("${") or _FORMAT_SLOT_RE.fullmatch(bare)) and (
+                not _KV_CONNSTR_PW_RE.search(line, vstart, vend)):
             continue
         if value[0] == "{" and field_semicolon:
             masked = "{***}"

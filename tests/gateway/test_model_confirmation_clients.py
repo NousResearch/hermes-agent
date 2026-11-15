@@ -10,6 +10,8 @@ import pytest
 
 from hermes_cli.gateway_client import GatewayClientError
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 class _Owner:
     """A real SessionAuthority behind the client ``rpc`` surface the viewers use."""

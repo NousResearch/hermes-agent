@@ -128,7 +128,7 @@ def encode(value: Any, refs: Optional[Callable[[Any], Optional[dict]]] = None, _
         return str(value)
     if isinstance(value, (bytes, bytearray)):
         return {"__bytes__": base64.b64encode(bytes(value)).decode("ascii")}
-    if isinstance(value, dict):
+    if isinstance(value, (dict, types.MappingProxyType)):  # a read-only mapping is plain data too
         return {str(k): encode(v, refs, _depth + 1) for k, v in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
         return [encode(v, refs, _depth + 1) for v in value]

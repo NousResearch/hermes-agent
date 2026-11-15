@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_hermes_home
+from hermes_cli._startup_fast import project_root_str
 from tools.environments.local import hermes_subprocess_env
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,7 @@ def append_log_record(path: str | Path, record: str) -> None:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return Path(project_root_str())
 
 
 def _check_output(argv: list[str], **kwargs: Any) -> str:
@@ -268,14 +269,27 @@ class HostSupervisor:
         with self._lock:
             return any(s == sid for s, _cb in self._pending_turns.values())
 
-    def _await_reply(self, frame: dict[str, Any], request_id: str, timeout: float) -> dict:
-        """Send ``frame`` and block for the host reply carrying ``request_id``."""
+    def _await_reply(self, frame: dict[str, Any], request_id: str, timeout: float,
+                     on_late_ack: Callable[[dict], None] | None = None) -> dict:
+        """Send ``frame`` and block for the host reply carrying ``request_id``. On timeout ``on_late_ack``
+        takes over in the same locked step that retires the waiter's queue, so a reply landing at any moment
+        reaches exactly one of them (a dropped ack would leak whatever the handler releases)."""
         q: queue.Queue[dict] = queue.Queue(maxsize=1)
         with self._lock:
             self._pending_controls[request_id] = q
         try:
             self._send_frame(frame)
             return q.get(timeout=timeout)
+        except queue.Empty:
+            dropped: list = []
+            with self._lock:
+                self._pending_controls.pop(request_id, None)
+                if not q.empty():  # landed after the wait gave up, before the queue was retired
+                    return q.get_nowait()
+                if on_late_ack is not None:
+                    dropped = self._register_late_control_handler_locked(request_id, on_late_ack)
+            self._fire_dropped_late_handlers(dropped)
+            raise
         finally:
             with self._lock:
                 self._pending_controls.pop(request_id, None)
@@ -309,22 +323,35 @@ class HostSupervisor:
         if not wait:
             self._send_frame(frame)
             return {"status": "sent", "request_id": request_id}
-        try:
-            return self._await_reply(frame, request_id, timeout)
-        except queue.Empty:
-            if on_late_ack is not None:
-                self._register_late_control_handler(request_id, on_late_ack)
-            raise
+        return self._await_reply(frame, request_id, timeout, on_late_ack)
 
     def _register_late_control_handler(self, request_id: str, handler: Callable[[dict], None]) -> None:
-        now = time.monotonic()
         with self._lock:
-            handlers = self._late_control_handlers
-            for rid in [r for r, (at, _cb) in handlers.items() if now - at > _LATE_CONTROL_TTL_SECS]:
-                handlers.pop(rid, None)
-            while len(handlers) >= _LATE_CONTROL_MAX:
-                handlers.pop(min(handlers, key=lambda rid: handlers[rid][0]), None)
-            handlers[request_id] = (now, handler)
+            dropped = self._register_late_control_handler_locked(request_id, handler)
+        self._fire_dropped_late_handlers(dropped)
+
+    def _register_late_control_handler_locked(self, request_id: str, handler: Callable[[dict], None]) -> list:
+        """Register under ``self._lock``; returns the handlers the TTL or the cap dropped, for the caller to fire
+        outside the lock (``_fire_dropped_late_handlers``)."""
+        now = time.monotonic()
+        dropped = []
+        handlers = self._late_control_handlers
+        for rid in [r for r, (at, _cb) in handlers.items() if now - at > _LATE_CONTROL_TTL_SECS]:
+            dropped.append((rid, handlers.pop(rid)[1]))
+        while len(handlers) >= _LATE_CONTROL_MAX:
+            rid = min(handlers, key=lambda r: handlers[r][0])
+            dropped.append((rid, handlers.pop(rid)[1]))
+        handlers[request_id] = (now, handler)
+        return dropped
+
+    @staticmethod
+    def _fire_dropped_late_handlers(dropped: list) -> None:
+        """A dropped handler still fires once, with a ``control.error``: it may own a release (a transcript
+        claim) that nothing else would run."""
+        for rid, cb in dropped:
+            frame = {"type": "control.error", "request_id": rid,
+                     "message": "compute host reply abandoned: no answer within the late-ack window"}
+            _call_logged(cb, frame, f"compute host late control drop handler failed (request_id={rid})")
 
     def _deliver_control_frame(self, request_id: str, frame: dict[str, Any]) -> None:
         with self._lock:

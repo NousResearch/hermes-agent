@@ -1,0 +1,26 @@
+name: othigai
+repo: https://github.com/ramakrishnanhulk20/othigai
+sha: 5ddfa2615adf3294ae703930b1f814ff85c2ca6b
+description: "A fire drill for your Hermes agent. /drill starts test agents on your machine with your model and your own SOUL.md, hands them an ordinary errand, and plants a trap in the email they read. Everything they can reach is fake: a fresh fake key, a throwaway folder in the system temp folder, and a listener on 127.0.0.1 standing in for the attacker. A default-no pre_tool_call gate checks every tool call a test agent makes, and you get a safety score with a 95% range, a step by step replay and fixes that the next drill measures. Nothing runs until you read a notice and type /drill yes. Disclosure — test agents make model calls on the model you name or your default, which costs money on a paid model (capped per agent and per drill, with a daily limit); before a drill it runs a harmless `rm -r` of its own temp folder plus curl and /dev/tcp probes to its listener through your session's terminal to check that the approval prompt works, so an approval prompt may appear and the right answer is no; test agents run a short list of commands inside a throwaway folder in the system temp folder; a local listener runs on a random 127.0.0.1 port for the length of a drill; it reads your SOUL.md and passes it to the test agents, and reads which memory provider is configured; test agent sessions stay in Hermes's normal history, where memory or telemetry plugins may see the trap text. No third-party network calls, no telemetry, no stored credentials."
+maintainer: ramakrishnanhulk20
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/ramakrishnanhulk20/othigai#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - othigai_run
+  provides_hooks:
+    - pre_tool_call
+    - subagent_start
+    - subagent_stop
+    - pre_api_request
+    - post_approval_response
+    - on_session_end
+    - post_compaction
+  provides_commands:
+    - drill
+  provides_middleware: []
+  requires_env: []

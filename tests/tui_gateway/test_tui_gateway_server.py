@@ -5665,7 +5665,7 @@ def test_live_session_payload_registers_transport_as_viewer():
 
     t = _LiveTransport()
     session = _session(transport=server._detached_ws_transport, running=False)
-    server._live_session_payload("viewer-sid", session, transport=t)
+    server._rebind_live_transport("viewer-sid", session, t)
 
     assert session["transport"] is t
     assert t in session.get("viewers", {})
@@ -5723,7 +5723,7 @@ def test_resume_rebind_cancels_pending_ws_orphan_reap(monkeypatch):
         server._schedule_ws_orphan_reap("cancel-sid")
         assert "cancel-sid" in server._pending_ws_reaps
 
-        server._live_session_payload("cancel-sid", session, transport=_LiveTransport())
+        server._rebind_live_transport("cancel-sid", session, _LiveTransport())
 
         assert "cancel-sid" not in server._pending_ws_reaps
         assert len(cancelled) == 1

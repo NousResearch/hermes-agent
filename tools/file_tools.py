@@ -429,10 +429,14 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     from tools.read_extract import (
         ANYDOC_EXTENSIONS, EXTRACTABLE_EXTENSIONS, MAX_DOCUMENT_BYTES, ExtractionError,
         extract_document_bytes, is_extractable_document)
+    from tools.tool_result_storage import is_pruned_json_archive, pageable_archive_text
     if hosted_scope() is not None:
         return None  # extraction parses the bytes in host temp files and host tools; the binary guard answers
 
-    if not is_extractable_document(str(_resolved)):
+    # A pruned tool result is archived byte-exact, so JSON output is one line of escaped text that the
+    # per-line cap would cut: page the text it wraps instead (the spill files' own rendering).
+    archived_json = is_pruned_json_archive(str(_resolved))
+    if not (archived_json or is_extractable_document(str(_resolved))):
         return None
     file_ops = _get_file_ops(task_id)
     try:
@@ -440,7 +444,8 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         if binary.error or binary.base64_content is None:
             raise ExtractionError(binary.error or "Document bytes unavailable")
         document_bytes = base64.b64decode(binary.base64_content, validate=True)
-        extracted_text = extract_document_bytes(document_bytes, str(_resolved))
+        extracted_text = (pageable_archive_text(document_bytes.decode("utf-8", errors="replace")) if archived_json
+                          else extract_document_bytes(document_bytes, str(_resolved)))
     except (ExtractionError, ValueError, base64.binascii.Error) as exc:
         logger.debug("document extraction failed for %s", path, exc_info=True)
         # Binary formats surface the specific failure (fallthrough would only

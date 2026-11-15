@@ -106,6 +106,17 @@ def test_the_running_turn_is_never_shortened(home):
     assert any(o["content"] != n["content"] for o, n in zip(msgs[:turn_start], pruned[:turn_start]))
 
 
+def test_the_first_turn_is_never_shortened(home):
+    """The loop's transcript carries no system row, so a session's first turn starts at index 0."""
+    msgs = [{"role": "user", "content": "read them all"}]
+    for i in range(30):
+        msgs += _round(i, f"line {i}\n" + "y" * 12_000)
+
+    pruned, count = _compressor().prune_tool_results_only(msgs, current_tokens=200_000, turn_start=0)
+
+    assert (pruned, count) == (msgs, 0)
+
+
 def test_pruned_archive_follows_its_session(home):
     """Referenced archives survive the age sweep; deleting the session retires them."""
     db = SessionDB(db_path=home / "state.db")
@@ -132,3 +143,19 @@ def test_pruned_archive_follows_its_session(home):
         assert not any(f.exists() for f in files)
     finally:
         db.close()
+
+
+def test_read_file_pages_a_json_archive_by_the_text_it_wraps(home):
+    """A JSON result is archived byte-exact (one long line); read_file must still reach every line of it,
+    not cut it at the per-line cap."""
+    from tools.file_tools import read_file_tool
+
+    body = "\n".join(f"{i}|line {i} " + "z" * 60 for i in range(1, 200)) + "\n198|IMPORTANT: the fact."
+    msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+    for i in range(8):
+        msgs += _round(i, json.dumps({"content": body.replace("fact", f"fact {i}"), "total_lines": 199}))
+    pruned, _ = _compressor().prune_tool_results_only(msgs, current_tokens=100_000)
+    stub = next(n["content"] for o, n in zip(msgs, pruned) if o["content"] != n["content"])
+
+    page = json.loads(read_file_tool(str(_archive_path(stub)), offset=1, limit=500))
+    assert "IMPORTANT: the fact" in page["content"]

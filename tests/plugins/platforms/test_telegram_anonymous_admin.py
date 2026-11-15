@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from plugins.platforms.telegram.adapter import _is_peer_bot_user
+from gateway.config import Platform, PlatformConfig
+from plugins.platforms.telegram.adapter import TelegramAdapter, _is_peer_bot_user
 
 ANONYMOUS_ADMIN_ID = 1087968824
 
@@ -36,3 +37,44 @@ def test_human_is_not_a_peer_bot():
 
 def test_missing_author_is_not_a_peer_bot():
     assert _is_peer_bot_user(None) is False
+
+
+def test_anonymous_admin_survives_bot_mention_gate_in_free_response_group():
+    """#156228: a group admin must bypass the *earlier* bot-to-bot trigger guard too.
+
+    The source/event-level fix alone still drops an unmentioned anonymous admin when the
+    supported bots_require_mention option is enabled in an otherwise free-response group.
+    """
+    adapter = object.__new__(TelegramAdapter)
+    adapter.platform = Platform.TELEGRAM
+    adapter.config = PlatformConfig(
+        enabled=True, token="test", extra={
+            "require_mention": True,
+            "bots_require_mention": True,
+            "free_response_chats": ["-100"],
+            "allowed_chats": ["-100"],
+            "allowed_topics": [],
+        },
+    )
+    adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
+
+    chat = SimpleNamespace(id=-100, type="group", title="Test Group", is_forum=False)
+
+    def group_message(user_id: int):
+        return SimpleNamespace(
+            message_id=42,
+            chat=chat,
+            sender_chat=chat if user_id == ANONYMOUS_ADMIN_ID else None,
+            from_user=_user(user_id, True),
+            text="following up",
+            caption=None,
+            entities=[],
+            caption_entities=[],
+            message_thread_id=None,
+            is_topic_message=False,
+            reply_to_message=None,
+        )
+
+    assert adapter._should_process_message(group_message(ANONYMOUS_ADMIN_ID)) is True
+    # A real peer bot without an explicit @mention must remain suppressed.
+    assert adapter._should_process_message(group_message(123456789)) is False

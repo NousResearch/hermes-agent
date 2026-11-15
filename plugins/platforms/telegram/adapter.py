@@ -5765,7 +5765,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """True when the sender is a bot other than this one (this bot's own echoes are already
         filtered by ``_is_own_message``)."""
         sender = getattr(message, "from_user", None)
-        if sender is None or not getattr(sender, "is_bot", False):
+        if not _is_peer_bot_user(sender):
             return False
         bot_id = getattr(self._bot, "id", None)
         sender_id = getattr(sender, "id", None)

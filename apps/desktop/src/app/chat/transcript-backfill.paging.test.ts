@@ -242,6 +242,7 @@ describe('Show earlier paging walks', () => {
       }
 
       const rows = Array.from({ length: 150 }, (_, turn) => turnRows(turn)).flat()
+
       const pageAt = (offset: number) => {
         const end = rows.length - offset
         const messages = rows.slice(Math.max(0, end - LIMIT), Math.max(0, end))

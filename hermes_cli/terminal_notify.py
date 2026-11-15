@@ -31,7 +31,7 @@ def write_tty(seq: str) -> None:
         with open("/dev/tty", "w", encoding="utf-8") as tty:
             tty.write(seq)
         return
-    except OSError:
+    except (OSError, UnicodeError):
         pass
     try:
         sys.stdout.write(seq)

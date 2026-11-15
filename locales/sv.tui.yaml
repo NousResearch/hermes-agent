@@ -541,3 +541,28 @@ content.setup.setupRow: "kör installationsguiden här (lägger till en leverant
 content.setup.modelRow: "välj en modell (kräver en session; lägg först till en leverantör)"
 content.setup.exitRow: "avsluta och kör `hermes setup` manuellt"
 content.setup.footer: "På kontrollpanelen anger sidan Modeller profilens standardvärde; i datorprogrammet finns den under Inställningar -> Modeller."
+
+userMessages.details: "Detaljer: {0}"
+
+userMessages.rpc.shellBackendRefused: "!-kommandon körs på gatewayvärden, men sessionens terminalmiljö är {0}, så kommandot kördes inte. Be i stället agenten att köra det; agentens terminal körs i {0}."
+userMessages.rpc.shellBackendRefusedUnnamed: "!-kommandon körs på gatewayvärden, men sessionens terminalmiljö är inte lokal, så kommandot kördes inte. Be i stället agenten att köra det."
+userMessages.rpc.methodUnavailable: "Den här Hermes-tjänsten tillhandahåller inte {0}, så åtgärden utfördes inte."
+userMessages.rpc.versionSkew: "Terminalgränssnittet och Hermes-tjänsten är osynkroniserade (olika versioner). Kör /update, eller avsluta, kör `hermes update` och starta TUI:n igen."
+userMessages.rpc.sessionNotFound: "Den här chatten är inte längre kopplad till tjänsten (den var inaktiv eller tjänsten startades om). Historiken är sparad: skriv /resume för att öppna den igen."
+userMessages.rpc.launchCredentialsChanged: "Den här chatten kan inte längre använda API-nyckeln den startade med (den ändrades eller togs bort), så åtgärden utfördes inte. En chatt byter aldrig själv till en annan nyckel. Skriv /new för att starta en ny chatt med din aktuella nyckel."
+userMessages.rpc.sessionReadOnly: "Den här chatten är sparad historik som Hermes kan visa men inte fortsätta, så meddelandet kördes inte. Använd /new för att starta en ny chatt."
+userMessages.rpc.sessionHasChildren: "Den här chatten har underordnade sessioner, till exempel underagentkörningar, som också skulle tas bort. Därför raderades den inte."
+userMessages.rpc.notConnected: "Hermes är inte ansluten just nu, så detta skickades inte. Den återansluter automatiskt; vänta en stund och försök igen, eller skriv /logs om problemet kvarstår."
+userMessages.rpc.timedOut: "Hermes svarade inte inom {0} sekunder. Försök igen; om det fortsätter, skriv /logs och rapportera de sista raderna."
+userMessages.rpc.slashTimedOut: "/{0} slutfördes inte: kommandohjälparen överskred tidsgränsen. Försök igen; om det fortsätter, skriv /logs och rapportera de sista raderna."
+userMessages.rpc.slashCrashed: "/{0} slutfördes inte: kommandohjälparen kraschade. Försök igen; skriv /logs för stackspårningen."
+
+userMessages.promptTimeout.secret: "Inmatningen av hemligheten stängdes: inget svar kom i tid, så steget som behövde den hoppades över. Skicka begäran igen när du är redo att ange den."
+userMessages.promptTimeout.sudo: "Lösenordsinmatningen stängdes: inget svar kom i tid, så kommandot hoppades över. Skicka begäran igen när du är redo att ange lösenordet."
+userMessages.promptTimeout.vaultCode: "Inmatningen av verifieringskoden stängdes: inget svar kom i tid, så inloggningen hoppades över. Skicka begäran igen när du har koden."
+userMessages.promptTimeout.vaultSaveLogin: "Inmatningen för att spara inloggningen stängdes: inget svar kom i tid, så inget sparades. Skicka begäran igen när du är redo."
+userMessages.promptTimeout.vaultUnlockPrompt: "Inmatningen för upplåsning stängdes: inget svar kom i tid, så lösenordshanteraren förblev låst. Skicka begäran igen när du vill låsa upp den."
+
+userMessages.credential.currentProvider: "den aktuella leverantören"
+userMessages.credential.missingKey: "Ingen API-nyckel är angiven för {0}, så meddelanden kommer att misslyckas. Skriv /model, välj {0} och klistra in en nyckel, eller kör /setup."
+userMessages.skills.noneInstalled: "Inga färdigheter är installerade ännu. Skriv /skills browse för att se katalogen eller /skills install <name>."

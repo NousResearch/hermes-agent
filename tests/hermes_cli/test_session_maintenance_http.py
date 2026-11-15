@@ -17,6 +17,11 @@ async def test_maintenance_routes_refuse_live_owner_without_changing_rows(tmp_pa
     with SessionDB(db_path=tmp_path / 'state.db') as db:
         db.create_session('ended-empty', source='cli')
         db.end_session('ended-empty', 'complete')
+        # A legacy unowned row: the backfill then has real work, so it still needs the writer's
+        # reservation and must keep refusing under a live owner (an empty store answers without it).
+        db.create_session('legacy-null', source='cli', profile_name='default')
+        db._conn.execute("UPDATE sessions SET profile_name = NULL WHERE id = 'legacy-null'")
+        db._conn.commit()
         before = db.get_session('ended-empty')
         owner = ProfileOwnership()
         owner.reserve([tmp_path])
@@ -29,6 +34,7 @@ async def test_maintenance_routes_refuse_live_owner_without_changing_rows(tmp_pa
                     assert response.status_code == 409, (path, response.text)
                     assert 'maintenance' in response.json()['detail'].lower()
                     assert db.get_session('ended-empty') == before
+                    assert db.get_session('legacy-null')['profile_name'] is None
         finally:
             owner.close()
 

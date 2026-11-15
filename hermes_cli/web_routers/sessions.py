@@ -882,14 +882,42 @@ async def delete_session_endpoint(session_id: str, request: Request, profile: Op
     return result
 
 
+def _profile_owner_home(profile: Optional[str]) -> Path:
+    """The HERMES_HOME whose runtime owns *profile*'s store."""
+    from hermes_state import _default_db_path
+    return Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
+
+
+def _gateway_owns_profile(profile: Optional[str]) -> bool:
+    """Whether a *separate* gateway process owns *profile*'s home.
+
+    Only the safe direction is used: discovery answers ``None`` when it cannot tell, and an
+    absent/refused control socket means no runtime holds the profile.
+    """
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    return discover_gateway_endpoint(_profile_owner_home(profile), timeout=1.5).endpoint is not None
+
+
+def _count_pending_owner_stamps_sync(profile: Optional[str]) -> int:
+    db_path = Path(_session_db_path_for_profile(profile))
+    if not db_path.exists() or not db_path.stat().st_size:
+        # The owner has not created this store yet; a browse must never initialize it.
+        return 0
+    return _with_db(profile, lambda db: db.count_null_session_profiles(), read_only=True)
+
+
+async def _count_pending_owner_stamps(profile: Optional[str]) -> int:
+    """Legacy unowned rows left to stamp, read without ever taking the writer's reservation."""
+    return await asyncio.to_thread(_count_pending_owner_stamps_sync, profile)
+
+
 def _owner_db_for(request: Request, profile: Optional[str]):
     """The live owner's own store for *profile* when a composed gateway serves it, else None."""
     runner = getattr(request.app.state, "gateway_runner", None)
     if runner is None:
         return None
     from gateway.session_authorities import authority_for_home
-    from hermes_state import _default_db_path
-    home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
+    home = _profile_owner_home(profile)
     authority = authority_for_home(runner, home)
     return getattr(authority, "db", None)
 
@@ -910,6 +938,7 @@ async def backfill_session_owner_profiles(body: SessionOwnerBackfill, request: R
     ``get_sessions``). See #95407.
     """
     stamp = _serving_profile(body.profile)
+    deferred_to_owner = False
 
     with http_failure(
         "POST /api/sessions/owner-backfill failed", 500, detail="Internal server error"):
@@ -919,15 +948,31 @@ async def backfill_session_owner_profiles(body: SessionOwnerBackfill, request: R
             # would 409 every Desktop boot), so the idempotent stamp runs on its own connection.
             stamped = await asyncio.to_thread(owner_db.backfill_null_session_profiles, stamp)
         else:
-            stamped = await asyncio.to_thread(
-                _with_db, body.profile, lambda db: db.backfill_null_session_profiles(stamp),
-                read_only=False)
+            # No composed owner here, but a standalone gateway may still own the profile. It is the
+            # only writer while it holds it, so the offline reservation below is refused and every
+            # Desktop boot 409s (#148531). The owner already runs this same idempotent stamp at
+            # bring-up (gateway/session_authority.py), so check the cheap read first and only take
+            # the write path when the profile is provably unowned.
+            pending = await _count_pending_owner_stamps(body.profile)
+            if not pending:
+                stamped = 0
+            elif await asyncio.to_thread(_gateway_owns_profile, body.profile):
+                deferred_to_owner = True
+                stamped = 0
+            else:
+                stamped = await asyncio.to_thread(
+                    _with_db, body.profile, lambda db: db.backfill_null_session_profiles(stamp),
+                    read_only=False)
 
     if stamped:
         _log.info(
             "owner-backfill: stamped %d legacy NULL-profile session row(s) with profile %r",
             stamped, stamp)
-    return {"ok": True, "stamped": stamped, "profile": stamp}
+    elif deferred_to_owner:
+        _log.info("owner-backfill: %r is owned by a running gateway; it stamps its own rows",
+                  stamp)
+    return {"ok": True, "stamped": stamped, "profile": stamp,
+            "deferred_to_owner": deferred_to_owner}
 
 
 @manage_router.patch("/api/sessions/{session_id}")

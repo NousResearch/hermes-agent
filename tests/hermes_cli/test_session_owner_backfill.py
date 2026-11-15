@@ -139,3 +139,105 @@ def test_backfill_treats_empty_string_profile_as_legacy(client):
     assert resp.status_code == 200
     assert resp.json()["stamped"] == 1
     assert _profiles(get_hermes_home() / "state.db")["legacy-empty"] == "default"
+
+
+# --- Split topology: a standalone gateway owns state.db (#148531) --------------------
+#
+# The Desktop calls this endpoint on every boot. A standalone gateway holds the profile's
+# owner reservation for its whole lifetime, so the offline write path is refused for as long
+# as it runs — `POST /api/sessions/owner-backfill` answered 409 on every boot even when the
+# store had nothing left to stamp, and the client fails closed: no session could be resumed
+# and no mutation went through. The owner runs this same idempotent stamp at bring-up
+# (gateway/session_authority.py::backfill_legacy_session_owners), so an owned store must
+# answer without reserving it.
+
+@pytest.fixture
+def split_home(tmp_path, monkeypatch):
+    """A profile home of its own, with no runtime owning it."""
+    monkeypatch.setattr("hermes_state._default_db_path", lambda: tmp_path / "state.db")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    return tmp_path
+
+
+@pytest.fixture
+def owner_held(split_home):
+    """Hold the real profile reservation the way a running gateway does."""
+    from gateway.runtime_ownership import ProfileOwnership
+
+    owner = ProfileOwnership()
+    owner.reserve([split_home])
+    try:
+        yield split_home
+    finally:
+        owner.close()
+
+
+def _split_client(app):
+    import httpx
+
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost")
+
+
+def _app():
+    from fastapi import FastAPI
+    from hermes_cli.web_routers.sessions import manage_router
+
+    app = FastAPI()
+    app.include_router(manage_router)
+    return app
+
+
+def _seed_legacy_null(db_path):
+    from hermes_state import SessionDB
+
+    with SessionDB(db_path=db_path) as db:
+        db.create_session("legacy-null", source="cli", profile_name="default")
+        db._conn.execute("UPDATE sessions SET profile_name = NULL WHERE id = 'legacy-null'")
+        db._conn.commit()
+
+
+@pytest.mark.asyncio
+async def test_owner_backfill_answers_without_reserving_when_nothing_is_pending(owner_held):
+    """The boot path: nothing to stamp, so it must not ask for the writer's lock at all."""
+    from hermes_state import SessionDB
+
+    with SessionDB(db_path=owner_held / "state.db") as db:
+        db.create_session("owned", source="cli", profile_name="default")
+
+    async with _split_client(_app()) as client:
+        resp = await client.post("/api/sessions/owner-backfill", json={})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "ok": True, "stamped": 0, "profile": "default", "deferred_to_owner": False}
+
+
+@pytest.mark.asyncio
+async def test_owner_backfill_defers_pending_rows_to_the_live_owner(owner_held, monkeypatch):
+    """Pending rows + a discoverable owner: hand the stamp over instead of 409-ing."""
+    from types import SimpleNamespace
+
+    _seed_legacy_null(owner_held / "state.db")
+    monkeypatch.setattr(
+        "hermes_cli.gateway_runtime.discover_gateway_endpoint",
+        lambda home, *, timeout: SimpleNamespace(
+            endpoint=SimpleNamespace(home=str(home)), state="live", reason_code=None))
+
+    async with _split_client(_app()) as client:
+        resp = await client.post("/api/sessions/owner-backfill", json={})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["deferred_to_owner"] is True
+    assert resp.json()["stamped"] == 0
+    # The owner is the writer; this process did not touch the row.
+    assert _profiles(owner_held / "state.db")["legacy-null"] is None
+
+
+@pytest.mark.asyncio
+async def test_owner_backfill_still_writes_when_no_owner_holds_the_profile(split_home):
+    """An unowned store keeps the offline write path (the pre-split-topology behaviour)."""
+    _seed_legacy_null(split_home / "state.db")
+
+    async with _split_client(_app()) as client:
+        resp = await client.post("/api/sessions/owner-backfill", json={})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["stamped"] == 1
+    assert _profiles(split_home / "state.db")["legacy-null"] == "default"

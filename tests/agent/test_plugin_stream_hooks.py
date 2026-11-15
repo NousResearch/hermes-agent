@@ -1191,7 +1191,10 @@ def test_targeted_unload_retires_observer_before_plugin_teardown(monkeypatch, tm
             if any(registration.plugin_key == "target-observer" for registration in registrations):
                 state_closed.set()
                 release_running.set()
-                target_dispatcher.events.join()
+                with target_dispatcher.events.all_tasks_done:
+                    assert target_dispatcher.events.all_tasks_done.wait_for(
+                        lambda: target_dispatcher.events.unfinished_tasks == 0, timeout=5.0
+                    )
 
         monkeypatch.setattr(manager, "_dispose_registrations", close_plugin_state)
         assert manager.unload(target) is True
@@ -1262,7 +1265,10 @@ def test_targeted_unload_retires_dispatcher_for_callback_shared_with_survivor(
             ):
                 state_closed.set()
                 release_running.set()
-                dispatcher.events.join()
+                with dispatcher.events.all_tasks_done:
+                    assert dispatcher.events.all_tasks_done.wait_for(
+                        lambda: dispatcher.events.unfinished_tasks == 0, timeout=5.0
+                    )
 
         monkeypatch.setattr(manager, "_dispose_registrations", close_plugin_state)
         assert manager.unload(target) is True

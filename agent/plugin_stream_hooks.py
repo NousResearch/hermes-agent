@@ -221,14 +221,8 @@ def _schedule_lazy_discovery(manager: Any, discover: Callable[[], Any]) -> None:
 
     def run_discovery() -> None:
         try:
-            lock = getattr(manager, "_discovery_lock", None)
-            if lock is None:
-                if not getattr(manager, "_retired", False) and not getattr(manager, "_discovered", True):
-                    discover()
-            else:
-                with lock:
-                    if not getattr(manager, "_retired", False) and not getattr(manager, "_discovered", True):
-                        discover()
+            if not getattr(manager, "_retired", False) and not getattr(manager, "_discovered", True):
+                discover()
         except Exception:
             logger.warning("lazy plugin observer discovery failed", exc_info=True)
         finally:

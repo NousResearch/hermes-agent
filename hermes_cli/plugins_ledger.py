@@ -267,7 +267,8 @@ class PluginLedgerMixin:
             if registration.kind == "hook" and registration.hook_callback is not None
         }
 
-    def unload(self, plugin: str | PluginManifest | LoadedPlugin | None = None) -> bool:
+    def unload(self, plugin: str | PluginManifest | LoadedPlugin | None = None, *,
+               _retired_observers: list | None = None) -> bool:
         """Unload registrations while excluding discovery/deferred loading."""
         retired_observers = []
         with self._discovery_lock, _plugin_home_scope(self.home_path):
@@ -287,8 +288,16 @@ class PluginLedgerMixin:
                 )
             except Exception:
                 logger.debug("plugin observer dispatcher retirement failed", exc_info=True)
+            if _retired_observers is not None:
+                _retired_observers.extend(retired_observers)
             found = self._unload_scoped(plugin)
 
+        if _retired_observers is None:
+            self._stop_retired_observers(retired_observers)
+        return found
+
+    @staticmethod
+    def _stop_retired_observers(retired_observers: list) -> None:
         if retired_observers:
             from agent.plugin_stream_hooks import _stop_dispatcher
 
@@ -303,7 +312,6 @@ class PluginLedgerMixin:
                     timeout=max(0.0, deadline - time.monotonic()),
                     discard_pending=True,
                 )
-        return found
 
     def _unload_scoped(self, plugin: str | PluginManifest | LoadedPlugin | None = None) -> bool:
         """Unload one plugin (or all when ``plugin=None``, as force rediscovery does). Every ledger registration

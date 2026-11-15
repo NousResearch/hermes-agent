@@ -35,48 +35,23 @@ def _measure_peak_allocation(call):
         tracemalloc.stop()
 
 
-class _InfiniteObservationTuple(tuple):
-    """Tuple-shaped iterable that trips if the manager pulls past a hard cap.
+def _count_normalized_candidates(monkeypatch):
+    import agent.memory_manager_prefetch as prefetch
 
-    The manager only accepts ``list``/``tuple`` observation containers (see
-    ``MemoryPrefetchResult.__post_init__``); a plain generator would be
-    rejected before it reaches the traversal path we want to bound. This
-    subclass pre-materializes a very large tuple of malformed candidates and
-    tracks how many ``next()`` calls the manager made — an "infinite-like"
-    shape for the manager's purposes because it exceeds every legitimate
-    per-operation budget by orders of magnitude, and raises loudly if the
-    manager keeps pulling once the inspected-candidate cap should have
-    stopped it.
-    """
+    calls = []
+    original = prefetch._normalize_observation
 
-    def __new__(cls, values, *, guard_cap):
-        instance = super().__new__(cls, values)
-        instance._guard_cap = guard_cap
-        instance.pulled = 0
-        return instance
+    def counting_normalize(*args, **kwargs):
+        calls.append(None)
+        return original(*args, **kwargs)
 
-    def __iter__(self):
-        for index in range(tuple.__len__(self)):
-            if self.pulled >= self._guard_cap:
-                raise AssertionError(
-                    "observation traversal exceeded the inspected-candidate "
-                    f"guard cap of {self._guard_cap} pulls"
-                )
-            self.pulled += 1
-            yield tuple.__getitem__(self, index)
+    monkeypatch.setattr(prefetch, "_normalize_observation", counting_normalize)
+    return calls
 
 
-def _assert_inspected_cap_bounds(
-    tail: _InfiniteObservationTuple,
-    caplog,
-    *,
-    malformed_pattern: str,
-):
-    """Shared assertions for the three inspected-cap regression fixtures."""
-    # The manager stops the tail at (or a little past) the shared cap. The
-    # small O(1) headroom covers the valid-prefix candidate plus one
-    # count/bytes look-ahead when the accepted budget also fires.
-    assert tail.pulled <= MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 2
+def _assert_inspected_cap_bounds(calls, caplog, *, malformed_pattern: str):
+    """The valid prefix and malformed tail share one inspection budget."""
+    assert len(calls) == MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES
     # Per-candidate malformed warnings are bounded by the same cap — not by
     # the size of the tail, which is orders of magnitude larger.
     malformed_warnings = [
@@ -106,11 +81,8 @@ def test_wrong_type_observation_tail_is_bounded_by_inspected_cap(monkeypatch, ca
     _stub_direct_prefetch(monkeypatch)
     valid_prefix = _observation({"index": 0})
     tail_size = MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES * 100
-    guard_cap = MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 4
-    tail = _InfiniteObservationTuple(
-        (valid_prefix,) + tuple(object() for _ in range(tail_size)),
-        guard_cap=guard_cap,
-    )
+    calls = _count_normalized_candidates(monkeypatch)
+    tail = (valid_prefix,) + tuple(object() for _ in range(tail_size))
     manager = MemoryManager()
     manager.add_provider(
         StructuredMemoryProvider(
@@ -125,7 +97,7 @@ def test_wrong_type_observation_tail_is_bounded_by_inspected_cap(monkeypatch, ca
     assert result.context == "usable context"
     assert [item.payload["index"] for item in result.observations] == [0]
     _assert_inspected_cap_bounds(
-        tail, caplog, malformed_pattern="malformed prefetch observation"
+        calls, caplog, malformed_pattern="malformed prefetch observation"
     )
 
 
@@ -149,11 +121,8 @@ def test_invalid_metadata_observation_tail_is_bounded_by_inspected_cap(
         payload={"whatever": True},
     )
     tail_size = MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES * 100
-    guard_cap = MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 4
-    tail = _InfiniteObservationTuple(
-        (valid_prefix,) + tuple(invalid_meta for _ in range(tail_size)),
-        guard_cap=guard_cap,
-    )
+    calls = _count_normalized_candidates(monkeypatch)
+    tail = (valid_prefix,) + tuple(invalid_meta for _ in range(tail_size))
     manager = MemoryManager()
     manager.add_provider(
         StructuredMemoryProvider(
@@ -168,7 +137,7 @@ def test_invalid_metadata_observation_tail_is_bounded_by_inspected_cap(
     assert result.context == "usable context"
     assert [item.payload["index"] for item in result.observations] == [0]
     _assert_inspected_cap_bounds(
-        tail, caplog, malformed_pattern="malformed prefetch observation"
+        calls, caplog, malformed_pattern="malformed prefetch observation"
     )
 
 
@@ -189,14 +158,13 @@ def test_node_budget_exhausted_tail_is_bounded_by_inspected_cap(monkeypatch, cap
     # their first budget decrement — one next() and one log per element
     # without the inspected-candidate cap.
     tail_size = MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES * 3
-    guard_cap = MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 4
-    tail = _InfiniteObservationTuple(
+    calls = _count_normalized_candidates(monkeypatch)
+    tail = (
         (valid_prefix,)
         + tuple(
             _observation(_adversarial_malformed_payload())
             for _ in range(tail_size)
-        ),
-        guard_cap=guard_cap,
+        )
     )
     manager = MemoryManager()
     manager.add_provider(
@@ -212,7 +180,7 @@ def test_node_budget_exhausted_tail_is_bounded_by_inspected_cap(monkeypatch, cap
     assert result.context == "usable context"
     assert [item.payload["index"] for item in result.observations] == [0]
     _assert_inspected_cap_bounds(
-        tail, caplog, malformed_pattern="malformed prefetch observation"
+        calls, caplog, malformed_pattern="malformed prefetch observation"
     )
 
 

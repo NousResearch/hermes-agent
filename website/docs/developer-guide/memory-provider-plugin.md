@@ -409,6 +409,7 @@ structured observation and receives these keyword fields:
 - `context_sha256`: the lowercase hexadecimal SHA-256 digest of the final
   merged context's exact UTF-8 bytes.
 - `context_byte_length`: the byte length of those exact UTF-8 bytes.
+- `telemetry_schema_version`: the observer dispatcher's event schema version.
 
 The hook never receives `MemoryPrefetchResult` or any other object from which
 merged context can be read. Raw recalled/source content may therefore reach the

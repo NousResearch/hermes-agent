@@ -156,6 +156,21 @@ def _install(entry: Any, override: Optional[RuntimeOverride]) -> None:
     object.__setattr__(entry, "_runtime_override", override)
 
 
+def replace_runtime_entry(entry: Any, **updates: Any) -> Any:
+    """Copy row metadata without exposing its durable grant during selection/rotation.
+
+    Dataclass replacement omits transient attributes. Carry a valid override to the new
+    row before it is published, but let durable credential changes invalidate it.
+    """
+    updated = replace(entry, **updates)
+    override = active_runtime_override(entry)
+    if override is not None and entry.base_url == updated.base_url:
+        _install(updated, override)
+        if active_runtime_override(updated) is None:
+            _install(updated, None)
+    return updated
+
+
 def exact_https_origin(url: Any) -> Optional[str]:
     """``https://host`` for a complete host-only HTTPS URL; None for any path, query, port, userinfo."""
     if not isinstance(url, str) or not url or url != url.strip() or "\\" in url:

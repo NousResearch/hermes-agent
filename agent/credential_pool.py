@@ -1103,7 +1103,8 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
 
     def _adopt(self, entry: PooledCredential, *, persist: bool = True, **updates: Any) -> PooledCredential:
         """``replace(entry, **updates)``, swap it into the pool, optionally persist."""
-        updated = replace(entry, **updates)
+        from agent.credential_pool_plugin import replace_runtime_entry
+        updated = replace_runtime_entry(entry, **updates)
         self._replace_entry(entry, updated)
         if persist:
             self._persist()

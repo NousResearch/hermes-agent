@@ -5074,9 +5074,12 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")
-    if req.pool_choice is not None and not req.explicit_api_key:
-        picked = req.pool_choice.choose(req.original_provider, provider, req.model, raw_base_url)
-        api_key = picked.api_key if picked is not None else api_key
+    from agent.auxiliary_pool_recovery import resolve_chosen_api_key_client
+    return resolve_chosen_api_key_client(req, pconfig, api_key, raw_base_url)
+
+
+def _resolve_api_key_client(req: _ResolveRequest, pconfig: Any, provider: str, api_key: Any,
+                            raw_base_url: str) -> _ResolveResult:
     if provider == "actual":
         with contextlib.suppress(Exception):
             from hermes_cli.auth import (
@@ -5838,17 +5841,22 @@ def _get_cached_client(
     # Build outside the lock. For pool-backed providers derive the key from the pool entry:
     # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
     # and retry an exhausted key. A custom entry peeks only its rows bound to the address called.
-    effective_api_key = api_key
+    effective_api_key, effective_base_url, _pk = api_key, base_url, None
     if not effective_api_key and _normalize_aux_provider(provider) != "anthropic":  # it picks its own (#154242)
         from hermes_cli.runtime_provider import choose_pool_key
         _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"), base_url)
         with contextlib.suppress(Exception):  # an unreadable pool leaves the resolver's own key, as before
-            if (_pk := choose_pool_key(_pool, provider, model=_normalize_resolved_model(model, provider) if model else None, mode="peek")):
+            if (_pk := choose_pool_key(_pool, provider, model=_normalize_resolved_model(model, provider) if model else None,
+                                       mode="peek", admit_for=base_url or None)):
                 effective_api_key = _pk.api_key.strip() or api_key
+                # A derived pair travels together: its key never goes to the resolver's default endpoint.
+                effective_base_url = base_url or _pk.base_url
     client, default_model = resolve_provider_client(
-        provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
+        provider, model, async_mode, explicit_base_url=effective_base_url, explicit_api_key=effective_api_key,
         api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
     )
+    from agent.auxiliary_pool_recovery import stamp_chosen_client
+    client = stamp_chosen_client(client, _pk)
     if client is not None and _aux_probe_active():
         # Availability probes answer "resolvable?" and must leave the cache untouched: the
         # probe stub (bare, or wrapped in a Codex/Anthropic adapter whose leaf is the stub)

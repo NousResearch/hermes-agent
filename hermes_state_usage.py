@@ -385,12 +385,14 @@ class SessionUsageMixin:
             self._record_model_usage(conn, session_id, task=task, **usage)
 
     def get_prompt_cache_clock(self, session_id: str) -> dict[str, Any]:
-        """``{"clock": <stored JSON or None>, "last_assistant_at": <newest assistant row time or None>}``;
-        the second is the resume fallback for sessions stored before the clock existed."""
+        """``{"clock": <stored JSON or None>, "last_assistant_at": <newest assistant row time or None>}``.
+        The second is the resume fallback for sessions stored before the clock existed, and only for
+        sessions whose counters show the cache was ever read or written."""
         self.flush_for_read()
         row = self._read_one(
-            "SELECT s.prompt_cache_clock, (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id"
-            " AND m.role = 'assistant' AND m.active = 1) FROM sessions s WHERE s.id = ?", (session_id,))
+            "SELECT s.prompt_cache_clock, CASE WHEN COALESCE(s.cache_read_tokens, 0) + COALESCE(s.cache_write_tokens, 0) > 0"
+            " THEN (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id AND m.role = 'assistant'"
+            " AND m.active = 1) END FROM sessions s WHERE s.id = ?", (session_id,))
         return {"clock": row[0], "last_assistant_at": row[1]} if row else {}
 
     def _record_model_usage(

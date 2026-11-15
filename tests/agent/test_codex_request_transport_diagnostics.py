@@ -51,6 +51,7 @@ def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):
         model="gpt-5.6-sol",
         provider="openai-codex",
         session_id="",
+        _max_stream_retries=1,  # pinned: the count is configurable since agent.max_stream_retries landed
         _client_log_context=lambda: "",
         _buffer_diagnostic_status=lambda message: None,
     )
@@ -107,6 +108,7 @@ def test_zero_event_retry_prunes_oversized_tool_output_and_logs_size_delta(monke
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path, raising=False)
     agent = _build_agent(monkeypatch)
+    agent._max_stream_retries = 1  # pinned: the count is configurable since agent.max_stream_retries landed
     seen: list = []
     agent.client = _zero_event_then_completed_client(seen)
 
@@ -129,6 +131,7 @@ def test_zero_event_retry_without_prunable_output_logs_unchanged_resend(monkeypa
     from tests.agent.test_run_agent_codex_responses import _build_agent
 
     agent = _build_agent(monkeypatch)
+    agent._max_stream_retries = 1  # pinned: the count is configurable since agent.max_stream_retries landed
     seen: list = []
     agent.client = _zero_event_then_completed_client(seen)
     kwargs = _oversized_codex_kwargs(300_000)

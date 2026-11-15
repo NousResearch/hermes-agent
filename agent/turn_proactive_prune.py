@@ -10,17 +10,19 @@ from typing import Any
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.conversation_compression import _reset_read_dedup_caches
-from agent.prompt_caching import provider_cache_expired
+from agent.prompt_cache_clock import cache_certainly_cold, cache_window
 
 logger = logging.getLogger("agent.conversation_loop")
 
 
-def prompt_cache_is_cold(agent: Any, messages: list[dict[str, Any]]) -> bool:
+def prompt_cache_is_cold(agent: Any) -> bool:
     """Whether the provider prompt cache has certainly expired, so a history rewrite breaks nothing.
 
-    The prune's ONLY cold-cache reading (both call sites): the shared per-provider cache clock
-    replaces this body in one line when it lands."""
-    return provider_cache_expired(agent, messages)
+    The prune's ONLY cold-cache reading (both call sites), from the shared cache clock: past the
+    window's estimated end only. An unknown window (no cache touched yet, an unreadable store, a
+    route switch, or a compaction or prune since the last response) or one that may still be warm
+    answers False. The clock restores a resumed session's window from the store itself."""
+    return cache_certainly_cold(cache_window(agent))
 
 
 def run_proactive_prune(
@@ -53,7 +55,7 @@ def turn_start_cold_prune(agent: Any, out: Any, effective_task_id: Any) -> None:
             or not isinstance(idx, int) or not 0 < idx < len(out.messages)
             or any(isinstance(m, dict) and (m.get("_row_id") or m.get(_DB_PERSISTED_MARKER))
                    for m in out.messages[idx:])
-            or not prompt_cache_is_cold(agent, out.messages[:idx])):
+            or not prompt_cache_is_cold(agent)):
         return
     from agent import turn_context as _tc
 

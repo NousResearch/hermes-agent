@@ -9,7 +9,6 @@ import pytest
 
 from agent.context_compressor import ContextCompressor
 from agent.context_compressor_prune import _COLD_CACHE_MIN_RECLAIM_TOKENS
-from agent.prompt_caching import provider_cache_expired
 from agent.turn_context_compaction import CompactionOutcome, run_turn_start_compaction
 from agent.turn_proactive_prune import run_proactive_prune, turn_start_cold_prune
 
@@ -113,39 +112,50 @@ def test_reset_clears_the_cold_credit():
     assert c._proactive_prune_cold_credit == 0
 
 
-# --- provider_cache_expired -------------------------------------------------------------------------------
+# --- the shared cache clock decides "cold" ------------------------------------------------------------------
 
-def _agent(**kw):
-    base = dict(_use_prompt_caching=True, _cache_disabled=False, _cache_ttl="5m", model="test-model", provider="test-provider",
-                _last_api_response_at=1_000.0)
-    base.update(kw)
-    return MagicMock(spec=list(base), **base)
+_ROUTE = ("anthropic", "https://api.anthropic.com", "claude-test")
 
 
-@pytest.mark.parametrize("ttl, gap, expected", [
-    ("5m", 300, False), ("5m", 320, False), ("5m", 331, True), ("1h", 331, False), ("1h", 3620, False),
-    ("1h", 3631, True), (None, 331, True),
+def _clock_agent(agent, *, estimated_until, guaranteed_until=None, confidence="proven"):
+    """Give *agent* a live cache-clock event on its own route (no durable generation: a fresh compressor)."""
+    from agent.prompt_cache_clock import CacheEvent, _route_key
+    agent.provider, agent.base_url, agent.model = _ROUTE
+    agent._session_db = None
+    agent.context_compressor.compression_count = 0
+    route = _route_key(*_ROUTE)
+    agent._prompt_cache_clock = CacheEvent(
+        route=route, destination=route, route_class="anthropic_native", requested_ttl="5m", sent_at=0.0,
+        read_tokens=100, write_tokens=0, tier="5m", confidence=confidence, reason="test",
+        guaranteed_until=guaranteed_until, estimated_until=estimated_until, session_id="s1")
+    agent._prompt_cache_compression_mark = 0
+    agent._prompt_cache_clock_restored = True
+    return agent
+
+
+@pytest.mark.parametrize("window, expected", [
+    ("cold", True), ("maybe_warm", False), ("warm", False), ("unknown", False), ("never_touched", False),
 ])
-def test_expiry_follows_the_effective_ttl(ttl, gap, expected):
-    assert provider_cache_expired(_agent(_cache_ttl=ttl), now=1_000.0 + gap) is expected
-
-
-def test_caching_off_or_no_response_is_never_cold():
-    assert provider_cache_expired(_agent(_use_prompt_caching=False), now=99_999.0) is False
-    assert provider_cache_expired(_agent(_cache_disabled=True), now=99_999.0) is False
-    assert provider_cache_expired(_agent(_last_api_response_at=None), messages=[], now=99_999.0) is False
-
-
-def test_resumed_session_reads_the_last_assistant_timestamp():
-    agent = _agent(_last_api_response_at=None)
-    msgs = [{"role": "user", "content": "q", "timestamp": 10.0}, {"role": "assistant", "content": "a", "timestamp": 500.0},
-            {"role": "user", "content": "q2", "timestamp": 9_000.0}]
-    assert provider_cache_expired(agent, msgs, now=500.0 + 400) is True
-    assert provider_cache_expired(agent, msgs, now=500.0 + 100) is False
-
-
-def test_qwen_route_clamps_1h_to_5m():
-    assert provider_cache_expired(_agent(_cache_ttl="1h", model="qwen3-max", provider="alibaba"), now=1_000.0 + 400) is True
+def test_only_a_window_the_clock_calls_cold_prunes(window, expected):
+    """Invariant: the prune's cold reading is the shared clock's, never a TTL of its own. A stale
+    last-response stamp (the old private clock's input) no longer makes a maybe-warm cache cold, and an
+    unknown window (no cache touched, or a rewrite since the last response) fails closed."""
+    import time
+    now = time.time()
+    prune, calls = _recording_prune(lambda m, cold: (m, 0))
+    agent = _site_agent(prune, cold=True)
+    # The old private clock's inputs: caching on, 5m TTL, last response long ago (it called every case cold).
+    agent._use_prompt_caching, agent._cache_disabled, agent._cache_ttl = True, False, "5m"
+    agent._last_api_response_at = 0.0
+    ends = {"cold": (now - 1, None, "proven"), "maybe_warm": (now + 3_600, now - 1, "assumed"),
+            "warm": (now + 300, now + 300, "proven"), "unknown": (None, None, "unknown")}
+    if window == "never_touched":
+        agent._prompt_cache_clock, agent._prompt_cache_clock_restored = None, True
+    else:
+        estimated, guaranteed, confidence = ends[window]
+        _clock_agent(agent, estimated_until=estimated, guaranteed_until=guaranteed, confidence=confidence)
+    run_proactive_prune(agent, _history(3, big=set()), 100_000, "t")
+    assert calls == [expected]
 
 
 # --- call sites -------------------------------------------------------------------------------------------
@@ -160,10 +170,7 @@ def _site_agent(prune, *, cold, session_db=True, checkpoint=False, session_id="s
     agent.compression_enabled = True
     agent.compression_checkpoint_required = checkpoint
     agent.session_id = "s1"
-    agent._use_prompt_caching, agent._cache_disabled, agent._cache_ttl = True, False, "5m"
-    agent.model, agent.provider = "test-model", "test-provider"
-    agent._last_api_response_at = 0.0 if cold else 9e18
-    return agent
+    return _clock_agent(agent, estimated_until=0.0 if cold else 9e18)
 
 
 def _recording_prune(result_for):

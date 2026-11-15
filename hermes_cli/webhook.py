@@ -278,7 +278,10 @@ def _cmd_subscribe(args):
     print(f"\n  {'Updated' if is_update else 'Created'} webhook subscription: {name}")
     print(f"  URL:    {_route_url(name, route)}")
     print(f"  Profile: {profile}")
-    print(f"  Secret: {secret}")
+    # Masked: the full secret would otherwise land in scrollback, agent transcripts and CI logs.
+    from agent.redact import mask_secret
+    from hermes_constants import display_hermes_home
+    print(f"  Secret: {mask_secret(secret)} (full value in {display_hermes_home()}/{_SUBSCRIPTIONS_FILENAME})")
     print(f"  Events: {', '.join(events) or '(all)'}")
     print(f"  Signature: {route.get('signature', 'any supported scheme (unpinned)')!s}")
     print(f"  Deliver: {route['deliver']}")
@@ -294,7 +297,7 @@ def _cmd_subscribe(args):
     if route.get("script"):
         print(f"  Script: {route['script']}")
     print("\n  Configure your service to POST to the URL above.")
-    print("  Use the secret for HMAC-SHA256 signature validation.")
+    print("  Use the route's stored secret for HMAC-SHA256 signature validation.")
     print("  The gateway must be running to receive events (hermes gateway run).\n")
 
 

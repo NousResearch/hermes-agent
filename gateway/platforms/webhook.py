@@ -354,7 +354,8 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _deliver_to(self, delivery: dict[str, Any], chat_id: str, content: str) -> SendResult:
         deliver_type = delivery["deliver"]
         if deliver_type == "log":
-            logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
+            logger.info("[webhook] Response for %s (%d chars)", chat_id, len(content))
+            logger.debug("[webhook] Response text for %s: %s", chat_id, content)
             return SendResult(success=True)
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
@@ -425,7 +426,7 @@ class WebhookAdapter(BasePlatformAdapter):
         toolsets = route_config.get("toolsets") if isinstance(route_config, dict) else None
         if not isinstance(toolsets, list):
             return None
-        return [str(t).strip() for t in toolsets if str(t).strip()] or None
+        return [str(t).strip() for t in toolsets if str(t).strip()]
 
     # --- HTTP handlers ---
 
@@ -984,7 +985,8 @@ class WebhookAdapter(BasePlatformAdapter):
         """deliver_only: dispatch *content* to the same delivery helpers agent-mode ``send()`` uses."""
         deliver_type = delivery.get("deliver", "log")
         if deliver_type == "log":  # startup validation rejects deliver_only + log; guard defensively
-            logger.info("[webhook] direct-deliver log-only: %s", content[:200])
+            logger.info("[webhook] direct-deliver log-only (%d chars)", len(content))
+            logger.debug("[webhook] direct-deliver log-only text: %s", content)
             return SendResult(success=True)
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
@@ -1073,6 +1075,10 @@ class WebhookAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
                 chat_id = home.chat_id
             thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
+            # Runtime gate on the FINAL target (payload-rendered chat_id included): a shared-bot
+            # satellite rides the primary's bot only to chats routed to it (#147602).
+            if not self.gateway_runner._shared_bot_target_allowed(target_platform, profile, chat_id, thread_id):
+                return SendResult(success=False, error=f"{platform_name}:{chat_id} is not routed to profile {profile}")
             result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
             if result.success:
                 self._mirror_delivery(platform_name, str(chat_id), content, delivery, thread_id)

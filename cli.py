@@ -241,6 +241,7 @@ except Exception:
     pass
 import threading
 import queue
+from hermes_cli._startup_fast import project_root_str
 
 
 def _lazy_shim(module: str, name: str, alias: str | None = None):
@@ -337,7 +338,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from agent.i18n import t as _t
 
 _hermes_home = get_hermes_home()
-_project_env = Path(__file__).parent / '.env'
+_project_env = Path(project_root_str()) / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
 
@@ -1195,9 +1196,9 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
             )
         if entry is None:
             return self._process_unregistered_slash(cmd_original, cmd_lower)
-        from hermes_cli.gateway_cli_commands import run as run_gateway_command
-        if run_gateway_command(self, canonical, cmd_original):
-            return True  # state the gateway session owns (checkpoints, .env, handoff)
+        from hermes_cli.gateway_cli_commands import EXIT_SESSION, run as run_gateway_command
+        if answered := run_gateway_command(self, canonical, cmd_original):
+            return answered is not EXIT_SESSION  # state the gateway session owns (checkpoints, .env, handoff)
         method_name, pass_arg = entry
         handler = getattr(self, method_name)
         result = handler(cmd_original) if pass_arg else handler()

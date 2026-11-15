@@ -3277,7 +3277,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     _JOB_ID_RE = re.compile(r"[a-f0-9]{12}")
     # Update whitelist — prevents clients injecting arbitrary keys.
-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled", "timezone"}
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
@@ -3317,17 +3317,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 return web.json_response({"error": scan_error}, status=400)
         return None
 
-    def _job_response(self, fn, job_id: str, *, notify: bool) -> web.Response:
-        """Run ``fn(job_id)``: 404 when falsy, else ``{"job": ...}``; exceptions -> 500."""
-        try:
-            job = fn(job_id)
-            if not job:
-                return web.json_response({"error": "Job not found"}, status=404)
-            if notify:
-                _notify_cron_provider_jobs_changed()
-            return web.json_response({"job": job})
-        except Exception as e:
-            return self._cron_error_response(e)
+    def _job_response(self, fn, job_id: str, *, notify: bool, invalid_input=()) -> web.Response:
+        from gateway.platforms.api_server_cron_jobs import job_response
+        return job_response(self, fn, job_id, notify=notify, invalid_input=invalid_input)
 
     async def _job_lookup_or_mutate(self, request: web.Request, fn, *, notify: bool) -> web.Response:
         job_id, err = self._cron_request_guard(request, need_job_id=True)
@@ -3371,7 +3363,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "prompt": prompt, "schedule": schedule, "name": name,
                 "deliver": body.get("deliver", "local"),
                 "origin": self._cron_origin_from_request(request)}
-            for key in ("paused", "paused_reason"):
+            for key in ("paused", "paused_reason", "timezone"):
                 if key in body:
                     kwargs[key] = body[key]
             if skills:
@@ -3392,24 +3384,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     async def _handle_update_job(self, request: web.Request) -> web.Response:
         """PATCH /api/jobs/{job_id} — update a cron job."""
-        job_id, err = self._cron_request_guard(request, need_job_id=True)
-        if err:
-            return err
-        try:
-            body = await request.json()
-            # Whitelist allowed fields to prevent arbitrary key injection
-            sanitized = {k: v for k, v in body.items() if k in self._UPDATE_ALLOWED_FIELDS}
-            if not sanitized:
-                return web.json_response({"error": "No valid fields to update"}, status=400)
-            if "name" in sanitized and len(sanitized["name"]) > self._MAX_NAME_LENGTH:
-                return web.json_response({"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"}, status=400)
-            if "prompt" in sanitized:
-                prompt_err = self._validate_cron_prompt(sanitized["prompt"])
-                if prompt_err:
-                    return prompt_err
-        except Exception as e:
-            return self._cron_error_response(e)
-        return self._job_response(lambda jid: _cron_update(jid, sanitized), job_id, notify=True)
+        from gateway.platforms.api_server_cron_jobs import handle_update_job
+        return await handle_update_job(self, request)
 
     async def _handle_delete_job(self, request: web.Request) -> web.Response:
         """DELETE /api/jobs/{job_id} — delete a cron job."""

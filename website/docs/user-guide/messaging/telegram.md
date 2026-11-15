@@ -96,6 +96,12 @@ Notes:
   A hard crash leaves the last-known status — the inherent limitation of a
   profile-text indicator.
 - Off by default, since it mutates the bot's global profile.
+- Hermes saves the bot's own short description (the one set in @BotFather) before
+  it first writes **Online**, and keeps that copy across restarts and crashes.
+  Turn `status_indicator` off and the next connect puts your text back, unless
+  you have set a new description in @BotFather since (yours is kept). Edit the
+  description while the gateway is down and the new text is what Hermes saves.
+  If Hermes cannot read and save your text at connect, it writes no status that run.
 
 ### Cold-boot pending queue (Optional)
 
@@ -405,6 +411,7 @@ Add the following to `~/.hermes/.env`:
 TELEGRAM_WEBHOOK_URL=https://my-app.fly.dev/telegram
 TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)"  # required
 # TELEGRAM_WEBHOOK_PORT=8443        # optional, default 8443
+# TELEGRAM_WEBHOOK_HOST=::          # optional, bind host (e.g. IPv6-only)
 ```
 
 | Variable | Required | Description |
@@ -412,6 +419,7 @@ TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)"  # required
 | `TELEGRAM_WEBHOOK_URL` | Yes | Public HTTPS URL where Telegram will send updates. The URL path is auto-extracted (e.g., `/telegram` from the example above). |
 | `TELEGRAM_WEBHOOK_SECRET` | **Yes** (when `TELEGRAM_WEBHOOK_URL` is set) | Secret token that Telegram echoes in every webhook request for verification. The gateway refuses to start without it — see [GHSA-3vpc-7q5r-276h](https://github.com/NousResearch/hermes-agent/security/advisories/GHSA-3vpc-7q5r-276h). Generate with `openssl rand -hex 32`. |
 | `TELEGRAM_WEBHOOK_PORT` | No | Local port the webhook server listens on (default: `8443`). |
+| `TELEGRAM_WEBHOOK_HOST` | No | Local bind host for the webhook server. Default: unset → dual-stack bind on all interfaces (IPv4+IPv6). Set this on IPv6-only deployments (e.g. Fly.io 6PN) or to pin the listener to a specific interface. Can also be set via `platforms.telegram.extra.webhook_host` in `config.yaml`. |
 
 When `TELEGRAM_WEBHOOK_URL` is set, the gateway starts an HTTP webhook server instead of polling. When unset, polling mode is used — no behavior change from previous versions.
 
@@ -480,6 +488,7 @@ TELEGRAM_HOME_CHANNEL_NAME="My Notes"
 
 :::tip
 Group chat IDs are negative numbers (e.g., `-1001234567890`). Your personal DM chat ID is the same as your user ID.
+An `@username` works only for a public channel or supergroup: Telegram answers "Chat not found" for a person's handle, so use the numeric ID for a DM home.
 :::
 
 ### Cron deliveries in topic mode
@@ -833,6 +842,10 @@ Messages in Telegram topics `31` and `42` are always ignored before the mention 
 - Patterns use Python regular expressions
 - Matching is case-insensitive
 - Patterns are checked against both text messages and media captions
+- A captionless voice note has no text, so it can only wake the bot by reply or @mention. Set
+  `voice_mention_patterns: true` to transcribe such a group voice note first and match these patterns
+  against what was said. It is off by default because every unaddressed voice note in the group then
+  goes to your speech-to-text provider. The turn reuses that transcript (one STT call)
 - Invalid regex patterns are ignored with a warning in the gateway logs rather than crashing the bot
 - If you want a pattern to match only at the start of a message, anchor it with `^`
 
@@ -1246,7 +1259,7 @@ gateway:
 
 When enabled, Hermes attaches Telegram's `LinkPreviewOptions(is_disabled=True)` to every outgoing message, including the streaming preview edits and the final edit of a streamed reply (edits that resolve a button prompt, such as an approval card, don't carry it yet), and falls back to the legacy `disable_web_page_preview` parameter on older `python-telegram-bot` versions.
 
-**Long replies and flood control.** A reply longer than Telegram's 4,096-character limit is sent as numbered parts (`(1/3)`, `(2/3)`, …). A part boundary that falls inside bold, italic, underline, strikethrough or spoiler text closes the style at the end of one part and reopens it at the start of the next, so both parts keep the formatting. Sends to one chat are delivered one reply at a time, so a scheduled report and a DM answer landing together cannot interleave their parts, and a file upload cannot land between two parts of the text it accompanies. If Telegram's flood control refuses a part mid-way, Hermes resumes from the refused part once the penalty passes instead of re-sending the parts already on screen, and while a chat is inside a known penalty window further sends to it fail closed locally (no extra requests that would lengthen the penalty). A penalty longer than the gateway's inline wait cap is handed to the delivery ledger, which redelivers the reply with a "part of it may already have arrived above" note. File attachments (documents, photos, videos, voice) follow the same rule: a short penalty is waited out and the upload retried; a longer one schedules a single native re-upload once the window has passed, and you only see the "Couldn't deliver the file attachment" notice if that re-upload is refused too. An upload that never reached Telegram (a connect or pool failure) or that Telegram answered with its own 5xx error is retried up to three times with a short backoff. If all three fail, you get the "Couldn't deliver the file attachment" notice. An upload that may already be in the chat (the connection dropped or timed out after the file was sent) is never re-sent and posts no failure notice; it is reported as unconfirmed, so the `send_message` tool and cron delivery do not re-send it either.
+**Long replies and flood control.** A reply longer than Telegram's 4,096-character limit is sent as numbered parts (`(1/3)`, `(2/3)`, …). A part boundary that falls inside bold, italic, underline, strikethrough or spoiler text closes the style at the end of one part and reopens it at the start of the next, so both parts keep the formatting. Sends to one chat are delivered one reply at a time, so a scheduled report and a DM answer landing together cannot interleave their parts, and a file upload cannot land between two parts of the text it accompanies. If Telegram's flood control refuses a part mid-way, Hermes resumes from the refused part once the penalty passes instead of re-sending the parts already on screen, and while a chat is inside a known penalty window further sends to it fail closed locally (no extra requests that would lengthen the penalty). That window survives a gateway restart: it is saved per bot in the profile home (`telegram_flood_cooldown_<bot id>.json`), so a restart during a ban does not fire straight back into it. A penalty longer than the gateway's inline wait cap is handed to the delivery ledger, which redelivers the reply with a "part of it may already have arrived above" note. File attachments (documents, photos, videos, voice) follow the same rule: a short penalty is waited out and the upload retried; a longer one schedules a single native re-upload once the window has passed, and you only see the "Couldn't deliver the file attachment" notice if that re-upload is refused too. An upload that never reached Telegram (a connect or pool failure) or that Telegram answered with its own 5xx error is retried up to three times with a short backoff. If all three fail, you get the "Couldn't deliver the file attachment" notice. An upload that may already be in the chat (the connection dropped or timed out after the file was sent) is never re-sent and posts no failure notice; it is reported as unconfirmed, so the `send_message` tool and cron delivery do not re-send it either.
 
 ## Group Allowlisting
 
@@ -1285,6 +1298,7 @@ Behavior:
 - `TELEGRAM_GROUP_ALLOWED_USERS` only authorizes the listed senders in groups/forums. They still can't DM the bot unless listed in `TELEGRAM_ALLOWED_USERS`.
 - A chat in `TELEGRAM_GROUP_ALLOWED_CHATS` authorizes every member of that chat, regardless of sender.
 - Use `*` in any of these to allow any sender/chat.
+- Edits to these lists in `config.yaml` apply to the next message with no gateway restart: a user you remove is refused from their next message or button tap. This holds for every profile a multiplexed gateway (`gateway.multiplex_profiles`) serves, including the host profile it was started with. A value set in `.env`, an external secret source or the gateway's own environment still wins over `config.yaml`.
 - This layers on top of existing mention/pattern triggers and on top of `group_topics` + `ignored_threads`.
 
 ### Migration from before PR #17686

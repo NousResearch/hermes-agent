@@ -22,8 +22,9 @@ class _FakeRemoteEnv:
 
     def __init__(self):
         self.files = {"/home/agent/out/report.txt": b"hello from sandbox",
-                      "/home/agent/.ssh/id_rsa": b"SECRET"}
-        self.links = {"/home/agent/out/innocent.txt": "/home/agent/.ssh/id_rsa"}
+                      "/home/agent/.ssh/id_rsa": b"SECRET", "/home/agent/app/.ENV": b"API_KEY=SECRET"}
+        self.links = {"/home/agent/out/innocent.txt": "/home/agent/.ssh/id_rsa",
+                      "/home/agent/out/notes.txt": "/home/agent/app/.ENV"}
         self.fetched: list = []
 
     def fetch_realpath(self, remote_path):
@@ -54,6 +55,14 @@ def test_sandbox_artifact_is_fetched_but_credentials_and_symlinks_to_them_are_no
     assert all(Path(p).name.endswith("_report.txt") for p, _ in delivered)
     # The credential file and the symlink that resolves to it were refused BEFORE any bytes moved.
     assert remote_env.fetched == ["/home/agent/out/report.txt", "/home/agent/out/report.txt"]
+
+
+def test_sandbox_project_env_file_is_not_fetched(remote_env):
+    """The fetched copy is renamed, so the host basename rule must be applied to the sandbox path
+    (and its symlink target) before any bytes move (#59044)."""
+    media = [("/home/agent/app/.ENV", False), ("/home/agent/out/notes.txt", False)]
+    assert BasePlatformAdapter.filter_media_delivery_paths(media) == []
+    assert remote_env.fetched == []
 
 
 def test_local_backend_and_strict_mode_do_not_fetch(monkeypatch, tmp_path, remote_env):

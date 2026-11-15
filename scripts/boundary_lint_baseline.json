@@ -535,6 +535,8 @@
     "plugins/platforms/slack/adapter.py tools.slash_confirm": 1,
     "plugins/platforms/slack/adapter.py tools.url_safety.redirect_target_from_response": 2,
     "plugins/platforms/slack/adapter.py utils.warn_if_credential_file_broadly_readable": 1,
+    "plugins/platforms/slack/adapter_forwarded.py agent.compression_marker.ELISION_MARKER_MAX_LEN": 1,
+    "plugins/platforms/slack/adapter_forwarded.py agent.compression_marker.elide": 1,
     "plugins/platforms/slack/adapter_slash_payload.py hermes_cli.commands_platforms.slack_subcommand_map": 1,
     "plugins/platforms/slack/gateway_env.py gateway.platform_env.EnvCred": 1,
     "plugins/platforms/slack/gateway_env.py gateway.platform_env.getenv": 1,

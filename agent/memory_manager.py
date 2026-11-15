@@ -956,7 +956,7 @@ class MemoryManager:
         self._agent_context = _context if isinstance(_context, str) and _context.strip() else "primary"
         # One instance, one profile: never rebind an instance another profile's manager bound (#140058).
         for provider in [p for p in self._providers if p.name != "builtin"]:
-            if not claim_instance(provider, kwargs["hermes_home"]):
+            if not claim_instance(provider, kwargs["hermes_home"], manager=self):
                 self._drop_provider(provider)
         self._each_provider("initialize failed", lambda p: p.initialize(session_id=session_id, **kwargs),
                             level=logging.WARNING)

@@ -18,7 +18,6 @@ from typing import Any, Callable, List, Optional, Tuple
 
 _log = logging.getLogger(__name__)
 
-_PLUGINS_ROOT = Path(__file__).parent
 _MODULE_LOAD_LOCKS: dict[str, threading.RLock] = {}
 _MODULE_LOAD_LOCKS_GUARD = threading.Lock()
 # Inside bounded_load_wait(), how long a second caller waits for another thread's in-flight load of
@@ -141,6 +140,15 @@ def _exec(mod: Any, logger: Optional[logging.Logger] = None) -> bool:
         return False
 
 
+def _exec_parent_shell(parent: str) -> None:
+    """Exec the ``__init__.py`` of an importable parent package that is not loaded yet."""
+    if parent in sys.modules:
+        return
+    spec = importlib.util.find_spec(parent)
+    if spec is not None and spec.has_location and spec.submodule_search_locations:
+        _exec(_new_module(parent, Path(spec.origin), list(spec.submodule_search_locations)))
+
+
 def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: tuple[str, ...],
                        logger: logging.Logger, synthetic_namespace: Optional[str] = None) -> Optional[Any]:
     """Import ``plugin_dir/__init__.py`` as *module_name* (reusing sys.modules when loaded).
@@ -197,9 +205,7 @@ def _load_plugin_module_locked(module_name: str, plugin_dir: Path, init_file: Pa
     if cached is not None and getattr(cached, "__file__", None):
         return cached
     for parent in parents:
-        parent_path = _PLUGINS_ROOT.joinpath(*parent.split(".")[1:])
-        if parent not in sys.modules and (parent_path / "__init__.py").exists():
-            _exec(_new_module(parent, parent_path / "__init__.py", [str(parent_path)]))
+        _exec_parent_shell(parent)
     if synthetic_namespace:
         register_synthetic_package(synthetic_namespace, [])
     # Reserve the name before siblings exec so their relative imports resolve.

@@ -5,6 +5,8 @@ compilation, and fence-aware markdown chunking."""
 import asyncio
 import contextlib
 import contextvars
+import hashlib
+import hmac
 import itertools
 import json
 import logging
@@ -16,6 +18,7 @@ import time
 import unicodedata
 from pathlib import Path
 from typing import Any, Iterator, MutableMapping, Optional
+from urllib.parse import urljoin, urlsplit
 from gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
 
@@ -112,6 +115,17 @@ async def cancel_task(task: Optional[asyncio.Task]) -> None:
     if task is not asyncio.current_task():
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
+
+
+def tag_safe_display_name(value: Any) -> str:
+    """A sender display name made safe to sit inside a gateway-built ``[name]`` / ``[name|id]`` tag.
+
+    Display names are set by the sender. On top of the one-line neutralization, the tag's own
+    delimiters (``[``, ``]`` and the ``|`` that precedes a trusted id) are dropped, so a name can
+    neither end the tag early nor forge a second id or mention span inside it."""
+    from gateway.session import neutralize_untrusted_inline_text
+    text = neutralize_untrusted_inline_text(value)
+    return " ".join("".join(ch for ch in text if ch not in "[]|").split())
 
 
 def display_width(text: str) -> int:
@@ -411,6 +425,76 @@ async def send_chunks(chunks: list, send_one) -> Any:
     return result
 
 
+_LOG_HASH_SALT_FILE = "log_hash_salt"
+_LOG_HASH_SALTS: dict[str, bytes] = {}
+_PROCESS_LOG_HASH_SALT = secrets.token_bytes(32)
+
+
+def _read_or_create_log_hash_salt(home: Path) -> bytes:
+    path = home / _LOG_HASH_SALT_FILE
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        # Atomic create: write a private temp file, hard-link it into place; the loser of a race
+        # reads the winner's salt. A crash can never leave a short salt file behind.
+        data = secrets.token_bytes(32)
+        temporary = home / f".{_LOG_HASH_SALT_FILE}.{os.getpid()}.{secrets.token_hex(8)}"
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                data = path.read_bytes()
+            except OSError:  # no hard links (Android SELinux, exFAT): exclusive create, first wins
+                data = _create_log_hash_salt_exclusive(path, data)
+        finally:
+            temporary.unlink(missing_ok=True)
+    if len(data) != 32:
+        raise ValueError("log hash salt is invalid")
+    return data
+
+
+def _create_log_hash_salt_exclusive(path: Path, data: bytes) -> bytes:
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return path.read_bytes()
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
+    return data
+
+
+def _log_hash_salt() -> bytes:
+    from hermes_constants import get_hermes_home, hermes_home_key
+    try:
+        home = get_hermes_home()
+        key = hermes_home_key(home)
+    except (OSError, ValueError):
+        return _PROCESS_LOG_HASH_SALT
+    if (cached := _LOG_HASH_SALTS.get(key)) is None:
+        try:
+            cached = _read_or_create_log_hash_salt(home)
+        except (OSError, ValueError):
+            # Must never raise into a log call; a process-random salt still correlates within this
+            # run. Cached so an unwritable home doesn't retry file I/O on every log line.
+            cached = _PROCESS_LOG_HASH_SALT
+        _LOG_HASH_SALTS[key] = cached
+    return cached
+
+
+def hash_for_log(value: object) -> str:
+    """A short stable digest of an identifier (chat id, address) for INFO logs: lines about the
+    same chat still correlate, but the log never carries the identifier itself. Keyed with a
+    per-install salt so low-entropy ids (phone numbers, guessable emails) can't be recovered from
+    a shared log by hashing candidates."""
+    if value is None or value == "":
+        return "<none>"
+    data = str(value).encode("utf-8", "surrogatepass")
+    return "h:" + hmac.new(_log_hash_salt(), data, hashlib.sha256).hexdigest()[:10]
+
+
 def redact_phone(phone: str) -> str:
     """Redact a phone number for logging, preserving country code and last 4."""
     if not phone:
@@ -484,6 +568,123 @@ def convert_table_to_bullets(text: str) -> str:
             out.append(line)
             i += 1
     return '\n'.join(out)
+
+
+def voice_mention_gate_enabled(extra: Optional[dict]) -> bool:
+    """``voice_mention_patterns``: opt-in, because it sends unaddressed members' voice notes to STT."""
+    from utils import is_truthy_value
+    return is_truthy_value((extra or {}).get("voice_mention_patterns"), default=False)
+
+
+def _gate_stt_scope(adapter: Any, source: Any) -> Any:
+    """The routed profile's runtime scope for *source*, as the turn will enter it, so the gate's STT
+    reads that profile's ``stt`` config and secrets; a no-op outside a runner."""
+    runner = getattr(adapter, "gateway_runner", None)
+    enter = getattr(runner, "_async_profile_scope_for_source", None)
+    if source is None or not callable(enter):
+        return contextlib.nullcontext()
+    adapter._canonicalize(source)
+    return enter(source)
+
+
+def _sender_may_use_bot(adapter: Any, source: Any) -> bool:
+    """The runner's own allowlist verdict for *source*, checked BEFORE gate STT: a sender the turn
+    would refuse must not spend the operator's STT provider. True outside a runner."""
+    authorize = getattr(getattr(adapter, "gateway_runner", None), "_is_user_authorized_for_source", None)
+    if source is None or not callable(authorize):
+        return True
+    adapter._canonicalize(source)
+    return bool(authorize(source))
+
+
+def bypasses_chat_order(text: Any) -> bool:
+    """A running-agent escape hatch (``/stop``, ``/approve``, ``/deny``): it acts on work already in
+    flight, so it skips :class:`ChatOrderedWork`'s per-chat wait and never waits on an earlier voice
+    note's gate STT. Every other command (``/new``, ``/undo``, ``/status``) keeps its place behind it."""
+    from gateway.session_commands import _ESCAPE_HATCHES
+    from hermes_cli.commands import resolve_command
+    head = str(text or "").lstrip().split(maxsplit=1)
+    if not head or not head[0].startswith("/"):
+        return False
+    cmd = resolve_command(head[0][1:].split("@", 1)[0])
+    return cmd is not None and cmd.name in _ESCAPE_HATCHES
+
+
+async def spoken_mention_clips(paths: list[str], patterns, *, adapter: Any = None, source: Any = None,
+                               keep: frozenset = frozenset()) -> list[str]:
+    """Transcribe a group voice note that only a spoken wake word could admit and match ``patterns``
+    against the transcript (the text gate runs before STT, so it never sees one: #102330). STT runs
+    in the profile *source* routes to (``adapter.gateway_runner``) and never when that profile
+    disables it. On a match, the clips to attach; the turn reuses their transcripts, one STT call
+    per clip. Otherwise ``[]``, and the clips fetched only for this check are deleted (never those
+    in *keep*, which another owner still references)."""
+    from gateway.run_inbound_transcription import (remember_gate_transcript, stt_enabled_for_turn,
+                                                   transcribe_one_clip)
+    results: dict = {}
+    try:
+        async with _gate_stt_scope(adapter, source):
+            from tools.transcription_tools import is_stt_enabled
+            enabled = stt_enabled_for_turn(getattr(adapter, "gateway_runner", None)) \
+                and _sender_may_use_bot(adapter, source) and await asyncio.to_thread(is_stt_enabled)
+            for path in paths if enabled else ():
+                try:
+                    results[path] = await transcribe_one_clip(path)
+                except Exception as exc:  # health: allow BLE001 -- an STT failure is a non-match, never a crash
+                    logger.warning("Spoken mention check could not transcribe %s: %s", path, exc)
+            if any(text and any(p.search(text) for p in patterns) for text, _note in results.values()):
+                for path, (text, _note) in results.items():
+                    if text is not None:
+                        remember_gate_transcript(path, text)
+                return list(paths)
+    except Exception as exc:  # health: allow BLE001 -- an unroutable source is dropped by ingress anyway
+        logger.warning("Spoken mention check could not enter the routed profile: %s", exc)
+    for path in paths:
+        if path not in keep:
+            with contextlib.suppress(OSError):
+                os.remove(path)
+    return []
+
+
+class ChatOrderedWork:
+    """Inbound work that may wait on gate-time STT runs off the platform's single reader, FIFO per
+    chat: a slow voice note delays only its own chat, and a message sent after it in that chat
+    still arrives after it. At most ``limit`` gate transcriptions run at once."""
+
+    def __init__(self, adapter: Any, limit: int = 4):
+        self._adapter, self._tails, self._slots = adapter, {}, asyncio.Semaphore(limit)
+
+    def busy(self, chat: str) -> bool:
+        tail = self._tails.get(chat)
+        return tail is not None and not tail.done()
+
+    def submit(self, chat: str, work, *, transcribes: bool) -> asyncio.Task:
+        prev = self._tails.get(chat)
+
+        async def run():
+            if prev is not None and not prev.done():
+                await asyncio.wait([prev])
+            try:
+                if transcribes:
+                    async with self._slots:
+                        await work()
+                else:
+                    await work()
+            except Exception:  # health: allow BLE001 -- one message's failure must not stall its chat
+                logger.exception("[%s] inbound work for chat %s failed", getattr(self._adapter, "name", "?"), chat)
+
+        task = asyncio.create_task(run())
+        self._tails[chat] = task
+        task.add_done_callback(lambda t: self._tails.pop(chat, None) if self._tails.get(chat) is t else None)
+        tasks = getattr(self._adapter, "_background_tasks", None)
+        if isinstance(tasks, set):
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+        return task
+
+
+def chat_ordered_work(adapter: Any) -> ChatOrderedWork:
+    """The adapter's :class:`ChatOrderedWork`, created on first use."""
+    return adapter.__dict__.setdefault("_chat_ordered_work", ChatOrderedWork(adapter))
 
 
 def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None = None,
@@ -911,6 +1112,53 @@ def platform_http_client(**kwargs: Any) -> Any:
         del kwargs["limits"]
     return create_ssrf_safe_async_client(event_hooks=hooks, **kwargs)
 
+
+_AIOHTTP_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_AIOHTTP_MAX_REDIRECTS = 10
+
+
+def _origin(url: str) -> tuple:
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    return scheme, parts.hostname, parts.port or (443 if scheme == "https" else 80)
+
+
+def _sends_credentials(session: Any, kwargs: dict) -> bool:
+    """Whether a ``session.get(**kwargs)`` would carry an ``Authorization`` header or basic auth."""
+    headers = [*getattr(session, "headers", {}), *(kwargs.get("headers") or {})]
+    return (getattr(session, "_default_auth", None) is not None or kwargs.get("auth") is not None
+            or any(str(name).lower() == "authorization" for name in headers))
+
+
+@contextlib.asynccontextmanager
+async def ssrf_checked_aiohttp_get(session: Any, url: str, *, first_hop_vetted: bool = False, **kwargs: Any):
+    """``session.get(url)`` on an aiohttp session with every redirect hop checked by
+    ``tools.url_safety.async_is_safe_url``. aiohttp follows redirects by default, so a pre-flight
+    check alone lets a public URL 302 to loopback or cloud metadata. Raises ``ValueError`` on a
+    blocked hop, a credential-bearing cross-origin hop, or too many redirects. ``first_hop_vetted``
+    skips the check on ``url`` itself for a caller that vetted it another way (a host allowlist);
+    redirect targets are always checked."""
+    from tools.url_safety import async_is_safe_url
+    # aiohttp spends one ``total`` across its own redirect loop and the body read; each hop here
+    # is a fresh request, so the whole chain shares one deadline or ``total`` multiplies per hop.
+    total = getattr(kwargs.get("timeout") or getattr(session, "timeout", None), "total", None)
+    async with asyncio.timeout(total if isinstance(total, (int, float)) else None):
+        source_origin, current_url = _origin(url), url
+        for hop in range(_AIOHTTP_MAX_REDIRECTS + 1):
+            if (hop or not first_hop_vetted) and not await async_is_safe_url(current_url):
+                raise ValueError("Blocked URL targeting a private or internal address")
+            # aiohttp strips Authorization on a cross-origin redirect; a fresh session.get() re-applies
+            # session defaults, so refuse the hop rather than hand the first origin's credentials on.
+            if _origin(current_url) != source_origin and _sends_credentials(session, kwargs):
+                raise ValueError("Blocked credential-bearing cross-origin redirect")
+            async with session.get(current_url, allow_redirects=False, **kwargs) as response:
+                location = response.headers.get("Location")
+                if response.status in _AIOHTTP_REDIRECT_STATUSES and location:
+                    current_url = urljoin(current_url, location)
+                    continue
+                yield response
+                return
+        raise ValueError("Too many redirects")
 
 # The slowest uplink a media upload's budgets still cover, and the wall-clock ceiling they grow to.
 MIN_MEDIA_UPLOAD_RATE = 128 * 1024  # B/s

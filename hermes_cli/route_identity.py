@@ -130,3 +130,19 @@ async def should_clear_context_pin_async(*args: Any) -> bool:
     cold-start disk I/O."""
     import asyncio
     return await asyncio.to_thread(should_clear_context_pin, *args)
+
+
+def drop_credentials_of_other_route(model_cfg: dict[str, Any], prior_model_cfg: Any) -> dict[str, Any]:
+    """Drop a stored key unless *model_cfg* still names the route it was entered for.
+
+    A custom endpoint's ``model.api_key`` / ``key_env`` belongs to that ONE endpoint: when the user
+    switches to another endpoint without typing a key, keeping it sends endpoint A's secret to B.
+    Same rule as ``model_switch.model_selection_config_updates`` (same provider and base_url)."""
+    from hermes_cli.config import clear_model_endpoint_credentials
+    prior = prior_model_cfg if isinstance(prior_model_cfg, dict) else {}
+    same_route = (
+        str(prior.get("provider") or "").strip().lower() == str(model_cfg.get("provider") or "").strip().lower()
+        and normalize_route_base_url(prior.get("base_url")) == normalize_route_base_url(model_cfg.get("base_url")))
+    if not same_route:
+        clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
+    return model_cfg

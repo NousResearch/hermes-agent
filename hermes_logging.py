@@ -297,6 +297,24 @@ def canonical_logger_name(name: str) -> str:
     return name.removeprefix("hermes_agent.")
 
 
+def display_record(record: logging.LogRecord) -> logging.LogRecord:
+    """*record* as Hermes log formats print it: with its canonical logger name. ``record.name`` itself,
+    which filters and third-party handlers read, is left unchanged."""
+    shown = canonical_logger_name(record.name)
+    if shown == record.name:
+        return record
+    record = copy.copy(record)
+    record.name = shown
+    return record
+
+
+class DisplayNameFormatter(logging.Formatter):
+    """``logging.Formatter`` whose ``%(name)s`` is the canonical logger name."""
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        return super().formatMessage(display_record(record))
+
+
 class _ComponentFilter(logging.Filter):
     """Only pass records whose canonical logger name starts with one of *prefixes*."""
 

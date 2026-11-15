@@ -19,7 +19,7 @@ from contextvars import copy_context
 from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.delivery import looks_like_telegram_private_chat_id
+from gateway.delivery import looks_like_telegram_private_chat_id, prime_revived_egress
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
@@ -29,8 +29,7 @@ from gateway.restart import (
 from gateway.run_shutdown import _log_suppressed, _send_error
 from hermes_cli.observability.shared_metrics_busy import note_running_chat_owner
 from gateway.shutdown_watchdog import (
-    DEFAULT_HEARTBEAT_INTERVAL_S, DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
-    DEFAULT_LOOP_WATCHDOG_MAX_STRIKES, DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, loop_heartbeat_forever,
+    DEFAULT_HEARTBEAT_INTERVAL_S, loop_heartbeat_forever,
 )
 from typing import Any, Dict, Optional, Tuple
 
@@ -131,6 +130,7 @@ class GatewayStartupMixin:
         until it finishes, else a user message can race it)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         try:
+            prime_revived_egress(adapter, event)
             await adapter.handle_message(event)
             session_tasks = getattr(adapter, "_session_tasks", {})
             task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
@@ -595,33 +595,8 @@ class GatewayStartupMixin:
             raise
 
     def _resume_pending_candidates(self, platform=None) -> Optional[list]:
-        """Snapshot resume-pending entries (optionally scoped to ``platform``); None when
-        enumeration failed or the restart-loop breaker tripped for this boot."""
-        try:
-            with self.session_store._lock:
-                self.session_store._ensure_loaded_locked()
-                candidates = [
-                    entry for entry in self.session_store._entries.values()
-                    if entry.resume_pending
-                    and not entry.suspended
-                    and entry.origin is not None
-                    and entry.resume_reason in self._AUTO_RESUME_REASONS
-                    and (platform is None or entry.origin.platform == platform)
-                ]
-        except Exception as exc:
-            logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
-            return None
-        # Restart-loop breaker: only boots WITH restart-interrupted sessions count; when tripped, skip
-        # auto-resume for THIS boot only (inbound still served; sessions stay resume_pending).
-        if candidates:
-            try:
-                from gateway import restart_loop_guard as _rlg
-                _max_restarts, _window, _max_gap = self._restart_loop_guard_config()
-                if _rlg.check_and_record(_max_restarts, _window, max_gap_seconds=_max_gap):
-                    return None
-            except Exception as exc:
-                logger.debug("Restart-loop guard check skipped: %s", exc)
-        return candidates
+        from gateway.run_restored_delivery import resume_pending_candidates
+        return resume_pending_candidates(self, platform)
 
     def _resume_owner_authorized(self, session_key: str, source) -> bool:
         """Validate the session owner against the CURRENT allowlist: a session created before the
@@ -730,36 +705,8 @@ class GatewayStartupMixin:
         return True
 
     def _start_loop_liveness_guards(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Arm the selector floor and out-of-loop watchdog before adapters. Disabled entirely with
-        ``gateway.loop_watchdog: false`` in config.yaml (config-only knob).
-
-        See #69089.
-        """
-        from gateway.shutdown_watchdog import _arm_loop_floor_timer, start_loop_liveness_watchdog
-        config = getattr(self, "config", None)
-        if config is not None and not getattr(config, "loop_watchdog", True):
-            return
-        if getattr(self, "_loop_floor_timer_handle", None) is None:
-            with _log_suppressed(logging.DEBUG, "Failed to arm gateway loop floor timer", exc_info=True):
-                self._loop_floor_timer_handle = _arm_loop_floor_timer(loop)
-        watchdog = getattr(self, "_loop_liveness_watchdog", None)
-        if watchdog is None or not watchdog.is_alive():
-            try:
-                # getattr defaults cover config=None test paths; loaded values are already clamped.
-                self._loop_liveness_watchdog = start_loop_liveness_watchdog(
-                    loop,
-                    probe_interval=float(getattr(
-                        config, "loop_watchdog_probe_interval_s", DEFAULT_LOOP_WATCHDOG_INTERVAL_S
-                    )),
-                    probe_timeout=float(getattr(
-                        config, "loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
-                    )),
-                    max_strikes=int(getattr(
-                        config, "loop_watchdog_max_strikes", DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
-                    )),
-                )
-            except Exception:
-                logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
+        from gateway.run_startup_liveness import start_loop_liveness_guards
+        start_loop_liveness_guards(self, loop)
 
     def _stop_loop_liveness_guards(self) -> None:
         """Disarm lifetime liveness guards before shutdown can load the loop — including the
@@ -1669,7 +1616,7 @@ class GatewayStartupMixin:
     )
     _POST_RECONNECT_WATCHERS = (
         "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_profile_reconcile_watcher",
-    )
+        "_delegation_auto_resume_watcher")
 
     def _start_spawn_background_watchers(self) -> None:
         """Spawn the long-lived supervised background watchers."""
@@ -1943,9 +1890,9 @@ class GatewayStartupMixin:
         (``handoff_head``), so its whole chain moves onto the lane together with the local receipt
         that guards it, and a viewer still holding it open (the Desktop that ran /handoff) follows
         it (#143286)."""
-        from gateway.session_route_recovery import conversation_head, follow_hand_off
+        from gateway.session_route_recovery import conversation_head, follow_hand_off, settled_handoff_db
         authority, local_owner, target = await conversation_head(self, cli_session_id)
-        # Ensure a session_store entry exists for this key; switch_session then re-points it.
+        await settled_handoff_db(self, authority, cli_session_id)  # unresolved work keeps the route
         await self.async_session_store.get_or_create_session(dest.source)
         switched = await self.async_session_store.switch_session(session_key, target, preserve_prompt_pin=False)
         if switched is None:

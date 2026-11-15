@@ -31,7 +31,8 @@ from hermes_constants import (
 )
 from hermes_cli.config_backend import (
     config_cache_version, config_cache_version_or_none, config_exists, require_file_tooling)
-from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read
+from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read, json_safe_dumps
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -680,6 +681,8 @@ class ProfileInfo:
     # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
     # the Bots roster shows. Presentation-only, like ``display_name``.
     bot_title: str = ""
+    # Only ``{"hermes-bots": {...}}``: other plugins' ui_meta (group-chat logs, images) stays off rosters.
+    ui_meta: dict = field(default_factory=dict)
     # Canonical ids this profile was previously known by (``hermes profile rename``
     # appends here). Lets Bot Mode group chats re-link persisted member
     # descriptors to the renamed live profile (#110200).
@@ -872,29 +875,27 @@ def _cached_skill_count(profile_dir: Path) -> int:
 
 
 def read_profile_meta(profile_dir: Path) -> dict:
-    """Read ``profile.yaml`` -> ``{description, description_auto, display_name,
-    previous_names}`` (empty defaults when missing/unreadable). Never raises — a
+    """Read ``profile.yaml`` -> ``{description, description_auto, display_name, bot_title,
+    ui_meta, previous_names}`` (empty defaults when missing/unreadable). Never raises — a
     corrupt file on one profile must not break ``hermes profile list``."""
     def _read() -> dict:
         data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
-        ui_meta = data.get("ui_meta")
-        bot_title = ""
-        if isinstance(ui_meta, dict):
-            hermes_bots = ui_meta.get("hermes-bots")
-            if isinstance(hermes_bots, dict):
-                bot_title = str(hermes_bots.get("title") or "").strip()
+        ui_meta = data.get("ui_meta") if isinstance(data.get("ui_meta"), dict) else {}
+        bots = ui_meta.get("hermes-bots") if isinstance(ui_meta.get("hermes-bots"), dict) else {}
         return {
             "description": str(data.get("description") or "").strip(),
             "description_auto": bool(data.get("description_auto", False)),
             "display_name": str(data.get("display_name") or "").strip(),
-            "bot_title": bot_title,
+            "bot_title": str(bots.get("title") or "").strip(),
+            "ui_meta": json_safe_dumps({"hermes-bots": bots} if bots else {}),
             "previous_names": _clean_previous_names(data.get("previous_names")),
         }
 
-    # A copy per caller (list included): the cached value is shared, and a caller that mutates
-    # its result must not poison the next reader.
+    # A copy per caller (list and ui_meta included): the cached value is shared, and a caller that
+    # mutates its result must not poison the next reader.
     meta = dict(_cached_profile_read(profile_dir / "profile.yaml", "profile-meta", _read))
     meta["previous_names"] = list(meta["previous_names"])
+    meta["ui_meta"] = json.loads(meta["ui_meta"])
     return meta
 
 
@@ -1466,14 +1467,13 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False, problems: Option
         if not quiet:
             print(*lines, sep="\n")
 
-    project_root = Path(__file__).parent.parent.resolve()
     try:
         result = subprocess.run(
             [sys.executable, "-c",
              "import json; from tools.skills_sync import sync_skills; "
              "r = sync_skills(quiet=True); print(json.dumps(r))"],
             env={**os.environ, "HERMES_HOME": str(profile_dir)},
-            cwd=str(project_root),
+            cwd=project_root_str(),
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
             check=False,
         )
@@ -2187,14 +2187,8 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
-        # Remove foreign runtime state before publishing, including file-shaped roots.
-        # A failed removal must abort import rather than install a stale PM selection.
-        for child in final_source.iterdir():
-            if child.name in PM_RUNTIME_ROOT_DIRS:
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
+        from hermes_cli.profiles_initialization import prepare_imported_tree
+        prepare_imported_tree(final_source)
         shutil.move(str(final_source), str(profile_dir))
     clear_named_profile_deleted(profile_dir)
     return profile_dir

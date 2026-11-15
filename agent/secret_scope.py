@@ -202,6 +202,10 @@ _GLOBAL_ENV_EXACT = frozenset({
     "HERMES_MAX_ITERATIONS", "HERMES_API_TIMEOUT",
     "HERMES_REDACT_SECRETS", "HERMES_NOUS_TIMEOUT_SECONDS",
     "_HERMES_GATEWAY",
+    # Managed-scope bootstrap: launch-only (see hermes_constants.LAUNCH_ONLY_ENV_KEYS) —
+    # every process must resolve the SAME directory or a routed child silently loses
+    # administrator policy, so it is never residue and never profile-scoped (#135200).
+    "HERMES_MANAGED_DIR",
     # OS / interpreter
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ", "PWD", "SHELL", "TMPDIR",
     "VIRTUAL_ENV", "PYTHONPATH", "SSL_CERT_FILE",
@@ -233,7 +237,8 @@ _GLOBAL_ENV_PREFIXES = (
 
 def _is_global_env(name: str) -> bool:
     """True for genuinely process-global (non-profile-secret) env vars."""
-    return name in _GLOBAL_ENV_EXACT or name.startswith(_GLOBAL_ENV_PREFIXES)
+    from hermes_constants import is_launch_only_env_key  # case-folded: Windows env names (#135200)
+    return name in _GLOBAL_ENV_EXACT or name.startswith(_GLOBAL_ENV_PREFIXES) or is_launch_only_env_key(name)
 
 
 def _environ_or(name: str, default: Optional[str]) -> Optional[str]:
@@ -423,6 +428,13 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
     from ``os.environ`` — so the scope holds only profile secrets."""
     secrets = load_env_file(Path(hermes_home) / ".env")
+    # Launch-only keys are never profile secrets (#135200): get_secret consults
+    # _is_global_env first, but direct scope.get readers (e.g. platform_gate_env
+    # under multiplexing) do not — a planted .env entry would otherwise survive
+    # into the mapping as a readable value. The external/managed paths below
+    # already drop them via _is_global_env; this is the one entry that doesn't.
+    from hermes_constants import is_launch_only_env_key
+    secrets = {k: v for k, v in secrets.items() if not is_launch_only_env_key(k)}
     dotenv = dict(secrets)
     try:
         from hermes_cli.env_loader import get_secret_source_values

@@ -51,7 +51,7 @@ class BackendIdentity:
     def build(
         cls, provider: Optional[str] = None, model: Optional[str] = None,
         base_url: Optional[str] = None,
-    ) -> "BackendIdentity":
+    ) -> BackendIdentity:
         return cls(
             provider=_norm(provider), model=_norm(model),
             base_url=normalize_route_base_url(base_url),
@@ -131,24 +131,3 @@ def should_skip_candidate(
     True when it is the same backend as ``failed`` along the axis ``scope`` invalidated.
     Every fallback/dedup/skip site must call this."""
     return _SCOPE_PREDICATES.get(scope, same_deployment)(candidate, failed)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-_REASON_SCOPES = {
-    "auth error": FailureScope.CREDENTIAL,
-    "payment error": FailureScope.CREDENTIAL,
-    "rate limit": FailureScope.MODEL,
-    "model incompatible with route": FailureScope.MODEL,
-    "invalid provider response": FailureScope.MODEL,
-    "connection error": FailureScope.MODEL,
-    "timeout": FailureScope.MODEL,
-}
-
-def classify_failure_scope(reason: Optional[str]) -> FailureScope:
-    """Map a human-readable failure reason to the identity axis it kills."""
-    return _REASON_SCOPES.get((reason or "").strip().lower(), FailureScope.MODEL)
-# ---- END PLUGIN-COMPAT ----

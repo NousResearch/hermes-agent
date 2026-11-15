@@ -67,7 +67,7 @@ class CapabilityDescriptor:
         return json.dumps(asdict(self), sort_keys=True, ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, data: str) -> "CapabilityDescriptor":
+    def from_json(cls, data: str) -> CapabilityDescriptor:
         """Deserialize a handshake JSON string; unknown keys ignored, missing keys default.
 
         Trust-boundary normalization (malformed input never breaks the handshake):

@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _http import get_json  # noqa: E402
+from _http import get_json
 
 ENDPOINT = "https://lda.senate.gov/api/v1/filings/"
 COLUMNS = [
@@ -57,7 +57,7 @@ def fetch(
     while page < max_pages:
         try:
             payload = get_json(url, params=params if page == 0 else None, headers=headers)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"Senate LDA error on page {page + 1}: {e}", file=sys.stderr)
             break
         if not isinstance(payload, dict):

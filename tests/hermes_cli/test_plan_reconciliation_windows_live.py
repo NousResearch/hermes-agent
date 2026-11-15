@@ -136,5 +136,5 @@ def test_plan_reconciliation_live_windows(tmp_path, monkeypatch):
         for proc in (child, foreign):
             if proc.poll() is None:
                 # /T: uv's venv python.exe is a trampoline; kill the real interpreter too.
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False)
             proc.wait()

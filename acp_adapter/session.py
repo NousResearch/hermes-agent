@@ -17,11 +17,17 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _same_origin(a: str, b: str) -> bool:
+    from utils import base_url_origin
+    origin = base_url_origin(a)
+    return bool(origin[1]) and origin == base_url_origin(b)
 
 
 def _translate_acp_cwd(cwd: str) -> str:
@@ -63,7 +69,7 @@ def _format_updated_at(value: Any) -> str | None:
     if value is None or (isinstance(value, str) and value.strip()):
         return value
     try:
-        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+        return datetime.fromtimestamp(float(value), tz=UTC).isoformat()
     except Exception:
         return None
 
@@ -74,7 +80,7 @@ def _updated_at_sort_key(value: Any) -> float:
     raw = str(value).strip() if value is not None else ""
     if not raw:
         return float("-inf")
-    for parse in (lambda s: datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp(), float):
+    for parse in (lambda s: datetime.fromisoformat(s).timestamp(), float):
         try:
             return parse(raw)
         except Exception:
@@ -100,8 +106,8 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
 
 
-def _expand_acp_enabled_toolsets(toolsets: List[str] | None = None,
-                                 mcp_server_names: List[str] | None = None) -> List[str]:
+def _expand_acp_enabled_toolsets(toolsets: list[str] | None = None,
+                                 mcp_server_names: list[str] | None = None) -> list[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
     names = [n for n in (["hermes-acp"] if toolsets is None else toolsets) if n]
     names += [f"mcp-{s}" for s in (mcp_server_names or []) if s]
@@ -118,12 +124,12 @@ def _parse_model_config(mc: Any) -> dict:
 
 
 def _session_info(sid: str, cwd: str, model: Any, history_len: int, title: Any, preview: Any,
-                  updated_at: Any) -> Dict[str, Any]:
+                  updated_at: Any) -> dict[str, Any]:
     return {"session_id": sid, "cwd": cwd, "model": model, "history_len": history_len,
             "title": _build_session_title(title, preview, cwd), "updated_at": _format_updated_at(updated_at)}
 
 
-def _first_user_preview(history: List[Dict[str, Any]], default: str) -> str:
+def _first_user_preview(history: list[dict[str, Any]], default: str) -> str:
     return next((str(m.get("content") or "").strip() for m in history
                  if m.get("role") == "user" and str(m.get("content") or "").strip()), default)
 
@@ -136,7 +142,7 @@ class SessionState:
     agent: Any  # AIAgent instance
     cwd: str = "."
     model: str = ""
-    history: List[Dict[str, Any]] = field(default_factory=list)
+    history: list[dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
     # A state-mutating slash command (/reset, /compress, /model) is in flight. Turn claims
@@ -144,7 +150,7 @@ class SessionState:
     # a bare is_running check in the slash thread would leave a check-then-act window where
     # a prompt claims the turn mid-mutation.
     command_op: bool = False
-    queued_prompts: List[str] = field(default_factory=list)
+    queued_prompts: list[str] = field(default_factory=list)
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
@@ -162,7 +168,7 @@ class SessionManager:
     def __init__(self, agent_factory=None, db=None):
         """``agent_factory``: AIAgent-like factory (tests); default builds a real AIAgent from
         the runtime provider config. ``db``: SessionDB; default lazily opens ``~/.hermes/state.db``."""
-        self._sessions: Dict[str, SessionState] = {}
+        self._sessions: dict[str, SessionState] = {}
         self._lock = threading.Lock()
         # Serializes DB restores: session construction runs off the event loop, so two
         # overlapping session/load for one id must share a single agent build.
@@ -207,16 +213,10 @@ class SessionManager:
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
-    def list_sessions(self, cwd: str | None = None) -> List[Dict[str, Any]]:
+    def list_sessions(self, cwd: str | None = None) -> list[dict[str, Any]]:
         """Return lightweight info dicts for all sessions (memory + database)."""
         normalized_cwd = _normalize_cwd_for_compare(cwd) if cwd else None
-        db = self._get_db()
-        persisted_rows: dict[str, dict[str, Any]] = {}
-        try:
-            for row in (db.list_sessions_rich(source="acp", limit=1000) if db is not None else ()):
-                persisted_rows[str(row["id"])] = dict(row)
-        except Exception:
-            logger.debug("Failed to load ACP sessions from DB", exc_info=True)
+        persisted_rows = self._catalog_rows()
 
         def _matches(session_cwd: str) -> bool:
             return not normalized_cwd or _normalize_cwd_for_compare(session_cwd) == normalized_cwd
@@ -248,6 +248,28 @@ class SessionManager:
 
         results.sort(key=lambda item: _updated_at_sort_key(item.get("updated_at")), reverse=True)
         return results
+
+    def _catalog_rows(self) -> dict[str, dict[str, Any]]:
+        from acp_adapter.catalog import read_catalog_rows
+        from pathlib import Path
+
+        path = Path(self._db_instance.db_path) if self._db_instance is not None else get_hermes_home() / "state.db"
+        return read_catalog_rows(path)
+
+    def display_history(self, session_id: str) -> Optional[list[dict[str, Any]]]:
+        """The DURABLE DISPLAY projection for a session (``include_compacted``): what a reopened
+        editor should show, which is a SUPERSET of the active-only model history. In particular it
+        keeps a safety-refused turn's retained ``content_refused`` row, which the model context
+        dropped (``active = 0``). ``None`` when the DB is unavailable (e.g. a test agent factory),
+        so callers fall back to the in-memory model history."""
+        db = self._get_db()
+        if db is None:
+            return None
+        try:
+            return db.get_messages_as_conversation(session_id, include_compacted=True)
+        except Exception:
+            logger.debug("Failed to load ACP display history for %s", session_id, exc_info=True)
+            return None
 
     def update_cwd(self, session_id: str, cwd: str) -> Optional[SessionState]:
         """Update the working directory for a session and its tool overrides."""
@@ -304,7 +326,7 @@ class SessionManager:
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
-                       history: List[Dict[str, Any]], *, persist: bool = True) -> SessionState:
+                       history: list[dict[str, Any]], *, persist: bool = True) -> SessionState:
         """Build a SessionState, register it in memory, bind its cwd for tools, optionally persist."""
         state = SessionState(session_id=session_id, agent=agent, cwd=cwd, model=model,
                              history=history, cancel_event=threading.Event())
@@ -349,7 +371,12 @@ class SessionManager:
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
         for key in ("provider", "base_url", "api_mode"):
-            value = getattr(state.agent, key, None)
+            # Prefer the route's named form (``custom:<name>``) for provider: the bare kind a
+            # named custom provider leaves on agent.provider cannot be re-resolved on resume (#139908).
+            if key == "provider":
+                value = getattr(state.agent, "provider_route", None) or getattr(state.agent, key, None)
+            else:
+                value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
 
@@ -535,15 +562,37 @@ class SessionManager:
             "reasoning_config": resolve_reasoning_config(config, model or default_model),
         }
         resolve_error: Exception | None = None
+        # A persisted row can carry a named custom endpoint downgraded to the bare kind
+        # (`custom`) plus its base_url (#142714): bare custom resolves credentialless, so
+        # map the recorded endpoint back to the configured identity it came from first —
+        # those rows then restore onto the endpoint they used instead of failing closed.
+        requested = requested_provider or config_provider
+        if requested == "custom" and base_url:
+            from hermes_cli.runtime_provider_custom import find_custom_provider_identity
+            try:
+                requested = find_custom_provider_identity(base_url) or requested
+            except Exception:
+                logger.debug("ACP session could not map its recorded base_url back to a "
+                             "named custom provider", exc_info=True)
         try:
             runtime = resolve_runtime_provider(
-                requested=requested_provider or config_provider, target_model=(model or default_model) or None)
+                requested=requested, target_model=(model or default_model) or None)
+            # The resolved key belongs to the resolved endpoint: a recorded base_url on another
+            # origin (a row stamped by an earlier fallback build, #142714) would send it there.
+            if base_url and runtime.get("base_url") and not _same_origin(base_url, runtime["base_url"]):
+                logger.warning("ACP session %s: recorded endpoint %s is not the resolved provider's "
+                               "endpoint %s; using the resolved one", session_id, base_url, runtime["base_url"])
+                base_url, api_mode = None, None
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
                 "credential_pool": runtime.get("credential_pool"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),
             })
+            # The resolved provider's request body (a custom entry's extra_body); an explicit base_url pointing
+            # elsewhere is another endpoint, which must not inherit it.
+            if runtime.get("request_overrides") and (not base_url or base_url == runtime.get("base_url")):
+                kwargs["request_overrides"] = runtime["request_overrides"]
         except Exception as exc:
             resolve_error = exc
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
@@ -572,14 +621,20 @@ class SessionManager:
             if resolve_error is not None:
                 raise resolve_error from exc
             raise
+        if resolve_error is not None and requested_provider:
+            # Fail closed on an explicit request (#139908): the bare build "succeeded" only by
+            # dropping the failed resolution, landing the agent on the config-default endpoint —
+            # a different endpoint the session never used, later sent this provider's key.
+            # The bare-fallback contract (#91090) stands for the config-default request.
+            raise resolve_error
         # ACP stdio: stdout is protocol-only JSON-RPC; agent chatter goes to stderr.
         agent._print_fn = _acp_stderr_print
+        # The named route the agent actually resolved (``custom:<name>``), which AIAgent keeps
+        # only as the bare kind (``custom``): _persist stores it so a resume re-resolves the
+        # same named entry instead of a credentialless bare kind (#139908). A recovered
+        # identity (#142714) is the route too, so the next persist stores it back named.
+        # Only the bare kind is lossy: ``auto`` or an alias must persist what it resolved to.
+        route = str(requested or config_provider or "").strip()
+        if route and kwargs.get("provider") == "custom":
+            agent.provider_route = route
         return agent
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from threading import Lock  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

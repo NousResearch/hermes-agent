@@ -47,6 +47,17 @@ describe('custom models', () => {
     expect(merged[1]).toBe(providers[1])
     expect(withCustomModels(providers, [])).toBe(providers)
   })
+
+  it('merges custom models into a usage-window Nous row too (window plans allow any model)', () => {
+    const nous: ModelOptionProvider = {
+      ...provider('nous', ['example/model-b']),
+      plan_usage: { kind: 'usage_window', gauges: [] }
+    }
+
+    const merged = withCustomModels([nous], [{ model: 'acme/model-x', provider: 'nous' }])
+
+    expect(merged[0]?.models).toEqual(['example/model-b', 'acme/model-x'])
+  })
 })
 
 describe('resetModelVisibilityKeepingCustoms', () => {
@@ -74,9 +85,9 @@ describe('resetModelVisibilityKeepingCustoms', () => {
     // (a featured default) but left hidden, so the snapshot counts it as judged
     // and the default rule never re-admits it.
     setVisibleModels(new Set([modelVisibilityKey('openrouter', 'acme/model-x')]), catalog)
-    expect(effectiveVisibleKeys($visibleModels.get(), catalog).has(modelVisibilityKey('openrouter', 'openai/gpt-6'))).toBe(
-      false
-    )
+    expect(
+      effectiveVisibleKeys($visibleModels.get(), catalog).has(modelVisibilityKey('openrouter', 'openai/gpt-6'))
+    ).toBe(false)
 
     resetModelVisibilityKeepingCustoms(catalog)
 

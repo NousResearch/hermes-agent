@@ -9,7 +9,7 @@ auth, billing and payment failures keep benching the whole credential with.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.credential_pool import PooledCredential
@@ -17,9 +17,24 @@ if TYPE_CHECKING:
 # A Codex ChatGPT-account model entitlement 400 is a plan property, not a window: bench the
 # (credential, model) pair until an explicit ``hermes auth reset`` clears model_cooldowns (#71970).
 MODEL_ENTITLEMENT_BENCH_SECONDS = 365 * 24 * 60 * 60
+# A usage-window plan limit: this model is refused until the allowance resets; every other model
+# (a Free or non-Large one) stays usable on the same credential.
+FAILURE_REASON_USAGE_WINDOW = "usage_window"
 
 
-def model_cooldown_until(entry: "PooledCredential", model: Optional[str]) -> Optional[float]:
+def pool_failure_reason(reason: Any, error_context: Optional[dict[str, Any]], billing_unverified: bool) -> str:
+    """The pool's failure reason for a rotation (*reason* is a ``FailoverReason``). A usage-window 402
+    benches only the refused model; an ambiguous billing body is sized as transient, not a 1-hour bench."""
+    from agent.error_classifier import FailoverReason
+    if reason == FailoverReason.billing and (error_context or {}).get("usage_window"):
+        return FAILURE_REASON_USAGE_WINDOW
+    if reason == FailoverReason.billing and billing_unverified:
+        from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
+        return FAILURE_REASON_BILLING_UNVERIFIED
+    return reason.value
+
+
+def model_cooldown_until(entry: PooledCredential, model: Optional[str]) -> Optional[float]:
     """Active cooldown blocking *entry* for *model*, or ``None``.
 
     Callers that do not know the model stay conservative: any active model
@@ -32,9 +47,9 @@ def model_cooldown_until(entry: "PooledCredential", model: Optional[str]) -> Opt
     return max(active) if active else None
 
 
-def merge_model_cooldowns(*maps: Any) -> Dict[str, float]:
+def merge_model_cooldowns(*maps: Any) -> dict[str, float]:
     """Latest reset per model across snapshots — each writer only observed its own model."""
-    merged: Dict[str, float] = {}
+    merged: dict[str, float] = {}
     for cooldowns in maps:
         if not isinstance(cooldowns, dict):
             continue
@@ -67,7 +82,7 @@ class CredentialPoolModelCooldownMixin:
 
         if not model:
             return False
-        if failure_reason == "model_entitlement":
+        if failure_reason in ("model_entitlement", FAILURE_REASON_USAGE_WINDOW):
             return True
         return (
             self.provider == "anthropic" and status_code == 429
@@ -75,7 +90,7 @@ class CredentialPoolModelCooldownMixin:
         )
 
     def _cool_down_model(
-        self, entry: "PooledCredential", model: str, error_context: Optional[Dict[str, Any]],
+        self, entry: PooledCredential, model: str, error_context: Optional[dict[str, Any]],
         failure_reason: Optional[str] = None,
     ) -> None:
         """Record a cooldown for *model* on *entry* and every sibling sharing its key.
@@ -102,3 +117,30 @@ class CredentialPoolModelCooldownMixin:
             cooldowns = merge_model_cooldowns(scoped.model_cooldowns, {model: until})
             self._adopt(scoped, persist=False, model_cooldowns=cooldowns)
         self._persist()
+
+    def limit_state(self, models: Iterable[str]) -> Optional[dict[str, Any]]:
+        """What a picker should say about this pool's rate limits, or ``None`` when nothing is limited.
+
+        ``{"scope": "account", "resets_at": epoch}`` when every live entry is benched credential-wide
+        (the whole login is out; another model won't help), else ``{"scope": "models", "models":
+        {model: epoch}}`` for the given *models* no usable entry can serve until a model cooldown
+        ends. Entitlement benches (a year: the plan lacks the model) aren't windows that reset, so
+        they're left out. Read-only: never clears or persists a cooldown.
+        """
+        from agent.credential_pool import STATUS_DEAD, _exhausted_until
+
+        now = time.time()
+        with self._lock:
+            live = [entry for entry in self._entries if entry.last_status != STATUS_DEAD]
+            sole = len(live) <= 1
+            benched = {entry.id: until for entry in live
+                       if (until := _exhausted_until(entry, sole_credential=sole)) and until > now}
+            if live and len(benched) == len(live):
+                return {"scope": "account", "resets_at": min(benched.values())}
+            usable = [entry for entry in live if entry.id not in benched]
+            cooled: dict[str, float] = {}
+            for model in models:
+                waits = [model_cooldown_until(entry, model) for entry in usable]
+                if waits and all(waits) and min(waits) - now < MODEL_ENTITLEMENT_BENCH_SECONDS / 2:
+                    cooled[model] = min(waits)
+        return {"scope": "models", "models": cooled} if cooled else None

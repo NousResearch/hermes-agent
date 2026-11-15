@@ -12,6 +12,8 @@ import type * as ChatRuntime from '@/lib/chat-runtime'
 import { SESSION_ROW_AREAS, type SessionRowSlotProps } from '@/lib/session-row-slots'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
+import { $sidebarRowMeta } from '@/store/layout'
+import { $pullRequestsByBranch, branchPrKey } from '@/store/pull-requests'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
@@ -37,7 +39,6 @@ vi.mock('@/i18n', () => ({
           backgroundRunning: 'Running in background',
           finishedUnread: 'Finished',
           handoffOrigin: (platform: string) => `Started on ${platform}`,
-          continuationOrigin: 'Automatic continuation — this conversation was compressed and continued',
           messageCount: (count: number) => `${count} messages`,
           needsInput: 'Needs input',
           sessionActions: 'Session actions',
@@ -290,12 +291,75 @@ describe('SidebarSessionRow', () => {
   })
 })
 
+describe('SidebarSessionRow keyboard stops', () => {
+  const rowMeta = $sidebarRowMeta.get()
+  const pullRequests = $pullRequestsByBranch.get()
+
+  afterEach(() => {
+    $sidebarRowMeta.set(rowMeta)
+    $pullRequestsByBranch.set(pullRequests)
+  })
+
+  it.each([false, true])('keeps timestamp metadata out of keyboard focus (card=%s)', card => {
+    $sidebarRowMeta.set(['updated'])
+    const { container } = renderRow(makeSession({ title: 'Keyboard session' }), { card })
+    const primary = screen.getByRole('button', { name: 'Keyboard session' })
+    const actions = screen.getByRole('button', { name: 'Session actions' })
+    const timestamp = container.querySelector('time')!
+
+    primary.focus()
+    timestamp.focus()
+    expect(globalThis.document.activeElement).toBe(primary)
+
+    const stops = [...container.querySelectorAll<HTMLElement>('button, [tabindex]')].filter(
+      element => element.tabIndex >= 0
+    )
+
+    expect(stops).toEqual(card ? [actions, primary] : [primary, actions])
+    actions.focus()
+    expect(globalThis.document.activeElement).toBe(actions)
+  })
+
+  it('retains the real pull-request action as a separate keyboard stop', () => {
+    $sidebarRowMeta.set(['pr'])
+    $pullRequestsByBranch.set({
+      [branchPrKey('/repo', 'feature')]: {
+        branch: 'feature',
+        draft: false,
+        number: 7,
+        state: 'open',
+        title: 'Feature',
+        url: 'https://github.com/example/repo/pull/7'
+      }
+    })
+
+    const { container } = renderRow(
+      makeSession({ git_branch: 'feature', git_repo_root: '/repo', title: 'Feature session' })
+    )
+
+    const primary = screen.getByRole('button', { name: 'Feature session' })
+    const pullRequest = screen.getByRole('button', { name: 'Open pull request #7' })
+    const actions = screen.getByRole('button', { name: 'Session actions' })
+
+    const stops = [...container.querySelectorAll<HTMLElement>('button, [tabindex]')].filter(
+      element => element.tabIndex >= 0
+    )
+
+    expect(stops).toEqual([primary, pullRequest, actions])
+    pullRequest.focus()
+    expect(globalThis.document.activeElement).toBe(pullRequest)
+    noop.mockClear()
+    fireEvent.click(pullRequest)
+    expect(noop).not.toHaveBeenCalled()
+  })
+})
+
 // Regression for #83617: the row shell once spread the FULL dnd-kit handle, so
 // Space on a focused control inside the row (the ⋯ button that opens Rename)
 // reached the KeyboardSensor's activator — a drag armed, and the sensor then
 // ate the next Space at window level (the rename input dropped the keystroke).
 describe('SidebarSessionRow inside the sortable list', () => {
-  function SortableRow({ session }: { session: SessionInfo }) {
+  function SortableRow({ onResume, session }: { onResume: () => void; session: SessionInfo }) {
     const { dragHandleProps, dragging, ref, reorderable, style } = useSortableBindings(session.id)
 
     return (
@@ -307,7 +371,7 @@ describe('SidebarSessionRow inside the sortable list', () => {
         onArchive={noop}
         onDelete={noop}
         onPin={noop}
-        onResume={noop}
+        onResume={onResume}
         onToggleUnread={noop}
         ref={ref}
         reorderable={reorderable}
@@ -318,7 +382,7 @@ describe('SidebarSessionRow inside the sortable list', () => {
     )
   }
 
-  function Host({ session }: { session: SessionInfo }) {
+  function Host({ onResume, session }: { onResume: () => void; session: SessionInfo }) {
     // The sidebar's own sensor set (index.tsx dndSensors).
     const sensors = useSensors(
       useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -327,7 +391,7 @@ describe('SidebarSessionRow inside the sortable list', () => {
 
     return (
       <ReorderableList ids={[session.id]} onReorder={noop} sensors={sensors}>
-        <SortableRow session={session} />
+        <SortableRow onResume={onResume} session={session} />
       </ReorderableList>
     )
   }
@@ -335,7 +399,7 @@ describe('SidebarSessionRow inside the sortable list', () => {
   const space = { code: 'Space', key: ' ' }
 
   it('lets Space through to a focused row control instead of arming a keyboard drag', () => {
-    const { container } = render(<Host session={makeSession({ title: 'Renamable' })} />)
+    const { container } = render(<Host onResume={noop} session={makeSession({ title: 'Renamable' })} />)
     const kebab = screen.getByRole('button', { name: 'Session actions' })
     kebab.focus()
 
@@ -346,12 +410,37 @@ describe('SidebarSessionRow inside the sortable list', () => {
   })
 
   it('still starts a keyboard reorder from the grabber', () => {
-    const { container } = render(<Host session={makeSession({ title: 'Renamable' })} />)
+    const { container } = render(<Host onResume={noop} session={makeSession({ title: 'Renamable' })} />)
     const grabber = container.querySelector<HTMLElement>('[data-reorder-handle]')!
 
     grabber.focus()
     fireEvent.keyDown(grabber, space)
     expect(grabber.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  // #38072 finding 3 (axe nested-interactive): the grabber (dnd-kit
+  // role="button" + tabIndex) must be a SIBLING of the row's primary action,
+  // never a descendant of it. The row body is a div carrying the gesture
+  // handlers; the title is the row's real button and its click bubbles to
+  // the body's resolver, so pointer users keep click-anywhere-on-the-row.
+  it('renders the grabber outside any button, with the title as the row button', () => {
+    const onResume = vi.fn()
+    const { container } = render(<Host onResume={onResume} session={makeSession({ title: 'Renamable' })} />)
+
+    const grabber = container.querySelector<HTMLElement>('[data-reorder-handle]')!
+
+    // Handle semantics survive (keyboard reorder above depends on them)…
+    expect(grabber.getAttribute('role')).toBe('button')
+    expect(grabber.tabIndex).toBe(0)
+    // …but it no longer nests inside the row's primary button.
+    expect(grabber.closest('button')).toBeNull()
+
+    // The title line is the row button; clicks on it resume via the body
+    // div's bubbled resolver (no onClick of its own).
+    const title = screen.getByRole('button', { name: 'Renamable' })
+    expect(title.closest('[data-reorder-handle]')).toBeNull()
+    fireEvent.click(title)
+    expect(onResume).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -410,29 +499,5 @@ describe('SidebarSessionRow decoration slots', () => {
     })
 
     expect(screen.queryByTestId('lead-deco')).toBeNull()
-  })
-})
-
-// #121148: a projected compression continuation renders as a plain
-// top-level row that reads as a brand-new conversation — and the sealed
-// predecessor it replaced used to nest like a branch users deleted as
-// accidents. The row must carry a visible continuation affordance.
-describe('SidebarSessionRow continuation badge', () => {
-  const continuationGlyph = (container: HTMLElement) => container.querySelector('.codicon-layers')
-
-  it('paints the continuation glyph for a projected compression tip', () => {
-    const { container } = renderRow(makeSession({ continuation_kind: 'compression', title: 'Long-running chat' }))
-
-    expect(continuationGlyph(container)).not.toBeNull()
-  })
-
-  it('paints nothing for a plain session and for a branch', () => {
-    const plain = renderRow(makeSession({ title: 'Plain' }))
-
-    expect(continuationGlyph(plain.container)).toBeNull()
-
-    const branch = renderRow(makeSession({ parent_session_id: 'parent', title: 'A real branch' }))
-
-    expect(continuationGlyph(branch.container)).toBeNull()
   })
 })

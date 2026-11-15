@@ -64,17 +64,23 @@ def _accounts_tab_providers() -> set[str]:
 
 
 def test_every_hermes_model_provider_is_configurable_in_desktop():
-    """PARITY CONTRACT: GUI (keys ∪ accounts) ⊇ `hermes model` universe."""
+    """PARITY CONTRACT: GUI (keys ∪ accounts) == the `hermes model` universe (listed providers):
+    every listed provider is configurable, and an unlisted pre-release one is on neither tab."""
+    from hermes_cli.models_catalog_static import listed_canonical_providers
+
     gui = _keys_tab_providers() | _accounts_tab_providers()
+    listed = {e.slug for e in listed_canonical_providers()}
     missing = [
-        e.slug
-        for e in CANONICAL_PROVIDERS
-        if e.slug not in _EXEMPT and e.slug not in gui
+        slug
+        for slug in sorted(listed)
+        if slug not in _EXEMPT and slug not in gui
     ]
     assert not missing, (
         "providers shown in `hermes model` but not configurable in the desktop "
         f"Providers tabs: {missing}"
     )
+    leaked = sorted(gui & ({e.slug for e in CANONICAL_PROVIDERS} - listed))
+    assert not leaked, f"unlisted pre-release providers on the desktop Providers tabs: {leaked}"
 
 
 def test_each_provider_lands_on_the_tab_its_auth_type_dictates():

@@ -1,0 +1,18 @@
+name: model-picker
+repo: https://github.com/aean0x/hermes-model-picker
+sha: 8ba20ad970f68d6adecc958da8992034e89f3481
+description: "Per-turn cost classifier across three model tiers (Quick / Standard / Expert): rates each user turn from configurable best_for lists and rewrites the outgoing request's model through the llm_request middleware, biased to keep the previous tier unless the turn changes shape, with escalate_model for tool failures. Disclosure — the plugin rewrites the model field of every outgoing request for a classified session, picking between three configured model ids that must all belong to the session's own provider (a foreign-provider tier is refused and the session model stands); it makes one bounded auxiliary classifier call through the host's plugin LLM route on each classified turn (up to about 12,000 characters of recent conversation plus the prompt), reading its model ids from config.json next to the plugin, MODEL_PICKER_CONFIG, or MODEL_PICKER_* env, and falls back to the host's primary model; routing decisions, with the first 120 characters of each classified prompt, are logged to $HERMES_HOME/logs/model-picker.log; a classifier-driven tier change can ask the context engine to compact the transcript before the switch, and escalate_model replaces the next request's context with a model-written handoff summary plus the recent tail; that engine registers only when the host config sets context.engine: model-picker."
+maintainer: aean0x
+tier: community
+category: models
+docs_url: https://github.com/aean0x/hermes-model-picker#readme
+version: "0.12.0"
+capabilities:
+  provides_tools:
+    - escalate_model
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+  provides_middleware:
+    - llm_request
+  requires_env: []

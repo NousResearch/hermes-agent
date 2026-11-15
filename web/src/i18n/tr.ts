@@ -92,9 +92,18 @@ export const tr: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Etkin bellek sağlayıcısı",
+    noProvider: "yok — yalnızca yerleşik",
+    builtinLayer: "Yerleşik katman",
+    builtinNote: "MEMORY.md ve USER.md, herhangi bir harici sağlayıcıdan bağımsız olarak Hermes'in kendi belleğidir. Varsayılan olarak ikisi de oturumlara yüklenir; (memory.memory_enabled / memory.user_profile_enabled) yapılandırma anahtarları her birini kapatır. Bir sağlayıcı bunlara ekleme yapar; asla yerlerini almaz.",
+  },
+
   status: {
     actionFailed: "İşlem başarısız",
     actionFinished: "Tamamlandı",
+    actionFinishedOwed: "Güncellendi, ancak bekleyen adımlar var (bitirmek için `hermes update` komutunu yeniden çalıştırın)",
     actions: "İşlemler",
     agent: "Agent",
     activeSessions: "Aktif Oturumlar",
@@ -361,6 +370,13 @@ export const tr: Translations = {
     authRequired: "Kimlik doğrulama gerekli",
     authRequiredHint: "Kimlik doğrulamak için bu komutu çalıştırın:",
     updateGit: "Git pull",
+    updateAll: "Tümünü güncelle",
+    updatingAll: "Eklentiler güncelleniyor…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Güncellendi ${updated}, inceleme gerekli ${needsReview}, başarısız ${failed}`,
+    autoUpdate: "Otomatik güncelleme",
+    autoUpdateDesc: (hours: number) =>
+      `Ağ geçidi denetlediğinde (her ${hours} saatte) eklenti güncellemelerini otomatik uygula. Güncellenen kod yeni oturumlarda yüklenir.`,
     versionBadge: "Sürüm",
     showInSidebar: "Kenar çubuğunda göster",
     hideFromSidebar: "Kenar çubuğundan gizle",

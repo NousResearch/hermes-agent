@@ -1221,17 +1221,3 @@
   outline: 2px solid var(--ifm-color-primary);
   outline-offset: 2px;
 }
-
-/* Legal footer under the catalog grid. */
-.legalNote {
-  margin: 2.5rem 0 0;
-  text-align: center;
-  font-size: 0.8rem;
-  color: var(--ifm-font-color-secondary);
-  line-height: 1.6;
-}
-
-.legalNote a {
-  color: inherit;
-  text-decoration: underline;
-}

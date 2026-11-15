@@ -20,7 +20,7 @@ class LocalLoginBackend(LoginBackend):
     display_name = "Hermes vault"
     prefix = "vault_"
 
-    def list_items(self) -> List[VaultItemMeta]:
+    def list_items(self) -> list[VaultItemMeta]:
         return _store().list_items()
 
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
@@ -34,5 +34,5 @@ class LocalLoginBackend(LoginBackend):
         seed = str(_store().resolve_secret(handle).get("otp_secret") or "")
         return totp_now(seed) if seed else None
 
-    def resolve_secret(self, handle: str) -> Dict[str, str]:
+    def resolve_secret(self, handle: str) -> dict[str, str]:
         return {k: str(v) for k, v in _store().resolve_secret(handle).items()}

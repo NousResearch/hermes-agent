@@ -1,0 +1,70 @@
+{
+ "arm": "base",
+ "model": "openai/gpt-6-luna",
+ "child_model": "openai/gpt-6-luna",
+ "task": "all_implicit_table",
+ "kind": "all",
+ "rep": 2,
+ "error": null,
+ "success": true,
+ "units": 3,
+ "expected_units": 1,
+ "delivery_ok": false,
+ "score": 0.0,
+ "spawn_calls": 1,
+ "spawn_groups": [
+  [
+   null,
+   null,
+   null
+  ]
+ ],
+ "children_run": 3,
+ "parent_turns_after_dispatch": 3,
+ "parent_calls_total": 5,
+ "parent_calls_after_dispatch": 3,
+ "other_calls": [],
+ "parent_usage": {
+  "api_calls": 5,
+  "prompt_tokens": 27682,
+  "input_tokens": 15,
+  "cache_read_tokens": 21250,
+  "cache_write_tokens": 6417,
+  "completion_tokens": 533,
+  "total_tokens": 28215
+ },
+ "child_tokens": {
+  "input": 21873,
+  "output": 246
+ },
+ "child_api_calls": 6,
+ "child_cost_usd_estimate": 0.001678,
+ "delegate_schema_chars": 5056,
+ "unit_log": [
+  {
+   "delegation_id": "deleg_c202ecb6-2",
+   "group": null,
+   "task_indexes": [
+    1
+   ],
+   "at_s": 9.7
+  },
+  {
+   "delegation_id": "deleg_c202ecb6-1",
+   "group": null,
+   "task_indexes": [
+    0
+   ],
+   "at_s": 12.1
+  },
+  {
+   "delegation_id": "deleg_c202ecb6-3",
+   "group": null,
+   "task_indexes": [
+    2
+   ],
+   "at_s": 13.7
+  }
+ ],
+ "wall_s": 18.2
+}

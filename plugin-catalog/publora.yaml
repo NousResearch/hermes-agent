@@ -1,0 +1,17 @@
+name: publora
+title: Publora
+repo: https://github.com/publora-team/hermes-publora
+sha: 189b417e90bd2da81876a7594fd0a0e0b5c94b5d
+description: "Draft, schedule and publish social media posts on LinkedIn, X, Instagram, Threads, TikTok, YouTube, Facebook, Bluesky, Mastodon and Telegram through Publora's hosted Streamable HTTP MCP server. Portable Agent Plugins v1 package with nine skills; no local executable code."
+maintainer: publora-team
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/publora-team/hermes-publora/blob/189b417e90bd2da81876a7594fd0a0e0b5c94b5d/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

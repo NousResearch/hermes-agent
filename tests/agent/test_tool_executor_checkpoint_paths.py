@@ -131,7 +131,7 @@ async def test_container_session_refuses_host_rollback_on_every_surface(tmp_path
     assert "docker" in "".join(capsys.readouterr())
 
     runner = object.__new__(gateway_run.GatewayRunner)
-    runner._checkpoint_manager = lambda: manager
+    runner._checkpoint_manager = lambda source=None: manager
     source = SessionSource(platform=Platform.TELEGRAM, user_id="u", chat_id="c", user_name="t", chat_type="dm")
     for text in ("/rollback 1", "/rollback 1 --all"):
         assert "docker" in await runner._handle_rollback_command(MessageEvent(text=text, source=source))

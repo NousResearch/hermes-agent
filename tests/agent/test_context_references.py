@@ -603,13 +603,18 @@ async def test_blocks_canonical_read_denylist_credential_stores(tmp_path: Path, 
     mcp_token.parent.mkdir(parents=True)
     mcp_token.write_text('{"token": "MCP-TOKEN-SECRET"}\n', encoding="utf-8")
 
+    gcloud_adc = tmp_path / ".config" / "gcloud" / "application_default_credentials.json"
+    gcloud_adc.parent.mkdir(parents=True)
+    gcloud_adc.write_text('{"refresh_token": "GCLOUD-SECRET"}\n', encoding="utf-8")
+
     project_env = tmp_path / "project" / ".env"
     project_env.parent.mkdir(parents=True)
     project_env.write_text("DB_PASSWORD=ENV-SECRET\n", encoding="utf-8")
 
     result = await preprocess_context_references_async(
         "inspect @file:.hermes/auth.json and @file:.hermes/.anthropic_oauth.json "
-        "and @file:.hermes/mcp-tokens/github.json and @file:project/.env",
+        "and @file:.hermes/mcp-tokens/github.json and @file:project/.env "
+        "and @file:.config/gcloud/application_default_credentials.json",
         cwd=tmp_path,
         allowed_root=tmp_path,
         context_length=100_000,
@@ -621,9 +626,10 @@ async def test_blocks_canonical_read_denylist_credential_stores(tmp_path: Path, 
         "OAUTH-SECRET",
         "MCP-TOKEN-SECRET",
         "ENV-SECRET",
+        "GCLOUD-SECRET",
     ):
         assert secret not in result.message
-    assert sum("sensitive credential" in warning for warning in result.warnings) == 4
+    assert sum("sensitive credential" in warning for warning in result.warnings) == 5
 
 
 @pytest.mark.asyncio
@@ -747,3 +753,68 @@ async def test_composer_paste_outside_workspace_is_attached_but_sibling_dir_is_n
     assert "PASTED-BODY-MARKER" in result.message
     assert "LOOKALIKE-SECRET" not in result.message
     assert "outside the allowed workspace" in "\n".join(result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_blocklisted_url_reference_explains_policy_refusal(tmp_path: Path, monkeypatch):
+    """#127696: a blocked @url ref must explain the policy denial, not report an empty page."""
+    from agent.context_references import preprocess_context_references_async
+    from tools import web_tools
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "security:\n"
+        "  website_blocklist:\n"
+        "    enabled: true\n"
+        "    domains: [blocked.example]\n",
+        encoding="utf-8",
+    )
+
+    async def allow_public(_url: str) -> bool:
+        return True
+
+    class Provider:
+        name = "test"
+
+    async def forbid_provider_dispatch(*_args, **_kwargs):
+        pytest.fail("Blocklisted @url reference reached the extraction provider")
+
+    monkeypatch.setattr(web_tools, "async_is_safe_url", allow_public)
+    monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "test")
+    monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+    monkeypatch.setattr(web_tools, "_resolve_extract_provider", lambda _backend: (Provider(), None))
+    monkeypatch.setattr("tools.web_tools_extract._dispatch_extract", forbid_provider_dispatch)
+
+    result = await preprocess_context_references_async(
+        "Inspect @url:https://blocked.example/x",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert len(result.warnings) == 1
+    assert "Blocked by website policy" in result.warnings[0]
+    assert "blocked.example" in result.warnings[0]
+    assert "no content extracted" not in result.message
+    assert "--- Attached Context ---" not in result.message
+
+
+@pytest.mark.asyncio
+async def test_refused_url_reference_explains_the_refusal(tmp_path: Path, monkeypatch):
+    """An SSRF or secret-URL refusal must reach the warning, not read as an empty page."""
+    from agent.context_references import preprocess_context_references_async
+    from tools import web_tools
+
+    async def private(_url: str) -> bool:
+        return False
+
+    monkeypatch.setattr(web_tools, "async_is_safe_url", private)
+    result = await preprocess_context_references_async(
+        "Inspect @url:http://10.0.0.1/admin @url:https://example.com/?api_key=sk-abcdefghijklmnopqrstuvwxyz0123",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert len(result.warnings) == 2
+    assert "private or internal network address" in result.warnings[0]
+    assert "API key or token" in result.warnings[1]
+    assert "no content extracted" not in result.message

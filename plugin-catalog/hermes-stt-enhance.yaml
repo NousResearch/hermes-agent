@@ -1,0 +1,17 @@
+name: hermes-stt-enhance
+repo: https://github.com/dmmeteo/hermes-stt-enhance
+sha: 7be60e334a2d7cba870a76b5758e83655323d8b0
+subdir: hermes-stt-enhance
+description: "Local speech-to-text (provider stt_enhance) with faster-whisper or opt-in sherpa-onnx Parakeet V3 and long-audio chunking, plus an optional bounded LLM pass that enhances the transcript using a custom skill, an inline prompt or the default, and keeps the raw transcript on failure. Disclosure — audio is decoded locally. Post-processing is on by default and sends the transcript text to the LLM Hermes routes the stt_enhance auxiliary task to (your main, usually remote, provider unless you point it at a local endpoint or set post_processing.enabled: false). It reads the body of the SKILL.md you configure (never executed) and runs ffmpeg/ffprobe. The opt-in Parakeet backend reads a local model export and, on first use and only when your config.yaml explicitly sets security.allow_lazy_installs: true, installs pinned sherpa-onnx and numpy from PyPI into ~/.hermes/plugin-runtimes/hermes-stt-enhance/ (shared by all profiles). No tools, hooks, background processes, telemetry or stored credentials."
+maintainer: dmmeteo
+tier: community
+category: voice
+requires_hermes: ">=0.15.0"
+docs_url: https://github.com/dmmeteo/hermes-stt-enhance/tree/7be60e334a2d7cba870a76b5758e83655323d8b0/hermes-stt-enhance#readme
+version: "0.5.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

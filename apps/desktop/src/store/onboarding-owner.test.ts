@@ -28,11 +28,14 @@ vi.mock('@/store/gateway', async importOriginal => ({
 const owner = { connectionId: 'athena', profile: 'leverage-ai' }
 const requests: HermesApiRequest[] = []
 let authFlow: 'device_code' | 'pkce'
+// The sign-in long-poll asks at once, so a test that cancels a waiting flow keeps it pending.
+let pollStatus: 'approved' | 'pending'
 let deferStart: (() => Promise<void>) | undefined
 
 beforeEach(() => {
   vi.useFakeTimers()
   authFlow = 'device_code'
+  pollStatus = 'approved'
   deferStart = undefined
   requests.length = 0
   setApiRequestConnection(owner.connectionId)
@@ -63,7 +66,7 @@ beforeEach(() => {
         }
 
         if (path.includes('/poll/') || path.endsWith('/submit')) {
-          return { ok: true, status: 'approved' }
+          return { ok: true, status: path.endsWith('/submit') ? 'approved' : pollStatus }
         }
 
         if (path.startsWith('/api/model/options')) {
@@ -135,13 +138,19 @@ it.each(['device_code', 'pkce'] as const)(
     expect(ctx.requestGateway).not.toHaveBeenCalledWith('reload.env')
     expect(ctx.requestGateway).toHaveBeenCalledWith('setup.runtime_check', { provider: 'openai-codex' })
     await setOnboardingModel('other-fixture-model', 'openai-codex')
-    expect(requests.filter(request => request.path === '/api/model/set')).toHaveLength(2)
+    // Manual flows defer the global-default flip to the confirm card (#102829):
+    // completeWithModelConfirm skips its early persist, so the only /api/model/set
+    // is the explicit Change pick (persisted on Begin via confirmOnboardingModel
+    // when nothing changes). Owner pinning is what this test guards: every write
+    // still carries the flow's initiating owner below.
+    expect(requests.filter(request => request.path === '/api/model/set')).toHaveLength(1)
     expect(requests.some(request => request.path.includes(flow === 'pkce' ? '/submit' : '/poll/'))).toBe(true)
     expectOwnerRequests()
   }
 )
 
 it('cancels on the original owner after the foreground changes', async () => {
+  pollStatus = 'pending'
   const ctx = beginContext()
   await startProviderOAuth({ ...makeOAuthProvider('openai-codex'), flow: 'device_code' }, ctx)
   switchForeground()

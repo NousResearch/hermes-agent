@@ -1,6 +1,6 @@
 name: nvidia-app
 repo: https://github.com/NousResearch/hermes-nvidia
-sha: 65bb8d89263f920e8599432823d2d4e05cc113e3
+sha: de75692b479dc88b95e428a9cb25091d3fb0e327
 subdir: nvidia-app
 description: "NVIDIA App control through its local MCP server: overlay capture and state, driver status
   and release notes, game optimization, and app launch. Requires NVIDIA App 11.0 or newer on Windows;
@@ -10,7 +10,7 @@ description: "NVIDIA App control through its local MCP server: overlay capture a
   NVIDIA App settings on this machine; nothing leaves loopback."
 title: NVIDIA App
 maintainer: NousResearch
-tier: official
+tier: verified
 category: tools
 requires_hermes: ">=0.21.4"
 docs_url: https://github.com/NousResearch/hermes-nvidia/tree/main/nvidia-app

@@ -76,7 +76,7 @@ def _validate(job_id: str, key: str, value: str) -> None:
         raise ValueError(f"value too large (max {MAX_VALUE_BYTES} bytes per key)")
 
 
-def set_note(job_id: str, key: str, value: str) -> Dict[str, Any]:
+def set_note(job_id: str, key: str, value: str) -> dict[str, Any]:
     """Upsert one key. Raises ValueError when a size cap would be exceeded."""
     job_id, key, value = str(job_id), str(key), str(value)
     _validate(job_id, key, value)
@@ -123,7 +123,7 @@ def delete_note(job_id: str, key: str) -> bool:
     return cur.rowcount > 0
 
 
-def list_notes(job_id: str) -> List[Dict[str, Any]]:
+def list_notes(job_id: str) -> list[dict[str, Any]]:
     """All entries for one job, sorted by key."""
     with _transaction() as conn:
         rows = conn.execute(

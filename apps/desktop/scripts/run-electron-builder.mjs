@@ -14,6 +14,20 @@ const platformFlags = new Map([['--win', 'win32'], ['-w', 'win32'], ['--windows'
   ['--mac', 'darwin'], ['--macos', 'darwin'], ['-m', 'darwin'], ['-o', 'darwin'], ['--linux', 'linux'], ['-l', 'linux']])
 const architectures = ['--x64', '--arm64', '--ia32', '--armv7l', '--universal']
 
+// electron-builder's asar/blockmap pass outgrows the default V8 heap. Set here,
+// not via a cross-env prefix on the `builder` script: cross-env strips `'` from
+// forwarded arguments (#103010) and needs its bin installed (#110121).
+const HEAP_FLAG = '--max-old-space-size=16384'
+
+/**
+ * Inherited NODE_OPTIONS stay byte-identical (quoted preload paths survive); the
+ * heap flag goes last so it wins, as cross-env's replacement did.
+ * @param {string} [inherited] @returns {string}
+ */
+export function builderNodeOptions(inherited = process.env.NODE_OPTIONS ?? '') {
+  return `${inherited} ${HEAP_FLAG}`.trim()
+}
+
 /** @param {string[]} args @param {string} name @returns {string | undefined} */
 function takeOption(args, name) {
   const index = args.findIndex(arg => arg === name || arg.startsWith(`${name}=`))
@@ -83,6 +97,7 @@ function runSourceBuilds(args, nativeDeps, spawn) {
   const requested = [...new Set(args.filter(arg => architectures.includes(arg)))]
   if (requested.includes('--universal')) throw new Error('No prepared universal native payload; use --x64 --arm64 for separate packages')
   if (nativeDeps && requested.length > 1) throw new Error('--native-deps selects one architecture, not multiple source targets')
+  const env = { ...process.env, NODE_OPTIONS: builderNodeOptions() }
   for (const flag of requested.length ? requested : [`--${process.arch}`]) {
     const arch = flag.slice(2)
     const target = `${platform}-${arch}`
@@ -100,7 +115,7 @@ function runSourceBuilds(args, nativeDeps, spawn) {
       '--prepared', path.join(out, 'prepared.json'), '--native-deps', native,
       ...args.filter(arg => !architectures.includes(arg)), flag])
     for (const command of commands) {
-      const result = spawn(process.execPath, command, { cwd: app, stdio: 'inherit' })
+      const result = spawn(process.execPath, command, { cwd: app, stdio: 'inherit', env })
       if (result.error) throw result.error
       if (result.status !== 0) return result.status ?? 1
     }
@@ -140,7 +155,7 @@ export function runElectronBuilder(args, { spawn = spawnSync } = {}) {
     preloads.push('--require', path.join(import.meta.dirname, 'dmgbuild-diagnostics.cjs'))
   }
   /** @type {NodeJS.ProcessEnv} */
-  const env = { ...process.env, HERMES_PREPARED_PACKAGING: manifest,
+  const env = { ...process.env, NODE_OPTIONS: builderNodeOptions(), HERMES_PREPARED_PACKAGING: manifest,
     HERMES_PREPARED_NATIVE_DEPS: nativeDeps, HERMES_PREPARED_TARGET: inputs.target }
   if (inputs.dmgbuild) env.CUSTOM_DMGBUILD_PATH = inputs.dmgbuild
   if (inputs.windows?.dotnetRoot) env.DOTNET_ROOT = inputs.windows.dotnetRoot

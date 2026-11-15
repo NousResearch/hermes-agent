@@ -1,0 +1,25 @@
+name: pushover-hermes-plugin
+repo: https://github.com/lightx/pushover-hermes-plugin
+sha: 967fe2d476b384d51773529a7b34ab52e3fdebf1
+description: "Pushover as an outbound-only gateway platform, plus opt-in agent lifecycle notifications (finished, questions, errors, approvals, kanban blockers, Hermes's sudo password prompt) via Pushover and/or native notify-send, managed with /notifications. Disclosure — sends HTTPS requests to api.pushover.net only, carrying your Pushover app token, user key and notification text (when lifecycle notifications are enabled, excerpts of agent replies, clarify questions, approval commands, the command waiting on the sudo password prompt (redacted by Hermes; never the password) and kanban block reasons; PUSHOVER_NOTIFY_QUESTION=minimal suppresses all but kanban reasons); send_message can address any Pushover user or group key; runs notify-send (argv, no shell) when native notifications are enabled; writes an unrotated log under $HERMES_HOME/logs and settings.json under $HERMES_HOME/plugin-data, and $HERMES_HOME/.env only from the interactive setup wizard. Outbound-only, no inbound or approval path, no telemetry, no background processes."
+maintainer: lightx
+tier: community
+category: platform
+requires_hermes: ">=0.21"
+docs_url: https://github.com/lightx/pushover-hermes-plugin#readme
+version: "1.2.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - post_llm_call
+  - pre_approval_request
+  - post_approval_response
+  - pre_tool_call
+  - post_tool_call
+  - on_human_input_request
+  provides_middleware: []
+  requires_env:
+  - PUSHOVER_APP_TOKEN
+  - PUSHOVER_USER_KEY

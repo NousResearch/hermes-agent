@@ -42,7 +42,7 @@ def payload_tree(tmp_path: Path):
     py_dir = tmp_path / "stage" / "tools" / "py-1"
     repo = tmp_path / "stage" / "repo"
     site = tmp_path / "stage" / "venv" / "Lib" / "site-packages"
-    for d in (bin_dir, py_dir, repo / "hermes_cli", repo / "pm", site):
+    for d in (bin_dir, py_dir, repo / "hermes_cli", repo / "hermes_agent" / "compat", repo / "pm", site):
         d.mkdir(parents=True, exist_ok=True)
 
     # A real interpreter at the shebang's target: the launcher will create
@@ -67,6 +67,8 @@ def payload_tree(tmp_path: Path):
 
     # Exercise the real bootstrap before the fixture entry point.
     for relative in ("hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py",
+                     "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py",
+                     "hermes_agent/compat/finder.py", "hermes_agent/compat/moves.py",
                      "pm/environments.py", "pm/filesystem.py", "hermes_cli/runtime_state.py",
                      "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py",
                      # prepare_launch returns early for a fixture repo (no .git), but the bootstrap
@@ -99,7 +101,7 @@ def _mint(bin_dir: Path, wrapper: Path, specs) -> list[str]:
         HERMES_MINT_WRAPPER=str(wrapper),
         HERMES_MINT_PYTHON=r"<launcher_dir>\..\tools\py-1\python.exe",
     )
-    proc = subprocess.run([sys.executable, str(_MINT)], capture_output=True, text=True, env=env)
+    proc = subprocess.run([sys.executable, str(_MINT)], capture_output=True, text=True, env=env, check=False)
     assert proc.returncode == 0, proc.stderr
     return proc.stdout.split()
 
@@ -141,7 +143,7 @@ def test_minted_launcher_runs_relocated_and_forwards_exit_code(payload_tree, tmp
 
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "PYTHONPYCACHEPREFIX")}
     env["LOCALAPPDATA"] = str(payload_tree["tmp"] / "lad")
-    proc = subprocess.run([str(exe), "--version"], capture_output=True, text=True, cwd=tmp_path, env=env)
+    proc = subprocess.run([str(exe), "--version"], capture_output=True, text=True, cwd=tmp_path, env=env, check=False)
     assert proc.returncode == 7, proc.stderr[-800:]
     assert proc.stdout.strip() == "OK None"  # PYTHONHOME was dropped
 
@@ -160,6 +162,6 @@ def test_mint_rejects_a_non_launcher_dir_shebang(tmp_path):
     wrapper = tmp_path / "w.py"
     wrapper.write_text("x = 1\n", encoding="utf-8")
     env["HERMES_MINT_WRAPPER"] = str(wrapper)
-    proc = subprocess.run([sys.executable, str(_MINT)], capture_output=True, text=True, env=env)
+    proc = subprocess.run([sys.executable, str(_MINT)], capture_output=True, text=True, env=env, check=False)
     assert proc.returncode != 0
     assert "launcher_dir" in proc.stderr

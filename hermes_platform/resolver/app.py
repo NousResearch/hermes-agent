@@ -1,35 +1,59 @@
 """Desktop-application resolver over an `AppDef` (parsed from an MCP manifest's `app:` block).
 
-`locate` stats the executable or bundle. `inspect` reads the version source in-process.
-`probe` re-reads the vendor's runtime file on every call; the bearer token in it never
-leaves this module.
+`locate` stats every declared location in order (fixed paths, PATH, uninstall entries, the flatpak,
+snap and Applications directories) and lists directories for a `*` path segment; the first present
+one wins. `inspect` reads the version source in-process.
+`probe` re-reads the vendor's runtime file on every call; its bearer token is only ever
+attached to endpoint URLs that re-verify as plain loopback http.
 """
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import plistlib
+import re
 import sys
 import time
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Callable, Iterator, Literal
 from urllib.parse import urlsplit
 
+from hermes_platform.resolver import known_dirs
 from hermes_platform.resolver.base import Effort, Inspection, Probe
 from hermes_platform.resolver.core import (
     Candidate,
     CheckState,
+    Kind,
     LookupContext,
     Observation,
     Resolution,
+    locate_command,
 )
 
 PresenceKind = Literal["executable", "bundle"]
 VersionKind = Literal["pe_resource", "plist", "uninstall_registry", "none"]
 LivenessKind = Literal["server_json", "none"]
 
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _is_plain_loopback_http(parts) -> bool:
+    """One predicate for the runtime-url check and the composed-URL/dial-time re-checks:
+    plain http, loopback host, no userinfo. Callers keep their own port rules and details."""
+    return (parts.scheme == "http" and parts.hostname in _LOOPBACK_HOSTS
+            and not parts.username and not parts.password)
+
+
+@dataclass(frozen=True)
+class AppLocation:
+    """One place to look. `kind` is `path` or a key of `LOCATION_KINDS`. `value` is the path, or the
+    value of that kind's `key`. `file` is joined onto an uninstall entry's `InstallLocation`."""
+
+    kind: str
+    value: str
+    file: str = ""
 
 
 @dataclass(frozen=True)
@@ -39,7 +63,7 @@ class AppDef:
     app_id: str
     os_family: str
     presence: PresenceKind
-    location: str
+    locations: tuple[AppLocation, ...]
     version_kind: VersionKind = "none"
     version_arg: str = ""
     liveness_kind: LivenessKind = "none"
@@ -75,15 +99,9 @@ class AppResolver:
 
     def locate(self, ctx: LookupContext | None = None) -> Resolution:
         d = self.definition
-        target = _expand(d.location)
-        if not os.path.isabs(target) or "%" in target or "$" in target:
-            return Resolution("missing", (Candidate(target, f"app:{d.app_id}", False),))
-        if d.presence == "bundle":
-            present = os.path.isdir(target) and os.path.isfile(os.path.join(target, "Contents", "Info.plist"))
-        else:
-            present = os.path.isfile(target)
-        cand = Candidate(target, f"app:{d.app_id}", present)
-        return Resolution("known_path" if present else "missing", (cand,))
+        found = [hit for loc in d.locations for hit in _locator(loc.kind)(d, loc, ctx)]
+        kind: Kind = next((k for c, k in found if c.present), "missing")
+        return Resolution(kind, tuple(c for c, _ in found))
 
     # ---- inspect: bounded file reads and in-process OS APIs -----------------------------
 
@@ -139,6 +157,87 @@ class AppResolver:
         return Probe(running=running, answering=answering, endpoint=endpoint_obs)
 
 
+# ---- locations: each yields (candidate, resolution kind) in probe order -----------------
+
+_Hit = tuple[Candidate, Kind]
+_Locator = Callable[[AppDef, AppLocation, LookupContext | None], list[_Hit]]
+
+
+def _present(presence: PresenceKind, path: str) -> bool:
+    if presence == "bundle":
+        return os.path.isdir(path) and os.path.isfile(os.path.join(path, "Contents", "Info.plist"))
+    return os.path.isfile(path)
+
+
+def _hit(d: AppDef, source: str, path: str) -> _Hit:
+    present = os.path.isabs(path) and _present(d.presence, path)
+    return Candidate(path, source, present), "known_path"
+
+
+def _version_order(path: str) -> list:
+    return [(1, int(part)) if part.isdigit() else (0, part) for part in re.split(r"(\d+)", path)]
+
+
+def _path_hits(d: AppDef, loc: AppLocation, ctx: LookupContext | None) -> list[_Hit]:
+    target, source = _expand(loc.value), f"app:{d.app_id}"
+    not_found: list[_Hit] = [(Candidate(target, source, False), "known_path")]
+    if not os.path.isabs(target) or "%" in target or "$" in target:
+        return not_found
+    if "*" not in target:
+        return [_hit(d, source, target)]
+    # A `*` segment stands for a versioned folder (`Blender 5.2`); the highest version is tried first.
+    pattern = "*".join(glob.escape(part) for part in target.split("*"))
+    matches = sorted(glob.glob(pattern), key=_version_order, reverse=True)
+    return [_hit(d, source, match) for match in matches] or not_found
+
+
+def _command_hits(d: AppDef, loc: AppLocation, ctx: LookupContext | None) -> list[_Hit]:
+    res = locate_command(loc.value, ctx)
+    return [(Candidate(c.value, f"app:{d.app_id}:{loc.kind}", c.present), "path_executable") for c in res.candidates]
+
+
+def _uninstall_hits(d: AppDef, loc: AppLocation, ctx: LookupContext | None) -> list[_Hit]:
+    if sys.platform != "win32":
+        return []
+    # A UNC InstallLocation is skipped so a presence check never touches the network.
+    return [_hit(d, f"app:{d.app_id}:{loc.kind}", os.path.join(entry["InstallLocation"], loc.file))
+            for entry in _uninstall_entries(loc.value)
+            if entry.get("InstallLocation") and not entry["InstallLocation"].startswith(("\\\\", "//"))]
+
+
+def _in_dirs(dirs: Callable[[], tuple[str, ...]]) -> _Locator:
+    def hits(d: AppDef, loc: AppLocation, ctx: LookupContext | None) -> list[_Hit]:
+        return [_hit(d, f"app:{d.app_id}:{loc.kind}", os.path.join(_expand(root), loc.value)) for root in dirs()]
+    return hits
+
+
+@dataclass(frozen=True)
+class LocationSpec:
+    """A location kind a declaration names in a mapping. `only_on` is the one OS family it is valid
+    under (None: any), `key` names the mapping field holding what to find, `yields` is the presence
+    it finds, and `needs_file` says the mapping also carries a relative `file`."""
+
+    only_on: str | None
+    key: str
+    yields: PresenceKind
+    locate: _Locator
+    needs_file: bool = False
+
+
+LOCATION_KINDS: dict[str, LocationSpec] = {
+    "command": LocationSpec(None, "name", "executable", _command_hits),
+    "uninstall_registry": LocationSpec("win32", "display_name_prefix", "executable", _uninstall_hits, needs_file=True),
+    "app_bundle": LocationSpec("darwin", "name", "bundle", _in_dirs(known_dirs.mac_application_dirs)),
+    "flatpak": LocationSpec("linux", "app_id", "executable", _in_dirs(known_dirs.flatpak_export_dirs)),
+    "snap": LocationSpec("linux", "name", "executable", _in_dirs(known_dirs.snap_bin_dirs)),
+}
+
+
+def _locator(kind: str) -> _Locator:
+    """A plain string location is a `path`; every other kind comes from `LOCATION_KINDS`."""
+    return _path_hits if kind == "path" else LOCATION_KINDS[kind].locate
+
+
 # ---- version sources -------------------------------------------------------------------
 
 
@@ -180,9 +279,32 @@ def _pe_version(path: str) -> Observation[str]:
     return Observation(CheckState.PRESENT, f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}")
 
 
-def _uninstall_registry_version(display_name_prefix: str) -> Observation[str]:
-    if sys.platform != "win32":
-        return Observation(CheckState.UNAVAILABLE, detail="uninstall_registry needs Windows")
+def _uninstall_values(entry: Any) -> dict[str, str]:
+    """The uninstall entry's values that exist; any of them may be missing."""
+    import winreg
+
+    values: dict[str, str] = {}
+    for value_name in ("DisplayName", "DisplayVersion", "InstallLocation"):
+        try:
+            values[value_name] = str(winreg.QueryValueEx(entry, value_name)[0])
+        except OSError:
+            continue
+    return values
+
+
+def _uninstall_entry(key: Any, index: int) -> dict[str, str]:
+    """One child entry's values; an entry can vanish between EnumKey and OpenKey, which reads as no values."""
+    import winreg
+
+    try:
+        with winreg.OpenKey(key, winreg.EnumKey(key, index)) as entry:
+            return _uninstall_values(entry)
+    except OSError:
+        return {}
+
+
+def _uninstall_entries(display_name_prefix: str) -> Iterator[dict[str, str]]:
+    """Each uninstall entry whose `DisplayName` starts with the prefix, machine-wide before per-user."""
     import winreg
 
     roots = (
@@ -195,21 +317,22 @@ def _uninstall_registry_version(display_name_prefix: str) -> Observation[str]:
             with winreg.OpenKey(hive, root) as key:
                 count = winreg.QueryInfoKey(key)[0]
                 for i in range(count):
-                    sub = winreg.EnumKey(key, i)
-                    with winreg.OpenKey(key, sub) as entry:
-                        try:
-                            name, _ = winreg.QueryValueEx(entry, "DisplayName")
-                        except OSError:
-                            continue
-                        if str(name).startswith(display_name_prefix):
-                            try:
-                                version, _ = winreg.QueryValueEx(entry, "DisplayVersion")
-                            except OSError:
-                                return Observation(CheckState.UNAVAILABLE, detail="entry has no DisplayVersion")
-                            return Observation(CheckState.PRESENT, str(version))
+                    values = _uninstall_entry(key, i)
+                    if values.get("DisplayName", "").startswith(display_name_prefix):
+                        yield values
         except OSError:
             continue
-    return Observation(CheckState.ABSENT, detail="no uninstall entry")
+
+
+def _uninstall_registry_version(display_name_prefix: str) -> Observation[str]:
+    if sys.platform != "win32":
+        return Observation(CheckState.UNAVAILABLE, detail="uninstall_registry needs Windows")
+    entry = next(_uninstall_entries(display_name_prefix), None)
+    if entry is None:
+        return Observation(CheckState.ABSENT, detail="no uninstall entry")
+    if "DisplayVersion" not in entry:
+        return Observation(CheckState.UNAVAILABLE, detail="entry has no DisplayVersion")
+    return Observation(CheckState.PRESENT, entry["DisplayVersion"])
 
 
 # ---- liveness: the token stays inside this section -------------------------------------
@@ -236,16 +359,18 @@ def _read_server_json(path: str, d: AppDef) -> _Session | None:
     pid = data.get(d.liveness_pid_key)
     url = data.get(d.liveness_url_key)
     token = data.get(d.liveness_token_key)
+    # bool is an int subclass (pid:true would probe PID 1) and os.kill overflows past int32.
+    valid_pid = isinstance(pid, int) and not isinstance(pid, bool) and 0 < pid <= 0x7FFFFFFF
     return _Session(
-        pid=pid if isinstance(pid, int) else None,
+        pid=pid if valid_pid else None,
         url=url if isinstance(url, str) else "",
         token=token if isinstance(token, str) else "",
     )
 
 
 def _pid_alive(pid: int | None) -> Observation[bool]:
-    if pid is None or pid <= 0:
-        return Observation(CheckState.UNAVAILABLE, detail="no pid in runtime file")
+    if pid is None or isinstance(pid, bool) or not (0 < pid <= 0x7FFFFFFF):
+        return Observation(CheckState.UNAVAILABLE, detail="no valid pid in runtime file")
     if sys.platform == "win32":
         import ctypes
         from ctypes import wintypes
@@ -269,7 +394,8 @@ def _pid_alive(pid: int | None) -> Observation[bool]:
 
 
 def _endpoint_observation(raw_url: str, fixed_path: str) -> Observation[str]:
-    """Accept only a loopback http URL with a numeric port and no userinfo; the path is ours."""
+    """Accept only a loopback http URL with a numeric port and no userinfo; ``fixed_path`` is
+    manifest text, so the composed URL is re-parsed and re-verified before returning."""
     if not raw_url:
         return Observation(CheckState.UNAVAILABLE, detail="no url in runtime file")
     try:
@@ -279,18 +405,39 @@ def _endpoint_observation(raw_url: str, fixed_path: str) -> Observation[str]:
         return Observation(CheckState.UNAVAILABLE, detail="malformed endpoint")
     if parts.scheme != "http" or username or password:
         return Observation(CheckState.UNAVAILABLE, detail="endpoint must be plain http without userinfo")
-    if hostname not in _LOOPBACK_HOSTS:
+    if not _is_plain_loopback_http(parts):
         return Observation(CheckState.UNAVAILABLE, detail="endpoint must be loopback")
     if port is None or not (1 <= port <= 65535):
         return Observation(CheckState.UNAVAILABLE, detail="endpoint needs a numeric port")
-    return Observation(CheckState.PRESENT, f"http://{hostname}:{port}{fixed_path}")
+    # IPv6 literals need brackets in URL authority or the composed URL is unparseable.
+    host_fmt = f"[{hostname}]" if ":" in hostname else hostname
+    composed = f"http://{host_fmt}:{port}{fixed_path}"
+    try:
+        rejoined = urlsplit(composed)
+        _ = rejoined.port
+    except ValueError:
+        return Observation(CheckState.UNAVAILABLE, detail="malformed endpoint path")
+    # fixed_path is manifest text: a crafted tail (e.g. '@host/') would rewrite the authority and
+    # send the runtime file's bearer token to a manifest-chosen host. Re-verify the whole URL.
+    if not _is_plain_loopback_http(rejoined) or rejoined.port != port:
+        return Observation(CheckState.UNAVAILABLE, detail="endpoint path must stay on loopback")
+    return Observation(CheckState.PRESENT, composed)
 
 
 def _mcp_initialize(session: _Session, endpoint: str, deadline_s: float) -> Observation[bool]:
     """One MCP `initialize` POST under one absolute deadline covering connect, headers, and body."""
     import http.client
 
-    parts = urlsplit(endpoint)
+    try:
+        parts = urlsplit(endpoint)
+        port = parts.port
+    except ValueError:
+        return Observation(CheckState.UNAVAILABLE, detail="malformed endpoint")
+    if port is None or not (1 <= port <= 65535) or not _is_plain_loopback_http(parts):
+        # Belt under _endpoint_observation: the caller-side path tail is manifest text, so the
+        # re-parsed URL must still name a loopback host:port before any connection -- the bearer
+        # token rides on this request.
+        return Observation(CheckState.UNAVAILABLE, detail="endpoint is not a loopback http URL")
     body = json.dumps({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
@@ -307,17 +454,21 @@ def _mcp_initialize(session: _Session, endpoint: str, deadline_s: float) -> Obse
             raise TimeoutError
         return left
 
-    conn = http.client.HTTPConnection(parts.hostname or "127.0.0.1", parts.port or 80, timeout=remaining())
+    conn = None
     try:
+        conn = http.client.HTTPConnection(parts.hostname or "127.0.0.1", port, timeout=remaining())
         conn.request("POST", parts.path or "/", body=body, headers=headers)
         conn.sock.settimeout(remaining())
         status = conn.getresponse().status
     except TimeoutError:
         return Observation(CheckState.ABSENT, False, f"no answer within {deadline_s:g} s")
-    except (OSError, http.client.HTTPException):
+    except (OSError, http.client.HTTPException, ValueError):
+        # ValueError covers a non-ASCII path (conn.request -> UnicodeEncodeError) from a
+        # directly-constructed AppDef, which never passed the declaration charset check.
         return Observation(CheckState.ABSENT, False, "connection refused or timed out")
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     if status in (200, 401, 403):
         return Observation(CheckState.PRESENT, True, f"http {status}")
     return Observation(CheckState.ABSENT, False, f"http {status}")

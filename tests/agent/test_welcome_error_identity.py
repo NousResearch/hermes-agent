@@ -45,7 +45,7 @@ def test_named_errors_do_not_offer_anonymous_recovery(api_key, base_url, case):
     if status == 403:
         result = nonretryable_client_error_result(agent, error, classified, status_code=status, **common)
     else:
-        result = max_retries_exhausted_result(agent, error, classified, max_retries=3,
+        result = max_retries_exhausted_result(agent, error, classified, attempts=3,
                                              is_rate_limited=status == 429, error_msg=message, **common)
     assert "welcome_refusal" not in classified.error_context
     assert "welcome_route" not in classified.error_context
@@ -100,7 +100,7 @@ def test_auxiliary_anonymous_cooldown_does_not_outlive_signing_in(tmp_path, monk
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     record_nous_rate_limit(headers={"retry-after": "600"}, anonymous=True)
     runtime = [make_jwt(), WELCOME]
-    monkeypatch.setattr(aux, "_read_nous_auth", lambda: {})
+    monkeypatch.setattr(aux, "_read_nous_auth", dict)
     monkeypatch.setattr(aux, "_resolve_nous_runtime_api", lambda **kw: tuple(runtime))
     unhealthy = []
     monkeypatch.setattr(aux, "_mark_provider_unhealthy", lambda *a, **kw: unhealthy.append(kw.get("ttl")))

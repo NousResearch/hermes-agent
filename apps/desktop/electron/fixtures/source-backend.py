@@ -23,7 +23,8 @@ def main() -> None:
     root = Path(os.environ["HERMES_HOME"]) / "hermes-agent"
     root.mkdir(parents=True)
     for name in (
-        "hermes_cli", "hermes_platform", "pm", "agent", "tools", "gateway", "tui_gateway", "cron", "plugins",
+        "hermes_agent", "hermes_cli", "hermes_platform", "pm", "agent", "tools", "gateway", "tui_gateway", "cron",
+        "plugins",
     ):
         shutil.copytree(repository / name, root / name,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
@@ -75,7 +76,7 @@ def main() -> None:
         f"runpy.run_path({str(worker)!r}, run_name='__main__')"
     )
     client = importlib.import_module("pm.client")
-    setattr(client, "runtime_command", lambda *args, **kwargs: [str(worker_python), "-I", "-c", worker_code])
+    client.runtime_command = lambda *args, **kwargs: [str(worker_python), "-I", "-c", worker_code]
     pm.sync_venv(explicit=True, project_root=root)
     selected = selected_venv(root)
     assert selected and selected.is_relative_to(Path(os.environ["HERMES_HOME"]))

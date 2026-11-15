@@ -25,7 +25,7 @@ def _keyless_rescue_enabled() -> bool:
     try:
         from agent.web_search_registry import _keyless_tier_enabled
         return _keyless_tier_enabled()
-    except Exception as exc:  # noqa: BLE001 — registry optional
+    except Exception as exc:
         logger.debug("keyless rescue tier check failed: %s", exc)
         return False
 
@@ -48,17 +48,18 @@ def _ring_vendor_keyless(name: str) -> bool:
 
 
 def _managed_search_fallback(provider, original_error: str, query: str, limit: int):
-    """Try managed Firecrawl for this call only; None leaves the original error for keyless rescue."""
+    """Try managed Firecrawl for this call only; None leaves the original error for keyless rescue.
+    Managed Firecrawl is billed, so a caller on free fast search alone never reaches it."""
     from agent.web_search_provider import get_provider_env
-    from tools.web_tools import _managed_web_search
+    from tools import web_tools as _wt
     if (getattr(provider, "name", "") != "perplexity"
-            or get_provider_env("PERPLEXITY_API_KEY") or not _managed_web_search()):
+            or get_provider_env("PERPLEXITY_API_KEY") or not _wt._managed_web_search() or not _wt._is_tool_gateway_ready()):
         return None
     logger.warning("web_search managed Perplexity failed (%s); serving this call from managed Firecrawl", (original_error or "")[:200])
     try:
         from agent.web_search_registry import get_provider
         resp = get_provider("firecrawl").search(query, limit)
-    except Exception as exc:  # noqa: BLE001 — fallback is best-effort
+    except Exception as exc:
         resp = {"success": False, "error": str(exc)}
     if not resp.get("success"):
         logger.warning("managed Firecrawl fallback failed too: %s", str(resp.get("error", ""))[:200])
@@ -84,7 +85,7 @@ def _rescue_eligible(provider) -> bool:
         from plugins.web.keyless_mcp import _KEYLESS_RING
         name = getattr(provider, "name", "")
         return name not in _KEYLESS_RING or not _ring_vendor_keyless(name)
-    except Exception as exc:  # noqa: BLE001 — rescue is best-effort
+    except Exception as exc:
         logger.debug("rescue eligibility check failed: %s", exc)
         return False
 

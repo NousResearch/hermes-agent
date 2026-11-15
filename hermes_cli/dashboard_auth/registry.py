@@ -1,32 +1,39 @@
 """Module-level registry for DashboardAuthProvider instances. Plugins call ``register_provider``
 via the plugin context hook at startup; the auth gate iterates ``list_providers()`` and uses
-``get_provider`` to dispatch on the session's ``provider`` field."""
+``get_provider`` to dispatch on the session's ``provider`` field.
+
+Storage, the per-profile overlays and the plugin snapshot/restore pair are the shared
+:class:`agent.provider_registry.ProviderRegistry`. Registration, lookup and listing keep their own
+contract below: names are exact (no normalization), a duplicate raises, and lists keep
+registration order."""
 from __future__ import annotations
 
 import logging
-import threading
 from typing import List, Optional
 
+from agent.provider_registry import ProviderRegistry, exact_key
 from hermes_constants import hermes_home_key, normalize_scope
 from hermes_cli.dashboard_auth.base import DashboardAuthProvider, assert_protocol_compliance
 
 _log = logging.getLogger(__name__)
-_lock = threading.Lock()
-_providers: dict[str, DashboardAuthProvider] = {}
-_scoped_providers: dict[str, dict[str, DashboardAuthProvider]] = {}
+_registry: ProviderRegistry[DashboardAuthProvider] = ProviderRegistry(
+    label="Dashboard-auth", provider_cls=DashboardAuthProvider, logger=_log, normalize=exact_key,
+)
+# Bound by hand rather than via ``export()``: register/get/list below keep this registry's own
+# contract, so only the storage and the snapshot/restore pair come from the shared engine.
+_providers = _registry._providers
+_scoped_providers = _registry._scoped_providers
+_lock = _registry._lock
+_target = _registry._target
+snapshot_registration = _registry.snapshot_registration
+restore_registration = _registry.restore_registration
 
 
 def _merged(scope: Optional[str] = None) -> dict[str, DashboardAuthProvider]:
+    """Lock-free merge for callers already holding ``_lock``."""
     providers = dict(_providers)
     providers.update(_scoped_providers.get(hermes_home_key(scope), {}))
     return providers
-
-
-def _target(scope: Optional[str], *, create: bool) -> dict[str, DashboardAuthProvider]:
-    """Global map for ``scope is None``, else that scope's overlay."""
-    if scope is None:
-        return _providers
-    return _scoped_providers.setdefault(scope, {}) if create else _scoped_providers.get(scope, {})
 
 
 def _log_registered(kind: str, provider: DashboardAuthProvider) -> None:
@@ -52,48 +59,31 @@ def get_provider(name: str, *, scope: Optional[str] = None) -> Optional[Dashboar
         return _merged(scope).get(name)
 
 
-def snapshot_registration(
-    name: str, *, scope: Optional[str] = None) -> Optional[DashboardAuthProvider]:
-    with _lock:
-        scope = normalize_scope(scope)
-        return _target(scope, create=False).get(name)
-
-
-def restore_registration(
-    name: str, current: DashboardAuthProvider, previous: Optional[DashboardAuthProvider],
-    *, scope: Optional[str] = None) -> bool:
-    """Restore a host-owned provider registration if it is still current."""
-    with _lock:
-        scope = normalize_scope(scope)
-        target = _target(scope, create=True)
-        if target.get(name) is not current:
-            return False
-        if previous is None:
-            target.pop(name, None)
-        else:
-            target[name] = previous
-        if scope is not None and not target:
-            _scoped_providers.pop(scope, None)
-    return True
-
-
-def list_providers(*, scope: Optional[str] = None) -> List[DashboardAuthProvider]:
+def list_providers(*, scope: Optional[str] = None) -> list[DashboardAuthProvider]:
     """All registered providers, in registration order."""
     with _lock:
         return list(_merged(scope).values())
 
 
-def list_token_providers() -> List[DashboardAuthProvider]:
+def list_token_providers() -> list[DashboardAuthProvider]:
     """Providers with ``supports_token`` True, in registration order. The ``token_auth`` seam
     consults only these, so OAuth/password-only providers are never asked to ``verify_token``;
     empty => a token-authable route fails closed (401)."""
     return [p for p in list_providers() if getattr(p, "supports_token", False)]
 
 
-def list_session_providers() -> List[DashboardAuthProvider]:
+def list_session_providers() -> list[DashboardAuthProvider]:
     """Providers with ``supports_session`` True (interactive cookie sessions); the login page,
     /auth/login and the gate's verify/refresh loops use only these."""
     return [p for p in list_providers() if getattr(p, "supports_session", True)]
+
+
+def list_interactive_providers() -> list[DashboardAuthProvider]:
+    """Session providers that offer a sign-in flow (``interactive_login`` True). Every login
+    surface — the login page, ``/api/auth/providers``, auto-SSO, native authorize selection and
+    chooser, the ``native_pkce`` advertisement — uses this; the verify/refresh loops keep
+    :func:`list_session_providers`, so a provisioned-credential provider still authenticates."""
+    return [p for p in list_session_providers() if getattr(p, "interactive_login", True)]
 
 
 def register_global_provider(provider: DashboardAuthProvider) -> None:
@@ -121,8 +111,4 @@ def unregister_global_provider(name: str, provider: DashboardAuthProvider) -> bo
     return False
 
 
-def clear_providers() -> None:
-    """Test-only: drop all registrations."""
-    with _lock:
-        _providers.clear()
-        _scoped_providers.clear()
+clear_providers = _registry.reset_for_tests  # Test-only: drop all registrations.

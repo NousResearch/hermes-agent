@@ -6,6 +6,8 @@
 * :func:`run_bounded_async` / :func:`run_bounded_sync` — wall-clock deadlines driven by
   a daemon ``threading.Timer`` / worker thread, so a blocked event loop cannot disable them.
 * :func:`kill_process_tree` — portable whole-tree termination.
+* :func:`poll_until` — the one "check until it holds or the deadline passes" loop; use it
+  instead of hand-writing ``deadline = time.monotonic() + t; while ...: time.sleep(...)``.
 
 Invariants: operation exceptions propagate unchanged (only the *timeout* outcome is reified
 as :class:`BoundedResult`); a timeout here is OUR deadline, not the provider's (classify
@@ -25,14 +27,23 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional, Protocol
+from typing import Any, Awaitable, Callable, Optional, Protocol, TypeVar
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "MAX_SAFE_TIMEOUT_S", "BoundedResult", "DeadlineExpired", "clamp_timeout", "resolve_timeout",
-    "run_bounded_async", "run_bounded_sync", "kill_process_tree",
+    "MAX_SAFE_TIMEOUT_S",
+    "BoundedResult",
+    "DeadlineExpired",
+    "clamp_timeout",
+    "kill_process_tree",
+    "poll_until",
+    "resolve_timeout",
+    "run_bounded_async",
+    "run_bounded_sync",
 ]
+
+_T = TypeVar("_T")
 
 # Upper bound for any timeout handed to platform wait primitives.
 #
@@ -126,6 +137,26 @@ def clamp_timeout(timeout: Optional[float]) -> Optional[float]:
     return None if value <= 0 else min(value, MAX_SAFE_TIMEOUT_S)
 
 
+def poll_until(predicate: Callable[[], _T], timeout: float, interval: float) -> _T:
+    """Call ``predicate`` every ``interval`` s until it returns something truthy or ``timeout`` s
+    pass; return its last result (falsy on timeout).
+
+    The first check runs at once and the last sleep is cut to the time left, so a condition that
+    holds when the deadline arrives still counts. ``timeout <= 0`` means exactly one check.
+    Only the sleeps are bounded: time spent inside ``predicate`` is not, so a predicate that blocks
+    (socket probes, subprocess calls) can carry the final check past the deadline.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        result = predicate()
+        if result:
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return result
+        time.sleep(min(interval, remaining))
+
+
 # --- Timeout resolution: config ``timeouts:`` > legacy env var > default ------
 
 
@@ -189,7 +220,7 @@ def resolve_timeout(key: str, *, default: Optional[float], env_var: Optional[str
 # timer dumps all thread stacks when the loop provably failed to process the expiry — the one piece of
 # information loop-blocked hangs otherwise never surface.
 # ---------------------------------------------------------------------------
-def _consume_abandoned(task: "asyncio.Future[Any]") -> None:
+def _consume_abandoned(task: asyncio.Future[Any]) -> None:
     """Observe an abandoned task's outcome so it never logs 'never retrieved'."""
     try:
         if not task.cancelled():
@@ -198,7 +229,7 @@ def _consume_abandoned(task: "asyncio.Future[Any]") -> None:
         pass
 
 
-def _abandon(task: "asyncio.Future[Any]") -> None:
+def _abandon(task: asyncio.Future[Any]) -> None:
     """Cancel ``task`` and never await it; its outcome is consumed so it stays unobserved-safe."""
     task.cancel()
     task.add_done_callback(_consume_abandoned)
@@ -247,7 +278,7 @@ async def run_bounded_async(
 
     task = asyncio.ensure_future(awaitable)
     loop = asyncio.get_running_loop()
-    deadline: "asyncio.Future[None]" = loop.create_future()
+    deadline: asyncio.Future[None] = loop.create_future()
     loop_processed_expiry = threading.Event()
 
     def _mark_expired() -> None:
@@ -431,7 +462,7 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
         try:
             proc = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True, timeout=15, check=False, creationflags=creationflags,
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=15, check=False, creationflags=creationflags,
             )
             # taskkill exits non-zero for not-found / access-denied (False = nothing terminated).
             return proc.returncode == 0

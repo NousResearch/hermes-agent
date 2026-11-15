@@ -64,6 +64,13 @@ describe('a sent reference renders as the chip the composer showed', () => {
   it('leaves a fenced block alone', () => {
     render(<UserMessageText text={'before\n```ts\nconst x = 1\n```\nafter'} />)
 
-    expect(document.querySelector('[data-slot="aui_user-fence"]')?.textContent).toBe('const x = 1\n')
+    const fence = document.querySelector('[data-slot="aui_user-fence"]')
+
+    expect(fence?.textContent).toBe('const x = 1\n')
+    // #70451: a wide user fence wraps inside the bubble instead of growing a
+    // horizontal scrollbar under the transcript.
+    expect(fence?.className).toContain('overflow-x-hidden')
+    expect(fence?.className).toContain('whitespace-pre-wrap')
+    expect(fence?.className).not.toContain('overflow-x-auto')
   })
 })

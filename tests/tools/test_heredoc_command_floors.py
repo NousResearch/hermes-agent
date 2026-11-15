@@ -72,6 +72,66 @@ def test_path_qualified_reader_of_a_written_doc_stays_quiet(floors_off):
     assert approval_floors._match_user_deny_rule(command) is None
 
 
+@pytest.mark.parametrize("reader", [
+    'echo "$(cat notes.md)"', "cat notes.md | bash -n", "bash -n <(cat notes.md)",
+    "cat notes.md | python3 -m json.tool", "printf '%s' 'cat notes.md | bash'", "cat notes.md | bashate",
+    "cat notes.md | bash other.sh", "cat notes.md | python3 -W ignore lint.py",
+    'bash other.sh "$(cat notes.md)"',
+])
+def test_reading_a_written_doc_without_running_it_stays_quiet(floors_off, reader):
+    command = f"cat > notes.md <<'EOF'\nrm notes.txt\nEOF\n{reader}"
+
+    assert approval_floors._match_user_deny_rule(command) is None, reader
+
+
+@pytest.mark.parametrize("runner", [
+    'eval "$(cat job.sh)"', "cat job.sh | bash -s -- --prefix /opt", ". <(cat job.sh)", "cat job.sh | sudo bash",
+    "cat job.sh | bash > run.log 2>&1", "cat job.sh | python3 - install", "cat job.sh | bash -euo pipefail",
+    "cat job.sh | bash -o pipefail -x", "cat job.sh | bash +o posix", "cat job.sh | python3 -W ignore",
+])
+def test_running_a_written_file_s_content_keeps_it_on_the_deny_list(floors_off, runner):
+    command = f"cat > job.sh <<'EOF'\nrm notes.txt\nEOF\n{runner}"
+
+    assert approval_floors._match_user_deny_rule(command) is not None, runner
+
+
+@pytest.mark.parametrize("command", [
+    "cat > job.sh <<'EOF'\nrm -rf /\nEOF\nbash -euo pipefail job.sh",
+    "cat > job.sh <<'EOF'\nrm -rf /\nEOF\nbash +o posix job.sh",
+    "cat > j.ps1 <<'EOF'\nRemove-Item C:\\ -Recurse -Force\nEOF\npwsh -File j.ps1",
+    "cat > j.ps1 <<'EOF'\nStop-Computer -Force\nEOF\npowershell -NoProfile -ExecutionPolicy Bypass -File .\\j.ps1",
+    "cat > j.ps1 <<'EOF'\nClear-Disk -Number 0 -RemoveData\nEOF\npwsh -ep bypass j.ps1",
+    "cat > j.bat <<'EOF'\nrd /s /q C:\\\nEOF\ncmd /c j.bat",
+    "cat > j.bat <<'EOF'\nrd /s /q C:\\\nEOF\nCMD.EXE /Q /C call .\\j.bat",
+])
+def test_option_values_and_windows_runners_keep_written_script_on_floors(floors_off, command):
+    command = command.replace("rm -rf /", "r" + "m -r" + "f /")
+    assert detect_hardline_command(command)[0] is True
+    assert approval.check_all_command_guards(command, "local")["approved"] is False
+
+
+@pytest.mark.parametrize("script,runner", [
+    ("j.ps1", "pwsh -File j.ps1"), ("job.py", "python3 -W ignore job.py"), ("job.sh", "bash -o pipefail job.sh"),
+    ("j.bat", "cmd /c j.bat"),
+    ("job.sh", "bash -o pipefail 2>err.log job.sh"),
+    ("job.sh", "bash -o pipefail 2>&1 job.sh"), ("job.sh", "bash -o pipefail < job.sh"),
+    ("job.sh", 'bash -o pipefail -c "$(cat job.sh)"'),
+])
+def test_option_value_or_powershell_run_keeps_written_script_on_the_deny_list(floors_off, script, runner):
+    command = f"cat > {script} <<'EOF'\nrm notes.txt\nEOF\n{runner}"
+
+    assert approval_floors._match_user_deny_rule(command) is not None, runner
+
+
+@pytest.mark.parametrize("runner", [
+    "bash -o pipefail other.sh", "pwsh -File other.ps1", "pwsh -Command Get-Date", "cmd /c other.bat",
+])
+def test_running_another_script_after_a_written_doc_stays_quiet(floors_off, runner):
+    command = f"cat > notes.md <<'EOF'\nrm notes.txt\nEOF\n{runner}"
+
+    assert approval_floors._match_user_deny_rule(command) is None, runner
+
+
 def test_unquoted_heredoc_keeps_command_substitution_visible_to_hardline():
     command = "cat > notes.txt <<EOF\n$(rm -rf /)\nEOF"
 

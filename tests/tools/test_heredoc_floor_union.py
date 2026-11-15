@@ -82,6 +82,11 @@ def test_code_heredoc_body_stays_visible_to_dangerous_scan(command):
     f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\n\"/bin/bash\" job.sh",
     f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\nsudo 'bash' job.sh",
     f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\nC:\\Git\\bin\\bash.exe job.sh",
+    # The file's content run instead of the file.
+    f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\neval \"$(cat job.sh)\"",
+    f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\ncat job.sh | bash",
+    f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\nbash <(cat job.sh)",
+    f"cat > job.sh <<'EOF'\n{RM_ROOT}\nEOF\nsh -c \"$(< job.sh)\"",
 ])
 def test_heredoc_written_then_run_keeps_its_body_on_the_floors(gate_mode, command):
     # The body lands in a file the same string runs: it is code, not data.
@@ -143,6 +148,7 @@ def test_unterminated_heredoc_spam_is_linear():
     "curl -o f;" * 6400,
     "curl -O " + "https://e.x/f " * 6000 + "\nf",
     "curl -O https://e.x/f;" * 4000,
+    "curl -o f x" + ";bash -o pipefail g" * 8000,
 ])
 def test_download_then_run_rule_is_linear(command):
     # The whole detector is already ~1 s on these on main (other rules); time the new rule alone.

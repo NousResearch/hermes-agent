@@ -21,7 +21,7 @@ _TARGET_RE = re.compile(
     re.IGNORECASE,
 )
 _TERMINATOR = r"(?=[\s;&|)`'\"]|$)"
-_SCRIPT_INTERPRETERS_RE = r"python[0-9.]*+|perl|ruby|node|php"
+_SCRIPT_INTERPRETERS_RE = r"python[0-9.]*+|perl|ruby|node|php|pwsh|powershell|cmd"
 _PIPE_PATH_PREFIX_RE = r"(?>(?:[a-zA-Z]:)?(?:[.\w~-]*+[/\\])*+)"
 
 
@@ -39,6 +39,16 @@ _LINE_WRAPPERS_RE = _launcher_wrappers_re(_H)
 # BEGIN/use blocks.
 _SHELL_CHECK_FLAG = r"-[vx]*+n[nvx]*+"
 _CHECK_ONLY_FLAGS = {"node": r"-c|--check", "ruby": r"-w?c[cw]*+", "php": r"-l"}
+# Options whose next word is their value, not a script operand (`bash -euo pipefail`, `python3 -W ignore`).
+_SHELL_VALUE_FLAG = r"[-+][a-zA-Z]*[oO]"
+_PS_VALUE_FLAG = r"(?i)-(?:ep|ex\w*|w\w*|config\w*)"  # -ExecutionPolicy, -WindowStyle, -WorkingDirectory
+_VALUE_FLAGS = {"python": r"-[WX]", "node": r"-r|--require|--import", "ruby": r"-[rI]",
+                "pwsh": _PS_VALUE_FLAG, "powershell": _PS_VALUE_FLAG}
+# cmd's switches are /x words; `call` only names the batch file after it (`cmd /c call j.bat`).
+_OPTION_WORDS = {"cmd": r"/\S*|(?i:call)"}
+_REDIRECT_RE = re.compile(r"\d*+[<>]++&?+\s*+[^\s<>]*+")
+_ARGS_RE = re.compile(r"(?:[^\n;&|)`]|(?<=[<>])&)*+")  # `2>&1` is a redirection, not a list operator
+_STDIN_RE = re.compile(r"(?<![<\S])0?<(?![<(&])\s*+([^\s<>]++)")
 # curl -O / --remote-name saves under the URL's basename, not an operand: `curl -fsSLO URL`.
 # `command -v`/`-V` only looks the name up (`&& command -v tool` after installing tool).
 _LOOKUP_ONLY_RE = re.compile(r"\bcommand(?:\s+-[a-uw-zA-UW-Z]+)*\s+-[a-zA-Z]*[vV]", re.IGNORECASE)
@@ -67,11 +77,62 @@ class DownloadThenRunMatcher:
             re.IGNORECASE,
         )
         self._check_flags = {**{name: _SHELL_CHECK_FLAG for name in shell_names_re.split("|")}, **_CHECK_ONLY_FLAGS}
+        # FILE's content run instead of FILE, at a command start: `$(cat f)`, `$(< f)`, `` `cat f` ``
+        # or `<(cat f)`, bare or after eval, source or a program (`sh -c "$(cat f)"`), or `cat f | sh`.
+        # A substitution used as an argument (`echo "$(cat f)"`) runs nothing.
+        read = r"(?:\$\(\s*+(?:cat\s++|<\s*+)|`\s*+cat\s++|<\(\s*+cat\s++)['\"]?(?:\./)?(?P<file>[^\s;&|<>'\"`()]++)"
+        tool = rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?P<{{}}>{shell_names_re}|{_SCRIPT_INTERPRETERS_RE})(?:\.exe)?['\"]?"
+        self._read_run_re = re.compile(
+            rf"[;&|\n(]\s*+(?:(?:[{{!]|if|then|do|else|elif|while|until){_H}++)*+(?:\w++=\S*+{_H}++)*+"
+            rf"{_LINE_WRAPPERS_RE}(?:(?:(?:eval|source|\.|{tool.format('rtool')}(?P<rflags>(?:{_H}++(?![$`<'\"])[^\s;&|)`]++)*?)){_H}++)?"
+            rf"['\"]?{read}|cat{_H}++['\"]?(?:\./)?(?P<piped>[^\s;&|<>'\"`()]++)['\"]?{_H}*+\|(?!\|)&?\s*+"
+            rf"{_LINE_WRAPPERS_RE}{tool.format('ptool')}{_TERMINATOR}(?P<pargs>(?:{_H}++[^\s;&|)`]++)*+))",
+            re.IGNORECASE,
+        )
 
     def _syntax_check_only(self, run: re.Match) -> bool:
         flag = self._check_flags.get((run.group("tool") or "").lower())
         flags = run.group("flags").split() if flag and run.group("flags") else ()
         return bool(flags) and all(re.fullmatch(flag, f) for f in flags)
+
+    def _split_args(self, tool: str, words: list[str]) -> tuple[list[str], list[str]]:
+        """(options, words from the operand on): option values are not operands."""
+        shell = self._check_flags.get(tool) == _SHELL_CHECK_FLAG
+        value = _SHELL_VALUE_FLAG if shell else _VALUE_FLAGS.get("python" if tool.startswith("python") else tool, "(?!)")
+        flags, i = [], 0
+        option = r"[-+]\S*" if shell else _OPTION_WORDS.get(tool, r"-\S*")
+        while i < len(words) and re.fullmatch(option, words[i]):
+            flags.append(words[i])
+            i += 2 if re.fullmatch(value, words[i]) else 1
+        return flags, words[i:]
+
+    def _check_only(self, tool: str, flags: list[str]) -> bool:
+        check = self._check_flags.get(tool)
+        return bool(check and flags) and all(re.fullmatch(check, f) for f in flags)
+
+    def _operand_ran(self, run: re.Match, text: str, targets: dict[str, int]) -> bool:
+        """`bash -o pipefail job.sh`, `powershell -ExecutionPolicy Bypass -File .\\j.ps1`: the real operand."""
+        tool = run.group("tool").lower()
+        args = _ARGS_RE.match(text, run.end("prog")).group()
+        flags, rest = self._split_args(tool, _REDIRECT_RE.sub(" ", args).split())
+        operand = rest[0] if rest else (stdin.group(1) if (stdin := _STDIN_RE.search(args)) else None)
+        if operand is None or self._check_only(tool, flags):
+            return False
+        return run.start() >= targets.get(_base(operand.strip("'\"").replace("\\", "/")), len(text))
+
+    def _runs_content(self, read: re.Match) -> bool:
+        """`bash -n <(cat f)`, `cat f | bash -n` and `cat f | python3 -m json.tool` don't run f."""
+        tool = (read.group("rtool") or read.group("ptool") or "").lower()
+        # redirections (`> run.log`, `2>&1`) are not operands
+        flags, rest = self._split_args(tool, _REDIRECT_RE.sub(" ", read.group("rflags") or read.group("pargs") or "").split())
+        if self._check_only(tool, flags):
+            return False
+        # A piped program reads its code from stdin unless a script or -c/-m operand comes first.
+        shell = self._check_flags.get(tool) == _SHELL_CHECK_FLAG
+        if read.group("piped") is None:
+            return not rest  # `bash other.sh "$(cat f)"` hands f's content to other.sh as an argument
+        return not rest or any(
+            f == "-" or (shell and re.fullmatch(r"-[a-zA-Z]*s[a-zA-Z]*", f)) for f in flags)
 
     def search(self, text: str):
         targets: dict[str, int] = {}  # downloaded FILE -> where its download ends
@@ -96,8 +157,13 @@ class DownloadThenRunMatcher:
             prog = (run.group("prog") or "").strip("'\"")
             prog_ran = "/" in prog and run.start() >= targets.get(_base(prog), len(text))
             file_ran = run.start() >= targets.get(_base(run.group("file")), len(text)) and not self._syntax_check_only(run)
+            file_ran = file_ran or bool(run.group("tool")) and self._operand_ran(run, text, targets)
             if (prog_ran or file_ran) and not _LOOKUP_ONLY_RE.search(run.group()):
                 return run
+        for read in self._read_run_re.finditer(text, min(targets.values())):
+            written = read.start() >= targets.get(_base(read.group("file") or read.group("piped")), len(text))
+            if written and self._runs_content(read):
+                return read
         return None
 
 

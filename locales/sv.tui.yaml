@@ -815,3 +815,29 @@ slashCmd.core.rewind.imagesKeptAsNotes: "{0} bild(er) kunde inte bifogas igen: g
 slashCmd.core.rewind.unsupported: "/rewind kräver den delade gatewayen (hermes serve)"
 slashCmd.core.rewind.done: "gick tillbaka till prompt {0} ({1} meddelanden togs bort)"
 slashCmd.core.rewind.forked: "förgrenade från före prompt {0} — redigera prompten och tryck på Enter för att skicka"
+
+slashCmd.core.copy.copiedCharsOne: "kopierade {0} tecken"
+slashCmd.core.copy.copiedCharsOther: "kopierade {0} tecken"
+slashCmd.core.copy.clipboardFailed: "det gick inte att kopiera till urklipp — prova HERMES_TUI_FORCE_OSC52=1 för att framtvinga escape-sekvensen"
+slashCmd.core.copy.usage: "användning: /copy [nummer]"
+slashCmd.core.copy.nothingToCopy: "inget att kopiera — starta först en konversation"
+slashCmd.core.copy.sentOsc52: "skickade OSC52-kopieringssekvens (kräver terminalstöd)"
+slashCmd.core.copy.copied: "kopierat till urklipp"
+slashCmd.core.copy.failed: "kopieringen misslyckades: {0}"
+
+slashCmd.core.paste.usage: "användning: /paste"
+slashCmd.core.prompt.editorFailed: "redigeraren misslyckades: {0}"
+
+slashCmd.core.terminalSetup.usage: "användning: /terminal-setup [auto|vscode|cursor|windsurf]"
+slashCmd.core.terminalSetup.restartIde: "starta om IDE-terminalen för att de nya tangentbindningarna ska börja gälla"
+slashCmd.core.terminalSetup.failed: "terminalinställningen misslyckades: {0}"
+
+slashCmd.core.logs.pageTitle: "Loggar"
+slashCmd.core.logs.none: "det finns inga gatewayloggar"
+
+slashCmd.core.save.noConversation: "ingen konversation ännu"
+slashCmd.core.save.noActiveSession: "ingen aktiv session — inget att spara"
+slashCmd.core.save.saved: "konversationen sparades i: {0}"
+slashCmd.core.save.savedOnHost: "konversationen sparades som rå JSON på värddatorn för gatewayen: {0}"
+slashCmd.core.save.legacyRefused: "sparades inte: den här gatewayen tillhandahåller inte /save-export (en äldre gateway eller en sidoprocess utan sessionsbehörighet), så den kan inte skriva en rensad, namngiven eller md/html-kopia. Anslut till gatewayen som äger sessionen, uppdatera den eller kör vanlig /save för att skriva rå JSON på värddatorn för gatewayen."
+slashCmd.core.save.failed: "det gick inte att spara"

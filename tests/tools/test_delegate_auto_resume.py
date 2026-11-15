@@ -33,13 +33,18 @@ class _AlwaysLimited(_ScriptedModel):
 def _settled(delegation_id):
     """The unit's completion once it finished: the queued event, or, for a unit every child of which waits on a
     promised automatic resume (silent: nothing queued), the event its ledger row recorded."""
-    from tools.async_delegation import _transaction
+    import sqlite3
+
+    from persistence_assembly import profile_scope, store_location
     from tests.waiting import wait_until
 
     def row():
-        with _transaction() as conn:
+        conn = sqlite3.connect(store_location(profile_scope()))  # health: allow HX015 -- test reads a temp-home store
+        try:
             got = conn.execute("SELECT state, delivery_state, event_json FROM async_delegations WHERE delegation_id=?",
                                (delegation_id,)).fetchone()
+        finally:
+            conn.close()
         return got if got and got[0] != "running" and got[2] else None
     _state, delivery, event = wait_until(row, what=f"{delegation_id} to finish")
     return _completion(delegation_id) if delivery == "pending" else json.loads(event)

@@ -197,7 +197,7 @@ def test_crashed_childs_worktree_survives_the_sweep_until_its_record_expires(tmp
     from hermes_cli.worktree_sweep import plan_sweep, run_sweep, sweep_settings
     from hermes_state import SessionDB
     from tools.async_delegation import recover_abandoned_delegations
-    from tools.delegate_tool_resumable import _upsert
+    from tools.delegate_tool_resumable import _upsert, _write
     from hermes_constants import get_hermes_home
 
     repo = tmp_path / "repo"
@@ -212,12 +212,10 @@ def test_crashed_childs_worktree_survives_the_sweep_until_its_record_expires(tmp
     SessionDB(db_path=get_hermes_home() / "state.db").close()
 
     db = get_hermes_home() / "state.db"
-    conn = sqlite3.connect(db)  # health: allow HX015 -- test seeds a temp-home store
-    with conn:
-        _upsert(conn, "sa-crash", {"session_id": "s", "cwd": str(tree), "owner_pid": 2 ** 22 + 7,
-                                   "owners": ["parent-sess"], "worktrees_at_start": [str(repo)]},
-                state="running", pinned=True, expires_at=time.time() + 3600)
-    conn.close()
+    assert _write(db, lambda ledger: _upsert(ledger, "sa-crash", {
+        "session_id": "s", "cwd": str(tree), "owner_pid": 2 ** 22 + 7, "owners": ["parent-sess"],
+        "worktrees_at_start": [str(repo)]}, state="running", pinned=True, expires_at=time.time() + 3600,
+        expected=None))
     recover_abandoned_delegations()
     old = time.time() - 30 * 3600
     git_dir = repo / ".git" / "worktrees" / "subagent-sa-crash"

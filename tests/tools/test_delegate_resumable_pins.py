@@ -66,10 +66,10 @@ def test_a_running_continuation_pins_the_tree_it_moved_to_not_only_where_it_last
     a, b = repo / ".worktrees" / "subagent-old", repo / ".worktrees" / "subagent-new"
     _git("worktree", "add", "-qb", "old", str(a), cwd=repo)
     _git("worktree", "add", "-qb", "new", str(b), cwd=repo)
-    with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
-        r._upsert(conn, "sa-pins", {"owners": [parent.session_id], "session_id": "child", "cwd": str(a),
-                                    "pin_paths": [str(a)], "worktrees_at_start": [str(repo), str(a), str(b)]},
-                  state="resumable", pinned=True, expires_at=time.time() + 3600)
+    assert r._write(r._db_path_for(parent), lambda ledger: r._upsert(
+        ledger, "sa-pins", {"owners": [parent.session_id], "session_id": "child", "cwd": str(a),
+                            "pin_paths": [str(a)], "worktrees_at_start": [str(repo), str(a), str(b)]},
+        state="resumable", pinned=True, expires_at=time.time() + 3600, expected=None))
     run = _run(parent, "sa-pins")
     with patch.object(r, "_child_cwd", return_value=str(a)):
         r.record_start(run)  # the continue resumes in A ...

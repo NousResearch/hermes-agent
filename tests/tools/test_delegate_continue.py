@@ -9,6 +9,7 @@ import json
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import hermes_yaml as yaml
@@ -47,12 +48,13 @@ class _ScriptedModel:
         db = kw["session_db"]
 
         def run_conversation(user_message, conversation_history=None, **_):
+            from tests.fixtures.storage_seed import seed_messages, seed_session
             self.turns.append({"session_id": child.session_id, "message": user_message,
                                "history": conversation_history, "home": str(get_hermes_home())})
-            db.create_session(child.session_id, "subagent", parent_session_id=kw.get("parent_session_id"))
+            seed_session(db, child.session_id, "subagent", parent_session_id=kw.get("parent_session_id"))
             reply = f"done: {user_message}"
-            db.append_message(child.session_id, "user", user_message)
-            db.append_message(child.session_id, "assistant", reply)
+            seed_messages(db, child.session_id, {"role": "user", "content": user_message},
+                          {"role": "assistant", "content": reply})
             return {"final_response": reply, "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = run_conversation
@@ -67,8 +69,13 @@ def _parent(session_id="parent-sess", db=None):
     parent.providers_allowed = parent.providers_ignored = parent.providers_order = parent.provider_sort = None
     parent.session_id, parent._delegate_depth, parent._interrupt_requested = session_id, 0, False
     parent.enabled_toolsets, parent.disabled_toolsets = ["terminal", "file", "web"], []
+    from persistence_assembly import Persistence, open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
     parent._session_db = db if db is not None else SessionDB()
-    parent._session_db.create_session(session_id, "cli")
+    # The storage handle on the same store, which the compression-lineage ownership check reads through.
+    parent.persistence = (parent._session_db if isinstance(parent._session_db, Persistence) else
+                          open_persistence(profile_scope(home=Path(parent._session_db.db_path).parent)))
+    seed_session(parent.persistence, session_id, "cli")
     parent._active_children, parent._active_children_lock = [], threading.Lock()
     parent._print_fn = parent.tool_progress_callback = parent.thinking_callback = None
     return parent
@@ -219,6 +226,7 @@ def _write_profile(home, *, host, model, key):
     (home / ".env").write_text(f"PROFILE_KEY={key}\n", encoding="utf-8")
 
 
+@pytest.mark.live_system_guard_bypass  # its HOME is the test's own tmp dir: the "real" Hermes root is temporary
 def test_profile_routed_child_continues_inside_its_profile_scope(tmp_path, monkeypatch):
     from tools.delegate_tool import delegate_task
     from tools.delegate_tool_routes import _route_to_task_route

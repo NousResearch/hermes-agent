@@ -359,6 +359,11 @@ Code blocks and inline code are preserved as-is since WhatsApp supports triple-b
 
 When the agent calls tools (web search, file operations, etc.), WhatsApp displays real-time progress indicators showing which tool is running. This is enabled by default — no configuration needed.
 
+### Processing Reactions
+
+With `whatsapp.reactions: true` in `config.yaml` the bot reacts 👀 to a message while it works on it, then swaps
+that for ✅ when done or ❌ when the turn failed; a cancelled turn clears it. Off by default.
+
 ### Native Polls, Clarify-as-Poll, and Locations
 
 The Baileys-bridge adapter (bot mode) supports several native WhatsApp message types:

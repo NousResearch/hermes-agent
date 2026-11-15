@@ -19,7 +19,7 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, generateMessageIDV2, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -84,7 +84,7 @@ const WHATSAPP_DEBUG =
 // TTL flows. Default OFF: existing deployments see no behavior change.
 //
 // Heuristic limitation: we distinguish bot-API-sent from owner-typed by
-// looking up `key.id` in `recentlySentIds` (populated when /send returns).
+// looking up `key.id` in `recentlySentIds` (registered before transmission).
 // On bridge restart that set is empty, so a few in-flight bot replies may
 // briefly look like owner-typed until they age out. Acceptable; we don't
 // persist the set.
@@ -198,10 +198,14 @@ function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT
       timeoutMs,
     );
   });
-  return enqueueSend(() =>
-    Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
-      .finally(() => clearTimeout(timer))
-  );
+  return enqueueSend(() => {
+    // A timeout does not cancel Baileys: reserve the ID before it can emit an
+    // echo, and retain it even if the HTTP request fails before the send settles.
+    const messageId = options.messageId || generateMessageIDV2(sock.user?.id);
+    rememberSentId(messageId);
+    return Promise.race([sock.sendMessage(chatId, payload, { ...options, messageId }), timeoutPromise])
+      .finally(() => clearTimeout(timer));
+  });
 }
 
 function formatOutgoingMessage(message) {

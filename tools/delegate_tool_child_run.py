@@ -409,10 +409,6 @@ class _Heartbeat:
         return None
 
 
-def _start_heartbeat(child: Any, parent_agent: Any, task_index: int) -> _Heartbeat:
-    """Build (not start) one child's heartbeat; see ``_Heartbeat``."""
-    return _Heartbeat(child, parent_agent, task_index)
-
 def _register_child(
     child: Any, parent_agent: Any, goal: str, *, owner_session_id: Optional[str], owner_transport: Any,
     owner_session_record: Any,
@@ -931,7 +927,7 @@ class _ChildRun:
         """Close steer acceptance (see ``_merge_late_steer``); returns late steer text, if any."""
         return _close_subagent_steering(self.subagent_id, self.child) if self.subagent_id else None
 
-    def wait_liveness_aware(self, settled: threading.Event, child_future: Any, child_timeout: Optional[float]) -> None:
+    def wait_liveness_aware(self, settled: threading.Event, child_timeout: Optional[float]) -> None:
         """Wait for the worker or the stale verdict, where ``child_timeout`` bounds INACTIVITY, not total runtime.
 
         A configured cap used to be a dispatch-to-death stopwatch, so it only ever killed children the runtime had
@@ -1025,7 +1021,7 @@ class _ChildRun:
         # Set when the stale verdict — not the configured cap — ended the wait; the entry must name that cause.
         stale_after: Optional[float] = None
         try:
-            self.wait_liveness_aware(settled, future, child_timeout)
+            self.wait_liveness_aware(settled, child_timeout)
             if not future.done():
                 stale_after = getattr(self.heartbeat, "stale_threshold_seconds", None)
                 if stale_after is None:

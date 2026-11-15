@@ -40,7 +40,7 @@ def _settled(delegation_id):
         with _transaction() as conn:
             got = conn.execute("SELECT state, delivery_state, event_json FROM async_delegations WHERE delegation_id=?",
                                (delegation_id,)).fetchone()
-        return got if got and got[0] not in ("running", "finalizing") and got[2] else None
+        return got if got and got[0] != "running" and got[2] else None
     _state, delivery, event = wait_until(row, what=f"{delegation_id} to finish")
     return _completion(delegation_id) if delivery == "pending" else json.loads(event)
 

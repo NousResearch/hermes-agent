@@ -560,8 +560,8 @@ async def get_status(profile: Optional[str] = None,
     active session count and the auth-gate shape — no bodies, no session content, no secrets.
 
     ``?profile=`` (dashboard management switcher) uses the config-only contextvar scope, NOT
-    _profile_scope: this handler awaits the remote health probe, and _profile_scope swaps
-    process-global skills-module attributes a concurrent request would cross-restore.
+    _profile_scope: this handler awaits the remote health probe, and _profile_scope holds a
+    process-wide lock that must never be held across an await.
     """
     from hermes_cli.web_server import _GATEWAY_HEALTH_URL
     verified = await _status_caller_verified(request)

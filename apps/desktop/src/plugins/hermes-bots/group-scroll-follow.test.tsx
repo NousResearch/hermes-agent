@@ -8,18 +8,30 @@ import { useStickToBottom } from './canonical-group-details'
 function Transcript({ item }: { item: string }) {
   const ref = useStickToBottom()
 
-  return <div ref={ref} role="log"><div>{item}</div></div>
+  return (
+    <div ref={ref} role="log">
+      <div>{item}</div>
+    </div>
+  )
 }
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 it('follows added messages, approvals and viewport changes, but preserves a reader’s place', () => {
   let resize!: () => void
-  vi.stubGlobal('ResizeObserver', class {
-    constructor(callback: () => void) { resize = callback }
-    observe() {}
-    disconnect() {}
-  })
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      constructor(callback: () => void) {
+        resize = callback
+      }
+      observe() {}
+      disconnect() {}
+    }
+  )
   const view = render(<Transcript item="History" />)
   const log = screen.getByRole('log')
   let height = 500
@@ -28,7 +40,12 @@ it('follows added messages, approvals and viewport changes, but preserves a read
   Object.defineProperties(log, {
     scrollHeight: { get: () => height },
     clientHeight: { get: () => viewport },
-    scrollTop: { get: () => top, set: value => { top = Math.min(value, height - viewport) } }
+    scrollTop: {
+      get: () => top,
+      set: value => {
+        top = Math.min(value, height - viewport)
+      }
+    }
   })
   act(resize)
   expect(top).toBe(400)

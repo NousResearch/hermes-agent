@@ -36,9 +36,16 @@ export const isTerminalBootstrapFailure = (message: string) => /^gateway unavail
 export const bootstrapLocalGateway = async (start: boolean, recover = false): Promise<GatewayConnection> => {
   const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
 
-  const { stdout } = await promisify(execFile)(resolvePython(),
+  const { stdout } = await promisify(execFile)(
+    resolvePython(),
     [pythonHelperPath('gateway_bootstrap.py', root), ...(start ? ['--start'] : recover ? ['--recover'] : [])],
-    { cwd: root, env: { ...process.env, PYTHONPATH: root, HERMES_PYTHON_SRC_ROOT: root }, timeout: 40_000, maxBuffer: 1024 * 1024 })
+    {
+      cwd: root,
+      env: { ...process.env, PYTHONPATH: root, HERMES_PYTHON_SRC_ROOT: root },
+      timeout: 40_000,
+      maxBuffer: 1024 * 1024
+    }
+  )
 
   return JSON.parse(stdout) as GatewayConnection
 }

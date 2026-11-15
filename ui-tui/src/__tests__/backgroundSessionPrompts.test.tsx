@@ -29,9 +29,19 @@ function mount(gw: any) {
 
   function Harness() {
     lifecycle = useSessionLifecycle({
-      colsRef: { current: 80 }, composerActions: { setComposerTokens: noop }, gw, rpc: gw.request,
-      scrollRef: { current: null }, panel: noop, sys: noop, setHistoryItems: noop, setLastUserMsg: noop,
-      setSessionStartedAt: noop, setStickyPrompt: noop, setVoiceProcessing: noop, setVoiceRecording: noop
+      colsRef: { current: 80 },
+      composerActions: { setComposerTokens: noop },
+      gw,
+      rpc: gw.request,
+      scrollRef: { current: null },
+      panel: noop,
+      sys: noop,
+      setHistoryItems: noop,
+      setLastUserMsg: noop,
+      setSessionStartedAt: noop,
+      setStickyPrompt: noop,
+      setVoiceProcessing: noop,
+      setVoiceRecording: noop
     } as any)
 
     return <Text>probe</Text>
@@ -40,13 +50,20 @@ function mount(gw: any) {
   const instance = renderSync(<Harness />, {
     stdin: new PassThrough() as any,
     stdout: Object.assign(new PassThrough(), { columns: 80, rows: 20, isTTY: false }) as any,
-    stderr: new PassThrough() as any, patchConsole: false
+    stderr: new PassThrough() as any,
+    patchConsole: false
   })
 
   return {
-    get lifecycle() { return lifecycle },
+    get lifecycle() {
+      return lifecycle
+    },
     cleanup() {
-      instance.unmount(); turnController.fullReset(); resetUiState(); resetOverlayState(); vi.unstubAllEnvs()
+      instance.unmount()
+      turnController.fullReset()
+      resetUiState()
+      resetOverlayState()
+      vi.unstubAllEnvs()
       rmSync(home, { recursive: true, force: true })
     }
   }
@@ -57,8 +74,13 @@ it('keeps the canonical subscription of a session left mid-turn, so its question
 
   const request = vi.fn(async (method: string, params: any) => {
     if (method === 'session.resume' || method === 'session.activate') {
-      return { session_id: params.session_id, subscription_id: `sub-${params.session_id}`, messages: [], running: true,
-        info: info(params.session_id) }
+      return {
+        session_id: params.session_id,
+        subscription_id: `sub-${params.session_id}`,
+        messages: [],
+        running: true,
+        info: info(params.session_id)
+      }
     }
 
     if (method === 'session.create') {
@@ -83,8 +105,11 @@ it('keeps the canonical subscription of a session left mid-turn, so its question
     h.lifecycle.activateLiveSession('old')
     await vi.waitFor(() => expect(getUiState().sid).toBe('old'))
     await vi.waitFor(() =>
-      expect(request).toHaveBeenCalledWith('session.detach', { session_id: 'fresh', subscription_id: 'sub-fresh' }))
-  } finally { h.cleanup() }
+      expect(request).toHaveBeenCalledWith('session.detach', { session_id: 'fresh', subscription_id: 'sub-fresh' })
+    )
+  } finally {
+    h.cleanup()
+  }
 })
 
 it('switching back on the legacy transport opens the question the background session is waiting on', async () => {
@@ -95,16 +120,25 @@ it('switching back on the legacy transport opens the question the background ses
   gw.on('request', (req: any) => handle(req))
   gw.drain()
 
-  const clarify = { id: 'srq-bg', method: 'clarify',
-    params: { session_id: 'bg', questions: [{ qid: 'q0', question: 'which colour?', choices: ['red', 'blue'] }] } }
+  const clarify = {
+    id: 'srq-bg',
+    method: 'clarify',
+    params: { session_id: 'bg', questions: [{ qid: 'q0', question: 'which colour?', choices: ['red', 'blue'] }] }
+  }
 
   // The channel re-delivers `open_requests` before the activation resolves (the view still shows
   // `fresh`), then the activation resets the view: the card has to come back after that reset.
   vi.spyOn(gw, 'request').mockImplementation(async (_method, params: any) => {
     ;(gw as any).channel.deliverRequest(clarify.id, clarify.method, clarify.params, true)
 
-    return { session_id: params.session_id, running: true, status: 'waiting', messages: [], info: info('bg'),
-      open_requests: [clarify] }
+    return {
+      session_id: params.session_id,
+      running: true,
+      status: 'waiting',
+      messages: [],
+      info: info('bg'),
+      open_requests: [clarify]
+    }
   })
 
   const h = mount(gw)
@@ -118,7 +152,9 @@ it('switching back on the legacy transport opens the question the background ses
     await vi.waitFor(() => expect(getUiState().sid).toBe('bg'))
     await vi.waitFor(() => expect($overlayState.get().clarify?.requestId).toBe('srq-bg'))
     expect($overlayState.get().clarify?.questions[0]?.question).toBe('which colour?')
-  } finally { h.cleanup() }
+  } finally {
+    h.cleanup()
+  }
 })
 
 it('announces a session left mid-turn that finished before any poll saw it busy', () => {
@@ -126,26 +162,59 @@ it('announces a session left mid-turn that finished before any poll saw it busy'
 
   watch.update([{ id: 'old', status: 'idle' }], 'old') // the last poll before the turn started
   watch.handoff('old')
-  expect(watch.update([{ id: 'old', status: 'idle', title: 'quick' }, { id: 'new', status: 'idle' }], 'new'))
-    .toEqual([expect.stringContaining('quick')])
+  expect(
+    watch.update(
+      [
+        { id: 'old', status: 'idle', title: 'quick' },
+        { id: 'new', status: 'idle' }
+      ],
+      'new'
+    )
+  ).toEqual([expect.stringContaining('quick')])
 })
 
 it('drops a status read that resolves after the view switched sessions, without consuming the transition', async () => {
   const watch = createBackgroundSessionWatch()
   watch.focus('a')
   watch.focus('b')
-  watch.update([{ id: 'a', status: 'working' }, { id: 'b', status: 'idle' }], 'b')
+  watch.update(
+    [
+      { id: 'a', status: 'working' },
+      { id: 'b', status: 'idle' }
+    ],
+    'b'
+  )
 
   let focused = 'b'
   let reply!: (value: unknown) => void
-  const gw = { isCanonical: true, request: vi.fn(() => new Promise(resolve => { reply = resolve })) }
+  const gw = {
+    isCanonical: true,
+    request: vi.fn(
+      () =>
+        new Promise(resolve => {
+          reply = resolve
+        })
+    )
+  }
 
   const stale = backgroundSessionNotices(watch, gw as any, [{ id: 'a' }, { id: 'b' }], 'b', () => focused === 'b')
   focused = 'a' // the user switched to `a` while the read was in flight
-  reply({ sessions: [{ id: 'a', status: 'waiting' }, { id: 'b', status: 'idle' }] })
+  reply({
+    sessions: [
+      { id: 'a', status: 'waiting' },
+      { id: 'b', status: 'idle' }
+    ]
+  })
   expect(await stale).toEqual([])
 
   // Back on `b`: the transition was not consumed by the stale read, so it is still announced.
-  expect(watch.update([{ id: 'a', status: 'waiting', title: 'refactor' }, { id: 'b', status: 'idle' }], 'b'))
-    .toEqual([expect.stringContaining('refactor')])
+  expect(
+    watch.update(
+      [
+        { id: 'a', status: 'waiting', title: 'refactor' },
+        { id: 'b', status: 'idle' }
+      ],
+      'b'
+    )
+  ).toEqual([expect.stringContaining('refactor')])
 })

@@ -92,3 +92,15 @@ def test_interrupt_after_the_move_never_revives_the_old_name(mux, monkeypatch):
     assert _listed() == {"after"}
     assert not named_profile_is_deleted(old_dir) and not named_profile_is_deleted(new_dir)
     assert calls == [("notify", "before")]  # the unroute only: no re-serve or re-register of "before"
+
+def test_interrupt_during_desktop_stop_recovers_unmoved_profile_service(mux, monkeypatch):
+    old_dir, calls = mux
+    monkeypatch.setattr(profiles, "_stop_bot_desktop", _interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        profiles.rename_profile("before", "after")
+
+    assert old_dir.is_dir() and not named_profile_is_deleted(old_dir)
+    assert _listed() == {"before"} and profiles.profile_exists("before")
+    assert not (old_dir.parent / "after").exists()
+    assert calls == [("register", "before")]  # no unroute occurred; re-register stopped s6 slot

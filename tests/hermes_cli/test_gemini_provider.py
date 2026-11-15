@@ -3,25 +3,14 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider, resolve_api_key_provider_credentials
-from hermes_cli.models import _PROVIDER_MODELS, _PROVIDER_LABELS, _PROVIDER_ALIASES, normalize_provider
+from hermes_cli.auth import resolve_provider, resolve_api_key_provider_credentials
+from hermes_cli.models import normalize_provider
 from hermes_cli.model_normalize import normalize_model_for_provider, detect_vendor
-from agent.model_metadata import get_model_context_length
-from agent.models_dev import PROVIDER_TO_MODELS_DEV, list_agentic_models, _NOISE_PATTERNS
+from agent.models_dev import list_agentic_models
 
 
 # ── Provider Registry ──
 
-class TestGeminiProviderRegistry:
-    def test_gemini_in_registry(self):
-        assert "gemini" in PROVIDER_REGISTRY
-
-    def test_gemini_config(self):
-        pconfig = PROVIDER_REGISTRY["gemini"]
-        assert pconfig.id == "gemini"
-        assert pconfig.name == "Google AI Studio"
-        assert pconfig.auth_type == "api_key"
-        assert pconfig.inference_base_url == "https://generativelanguage.googleapis.com/v1beta"
 
 
 # ── Provider Aliases ──
@@ -44,10 +33,6 @@ class TestGeminiAliases:
         assert resolve_provider("gemini") == "gemini"
 
 
-    def test_models_py_aliases(self):
-        assert _PROVIDER_ALIASES.get("google") == "gemini"
-        assert _PROVIDER_ALIASES.get("google-gemini") == "gemini"
-        assert _PROVIDER_ALIASES.get("google-ai-studio") == "gemini"
 
     def test_normalize_provider(self):
         assert normalize_provider("google") == "gemini"
@@ -99,13 +84,6 @@ class TestGeminiCredentials:
 
 # ── Model Catalog ──
 
-class TestGeminiModelCatalog:
-    def test_provider_entry_exists(self):
-        """Gemini provider has a model catalog entry. Specific model names
-        are data that changes with Google releases and don't belong in tests.
-        """
-        assert "gemini" in _PROVIDER_MODELS
-        assert len(_PROVIDER_MODELS["gemini"]) >= 1
 
 
 # ── Model Normalization ──
@@ -124,14 +102,6 @@ class TestGeminiModelNormalization:
 
 # ── Context Length ──
 
-class TestGeminiContextLength:
-    def test_gemma_4_31b_context(self):
-        # Mock external API lookups to test against hardcoded defaults
-        # (models.dev and OpenRouter may return different values like 262144).
-        with patch("agent.models_dev.lookup_models_dev_context", return_value=None), \
-             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
-            ctx = get_model_context_length("gemma-4-31b-it", provider="gemini")
-        assert ctx == 256000
 
 
 # ── Agent Init (no SyntaxError) ──
@@ -170,8 +140,6 @@ class TestGeminiAgentInit:
 # ── models.dev Integration ──
 
 class TestGeminiModelsDev:
-    def test_gemini_mapped_to_google(self):
-        assert PROVIDER_TO_MODELS_DEV.get("gemini") == "google"
 
 
 

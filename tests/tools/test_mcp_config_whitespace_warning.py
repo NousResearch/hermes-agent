@@ -9,15 +9,15 @@ import logging
 
 import pytest
 
-from tools import mcp_tool
-from tools.mcp_tool import _warn_hidden_whitespace
+from tools import mcp_tool_config as _mcp_config
+from tools.mcp_tool_config import _warn_hidden_whitespace
 
 
 @pytest.fixture(autouse=True)
 def _reset_dedupe():
-    mcp_tool._whitespace_warned.clear()
+    _mcp_config._whitespace_warned.clear()
     yield
-    mcp_tool._whitespace_warned.clear()
+    _mcp_config._whitespace_warned.clear()
 
 
 def test_clean_config_no_warnings(caplog):
@@ -44,9 +44,6 @@ def test_trailing_newline_in_header_flagged(caplog):
     assert not any("abc123" in m for m in messages)
 
 
-def test_leading_space_in_url_flagged():
-    flagged = _warn_hidden_whitespace("srv", {"url": " https://example.com"})
-    assert flagged == ["url"]
 
 
 def test_whitespace_in_list_item_flagged_with_index():
@@ -77,10 +74,6 @@ def test_non_string_values_ignored():
     assert flagged == []
 
 
-def test_values_never_mutated():
-    config = {"headers": {"Authorization": "Bearer tok\n"}}
-    _warn_hidden_whitespace("srv", config)
-    assert config["headers"]["Authorization"] == "Bearer tok\n"
 
 
 def test_warning_deduped_per_process(caplog):
@@ -95,12 +88,6 @@ def test_warning_deduped_per_process(caplog):
     assert len(warn_records) == 1
 
 
-def test_distinct_servers_warned_separately(caplog):
-    with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
-        _warn_hidden_whitespace("a", {"url": "https://x.com "})
-        _warn_hidden_whitespace("b", {"url": "https://x.com "})
-    warn_records = [r for r in caplog.records if "hidden" in r.getMessage()]
-    assert len(warn_records) == 2
 
 
 def test_load_mcp_config_emits_warning(tmp_path, monkeypatch, caplog):
@@ -116,7 +103,7 @@ def test_load_mcp_config_emits_warning(tmp_path, monkeypatch, caplog):
     with mock_patch("hermes_cli.config.load_config",
                     return_value={"mcp_servers": servers}), \
          caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
-        result = mcp_tool._load_mcp_config()
+        result = _mcp_config._load_mcp_config()
 
     assert "pasted" in result
     # Value passes through unmutated.

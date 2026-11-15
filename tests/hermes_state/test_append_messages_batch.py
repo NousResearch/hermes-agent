@@ -11,10 +11,8 @@ import sqlite3
 
 import pytest
 
-from hermes_state import (
-    CompressionSessionClosedError,
-    SessionDB,
-)
+from hermes_state import SessionDB
+from hermes_state_errors import CompressionSessionClosedError
 
 
 @pytest.fixture()
@@ -192,3 +190,65 @@ class TestAppendMessagesBatch:
         db.append_messages_batch("sess-batch", msgs)
         raw = db._conn.execute("SELECT tool_calls FROM messages").fetchone()[0]
         assert json.loads(raw) == [{"name": "t", "arguments": "{}"}]
+
+
+class TestShadowedCheckpointRowsArePruned:
+    """Under native compaction every assistant response persists a fresh ``type: "compaction"`` checkpoint
+    and local compaction (the only other prune site) rarely fires, so older rows kept ~120 KB of ciphertext
+    the wire builder never replays (#102374). Landing a newer carrier row rewrites the older active rows."""
+
+    @staticmethod
+    def _checkpoint(tag):
+        return {"type": "compaction", "encrypted_content": f"ckpt-{tag}"}
+
+    @staticmethod
+    def _reasoning(tag):
+        return {"type": "reasoning", "encrypted_content": f"rs-{tag}", "id": f"rs_{tag}"}
+
+    @staticmethod
+    def _agent(db):
+        from agent.session_persistence import SessionPersistenceMixin
+
+        class _Agent(SessionPersistenceMixin):
+            pass
+
+        agent = _Agent()
+        agent._session_db, agent._session_db_created, agent.session_id = db, True, "sess-batch"
+        agent._last_flushed_db_idx, agent._flushed_db_message_ids = 0, set()
+        agent._flushed_db_message_session_id, agent._persist_disabled = None, False
+        return agent
+
+    def _durable_items(self, db):
+        return [
+            (row["id"], json.loads(row["codex_reasoning_items"]) if row["codex_reasoning_items"] else None)
+            for row in db._conn.execute(
+                "SELECT id, codex_reasoning_items FROM messages WHERE session_id = ? AND role = 'assistant' "
+                "AND active = 1 ORDER BY id", ("sess-batch",)).fetchall()
+        ]
+
+    def test_newer_carrier_row_prunes_the_older_rows_checkpoints(self, db):
+        """The production flush path: turn 1 lands a carrier, turn 2 lands a newer one -> only the newest
+        row still holds a checkpoint, durably and in the live transcript; reasoning items are untouched."""
+        agent = self._agent(db)
+        messages = [
+            {"role": "user", "content": "u0"},
+            {"role": "assistant", "content": "a0", "codex_reasoning_items": [self._reasoning(0), self._checkpoint(0)]},
+        ]
+        assert agent._flush_messages_to_session_db(messages) is True
+        assert self._durable_items(db) == [(2, [self._reasoning(0), self._checkpoint(0)])]
+
+        messages += [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1", "codex_reasoning_items": [self._reasoning(1), self._checkpoint(1)]},
+        ]
+        assert agent._flush_messages_to_session_db(messages) is True
+
+        assert self._durable_items(db) == [
+            (2, [self._reasoning(0)]),
+            (4, [self._reasoning(1), self._checkpoint(1)]),
+        ]
+        # The live dicts match the rows they were persisted as (the marker contract), so no re-write is queued.
+        assert messages[1]["codex_reasoning_items"] == [self._reasoning(0)]
+        assert messages[3]["codex_reasoning_items"] == [self._reasoning(1), self._checkpoint(1)]
+        assert agent._flush_messages_to_session_db(messages) is True
+        assert db.message_count("sess-batch") == 4

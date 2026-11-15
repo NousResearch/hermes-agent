@@ -3,6 +3,11 @@ name: JS Tests
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
 
 jobs:
   check:
@@ -14,39 +19,50 @@ jobs:
     #
     # One larger runner installs one time. vitest, tsc and eslint each size
     # their own worker pool from the core count.
-    runs-on: ubuntu-latest-32-core
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          node-version: 26
-          cache: npm
+          ref: ${{ inputs.commit }}
+      - name: Set up the locked JS build toolchain
+        id: node
+        uses: ./.github/actions/setup-pm
+        with:
+          # Desktop checks also run Python payload and icon build helpers, and
+          # the electron contracts drive real hermes_cli/pm code through
+          # HERMES_PYTHON, which needs the application dependencies.
+          toolchain: all
+          extras: '[]'
+          test-environment: 'true'
 
-      - name: grab npm 12
+      - name: Install zsh and a virtual display for Electron
+        if: runner.os == 'Linux'
+        # Refresh the package index first, like every other apt step here: a
+        # runner image without a populated list can't resolve zsh/libnotify4.
         run: |
-          # No-op once the bundled npm is already 12.x — saves ~5-15s/job and
-          # keeps the installed major aligned with the npm12 cache-key tag.
-          npm --version | grep -q '^12\.' || npm i -g npm@12
+          sudo apt-get update -qq
+          sudo apt-get install -y zsh xvfb \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
 
-      # The ``cache: npm`` option of ``setup-node`` caches only the ~/.npm
-      # tarball cache. The job then extracts the full workspace node_modules
-      # again and runs the postinstalls again, which includes the Electron
-      # binary fetch. This caches the installed tree itself, keyed on the
-      # lockfile, and skips ``npm ci`` on an exact hit. There are no
+      # setup-pm caches pnpm's store, not the installed workspace tree.
+      # The job then links the full workspace node_modules
+      # again and runs the native postinstalls again. Electron's binary is
+      # prepared explicitly below. This caches the installed tree itself, keyed on the
+      # lockfile, and skips ``pnpm install`` on an exact hit. There are no
       # restore-keys: a partial hit leaves a stale tree, so anything other
       # than an exact lockfile match reinstalls from the start.
       #
-      # This install runs WITH scripts, so the tree holds the postinstall
-      # artifacts. The postinstall of electron unpacks its binary into
-      # node_modules/electron/dist, which is inside the cached tree.
+      # This install runs WITH scripts, so the tree holds native lifecycle
+      # artifacts and the explicitly prepared Electron dist, both inside the cached tree.
       #
       # The ~/.cache/electron download cache stays out of the key on purpose.
-      # ``npm ci`` is skipped on a hit, so nothing reads that cache. It only
+      # ``pnpm install`` is skipped on a hit, so nothing reads that cache. It only
       # makes the archive larger.
       - name: Restore node_modules
         id: node-modules-cache
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             node_modules
@@ -55,17 +71,56 @@ jobs:
             ui-tui/packages/*/node_modules
             tests-js/node_modules
             web/node_modules
-          key: node-modules-scripts-${{ runner.os }}-node26-npm12-${{ hashFiles('package-lock.json') }}
+          key: node-modules-scripts-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-pnpm${{ steps.node.outputs.pnpm-version }}-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml') }}
 
+      # Vitest records each file's duration and result under
+      # node_modules/.vite/vitest and orders the next run from it, longest first.
+      # The run that misses the cache writes it before the post step saves the
+      # tree, so every hit until the next lockfile change replays that one run's
+      # order: the slowest jsdom suites all start cold together and starve the
+      # rest past their 15s timeout. Drop it so each run orders from scratch.
+      - name: Drop vitest run history from the restored tree
+        run: rm -rf node_modules/.vite/vitest apps/*/node_modules/.vite/vitest ui-tui/node_modules/.vite/vitest ui-tui/packages/*/node_modules/.vite/vitest tests-js/node_modules/.vite/vitest web/node_modules/.vite/vitest
+
+      # No --trust-lockfile: this install is the gate that checks every locked
+      # version against pnpm-workspace.yaml's release-age policy.
       - uses: ./.github/actions/retry
         if: steps.node-modules-cache.outputs.cache-hit != 'true'
         with:
-          command: npm ci
+          command: just js-install
+
+      # The cached tree is keyed on the lockfile alone, so an exact hit proves
+      # nothing about the manifests. This checks the lockfile still matches
+      # every package.json and passes the release-age policy, without
+      # touching node_modules.
+      - name: Check the lockfile against the manifests and policy
+        if: steps.node-modules-cache.outputs.cache-hit == 'true'
+        run: pnpm install --frozen-lockfile --lockfile-only
+
+      # tests-js/pnpm-workspace-policy.test.mjs reads pnpm-workspace.yaml after the install above; an
+      # install that rewrites it (an exclude prune, say) would hide what was committed, and the
+      # clean-checkout step at the end only warns.
+      - name: Check the install kept pnpm-workspace.yaml as committed
+        run: git diff --exit-code -- pnpm-workspace.yaml
+
+      - name: Prepare locked Electron runtime before parallel checks
+        run: just electron-runtime
+
+      # The WhatsApp bridge is a standalone npm package, outside the root
+      # workspaces, so run-workspace-checks never sees it. Two of its suites
+      # import @whiskeysockets/baileys, so install its own lockfile first;
+      # --ignore-scripts because the tests need no native build.
+      - name: Install WhatsApp bridge dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: just js-install-whatsapp-bridge
+      - name: Run WhatsApp bridge node tests
+        run: just test-whatsapp-bridge
 
       # Every check runs at the same time. The step fails only after all of
-      # them finish. There are two reasons this is not ``npm run --ws check``.
+      # them finish. There are two reasons this is not ``pnpm -r run check``.
       #
-      #   * ``--ws`` is serial and stops at the first workspace that fails. A
+      #   * ``-r`` stops at the first workspace that fails. A
       #     run then reports one failure, where the matrix this replaced
       #     reported every failure together.
       #   * The unit of work is a CHECK, and not a workspace. apps/desktop is
@@ -75,9 +130,15 @@ jobs:
       #     its lint, ui, electron and plugin suites all run together. That
       #     is the same selection rule the old matrix job used.
       #
-      # Discovery is ``npm query .workspace``. A new package or a new
+      # Discovery is ``pnpm ls -r --depth -1 --json``. A new package or a new
       # ``check:*`` script needs no change here. An empty list is an error and
       # not an empty run, because an empty run reports green after it checks
       # nothing.
       - name: Run all workspace checks
-        run: node .github/scripts/run-workspace-checks.mjs
+        run: just check-js-ci
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree

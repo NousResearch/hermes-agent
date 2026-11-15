@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import tools.terminal_tool as tt
+import tools.terminal_tool_backends as ttb
+from tools.terminal_tool_lifecycle import get_active_env
 
 
 def _clear(*task_ids):
@@ -17,7 +19,7 @@ def _clear(*task_ids):
 def test_local_backend_is_noop(monkeypatch):
     """Local backend reads images host-side — no sandbox is created."""
     monkeypatch.setenv("TERMINAL_ENV", "local")
-    with patch.object(tt, "_create_environment") as create:
+    with patch.object(ttb, "_create_environment") as create:
         assert tt.ensure_task_env("t-local") is None
     create.assert_not_called()
 
@@ -31,10 +33,10 @@ def test_non_local_creates_and_reuses(monkeypatch):
     _clear(eff, task_id)
     fake = SimpleNamespace(execute=lambda *a, **k: {"returncode": 0, "output": ""})
     try:
-        with patch.object(tt, "_create_environment", return_value=fake) as create:
+        with patch.object(ttb, "_create_environment", return_value=fake) as create:
             assert tt.ensure_task_env(task_id) is fake
             create.assert_called_once()
-            assert tt.get_active_env(task_id) is fake
+            assert get_active_env(task_id) is fake
 
             # Already active -> no second creation.
             assert tt.ensure_task_env(task_id) is fake
@@ -51,8 +53,8 @@ def test_creation_failure_returns_none_and_caches_nothing(monkeypatch):
     eff = tt._resolve_container_task_id(task_id)
     _clear(eff, task_id)
     try:
-        with patch.object(tt, "_create_environment", side_effect=RuntimeError("boom")):
+        with patch.object(ttb, "_create_environment", side_effect=RuntimeError("boom")):
             assert tt.ensure_task_env(task_id) is None
-        assert tt.get_active_env(task_id) is None
+        assert get_active_env(task_id) is None
     finally:
         _clear(eff, task_id)

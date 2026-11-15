@@ -1,0 +1,29 @@
+name: hyperliquid-desk
+repo: https://github.com/KevinM0001/hermes-hyperliquid-plugin
+sha: "abc81670fbfa0839fa6d3fc5b0ad823fe8c9e97d"
+subdir: ""
+description: "Live Hyperliquid dashboard tab, Flow Deck alerts, wallets and market tools with a commentary skill on Hyperliquid's public data, plus node panels from the plugin author's hosted relay (on by default, can be turned off) or your own engine feed. Read-only; no orders, no trading keys. Independent; not affiliated with Hyperliquid. Disclosure — Node panels default to the plugin author's hosted relay (wss://relay.perpdepth.com, node_feed \"hosted\"): while the collector runs and a node panel is open or a node tool is answering, it receives your IP address, the markets you follow and the one on screen; set node_feed to \"off\" or to your own socket/relay to stop it. Market data otherwise comes from Hyperliquid's public API (api.hyperliquid.xyz); no orders, signing or wallet keys."
+maintainer: KevinM0001
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "1.0.0"
+image: "https://raw.githubusercontent.com/KevinM0001/hermes-hyperliquid-plugin/abc81670fbfa0839fa6d3fc5b0ad823fe8c9e97d/docs/screenshots/card.png"
+screenshots:
+  - "https://raw.githubusercontent.com/KevinM0001/hermes-hyperliquid-plugin/abc81670fbfa0839fa6d3fc5b0ad823fe8c9e97d/docs/screenshots/01-desk.png"
+  - "https://raw.githubusercontent.com/KevinM0001/hermes-hyperliquid-plugin/abc81670fbfa0839fa6d3fc5b0ad823fe8c9e97d/docs/screenshots/02-chart-ladder.png"
+  - "https://raw.githubusercontent.com/KevinM0001/hermes-hyperliquid-plugin/abc81670fbfa0839fa6d3fc5b0ad823fe8c9e97d/docs/screenshots/03-flow-deck.png"
+  - "https://raw.githubusercontent.com/KevinM0001/hermes-hyperliquid-plugin/abc81670fbfa0839fa6d3fc5b0ad823fe8c9e97d/docs/screenshots/04-wallets.png"
+  - "https://raw.githubusercontent.com/KevinM0001/hermes-hyperliquid-plugin/abc81670fbfa0839fa6d3fc5b0ad823fe8c9e97d/docs/screenshots/05-node-stop-map.png"
+  - "https://raw.githubusercontent.com/KevinM0001/hermes-hyperliquid-plugin/abc81670fbfa0839fa6d3fc5b0ad823fe8c9e97d/docs/screenshots/06-ask-hermes.png"
+readme: true
+platforms: [linux, macos]
+title: Hyperliquid Desk
+known_issues:
+  - Node panels use the plugin author's hosted relay by default (node_feed "hosted"), a third-party network call to relay.perpdepth.com; when it can't serve, the node panels say why and public mode works as before. Set node_feed to "off" to turn node data off, or to your own engine socket or relay.
+  - When the hosted relay is down, full or switched off, the node panels say which and public mode keeps working; a replay is never used in its place.
+capabilities:
+  provides_tools: [hl_market, hl_flow, hl_context, hl_status, hl_alerts, hl_wallets, hl_candles, hl_structure, hl_watch, node_status, node_book, node_stops]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

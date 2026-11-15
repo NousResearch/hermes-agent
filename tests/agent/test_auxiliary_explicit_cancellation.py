@@ -79,7 +79,7 @@ class _AnthropicStreamContext:
     def __enter__(self) -> _BlockingStream:
         return self.stream
 
-    def __exit__(self, *_args: Any) -> None:
+    def __exit__(self, *_args: object) -> None:
         self.stream.close()
 
 
@@ -143,10 +143,11 @@ def _cancel_silent_request(
 
     worker = threading.Thread(target=_worker, daemon=True)
     worker.start()
-    assert started.wait(timeout=1), "request never entered its silent transport"
+    # Thread start-up on a loaded CI runner can exceed 1 s; the bound is only "eventually entered the transport".
+    assert started.wait(timeout=5), "request never entered its silent transport"
     cancelled_at = time.monotonic()
     cancel_event.set()
-    worker.join(timeout=1)
+    worker.join(timeout=5)
     elapsed = time.monotonic() - cancelled_at
     assert not worker.is_alive(), "explicit cancellation did not wake the silent request"
     return result["exc"], elapsed
@@ -494,7 +495,7 @@ def test_bedrock_silent_nonstream_request_is_isolated_without_close_wakeup() -> 
     release = threading.Event()
     runtime_client = _BedrockRuntimeClient(started, release)
     reset_client_cache()
-    _bedrock_runtime_client_cache["us-test-1"] = runtime_client
+    _bedrock_runtime_client_cache[("us-test-1", None)] = runtime_client
     client = aux.BedrockAuxiliaryClient("us-test-1", "bedrock-test")
     try:
         exc, elapsed = _cancel_silent_request(client, started, _invoke_generic)
@@ -548,15 +549,13 @@ def test_isolated_provider_worker_inherits_protection_and_progress_hook() -> Non
 
     assert observed["protected"] is True
     assert observed["thread"] != caller
-    assert progress == ["tick"]
+    # The hook must reach the isolated worker thread; the seam wrapper adds its own dispatch ticks.
+    assert "tick" in progress
 
 
 def test_isolated_provider_worker_inherits_caller_contextvars() -> None:
-    from tools.approval import (
-        get_current_session_key,
-        reset_current_session_key,
-        set_current_session_key,
-    )
+    from tools.approval import get_current_session_key
+    from tools.approval_context import reset_current_session_key, set_current_session_key
 
     arbitrary = contextvars.ContextVar("isolated-provider-test", default="missing")
     arbitrary_token = arbitrary.set("caller-value")

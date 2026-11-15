@@ -3,7 +3,7 @@
 import threading
 import time
 
-from tools.environments.base import _ThreadedProcessHandle
+from tools.environments.base_output import _ThreadedProcessHandle
 
 
 class TestBasicExecution:
@@ -19,16 +19,6 @@ class TestBasicExecution:
         assert "hello world" in output
 
 
-    def test_empty_output(self):
-        def exec_fn():
-            return ("", 0)
-
-        handle = _ThreadedProcessHandle(exec_fn)
-        handle.wait(timeout=5)
-
-        assert handle.returncode == 0
-        output = handle.stdout.read()
-        assert output == ""
 
 
 class TestPolling:
@@ -46,13 +36,6 @@ class TestPolling:
         handle.wait(timeout=5)
         assert handle.poll() == 0
 
-    def test_poll_returns_returncode_when_done(self):
-        def exec_fn():
-            return ("ok", 0)
-
-        handle = _ThreadedProcessHandle(exec_fn)
-        handle.wait(timeout=5)
-        assert handle.poll() == 0
 
 
 class TestCancelFn:

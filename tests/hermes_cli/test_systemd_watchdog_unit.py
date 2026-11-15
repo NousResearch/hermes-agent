@@ -44,7 +44,7 @@ def test_system_unit_reads_watchdog_from_target_home(tmp_path, monkeypatch):
     monkeypatch.setattr(
         gateway_cli,
         "_system_service_identity",
-        lambda _user: ("service", "service", str(tmp_path / "account")),
+        lambda _user: ("service", "service", str(tmp_path / "account"), 1001),
     )
     monkeypatch.setattr(
         gateway_cli,

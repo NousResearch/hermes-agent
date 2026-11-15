@@ -9,6 +9,7 @@ import {
   setSurfaceVar
 } from '@/app/chat/surface-vars'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { hostHas } from '@/lib/host-capabilities'
 
 import {
   COMPOSER_COMPACT_PILL_PX,
@@ -32,19 +33,51 @@ export interface ComposerFit {
   foldVoice: boolean
   minimal: boolean
   tight: boolean
+  singleColumn: boolean
 }
 
-const ROOMY: ComposerFit = { compactPill: false, foldVoice: false, minimal: false, tight: false }
+const ROOMY: ComposerFit = { compactPill: false, foldVoice: false, minimal: false, tight: false, singleColumn: false }
 
-const fitForWidth = (width: number): ComposerFit => ({
-  compactPill: width < COMPOSER_COMPACT_PILL_PX,
-  foldVoice: width < COMPOSER_FOLD_VOICE_PX,
-  minimal: width < COMPOSER_MINIMAL_PX,
-  tight: width < COMPOSER_STACK_BREAKPOINT_PX
-})
+const fitForWidth = (width: number, controlSize: number): ComposerFit => {
+  const growth = Math.max(0, controlSize - 24)
+
+  return {
+    compactPill: width < COMPOSER_COMPACT_PILL_PX + growth * 5,
+    foldVoice: width < COMPOSER_FOLD_VOICE_PX + growth * 5,
+    minimal: width < COMPOSER_MINIMAL_PX + growth * 3,
+    tight: width < COMPOSER_STACK_BREAKPOINT_PX + growth * 5,
+    // Two buttons + gap + surface padding + border. At the 80px pane floor
+    // touch controls keep their hit size by occupying separate rows.
+    singleColumn: width < controlSize * 2 + 24
+  }
+}
 
 const sameFit = (a: ComposerFit, b: ComposerFit) =>
-  a.compactPill === b.compactPill && a.foldVoice === b.foldVoice && a.minimal === b.minimal && a.tight === b.tight
+  a.compactPill === b.compactPill &&
+  a.foldVoice === b.foldVoice &&
+  a.minimal === b.minimal &&
+  a.tight === b.tight &&
+  a.singleColumn === b.singleColumn
+
+// The compact controls the collapse stages were sized for.
+const DESKTOP_CONTROL_PX = 24
+
+/** Collapse stages for a composer `width` wide. The browser host's touch layout
+ *  grows the controls to 44px (styles.css), so it budgets the live
+ *  `--composer-control-size` token and splits into one column below two
+ *  targets. Native Desktop keeps the compact stages and the row, as on main. */
+function composerFit(composer: HTMLElement, width: number): ComposerFit {
+  if (!hostHas('touchSizedControls')) {
+    return { ...fitForWidth(width, DESKTOP_CONTROL_PX), singleColumn: false }
+  }
+
+  const token = getComputedStyle(composer).getPropertyValue('--composer-control-size').trim()
+
+  const size =
+    parseFloat(token) * (token.endsWith('rem') ? parseFloat(getComputedStyle(document.documentElement).fontSize) : 1)
+
+  return fitForWidth(width, Number.isFinite(size) ? size : DESKTOP_CONTROL_PX)
+}
 
 interface UseComposerMetricsResult extends ComposerFit {
   stacked: boolean
@@ -125,26 +158,12 @@ export function useComposerMetrics({
       return
     }
 
-    // Floating composer is out of the thread's flow — it must not reserve any
-    // bottom clearance. Zero the measured vars so the thread reclaims the space.
-    // Read through a ref so the callback stays stable, and read THIS surface's
-    // own state: pop-out is per layout zone, so a float in the left split must
-    // not zero the right split's clearance.
-    if (poppedOutRef.current) {
-      lastBucketedHeightRef.current = 0
-      lastBucketedSurfaceHeightRef.current = 0
-      setSurfaceVar(composer, COMPOSER_HEIGHT_VAR, '0px')
-      setSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR, '0px')
-
-      return
-    }
-
     const { height } = dock.getBoundingClientRect()
     const { width } = composer.getBoundingClientRect()
     const surfaceHeight = composerSurfaceRef.current?.getBoundingClientRect().height
 
     if (width > 0) {
-      const nextFit = fitForWidth(width)
+      const nextFit = composerFit(composer, width)
 
       if (!sameFit(nextFit, lastFitRef.current)) {
         lastFitRef.current = nextFit
@@ -162,6 +181,17 @@ export function useComposerMetrics({
 
     if (editor && editor.scrollHeight > COMPOSER_SINGLE_LINE_MAX_PX) {
       setExpanded(true)
+    }
+
+    // Floats still need their width-driven controls, but no pane reserves
+    // bottom clearance while the shared composer is detached.
+    if (poppedOutRef.current) {
+      lastBucketedHeightRef.current = 0
+      lastBucketedSurfaceHeightRef.current = 0
+      setSurfaceVar(composer, COMPOSER_HEIGHT_VAR, '0px')
+      setSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR, '0px')
+
+      return
     }
 
     if (height > 0) {
@@ -193,6 +223,7 @@ export function useComposerMetrics({
     syncComposerMetrics()
   }, [poppedOut, syncComposerMetrics])
 
+  // eslint-disable-next-line no-restricted-syntax -- resets a publish-dedupe cache in cleanup, not a mirrored atom
   useEffect(() => {
     // Resolve the owning surface while the composer is still attached; the
     // unmount cleanup runs after React detached the node, where closest() can
@@ -202,6 +233,16 @@ export function useComposerMetrics({
     return () => {
       clearSurfaceVar(root, COMPOSER_HEIGHT_VAR)
       clearSurfaceVar(root, COMPOSER_SURFACE_HEIGHT_VAR)
+      // The bucket refs mirror what is published, so clearing the vars must
+      // clear them too. This cleanup also runs on a non-final unmount (a
+      // StrictMode effect replay, a Suspense hide); the re-mount then
+      // re-measures the same dock, and with the refs still holding the old
+      // bucket the unchanged-skip check swallowed the republish. The thread
+      // fell back to the :root estimate (~62px) under a dock that could be
+      // 200px tall, and the status stack sat on top of the last turn until a
+      // real resize happened to fire.
+      lastBucketedHeightRef.current = 0
+      lastBucketedSurfaceHeightRef.current = 0
     }
   }, [composerRef])
 
@@ -223,6 +264,7 @@ export function useComposerMetrics({
     foldVoice: fit.foldVoice || fit.minimal,
     minimal: fit.minimal,
     stacked: expanded || fit.tight,
-    tight: fit.tight
+    tight: fit.tight,
+    singleColumn: fit.singleColumn
   }
 }

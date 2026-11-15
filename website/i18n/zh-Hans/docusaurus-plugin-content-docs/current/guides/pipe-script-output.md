@@ -209,9 +209,9 @@ hermes send --list --json
 
 ## 相关文档
 
-- [用 Cron 自动化一切](/guides/automate-with-cron) —
+- [用 Cron 自动化一切](./automate-with-cron.md) —
   输出自动投递到任意平台的定时任务。
-- [Gateway 内部机制](/developer-guide/gateway-internals) —
+- [Gateway 内部机制](../developer-guide/gateway-internals.md) —
   `hermes send` 与 cron 投递共享的投递路由器。
-- [消息平台配置](/user-guide/messaging/) —
+- [消息平台配置](../user-guide/messaging/index.md) —
   各平台的一次性配置说明。

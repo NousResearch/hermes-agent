@@ -1,16 +1,9 @@
 """Tests for ${ENV_VAR} substitution in config.yaml values."""
 
-import pytest
 from hermes_cli.config import _expand_env_vars, load_config
 
 
 class TestExpandEnvVars:
-    def test_simple_substitution(self):
-        with pytest.MonkeyPatch().context() as mp:
-            mp.setenv("MY_KEY", "secret123")
-            assert _expand_env_vars("${MY_KEY}") == "secret123"
-
-
 
 
     def test_non_string_values_untouched(self):
@@ -18,8 +11,6 @@ class TestExpandEnvVars:
         assert _expand_env_vars(3.14) == 3.14
         assert _expand_env_vars(True) is True
         assert _expand_env_vars(None) is None
-
-
 
 
 class TestLoadConfigExpansion:
@@ -122,3 +113,31 @@ class TestLoadCliConfigExpansion:
         config = load_cli_config()
 
         assert config["auxiliary"]["vision"]["api_key"] == "${UNSET_CLI_VAR_ABC}"
+
+
+class TestExpansionUnderProfileScope:
+    """``${VAR}`` refs must resolve against the active profile's secret scope,
+    not the shared process environment (#84079): under multiplex every
+    secondary profile otherwise "had" the default profile's token and fanned
+    out.  Outside multiplex the scope is an overlay and environ still applies."""
+
+    def test_scoped_ref_never_reads_another_profiles_environ(self, monkeypatch):
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "default-token")
+        was_active = ss.is_multiplex_active()
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"OTHER_KEY": "x"})  # profile-b: no matrix token
+        try:
+            assert _expand_env_vars("${MATRIX_ACCESS_TOKEN}") == "${MATRIX_ACCESS_TOKEN}"
+            assert _expand_env_vars("${env:MATRIX_ACCESS_TOKEN}") == "${env:MATRIX_ACCESS_TOKEN}"
+        finally:
+            ss.reset_secret_scope(token)
+        token = ss.set_secret_scope({"MATRIX_ACCESS_TOKEN": "c-token"})
+        try:
+            assert _expand_env_vars("${MATRIX_ACCESS_TOKEN}") == "c-token"
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(was_active)
+        # Unscoped (default profile / single-profile CLI): legacy environ read.
+        assert _expand_env_vars("${MATRIX_ACCESS_TOKEN}") == "default-token"

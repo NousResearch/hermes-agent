@@ -57,7 +57,11 @@ export const TimelineTimestamp: FC<{
 
   return (
     <span
-      className={cn('text-[0.625rem] leading-4 tabular-nums text-muted-foreground/55', className)}
+      // The same meta ink as the tool rows' stamps (SCAFFOLD_META_CLASS).
+      // `text-muted-foreground/55` doubled an alpha: muted-foreground is
+      // already a 54% mix of the base ink, so the stamp landed near 30% —
+      // faint over a dark chrome and fainter over a light one.
+      className={cn('text-[0.625rem] leading-4 tabular-nums text-(--conversation-scaffold-meta)', className)}
       data-slot="timeline-timestamp"
       title={title}
     >

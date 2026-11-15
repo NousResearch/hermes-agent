@@ -46,6 +46,8 @@
  * would be double-encoded downstream; this function exists to document and
  * pin that contract at the one seam that got it wrong.
  */
+import { readStatusCode } from './api-transport'
+
 export function resolveJsonBody<T>(body: T): T {
   return body
 }
@@ -138,6 +140,74 @@ export interface AdvertisedAuthProvider {
   supportsPassword?: boolean
 }
 
+/** Dashboard `basic` auth is username/password; `/api/status` often lists it as a bare string. */
+const PASSWORD_PROVIDER_NAMES = new Set(['basic'])
+
+const OAUTH_NOT_SIGNED_IN_MESSAGE =
+  'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
+  'Open Settings → Gateway and click "Sign in", or switch back to Local.'
+
+const OAUTH_SESSION_EXPIRED_MESSAGE =
+  'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
+
+/**
+ * Normalize `/api/auth/providers` objects *or* `/api/status` `auth_providers`
+ * string names into the shape `oauthGuardMayHardFail` understands.
+ */
+export function normalizeAdvertisedAuthProviders(providers: unknown): AdvertisedAuthProvider[] {
+  if (!Array.isArray(providers)) {
+    return []
+  }
+
+  const out: AdvertisedAuthProvider[] = []
+
+  for (const provider of providers) {
+    if (typeof provider === 'string') {
+      const name = provider.trim()
+
+      if (!name) {
+        continue
+      }
+
+      out.push({ name, supportsPassword: PASSWORD_PROVIDER_NAMES.has(name) })
+
+      continue
+    }
+
+    if (!provider || typeof provider !== 'object') {
+      continue
+    }
+
+    const raw = provider as AdvertisedAuthProvider & { supports_password?: boolean }
+    const name = typeof raw.name === 'string' ? raw.name.trim() : ''
+
+    if (!name) {
+      continue
+    }
+
+    const supportsPassword =
+      typeof raw.supportsPassword === 'boolean'
+        ? raw.supportsPassword
+        : typeof raw.supports_password === 'boolean'
+          ? raw.supports_password
+          : PASSWORD_PROVIDER_NAMES.has(name)
+
+    out.push({ name, supportsPassword })
+  }
+
+  return out
+}
+
+/**
+ * A 401/403 on `POST /api/auth/ws-ticket` is "session expired" only when we
+ * actually had a decryptable native token set. Stale partition cookies plus
+ * an unreadable keychain otherwise look like a live oauth session and the
+ * ticket mint 401s — that must send the user to Sign in, not "expired".
+ */
+export function oauthTicketFailureAuthMessage(hasDecryptableNativeSession: boolean): string {
+  return hasDecryptableNativeSession ? OAUTH_SESSION_EXPIRED_MESSAGE : OAUTH_NOT_SIGNED_IN_MESSAGE
+}
+
 /**
  * Whether the oauth pre-flight guard may hard-fail a connection for "not
  * signed in".
@@ -156,16 +226,31 @@ export interface AdvertisedAuthProvider {
  * unknown or empty list keeps the strict guard, so backends that predate
  * `/api/auth/providers` are unaffected.
  */
-export function oauthGuardMayHardFail(providers: AdvertisedAuthProvider[] | null | undefined): boolean {
-  if (!Array.isArray(providers) || providers.length === 0) {
-    return true
-  }
-
-  const named = providers.filter(provider => provider && typeof provider === 'object' && provider.name)
+export function oauthGuardMayHardFail(providers: unknown): boolean {
+  const named = normalizeAdvertisedAuthProviders(providers)
 
   if (named.length === 0) {
     return true
   }
 
   return !named.every(provider => provider.supportsPassword)
+}
+
+/**
+ * Whether a rejected native-bearer request should try ONE forced token
+ * rotation before the rejection counts as confirmed.
+ *
+ * The gateway gate never rotates a native access token server-side — only
+ * cookie sessions get the transparent AT-from-RT refresh; the native flow is
+ * told to call `/auth/native/refresh` itself (dashboard_auth/middleware.py).
+ * So a 401 on a bearer the desktop still considers unexpired is ambiguous
+ * until that refresh has had its say: a live refresh token yields a fresh
+ * bearer, a dead one confirms the session is gone (#95701). Only a structured
+ * 401 qualifies. A 403 is a policy refusal for an identity the gate DID
+ * recognize, and a rotated token for the same identity cannot change it; a
+ * transport failure or an anonymous message-only error says nothing about
+ * the credential and must keep its transient classification.
+ */
+export function shouldRotateNativeTokenAfterRejection(error: unknown): boolean {
+  return readStatusCode(error) === 401
 }

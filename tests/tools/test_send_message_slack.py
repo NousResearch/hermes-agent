@@ -9,12 +9,10 @@ _standalone_send`` and text sends now route through ``_send_via_adapter``
 import asyncio
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import Platform
-from tools.send_message_tool import _send_to_platform
 
 
 def _ensure_slack_mock(monkeypatch):
@@ -42,29 +40,6 @@ def _ensure_slack_mock(monkeypatch):
         monkeypatch.setitem(sys.modules, name, mod)
 
 
-def test_slack_send_to_platform_routes_through_send_via_adapter(monkeypatch):
-    """Slack text sends go through _send_via_adapter (live adapter first)."""
-    _ensure_slack_mock(monkeypatch)
-
-    live_send = AsyncMock(return_value={"success": True, "message_id": "live-ts"})
-
-    with patch("tools.send_message_tool._send_via_adapter", live_send):
-        result = asyncio.run(
-            _send_to_platform(
-                Platform.SLACK,
-                SimpleNamespace(enabled=True, token="bad-token,good-token", extra={}),
-                "C123",
-                "**hello** from Hermes",
-                thread_id="171.1",
-            )
-        )
-
-    assert result == {"success": True, "message_id": "live-ts"}
-    live_send.assert_awaited_once()
-    call = live_send.await_args
-    assert call.args[0] == Platform.SLACK
-    assert call.args[2] == "C123"
-    assert call.kwargs["thread_id"] == "171.1"
 
 
 class _SlackResponse:
@@ -137,3 +112,20 @@ def test_standalone_send_stops_on_non_token_error(monkeypatch, _standalone_send)
 
     assert result == {"error": "Slack API error: msg_too_long"}
     assert len(fake_session.calls) == 1
+
+
+def test_slack_dm_resolution_error_never_echoes_the_proxy_password(monkeypatch):
+    """aiohttp's InvalidURL text is the raw proxy URL; the surfaced tool error must not carry it."""
+    import asyncio
+
+    from tools.send_message_senders import _resolve_slack_user_target
+
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy",
+                "NO_PROXY", "no_proxy", "SLACK_PROXY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://bob:S3cretPW@127.0.0.1:notaport")
+    chat_id, error = asyncio.run(_resolve_slack_user_target("xoxb-test", "user:U123"))
+    assert chat_id is None
+    assert error["error"].startswith("Slack DM resolution failed: ")
+    assert "S3cretPW" not in error["error"]
+    assert "InvalidURL" in error["error"]

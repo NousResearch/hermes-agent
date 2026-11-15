@@ -28,15 +28,18 @@ def worker_env(monkeypatch, tmp_path):
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="worker-test", assignee="test-worker")
         kb.claim_task(conn, tid)
+        run_id = kb._current_run_id(conn, tid)
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     return tid
 
 
@@ -48,9 +51,10 @@ def test_kanban_comment_body_scrubbed_github_pat(worker_env):
     """ghp_ PAT in comment body must be masked before DB write."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     secret = "ghp_" + "A" * 40
     kt._handle_comment({"task_id": worker_env, "body": f"token: {secret}"})
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         comments = kb.list_comments(conn, worker_env)
     finally:
@@ -65,6 +69,7 @@ def test_kanban_block_reason_scrubbed_jwt(worker_env):
     """JWT in block reason must be masked before DB write."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     # Minimal valid-ish JWT (header.payload.sig)
     jwt = (
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
@@ -72,13 +77,14 @@ def test_kanban_block_reason_scrubbed_jwt(worker_env):
         ".dozjgNryP4J3jVmNHl0w5N_5NjP1-iXkpHgcth826Iw"
     )
     kt._handle_block({"reason": f"Bearer {jwt}"})
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         run = kb.latest_run(conn, worker_env)
     finally:
         conn.close()
     # block_task stores reason as run.summary
     assert run is not None
+    assert run.outcome == "blocked"
     stored = run.summary or ""
     assert jwt not in stored
 
@@ -91,9 +97,10 @@ def test_kanban_comment_no_secret_passthrough(worker_env):
     """Plain text without credential patterns must pass through unchanged."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     plain = "hello from the pipeline — no secrets here"
     kt._handle_comment({"task_id": worker_env, "body": plain})
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         comments = kb.list_comments(conn, worker_env)
     finally:
@@ -111,9 +118,10 @@ def test_scrub_respects_force_flag_regardless_of_config(worker_env, monkeypatch)
     monkeypatch.setenv("HERMES_REDACT_SECRETS", "false")
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     secret = "ghp_" + "C" * 40
     kt._handle_comment({"task_id": worker_env, "body": f"token: {secret}"})
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         comments = kb.list_comments(conn, worker_env)
     finally:
@@ -130,13 +138,137 @@ def test_kanban_complete_result_field_scrubbed(worker_env):
     """Legacy result field must be scrubbed just like summary."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     secret = "sk-" + "D" * 48
     kt._handle_complete({"result": f"finished with key={secret}"})
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         run = kb.latest_run(conn, worker_env)
     finally:
         conn.close()
     assert run is not None
-    stored = run.summary or run.result if hasattr(run, "result") else run.summary or ""
-    assert secret not in (stored or "")
+    assert run.outcome == "completed"
+    stored = run.summary or ""
+    assert secret not in stored
+
+
+def test_kanban_create_body_scrubbed_api_key(worker_env):
+    """sk- key in a kanban_create body must be masked before the DB write.
+
+    _handle_create was the only one of the five kanban write paths that
+    persisted free text verbatim (#92354) — every other path already
+    called redact_sensitive_text(force=True)."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    secret = "sk-" + "a" * 30
+    out = json.loads(kt._handle_create({
+        "title": f"rotate {secret} now",
+        "assignee": "test-worker",
+        "body": f"complete using {secret}",
+    }))
+    assert out["ok"] is True
+    conn = kbc.connect()
+    try:
+        task = kb.get_task(conn, out["task_id"])
+    finally:
+        conn.close()
+    assert task is not None
+    assert secret not in (task.body or "")
+    # Head/tail mask survives for debuggability (same rule as other paths).
+    assert "sk-" in (task.body or "")
+    # Titles are free text too and masked under the same contract —
+    # a key pasted into a title would otherwise survive in board listings
+    # and dispatcher logs (review follow-up on #92354).
+    assert secret not in (task.title or "")
+    assert "sk-" in (task.title or "")
+
+
+def test_kanban_create_secret_free_body_passthrough(worker_env):
+    """A secret-free body must pass through byte-for-byte."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    body = "Investigate the flaky e2e suite and report findings."
+    out = json.loads(kt._handle_create({
+        "title": "plain task",
+        "assignee": "test-worker",
+        "body": body,
+    }))
+    assert out["ok"] is True
+    conn = kbc.connect()
+    try:
+        task = kb.get_task(conn, out["task_id"])
+    finally:
+        conn.close()
+    assert task is not None
+    assert task.body == body
+
+
+def test_kanban_complete_corrupting_metadata_stays_structured(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+
+    secret = "DB_PASSWORD=pw1longer" + "value99"
+    response = json.loads(kt._handle_complete({
+        "summary": "done",
+        "metadata": {"headers": secret, "safe": "keep"},
+    }))
+    assert response["ok"] is True
+    conn = connect()
+    try:
+        metadata = kb.latest_run(conn, worker_env).metadata
+    finally:
+        conn.close()
+    assert metadata["safe"] == "keep"
+    assert secret not in json.dumps(metadata)
+
+
+def test_kanban_request_review_corrupting_metadata_stays_structured(worker_env, monkeypatch):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+
+    secret = "DB_PASSWORD=pw1longer" + "value99"
+    conn = connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+    finally:
+        conn.close()
+    assert run is not None
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run.id))
+    response = json.loads(kt._handle_request_review({
+        "summary": "ready for review",
+        "metadata": {"headers": secret, "safe": "keep"},
+    }))
+    assert "error" not in response, response
+    conn = connect()
+    try:
+        metadata = kb.latest_run(conn, worker_env).metadata
+    finally:
+        conn.close()
+    assert metadata is not None
+    assert metadata["safe"] == "keep"
+    assert secret not in json.dumps(metadata)
+
+
+def test_kanban_complete_list_held_secret_keeps_sibling_fields(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+
+    secret = "DB_PASSWORD=pw1longer" + "value99"
+    response = json.loads(kt._handle_complete({
+        "summary": "done",
+        "metadata": {"commands_run": [secret, "ls"], "safe": "keep"},
+    }))
+    assert response["ok"] is True
+    conn = connect()
+    try:
+        metadata = kb.latest_run(conn, worker_env).metadata
+    finally:
+        conn.close()
+    assert metadata["safe"] == "keep"
+    assert metadata["commands_run"][1] == "ls"
+    assert secret not in json.dumps(metadata)

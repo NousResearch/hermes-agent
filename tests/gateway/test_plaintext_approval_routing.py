@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 
@@ -68,10 +68,7 @@ def _make_runner():
     adapter._unwrap_ephemeral = lambda r: (r, 0) if isinstance(r, str) else (None, 0)
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
-    runner._busy_ack_ts = {}
     runner._draining = False
     runner.session_store = None
     runner._is_user_authorized = lambda _source: True
@@ -84,7 +81,8 @@ def _make_runner():
 
 def _register_blocking_approval(runner):
     """Register a real blocking approval entry for the runner's session."""
-    from tools.approval import _ApprovalEntry, _gateway_queues
+    from tools.approval import _gateway_queues
+    from tools.approval_gateway_wait import _ApprovalEntry
     source = _make_source()
     session_key = runner._session_key_for_source(source)
     entry = _ApprovalEntry({"command": "rm -rf /tmp/test"})
@@ -115,12 +113,12 @@ def test_no_pending_approval_does_not_consume_conversational_yes():
     approval — it falls through to normal busy handling (design intent:
     'yes' in conversation must not execute a dangerous command)."""
     _clear_approval_state()
-    runner, adapter = _make_runner()
+    runner, _adapter = _make_runner()
     source = _make_source()
     session_key = runner._session_key_for_source(source)
     # No approval registered.
 
-    handled = asyncio.run(
+    asyncio.run(
         runner._handle_active_session_busy_message(_make_event("yes"), session_key)
     )
 

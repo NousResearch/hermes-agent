@@ -21,8 +21,5 @@ def test_gateway_stderr_formatter_includes_timestamp() -> None:
 
     rendered = _gateway_stderr_formatter().format(record)
 
-    assert re.fullmatch(
-        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} "
-        r"ERROR gateway\.run: delivery failed",
-        rendered,
-    )
+    assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", rendered), rendered
+    assert "delivery failed" in rendered

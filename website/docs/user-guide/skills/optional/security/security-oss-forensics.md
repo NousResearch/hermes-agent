@@ -48,7 +48,7 @@ Read these before every investigation step. Violating them invalidates the repor
 5. **Proof-Required Disproval**: A hypothesis cannot be dismissed without a specific, evidence-backed counter-argument. "No evidence found" is not sufficient to disprove—it only makes a hypothesis inconclusive.
 6. **SHA/URL Double-Verification**: Any commit SHA, URL, or external identifier cited as evidence must be independently confirmed from at least two sources before being marked as verified.
 7. **Suspicious Code Rule**: Never run code found inside the investigated repository locally. Analyze statically only, or use `execute_code` in a sandboxed environment.
-8. **Secret Redaction**: Any API keys, tokens, or credentials discovered during investigation must be redacted in the final report. Log them internally only.
+8. **Secret Redaction**: Do not write live API keys, tokens, or credentials in plaintext into the report, `iocs.md`, evidence-store entries, sub-agent `context`, or other ordinary working files. Record only non-secret references: the secret type, the source location (commit SHA, path, line), and an evidence item ID. If raw-secret preservation is explicitly authorized and necessary for the investigation, keep it in a separately designated, access-controlled evidence store with suitable encryption and retention controls; ordinary artifacts hold references, not copies. Do not include that store in the Phase 7 archive without separate explicit authorization.
 
 ---
 
@@ -74,7 +74,7 @@ Read these before every investigation step. Violating them invalidates the repor
    ```
 2. Initialize the evidence store:
    ```bash
-   python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json list
+   python SKILL_DIR/scripts/evidence-store.py --store evidence.json list
    ```
 3. Copy the forensic report template:
    ```bash
@@ -101,7 +101,7 @@ Read these before every investigation step. Violating them invalidates the repor
 
 **Output**: Populate `iocs.md` with extracted IOCs. Each IOC must have:
 - Type (from: COMMIT_SHA, FILE_PATH, API_KEY, SECRET, IP_ADDRESS, DOMAIN, PACKAGE_NAME, ACTOR_USERNAME, MALICIOUS_URL, OTHER)
-- Value
+- Value (for `API_KEY`/`SECRET`, the non-secret reference from guardrail 8, never the raw secret)
 - Source (user-provided, inferred)
 
 **Reference**: See [evidence-types.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/evidence-types.md) for IOC taxonomy.
@@ -144,7 +144,7 @@ git log --all --diff-filter=A --name-only --format="%H %ai" -- "*.so" "*.dll" "*
 git log --show-signature --format="%H %ai %aN" > ../signature_check.txt 2>&1
 ```
 
-**Evidence to collect** (add via `python3 SKILL_DIR/scripts/evidence-store.py add`):
+**Evidence to collect** (add via `python SKILL_DIR/scripts/evidence-store.py add`):
 - Each dangling commit SHA → type: `git`
 - Force-push evidence (reflog showing history rewrite) → type: `git`
 - Unsigned commits from verified contributors → type: `git`
@@ -297,7 +297,7 @@ LIMIT 200
 
 After all investigators complete:
 
-1. Run `python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json list` to see all collected evidence.
+1. Run `python SKILL_DIR/scripts/evidence-store.py --store evidence.json list` to see all collected evidence.
 2. For each piece of evidence, verify the `content_sha256` hash matches the original source.
 3. Group evidence by:
    - **Timeline**: Sort all timestamped evidence chronologically
@@ -368,8 +368,8 @@ Populate `investigation-report.md` using the template in [forensic-report.md](ht
 
 ## Phase 7: Completion
 
-1. Run final evidence count: `python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json list`
-2. Archive the full investigation directory.
+1. Run final evidence count: `python SKILL_DIR/scripts/evidence-store.py --store evidence.json list`
+2. Archive the full investigation directory after confirming it contains no plaintext secrets (guardrail 8).
 3. If compromise is confirmed:
    - List immediate mitigations (rotate credentials, pin dependency hashes, notify affected users)
    - Identify affected versions/packages

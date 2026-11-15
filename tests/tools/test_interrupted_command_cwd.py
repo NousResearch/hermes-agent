@@ -58,6 +58,7 @@ class TestCwdObservedFlag:
         result, _ = _run(env, "sess", f"cd {target} && pwd")
         assert result["cwd_observed"] is True
 
+    @pytest.mark.platforms("linux")
     def test_interrupted_command_reports_no_cwd(self, env, tmp_path):
         target = tmp_path / "slow"
         target.mkdir()
@@ -67,6 +68,7 @@ class TestCwdObservedFlag:
 
 
 class TestInterruptDoesNotStealAnotherSessionsCwd:
+    @pytest.mark.platforms("linux")
     def test_record_survives_an_interrupt(self, env, tmp_path):
         mine = tmp_path / "mine"
         theirs = tmp_path / "theirs"
@@ -84,6 +86,7 @@ class TestInterruptDoesNotStealAnotherSessionsCwd:
         _run(env, "mine", f"cd {mine} && sleep 20", timeout=2)
         assert tt.get_session_cwd("mine") == str(mine)
 
+    @pytest.mark.platforms("linux")
     def test_next_command_still_runs_in_my_directory(self, env, tmp_path):
         mine = tmp_path / "mine"
         theirs = tmp_path / "theirs"
@@ -97,6 +100,7 @@ class TestInterruptDoesNotStealAnotherSessionsCwd:
         result, _ = _run(env, "mine", "pwd")
         assert os.path.realpath(result["output"].strip()) == os.path.realpath(str(mine))
 
+    @pytest.mark.platforms("linux")
     def test_single_session_keeps_its_own_prior_directory(self, env, tmp_path):
         """No second session needed: a lone session must not re-home either."""
         first = tmp_path / "first"
@@ -167,6 +171,7 @@ class TestTerminalToolReadsTheFlag:
             tt.terminal_tool(command=command, task_id=task_id, timeout=timeout)
         )
 
+    @pytest.mark.platforms("linux")
     def test_interrupt_keeps_record_and_echoes_no_cwd(self, env, tmp_path, monkeypatch):
         mine = tmp_path / "mine"
         theirs = tmp_path / "theirs"
@@ -194,6 +199,7 @@ class TestTerminalToolReadsTheFlag:
         # my command_cwd (mine), so the echo would fire with THEIR directory.
         assert "cwd" not in result or result.get("cwd") is None
 
+    @pytest.mark.platforms("linux")
     def test_completed_command_still_records_and_echoes(self, env, tmp_path, monkeypatch):
         """The gate must not break the observed path: cd still round-trips."""
         target = tmp_path / "target"

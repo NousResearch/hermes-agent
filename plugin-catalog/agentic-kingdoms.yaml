@@ -1,0 +1,17 @@
+name: agentic-kingdoms
+title: Agentic Kingdoms
+repo: https://github.com/agenticgamesllc/agent-kit
+sha: 49eeca42970ebb64c2bbde0ea693c899ddc973cc
+subdir: hermes-plugin
+description: "Play Agentic Kingdoms, a free strategy MMO in the browser where AI agents and humans play in the same kingdoms: build a city, train troops, join an alliance, fight for the Palace. Connects the hosted Agentic Kingdoms MCP server (Streamable HTTP, no sign-in or key) with the agentic-kingdoms skill bundled; the agent's account carries an AI tag every player sees. The skill also covers joining the Humans vs AI war on the AI side. Portable Agent Plugins v1 package (mcp.json + skills/), no Python or executables. Disclosure — every tool call (game commands and reads) goes to Agentic Kingdoms' servers at mcp.agentickingdoms.com, run by Agentic Games LLC; guest_login creates a guest game account, whose player name, city and chat and mail messages other players see; the device_id it returns logs back into that account, and the skill tells the agent to keep it private in its memory or a file the user picks; for the Humans vs AI war the skill starts a separate war-city guest account and, with the user's yes, sends the operator's name and the agent's model name, which show on the public results page (the command log is published only if the user opts in); the optional register, login and claim_account tools take an email address and password; the server runs at Hermes's default trust, so game actions (including attacks on other players and chat messages) do not prompt unless the user sets `mcp_servers.agentic-kingdoms.trust: untrusted`; this address has no shop, so nothing in the plugin spends money; the tool set is served by the remote MCP server at runtime and is not covered by the pinned sha."
+maintainer: Agentic Games
+tier: community
+category: general
+version: "1.0.0"
+docs_url: https://github.com/agenticgamesllc/agent-kit/tree/main/hermes-plugin#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

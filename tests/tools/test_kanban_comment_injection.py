@@ -21,6 +21,7 @@ if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 import tools.kanban_tools as kt
 
 
@@ -66,7 +67,7 @@ def test_noop_without_worker_env(worker_home, monkeypatch):
 
 
 def test_seed_then_inject_new_comment(worker_home, monkeypatch):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="live task")
         kb.add_comment(conn, tid, author="desktop", body="pre-existing note")
@@ -82,7 +83,7 @@ def test_seed_then_inject_new_comment(worker_home, monkeypatch):
     assert kt.inject_new_comments_from_env(agent) is False
     assert agent.steers == []
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.add_comment(conn, tid, author="desktop", body="actually use the v2 API")
     finally:
@@ -100,7 +101,7 @@ def test_seed_then_inject_new_comment(worker_home, monkeypatch):
 
 
 def test_skips_own_authored_comments(worker_home, monkeypatch):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="echo guard")
     finally:
@@ -113,9 +114,77 @@ def test_skips_own_authored_comments(worker_home, monkeypatch):
     _unthrottle()
     kt.inject_new_comments_from_env(agent)  # seed
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.add_comment(conn, tid, author="worker-bot", body="i did a thing")
+    finally:
+        conn.close()
+
+    _unthrottle()
+    assert kt.inject_new_comments_from_env(agent) is False
+    assert agent.steers == []
+
+
+def test_delegated_child_in_worker_process_neither_receives_nor_consumes_notes(worker_home, monkeypatch):
+    """A delegate_task child inherits the worker's ``HERMES_KANBAN_TASK``; operator notes
+    address the worker, so the child must not be steered by them and must not advance the
+    shared watermark (which would make the worker miss them) (#112817)."""
+    from agent.delegation_context import delegated_child_context
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="live task")
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_PROFILE", "worker-bot")
+
+    worker = FakeAgent()
+    _unthrottle()
+    assert kt.inject_new_comments_from_env(worker) is False  # seed
+
+    conn = kbc.connect()
+    try:
+        kb.add_comment(conn, tid, author="desktop", body="operator note for the worker")
+    finally:
+        conn.close()
+
+    child = FakeAgent()
+    with delegated_child_context():
+        _unthrottle()
+        assert kt.inject_new_comments_from_env(child) is False
+    assert child.steers == []
+
+    _unthrottle()
+    assert kt.inject_new_comments_from_env(worker) is True
+    assert "operator note" in worker.steers[0]
+
+
+def test_skips_own_authored_comments_without_env_profile(worker_home, monkeypatch):
+    """Own comments are skipped even when ``HERMES_PROFILE`` is absent: the
+    injection filter resolves the worker's identity the same way the persisted
+    write side does (env → ``HERMES_HOME``-derived active profile), so a worker's
+    own notes can never steer its live turn as fake operator messages."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="identity echo guard")
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    agent = FakeAgent()
+
+    _unthrottle()
+    kt.inject_new_comments_from_env(agent)  # seed
+
+    identity = kt._persisted_identity()
+    assert identity != "worker"  # resolved from HERMES_HOME, not the generic label
+
+    conn = kbc.connect()
+    try:
+        kb.add_comment(conn, tid, author=identity, body="note to self")
     finally:
         conn.close()
 

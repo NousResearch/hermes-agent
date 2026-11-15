@@ -105,13 +105,6 @@ function embeddedImageRemovalRange(text: string, dataStart: number, dataEnd: num
   return { end, start }
 }
 
-function normalizeCleanedText(text: string): string {
-  return text
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
 export function extractEmbeddedImages(text: string): EmbeddedImageExtraction {
   if (!text || !text.includes(DATA_IMAGE_PREFIX)) {
     return { cleanedText: text, images: [] }
@@ -150,7 +143,7 @@ export function extractEmbeddedImages(text: string): EmbeddedImageExtraction {
 
   pieces.push(text.slice(appendCursor))
 
-  return { cleanedText: normalizeCleanedText(pieces.join('')), images }
+  return { cleanedText: pieces.join(''), images }
 }
 
 export function embeddedImageUrls(text: string): string[] {
@@ -200,5 +193,5 @@ export function extractImageRefs(text: string): { cleanedText: string; refs: str
     cleanedText = cleanedText.replace(SCREENSHOT_PLACEHOLDER_LINE_RE, '')
   }
 
-  return { cleanedText: cleanedText.trim(), refs }
+  return { cleanedText, refs }
 }

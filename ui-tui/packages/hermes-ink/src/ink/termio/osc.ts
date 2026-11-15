@@ -17,6 +17,13 @@ const ENV_OFF_RE = /^(?:0|false|no|off)$/i
 /** String Terminator (ESC \) - alternative to BEL for terminating OSC */
 export const ST = ESC + '\\'
 
+/** Strip C0, DEL and C1 controls from a hyperlink URL: a BEL/ESC in it would end the
+ *  OSC 8 sequence early and hand the rest of the URL to the terminal as raw input. */
+export function sanitizeOsc8Url(value: string): string {
+  // eslint-disable-next-line no-control-regex -- stripping controls is the point
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+}
+
 /** Generate an OSC sequence: ESC ] p1;p2;...;pN <terminator>
  * Uses ST terminator for Kitty (avoids beeps), BEL for others */
 export function osc(...parts: (string | number)[]): string {
@@ -201,7 +208,10 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
   const { code } = await execFileNoThrow('tmux', args, {
     input: text,
     useCwd: false,
-    timeout: 2000
+    timeout: 2000,
+    // tmux may daemonize a server while retaining the inherited stdio pipes;
+    // only the child exit code is needed for this call site.
+    resolveOnExit: true
   })
 
   return code === 0
@@ -631,6 +641,7 @@ export function link(url: string, params?: Record<string, string>): string {
     return LINK_END
   }
 
+  url = sanitizeOsc8Url(url)
   const p = { id: osc8Id(url), ...params }
 
   const paramStr = Object.entries(p)

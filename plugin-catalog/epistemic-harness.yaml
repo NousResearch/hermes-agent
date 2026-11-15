@@ -1,0 +1,29 @@
+name: epistemic-harness
+repo: https://github.com/quangphucqp/epistemic-harness
+sha: 5abd0dc482096c3f64379115fc79cc96e4e7203a
+subdir: ""
+version: "1.4.4"
+description: "Helps a Hermes agent record a prediction before a selected check, compare the result, and track revisions in a local case. Disclosure — the optional epistemic_methods tool (off by default; enable with the plugin's jev setting) sends a capped, redacted projection of the active case (top unknown, decision, stopping condition, a few claim and plan texts, recent event types and the candidate methods you supply) to api.typesafe.ai (or the https endpoint you configure) under your TYPESAFE_API_KEY, spending your TypeSafe credits; once enabled, the plugin requires a consultation before each committed probe and before closing a case."
+maintainer: quangphucqp
+tier: community
+category: general
+requires_hermes: ">=0.21,<1.0"
+platforms:
+  - linux
+  - macos
+docs_url: https://github.com/quangphucqp/epistemic-harness#readme
+capabilities:
+  provides_tools:
+    - epistemic_model
+    - epistemic_probe
+    - epistemic_methods
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - transform_tool_result
+    - subagent_stop
+    - on_session_reset
+    - on_session_finalize
+  provides_middleware:
+    - tool_execution
+  requires_env: []

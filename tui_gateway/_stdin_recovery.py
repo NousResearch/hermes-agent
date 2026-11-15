@@ -1,151 +1,100 @@
 """Shared spurious stdin-EOF recovery for the TUI gateway entry point and slash worker.
 
-When a child process inherits fd 0 (stdin) and sets ``O_NONBLOCK``, the flag
-lands on the **shared open file description** — not just the child's descriptor.
-The gateway's next ``read()`` returns ``EAGAIN``, which CPython's buffered
-``TextIOWrapper`` converts to ``b''`` (apparent EOF), killing the gateway.
-
-This module provides:
-- :func:`diagnose_stdin_state` — forensic diagnostic (``O_NONBLOCK`` / ``SO_RCVTIMEO``)
-- :func:`handle_spurious_eof` — check whether an empty ``readline()`` is a genuine
-  peer-close or a spurious EOF, and recover if spurious.
-
-The recovery is **POSIX-only** (``fcntl``).  On Windows, ``O_NONBLOCK`` on a
-shared file description is not a concern, so the guard simply reports a
-genuine EOF and lets the caller exit.
+When a child inherits fd 0 and sets ``O_NONBLOCK``, the flag lands on the SHARED open
+file description, not just the child's descriptor. The next ``read()`` returns
+``EAGAIN``, which CPython's buffered ``TextIOWrapper`` converts to ``b''`` (apparent
+EOF), killing the gateway. Recovery is POSIX-only (``fcntl``); on Windows the guard
+just reports a genuine EOF and lets the caller exit.
 """
 
 from __future__ import annotations
 
 import os
+import socket
+import struct
 import time
 
 try:
-    import fcntl as _fcntl
-    _HAS_FCNTL = True
-except ImportError:
-    _fcntl = None  # type: ignore[assignment]
-    _HAS_FCNTL = False
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None  # type: ignore[assignment]
 
-try:
-    import socket as _socket
-    _HAS_SOCKET = True
-except ImportError:
-    _socket = None  # type: ignore[assignment]
-    _HAS_SOCKET = False
-
-import struct
-
-
-# Rate-limit: at most this many spurious-EOF recoveries per 60-second window.
-# A child aggressively flipping ``O_NONBLOCK`` on the shared fd would otherwise
-# create a tight busy-loop burning CPU.  Exceeding the cap exits the process —
-# the parent (TUI / gateway) respawns it with fresh state, which is safer than
-# fighting forever.
+# Recoveries per 60s window. A child aggressively flipping the flag would otherwise
+# create a tight busy-loop; exceeding the cap exits so the parent respawns us fresh.
 MAX_RECOVERIES_PER_MINUTE = 10
 
 
-def diagnose_stdin_state() -> str:
-    """Return a diagnostic string about stdin's current state.
+def _stdin_nonblock() -> bool:
+    try:
+        return bool(fcntl.fcntl(0, fcntl.F_GETFL) & os.O_NONBLOCK)  # type: ignore[union-attr]
+    except Exception:
+        return False
 
-    Used for crash-log forensics when stdin iteration falls through.
-    Distinguishes genuine peer-close (flag clear) from spurious EOF
-    caused by a child setting ``O_NONBLOCK`` on the shared file description.
+
+def _stdin_sockopt(getter):
+    """Run ``getter(sock)`` against a dup of fd 0 as a socket; None on failure.
+
+    ``fromfd`` dups the fd, so ``close`` releases the dup without touching fd 0.
+    """
+    try:
+        s = socket.fromfd(0, socket.AF_UNIX, socket.SOCK_STREAM)
+    except Exception:
+        return None
+    try:
+        return getter(s)
+    except Exception:
+        return None
+    finally:
+        s.close()
+
+
+def diagnose_stdin_state() -> str:
+    """Diagnostic string (``O_NONBLOCK`` / ``SO_RCVTIMEO``) for crash-log forensics.
+
+    ``SO_RCVTIMEO`` is equally shared on the open file description; a child's
+    ``setsockopt`` launders into the same spurious-EOF path with ``O_NONBLOCK`` clear.
     """
     parts: list[str] = []
-    if _HAS_FCNTL and _fcntl is not None:
+    if fcntl is None:
+        parts.append("O_NONBLOCK=n/a (no fcntl)")
+    else:
         try:
-            flags = _fcntl.fcntl(0, _fcntl.F_GETFL)
+            flags = fcntl.fcntl(0, fcntl.F_GETFL)
             parts.append(f"O_NONBLOCK={'1' if flags & os.O_NONBLOCK else '0'}")
         except Exception as e:
             parts.append(f"F_GETFL error: {e}")
-    else:
-        parts.append("O_NONBLOCK=n/a (no fcntl)")
-    # ``SO_RCVTIMEO`` is a socket option (not a file-status flag), equally
-    # shared on the open file description.  A child setting it via
-    # ``setsockopt`` launders into the same spurious-EOF path with
-    # ``O_NONBLOCK`` clear, so we report it alongside the flag.
-    if _HAS_SOCKET and _socket is not None:
-        try:
-            s = _socket.fromfd(0, _socket.AF_UNIX, _socket.SOCK_STREAM)
-            try:
-                tv = s.getsockopt(_socket.SOL_SOCKET, _socket.SO_RCVTIMEO)
-                parts.append(f"SO_RCVTIMEO={tv!r}")
-            finally:
-                # ``fromfd`` duped the fd; ``close`` releases the dup without
-                # touching the original fd 0.
-                s.close()
-        except Exception:
-            pass
+    tv = _stdin_sockopt(lambda s: s.getsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO))
+    if tv is not None:
+        parts.append(f"SO_RCVTIMEO={tv!r}")
     return ", ".join(parts) if parts else "unknown"
 
 
-def handle_spurious_eof(
-    recovery_times: list[float],
-    log_fn: object,
-) -> bool:
+def handle_spurious_eof(recovery_times: list[float], log_fn: object) -> bool:
     """Check whether an empty ``readline()`` is spurious; recover if so.
 
-    Returns ``True`` if the caller should ``continue`` the read loop
-    (spurious EOF was recovered), ``False`` if it should ``break`` (genuine
-    peer-close or rate limit exceeded).
-
-    ``log_fn`` is called with a diagnostic string — ``_log_exit`` in
-    ``entry.py``, ``print(file=sys.stderr)`` in ``slash_worker.py``.
+    Returns True if the caller should ``continue`` the read loop (recovered), False if it
+    should ``break`` (genuine peer-close or rate limit exceeded). ``log_fn`` receives a
+    diagnostic string.
     """
-    # Without ``fcntl`` (Windows) we can't check the flag, and the
-    # ``O_NONBLOCK`` shared-description issue is POSIX-specific anyway —
-    # treat it as a genuine EOF.
-    if not (_HAS_FCNTL and _fcntl is not None):
+    # Without fcntl (Windows) we can't check the flag and the issue is POSIX-specific
+    # anyway; a clear flag means a genuine peer-close.
+    if fcntl is None or not _stdin_nonblock():
         log_fn("stdin EOF (peer closed)")  # type: ignore[operator]
         return False
-
-    try:
-        flags = _fcntl.fcntl(0, _fcntl.F_GETFL)
-        is_nonblock = bool(flags & os.O_NONBLOCK)
-    except Exception:
-        is_nonblock = False
-
-    if not is_nonblock:
-        # Genuine peer-close — no subprocess flag tampering detected.
-        log_fn("stdin EOF (peer closed)")  # type: ignore[operator]
-        return False
-
-    # Spurious EOF: a child set ``O_NONBLOCK`` (and/or ``SO_RCVTIMEO``) on
-    # the shared file description, laundered into ``b''`` / ``EAGAIN`` by
-    # CPython's buffered layer.  Restore blocking mode and resume.
     now = time.time()
     recovery_times.append(now)
     recovery_times[:] = [t for t in recovery_times if t > now - 60]
     if len(recovery_times) > MAX_RECOVERIES_PER_MINUTE:
         log_fn(  # type: ignore[operator]
             f"stdin spurious-EOF recovery rate exceeded "
-            f"({len(recovery_times)}/min, cap {MAX_RECOVERIES_PER_MINUTE})"
-        )
+            f"({len(recovery_times)}/min, cap {MAX_RECOVERIES_PER_MINUTE})")
         return False
-
-    diag = diagnose_stdin_state()
-    log_fn(f"stdin spurious EOF (subprocess O_NONBLOCK flip), recovering: {diag}")  # type: ignore[operator]
-
-    # Clear ``O_NONBLOCK`` on the shared file description.
+    log_fn(f"stdin spurious EOF (subprocess O_NONBLOCK flip), recovering: {diagnose_stdin_state()}")  # type: ignore[operator]
+    # Restore blocking mode on the shared description, and clear SO_RCVTIMEO too: a
+    # non-zero timeout would make the next readline() return '' again until the limiter fires.
     os.set_blocking(0, True)
-
-    # Also clear ``SO_RCVTIMEO`` if it was set by a child on the shared
-    # description.  A non-zero timeout would cause the next ``readline()``
-    # to time out and return ``''`` again, looping until the rate limiter
-    # kicks in.  Clearing it restores fully blocking semantics.
-    if _HAS_SOCKET and _socket is not None:
-        try:
-            s = _socket.fromfd(0, _socket.AF_UNIX, _socket.SOCK_STREAM)
-            try:
-                # Zero timeval: tv_sec=0, tv_usec=0 (struct timeval on most platforms)
-                s.setsockopt(_socket.SOL_SOCKET, _socket.SO_RCVTIMEO, struct.pack("ll", 0, 0))
-            finally:
-                s.close()
-        except Exception:
-            pass
-
-    # ``_io.TextIOWrapper.readline`` returns an empty string on ``EAGAIN``
-    # but does NOT stick EOF; after restoring blocking, the next call will
-    # block until data arrives or the peer truly closes.
+    # "ll" = struct timeval {tv_sec, tv_usec}; zero timeval disables the timeout.
+    _stdin_sockopt(lambda s: s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, struct.pack("ll", 0, 0)))
+    # TextIOWrapper.readline returns '' on EAGAIN but does NOT stick EOF; the next call
+    # blocks until data arrives or the peer truly closes.
     return True

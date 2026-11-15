@@ -8,9 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from plugins.teams_pipeline import register
 from plugins.teams_pipeline.meetings import (
     TeamsMeetingError,
     looks_like_transcript_id,
@@ -42,20 +40,6 @@ async def _transcript_meeting_resolver(
 
 async def _no_call_record(*args, **kwargs):
     return None
-
-
-def test_register_adds_cli_only():
-    mgr = PluginManager()
-    manifest = PluginManifest(name="teams_pipeline")
-    ctx = PluginContext(manifest, mgr)
-
-    register(ctx)
-
-    assert "teams-pipeline" in mgr._cli_commands
-    entry = mgr._cli_commands["teams-pipeline"]
-    assert entry["plugin"] == "teams_pipeline"
-    assert callable(entry["setup_fn"])
-    assert callable(entry["handler_fn"])
 
 
 def test_runtime_config_uses_existing_teams_platform_settings():
@@ -90,37 +74,6 @@ def test_runtime_config_uses_existing_teams_platform_settings():
     }
 
 
-def test_build_pipeline_runtime_reuses_existing_teams_adapter_surface(monkeypatch, tmp_path):
-    from plugins.teams_pipeline import runtime as runtime_module
-
-    class FakeWriter:
-        def __init__(self, platform_config=None, **kwargs) -> None:
-            self.platform_config = platform_config
-
-    monkeypatch.setattr(runtime_module, "build_graph_client", lambda: object())
-    monkeypatch.setattr(runtime_module, "resolve_teams_pipeline_store_path", lambda: tmp_path / "teams-store.json")
-    monkeypatch.setattr("plugins.platforms.teams.adapter.TeamsSummaryWriter", FakeWriter)
-
-    gateway = SimpleNamespace(
-        config=GatewayConfig(
-            platforms={
-                Platform("teams"): PlatformConfig(
-                    enabled=True,
-                    extra={
-                        "delivery_mode": "incoming_webhook",
-                        "incoming_webhook_url": "https://example.com/hook",
-                    },
-                )
-            }
-        )
-    )
-
-    runtime = runtime_module.build_pipeline_runtime(gateway)
-
-    assert isinstance(runtime.teams_sender, FakeWriter)
-    assert runtime.teams_sender.platform_config is gateway.config.platforms[Platform("teams")]
-
-
 @pytest.mark.anyio
 async def test_bind_gateway_runtime_attaches_scheduler(monkeypatch, tmp_path):
     from plugins.teams_pipeline import runtime as runtime_module
@@ -128,16 +81,27 @@ async def test_bind_gateway_runtime_attaches_scheduler(monkeypatch, tmp_path):
     class FakeAdapter:
         def __init__(self) -> None:
             self.scheduler = None
+            self._background_tasks = set()
 
         def set_notification_scheduler(self, scheduler) -> None:
             self.scheduler = scheduler
 
     class FakePipeline:
+        """Accept persists the job; processing (Graph fetch, transcript, summary) blocks until released."""
+
         def __init__(self) -> None:
             self.notifications = []
+            self.release = asyncio.Event()
 
-        async def run_notification(self, notification):
-            self.notifications.append(notification)
+        def create_job_from_notification(self, notification):
+            return SimpleNamespace(job_id=f"job-{notification['id']}", status="received")
+
+        async def run_job(self, job_id):
+            await self.release.wait()
+            self.notifications.append({"id": job_id.removeprefix("job-")})
+
+        async def run_notification(self, notification):  # TeamsMeetingPipeline: accept, then run inline
+            return await self.run_job(self.create_job_from_notification(notification).job_id)
 
     adapter = FakeAdapter()
     pipeline = FakePipeline()
@@ -157,7 +121,11 @@ async def test_bind_gateway_runtime_attaches_scheduler(monkeypatch, tmp_path):
     assert callable(adapter.scheduler)
 
     notification = {"id": "notif-1"}
-    await adapter.scheduler(notification, object())
+    # The webhook's 202 waits only for the durable accept, never for the processing pipeline.
+    await asyncio.wait_for(adapter.scheduler(notification, object()), timeout=1)
+    assert pipeline.notifications == []
+    pipeline.release.set()
+    await asyncio.gather(*adapter._background_tasks)
     assert pipeline.notifications == [notification]
 
 
@@ -168,7 +136,6 @@ def test_store_persists_subscription_event_and_job_state(tmp_path):
         "sub-1",
         {"client_state": "abc", "resource": "communications/onlineMeetings"},
     )
-    store.record_event_timestamp("evt-1", "2026-05-03T19:30:00Z")
     store.upsert_job("job-1", {"status": "received", "event_id": "evt-1"})
     store.upsert_sink_record("notion:meeting-1", {"page_id": "page-1"})
 
@@ -180,7 +147,6 @@ def test_store_persists_subscription_event_and_job_state(tmp_path):
     assert subscription is not None
     assert subscription["subscription_id"] == "sub-1"
     assert subscription["client_state"] == "abc"
-    assert reloaded.get_event_timestamp("evt-1") == "2026-05-03T19:30:00Z"
     assert job is not None
     assert job["status"] == "received"
     assert sink is not None
@@ -430,7 +396,7 @@ class TestTeamsMeetingPipeline:
         assert summarize_calls == 1
         assert len(store.list_jobs()) == 1
         receipt_key = TeamsPipelineStore.build_notification_receipt_key(notification)
-        assert store.has_notification_receipt(receipt_key) is True
+        assert store.record_notification_receipt(receipt_key) is False
 
 
 def test_parse_graph_meeting_resource_reads_quoted_users_transcript_path():

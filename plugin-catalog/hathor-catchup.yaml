@@ -1,0 +1,20 @@
+name: hathor-catchup
+repo: https://github.com/DrAhmed7887/hathor-hermes-plugin
+sha: 07fa5bc4812812138c79c360994acd2ec2311ed7
+description: "Check a child's vaccination card against a sourced national schedule (Egypt, Sudan, Syria, Nigeria, Ethiopia, Eritrea, South Sudan, WHO) and get the missing doses and a dated catch-up plan. Deterministic engine with no model or network calls; a schedule guard (pre_llm_call, post_tool_call, transform_llm_output) keeps vaccine answers tied to the tool and its source. Disclosure — no network calls, model calls, shell commands, credentials or stored data; a guard hook adds a short instruction to vaccine-related turns and appends a footer to those replies (the schedule source when the tool ran, a warning when it did not). The \"checked\" footer means the tool ran in that turn, not that the reply's wording was verified. Schedules are bundled snapshots (last updated 2025-12 to 2026-04) and some rule tables are marked pending physician sign-off in the tool output. Decision support, not medical advice."
+maintainer: DrAhmed7887
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+title: "Hathor catch-up"
+capabilities:
+  provides_tools:
+    - vaccine_card_check
+    - vaccine_schedule
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

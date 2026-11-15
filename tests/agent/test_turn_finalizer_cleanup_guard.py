@@ -8,6 +8,8 @@ for must still be returned.  Previously any of those raised straight out of
 traceback and lost the whole turn.
 """
 
+from unittest.mock import patch
+
 import pytest
 
 from agent.turn_finalizer import finalize_turn
@@ -23,7 +25,10 @@ class _StubCompressor:
     last_prompt_tokens = 0
 
 
-class _StubAgent:
+from agent.status_output import StatusOutputMixin
+
+
+class _StubAgent(StatusOutputMixin):
     """Minimal agent surface that ``finalize_turn`` reads from."""
 
     def __init__(self, *, raise_in):
@@ -156,11 +161,49 @@ def test_single_cleanup_step_raises_does_not_skip_others(step):
     assert len(result["cleanup_errors"]) == 1
 
 
+def test_a_ticketed_steer_stays_out_of_the_leftover_follow_up():
+    """A gateway transfer still buffered when the turn ends is not this turn's leftover steer: the
+    finalizer hands back only ticketless steers, so settlement returns the transfer to its queue."""
+    agent = _StubAgent(raise_in=())
+    agent._drain_leftover_steer = lambda: "typed /steer"
+    agent._drain_pending_steer = lambda: "typed /steer\nqueued prompt"
+    assert _run(agent)["pending_steer"] == "typed /steer"
+
+
 def test_clean_turn_has_no_cleanup_errors_key():
     agent = _StubAgent(raise_in=())
     result = _run(agent)
     assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
     assert result["completed"] is False
     assert "cleanup_errors" not in result
+
+
+@pytest.mark.parametrize(
+    ("persist_disabled", "expected_calls"),
+    [
+        (True, ["transform_llm_output"]),
+        (False, ["transform_llm_output", "post_llm_call", "on_session_end"]),
+    ],
+)
+def test_persist_disabled_turn_skips_session_end_hook(
+    persist_disabled, expected_calls
+):
+    agent = _StubAgent(raise_in=())
+    agent._persist_disabled = persist_disabled
+    calls = []
+
+    def capture(name, _logger, **_kwargs):
+        calls.append(name)
+        return []
+
+    with patch("agent.turn_finalizer._invoke_hook_safely", side_effect=capture):
+        _run(
+            agent,
+            final_response="done",
+            api_call_count=1,
+            turn_exit_reason="text_response(stop)",
+        )
+
+    assert ("on_session_end" in calls) == ("on_session_end" in expected_calls)
 
 

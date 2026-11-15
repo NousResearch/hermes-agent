@@ -828,7 +828,7 @@ class HostedRoomPolicyRepository(Protocol):
     """
 
     def snapshot(self, *, placement: HostedPlacement, room_id: str, latest_seq: int, max_active_events: int = 64) -> PolicySnapshot:
-        """Sync the room's policy cursor through ``latest_seq``, then read the bounded snapshot; ``RoomNotFoundError`` and ``PolicyProjectionError``. A ``room.activity`` closes its thread only while the thread still belongs to the discussion it names; a ``room.continued`` reopens its discussion unless a newer user message on the thread came between the discussion's message and the Continue."""
+        """Sync the room's policy cursor through ``latest_seq``, then read the bounded snapshot; ``RoomNotFoundError`` and ``PolicyProjectionError``. A ``room.activity`` closes its thread only while the thread still belongs to the discussion it names; a ``room.continued`` reopens its discussion unless a newer user message on the thread came between the discussion's message and the Continue. The events also carry the thread's user messages that the retained non-pass ``turn.settled`` events name as their source, never one from another thread."""
         ...
 
     def compact_completed(self, *, placement: HostedPlacement, room_id: str, max_active_events: int = 64) -> None:

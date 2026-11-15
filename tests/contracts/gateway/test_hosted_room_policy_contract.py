@@ -291,3 +291,31 @@ def test_snapshot_transcript_keeps_the_latest_settlement_of_a_committed_message(
     _user(store, "u2")
     # CONTRACT: the transcript stores the committed message with the newest settlement that named it; the closed discussion's active events are gone.
     assert _snapshot(store, 6).events == _logged(store, 1, 2, 4, 6)
+
+
+def test_snapshot_keeps_the_source_of_a_retained_settlement_on_its_own_thread(backend, scope_a):
+    store = backend.open(scope_a)
+    _room(store)
+    gateway = {"kind": "gateway", "id": "gw"}
+    source = _user(store, "u1")
+    _append(store, "m1", "message.member", {"thread_id": "t1", "discussion_event_id": "u1", "member_id": "m1"}, actor=MEMBER)
+    _append(store, "s1", "turn.settled", {"thread_id": "t1", "discussion_event_id": "u1", "member_id": "m1", "task_id": "task-1", "message_event_id": "m1"}, actor=gateway)
+    _append(store, "a1", "room.activity", {"thread_id": "t1", "discussion_event_id": "u1", "status": "settled"}, actor=gateway)
+    for n in range(22):
+        _user(store, f"later-{n}")
+    last = _user(store, "later-22")
+    # CONTRACT: a non-pass settlement the transcript keeps brings back its source user message after the message falls out of the transcript.
+    assert _logged(store, source)[0] in _snapshot(store, last).events
+
+
+def test_snapshot_never_imports_a_settlement_source_from_another_thread(backend, scope_a):
+    store = backend.open(scope_a)
+    _room(store)
+    gateway = {"kind": "gateway", "id": "gw"}
+    _user(store, "v1", thread_id="t2")
+    _append(store, "a1", "room.activity", {"thread_id": "t2", "discussion_event_id": "v1", "status": "settled"}, actor=gateway)
+    _append(store, "m1", "message.member", {"thread_id": "t1", "discussion_event_id": "v1", "member_id": "m1"}, actor=MEMBER)
+    _append(store, "s1", "turn.settled", {"thread_id": "t1", "discussion_event_id": "v1", "member_id": "m1", "task_id": "task-1", "message_event_id": "m1"}, actor=gateway)
+    _user(store, "u2")
+    # CONTRACT: a settlement whose source names a user message of another thread does not pull that message in.
+    assert _snapshot(store, 5).events == _logged(store, 3, 4, 5)

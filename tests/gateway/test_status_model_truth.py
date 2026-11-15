@@ -6,7 +6,8 @@ from unittest.mock import patch
 import pytest
 
 from gateway.session import SessionEntry, build_session_key
-from hermes_state import AsyncSessionDB, SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session, seed_usage
 from tests.gateway.test_status_command import _make_event, _make_runner, _make_source
 
 _CONFIG = {"model": {"provider": "openrouter", "default": "thinkingmachines/inkling-small:free"}}
@@ -18,11 +19,11 @@ def _runner_with_old_usage(tmp_path):
                          platform=_make_source().platform, chat_type="dm")
     runner = _make_runner(entry)
     runner.session_store.get_model_override.return_value = None
-    db = SessionDB(db_path=tmp_path / "state.db")
-    runner._session_db = AsyncSessionDB(db)
-    db.create_session("sess-1", "telegram", model="dots-studio/dots-3-note-preview:free")
-    db.update_token_counts("sess-1", model="dots-studio/dots-3-note-preview:free",
-                           billing_provider="openrouter", input_tokens=100, api_call_count=3)
+    db = open_persistence(profile_scope(home=tmp_path))
+    runner.persistence = db
+    seed_session(db, "sess-1", "telegram", model="dots-studio/dots-3-note-preview:free")
+    seed_usage(db, "sess-1", model="dots-studio/dots-3-note-preview:free",
+               billing_provider="openrouter", input_tokens=100, api_call_count=3)
     return runner, db
 
 

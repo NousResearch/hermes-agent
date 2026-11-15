@@ -3,7 +3,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.title_generator import _clean_title, _repair_mojibake, auto_title_session, generate_title
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def test_utf8_read_as_cp1250_is_restored():
@@ -49,11 +50,11 @@ def test_undecodable_byte_residue_is_rejected():
 
 
 def test_rejected_damaged_title_falls_back_to_the_users_words(tmp_path):
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session(session_id="s1", source="telegram")
+    db = storage_handle(tmp_path)
+    seed_session(db, "s1", "telegram")
     with patch("agent.title_generator.call_llm", return_value=_reply("ArkadaμƒΔ±ΕŸ selamlaşma")):
-        auto_title_session(db, "s1", "Arkadaşım ile selamlaşma")
-    assert db.get_session_title("s1") == "Arkadaşım ile selamlaşma"
+        auto_title_session(db, "s1", "Arkadaşım ile selamlaşma", persistence=db)
+    assert db.sessions.get_title("s1") == "Arkadaşım ile selamlaşma"
 
 
 @pytest.mark.parametrize("title", [

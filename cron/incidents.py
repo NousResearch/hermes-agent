@@ -69,7 +69,10 @@ def _connect() -> sqlite3.Connection:
 
     path = _db_path()
     _ensure_cron_dir(path.parent)
-    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
+    # Same file as the executions ledger, so the gate (and the DDL for both tables) lives there:
+    # a second per-module stamp would starve whichever module migrated second (#155907).
+    return open_db(path, db_label="cron/executions.db", synchronous_full=True,
+                   initialize=_executions._initialize_if_stale)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:

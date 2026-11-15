@@ -43,6 +43,9 @@ _STATUS_CHECK = "('claimed','running','completed','failed','unknown','cancelled'
 FIRER_FINISHED_STATES = frozenset({"completed", "failed", "cancelled"})
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
+# Bumped when _migrate_schema's DDL changes: the file carries this in PRAGMA user_version, so a
+# connection whose file is already at the current version runs no DDL at all (#155907).
+SCHEMA_VERSION = 1
 
 
 # --- executions ledger --------------------------------------------------------------------------
@@ -56,7 +59,26 @@ def _connect() -> sqlite3.Connection:
 
     path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
     _ensure_cron_dir(path.parent)
-    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
+    return open_db(path, db_label="cron/executions.db", synchronous_full=True,
+                   initialize=_initialize_if_stale)
+
+
+def _initialize_if_stale(conn: sqlite3.Connection) -> None:
+    """The ``open_db`` hook: run the DDL only when the file's schema is behind (see SCHEMA_VERSION)."""
+    from hermes_cli.sqlite_util import initialize_if_outdated
+
+    initialize_if_outdated(conn, version=SCHEMA_VERSION, migrate=_migrate_schema)
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Every table this file carries, under one version gate.
+
+    ``cron.incidents`` keeps its incidents table in the same database, so a per-module gate would
+    let whichever module stamped ``user_version`` first starve the other one's DDL. Both run here.
+    """
+    _initialize_schema(conn)
+    from cron import incidents
+    incidents._initialize_schema(conn)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:

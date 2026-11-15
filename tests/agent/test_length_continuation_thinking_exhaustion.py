@@ -360,3 +360,22 @@ class TestReasoningOffReachesTheWire:
         calls = loop_agent.client.chat.completions.create.call_args_list
         first = (calls[0].kwargs.get("extra_body") or {}).get("reasoning")
         assert first == {"enabled": True, "effort": "high"}, first
+
+
+class TestInlineReasoningOnlyTruncationEndsTheTurn:
+    """A ``finish_reason="length"`` reply whose content is only a reasoning block, in any
+    ``THINK_TAG_NAMES`` tag, closed or cut off mid-thought, ends at the first call with the
+    thinking-budget notice, the handling ``<think>`` already gets, instead of spending the
+    continuation nudges with reasoning still on."""
+
+    @pytest.mark.parametrize("closed", [True, False], ids=["closed", "unterminated"])
+    @pytest.mark.parametrize("tag", ["think", "thought", "思考", "mm:think"])
+    def test_first_call_ends_with_thinking_budget_notice(self, loop_agent, tag, closed):
+        body = f"<{tag}>still weighing the options" + (f"</{tag}>" if closed else "")
+        loop_agent.client.chat.completions.create.side_effect = [
+            _truncated_text_response(body) for _ in range(4)
+        ]
+        result = _run(loop_agent, "write me a long report")
+
+        assert loop_agent.client.chat.completions.create.call_count == 1
+        assert "Thinking Budget Exhausted" in (result["final_response"] or "")

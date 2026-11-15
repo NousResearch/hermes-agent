@@ -835,6 +835,64 @@ class TestSymlinkedCategoryDiagnostic:
             " real categories must")
 
 
+    @pytest.mark.parametrize(
+        "name_field",
+        [
+            "name: demo\n",
+            "name: demo # trailing comment\n",
+            'name: "\\u0064emo"\n',
+            "name: >-\n  demo\n",
+        ],
+        ids=["plain", "comment", "unicode-escape", "folded-scalar"],
+    )
+    def test_lifecycle_install_then_recategorize_with_recorded_identity(self, tmp_path, capsys, name_field):
+        """End-to-end with the identity bundled discovery actually records: install a skill
+        whose frontmatter name is in a variant form (the manifest key is the line-based read,
+        e.g. ``demo # trailing comment``), then recategorize it upstream while the installed
+        copy ends up behind a category symlink. The diagnostic must fire for the recorded
+        identity, and materializing the copy must relocate it under that same identity."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        skills_dir.mkdir()
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # 1) Install from a variant-form source.
+        src = bundled / "research" / "demo"
+        src.mkdir(parents=True)
+        (src / "SKILL.md").write_text(f"---\n{name_field}---\n# Body\n")
+        with self._patches(bundled, skills_dir, manifest_file):
+            result1 = sync_skills(quiet=True)
+            recorded_manifest = _read_manifest()
+        assert result1["copied"], f"variant source was not installed: {result1}"
+        recorded_name = read_skill_name(skills_dir / "research" / "demo" / "SKILL.md", "demo")
+        assert recorded_name in recorded_manifest, "manifest did not record the discovery identity"
+
+        # 2) Upstream recategorizes research/demo -> web/demo; the installed copy lands
+        #    behind a category symlink (only reachable through it).
+        (bundled / "web").mkdir()
+        shutil.move(str(src), str(bundled / "web" / "demo"))
+        external = tmp_path / "external-research"
+        external.mkdir()
+        shutil.move(str(skills_dir / "research" / "demo"), str(external / "demo"))
+        (skills_dir / "research").rmdir()
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+
+        # 3) The recorded identity is stranded behind the symlink — warn, never move.
+        with self._patches(bundled, skills_dir, manifest_file):
+            result2 = sync_skills(quiet=False)
+        warn = self._warn_line(capsys.readouterr().out, recorded_name)
+        assert warn, f"recorded identity {recorded_name!r} went unwarned"
+        assert not result2["relocated"] and not result2["copied"]
+        assert (external / "demo" / "SKILL.md").exists(), "stranded copy was touched"
+
+        # 4) Materialize per the warned remedy: the recorded identity relocates.
+        (skills_dir / "research").unlink()
+        shutil.move(str(external / "demo"), str(skills_dir / "research" / "demo"))
+        with self._patches(bundled, skills_dir, manifest_file):
+            result3 = sync_skills(quiet=False)
+        assert recorded_name in result3["relocated"], (
+            f"materialized copy did not relocate under the recorded identity {recorded_name!r}")
+
     def test_symlink_removal_alone_strands_the_copy(self, tmp_path, capsys):
         """Why the warning must not suggest removing the symlink: with the copy still outside
         the tree, the next sync reads the missing destination as a user deletion — nothing is

@@ -92,3 +92,20 @@ def test_log_line_names_the_field_not_just_the_line():
     logged = _refused_check(caught.value)
     assert "storage_unavailable[model]" in logged, logged
     assert "names no model" in logged, logged
+
+@pytest.mark.parametrize("field", [
+    "client_env_json",
+    "client_env_rules_json",
+    "config_json",
+    "request_json",
+    "terminal_json",
+])
+def test_malformed_json_refusal_names_the_stored_field(field):
+    """A broken JSON receipt still names the failed check, without changing the wire code."""
+    from gateway.session_local_recovery import _refused_check
+
+    error = refuse(**{field: "{"})
+    assert error.reason == "storage_unavailable"
+    assert error.field == field, (error.field, error.detail)
+    assert error.detail
+    assert f"storage_unavailable[{field}]" in _refused_check(error)

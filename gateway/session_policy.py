@@ -1080,7 +1080,11 @@ def restore_policy(data):
             raise _policy_refused('safe_mode', 'safe mode requires ignore_user_config')
         from dataclasses import replace
         for name in ('config_json', 'request_json', 'terminal_json'):
-            if not isinstance(json.loads(getattr(policy, name)), dict):
+            try:
+                value = json.loads(getattr(policy, name))
+            except (TypeError, ValueError) as exc:
+                raise _policy_refused(name, 'the stored policy object is not valid JSON') from exc
+            if not isinstance(value, dict):
                 raise _policy_refused(name, 'the stored policy object is not a JSON object')
         terminal = json.loads(policy.terminal_json)
         if terminal_uses_host_cwd(terminal) and terminal.get('TERMINAL_CWD') != policy.cwd:
@@ -1098,7 +1102,10 @@ def _valid_client_env(value, kind: type = str):
     """A stored client map (names to strings) or its rules (``kind=list``: rule names to string lists)."""
     if value is None:
         return True
-    env = json.loads(value) if isinstance(value, str) else None
+    try:
+        env = json.loads(value) if isinstance(value, str) else None
+    except ValueError:
+        return False
     return isinstance(env, dict) and all(isinstance(k, str) and isinstance(v, kind) and (
         kind is str or all(isinstance(item, str) for item in v)) for k, v in env.items())
 

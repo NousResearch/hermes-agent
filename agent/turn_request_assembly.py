@@ -208,6 +208,21 @@ def assemble_api_request(
     # the canonical tool registry stays undecorated. Marked ``content`` becomes text
     # blocks the whitespace pass skips, so the same row's bytes vary across turns.
     tools_for_api = agent.tools
+    # Guardrail-halt wrap-up (turn_tool_round): this one call offers no tools so the model
+    # writes a real summary of what it observed instead of resuming the halted loop.
+    # Applied before the cache plan is built, so the plan describes the request actually
+    # sent. The flag is NOT consumed here: a restart (compression, redirect) re-assembles
+    # the same logical call, which must stay tool-free; the loop clears it once the
+    # wrap-up response is in hand.
+    #
+    # This is the only place the toolset may narrow mid-conversation, and it is
+    # deliberately the LAST call of the turn: an empty list makes the transports omit
+    # ``tools`` entirely (they gate on truthiness), so the request prefix diverges for
+    # this one call and the next turn, which sends the full toolset again, re-matches the
+    # prefix cached before the halt. Nothing mutates ``agent.tools``, so no later turn
+    # sees a changed toolset.
+    if getattr(agent, "_toolguard_suppress_tools_next_call", False) is True:
+        tools_for_api = []
     if agent._use_prompt_caching and agent.provider != "moa":
         from agent.prompt_caching import envelope_tool_part_cache_markers_supported
 

@@ -9,13 +9,13 @@ fails like it always did, on the local backend and through the shared sandbox wr
 import json
 import shutil
 import subprocess
-import time
 
 import pytest
 
 from tools.environments.base import BaseEnvironment
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
+from tests.waiting import wait_until
 
 pytestmark = pytest.mark.platforms("linux", "macos")
 
@@ -91,9 +91,25 @@ def test_sandbox_background_start_in_deleted_cwd_carries_the_fallback_note(tmp_p
         assert started["output"] == "Background process started", started
         assert str(doomed) in started["cwd_fallback"] and str(tmp_path.resolve()) in started["cwd_fallback"], started
         session = process_registry.get(started["session_id"])
-        deadline = time.monotonic() + 30
-        while not session.exited and time.monotonic() < deadline:
-            time.sleep(0.2)
-        assert session.output_buffer.strip() == str(tmp_path.resolve())
+        assert session is not None
+        wait_until(lambda: session.exited, timeout=30, what="background job exit")
+        assert session.exit_code == 0 and session.output_buffer.strip() == str(tmp_path.resolve())
+    finally:
+        process_registry.kill_all()
+
+
+def test_sandbox_job_that_deletes_its_cwd_is_still_tracked_and_session_cwd_is_untouched(tmp_path):
+    """The poller reads the job's log by absolute path from "/": a job removing its own cwd must not
+    turn every poll into a cd failure (a false exit -1), and polling must not move ``env.cwd``."""
+    from tools.process_registry import process_registry
+
+    doomed = tmp_path / "proj"
+    doomed.mkdir()
+    env = _BashSandbox(cwd=str(doomed), timeout=30)
+    session = process_registry.spawn_via_env(env, f"rm -rf {doomed}; sleep 3; echo done; exit 7", cwd=str(doomed))
+    try:
+        wait_until(lambda: session.exited, timeout=30, what="background job exit")
+        assert session.exit_code == 7 and "done" in session.output_buffer, session.output_buffer
+        assert env.cwd == str(doomed)
     finally:
         process_registry.kill_all()

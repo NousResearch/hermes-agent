@@ -832,7 +832,10 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             result["hermes_timed_out"] = True
         else:
             result = bounded.value
+        prev_cwd = self.cwd
         self._update_cwd(result)
+        if cwd and cwd != prev_cwd and not allow_cwd_fallback:
+            self.cwd = prev_cwd  # housekeeping from "/" or a one-off workdir must not move the session
         if self._cwd_fallback_marker and (split := _split_cwd_marker(result.get("output", ""), self._cwd_fallback_marker)):
             used, result["output"] = split
             cwd_fallback = cwd_fallback or ({"requested": effective_cwd, "used": used} if used else None)

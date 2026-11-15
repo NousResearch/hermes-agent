@@ -1426,9 +1426,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             time.sleep(2)
             try:
                 # Read only the bytes written since the last poll, plus the process status.
-                raw = env.execute(
+                raw = env.execute(  # absolute paths only: "/" survives the job deleting its cwd
                     log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path)),
-                    timeout=10).get("output", "")
+                    cwd="/", timeout=10).get("output", "")
                 reply = parse_log_delta_reply(raw)
                 delta = reply.delta if reply else ""
                 if reply:
@@ -2238,7 +2238,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
-            session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+            session.env_ref.execute(f"kill {session.pid} 2>/dev/null", cwd="/", timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:
             # Same fate as poll/list: a gone or reused PID means our process is
             # gone — never tree-kill the stranger — but a live PID with an

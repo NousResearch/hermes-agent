@@ -41,6 +41,7 @@ import sys
 import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
+from datetime import datetime, UTC
 
 from html import escape as _html_escape
 from pathlib import Path
@@ -2058,7 +2059,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._background_read_receipt(room_id, event_id)  # the claim receipted the voice
                 return
         msg_event = await self._build_inbound_event(
-            room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
+            room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to,
+            timestamp=datetime.fromtimestamp(event_ts, tz=UTC) if event_ts is not None else None)
         if msg_event is None:
             return
         if msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -2126,7 +2128,8 @@ class MatrixAdapter(BasePlatformAdapter):
         media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
-            media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
+            media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype,
+            timestamp=datetime.fromtimestamp(event_ts, tz=UTC) if event_ts is not None else None)
         if msg_event is not None:
             await self.handle_message(msg_event)
 

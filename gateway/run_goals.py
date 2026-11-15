@@ -371,7 +371,11 @@ class GatewayGoalsMixin:
             adapter = self._delivery_adapter_for(source)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
-                self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)
+                event = self._synthetic_prompt_event(source, prompt)
+                # Pinned to the judged session: a /new or reset before the slot drains drops it.
+                event.metadata.update(gateway_session_key=_quick_key, gateway_session_strict=True,
+                                      gateway_session_id=session_entry.session_id)
+                self._enqueue_fifo(_quick_key, event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 

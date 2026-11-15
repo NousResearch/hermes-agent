@@ -448,10 +448,17 @@ class WebhookAdapter(BasePlatformAdapter):
         Runs on every POST before auth, so it never takes the CLI writer lock: writers publish via
         atomic rename, which also gives the file a new inode, so a restored mtime cannot hide a change;
         ``file_cache_version`` also catches a same-tick same-size edit made in place (a hand edit).
+
+        The registry belongs to the launch (multiplexer) home, never a routed profile's: admission
+        and reply legs run inside ``_profile_runtime_scope``, where ``get_hermes_home()`` is the
+        served profile's home — an empty registry there would drop every dynamic route mid-admission
+        (route_digest's not_found 503). The launch home also survives hosts that re-point HERMES_HOME
+        at a served profile (the routing pin), keeping this reload consistent with the unscoped
+        request-time load.
         """
-        from hermes_constants import get_hermes_home
+        from hermes_constants import get_routing_process_hermes_home
         from utils import file_cache_version
-        subs_path = get_hermes_home() / _DYNAMIC_ROUTES_FILENAME
+        subs_path = get_routing_process_hermes_home() / _DYNAMIC_ROUTES_FILENAME
         try:
             stat_key = file_cache_version(subs_path)
         except FileNotFoundError:

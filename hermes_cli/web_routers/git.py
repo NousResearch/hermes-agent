@@ -7,8 +7,6 @@ wrappers (git/gh can block).
 """
 
 import asyncio
-import shutil
-import time
 from functools import partial
 from pathlib import Path
 from typing import Optional
@@ -16,7 +14,6 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 
 from hermes_cli import web_git as _web_git
-from hermes_cli._subprocess_compat import bounded_probe_run
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import _fs_path, _hosted_fs_path_allowed, _hosted_fs_read_guard
 from hermes_cli.web_models import (
@@ -50,61 +47,6 @@ def _git_path(path: str) -> str:
 @router.get("/api/git/status")
 async def git_status_route(path: str):
     return await _git_op(_web_git.repo_status, _git_path(path))
-
-
-# Cached `gh auth status` for the desktop composer's GitHub suggestion pill. GitHub
-# deliberately has NO MCP catalog entry (hosted MCP needs a per-host OAuth app; the
-# gh-CLI skills are the better integration), so the pill offers `/github-auth` —
-# only to users who aren't already authenticated.
-_GH_AUTH_TTL_S = 300.0
-_gh_auth_cache: Optional[tuple] = None  # (monotonic_ts, payload)
-_gh_auth_probe_task: Optional[asyncio.Task] = None
-_gh_auth_probe_started = 0.0  # monotonic start of _gh_auth_probe_task
-
-
-def _probe_gh_auth() -> dict:
-    gh = shutil.which("gh")
-    if not gh:
-        return {"available": False, "authenticated": False}
-    try:
-        # Exits 0 when at least one host is logged in; DEVNULL stdin guards against any prompt.
-        proc = bounded_probe_run([gh, "auth", "status"], timeout=10)
-        return {"available": True, "authenticated": bool(proc and proc.returncode == 0)}
-    except Exception:
-        return {"available": True, "authenticated": False}
-
-
-def _clear_gh_auth_probe_task(completed_task: asyncio.Task) -> None:
-    """Release a completed shared probe even if all requesters disconnected."""
-    global _gh_auth_probe_task
-    if _gh_auth_probe_task is completed_task:
-        _gh_auth_probe_task = None
-
-
-@router.get("/api/git/gh-auth")
-async def gh_auth_status_route(refresh: bool = False):
-    """``{"available", "authenticated"}`` for the `gh` CLI; cached 5 min
-    (``refresh=true`` bypasses so the pill withdraws right after a login)."""
-    global _gh_auth_cache, _gh_auth_probe_task, _gh_auth_probe_started
-    asked = time.monotonic()
-    if not refresh and _gh_auth_cache and asked - _gh_auth_cache[0] < _GH_AUTH_TTL_S:
-        return _gh_auth_cache[1]
-    while True:
-        if _gh_auth_probe_task is None or _gh_auth_probe_task.done():
-            _gh_auth_probe_task = asyncio.create_task(asyncio.to_thread(_probe_gh_auth))
-            _gh_auth_probe_started = time.monotonic()
-            _gh_auth_probe_task.add_done_callback(_clear_gh_auth_probe_task)
-        probe_task, started = _gh_auth_probe_task, _gh_auth_probe_started
-        # Shield the shared probe: disconnecting one requester must not cancel the
-        # probe that other refreshes/cache misses are awaiting.
-        payload = await asyncio.shield(probe_task)
-        # A refresh must not accept a probe that started before it was asked for (it may predate
-        # `gh auth login`, and its answer would then be cached for the full TTL): wait that one out,
-        # then start or join the next. Still only one `gh` runs at a time.
-        if not refresh or started >= asked:
-            break
-    _gh_auth_cache = (time.monotonic(), payload)
-    return payload
 
 
 @router.get("/api/git/worktrees")

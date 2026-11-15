@@ -389,11 +389,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/web_routers/git.py",
-    "symbol": "_probe_gh_auth",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_constants.py",
     "symbol": "find_node_executable",
     "kind": "bare_which"

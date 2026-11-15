@@ -221,6 +221,11 @@ class ProviderProfile:
     process_args: tuple = ()             # default argv tail, e.g. ("--mode", "acp")
     process_command_env_vars: tuple = ()  # env overrides for the binary, in priority order
     process_args_env_var: str = ""       # env override for argv (shlex-split)
+    # The CLI's own sign-in, as an argv tail after the resolved binary, e.g. ("auth", "login"). Sign-in
+    # hints (error copy, cron notices, the Desktop card) show it; empty keeps ``hermes model``. Declared,
+    # not probed: hints are built on the gateway's event loop, so they never run ``setup_status()``.
+    # Keyword-only so a plugin subclass's own positional option keeps its slot.
+    login_args: tuple = field(default=(), kw_only=True)
 
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.

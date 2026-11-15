@@ -953,6 +953,66 @@ class TestHeadTailTruncation(unittest.TestCase):
         self.assertIn("HEAD", body)
         self.assertIn("TAIL", body)
 
+    def test_remote_stdout_spill_is_sanitized_and_private(self):
+        """The spilled full output must not keep on disk the secrets the inline
+        result masked; the warning directs the model to read that file."""
+        import stat as stat_mod
+        secret = "ghp_" + "0123456789abcdef"
+
+        class FakeEnv:
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, cwd=None, timeout=None):
+                if "command -v python3" in command:
+                    return {"output": "OK\n", "returncode": 0}
+                if "python3 script.py" in command:
+                    return {"output": ("HEAD\n" + secret + "\n\x1b[31m"
+                                       + ("x" * 80_000) + "\x1b[0m\nTAIL\n"),
+                            "returncode": 0}
+                return {"output": "", "returncode": 0}
+
+        fake_thread = MagicMock()
+
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env", return_value=(FakeEnv(), "ssh")), \
+             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
+            result = json.loads(_execute_remote("print('x')", "task-1", ["terminal"]))
+
+        self.assertEqual(result["status"], "success")
+        self.assertNotIn(secret, result["output"])  # inline copy is masked
+        spill = result["stdout_spill_path"]
+        with open(spill, encoding="utf-8") as f:
+            body = f.read()
+        from agent.redact import redact_sensitive_text
+        self.assertNotIn(secret, body)
+        # Masked remnant proves the pipeline ran; derive it so the mask format is not frozen.
+        self.assertIn(redact_sensitive_text(secret, code_file=True), body)
+        self.assertNotIn("\x1b[", body)       # ANSI-stripped like the inline copy
+        self.assertIn("TAIL", body)
+        if os.name == "posix":
+            self.assertEqual(stat_mod.S_IMODE(os.stat(spill).st_mode), 0o600)
+            self.assertEqual(stat_mod.S_IMODE(os.stat(os.path.dirname(spill)).st_mode), 0o700)
+
+    @pytest.mark.platforms("posix")
+    def test_spill_keeps_group_bits_of_existing_cache_dir(self):
+        """Tightening an existing cache/exec drops world bits only: a shared-group home
+        (HERMES_HOME_MODE=2770) keeps group access; the spill file itself is 0600."""
+        import stat as stat_mod
+        from hermes_constants import get_hermes_dir
+        from tools.code_execution_tool import _spill_full_stdout
+        cache_dir = get_hermes_dir("cache/exec", "exec_spill")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        # macOS gives a new dir its parent's group and drops setgid on chmod when the
+        # caller isn't in that group; own the group first, as a shared-group home does.
+        os.chown(cache_dir, -1, os.getegid())
+        os.chmod(cache_dir, 0o2777)
+        spill = _spill_full_stdout("group-shared spill\n")
+        self.assertTrue(spill)
+        self.assertEqual(os.stat(cache_dir).st_mode & 0o7777, 0o2770)
+        self.assertEqual(stat_mod.S_IMODE(os.stat(spill).st_mode), 0o600)
+
 
 class TestRpcTokenAuthorization(unittest.TestCase):
     """The per-session RPC token must gate socket dispatch (fail-closed).

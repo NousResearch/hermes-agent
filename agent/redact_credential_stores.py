@@ -97,7 +97,8 @@ def redact_credential_store_lines(text: str, mask, should_redact) -> str:
             # after any ``password`` token is masked too: ``login password X`` is ambiguous, so fail closed.
             secret = keyword == "password" or (prev == "password" and value not in _NETRC_KEYWORDS)
             # A bare ``=``/``:`` is an INI ``password = x`` line, left to the INI pass; ``:x`` is a password.
-            if secret and value not in ("=", ":") and value != "***" and not value.startswith("«redacted"):
+            bare = value.lstrip("=:")  # ``=«redacted-secret»``: the INI pass already masked ``password =x``
+            if secret and bare and bare != "***" and not bare.startswith("«redacted"):
                 out.append(line[pos:tok.start()] + mask(value))
                 pos = tok.end()
             keyword = None if keyword else value if value in _NETRC_KEYWORDS else None
@@ -110,7 +111,9 @@ def redact_credential_store_lines(text: str, mask, should_redact) -> str:
             return m.group(0)
         return f"{key}{mask(value)}"
 
+    # INI first: the netrc scan would mask only the first word of ``password =a b``.
+    text = outside_spans(text, aws_credential_process_keys(text), lambda t: _INI_SPACED_ASSIGN_RE.sub(_ini_sub, t))
     text = _NETRC_LINE_RE.sub(_netrc_sub, text)
     for pattern in _CREDENTIAL_STORE_RES:
         text = pattern.sub(_sub, text)
-    return outside_spans(text, aws_credential_process_keys(text), lambda t: _INI_SPACED_ASSIGN_RE.sub(_ini_sub, t))
+    return text

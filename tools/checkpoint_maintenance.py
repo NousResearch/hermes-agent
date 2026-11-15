@@ -371,7 +371,7 @@ def maybe_auto_prune_checkpoints(
 ) -> dict[str, object]:
     """Idempotent wrapper around ``prune_checkpoints`` for startup hooks.
 
-    Writes ``CHECKPOINT_BASE/.last_prune`` on completion so subsequent
+    Writes ``<checkpoint base>/.last_prune`` on completion so subsequent
     calls within ``min_interval_hours`` short-circuit.
 
     Returns ``{"skipped": bool, "result": prune_checkpoints-dict,

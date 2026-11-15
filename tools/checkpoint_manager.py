@@ -71,18 +71,13 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-CHECKPOINT_BASE = get_hermes_home() / "checkpoints"
-_CHECKPOINT_BASE_AT_IMPORT = CHECKPOINT_BASE
-
-
 def _resolve_checkpoint_base() -> Path:
-    """Active profile's checkpoint root at call time: the patched ``CHECKPOINT_BASE`` when a test
-    changed it, else live profile-scoped HERMES_HOME — under the multiplexed gateway one process
-    serves every profile, so the import-time constant would write every profile's code-edit
-    checkpoints into the launch profile's store."""
-    return CHECKPOINT_BASE if CHECKPOINT_BASE != _CHECKPOINT_BASE_AT_IMPORT else get_hermes_home() / "checkpoints"
+    """Active profile's checkpoint root, resolved per call: under the multiplexed gateway one
+    process serves every profile, so an import-time value would write every profile's
+    code-edit checkpoints into the launch profile's store."""
+    return get_hermes_home() / "checkpoints"
 
-# Single shared store directory under CHECKPOINT_BASE.
+# Single shared store directory under the checkpoint base.
 _STORE_DIRNAME = "store"
 _REFS_PREFIX = "refs/hermes"
 # Commit-body line carrying a snapshot's exact take time (listings read only the subject).
@@ -540,7 +535,7 @@ def _migrate_legacy_store(base: Path) -> Optional[Path]:
     """Move pre-v2 per-project shadow repos into a ``legacy-<ts>/`` dir.
 
     The pre-v2 layout had one shadow git repo per working directory directly
-    under ``CHECKPOINT_BASE``.  The v2 layout wants a single ``store/`` dir.
+    under the checkpoint base.  The v2 layout wants a single ``store/`` dir.
     Rather than delete the old data (users might want to recover), rename
     everything except our own v2 entries into ``legacy-<timestamp>/``.  The
     legacy dir is subject to the same retention sweep and can be manually
@@ -782,7 +777,7 @@ def _pre_v2_shadow_repos(base: Path) -> list[dict]:
     """Return pre-v2 per-project shadow repos still directly under ``base``.
 
     Pre-v2 layout kept one shadow git repo per working directory directly
-    under ``CHECKPOINT_BASE`` (identified by a ``HEAD`` file).  This is the
+    under the checkpoint base (identified by a ``HEAD`` file).  This is the
     single source of truth for that scan so a preview built from it (e.g.
     ``store_status``) always matches what ``prune_checkpoints`` deletes.
     """

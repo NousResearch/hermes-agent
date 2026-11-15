@@ -31,6 +31,11 @@ class ClientCapabilitiesParams(Params):
     #: error for methods it has no handler for. A WebSocket client that never says so is treated as a
     #: build older than server→client requests and every such request fails fast for it.
     server_requests: bool = False
+    #: The client is the Desktop app connected to a backend on its own machine (its connection mode is
+    #: local). Counted only on a connection that redeemed a native ticket minted over this machine's
+    #: private control socket; it is what makes the welcome trial and first-run onboarding available
+    #: in a gateway that also serves the CLI, the TUI and bots.
+    desktop_local: bool = False
 
 
 class ClientCapabilitiesResult(Result):
@@ -41,6 +46,11 @@ class ClientCapabilitiesResult(Result):
     #: answer: the request settles only once every attached client declined (server_requests.py).
     #: An older backend settles on the first error, so a client sends the decline only when this is true.
     declines_not_shown: bool = False
+    #: A canonical owner on this backend admits ``clarify_batch`` on ``prompt.submit``: the turn's
+    #: multi-question clarify arrives as ONE ``clarify`` request answered with ``clarify.lock``, not
+    #: one card per question. An older owner refuses the unknown key, so a client declares it only when
+    #: this is true. (The legacy sidecar always asks the batch at once and is never sent the key.)
+    canonical_clarify_batch: bool = False
 
 
 method("client.capabilities", params=ClientCapabilitiesParams, result=ClientCapabilitiesResult,

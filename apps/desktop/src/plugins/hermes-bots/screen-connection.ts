@@ -13,6 +13,7 @@
 import { host, resolveSiblingWsUrl } from '@hermes/plugin-sdk'
 import type { DisplayLease, PluginProfileRoute, RpcEvent } from '@hermes/plugin-sdk'
 
+import { retainRouteSocket } from './route-lease'
 import { resolveBotConnectionRoute } from './routing'
 import type { RosterRow } from './types'
 
@@ -141,21 +142,9 @@ export function displayRequest<T>(bot: RosterRow, method: string, params: Record
  * routes, which never close) get a no-op release.
  */
 export async function retainBotScreen(bot: RosterRow): Promise<() => void> {
-  const noop = () => undefined
-
   const route = botScreenRoute(bot)
 
-  if (typeof host.retainProfile !== 'function' || route === null) {
-    return noop
-  }
-
-  try {
-    const release = await host.retainProfile(route)
-
-    return typeof release === 'function' ? release : noop
-  } catch {
-    return noop
-  }
+  return (route === null ? null : await retainRouteSocket(route)) ?? (() => undefined)
 }
 
 /**

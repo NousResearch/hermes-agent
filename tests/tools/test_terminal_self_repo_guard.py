@@ -17,7 +17,6 @@ def _make_env_config(**overrides):
         "host_cwd": None,
         "modal_mode": "auto",
         "docker_image": "",
-        "singularity_image": "",
         "modal_image": "",
         "daytona_image": "",
     }

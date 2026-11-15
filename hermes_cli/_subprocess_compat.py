@@ -59,9 +59,9 @@ _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exe
 
 def run(cmd, **kwargs) -> NoReturn:
     # Shim to suppress old updater work until relaunch. Do not start its installer.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli._subprocess_compat.run")
 
 
 def harden_git_argv(args: Sequence[str]) -> list[str]:
@@ -271,6 +271,7 @@ def windows_detach_popen_kwargs() -> dict:
     """
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
+    # detached-spawn: ok — the detach helper itself; every call site is checked on its own
     return {"start_new_session": True}
 
 
@@ -285,6 +286,9 @@ NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1"}
 # GIT_CONFIG_KEY_n/VALUE_n overrides for internal git children: no credential/askpass prompts, no
 # repo-configured fsmonitor/hooks/pager/editor/external-diff programs.
 _GIT_CONFIG_INJECT_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+# Variables that point git at a repository other than its cwd (credential/ssh variables stay).
+_GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
 _GIT_CONFIG_OVERRIDES = {
     "credential.helper": "",
     "core.askPass": "",
@@ -305,7 +309,7 @@ _GIT_CONFIG_OVERRIDES = {
 
 def _safe_directory_cache_key(env: Mapping[str, str]) -> tuple:
     """Everything that decides which files ``git config --system/--global`` reads, plus the
-    global candidates' mtimes so an edit to ``~/.gitconfig`` is picked up without a restart."""
+    global candidates' ``file_cache_version`` so an edit to ``~/.gitconfig`` is picked up without a restart."""
     home = env.get("HOME", "")
     xdg = env.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
     candidates = (
@@ -313,10 +317,11 @@ def _safe_directory_cache_key(env: Mapping[str, str]) -> tuple:
         env.get("GIT_CONFIG_GLOBAL") or os.path.join(home, ".gitconfig"),
         os.path.join(xdg, "git", "config"),
     )
+    from utils import file_cache_version
     stamps = []
     for path in candidates:
         try:
-            stamps.append(os.stat(path).st_mtime_ns)
+            stamps.append(file_cache_version(path))
         except OSError:
             stamps.append(None)
     return (
@@ -463,6 +468,11 @@ def noninteractive_git_env(base: Mapping[str, str] | None = None) -> dict[str, s
         if key == "GIT_CONFIG_PARAMETERS" or key.startswith(_GIT_CONFIG_INJECT_PREFIXES):
             env.pop(key, None)
     env.pop("GIT_CONFIG_COUNT", None)
+    # An inherited GIT_DIR/GIT_WORK_TREE (a dotfiles alias, a git hook) retargets the call at the
+    # user's other repo instead of the cwd the caller names; a plugin's stash/reset would act on
+    # it (#146032). A caller that needs one sets it on the returned env.
+    for key in _GIT_LOCATION_ENV:
+        env.pop(key, None)
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -547,10 +557,7 @@ def noninteractive_repo_git_env(
             return None
         origin_path = Path(origin[len("file:"):])
         if not origin_path.is_absolute():
-            # git prints repo-local origins relative to the worktree top level, not to *cwd*; with a
-            # caller-set GIT_DIR/GIT_WORK_TREE they are relative to something else, so refuse.
-            if env.get("GIT_DIR") or env.get("GIT_WORK_TREE"):
-                return None
+            # git prints repo-local origins relative to the worktree top level, not to *cwd*.
             if toplevel is None:
                 top = bounded_probe_run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
                                         timeout=2, env=env)
@@ -597,6 +604,11 @@ def noninteractive_repo_git_env(
 
     start = int(env["GIT_CONFIG_COUNT"])  # always set by noninteractive_git_env
     overrides = [(key, "") for key in keys] + [(key, "false") for key in required]
+    if keys:
+        # With the filters emptied a stat refresh hashes raw bytes: `status` and `diff` must not write
+        # it back to the index, or a file that only the clean filter changes reads clean to the user.
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+        overrides.append(("diff.autoRefreshIndex", "false"))
     for offset, (key, value) in enumerate(overrides):
         env[f"GIT_CONFIG_KEY_{start + offset}"] = key
         env[f"GIT_CONFIG_VALUE_{start + offset}"] = value
@@ -672,6 +684,17 @@ def pid_exists_stdlib(pid: int) -> bool:
     return True
 
 
+def process_start_time_stdlib(pid: int) -> int | None:
+    """``/proc/<pid>/stat`` field 22 (start time in clock ticks since boot), stdlib only; None
+    without /proc (macOS, Windows) or when the process is gone. ``gateway.status``'s start-time
+    fingerprint reads the same field first, so the two agree on Linux."""
+    try:
+        # Field 22 counted after comm's last ")": comm may hold spaces or non-UTF-8 bytes.
+        return int(Path(f"/proc/{int(pid)}/stat").read_bytes().rsplit(b")", 1)[1].split()[19])
+    except (IndexError, ValueError, OSError):
+        return None
+
+
 def _process_start_time(pid: int) -> int | None:
     """The repository's stable process-start fingerprint, if available."""
     try:
@@ -735,8 +758,12 @@ def pid_is_hermes(pid: int, *, expected_start_time: int | None = None) -> bool:
         return False
 
 
-def kill_process_tree(proc: subprocess.Popen) -> None:
+def kill_process_tree(proc: subprocess.Popen, *, grace: float = 0.0) -> None:
     """Best-effort terminate *proc* and its descendants on both platforms; never raises.
+
+    ``grace`` > 0 (POSIX): SIGTERM the tree first and SIGKILL only if *proc* outlives ``grace``
+    seconds, so a git can delete its lock and tmp files on the way out (Windows always forces);
+    when *proc* exits in time, what is left of the group it leads is SIGKILLed.
 
     ``proc.kill()`` alone only terminates the direct child. This is cleanup on an already-failing
     path whose contract is to fail open, so every failure (access denied, already reaped) is
@@ -756,6 +783,27 @@ def kill_process_tree(proc: subprocess.Popen) -> None:
     try:
         from agent.deadline import kill_process_tree as _deadline_kill_tree
 
+        if grace > 0 and not IS_WINDOWS:
+            import signal as _signal
+
+            try:
+                leads_group = os.getpgid(proc.pid) == proc.pid
+            except ProcessLookupError:
+                leads_group = False
+            _deadline_kill_tree(proc.pid, sig=_signal.SIGTERM)
+            try:
+                proc.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                # The leader went on TERM; a group member that ignores it would outlive us. The
+                # pgid stays reserved while any member lives, so this reaches only that group.
+                if leads_group:
+                    try:
+                        os.killpg(proc.pid, _signal.SIGKILL)  # windows-footgun: ok — POSIX-only branch
+                    except ProcessLookupError:
+                        pass
+                return
         _deadline_kill_tree(proc.pid)
     except Exception:
         _legacy_kill_process_tree(proc)
@@ -816,6 +864,7 @@ def bounded_probe_run(
     ``Get-CimInstance Win32_Process`` gateway scan hit exactly this during ``hermes update`` on slow-WMI
     machines (#87134); the git probes hit it first (#68609 / #66037).
     """
+    # detached-spawn: ok — awaited probe; a timeout or failure tree-kills its group (kill_and_drain)
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     job = None
     try:

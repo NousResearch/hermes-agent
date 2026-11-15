@@ -10,16 +10,11 @@ logger = logging.getLogger("gateway.relay.adapter")
 async def admit_relay_delivery(adapter, runner, event):
     """Admit *event*; the transport ACKs the frame once this returns, or once the returned task does.
 
-    Without producer hooks admission waits only for the SQLite receipt, on the socket reader. With
-    one, ``pre_gateway_dispatch`` or ``post_gateway_admission`` plugin code runs before the commit and
-    may await ``adapter.send()``, whose ``outbound_result`` only that reader delivers, or wait for
-    another inbound message: the admission then runs in a task off the reader, after any earlier
-    admission of the same chat, so one chat's deliveries still commit in arrival order."""
-    from gateway.run_inbound_consumer import POST_ADMISSION_HOOK
-    from hermes_cli.lifecycle import has_hook
-    if not (has_hook('pre_gateway_dispatch') or has_hook(POST_ADMISSION_HOOK)):
-        await _admit(adapter, runner, event)
-        return None
+    Admission runs in a task off the socket reader, after any earlier admission of the same chat, so
+    one chat's deliveries still commit in arrival order. It may await ``adapter.send()``, whose
+    ``outbound_result`` only that reader delivers: plugin code (``pre_gateway_dispatch``,
+    ``post_gateway_admission``) and answering the chat's running turn (``session_ingress_live_turn``:
+    a busy ack, a resolved prompt's card), which can become possible while admission waits."""
     lanes = adapter._admission_lanes
     lane = (event.source.platform.value, event.source.chat_id)
     task = asyncio.create_task(_admit_after(lanes.get(lane), adapter, runner, event))
@@ -38,11 +33,18 @@ async def _admit_after(previous, adapter, runner, event):
 
 async def _admit(adapter, runner, event):
     # A permanent refusal returns, so the transport ACKs it (a replay would be refused again: main's
-    # runner dropped it too); any other failure withholds the ACK so the connector redelivers.
+    # runner dropped it too); any other failure withholds the ACK so the connector redelivers. A
+    # parked target is refused to the sender and ACKed: it stays parked until a rescan or a restart,
+    # and a withheld frame would stall the connector's ordered, ack-gated buffer drain for every
+    # profile on this instance (a live frame is never redelivered anyway).
+    from gateway.parked_route_refusal import ParkedProfileRefusal, refuse_parked_route
     from gateway.platforms.webhook_ingress import admit_producer
     from gateway.relay.adapter import _PERMANENT_REFUSALS
     try:
         receipt = await admit_producer(adapter, event)
+    except ParkedProfileRefusal as exc:
+        refuse_parked_route(adapter, event.source, exc.profile, reply_to=event.message_id)
+        return
     except RuntimeStoreError as exc:
         if exc.reason not in _PERMANENT_REFUSALS:
             raise

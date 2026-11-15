@@ -43,3 +43,15 @@ describe('segmentTranscriptDirectives', () => {
     expect(segmentTranscriptDirectives(`::x{${'a="b" '.repeat(1000)}}`)).toBeNull()
   })
 })
+
+describe('segmentTranscriptDirectives / long attribute values', () => {
+  it('parses a directive carrying two signed URLs', () => {
+    // Signed CDN URLs run 500-1,000 chars; a model card names a model and its thumbnail.
+    const signed = (name: string) => `https://cdn.example.com/${name}?Signature=${'s'.repeat(800)}&Key-Pair-Id=K`
+    const text = `::model{url="${signed('m.glb')}" thumb="${signed('t.png')}" title="Fox"}`
+
+    expect(directive(text)).toMatchObject({
+      directive: { attrs: { url: signed('m.glb'), thumb: signed('t.png'), title: 'Fox' } }
+    })
+  })
+})

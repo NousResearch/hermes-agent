@@ -8,21 +8,14 @@ from tui_gateway import session_notifications, session_auto_continue
 from tui_gateway.turn_marker import record_turn_start, read_turn_marker
 
 
-def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
+def test_refused_input_reports_a_failed_terminal_outcome():
     import contextlib
     import contextvars
     import logging
     import time
     from tui_gateway import prompt_turn
     from tui_gateway.session_lifecycle import _start_session_work
-    from tools import bot_live_delivery as mailbox
 
-    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
-                 lease_id="lease", live_session_id="live")
-    queued = dict(id='a' * 32, delivery_id='a' * 32, owner=owner, **owner,
-                  status='claimed', message='refused input', created_at=1)
-    with mailbox._locked(tmp_path) as root:
-        mailbox._write(root / (queued['id'] + '.json'), queued)
     agent = SimpleNamespace(session_id="chat")
     session = dict(agent=agent, session_key="chat", history_lock=threading.RLock(), running=True)
     retired = []
@@ -31,7 +24,7 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         "threading": threading, "time": time, "logger": logging.getLogger(__name__),
         "_start_session_work": _start_session_work,
         "_sessions_lock": threading.RLock(), "_sessions": {},
-        "_admit_prompt_turn": lambda *args: ([], agent),
+        "_admit_prompt_turn": lambda *args, **kwargs: ([], agent),
         "_session_profile_runtime_scope": lambda session: contextlib.nullcontext(),
         "_emit": noop, "bind_transport": noop, "reset_transport": noop,
         "_current_runtime_session_record": contextvars.ContextVar("refused_turn"),
@@ -49,13 +42,11 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         # Every dispatch binds the session's own row before the turn writes (#111999).
         "_ensure_session_db_row": noop,
     })
-    def terminal(outcome):
-        mailbox.complete_delivery(tmp_path, queued["id"], status=outcome["status"],
-                                  error=outcome.get("error", ""))
-    assert submit(None, "live", session, "refused input", terminal_callback=terminal)
+    outcomes = []
+    assert submit(None, "live", session, "refused input", terminal_callback=outcomes.append)
     session["_run_thread"].join(timeout=5)
     assert not session["_run_thread"].is_alive()
-    assert mailbox.read_delivery_result(tmp_path, queued["id"])["status"] == "failed"
+    assert [outcome["status"] for outcome in outcomes] == ["failed"]
     assert retired and session["running"] is False
 
 

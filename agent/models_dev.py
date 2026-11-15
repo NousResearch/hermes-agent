@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 MODELS_DEV_URL = "https://models.dev/api.json"
 _MODELS_DEV_CACHE_TTL = 4 * 3600  # 4 hours — ETag conditional GET makes refresh cheap
 _MODELS_DEV_RETRY_DELAY = 300  # 5 minutes after a failed refresh
+_MODELS_DEV_FETCH_DEADLINE = 15.0  # whole download; ~600 KB gzipped fits at ~40 KB/s
 # In-memory cache
 _models_dev_cache: dict[str, Any] = {}
 _models_dev_cache_time: float = 0
@@ -34,6 +35,7 @@ _models_dev_retry_after: float = 0
 _models_dev_fetch_lock = threading.Lock()
 _models_dev_refresh_lock = threading.Lock()
 _models_dev_refresh_in_flight = False
+_models_dev_download_slot = threading.Lock()  # held by the one live download, abandoned or not
 
 
 @dataclass
@@ -114,7 +116,7 @@ PROVIDER_TO_MODELS_DEV: dict[str, str] = {
     "moonshot": "kimi-for-coding", "stepfun": "stepfun",
     "kimi-coding-cn": "kimi-for-coding", "minimax": "minimax",
     "minimax-oauth": "minimax", "minimax-cn": "minimax-cn", "deepseek": "deepseek",
-    "alibaba": "alibaba", "qwen-oauth": "alibaba", "copilot": "github-copilot",
+    "alibaba": "alibaba", "qwen-oauth": "alibaba",
     "ai-gateway": "vercel", "opencode-zen": "opencode",
     "opencode-go": "opencode-go",
     "kilocode": "kilo", "fireworks": "fireworks-ai",
@@ -133,6 +135,27 @@ PROVIDER_TO_MODELS_DEV: dict[str, str] = {
 _MODELS_DEV_TO_PROVIDER: Optional[dict[str, list[str]]] = None
 
 
+def _profile_models_dev_ids() -> dict[str, str]:
+    """``{name: models_dev_id}`` declared by registered provider profiles the static map lacks.
+    Read at lookup time (never merged into ``PROVIDER_TO_MODELS_DEV``)."""
+    from providers import list_providers
+    return {p.name: p.models_dev_id for p in list_providers()
+            if p.models_dev_id and p.name not in PROVIDER_TO_MODELS_DEV}
+
+
+def models_dev_provider_map() -> dict[str, str]:
+    """Hermes provider id → models.dev id: ``PROVIDER_TO_MODELS_DEV``, then profile ``models_dev_id``s."""
+    return {**PROVIDER_TO_MODELS_DEV, **_profile_models_dev_ids()}
+
+
+def models_dev_id_for(provider: str) -> Optional[str]:
+    """models.dev id for an exact Hermes provider id (static map first, then its profile), or None."""
+    key = (provider or "").strip()
+    if not key or key in PROVIDER_TO_MODELS_DEV:
+        return PROVIDER_TO_MODELS_DEV.get(key)
+    return _profile_models_dev_ids().get(key)
+
+
 def _models_dev_to_hermes_ids(mdev_id: str) -> list[str]:
     """Return the Hermes provider ids that map to *mdev_id* (may be [])."""
     global _MODELS_DEV_TO_PROVIDER
@@ -140,7 +163,8 @@ def _models_dev_to_hermes_ids(mdev_id: str) -> list[str]:
         _MODELS_DEV_TO_PROVIDER = {}
         for hermes_id, mapped in PROVIDER_TO_MODELS_DEV.items():
             _MODELS_DEV_TO_PROVIDER.setdefault(mapped, []).append(hermes_id)
-    return _MODELS_DEV_TO_PROVIDER.get(mdev_id, [])
+    profile_ids = [name for name, mapped in _profile_models_dev_ids().items() if mapped == mdev_id]
+    return [*_MODELS_DEV_TO_PROVIDER.get(mdev_id, []), *profile_ids]
 
 
 def _dict_or_empty(value: Any) -> dict[str, Any]:
@@ -155,7 +179,7 @@ def _configured_catalog_provider(
     name = (provider or "").strip()
     if name.lower().startswith("custom:"):
         name = name[len("custom:"):]
-    if not name or name in PROVIDER_TO_MODELS_DEV:
+    if not name or models_dev_id_for(name) is not None:
         return None
     provider_config = (
         _cfg_get("providers", name, default=None, config=config)
@@ -181,11 +205,11 @@ def _models_dev_id(
     """models.dev provider id for a Hermes provider id, or None. A custom provider reaches the
     catalog only through its configured ``catalog_provider`` alias (#112649)."""
     key = (provider or "").strip()
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(key)
+    mdev_id = models_dev_id_for(key)
     if mdev_id is None:
         alias = _configured_catalog_provider(key, config=config)
-        mdev_id = PROVIDER_TO_MODELS_DEV.get(alias, alias) if alias else None
-        if mdev_id is not None and mdev_id not in PROVIDER_TO_MODELS_DEV.values() \
+        mdev_id = (models_dev_id_for(alias) or alias) if alias else None
+        if mdev_id is not None and mdev_id not in models_dev_provider_map().values() \
                 and mdev_id not in fetch_models_dev(allow_network=False):
             # A mistyped alias must not leak into ModelInfo.provider_id; the row stays on its own slug.
             if (key, alias) not in _UNKNOWN_CATALOG_PROVIDER_WARNED:
@@ -320,18 +344,48 @@ def _fetch_models_dev_from_network(*, conditional: bool = False) -> tuple[dict[s
     errors and on an empty/invalid payload. ``conditional`` sends ``If-None-Match`` with the sidecar's
     ETag and raises ``_NotModified`` on 304 — pass True ONLY while holding ``_models_dev_fetch_lock``
     AND a servable registry, or a 304 leaves the process with no data."""
+    from agent.deadline import DeadlineExpired, run_bounded_sync
+
     headers: dict[str, str] = {}
     if conditional and (etag := _load_etag()):
         headers["If-None-Match"] = etag
-    # (connect, read): 5 s connect fails fast on blackholed hosts; 10 s read tolerates a slow registry.
-    response = requests.get(_get_models_dev_url(), headers=headers, timeout=(5, 10))
-    if response.status_code == 304:
+    url = _get_models_dev_url()
+    # A download abandoned at the deadline keeps its thread and socket until the server stops; it
+    # owns this slot until then, so a later attempt (force_refresh skips the backoff) fails fast
+    # instead of stacking a second transfer on the same slow link.
+    if not _models_dev_download_slot.acquire(blocking=False):
+        raise RuntimeError("an abandoned models.dev download is still running")
+    started = threading.Event()
+
+    def download() -> tuple[int, Any, str]:
+        started.set()
+        try:
+            # (connect, read) bounds each socket op, not the download: a trickling body never trips it.
+            response = requests.get(url, headers=headers, timeout=(5, 10))
+            if response.status_code == 304:
+                return 304, None, ""
+            response.raise_for_status()
+            return response.status_code, response.json(), response.headers.get("ETag", "")
+        finally:
+            _models_dev_download_slot.release()
+
+    # The cold-cache fetch runs inside a caller's request (a fresh home's first session.create
+    # reaches it through tool availability), so the whole exchange, DNS included, gets one
+    # wall-clock cap; on expiry the caller falls back to the stale/empty cache and the backoff.
+    try:
+        bounded = run_bounded_sync(download, _MODELS_DEV_FETCH_DEADLINE, label="models.dev fetch")
+    except BaseException:
+        if not started.is_set():  # the worker never ran (thread start failed), so the slot is ours
+            _models_dev_download_slot.release()
+        raise
+    if bounded.timed_out:
+        raise DeadlineExpired("models.dev fetch", _MODELS_DEV_FETCH_DEADLINE)
+    status, data, etag = bounded.value
+    if status == 304:
         raise _NotModified()
-    response.raise_for_status()
-    data = response.json()
     if not _validate_registry(data):
         raise ValueError("models.dev returned an empty or invalid registry")
-    return data, response.headers.get("ETag", "")
+    return data, etag
 
 
 def _mark_stale_cache_grace() -> None:
@@ -676,7 +730,7 @@ def _provider_override_section(provider: str, *, config: Optional[dict[str, Any]
     if not overrides or not provider_key:
         return None
     # Forward (Hermes → models.dev id) and reverse (caller passed a models.dev id, config keyed by Hermes id) aliases.
-    candidates = [provider_key, PROVIDER_TO_MODELS_DEV.get(provider_key), *_models_dev_to_hermes_ids(provider_key)]
+    candidates = [provider_key, models_dev_id_for(provider_key), *_models_dev_to_hermes_ids(provider_key)]
     return next((section for section in (overrides.get(key) if key else None for key in candidates) if isinstance(section, dict)), None)
 
 

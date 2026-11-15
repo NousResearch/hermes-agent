@@ -140,22 +140,38 @@ export interface OAuthPollResponse {
   account_email?: null | string
   error_message?: null | string
   expires_at?: null | number
+  /** Approved Nous sign-ins only: the free tier's handoff the sign-in ran
+   *  (what moved, what to reconnect). Null when it replaced no free tier. */
+  handoff_status?: AppHandoffStatus | null
   /** Approved sign-ins only: the default model the backend settled on. Null
    *  when the config already pointed at the user's own model and was left
    *  alone. */
   model?: null | string
-  /** Why a non-approved terminal status ended that way: `user_declined`
-   *  (status `denied`), or `superseded` / `account_retired` /
-   *  `account_not_anonymous` / `account_busy` / `timeout` (status `error`).
-   *  `error_message` carries the matching user-facing text. */
+  /** Why a non-approved terminal status ended that way: `timeout`, or one of
+   *  the account service's `anon_*` verdicts (status `error`). `error_message`
+   *  carries the matching user-facing text. */
   reason?: null | string
-  /** Failed sign-ins over a free-tier identity: the seconds the account service
-   *  asked the client to wait before trying again (0 or absent when none). */
+  /** Failed Nous sign-ins: the seconds the account service asked the client
+   *  to wait before trying again (0 or absent when none). */
   retry_after?: null | number
-  /** Failed sign-ins over a free-tier identity: whether a later attempt can succeed. */
+  /** Failed Nous sign-ins: whether a later attempt can succeed. */
   retryable?: boolean | null
   session_id: string
   status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
+}
+
+/** The free tier's apps moving to the account that replaced it
+ *  (`hermes_cli/guest_handoff.py`, `wire_status`). `lines` is the backend's
+ *  own copy for this state, the same lines the terminal prints. */
+export interface AppHandoffStatus {
+  account_email?: null | string
+  connectors_kind?: null | string
+  dropped_toolkits?: string[]
+  lines: string[]
+  moved_toolkits?: string[]
+  probably_moved?: boolean
+  state: 'claimed' | 'failed' | 'gone' | 'idle' | 'pending' | 'retrying'
+  updated_at?: null | string
 }
 
 /** Result of the `free_tier.status` RPC. Pull-only: it reads local auth state
@@ -185,6 +201,8 @@ export interface FreeTierStatus {
   challenge?: FreeTierChallengePayload | null
   /** Seconds until the one-time first-task sign-in offer is due (0 = now); null when none is owed. */
   nudge_due_in?: number | null
+  /** The same for the connector offer: no trial, and apps connected on the free tier. */
+  connector_nudge_due_in?: number | null
 }
 
 export interface MemoryProviderOAuthStatus {
@@ -362,8 +380,42 @@ export interface MessagingPlatformInfo {
    *  the client (or vendor console) must call. Null for standalone and default-profile platforms. */
   ingress_url?: null | string
   name: string
+  /** Team Gateway's shared bot carries this platform: setup links a chat account to it. */
+  relay_fronted?: boolean
+  /** The relay owns this platform outright, so a direct bot is switched off at every start. */
+  relay_exclusive?: boolean
+  /** Team Gateway switches this platform's direct connection off at every gateway start. */
+  disabled_by_relay?: boolean
   state?: null | string
   updated_at?: null | string
+}
+
+export interface RelayLinkedAccount {
+  displayName?: string
+  handle?: string
+  platformUserId: string
+}
+
+export interface RelayLinksResponse {
+  /** "portal" when the Nous Portal access setting governs this agent: links are made there. */
+  managed_by?: 'connector' | 'portal'
+  portal_url?: string
+  platforms: { accounts: RelayLinkedAccount[]; bot_url: null | string; platform: string }[]
+}
+
+export interface RelayLinkCode {
+  bot_url: null | string
+  code: string
+  /** The exact message to send the shared bot. */
+  command: string
+  expires_at: null | string
+  platform: string
+}
+
+export interface RelayLinkCodeState {
+  reason?: null | string
+  /** pending = not redeemed yet; inactive = used or expired; refused = see reason. */
+  state: 'inactive' | 'pending' | 'refused'
 }
 
 export interface MessagingPlatformsResponse {
@@ -426,58 +478,6 @@ export interface TelegramOnboardingApplyResponse {
   restart_started?: boolean
 }
 
-// -- Webhooks (subscription CRUD) --------------------------------------------
-// Incoming HTTP event routes served by the webhook gateway platform. Backed by
-// the same JSON store the CLI/dashboard use; per-route HMAC secrets are
-// redacted on read and surfaced exactly once on create.
-
-export interface WebhookRoute {
-  created_at: null | string
-  deliver: string
-  deliver_only: boolean
-  description: string
-  enabled: boolean
-  events: string[]
-  name: string
-  prompt: string
-  secret_set: boolean
-  skills: string[]
-  url: string
-}
-
-export interface WebhooksResponse {
-  base_url: string
-  enabled: boolean
-  subscriptions: WebhookRoute[]
-}
-
-export interface WebhookCreatePayload {
-  deliver?: string
-  deliver_chat_id?: string
-  deliver_only?: boolean
-  description?: string
-  events?: string[]
-  name: string
-  prompt?: string
-  skills?: string[]
-}
-
-// Create echoes the route summary plus the one-time secret.
-export interface WebhookCreateResponse extends WebhookRoute {
-  secret: string
-}
-
-export interface WebhookEnableResponse {
-  enabled: true
-  needs_restart: boolean
-  ok: boolean
-  platform: 'webhook'
-  restart_action?: string
-  restart_error?: string
-  restart_pid?: null | number
-  restart_started?: boolean
-}
-
 export interface HermesConfig {
   agent?: {
     reasoning_effort?: string
@@ -486,6 +486,8 @@ export interface HermesConfig {
   }
   display?: {
     show_reasoning?: boolean | string
+    /** Per-platform overrides; a local session's `/reasoning show|hide` saves `platforms.cli`. */
+    platforms?: Record<string, { show_reasoning?: boolean | string } | undefined>
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean
@@ -711,6 +713,9 @@ export interface SessionMessage {
   display_kind?:
     | 'async_delegation_complete'
     | 'auto_continue'
+    // A safety-refused turn the backend dropped from the model's context but
+    // retained for display (agent/turn_failure_copy.py CONTENT_REFUSED_DISPLAY_KIND).
+    | 'content_refused'
     | 'failed_turn'
     | 'hidden'
     | 'model_switch'
@@ -822,6 +827,10 @@ export interface SessionResumeResult {
   message_count: number
   messages: SessionMessage[]
   messages_omitted?: boolean
+  /** Canonical snapshot only: every admission the owner has not finished (queued, started, or `unknown` after a
+   *  crash). `info.pending_submissions` is derived from it, and a forwarding owner's `session.info` sends a partial
+   *  list under that name. */
+  pending?: unknown
   resumed: string
   running?: boolean
   session_id: string
@@ -884,6 +893,8 @@ export interface UsageStats {
   cost_usd?: number
   input: number
   output: number
+  /** Window plans only (tui_gateway `_get_usage`): today's allowance (else the binding one), for the status bar. */
+  plan_gauge?: { id: string; label: string; resets_at_ms?: null | number; used_bp: number }
   total: number
 }
 
@@ -1027,11 +1038,17 @@ export interface AnalyticsTotals {
 }
 
 export interface CronJob {
+  /** Missed-run policy: true runs one catch-up, false skips; null/absent follows the default. */
+  catch_up?: boolean | null
   deliver?: null | string
   enabled: boolean
   id: string
   last_error?: null | string
   last_run_at?: null | string
+  /** The job's newest ledger attempt (``cron.jobs.list_jobs``); claimed/running = a run in flight. */
+  latest_execution?: CronJobExecution | null
+  /** The newest claimed/running attempt under a live owner, even when a newer refused row is latest. */
+  live_execution?: CronJobExecution | null
   model?: null | string
   name?: null | string
   next_run_at?: null | string
@@ -1044,7 +1061,23 @@ export interface CronJob {
   state?: null | string
 }
 
+export interface CronJobExecution {
+  claimed_at?: null | string
+  error?: null | string
+  id: string
+  status: string
+}
+
+/** POST /api/cron/jobs/{id}/cancel: ``cancelled`` is false when no run was in flight. */
+export interface CronCancelResult {
+  cancelled: boolean
+  detail?: string
+  execution_id?: null | string
+  job_id: string
+}
+
 export interface CronJobCreatePayload {
+  catch_up?: boolean
   deliver?: string
   model?: string
   name?: string
@@ -1061,6 +1094,7 @@ export interface CronJobSchedule {
 }
 
 export interface CronJobUpdates {
+  catch_up?: boolean | null
   deliver?: string
   enabled?: boolean
   model?: null | string
@@ -1210,6 +1244,8 @@ export interface SkillInfo {
   /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed,
    * 'external' = mounted from skills.external_dirs (externally authored, still editable). */
   provenance?: 'agent' | 'bundled' | 'external' | 'hub'
+  /** User lock: the AGENT may not change this skill (the user still can). Absent on older backends. */
+  locked?: boolean
 }
 
 /** One entry of the built-in optional-skills catalog (optional-skills/ in the
@@ -1606,6 +1642,8 @@ export interface BackendUpdateCheckResponse {
   update_available: boolean
   /** A stable release this build already contains: applying it moves back. */
   rollback_to?: null | string
+  /** A stable release `hermes update` refuses: the backend stays on its build. */
+  held?: 'downgrade' | null
   /** Update-available only; absent on older backends. */
   channel?: string
   branch?: null | string
@@ -1847,10 +1885,19 @@ export interface McpCatalogResponse {
   diagnostics: { name: string; kind: string; message: string }[]
 }
 
+export type MemoryProviderStatus = 'missing' | 'needs_config' | 'ready' | 'unavailable'
+
 /** `GET /api/memory` — active provider + built-in memory file sizes. */
 export interface MemoryStatusResponse {
+  /** Configured external provider; `''` = built-in memory only. */
   active: string
-  providers: { name: string; description: string; configured: boolean }[]
+  providers: {
+    name: string
+    description: string
+    available: boolean
+    configured: boolean
+    status: MemoryProviderStatus
+  }[]
   builtin_files: { memory: number; user: number }
 }
 
@@ -1884,6 +1931,8 @@ export interface ModelAssignmentResponse {
   confirm_message?: string
   confirm_required?: boolean
   model?: string
+  /** Window plans, Large model: a warning to show (never a confirm). */
+  notice?: string
   ok: boolean
   provider?: string
   reset?: boolean

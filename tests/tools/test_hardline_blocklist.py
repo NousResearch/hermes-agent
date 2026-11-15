@@ -440,6 +440,65 @@ def test_true_positive_shapes_stay_hardline_blocked(command):
     assert desc
 
 
+# eval hands its joined arguments back to the shell exactly like `sh -c`, so the
+# command-position rules must see that code too (#102317).
+@pytest.mark.parametrize("command", [
+    'eval "rm -rf /"',
+    "eval rm -rf /",
+    "eval -- 'rm -rf /'",
+    'sudo eval "rm -rf /"',
+    "ls; eval 'shutdown -h now'",
+    "bash -c \"eval 'rm -rf /'\"",
+    "eval \"eval 'mkfs.ext4 /dev/sda1'\"",
+    "echo $(eval 'reboot') done",
+    "echo `eval 'reboot'` done",
+    "echo $(eval \"eval 'reboot'\") done",
+    'x=$(eval "rm -rf /")',
+    # Quotes inside eval code are removed when eval re-parses it, as with `bash -c`.
+    "eval \"'rm' -rf /\"",
+    "eval '\"reboot\"'",
+    "eval \"$'\\x72\\x6d' -rf /\"",
+    "eval \"eval \\\"$'\\x72\\x6d' -rf /\\\"\"",
+])
+def test_eval_payload_reaches_hardline_floor(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"eval payload leaked past the hardline floor: {command!r}"
+    assert desc
+
+
+@pytest.mark.parametrize("command", [
+    'eval "$(ssh-agent -s)"',
+    "eval \"echo 'rm -rf / is fatal'\"",
+    "echo eval rm -rf /",
+    "eval 'ls -la'",
+    # A nested eval ends at its substitution's closer; the outer command's
+    # quoted arguments are data, not eval code.
+    "echo $(eval 'printf ready') '(reboot)'",
+    "echo `eval 'printf ready'` '(reboot)'",
+    "(eval 'printf ready') '(reboot)'",
+])
+def test_eval_payload_data_is_not_hardline(command):
+    assert detect_hardline_command(command) == (False, None)
+
+
+def test_eval_payload_hardline_survives_yolo(clean_session, monkeypatch):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    result = check_all_command_guards('eval "rm -rf /"', "local")
+    assert result["approved"] is False
+    assert result.get("hardline") is True
+
+
+@pytest.mark.parametrize("level", ["eval ", "eval command ", "sudo eval "])
+def test_deep_eval_nesting_fails_closed(level):
+    """Each nested eval rescans the rest of the command, so `eval eval … ls` made detection quadratic.
+    Past the nesting cap detection stops and blocks rather than letting uninspected code run."""
+    from tools.approval_detection import _PARSER_LIMIT_DESCRIPTION
+    assert detect_hardline_command(level * 2 + "ls") == (False, None)
+    deep = level * 64 + "ls"
+    assert detect_hardline_command(deep) == (True, _PARSER_LIMIT_DESCRIPTION)
+    assert detect_dangerous_command(deep)[2] == _PARSER_LIMIT_DESCRIPTION
+
+
 # DANGEROUS-tier duplicates of the mkfs/dd rules must be anchored the same
 # way: quoted prose must not even require approval, while real invocations
 # stay flagged (yolo can still bypass this tier — that's what yolo is for).
@@ -616,7 +675,7 @@ def test_container_backends_still_bypass(clean_session):
 
     Hardline only protects environments with real host impact (local, ssh).
     """
-    for env in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+    for env in ("docker", "modal", "daytona", "vercel_sandbox"):
         r1 = check_dangerous_command("rm -rf /", env)
         assert r1["approved"] is True, f"container {env} should still bypass"
         r2 = check_all_command_guards("rm -rf /", env)
@@ -696,7 +755,97 @@ def test_sudo_stdin_guard_detects_without_password():
 
 def test_sudo_stdin_guard_container_bypass(clean_session):
     """Containerized backends still bypass — they can't touch the host."""
-    for env in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+    for env in ("docker", "modal", "daytona", "vercel_sandbox"):
         for cmd in _SUDO_STDIN_BLOCK:
             result = check_all_command_guards(cmd, env)
             assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"
+
+
+_MULTI_CALL_BYPASS = [
+    # Shutdown / reboot / halt / poweroff applets
+    "busybox reboot",
+    "busybox poweroff",
+    "busybox halt",
+    "busybox shutdown",
+    "toybox reboot",
+    "toybox poweroff",
+    "toybox halt",
+    # Path-qualified multi-call binary
+    "/bin/busybox reboot",
+    "/usr/bin/busybox poweroff",
+    "./busybox reboot",
+    "usr/bin/busybox reboot",
+    "bin/busybox halt",
+    "/bin/toybox reboot",
+    # Multi-call after ordinary wrappers already in _CMDPOS
+    "sudo busybox reboot",
+    "sudo -E busybox poweroff",
+    "env FOO=1 busybox reboot",
+    "nohup busybox reboot",
+    "setsid busybox poweroff",
+    # Multi-call after separators / subshell
+    "ls; busybox reboot",
+    "true && busybox poweroff",
+    "false || busybox halt",
+    "$(busybox reboot)",
+    "(busybox reboot)",
+    "{ busybox poweroff; }",
+    # init as multi-call applet (next word is the applet)
+    "busybox init 0",
+    "busybox init 6",
+    # Root wipe via multi-call rm (hardline floor is the only yolo residual)
+    "busybox rm -rf /",
+    "toybox rm -rf /",
+    "busybox rm -rf ~",
+    "/bin/busybox rm -rf /",
+    "sudo busybox rm -rf /",
+    "busybox rm -rf /etc",
+    'busybox rm -rf "/"',
+]
+
+_MULTI_CALL_NOT_HARDLINE = [
+    "busybox ls",
+    "busybox cat /etc/hosts",
+    "busybox echo reboot",
+    "toybox ps",
+    "toybox echo poweroff",
+    "echo busybox reboot",
+    "echo 'busybox reboot'",
+    "grep busybox reboot.log",
+    "find . -name busybox",
+    "git commit -m 'busybox reboot note'",
+    'gh pr create --title "block busybox reboot"',
+    "busybox",  # no applet selected
+    "toybox",
+    # Benign multi-call after wrappers
+    "sudo busybox ls",
+    "env FOO=1 busybox true",
+    "nohup busybox sleep 1",
+    # Option-first: next token is a flag, not the hardline applet
+    "busybox --help reboot",
+    "busybox -h reboot",
+    "busybox --list reboot",
+    "toybox --help poweroff",
+    "toybox -h halt",
+    "busybox --help",
+    "busybox --login reboot",
+    "/bin/busybox --help reboot",
+    "sudo busybox --help reboot",
+]
+
+
+@pytest.mark.parametrize("command", _MULTI_CALL_BYPASS)
+@pytest.mark.parametrize("yolo", [False, True])
+def test_multicall_hardline_applies_through_guards(command, yolo, clean_session, monkeypatch):
+    if yolo:
+        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    else:
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    assert detect_hardline_command(command)[0]
+    result = check_all_command_guards(command, "local")
+    assert result["approved"] is False
+
+
+@pytest.mark.parametrize("command", _MULTI_CALL_NOT_HARDLINE)
+def test_multicall_data_and_benign_applets_are_not_hardline(command):
+    assert detect_hardline_command(command)[0] is False

@@ -133,14 +133,19 @@ def test_agents_before_the_first_turn_reads_the_opened_sessions_processes(gatewa
     assert ("process.list", {"session_id": SID}) in client.calls
 
 
-def test_stop_typed_mid_turn_interrupts_the_turn_then_stops_processes(gateway, monkeypatch, capsys):
+def test_stop_typed_mid_turn_interrupts_the_turn_then_stops_processes(gateway, monkeypatch):
     """/stop typed while a turn runs is dispatched inline and interrupts it like Ctrl+C (tracker
     #134889 N4), instead of being queued until the turn it should stop has finished. Only the
     interrupt runs on the UI thread: ``kill_all`` waits out each process's stop grace period, so it
-    runs on a worker and the input is back at once (Greptile 4277259986)."""
+    runs on a worker and the input is back at once (Greptile 4277259986). Both its notices go
+    through ``_cprint``: a plain print() from the Enter handler or the worker is buried by the
+    prompt_toolkit redraw, so a mid-turn /stop printed nothing (tracker #134889 CLI-27)."""
     import threading
     from types import SimpleNamespace
+    import cli as cli_module
     from cli import HermesCLI
+    painted = []
+    monkeypatch.setattr(cli_module, "_cprint", painted.append)
     _agent, client = gateway
     view = gateway_tools.process_view()
     assert view is not None
@@ -168,7 +173,7 @@ def test_stop_typed_mid_turn_interrupts_the_turn_then_stops_processes(gateway, m
     release.set()
     for worker in [t for t in threading.enumerate() if t.name == "cli-stop"]:
         worker.join(5)
-    out = capsys.readouterr().out
+    out = "\n".join(painted)
     assert stopped.is_set() and "Interrupting agent" in out and "Stopped 1 process(es)." in out
     assert any(method == "process.stop" for method, _ in client.calls)
 

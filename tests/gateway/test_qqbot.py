@@ -100,7 +100,8 @@ class TestVoiceAttachmentSSRFProtection:
 
 
     def test_connect_uses_redirect_guard_hook(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter, _ssrf_redirect_guard
+        from gateway.platforms.base import ssrf_redirect_guard
+        from plugins.platforms.qqbot.adapter import QQAdapter
 
         client = mock.AsyncMock()
         with mock.patch("plugins.platforms.qqbot.adapter.httpx.AsyncClient", return_value=client) as async_client_cls:
@@ -113,7 +114,7 @@ class TestVoiceAttachmentSSRFProtection:
         assert async_client_cls.call_count == 1
         kwargs = async_client_cls.call_args.kwargs
         assert kwargs.get("follow_redirects") is True
-        assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
+        assert kwargs.get("event_hooks", {}).get("response") == [ssrf_redirect_guard]
 
 
 # ---------------------------------------------------------------------------
@@ -853,7 +854,7 @@ class TestDefaultInteractionDispatch:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -868,7 +869,7 @@ class TestDefaultInteractionDispatch:
                 "id": "i",
                 "chat_type": 2,
                 "user_openid": "u-42",
-                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-42:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-42:allow-once:req-1"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
@@ -882,7 +883,7 @@ class TestDefaultInteractionDispatch:
         adapter = self._make_adapter()
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -974,7 +975,7 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -987,7 +988,7 @@ class TestProfileNamespaceApprovalAuthz:
                 "id": "i",
                 "chat_type": 2,
                 "user_openid": "u-42",
-                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:c2c:u-42:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:c2c:u-42:allow-once:req-1"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
@@ -1002,7 +1003,7 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -1015,7 +1016,7 @@ class TestProfileNamespaceApprovalAuthz:
                 "id": "i", "chat_type": 1,
                 "group_openid": "g-1",
                 "group_member_openid": "owner",
-                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once:req-1"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
@@ -1030,7 +1031,7 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -1043,7 +1044,7 @@ class TestProfileNamespaceApprovalAuthz:
                 "id": "i", "chat_type": 1,
                 "group_openid": "g-1",
                 "group_member_openid": "attacker",
-                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:coder:qqbot:group:g-1:owner:allow-once:req-1"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:

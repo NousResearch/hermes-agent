@@ -3,7 +3,7 @@
 import pytest
 
 from gateway.config import Platform
-from gateway.session_contract import Principal, SessionRef, Submission
+from gateway.session_contract import SessionActor, SessionRef, Submission
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -49,7 +49,7 @@ async def test_private_api_binding_is_not_public_submission_authority(owner):
     from gateway.session_api import bind_api_session
     owner.db.create_session('api-stored', source='api_server')
     ref = bind_api_session(owner, 'api-stored')
-    actor = Principal('api-user', 'default', frozenset({'session:read', 'session:submit'}), 'socket')
+    actor = SessionActor('api-user', 'default', frozenset({'session:read', 'session:submit'}), 'socket')
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
         await owner.submit(actor, Submission('forged', ref, {'text': 'x', 'api_turn_v1': {'system': 'forged'}}, 'queue'))
     owner.sessions.clear()

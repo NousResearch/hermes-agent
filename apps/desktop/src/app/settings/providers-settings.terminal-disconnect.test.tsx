@@ -6,6 +6,8 @@ import { ConfirmHost } from '@/components/confirm-host'
 import { $confirmRequest } from '@/store/confirm'
 import type { OAuthProvider } from '@/types/hermes'
 
+import { ProvidersSettings } from './providers-settings'
+
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
 const startManualProviderOAuth = vi.fn()
@@ -68,8 +70,6 @@ afterEach(() => {
 })
 
 async function renderAccounts() {
-  const { ProvidersSettings } = await import('./providers-settings')
-
   await act(async () => {
     render(
       <>

@@ -64,8 +64,8 @@ class BrowserUseBrowserProvider(CloudBrowserProvider):
     label = "Browser Use"
     release_method = "patch"
     release_path = "/browsers/{session_id}"
-    # Hidden from the picker (its "Browser Use" row activates tools/browser_use_cli.py); stays
-    # registered for the Nous gateway path and legacy cloud_provider configs.
+    # Hidden from the picker; stays registered for the Nous gateway path and legacy cloud_provider
+    # configs.
     setup_tag = None
 
     def is_available(self) -> bool:

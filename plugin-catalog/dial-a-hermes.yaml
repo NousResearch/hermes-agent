@@ -1,0 +1,23 @@
+name: dial-a-hermes
+repo: https://github.com/ebohdarlington123-cmyk/dial-a-hermes
+sha: ee1117f21afd63e473d9605e4a26a435ffb7a628
+subdir: plugins/dial-a-hermes
+title: Dial-a-Hermes (USSD)
+description: "Talk to Hermes from any phone with no data: a USSD gateway platform (Africa's Talking-compatible callback) with 182-char paged replies, a 'thinking, press 1 to check' flow for long turns, keypad exec approvals (1 Approve / 2 Deny, full command shown first, Hermes's own approval flow), clarify answers, optional SMS of the full reply, English/Nigerian Pidgin menus and a local feature-phone simulator. Owner-only phone allowlist, fails closed. Disclosure — opens a local HTTP listener (default 127.0.0.1:8095) for POST /ussd/<secret-token> and GET /health, plus a loopback-only simulator page when USSD_SIMULATOR=true; Africa's Talking does not sign callbacks, so the secret token in the URL is the boundary; outbound calls only when USSD_SMS_MODE=africastalking, to api.africastalking.com / api.sandbox.africastalking.com (reply text and the owner's number); stores per-phone language choice in the plugin data folder; no telemetry."
+maintainer: ebohdarlington123-cmyk
+tier: community
+category: platform
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/ebohdarlington123-cmyk/dial-a-hermes#readme
+version: "0.1.0"
+platforms: []
+known_issues:
+  - Needs a public HTTPS URL (tunnel or reverse proxy) and an Africa's Talking account (free sandbox) for real phones; the bundled simulator works locally without either.
+  - USSD gives each callback about 10 seconds and a session about 3 minutes; longer agent turns continue in the background and are read with "1 Check again" or by dialing back.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - USSD_ALLOWED_USERS
+    - USSD_CALLBACK_TOKEN

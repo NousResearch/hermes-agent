@@ -1,4 +1,5 @@
-import { getQueuedPrompts, type QueuedPromptEntry, writeSessionQueue } from './composer-queue'
+import { noteListedSubmissions } from './admitted-submissions'
+import { getQueuedPrompts, type QueuedPromptEntry, queuedSubmissionId, writeSessionQueue } from './composer-queue'
 import { $sessions, resolveComposerSessionKey } from './session'
 
 // One localStorage key per (session, admission). Every Desktop window of the origin shares this
@@ -15,6 +16,8 @@ interface PendingSubmission {
   status?: string
   /** Where in the session's event order the owner last listed this admission as pending. */
   seen?: PendingSnapshotFence
+  /** The snapshot's queued-row controls; carried to the card only, never journaled. */
+  controls?: string[]
 }
 
 /** A canonical pending snapshot's place in its session's event order: the replay epoch and the
@@ -50,6 +53,28 @@ export function readPendingSubmissions(session: string): Record<string, PendingS
   }
 
   return entries
+}
+
+/** Sessions the journal still holds an unsettled admission for (queued, started or unknown when
+ *  last observed): the ones whose owner may have moved on while no window was watching. */
+export function journaledPendingSessions(): string[] {
+  const sessions = new Set<string>()
+  const unsettled = (entry: null | PendingSubmission | undefined) => Boolean(entry?.status && entry.status !== 'retired')
+
+  for (const [session, entries] of Object.entries(parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, Record<string, PendingSubmission>>))) {
+    if (Object.values(entries ?? {}).some(unsettled)) { sessions.add(session) }
+  }
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index)
+
+    if (!key?.startsWith(ENTRY_PREFIX)) { continue }
+    const [owner] = parse(key.slice(ENTRY_PREFIX.length), [] as unknown[])
+
+    if (typeof owner === 'string' && unsettled(parse<null | PendingSubmission>(window.localStorage.getItem(key), null))) { sessions.add(owner) }
+  }
+
+  return [...sessions]
 }
 
 /** One admission's record without enumerating the journal: its v2 key, else the legacy blob. */
@@ -193,7 +218,8 @@ function collectReceipts(value: RawReceipts, known: Record<string, PendingSubmis
       ...known[id],
       id,
       text: typeof raw.user === 'string' ? raw.user : (known[id]?.text ?? ''),
-      status: stale ? known[id].status : raw.status
+      status: stale ? known[id].status : raw.status,
+      ...(Array.isArray(raw.controls) ? { controls: raw.controls.filter((c: unknown) => typeof c === 'string') } : {})
     })
   }
 
@@ -214,14 +240,18 @@ function projectQueue(
   admissionByInput: Map<string, string>,
   stillPending: Set<string>
 ): QueuedPromptEntry[] {
+  // The owner lists its admissions in FIFO order: a card it lists is shown in that order, so an
+  // admission back in its queue place (a steer that never reached the turn) is not shown last.
+  const order = new Map([...receipts.keys()].map((id, index) => [id, index]))
   const next: QueuedPromptEntry[] = []
 
   for (const entry of current) {
-    const receipt = receipts.get(admissionByInput.get(entry.id) ?? entry.id)
+    const submissionId = queuedSubmissionId(entry)
+    const receipt = receipts.get(admissionByInput.get(submissionId) ?? submissionId)
 
     if (receipt) {
       if (receipt.status !== 'started') {
-        next.push({ ...entry, id: receipt.id, serverStatus: receipt.status })
+        next.push({ ...entry, id: receipt.id, serverStatus: receipt.status, serverControls: receipt.controls })
       }
 
       receipts.delete(receipt.id)
@@ -238,10 +268,24 @@ function projectQueue(
         displayText: receipt.displayText,
         attachments: [],
         queuedAt: Date.now(),
-        serverStatus: receipt.status
+        serverStatus: receipt.status,
+        serverControls: receipt.controls
       })
     }
   }
+
+  return inOwnerOrder(next, order)
+}
+
+/** Listed cards take the owner's order among the slots they hold; every other card keeps its slot. */
+function inOwnerOrder(entries: QueuedPromptEntry[], order: Map<string, number>): QueuedPromptEntry[] {
+  const slots = entries.flatMap((entry, index) => (order.has(entry.id) ? [index] : []))
+  const listed = slots.map(index => entries[index]).sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
+  const next = [...entries]
+
+  slots.forEach((slot, index) => {
+    next[slot] = listed[index]
+  })
 
   return next
 }
@@ -270,7 +314,9 @@ function updateKnownReceipts(known: Record<string, PendingSubmission>, value: Ra
         ...previous,
         id: raw.admission_id,
         text: raw.user ?? previous?.text ?? '',
-        status: raw.status,
+        // A steer in transfer reads `started` but can still go back to its queue place: it never
+        // raises the admission's rank, so the owner's later `queued` listing repaints its card.
+        status: raw.steering === true ? (previous?.status ?? 'queued') : raw.status,
         ...(fence && !predates(fence, previous?.seen) ? { seen: fence } : {})
       }
     }
@@ -288,6 +334,7 @@ export function reconcilePendingSubmissions(storedId: string, value: unknown, fe
   // shown there. Receipts journaled under the tip before the lineage was known move along.
   const key = journalKey(storedId)
   adoptJournal(storedId, key)
+  noteListedSubmissions(key, value.flatMap(raw => (typeof raw?.input_id === 'string' ? [raw.input_id] : [])))
 
   const before = readPendingSubmissions(key)
   const known = { ...before }

@@ -1,0 +1,405 @@
+"""Credential shapes that leaked past agent.redact (#53741, #125680, #134475, #141283, #142852, #147240).
+
+Each class pins one family: the leak is masked in both the default (head/tail) mask and the
+non-reusable ``file_read`` + ``secret_file`` sentinel, and the look-alike identifiers or docs
+samples next to it stay byte-identical.
+"""
+
+import time
+
+import pytest
+
+from agent.redact import redact_for_egress, redact_sensitive_text, redact_terminal_output
+
+V = "q7Zr4Lm9Xc2Vb5Nw8Kd3Hf6J"
+SK = "sk-" + "q7Zr4Lm9Xc2Vb5Nw8Kd3Hf6Jt1Pa0Sg7Ye4Uo2"
+GH = "ghp_" + "Ab3dE5gH7jK9mN1pQ3sT5vX7zB9dF1hJ3kL5"
+
+
+@pytest.fixture(autouse=True)
+def _ensure_redaction_enabled(monkeypatch):
+    monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+
+
+def _both_modes(text: str) -> list[str]:
+    return [redact_sensitive_text(text, force=True),
+            redact_sensitive_text(text, force=True, file_read=True, secret_file=True)]
+
+
+def _assert_masked(text: str, secret: str) -> None:
+    for out in _both_modes(text):
+        assert secret not in out, out
+
+
+def _assert_unchanged(text: str) -> None:
+    assert _both_modes(text) == [text, text]
+
+
+class TestQuotedYamlScalars:
+    """#53741 / #147240 family 1: ``api_key: "v"`` skipped the YAML pass on its quote."""
+
+    @pytest.mark.parametrize("text", [f'api_key: "{V}"', f"api_key: '{V}'", 'password: "hunter2"',
+                                      f'  5|  secret: "{V}"'])
+    def test_quoted_value_masked(self, text):
+        _assert_masked(text, V if V in text else "hunter2")
+
+    @pytest.mark.parametrize("text", ['api_key: "<your key>"', 'api_key: "${API_KEY}"', 'password: ""',
+                                      'Secretary: "J. Smith"', "api_key: 'process.env.OPENAI_API_KEY'"])
+    def test_placeholders_and_prose_kept(self, text):
+        _assert_unchanged(text)
+
+
+class TestConcatenatedPasswordKeys:
+    """#134475: ``dbpassword`` / ``rootpasswd`` never put the keyword on a word start."""
+
+    @pytest.mark.parametrize("text, secret", [("dbpassword: hunter2xyz", "hunter2xyz"),
+                                              ("rootpasswd: s3cr3tzz", "s3cr3tzz"),
+                                              ("app.dbpassword=hunter2xyz", "hunter2xyz")])
+    def test_masked(self, text, secret):
+        _assert_masked(text, secret)
+
+    @pytest.mark.parametrize("text", ["passwordless: true", "passwordless=true"])
+    def test_passwordless_kept(self, text):
+        _assert_unchanged(text)
+
+
+class TestDatabaseClientCredentials:
+    """#141283: keyword/value connection strings and glued client env names."""
+
+    @pytest.mark.parametrize("text, secret", [
+        ("Host=db;Username=app;Password=s3cretpw;Database=x", "s3cretpw"),
+        ("Server=db;UID=app;PWD={Zq7x;LmP2};Database=core", "Zq7x;LmP2"),
+        ('psql "host=db user=app password=s3cretpw dbname=x"', "s3cretpw"),
+        ("PGPASSWORD=s3cretpw psql -h db", "s3cretpw"),
+        ("MYSQL_PWD=s3cretpw", "s3cretpw"),
+        ("SSHPASS=s3cretpw sshpass -e ssh host", "s3cretpw"),
+    ])
+    def test_masked(self, text, secret):
+        _assert_masked(text, secret)
+
+    @pytest.mark.parametrize("text, expected", [
+        ("Server=db;User Id=sa;Password=it's-s3cretpw;Database=x",
+         "Server=db;User Id=sa;Password=***;Database=x"),
+        ('Server=db;User Id=sa;Password=ab"s3cretpw;Database=x',
+         "Server=db;User Id=sa;Password=***;Database=x"),
+        ("host=db user=app password=ab's3cretpw dbname=x", "host=db user=app password=*** dbname=x"),
+        # The quote that wraps the whole string still ends the value.
+        ("conn = 'Server=db;User Id=sa;Password=s3cretpw'", "conn = 'Server=db;User Id=sa;Password=***'"),
+        ('{"Default": "Server=db;User Id=sa;Password=s3cretpw"}',
+         '{"Default": "Server=db;User Id=sa;Password=***"}'),
+        ('psql "host=db user=app password=s3cretpw"', 'psql "host=db user=app password=***"'),
+        # ...also when an operator follows it, so the code after the string survives.
+        ("c = 'Server=db;User Id=sa;Password=s3cretpw'.format(a)",
+         "c = 'Server=db;User Id=sa;Password=***'.format(a)"),
+        ('c = "Server=db;User Id=sa;Password=s3cretpw"+suffix',
+         'c = "Server=db;User Id=sa;Password=***"+suffix'),
+        ("psql 'host=db user=app password=s3cretpw'&& echo ok",
+         "psql 'host=db user=app password=***'&& echo ok"),
+    ])
+    def test_quote_inside_unquoted_password_masked(self, text, expected):
+        assert redact_sensitive_text(text, force=True) == expected
+
+    @pytest.mark.parametrize("head, key", [
+        ("Server=db;User Id=sa;Password=x;", "Password="),
+        ("host=db user=app ", "password="),
+    ])
+    def test_repeated_keys_after_template_value_stay_linear(self, head, key):
+        # Each key's ``${'…}`` value runs to end of line and is skipped as a template; a later key
+        # must not rescan that tail, or the line costs O(n^2).
+        line = head + ("${'" + key) * 6000 + "}"
+        t0 = time.perf_counter()
+        redact_terminal_output(line, force=True)
+        assert time.perf_counter() - t0 < 2.0
+
+    @pytest.mark.parametrize("line", [
+        "Server=db;User Id=sa;" + "Pass" + "word=${a'" + "Pass" + "word=s3cretpw}",
+        "host=db user=app " + "pass" + "word=${a'" + "pass" + "word=s3cretpw}",
+    ])
+    def test_key_inside_template_shaped_value_masked(self, line):
+        # The quote no longer ends the first value, so it reaches ``}`` and looks like a template.
+        assert "s3cretpw" not in redact_terminal_output(line, force=True)
+
+    def test_braced_odbc_password_masked_in_a_file_read(self):
+        # ``cat`` output is read as code, where ``{pw}`` is a template; an ODBC brace is a literal.
+        out = redact_terminal_output("Server=db;UID=app;PWD={Zq7x;LmP2};Database=core",
+                                     "cat appsettings.json", force=True)
+        assert "Zq7x" not in out
+        # A brace literal that opens like an identifier still carries password characters.
+        assert "ssw0rd" not in redact_terminal_output("Server=db;UID=app;PWD={P@ssw0rd!};Database=core",
+                                                      "cat appsettings.json", force=True)
+        for template in ("{0}", "{cfg['pw']}", "{pw!r}", "{ get_pw() }"):
+            line = f"Server=db;PWD={template};Database=x"
+            assert redact_terminal_output(line, "cat app.py", force=True) == line
+
+    @pytest.mark.parametrize("text", ["PWD=/home/app/project", "PGPASSFILE=/home/app/.pgpass",
+                                      "the password= field", "the pwd= flag and host= flag",
+                                      "host=db port=5432 dbname=x",
+                                      "Data Source=db;Initial Catalog=x;Integrated Security=true"])
+    def test_non_credentials_kept(self, text):
+        _assert_unchanged(text)
+
+
+class TestUserinfoAndBasicPairs:
+    """#125680: ``scheme://user:pass@`` userinfo, and ``NAME=user:pass`` at force boundaries."""
+
+    @pytest.mark.parametrize("text, expected", [
+        ("https://user:s3cretpw@host/path", "https://user:***@host/path"),
+        ("git remote set-url origin https://me:hunter2pass@github.com/o/r.git",
+         "git remote set-url origin https://me:***@github.com/o/r.git"),
+        ("MY_PROXY_BASIC=user:s3cretpw", "MY_PROXY_BASIC=user:***"),
+        ('env = ["MY_PROXY_BASIC=user:s3cretpw", "X=1"]', 'env = ["MY_PROXY_BASIC=user:***", "X=1"]'),
+    ])
+    def test_masked(self, text, expected):
+        assert redact_sensitive_text(text, force=True) == expected
+        assert "s3cretpw" not in redact_sensitive_text(text, force=True, file_read=True, secret_file=True)
+
+    @pytest.mark.parametrize("text", [
+        "https://example.com/path", "git@github.com:org/repo.git", "ssh user@host", "user@example.com",
+        "postgres://user@host/db", "https://user:${TOKEN}@host/x", "https://api.x.com/cb?code=abc123&s=1",
+        "IMAGE=ubuntu:24.04-noble", "TAG=myrepo:latest-release", "SRC=C:\\Users\\me",
+        "CHECKSUM=sha256:" + "ab12" * 16, "TS=2026-01-01T10:00:00", "HOST=localhost:5432",
+        # Colon values under names that never hold a Basic pair, and userinfo docs samples.
+        "IMAGE=redis:7-alpine", "BRANCH=origin:feature-login2", "Server=tcp:db,1433;Initial Catalog=x",
+        'url = f"https://{user}:{pw}@host"', "The format is https://user:password@host",
+        "PROXY_DEST=buildhost:Release2026/artifact.tar",
+    ])
+    def test_non_credentials_kept(self, text):
+        _assert_unchanged(text)
+
+
+class TestAffixedJsonKeys:
+    """#147240 family 2: JSON keys containing a secret word outside the closed key list."""
+
+    @pytest.mark.parametrize("key", ["API_TOKEN", "DB_PASSWORD", "client_secret", "my_api_key_value"])
+    def test_masked(self, key):
+        _assert_masked(f'{{"{key}": "{V}"}}', V)
+
+    @pytest.mark.parametrize("text", [f'{{"output": "{{\\"DB_PASSWORD\\": \\"{V}\\"}}"}}',
+                                      f'{{"DB_PASSWORD": "{V[:8]}\\\\{V[8:]}"}}'])
+    def test_escaped_json_masked(self, text):
+        # A tool result wrapping a config dump escapes its quotes; a value may carry escapes too.
+        _assert_masked(text, V[8:])
+
+    @pytest.mark.parametrize("text", ['{"token_count": 12}', '{"password_policy": "strict-min12"}',
+                                      '{"passwordChanged": "2015-09-03T16:41:46.000Z"}', '{"has_password": "true"}',
+                                      '{"tokenUrl": "https://login.example.com/oauth2/token"}',
+                                      '{"secret_id": "3f2a9c1e-1b2c-4d5e-8f90-123456789abc"}',
+                                      '{"secret_name": "prod-db-creds"}', '{"API_TOKEN": "<your token>"}',
+                                      '{"secretary": "Jane Smith"}', '{"tokenizer": "cl100k_base"}'])
+    def test_metadata_kept(self, text):
+        _assert_unchanged(text)
+
+
+class TestPrefixedKeyAfterSeparator:
+    """#147240 family 3: a known-prefix key glued to an identifier by ``-`` / ``_``."""
+
+    @pytest.mark.parametrize("text, secret", [(f"backup-{SK}.txt", SK[3:]), (f"backup_{SK}.txt", SK[3:]),
+                                              (f"x-{GH}", GH[4:])])
+    def test_masked(self, text, secret):
+        _assert_masked(text, secret)
+
+    @pytest.mark.parametrize("text", ["backup-sk-learn.txt", "scikit-learn", "x-request-id",
+                                      "deploy-sk-prod-deployment-01", "build_hf_transformers_cache"])
+    def test_identifiers_kept(self, text):
+        _assert_unchanged(text)
+
+
+class TestUserinfoStopsAtQuote:
+    """A ``"`` ends a JSON string, so ``"https://a.com","u:pw@y"`` holds no ``user:pass@`` userinfo."""
+
+    @pytest.mark.parametrize("text", ['["https://a.com","u:longpassword1@y"]',
+                                      '"https://example.com","x@y.com"'])
+    def test_adjacent_json_strings_stay_intact(self, text):
+        _assert_unchanged(text)
+        # Strict mode (memory context) masks every userinfo, and must stop at the quote too.
+        assert redact_sensitive_text(text, redact_url_credentials=True) == text
+        assert redact_sensitive_text('{"@context":"https://schema.org","@type":"Thing"}',
+                                     redact_url_credentials=True) == '{"@context":"https://schema.org","@type":"Thing"}'
+
+    def test_userinfo_password_still_masked(self):
+        _assert_masked("https://user:FakeSecret9876@host/path", "FakeSecret9876")
+
+class TestNetworkPathUserinfo:
+    """#125664 residual: scheme-less ``//user:pass@host/share`` (SMB/CIFS mounts) under force."""
+
+    @pytest.mark.parametrize("text", ["//user:FakeSecret9876@host/share",
+                                      "mount -t cifs //user:FakeSecret9876@host/share /mnt",
+                                      'src="//user:FakeSecret9876@host/share"', "`//user:FakeSecret9876@host`",
+                                      "[//user:FakeSecret9876@host/a, //user:FakeSecret9876@host/b]"])
+    def test_forced_network_path_password_masked(self, text):
+        _assert_masked(text, "FakeSecret9876")
+        assert "//user:***@host" in redact_sensitive_text(text, force=True)
+
+    @pytest.mark.parametrize("text", ["// TODO: user:note@x", "//user:note@x", "//cdn.example.com/lib.js",
+                                      '<a href="//example.com">', "a//user:FakeSecret9876@h",
+                                      "//user:${SMB_PASSWORD}@host/share", "//user:%SMB_PASSWORD%@host/share"])
+    def test_comments_relative_urls_and_placeholders_unchanged(self, text):
+        _assert_unchanged(text)
+
+
+class TestGoogleOAuthCredentials:
+    """#64351: a pasted ``client_secret.json`` / OAuth access token logged as a chat preview leaked."""
+
+    SECRET = "GOCSPX-" + "k1fQ7z_P2mX9vLk4n-Rt8wYb1cDf6"  # real bodies are base64url: carry "-" and "_"
+    ACCESS = "ya29." + "a0AfH6SMBq7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0"
+    SA_ACCESS = "ya29.c." + "c0ASRK0GaPq7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0"  # service account / GCE metadata
+    STS_ACCESS = "ya29.d." + "c0AZ4bNpq7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0"  # workload identity federation (STS)
+    REFRESH = "1//0" + "gLx7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0qWeRtYuIoP"  # #39654
+
+    @pytest.mark.parametrize("template", [
+        "msg='client_secret\":\"{}\",\"redirect_uris\":[\"http://localhost\"]}}}}'",  # cut mid-JSON
+        "here is my secret {} thanks", "[\"{}\"]", "Authorization: {}",
+    ])
+    def test_masked_without_a_secret_key_name(self, template):
+        for secret in (self.SECRET, self.ACCESS, self.SA_ACCESS, self.STS_ACCESS, self.REFRESH):
+            _assert_masked(template.format(secret), secret)
+
+    def test_client_secret_fragment_cut_by_the_preview_is_masked(self):
+        fragment = self.SECRET[:17]  # 80-char preview can end mid-body
+        _assert_masked("msg='client_secret\":\"" + fragment, fragment)
+
+    @pytest.mark.parametrize("separator", ["-", "_"])
+    def test_client_secret_glued_to_identifier_is_masked(self, separator):
+        # Full base64url secrets need masking even if no body run reaches 16 alphanumerics.
+        _assert_masked(f"msg='archive{separator}{self.SECRET}'", self.SECRET)
+
+    @pytest.mark.parametrize("separator", ["-", "_"])
+    def test_access_token_glued_to_identifier_is_masked(self, separator):
+        # Same shape for ya29.: separators every few chars leave no 16-alphanumeric run.
+        token = "ya29.a0AfH6SM_q7z-P2mX9vL_k4n-Rt8wYb1c-Df6gHj3s_A0x"
+        _assert_masked(f"msg='log{separator}{token}'", token)
+
+    @pytest.mark.parametrize("separator", ["-", "_"])
+    def test_refresh_token_glued_to_identifier_is_masked(self, separator):
+        token = "1//0g_A-x_B-y_C-z_D-w_E-v"  # base64url separators leave no 16-alphanumeric run
+        _assert_masked(f"msg='log{separator}{token}'", token)
+
+    @pytest.mark.parametrize("split", ["\x1b", "\u200b"])
+    def test_refresh_token_split_by_control_char_is_masked(self, split):
+        token = self.REFRESH[:8] + split + self.REFRESH[8:]
+        for out in _both_modes(f"token {token} end"):
+            assert self.REFRESH[8:] not in out, out
+
+    @pytest.mark.parametrize("separator", ["-", "_"])
+    @pytest.mark.parametrize("split", ["\x1b", "\u200b"])
+    def test_glued_refresh_token_split_by_control_char_is_masked(self, separator, split):
+        token = "1//0g_A-" + split + "x_B-y_C-z_D-w_E-v"
+        for out in _both_modes(f"msg='log{separator}{token}'"):
+            assert "x_B-y_C-z_D-w_E-v" not in out, out
+
+    @pytest.mark.parametrize("text", ["backup-sk-\x1blearn-model-weights-final", "scikit-\x1blearn",
+                                      "x_sk-le\u200barn_rate_schedule_v2", "task_sk-learn\tpip\tInstalled2024Version",
+                                      "x-fc-config\tValue123\nNextLine",
+                                      "my-xox" + "b-not-a-token-name\tAbc123Def456Ghi789\n",
+                                      "backup-sk-\x1blearn-model-weights-final\nVersion1234567890abcdef"])
+    def test_glued_identifiers_split_by_control_char_kept(self, text):
+        _assert_unchanged(text)
+
+    @pytest.mark.parametrize("split", ["\x1b", "\u200b"])
+    def test_glued_key_split_into_short_runs_is_masked(self, split):
+        # Opaque only once joined: each fragment is under the 16-char run the exemption looks for.
+        for out in _both_modes(f"msg='log-ghp_Lx7zP2mX9vLk4nR{split}t8wYb1cDf6gHj3s'"):
+            assert "t8wYb1cDf6gHj3s" not in out, out
+
+    def test_glued_identifier_kept_when_the_next_line_holds_a_key(self):
+        text = "backup-sk-\x1blearn-model-weights-final\n" + "sk-" + "proj-Q7mZ2xW9rT4kL8vB3nH6pD1sF5gJ0cY"
+        for out in _both_modes(text):
+            assert out.startswith("backup-sk-\x1blearn-model-weights-final\n") and "Q7mZ2xW9rT4kL8vB" not in out, out
+
+    @pytest.mark.parametrize("key", ["gh" + "p_Lx7zP2\u200bmX9vLk4nRt8wYb1cDf6gHj3sA0",
+                                     "sk-" + "proj-Lx7zP2\u200bmX9vLk4nRt8wYb1cDf6gHj3sA0",
+                                     "1//" + "0gLx7z_P2\u200bmX9vLk4n-Rt8wYb1cDf6gHj3sA0"])
+    def test_split_key_after_a_line_ending_in_a_glued_identifier_is_masked(self, key):
+        text = "my-sk-learn-config.\n" + key
+        for out in _both_modes(text):
+            assert out.startswith("my-sk-learn-config.\n") and "mX9vLk4n" not in out, out
+
+    @pytest.mark.parametrize("text", ["see /usr/lib/\x1bfoo/bar.so", "https://example.com/a\u200b/b/c",
+                                      "v1//\x1bapi/" + "a" * 24])
+    def test_paths_with_control_chars_kept(self, text):
+        _assert_unchanged(text)
+
+    @pytest.mark.parametrize("text", ["GOCSPX-short", "ya29.short", "ya29.c.short", "notGOCSPX-" + "A" * 24, "mya29." + "A" * 24])
+    def test_short_or_embedded_lookalikes_kept(self, text):
+        _assert_unchanged(text)
+
+    @pytest.mark.parametrize("text", ["1//refresh", "1//rt-0", "page 1//0 of 3", "a1//0" + "A" * 24,
+                                      "https://example.com/v1//api/" + "a" * 24, "x = 1//2 // floor division",
+                                      "x = 1//batch_size_per_device_total", "1//0" + "x" * 19])
+    def test_refresh_token_lookalikes_kept(self, text):
+        _assert_unchanged(text)
+
+
+class TestSeparatorTail:
+    """A token followed by ``_``/``-`` (``ghp_…_SUFFIX``) was missed wholesale: the shared trailing
+    guard rejected the separator and backtracking could not end the body anywhere else (#142852)."""
+
+    BODY = "Ab3" * 12
+
+    @pytest.mark.parametrize("prefix", ["ghp_", "npm_", "hf_"])
+    @pytest.mark.parametrize("lead,tail", [("", "_SUFFIX"), ("", "-backup"), ("x-", "_SUFFIX"),
+                                           ("never_", "-backup"), ("", ".x")])
+    def test_token_with_separator_tail_is_masked(self, prefix, lead, tail):
+        token = prefix + self.BODY
+        text = f"value {lead}{token}{tail} here"
+        _assert_masked(text, token)
+        for out in _both_modes(text):
+            assert f"{tail} here" in out, out
+
+    def test_exact_length_aws_key_with_underscore_tail_is_masked(self):
+        token = "AKIA" + "AB12" * 4
+        _assert_masked(f"export {token}_old", token)
+
+    @pytest.mark.parametrize("text", ["id AKIA" + "AB12" * 4 + "xyz here", "ghp_tooshort_x here",
+                                      "pip install scikit-learn backup-sk-learn"])
+    def test_alnum_tail_short_body_and_lookalikes_kept(self, text):
+        _assert_unchanged(text)
+
+
+class TestKnownPrefixUnderscoreDashTail:
+    def test_prefix_tokens_followed_by_an_underscore_or_dash_are_masked(self):
+        """The trailing guard rejects ``_``/``-`` only when a pattern's body class admits
+        them: the old shared class, wider than the body (``_``/``-`` vs ``ghp_…[A-Za-z0-9]``),
+        failed at the token's natural end and at every backtrack step alike, so
+        ``ghp_…_SUFFIX`` was not matched at all and shipped in cleartext (#142852)."""
+        cases = [
+            ("ghp_" + "A" * 40, "_SUFFIX"),        # env-var / log-key shape
+            ("gho_" + "B" * 40, "_env"),
+            ("hf_" + "C" * 20, "_KEY"),
+            ("npm_" + "D" * 36, "-token"),
+            ("xoxb-" + "E" * 24, "_SUFFIX"),
+            ("AKIA" + "F" * 16, "_TAIL"),           # exact AWS access-key length
+            ("rk_live_" + "G" * 24, "_limited"),
+            ("gsk_" + "H" * 56, "-prod"),
+            ("github_pat_" + "I" * 36, "-env"),     # body has ``_`` but no ``-``
+        ]
+        for token, delimiter in cases:
+            out = redact_sensitive_text(f"value {token}{delimiter} here", force=True)
+            assert token not in out, f"{token[:9]}… followed by {delimiter!r} survived: {out!r}"
+            # The mask ends at the token: the delimiter-joined suffix is not secret
+            # matter and must survive for debuggability.
+            assert f"{delimiter} here" in out, out
+
+    def test_underscore_shape_still_requires_the_length_floor(self):
+        """A too-short body keeps the pattern silent even with an underscore tail —
+        the fix loosened the boundary, not the length gate."""
+        assert redact_sensitive_text("ghp_tooshort_x here", force=True) == "ghp_tooshort_x here"
+
+
+@pytest.mark.parametrize("name", ["accessToken", "refreshToken", "apiToken", "x-api-key", "auth_token",
+                                  "private_token", "access_key", "secret_key", "credential", "passwd",
+                                  "mysql_pwd", "sshpass", "client-key-data", "my_api_key_value",
+                                  "passwordValue", "api_key_value"])
+def test_egress_url_query_mask_covers_the_json_field_secret_names(name):
+    # #119852: the archival URL pass masks the same credential names the JSON-field rule does.
+    value = "Zo4" + "q8vN3kPw2xR7tL"
+    out = redact_for_egress(f"https://x.example/y?{name}={value}&page=2", urls=True)
+    assert value not in out and "page=2" in out
+
+
+@pytest.mark.parametrize("name", ["page", "public_key", "key_id", "token_count", "max_tokens", "tokenUrl",
+                                  "redirect_uri", "state"])
+def test_egress_url_query_mask_keeps_metadata_names(name):
+    url = "https://x.example/y?" + name + "=Zo4q8vN3kPw2xR7tL&page=2"
+    assert redact_for_egress(url, urls=True) == url

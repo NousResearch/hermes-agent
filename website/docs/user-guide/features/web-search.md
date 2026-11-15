@@ -66,7 +66,7 @@ Each provider dispatch is also bounded by a wall-clock timeout (`web.extract_tim
 
 ### When truncation gets in the way
 
-If you specifically need the live DOM rather than extracted markdown — for example, a JS-heavy page where extraction returns little content — use `browser_navigate` + `browser_snapshot` instead. The browser tool returns the live accessibility tree (subject to its own snapshot cap on huge pages).
+If you specifically need the live DOM rather than extracted markdown — for example, a JS-heavy page where extraction returns little content — use `browser_exec` instead: open the page with `new_tab(url)` + `wait_for_load()`, then read it with `page_info()` or a `js()` DOM extraction. It works on the live, rendered page.
 
 ---
 
@@ -515,19 +515,3 @@ Switch to a self-hosted instance (see [Option A](#option-a--self-host-with-docke
 ### `web_extract` returns truncated content with a `[TRUNCATED]` footer
 
 That's expected for pages over the character budget. The footer names the on-disk file holding the full clean text and the exact `read_file` call to page through the omitted middle. To see more inline, raise `web.extract_char_limit` in `config.yaml` or pass a larger `char_limit` on the call.
-
----
-
-## Optional skill: `searxng-search`
-
-For agents that need to use SearXNG via `curl` directly (e.g. as a fallback when the web toolset isn't available), install the `searxng-search` optional skill:
-
-```bash
-hermes skills install official/research/searxng-search
-```
-
-This adds a skill that teaches the agent how to:
-- Call the SearXNG JSON API via `curl` or Python
-- Filter by category (`general`, `news`, `science`, etc.)
-- Handle pagination and error cases
-- Fall back gracefully when SearXNG is unreachable

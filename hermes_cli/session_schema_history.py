@@ -213,6 +213,10 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'runtime_revision', 'id'),
             ('+', 'runtime_generation', 'runtime_revision'),
         )),
+        # GW-18 (package 10, #140968): write-side revision a transcript-derived cache keys on.
+        ('32 2026-10-18T10:11Z 1fc1999769', (('+', 'transcript_revision', 'tool_names'),)),
+        # Last prompt-cache event (agent/prompt_cache_clock.py), JSON; written with the token batch.
+        ('33 2026-11-15T12:00Z feat/prompt-cache-clock', (('+', 'prompt_cache_clock', 'transcript_revision'),)),
         ),
     ),
     "messages": _TableHistory(

@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import threading
 
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 from hermes_state_keys import CRON_PRINCIPAL_ID, cron_request_id
 from hermes_state_runtime import RuntimeStoreError, admit_session_input, get_session_admission
 
@@ -38,6 +38,46 @@ def owner_for_home(home):
     return None
 
 
+async def _admit_local_delivery(authority, chat_id, text, metadata):
+    from gateway.config import Platform
+    from gateway.session_authorities import owner_scope
+    from gateway.session_automation import admit_route_wake
+    from gateway.session_local_recovery import local_adapter_map, restore_local_session
+    from gateway.session_route_recovery import mountable, restore_routed_session
+    with owner_scope(authority):
+        live = authority.sessions.get(chat_id)
+        if live is None and mountable(authority, chat_id):
+            # A messaging conversation a reminder set from the app names (gateway/session_detached.py),
+            # not mounted (a restart): it mounts off the chat, or on it when the chat names it again.
+            restore_routed_session(authority, chat_id)
+        elif live is None or live.source is None or live.source.platform == Platform.LOCAL:
+            restore_local_session(authority, chat_id)  # a chat closed before this fire, as for completions
+        source = authority.sessions[chat_id].source
+        # Off the chat its app viewers take it (as a note); back on the chat (its /resume) it is that
+        # conversation's own turn there.
+        adapter = (local_adapter_map(authority)[Platform.LOCAL] if source.platform == Platform.LOCAL
+                   else authority.runner._adapter_for_source(source))
+        return await admit_route_wake(authority.runner, adapter, source, text, 'cron', metadata)
+
+
+def deliver_to_local_chat(home, chat_id, text, *, diagnostic=False):
+    """Admit a cron result into local chat *chat_id*'s FIFO; at the head it is written into the chat's
+    history as a note, never a turn (``session_completion_notes``). A local chat has no push transport
+    (``LocalSessionAdapter.send`` only acknowledges a turn's own output), so only the owner in this
+    process can deliver. Called off the owner loop; None once admitted, else the error."""
+    owner = owner_for_home(home)
+    if owner is None:
+        return f"local chat {chat_id}: no gateway in this process owns its session"
+    authority, loop = owner
+    metadata = {'notification_category': 'diagnostic'} if diagnostic else {}
+    try:
+        admitted = asyncio.run_coroutine_threadsafe(
+            _admit_local_delivery(authority, chat_id, text, metadata), loop).result(timeout=60)
+    except (RuntimeStoreError, KeyError, TimeoutError) as exc:  # unknown chat, refused admission, stalled owner
+        return f"local chat {chat_id}: delivery not confirmed: {exc!r}"
+    return None if admitted else f"local chat {chat_id}: delivery refused: the chat has no committed route"
+
+
 def current_execution():
     return _execution.get()
 
@@ -50,7 +90,7 @@ def bind_execution(authority, session_id, job_id, execution_id):
 
 def _actor(authority, actor):
     if actor is None:
-        return Principal(CRON_PRINCIPAL_ID, authority.profile_id,
+        return SessionActor(CRON_PRINCIPAL_ID, authority.profile_id,
                          frozenset({'session:create', 'session:submit', 'session:read', 'session:control'}), 'cron-ticker')
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -58,7 +98,7 @@ def _actor(authority, actor):
         raise RuntimeStoreError('permission_denied')
     # Cron fires belong to the profile scheduler, not the transport that observes
     # them. The same execution ID from ticker and CLI must dedupe together.
-    return Principal(CRON_PRINCIPAL_ID, authority.profile_id, actor.capabilities, actor.transport_id)
+    return SessionActor(CRON_PRINCIPAL_ID, authority.profile_id, actor.capabilities, actor.transport_id)
 
 
 def _create(authority, actor, params):
@@ -108,6 +148,10 @@ def _create(authority, actor, params):
             'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)}, request_id
 
 
+# What a message typed into a scheduled job's session settles with (see ``execute``); its text is
+# ``gateway.errors.cron_session_read_only``, rendered in the owning profile's language.
+CRON_SESSION_READ_ONLY_SURFACE = {'layer': 'gateway', 'code': 'cron_session_read_only', 'retryable': False}
+
 # Run-side verdicts run_job stamps on the job dict for the firing scheduler's bookkeeping tail
 # (cron/quota_hold.py parks past a closed usage window; cron/unreachable_retry.py re-runs a
 # never-reached model). They cross the authority boundary inside the cron result.
@@ -130,8 +174,9 @@ async def operation(authority, name, params, actor=None):
         request_id = cron_request_id(params['job_id'], params['request_id'])
         sid = local_identity(authority.profile_id, actor.subject, request_id)
         from hermes_state_runtime import list_session_admissions
-        rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
-        row = next((r for r in rows if r['request_id'] == request_id and r['principal_id'] == actor.subject), None)
+        rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid, pending_only=False)
+        from gateway.owner_identity import same_owner
+        row = next((r for r in rows if r['request_id'] == request_id and same_owner(r['principal_id'], actor.subject)), None)
         if row is None:
             return {'status': 'missing', 'result': None}
         state = await operation(authority, 'status', {'session_id': sid, 'admission_id': row['admission_id']}, actor)
@@ -171,8 +216,11 @@ async def operation(authority, name, params, actor=None):
         raise RuntimeStoreError('invalid_params')
     ref = SessionRef(authority.profile_id, params['session_id'])
     authority.authorize(actor, ref, 'session:submit')
-    row = get_session_admission(authority.db, admission_id=params['admission_id'])
-    if row is None or row['target_session_id'] != ref.session_id or row['principal_id'] != actor.subject:
+    # The firer polls this every <= 2 s per running job: one worker hop reads the row (and a terminal
+    # row's saved result), so slow storage delays the poll, never the owner loop.
+    row, saved = await asyncio.to_thread(_read_admission, authority.db, params['admission_id'], name == 'status')
+    from gateway.owner_identity import same_owner
+    if row is None or row['target_session_id'] != ref.session_id or not same_owner(row['principal_id'], actor.subject):
         raise RuntimeStoreError('permission_denied')
     if name == 'cancel':
         if row['status'] == 'queued':
@@ -184,8 +232,6 @@ async def operation(authority, name, params, actor=None):
         return {'ok': True}
     result, flags = None, {}
     if row['status'] == 'terminal':
-        from gateway.session_results import admission_result
-        saved = admission_result(authority.db, row['admission_id'])
         result = saved['result'].get('cron_result') if saved else None
         flags = (saved['result'].get('cron_job_flags') or {}) if saved else {}
         if result is None:
@@ -193,6 +239,16 @@ async def operation(authority, name, params, actor=None):
     from cron.scheduler_liveness import owner_progress
     return {'status': row['status'], 'result': result, 'job_flags': flags,
             'progress_at': owner_progress.get(row['request_id'].rsplit(':', 1)[-1])}
+
+
+def _read_admission(db, admission_id, with_result):
+    """``(row, saved result)`` of a cron admission, read in a worker thread; the result only for a
+    terminal row a ``status`` poll asked about (``cancel`` never reads it)."""
+    row = get_session_admission(db, admission_id=admission_id)
+    if not with_result or row is None or row['status'] != 'terminal':
+        return row, None
+    from gateway.session_results import admission_result
+    return row, admission_result(db, admission_id)
 
 
 def _cancellations(authority):
@@ -234,7 +290,15 @@ async def execute(authority, ref, row, policy):
     if (row['payload'] != {'text': data['extra_prompt'] or ''}
             or row['request_id'] != data['request_id']
             or row['principal_id'] != authority.sessions[ref.session_id].source.user_id):
-        raise RuntimeStoreError('admission_conflict')
+        # A cron session only runs its own frozen fire; anything else typed into it fails with a
+        # descriptor the viewer can render (and offer a new chat for), never a generic failure.
+        from agent.i18n import t
+        text = t('gateway.errors.cron_session_read_only')
+        authority.pending_results[row['admission_id']] = {'result': {
+            'final_response': '', 'messages': [], 'failed': True, 'completed': False,
+            'error': text, 'error_surface': dict(CRON_SESSION_READ_ONLY_SURFACE)},
+            'usage': {}}
+        return text
     cancellations = _cancellations(authority)
     cancel = cancellations.setdefault(row['admission_id'], threading.Event())
     execution_id = scheduler_execution_id(data['cron_job']['id'], row['request_id'])
@@ -242,10 +306,16 @@ async def execute(authority, ref, row, policy):
     job = dict(data['cron_job'], execution_id=execution_id)
     token = bind_execution(authority, ref.session_id, job['id'], execution_id)
     try:
+        from cron.cancellation import CancelRequest, _CombinedCancelEvent
+
         db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
-        with _profile_runtime_scope(db_path.parent):
+        from agent.runtime_scope import bind_turn, claim_fence
+        with _profile_runtime_scope(db_path.parent), bind_turn(ref.session_id, row['admission_id'], claim_fence(row)):
+            # The forwarded ``cron.cancel`` carries no reason, so the operator's marker is read here
+            # first: a stopped agent run reports "cancelled on request", not a lost fire claim.
+            stop = _CombinedCancelEvent(CancelRequest(execution_id), cancel)
             result = await asyncio.to_thread(_run_identified, run_job, job, execution_id,
-                                             extra_prompt=data['extra_prompt'], cancel_event=cancel)
+                                             extra_prompt=data['extra_prompt'], cancel_event=stop)
         # run_job stamps run-side verdicts on ITS job copy (quota hold, unreachable model); the
         # firing scheduler's bookkeeping reads them off its own dict, so they ride the result.
         flags = {key: job[key] for key in RUN_JOB_FLAGS if key in job}

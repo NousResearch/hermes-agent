@@ -4,12 +4,12 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 
 import { renderSync, Text } from '@hermes/ink'
+import { canonicalRequest, canonicalResult } from '@hermes/shared/gateway-canonical'
 import React from 'react'
 import { expect, it, vi } from 'vitest'
 
 import { getUiState, resetUiState } from '../app/uiStore.js'
 import { useSessionLifecycle } from '../app/useSessionLifecycle.js'
-import { canonicalRequest, canonicalResult } from '../canonicalGateway.js'
 import { ActiveSessionSwitcher } from '../components/activeSessionSwitcher.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -165,9 +165,16 @@ function mountSwitcher(onClose: (id: string) => Promise<null | { closed?: boolea
 
   const closeLive = async () => {
     await vi.waitFor(() => expect(out.text).toContain('Current conversation'), WAIT)
-    // `^d` on the live row the view is on (the initial selection lands there).
-    stdin.write('\u0004')
-    await vi.waitFor(() => expect(onClose).toHaveBeenCalledWith('live'), WAIT)
+    // `^d` on the live row the view is on (the initial selection lands there). Ink attaches the
+    // switcher's key listener in a passive effect that can land after the first frame paints on a
+    // loaded host, so a single early write is dropped: re-send until the switcher has heard it.
+    await vi.waitFor(() => {
+      if (!vi.mocked(onClose).mock.calls.length) {
+        stdin.write('\u0004')
+      }
+
+      expect(onClose).toHaveBeenCalledWith('live')
+    }, WAIT)
     await vi.waitFor(() => {
       instance.rerender(React.cloneElement(element))
       expect(out.text).toMatch(/error: /)

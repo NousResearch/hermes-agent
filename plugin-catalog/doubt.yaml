@@ -1,0 +1,21 @@
+name: doubt
+repo: https://github.com/PinnacleCryptNG/doubt
+sha: 4b35c4b296f50fd2184be4faf80bc90e8e3e9862
+description: "Word-by-word certainty heat maps from the model's own token probabilities, and a guard that sends commands built on a guess to the approval prompt. Disclosure — with the guard on (default for `terminal` calls), each guarded tool call sends one extra chat request carrying up to 8 KB of the recent conversation to the configured scorer endpoint (default: the agent's own endpoint) using DOUBT_SCORER_API_KEY or, on openrouter.ai, OPENROUTER_API_KEY; it also asks the provider for token logprobs on every chat-completions request and appends a one-line certainty summary under replies (`annotate: off` disables it)."
+maintainer: PinnacleCryptNG
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+title: Doubt
+screenshots:
+  - https://raw.githubusercontent.com/PinnacleCryptNG/doubt/4b35c4b296f50fd2184be4faf80bc90e8e3e9862/docs/terminal.png
+  - https://raw.githubusercontent.com/PinnacleCryptNG/doubt/4b35c4b296f50fd2184be4faf80bc90e8e3e9862/docs/pane.png
+  - https://raw.githubusercontent.com/PinnacleCryptNG/doubt/4b35c4b296f50fd2184be4faf80bc90e8e3e9862/docs/desktop.png
+known_issues:
+  - "Needs model.streaming: false and a provider that returns logprobs; most providers omit them on requests that carry tools, so the heat map fills on tool-free turns."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, transform_llm_output]
+  provides_middleware: [llm_request, llm_execution]
+  requires_env: []

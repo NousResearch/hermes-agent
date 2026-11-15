@@ -7,6 +7,7 @@ registry first, then the legacy built-in path. Plugin side: ``platform_registry
 .register(PlatformEntry(...))``; gateway side: ``create_adapter("irc", platform_config)``.
 """
 
+import contextlib
 import contextvars
 import logging
 import sys
@@ -17,6 +18,9 @@ from typing import Any, Awaitable, Callable, Optional
 from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
+# The verdict of an ``ensure_deps`` an async gateway caller already ran in an executor (#125607).
+_OFF_LOOP_DEPS_RESULT: contextvars.ContextVar[Optional[bool]] = contextvars.ContextVar(
+    "platform_off_loop_deps_result", default=None)
 
 _LoadKey = tuple[Optional[str], str]
 _Loader = Callable[[], None]
@@ -86,6 +90,9 @@ class PlatformEntry:
     emoji: str = "🔌"  # CLI/gateway display
     allow_update_command: bool = True  # /update may be issued from this platform
     platform_hint: str = ""  # injected into the system prompt; empty = none
+    # ``{tool_name: sentence}`` appended to ``platform_hint`` only when the session's toolset (fixed at
+    # prompt build) has that tool, so the hint never recommends a tool cron or the profile disabled.
+    platform_hint_tool_notes: dict = field(default_factory=dict)
     # ``() -> Optional[dict]`` of ``extra`` fields to seed when auto-enabled from env; runs in
     # ``_apply_env_overrides`` BEFORE adapter construction so ``gateway status`` sees it.
     env_enablement_fn: Optional[Callable[[], Optional[dict]]] = None
@@ -106,7 +113,7 @@ class PlatformEntry:
     send_message_handler: Optional[Callable[[dict, str, str, Any], Any]] = None
     # Out-of-process sender for cron without a co-resident gateway:
     # ``async (pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False)
-    # -> {"success": True, "message_id": ...} | {"error": str}``.
+    # -> {"success": True, "message_id": ...} | {"error": str}``; ``notify`` only if declared/**kwargs.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
     # Every inbound event is produced by the service the adapter authenticated to with its own
     # credential (an event bus, not a person), so user allowlists and pairing do not apply. Never
@@ -138,6 +145,12 @@ class PlatformEntry:
     # either resolves "open" without ``allow_all_env`` / GATEWAY_ALLOW_ALL_USERS, startup is refused.
     # A "" member = that policy is YAML-only (QQ Bot). None = no own policy, never checked.
     own_policy_env: Optional[tuple] = None
+    # Env var listing group/forum CHAT ids whose traffic is authorized by chat (any sender, user_id
+    # optional): Telegram ``TELEGRAM_GROUP_ALLOWED_CHATS``, QQ ``QQ_GROUP_ALLOWED_USERS``. "" = none.
+    group_allowed_chats_env: str = ""
+    # True: a configured env allowlist turns the unauthorized-DM default from "pair" into "ignore"
+    # (the owner restricted access; unknown senders get no pairing code).
+    allowlist_suppresses_pairing: bool = False
     # --- send ---
     # send_message native target syntax, see ``gateway.platforms.send_targets``. A hint, not an
     # authority like ``parse_target_ref_fn``: None / NOT_EXPLICIT fall back to core's generic id
@@ -207,6 +220,10 @@ class PlatformRegistry:
         # A failed loader is no longer discoverable, but its identity remains
         # until ownership teardown can CAS-restore the displaced predecessor.
         self._consumed_loaders: dict[_LoadKey, _Loader] = {}
+        # Loads that ended without registering, kept even when the plugin manager's failure path
+        # disposes the registration (which cancels the load, so it is never "consumed"): the config
+        # loader must not read that platform's absence as its YAML keys being deleted.
+        self._failed_loads: set[_LoadKey] = set()
         # Manifest-declared env names per deferred platform (``requires_env``), recorded without
         # importing the adapter so ``gateway.platform_activation`` can tell a configured platform
         # from an unconfigured one. A hint only: a stale entry costs one extra import, never a miss.
@@ -249,6 +266,7 @@ class PlatformRegistry:
         with self._lock:
             entries, deferred = self._scope_maps(scope, create=True)
             self._consumed_loaders.pop((scope, name), None)
+            self._failed_loads.discard((scope, name))  # a new generation gets its own verdict
             if name not in entries:
                 deferred[name] = loader
 
@@ -340,6 +358,8 @@ class PlatformRegistry:
             with self._lock:
                 was_cancelled = load_key in self._cancelled_inflight
                 entries, deferred = self._scope_maps(load_key[0])
+                if name not in entries:
+                    self._failed_loads.add(load_key)
                 if not was_cancelled and name not in entries and name not in deferred:
                     self._consumed_loaders[load_key] = loader
                 self._inflight.pop(load_key, None)
@@ -388,9 +408,20 @@ class PlatformRegistry:
         actually configures; importing every bundled adapter (~20 SDKs) just to read metadata cost
         every cold start ~0.5 s. *wanted* is :func:`gateway.platform_activation.has_activation_evidence`
         (or a test stub); entries that are already loaded are always returned."""
+        return self.configured_load(wanted)[0]
+
+    def configured_load(self, wanted: Callable[[str], bool]) -> tuple[list[PlatformEntry], bool]:
+        """``configured_entries`` plus whether a *wanted* platform failed to load (now or on an earlier
+        pass: a failed lazy loader stays consumed). The caller decides what that absence means; to the
+        YAML loader it is not evidence that the platform's settings were deleted."""
         self._resolve_all(wanted)
         with self._lock:
-            return list({**self._entries, **self._scoped_entries.get(self.current_scope_key(), {})}.values())
+            scope = self.current_scope_key()
+            entries = list({**self._entries, **self._scoped_entries.get(scope, {})}.values())
+            unresolved = {name for (owner, name) in self._consumed_loaders if owner in (None, scope)}
+            unresolved.update(name for (owner, name) in self._failed_loads if owner in (None, scope))
+            unresolved.difference_update(entry.name for entry in entries)
+        return entries, any(wanted(name) for name in unresolved)
 
     def loaded_entries(self) -> list[PlatformEntry]:
         """Entries already materialized (never imports a deferred adapter)."""
@@ -409,12 +440,20 @@ class PlatformRegistry:
             # A concrete registration supersedes any pending deferred loader.
             entries, deferred = self._scope_maps(scope, create=True)
             self._consumed_loaders.pop((scope, entry.name), None)
+            self._failed_loads.discard((scope, entry.name))
             deferred.pop(entry.name, None)
             prev = entries.get(entry.name)
             if prev is not None:
                 logger.info("Platform '%s' re-registered (was %s, now %s)", entry.name, prev.source, entry.source)
             entries[entry.name] = entry
             logger.debug("Registered platform adapter: %s (%s)", entry.name, entry.source)
+
+    def forget_failed_loads(self, scope: Optional[str]) -> None:
+        """Drop *scope*'s failed-load records: a force reload re-decides which of that profile's plugins
+        exist, and one disabled or removed since its import failed must stop holding back YAML cleanup.
+        Other profiles' records stay: their plugins were not reloaded."""
+        with self._lock:
+            self._failed_loads = {key for key in self._failed_loads if key[0] != scope}
 
     def unregister(self, name: str, *, scope: Optional[str] = None) -> bool:
         """Remove a platform entry. Returns True if it existed."""
@@ -483,12 +522,27 @@ class PlatformRegistry:
             entries, _deferred = self._scope_maps(scope)
             return name in entries or name in self._entries or self._load_pending(scope, name)
 
-    def create_adapter(self, name: str, config: Any) -> Optional[Any]:
-        """Create an adapter instance for *name*; None when no entry exists, deps are missing
-        and cannot be installed, ``validate_config`` fails, or the factory raises."""
+    @staticmethod
+    @contextlib.contextmanager
+    def deps_resolved_off_loop(deps_ok: Optional[bool]):
+        """Scope in which ``create_adapter`` reuses *deps_ok* from an ``ensure_deps`` the caller already
+        ran in an executor, so neither the probe nor a failed install re-runs on the event loop."""
+        token = _OFF_LOOP_DEPS_RESULT.set(deps_ok)
+        try:
+            yield
+        finally:
+            _OFF_LOOP_DEPS_RESULT.reset(token)
+
+    def ensure_deps(self, name: str) -> Optional[bool]:
+        """Passive probe, then the ACTIVE installer when deps are missing; None when *name* has no
+        entry. Blocking (``ensure_deps_fn`` may run a pm install for minutes): the gateway calls it
+        through an executor before ``create_adapter`` so the install never stalls its event loop."""
         entry = self.get(name)
         if entry is None:
             return None
+        resolved = _OFF_LOOP_DEPS_RESULT.get()
+        if resolved is not None:
+            return resolved
         def _probe(fn: Callable[[], Any], failure_msg: str) -> bool:
             try:
                 return bool(fn())
@@ -504,6 +558,13 @@ class PlatformRegistry:
         if not deps_ok:
             hint = f" ({entry.install_hint})" if entry.install_hint else ""
             logger.warning("Platform '%s' requirements not met%s", entry.label, hint)
+        return deps_ok
+
+    def create_adapter(self, name: str, config: Any) -> Optional[Any]:
+        """Create an adapter instance for *name*; None when no entry exists, deps are missing
+        and cannot be installed, ``validate_config`` fails, or the factory raises."""
+        entry = self.get(name)
+        if entry is None or not self.ensure_deps(name):
             return None
         if entry.validate_config is not None:
             try:

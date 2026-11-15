@@ -1,7 +1,7 @@
 // Shared usePromptActions test harness (index.test.tsx and the topical siblings).
 import { act, render } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import type { SubmitTextOptions } from './utils'
 
@@ -29,6 +29,8 @@ export interface HarnessHandle {
   reloadFromMessage: (parentId: null | string) => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   redirectPrompt: (text: string) => Promise<boolean>
+  /** What a real resume does to the session slice: replace its transcript (the hook reads it back). */
+  replaceSessionMessages: (messages: unknown[]) => void
   /** @deprecated Use `redirectPrompt`. */
   steerPrompt: (text: string) => Promise<boolean>
   submitTextRaw: (text: string, options?: SubmitTextOptions) => Promise<boolean>
@@ -143,6 +145,10 @@ export function Harness({
     }
   })
 
+  const replaceSessionMessages = useCallback((messages: unknown[]) => {
+    stateRef.current = { ...(stateRef.current as object), messages } as never
+  }, [])
+
   useEffect(() => {
     onReady({
       activeSessionIdRef,
@@ -156,6 +162,7 @@ export function Harness({
         act(async () => actions.restoreToMessage(...args)) as Promise<void>,
       redirectPrompt: (...args: Parameters<typeof actions.redirectPrompt>) =>
         act(async () => actions.redirectPrompt(...args)) as Promise<boolean>,
+      replaceSessionMessages,
       steerPrompt: (...args: Parameters<typeof actions.steerPrompt>) =>
         act(async () => actions.steerPrompt(...args)) as Promise<boolean>,
       submitTextRaw: actions.submitText,
@@ -171,7 +178,8 @@ export function Harness({
     actions.steerPrompt,
     actions.submitText,
     activeSessionIdRef,
-    onReady
+    onReady,
+    replaceSessionMessages
   ])
 
   return null

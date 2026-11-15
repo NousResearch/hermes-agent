@@ -1060,6 +1060,7 @@
     "composer.queued",
     "composer.queuedPaused",
     "composer.queuedTerminalSelectionExpiredBody",
+    "composer.quoteAddToChat",
     "composer.readingAloud",
     "composer.redirect",
     "composer.removeAttachment",

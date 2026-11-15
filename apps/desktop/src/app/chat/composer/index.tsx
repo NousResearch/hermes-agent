@@ -130,6 +130,9 @@ function controlRowGridClass(singleColumn: boolean, stacked: boolean): string {
     : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
 }
 
+// Hook order: the undo recorder must exist before `useComposerDraft` and be filled
+// after `useComposerUndo`, so neither hook can own it.
+// health: allow FUNC_LINES -- +6 lines of hook-order plumbing; phase extraction is a separate PR
 export function ChatBar({
   busy,
   cwd,
@@ -289,6 +292,9 @@ export function ChatBar({
   // The draft engine — detached source of truth (DOM + draftRef + edge
   // selectors); typing never re-renders the chrome. ChatBar owns `queueEditRef`
   // and threads it in so the draft↔queue coupling is an explicit dep, not a tangle.
+  // Filled by useComposerUndo, which must be declared after the draft hook.
+  const recordUndoPointRef = useRef<(() => void) | null>(null)
+
   const {
     activeQueueSessionKeyRef,
     clearDraft,
@@ -309,7 +315,7 @@ export function ChatBar({
     stashAt,
     syncDraftFromEditor,
     takeDraftRetry
-  } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
+  } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, recordUndoPointRef, sessionId })
 
   useComposerScreenshot({ sessionKey: activeQueueSessionKey, focusKey, onAttachImageBlob })
 
@@ -320,6 +326,9 @@ export function ChatBar({
     editorRef,
     syncDraftFromEditor
   })
+
+  // Every composer-bus insert now banks an undo point before it repaints.
+  recordUndoPointRef.current = recordUndoPoint
 
   // Paste-to-focus: clipboard images from an unfocused ⌘V ride the bus (the
   // window dispatcher has no handle on this composer's attachment scope).

@@ -191,7 +191,7 @@ class ProactivePruneMixin:
         reclaimed = max(0, before - after)
         if not pruned_count or reclaimed < min_reclaim:
             discard_archives(archives)
-            self._warn_reclamation_no_op("prune:archive_write_failed", current_tokens, before=before)
+            self._warn_reclamation_no_op("prune:archive_write_failed" if unarchived else "prune:reclaim_below_minimum", current_tokens, before=before)
             return messages, 0
         if cold_cache:  # Nothing to protect: keep the warm runway and credit the reclaim to the next warm gate.
             next_rearm_tokens, cold_credit = self._proactive_prune_rearm_tokens, self._proactive_prune_cold_credit + reclaimed

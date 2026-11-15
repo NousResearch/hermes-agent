@@ -5,7 +5,7 @@ import logging
 import os
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
-from agent.model_metadata import is_local_endpoint
+from agent.process_transport import is_local_server
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     cfg_get,
@@ -625,7 +625,7 @@ def _stale_aux_pins(cfg: dict, new_provider: str) -> list:
         if slot_provider and slot_provider.lower() not in {"auto", "", "main"} and slot_provider.lower() != new_provider:
             # A pin on a private/LAN endpoint (per-task base_url, e.g. a home Ollama box) never bills
             # a provider, so a main switch does not orphan it.
-            if is_local_endpoint(str(slot_cfg.get("base_url", "") or "")):
+            if is_local_server(slot_cfg.get("base_url"), slot_provider):
                 continue
             stale_aux.append({
                 "task": slot, "provider": slot_provider, "model": str(slot_cfg.get("model", "") or ""),

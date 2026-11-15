@@ -933,6 +933,24 @@ def test_relaxed_rule_attack_still_blocks(tmp_path, case):
 class TestFalsePositiveReductions:
     """Patterns that previously flagged benign, intrinsic skill content."""
 
+    def test_chmod_skipped_warning_is_not_suid(self, tmp_path):
+        script = tmp_path / "builder.py"
+        script.write_text('warnings.append(f"chmod skipped for {output_path}: {exc}")\n', encoding="utf-8")
+
+        assert not any(
+            f.category == "privilege_escalation" and f.severity == "critical" for f in scan_file(script, script.name)
+        )
+
+    @pytest.mark.parametrize(
+        "line", ["chmod u+s /bin/tool", "chmod +s /bin/tool", "chmod g+s /bin/tool", "chmod 4755 /bin/tool"]
+    )
+    def test_chmod_setting_suid_bit_still_fires_once(self, tmp_path, line):
+        script = tmp_path / "install.sh"
+        script.write_text(line + "\n", encoding="utf-8")
+
+        critical = [f for f in scan_file(script, script.name) if f.severity == "critical"]
+        assert [f.pattern_id for f in critical] == ["setuid_setgid"]
+
     def test_markdown_link_destination_is_not_path_traversal(self, tmp_path):
         # #110974: a 3-level relative doc link in a README is documentation structure, not
         # filesystem access, yet it scored `high` and hard-blocked community installs.
@@ -1336,3 +1354,34 @@ class TestBundleIgnoreFilesNotHonored:
         (junk / "tool.exe").write_bytes(b"MZ")
         ids = {fi.pattern_id for fi in scan_skill(skill_dir, source="community").findings}
         assert {"too_many_files", "binary_file"} <= ids
+
+
+# Well-known PUBLIC Solana program ids that every Solana client hardcodes. Only these exact values,
+# as the whole quoted literal, are excused from hardcoded_secret.
+_SOLANA_PROGRAM_IDS = [
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+    "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+    "11111111111111111111111111111111",
+    "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
+]
+
+
+def _one_char_changed(value: str) -> str:
+    return value[:-1] + ("2" if value[-1] != "2" else "3")
+
+
+@pytest.mark.parametrize(("value", "flagged"), [
+    *[(pid, False) for pid in _SOLANA_PROGRAM_IDS],
+    *[(_one_char_changed(pid), True) for pid in _SOLANA_PROGRAM_IDS],
+    *[(pid + "x", True) for pid in _SOLANA_PROGRAM_IDS[:1]],
+    ("dQfGWKngiT8exXbhAU1YJqHdRVUkNt8SwSD8BKDuMXQv", True),  # random 44-char base58
+])
+def test_public_solana_program_id_is_not_a_hardcoded_secret(tmp_path, value, flagged):
+    """A constant naming a public Solana program is not an embedded credential; a different
+    value of the same shape (or a listed id with one character changed) still is."""
+    f = tmp_path / "check.ts"
+    f.write_text(f"export const TOKEN = '{value}';\n", encoding="utf-8")
+    hit = any(fi.pattern_id == "hardcoded_secret" for fi in scan_file(f, "web/lib/check.ts"))
+    assert hit is flagged

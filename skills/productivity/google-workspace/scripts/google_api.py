@@ -37,6 +37,7 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+from _secure_storage import write_private_json
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
@@ -265,11 +266,9 @@ def get_credentials():
             print("Re-run the setup script to sign in again:", file=sys.stderr)
             print(f"  python {Path(__file__).parent / 'setup.py'}", file=sys.stderr)
             sys.exit(1)
-        TOKEN_PATH.write_text(
-            json.dumps(
-                _normalize_authorized_user_payload(json.loads(creds.to_json())),
-                indent=2,
-            ), encoding="utf-8"
+        write_private_json(
+            TOKEN_PATH,
+            _normalize_authorized_user_payload(json.loads(creds.to_json())),
         )
     if not creds.valid:
         print("Token is invalid. Re-run setup.", file=sys.stderr)

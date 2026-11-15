@@ -18,7 +18,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.plugin_live_notes import queue_plugin_notice
+from agent.plugin_live_notes import attach_to_tool_message, pop_plugin_notices, queue_plugin_notice
+from agent.redact_secret_sources import publish_secret_source_values
+from agent.tool_dispatch_helpers import make_tool_result_message
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from run_agent import AIAgent
 from tools.budget_config import BudgetConfig
 
@@ -139,3 +142,25 @@ def test_the_notice_survives_the_turn_budget_spilling_its_tool_result():
     tool_row = next(m for m in requests[1] if m.get("role") == "tool")
     assert big not in tool_row["content"]  # spilled to a file, a preview stays inline
     assert tool_row["content"].endswith(NOTE)
+
+@pytest.mark.parametrize("delivery", ["tool_result", "user_turn"])
+def test_secret_source_value_in_deferred_note_is_redacted_on_model_egress(tmp_path, delivery):
+    """An LSP/plugin note is attached AFTER make_tool_result_message redacts tool output;
+    a remaining notice also rides the next user turn. Neither may reveal source credentials."""
+    secret = "Zr4kWq8mNp2x"
+    token = set_hermes_home_override(str(tmp_path))
+    try:
+        publish_secret_source_values(tmp_path, {"VENDOR_TOKEN": secret})
+        agent = SimpleNamespace()
+        queue_plugin_notice(agent, "lsp:config.py", f"LSP diagnostic: unexpected value {secret}")
+        if delivery == "tool_result":
+            row = make_tool_result_message("patch", "edited file", "call_1")
+            attach_to_tool_message(agent, row)
+            emitted = row["content"]
+        else:
+            emitted = pop_plugin_notices(agent)
+        assert secret not in emitted
+        assert "«redacted:secret-source»" in emitted
+    finally:
+        publish_secret_source_values(tmp_path, {})
+        reset_hermes_home_override(token)

@@ -4,6 +4,10 @@ pre-commit:
       glob: "*.py" # glob filter
       run: just ruff {staged_files}
 
+    - name: move shims
+      glob: "*.py"
+      run: just check --only shims
+
     - name: lint web
       root: web/
       glob: "web/**/*.{js,ts,tsx}"

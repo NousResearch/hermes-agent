@@ -11,13 +11,14 @@ import re
 import smtplib
 import socket
 import ssl
+import string
 import uuid
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email.parser import BytesHeaderParser
-from email.utils import formatdate, parseaddr
+from email.utils import formatdate, getaddresses, parseaddr
 from email import encoders
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -59,6 +60,12 @@ _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[
               (re.compile(r"&amp;"), "&"), (re.compile(r"&lt;"), "<"), (re.compile(r"&gt;"), ">"), (re.compile(r"\n{3,}"), "\n\n"))
 # ``display <bracketed>`` split for the _extract_email_address fallback (linear: neither part can match the other's delimiters).
 _SINGLE_BRACKET_FROM_RE = re.compile(r'([^"<>]*)<([^<>\s]+)>\s*')
+# Exactly one addr-spec: a bracketed ``a@x,b@y`` would become a multi-recipient chat_id and reply To:, and a ``:``
+# makes the reply To: a group whose recipient is not the chat_id.
+_SINGLE_ADDR_SPEC_RE = re.compile(r"[^@,;:]+@[^@,;:]+")
+# Sender addresses fold ASCII case only: str.lower() maps U+212A KELVIN SIGN to "k", so a non-ASCII local part could
+# fold onto an allowlisted address while authentication only proves the domain.
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 _COMMENT_RE = re.compile(r"\([^()]*\)")
 # Longest From: value we parse. parseaddr is pure Python and superlinear on hostile input (~1s at 100KB, GIL held);
 # a real mailbox plus display name stays far below this (RFC 5322 caps a line at 998 chars).
@@ -285,23 +292,29 @@ def _strip_html(html: str) -> str:
 
 
 def _extract_email_address(raw: str) -> str:
-    """Bare lowercased addr-spec from a From: value. Uses parseaddr, not a first-<...> regex (GHSA-rxqh-5572-8m77);
+    """Bare ASCII-lowercased addr-spec from a From: value. Uses parseaddr, not a first-<...> regex (GHSA-rxqh-5572-8m77);
     RFC 5322 folding is unfolded first because parseaddr misreads a folded quoted display name. Unquoted
-    ``Name <addr>`` values parseaddr rejects (``Doe, John <j@x>``) fall back to their single bracketed address,
+    ``Name <addr>`` values parseaddr rejects (``Doe, John <j@x>``) fall back to their single bracketed addr-spec,
     but only when the display part (``(comments)`` removed) cannot hold another mailbox or group: no quotes, ``;``,
     ``:`` or stray parens, and no ``@`` unless it is exactly the bracketed address (``a@x <a@x>``). Values over
-    ``_MAX_FROM_LEN`` (or with more than 64 ``(``) and results without ``@`` return ``""`` so the caller drops the message."""
+    ``_MAX_FROM_LEN`` (or with more than 64 ``(``) and results that are not exactly one round-tripping ``local@domain``
+    mailbox return ``""`` so the caller drops the message."""
     value = re.sub(r"\r?\n[ \t]+", " ", str(raw or ""))
     if len(value) > _MAX_FROM_LEN or value.count("(") > 64:
         return ""  # hostile size/nesting: take the empty-sender drop (parseaddr recurses per nested comment)
     _, addr = parseaddr(value)
     if not addr and (m := _SINGLE_BRACKET_FROM_RE.fullmatch(value)):
         display, bracketed = _strip_comments(m.group(1)).strip(), m.group(2)
-        if ("@" in bracketed[1:-1] and not any(c in display for c in ";:()")
+        if (_SINGLE_ADDR_SPEC_RE.fullmatch(bracketed) and not any(c in display for c in ";:()")
                 and ("@" not in display or display.lower() == bracketed.lower())):
             addr = bracketed
-    addr = addr.strip().lower()
-    return addr if "@" in addr else ""  # a bare word (``John``) is not a sender identity
+    addr = addr.strip().translate(_ASCII_LOWER)
+    # Both paths: the identity is the reply To:, so it must re-parse as exactly this one mailbox. An unterminated
+    # quote makes parseaddr return ``a@x, b@evil`` verbatim, and ``victim"@evil`` re-parses as RCPT TO ``victim``.
+    local, at, domain = addr.partition("@")
+    if not (local and at and domain and "@" not in domain and getaddresses([addr]) == [("", addr)]):
+        return ""  # also drops a bare word (``John``), which is not a sender identity
+    return addr
 
 
 def _strip_comments(text: str) -> str:
@@ -353,13 +366,13 @@ def _auth_props(text: str) -> list[tuple[str, str]]:
 
 def _domain_of(address: str) -> str:
     """Lowercased domain part of an email address, or ''."""
-    return address.rpartition("@")[2].strip().lower()
+    return address.rpartition("@")[2].strip().translate(_ASCII_LOWER)  # A-Z only, like the identity (U+212A stays)
 
 
 def _domains_aligned(a: str, b: str) -> bool:
     """Relaxed DMARC alignment: equal, or one is a dot-suffix of the other."""
-    a = (a or "").strip().lower().rstrip(".")
-    b = (b or "").strip().lower().rstrip(".")
+    a = (a or "").strip().translate(_ASCII_LOWER).rstrip(".")
+    b = (b or "").strip().translate(_ASCII_LOWER).rstrip(".")
     return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 
@@ -775,7 +788,7 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _sender_accepted(self, sender_addr: str, msg_data: dict[str, Any]) -> bool:
         """Pre-dispatch sender gate: self, automated, authorization, From: authentication."""
-        if sender_addr == self._address.lower():
+        if sender_addr == self._address.translate(_ASCII_LOWER):
             return False
         if _is_automated_sender(sender_addr, {}):
             logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
@@ -785,12 +798,12 @@ class EmailAdapter(BasePlatformAdapter):
         listed = set()
         for raw in (allowed_raw, _get_secret("GATEWAY_ALLOWED_USERS", "")):
             raw = decode_json_list_literal(raw)
-            listed.update(str(a).strip().lower() for a in (raw if isinstance(raw, list) else str(raw).split(","))
+            listed.update(str(a).strip().translate(_ASCII_LOWER) for a in (raw if isinstance(raw, list) else str(raw).split(","))
                           if str(a).strip())
-        is_listed = sender_addr.lower() in listed
+        is_listed = sender_addr in listed
         if is_listed:
             granted = True
-        elif sender_addr.split("@", 1)[0].lower() in listed:
+        elif sender_addr.split("@", 1)[0] in listed:
             # The gateway's check also matches an address by its bare local part (#119446), so an entry like "alice"
             # would admit, or pair, alice@<any domain>; the domain is the sender's to choose.
             logger.debug("[Email] Dropping sender whose local part alone matches an allowlist entry: %s", sender_addr)

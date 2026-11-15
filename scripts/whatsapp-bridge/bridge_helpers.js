@@ -778,14 +778,22 @@ export function formatLogStamp(date) {
 }
 
 /**
- * Stamp every console.log/warn/error line. The adapter captures stdout/stderr
+ * libsignal (inside Baileys) logs whole session objects on open/close/remove, and
+ * util.format prints their private, root and base keys. Keep the label only (#149860).
+ */
+function withoutSignalSessions(args) {
+  return args.map(arg => (arg?.constructor?.name === 'SessionEntry' ? '<SessionEntry>' : arg));
+}
+
+/**
+ * Stamp every console.log/info/warn/error line. The adapter captures stdout/stderr
  * verbatim into bridge.log, which otherwise cannot be sequenced (#97021).
  */
 export function installConsoleStamps(target = console) {
-  for (const method of ['log', 'warn', 'error']) {
+  for (const method of ['log', 'info', 'warn', 'error']) {
     const original = target[method].bind(target);
     target[method] = (...args) => {
-      const text = format(...args);
+      const text = format(...withoutSignalSessions(args));
       original('%s', text ? `${formatLogStamp(new Date())} ${text}` : text);
     };
   }

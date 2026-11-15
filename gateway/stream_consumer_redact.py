@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import re
 
-from agent.redact import _PREFIX_SUBSTRINGS, redact_for_egress
+from agent.redact import _PREFIX_SUBSTRINGS
+from agent.redact_phone_policy import redact_for_chat_egress as redact_for_egress
 
 _TAIL_SCAN = 512        # how far back from the end (or from an open value's start) a label can start
 _LABEL_MAX = 256        # longest label (plus separators) an open value can follow
@@ -30,8 +31,10 @@ _LOOKBACK = 1024        # most settled text re-redacted with each newly settled 
 # ``bot:token``, ``user@host``).
 _PROBE = "Q7mZ2xW9rT4kL8vB3nH6pD1sF5gJ0cYa8Kd2LmP4"
 _CONTINUATIONS = (_PROBE, "." + _PROBE, ":" + _PROBE, "-" + _PROBE, "_" + _PROBE, "@example.com/")
-# Literal starts of secrets the prefix list does not carry (JWT, base64 PEM, age).
-_LITERALS = tuple(lit for lit in (*_PREFIX_SUBSTRINGS, "eyJ", "LS0tLS1CRUdJTi", "AGE-SECRET-KEY-1") if lit)
+# Literal starts of secrets the prefix list does not carry (JWT, base64 PEM, age, Discord mfa).
+# Hold mfa. from its first byte: its 84-char secret body can otherwise be streamed
+# almost in full before the complete-token redactor recognizes it.
+_LITERALS = tuple(lit for lit in (*_PREFIX_SUBSTRINGS, "eyJ", "LS0tLS1CRUdJTi", "AGE-SECRET-KEY-1", "mfa.") if lit)
 _LITERAL_MAX = max(map(len, _LITERALS))
 _NON_KEY_CHAR_RE = re.compile(r"[^A-Za-z0-9_\-]")
 # A Zhipu key's 32-hex id still arriving: no probe completes it until its ``.secret`` part does.
@@ -65,7 +68,7 @@ _PPK_OPEN_RE = re.compile(
     r"(?:(?:\r?\n|\\r\\n|\\n)[ \t]*(?:\d+[|:\t][ \t]*)?[A-Za-z0-9+/=]*[ \t]*)*")
 # A token run broken only by control/zero-width characters: the redactor joins it (#77484).
 _CONTROL_SPLIT_RUN_RE = re.compile(
-    r"[A-Za-z0-9_.\-\x00-\x1f\u200b-\u200f\u2028-\u202f\u2060\ufeff]*"
+    r"[A-Za-z0-9_./\-\x00-\x1f\u200b-\u200f\u2028-\u202f\u2060\ufeff]*"
     r"[\x00-\x1f\u200b-\u200f\u2028-\u202f\u2060\ufeff]\Z")
 
 
@@ -75,7 +78,11 @@ def _token_may_be_secret(context: str, token: str) -> bool:
     masked once a continuation is appended."""
     if any(lit in token for lit in _LITERALS) or _HEX_ID_TAIL_RE.search(token):
         return True
+    # A bare number may start ``1//0`` (#39654), but the refresh-token mask keeps ``1//0gL``
+    # visible, so showing the digits first leaks nothing and the frames stay prefix-stable.
     for i in range(max(0, len(token) - _LITERAL_MAX), len(token)):
+        if token[i:].isdigit():
+            continue
         if (not i or not token[i - 1].isalnum()) and any(lit.startswith(token[i:]) for lit in _LITERALS):
             return True
     base = redact_for_egress(context + token)

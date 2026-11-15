@@ -409,6 +409,12 @@ def _cancel_job(job: _ForkJob) -> None:
     _after_fence(job, fork, never_launched, message="plugin fork cancelled", tool_reason="plugin fork cancelled")
 
 
+def launched_fork_runs(agent: Any) -> list:
+    """The runs of ``agent``'s forks that are past launch (a deferred fork has not started)."""
+    with _lock:
+        return [job.run for job in (getattr(agent, "_plugin_fork_jobs", None) or ()) if job.launched]
+
+
 def interrupt_plugin_forks(agent: Any, *, message: str, tool_reason: str) -> list:
     """Fence every fork of ``agent`` (deferred, launching or running) and refuse any fork of the
     current turn not registered yet; the runs to await (``request_done``)."""

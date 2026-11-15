@@ -28,10 +28,15 @@ from agent.secret_sources._cache import (
 )
 from agent.secret_sources.base import (
     ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
-    is_valid_env_name as _is_valid_env_name, get_source_environment, run_cli, source_child_env,
+    is_valid_env_name as _is_valid_env_name, build_minimal_provider_env, get_source_environment, run_cli,
 )
 
 logger = logging.getLogger(__name__)
+
+# bws's global env options (besides the token, which callers pass explicitly).
+# BWS_CONFIG_FILE / BWS_PROFILE can select a self-hosted server; dropping them
+# would send the token to the default (US Cloud) endpoint instead.
+BWS_ENV_ALLOW = ("BWS_SERVER_URL", "BWS_CONFIG_FILE", "BWS_PROFILE")
 
 _BWS_RUN_TIMEOUT = 30
 
@@ -383,11 +388,10 @@ def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str
     # `--` terminates option parsing so the project id can never be read as a
     # bws flag, whatever it contains. Matches `op read` in onepassword.py.
     cmd = [str(bws), "secret", "list", "--output", "json", "--", project_id]
-    # The bws child intentionally receives the access token; a profile-local
-    # fetch must not inherit sibling credentials (source_child_env).
-    env = source_child_env()
-    env["BWS_ACCESS_TOKEN"] = access_token
-    env.setdefault("NO_COLOR", "1")
+    # The bws child gets its access token and an allowlisted env, never the
+    # post-dotenv provider credentials (or, under multiplex, a sibling's).
+    env = build_minimal_provider_env(allow_env=BWS_ENV_ALLOW,
+                                     extra_env={"BWS_ACCESS_TOKEN": access_token})
     # Empty server_url keeps whatever BWS_SERVER_URL the shell already had (manual
     # overrides keep working), but only once it validates — see apply_server_url_to_env.
     env_warnings: list[str] = []

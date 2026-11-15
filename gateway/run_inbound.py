@@ -27,6 +27,7 @@ from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_
 from gateway.run_busy import approval_input_words
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
+from gateway.run_inbound_moa import GatewayInboundMoaMixin
 from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_turn_setup_guard import cancel_preagent_setup, pending_setup_busy_notice
@@ -73,7 +74,9 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text.removeprefix(prefix)
 
 
-class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayPluginInjectionMixin):
+class GatewayInboundMixin(
+    GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayPluginInjectionMixin, GatewayInboundMoaMixin,
+):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
@@ -735,7 +738,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 await authority.interrupt(actor, ref, handle.execution_generation)
 
     def _hm_in_telegram_grace(self, event: MessageEvent, source: SessionSource, _quick_key: str) -> bool:
-        """A Telegram text follow-up inside the post-start grace window (it waits, never interrupts).
+        """A Telegram text or voice follow-up inside the post-start grace window (it waits, never interrupts).
         Invalid or empty ``HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS`` falls back to 3.0 via ``_float_env``."""
         from gateway.run import _float_env
         _grace = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
@@ -745,7 +748,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         _raw = getattr(event, "raw_message", None)
         _sent = (_edit if isinstance(_edit := getattr(_raw, "edit_date", None), type(event.timestamp)) else event.timestamp) if _raw else None
         _arrived = _sent.timestamp() if hasattr(_sent, "timestamp") else time.time()
-        if not (source.platform == Platform.TELEGRAM and event.message_type == MessageType.TEXT
+        # A voice note is a dictated follow-up like text: a second voice sent seconds after the first
+        # must not interrupt, and so drop, the reply being written for it (#31328).
+        if not (source.platform == Platform.TELEGRAM and event.message_type in (MessageType.TEXT, MessageType.VOICE)
                 and _grace > 0 and _started_at and -1 <= (_arrived - _started_at) <= _grace):
             return False
         logger.debug("Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
@@ -790,7 +795,6 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         self, event: MessageEvent, source: SessionSource, running_agent: Any, _quick_key: str
     ) -> None:
         """Interrupt path: redirect text-only corrections when supported, else ``agent.interrupt()``."""
-        from gateway.run import _build_media_placeholder
         # Text-only corrections redirect the live turn (preserving displayed context) when the
         # runtime supports it; media/voice and older runtimes use the interrupt path below.
         _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True
@@ -799,17 +803,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 logger.debug("PRIORITY redirect for session %s", _quick_key)
                 return
         logger.debug("PRIORITY interrupt for session %s", _quick_key)
-        _interrupt_text = event.text
         if self._pending_event_audio_paths(event):
-            _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
-                event, self._delivery_adapter_for(source), source, event.text or "",
-                log_context="Voice-priority-interrupt",
-            )
-        elif not _interrupt_text and getattr(event, "media_urls", None):
-            _interrupt_text = _build_media_placeholder(event)
-        # Delivered via adapter._pending_messages (read by _run_agent); never also buffered on self
-        # — that copy was never consumed and grew unbounded.
-        running_agent.interrupt(_interrupt_text)
+            # Queued like the demoted interrupt below: the follow-up turn transcribes it, so the
+            # interrupt never waits for STT (#143961).
+            self._queue_or_replace_pending_event(_quick_key, event)
+        running_agent.interrupt(self._busy_interrupt_text(event))
 
     def _clarify_takeover(self, event: MessageEvent, _quick_key: str) -> bool:
         """True while the turn whose clarify this message cancelled still owns the session."""
@@ -826,7 +824,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         superseded = self._clarify_takeover(event, _quick_key)
         mode = "interrupt" if superseded else self._effective_busy_input_mode(source)
         if (mode == "interrupt" and not superseded and not getattr(event, "internal", False)
-                and not event.get_command() and self._hm_text_only(event)
+                and not event.get_command() and (self._hm_text_only(event) or event.message_type == MessageType.VOICE)
                 and self._hm_in_telegram_grace(event, source, _quick_key)):
             return False  # leave the just-started turn running; the caller admits this follow-up
         state = self._peek_session_state(_quick_key)
@@ -963,6 +961,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     async def _hm_cmd_new(self, event, source, _quick_key):
         if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
             return True, self._telegram_topic_root_new_message()
+        # A plugin turn waiting before its agent exists leaves the chat idle here, so /new asks
+        # first: the person's command still ends that turn's wait for background work at once.
+        from gateway.run_plugin_injection import person_input_joined_turn
+        person_input_joined_turn(self, _quick_key)
         return await self._hm_confirm_destructive(
             event, "new", t("gateway.confirm.detail_new"),
             self._handle_reset_command,
@@ -1069,35 +1071,6 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return True, usage
         with suppress(Exception):
             event.text = payload
-        return False, None
-
-    async def _hm_cmd_moa(self, event, source, _quick_key):
-        # /moa is one-shot sugar only: run a single prompt through the default MoA preset, then
-        # restore the prior model. To *switch* to a MoA preset for the session, pick it from the
-        # model picker (MoA presets surface as a virtual "Mixture of Agents" provider).
-        from hermes_cli.moa_config import moa_usage, normalize_moa_config
-        from hermes_cli.config import load_config
-
-        moa_payload = event.get_command_args().strip()
-        if not moa_payload:
-            return True, moa_usage()
-        try:
-            cfg = load_config()
-            moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
-        except Exception:
-            moa_cfg = normalize_moa_config({})
-        try:
-            event.text = moa_payload
-            _moa_state = self._session_state(_quick_key)
-            # Same one-shot snapshot `/model --once` uses, so eviction/stop/finalizer settle both alike.
-            self._claim_one_turn_restore(_quick_key)
-            _moa_state.conversation.model_override = {
-                "provider": "moa", "model": moa_cfg["default_preset"], "base_url": "moa://local",
-                "api_key": "moa-virtual-provider", "api_mode": "chat_completions",
-            }
-            self._evict_cached_agent(_quick_key)
-        except Exception:
-            return True, t("gateway.moa.prepare_failed")
         return False, None
 
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites, one-shot MoA), each
@@ -1450,6 +1423,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            from gateway.session_moa_turn import arm_admitted_moa
+            arm_admitted_moa(self, _quick_key, event)  # restored by the finally below
             # Fail-open plugin consume inside the claimed slot (#129958); once per message.
             if not is_internal:
                 _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)

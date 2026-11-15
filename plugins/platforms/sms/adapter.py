@@ -23,9 +23,9 @@ from typing import Any, Dict, Optional
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import redact_phone, send_chunks, strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, redact_phone, send_chunks, strip_markdown
 from gateway.platforms._shared import (
-    env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
+    env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, secrets_match, send_error
 )
 from gateway.platforms.send_targets import StandaloneSendPolicy
 
@@ -45,6 +45,7 @@ MAX_SMS_LENGTH = 1600  # ~10 SMS segments
 DEFAULT_WEBHOOK_PORT = 8080
 DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _TWILIO_WEBHOOK_MAX_BODY_BYTES = 65_536  # 64 KiB — Twilio payloads are small
+_MESSAGE_SID_TTL_SECONDS = 86_400  # Twilio's signature carries no nonce: replays are only caught by SID
 _EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 
 
@@ -105,6 +106,7 @@ class SmsAdapter(BasePlatformAdapter):
         self._webhook_url: str = _get_scoped_secret("SMS_WEBHOOK_URL", "").strip()
         self._runner = None
         self._http_session: Optional[aiohttp.ClientSession] = None
+        self._seen_message_sids = MessageDeduplicator(ttl_seconds=_MESSAGE_SID_TTL_SECONDS)
 
     # -- Lifecycle -----------------------------------------------------------
 
@@ -211,9 +213,7 @@ class SmsAdapter(BasePlatformAdapter):
         data_to_sign = url + "".join(key + post_params[key] for key in sorted(post_params.keys()))
         mac = hmac.new(self._auth_token.encode("utf-8"), data_to_sign.encode("utf-8"), hashlib.sha1)
         computed = base64.b64encode(mac.digest()).decode("utf-8")
-        # Compare as bytes: compare_digest raises TypeError on non-ASCII str,
-        # and the signature is a raw request header.
-        return hmac.compare_digest(computed.encode(), signature.encode())
+        return secrets_match(signature, computed)
 
     @staticmethod
     def _port_variant_url(url: str) -> str | None:
@@ -261,6 +261,9 @@ class SmsAdapter(BasePlatformAdapter):
             return _twiml_response()
         if from_number == self._from_number:  # echo prevention
             logger.debug("[sms] ignoring echo from own number %s", redact_phone(from_number))
+            return _twiml_response()
+        if self._seen_message_sids.is_duplicate(message_sid):  # replayed or retried signed POST
+            logger.info("[sms] ignoring repeat MessageSid %s", message_sid)
             return _twiml_response()
         logger.info("[sms] inbound from %s -> %s (%d chars)", redact_phone(from_number), redact_phone(to_number), len(text))
         source = self.build_source(

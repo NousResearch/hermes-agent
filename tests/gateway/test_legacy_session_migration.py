@@ -234,3 +234,130 @@ async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
         refused = await native.dispatch({'id': 3, 'method': 'session.resume', 'params': {'session_id': sid}})
         assert 'error' in refused, refused
         assert db.get_session(sid)['user_id'] == user_id
+
+
+async def _stale_cwd_authority(tmp_path, monkeypatch):
+    """A profile whose terminal cwd is ``work`` and a native, same-profile connection to it."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    work = tmp_path / 'work'
+    work.mkdir()
+    monkeypatch.setenv('TERMINAL_CWD', str(work))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
+    authority._schedule = lambda ref: None
+    conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: True), {
+        'user_id': 'owner', 'provider': 'local', 'profile_id': authority.profile_id,
+        'instance_id': authority.instance_id})
+    return runner, authority, conn, work
+
+
+def _gone_dirs(tmp_path):
+    """A row written on another host (a Linux home on this Mac) and one whose worktree was deleted."""
+    deleted = tmp_path / 'deleted-worktree'
+    deleted.mkdir()
+    deleted.rmdir()
+    gone = ['/home/hermes-previous-host/project', str(deleted)]
+    assert not any(Path(p).exists() for p in gone)
+    return gone
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('which', [0, 1])
+async def test_legacy_row_whose_cwd_is_gone_from_this_host_adopts_in_the_profile_cwd(tmp_path, monkeypatch, caplog, which):
+    from gateway.config import Platform
+    from gateway.session_local_title import resolve_titled_session
+    stale = _gone_dirs(tmp_path)[which]
+    runner, authority, conn, work = await _stale_cwd_authority(tmp_path, monkeypatch)
+    try:
+        authority.db.create_session('moved', source='cli', model='old-model', cwd=stale)
+        authority.db.append_message('moved', role='user', content='OLD_QUESTION')
+        with caplog.at_level('WARNING', logger='gateway.session_local_migration'):
+            ref = resolve_titled_session(authority, conn.actor, 'moved')
+        policy = runner.adapters[Platform.LOCAL].policies[ref.session_id]
+        assert (ref.session_id, policy.model, policy.cwd) == ('moved', 'old-model', str(work))
+        assert json.loads(policy.terminal_json)['TERMINAL_CWD'] == str(work)
+        assert 'cwd' not in json.loads(policy.request_json)
+        assert any('moved' in r.getMessage() and stale in r.getMessage() for r in caplog.records)
+        snapshot = await authority.attach(conn.actor, ref)
+        assert [m['content'] for m in snapshot.history] == ['OLD_QUESTION']
+    finally:
+        await conn.close()
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_row_whose_cwd_exists_keeps_it_verbatim(tmp_path, monkeypatch):
+    from gateway.config import Platform
+    from gateway.session_local_title import resolve_titled_session
+    runner, authority, conn, work = await _stale_cwd_authority(tmp_path, monkeypatch)
+    project = tmp_path / 'project'
+    project.mkdir()
+    try:
+        authority.db.create_session('kept', source='cli', model='old-model', cwd=str(project))
+        ref = resolve_titled_session(authority, conn.actor, 'kept')
+        assert runner.adapters[Platform.LOCAL].policies[ref.session_id].cwd == str(project) != str(work)
+    finally:
+        await conn.close()
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_acp_row_whose_saved_workspace_is_gone_adopts_in_the_profile_cwd(tmp_path, monkeypatch):
+    from gateway.config import Platform
+    from gateway.session_local_title import resolve_titled_session
+    stale = _gone_dirs(tmp_path)[0]
+    runner, authority, conn, work = await _stale_cwd_authority(tmp_path, monkeypatch)
+    try:
+        # Older ACP rows hold their workspace only in model_config.
+        authority.db.create_session('acp-moved', source='acp', model='old-model', model_config={'cwd': stale})
+        ref = resolve_titled_session(authority, conn.actor, 'acp-moved')
+        assert runner.adapters[Platform.LOCAL].policies[ref.session_id].cwd == str(work)
+    finally:
+        await conn.close()
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_bot_chat_lookup_on_a_row_from_another_host_returns_the_row(tmp_path, monkeypatch):
+    """Desktop's Bots roster (``findExistingCanonicalChat``) asks ``session.list title="Bot Chat"``. A
+    canonical row written on the profile's previous host answered ``invalid_params field=cwd`` and the
+    bot could never be opened; it adopts in the profile's cwd instead."""
+    from gateway.config import Platform
+    stale = _gone_dirs(tmp_path)[0]
+    runner, authority, conn, work = await _stale_cwd_authority(tmp_path, monkeypatch)
+    try:
+        authority.db.create_session('bot-chat', source='cli', model='old', cwd=stale)
+        authority.db.set_session_title('bot-chat', 'Bot Chat')
+        authority.db.set_session_hidden('bot-chat', True)
+        reply = await conn.dispatch({'id': 1, 'method': 'session.list', 'params': {
+            'title': 'Bot Chat', 'include_hidden': True, 'limit': 200}})
+        assert 'error' not in reply, reply
+        assert [s['id'] for s in reply['result']['sessions']] == ['bot-chat']
+        assert runner.adapters[Platform.LOCAL].policies['bot-chat'].cwd == str(work)
+    finally:
+        await conn.close()
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_client_create_naming_a_missing_cwd_is_still_refused(tmp_path, monkeypatch):
+    """Only a stored row heals: a folder a client names for a new session must exist."""
+    stale = _gone_dirs(tmp_path)[0]
+    _, authority, conn, _ = await _stale_cwd_authority(tmp_path, monkeypatch)
+    try:
+        reply = await conn.dispatch({'id': 1, 'method': 'session.create', 'params': {
+            'request_id': 'fresh', 'source': 'cli', 'model': 'm', 'cwd': stale}})
+        assert reply['error']['data']['reason'] == 'invalid_params', reply
+        assert reply['error']['data'].get('field') == 'cwd', reply
+        assert authority.sessions == {}
+    finally:
+        await conn.close()
+        authority.db.close()

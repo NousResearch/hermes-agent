@@ -20,7 +20,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 
@@ -66,6 +66,7 @@ class _Adapter(BasePlatformAdapter):
     def __init__(self, platform):
         super().__init__(PlatformConfig(enabled=True, token="fake-token"), platform)
         self.sent = []
+        self.outcomes = []
         self._should_auto_tts_for_chat = lambda _chat_id: True
         self.play_tts = AsyncMock(return_value=SendResult(success=True, message_id="tts-1"))
         self._session_store = SimpleNamespace(peek_session_id=lambda key: "sess-1")
@@ -88,6 +89,9 @@ class _Adapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str):
         return {"id": chat_id}
+
+    async def on_processing_complete(self, event, outcome):
+        self.outcomes.append(outcome)
 
 
 async def _run_turn(platform, message_type, handler, *, audio_delivered=None):
@@ -149,6 +153,19 @@ async def test_empty_display_text_sends_the_voice_note_alone(monkeypatch):
 
     adapter.play_tts.assert_awaited_once()
     assert adapter.sent == []
+    assert adapter.outcomes == [ProcessingOutcome.SUCCESS]
+
+
+@pytest.mark.asyncio
+async def test_delivered_voice_reply_with_empty_display_is_still_a_success(monkeypatch):
+    """The runner already sent the voice note outside record_delivery; blank display must not
+    make the turn report FAILURE (and the failure reaction) as if nothing went out."""
+    _fake_hooks(monkeypatch, lambda kw: "")
+
+    adapter = await _run_turn(Platform.DISCORD, MessageType.TEXT, _reply(CUED, voice_reply_sent=True))
+
+    assert adapter.sent == []
+    assert adapter.outcomes == [ProcessingOutcome.SUCCESS]
 
 
 @pytest.mark.parametrize("platform", [Platform.DISCORD, Platform.TELEGRAM])

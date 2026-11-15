@@ -11,6 +11,7 @@ nothing here can pass against a mocked transport.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -209,3 +210,109 @@ def test_reload_tears_down_a_servers_clones(root, probe):
     assert not _clones("cwdprobe_reload")
     assert clone._task.done() and clone.session is None
     assert _clones(), "pruning one server tore down another server's clones"
+
+
+def test_a_clone_connecting_during_a_prune_is_discarded(root):
+    """A clone whose connect is still in flight when its baseline is torn down (reload, config
+    prune) must never be inserted afterwards: it would be a live child with no baseline, which
+    no teardown will ever reap or re-register (#151827 port, review finding 1)."""
+    from tests.waiting import wait_until
+    from tools import mcp_tool, mcp_tool_project_scope as scope
+    from tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children, shutdown_mcp_servers
+
+    name = "cwdprobe_prune_race"
+    slow, go = root / "slow", root / "go"
+    slow.mkdir(exist_ok=True)
+    # The clone child answers `initialize` only when the trigger file appears, so the prune can
+    # deterministically land inside the connect: a watcher fires the trigger the moment the
+    # baseline disappears from the registry, while the MCP loop is still draining.
+    (root / "slow_probe.py").write_text(_PROBE.replace(
+        'if method == "initialize":',
+        'if method == "initialize":\n'
+        f'        if os.path.basename(START) == "slow":\n'
+        f'            for _ in range(4000):\n'
+        f'                if os.path.exists({str(go)!r}):\n'
+        f'                    break\n'
+        f'                time.sleep(0.01)'),
+        encoding="utf-8")
+    from tools.mcp_tool_discovery import register_mcp_servers
+    # A second server keeps the MCP loop alive across the prune (the real /reload-mcp shape):
+    # with nothing else registered, the post-prune drain would cancel the in-flight connect
+    # itself and the race could never fire.
+    register_mcp_servers({"cwdprobe_prune_keeper": {"command": sys.executable, "args": [str(root / "probe.py")],
+                                                    "connect_timeout": 30, "timeout": 30}})
+    register_mcp_servers({name: {"command": sys.executable, "args": [str(root / "slow_probe.py")],
+                                 "connect_timeout": 30, "timeout": 30}})
+    assert name in mcp_tool._servers
+    result: dict = {}
+
+    def race() -> None:
+        from tools.mcp_tool_handlers import _make_tool_handler
+        set_session_cwd(str(slow))
+        try:
+            result["r"] = _make_tool_handler(name, "whereami", 30)({})
+        finally:
+            clear_session_cwd()
+
+    def trigger_when_pruned() -> None:
+        wait_until(lambda: name not in mcp_tool._servers, timeout=20,
+                   what="the prune to remove the baseline")
+        go.write_text("go")
+
+    worker = threading.Thread(target=race)
+    trigger = threading.Thread(target=trigger_when_pruned)
+    worker.start()
+    try:
+        # The connect holds its single-flight lock while spawning the child: tear the baseline
+        # down inside that window, before the clone can be inserted.
+        connect_lock = wait_until(
+            lambda: scope._scoped_connect_locks.get((name, os.path.realpath(str(slow)))),
+            what="the clone connect to take flight")
+        assert connect_lock is not None
+        wait_until(lambda: connect_lock.locked(), what="the connect lock to be held")
+        trigger.start()
+        shutdown_mcp_servers(scope=None, names={name})
+        worker.join(timeout=60)
+        trigger.join(timeout=30)
+
+        assert name not in mcp_tool._servers, "test premise: the prune removed the baseline"
+        assert not _clones(name), "a clone connected during the prune survived it"
+        assert "not connected" in str(result.get("r")), result.get("r")
+    finally:
+        clear_session_cwd()
+        shutdown_mcp_servers()
+        _kill_orphaned_mcp_children(include_active=True)
+
+
+def test_the_insert_gate_refuses_a_torn_down_baseline(root, monkeypatch):
+    """Gate-level twin of the prune race: the clone insert must verify the baseline is still the
+    live connection, and a clone connected for a torn-down baseline is shut down, not handed out."""
+    from tools import mcp_tool, mcp_tool_project_scope as scope
+
+    name = "cwdprobe_gate"
+    project = root / "gateproj"
+    project.mkdir(exist_ok=True)
+    _register(root, name)
+    baseline = mcp_tool._servers[name]
+
+    class _OrphanClone:
+        def __init__(self):
+            self.shutdown_called = threading.Event()
+
+        async def shutdown(self):
+            self.shutdown_called.set()
+
+    orphan = _OrphanClone()
+    monkeypatch.setattr(scope, "_connect_clone", lambda *args, **kwargs: orphan)
+    with mcp_tool._lock:
+        mcp_tool._servers.pop(name)  # the prune, between the lookup and the insert
+
+    set_session_cwd(str(project))
+    try:
+        got = scope._server_for_call(name, name, baseline)
+    finally:
+        clear_session_cwd()
+
+    assert got is None, "a clone was handed out for a torn-down baseline"
+    assert not _clones(name), "the orphaned clone was inserted anyway"
+    assert orphan.shutdown_called.is_set(), "the discarded clone was never shut down"

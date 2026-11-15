@@ -90,6 +90,7 @@ def _server_for_call(server_name: str, key: Any, baseline: Any, *, connect: bool
         if not connect:
             return None
         connect_lock = _scoped_connect_locks.setdefault(clone_key, threading.Lock())
+    orphan = None
     with connect_lock:
         with _core._lock:
             clone = _scoped_servers.get(clone_key)
@@ -100,8 +101,24 @@ def _server_for_call(server_name: str, key: Any, baseline: Any, *, connect: bool
                     _scoped_connect_locks.pop(clone_key, None)
                 return None
         with _core._lock:
-            _scoped_servers[clone_key] = clone
-            _lease(clone_key)
+            # A teardown (reload, config prune, shutdown) can remove the baseline while a clone
+            # connect is in flight; inserting afterwards would strand a live child no owner will
+            # ever reap or re-register. The clone goes down with its baseline or not at all. The
+            # connect lock stays (a peer may be single-flighted on it); a later eviction or
+            # pop_clones reaps it with the rest of the dead key's state.
+            if _core._servers.get(key) is baseline:
+                _scoped_servers[clone_key] = clone
+                _lease(clone_key)
+            else:
+                orphan, clone = clone, None
+    if orphan is not None:  # off the lock, like every other shutdown
+        try:
+            _loop._run_on_mcp_loop(orphan.shutdown, timeout=15)
+        # health: allow BLE001 -- one failed close must not fail the call; the orphan reaper still owns its PIDs
+        except Exception:
+            logger.warning("MCP server '%s': discarded an orphaned project transport for %s",
+                           server_name, cwd, exc_info=True)
+        return None
     _evict_idle_overflow(key, keep=clone_key)
     return clone
 

@@ -164,6 +164,7 @@ describe('hovered zone retargets the tab verbs', () => {
       dir: 'center',
       workspaceMode: 'sessions'
     }
+
     session.$selectedStoredSessionId.set(null)
     sessionStates.$sessionTiles.set([initialTile])
 
@@ -176,19 +177,25 @@ describe('hovered zone retargets the tab verbs', () => {
     sessionStates.openSessionTile('b', 'center')
 
     expect(model.findGroupOfPane(tree.$layoutTree.get()!, 'session-tile:b')?.id).toBe('grp-side')
-    expect(sessionStates.$sessionTiles.get().find(t => t.storedSessionId === 'b')?.anchor).toBe(
-      'session-tile:c'
-    )
+    expect(sessionStates.$sessionTiles.get().find(t => t.storedSessionId === 'b')?.anchor).toBe('session-tile:c')
   })
 
   // Regression test for #149088: new tab placement docks into the FOCUSED column,
   // not the hovered one, when the pointer drifts over another column.
   it('new tab docks into the focused column despite stray hover', async () => {
     const { tree } = await setup()
+    const sessionStates = await import('@/store/session-states')
 
     // Focus on grp-main, but pointer hovers grp-side (simulating drift)
     tree.noteActiveTreeGroup('grp-main')
     tree.noteHoveredTreeGroup('grp-side')
+
+    // A session with no tile yet: the unanchored open persists the FOCUSED
+    // anchor. Asserting only the resolver below would leave the placement
+    // itself untested — a hover-first ladder still resolves, just elsewhere.
+    sessionStates.openSessionTile('session-1', 'right')
+
+    expect(sessionStates.$sessionTiles.get().find(t => t.storedSessionId === 'session-1')?.anchor).toBe('workspace')
 
     // focusedSessionTabAnchor() should resolve to the FOCUSED zone (grp-main's workspace)
     expect(tree.focusedSessionTabAnchor()).toBe('workspace')

@@ -21,6 +21,7 @@ import {
   writeDraftStash
 } from './composer-draft-stash'
 import { recordDislike, recordFriction } from './desktop-metrics'
+import { cancelProfileNavigationRestore } from './profile-navigation'
 
 /** Release blob: chip previews created for OS image drops (see #63682). */
 export function revokeAttachmentPreviewUrl(url?: string | null) {
@@ -112,7 +113,10 @@ let nextVoiceStartRequest = 0
 let handledVoiceStartRequest = 0
 export const createComposerAttachmentOccurrenceId = (): string => randomUuid()
 
-export const requestVoiceConversationStart = (): void => $voiceConversationStartRequest.set(++nextVoiceStartRequest)
+export const requestVoiceConversationStart = (): void => {
+  cancelProfileNavigationRestore()
+  $voiceConversationStartRequest.set(++nextVoiceStartRequest)
+}
 
 export const takeVoiceConversationStart = (current: number): boolean => {
   if (current <= handledVoiceStartRequest) {

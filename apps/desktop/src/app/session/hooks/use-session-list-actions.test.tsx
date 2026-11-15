@@ -32,6 +32,7 @@ import {
   setSessionsLoadError,
   setSessionsLoading
 } from '@/store/session'
+import { $sessionListAuthority } from '@/store/session-list-authority'
 
 import { deferred } from '../../../test/deferred'
 
@@ -116,6 +117,45 @@ vi.mock('@/store/session-states', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
   getRecentlySettledSessionIds: () => settled.ids
 }))
+
+it('publishes failed authority when the target list read rejects', async () => {
+  $sessionListAuthority.set(null)
+  listSidebarSessions.mockRejectedValueOnce(new Error('offline'))
+  const { result } = renderHook(() => useSessionListActions({ profileScope: 'coder' }))
+  await act(async () => {
+    await expect(result.current.refreshSessions()).rejects.toThrow('offline')
+  })
+  expect($sessionListAuthority.get()).toMatchObject({ profile: 'coder', status: 'failed' })
+})
+
+it('publishes failed authority for a retry response instead of waiting forever', async () => {
+  $sessionListAuthority.set(null)
+  const response = sidebar({ sessions: [] })
+  response.recents.retry = true
+  listSidebarSessions.mockResolvedValueOnce(response)
+  const { result } = renderHook(() => useSessionListActions({ profileScope: 'coder' }))
+  await act(async () => {
+    await result.current.refreshSessions()
+  })
+  expect($sessionListAuthority.get()).toMatchObject({ profile: 'coder', status: 'failed' })
+})
+
+it('publishes list authority only after a successful target-profile response, including an empty list', async () => {
+  $sessionListAuthority.set(null)
+  const pending = deferred<SidebarSessionsResponse>()
+  listSidebarSessions.mockReturnValue(pending.promise)
+  const { result } = renderHook(() => useSessionListActions({ profileScope: 'coder' }))
+  let refresh!: Promise<void>
+  act(() => {
+    refresh = result.current.refreshSessions()
+  })
+  expect($sessionListAuthority.get()).toBeNull()
+  await act(async () => {
+    pending.resolve(sidebar({ sessions: [] }))
+    await refresh
+  })
+  expect($sessionListAuthority.get()).toMatchObject({ profile: 'coder', epoch: gatewayScope.epoch })
+})
 
 beforeEach(() => {
   gatewayScope.epoch = 0

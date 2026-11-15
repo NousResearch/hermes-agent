@@ -1,5 +1,5 @@
 import { atom } from 'nanostores'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Picking a profile must stay on the source the user is LOOKING at. $profiles
 // is the active gateway's list, so a pick made while a registry source is live
@@ -34,6 +34,7 @@ vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }
 vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph }))
 
 const { $activeGatewayProfile, newSessionInProfile, selectProfile } = await import('./profile')
+const { cancelProfileNavigationRestore } = await import('./profile-navigation')
 
 beforeEach(() => {
   ensureGatewayForProfile.mockClear()
@@ -44,8 +45,10 @@ beforeEach(() => {
   $activeGatewayProfile.set('default')
   // resolveConnectionForAgent is best-effort; without a bridge it resolves
   // null and the previous descriptor stays, which is fine here.
-  ;(globalThis as { window?: unknown }).window = {}
+  ;(globalThis as { window?: unknown }).window = { addEventListener: vi.fn(), removeEventListener: vi.fn() }
 })
+
+afterEach(() => cancelProfileNavigationRestore())
 
 describe('selectProfile', () => {
   it('activates the pick on the live registry source, not the primary', async () => {
@@ -125,6 +128,8 @@ describe('selectProfile startup preference (#79886)', () => {
     const getConnectionConfig = vi.fn(async () => ({ mode: 'local' }))
 
     ;(globalThis as { window?: unknown }).window = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
       hermesDesktop: {
         getConnection,
         getConnectionConfig,
@@ -190,6 +195,8 @@ describe('selectProfile startup preference (#79886)', () => {
     const getConnectionConfig = vi.fn(async () => ({ mode: 'local' }))
 
     ;(globalThis as { window?: unknown }).window = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
       hermesDesktop: {
         getConnection,
         getConnectionConfig,
@@ -211,6 +218,8 @@ describe('selectProfile startup preference (#79886)', () => {
     const getConnectionConfig = vi.fn(async () => ({ mode: 'ssh' }))
 
     ;(globalThis as { window?: unknown }).window = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
       hermesDesktop: {
         getConnection,
         getConnectionConfig,

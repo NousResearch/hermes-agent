@@ -32,6 +32,7 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { clearAllSessionControl } from '@/store/session-control'
+import { $sessionListAuthority } from '@/store/session-list-authority'
 import { resetSessionPinMirror } from '@/store/session-pin-sync'
 import { clearAllSessionStates } from '@/store/session-states'
 import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
@@ -203,6 +204,7 @@ export function recoverActiveSourceAfterFailedGatewaySwitch(token: GatewaySwitch
  * alone so the user stays where they were (e.g. mid-Gateway settings).
  */
 export function wipeSessionListsForGatewaySwitch(): void {
+  $sessionListAuthority.set(null)
   // The next backend is a different runtime — don't carry the old one's
   // "batched sidebar endpoint missing" capability verdict across the switch.
   resetSidebarBatchCapability()

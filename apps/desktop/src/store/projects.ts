@@ -37,6 +37,7 @@ import {
   normalizeProfileKey,
   requestFreshSession
 } from '@/store/profile'
+import { cancelProfileNavigationRestore } from '@/store/profile-navigation'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import {
   $currentCwd,
@@ -1712,6 +1713,7 @@ export async function addProjectFolders(id: string, paths: string[]): Promise<vo
 // one-keystroke version of new project → enter → new session. Like goToProject,
 // this is an open-from-nowhere: an occupied main gets a stacked tab, not stolen.
 export async function openFolderAsProject(dir?: string): Promise<void> {
+  cancelProfileNavigationRestore()
   const target = (dir ?? (await pickProjectFolder()) ?? '').trim()
 
   if (!target) {

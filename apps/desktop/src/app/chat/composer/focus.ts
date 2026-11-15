@@ -14,6 +14,7 @@ import { isElementInHiddenPane, queryAllVisible, queryVisible } from '@/componen
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { subscribePreviewAnnotateHandoff } from '@/lib/preview-annotate/handoff'
 import { dataUrlToBlob } from '@/lib/preview-annotate/pack'
+import { cancelProfileNavigationRestore } from '@/store/profile-navigation'
 
 import { $floatingComposerOwner } from './floating-state'
 import type { InlineRefInput } from './inline-refs'
@@ -292,6 +293,7 @@ export const requestComposerInsert = (
     return
   }
 
+  cancelProfileNavigationRestore()
   dispatch<InsertDetail>(INSERT_EVENT, { mode, target: resolve(target), text: trimmed })
 }
 

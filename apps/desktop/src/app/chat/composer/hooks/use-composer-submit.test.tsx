@@ -17,6 +17,11 @@ import { $notifications } from '@/store/notifications'
 import { $onboardingPhase } from '@/store/onboarding-phase'
 import { $onboardingSession } from '@/store/onboarding-session'
 import {
+  $profileNavigationRequest,
+  cancelProfileNavigationRestore,
+  requestProfileNavigationRestore
+} from '@/store/profile-navigation'
+import {
   clearAllPrompts,
   hasBlockingPromptRequest,
   setApprovalRequest,
@@ -164,6 +169,19 @@ function renderSubmitHook({
 }
 
 describe('useComposerSubmit external request routing', () => {
+  it('submit dispatch cancels pending profile restore before onSubmit', () => {
+    const { hook, onSubmit } = renderSubmitHook({ text: 'send this' })
+    onSubmit.mockImplementationOnce(async () => {
+      expect($profileNavigationRequest.get()).toBeNull()
+
+      return true
+    })
+    requestProfileNavigationRestore('coder')
+    act(() => hook.result.current.dispatchSubmit('send this'))
+    expect($profileNavigationRequest.get()).toBeNull()
+    cancelProfileNavigationRestore()
+  })
+
   afterEach(() => {
     cleanup()
     clearQueuedPrompts('stored-session')

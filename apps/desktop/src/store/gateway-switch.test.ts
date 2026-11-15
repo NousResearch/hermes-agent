@@ -44,6 +44,7 @@ import {
   registerGatewaySwitchLifecycle,
   wipeSessionListsForGatewaySwitch
 } from './gateway-switch'
+import { $sessionListAuthority } from './session-list-authority'
 
 // Each star map fetch records the connection requests route to when it is issued.
 const { starmapFetchScopes } = vi.hoisted(() => ({ starmapFetchScopes: [] as Array<null | string> }))
@@ -71,6 +72,12 @@ vi.mock(import('@/store/profile'), async importOriginal => {
 })
 
 const { invalidateProfileListFetches } = await import('@/store/profile')
+
+it('clears session list authority on a gateway wipe', () => {
+  $sessionListAuthority.set({ profile: 'default', scope: '', epoch: 1, status: 'loaded' })
+  wipeSessionListsForGatewaySwitch()
+  expect($sessionListAuthority.get()).toBeNull()
+})
 
 describe('wipeSessionListsForGatewaySwitch', () => {
   beforeEach(() => {

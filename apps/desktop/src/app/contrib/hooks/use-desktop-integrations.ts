@@ -25,6 +25,7 @@ import {
 } from '@/store/native-notifications'
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { $profileNavigationRequest, currentProfileNavigationSequence } from '@/store/profile-navigation'
 import { openFolderAsProject } from '@/store/projects'
 import {
   $selectedStoredSessionId,
@@ -44,17 +45,15 @@ import { onSessionsChanged } from '@/store/session-sync'
 import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isBrowserWindow, isHudWindow, isPeerInstanceWindow, isSecondaryWindow } from '@/store/windows'
-import type { SessionInfo } from '@/types/hermes'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
 
+import { isMainOnNewChatRoute, type RememberedSession, validateRememberedNavigation } from './remembered-navigation'
 import { resolveRememberedSessionId } from './remembered-session'
 
 // Trailing window that folds a burst of kept-route opens into one list refresh.
 const KEPT_ROUTE_REFRESH_COALESCE_MS = 400
-
-type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'parent_session_id' | 'profile' | 'source'>
 
 interface DesktopIntegrationsParams {
   activeProfile: string
@@ -121,6 +120,9 @@ export function useDesktopIntegrations({
   }, [])
 
   const restoredRef = useRef(false)
+  const launchProfileNavigation = useRef(currentProfileNavigationSequence())
+  const profileNavigationRequest = useStore($profileNavigationRequest)
+  const switchDraftSequence = useRef<number | null>(null)
   const diskPluginsScanPending = useStore($diskPluginsScanPending)
 
   // Wait until boot has adopted the primary profile, then restore that profile's
@@ -138,7 +140,28 @@ export function useDesktopIntegrations({
       return
     }
 
-    if (!restoredRef.current) {
+    // Keep the switch draft out of remembered history even after a failed or
+    // cancelled restore. The barrier ends when navigation leaves this draft;
+    // it must not erase the destination merely because a page/read was absent.
+    const pending = $profileNavigationRequest.get() ?? profileNavigationRequest
+
+    if (pending) {
+      switchDraftSequence.current = pending.sequence
+    }
+
+    if (switchDraftSequence.current !== null) {
+      // The reset changes the hash synchronously before the router render.
+      if (isMainOnNewChatRoute(locationPathname, 'barrier')) {
+        return
+      }
+
+      switchDraftSequence.current = null
+    }
+
+    // A rail pick owns live navigation, including its fallback. Boot's own
+    // fresh-session resets are NOT rail picks and keep the original launch behavior.
+    // Do not latch restoredRef when yielding to the live path.
+    if (!restoredRef.current && currentProfileNavigationSequence() === launchProfileNavigation.current) {
       // Only cold-start navigation at the default route is replaceable; a deep
       // link or hidden-then-shown window keeps its explicit destination.
       if (locationPathname === NEW_CHAT_ROUTE) {
@@ -157,11 +180,16 @@ export function useDesktopIntegrations({
         }
 
         const route = getRememberedRoute(activeProfile)
-        const routeSession = route ? routeSessionId(route) : null
         const last = getRememberedSessionId(activeProfile)
 
-        const restorableNonSessionRoute =
-          !!route && route !== NEW_CHAT_ROUTE && !routeSession && !isOverlayView(appViewForPath(route))
+        const {
+          routeSession,
+          nonSessionRoute: restorableNonSessionRoute,
+          validRoute,
+          listedLast,
+          rowFor,
+          belongs
+        } = validateRememberedNavigation(route, last, activeProfile, sessions)
 
         // Boot adoption can publish renderer.ready before its async session
         // refresh completes. Keep the restore latch open until ownership can be
@@ -188,8 +216,6 @@ export function useDesktopIntegrations({
         // parent_session_id but ARE user-facing — source, not parenthood, is
         // the discriminator. A listed row carries its source, so the guard is
         // synchronous there; an unlisted id resolves by id below.
-        const rowFor = (id: string) => sessions.find(session => sessionMatchesStoredId(session, id))
-
         // The same owner hygiene the click path (openStoredSession) applies to
         // a list row: an untagged row is owned by the ambient backend, so a
         // stale explicit hint (older builds persisted `local` for legacy
@@ -213,14 +239,7 @@ export function useDesktopIntegrations({
           }
         }
 
-        const restorableRouteSession = routeSession && rowFor(routeSession)?.source !== 'subagent' ? routeSession : null
-
-        if (
-          route &&
-          route !== NEW_CHAT_ROUTE &&
-          !isOverlayView(appViewForPath(route)) &&
-          (!routeSession || (restorableRouteSession && sessionBelongsToProfile(sessions, routeSession, activeProfile)))
-        ) {
+        if (route && validRoute) {
           // The user may have started typing on the fresh chat while the
           // backend was still coming up; the composer moves that draft onto
           // the restored session when its scope swaps (#114122).
@@ -243,7 +262,7 @@ export function useDesktopIntegrations({
         if (last) {
           // Fast path: a listed, non-delegate row restores directly, exactly
           // as before — no by-id fetch on the common cold start.
-          if (rowFor(last)?.source !== 'subagent' && sessionBelongsToProfile(sessions, last, activeProfile)) {
+          if (listedLast) {
             repairOwnerHintsForRestore(last)
             announceNewSessionDraftKey(resolveComposerSessionKey(last, sessions))
             navigate(sessionRoute(last), { replace: true })
@@ -258,7 +277,11 @@ export function useDesktopIntegrations({
           // remembered value for the next launch instead of discarding it.
           void resolveRememberedSessionId(last, getSession)
             .then(remembered => {
-              if (!remembered || !sessionBelongsToProfile(sessions, remembered, activeProfile)) {
+              if (currentProfileNavigationSequence() !== launchProfileNavigation.current) {
+                return
+              }
+
+              if (!remembered || !belongs(remembered)) {
                 setRememberedSessionId(null, activeProfile)
 
                 return
@@ -316,6 +339,7 @@ export function useDesktopIntegrations({
     locationPathname,
     navigate,
     profileReady,
+    profileNavigationRequest,
     resumeExhaustedSessionId,
     resumeLastSession,
     routedSessionId,

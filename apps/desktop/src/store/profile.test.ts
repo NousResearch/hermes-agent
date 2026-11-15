@@ -32,10 +32,15 @@ vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn()
 }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
+vi.mock('@/store/notifications', () => ({ notifyError: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph }))
+
+import { $profileNavigationRequest } from './profile-navigation'
 
 const {
   $activeGatewayProfile,
+  $freshSessionRequest,
+  $showAllProfiles,
   $profiles,
   ensureGatewayProfile,
   invalidateProfileListFetches,
@@ -81,12 +86,13 @@ beforeEach(() => {
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
   $profiles.set([])
-  vi.stubGlobal('window', { hermesDesktop: { getConnection } })
+  vi.stubGlobal('window', { hermesDesktop: { getConnection }, addEventListener: vi.fn(), removeEventListener: vi.fn() })
   vi.mocked(invalidateProfileScopedQueries).mockClear()
   resetStarmapGraph.mockClear()
 })
 
 afterEach(() => {
+  $profileNavigationRequest.set(null)
   vi.unstubAllGlobals()
   $connection.set(null)
 })
@@ -147,6 +153,92 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     await ensureGatewayProfile('vps-remote')
 
     expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
+  })
+})
+
+describe('profile navigation restore intent', () => {
+  it('requests a fresh draft and preserves the boot-yield signal when switching profiles', () => {
+    const fresh = $freshSessionRequest.get()
+    selectProfile('coder')
+    expect($freshSessionRequest.get()).toBe(fresh + 1)
+    expect($profileNavigationRequest.get()?.profile).toBe('coder')
+  })
+
+  it('leaves navigation alone when re-tapping the active profile', () => {
+    const request = $profileNavigationRequest.get()
+    const fresh = $freshSessionRequest.get()
+    selectProfile('default')
+    expect($profileNavigationRequest.get()).toBe(request)
+    expect($freshSessionRequest.get()).toBe(fresh)
+  })
+
+  it('restores when leaving All profiles even for the active profile', () => {
+    $showAllProfiles.set(true)
+    selectProfile('default')
+    expect($showAllProfiles.get()).toBe(false)
+    expect($profileNavigationRequest.get()?.profile).toBe('default')
+  })
+
+  it('marks a restore ready only after activation and descriptor publication', async () => {
+    let finish!: () => void
+    ensureGatewayForProfile.mockImplementationOnce(
+      () =>
+        new Promise<undefined>(resolve => {
+          finish = () => resolve(undefined)
+        })
+    )
+    getConnection.mockResolvedValue(remoteConn({ profile: 'coder' }))
+    selectProfile('coder')
+    expect($profileNavigationRequest.get()?.scope).toBeUndefined()
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    finish()
+    await vi.waitFor(() => expect($profileNavigationRequest.get()?.scope).toContain('.remote.'))
+    expect($activeGatewayProfile.get()).toBe('coder')
+    expect($connection.get()?.profile).toBe('coder')
+  })
+
+  it('reports failed activation without losing the fresh-session request', async () => {
+    const fresh = $freshSessionRequest.get()
+    ensureGatewayForProfile.mockRejectedValueOnce(new Error('offline'))
+    selectProfile('coder')
+    await vi.waitFor(() => expect($profileNavigationRequest.get()?.activation).toBe('failed'))
+    expect($freshSessionRequest.get()).toBe(fresh + 1)
+  })
+
+  it('reports a non-landed descriptor instead of waiting indefinitely', async () => {
+    getConnection.mockResolvedValue(localConn({ profile: 'previous' }))
+    selectProfile('coder')
+    await vi.waitFor(() => expect($profileNavigationRequest.get()?.activation).toBe('failed'))
+  })
+
+  it('A to B to A re-tap drops B before its late activation lands', async () => {
+    let finish!: () => void
+    ensureGatewayForProfile.mockImplementationOnce(
+      () =>
+        new Promise<undefined>(resolve => {
+          finish = () => resolve(undefined)
+        })
+    )
+    getConnection.mockResolvedValue(localConn({ profile: 'coder' }))
+    selectProfile('coder')
+    expect($profileNavigationRequest.get()?.profile).toBe('coder')
+    const bump = $freshSessionRequest.get()
+    selectProfile('default')
+    expect($freshSessionRequest.get()).toBe(bump)
+    expect($profileNavigationRequest.get()).toBeNull()
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    finish()
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
+    expect($profileNavigationRequest.get()).toBeNull()
+  })
+
+  it('coalesces rapid switches to the latest navigation request', () => {
+    selectProfile('a')
+    const first = $profileNavigationRequest.get()!
+    selectProfile('b')
+    selectProfile('c')
+    expect($profileNavigationRequest.get()?.profile).toBe('c')
+    expect($profileNavigationRequest.get()!.sequence).toBeGreaterThan(first.sequence)
   })
 })
 

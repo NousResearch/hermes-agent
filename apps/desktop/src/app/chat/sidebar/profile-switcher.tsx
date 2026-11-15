@@ -690,8 +690,8 @@ export function ProfileRail() {
         />
       )}
 
-      {/* Land in the new profile on a fresh chat (selectProfile triggers the
-          new-session reset), not stuck on the session you were just in. */}
+      {/* Creation uses the normal pick path: clear main first, then optionally
+          restore history (a re-created profile name may still have some). */}
       <CreateProfileDialog
         onClose={() => setCreateOpen(false)}
         onCreated={async name => {

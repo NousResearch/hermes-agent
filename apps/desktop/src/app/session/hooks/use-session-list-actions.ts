@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
 import { getApiRequestConnection, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
+import { activeConnectionScopeSuffix } from '@/lib/connection-scoped'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,
@@ -43,6 +44,7 @@ import {
   setSessionsLoading,
   stampMessagingRowsWithListServer
 } from '@/store/session'
+import { setSessionListAuthority } from '@/store/session-list-authority'
 import {
   $removedSessionIds,
   captureSessionTombstoneGenerations,
@@ -379,6 +381,8 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // pre-archive-commit can land post-prune, and only the generation
       // delta (not tombstone membership) still names the doomed row then.
       const removalSnapshot = captureSessionTombstoneGenerations()
+      let activationEpoch = gatewayActivationEpoch()
+      let listScope = activeConnectionScopeSuffix()
 
       try {
         const limit = $sessionsLimit.get()
@@ -406,7 +410,6 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
             messagingExclude: MESSAGING_EXCLUDED_SOURCES
           })
 
-        let activationEpoch = gatewayActivationEpoch()
         let result = await fetchPage()
 
         // A gateway activation that landed mid-request voids this page: it may
@@ -419,6 +422,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // re-read under the current epoch instead.
         while (owns() && gatewayActivationEpoch() !== activationEpoch) {
           activationEpoch = gatewayActivationEpoch()
+          listScope = activeConnectionScopeSuffix()
           result = await fetchPage()
         }
 
@@ -462,6 +466,19 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
             return sameCronSignature(prev, next) ? prev : next
           })
+
+          // Only a successful read can authorize navigation. A retained page
+          // from a failed profile is useful to paint, never proof of absence.
+          setSessionListAuthority({
+            profile: sessionProfile,
+            scope: listScope,
+            epoch: activationEpoch,
+            status:
+              scopedRetry || recentsErrors?.some(error => sessionProfile === 'all' || error.profile === sessionProfile)
+                ? 'failed'
+                : 'loaded'
+          })
+
           // "Is there another page?" instead of an exact total: the backend
           // reports which profiles filled their window, which costs nothing on
           // top of the rows it already read (the old exact totals ran a COUNT(*)
@@ -529,6 +546,15 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           )
         }
       } catch (error) {
+        if (owns()) {
+          setSessionListAuthority({
+            profile: sessionProfile,
+            scope: listScope,
+            epoch: activationEpoch,
+            status: 'failed'
+          })
+        }
+
         if (owns() && showLoading) {
           setSessionsLoadError(true)
         }

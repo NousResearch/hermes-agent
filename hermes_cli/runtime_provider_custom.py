@@ -219,6 +219,9 @@ def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Opti
         model_name = _clean(entry.get("model", ""))
         if model_name:
             result["model"] = model_name
+        key_cmd = _clean(entry.get("key_cmd", ""))
+        if key_cmd:
+            result["key_cmd"] = key_cmd
         _lift_common_custom_fields(entry, result, provider_key=provider_key, key_env=_clean(entry.get("key_env", "")),
                                    api_mode=_rp()._parse_api_mode(entry.get("api_mode")))
         return result, entry

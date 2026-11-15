@@ -22,7 +22,7 @@ def owner(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
+    from gateway.session_controls import AuthorityConnection
     from hermes_cli.active_sessions import release_active_session
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -34,14 +34,18 @@ def owner(tmp_path, monkeypatch):
     db.set_session_title(CHAT, 'Rodar dag-ulw via interface desktop')
     db.append_message(CHAT, role='user', content='Q')
     db.append_message(CHAT, role='assistant', content='A')
-    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False)
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _adapter_for_source=lambda source: None, _cached_agent_for=lambda route: None,
+                             _evict_cached_agent=lambda route: None)
     authority = asyncio.run(initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='gateway'))
-    caps = frozenset({'session:create', 'session:read', 'session:submit', 'session:control'})
-    native = SessionActor('native', str(tmp_path), caps, 'native-socket')
-    authority._native_legacy_transports = {native.transport_id: native}
+    identity = {'user_id': 'native', 'provider': 'local', 'profile_id': str(tmp_path),
+                'instance_id': 'gateway'}
+    connection = AuthorityConnection(authority, object(), identity)
+    native = connection.actor
     leases = []
     try:
-        yield SimpleNamespace(authority=authority, db=db, home=Path(db.db_path).parent, native=native, leases=leases)
+        yield SimpleNamespace(authority=authority, db=db, home=Path(db.db_path).parent, native=native,
+                               leases=leases, connection=connection)
     finally:
         for lease in leases:
             release_active_session(lease)
@@ -59,13 +63,15 @@ def _mount_dashboard_pane(owner):
 
 @pytest.mark.asyncio
 async def test_an_idle_dashboard_pane_does_not_fence_opening_its_chat_through_the_gateway(owner):
-    from gateway.session_local_migration import resolve_local_target
     lease = _mount_dashboard_pane(owner)
 
-    ref = resolve_local_target(owner.authority, owner.native, CHAT)
+    reply = await owner.connection.dispatch({'id': 1, 'method': 'session.resume',
+                                             'params': {'session_id': CHAT, 'omit_messages': True}})
 
-    snapshot = await owner.authority.attach(owner.native, ref)
-    assert [m['content'] for m in snapshot.history] == ['Q', 'A']
+    assert 'result' in reply, reply
+    assert reply['result']['session_id'] == CHAT
+    assert reply['result']['messages_omitted'] is True
+    assert reply['result']['message_count'] == 2
     assert not lease.released, 'the pane keeps its lease beside the gateway'
 
 

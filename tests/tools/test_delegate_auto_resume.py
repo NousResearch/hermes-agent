@@ -133,7 +133,7 @@ def test_the_parent_wins_a_child_is_not_resumed_once_its_parent_moved_on(tmp_pat
         sid = out["subagent_ids"][0]
     with patch("run_agent.AIAgent", side_effect=fine):
         if parent_moved_on == "parent_reset":
-            parent._session_db.end_session(parent.session_id, "new_session")
+            parent.persistence.sessions.end(parent.session_id, "new_session")
         else:
             if parent_moved_on == "new_work_other_repo":
                 record_session_cwd("parent-task", str(_repo(tmp_path, "elsewhere")))

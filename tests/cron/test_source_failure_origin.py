@@ -46,3 +46,33 @@ def test_reported_eai_nodata_is_a_source_transient(streak,expected):
     from cron.scheduler_failure_copy import defer_transient_source_notice
     error='[monitor_source_failed] Script exited with code 1\nstderr:\nURLError: [Errno -5] DNS lookup failed'
     assert defer_transient_source_notice(dict(JOB,failure_streak=streak),error) is expected
+
+
+@pytest.mark.parametrize("schedule", [
+    {"kind": "cron", "expr": "0,5 9 * * *"},
+    {"kind": "cron", "expr": "*/5 9 * * *"},
+])
+def test_sparse_cron_never_defers_source_failure(schedule):
+    from cron.scheduler_failure_copy import defer_transient_source_notice
+    assert not defer_transient_source_notice(dict(JOB, schedule=schedule), "[monitor_source_failed] HTTP 503")
+
+@pytest.mark.parametrize("completed", [0, 1])
+def test_finite_monitor_alerts_before_no_retry_remains(completed):
+    from cron.scheduler_failure_copy import defer_transient_source_notice
+    job = dict(JOB, repeat={"times": 2, "completed": completed})
+    assert defer_transient_source_notice(job, "[monitor_source_failed] HTTP 503") is (completed == 0)
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_native_httpx_monitor_failure_is_transient(status):
+    import httpx
+    from cron.scheduler_failure_copy import defer_transient_source_notice
+    response = httpx.Response(status, request=httpx.Request("GET", "https://example.test/monitor"))
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        response.raise_for_status()
+    assert defer_transient_source_notice(JOB, "[monitor_source_failed] monitor_url fetch failed: " + str(raised.value))
+
+
+@pytest.mark.parametrize("expression", ["* * * * *", "*/5 * * * *"])
+def test_continuous_short_cron_can_defer(expression):
+    from cron.scheduler_failure_copy import defer_transient_source_notice
+    assert defer_transient_source_notice(dict(JOB, schedule={"kind": "cron", "expr": expression}), "[monitor_source_failed] HTTP 503")

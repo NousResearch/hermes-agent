@@ -186,14 +186,26 @@ def defer_transient_source_notice(job: dict, error: str) -> bool:
         return False
     from cron.jobs import _schedule_cadence_seconds
 
-    cadence = _schedule_cadence_seconds(job.get("schedule", {}))
+    schedule = job.get("schedule", {})
+    # The general cadence helper only samples two cron occurrences. For notice
+    # deferral accept a provably continuous minute-step schedule, never a daily burst.
+    if schedule.get("kind") == "cron":
+        expression = str(schedule.get("expr") or "")
+        match = re.fullmatch(r"(?:\*|\*/([1-5]))\s+\*\s+\*\s+\*\s+\*", expression.strip())
+        cadence = int(match.group(1) or 1) * 60 if match else None
+    else:
+        cadence = _schedule_cadence_seconds(schedule)
+    repeat = job.get("repeat") or {}
+    times = repeat.get("times")
+    if times is not None and times > 0 and repeat.get("completed", 0) + 1 >= times:
+        return False
     if cadence is None or not 0 < cadence <= 300 or int(job.get("failure_streak") or 0) >= 2:
         return False
     lower = error.lower()
     if re.search(r"\b(?:401|403)\b|disk full|no space|corrupt|integrity|permission denied", lower):
         return False
     return bool(
-        re.search(r"\bhttp(?: error)?\W{0,3}(?:500|502|503|504)\b", lower)
+        re.search(r"\b(?:http(?: error)?|server error)\W{0,3}(?:500|502|503|504)\b", lower)
         or "temporary failure in name resolution" in lower
         or "name or service not known" in lower
         or "[errno -5]" in lower

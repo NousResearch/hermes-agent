@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from tests.fixtures.storage_seed import seed_usage
 from tests.gateway.test_status_command import _make_event
 from tests.gateway.test_status_model_truth import _runner_with_old_usage
 
@@ -28,8 +29,8 @@ async def _multiplexed_secondary_profile(tmp_path, monkeypatch):
                                                                  "provider": "openrouter"}}))
     runner, db = _runner_with_old_usage(tmp_path)
     runner.config.multiplex_profiles = True
-    db.update_token_counts("sess-1", model="secondary-model", billing_provider="openrouter",
-                           input_tokens=5, api_call_count=1)
+    seed_usage(db, "sess-1", model="secondary-model", billing_provider="openrouter", input_tokens=5,
+               api_call_count=1)
     runner._resolve_route_context = AsyncMock(return_value=None)
     event = _make_event("/status")
     event.source.profile = "secondary"
@@ -44,8 +45,8 @@ async def _provider_only_channel_override(tmp_path, monkeypatch):
     runner, db = _runner_with_old_usage(tmp_path)
     runner._resolve_route_context = AsyncMock(return_value=None)
     runner.config.platforms[Platform.TELEGRAM].channel_overrides = {"c1": ChannelOverride(provider="anthropic")}
-    db.update_token_counts("sess-1", model="shared-model", billing_provider="anthropic", input_tokens=5,
-                           api_call_count=1)
+    seed_usage(db, "sess-1", model="shared-model", billing_provider="anthropic", input_tokens=5,
+               api_call_count=1)
     try:
         with patch("gateway.run._load_gateway_config",
                    return_value={"model": {"default": "shared-model", "provider": "openrouter"}}), \

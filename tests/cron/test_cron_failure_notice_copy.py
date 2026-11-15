@@ -106,6 +106,26 @@ def test_monitor_source_failure_shapes_take_the_script_notice(monkeypatch):
         assert "model service" not in msg, (text, msg)
 
 
+def test_monitor_url_rejections_do_not_echo_credentials_or_blame_provider(monkeypatch):
+    """Monitor URL failures precede the agent and may contain the configured URL verbatim."""
+    from cron.monitor import MAX_URL_REDIRECTS, _fetch_monitor_url
+
+    _no_chain(monkeypatch)
+    url = "ftp://monitor:secret-canary@invalid.example/health"
+    ok, rejected = _fetch_monitor_url(url)
+    assert not ok
+    for error in (
+        rejected,
+        "monitor_url blocked: private/internal or unsafe destination",
+        "monitor_url redirect without a Location header",
+        f"monitor_url exceeded {MAX_URL_REDIRECTS} redirects",
+    ):
+        notice = _summarize_cron_failure_for_delivery(JOB, error)
+        assert "No model was invoked" in notice, (error, notice)
+        assert "model service" not in notice, (error, notice)
+        assert "secret-canary" not in notice, (error, notice)
+
+
 def test_script_not_found_keeps_only_its_short_diagnostic(monkeypatch):
     """A path diagnostic is self-contained (never captured stderr), so it travels — bounded to its
     first sentence: the runner's remaining prose is help text, and a notice is one line."""

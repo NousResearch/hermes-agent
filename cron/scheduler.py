@@ -270,6 +270,10 @@ _SCRIPT_SOURCE_FAILURE_PREFIXES = (
     "script path is not a file",
     "script cancelled",
     "monitor_url fetch failed",
+    "monitor_url must be http(s):",
+    "monitor_url blocked:",
+    "monitor_url redirect without a location header",
+    "monitor_url exceeded ",
     "monitor job has neither",
 )
 # Shapes whose own text is a self-contained one-line diagnostic (no captured stderr): safe to echo.

@@ -3,6 +3,7 @@
 import shutil
 import json
 import os
+import signal
 import stat
 import pytest
 from pathlib import Path
@@ -11,6 +12,7 @@ from unittest.mock import patch
 from tools.skills_sync import (
     _get_bundled_dir,
     _iter_active_skill_mds,
+    _iter_skill_mds_following_links,
     _read_manifest,
     read_skill_name,
     _write_manifest,
@@ -478,6 +480,131 @@ class TestSymlinkedCategoryDiagnostic:
         assert "demo" not in result["relocated"] and "demo" not in result["copied"]
         # Provenance is kept: the stranded copy still reads as a bundled skill.
         assert recorded.get("demo") == origin_hash
+
+    @pytest.mark.parametrize(
+        "name_field",
+        [
+            "name: demo\n",                       # control: both name readers agree
+            "name: demo # trailing comment\n",    # loads as demo; line reader keeps the comment
+            'name: "\\u0064emo"\n',               # loads as demo; line reader keeps the escape
+            "name: >-\n  demo\n",                 # loads as demo; line reader sees the indicator
+        ],
+        ids=["plain", "comment", "unicode-escape", "folded-scalar"],
+    )
+    def test_loader_visible_yaml_names_warn_when_basename_differs(self, tmp_path, capsys, name_field):
+        """The diagnostic answers "can the agent still load this skill?" — so a copy whose
+        frontmatter LOADS as the tracked name must warn even when the line-based name read
+        garbles it AND the directory basename differs (both legacy identity signals miss)."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        custom = external / "custom-folder"  # basename differs from the skill name on purpose
+        custom.mkdir(parents=True)
+        (custom / "SKILL.md").write_text(f"---\n{name_field}---\n# Body\n")
+        origin_hash = dir_hash(custom)
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=False)
+
+        warn = self._warn_line(capsys.readouterr().out, "demo")
+        assert warn, f"loader-visible copy behind a symlink went unwarned for {name_field!r}"
+
+    def test_following_the_warned_remediation_restores_relocation(self, tmp_path, capsys):
+        """The warning's remedy must be real: replacing the category symlink with a real
+        directory that contains the copy lets the NEXT sync relocate it to the new upstream
+        path and resume updating it."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        old = self._skill(external, "demo")
+        origin_hash = dir_hash(old)
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=False)
+        assert not result["relocated"], "a copy only reachable via a symlink must not move"
+        warn = self._warn_line(capsys.readouterr().out, "demo")
+        assert warn, "blocked relocation went unwarned"
+        assert "real directory" in warn, "the remedy must name replacing the symlink with a real directory"
+
+        # Follow the warned remedy: replace the symlink with a real directory holding the copy.
+        (skills_dir / "research").unlink()
+        shutil.move(str(external / "demo"), str(skills_dir / "research" / "demo"))
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result2 = sync_skills(quiet=False)
+        assert result2["relocated"] == ["demo"], "remedied copy was not relocated to the new path"
+        new_copy = skills_dir / "web" / "demo"
+        assert (new_copy / "SKILL.md").read_text(encoding="utf-8").startswith("---\nname: demo")
+
+    def test_symlink_removal_alone_strands_the_copy(self, tmp_path, capsys):
+        """Why the warning must not suggest removing the symlink: with the copy still outside
+        the tree, the next sync reads the missing destination as a user deletion — nothing is
+        restored, and the copy stays stranded outside the tree."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        self._skill(external, "demo")
+        origin_hash = dir_hash(external / "demo")
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=False)
+        capsys.readouterr()
+
+        # Misread remedy: delete the symlink without materializing the copy.
+        (skills_dir / "research").unlink()
+        with self._patches(bundled, skills_dir, manifest_file):
+            result2 = sync_skills(quiet=False)
+        assert not result2["copied"] and not result2["relocated"], "a user deletion must not re-add"
+        assert not (skills_dir / "web" / "demo").exists(), "the skill was silently restored anyway"
+        assert (external / "demo" / "SKILL.md").exists(), "the stranded copy is still out there"
+
+    @pytest.mark.platforms("posix")
+    def test_following_walk_terminates_and_dedupes_on_cycles_aliases_and_dangling_links(self, tmp_path):
+        """The diagnostic's iterator must survive hostile layouts to EXHAUSTION (not stop at
+        the first match): a symlink cycle, an aliased category, and a dangling category link.
+        Each real skill directory yields exactly once — the visited-inode guard is what keeps
+        the walk finite, so it is pinned by a hard alarm, not by reaching a match early."""
+        skills_dir = tmp_path / "user_skills"
+        skills_dir.mkdir()
+        self._skill(skills_dir, "plain/skill-a", name="skill-a")
+        external = tmp_path / "external"
+        self._skill(external, "skill-b", name="skill-b")
+        (skills_dir / "cyc").symlink_to(external, target_is_directory=True)
+        (external / "loop").symlink_to(skills_dir / "cyc", target_is_directory=True)  # cycle
+        (skills_dir / "alias").symlink_to(external, target_is_directory=True)  # alias, same inode
+        (skills_dir / "broken").symlink_to(tmp_path / "missing", target_is_directory=True)  # dangling
+
+        def _did_not_terminate(signum, frame):
+            raise AssertionError("cycle-safe walk did not terminate (visited-inode guard broken)")
+
+        old_handler = signal.signal(signal.SIGALRM, _did_not_terminate)
+        signal.alarm(20)
+        try:
+            with patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+                yielded = sorted(md.parent.name for md in _iter_skill_mds_following_links())
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+
+        assert yielded == ["skill-a", "skill-b"], "aliased dirs must yield once; dangling adds nothing"
 
     def test_modified_external_copy_warns_without_reset_advice(self, tmp_path, capsys):
         """F4: a user-edited copy behind an escaping category symlink must be reported

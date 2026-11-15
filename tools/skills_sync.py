@@ -26,6 +26,7 @@ for _stream in (sys.stdout, sys.stderr):
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import (
     ESSENTIAL_SKILLS, EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS, is_excluded_skill_path,
+    parse_frontmatter,
 )
 from tools.skill_usage import read_skill_name
 from tools.skills_sync_optional import (
@@ -249,16 +250,32 @@ def _move_dir(src: Path, dest: Path) -> None:
     shutil.move(str(src), str(dest))
 
 
+def _loader_visible_name(skill_md: Path) -> Optional[str]:
+    """The loader's YAML frontmatter ``name`` for a SKILL.md — the identity the agent actually
+    invokes. Differs from ``read_skill_name``'s line-based read on commented (``name: demo # x``),
+    escape-encoded and block-scalar names (#143470): those load as ``demo`` but read as garbage
+    line-wise. Diagnostic-only; discovery/manifest identities keep ``read_skill_name``."""
+    try:
+        frontmatter, _ = parse_frontmatter(skill_md.read_text(encoding="utf-8-sig", errors="replace")[:4000])
+    except OSError:
+        return None
+    name = frontmatter.get("name")
+    return name if isinstance(name, str) and name else None
+
+
 def _warn_invisible_renamed_copy(st: "_SyncState", skill_name: str, dest: Path) -> None:
     """#143470: the loader follows symlinked category dirs, so a skill whose only copy sits under
     one is ACTIVE for the agent yet invisible to the rglob-based active index — an upstream
     rename then reads as a user deletion. READ-ONLY fallback diagnostic: first match only (one
     warning per run), cycle-safe, and sync never moves, deletes, or resets content reached
     through a symlink. No ``reset`` advice either: reset's own scan cannot see the copy, and
-    moving it is not sync's call — the safe remedy (move the copy into the tree / remove the
-    category symlink) is stated instead. The wording is deliberately generic about the copy's
-    contents: deciding "pristine vs modified" would hash external content reached through the
-    symlink, a cost the diagnostic does not need — user edits are untouched either way.
+    moving it is not sync's call — the safe remedy (replace the category symlink with a real
+    directory containing the copy) is stated instead. The wording is deliberately generic about
+    the copy's contents: deciding "pristine vs modified" would hash external content reached
+    through the symlink, a cost the diagnostic does not need — user edits are untouched either
+    way. A candidate matches on the directory basename, the manifest's line-based name read, or
+    the loader's YAML name — the diagnostic answers "can the agent still load this?", so it
+    must not miss a copy the loader invokes under a name the line reader garbles.
 
     The warning is APPENDED to ``st.relocation_warnings`` (rendered by quiet production
     callers from the sync result) and only additionally printed via ``st.say`` when not
@@ -266,7 +283,11 @@ def _warn_invisible_renamed_copy(st: "_SyncState", skill_name: str, dest: Path) 
     for md in _iter_skill_mds_following_links():
         if md.parent == dest or not md.parent.is_dir():
             continue
-        if read_skill_name(md, md.parent.name) != skill_name and md.parent.name != skill_name:
+        if (
+            md.parent.name != skill_name
+            and read_skill_name(md, md.parent.name) != skill_name
+            and _loader_visible_name(md) != skill_name
+        ):
             continue
         try:
             rel = _rel_skills_posix(md.parent)
@@ -277,8 +298,10 @@ def _warn_invisible_renamed_copy(st: "_SyncState", skill_name: str, dest: Path) 
         message = (
             f"{skill_name}: upstream moved this skill to {_rel_skills_posix(dest)}, but the copy "
             f"at {rel} is only reachable through a category symlink, so it was not automatically "
-            f"relocated. It is left untouched and will not receive updates — move the copy into "
-            f"the skills tree (or remove the category symlink) to let sync manage it.")
+            f"relocated. It is left untouched and will not receive updates. To let sync manage "
+            f"it again, replace the category symlink with a real directory that contains the "
+            f"copy — removing the symlink alone would strand it: the retained manifest entry "
+            f"makes sync read the missing destination as a user deletion.")
         st.relocation_warnings.append(message)
         st.say(f"  ⚠ {message}")
         return

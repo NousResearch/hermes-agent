@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,6 +85,15 @@ def _read_manifest_field(plugin_dir: Path, key: str) -> Optional[str]:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _self_cloned_next_step(path: Path) -> str:
+    from pm.filesystem import is_junction
+
+    if path.is_symlink() or is_junction(path):
+        # `adopt` refuses a link on purpose: Hermes never updates or deletes files outside its plugins dir.
+        return f"linked to {os.path.realpath(path)}; pull updates in that checkout"
+    return "self-cloned; run `hermes plugins adopt` first"
+
+
 def check_local_provenance(prov: Provenance) -> CheckResult:
     """Check installed provenance without fetching remote metadata."""
     result = CheckResult(name=prov.name, klass=prov.klass.value)
@@ -98,7 +108,7 @@ def check_local_provenance(prov: Provenance) -> CheckResult:
         )
         return result
     if prov.klass is ProvenanceClass.SELF_CLONED:
-        result.reason = "self-cloned; run `hermes plugins adopt` first"
+        result.reason = _self_cloned_next_step(prov.path)
         return result
 
     row = prov.row or {}

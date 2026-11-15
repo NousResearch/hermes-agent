@@ -54,6 +54,15 @@ class TestMatchUserDenyRule:
         deny_config(["git push --force*"])
         assert mod._match_user_deny_rule('git pu""sh --force origin main') is not None
 
+    def test_whole_quoted_argument_matches_after_quote_removal(self, deny_config):
+        """The shell removes quotes before ``git`` sees its argv, so the rule must too (#117815)."""
+        deny_config(["git status", "rm -rf /important*"])
+        for command in ('git "status"', "git 'status'", r"git \status", 'git "sta\\\ntus"', 'rm -rf "/important/data"'):
+            assert mod._match_user_deny_rule(command) is not None, command
+        # Quoted bytes stay data: a quoted space is not an argument boundary.
+        assert mod._match_user_deny_rule('git "sta tus"') is None
+        assert mod._match_user_deny_rule(r'git "st\atus"') is None  # a backslash inside "..." stays
+
 def test_deny_follows_executable_identity(deny_config, clean_env, monkeypatch):
     """Paths, prefixes and shell carriers cannot outrank an explicit deny."""
     commands = [

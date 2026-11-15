@@ -43,6 +43,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(REPO_ROOT))
+from hermes_agent.compat.paths import current_path, original_path
 
 SUPPRESS_MARKER = re.compile(r"#\s*windows-footgun\s*:\s*ok\b", re.IGNORECASE)
 
@@ -525,7 +527,7 @@ def should_scan_file(path: Path) -> bool:
             return False
     # Skip self and docs that intentionally mention the patterns
     rel = path.relative_to(REPO_ROOT).as_posix()
-    if rel in EXCLUDED_FILES:
+    if original_path(rel) in EXCLUDED_FILES:
         return False
     # Only scan text files (rough heuristic — .py, .md, .sh, .ps1, .yaml, etc.)
     if path.suffix in {".py", ".pyw", ".pyi"}:
@@ -907,14 +909,8 @@ def main(argv: list[str]) -> int:
     if args.all:
         # Scan main Python packages + scripts
         roots = [
-            REPO_ROOT / "hermes_cli",
-            REPO_ROOT / "gateway",
-            REPO_ROOT / "tools",
-            REPO_ROOT / "cron",
-            REPO_ROOT / "agent",
-            REPO_ROOT / "plugins",
-            REPO_ROOT / "scripts",
-            REPO_ROOT / "acp_adapter",
+            REPO_ROOT / current_path(top)
+            for top in ("hermes_cli", "gateway", "tools", "cron", "agent", "plugins", "scripts", "acp_adapter")
         ]
         roots = [r for r in roots if r.exists()]
     elif args.diff:

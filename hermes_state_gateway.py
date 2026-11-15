@@ -1020,14 +1020,18 @@ class SessionGatewayMixin:
             " ORDER BY last_heartbeat DESC")
         return [dict(r) for r in rows]
 
-    def request_handoff(self, session_id: str, platform: str) -> bool:
-        """Mark a session pending handoff to *platform*; False if a handoff is already in flight."""
-        return self._write_rowcount(
-            "UPDATE sessions SET handoff_state = 'pending',     handoff_platform = ?, "
-            "    handoff_error = NULL WHERE id = ? AND (handoff_state IS NULL "
-            "                  OR handoff_state IN ('completed', 'failed'))",
-            (platform, session_id),
-        ) > 0
+    def request_handoff(self, session_id: str, platform: str, *, _guard=None) -> bool:
+        """Mark a session pending handoff to *platform*; False if a handoff is already in flight.
+        ``_guard(conn)`` raises to refuse inside the same write transaction (the owner's durable
+        execution fence, ``gateway.session_handoff.require_settled``)."""
+        def _do(conn):
+            if _guard is not None:
+                _guard(conn)
+            return conn.execute(
+                "UPDATE sessions SET handoff_state = 'pending', handoff_platform = ?, handoff_error = NULL "
+                "WHERE id = ? AND (handoff_state IS NULL OR handoff_state IN ('completed', 'failed'))",
+                (platform, session_id)).rowcount
+        return self._execute_write(_do) > 0
 
     def get_handoff_state(self, session_id: str) -> Optional[dict[str, Any]]:
         """Return ``{"state", "platform", "error"}`` or None if the session has no handoff record."""

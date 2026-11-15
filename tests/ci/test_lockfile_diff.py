@@ -20,6 +20,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 
 import pytest
@@ -161,6 +162,60 @@ def test_pnpm_alias_and_new_edge_between_locked_versions_are_reported():
     }
 
 
+def test_pnpm_repin_through_peer_suffixes_and_other_dependency_fields_is_reported():
+    # The repo lock's references mostly carry a peer suffix, its snapshots list
+    # transitivePeerDependencies, and moves also land in devDependencies and
+    # optionalDependencies. Here the consumer's own peer moves too (8 -> 9).
+    def variant(lock: str, peer: str) -> str:
+        for old, new in (("\n  pkg:\n    dependencies:\n", "\n  pkg:\n    devDependencies:\n"),
+                         ("\n  .:\n    dependencies:\n", "\n  .:\n    optionalDependencies:\n"),
+                         ("  debug@4.3.4:\n    dependencies:\n", f"  debug@4.3.4(supports-color@{peer}):\n"
+                                                                "    optionalDependencies:\n")):
+            assert lock.count(old) == 1
+            lock = lock.replace(old, new)
+        lock = re.sub(r"(?m)^( +(?:version|ms): 2\.1\.[23])$", rf"\1(supports-color@{peer})", lock)
+        return re.sub(r"(\n    optionalDependencies:\n      ms: \S+\n)",
+                      r"\1    transitivePeerDependencies:\n      - supports-color\n", lock)
+
+    assert _mod.diff_pnpm_locks(variant(REPIN_BASE, "8.1.1"), variant(REPIN_HEAD, "9.4.0")) == {
+        "added": [],
+        "removed": [],
+        "updated": [
+            ("ms *(pkg)*", "2.1.3", "2.1.2"),
+            ("ms *(root)*", "2.1.2", "2.1.3"),
+            ("ms *(via debug@4.3.4)*", "2.1.2", "2.1.3"),
+        ],
+    }
+
+
+def _edit(lock: str, *edits: tuple[str, str, int]) -> str:
+    for pattern, replacement, count in edits:
+        lock, found = re.subn(pattern, replacement, lock)
+        assert found == count, pattern
+    return lock
+
+
+_ROOT_MS = r"specifier: 2\.1\.2\n        version: 2\.1\.2\n"  # the root's ms in repin-base
+
+
+@pytest.mark.parametrize(("edits", "row"), [
+    # The root moves from 2.1.2, still locked, to 2.1.4, which only the head locks.
+    ([(_ROOT_MS, "specifier: 2.1.4\n        version: 2.1.4\n", 1),
+      (r"\nsnapshots:\n", "\n  ms@2.1.4:\n    resolution: {integrity: sha512-x}\n\nsnapshots:\n", 1),
+      (r"\Z", "\n  ms@2.1.4: {}\n", 1)],
+     ("ms", "2.1.2, 2.1.3", "2.1.2, 2.1.3, 2.1.4")),
+    # The root and debug move from 2.1.2, which only the base locks, to 2.1.3, still locked.
+    ([(_ROOT_MS, "specifier: 2.1.3\n        version: 2.1.3\n", 1),
+      (r"      ms: 2\.1\.2\n", "      ms: 2.1.3\n", 1),
+      (r"\n  ms@2\.1\.2:(?: \{\}|\n    resolution: .*)\n", "\n", 2)],
+     ("ms", "2.1.2, 2.1.3", "2.1.3")),
+])
+def test_pnpm_move_to_or_from_a_version_locked_on_one_side_stays_one_package_row(edits, row):
+    # The package row already shows such a move, so no project or edge row repeats it.
+    assert _mod.diff_pnpm_locks(REPIN_BASE, _edit(REPIN_BASE, *edits)) == {
+        "added": [], "removed": [], "updated": [row]}
+
+
 def test_pnpm_project_that_appears_or_disappears_is_one_row():
     renamed = REPIN_BASE.replace("\n  pkg:\n", "\n  packages/pkg:\n")
     assert _mod.diff_pnpm_locks(REPIN_BASE, renamed) == {
@@ -193,6 +248,54 @@ def test_pnpm_section_ends_at_a_top_level_key_pnpm_does_not_define():
     # An empty workspace: the foreign key directly follows importers.
     empty = "lockfileVersion: '9.0'\n\nimporters:\n\n  .: {}\n\nbit:\n  approved: []\n"
     assert section_keys(empty, "importers") == ["."]
+
+
+def test_pnpm_section_keys_refuses_a_key_line_not_indented_two_spaces():
+    # ``ab@1`` one column short would otherwise read as the key ``b@1``.
+    from scripts.ci.pnpm_lock import section_keys
+
+    with pytest.raises(ValueError, match="unreadable packages line"):
+        section_keys(REPIN_HEAD.replace("\n  ms@2.1.3:", "\n ms@2.1.3:"), "packages")
+
+
+def test_pnpm_section_reads_an_explicit_key():
+    # pnpm writes a key over 1024 characters (a long peer suffix on a snapshot) as
+    # ``? key`` / ``: value``; the value's first line follows the ``: ``.
+    from scripts.ci.pnpm_lock import section, section_keys
+
+    explicit = REPIN_HEAD
+    for old, new in (("  ms@2.1.2:\n    resolution:", "  ? ms@2.1.2\n  : resolution:"),
+                     ("  debug@4.3.4:\n    dependencies:", "  ? debug@4.3.4\n  : dependencies:"),
+                     ("  ms@2.1.3: {}", "  ? ms@2.1.3\n  : {}")):
+        assert explicit.count(old) == 1
+        explicit = explicit.replace(old, new)
+    for name in ("snapshots", "packages"):
+        assert section(explicit, name) == section(REPIN_HEAD, name)
+        assert section_keys(explicit, name) == section_keys(REPIN_HEAD, name)
+    assert _mod.diff_pnpm_locks(REPIN_BASE, explicit) == _mod.diff_pnpm_locks(REPIN_BASE, REPIN_HEAD)
+    with pytest.raises(ValueError, match="unreadable snapshots line"):
+        section(explicit.replace("  : dependencies:", "    dependencies:"), "snapshots")
+    with pytest.raises(ValueError, match="unreadable snapshots line"):  # a value line with no key line
+        section(REPIN_HEAD.replace("  ms@2.1.3: {}", "  ms@2.1.3:\n  : {}"), "snapshots")
+
+
+def test_pnpm_explicit_quoted_file_key_preserves_embedded_colon_space():
+    from scripts.ci.pnpm_lock import section, section_keys
+
+    # POSIX file: paths can contain ": ", so js-yaml quotes their keys.
+    # Real pnpm switches to an explicit mapping key above 1024 characters.
+    path = "/".join(["a" * 150] * 7) + "/package: with space"
+    key = f"ms@file:vendor/{path}"
+    assert len(key) > 1024
+    old = "  ms@2.1.2:\\n    resolution:".replace("\\n", "\n")
+    assert REPIN_HEAD.count(old) == 1
+    explicit = REPIN_HEAD.replace(old, f"  ? '{key}'\\n  : resolution:".replace("\\n", "\n"), 1)
+
+    assert key in section(explicit, "packages")
+    assert key in section_keys(explicit, "packages")
+    # Below the threshold pnpm writes the same quoted key as an ordinary ``'key':`` line.
+    short = REPIN_HEAD.replace(old, "  'ms@file:vendor/package: with space':\n    resolution:", 1)
+    assert "ms@file:vendor/package: with space" in section_keys(short, "packages")
 
 
 @pytest.mark.parametrize(("old", "new"), [

@@ -354,9 +354,13 @@ async def _upload_ciphertext(session: aiohttp.ClientSession, *, ciphertext: byte
 
 async def _download_bytes(session: aiohttp.ClientSession, *, url: str, timeout_seconds: float = 60.0) -> bytes:
     from gateway.platforms.base import read_httpx_body_with_limit
+    from gateway.platforms.helpers import ssrf_checked_aiohttp_get
 
     async def _do() -> bytes:
-        async with session.get(url) as response:
+        # Callers vet ``url`` (is_safe_url for reply URLs, the CDN allowlist or configured CDN base for
+        # inbound media), so a fake-ip resolver answering the CDN with 198.18.x.x still works; every
+        # redirect hop is re-checked, since either can 302 anywhere.
+        async with ssrf_checked_aiohttp_get(session, url, first_hop_vetted=True) as response:
             response.raise_for_status()
             return await read_httpx_body_with_limit(
                 response, media_type="media", body=response.content.iter_chunked(65536))

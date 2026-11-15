@@ -42,6 +42,8 @@ from agent.inline_tool_executors import (
     InlineToolContext,
     apply_transform_tool_result,
     emit_terminal_post_tool_call,
+    is_context_engine_tool,
+    is_memory_provider_tool,
     tool_hook_ids,
 )
 from agent.message_metadata import stamp_data_use
@@ -750,7 +752,9 @@ def _dispatch_authorized_once(
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
     from agent.tool_progress_relay import bound_tool_progress
     from tools.connectors.data_use import collect_data_use
-    with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id), collect_data_use() as data_use:
+    from tools.mcp_elicitation_form import bound_form_asker  # MCP elicitation asks on this turn's clarify surface
+    with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id), collect_data_use() as data_use, \
+            bound_form_asker(getattr(agent, "clarify_callback", None)):
         try:
             return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
         finally:
@@ -1708,14 +1712,14 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
             lambda next_args: call_with_arg_checks(
                 registry.get_entry(function_name), next_args, agent._dispatch_delegate_task),
             spinner=spinner, is_delegate=True)
-    if agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
+    if is_context_engine_tool(agent, function_name):
         return _SequentialDispatch(
             execute=lambda next_args: agent.context_compressor.handle_tool_call(function_name, next_args, messages=messages),
             spinner=_start_quiet_tool_spinner(agent, function_name, function_args, gate=False),
             error_result=lambda e: json.dumps({"error": f"Context engine tool '{function_name}' failed: {e}"}),
             error_log="context_engine.handle_tool_call raised for %s: %s",
         )
-    if agent._memory_manager and agent._memory_manager.has_tool(function_name):
+    if is_memory_provider_tool(agent, function_name):
         # Memory-provider tools (hindsight_retain, honcho_search, ...) are not in the registry.
         return _SequentialDispatch(
             execute=lambda next_args: agent._memory_manager.handle_tool_call(

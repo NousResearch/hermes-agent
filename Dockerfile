@@ -198,7 +198,7 @@ WORKDIR /opt/hermes
 # which fetched whatever revision the npm-resolved playwright wanted,
 # unverified, and recorded no fact. The resolved browser binary path is
 # baked to /etc/hermes/chromium-executable-path: the layout differs per
-# arch (chrome-linux64/chrome on amd64, chromium-linux-arm64/chromium on
+# arch (chrome-linux64/chrome on amd64, chrome-linux-arm64/chrome on
 # arm64), so it is resolved at build time and never hunted at boot.
 # hermes_cli/browser_runtime.py reads it when a volume over the runtime dir
 # hides pm's facts; stage2-hook.sh checks it still names a binary.
@@ -543,8 +543,13 @@ COPY --chmod=0644 docker/profile-hermes-path.sh /etc/profile.d/hermes.sh
 # image these are shared, non-secret package metadata, read by UID 10000.
 # uv's environment locks are build-only and may be world-writable. Remove
 # them after all builds; never relax permissions on mutable PM/home state.
+# uv also creates its cache locks 0666 (the root .lock and one <entry>.lock
+# per wheel/sdist entry), and the seed copy into $HERMES_HOME/cache/uv keeps
+# modes. Drop the world bit instead of deleting by name: "*.lock" also matches
+# files inside unpacked wheels (setuptools/_vendor/.lock).
 RUN mkdir -p /opt/data && chmod 0644 /opt/hermes/tools/facts.json && \
-    rm -f /opt/hermes/.venv/.lock /opt/hermes/pm-runtime/.lock
+    rm -f /opt/hermes/.venv/.lock /opt/hermes/pm-runtime/.lock && \
+    find /opt/hermes/uv-cache ! -type l -perm -0002 -exec chmod o-w {} +
 # Build helpers use system Python above; TUI gateway children need the sealed runtime.
 ENV HERMES_PYTHON=/opt/hermes/.venv/bin/python
 VOLUME [ "/opt/data" ]

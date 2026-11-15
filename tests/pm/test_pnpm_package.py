@@ -55,6 +55,38 @@ def test_every_target_with_a_pinned_node_can_install_the_js_workspaces():
         assert [a["url"] for a in lock.artifacts("pnpm", target)] == package.fetch_urls(version, target), target
 
 
+def test_a_bare_install_provisions_pnpm_only_where_it_builds_the_frontends(monkeypatch):
+    from pm import registry, store
+
+    names = Lockfile(paths.lockfile_path()).names()
+    monkeypatch.setattr(store, "current_target", lambda: "linux-x64")
+    assert "pnpm" in registry.source_install_packages(names)
+    monkeypatch.setattr(store, "current_target", lambda: "linux-arm64-bionic")
+    assert "pnpm" not in registry.source_install_packages(names)
+
+
+@pytest.mark.parametrize(("locked", "expected", "status"), [
+    (("pnpm",), ["? pnpm: not installed"], 0),
+    (("node", "pnpm"), ["✗ node: not installed", "? pnpm: not installed"], 1),
+])
+def test_pm_doctor_on_termux_does_not_fail_on_the_pnpm_it_fetches_on_demand(
+        tmp_path, monkeypatch, capsys, locked, expected, status):
+    import argparse
+
+    from pm import cli
+
+    lock = json.loads(paths.lockfile_path().read_text(encoding="utf-8"))
+    lock["packages"] = {name: lock["packages"][name] for name in locked}
+    (tmp_path / "lock.json").write_text(json.dumps(lock), encoding="utf-8")
+    monkeypatch.setattr(cli, "_lockfile", lambda: Lockfile(tmp_path / "lock.json"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setattr(cli, "current_target", lambda: "linux-arm64-bionic")
+    monkeypatch.setattr(cli, "_doctor_uv_cache", lambda **_: 0)
+
+    assert cli.cmd_doctor(argparse.Namespace()) == status
+    assert capsys.readouterr().out.splitlines() == expected
+
+
 @pytest.mark.parametrize("target", ["linux-x64", "win32-x64", "linux-arm64-bionic"])
 def test_pnpm_entry_holds_the_executable_and_the_launchers_dist(tmp_path, target):
     package = get_package("pnpm")

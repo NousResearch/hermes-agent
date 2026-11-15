@@ -150,8 +150,7 @@ def test_skill_safety_rule_survives_prune_only_and_salvage_rewrites():
     # Prune-only: no handoff exists, so the row the prune turns into a marker carries the rule itself.
     with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
         c = ContextCompressor(model="test", quiet_mode=True, threshold_percent=0.5, protect_first_n=2,
-                              protect_last_n=4, proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000,
-                              proactive_prune_min_reclaim_tokens=4096)  # ~7K-token fixture; shipped gate is 64K
+                              protect_last_n=4, proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000)
     calls = [("skill_view", '{"name":"pdf"}', "P" * 9000)] + [("terminal", '{"cmd":"ls"}', ch * 9000) for ch in "AB"]
     calls += [("terminal", '{"cmd":"ls"}', "ok")] * 5
     messages = [{"role": "system", "content": "sys"}]

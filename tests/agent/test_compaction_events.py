@@ -343,10 +343,12 @@ def _prune_after_tool_results(persist_disabled):
             {"id": f"c{i}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}
         ]})
         msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": (chr(65 + i) + SECRET) * 600 if i < 3 else "ok"})
+    # The running turn's user row: the prune skips a round whose turn index names no user row.
+    msgs.append({"role": "user", "content": "ask"})
     verdict = compress_after_tool_results(
         agent, messages=msgs, system_message="sys", user_message="ask", active_system_prompt="sys",
         conversation_history=None, compression_attempts=3, max_compression_attempts=3, effective_task_id="task",
-        final_response=None, turn_exit_reason=None, current_turn_user_idx=0,
+        final_response=None, turn_exit_reason=None, current_turn_user_idx=len(msgs) - 1,
     )
     return msgs, verdict.messages
 

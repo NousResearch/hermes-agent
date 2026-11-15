@@ -14,9 +14,15 @@ from agent.turn_context_compaction import CompactionOutcome, run_turn_start_comp
 from agent.turn_proactive_prune import run_proactive_prune, turn_start_cold_prune
 
 
-def _shipped():
+def _shipped(**kw):
     with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
-        return ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=4)
+        return ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=4, **kw)
+
+
+def _warm_on():
+    """The warm prune opted in at the replay's settings (it is off by default)."""
+    return _shipped(proactive_prune_tokens=64_000, proactive_prune_min_result_chars=1_000,
+                    proactive_prune_min_reclaim_tokens=64_000)
 
 
 def _history(n_pairs, big, chars=20_000, start=0):
@@ -35,8 +41,22 @@ def _small_batch():
     return _history(10, big=set(range(5)))
 
 
-def test_cold_cache_commits_below_the_warm_gate():
+def test_shipped_defaults_prune_only_a_cold_cache():
+    """Owner scope: warm pruning stays off by default; an already-expired cache prunes with no setting."""
     c = _shipped()
+    assert (c.proactive_prune_tokens, c.proactive_prune_min_result_chars, c.proactive_prune_min_reclaim_tokens) == (
+        0, 8_000, 4_096)
+    msgs = _small_batch()
+    warm, n_warm = c.prune_tool_results_only(msgs, current_tokens=500_000)
+    assert n_warm == 0 and warm is msgs
+    cold, n_cold = c.prune_tool_results_only(msgs, current_tokens=500_000, cold_cache=True)
+    assert n_cold >= 5 and cold is not msgs
+    _small, n_small = c.prune_tool_results_only(_history(10, big={0}), current_tokens=500_000, cold_cache=True)
+    assert n_small == 0  # ~5K reclaimable: under the 16K cold gate (the 4096 warm default does not lower it)
+
+
+def test_cold_cache_commits_below_the_warm_gate():
+    c = _warm_on()
     msgs = _small_batch()
     warm, n_warm = c.prune_tool_results_only(msgs, current_tokens=100_000)
     assert n_warm == 0 and warm is msgs  # warm cache: 25K is below 64K, no cache break
@@ -54,7 +74,7 @@ def test_cold_cache_still_needs_the_cold_gate():
 def test_cold_prune_leaves_runway_and_credits_the_next_warm_gate():
     """The two fixes that took the worst session from +19% to no session worse: a cold prune neither moves
     the regrowth runway nor resets the reclaim it already did; the next warm gate is 64K minus that credit."""
-    c = _shipped()
+    c = _warm_on()
     c._proactive_prune_rearm_tokens = 0
     first, n1 = c.prune_tool_results_only(_small_batch(), current_tokens=100_000, cold_cache=True)
     assert n1 and c._proactive_prune_rearm_tokens == 0
@@ -68,7 +88,7 @@ def test_cold_prune_leaves_runway_and_credits_the_next_warm_gate():
 
 
 def test_warm_runway_still_blocks_after_a_warm_prune_but_cold_ignores_it():
-    c = _shipped()
+    c = _warm_on()
     big = _history(20, big=set(range(16)))
     first, n1 = c.prune_tool_results_only(big, current_tokens=100_000)
     assert n1
@@ -80,7 +100,7 @@ def test_warm_runway_still_blocks_after_a_warm_prune_but_cold_ignores_it():
 
 
 def test_cold_gate_never_exceeds_a_lower_configured_gate():
-    c = _shipped()
+    c = _warm_on()
     c.proactive_prune_min_reclaim_tokens = 4_096
     out, n = c.prune_tool_results_only(_history(10, big={0}, chars=20_000), current_tokens=100_000, cold_cache=True)
     assert n and out is not None
@@ -270,7 +290,7 @@ def test_unflushed_tool_results_keep_their_original_on_disk(tmp_path, monkeypatc
         message[_DB_PERSISTED_MARKER] = True
     pending = _history(20, big=set(range(18)), chars=24_000, start=1)
     messages = [{"role": "system", "content": "sys"}, *saved, {"role": "user", "content": "run checks"}, *pending]
-    result, count = _bound(db).prune_tool_results_only(messages, current_tokens=300_000)
+    result, count = _bound(db).prune_tool_results_only(messages, current_tokens=300_000, cold_cache=True)
 
     assert count
     for old, new in zip(messages, result):

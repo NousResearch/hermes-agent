@@ -249,15 +249,16 @@ def test_removing_compressor_keys_restores_fresh_build_values(monkeypatch):
 
 
 def test_boolean_prune_trigger_matches_fresh_build(monkeypatch):
-    """Hot reload parses YAML booleans like agent_init: `true` keeps the default, `false` turns it off."""
+    """Hot reload parses YAML booleans like agent_init: a bool is never a count (`true` is not a 1-token
+    trigger); it keeps the default."""
     session, compressor = _session_with_compressor()
-    for raw, expected in ((True, 64_000), (False, 0)):
+    for raw, expected in ((True, 0), (False, 0)):
         monkeypatch.setattr(server, "_load_cfg", lambda raw=raw: {"compression": {"proactive_prune_tokens": raw}})
         server._sync_agent_compression_with_config("sid-bool", session)
         assert compressor.proactive_prune_tokens == expected
     monkeypatch.setattr(server, "_load_cfg", lambda: {"compression": {"proactive_prune_min_reclaim_tokens": True}})
     server._sync_agent_compression_with_config("sid-bool", session)
-    assert compressor.proactive_prune_min_reclaim_tokens == 64_000
+    assert compressor.proactive_prune_min_reclaim_tokens == 4_096
     # Non-prune keys keep their existing reload coercion (protect_last_n: false -> 0, as agent_init's int()).
     monkeypatch.setattr(server, "_load_cfg", lambda: {"compression": {"protect_last_n": False}})
     server._sync_agent_compression_with_config("sid-bool", session)

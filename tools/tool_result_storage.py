@@ -232,9 +232,9 @@ def _is_host_side_env(env) -> bool:
 def _write_to_spillover(content: str, filename: str, subdir: str = SPILLOVER_SUBDIR, exclusive: bool = False):
     """Write host-side to $HERMES_HOME/<subdir> (default cache/spillover); returns path str or None.
 
-    The write is size-verified before the caller tells the model "Full output saved":
-    a partially-flushed file (quota, ENOSPC race) fails closed to the bounded inline
-    truncation instead of referencing an archive that silently lost bytes.
+    The write is read back and compared byte-for-byte before the caller tells the model "Full
+    output saved": a partially-flushed or corrupted file (quota, ENOSPC race) fails closed to the
+    bounded inline truncation instead of referencing an archive that silently lost bytes.
     """
     data = content.encode("utf-8", errors="replace")
     try:
@@ -245,13 +245,15 @@ def _write_to_spillover(content: str, filename: str, subdir: str = SPILLOVER_SUB
         with open(path, "xb" if exclusive else "wb") as fh:  # exclusive: never overwrite another original
             fh.write(data)
         persisted_size = os.stat(path).st_size
+        # Size first (cheap), then the bytes: the content is already in memory.
+        exact = persisted_size == len(data) and path.read_bytes() == data
     except OSError as exc:
         logger.warning("Archive write to %s failed for %s: %s", subdir, filename, exc)
         return None
-    if persisted_size != len(data):
+    if not exact:
         logger.warning(
             "Spillover write for %s is not lossless (%d bytes on disk, "
-            "expected %d) — discarding archive",
+            "expected %d, or the bytes differ) — discarding archive",
             filename, persisted_size, len(data),
         )
         try:
@@ -312,14 +314,32 @@ def _safe_result_filename(tool_use_id: str, ext: str = "txt") -> str:
     return f"{safe_stem}.{ext}"
 
 
+def _backend_reads_host_files() -> bool:
+    """True only on the ``local`` terminal backend outside a hosted scope: the one place ``read_file`` opens
+    host paths. Every other backend (docker, modal, ssh, daytona, vercel_sandbox, plugins, unknown names)
+    reads its own filesystem, and the prune holds no environment to copy an archive into, so a stub would
+    name a file the model cannot open. Decided on the backend, never on whether a path translates
+    (``cache/pruned`` is mounted nowhere, so a translation check passed everywhere). An unresolvable
+    policy (refusal scope) answers False: fail closed, keep the result whole."""
+    from tools.environments.sandbox_scope import hosted_scope
+    from tools.terminal_scope import TerminalPolicyUnavailable, terminal_env
+
+    if hosted_scope() is not None:
+        return False
+    try:
+        return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
+    except TerminalPolicyUnavailable:
+        return False
+
+
 def write_pruned_original(content: str, session_id: str, tool_name: str, tool_call_id: str) -> tuple[str, str] | None:
     """Archive one tool result's full original before the proactive prune shortens it.
 
     Writes ``$HERMES_HOME/cache/pruned/<session>_<UTC stamp>_<tool>_<short id>.<json|txt>`` (``.json``
-    when the body parses as JSON), size-verified like a spill. Returns ``(host path, stub path)``: the
-    path a sandboxed backend mounts the file at, else the ``~/``-relative display path; always
-    ``/``-separated so the reference scan finds ``cache/pruned/<name>``. None when the write failed:
-    the caller then must keep that result unpruned.
+    when the body parses as JSON), read back and compared byte-for-byte like a spill. Returns
+    ``(host path, stub path)``; the stub path is the ``~/``-relative display path, always ``/``-separated so
+    the reference scan finds ``cache/pruned/<name>``. None when the backend cannot read host files or the
+    write failed: the caller then must keep that result unpruned.
     """
     try:
         json.loads(content)
@@ -329,7 +349,8 @@ def write_pruned_original(content: str, session_id: str, tool_name: str, tool_ca
     from pathlib import PurePath
 
     from hermes_constants import display_hermes_home, get_hermes_home
-    from tools.credential_files import to_agent_visible_cache_path
+    if not _backend_reads_host_files():
+        return None
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     short_id = hashlib.sha256(str(tool_call_id or "").encode("utf-8")).hexdigest()[:8]
     archive_dir = get_hermes_home() / PRUNED_SUBDIR
@@ -339,10 +360,6 @@ def write_pruned_original(content: str, session_id: str, tool_name: str, tool_ca
         if not (archive_dir / (name := _safe_result_filename(
             f"{session_id}_{stamp}_{tool_name}_{short_id}" + (f"_{n}" if n else ""), ext))).exists())
     host_path = str(archive_dir / filename)
-    # A sandboxed backend reads its own copy, and the prune holds no environment to sync and probe it with
-    # (spillover's path): naming a file the model cannot open yet would lose the result. Keep it whole.
-    if to_agent_visible_cache_path(host_path) != host_path:
-        return None
     if _write_to_spillover(content, filename, PRUNED_SUBDIR, exclusive=True) is None:
         return None
     return host_path, f"{PurePath(display_hermes_home()).as_posix()}/{PRUNED_SUBDIR}/{filename}"
@@ -422,17 +439,28 @@ def _pageable_text(content: str) -> str:
     return f"{text}\n\n{_ENVELOPE_METADATA_TAG}\n{metadata}\n{_ENVELOPE_METADATA_CLOSING_TAG}\n"
 
 
-_PRUNED_JSON_ARCHIVE_RE = re.compile(r"(?:^|[/\\])cache[/\\]pruned[/\\][^/\\]+\.json$")
+_PRUNED_ARCHIVE_RE = re.compile(r"(?:^|[/\\])cache[/\\]pruned[/\\][^/\\]+\.(?:json|txt)$")
 
 
-def is_pruned_json_archive(path: str) -> bool:
-    """True for a JSON prune archive (``cache/pruned/<name>.json``): ``read_file`` pages its text."""
-    return isinstance(path, str) and _PRUNED_JSON_ARCHIVE_RE.search(path) is not None
+def is_pruned_archive(path: str) -> bool:
+    """True for a prune archive (``cache/pruned/<name>.json|.txt``): ``read_file`` pages its text."""
+    return isinstance(path, str) and _PRUNED_ARCHIVE_RE.search(path) is not None
 
 
-def pageable_archive_text(raw: str) -> str:
-    """The pageable rendering of an archived JSON tool result: the text it wraps, nothing dropped."""
-    return _pageable_text(raw)
+def pageable_archive_text(raw: str, path: str, max_line_length: int) -> tuple[str, bool]:
+    """The pageable rendering of a prune archive, nothing dropped, and whether long lines were wrapped.
+
+    A JSON archive pages by the text it wraps (the spill files' own rendering). Any line still longer than
+    *max_line_length* is split into consecutive lines of that width, so ``offset``/``limit`` reach every
+    character: the per-line cap otherwise cut a one-line 300K-char archive at its first 2,000."""
+    text = _pageable_text(raw) if path.endswith(".json") else raw
+    width = max(1, max_line_length)
+    lines = text.split("\n")
+    if all(len(line) <= width for line in lines):
+        return text, False
+    return "\n".join(
+        chunk for line in lines for chunk in ([line[i:i + width] for i in range(0, len(line), width)] or [""])
+    ), True
 
 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:

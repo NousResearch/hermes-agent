@@ -30,16 +30,23 @@ def _changed_rows(messages: list[dict[str, Any]], pruned: list[dict[str, Any]]) 
 
 def _keep_running_turn(
     messages: list[dict[str, Any]], pruned: list[dict[str, Any]], turn_start: int | None,
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int] | None:
     """*pruned* with the turn in progress (from its user row at *turn_start*) put back whole, and how many
-    shortened rows that restored.
+    shortened rows that restored; ``None`` when *turn_start* names no user row (skip this round).
 
     The post-tool site runs between tool rounds of a live turn; a count-only tail let a long tool loop
-    stub its own earlier calls, so the model re-ran them or answered blind."""
+    stub its own earlier calls, so the model re-ran them or answered blind. ``None`` means the list holds
+    no running turn (the turn-start site prunes only the history before it). An index that is not a user
+    row (``reanchor_current_turn_user_idx`` answers -1 when no user row survived a compaction) cannot say
+    where the running turn starts, so the round fails closed instead of falling back to the count."""
+    if turn_start is None:
+        return pruned, 0
     if not (isinstance(turn_start, int) and 0 <= turn_start < len(messages)
             and isinstance(messages[turn_start], dict) and messages[turn_start].get("role") == "user"):
-        return pruned, 0
+        return None
     return [*pruned[:turn_start], *messages[turn_start:]], _changed_rows(messages[turn_start:], pruned[turn_start:])
+
+
 class ProactivePruneMixin:
     """``ContextCompressor`` mixin: the deterministic, no-LLM tool-result prune and its commit."""
 
@@ -59,9 +66,12 @@ class ProactivePruneMixin:
         self, messages: list[dict[str, Any]], current_tokens: int | None = None, *, cold_cache: bool = False,
         turn_start: int | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
-        """Deterministic, no-LLM tool-result prune gated on ``proactive_prune_tokens``.
+        """Deterministic, no-LLM tool-result prune: on an already-expired provider cache (``cold_cache``,
+        on by default), else gated on ``proactive_prune_tokens`` (off by default).
 
-        ``turn_start`` indexes the user row of the turn in progress: nothing from it on is shortened. Every result that is
+        ``turn_start`` indexes the user row of the turn in progress: nothing from it on is shortened, and an
+        index that names no user row skips the round. One assistant step's parallel results are shortened
+        all-or-none. Every result that is
         shortened has its full original written to ``cache/pruned/`` first and its stub names the file; a
         result whose write fails is left whole, so no committed prune loses an original (unflushed rows
         included: the store never needs to have seen the body).
@@ -69,8 +79,9 @@ class ProactivePruneMixin:
         Protects the tail by message COUNT only. A warm commit breaks the prompt cache, so it requires
         ``proactive_prune_min_reclaim_tokens`` (less what cold prunes freed since the last warm one) and a
         full regrowth runway; otherwise returns the INPUT object as ``(messages, 0)``. ``cold_cache`` (the
-        provider cache has already expired) has nothing to break: the gate drops to
-        ``_COLD_CACHE_MIN_RECLAIM_TOKENS`` and the runway is neither checked nor moved. The rearm gate is
+        provider cache has already expired) has nothing to break: no token trigger, the gate is
+        ``_COLD_CACHE_MIN_RECLAIM_TOKENS`` (lower only when the warm prune is on with a lower gate) and the
+        runway is neither checked nor moved. The rearm gate is
         measured on message bodies only, so it is bypassed (never the reclaim gate) when a provider-billed ``current_tokens`` reading already
         puts the request over ``threshold_tokens`` (#101889); every no-op taken while over threshold
         is logged once per distinct reason.
@@ -85,7 +96,8 @@ class ProactivePruneMixin:
         recent-tail protection applies to passes (2) and (3); pass (1) is tail-agnostic by design because
         dedup is lossless.
         """
-        if not self.would_proactively_prune(current_tokens):
+        # The cold path needs no trigger: an already-expired cache has no prefix left to break.
+        if not (cold_cache or self.would_proactively_prune(current_tokens)):
             return messages, 0
         if len(messages) <= self.protect_last_n + self._protect_head_size(messages) + 1:
             self._warn_reclamation_no_op("prune:tail_only", current_tokens)
@@ -101,10 +113,20 @@ class ProactivePruneMixin:
         if session_db and not (session_id and callable(getattr(session_db, "archive_and_compact", None))):
             self._warn_reclamation_no_op("prune:store_cannot_persist", current_tokens)
             return messages, 0
+        # One assistant step's parallel results are shortened all-or-none: a count-only tail split the step.
+        # Only a boundary ON a tool row splits one; a group that ends right before it is already whole.
+        boundary = len(messages) - self.protect_last_n
+        if 0 < boundary < len(messages) and messages[boundary].get("role") == "tool":
+            boundary = self._align_boundary_backward(messages, boundary)
+        protect_tail = len(messages) - boundary
         pruned_msgs, pruned_count = self._prune_old_tool_results(
-            messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=None, min_prune_chars=self.proactive_prune_min_result_chars,
+            messages, protect_tail_count=protect_tail, protect_tail_tokens=None, min_prune_chars=self.proactive_prune_min_result_chars,
         )
-        pruned_msgs, restored = _keep_running_turn(messages, pruned_msgs, turn_start)
+        kept = _keep_running_turn(messages, pruned_msgs, turn_start)
+        if kept is None:
+            self._warn_reclamation_no_op("prune:running_turn_unknown", current_tokens)
+            return messages, 0
+        pruned_msgs, restored = kept
         pruned_count -= restored
         if not pruned_count:
             # No-op contract: return the INPUT object so callers can gate on `result is not input`.
@@ -112,7 +134,8 @@ class ProactivePruneMixin:
             return messages, 0
         # Prompt-cache hysteresis: commit only when the reclaim is meaningful.
         gate = self.proactive_prune_min_reclaim_tokens
-        cold_gate = min(gate, _COLD_CACHE_MIN_RECLAIM_TOKENS)
+        # The warm gate lowers the cold one only when the warm prune is on (it is off by default).
+        cold_gate = min(gate, _COLD_CACHE_MIN_RECLAIM_TOKENS) if self.proactive_prune_tokens > 0 else _COLD_CACHE_MIN_RECLAIM_TOKENS
         min_reclaim = cold_gate if cold_cache else max(cold_gate, gate - self._proactive_prune_cold_credit)
         if before - sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs) < min_reclaim:
             self._warn_reclamation_no_op("prune:reclaim_below_minimum", current_tokens, before=before)

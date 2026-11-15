@@ -22,7 +22,8 @@ def state_db(tmp_path):
     with sqlite3.connect(db) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
-        conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, content TEXT, api_content TEXT)")
+        conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, content TEXT, api_content TEXT, role TEXT, "
+                     "tool_calls TEXT, tool_call_id TEXT, timestamp REAL)")
         conn.execute("INSERT INTO sessions VALUES ('s1')")
         conn.execute("INSERT INTO messages (content, api_content) VALUES ('hello', NULL)")
     conn.close()
@@ -123,15 +124,15 @@ def test_worktree_liveness_reads_are_tracked(state_db, tracked, tmp_path):
 
 
 def test_backup_integrity_query_is_tracked(state_db, tracked):
-    from hermes_cli.backup import _query_ro_sqlite
+    from hermes_cli.backup_integrity import _query_ro_sqlite
     value, exc = _query_ro_sqlite(state_db, lambda c: c.execute("SELECT count(*) FROM sessions").fetchone()[0])
     assert (value, exc) == (1, None)
     assert _key(state_db) in tracked
 
 
 def test_approvals_suggest_scan_is_tracked(state_db, tracked):
-    from hermes_cli.approvals_suggest import _connect_readonly
-    _connect_readonly(state_db).close()
+    from hermes_cli.approvals_suggest import scan_approval_history
+    scan_approval_history(state_db)
     assert _key(state_db) in tracked
 
 
@@ -148,7 +149,7 @@ def test_restore_destination_connection_is_tracked(state_db, tracked, tmp_path):
 def test_set_journal_mode_switch_connection_is_tracked(state_db, tracked, monkeypatch):
     import argparse
     from hermes_cli.sessions_cmd_journal_mode import cmd_set_journal_mode
-    monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", state_db)
+    monkeypatch.setenv("HERMES_HOME", str(state_db.parent))
     args = argparse.Namespace(sessions_action="set-journal-mode", mode="delete", db=None, force=True)
     assert cmd_set_journal_mode(args) == 0
     assert _key(state_db) in tracked

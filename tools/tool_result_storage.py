@@ -197,17 +197,24 @@ def _write_to_spillover(content: str, filename: str, subdir: str = SPILLOVER_SUB
     bounded inline truncation instead of referencing an archive that silently lost bytes.
     """
     data = content.encode("utf-8", errors="replace")
+    created = False
     try:
         from hermes_constants import get_hermes_home
         spill_dir = get_hermes_home() / subdir
         spill_dir.mkdir(parents=True, exist_ok=True)
         path = spill_dir / filename
         with open(path, "xb" if exclusive else "wb") as fh:  # exclusive: never overwrite another original
+            created = True
             fh.write(data)
         persisted_size = os.stat(path).st_size
         # Size first (cheap), then the bytes: the content is already in memory.
         exact = persisted_size == len(data) and path.read_bytes() == data
     except OSError as exc:
+        if exclusive and created:
+            try:
+                path.unlink()
+            except OSError as cleanup_error:
+                logger.warning("Partial archive cleanup failed for %s: %s", path, cleanup_error)
         logger.warning("Archive write to %s failed for %s: %s", subdir, filename, exc)
         return None
     if not exact:

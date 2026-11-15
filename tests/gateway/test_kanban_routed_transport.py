@@ -1,3 +1,4 @@
+import pytest
 """Persisted notification routes authorize exactly one transport, including route-only profiles."""
 import asyncio
 from pathlib import Path
@@ -7,6 +8,13 @@ from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_coll
 from gateway.profile_routing import parse_profile_routes
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kbn
+
+
+# This suite drives the board's own kernel from the seat that advances cards
+# (dispatcher-side mechanics), so it declares that seat explicitly. The fixture
+# is never autouse: a write from a scope that did not ask for it still fails
+# closed with KanbanAuthorizationError.
+pytestmark = pytest.mark.usefixtures("kanban_maintenance_authority")
 
 
 class RecordingAdapter:

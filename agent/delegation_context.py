@@ -19,6 +19,31 @@ _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("hermes_non_dispatc
 
 DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
 
+
+def _delegate_identity_scope(reason: str):
+    """Shadow the trusted Kanban identity for a non-owner in-process scope.
+
+    Bind-time, never profile- or env-derived: a delegate child / cron run that happens to
+    live inside a dispatcher worker must not inherit that worker's OWNER authority.
+    """
+    from agent.kanban_execution_identity import (
+        ROLE_DELEGATE_CHILD,
+        ROLE_FOREIGN_INSPECTOR,
+        KanbanExecutionContext,
+        bind_execution_context,
+    )
+
+    role = ROLE_DELEGATE_CHILD if reason == "delegate_child" else ROLE_FOREIGN_INSPECTOR
+    return bind_execution_context(KanbanExecutionContext(role=role, reason=reason))
+
+
+def _reset_delegate_identity_scope(token) -> None:
+    if token is None:
+        return
+    from agent.kanban_execution_identity import reset_execution_context
+
+    reset_execution_context(token)
+
 KANBAN_ENV_KEYS: tuple[str, ...] = (
     "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_GOAL_MODE", "HERMES_KANBAN_GOAL_MAX_TURNS",
@@ -31,12 +56,14 @@ def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
     entered without an id must restore the parent's session ContextVar (child
     construction calls ``set_current_session_id``)."""
     token = _DELEGATED_CHILD_CONTEXT.set(True)
+    ident_token = _delegate_identity_scope("delegate_child")
     try:
         from gateway.session_context import scoped_current_session_id  # lazy: it calls is_delegated_child_context()
 
         with scoped_current_session_id(session_id):
             yield
     finally:
+        _reset_delegate_identity_scope(ident_token)
         _DELEGATED_CHILD_CONTEXT.reset(token)
 
 
@@ -62,9 +89,11 @@ def non_dispatcher_owned_context() -> Iterator[None]:
     ``kanban_complete`` defaulting to its task). ContextVar-scoped rather than clearing
     os.environ, which the worker's claim heartbeat and concurrent readers share."""
     token = enter_non_dispatcher_owned_context()
+    ident_token = _delegate_identity_scope("non_dispatcher_owned")
     try:
         yield
     finally:
+        _reset_delegate_identity_scope(ident_token)
         exit_non_dispatcher_owned_context(token)
 
 

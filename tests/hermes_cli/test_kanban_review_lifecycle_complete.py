@@ -21,6 +21,15 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_diagnostics as kd
 
+# These regressions drive the kernel's review graph directly, from the same seat
+# the authenticated dashboard uses when a reviewer approves or returns a card.
+# Requesting the fixture is explicit (never autouse): without it every write
+# below fails closed with KanbanAuthorizationError. The owner-initiated half of
+# the lifecycle — an implementer's own request_review / request_changes and its
+# review-phase rule — is covered through real entrypoints with a reconciled
+# OWNER in tests/agent/test_kanban_execution_authority.py.
+pytestmark = pytest.mark.usefixtures("kanban_admin_authority")
+
 
 @pytest.fixture
 def conn(tmp_path: Path):
@@ -378,7 +387,12 @@ def test_interrupted_review_runs_retry_in_review_phase(
     assert retried is not None
     assert retried.status == "review"
     assert retried.current_run_id is None
-    event = kb.list_events(conn, task_id=task_id)[-1]
+    # The retry accounting event, not "whatever landed last": an administrative
+    # reclaim also appends its own ``admin_recovery`` audit event afterwards.
+    event = [
+        e for e in kb.list_events(conn, task_id=task_id)
+        if (e.payload or {}).get("retry_status") is not None
+    ][-1]
     assert event.payload is not None
     assert event.payload.get("retry_status") == "review"
 

@@ -18,6 +18,31 @@ def clear_kanban_env(monkeypatch):
     return monkeypatch
 
 
+@pytest.fixture
+def live_owner_task(tmp_path, clear_kanban_env):
+    """A real board whose one card is genuinely owned by THIS process.
+
+    The guard nudges only a reconciled OWNER (design: "Only current OWNER can be
+    nudged"), so a nudge test needs a real task/run/claim bound to this process
+    rather than a ``HERMES_KANBAN_TASK`` string with no board behind it.
+    """
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tests._fixtures.kanban_authority import owner_authority, register_worker
+
+    conn = kbc.connect(tmp_path / "kanban.db")
+    task_id = kb.create_task(conn, title="stop guard", assignee="builder")
+    assert kb.claim_task(conn, task_id, claimer="builder:test") is not None
+    for name, value in register_worker(conn, task_id).items():
+        clear_kanban_env.setenv(name, value)
+    try:
+        with owner_authority(conn, task_id) as ctx:
+            assert ctx.task_id == task_id
+            yield conn, task_id
+    finally:
+        conn.close()
+
+
 def test_env_can_disable(clear_kanban_env):
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
     clear_kanban_env.setenv("HERMES_KANBAN_STOP_NUDGE", "0")
@@ -49,8 +74,8 @@ def test_nudge_disabled_inside_non_dispatcher_context(clear_kanban_env):
     assert kanban_stop_nudge_enabled() is True
 
 
-def test_nudge_when_no_terminal_tool(clear_kanban_env):
-    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_46be8aa5")
+def test_nudge_when_no_terminal_tool(live_owner_task):
+    _, task_id = live_owner_task
     messages = [
         {"role": "user", "content": "work kanban task"},
         {
@@ -70,7 +95,7 @@ def test_nudge_when_no_terminal_tool(clear_kanban_env):
     assert nudge is not None
     assert "kanban_complete" in nudge
     assert "kanban_block" in nudge
-    assert "t_46be8aa5" in nudge
+    assert task_id in nudge
 
 
 def test_no_nudge_after_kanban_complete(clear_kanban_env):
@@ -137,9 +162,8 @@ def test_no_nudge_after_handoff_tool(clear_kanban_env, tool_name, who):
     assert build_kanban_stop_nudge(messages=messages) is None
 
 
-def test_nudge_still_fires_for_non_terminal_kanban_tool(clear_kanban_env):
+def test_nudge_still_fires_for_non_terminal_kanban_tool(live_owner_task):
     """Widening the set must not swallow the case the guard exists for."""
-    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
     messages = [
         {
             "role": "assistant",

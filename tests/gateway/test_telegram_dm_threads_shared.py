@@ -12,8 +12,6 @@ from tests.gateway.test_base_topic_sessions import DummyTelegramAdapter
 
 
 def _store(tmp_path, monkeypatch, extra):
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t", extra=extra)})
     return SessionStore(sessions_dir=tmp_path, config=config)
 
@@ -40,7 +38,7 @@ def test_dm_thread_ids_share_one_session_only_when_opted_in(tmp_path, monkeypatc
 
 def test_topic_mode_lanes_stay_isolated_under_shared(tmp_path, monkeypatch):
     store = _store(tmp_path, monkeypatch, {"dm_threads": "shared"})
-    store._db.enable_telegram_topic_mode(chat_id="111", user_id="111")
+    store._scoped_persistence().routing.enable_topic_mode(chat_id="111", user_id="111")
     assert len(_session_ids(store)) == 3
 
 

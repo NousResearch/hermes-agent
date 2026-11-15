@@ -476,12 +476,12 @@ class GatewayTurnPersistenceMixin:
     def _hmwa_fresh_session_has_pending_input(self, session_entry) -> bool:
         """Whether the authority FIFO of the fresh session already holds an admitted input."""
         from gateway.session_authorities import active_authority
-        from hermes_state_runtime import list_session_admissions
+        from gateway.session_persistence import authority_persistence
         authority = active_authority(self)
         if authority is None or session_entry is None:
             return False
         owner = authority.logical_owner(session_entry.session_id)
-        return bool(list_session_admissions(authority.db, session_id=owner))
+        return bool(authority_persistence(authority).admissions.list(session_id=owner))
 
     def _hmwa_defer_exhaustion_reset(self, session_entry, session_key, source):
         """True when the reset was handed to the authority drain. A LOCAL session (the Bot Chat a

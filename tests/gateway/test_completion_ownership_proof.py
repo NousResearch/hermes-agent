@@ -44,10 +44,9 @@ async def test_admitted_completion_survives_a_transient_owner_read_after_compres
     monkeypatch.setattr(runner, '_handle_message', turn)
     monkeypatch.setattr(runner, '_lookup_completion_owner', transient)
     ref = SessionRef(authority.profile_id, sid)
-    from hermes_state_runtime import claim_session_input, settle_session_input
-    head = claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)  # the human turn ran
-    settle_session_input(authority.db, epoch=authority.epoch, admission_id=head['admission_id'],
-                         generation=head['generation'], outcome='completed', result={})
+    from tests.fixtures.storage_seed import settle_claim
+    head = db.admissions.claim(epoch=authority.epoch, session_id=sid)  # the human turn ran
+    settle_claim(db, head, 'completed', {})
     await execute_admission(authority, ref, claim(authority, ref, row))
     assert resolved and resolved[0] is not None, 'admitted completion dropped before its turn'
     assert resolved[0][1].session_id == child

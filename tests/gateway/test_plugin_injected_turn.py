@@ -402,11 +402,12 @@ async def test_a_person_arriving_while_an_injected_turn_waits_does_not_inherit_i
 
 
 def _queued(probe, count):
-    from hermes_state_runtime import list_session_admissions
+    from gateway.session_authority import admission_row
 
     authority = probe.adapter.gateway_runner.session_authority
     sid = authority.logical_owner(authority.runner.session_store.lookup_by_session_key(probe.session_key).session_id)
-    return sum(row["status"] == "queued" for row in list_session_admissions(authority.db, session_id=sid)) == count
+    rows = map(admission_row, authority.persistence.admissions.list(session_id=sid))
+    return sum(row["status"] == "queued" for row in rows) == count
 
 
 @pytest.mark.asyncio

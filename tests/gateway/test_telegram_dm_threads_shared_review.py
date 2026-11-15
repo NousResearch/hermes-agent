@@ -10,6 +10,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from gateway.session_dm_threads import dm_thread_key_source, telegram_extra_for
 from gateway.session_identity import RoutingIdentity
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.gateway.test_base_topic_sessions import DummyTelegramAdapter
 from tests.gateway.test_telegram_dm_threads_shared import _dm, _store
 
@@ -36,11 +37,10 @@ def test_shared_dm_text_batches_stay_per_thread(tmp_path, monkeypatch):
 def test_topic_mode_read_from_the_routed_profiles_store(tmp_path, monkeypatch):
     """A primary bot routed to profile ``work`` keys before the runner enters that scope: /topic on
     in ``work`` (not in the launch profile) must still keep each topic its own session."""
-    from hermes_state_registry import acquire
     adapter, _ = _adapter(tmp_path, monkeypatch)
     work = tmp_path / "profiles" / "work"
     work.mkdir(parents=True)
-    acquire(work / "state.db").enable_telegram_topic_mode(chat_id="111", user_id="111", profile_name="work")
+    storage_handle(work).routing.enable_topic_mode(chat_id="111", user_id="111", profile_name="work")
     identity = RoutingIdentity(transport_profile="default", runtime_profile="work",
                                authorization_home=tmp_path, runtime_home=work)
 

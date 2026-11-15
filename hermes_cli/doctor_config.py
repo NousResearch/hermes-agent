@@ -284,6 +284,17 @@ def _validate_model_config(config_path, issues: list) -> None:
                         f"Fix: run 'hermes config set model.provider <valid_provider>'", issues)
     policy_id = str(runtime_provider or catalog_provider or "").strip().lower()
     accepts_vendor_slug = policy_id in _VENDOR_SLUG_PROVIDERS or policy_id == "custom" or policy_id.startswith("custom:")
+    # A provider the user defined in ``providers:`` supplies its own base_url, so it owns the model
+    # namespace: Requesty, LiteLLM and corporate gateways all address models as vendor/model, and
+    # ``ProviderDef.is_aggregator`` says so when the catalog knows the provider. Without this, every
+    # custom router is told to drop its vendor prefix — advice that changes the model id and breaks
+    # the request rather than fixing anything.
+    provider_def = resolve_full(provider, cfg.get("providers"), custom_providers) if resolve_full is not None else None
+    if provider_def is not None:
+        accepts_vendor_slug = accepts_vendor_slug or bool(
+            getattr(provider_def, "is_aggregator", False)
+            or str(getattr(provider_def, "source", "")) == "user-config"
+        )
     # openai-api pointed at a non-OpenAI endpoint (local router, proxy) is an aggregator in all but name:
     # the router owns the model namespace, so vendor/model slugs are the correct IDs there.
     model_base_url = str(model_section.get("base_url") or "").strip()

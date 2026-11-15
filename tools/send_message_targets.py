@@ -116,5 +116,5 @@ def resolve_send_target(
     elif resolution_failed:
         hint = "Try using a numeric channel ID instead."
     else:
-        hint = "Use send_message(action='list') to see available targets."
+        hint = "Run `hermes send --list` to see available targets."
     return None, None, f"Could not resolve '{target_ref}' on {platform_name}. {hint}"

@@ -1,7 +1,7 @@
 """#147602: a shared-bot satellite borrows the primary's bots unscoped (``_adapters_for_profile``),
 so every send_message path that hands it the live adapter for a caller-chosen target must apply the
-route gate. ``_live_adapter`` is that single choke point: send, react and cron's standalone fallback
-all resolve through it. Real ``GatewayRunner`` authz mixin, real ``profile_routes``, real handlers;
+route gate. ``_live_adapter`` is that single choke point: send and cron's standalone fallback both
+resolve through it. Real ``GatewayRunner`` authz mixin, real ``profile_routes``, real handlers;
 only the transports are fakes.
 """
 
@@ -25,15 +25,11 @@ class _Primary:
 
     def __init__(self, platform):
         self.platform = platform
-        self.sent, self.reactions = [], []
+        self.sent = []
 
     async def send(self, chat_id, content, metadata=None, **_kw):
         self.sent.append((chat_id, (metadata or {}).get("thread_id")))
         return SimpleNamespace(success=True, message_id="m1", error=None)
-
-    async def add_reaction(self, chat_id, emoji, message_id=None):
-        self.reactions.append(chat_id)
-        return {"success": True}
 
 
 @pytest.fixture
@@ -91,16 +87,6 @@ def test_send_to_unrouted_chat_never_uses_the_primary_bot(satellite):
     assert slack.sent == [("C0ROUTED1", None)]
 
 
-def test_react_on_unrouted_chat_never_uses_the_primary_bot(satellite):
-    tg = satellite.primary[Platform.TELEGRAM]
-    result = _tool({"action": "react", "target": "telegram:-100999", "emoji": "👍", "message_id": "5"})
-    assert tg.reactions == []
-    assert "error" in result and "profile_routes" in result["error"]
-    result = _tool({"action": "react", "target": "telegram:-100111", "emoji": "👍", "message_id": "5"})
-    assert result.get("success") is True, result
-    assert tg.reactions == ["-100111"]
-
-
 def test_cron_standalone_fallback_cannot_reach_the_primary_bot(satellite):
     """A ``SharedRouteAdapters`` miss with the satellite's own ``platforms.slack`` enabled resolves
     no error, so the job falls to ``_deliver_standalone`` -> ``_send_to_platform`` ->
@@ -148,30 +134,26 @@ def test_satellite_acts_in_its_inbound_routed_conversation_only(satellite, shape
     from gateway.session_context import clear_session_vars, set_session_vars
 
     routes, origin = _ORIGIN_ROUTED[shape]
+    platform = Platform(origin["platform"])
     satellite.runner.config.profile_routes = parse_profile_routes(routes)
-    adapter = satellite.primary[Platform(origin["platform"])]
-
-    def react(target):
-        return _tool({"action": "react", "target": target, "emoji": "👍", "message_id": "5"})
-
+    allowed = satellite.runner._shared_bot_target_allowed
     tokens = set_session_vars(profile="sec", **origin)
     try:
-        assert react(f"{origin['platform']}:{origin['chat_id']}").get("success") is True
-        assert "profile_routes" in react(f"{origin['platform']}:777").get("error", "")
-        if origin["platform"] == "discord":  # thread ids are global there
-            assert "profile_routes" in react("discord:111:999").get("error", "")
+        assert allowed(platform, "sec", origin["chat_id"], None) is True
+        assert allowed(platform, "sec", "777", None) is False
+        if platform is Platform.DISCORD:  # thread ids are global there
+            assert allowed(platform, "sec", "111", "999") is False
         # The same ids on another platform are not this conversation, whatever routes exist there.
-        elsewhere = "slack" if origin["platform"] == "discord" else "discord"
+        elsewhere = Platform.SLACK if platform is Platform.DISCORD else Platform.DISCORD
         satellite.runner.config.profile_routes = parse_profile_routes(
-            routes + [{**r, "name": f"{r['name']}-x", "platform": elsewhere} for r in routes])
-        assert "profile_routes" in react(f"{elsewhere}:{origin['chat_id']}").get("error", "")
+            routes + [{**r, "name": f"{r['name']}-x", "platform": elsewhere.value} for r in routes])
+        assert allowed(elsewhere, "sec", origin["chat_id"], None) is False
         more_specific = {k: origin[k] for k in ("chat_id", "thread_id", "user_id") if k in origin}
         satellite.runner.config.profile_routes = parse_profile_routes(routes + [dict(
-            name="other", platform=origin["platform"], profile="other", **more_specific)])
-        assert "profile_routes" in react(f"{origin['platform']}:{origin['chat_id']}").get("error", "")
+            name="other", platform=platform.value, profile="other", **more_specific)])
+        assert allowed(platform, "sec", origin["chat_id"], None) is False
     finally:
         clear_session_vars(tokens)
-    assert adapter.reactions == [origin["chat_id"]]
 
 
 def test_origin_topic_does_not_vouch_for_the_rest_of_its_chat(satellite):
@@ -182,16 +164,13 @@ def test_origin_topic_does_not_vouch_for_the_rest_of_its_chat(satellite):
 
     satellite.runner.config.profile_routes = parse_profile_routes([
         {"name": "t", "platform": "telegram", "chat_id": "-100222", "thread_id": "7", "profile": "sec"}])
-    tg = satellite.primary[Platform.TELEGRAM]
+    allowed = satellite.runner._shared_bot_target_allowed
     tokens = set_session_vars(profile="sec", platform="telegram", chat_id="-100222", thread_id="7")
     try:
-        refused = _tool({"action": "react", "target": "telegram:-100222", "emoji": "👍", "message_id": "5"})
-        sent = _tool({"action": "react", "target": "telegram:-100222:7", "emoji": "👍", "message_id": "5"})
+        assert allowed(Platform.TELEGRAM, "sec", "-100222", None) is False
+        assert allowed(Platform.TELEGRAM, "sec", "-100222", "7") is True
     finally:
         clear_session_vars(tokens)
-    assert "profile_routes" in refused.get("error", ""), refused
-    assert sent.get("success") is True, sent
-    assert tg.reactions == ["-100222"]
 
 
 def test_shared_channel_origin_matches_on_the_turn_sender(satellite):
@@ -202,20 +181,18 @@ def test_shared_channel_origin_matches_on_the_turn_sender(satellite):
 
     satellite.runner.config.profile_routes = parse_profile_routes([
         {"name": "u", "platform": "slack", "user_id": "U1", "profile": "sec"}])
-    slack = satellite.primary[Platform.SLACK]
-    react = {"action": "react", "target": "slack:C0SHARED", "emoji": "👍", "message_id": "5"}
+    allowed = satellite.runner._shared_bot_target_allowed
     tokens = set_session_vars(profile="sec", platform="slack", chat_id="C0SHARED", actor_id="U1")
     try:
-        assert _tool(react).get("success") is True
+        assert allowed(Platform.SLACK, "sec", "C0SHARED", None) is True
     finally:
         clear_session_vars(tokens)
     tokens = set_session_vars(profile="sec", platform="slack", chat_id="C0SHARED", actor_id="U1",
                               turn_event=SimpleNamespace(user_id=""))
     try:
-        assert "profile_routes" in _tool(react).get("error", "")
+        assert allowed(Platform.SLACK, "sec", "C0SHARED", None) is False
     finally:
         clear_session_vars(tokens)
-    assert slack.reactions == ["C0SHARED"]
 
 
 # Platforms whose thread is a sub-conversation of a chat that keeps its own id: a thread-less target
@@ -229,7 +206,7 @@ _GROUP_PLUS_THREAD = {
 @pytest.mark.parametrize("platform_name", sorted(_GROUP_PLUS_THREAD))
 def test_thread_pinned_origin_does_not_admit_its_groups_top_level(satellite, platform_name):
     """A route pinned to one Feishu/Google Chat thread dispatches only that thread to ``sec``; its
-    group's top level (a thread-less send/react) is not ``sec``'s conversation."""
+    group's top level (a thread-less send) is not ``sec``'s conversation."""
     from gateway.profile_routing import match_profile_route
     from gateway.session_context import clear_session_vars, set_session_vars
 

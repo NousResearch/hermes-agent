@@ -10,6 +10,7 @@ import pytest
 from tools.bot_desktop import lease
 from tools.bot_desktop.rfb_filter import RfbClientFilter
 from tests.bot_desktop_lease import reset_lease
+from tests.computer_use_fakes import NoopBackend, reset_backend
 
 _HANDSHAKE = b"RFB 003.008\n" + b"\x01" + b"\x00"
 _KEY = b"\x04\x01\x00\x00\x00\x00\x00\x61"          # KeyEvent 'a' down
@@ -25,10 +26,10 @@ _SETENC = b"\x02\x00\x00\x02" + b"\x00\x00\x00\x07" + b"\xff\xff\xff\x21"  # Set
 def _fresh_lease():
     from tools.computer_use import tool
 
-    tool.reset_backend_for_tests()
+    reset_backend()
     reset_lease()
     yield
-    tool.reset_backend_for_tests()
+    reset_backend()
     reset_lease()
 
 
@@ -89,7 +90,7 @@ def test_takeover_during_an_admitted_action_discards_its_result(monkeypatch):
     their keystrokes captured by an action admitted before they did."""
     from tools.computer_use import tool
 
-    monkeypatch.setattr(tool, "_new_backend", lambda mode: tool._NoopBackend())
+    monkeypatch.setattr(tool, "_new_backend", lambda mode: NoopBackend())
 
     def _dispatch_then_takeover(backend, action, args, **_):
         lease.acquire("human")  # a whole take-over / hand-back cycle inside the driver call:
@@ -107,7 +108,7 @@ def test_takeover_handback_during_approval_does_not_start_the_device_op(monkeypa
     not only after. Do not patch _dispatch — a recording backend must never be called."""
     from tools.computer_use import tool
 
-    class Rec(tool._NoopBackend):
+    class Rec(NoopBackend):
         def __init__(self):
             self.calls = []
 

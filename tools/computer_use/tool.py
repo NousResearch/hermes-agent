@@ -80,7 +80,6 @@ def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
 # ── Backend selection — env-swappable for tests ─────────────────────────────
 # Per-Hermes-session cached backends (own cua-driver session, native target, refs, grant namespace).
 _backend_lock = threading.Lock()
-_backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-session injection hook (older tests)
 _backends: dict[str, ComputerUseBackend] = {}
 _backend_call_locks: dict[str, threading.RLock] = {}
 _backend_permission_modes: dict[str, str] = {}
@@ -161,25 +160,17 @@ def _new_backend(permission_mode: str) -> ComputerUseBackend:
     return get_active_provider().create_backend(permission_mode=permission_mode)
 
 def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
-    """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
-    Caller holds ``_backend_lock``."""
-    global _backend
+    """Record a backend in the session caches. Caller holds ``_backend_lock``."""
     from tools.computer_use.cua_backend import desktop_identity
     _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
     _backend_displays[sid] = desktop_identity()
     _backend_call_locks[sid] = threading.RLock()
-    _backend = backend if sid == "" else _backend
     return backend
 
 def _detach_locked(sid: str) -> tuple[Optional[ComputerUseBackend], Optional[threading.RLock]]:
-    """Remove one session's cache entries, plus the ``_backend`` injection hook when it aliases the empty session
-    (older callers/tests may populate only the hook). Caller holds ``_backend_lock``."""
-    global _backend
+    """Remove one session's cache entries. Caller holds ``_backend_lock``."""
     _backend_permission_modes.pop(sid, None), _backend_displays.pop(sid, None)
     backend, call_lock = _backends.pop(sid, None), _backend_call_locks.pop(sid, None)
-    if sid == "":
-        backend = _backend if backend is None else backend
-        _backend = None if _backend is backend else _backend
     return backend, call_lock
 
 def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLock], on_error: Callable[[Exception], None]) -> None:
@@ -206,8 +197,6 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
         with _backend_lock:
             # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
             permission_mode = _cua_permission_mode(bare_sid)  # approval state is keyed by the Hermes session id
-            if sid == "" and _backend is not None and sid not in _backends:
-                _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
             if (cached := _backends.get(sid)) is None:
                 backend = _new_backend(permission_mode)
                 backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
@@ -276,43 +265,13 @@ def _shutdown_backend_atexit() -> None:
     the Hermes process that spawned it (#28152 item 3). #69903 kept the orphan from burning a core by
     disabling the cursor overlay; the process itself still lingered.
     """
-    global _backend
     with _backend_lock:
         unique = {id(b): (b, _backend_call_locks.get(sid)) for sid, b in _backends.items()}
-        if _backend is not None:
-            unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
-        _backend = None
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_displays.clear()
     with _approval_lock:
         _escalation_warned.clear()
     for backend, call_lock in unique.values():
         _stop_backend(backend, call_lock, lambda e: logger.debug("cua-driver atexit teardown failed: %s", e))
-
-def reset_backend_for_tests() -> None:  # pragma: no cover — tear down the cached backend and per-session state
-    _shutdown_backend_atexit()
-    _reset_screenshot_dedup()
-
-def _noop_stub(name: str, *params: str, result: Any = None):
-    # Recording stub: positional args are folded in under *params* (declared params default to None). ``result`` may
-    # be a factory of the recorded kwargs; None -> a trivial ok ActionResult.
-    def method(self, *pos, **kw):
-        self.calls.append((name, call := {**dict.fromkeys(params), **dict(zip(params, pos)), **kw}))
-        return result(call) if callable(result) else ActionResult(ok=True, action=name) if result is None else result
-    return method
-
-class _NoopBackend(ComputerUseBackend):  # pragma: no cover
-    """Test stub (tests patch ``_new_backend`` to return it). Records ``(name, kwargs)`` calls; returns trivial results."""
-
-    def __init__(self) -> None: self.calls: list[tuple[str, dict[str, Any]]] = []
-    start = stop = lambda self: None
-    def is_available(self) -> bool: return True
-
-    capture = _noop_stub("capture", "mode", "app", "pid", "window_id", result=lambda kw: CaptureResult(
-        mode=kw["mode"] or "som", width=1024, height=768, png_b64=None, elements=[], app=kw["app"] or "", window_title=""))
-    click, drag, scroll = _noop_stub("click"), _noop_stub("drag"), _noop_stub("scroll")
-    type_text, key, set_value = _noop_stub("type", "text"), _noop_stub("key", "keys"), _noop_stub("set_value", "value", "element")
-    list_apps, list_windows = _noop_stub("list_apps", result=[]), _noop_stub("list_windows", result=[])
-    focus_app = _noop_stub("focus_app", "app", "raise_window")
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
 def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
@@ -632,8 +591,6 @@ def _bounds_hints(elements: list[UIElement], image_width: int, image_height: int
             "space — derive click points from element bounds, or scale screenshot positions up accordingly")
     return round(max(max_x / image_width, max_y / image_height), 2), note
 
-_bounds_scale = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[0]
-_bounds_space_note = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[1]
 
 def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     """One capture's derived facts, computed once for every response branch: ``visible`` is the capped element list,

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import itertools
+from tests.computer_use_fakes import NoopBackend, reset_backend
 
 
 # ---------------------------------------------------------------------------
@@ -22,11 +23,11 @@ def _reset_backend(grant_computer_use_approvals):
     """Tear down the cached backend between tests; destructive actions get an interactive "once"
     through the shared approval gate (the tool fails closed with nobody to ask)."""
     from tools.computer_use import tool as cu_tool
-    cu_tool.reset_backend_for_tests()
+    reset_backend()
     # Force the noop backend.
-    with patch.object(cu_tool, "_new_backend", lambda mode: cu_tool._NoopBackend()):
+    with patch.object(cu_tool, "_new_backend", lambda mode: NoopBackend()):
         yield
-    cu_tool.reset_backend_for_tests()
+    reset_backend()
 
 
 @pytest.fixture
@@ -231,7 +232,7 @@ class TestCaptureResponse:
             def list_apps(self): return []
             def focus_app(self, app, raise_window=False): ...
 
-        cu_tool.reset_backend_for_tests()
+        reset_backend()
         with patch.object(cu_tool, "_new_backend", return_value=FakeBackend()), \
              patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
@@ -271,7 +272,7 @@ class TestCaptureResponse:
             def list_apps(self): return []
             def focus_app(self, app, raise_window=False): ...
 
-        cu_tool.reset_backend_for_tests()
+        reset_backend()
         with patch.object(cu_tool, "_new_backend", return_value=FakeBackend()), \
              patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
@@ -320,7 +321,7 @@ class TestCaptureResponse:
         from tools.computer_use import tool as cu_tool
 
         fake_backend = self._ax_backend_with(600)
-        cu_tool.reset_backend_for_tests()
+        reset_backend()
         with patch.object(cu_tool, "_new_backend", return_value=fake_backend):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "ax"})
 
@@ -341,7 +342,7 @@ class TestCaptureResponse:
         from tools.computer_use import tool as cu_tool
 
         fake_backend = self._ax_backend_with(5000)
-        cu_tool.reset_backend_for_tests()
+        reset_backend()
         with patch.object(cu_tool, "_new_backend", return_value=fake_backend):
             out = cu_tool.handle_computer_use(
                 {"action": "capture", "mode": "ax", "max_elements": 10_000}
@@ -896,10 +897,9 @@ class TestCaptureAfterAppContext:
                 return ActionResult(ok=True, action="wait")
 
         backend = TrackingBackend()
-        cu_tool.reset_backend_for_tests()
-        cu_tool._backend = backend
-
-        cu_tool.handle_computer_use({"action": "click", "element": 14, "capture_after": True})
+        reset_backend()
+        with patch.object(cu_tool, "_new_backend", lambda mode: backend):
+            cu_tool.handle_computer_use({"action": "click", "element": 14, "capture_after": True})
 
         # The follow-up capture must have been called with app="Calculator"
         assert len(captured_app_args) == 1
@@ -2278,33 +2278,33 @@ class TestCapturePayloadBudget:
 class TestBoundsSpaceNote:
     def test_note_present_when_bounds_exceed_image(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
+        from tools.computer_use.tool import _bounds_hints
 
         # Live repro: 1455x791 screenshot, element bounds out to x=3840
         # (native 4K desktop space).
         elems = [UIElement(index=0, role="Button", label="Close",
                            bounds=(3771, 0, 69, 60), app="")]
-        note = _bounds_space_note(elems, 1455, 791)
+        note = _bounds_hints(elems, 1455, 791)[1]
         assert note is not None
         assert "native desktop coordinates" in note
 
     def test_no_note_when_spaces_match(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
+        from tools.computer_use.tool import _bounds_hints
 
         elems = [UIElement(index=0, role="Button", label="OK",
                            bounds=(10, 10, 50, 20), app="")]
-        assert _bounds_space_note(elems, 1455, 791) is None
+        assert _bounds_hints(elems, 1455, 791)[1] is None
 
     def test_no_note_for_empty_or_degenerate(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
+        from tools.computer_use.tool import _bounds_hints
 
-        assert _bounds_space_note([], 1455, 791) is None
+        assert _bounds_hints([], 1455, 791)[1] is None
         zero = [UIElement(index=0, role="B", label="x",
                           bounds=(0, 0, 0, 0), app="")]
-        assert _bounds_space_note(zero, 1455, 791) is None
-        assert _bounds_space_note(zero, 0, 0) is None
+        assert _bounds_hints(zero, 1455, 791)[1] is None
+        assert _bounds_hints(zero, 0, 0)[1] is None
 
 
 class TestElementSpillFile:
@@ -2439,10 +2439,10 @@ class TestBoundsScaleField:
 
     def test_no_scale_when_spaces_match(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_scale
+        from tools.computer_use.tool import _bounds_hints
 
         elems = [UIElement(index=0, role="Button", label="OK",
                            bounds=(10, 10, 50, 20), app="")]
-        assert _bounds_scale(elems, 1455, 791) is None
-        assert _bounds_scale([], 1455, 791) is None
-        assert _bounds_scale(elems, 0, 0) is None
+        assert _bounds_hints(elems, 1455, 791)[0] is None
+        assert _bounds_hints([], 1455, 791)[0] is None
+        assert _bounds_hints(elems, 0, 0)[0] is None

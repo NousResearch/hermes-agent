@@ -655,6 +655,39 @@ class TestSymlinkedCategoryDiagnostic:
             assert warn, "hub-owned match suppressed the whole search"
             assert "free/hub-skill" in warn, f"wrong copy named in the warning: {warn}"
 
+    def test_alias_of_a_hub_installed_directory_stays_silent_in_either_order(self, tmp_path, capsys):
+        """Two symlinks to the SAME hub-installed directory: whichever alias the walk labels
+        the inode with, the content is hub-managed — the inode ownership check keeps the
+        outcome (silence) independent of traversal order."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external_hub = tmp_path / "external-hub"
+        hub_copy = self._skill(external_hub, "hub-skill", name="hub-skill")
+        origin_hash = dir_hash(hub_copy)
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"hub-skill:{origin_hash}\n")
+        (skills_dir / "locked").symlink_to(external_hub, target_is_directory=True)
+        (skills_dir / "free").symlink_to(external_hub, target_is_directory=True)  # alias, SAME dir
+        lock = skills_dir / ".hub" / "lock.json"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(json.dumps(
+            {"version": 1, "installed": {"hub-skill": {"install_path": "locked/hub-skill"}}}))
+        self._skill(bundled, "web/hub-skill", name="hub-skill", body="# Updated upstream\n")
+
+        # Force both labels for the shared inode: the walk's own dedupe attaches whichever
+        # alias comes first, so drive the diagnostic with each single-element order.
+        locked_md = skills_dir / "locked" / "hub-skill" / "SKILL.md"
+        free_md = skills_dir / "free" / "hub-skill" / "SKILL.md"
+        for order in ([locked_md], [free_md]):
+            with self._patches(bundled, skills_dir, manifest_file), \
+                    patch("tools.skills_sync._iter_skill_mds_following_links", return_value=iter(list(order))):
+                result = sync_skills(quiet=False)
+            out = capsys.readouterr().out
+            assert not result["relocation_warnings"], f"hub-managed content was warned on: {out}"
+            assert dir_hash(external_hub / "hub-skill") == origin_hash, "hub content was mutated"
+
     def test_following_walk_prunes_excluded_and_support_dirs_like_the_loader(self, tmp_path):
         """The following walk keeps the loader's exact pruning: excluded dirs (.archive, .hub)
         never descend; support dirs (scripts/) beneath a SKILL.md root are not categories;
@@ -666,12 +699,14 @@ class TestSymlinkedCategoryDiagnostic:
         support = skills_dir / "real" / "skill" / "scripts"  # support dir under a skill root
         support.mkdir(parents=True, exist_ok=True)
         (support / "helper.md").write_text("not a skill\n")
+        self._skill(skills_dir, "real/skill/scripts/nested", name="nested")  # SKILL.md under support
         self._skill(skills_dir, "scripts/toplevel-skill", name="toplevel-skill")  # valid category
 
         with patch("tools.skills_sync.SKILLS_DIR", skills_dir):
             names = sorted(md.parent.name for md in _iter_skill_mds_following_links())
         assert names == ["skill", "toplevel-skill"], (
-            "excluded dirs must not descend, support dirs must not count, real categories must")
+            "excluded dirs must not descend, support dirs must not count (even with a SKILL.md),"
+            " real categories must")
 
 
     def test_symlink_removal_alone_strands_the_copy(self, tmp_path, capsys):

@@ -299,15 +299,23 @@ def _warn_invisible_renamed_copy(st: "_SyncState", skill_name: str, dest: Path) 
             # The hub owns THIS install path, not every copy of the identity — skip it and
             # keep searching: a later non-hub copy still deserves its warning.
             continue
+        try:
+            info = md.parent.stat()
+        except OSError:
+            info = None
+        if info and (info.st_dev, info.st_ino) in st.hub_inodes:
+            # Alias of a hub-installed directory: whichever symlink reached the inode first,
+            # the content is hub-managed — silence must not depend on traversal order.
+            continue
         message = (
             f"{skill_name}: upstream moved this skill to {_rel_skills_posix(dest)}, but the copy "
             f"at {rel} is only reachable through a category symlink, so it was not automatically "
             f"relocated. It is left untouched and will not receive updates. Replace the category "
             f"symlink with a real directory containing the copy to make it visible again: a "
             f"pristine copy then relocates on the next sync, and a modified one is kept at the "
-            f"old path and listed under `hermes skills list-modified`. Removing the symlink "
-            f"alone would strand it — the retained manifest entry makes sync read the missing "
-            f"destination as a user deletion.")
+            f"old path with your edits preserved. Removing the symlink alone would strand it — "
+            f"the retained manifest entry makes sync read the missing destination as a user "
+            f"deletion.")
         st.relocation_warnings.append(message)
         st.say(f"  ⚠ {message}")
         return
@@ -318,17 +326,12 @@ def _copy_dir(src: Path, dest: Path) -> None:
     shutil.copytree(src, dest, ignore=_ignore_runtime_cache)
 
 
-def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Optional[str]:
-    """Move a bundled skill's stale copy to its new canonical path after an upstream RENAME /
-    RECATEGORIZATION (else it is misread as user-deleted and stranded forever). Only a copy
-    byte-identical to the origin hash — proof *we* placed it — moves. Returns rel source path."""
-    origin_hash = st.manifest.get(skill_name, "")
-    if not origin_hash:
-        # v1 plain-name entry (empty hash): no hash can authorize a move, but the read-only
-        # #143470 diagnostic still applies — stranding is identity-based, not hash-based.
-        _warn_invisible_renamed_copy(st, skill_name, dest)
-        return None
-    if st.active_index is None:  # by frontmatter name
+def _ensure_recovery_index(st: "_SyncState") -> dict[str, list[Path]]:
+    """Lazily build the shared recovery lookup: visible copies by every name form the loader
+    or the manifest can address them by, plus hub ownership as install-path strings AND as
+    real-directory inodes — an alias of a hub-installed dir is hub-managed whichever symlink
+    reached it first, so ownership must not depend on traversal order."""
+    if st.active_index is None:
         st.active_index = {}
         for md in _iter_active_skill_mds():
             line_name = read_skill_name(md, md.parent.name)
@@ -337,7 +340,27 @@ def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Opt
             if loader_name and loader_name != line_name:
                 st.active_index.setdefault(loader_name, []).append(md.parent)
         st.hub_paths = _read_hub_install_paths()
-    for candidate in st.active_index.get(skill_name, []):
+        for rel in st.hub_paths:
+            try:
+                info = (_skills_dir() / rel).stat()
+            except OSError:
+                continue  # dangling lock path: no directory, nothing to alias
+            st.hub_inodes.add((info.st_dev, info.st_ino))
+    return st.active_index
+
+
+def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Optional[str]:
+    """Move a bundled skill's stale copy to its new canonical path after an upstream RENAME /
+    RECATEGORIZATION (else it is misread as user-deleted and stranded forever). Only a copy
+    byte-identical to the origin hash — proof *we* placed it — moves. Returns rel source path."""
+    origin_hash = st.manifest.get(skill_name, "")
+    active_index = _ensure_recovery_index(st)
+    if not origin_hash:
+        # v1 plain-name entry (empty hash): no hash can authorize a move, but the read-only
+        # #143470 diagnostic still applies — stranding is identity-based, not hash-based.
+        _warn_invisible_renamed_copy(st, skill_name, dest)
+        return None
+    for candidate in active_index.get(skill_name, []):
         if candidate == dest or not candidate.is_dir():
             continue
         try:
@@ -382,6 +405,7 @@ class _SyncState:
     shadowed_by_external: list[str] = field(default_factory=list)
     active_index: Optional[dict[str, list[Path]]] = None  # rename-recovery indexes are expensive on
     hub_paths: set[str] = field(default_factory=set)  # bind mounts: built lazily, only when needed
+    hub_inodes: set[tuple[int, int]] = field(default_factory=set)  # hub-managed dirs by real inode (#143470)
 
     def say(self, msg: str) -> None:
         if not self.quiet:

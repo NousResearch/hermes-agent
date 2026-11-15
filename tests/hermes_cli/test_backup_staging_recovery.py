@@ -21,7 +21,15 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import backup
+from tests.fixtures.storage_holder import store_copy_seam
 from tests.waiting import wait_until
+
+
+def _patch_db_copies(monkeypatch, copy) -> None:
+    """Route every WAL-safe database copy a full backup makes through *copy*: a store file snapshots through the
+    store admin's copy, any other database through ``backup._safe_copy_db``."""
+    monkeypatch.setattr(backup, "_safe_copy_db", copy)
+    monkeypatch.setattr(*store_copy_seam(), lambda src, dst, **_kwargs: copy(src, dst))
 
 
 def _home(path: Path) -> Path:
@@ -35,23 +43,27 @@ def _home(path: Path) -> Path:
 
 def _child(home: Path, output: Path) -> tuple[subprocess.Popen[str], Path]:
     script = """
+        import importlib
         import sys
         from pathlib import Path
         from argparse import Namespace
         from hermes_cli import backup
 
-        def pause_copy(src, dst):
+        def pause_copy(src, dst, **_kwargs):
             dst.write_bytes(b'\\0' * 4096)
             print('READY ' + str(dst), flush=True)
             sys.stdin.read(1)
             return False
 
         backup._safe_copy_db = pause_copy
+        setattr(importlib.import_module(sys.argv[3]), sys.argv[4], pause_copy)
         backup._run_backup_locked(Namespace(output=sys.argv[2]), Path(sys.argv[1]))
     """
+    store_copy_module, store_copy_name = store_copy_seam()
     env = {**os.environ, "HERMES_HOME": str(home)}
     proc: subprocess.Popen[str] = subprocess.Popen(
-        [sys.executable, "-c", textwrap.dedent(script), str(home), str(output)],
+        [sys.executable, "-c", textwrap.dedent(script), str(home), str(output),
+         store_copy_module.__name__, store_copy_name],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -189,7 +201,7 @@ def test_failed_snapshot_cleans_staging_but_keeps_failure(tmp_path, monkeypatch)
         dst.write_bytes(b"incomplete")
         return False
 
-    monkeypatch.setattr(backup, "_safe_copy_db", fail)
+    _patch_db_copies(monkeypatch, fail)
     monkeypatch.setattr(backup, "_collect_external_entries", lambda: ([], []))
     assert not backup._run_backup_locked(Namespace(output=str(output)), home)
     assert not any(p.name.startswith(".hermes-backup-stage-") for p in home.iterdir())
@@ -211,7 +223,7 @@ def test_stage_stays_on_output_filesystem_and_snapshot_preserves_wal(
         assert dst.parent.parent == output_dir
         return safe_copy(src, dst)
 
-    monkeypatch.setattr(backup, "_safe_copy_db", copy_on_output)
+    _patch_db_copies(monkeypatch, copy_on_output)
     with sqlite3.connect(home / "state.db") as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("INSERT INTO messages VALUES ('in WAL')")

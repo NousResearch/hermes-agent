@@ -11,6 +11,7 @@ import sqlite3
 import pytest
 
 import hermes_state_wal
+import sqlite_support
 
 
 @pytest.fixture()
@@ -23,6 +24,12 @@ def network_home(tmp_path, monkeypatch):
     monkeypatch.setattr(hermes_state_wal, "_detect_network_fs", lambda directory, *a, **k: True, raising=False)
     getattr(hermes_state_wal, "_network_fs_cache", {}).clear()
     getattr(hermes_state_wal, "_network_fs_new_store_warned_paths", set()).clear()
+    # The other stores open through sqlite_support's copy of the policy.
+    monkeypatch.setattr(sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: False)
+    monkeypatch.setattr(sqlite_support, "path_on_cross_vm_fs", lambda p: False)
+    monkeypatch.setattr(sqlite_support, "_detect_network_fs", lambda directory, *a, **k: True, raising=False)
+    getattr(sqlite_support, "_network_fs_cache", {}).clear()
+    getattr(sqlite_support, "_network_fs_new_store_warned_paths", set()).clear()
     return home
 
 

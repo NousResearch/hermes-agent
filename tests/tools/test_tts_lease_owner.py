@@ -258,3 +258,114 @@ def test_unload_never_enters_an_owner_context_another_thread_is_in(monkeypatch, 
         leave.set()
         holder.join(5)
     assert tts_tool_lifecycle._tts_owners == {}
+
+
+@pytest.fixture
+def real_profiles(tmp_path, monkeypatch):
+    """Homes a/b whose ``config.yaml`` the real loader reads, both healthy command providers.
+    Returns ``(as_profile, write)``: ``as_profile(x)`` binds one; ``write(name, text)`` replaces a
+    profile's config file (an edit made while the lease is held: a broken file already fails that
+    profile's own warm-up)."""
+    from contextlib import contextmanager
+    from hermes_cli.config import atomic_config_write
+    homes = {name: tmp_path / name for name in ("a", "b")}
+    for name, home in homes.items():
+        home.mkdir()
+        atomic_config_write(home / "config.yaml", {"tts": _srv_config(name.upper(), 0)})
+    monkeypatch.setenv("SRV_TOKEN", "token")
+
+    @contextmanager
+    def as_profile(name):
+        token = set_hermes_home_override(str(homes[name]))
+        try:
+            yield
+        finally:
+            reset_hermes_home_override(token)
+
+    def write(name, text):
+        (homes[name] / "config.yaml").write_text(text)
+    return as_profile, write
+
+
+def _acquire_in(as_profile, order):
+    for name in order:
+        with as_profile(name):
+            tts_tool_lifecycle.acquire_tts_lease(f"lease-{name}")
+
+
+ORDERS = pytest.mark.parametrize("order", [("a", "b"), ("b", "a")], ids=["broken-first", "broken-last"])
+
+
+@ORDERS
+def test_an_unreadable_owner_window_still_schedules_the_healthy_owner(
+        real_profiles, timers, hooks, monkeypatch, order):
+    """Profile a's ``tts:`` is a truthy non-dict the real loader passes through: its window cannot
+    be read, so it counts as the default window, and b is still released in its own profile."""
+    from tools import tts_tool_local
+    as_profile, write = real_profiles
+    _acquire_in(as_profile, order)
+    write("a", "tts: broken-shape\n")
+    monkeypatch.setitem(tts_tool_local._piper_voice_cache, "voice", object())
+    with as_profile("b"):
+        for name in order:
+            tts_tool_lifecycle.release_tts_lease(f"lease-{name}")
+    assert timers() == [tts_tool_lifecycle._DEFAULT_KEEP_WARM_SECONDS]
+    _join_hook_threads()
+    assert _release_hooks(hooks) == ["release-B"]
+    assert tts_tool_local._piper_voice_cache == {}
+    assert tts_tool_lifecycle._tts_owners == {}
+
+
+@ORDERS
+def test_a_failing_owner_release_does_not_skip_the_healthy_owner(
+        real_profiles, timers, hooks, monkeypatch, order):
+    """Profile a's window reads (0) but its release raises (a non-string provider): b is still
+    released, the resident model is still unloaded and counted, and nothing escapes the caller."""
+    from tools import tts_tool_local
+    as_profile, write = real_profiles
+    _acquire_in(as_profile, order)
+    write("a", "tts:\n  provider: 5\n  keep_warm_seconds: 0\n")
+    monkeypatch.setitem(tts_tool_local._piper_voice_cache, "voice", object())
+    with as_profile("a"):
+        tts_tool_lifecycle.release_tts_lease(f"lease-{order[0]}")
+        result = tts_tool_lifecycle.release_tts_lease(f"lease-{order[1]}")
+    assert result == {"leases": 0, "released": 1}
+    _join_hook_threads()
+    assert _release_hooks(hooks) == ["release-B"]
+    assert tts_tool_local._piper_voice_cache == {}
+    assert tts_tool_lifecycle._tts_owners == {}
+
+
+def test_a_lone_failing_owner_still_unloads_local_models(real_profiles, timers, hooks, monkeypatch):
+    from tools import tts_tool_local
+    as_profile, write = real_profiles
+    _acquire_in(as_profile, ("a",))
+    write("a", "tts:\n  provider: 5\n  keep_warm_seconds: 0\n")
+    monkeypatch.setitem(tts_tool_local._piper_voice_cache, "voice", object())
+    with as_profile("a"):
+        assert tts_tool_lifecycle.release_tts_lease("lease-a") == {"leases": 0, "released": 1}
+    assert tts_tool_local._piper_voice_cache == {}
+
+
+@ORDERS
+def test_an_owner_config_backend_outage_does_not_stop_the_healthy_owner(
+        real_profiles, timers, hooks, monkeypatch, order):
+    """A config-backend outage is a ``SystemExit`` subclass that skips ``except Exception``; it must
+    stay inside the failing owner too, for both its window read and its release."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+    as_profile, _write = real_profiles
+    _acquire_in(as_profile, order)
+    real_load = tts_tool._load_tts_config
+
+    def load():
+        if get_hermes_home().name == "a":
+            raise ConfigBackendUnavailable("backend down")
+        return real_load()
+    monkeypatch.setattr(tts_tool, "_load_tts_config", load)
+    with as_profile("b"):
+        for name in order:
+            tts_tool_lifecycle.release_tts_lease(f"lease-{name}")
+    assert timers() == [tts_tool_lifecycle._DEFAULT_KEEP_WARM_SECONDS]
+    _join_hook_threads()
+    assert _release_hooks(hooks) == ["release-B"]
+    assert tts_tool_lifecycle._tts_owners == {}

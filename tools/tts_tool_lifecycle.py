@@ -158,10 +158,25 @@ def release_tts_provider(provider: Optional[str] = None) -> dict[str, Any]:
     return {"released": released}
 
 
+def _run_as_owner(owner: Context, fn: Callable[[], Any], fallback: Any, what: str) -> Any:
+    """``fn()`` in a copy of ``owner`` (a Context already entered by another thread cannot be entered
+    again). One owner's failure (an unreadable or malformed ``tts`` config) yields ``fallback``, so it
+    never stops the other profiles' windows or releases. Logs the exception type only: the message
+    can quote that profile's config. A config-backend outage is a ``SystemExit`` by design, so it is
+    named here too."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+    try:
+        return owner.copy().run(fn)
+    except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- one profile never blocks the others
+        logger.warning("[TTS] lease owner %s failed (%s); other owners continue", what, type(exc).__name__)
+        return fallback
+
+
 def _owners_keep_warm_seconds_locked() -> float:
-    """The longest window any owner's profile asks for, each read in (a copy of) its own context."""
-    return max((owner.copy().run(_keep_warm_seconds) for owner in _tts_owners.values()),
-               default=_DEFAULT_KEEP_WARM_SECONDS)
+    """The longest window any owner's profile asks for, each read in its own context; an owner whose
+    window cannot be read counts as the default window."""
+    return max((_run_as_owner(owner, _keep_warm_seconds, _DEFAULT_KEEP_WARM_SECONDS, "keep-warm read")
+                for owner in _tts_owners.values()), default=_DEFAULT_KEEP_WARM_SECONDS)
 
 
 def _keep_warm_seconds() -> float:
@@ -209,8 +224,10 @@ def _release_after_keep_warm(generation: int) -> int:
             _keep_warm_timer = None
             owners = list(_tts_owners.values())
             _tts_owners.clear()
-        # A copy per run: a Context already entered by another thread cannot be entered again.
-        return sum(owner.copy().run(release_tts_provider)["released"] for owner in owners)
+        released = sum(_run_as_owner(owner, release_tts_provider, {"released": 0}, "release")["released"]
+                       for owner in owners)
+        # Local caches need no owner config: drop whatever a failed owner release left resident.
+        return released + sum(release_tts_provider(name)["released"] for name in _LOCAL_TTS_MODEL_CACHES)
 
 
 def acquire_tts_lease(lease: str, tts_config: Optional[dict[str, Any]] = None) -> dict[str, Any]:

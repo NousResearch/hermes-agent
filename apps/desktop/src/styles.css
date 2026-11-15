@@ -1850,6 +1850,17 @@ body.guest-pointer-lock :is(webview, iframe) {
   margin-top: 0;
 }
 
+/* Ordered-list markers paint inside the list's own inline-start padding, and the
+   thread body clips at its left edge (.aui-md is overflow-hidden). Prose's
+   1.625em budget is measured for a proportional face: at the chat size a
+   two-digit marker ("10.") plus its gap is wider than that, so its first digit is
+   cut in half, and a monospace reply font clips every marker. The extra gutter is
+   spent on the marker, so an ordered list indents slightly more than a bullet
+   list instead of losing its numbers. */
+[data-slot='aui_assistant-message-content'] .aui-md :where(ol) {
+  padding-inline-start: 2.4em;
+}
+
 /* Prose, tools, todos, and thinking all share one left edge (the message
    content's --message-text-indent). No extra prose indent — a single gutter
    reads cleaner than a ragged tool-vs-reply column. */

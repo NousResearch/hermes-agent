@@ -61,10 +61,17 @@ def test_semicolon_in_libpq_query_password_does_not_leak_suffix():
     # libpq separates URI query keys with '&', not ';'.
     url = "postgresql://db/app?password=Zq7x9;LmP2kk&sslmode=require"
     assert redact_sensitive_text(url) == "postgresql://db/app?password=***&sslmode=require"
-    # Other DB drivers may treat ';key=value' as a sibling field.
+    # A ``;k=v`` run inside the password is still password data; masking a trailing ``;sslmode=…`` with
+    # it is the fail-closed side of the same rule.
+    assert redact_sensitive_text(
+        "postgresql://db/app?password=Zq7x9;a=LmP2kk&sslmode=require"
+    ) == "postgresql://db/app?password=***&sslmode=require"
     assert redact_sensitive_text(
         "mysql://db/app?password=Zq7x9LmP2kk;sslmode=require"
-    ) == "mysql://db/app?password=***;sslmode=require"
+    ) == "mysql://db/app?password=***"
+    assert redact_sensitive_text(
+        "postgresql://db/app?user=u;password=Zq7x9LmP2kk"
+    ) == "postgresql://db/app?user=u;password=***"
 
 
 def test_repeated_db_schemes_without_query_scan_in_linear_time():

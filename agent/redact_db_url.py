@@ -30,11 +30,10 @@ def _is_userinfo_placeholder(password: str) -> bool:
 _DB_URL_QUERY_RE = re.compile(
     r"(?:postgres(?:ql)?|mysql|mariadb|mongodb|rediss?|amqps?)(?:\+[a-z0-9]++)?://(?:[^\s?#:]|:(?!//))*+\?[^\s#\"<>]+",
     re.IGNORECASE)  # the authority/path run stops at the next ``://``: linear on repeated schemes
-# libpq URI query values may contain ';'; preserve it unless it opens a sibling ';key=value'.
-_QUERY_PW_PARAM_RE = re.compile(
-    r"([?&;](?:(?:ssl)?password|passwd|pwd)=)"
-    r"((?:[^&;#\s\"'<>]|;(?![a-z_][a-z0-9_.-]*=))++)",
-    re.IGNORECASE)
+# The value runs to the next ``&``, ``#`` or whitespace: these URL schemes separate query params with
+# ``&``, so a ``;`` is password data even before ``k=v`` (``password=Zq7x;a=b``). Quotes and ``<>`` still
+# end it (JSON / autolink context). Fail closed: a ``;sslmode=…`` after the password is masked with it.
+_QUERY_PW_PARAM_RE = re.compile(r"([?&;](?:(?:ssl)?password|passwd|pwd)=)([^&#\s\"'<>]+)", re.IGNORECASE)
 
 
 def redact_db_url_query_passwords(text: str) -> str:

@@ -62,7 +62,9 @@ def test_session_usage_fetches_credits_in_the_sessions_profile_scope(two_homes, 
         calls.append((_nous_portal_env_override(), Path(get_hermes_home()).resolve(), token))
         raise RuntimeError("no network in tests")  # fail-open: session.usage still answers
 
+    # Both Portal reads: a session off a Nous route (this empty config) reads with the stored token only.
     monkeypatch.setattr("hermes_cli.nous_account.get_nous_portal_account_info", fake_account_info)
+    monkeypatch.setattr("hermes_cli.nous_account.stored_token_account_info", fake_account_info)
     monkeypatch.setattr(server, "_sessions", {"sa": _session(None), "sb": _session(str(b))})
 
     for sid in ("sa", "sb"):

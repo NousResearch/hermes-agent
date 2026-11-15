@@ -40,6 +40,7 @@ def test_idle_due_session_compacts_with_the_cache_expiry_trigger_and_running_one
     import agent.cache_expiry_compaction as decision
 
     monkeypatch.setattr(decision, "claim_cache_expiry_compaction", lambda agent, **k: True)
+    monkeypatch.setattr(decision, "window_still_warm", lambda agent, **k: True)
     idle_agent, busy_agent = _Agent(), _Agent()
     idle, busy = _session(idle_agent), _session(busy_agent, running=True)
     monkeypatch.setattr(server, "_sessions", {"idle": idle, "busy": busy})

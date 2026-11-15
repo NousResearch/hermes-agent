@@ -66,7 +66,9 @@ _LEGACY_PREFERENCE = ("firecrawl", "parallel", "tavily", "perplexity", "exa", "s
 # resort, i.e. zero web credentials and no importable ddgs. Unpinned keyless
 # traffic round-robins across the ring per request; an explicit `hermes tools`
 # pick bypasses this walk. Disable with ``web.keyless_fallback: false``.
-_KEYLESS_PREFERENCE = ("exa", "parallel", "firecrawl", "keenable")
+# Scrapling is the local rung (no key, no rate limit); it must stay in sync
+# with keyless_mcp._KEYLESS_RING.
+_KEYLESS_PREFERENCE = ("scrapling", "exa", "parallel", "firecrawl", "keenable")
 
 
 def _keyless_preference() -> tuple:

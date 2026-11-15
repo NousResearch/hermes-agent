@@ -188,8 +188,6 @@ async def test_binding_is_checked_in_actual_producer_snapshot(tmp_path, monkeypa
     original = adapter._admit_agent_run
 
     async def changed_after_binding(*args, **kwargs):
-        # The worker's earlier binding check already passed. Exercise prepare_native's
-        # actual snapshot, not a fake result from the coalescer binding helper.
         route['prompt'] = 'changed after binding'
         return await original(*args, **kwargs)
 

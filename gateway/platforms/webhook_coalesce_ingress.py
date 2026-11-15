@@ -27,10 +27,10 @@ async def dispatch_received(adapter, *, request, route_config, route_name, profi
         now = time.time()
         coalesce = route_config.get('coalesce')
         non_durable = bool(route_config.get('deliver_only') or route_config.get('cron_job'))
-        coalescing = (isinstance(coalesce, dict) and group_key(
-            route_name, coalesce['key'], payload, event_type, adapter._render_prompt) is not None)
+        key = (group_key(route_name, coalesce['key'], payload, event_type, adapter._render_prompt)
+               if isinstance(coalesce, dict) else None)
         seen_at = adapter._seen_deliveries.get(identity)
-        if ((non_durable or coalescing) and seen_at is not None
+        if ((non_durable or key is not None) and seen_at is not None
                 and now - seen_at < adapter._idempotency_ttl):
             return duplicate(delivery_id)
         try:
@@ -46,12 +46,10 @@ async def dispatch_received(adapter, *, request, route_config, route_name, profi
         if route_config.get('deliver_only'):
             return await adapter._handle_deliver_only(prompt, payload, route_config, route_name,
                                                       event_type, delivery_id, profile)
-        if isinstance(coalesce, dict):
-            response = await accept_coalesced(adapter._coalescer, route_name=route_name, coalesce=coalesce,
+        if key is not None:
+            return await accept_coalesced(adapter._coalescer, route_name=route_name, coalesce=coalesce, key=key,
                 payload=payload, event_type=event_type, prompt=prompt, delivery_id=delivery_id, profile=profile,
                 revision=revision)
-            if response is not None:
-                return response
         response = await adapter._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt,
                                                      event_type, delivery_id, now)
         if response.status in (200, 202):

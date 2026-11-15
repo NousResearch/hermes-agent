@@ -113,3 +113,71 @@ async def test_flush_joins_http_accept_before_final_discovery(monkeypatch, exist
         release.set()
         await asyncio.gather(*[task for task in (request, flush) if task is not None], return_exceptions=True)
         await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_resolved_group_key_is_rendered_once(monkeypatch):
+    adapter = _make_adapter(routes={'pr': _coalesce_route(key='pull_request.number', window_seconds=60)})
+    _capture_admissions(adapter, monkeypatch)
+    render = adapter._render_prompt
+    keys = []
+
+    def count(template, *args):
+        if template == '{pull_request.number}':
+            keys.append(template)
+        return render(template, *args)
+
+    monkeypatch.setattr(adapter, '_render_prompt', count)
+    try:
+        response = await adapter._handle_webhook(_mock_request(_payload(7), delivery_id='once'))
+        assert response.status == 202 and len(keys) == 1
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_failed_claim_and_defer_wait_before_relaunch(monkeypatch):
+    from gateway.platforms import webhook_coalesce_recovery as recovery
+    route = _coalesce_route(key='pull_request.number', window_seconds=0.001)
+    adapter = _make_adapter(routes={'pr': route, 'ordinary': {'secret': 'INSECURE_NO_AUTH', 'prompt': '{action}'}})
+    admissions = _capture_admissions(adapter, monkeypatch)
+    store = adapter._coalescer.store
+    claim, defer = store.claim, store.defer
+    sleeping, release = asyncio.Event(), asyncio.Event()
+    real_sleep = asyncio.sleep
+    attempts = []
+
+    def fail_claim(*args):
+        attempts.append('claim')
+        raise OSError('controlled write failure')
+
+    def fail_defer(*args):
+        attempts.append('defer')
+        raise OSError('controlled write failure')
+
+    async def cooldown(delay, *args, **kwargs):
+        if delay == recovery.RETRY_SECONDS:
+            sleeping.set()
+            await release.wait()
+        else:
+            await real_sleep(delay, *args, **kwargs)
+
+    monkeypatch.setattr(store, 'claim', fail_claim)
+    monkeypatch.setattr(store, 'defer', fail_defer)
+    monkeypatch.setattr(recovery.asyncio, 'sleep', cooldown)
+    try:
+        response = await adapter._handle_webhook(_mock_request(_payload(7), delivery_id='backoff'))
+        assert response.status == 202
+        await asyncio.wait_for(sleeping.wait(), 2)
+        assert attempts == ['claim', 'defer'] and not admissions
+        unrelated = await adapter._handle_webhook(_mock_request(_payload(8), route_name='ordinary',
+                                                               delivery_id='unrelated'))
+        assert unrelated.status == 202 and len(admissions) == 1
+        monkeypatch.setattr(store, 'claim', claim)
+        monkeypatch.setattr(store, 'defer', defer)
+        release.set()
+        await async_wait_until(lambda: len(admissions) == 2, timeout=2, what='recovery after write failure')
+        assert admissions[-1].message_id == 'backoff'
+    finally:
+        release.set()
+        await adapter.disconnect()

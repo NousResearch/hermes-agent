@@ -9,7 +9,7 @@ from datetime import datetime, UTC
 
 from agent.async_utils import consume_detached_task_result, drain_task, drain_thread
 from gateway.platforms.webhook_coalesce import (
-    DEFAULT_MAX_WAIT_SECONDS, DEFAULT_WINDOW_SECONDS, group_key, prompt_with_note,
+    DEFAULT_MAX_WAIT_SECONDS, DEFAULT_WINDOW_SECONDS, prompt_with_note,
 )
 from gateway.platforms.webhook_coalesce_binding import Binding, binding_from, ensure_store_identity, expected_binding
 from gateway.platforms.webhook_coalesce_store import CoalesceStore
@@ -56,12 +56,9 @@ class DurableWebhookCoalescer:
         if not self._closed and (self._worker is None or self._worker.done()):
             self._worker = asyncio.create_task(self._recover())
 
-    async def enqueue(self, *, route_name, coalesce, payload, event_type, prompt, delivery_id, profile, revision):
+    async def enqueue(self, *, route_name, coalesce, key, payload, event_type, prompt, delivery_id, profile, revision):
         if self._closed:
             return 'unavailable'
-        key = group_key(route_name, coalesce['key'], payload, event_type, self.adapter._render_prompt)
-        if key is None:
-            return None
         from gateway.platforms.webhook import _WebhookDeliveryIdentity
         identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
         bound = await self.binding(route_name, profile, delivery_id, payload)
@@ -128,8 +125,13 @@ class DurableWebhookCoalescer:
         except asyncio.CancelledError:
             raise
         except Exception:
-            if await drain_thread(self.store.defer, batch_id, RETRY_SECONDS, 'admission_unavailable'):
-                logger.warning('[webhook] Coalesced batch held; admission unavailable', exc_info=True)
+            logger.debug('[webhook] Coalesced handoff failed; retaining work', exc_info=True)
+            try:
+                if await drain_thread(self.store.defer, batch_id, RETRY_SECONDS, 'admission_unavailable'):
+                    logger.warning('[webhook] Coalesced batch held; admission unavailable', exc_info=True)
+            except Exception:
+                logger.exception('[webhook] Coalescing retry could not be persisted; pending work retained')
+                await asyncio.sleep(RETRY_SECONDS)
 
     async def _admit(self, row):
         work = json.loads(row['work'])
@@ -224,8 +226,6 @@ async def accept_coalesced(coalescer, **kwargs):
     except Exception:
         logger.exception('[webhook] Could not persist coalesced delivery')
         outcome = 'unavailable'
-    if outcome is None:
-        return None
     if outcome not in {'coalesced', 'duplicate'}:
         return web.json_response({'error': 'Coalescing unavailable; retry this delivery'}, status=503)
     return web.json_response({'status': outcome, 'route': kwargs['route_name'],

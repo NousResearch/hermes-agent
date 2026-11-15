@@ -33,7 +33,6 @@ expected_binding: ContextVar[Binding | None] = ContextVar('webhook_coalesced_bin
 
 
 def ensure_store_identity(db):
-    """Older upgraded stores may predate fresh-store provenance metadata."""
     rows = db._read_all("SELECT value FROM state_meta WHERE key='store_instance_id'")
     if rows:
         return rows[0]['value']

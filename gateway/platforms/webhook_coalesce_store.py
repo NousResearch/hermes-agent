@@ -94,7 +94,6 @@ class CoalesceStore:
             return [dict(row) for row in conn.execute('SELECT id,due FROM batches ORDER BY due')]
 
     def pending(self):
-        """Explicit diagnostic read, not part of the hot-path scheduler."""
         with self.connection(write=False) as conn:
             return [dict(row) for row in conn.execute('SELECT * FROM batches ORDER BY first_at')]
 

@@ -417,7 +417,6 @@ async def test_a_non_durable_webhook_for_a_parked_profile_is_refused_before_its_
 
 @pytest.mark.asyncio
 async def test_a_coalesced_batch_whose_admission_fails_retains_its_work(tmp_path, monkeypatch):
-    """An acknowledged batch is retained for retry, not left dependent on a provider resend."""
     from gateway.platforms import webhook_ingress
     from gateway.platforms.webhook import _INSECURE_NO_AUTH
     homes = _homes(tmp_path, monkeypatch)

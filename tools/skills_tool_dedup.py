@@ -11,9 +11,13 @@ import hashlib
 import json
 import threading
 
-_skill_view_tracker: dict[str, dict[tuple, str]] = globals().get("_skill_view_tracker") or {}
+_existing_skill_tracker = globals().get("_skill_view_tracker")
+_skill_view_tracker: dict[str, dict[tuple, str]] = (
+    _existing_skill_tracker if isinstance(_existing_skill_tracker, dict) else {}
+)
+_existing_skill_epoch_history = globals().get("_skill_view_epoch_history")
 _skill_view_epoch_history: dict[str, dict[tuple, tuple[str, int, str]]] = (
-    globals().get("_skill_view_epoch_history") or {}
+    _existing_skill_epoch_history if isinstance(_existing_skill_epoch_history, dict) else {}
 )
 _skill_view_tracker_lock = globals().get("_skill_view_tracker_lock") or threading.Lock()
 _SKILL_VIEW_DEDUP_CAP = 200
@@ -211,13 +215,17 @@ def reset_skill_view_dedup(
             _skill_view_tracker.clear()
             _skill_view_epoch_history.clear()
         else:
-            _skill_view_tracker.pop(str(task_id), None)
+            existing = _skill_view_tracker.get(str(task_id))
+            if isinstance(existing, dict):
+                existing.clear()
     if task_id is not None and surviving_messages:
         seed_skill_view_dedup_from_messages(task_id, surviving_messages)
 
 
 def migrate_skill_view_state(old_task_id: str | None, new_task_id: str | None) -> None:
-    """Carry skill_view dedup and cross-epoch load history across session rotation."""
+    """Carry skill_view dedup and cross-epoch load history across session rotation.
+    Shares the underlying dicts across ``old_tid`` and ``new_tid`` so mid-turn calls
+    bound to ``effective_task_id`` and subsequent turns bound to ``new_tid`` stay in sync."""
     if not old_task_id or not new_task_id:
         return
     old_tid = str(old_task_id)
@@ -225,18 +233,28 @@ def migrate_skill_view_state(old_task_id: str | None, new_task_id: str | None) -
     if old_tid == new_tid:
         return
     with _skill_view_tracker_lock:
-        old_cache = _skill_view_tracker.pop(old_tid, None)
-        if old_cache:
-            dst_cache = _skill_view_tracker.setdefault(new_tid, {})
+        old_cache = _skill_view_tracker.get(old_tid)
+        dst_cache = _skill_view_tracker.setdefault(new_tid, {})
+        if old_cache and old_cache is not dst_cache:
             for k, v in old_cache.items():
                 dst_cache.setdefault(k, v)
-        old_epochs = _skill_view_epoch_history.pop(old_tid, None)
-        if old_epochs:
-            dst_epochs = _skill_view_epoch_history.setdefault(new_tid, {})
+            for k, v in list(_skill_view_tracker.items()):
+                if v is old_cache:
+                    _skill_view_tracker[k] = dst_cache
+        else:
+            _skill_view_tracker[old_tid] = dst_cache
+        old_epochs = _skill_view_epoch_history.get(old_tid)
+        dst_epochs = _skill_view_epoch_history.setdefault(new_tid, {})
+        if old_epochs and old_epochs is not dst_epochs:
             for k, (digest, loads, compact_json) in old_epochs.items():
                 prev = dst_epochs.get(k)
                 if prev is None or (prev[0] == digest and loads > prev[1]):
                     dst_epochs[k] = (digest, loads, compact_json)
+            for k, v in list(_skill_view_epoch_history.items()):
+                if v is old_epochs:
+                    _skill_view_epoch_history[k] = dst_epochs
+        else:
+            _skill_view_epoch_history[old_tid] = dst_epochs
 
 
 def clear_skill_view_state(task_id: str | None = None) -> None:

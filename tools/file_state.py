@@ -86,10 +86,11 @@ class FileStateRegistry:
     def __init__(self) -> None:
         self._reads: dict[str, dict[str, ReadStamp]] = defaultdict(dict)
         self._last_writer: dict[str, tuple[str, float]] = {}
+        self._lineage_peers: dict[str, set[str]] = {}
         self._path_locks: dict[str, threading.Lock] = {}
         self._path_lock_users: dict[str, int] = {}
         self._meta_lock = threading.Lock()  # guards _path_locks
-        self._state_lock = threading.Lock()  # guards _reads + _last_writer
+        self._state_lock = threading.Lock()  # guards _reads + _last_writer + _lineage_peers
 
     @contextmanager
     def lock_path(self, resolved: str):
@@ -161,7 +162,10 @@ class FileStateRegistry:
 
         if last_writer is not None:
             writer_tid, writer_ts = last_writer
-            if writer_tid != task_id:
+            same_lineage = (writer_tid == task_id) or (
+                writer_tid in getattr(self, "_lineage_peers", {}).get(task_id, ())
+            )
+            if not same_lineage:
                 if stamp is None:
                     return (
                         f"{resolved} was modified by sibling subagent "
@@ -206,8 +210,9 @@ class FileStateRegistry:
         paths_set = set(paths)
         out: dict[str, list[str]] = defaultdict(list)
         with self._state_lock:
+            peers = getattr(self, "_lineage_peers", {}).get(exclude_task_id, ())
             for p, (writer_tid, ts) in self._last_writer.items():
-                if writer_tid != exclude_task_id and ts >= since_ts and p in paths_set:
+                if writer_tid != exclude_task_id and writer_tid not in peers and ts >= since_ts and p in paths_set:
                     out[writer_tid].append(p)
         return dict(out)
 
@@ -226,23 +231,42 @@ class FileStateRegistry:
         same scratch path as "modified by sibling subagent" hours after the writer exited."""
         with self._state_lock:
             self._reads.pop(task_id, None)
+            peers_map = getattr(self, "_lineage_peers", None)
+            if isinstance(peers_map, dict):
+                peers = peers_map.pop(task_id, None)
+                if isinstance(peers, set):
+                    peers.discard(task_id)
             for p in [p for p, (writer_tid, _ts) in self._last_writer.items() if writer_tid == task_id]:
                 del self._last_writer[p]
 
     def migrate_task(self, old_task_id: str, new_task_id: str) -> None:
-        """Carry read stamps and writer claims across session rotation (old_session_id -> new_session_id)."""
+        """Carry read stamps and writer claims across session rotation (old_session_id -> new_session_id).
+        Shares the underlying read-stamp dict and links both IDs in ``_lineage_peers`` so mid-turn
+        tool calls still bound to ``effective_task_id`` (``old_task_id``) and subsequent turns bound
+        to ``new_task_id`` see identical read/write stamps and never flag each other as siblings."""
         if not old_task_id or not new_task_id or old_task_id == new_task_id:
             return
         with self._state_lock:
-            old_reads = self._reads.pop(old_task_id, None)
-            if old_reads:
-                dst = self._reads.setdefault(new_task_id, {})
+            peers_map = getattr(self, "_lineage_peers", None)
+            if not isinstance(peers_map, dict):
+                peers_map = {}
+                self._lineage_peers = peers_map
+            merged_peers = set(peers_map.get(old_task_id) or {old_task_id}) | set(
+                peers_map.get(new_task_id) or {new_task_id}
+            )
+            for pid in merged_peers:
+                peers_map[pid] = merged_peers
+            old_reads = self._reads.get(old_task_id)
+            dst = self._reads.setdefault(new_task_id, {})
+            if old_reads and old_reads is not dst:
                 for p, stamp in old_reads.items():
                     existing = dst.get(p)
                     if existing is None or stamp[1] >= existing[1]:
                         dst[p] = stamp
+            for pid in merged_peers:
+                self._reads[pid] = dst
             for p, (writer_tid, ts) in list(self._last_writer.items()):
-                if writer_tid == old_task_id:
+                if writer_tid in merged_peers:
                     self._last_writer[p] = (new_task_id, ts)
 
     def clear(self) -> None:
@@ -250,12 +274,21 @@ class FileStateRegistry:
         with self._state_lock:
             self._reads.clear()
             self._last_writer.clear()
+            if hasattr(self, "_lineage_peers"):
+                self._lineage_peers.clear()
         with self._meta_lock:
             self._path_locks.clear()
             self._path_lock_users.clear()
 
 
-_registry = FileStateRegistry()
+_existing_registry = globals().get("_registry")
+if isinstance(_existing_registry, object) and hasattr(_existing_registry, "_reads"):
+    _existing_registry.__class__ = FileStateRegistry
+    _registry: FileStateRegistry = _existing_registry  # type: ignore[assignment]
+    if not isinstance(getattr(_registry, "_lineage_peers", None), dict):
+        _registry._lineage_peers = {}
+else:
+    _registry = FileStateRegistry()
 
 
 def get_registry() -> FileStateRegistry:

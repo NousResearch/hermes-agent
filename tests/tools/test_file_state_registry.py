@@ -267,13 +267,21 @@ class FileToolsIntegrationTests(unittest.TestCase):
         from tools.file_tools import migrate_file_ops_state
 
         p = self._write_seed("rotated.txt", "v1\n")
+        rp = os.path.realpath(p)
         self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="sess_parent")))
         self.assertNotIn("error", json.loads(write_file_tool(path=p, content="v2\n", task_id="sess_parent")))
 
         migrate_file_ops_state("sess_parent", "sess_child")
-        self.assertIsNone(file_state.check_stale("sess_child", p))
+        self.assertIsNone(file_state.check_stale("sess_child", rp))
+        self.assertIsNone(file_state.check_stale("sess_parent", rp))
+        # Mid-turn write under effective_task_id (sess_parent) after rotation must not block sess_child
+        w_mid = json.loads(write_file_tool(path=p, content="v2_mid\n", task_id="sess_parent"))
+        self.assertNotIn("error", w_mid)
+        self.assertNotIn("_warning", w_mid)
+        self.assertIsNone(file_state.check_stale("sess_child", rp))
         w_child = json.loads(write_file_tool(path=p, content="v3\n", task_id="sess_child"))
         self.assertNotIn("error", w_child)
+        self.assertNotIn("_warning", w_child)
 
     def test_terminal_lifecycle_cache_invalidation_preserves_write_baselines(self):
         from tools.terminal_tool_lifecycle import _clear_file_ops_cache
@@ -302,7 +310,23 @@ class FileToolsIntegrationTests(unittest.TestCase):
         self.assertEqual(file_state.known_reads("fork_uuid_1"), [])
         self.assertEqual(file_state.known_reads("parent_sess_1"), [])
 
+    def test_module_reload_preserves_registry_and_read_tracker_identity(self):
+        import importlib
+        import tools.file_tools_read_tracking as ftrt
 
+        p = self._write_seed("reload_keep.py", "x = 1\n")
+        self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="reload_sess")))
+        reg_before = file_state.get_registry()
+        tracker_before = ftrt._read_tracker
+
+        importlib.reload(file_state)
+        importlib.reload(ftrt)
+
+        self.assertIs(file_state.get_registry(), reg_before)
+        self.assertIs(ftrt._read_tracker, tracker_before)
+        rp = os.path.realpath(p)
+        self.assertIn(rp, file_state.known_reads("reload_sess"))
+        self.assertIn(rp, ftrt._read_tracker.get("reload_sess", {}).get("full_write_baselines", {}))
 
 
 if __name__ == "__main__":

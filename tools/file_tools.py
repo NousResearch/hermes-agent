@@ -254,8 +254,9 @@ def _is_expected_write_exception(exc: Exception) -> bool:
 
 
 # ── ShellFileOperations per terminal environment ─────────────────────────
-_file_ops_lock = threading.Lock()
-_file_ops_cache: dict = {}
+_file_ops_lock = globals().get("_file_ops_lock") or threading.Lock()
+_existing_file_ops_cache = globals().get("_file_ops_cache")
+_file_ops_cache: dict = _existing_file_ops_cache if isinstance(_existing_file_ops_cache, dict) else {}
 
 
 def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):

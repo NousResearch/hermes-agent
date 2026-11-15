@@ -64,13 +64,23 @@ class _PerAgentTracker(dict):
         return super().pop(self._key(task_id), *default)
 
 
-_read_tracker_lock = threading.Lock()
-_read_tracker: dict = _PerAgentTracker()
+_read_tracker_lock = globals().get("_read_tracker_lock") or threading.Lock()
+_existing_read_tracker = globals().get("_read_tracker")
+if isinstance(_existing_read_tracker, dict):
+    _existing_read_tracker.__class__ = _PerAgentTracker
+    _read_tracker: dict = _existing_read_tracker
+else:
+    _read_tracker = _PerAgentTracker()
 
 # Consecutive patch failures per (task_id, resolved_path); escalates the hint
 # when the model keeps failing the same file. Reset on a successful patch.
-_patch_failure_lock = threading.Lock()
-_patch_failure_tracker: dict = _PerAgentTracker()  # {task_id: {resolved_path: count}}
+_patch_failure_lock = globals().get("_patch_failure_lock") or threading.Lock()
+_existing_patch_failure_tracker = globals().get("_patch_failure_tracker")
+if isinstance(_existing_patch_failure_tracker, dict):
+    _existing_patch_failure_tracker.__class__ = _PerAgentTracker
+    _patch_failure_tracker: dict = _existing_patch_failure_tracker
+else:
+    _patch_failure_tracker = _PerAgentTracker()  # {task_id: {resolved_path: count}}
 _PATCH_FAILURE_PATHS_CAP = 64
 
 # Only the most recent reads matter for dedup, loop detection and external-edit
@@ -311,7 +321,10 @@ def seed_file_dedup_from_messages(task_id: str | None, messages: list | None) ->
 
 
 def migrate_file_read_state(old_task_id: str | None, new_task_id: str | None) -> None:
-    """Carry per-task read/write tracking across session rotation (old_session_id -> new_session_id)."""
+    """Carry per-task read/write tracking across session rotation (old_session_id -> new_session_id).
+    Shares the underlying tracking dict across ``old_tid`` and ``new_tid`` so mid-turn tool calls
+    still bound to ``effective_task_id`` (``old_tid``) and subsequent turns bound to ``new_tid``
+    observe and mutate the same read/write baselines."""
     if not old_task_id or not new_task_id:
         return
     old_tid = str(old_task_id)
@@ -319,27 +332,36 @@ def migrate_file_read_state(old_task_id: str | None, new_task_id: str | None) ->
     if old_tid == new_tid:
         return
     with _read_tracker_lock:
-        old_data = _read_tracker.pop(old_tid, None)
-        if old_data:
-            dst = _read_tracker.get(new_tid)
-            if dst is None:
-                _read_tracker[new_tid] = old_data
-            else:
-                for map_key in ("dedup", "dedup_hits", "full_write_baselines", "not_found_cache"):
-                    src_map = old_data.get(map_key)
-                    if isinstance(src_map, dict) and src_map:
-                        dst_map = dst.setdefault(map_key, {})
-                        for k, v in src_map.items():
-                            dst_map.setdefault(k, v)
-                src_ts = old_data.get("read_timestamps")
-                if isinstance(src_ts, dict) and src_ts:
-                    dst_ts = dst.setdefault("read_timestamps", {})
-                    for k, v in src_ts.items():
-                        if k not in dst_ts or v > dst_ts[k]:
-                            dst_ts[k] = v
-                src_gen = old_data.get("dedup_generation_reads")
-                if isinstance(src_gen, set) and src_gen:
-                    dst.setdefault("dedup_generation_reads", set()).update(src_gen)
+        old_data = _read_tracker.get(old_tid)
+        dst = _read_tracker.get(new_tid)
+        if old_data is None and dst is None:
+            dst = {"last_key": None, "consecutive": 0, "dedup": {}, "dedup_generation_reads": set()}
+            _read_tracker[old_tid] = dst
+            _read_tracker[new_tid] = dst
+        elif old_data is not None and dst is None:
+            dst = old_data
+            _read_tracker[new_tid] = dst
+        elif old_data is None and dst is not None:
+            _read_tracker[old_tid] = dst
+        elif old_data is not None and dst is not None and old_data is not dst:
+            for map_key in ("dedup", "dedup_hits", "full_write_baselines", "not_found_cache", "read_coverage"):
+                src_map = old_data.get(map_key)
+                if isinstance(src_map, dict) and src_map:
+                    dst_map = dst.setdefault(map_key, {})
+                    for k, v in src_map.items():
+                        dst_map.setdefault(k, v)
+            src_ts = old_data.get("read_timestamps")
+            if isinstance(src_ts, dict) and src_ts:
+                dst_ts = dst.setdefault("read_timestamps", {})
+                for k, v in src_ts.items():
+                    if k not in dst_ts or v > dst_ts[k]:
+                        dst_ts[k] = v
+            src_gen = old_data.get("dedup_generation_reads")
+            if isinstance(src_gen, set) and src_gen:
+                dst.setdefault("dedup_generation_reads", set()).update(src_gen)
+            for k, v in list(_read_tracker.items()):
+                if v is old_data:
+                    _read_tracker[k] = dst
     from tools import file_state
     file_state.get_registry().migrate_task(old_tid, new_tid)
 

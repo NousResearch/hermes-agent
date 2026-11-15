@@ -1664,6 +1664,11 @@ def _adopt_live_compression_child(
         from tools.skills_tool_dedup import migrate_skill_view_state
         migrate_file_ops_state(parent_session_id, child_session_id)
         migrate_skill_view_state(parent_session_id, child_session_id)
+        _cur_tid = getattr(agent, "_current_task_id", None)
+        if isinstance(_cur_tid, str) and _cur_tid and _cur_tid not in (parent_session_id, child_session_id):
+            _rot_hist.add(_cur_tid)
+            migrate_file_ops_state(_cur_tid, child_session_id)
+            migrate_skill_view_state(_cur_tid, child_session_id)
     _rebind_session_context(child_session_id)
     _hand_off_metrics_segment(parent_session_id, child_session_id)
     agent._session_db_created = True
@@ -3323,6 +3328,11 @@ def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: An
         from tools.skills_tool_dedup import migrate_skill_view_state
         migrate_file_ops_state(old_session_id, agent.session_id)
         migrate_skill_view_state(old_session_id, agent.session_id)
+        _cur_tid = getattr(agent, "_current_task_id", None)
+        if isinstance(_cur_tid, str) and _cur_tid and _cur_tid not in (old_session_id, agent.session_id):
+            _rot_hist.add(_cur_tid)
+            migrate_file_ops_state(_cur_tid, agent.session_id)
+            migrate_skill_view_state(_cur_tid, agent.session_id)
     with _swallow('Could not carry rejected thinking on compression: %s'):
         from agent.anthropic_thinking_replay import carry_rejected_thinking_to_session
         carry_rejected_thinking_to_session(agent, old_session_id)

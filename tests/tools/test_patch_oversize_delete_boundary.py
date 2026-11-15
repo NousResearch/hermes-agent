@@ -1,5 +1,8 @@
 """The oversized deletion must validate at the delete boundary."""
 import hashlib
+import sys
+
+import pytest
 
 from tools import file_operations
 from tools.environments.local import LocalEnvironment
@@ -28,6 +31,7 @@ def test_same_size_replacement_at_delete_boundary_survives(tmp_path, monkeypatch
     assert path.read_text() == 'b' * 1024
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require elevated privileges on Windows")
 def test_delete_oversized_symlink_preserves_target(tmp_path, monkeypatch):
     monkeypatch.setattr(file_operations, '_RAW_READ_MAX_BYTES', 64)
     target = tmp_path / 'large-target'
@@ -45,6 +49,7 @@ def test_delete_oversized_symlink_preserves_target(tmp_path, monkeypatch):
     assert target.read_text() == 'a' * 1024
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require elevated privileges on Windows")
 def test_digest_bound_delete_matches_and_rejects_changed_target(tmp_path):
     target = tmp_path / 'target'
     target.write_bytes(b'bytes')

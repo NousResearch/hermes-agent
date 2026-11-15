@@ -139,6 +139,11 @@ class FooteredReply(str):
         instance.runtime_footer = footer
         return instance
 
+    def __reduce__(self):
+        """Preserve the footer when event publication deep-copies the response."""
+        text = self.removesuffix(f"\n\n{self.runtime_footer}")
+        return type(self), (text, self.runtime_footer)
+
 
 class _FooterCaption(str):
     """A photo caption that carries the runtime footer (``caption_with_footer``)."""

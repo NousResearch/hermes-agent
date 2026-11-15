@@ -5,6 +5,7 @@ whose only text is the footer) it goes on the last photo's caption, on adapters 
 ``media_caption_limit`` (Telegram: 1024) and only when it fits. Everything else is unchanged.
 """
 
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,15 @@ from gateway.runtime_footer import FooteredReply
 from tests.gateway.test_run_progress_topics import _make_runner
 
 FOOTER = "model-x · 29%"
+
+
+def test_footed_reply_deepcopy_preserves_text_and_footer():
+    response = FooteredReply("Delivered", FOOTER)
+
+    copied = deepcopy(response)
+
+    assert copied == response
+    assert copied.runtime_footer == FOOTER
 
 
 class _Adapter(BasePlatformAdapter):

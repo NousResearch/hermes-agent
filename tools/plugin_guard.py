@@ -11,8 +11,11 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 from __future__ import annotations
 
 import ast
+import codecs
+import io
 import os
 import subprocess
+import tokenize
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
@@ -175,43 +178,60 @@ def _main_guard_body_lines(file_path: Path) -> set[int]:
 
 # Nodes that can own a docstring: only the first statement of a module, class or function is one.
 _DOCSTRING_OWNERS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-_DOCSTRING_READERS = frozenset({"__doc__", "getdoc"})
+
+
+def _declares_non_utf8_source(file_path: Path) -> bool:
+    """A PEP 263 cookie (``# coding: utf-7``) makes CPython run a different text than the UTF-8 parse
+    the docstring spans come from, so those spans say nothing about what executes. Fail closed."""
+    try:
+        raw = file_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        codec = tokenize.detect_encoding(io.BytesIO(raw).readline)[0]
+        return codecs.lookup(codec).name not in ("utf-8", "utf-8-sig")
+    except (OSError, SyntaxError, LookupError, UnicodeError):
+        return True
 
 
 def _docstring_lines(file_path: Path) -> set[int]:
-    """Return the lines holding module/class/function docstrings.
+    """Return the lines holding module/class/function docstrings and nothing else.
 
     A docstring is prose that documents a defense for a reader, so its findings take the same
     one-step cap as a whole-line comment (#155823). ``ast`` reports a docstring only for the first
-    statement of a module/class/function, so a triple-quoted *constant* (``PAYLOAD = \"\"\"...
-    \"\"\"``) is not included: prose cannot execute, but a string the code can hand to ``exec`` can.
-    Invalid Python returns no lines, keeping every finding at its conservative severity.
+    statement of a module/class/function, so a triple-quoted *constant* (``PAYLOAD = \\"\\"\\"...
+    \\"\\"\\"``) is not included: prose cannot execute, but a string the code can hand to ``exec`` can.
+    A line any other node also occupies (``\\"\\"\\"x\\"\\"\\"; os.system(...)``, a default argument on a
+    multi-line ``def`` header) is code. Invalid Python returns no lines, keeping every finding at
+    its conservative severity.
     """
     tree = _parse_python_source(file_path)
-    if tree is None:
+    if tree is None or _declares_non_utf8_source(file_path):
         return set()
     lines: set[int] = set()
     docstrings: set[int] = set()
     for node in ast.walk(tree):
-        # A file that reads docstrings back (``f.__doc__``, ``getattr(f, "__doc__")``, ``inspect.getdoc``)
-        # can hand one to a shell, so none of its docstrings counts as prose.
-        if (isinstance(node, ast.Attribute) and node.attr in _DOCSTRING_READERS
-                or isinstance(node, ast.Name) and node.id in _DOCSTRING_READERS
-                or isinstance(node, ast.Constant) and node.value in _DOCSTRING_READERS):
-            return set()
         if not isinstance(node, _DOCSTRING_OWNERS) or not node.body:
             continue
         first = node.body[0]
         if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
                 and isinstance(first.value.value, str)):
-            docstrings.add(id(first))
+            docstrings.update((id(first), id(first.value)))
             lines.update(range(first.lineno, getattr(first, "end_lineno", first.lineno) + 1))
-    # A line a docstring shares with code (``"""x"""; os.system(...)``, ``def f(): """…"""``) is code.
     for node in ast.walk(tree):
-        if isinstance(node, ast.stmt) and id(node) not in docstrings:
-            last = node.lineno if hasattr(node, "body") else getattr(node, "end_lineno", node.lineno)
-            lines.difference_update(range(node.lineno, last + 1))
+        first_line = getattr(node, "lineno", None)
+        if id(node) in docstrings or first_line is None:
+            continue
+        # A compound statement's span is its whole body: drop only its first line here; the
+        # header's own parts (decorators, arguments, defaults, bases) are nodes of their own.
+        last = first_line if hasattr(node, "body") else getattr(node, "end_lineno", first_line)
+        lines.difference_update(range(first_line, last + 1))
     return lines
+
+
+def _docstring_cap(f: Finding) -> str:
+    """The comment cap, floored at ``high`` for a critical. A docstring is runtime data any file can
+    read back (``x.__doc__``, ``getattr(x, "__" + "doc__")``, ``inspect.getdoc``) by names no static
+    scan can enumerate, so a critical one stays visible and needs the user's confirmation
+    (``caution``): never ``safe``, and never the un-overridable ``dangerous`` that prose alone caused."""
+    return "high" if f.severity == "critical" else _comment_severity(f)
 
 
 def _filter_findings(findings: list[Finding], rel_path: str, file_path: Path) -> list[Finding]:
@@ -241,7 +261,7 @@ def _filter_findings(findings: list[Finding], rel_path: str, file_path: Path) ->
         f.severity = _context_severity(f, rel_path, line, joined, doc_prose or locale_catalog, is_code,
                                        locale_catalog)
         if _is_defensive_documentation(f, rel_path, docstring_lines):
-            f.severity = _comment_severity(f)
+            f.severity = _docstring_cap(f) if f.line in docstring_lines else _comment_severity(f)
             # A quoted injection phrase in a defensive doc (``"ignore previous instructions"`` in a
             # CHANGELOG / code comment describing the filter that refuses it) is a note, not caution.
             if is_quoted_injection_phrase(f, line):

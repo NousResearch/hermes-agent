@@ -114,3 +114,25 @@ def test_template_seeded_config_keeps_the_update_backup_default(tmp_path, monkey
     assert _resolve_pre_update_backup_mode(Namespace(no_backup=False, backup=False)) == \
         DEFAULT_CONFIG["updates"]["pre_update_backup"]
 
+
+def test_template_seed_exposes_unitalk_settings_to_cli_and_gateway(tmp_path, monkeypatch):
+    import hermes_cli.config as cfg
+    from gateway.run import _load_gateway_config
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    assert cfg.seed_config_file(home / "config.yaml")
+
+    cli = cfg.load_config()
+    gateway = _load_gateway_config(home / "config.yaml")
+    for config in (cli, gateway):
+        assert config["model"]["provider"] == "unitalk"
+        assert config["model"]["default"] == "deepseek-v4.1-flash"
+        assert config["model"]["base_url"] == "https://llmgateway.unitalk.ai/v1"
+        assert config["database"]["journal_mode"] == "delete"
+        assert config["agent"]["max_turns"] == 90
+        assert config["auxiliary"]["web_extract"]["provider"] == "openai-api"
+        assert config["stt"]["openai"]["base_url"] == "https://llmgateway.unitalk.ai/v1"
+        assert config["gateway"]["allow_all_users"] is True
+        assert config["webapp"]["host"] == "0.0.0.0"
+        assert config["webapp"]["port"] == 9121

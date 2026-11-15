@@ -12,13 +12,13 @@ _config_version: 53
 # =============================================================================
 # Database Configuration
 # =============================================================================
-# WAL is the normal default. Hermes automatically falls back to DELETE when
+# DELETE is the Unitalk default. Hermes automatically falls back to DELETE when
 # SQLite reports that WAL is incompatible with the filesystem. Set this to
 # "delete" explicitly for deployments whose backing filesystem is not WAL
 # crash-safe, such as Linux containers bind-mounted through macOS virtiofs,
 # NFS, or SMB. Hermes will not live-downgrade a database already open in WAL.
 database:
-  journal_mode: "wal"  # Supported values: "wal", "delete"
+  journal_mode: "delete"  # Supported values: "wal", "delete"
   # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
   # wal_autocheckpoint: 1000     # pages between automatic checkpoints
   # journal_size_limit: 67108864 # cap the WAL/journal file size in bytes
@@ -67,6 +67,10 @@ attachments:
 # Plugin Installation
 # =============================================================================
 plugins:
+  enabled:
+    - browser-browser-use
+    - unitalk
+  disabled: []
   # Deadline for each Git clone, fetch or checkout during plugin install. Default: 300
   # seconds. Subdirectory installs download only that folder.
   # Raise this for large repositories or slow connections. Maximum: 3600.
@@ -78,10 +82,13 @@ plugins:
 model:
   # Default model to use (can be overridden with --model flag)
   # Both "default" and "model" work as the key name here.
-  default: "anthropic/claude-opus-4.6"
+  default: "deepseek-v4.1-flash"
+  api_mode: chat_completions
+  provider_name: litellm-unitalk
   
   # Inference provider selection:
-  #   "auto"         - Auto-detect from credentials (default)
+  #   "unitalk"      - Unitalk provider plugin (default)
+  #   "auto"         - Auto-detect from credentials
   #   "openrouter"   - OpenRouter (requires: OPENROUTER_API_KEY or OPENAI_API_KEY)
   #   "nous"         - Nous Portal OAuth (requires: hermes auth add nous)
   #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
@@ -110,11 +117,11 @@ model:
   #   It works with both no-auth and auth-enabled server modes.
   #
   # Can also be overridden for a single invocation with the --provider flag.
-  provider: "auto"
+  provider: "unitalk"
   
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
-  base_url: "https://openrouter.ai/api/v1"
+  base_url: "https://llmgateway.unitalk.ai/v1"
 
   # Stream API responses from the provider (default: true). The agent core
   # prefers streaming for every turn — subagents included — for liveness
@@ -935,6 +942,35 @@ prompt_caching:
 #   # in whole batches of this size, so the cached prefix changes once per batch.
 #   replay_recent_images: 3
 #
+auxiliary:
+  vision:
+    provider: auto
+    model: ""
+  web_extract:
+    provider: openai-api
+    model: deepseek-v4.1-flash
+  compression:
+    provider: auto
+    model: ""
+  skills_hub:
+    provider: openai-api
+    model: deepseek-v4.1-flash
+  approval:
+    provider: auto
+    model: ""
+  mcp:
+    provider: auto
+    model: ""
+  title_generation:
+    provider: auto
+    model: ""
+  curator:
+    provider: auto
+    model: ""
+  session_search:
+    provider: openai-api
+    model: deepseek-v4.1-flash
+#
 # auxiliary:
 #   # Image analysis: vision_analyze tool + browser screenshots
 #   vision:
@@ -1228,15 +1264,15 @@ skills:
 # Agent Behavior
 # =============================================================================
 agent:
-  # Maximum tool-calling iterations per conversation (default: 500)
+  # Maximum tool-calling iterations per conversation (default: 90)
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
-  max_turns: 500
+  max_turns: 90
 
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.
-  # gateway_timeout: 1800
+  gateway_timeout: 1800
 
   # Maximum time an alias routing key waits for an active turn holding the same
   # resolved session lease. On expiry Hermes rejects this inbound message and
@@ -1365,7 +1401,7 @@ agent:
   #   reasoning_effort:
   #     enabled: true
   #     effort: thinking
-  reasoning_effort: "medium"
+  reasoning_effort: "none"
   
   # Per-model reasoning effort overrides (optional dict)
   # Key: any sensible model spelling works (exact, dots↔dashes interchangeable,
@@ -1413,6 +1449,8 @@ agent:
 # Gateway Lifecycle
 # =============================================================================
 gateway:
+  allow_all_users: true
+  multiplex_profiles: true
   # Post-interrupt grace for running agents during an unexpected SIGTERM.
   # Adapter, bridge, and database teardown starts after this many seconds even
   # if an agent has not unwound. Keep it below the service-manager stop budget.
@@ -1690,7 +1728,7 @@ platform_toolsets:
 # =============================================================================
 # Text-to-Speech
 # =============================================================================
-# TTS defaults to Edge TTS unless changed in ~/.hermes/config.yaml.
+# The Unitalk template selects OpenAI TTS; the built-in fallback is Edge TTS.
 # Gemini TTS supports persona/director prompt files, and Gemini 3.1 Flash TTS
 # can use a hidden auxiliary rewrite pass to insert expressive square-bracket
 # audio tags into the TTS script without showing tags in chat.
@@ -1728,7 +1766,8 @@ platform_toolsets:
 # Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
 stt:
   enabled: true
-  # provider: "local"          # auto-detected if omitted
+  provider: "openai"
+  streaming: true
   # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra) ---
   # Local whisper gets Silero VAD; cloud endpoints otherwise receive raw audio —
   # silence inflates upload time, per-audio-minute billing, and hallucination risk.
@@ -1776,8 +1815,9 @@ stt:
   #   model: "whisper-large-v3-turbo"
   #   language: ""             # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   openai:
-    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
-    language: ""               # blank = inherit stt.language; set "en", "es", "fr", etc. to force
+    model: "gpt-4o-transcribe" # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
+    language: "en"             # blank = inherit stt.language; set "en", "es", "fr", etc. to force
+    base_url: "https://llmgateway.unitalk.ai/v1"
     timeout: 60                # request timeout in seconds; increase for self-hosted model cold starts
     max_retries: 1             # OpenAI SDK transport retries; set 0 to disable
   # mistral:
@@ -1802,10 +1842,13 @@ stt:
   #     command: "custom-asr --input {input_path} --output {output_path}"
   #     normalize: true  # requires ffmpeg; default false
 
-# Text-to-speech. Only the deepinfra block is documented here — the
-# remaining providers (edge, openai, xai, minimax, mistral, gemini,
-# elevenlabs, neutts, kittentts, piper) inherit sensible defaults from
-# DEFAULT_CONFIG in hermes_cli/config.py.
+# Text-to-speech provider settings not specified here inherit built-in defaults.
+tts:
+  provider: openai
+  speed: "1.0"
+  edge:
+    voice: fr-FR-VivienneMultilingualNeural
+#
 # tts:
 #   provider: "deepinfra"
 #   deepinfra:
@@ -1938,6 +1981,7 @@ delegation:
 # Display
 # =============================================================================
 display:
+  agent_name: atouch
   # Use compact banner mode (hides the ASCII-art banner, shows a single line).
   #   true:  Compact single-line banner
   #   false: Full ASCII banner with tool/skill summary (default)
@@ -2232,6 +2276,7 @@ telemetry:
   shared_metrics:
     enabled: false
     send: false
+    offer_version: 2
     # endpoint: https://telemetry.nousresearch.com/v1/telemetry
 
 
@@ -2281,6 +2326,19 @@ updates:
 # =============================================================================
 # Web Dashboard
 # =============================================================================
+webapp:
+  enabled: true
+  port: 9121
+  host: 0.0.0.0
+
+voice:
+  voice_chat_mode: gpt-live
+  gpt_live:
+    base_url: https://llmgateway.unitalk.ai/openai_passthrough/v1
+
+security:
+  redact_secrets: true
+
 # OAuth gate configuration for `hermes dashboard --host <non-loopback>`.
 # The bundled Nous Portal plugin reads these on startup; settings here are
 # the canonical surface. Each can be overridden by an environment variable:

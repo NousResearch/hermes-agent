@@ -130,7 +130,7 @@ def _has_openai_audio_backend() -> bool:
     return _openai_audio_unavailable_reason() is None
 
 
-def _is_local_stt_provider(provider: str, stt_config: dict[str, Any]) -> bool:
+def _is_local_stt_provider(provider: str) -> bool:
     """Whether *provider* is exempt from Hermes's remote upload cap."""
     return (provider or "").lower().strip() in {"local", "local_command"}
 
@@ -444,7 +444,7 @@ def _transcribe_prepared_audio(
     if not is_stt_enabled(stt_config):
         return _error_result("STT is disabled in config.yaml (stt.enabled: false).")
     provider = _get_provider(stt_config)
-    remote = not _is_local_stt_provider(provider, stt_config)
+    remote = not _is_local_stt_provider(provider)
     with ExitStack() as cleanup:
         # Never overwrite a neighboring WAV or leave converted voice notes behind.
         if remote and Path(file_path).suffix.lower() == ".caf":

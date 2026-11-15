@@ -46,6 +46,10 @@ def cmd_status(args: argparse.Namespace) -> int:
             if len(wd) > 60:
                 wd = "…" + wd[-59:]
             state = "live" if p.get("exists") else "orphan"
+            if p.get("skip_reason"):
+                # A file-cap refusal can leave earlier rollback points intact.
+                snapshot_state = "new snapshots skipped" if p.get("commits") else "no snapshots"
+                state = f"{state}, {snapshot_state}: {p['skip_reason']}"
             print(f"  {wd:<60}  {p.get('commits', 0):>7}  {_fmt_age(p.get('last_touch')):>12}  {state}")
 
     legacy = info.get("legacy_archives", [])

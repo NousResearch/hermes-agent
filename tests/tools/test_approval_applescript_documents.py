@@ -40,6 +40,9 @@ FRONTMOST = ("osascript -e 'tell application \"System Events\" to get name of fi
     'osascript -e \'tell application "Word" to close every document saving no\'',
     'osascript -e \'tell application "Keynote" to save front document\'',
     'osascript -e \'tell application "TextEdit" to set text of front document to ""\'',
+    # Text-element assignment replaces the operator's document content like `set text` does.
+    "osascript -e 'tell application \"TextEdit\" to set paragraph 1 of front document to \"\"'",
+    "osascript -e 'tell application \"TextEdit\" to set every word of front document to \"\"'",
     'osascript -e \'tell application "Finder" to delete POSIX file "/Users/me/traz.pdf"\'',
     # Runs a shell command: must not surface as a guardian-reviewable `rm` rule first.
     'osascript -e \'do shell script "rm -f /Users/me/traz.pdf"\'',

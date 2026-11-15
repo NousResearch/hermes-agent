@@ -44,7 +44,8 @@ OSASCRIPT_OPAQUE_DESCRIPTION = (
 # Verbs whose effect can discard unsaved work, mutate files, synthesize input or escape to a shell.
 _RISKY_RE = re.compile(
     r"\b(?:close|quit|delete|erase|trash|move|write|save|revert|empty|keystroke|click|restart|eject|kill)\b"
-    r"|\bset\s+(?:the\s+)?(?:contents|text|value|data)\b"
+    r"|\bset\s+(?:the\s+)?(?:(?:every|first|last|middle|some)\s+)?"
+    r"(?:contents|text|value|data|paragraphs?|words?|characters?|attribute\s+runs?)\b"
     r"|\bshut\s*down\b|\blog\s*out\b|\bkey\s*code\b|\bperform\s+action\b|\bdon.?t\s+save\b"
     r"|\bdo\s+(?:shell\s+)?script\b|\b(?:run|load|store)\s+script\b|\bdo\s+javascript\b|\bexecute\b"
     r"|\bopen\s+for\s+access\b|\bset\s+eof\b|\breplacing\b|\bsaving\s+no\b|\bwithout\s+saving\b"

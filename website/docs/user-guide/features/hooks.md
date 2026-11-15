@@ -1919,7 +1919,7 @@ Fires for each provider attempt immediately before sending it. This is observer-
 
 #### `post_api_request`
 
-Fires after a provider response has been normalized successfully. This is observer-only. Prefer the sanitized `response`; `assistant_message` is the raw normalized message, and `usage` contains accounting data.
+Fires after a provider response has been normalized successfully. This is observer-only. Prefer the sanitized `response`; `assistant_message` is the raw normalized message, and `usage` contains accounting data. `usage.reasoning_tokens` reads `0` both when the provider reported zero and when it reports no reasoning count; `usage.reasoning_tokens_reported` tells them apart.
 
 #### `api_request_error`
 

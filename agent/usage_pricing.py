@@ -652,6 +652,27 @@ _CHAT_USAGE_SHAPE = (
 )
 
 
+_REASONING_USAGE_PATHS = (
+    ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens"),
+    ("output_tokens_details", "thinking_tokens"),
+)
+
+
+def reasoning_tokens_reported(response_usage: Any) -> bool:
+    """Whether the provider's usage carries a reasoning count at all, so a measured ``0`` can be
+    told apart from a provider that never reports one (``normalize_usage`` reads both as ``0``)."""
+    for path in _REASONING_USAGE_PATHS:
+        obj = response_usage
+        for hop in path:
+            obj = obj.get(hop) if isinstance(obj, dict) else getattr(obj, hop, None)
+            if obj is None:
+                break
+        else:
+            if isinstance(obj, (int, float)) and not isinstance(obj, bool):
+                return True
+    return False
+
+
 def normalize_usage(
     response_usage: Any, *, provider: Optional[str] = None, api_mode: Optional[str] = None
 ) -> CanonicalUsage:
@@ -683,10 +704,7 @@ def normalize_usage(
     # (OpenAI, OpenRouter, DeepSeek, ...): completion_tokens_details.reasoning_tokens.
     # Anthropic Messages: output_tokens_details.thinking_tokens (the full thinking, not the summary).
     # Hidden thinking dominates output spend on reasoning models, so read all three.
-    reasoning_tokens = _first_nonzero(
-        u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens"),
-        ("output_tokens_details", "thinking_tokens"),
-    )
+    reasoning_tokens = _first_nonzero(u, *_REASONING_USAGE_PATHS)
 
     # On MiniMax-M3's Anthropic wire, cache_read_input_tokens carries a constant
     # +128 floor and cache_creation is always 0, so cache_read is not a reliable

@@ -230,17 +230,24 @@ _CACHE_TTL_SECONDS = {"5m": 300, "1h": 3600}
 _CACHE_EXPIRY_SLACK_SECONDS = 30
 
 
+def _epoch(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
 def _last_response_wall_time(agent: Any, messages: Any) -> float | None:
     """Wall-clock time of the last provider response: this process's stamp, else (a resumed session) the
-    newest persisted assistant row's ``timestamp``."""
-    last = getattr(agent, "_last_api_response_at", None)
-    if isinstance(last, (int, float)) and not isinstance(last, bool):
-        return float(last)
-    for msg in reversed(messages if isinstance(messages, list) else ()):
-        if isinstance(msg, dict) and msg.get("role") == "assistant":
-            ts = msg.get("timestamp")
-            return float(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else None
-    return None
+    newest assistant row's ``timestamp`` in *messages*, else the store's. Gateway and TUI replays drop
+    assistant timestamps, so without the store a resumed agent's first turn never read the cache as cold."""
+    if (last := _epoch(getattr(agent, "_last_api_response_at", None))) is not None:
+        return last
+    newest = next((m for m in reversed(messages if isinstance(messages, list) else ())
+                   if isinstance(m, dict) and m.get("role") == "assistant"), None)
+    if newest is None:
+        return None
+    if (ts := _epoch(newest.get("timestamp"))) is not None:
+        return ts
+    reader = getattr(getattr(agent, "_session_db", None), "latest_assistant_timestamp", None)
+    return _epoch(reader(getattr(agent, "session_id", "") or "")) if callable(reader) else None
 
 
 def provider_cache_expired(agent: Any, messages: Any = None, now: float | None = None) -> bool:

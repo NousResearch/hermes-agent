@@ -617,6 +617,12 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             "AND role NOT IN ('session_meta', 'system') ORDER BY id DESC LIMIT 1", (session_id,))
         return row[0] if row else None
 
+    def latest_assistant_timestamp(self, session_id: str) -> Optional[float]:
+        """``timestamp`` of the newest active assistant row (when the last provider response was saved), or ``None``."""
+        row = self._read_one("SELECT timestamp FROM messages WHERE session_id = ? AND role = 'assistant' AND active = 1 "
+                             "ORDER BY id DESC LIMIT 1", (session_id,)) if session_id else None
+        return coerce_epoch(row[0], field="message timestamp") if row else None
+
     def get_message_role(self, session_id: str, row_id: int) -> Optional[str]:
         """Role of the active message at *row_id* in *session_id*, or ``None``."""
         if not session_id:

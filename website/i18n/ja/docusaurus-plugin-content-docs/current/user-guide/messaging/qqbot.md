@@ -1,7 +1,7 @@
 # QQ Bot
 
 このページの Python 依存関係コマンドは、
-[PM で準備済みのソースチェックアウト](../../reference/package-management.md#developer-workflow)を前提としています。
+[PM で準備済みのソースチェックアウト](/docs/reference/package-management#developer-workflow)を前提としています。
 依存関係を変更した後は、チェックアウトを再アクティベートして Hermes を再起動してください。
 
 **公式 QQ Bot API（v2）** 経由で Hermes を QQ に接続します — プライベート（C2C）、グループの @ メンション、ギルド、ダイレクトメッセージを音声文字起こしとともにサポートします。
@@ -73,7 +73,7 @@ platforms:
     extra:
       app_id: "your-app-id"
       client_secret: "your-secret"
-      markdown_support: true       # QQ markdown を有効化（msg_type 2）。設定のみ。環境変数の同等物なし。
+      markdown_support: true       # enable QQ markdown (msg_type 2). Config-only; no env-var equivalent.
       dm_policy: "open"          # open | allowlist | disabled
       allow_from:
         - "user_openid_1"
@@ -81,11 +81,11 @@ platforms:
       group_allow_from:
         - "group_openid_1"
       stt:
-        provider: "zai"          # zai (GLM-ASR)、openai (Whisper) など
+        provider: "zai"          # zai (GLM-ASR), openai (Whisper), etc.
         baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4"
         apiKey: "your-stt-key"
         model: "glm-asr"
-        timeout: 60              # 文字起こしリクエストあたりの秒数（デフォルト 60）
+        timeout: 60              # seconds per transcription request (default 60)
 ```
 
 ## ボイスメッセージ（STT）

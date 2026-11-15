@@ -1,16 +1,20 @@
 ---
 sidebar_position: 1
-title: "クイックスタート"
+title: "Hermes Agent クイックスタート"
 description: "Hermes Agent との最初の対話 — インストールから 5 分以内にチャットを始める"
 ---
 
-# クイックスタート
+# Hermes Agent クイックスタート
+
+このページの Python 依存関係のコマンドは、
+[PM で準備したソースチェックアウト](/docs/reference/package-management#developer-workflow)を使います。
+依存関係を変更した後は、チェックアウトを再アクティベートして Hermes を再起動してください。
 
 このガイドは、ゼロの状態から、実運用に耐える Hermes のセットアップまで導きます。インストールし、プロバイダーを選び、チャットが動くことを確認し、何かが壊れたときに何をすべきかを正確に把握しましょう。
 
 ## 動画で見たい場合
 
-**Onchain AI Garage** が、インストール、セットアップ、基本コマンドのマスタークラス解説をまとめています。動画で一緒に進めたい場合は、このページの良い補完になります。さらに詳しくは、[Hermes Agent Tutorials & Use Cases](https://www.youtube.com/channel/UCqB1bhMwGsW-yefBxYwFCCg) のプレイリスト全体を参照してください。
+**Onchain AI Garage** が、インストール、セットアップ、基本コマンドのマスタークラス解説をまとめています。動画で一緒に進めたい場合は、このページの良い補完になります。さらに詳しくは、[Hermes Agent Tutorials & Use Cases](https://www.youtube.com/playlist?list=PLmpUb_PWAkDxewld5ZYyKifuHxgIbiq2d) のプレイリスト全体を参照してください。
 
 <div style={{position: 'relative', paddingBottom: '56.25%', height: 0, overflow: 'hidden', maxWidth: '100%', marginBottom: '1.5rem'}}>
   <iframe
@@ -47,26 +51,30 @@ description: "Hermes Agent との最初の対話 — インストールから 5 
 ---
 
 ## 1. Hermes Agent のインストール
+### macOS または Windows で Hermes Desktop インストーラーを使う（推奨）
+コマンドラインアプリとデスクトップアプリを簡単にインストールするには、Web サイトから [Hermes Desktop インストーラーをダウンロード](https://hermes-agent.nousresearch.com/)して実行します。
 
-ワンラインインストーラーを実行します:
+### Hermes Desktop を使わない場合:
+Hermes Desktop なしでコマンドラインのみをインストールするには、次を実行します:
 
+aarch64 の Android デバイスでは、別の [Termux APT ガイド](/docs/getting-started/termux)を使ってください。
+
+#### Linux / macOS / WSL2
 ```bash
-# Linux / macOS / WSL2 / Android (Termux)
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-:::tip Android / Termux
-スマートフォンにインストールする場合は、テスト済みの手動経路、対応 extra、現在の Android 固有の制限について、専用の [Termux ガイド](./termux.md)を参照してください。
-:::
+#### Windows（ネイティブ）
 
-:::tip Windows ユーザー
-まず [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) をインストールし、その後 WSL2 ターミナル内で上記のコマンドを実行してください。
-:::
+PowerShell で実行します:
+```powershell
+iex (irm https://hermes-agent.nousresearch.com/install.ps1) 
+```
 
 完了したら、シェルを再読み込みします:
 
 ```bash
-source ~/.bashrc   # または source ~/.zshrc
+source ~/.bashrc   # or source ~/.zshrc
 ```
 
 詳細なインストールオプション、前提条件、トラブルシューティングについては、[インストールガイド](./installation.md)を参照してください。
@@ -79,32 +87,68 @@ source ~/.bashrc   # または source ~/.zshrc
 hermes model
 ```
 
+:::tip 最も簡単な方法: Nous Portal
+1 つのサブスクリプションで 300 以上のモデルと [Tool Gateway](../user-guide/features/tool-gateway.md)（Web 検索、画像生成、TTS、クラウドブラウザ）をカバーします。新規インストールでは:
+
+```bash
+hermes setup --portal
+```
+
+これ 1 つのコマンドでログインし、Nous をプロバイダーに設定し、Tool Gateway を有効にします。
+:::
+
+:::info セットアップモード
+OpenClaw、Claude Code、Codex CLI、Cursor から移行してきましたか？ 新規の `hermes setup` がコンピューター上でそれらのいずれかを見つけると、まずセットアップのインポートを提案します（そのために `agent-importers` プラグインをインストールします。[他のエージェントからのインポート](/docs/user-guide/import-from-other-agents)を参照）。
+
+新規インストールでは、`hermes setup` は 3 つのモードを提供します:
+
+- **Quick Setup (Nous Portal)** — OAuth ログインで、管理すべき API キーはありません。モデルと Tool Gateway のツールをセットアップし、[Nous Portal サブスクリプション](/docs/integrations/nous-portal)に課金されます。推奨される最短経路です。
+- **Full Setup** — すべてのプロバイダー、ツール、オプションを自分で順に設定します（自分のキーを持ち込みます）。
+- **Blank Slate** — エージェントを動かすのに必要な最低限を除き、すべてが **オフ** で始まります: **プロバイダーとモデル、File Operations ツールセット、Terminal ツールセット**。Web、ブラウザ、コード実行、ビジョン、メモリ、委譲、cron、スキル、プラグイン、MCP サーバーはなく、圧縮、チェックポイント、スマートルーティング、メモリキャプチャもすべて無効です。最小限のベースラインが適用された後、2 つの経路のどちらかを選びます: **すべて無効のまま始める**（最小限のエージェントで今すぐ完了）、または **すべての設定を順に進める**（ツール、スキル、プラグイン、MCP、メッセージングを選んで有効化）。必要なものだけを正確に有効にする、最小限で完全に制御されたエージェントがほしい場合に選んでください。
+
+Blank Slate は明示的な `platform_toolsets.cli` リストと `agent.disabled_toolsets` を書き込むため、選ばなかったものが読み込まれることはありません — `hermes update` の後でもです。後から `hermes tools` で何でも再有効化でき、`hermes skills opt-in --sync` でスキルをシードし、`hermes setup agent` で設定を調整できます。
+:::
+
 おすすめの既定:
 
 | プロバイダー | 概要 | セットアップ方法 |
 |----------|-----------|---------------|
 | **Nous Portal** | サブスクリプション制、設定不要 | `hermes model` 経由の OAuth ログイン |
-| **OpenAI Codex** | ChatGPT OAuth、Codex モデルを使用 | `hermes model` 経由のデバイスコード認証 |
+| **OpenAI Codex** | ChatGPT または Codex サブスクリプション、Codex モデルを使用 | `hermes model` → **ChatGPT or Codex Subscription** 経由のデバイスコード認証 |
 | **Anthropic** | Claude モデルを直接 — Max プラン + 追加利用クレジット（OAuth）、またはトークン従量課金用の API キー | `hermes model` → OAuth ログイン（Max + 追加クレジットが必要）、または Anthropic API キー |
 | **OpenRouter** | 多数のモデルにまたがるマルチプロバイダールーティング | API キーを入力 |
-| **Z.AI** | GLM / Zhipu ホストのモデル | `GLM_API_KEY` / `ZAI_API_KEY` を設定 |
+| **Fireworks AI** | OpenAI 互換のダイレクトなモデル API | `FIREWORKS_API_KEY` を設定 |
+| **Z.AI** | GLM / Zhipu ホストのモデル | `GLM_API_KEY` / `ZAI_API_KEY` を設定（`Z_AI_API_KEY` も可） |
 | **Kimi / Moonshot** | Moonshot ホストのコーディング・チャットモデル | `KIMI_API_KEY`（または Kimi-Coding 専用の `KIMI_CODING_API_KEY`）を設定 |
 | **Kimi / Moonshot China** | 中国リージョンの Moonshot エンドポイント | `KIMI_CN_API_KEY` を設定 |
 | **Arcee AI** | Trinity モデル | `ARCEEAI_API_KEY` を設定 |
 | **GMI Cloud** | マルチモデルのダイレクト API | `GMI_API_KEY` を設定 |
-| **MiniMax (OAuth)** | ブラウザ OAuth 経由の MiniMax-M2.7 — API キー不要 | `hermes model` → MiniMax (OAuth) |
+| **Actual Computer** | 自分のハードウェアをプライベートな推論クラスタとして利用 — ホスト型リレーまたはローカルデーモン | `ACTUAL_API_KEY`（リレー）または `ACTUAL_BASE_URL=http://127.0.0.1:8080`（ローカル、キー不要）を設定 |
+| **MiniMax (OAuth)** | ブラウザ OAuth 経由の MiniMax フロンティアモデル — API キー不要（`hermes_cli/models.py` 内のモデル名はリリース間で変わる場合があります） | `hermes model` → MiniMax (OAuth) |
 | **MiniMax** | 国際版 MiniMax エンドポイント | `MINIMAX_API_KEY` を設定 |
 | **MiniMax China** | 中国リージョンの MiniMax エンドポイント | `MINIMAX_CN_API_KEY` を設定 |
-| **Alibaba Cloud** | DashScope 経由の Qwen モデル | `DASHSCOPE_API_KEY` を設定 |
+| **Alibaba Cloud** | DashScope 経由の Qwen モデル | `DASHSCOPE_API_KEY` を設定（Qwen Coding Plan は `ALIBABA_CODING_PLAN_API_KEY` も可） |
 | **Hugging Face** | 統合ルーター経由の 20 以上のオープンモデル（Qwen、DeepSeek、Kimi など） | `HF_TOKEN` を設定 |
 | **AWS Bedrock** | ネイティブ Converse API 経由の Claude、Nova、Llama、DeepSeek | IAM ロールまたは `aws configure`（[ガイド](../guides/aws-bedrock.md)） |
+| **Azure Foundry** | Azure AI Foundry ホストのモデル | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` を設定 |
+| **Google AI Studio** | ダイレクト API 経由の Gemini モデル | `GOOGLE_API_KEY` / `GEMINI_API_KEY` を設定 |
+| **xAI** | ダイレクト API 経由の Grok モデル | `XAI_API_KEY` を設定 |
+| **xAI Grok OAuth** | SuperGrok / Premium+ サブスクリプション、API キー不要 | `hermes model` → xAI Grok OAuth |
+| **NovitaAI** | マルチモデル API ゲートウェイ | `NOVITA_API_KEY` を設定 |
+| **Ramp Router** | OpenAI/Anthropic/xAI/... をまたいでルーティングする Responses ネイティブの LLM ゲートウェイ | `RAMP_ROUTER_API_KEY` を設定 |
+| **Nebius Token Factory** | Nebius AI クラウド上のオープンモデル | `NEBIUS_API_KEY` を設定 |
+| **StepFun** | Step Plan モデル | `STEPFUN_API_KEY` を設定 |
+| **Xiaomi MiMo** | Xiaomi ホストのモデル | `XIAOMI_API_KEY` を設定 |
+| **Tencent TokenHub** | Tencent ホストのモデル | `TOKENHUB_API_KEY` を設定 |
+| **Tencent TokenPlan** | Anthropic 形式のエンドポイント経由の Tencent Hy モデル | `TOKENPLAN_API_KEY` を設定 |
+| **Ollama Cloud** | マネージドな Ollama ホストのモデル | `OLLAMA_API_KEY` を設定 |
+| **LM Studio** | OpenAI 互換 API を公開するローカルのデスクトップアプリ | `LM_API_KEY` を設定（既定以外なら `LM_BASE_URL` も） |
+| **Qwen OAuth** | Qwen Portal のブラウザ OAuth — API キー不要 | `hermes model` → Qwen OAuth |
 | **Kilo Code** | KiloCode ホストのモデル | `KILOCODE_API_KEY` を設定 |
 | **OpenCode Zen** | 厳選モデルへの従量課金アクセス | `OPENCODE_ZEN_API_KEY` を設定 |
 | **OpenCode Go** | オープンモデル向けの月額 10 ドルサブスクリプション | `OPENCODE_GO_API_KEY` を設定 |
 | **DeepSeek** | DeepSeek API への直接アクセス | `DEEPSEEK_API_KEY` を設定 |
 | **NVIDIA NIM** | build.nvidia.com またはローカル NIM 経由の Nemotron モデル | `NVIDIA_API_KEY` を設定（任意: `NVIDIA_BASE_URL`） |
-| **GitHub Copilot** | GitHub Copilot サブスクリプション（GPT-5.x、Claude、Gemini など） | `hermes model` 経由の OAuth、または `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` |
-| **GitHub Copilot ACP** | Copilot ACP エージェントバックエンド（ローカルの `copilot` CLI を起動） | `hermes model`（`copilot` CLI + `copilot login` が必要） |
 | **Vercel AI Gateway** | Vercel AI Gateway ルーティング | `AI_GATEWAY_API_KEY` を設定 |
 | **Custom Endpoint** | VLLM、SGLang、Ollama、または任意の OpenAI 互換 API | ベース URL + API キーを設定 |
 
@@ -138,8 +182,8 @@ hermes config set OPENROUTER_API_KEY sk-or-...
 ## 3. 最初のチャットを実行
 
 ```bash
-hermes            # クラシック CLI
-hermes --tui      # モダンな TUI（推奨）
+hermes            # classic CLI
+hermes --tui      # modern TUI (recommended)
 ```
 
 モデル、利用可能なツール、スキルを示すウェルカムバナーが表示されます。具体的で検証しやすいプロンプトを使いましょう:
@@ -149,15 +193,15 @@ Hermes には 2 つのターミナルインターフェースが付属します:
 :::
 
 ```
-このリポジトリを 5 つの箇条書きで要約して、メインのエントリポイントが何か教えて。
+Summarize this repo in 5 bullets and tell me what the main entrypoint is.
 ```
 
 ```
-現在のディレクトリを確認して、メインのプロジェクトファイルらしきものを教えて。
+Check my current directory and tell me what looks like the main project file.
 ```
 
 ```
-このコードベース向けにクリーンな GitHub PR ワークフローを設定するのを手伝って。
+Help me set up a clean GitHub PR workflow for this codebase.
 ```
 
 **成功の状態:**
@@ -174,8 +218,8 @@ Hermes には 2 つのターミナルインターフェースが付属します:
 先に進む前に、再開が機能することを確認します:
 
 ```bash
-hermes --continue    # 最新のセッションを再開
-hermes -c            # 短縮形
+hermes --continue    # Resume the most recent session
+hermes -c            # Short form
 ```
 
 これで、たった今行ったセッションに戻れるはずです。戻れない場合は、同じプロファイルにいるか、セッションが実際に保存されたかを確認してください。これは後で複数のセットアップやマシンを扱うときに重要になります。
@@ -185,7 +229,7 @@ hermes -c            # 短縮形
 ### ターミナルを使う
 
 ```
-❯ ディスク使用量は？ 最も大きいディレクトリの上位 5 件を表示して。
+❯ What's my disk usage? Show the top 5 largest directories.
 ```
 
 エージェントがあなたの代わりにターミナルコマンドを実行し、結果を表示します。
@@ -217,10 +261,10 @@ hermes -c            # 短縮形
 ### ボットまたは共有アシスタント
 
 ```bash
-hermes gateway setup    # 対話的なプラットフォーム設定
+hermes gateway setup    # Interactive platform configuration
 ```
 
-[Telegram](/docs/user-guide/messaging/telegram)、[Discord](/docs/user-guide/messaging/discord)、[Slack](/docs/user-guide/messaging/slack)、[WhatsApp](/docs/user-guide/messaging/whatsapp)、[Signal](/docs/user-guide/messaging/signal)、[Email](/docs/user-guide/messaging/email)、[Home Assistant](/docs/user-guide/messaging/homeassistant)、[Microsoft Teams](/docs/user-guide/messaging/teams) を接続します。
+[Telegram](../user-guide/messaging/telegram.md)、[Discord](../user-guide/messaging/discord.md)、[Slack](../user-guide/messaging/slack.md)、[WhatsApp](../user-guide/messaging/whatsapp.md)、[Signal](../user-guide/messaging/signal.md)、[Email](../user-guide/messaging/email.md)、[Home Assistant](../user-guide/messaging/homeassistant.md)（プラグイン）、[Microsoft Teams](../user-guide/messaging/teams.md) を接続します。
 
 ### 自動化とツール
 
@@ -233,35 +277,50 @@ hermes gateway setup    # 対話的なプラットフォーム設定
 安全のため、エージェントを Docker コンテナまたはリモートサーバー上で実行します:
 
 ```bash
-hermes config set terminal.backend docker    # Docker 分離
-hermes config set terminal.backend ssh       # リモートサーバー
+hermes config set terminal.backend docker    # Docker isolation
+hermes config set terminal.backend ssh       # Remote server
 ```
+
+Docker サンドボックスでは、**egress 認証情報注入プロキシ**を有効にすることもできます。これにより、サンドボックスが実際の API キーを目にすることはなく、ローカルの TLS 傍受デーモンの背後からのみ機能する不透明なプロキシトークンだけが見えます。[Egress プロキシ](/docs/user-guide/egress/iron-proxy)を参照してください。セットアップは `hermes egress setup && hermes egress start` です。`hermes setup terminal` も Docker ユーザーにこれを案内します。Modal、SSH、Daytona、Singularity はまだ接続されていません。
 
 ### ボイスモード
 
-```bash
-# Hermes のインストールディレクトリから（curl インストーラーは
-# Linux/macOS では ~/.hermes/hermes-agent、Windows では %LOCALAPPDATA%\hermes\hermes-agent に配置します）:
-cd ~/.hermes/hermes-agent
-uv pip install -e ".[voice]"
-# 無料のローカル音声認識用に faster-whisper を含みます
-```
-
-その後 CLI で: `/voice on`。`Ctrl+B` を押して録音します。[ボイスモード](../user-guide/features/voice-mode.md)を参照してください。
+`hermes tools` を実行して Voice プロバイダーを設定します。その後 CLI で `/voice on`
+を有効にし、`Ctrl+B` を押して録音します。サポートされている要件が欠けている場合は PM が
+対処します。依存関係の変更には再起動が必要になる場合があります。ローカルの Faster-Whisper
+はすべてのアーキテクチャで利用できるわけではありません。[ボイスモード](../user-guide/features/voice-mode.md)を参照してください。
 
 ### スキル
 
+スキルは、特定のタスクのやり方を Hermes に教えるオンデマンドの指示ドキュメントです — Kubernetes へのデプロイ、GitHub PR の作成、モデルのファインチューニング、GIF の検索など。それぞれが名前、説明、ステップごとの手順を持つ `SKILL.md` ファイルです。エージェントは短い説明を無料で読み、タスクが実際に必要とするときだけスキルの完全な内容を読み込むため、スキルを追加してもすべてのリクエストが肥大化することはありません。
+
+Hermes には、`~/.hermes/skills/` にすでにインストールされた同梱スキルのカタログが付属しています。Skills Hub からさらに追加したり、自分で書いたりできます。
+
+**ハブから閲覧してインストールする:**
+
 ```bash
-hermes skills search kubernetes
-hermes skills install openai/skills/k8s
+hermes skills browse                      # list everything available
+hermes skills search kubernetes           # find skills by keyword
+hermes skills install openai/skills/k8s   # install one (runs a security scan first)
 ```
 
-またはチャットセッション内で `/skills` を使います。
+インストールの引数はハブの `source/path` スラッグです — `openai/skills/k8s` は OpenAI のカタログの `k8s` スキルを意味します。使うべき正確なスラッグは `hermes skills browse` で表示されます。
+
+**スキルを使う** — インストールしたすべてのスキルは自動的にスラッシュコマンドになります:
+
+```bash
+/k8s deploy the staging manifest          # run the skill with a request
+/k8s                                       # load it and let Hermes ask what you need
+```
+
+これは CLI でも、接続された任意のメッセージングプラットフォームでも動作します。最初からすべてをインストールする必要はありません — タスクがいずれかに一致すれば、エージェントは通常の会話の中で適切な同梱スキルを自分で選びます。
+
+自分でスキルを書く方法、外部スキルディレクトリ、ハブのソースの完全な一覧については、[スキルシステム](../user-guide/features/skills.md)を参照してください。
 
 ### MCP サーバー
 
 ```yaml
-# ~/.hermes/config.yaml に追加
+# Add to ~/.hermes/config.yaml
 mcp_servers:
   github:
     command: npx
@@ -278,7 +337,7 @@ ACP サポートは標準の `[all]` extra に含まれているため、curl �
 hermes acp
 ```
 
-（`[all]` なしでインストールした場合は、先に `cd ~/.hermes/hermes-agent && uv pip install -e ".[acp]"` を実行してください。）
+（`[all]` なしでインストールした場合は、先に `cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['acp'], explicit=True)"` を実行してください。）
 
 [ACP エディタ連携](../user-guide/features/acp.md)を参照してください。
 
@@ -327,6 +386,7 @@ hermes acp
 
 ## 次のステップ
 
+- **[ユーザーストーリー](/docs/user-stories)**: コミュニティによる実際のセットアップ。最初に Hermes に何を任せればよいか分からない場合の出発点に最適です
 - **[CLI ガイド](../user-guide/cli.md)** — ターミナルインターフェースを使いこなす
 - **[設定](../user-guide/configuration.md)** — セットアップをカスタマイズ
 - **[メッセージングゲートウェイ](../user-guide/messaging/index.md)** — Telegram、Discord、Slack、WhatsApp、Signal、Email、Home Assistant、Teams などを接続
@@ -334,3 +394,4 @@ hermes acp
 - **[AI プロバイダー](../integrations/providers.md)** — 完全なプロバイダー一覧とセットアップの詳細
 - **[スキルシステム](../user-guide/features/skills.md)** — 再利用可能なワークフローと知識
 - **[ヒントとベストプラクティス](../guides/tips.md)** — パワーユーザー向けのヒント
+- **[別のマシンへの移行](../reference/faq.md#exporting-hermes-to-another-machine)** — `hermes backup` でセットアップ全体（または[単一のプロファイル](../reference/faq.md#moving-a-single-profile-to-another-machine)）を移行できます。ゼロから作り直す必要はありません

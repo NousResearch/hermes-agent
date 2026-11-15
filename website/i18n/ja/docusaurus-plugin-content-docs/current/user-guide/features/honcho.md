@@ -8,8 +8,8 @@ description: "Honcho による AI ネイティブの永続メモリ — 弁証�
 
 [Honcho](https://github.com/plastic-labs/honcho) は、Hermesの組み込みメモリシステムの上に弁証法的推論と深いユーザーモデリングを追加する、AIネイティブのメモリバックエンドです。単純なキーバリューストレージの代わりに、Honchoは会話が起きた後にそれについて推論することで、ユーザーが誰であるか — その好み、コミュニケーションスタイル、目標、パターン — の動的なモデルを保持します。
 
-:::info Honchoはメモリプロバイダープラグインです
-Honchoは[メモリプロバイダー](./memory-providers.md)システムに統合されています。以下のすべての機能は、統一されたメモリプロバイダーインターフェースを通じて利用できます。
+:::info Honchoはカタログのメモリプロバイダープラグインです
+HonchoはPlastic Labsによってメンテナンスされており、[プラグインカタログ](./plugins.md)からインストールされます（`hermes plugins install honcho`）。ソースは[plastic-labs/honcho](https://github.com/plastic-labs/honcho/tree/main/hermes-plugin-honcho)にあります。Honchoは[メモリプロバイダー](./memory-providers.md)システムに統合されているため、以下のすべての機能は、統一されたメモリプロバイダーインターフェースを通じて利用できます。Honchoを同梱していたリリースからアップグレードしたホームには、プラグインが自動的にインストールされます — 設定とメモリはそのまま引き継がれます。
 :::
 
 ## Honchoが追加するもの
@@ -33,7 +33,8 @@ Honchoは[メモリプロバイダー](./memory-providers.md)システムに統�
 ## セットアップ
 
 ```bash
-hermes memory setup    # プロバイダーリストから "honcho" を選択
+hermes plugins install honcho   # from the plugin catalog
+hermes memory setup             # select "honcho" from the provider list
 ```
 
 または手動で設定します。
@@ -98,13 +99,17 @@ APIキーは [honcho.dev](https://honcho.dev) で取得してください。
 
 セッションの初期化時、Honchoは設定された完全な `dialecticDepth` でバックグラウンドで弁証法呼び出しを発火させ、その結果をターン1のコンテキスト組み立てに直接渡します。コールドなピアに対する単一パスのプリウォームは、しばしば薄い出力を返します — マルチパスの深さは、ユーザーが話す前に監査/調整のサイクルを実行します。ターン1までにプリウォームが届かない場合、ターン1は境界付きのタイムアウトを伴う同期呼び出しにフォールバックします。
 
-### クエリ適応型の推論レベル
+### クエリ適応型の推論レベル {#query-adaptive-reasoning-level}
 
 自動注入される弁証法は、クエリの長さによって `dialecticReasoningLevel` をスケールします: 120文字以上で+1レベル、400文字以上で+2、`reasoningLevelCap`（デフォルト `"high"`）でクランプされます。`reasoningHeuristic: false` で無効化すると、すべての自動呼び出しを `dialecticReasoningLevel` に固定します。利用可能なレベル: `minimal`、`low`、`medium`、`high`、`max`。
 
 ## 設定オプション
 
 Honchoは、`~/.honcho/config.json`（グローバル）または `$HERMES_HOME/honcho.json`（プロファイルローカル）で設定されます。セットアップウィザードがこれを処理してくれます。
+
+### 認証付きのセルフホストHoncho
+
+HermesをセルフホストのHonchoサーバーに向ける場合、`hermes honcho setup`（および `hermes memory setup`）はベースURLの後に**ローカルのJWT / ベアラートークン**を尋ねます。認証付きアクセスを有効にするには、サーバーの `AUTH_JWT_SECRET`（Honchoのcompose環境変数）で署名されたJWTを貼り付けます。`AUTH_USE_AUTH=false` で動作しているサーバーの場合は空欄のままにします。ローカルトークンはホストブロック（`honcho.json` の `hosts.<host>.apiKey`）の下に、クラウドの `apiKey` とは別に保存されるため、後で `Cloud or local?` プロンプトを `cloud` に戻しても、どちらの認証情報も失われません。
 
 ### 完全な設定リファレンス
 
@@ -119,18 +124,32 @@ Honchoは、`~/.honcho/config.json`（グローバル）または `$HERMES_HOME/
 | `dialecticDynamic` | `true` | `true` のとき、モデルはツールパラメータで呼び出しごとに推論レベルを上書きできます |
 | `dialecticMaxChars` | `600` | システムプロンプトに注入される弁証法結果の最大文字数 |
 | `recallMode` | `'hybrid'` | `hybrid`（自動注入 + ツール）、`context`（注入のみ）、`tools`（ツールのみ） |
+| `initOnSessionStart` | `false` | `tools` モードのみ。`true` はHonchoセッションを**セッション開始時に同期的に**作成するため、最初のツール呼び出しの前に準備が整います。`false`（デフォルト）は最初の `honcho_*` 呼び出しまで作成を遅延させます。下記の起動に関する注記を参照してください |
+| `timeout` | `null`（SDKのデフォルト） | 各Honcho SDK呼び出しに許可される秒数（`requestTimeout` と環境変数 `HONCHO_TIMEOUT` も受け付けます）。到達不能なサーバーが呼び出しを保持できる時間に上限を設けます。上記の早期初期化も含みます |
 | `writeFrequency` | `'async'` | メッセージをフラッシュするタイミング: `async`（バックグラウンドスレッド）、`turn`（同期）、`session`（終了時にバッチ）、または整数N |
 | `saveMessages` | `true` | メッセージをHoncho APIに永続化するかどうか |
 | `observationMode` | `'directional'` | `directional`（すべてオン）または `unified`（共有プール）。`observation` オブジェクトで上書きして粒度の細かい制御 |
 | `messageMaxChars` | `25000` | `add_messages()` 経由で送信されるメッセージあたりの最大文字数。超過するとチャンク分割されます |
 | `dialecticMaxInputChars` | `10000` | `peer.chat()` への弁証法クエリ入力の最大文字数 |
 | `sessionStrategy` | `'per-directory'` | `per-directory`、`per-repo`、`per-session`、または `global` |
+| `pinUserPeer` | `false` | ゲートウェイのみ。`true` のとき、すべてのプラットフォームユーザーが `peerName` に集約されます |
+| `userPeerAliases` | `{}` | ゲートウェイのみ。ランタイムIDからピアへのマップ（`{"7654321": "alice"}`）。多対一 |
+| `runtimePeerPrefix` | `""` | ゲートウェイのみ。どのエイリアスにも一致しない場合に、未知のランタイムIDに名前空間を付けます（`telegram_7654321`） |
+| `a2aSessions` | `true` | 他のボットからのDMを、人間のセッションではなく、送信元ボットごとの独自のHonchoセッションに書き込みます。`false` はボットが作成したターンを完全にスキップします |
 
 **セッション戦略**は、Honchoセッションがあなたの作業にどうマッピングされるかを制御します。
 - `per-session` — 各 `hermes` 実行ごとに新しいセッションを取得。クリーンなスタート、ツール経由のメモリ。新規ユーザーに推奨。
 - `per-directory` — 作業ディレクトリごとに1つのHonchoセッション。コンテキストが実行をまたいで蓄積されます。
 - `per-repo` — gitリポジトリごとに1つのセッション。
 - `global` — すべてのディレクトリをまたいだ単一のセッション。
+
+ディレクトリベースの戦略と手動の `sessions` マッピングは、バックエンドの起動ディレクトリではなく、論理的なセッションの作業ディレクトリを使用します。Desktop/TUIのプロジェクトワークスペースとACPのセッションディレクトリは、遅延ビルドを含め、エージェントの構築時に渡されます。ディレクトリが指定されない場合、Honchoはランタイムのcwdリゾルバーを使用します: セッションコンテキスト、次にスコープ付きの `terminal.cwd` 設定、次にプロセスの起動ディレクトリの順です。
+
+メッセージングゲートウェイは、戦略やタイトルに関係なく、チャットごとの安定したセッションキーを維持します。その他のセッションでは、`per-session` のアイデンティティが優先され、次に手動のディレクトリマッピング、明示的なタイトル、設定された戦略の順になります。
+
+自動生成されたHermesのタイトル（`derived` または `llm`）は、Desktopのブランチのリネージタイトルも含めて表示用のメタデータであり、`sessionStrategy` を上書きしません。明示的なユーザータイトルは、手動マッピングのない、ゲートウェイ以外かつ `per-session` 以外のセッションに対して、意図的なセッション名の上書きとして引き続き機能します。
+
+タイトルの出所が記録されるようになる前に作成されたセッションは、従来の動作を保持します: 古い自動タイトルと古いユーザータイトルを区別できないため、出所のないタイトルは明示的な上書きとして扱われます。
 
 **Recallモード**は、メモリが会話にどう流れ込むかを制御します。
 - `hybrid` — コンテキストがシステムプロンプトに自動注入され、かつツールも利用可能（いつクエリするかはモデルが決定）。
@@ -149,6 +168,34 @@ Honchoは、`~/.honcho/config.json`（グローバル）または `$HERMES_HOME/
 | `dialecticDynamic` | モデルの上書きをゲート | 該当なし（ツールなし） | モデルの上書きをゲート |
 
 `tools` モードでは、モデルが完全に制御します — 望むときに、選んだ任意の `reasoning_level` で `honcho_reasoning` を呼び出します。Cadenceと予算の設定は、自動注入のあるモード（`hybrid` と `context`）にのみ適用されます。
+
+**起動時の動作と `initOnSessionStart`。** `hybrid` と `context` モードでは、セッションはバックグラウンドスレッドで作成され、Honchoが遅いかダウンしている場合でも起動はフェイルオープンします。`tools` モードは設計上異なります: `initOnSessionStart: false`（デフォルト）では、最初の `honcho_*` ツール呼び出しまで何もHonchoに触れません。`initOnSessionStart: true` では、セッションは**エージェントの構築中に同期的に**作成されるため、ターン1のツール呼び出しが初期化途中のセッションと競合することはありません。この保証は、起動がHonchoを待つことを意味します: サーバーに到達できない場合、その早期パスのすべてのSDK呼び出しが接続/`timeout` の上限まで実行されてからエージェントの準備が整います。これはDesktopでは `request timed out: session.resume` / `prompt.submit` として現れます（レンダラーは30秒で諦めます）。Desktopでは、またHonchoが稼働していない可能性のあるローカルサービスである場合は常に、`initOnSessionStart` を `false` のままにし、有効にする場合は `honcho.json` で `timeout`（秒）を設定して各呼び出しに上限を設けてください。
+
+## ゲートウェイのアイデンティティマッピング {#gateway-identity-mapping}
+
+これらの設定は、[Hermesゲートウェイ](/docs/developer-guide/gateway-internals)を実行する場合にのみ意味があります — ゲートウェイは、ユーザーがプラットフォームネイティブのランタイムID（TelegramのUID、Discordのsnowflake、Slackのユーザー）を持って到着する唯一のエントリポイントです。CLI、TUI、デスクトップのセッションにはランタイムIDがなく、常に `peerName` に解決されるため、ゲートウェイ以外ではこれらのキーは何もしません。
+
+セットアップウィザードは、ゲートウェイプラットフォームが接続されているかどうかを検出し、接続されていなければこのステップを完全にスキップします。実行される場合は、1つの質問 — *このゲートウェイと誰が話しますか？* — を尋ね、キーを導出します。
+
+| 回答 | 結果 |
+|--------|--------|
+| **自分だけ** | `pinUserPeer: true` — エージェント以外のすべてのゲートウェイユーザーがあなたのピアに集約されます。ピン留めはすべてのエイリアスより優先されるため、ユーザー側のアイデンティティが独自のピアを必要としない場合にのみ選択してください。別々のエージェントがゲートウェイに到達し、それぞれが個別のピアを必要とする場合は、ピン留め**しないでください** — `pinUserPeer: false` のままにし、代わりに `userPeerAliases`（`[e]` エディター）でマッピングします |
+| **自分 + 他の人**（プール） | `pinUserPeer: false` + あなたのランタイムIDを `peerName` にマッピングする `userPeerAliases` — あなたは共有の履歴にとどまり、他の人は独自のピアを得ます |
+| **他の人だけ** | `pinUserPeer: false`、オプションで `runtimePeerPrefix` — 各ユーザーが独自のピアを得ます |
+
+代わりに3つのキーを直接設定するには、プロンプトで `[e]` を選択します。
+
+リゾルバーはキーを上から順に試し、最初に一致したものが採用されます: `pinUserPeer` → `userPeerAliases[id]` → `runtimePeerPrefix + id` → 生のランタイムID → `peerName` → セッションキーのフォールバック。
+
+各ターンはそれを書いた人のピアの下に書き込まれるため、共有チャットで最初にメッセージを送った人が他の全員の事実を集めてしまうことはもうありません。別のボットからのターン（`bot:<profile>` タグ付きのBot ModeのDM、またはアダプターがボットとしてフラグを立てたプラットフォームアカウント）は常に独自のピアを得ます: `pinUserPeer` は1人の人物のアカウントを統合するものであり、ボットは決して統合しません。そのターンは送信者ごとの `a2a` セッション（`a2aSessions` を参照）に入り、結論とカードは人間を記述するものであるため、そのようなターンの実行中は `honcho_conclude` / `honcho_profile` が書き込みを拒否します。
+
+:::warning ピン留めの解除はプールされたメモリを孤立させます
+`pinUserPeer` を `true` から `false` に切り替えてもデータは移行されません — `peerName` の下に蓄積されたメモリはそこにとどまり、プラットフォームユーザーは新しい空のピアに解決されます。自分の継続性を保つには、**プール**のパスを選んで、あなたのランタイムIDが `peerName` にエイリアスされるようにしてください。ウィザードはこの遷移を検出すると、自動的にこの誘導を提示します。
+:::
+
+:::note 非推奨のキー
+`pinPeerName` は `pinUserPeer` のレガシーエイリアスです — 後方互換性のために引き続き読み取られます（両方が設定されている場合は `pinUserPeer` が優先）が、書き込まれることはありません。セットアップを再実行すると、正規のキーに移行されます。
+:::
 
 ## 観測（方向性 vs. 統合） {#observation-directional-vs-unified}
 
@@ -199,23 +246,24 @@ Honchoがメモリプロバイダーとしてアクティブな場合、5つの�
 
 ## CLIコマンド
 
-`hermes honcho` サブコマンドは、**Honchoがアクティブなメモリプロバイダーである場合にのみ登録されます**（`config.yaml` の `memory.provider: honcho`）。`hermes memory setup` を実行してまずHonchoを選択してください。サブコマンドは次回の起動時に現れます。
+`hermes honcho` サブコマンドは、**Honchoがアクティブなメモリプロバイダーである場合にのみ登録されます**（`config.yaml` の `memory.provider: honcho`）。新規インストールでは、`hermes memory setup honcho` でHonchoを直接設定してください（または `hermes memory setup` を実行してリストから選択します）。その後、`hermes honcho` サブコマンドが次回の起動時に現れます。
 
 ```bash
-hermes honcho status          # 接続ステータス、設定、主要な設定値
-hermes honcho setup           # `hermes memory setup` にリダイレクト
-hermes honcho strategy        # セッション戦略を表示または設定（per-session/per-directory/per-repo/global）
-hermes honcho peer            # ピア名と弁証法の推論レベルを表示または更新
-hermes honcho mode            # recallモードを表示または設定（hybrid/context/tools）
-hermes honcho tokens          # コンテキストと弁証法のトークン予算を表示または設定
-hermes honcho identity        # AIピアのHonchoアイデンティティをシードまたは表示
-hermes honcho sync            # Honcho設定を既存のすべてのプロファイルに同期
-hermes honcho peers           # すべてのプロファイルにわたるピアアイデンティティを表示
-hermes honcho sessions        # 既知のHonchoセッションマッピングを一覧表示
-hermes honcho map             # 現在のディレクトリをHonchoセッション名にマッピング
-hermes honcho enable          # アクティブなプロファイルでHonchoを有効化
-hermes honcho disable         # アクティブなプロファイルでHonchoを無効化
-hermes honcho migrate         # openclaw-honcho からの段階的な移行ガイド
+hermes memory setup honcho    # Configure Honcho directly (works before activation)
+hermes honcho status          # Connection status, config, and key settings
+hermes honcho setup           # Redirects to `hermes memory setup` (post-activation alias)
+hermes honcho strategy        # Show or set session strategy (per-session/per-directory/per-repo/global)
+hermes honcho peer            # Show or update peer names + dialectic reasoning level
+hermes honcho mode            # Show or set recall mode (hybrid/context/tools)
+hermes honcho tokens          # Show or set token budget for context and dialectic
+hermes honcho identity        # Seed or show the AI peer's Honcho identity
+hermes honcho sync            # Sync Honcho config to all existing profiles
+hermes honcho peers           # Show peer identities across all profiles
+hermes honcho sessions        # List known Honcho session mappings
+hermes honcho map             # Map current directory to a Honcho session name
+hermes honcho enable          # Enable Honcho for the active profile
+hermes honcho disable         # Disable Honcho for the active profile
+hermes honcho migrate         # Step-by-step migration guide from openclaw-honcho
 ```
 
 ## `hermes honcho` からの移行

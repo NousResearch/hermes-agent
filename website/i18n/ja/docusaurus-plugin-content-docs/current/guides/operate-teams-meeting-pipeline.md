@@ -79,7 +79,7 @@ hermes cron create "0 */12 * * *" \
 
 ```bash
 hermes cron list
-hermes cron status        # スケジューラーの状態
+hermes cron status        # scheduler status
 ```
 
 #### オプション2: systemdタイマー（Linuxの本番デプロイに推奨）
@@ -134,8 +134,8 @@ cron環境に `MSGRAPH_*` の認証情報があることを確認してくださ
 スケジュールを設定したら、最初のスケジュール実行の後に更新アクティビティを確認します。
 
 ```bash
-hermes teams-pipeline subscriptions   # expirationDateTime が前進しているはず
-hermes teams-pipeline maintain-subscriptions --dry-run   # ほとんどの場合 "0 expiring soon" と表示されるはず
+hermes teams-pipeline subscriptions   # should show expirationDateTime advanced
+hermes teams-pipeline maintain-subscriptions --dry-run   # should show "0 expiring soon" most of the time
 ```
 
 Graph webhookがちょうど約72時間後に不可解に「動作を停止する」場合、最初に確認すべきはこれです。更新ジョブは実際に実行されたか？

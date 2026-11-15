@@ -56,8 +56,8 @@ Check @file:main.py, and also @file:test.py.
 `@file:` 参照は、正確なコンテンツ挿入のために行範囲をサポートします:
 
 ```text
-@file:src/main.py:42        # 42 行目のみ
-@file:src/main.py:10-25     # 10 行目から 25 行目まで（両端を含む）
+@file:src/main.py:42        # Single line 42
+@file:src/main.py:10-25     # Lines 10 through 25 (inclusive)
 ```
 
 行は 1 始まりです。無効な範囲は黙って無視されます（ファイル全体が返されます）。
@@ -112,17 +112,17 @@ Check @file:main.py, and also @file:test.py.
 ## 一般的なパターン
 
 ```text
-# コードレビューのワークフロー
+# Code review workflow
 Review @diff and check for security issues
 
-# コンテキスト付きでデバッグ
+# Debug with context
 This test is failing. Here's the test @file:tests/test_auth.py
 and the implementation @file:src/auth.py:50-80
 
-# プロジェクトの探索
+# Project exploration
 What does this project do? @folder:src @file:README.md
 
-# リサーチ
+# Research
 Compare the approaches in @url:https://arxiv.org/abs/2301.00001
 and @url:https://arxiv.org/abs/2301.00002
 ```

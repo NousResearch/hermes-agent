@@ -12,12 +12,12 @@ Hermesのウェブダッシュボード（`hermes dashboard`）は、コード�
 2. **UIプラグイン** — `manifest.json` とJavaScriptバンドルを含むディレクトリで、タブを登録したり、組み込みページを置き換えたり、ページスコープのスロットでページを拡張したり、名前付きのシェルスロットにコンポーネントを注入したりします。
 3. **バックエンドプラグイン** — そのプラグインディレクトリ内のPythonファイルで、FastAPIの `router` を公開します。ルートは `/api/plugins/<name>/` の下にマウントされ、プラグインのUIから呼び出されます。
 
-3つすべてが **実行時にドロップインで利用可能** です: リポジトリのクローンも、`npm run build` も、ダッシュボードのソースへのパッチも不要です。このページは、これら3つすべての正式なリファレンスです。
+3つすべてが **実行時にドロップインで利用可能** です: リポジトリのクローンも、`pnpm run build` も、ダッシュボードのソースへのパッチも不要です。このページは、これら3つすべての正式なリファレンスです。
 
 ダッシュボードを使いたいだけの場合は、[ウェブダッシュボード](./web-dashboard)を参照してください。（ウェブダッシュボードではなく）ターミナルCLIをリスキンしたい場合は、[スキンとテーマ](./skins)を参照してください — CLIのスキンシステムはダッシュボードのテーマとは無関係です。
 
 :::note デスクトップアプリではありません
-このページでは、**ウェブダッシュボード**（`hermes dashboard`）のプラグインシステム — `window.__HERMES_PLUGIN_SDK__`、`manifest.json`、ビルド済みのJSバンドル — を扱います。**ネイティブのデスクトップアプリ**（`hermes desktop`）には、これとは無関係の独自SDK — `@hermes/plugin-sdk`、単一のESMファイル、ビルドステップなし — があり、[デスクトッププラグインSDK](../../developer-guide/desktop-plugin-sdk.md)で説明しています。両者で共有されるのは、バックエンドの `plugin_api.py` 名前空間（`/api/plugins/<name>`）のみです。
+このページでは、**ウェブダッシュボード**（`hermes dashboard`）のプラグインシステム — `window.__HERMES_PLUGIN_SDK__`、`manifest.json`、ビルド済みのJSバンドル — を扱います。**ネイティブのデスクトップアプリ**（`hermes desktop`）には、これとは無関係の独自SDK — `@hermes/plugin-sdk`、単一のESMファイル、ビルドステップなし — があり、[デスクトッププラグインSDK](/docs/developer-guide/desktop-plugin-sdk)で説明しています。両者で共有されるのは、バックエンドの `plugin_api.py` 名前空間（`/api/plugins/<name>`）のみです。
 :::
 
 :::note 各要素の組み合わせ方
@@ -104,10 +104,10 @@ palette:
   background:
     hex: "#05091a"
     alpha: 1.0
-  midground: "#d8f0ff"          # 裸のhex、alpha = 1.0
+  midground: "#d8f0ff"          # bare hex, alpha = 1.0
   foreground:
     hex: "#ffffff"
-    alpha: 0                    # 不可視の最上層
+    alpha: 0                    # invisible top layer
   warmGlow: "rgba(255, 199, 55, 0.24)"
   noiseOpacity: 0.7
 ```
@@ -176,9 +176,9 @@ layoutVariant: cockpit
 
 ```yaml
 assets:
-  bg: "https://example.com/hero-bg.jpg"           # <Backdrop /> に自動接続
-  hero: "/my-images/strike-freedom.png"           # プラグインのサイドバー用
-  crest: "/my-images/crest.svg"                   # header-left のプラグイン用
+  bg: "https://example.com/hero-bg.jpg"           # auto-wired into <Backdrop />
+  hero: "/my-images/strike-freedom.png"           # for plugin sidebars
+  crest: "/my-images/crest.svg"                   # for header-left plugins
   logo: "/my-images/logo.png"
   sidebar: "/my-images/rail.png"
   header: "/my-images/header-art.png"
@@ -197,7 +197,7 @@ assets:
 プラグインはこれらを素のCSSまたはJSで読みます:
 
 ```javascript
-// プラグインのスロット内
+// In a plugin slot
 const hero = getComputedStyle(document.documentElement)
   .getPropertyValue("--theme-asset-hero").trim();
 ```
@@ -252,7 +252,7 @@ colorOverrides:
 
 ```yaml
 customCSS: |
-  /* スキャンラインオーバーレイ — cockpitバリアントがアクティブなときだけ表示。 */
+  /* Scanline overlay — only visible when cockpit variant is active. */
   :root[data-layout-variant="cockpit"] body::before {
     content: "";
     position: fixed;
@@ -294,7 +294,7 @@ name: ocean
 label: Ocean Deep
 description: Deep sea blues with coral accents
 
-# 3層パレット（{hex, alpha} または裸のhexを受け付ける）
+# 3-layer palette (accepts {hex, alpha} or bare hex)
 palette:
   background:
     hex: "#0a1628"
@@ -311,7 +311,7 @@ palette:
 typography:
   fontSans: "Poppins, system-ui, sans-serif"
   fontMono: "Fira Code, ui-monospace, monospace"
-  fontDisplay: "Poppins, system-ui, sans-serif"   # 任意
+  fontDisplay: "Poppins, system-ui, sans-serif"   # optional
   fontUrl: "https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&family=Fira+Code:wght@400;500&display=swap"
   baseSize: "15px"
   lineHeight: "1.6"
@@ -342,7 +342,7 @@ colorOverrides:
   ring: "#ff6b6b"
 
 customCSS: |
-  /* セレクターレベルの追加調整があればここに */
+  /* Any additional selector-level tweaks */
 ```
 
 ファイルを作成した後、ダッシュボードを更新します。ヘッダーバーからライブでテーマを切り替えます — パレットアイコンをクリックします。選択は `config.yaml` の `dashboard.theme` に永続化され、リロード時に復元されます。
@@ -418,14 +418,14 @@ JSXを好む場合は、Reactを外部依存とし、IIFE出力にする任意�
 
 ```
 ~/.hermes/plugins/my-plugin/
-├── plugin.yaml              # 任意 — 既存のCLI/ゲートウェイプラグインマニフェスト
-├── __init__.py              # 任意 — 既存のCLI/ゲートウェイフック
-└── dashboard/               # ダッシュボード拡張
-    ├── manifest.json        # 必須 — タブ設定、アイコン、エントリーポイント
+├── plugin.yaml              # optional — existing CLI/gateway plugin manifest
+├── __init__.py              # optional — existing CLI/gateway hooks
+└── dashboard/               # dashboard extension
+    ├── manifest.json        # required — tab config, icon, entry point
     ├── dist/
-    │   ├── index.js         # 必須 — ビルド済みJSバンドル（IIFE）
-    │   └── style.css        # 任意 — カスタムCSS
-    └── plugin_api.py        # 任意 — バックエンドAPIルート（FastAPI）
+    │   ├── index.js         # required — pre-built JS bundle (IIFE)
+    │   └── style.css        # optional — custom CSS
+    └── plugin_api.py        # optional — backend API routes (FastAPI)
 ```
 
 1つのプラグインディレクトリは、3つの直交する拡張を持てます:
@@ -537,15 +537,15 @@ SDK.fetchJSON("/api/plugins/my-plugin/data")
   .catch((err) => console.error("API call failed:", err));
 ```
 
-`fetchJSON` はセッション認証トークンを注入し、エラーをスローされる例外として表面化し、JSONを自動的にパースします。
+`fetchJSON` はセッション認証トークンを注入し、エラーをスローされる例外として表面化し、JSONを自動的にパースします。`fetchJSON` と `authedFetch` は、このダッシュボード自身のオリジンのみを呼び出します: 別のホストへの絶対URLは、セッショントークンを送信されるのではなく拒否されます。そのため、サードパーティのURL（CDNのアセット、ゲームサーバーなど）は素の `fetch` で取得してください。
 
 #### 組み込みのHermesエンドポイントを呼び出す
 
 ```javascript
-// エージェントのステータス
+// Agent status
 SDK.api.getStatus().then((s) => console.log("Version:", s.version));
 
-// 最近のセッション
+// Recent sessions
 SDK.api.getSessions(10).then((resp) => console.log(resp.sessions.length));
 ```
 
@@ -676,10 +676,10 @@ window.__HERMES_PLUGINS__.registerSlot("my-plugin", "sessions:top", PinnedSessio
     );
   }
 
-  // 隠しタブ用のプレースホルダー。
+  // Placeholder for the hidden tab.
   window.__HERMES_PLUGINS__.register("session-notes", function () { return null; });
 
-  // 実際の処理。
+  // The real work.
   window.__HERMES_PLUGINS__.registerSlot("session-notes", "sessions:top", Banner);
 })();
 ```
@@ -738,6 +738,10 @@ async def do_action(body: dict):
 - `POST /api/plugins/my-plugin/action`
 
 プラグインのAPIルートは、ダッシュボードの通常の認証ゲートの背後にあります — 未認証のリクエストはプラグインのルートが実行される前に `401` を受け取り、無効化されたプラグインのルートへのリクエストはリクエスト時に拒否されます。それでも、**信頼できないプラグインを実行する場合は、`--host 0.0.0.0` でダッシュボードを公開インターフェースに公開しないでください** — 認証済みのセッションからはそのルートにも到達できます。
+
+#### イベントループをブロックしない {#dont-block-the-event-loop}
+
+デフォルトの `plugins.isolation: in_process` では、APIハンドラーはゲートウェイのイベントループ上で実行されます。これは、他のすべてのダッシュボード、Desktop、チャットのリクエストに応答するのと同じループです。ブロックするハンドラー（`time.sleep`、同期HTTPクライアント、長時間のファイルスキャン）は、戻るまでそれらすべてを止めてしまいます: 3秒スリープするハンドラーは、無関係な `/api/status` を数秒遅らせ、Desktopの接続をタイムアウトさせることがあります。非同期I/Oとともに `async def` を使うか、`await asyncio.to_thread(...)` でブロックする処理をループの外に移してください（素の `def` ハンドラーもワーカースレッドで実行されます）。`plugins.isolation: host` はハンドラーを別プロセス（[プラグインホスト](plugins.md#running-plugins-out-of-process-pluginsisolation)）で実行します: そこでは遅いハンドラーはそのプロファイルのホストされたプラグインのリクエストだけを遅らせ、60秒経っても応答がないものはHTTP 504を受け取ります。
 
 #### Hermesの内部へのアクセス
 
@@ -803,10 +807,12 @@ async def config_snapshot():
 | 2 | `<repo>/plugins/<name>/dashboard/` | `bundled` |
 | 3 | `./.hermes/plugins/<name>/dashboard/` | `project` — `HERMES_ENABLE_PROJECT_PLUGINS` が設定されている場合のみ |
 
+複数のプロファイルを提供するゲートウェイでは、ゲートウェイの起動時のプロファイル以外のプロファイルに対するリクエストは、そのプロファイル自身の `plugins/<name>/dashboard/`、次にルートの `~/.hermes/plugins/<name>/dashboard/`（スタンドアロンの `hermes --profile <name> dashboard` と同様。同名で衝突した場合はプロファイル自身のコピーが優先されます）、次にバンドルされたものを参照し、そのプロファイルの `plugins.enabled` / `plugins.disabled` によってゲートされます。そのプラグインAPIは、ルートのプラグインのものも含めて、そのプロファイルの[プラグインホスト](plugins.md#running-plugins-out-of-process-pluginsisolation)で実行され、ゲートウェイ内で実行されることはありません。
+
 検出結果はダッシュボードプロセスごとにキャッシュされます。新しいプラグインを追加した後は、次のいずれかを行います:
 
 ```bash
-# 再起動なしで再スキャンを強制
+# Force a rescan without restart
 curl http://127.0.0.1:9119/api/dashboard/plugins/rescan
 ```
 
@@ -844,11 +850,11 @@ curl http://127.0.0.1:9119/api/dashboard/plugins/rescan
 ```bash
 git clone https://github.com/NousResearch/hermes-example-plugins.git
 
-# テーマ
+# Theme
 cp hermes-example-plugins/strike-freedom-cockpit/theme/strike-freedom.yaml \
    ~/.hermes/dashboard-themes/
 
-# プラグイン
+# Plugin
 cp -r hermes-example-plugins/strike-freedom-cockpit ~/.hermes/plugins/
 ```
 

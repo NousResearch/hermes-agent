@@ -6,6 +6,14 @@ description: "Ollamaと、Gemma 4のようなオープンウェイトモデル�
 
 # OllamaでHermesをローカル実行 — API費用ゼロ
 
+:::tip デスクトップユーザー向け: ワンクリックの方法があります
+Hermesデスクトップアプリでは、**Settings → Providers → Local Models** がローカルの
+llama.cppサーバーをインストールして管理してくれます — モデルのダウンロード、メモリへの
+適合、コンテキストサイズの調整も含まれます。[ローカルモデル](/docs/user-guide/local-models)を参照してください。
+このガイドは手動セットアップ向けです: 特にOllamaを使う場合、CLI中心のワークフロー、
+または自分で運用したいサーバー向けです。
+:::
+
 ## 課題
 
 クラウドのLLM APIはトークンごとに課金されます。重いコーディングセッションでは5〜20ドルかかることもあります。個人プロジェクト、学習、プライバシーに配慮した作業では、これが積み重なります — しかもすべての会話をサードパーティに送信することになります。
@@ -21,7 +29,7 @@ description: "Ollamaと、Gemma 4のようなオープンウェイトモデル�
 - ファイルを編集し、コマンドを実行し、Webを閲覧できる動作するローカルエージェント
 - オプション: 完全に自分のハードウェアで動くTelegram/Discordボット
 
-## 必要なもの
+## 必要なもの {#what-you-need}
 
 | コンポーネント | 最低限 | 推奨 |
 |-----------|---------|-------------|
@@ -35,7 +43,7 @@ OllamaはCPUのみのサーバーでも動作します。最新の8コアCPUで9
 
 ```bash
 # ~/.hermes/.env
-HERMES_API_TIMEOUT=1800   # 30分 — 遅いローカルモデルに対して余裕を持たせる
+HERMES_API_TIMEOUT=1800   # 30 minutes — generous for slow local models
 ```
 :::
 
@@ -49,7 +57,7 @@ curl -fsSL https://ollama.com/install.sh | sh
 
 ```bash
 ollama --version
-curl http://localhost:11434/api/tags   # {"models":[]} を返すはず
+curl http://localhost:11434/api/tags   # Should return {"models":[]}
 ```
 
 ## ステップ2: モデルをプルする
@@ -156,26 +164,26 @@ Hermesはターミナルツール、ファイル操作、そしてローカル�
 
 ### Ollamaのコンテキストウィンドウを拡大する
 
-デフォルトでは、Ollamaは2048トークンのコンテキストを使用します。エージェント作業（ツール呼び出し、長い会話）には、より多くが必要です：
+デフォルトでは、Ollamaは2048トークンのコンテキストを使用します。Hermesはツールを使ったエージェント作業に少なくとも64,000トークンを必要とします：
 
 ```bash
-# コンテキストを拡張するModelfileを作成
-cat > /tmp/Modelfile << 'EOF'
+# Create a Modelfile that extends context
+cat > ~/.hermes/cache/scratch/Modelfile << 'EOF'
 FROM gemma4:31b
-PARAMETER num_ctx 16384
+PARAMETER num_ctx 64000
 EOF
 
-ollama create gemma4-16k -f /tmp/Modelfile
+ollama create gemma4-64k -f ~/.hermes/cache/scratch/Modelfile
 ```
 
-その後、Hermesの設定を更新して `gemma4-16k` をモデル名として使用します。
+その後、Hermesの設定を更新して `gemma4-64k` をモデル名として使用します。
 
-### モデルを読み込んだままにする
+### モデルを読み込んだままにする {#keep-the-model-loaded}
 
 デフォルトでは、Ollamaは5分間アイドル状態が続くとモデルをアンロードします。常駐するゲートウェイボットの場合は、読み込んだままにします：
 
 ```bash
-# keep-aliveを24時間に設定
+# Set keep-alive to 24 hours
 curl http://localhost:11434/api/generate \
   -d '{"model": "gemma4:31b", "keep_alive": "24h"}'
 ```
@@ -188,12 +196,12 @@ curl http://localhost:11434/api/generate \
 Environment="OLLAMA_KEEP_ALIVE=24h"
 ```
 
-### GPUオフロードを使う（利用可能な場合）
+### GPUオフロードを使う（利用可能な場合） {#use-gpu-offloading-if-available}
 
 NVIDIA GPUがある場合、Ollamaは自動的にレイヤーをGPUにオフロードします。次で確認します：
 
 ```bash
-ollama ps   # 読み込まれているモデルとGPUレイヤー数を表示
+ollama ps   # Shows which model is loaded and how many GPU layers
 ```
 
 12 GBのGPUで31Bモデルを動かす場合、部分的なオフロード（約40レイヤーがGPU、残りがCPU）になりますが、それでも大幅に高速化します。
@@ -260,13 +268,23 @@ fallback_providers:
 
 ## トラブルシューティング
 
+### 「provider 'ollama' has no endpoint configured」
+
+`hermes chat --provider ollama`（または `vllm`）は、そのエイリアスに対してどこにもエンドポイントが設定されていない場合 — `providers.ollama.base_url` も `model.base_url` もない場合 — このエラーで停止します。Hermesは、たまたま設定されているクラウドキー（`OPENROUTER_API_KEY` / `OPENAI_API_KEY`）でOpenRouterにフォールバックするのではなく、リクエストの送信を拒否します。エンドポイントを追加してください：
+
+```yaml
+providers:
+  ollama:
+    base_url: "http://localhost:11434/v1"
+```
+
 ### 起動時に「Connection refused」
 
 Ollamaが実行されていません。起動します：
 
 ```bash
 sudo systemctl start ollama
-# または
+# or
 ollama serve
 ```
 
@@ -276,13 +294,26 @@ ollama serve
 - **`ollama ps` を確認:** GPUレイヤーがオフロードされていない場合、応答はCPUバウンドになります。CPUのみのサーバーでは正常です。
 - **コンテキストを減らす:** 大きな会話は推論を遅くします。定期的に `/compress` を使うか、設定でより低い圧縮しきい値を設定してください。
 
+### 最初の応答が遅い（プレフィル） {#slow-first-response-prefill}
+
+Hermesは、会話の内容より前に、すべてのAPI呼び出しで固定のペイロード — システムプロンプトと、有効なすべてのツールのツールスキーマ — を送信します。CPUのみまたはVRAMの少ない構成では、そのプロンプトの処理（*プレフィル*フェーズ）が最初のターンの大部分を占めます: モデルはプロンプトを処理する間、数分間沈黙し、その後通常のペースで生成します。これは想定どおりの動作であり、ハングではありません。[MacのローカルLLMガイド](./local-llm-on-mac.md#timeouts)にも同じ効果が記載されています — 大きなコンテキストのプレフィル中、ローカルモデルはプロンプトを処理する間、数分間何も出力しないことがあります — そしてHermesはローカルエンドポイントに対して、ストリーム読み取りタイムアウトを自動的に120秒から1800秒に引き上げます（`HERMES_STREAM_READ_TIMEOUT`）。
+
+役立つこと：
+
+- **モデルを読み込んだままにする** — Ollamaは5分後にアイドル状態のモデルをアンロードするため、次のプレフィルの前に完全な再読み込みが加わります。`OLLAMA_KEEP_ALIVE=24h` を設定してください（[ステップ6](#keep-the-model-loaded)を参照）。
+- **APIタイムアウトを広げる** — `~/.hermes/.env` に `HERMES_API_TIMEOUT=1800` を設定します（[必要なもの](#what-you-need)を参照）。
+- **固定プロンプトを測定して削減する** — `hermes prompt-size` を実行してシステムプロンプトとツールスキーマのバイト内訳を確認し、`hermes tools` で未使用のツールセットを無効にし、`hermes skills` で不要なスキルをアンインストールします。
+- **GPUオフロードを使う** — 部分的なオフロードでも大幅に高速化します（[ステップ6](#use-gpu-offloading-if-available)を参照）。
+
 ### モデルがツール呼び出しに従わない
 
-小さいモデル（3B、7B）は、ツール呼び出しの指示を無視して、構造化された関数呼び出しの代わりにプレーンテキストを生成することがあります。解決策：
+ツール呼び出しに対応していないモデルは、構造化された関数呼び出しの代わりにプレーンテキストを生成します。解決策：
 
-- **より大きいモデルを使う** — `gemma4:31b` や `gemma2:27b` は3B/7Bモデルよりはるかにうまくツール呼び出しを処理します。
+- **ツール呼び出しに対応したモデルを使う** — 上記のモデルのうち、信頼できるツール呼び出しが可能なのは `gemma4:31b` だけです。
 - **Hermesには自動修復がある** — 不正なツール呼び出しを検出し、自動的に修正を試みます。
 - **フォールバックを設定する** — ローカルモデルが3回失敗すると、Hermesはクラウドプロバイダーにフォールバックします。
+
+モデルが実際にツールを実行する代わりに、返信の中に `{"name": "web_search", ...}` のような生のJSONを出力する場合、通常はモデルではなく*サーバー*が原因です — ツール呼び出しが有効になっていないか、ツール呼び出しの形式がパースされていません。[ツール呼び出しが実行されずにテキストとして表示される](../integrations/providers.md#tool-calls-appear-as-text-instead-of-executing)のサーバー別の修正表を参照してください（llama.cppには `--jinja`、vLLMには `--enable-auto-tool-choice --tool-call-parser hermes` が必要、など）。
 
 ### コンテキストウィンドウのエラー
 
@@ -311,7 +342,7 @@ ollama serve
 ## クラウドモデルの方が優れているもの
 
 - **非常に複雑な多段階の推論** — 70B以上やClaude Opusのようなクラウドモデルは明らかに優れています
-- **長いコンテキストウィンドウ** — クラウドモデルは100K〜1Mトークンを提供します。ローカルモデルは通常8K〜32Kです
+- **長いコンテキストウィンドウ** — クラウドモデルは100K〜1Mトークンを提供します。ローカルランタイムは、設定しない限りHermesの最小要件である64Kを下回るデフォルトであることが多いです
 - **大きな応答での速度** — 長い生成では、クラウド推論はCPUのみのローカルより高速です
 
 最適なバランス: 日常的なタスクにはローカルを使い、難しいものにはクラウドフォールバックを設定する。

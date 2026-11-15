@@ -6,6 +6,10 @@ description: "MCP サーバーを Hermes Agent に接続し、ツールをフィ
 
 # Hermes で MCP を使う
 
+このページの Python 依存関係コマンドは、
+[PM で準備されたソースチェックアウト](/docs/reference/package-management#developer-workflow) を前提としています。
+依存関係を変更した後は、チェックアウトを再アクティベートして Hermes を再起動してください。
+
 このガイドでは、日々のワークフローで Hermes Agent と MCP を実際にどう使うかを説明します。
 
 機能ページが MCP とは何かを説明するものだとすれば、このガイドは MCP から素早く安全に価値を引き出す方法についてのものです。
@@ -37,13 +41,13 @@ MCP はアダプターレイヤーだと考えてください:
 
 ## ステップ 1: MCP サポートをインストールする
 
-標準のインストールスクリプトで Hermes をインストールした場合、MCP サポートはすでに含まれています（インストーラーは `uv pip install -e ".[all]"` を実行します）。
+標準のインストールスクリプトで Hermes をインストールした場合、MCP サポートはすでに含まれています。PM は宣言された `all` エクストラを選択します。
 
 エクストラなしでインストールしており、MCP を個別に追加する必要がある場合:
 
 ```bash
 cd ~/.hermes/hermes-agent
-uv pip install -e ".[mcp]"
+python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 ```
 
 npm ベースのサーバーの場合、Node.js と `npx` が利用可能であることを確認してください。
@@ -72,7 +76,7 @@ hermes chat
 そして具体的なことを尋ねます:
 
 ```text
-このプロジェクトを調べて、リポジトリのレイアウトを要約してください。
+Inspect this project and summarize the repo layout.
 ```
 
 ## ステップ 3: MCP がロードされたことを確認する
@@ -83,11 +87,15 @@ MCP はいくつかの方法で確認できます:
 - Hermes に利用可能なツールを尋ねる
 - 設定変更後は `/reload-mcp` を使う
 - サーバーの接続に失敗した場合はログを確認する
+- シェルから `hermes mcp test <server>` を実行する — 接続して検出されたツールを一覧表示し、
+  接続が完了すれば `0`、接続に失敗すれば `1`、サーバーが設定にない場合は `3`
+  （`2` は argparse の使用法エラー）で終了するため、ヘルスプローブや cron のウォッチドッグは
+  出力をパースする代わりに `$?` で分岐できます
 
 実用的なテストプロンプト:
 
 ```text
-今この瞬間に利用可能な、MCP 由来のツールを教えてください。
+Tell me which MCP-backed tools are available right now.
 ```
 
 ## ステップ 4: すぐにフィルタリングを始める
@@ -257,14 +265,65 @@ mcp_servers:
 良いプロンプト:
 
 ```text
-プロジェクト構造をレビューして、設定がどこにあるかを特定してください。
+Review the project structure and identify where configuration lives.
 ```
 
 ```text
-ローカルの git の状態を確認して、最近何が変わったかを要約してください。
+Check the local git state and summarize what changed recently.
 ```
 
-### パターン 2: GitHub トリアージアシスタント
+### パターン 2: Open Scaffold によるリポジトリネイティブの作業記録
+
+リポジトリの永続的な AI 作業記録（ミッション、計画、エビデンスノート、ハンドオフパケット、レビュー/ゲートの結果）を Hermes に読ませたい場合は、[Open Scaffold](https://github.com/graphanov/open-scaffold) を使います。Hermes はエージェントのままであり、Open Scaffold はリポジトリローカルの記録のままです。
+
+スキャフォールド済みの 1 つのリポジトリ用にサーバーを追加します:
+
+```bash
+hermes mcp add open_scaffold --command npx --args -y open-scaffold@latest mcp serve --repo /absolute/path/to/repo
+hermes mcp test open_scaffold
+```
+
+次に、公開する範囲を読み取り中心に保ちます。`hermes mcp add` のプロンプトで `select` を選ぶか、後で `config.yaml` を編集します:
+
+```yaml
+mcp_servers:
+  open_scaffold:
+    command: "npx"
+    args: ["-y", "open-scaffold@latest", "mcp", "serve", "--repo", "/absolute/path/to/repo"]
+    tools:
+      include:
+        - list_plans
+        - get_plan
+        - get_mission
+        - list_evidence
+        - get_evidence
+        - get_status
+        - search_plans
+        - list_amendments
+        - get_handoff
+        - analyze_loop
+        - gate_loop
+      prompts: false
+```
+
+良いプロンプト:
+
+```text
+Use the Open Scaffold MCP tools to compile the current handoff packet and tell me the next legal action.
+```
+
+```text
+Inspect the active plans and evidence notes, then say whether this repo is ready for human review or needs another attempt.
+```
+
+境界に関する注意:
+
+- Open Scaffold MCP はローカルファーストで、デフォルトでは読み取り専用です。
+- 書き込みツールを使うには、サーバーを `--allow-write` 付きで起動する必要があります。Hermes に `.osc` ファイルを変更させたいと明示的に望むまでは有効にしないでください。
+- Open Scaffold は作業を記録しゲートするものであり、Hermes にマージ、公開、デプロイ、ランタイムの起動を許可するものではありません。
+- 再現可能なツールスキーマが必要な場合は、`@latest` の代わりに `open-scaffold@<version>` に固定してください。
+
+### パターン 3: GitHub トリアージアシスタント
 
 ```yaml
 mcp_servers:
@@ -282,14 +341,14 @@ mcp_servers:
 良いプロンプト:
 
 ```text
-MCP に関するオープンな issue を一覧表示し、テーマ別にクラスタリングして、最も多いバグについて質の高い issue を起草してください。
+List open issues about MCP, cluster them by theme, and draft a high-quality issue for the most common bug.
 ```
 
 ```text
-リポジトリで _discover_and_register_server の使用箇所を検索し、MCP ツールがどのように登録されるかを説明してください。
+Search the repo for uses of _discover_and_register_server and explain how MCP tools are registered.
 ```
 
-### パターン 3: 社内 API アシスタント
+### パターン 4: 社内 API アシスタント
 
 ```yaml
 mcp_servers:
@@ -306,7 +365,7 @@ mcp_servers:
 良いプロンプト:
 
 ```text
-顧客 ACME Corp を調べて、最近の請求アクティビティを要約してください。
+Look up customer ACME Corp and summarize recent invoice activity.
 ```
 
 ここは、exclude リストよりも厳格なホワイトリストの方がはるかに優れているような場面です。
@@ -327,11 +386,11 @@ mcp_servers:
 良いプロンプト:
 
 ```text
-docs サーバーから利用可能な MCP リソースを一覧表示し、オンボーディングガイドを読んで要約してください。
+List available MCP resources from the docs server, then read the onboarding guide and summarize it.
 ```
 
 ```text
-docs サーバーが公開している prompts を一覧表示し、インシデント対応に役立つものを教えてください。
+List prompts exposed by the docs server and tell me which ones would help with incident response.
 ```
 
 ## チュートリアル: フィルタリングを含むエンドツーエンドのセットアップ
@@ -356,7 +415,7 @@ mcp_servers:
 Hermes を起動して尋ねます:
 
 ```text
-コードベースで MCP への参照を検索し、主な統合ポイントを要約してください。
+Search the codebase for references to MCP and summarize the main integration points.
 ```
 
 ### フェーズ 2: 必要になったときだけ拡張する
@@ -396,7 +455,7 @@ mcp_servers:
 これで Hermes はそれらを組み合わせられます:
 
 ```text
-ローカルのプロジェクトファイルを調べ、見つけたバグを要約した GitHub issue を作成してください。
+Inspect the local project files, then create a GitHub issue summarizing the bug you find.
 ```
 
 ここが MCP が強力になる場面です: Hermes コアを変更せずに、複数システムにまたがるワークフローを実現できます。
@@ -485,6 +544,6 @@ enabled: false
 
 ## 関連ドキュメント
 
-- [MCP（Model Context Protocol）](/docs/user-guide/features/mcp)
-- [FAQ](/docs/reference/faq)
-- [スラッシュコマンド](/docs/reference/slash-commands)
+- [MCP（Model Context Protocol）](../user-guide/features/mcp.md)
+- [FAQ](../reference/faq.md)
+- [スラッシュコマンド](../reference/slash-commands.md)

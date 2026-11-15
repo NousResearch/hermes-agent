@@ -6,16 +6,17 @@ description: "Hermes cronを使った実践的な自動化パターン — モ�
 
 # Cronで何でも自動化する
 
-[デイリーブリーフィングボットのチュートリアル](/docs/guides/daily-briefing-bot)では基本を扱いました。このガイドはさらに先へ進みます — あなた自身のワークフローに応用できる、5つの実践的な自動化パターンです。
+[デイリーブリーフィングボットのチュートリアル](./daily-briefing-bot.md)では基本を扱いました。このガイドはさらに先へ進みます — あなた自身のワークフローに応用できる、5つの実践的な自動化パターンです。
 
-機能の完全なリファレンスについては、[スケジュールタスク（Cron）](/docs/user-guide/features/cron)を参照してください。
+機能の完全なリファレンスについては、[スケジュールタスク（Cron）](../user-guide/features/cron.md)を参照してください。
 
 :::info 重要な概念
 cronジョブは、現在のチャットの記憶を持たない新しいエージェントセッションで実行されます。プロンプトは**完全に自己完結**していなければなりません — エージェントが知る必要のあるすべてを含めてください。
 :::
 
-:::tip LLMは不要？ no-agentモードを使いましょう。
-スクリプトがすでに送りたい正確なメッセージを生成している定期的なウォッチドッグ（メモリ警告、ディスク警告、CIのping、ハートビート）の場合は、[スクリプトのみのcronジョブ](/docs/guides/cron-script-only)でLLMを完全にスキップしましょう。トークンはゼロ、スケジューラは同じです。チャットでHermesに依頼してセットアップしてもらうこともできます — `cronjob` ツールは `no_agent=True` を選ぶべきタイミングを心得ており、あなたのためにスクリプトを書きます。
+:::tip LLMは不要？ トークンゼロの選択肢が2つあります。
+- スクリプトがすでに正確なメッセージを生成している**定期的なウォッチドッグ**（メモリ警告、ディスク警告、ハートビート）の場合: [スクリプトのみのcronジョブ](./cron-script-only.md)を使います。スケジューラは同じで、LLMは使いません。チャットでHermesに依頼してセットアップしてもらうこともできます — `cronjob_manage` ツールは `no_agent=True` を選ぶべきタイミングを心得ており、あなたのためにスクリプトを書きます。
+- **すでに実行中のスクリプトからの単発送信**（CIのステップ、post-commitフック、デプロイスクリプト、外部でスケジュールされたモニター）の場合: [`hermes send`](/docs/guides/pipe-script-output) を使うと、cronエントリを設定せずに、標準出力やファイルをTelegram / Discord / Slack などに直接パイプできます。
 :::
 
 ---
@@ -38,22 +39,22 @@ import hashlib, json, os, urllib.request
 URL = "https://example.com/pricing"
 STATE_FILE = os.path.expanduser("~/.hermes/scripts/.watch-site-state.json")
 
-# 現在のコンテンツを取得
+# Fetch current content
 req = urllib.request.Request(URL, headers={"User-Agent": "Hermes-Monitor/1.0"})
 content = urllib.request.urlopen(req, timeout=30).read().decode()
 current_hash = hashlib.sha256(content.encode()).hexdigest()
 
-# 以前の状態を読み込み
+# Load previous state
 prev_hash = None
 if os.path.exists(STATE_FILE):
     with open(STATE_FILE) as f:
         prev_hash = json.load(f).get("hash")
 
-# 現在の状態を保存
+# Save current state
 with open(STATE_FILE, "w") as f:
     json.dump({"hash": current_hash, "url": URL}, f)
 
-# エージェント向けの出力
+# Output for the agent
 if prev_hash and prev_hash != current_hash:
     print(f"CHANGE DETECTED on {URL}")
     print(f"Previous hash: {prev_hash}")
@@ -70,7 +71,11 @@ cronジョブをセットアップします。
 ```
 
 :::tip [SILENT] のトリック
-エージェントの最終応答に `[SILENT]` が含まれている場合、配信は抑制されます。つまり、実際に何かが起きたときだけ通知され、静かな時間帯にスパムが来ることはありません。
+cronの監視ジョブでは、何も変わっていないときは `[SILENT]` だけで応答するようエージェントに指示してください。cronの配信は `[SILENT]` を静音マーカーとして扱うため、実際に何かが起きたときだけ通知され、静かな時間帯にスパムが来ることはありません。
+:::
+
+:::tip 失敗通知を共有チャンネルに流さない
+`[SILENT]` が適用されるのは成功した実行のみです — ジョブがハードに失敗すると、エンジンはジョブの配信先に `⚠️ Cron 'X' failed…` という通知を投稿します。混雑した共有チャンネルに配信するジョブでは、`--failure-deliver local` を設定するとそれらの通知を完全に抑制できます（実行状態は `hermes cron list` と実行履歴で引き続き確認できます）。または `--failure-deliver slack:C_OPS` で失敗を運用チャンネルに向けることもできます。文法は `--deliver` と同じで、省略した場合は従来どおり失敗も `--deliver` に従います。
 :::
 
 ---
@@ -122,7 +127,7 @@ Otherwise, provide a concise summary of the activity." --name "Repo watcher" --d
 ```
 
 :::warning 自己完結したプロンプト
-プロンプトに正確な `gh` コマンドが含まれている点に注目してください。cronエージェントは以前の実行やあなたの好みの記憶を持ちません — すべてを明示的に書き出しましょう。
+プロンプトに正確な `gh` コマンドが含まれている点に注目してください。cronエージェントは以前の実行の会話履歴を持ちません — すべてを明示的に書き出しましょう。（永続メモリは読み込まれるため、MEMORY.md に保存された永続的な好みは引き継がれますが、ジョブにとって重要な詳細をそれに頼らないでください。）
 :::
 
 ---
@@ -138,21 +143,21 @@ from datetime import datetime
 DATA_DIR = os.path.expanduser("~/.hermes/data/prices")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# 現在のデータを取得（例: 暗号通貨の価格）
+# Fetch current data (example: crypto prices)
 url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd"
 data = json.loads(urllib.request.urlopen(url, timeout=30).read())
 
-# 履歴ファイルに追記
+# Append to history file
 entry = {"timestamp": datetime.now().isoformat(), "prices": data}
 history_file = os.path.join(DATA_DIR, "history.jsonl")
 with open(history_file, "a") as f:
     f.write(json.dumps(entry) + "\n")
 
-# 分析用に直近の履歴を読み込み
+# Load recent history for analysis
 lines = open(history_file).readlines()
-recent = [json.loads(l) for l in lines[-24:]]  # 直近24個のデータポイント
+recent = [json.loads(l) for l in lines[-24:]]  # Last 24 data points
 
-# エージェント向けの出力
+# Output for the agent
 print(f"Current: BTC=${data['bitcoin']['usd']}, ETH=${data['ethereum']['usd']}")
 print(f"Data points collected: {len(lines)} total, showing last {len(recent)}")
 print(f"\nRecent history:")
@@ -182,7 +187,7 @@ If there's a significant move, explain what happened." \
 複雑なスケジュールタスクのために、スキルを連鎖させます。スキルはプロンプトが実行される前に順番に読み込まれます。
 
 ```bash
-# arxiv スキルで論文を探し、obsidian スキルでノートを保存する
+# Use the arxiv skill to find papers, then the obsidian skill to save notes
 /cron add "0 8 * * *" "Search arXiv for the 3 most interesting papers on 'language model reasoning' from the past day. For each paper, create an Obsidian note with the title, authors, abstract summary, and key contribution." \
   --skill arxiv \
   --skill obsidian \
@@ -209,24 +214,24 @@ cronjob(
 ## ジョブを管理する
 
 ```bash
-# アクティブなすべてのジョブを一覧表示
+# List all active jobs
 /cron list
 
-# ジョブを即座にトリガー（テスト用）
+# Trigger a job immediately (for testing)
 /cron run <job_id>
 
-# 削除せずにジョブを一時停止
+# Pause a job without deleting it
 /cron pause <job_id>
 
-# 実行中のジョブのスケジュールやプロンプトを編集
+# Edit a running job's schedule or prompt
 /cron edit <job_id> --schedule "every 4h"
 /cron edit <job_id> --prompt "Updated task description"
 
-# 既存のジョブからスキルを追加または削除
+# Add or remove skills from an existing job
 /cron edit <job_id> --skill arxiv --skill obsidian
 /cron edit <job_id> --clear-skills
 
-# ジョブを完全に削除
+# Remove a job permanently
 /cron remove <job_id>
 ```
 
@@ -245,6 +250,27 @@ cronjob(
 | `slack` | `--deliver slack` | あなたのSlackホームチャンネル |
 | 特定のチャット | `--deliver telegram:-1001234567890` | 特定のTelegramグループ |
 | スレッド指定 | `--deliver telegram:-1001234567890:17585` | 特定のTelegramトピックスレッド |
+| Bot Chat | `--deliver bot-chat` | このプロファイルの正規のBot Chatに出力を注入 — ボットがそれを読んで応答します |
+| Bot Chat（名前指定） | `--deliver bot-chat:research` | 別のローカルプロファイルのBot Chat |
+
+### Bot Chatへの配信
+
+`bot-chat` 配信先は、ジョブの出力を**プロファイルの正規の「Bot
+Chat」セッションに実際のメッセージとして**配信します — ボットは他のメッセージと同じようにそれを受け取り、
+対応が必要なものに対応し、そのチャットで応答します。スケジュールされた出力を実行履歴にアーカイブするだけでなく、
+ボットにそれを*見て反応*してほしいときに使う配信先です。
+
+知っておくべきこと:
+
+- **マシンローカル。** プロファイルは、スケジューラを実行しているマシン上に存在している必要があります
+  （`hermes profile list`）。名前は作成時に検証されます。
+  他のゲートウェイ/マシン上のプロファイルは対象にできません。
+- **ボットのターンを消費する。** 各配信は、対象ボットのBot Chatで完全なエージェントターンを実行します
+  — 高頻度のジョブではそれに応じて予算を見積もってください。
+- **組み合わせ可能。** `--deliver bot-chat,telegram` は、ボットとTelegramのホームチャンネルの両方に投稿します。
+  `all` トークンが bot-chat 配信先に展開されることはありません。
+- 配信されるメッセージにはプレフィックスが付くため、ボットはそれがあなたからではなく、
+  スケジュールされたジョブから来たものだと分かります。
 
 ---
 
@@ -252,7 +278,7 @@ cronjob(
 
 **プロンプトを自己完結させる。** cronジョブ内のエージェントはあなたの会話の記憶を持ちません。URL、リポジトリ名、形式の好み、配信指示をプロンプトに直接含めてください。
 
-**`[SILENT]` を積極的に使う。** 監視ジョブでは、常に「何も変わっていなければ `[SILENT]` で応答せよ」といった指示を含めましょう。これにより通知のノイズが防げます。
+**`[SILENT]` を意図的に使う。** 監視ジョブでは、「何も変わっていなければ `[SILENT]` だけで応答せよ」といった指示を含めましょう。静かなケースでこのトークンの説明をエージェントに求めないでください — cronは `[SILENT]` を配信抑制マーカーとして扱います。
 
 **データ収集にはスクリプトを使う。** `script` パラメータを使えば、退屈な部分（HTTPリクエスト、ファイルI/O、状態の追跡）をPythonスクリプトに任せられます。エージェントはスクリプトの標準出力だけを見て、それに推論を適用します。これはエージェント自身に取得をさせるより安価で信頼性が高いです。
 
@@ -262,4 +288,4 @@ cronjob(
 
 ---
 
-*完全なcronリファレンス — すべてのパラメータ、エッジケース、内部の仕組み — については、[スケジュールタスク（Cron）](/docs/user-guide/features/cron)を参照してください。*
+*完全なcronリファレンス — すべてのパラメータ、エッジケース、内部の仕組み — については、[スケジュールタスク（Cron）](../user-guide/features/cron.md)を参照してください。*

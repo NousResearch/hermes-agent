@@ -8,9 +8,16 @@ description: "Hermes Agent を IMAP/SMTP 経由のメールアシスタントと
 
 Hermes は標準的な IMAP と SMTP プロトコルを使ってメールを受信・返信できます。エージェントのアドレスにメールを送ると、スレッド内で返信します — 特別なクライアントやボット API は不要です。Gmail、Outlook、Yahoo、Fastmail、または IMAP/SMTP をサポートする任意のプロバイダーで動作します。
 
-:::info 外部依存なし
-メールアダプターは Python 組み込みの `imaplib`、`smtplib`、`email` モジュールを使用します。追加のパッケージや外部サービスは不要です。
+:::info ゲートウェイアダプターのみ: 外部依存なし
+このページでは、Python 組み込みの `imaplib`、`smtplib`、`email` モジュールを使用するメールゲートウェイアダプターについて説明します。このゲートウェイ経路では、追加のパッケージや外部サービスは不要です。
 :::
+
+これは、同梱の [Himalaya メールスキル](/docs/user-guide/skills/bundled/email/email-himalaya)とは別物です。Himalaya メールスキルは、エージェントがターミナルコマンドを通じてメールを管理できるようにするもので、外部の `himalaya` CLI と Himalaya の設定ファイルが必要です。
+
+| ユースケース | 設定するもの | 外部依存 |
+|---|---|---|
+| 人が Hermes エージェントにメールを送り、返信を受け取れるようにする | このページのメールゲートウェイアダプター | IMAP/SMTP のメールアカウント以外は不要 |
+| エージェントがターミナルツールからメールボックスのメッセージを確認、作成、移動、管理できるようにする | Himalaya メールスキル | `himalaya` CLI と `~/.config/himalaya/config.toml` |
 
 ---
 
@@ -41,6 +48,31 @@ Hermes は標準的な IMAP と SMTP プロトコルを使ってメールを受�
 - SMTP ホストとポート（通常は STARTTLS でポート 587）
 - アプリパスワードが必要かどうか
 
+### Proton Mail Bridge / ローカルリレー
+
+Proton Mail Bridge（およびセルフホストの MTA などの同様のローカルリレー）は、
+ループバック上で **STARTTLS** と自己署名証明書を使ってリッスンするため、デフォルト設定
+（IMAP 993 での暗黙的 TLS、検証済み証明書）では接続できません。
+`~/.hermes/config.yaml` でトランスポートを上書きしてください:
+
+```yaml
+platforms:
+  email:
+    enabled: true
+    extra:
+      imap_host: 127.0.0.1
+      imap_security: starttls     # tls (default) | starttls | plain
+      imap_tls_verify: false      # Bridge uses a self-signed cert
+      smtp_host: 127.0.0.1
+      smtp_security: starttls     # default: tls on port 465, starttls otherwise
+      smtp_tls_verify: false
+```
+
+そして `~/.hermes/.env` に、Bridge の認証情報と一緒に `EMAIL_IMAP_PORT=1143` / `EMAIL_SMTP_PORT=1025` を
+設定します。不明な `*_security` の値は警告をログに記録し、安全なデフォルトにフォールバックします。
+`*_tls_verify` を無効にするのはループバックホストに対してのみにしてください —
+それ以外のホストで検証がオフになっている場合、Hermes は警告をログに記録します。
+
 ---
 
 ## ステップ 1: Hermes を設定する
@@ -58,20 +90,24 @@ hermes gateway setup
 `~/.hermes/.env` に追加します:
 
 ```bash
-# 必須
+# Required
 EMAIL_ADDRESS=hermes@gmail.com
-EMAIL_PASSWORD=abcd efgh ijkl mnop    # アプリパスワード（通常のパスワードではない）
+EMAIL_PASSWORD=abcd efgh ijkl mnop    # App password (not your regular password)
 EMAIL_IMAP_HOST=imap.gmail.com
 EMAIL_SMTP_HOST=smtp.gmail.com
 
-# セキュリティ（推奨）
+# Security (recommended)
 EMAIL_ALLOWED_USERS=your@email.com,colleague@work.com
+# Required: exact authserv-id on your receiving server's topmost
+# Authentication-Results header (Gmail: mx.google.com).
+# That server must strip inbound headers claiming this id before adding its own.
+EMAIL_AUTHSERV_ID=mx.google.com
 
-# 任意
-EMAIL_IMAP_PORT=993                    # デフォルト: 993（IMAP SSL）
-EMAIL_SMTP_PORT=587                    # デフォルト: 587（SMTP STARTTLS）
-EMAIL_POLL_INTERVAL=15                 # 受信箱チェックの間隔（秒）（デフォルト: 15）
-EMAIL_HOME_ADDRESS=your@email.com      # Cron ジョブのデフォルト配信先
+# Optional
+EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
+EMAIL_SMTP_PORT=587                    # Default: 587 (SMTP STARTTLS)
+EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 15)
+EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 ```
 
 ---
@@ -79,9 +115,9 @@ EMAIL_HOME_ADDRESS=your@email.com      # Cron ジョブのデフォルト配信�
 ## ステップ 2: ゲートウェイを起動する
 
 ```bash
-hermes gateway              # フォアグラウンドで実行
-hermes gateway install      # ユーザーサービスとしてインストール
-sudo hermes gateway install --system   # Linux のみ: 起動時のシステムサービス
+hermes gateway              # Run in foreground
+hermes gateway install      # Install as a user service
+sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
 起動時に、アダプターは:
@@ -135,14 +171,22 @@ platforms:
 
 ## アクセス制御
 
-メールアクセスは他のすべての Hermes プラットフォームと同じパターンに従います:
+メールのアクセスは、チャット型のプラットフォームよりもデフォルトで厳格です:
 
-1. **`EMAIL_ALLOWED_USERS` が設定済み** → それらのアドレスからのメールのみ処理されます
-2. **許可リスト未設定** → 未知の送信者にはペアリングコードが付与されます
+1. **`EMAIL_ALLOWED_USERS` が設定済み** → それらのアドレス（および `GATEWAY_ALLOWED_USERS` に含まれるアドレスや承認済みのペアリング）からのメールのみ処理されます
+2. **許可リスト未設定** → 未知の送信者は静かに無視されます
 3. **`EMAIL_ALLOW_ALL_USERS=true`** → 任意の送信者が受け入れられます（慎重に使用）
+4. **`platforms.email.unauthorized_dm_behavior: pair`** → 未知の送信者はペアリングコードを受け取ります
+5. **`platforms.email.unauthorized_dm_behavior: decline`** → 未知の送信者は丁寧な拒否を 1 回受け取り、その後 24 時間は何も受け取りません
+
+許可リストのエントリはアドレス全体と照合されます。`alice` のような裸のエントリ（たとえば `GATEWAY_ALLOWED_USERS` 内のチャットのユーザー名）は、どのドメインの `alice@` も許可しません。そのようなアドレスからのメールは、ペアリングや拒否の対象にはならず破棄されます。
+
+Hermes がメッセージに対応するのは、受信サーバーが付与した `Authentication-Results` ヘッダーがその `From:` ドメインを認証している場合（DMARC、またはアラインメントの取れた SPF/DKIM）のみです。これはオープンアクセス（`EMAIL_ALLOW_ALL_USERS` / `GATEWAY_ALLOW_ALL_USERS`）でも適用されます。オープンアクセスはどの送信者も許可しますが、各会話とすべての返信は `From:` をキーにしているため、偽造された `From:` があると、攻撃者のテキストがそのアドレスのセッションに入り込み、Hermes がそのアドレスにメールを送ることになります。ペアリングコードと拒否も同様に認証済みの `From:` を必要とするため、偽造されたアドレスにはどちらも送信されません。メールサーバーがそのヘッダーを付与しない場合は、`platforms.email.require_authenticated_sender: false`（または `EMAIL_TRUST_FROM_HEADER=true`）を設定してリスクを受け入れてください。そうしないと、許可された送信者からのメールでもそのようなヘッダーがないものは、ゲートウェイのログに `Dropping sender with unauthenticated From` という警告を出して破棄されます。最上位の `Authentication-Results` ヘッダー（サーバーが先頭に付加するもの。それより下のヘッダーは参照されません）が、固定した `authserv_id` と完全に一致する名前を持たない場合にも、`platforms.email.authserv_id`（`EMAIL_AUTHSERV_ID`）を指し示す同じ警告が出ます。`authserv_id` は、サーバーがそのヘッダーの最初の `;` の前に書き込む authserv-id と完全に一致しなければなりません。`EMAIL_ALLOWED_USERS` / `GATEWAY_ALLOWED_USERS` に記載されたアドレスからのメールがそれ以外の理由で認証に失敗した場合（たとえば DKIM が壊れている送信者や、アラインメントを壊す転送者）は、同じ警告とその判定結果とともに破棄され、オプトアウトのヒントは表示されません。その他の送信者からの失敗したメール（オープンアクセス下での偽造された `From:` など）は、デバッグレベルでのみログに記録され、静かに破棄されます。
+
+**送信者認証がオンの間は、`authserv_id` の固定が必須です。** `platforms.email.authserv_id`（`EMAIL_AUTHSERV_ID`）がないと、Hermes はサーバーの `Authentication-Results` ヘッダーと送信者が書いたヘッダーを区別できない（自前のヘッダーを付加しないセルフホストの MTA では、送信者のヘッダーが最上位に残ります）ため、どれも信頼しません。認証済みの `From:` を必要とするすべてのメッセージが破棄され、ゲートウェイのログに修正方法とともに一度だけその旨が記録されます。値を調べるには、サーバーが配信したメッセージを開き（「メッセージのソースを表示」/ 生のソース）、**最上位**の `Authentication-Results` ヘッダーの最初の `;` の前にあるトークンをコピーします（たとえば Gmail では `mx.google.com`）。そのトークンがメッセージごとに変わるように見える場合、それは authserv-id ではなくリレーごとのホスト名です。RFC 8601 は authserv-id を管理ドメインの安定した名前として定義しているため、MTA が安定した ID を付与するよう設定し（たとえば OpenDKIM / OpenDMARC の `AuthservID`）、それを固定してください。ID が一致することは固定であって、出所の証明ではありません。MTA が自身のヘッダーを先頭に付加する前に、その ID を名乗る受信 `Authentication-Results` ヘッダーを取り除くことを確認してください。安定した ID を固定できない場合は、`platforms.email.require_authenticated_sender: false`（または `EMAIL_TRUST_FROM_HEADER=true`）で明示的にオプトアウトし、その場合 `From:` は書かれたとおりに信頼されることを受け入れてください。
 
 :::warning
-**常に `EMAIL_ALLOWED_USERS` を設定してください。** これがないと、エージェントのメールアドレスを知る誰もがコマンドを送れてしまいます。エージェントはデフォルトでターミナルアクセスを持っています。
+**通常の運用では、専用の受信箱を使い、`EMAIL_ALLOWED_USERS` を設定してください。** 共有の受信箱には無関係な未読メッセージが含まれていることが多く、Hermes がデフォルトでそれらの連絡先に返信すべきではないため、メールのペアリングはオプトインになっています。
 :::
 
 ---
@@ -153,7 +197,7 @@ platforms:
 |---------|----------|
 | 起動時に **「IMAP connection failed」** | `EMAIL_IMAP_HOST` と `EMAIL_IMAP_PORT` を確認してください。アカウントで IMAP が有効か確認してください。Gmail の場合、設定 → 転送と POP/IMAP で有効化します。 |
 | 起動時に **「SMTP connection failed」** | `EMAIL_SMTP_HOST` と `EMAIL_SMTP_PORT` を確認してください。パスワードが正しいか確認してください（Gmail はアプリパスワードを使用）。 |
-| **メッセージが受信されない** | `EMAIL_ALLOWED_USERS` に送信者のメールが含まれているか確認してください。迷惑メールフォルダを確認してください — 一部のプロバイダーは自動返信をフラグします。 |
+| **メッセージが受信されない** | `EMAIL_ALLOWED_USERS` に送信者のメールが含まれているか確認してください。ゲートウェイのログに `authserv-id is not configured` と表示される場合は、`EMAIL_AUTHSERV_ID` を、サーバーが書き込む最上位の `Authentication-Results` ヘッダーの ID と完全に一致するよう設定してください。迷惑メールフォルダを確認してください — 一部のプロバイダーは自動返信をフラグします。 |
 | **「Authentication failed」** | Gmail では通常のパスワードではなくアプリパスワードを使う必要があります。先に 2FA を有効にしてください。 |
 | **返信が重複する** | ゲートウェイインスタンスが 1 つだけ実行されているか確認してください。`hermes gateway status` を確認してください。 |
 | **応答が遅い** | デフォルトのポーリング間隔は 15 秒です。より速い応答のために `EMAIL_POLL_INTERVAL=5` で短縮できます（ただし IMAP 接続は増えます）。 |
@@ -169,6 +213,7 @@ platforms:
 
 - メインのパスワードではなく**アプリパスワード**を使う（Gmail で 2FA の場合は必須）
 - エージェントと対話できる相手を制限するため `EMAIL_ALLOWED_USERS` を設定する
+- `EMAIL_AUTHSERV_ID` を受信 MTA の最上位の `Authentication-Results` スタンプの ID と完全に一致するよう設定し、その MTA がその ID を名乗る受信ヘッダーを取り除くことを確認する
 - パスワードは `~/.hermes/.env` に保存されます — このファイルを保護してください（`chmod 600`）
 - IMAP はデフォルトで SSL（ポート 993）、SMTP は STARTTLS（ポート 587）を使用します — 接続は暗号化されています
 
@@ -186,5 +231,6 @@ platforms:
 | `EMAIL_SMTP_PORT` | いいえ | `587` | SMTP サーバーポート |
 | `EMAIL_POLL_INTERVAL` | いいえ | `15` | 受信箱チェックの間隔（秒） |
 | `EMAIL_ALLOWED_USERS` | いいえ | — | カンマ区切りの許可送信者アドレス |
+| `EMAIL_AUTHSERV_ID` | はい（送信者認証がオフの場合を除く） | — | 受信サーバーの最上位の `Authentication-Results` ヘッダーにある authserv-id（完全一致）。これがないと、認証済みの `From:` を必要とするすべてのメッセージが破棄されます |
 | `EMAIL_HOME_ADDRESS` | いいえ | — | Cron ジョブのデフォルト配信先 |
 | `EMAIL_ALLOW_ALL_USERS` | いいえ | `false` | すべての送信者を許可（非推奨） |

@@ -15,18 +15,19 @@ Hermesにはいくつかの異なるプラガブルインターフェースが�
 | 追加したいもの | 読むべきガイド |
 |---|---|
 | カスタムツール、フック、スラッシュコマンド、スキル、CLIサブコマンド | **このガイド**（汎用プラグインサーフェス） |
-| **ネイティブデスクトップアプリ**の拡張（ペイン、ページ、ステータスバー、パレット、テーマ） | [Desktop Plugin SDK](../desktop-plugin-sdk.md) |
+| **ネイティブデスクトップアプリ**の拡張（ペイン、ページ、ステータスバー、パレット、テーマ） | [Desktop Plugin SDK](/docs/developer-guide/desktop-plugin-sdk) |
 | **Webダッシュボード**の拡張（タブ、シェルスロット、テーマ） | [Extending the Dashboard](../../user-guide/features/extending-the-dashboard.md) |
-| **LLM / 推論バックエンド**（新しいプロバイダー） | [Model Provider Plugins](../model-provider-plugin.md) |
-| **ゲートウェイチャネル**（Discord/Telegram/IRC/Teams など） | [Adding Platform Adapters](../adding-platform-adapters.md) |
-| **メモリバックエンド**（Honcho/Mem0/Supermemory など） | [Memory Provider Plugins](../memory-provider-plugin.md) |
-| **コンテキスト圧縮エンジン** | [Context Engine Plugins](../context-engine-plugin.md) |
-| **画像生成バックエンド** | [Image Generation Provider Plugins](../image-gen-provider-plugin.md) |
-| **動画生成バックエンド** | [Video Generation Provider Plugins](../video-gen-provider-plugin.md) |
-| **Web検索 / 抽出バックエンド** | [Web Search Provider Plugins](../web-search-provider-plugin.md) |
-| **クラウドブラウザバックエンド**（Browserbase風のCDPセッションプロバイダー） | [Browser Provider Plugins](../browser-provider-plugin.md) |
+| **LLM / 推論バックエンド**（新しいプロバイダー） | [Model Provider Plugins](/docs/developer-guide/model-provider-plugin) |
+| **ゲートウェイチャネル**（Discord/Telegram/IRC/Teams など） | [Adding Platform Adapters](/docs/developer-guide/adding-platform-adapters) |
+| **メモリバックエンド**（Honcho/Mem0/Supermemory など） | [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) |
+| **コンテキスト圧縮エンジン** | [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) |
+| **画像生成バックエンド** | [Image Generation Provider Plugins](/docs/developer-guide/image-gen-provider-plugin) |
+| **動画生成バックエンド** | [Video Generation Provider Plugins](/docs/developer-guide/video-gen-provider-plugin) |
+| **Web検索 / 抽出バックエンド** | [Web Search Provider Plugins](/docs/developer-guide/web-search-provider-plugin) |
+| **クラウドブラウザバックエンド**（Browserbase風のCDPセッションプロバイダー） | [Browser Provider Plugins](/docs/developer-guide/browser-provider-plugin) |
+| **委任戦略**（サブエージェントごとにプロファイルや名前付きモデルを選ぶ） | [Delegation Provider Plugins](/docs/developer-guide/delegation-provider-plugin) — `ctx.register_delegation_provider()` |
 | **computer-useドライバー**（`computer_use`ツールの背後にあるデスクトップ操作） | [Computer-useバックエンドプラグイン](#computer-use-backend-plugins) — `ctx.register_computer_use_provider()` |
-| **シークレットマネージャーバックエンド**（vault / パスワードマネージャー / OSキーストア） | [Secret Source Plugins](../secret-source-plugin.md) |
+| **シークレットマネージャーバックエンド**（vault / パスワードマネージャー / OSキーストア） | [Secret Source Plugins](/docs/developer-guide/secret-source-plugin) |
 | **ダッシュボードのOIDC/認証プロバイダー** | [Web Dashboard — custom providers](../../user-guide/features/web-dashboard.md#custom-providers) — `ctx.register_dashboard_auth_provider()` |
 | **TTSバックエンド**（任意のCLI — Piper、VoxCPM、Kokoro、ボイスクローニングなど） | [TTS custom command providers](../../user-guide/features/tts.md#custom-command-providers) — 設定駆動、Python不要 |
 | **STTバックエンド**（カスタムwhisper / ASR CLI） | [Voice Message Transcription](../../user-guide/features/tts.md#voice-message-transcription-stt) — `HERMES_LOCAL_STT_COMMAND`をargvトークン化されたテンプレートに設定 |
@@ -34,13 +35,25 @@ Hermesにはいくつかの異なるプラガブルインターフェースが�
 | **ゲートウェイイベントフック**（起動時、セッションイベント、コマンドで発火） | [Event Hooks](../../user-guide/features/hooks.md#gateway-event-hooks) — `~/.hermes/hooks/<name>/`に`HOOK.yaml` + `handler.py`を配置 |
 | **シェルフック**（イベント時にシェルコマンドを実行） | [Shell Hooks](../../user-guide/features/hooks.md#shell-hooks) — `config.yaml`の`hooks:`配下に宣言 |
 | **追加のスキルソース**（カスタムGitHubリポジトリ、プライベートスキルインデックス） | [Skills](../../user-guide/features/skills.md) — `hermes skills tap add <repo>` · [tapの公開](../../user-guide/features/skills.md#publishing-a-custom-skill-tap) |
-| ファーストクラスの**コア**推論プロバイダー（プラグインではない） | [Adding Providers](../adding-providers.md) |
+| ファーストクラスの**コア**推論プロバイダー（プラグインではない） | [Adding Providers](/docs/developer-guide/adding-providers) |
 
 設定駆動（TTS、STT、MCP、シェルフック）やドロップインディレクトリ（ゲートウェイフック）スタイルを含む、すべての拡張サーフェスを一覧でまとめた[Pluggable interfaces table](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each)も参照してください。
 :::
 
 :::caution サードパーティ製品のプラグインはコアツリーではなくスタンドアロンで配布する
 **他者の製品やプロジェクト**を統合するプラグイン — オブザーバビリティ/メトリクスバックエンド、ベンダーSaaSコネクタ、アナリティクスダッシュボード、有料サービスとの連携 — は、`NousResearch/hermes-agent`にマージするのではなく、**スタンドアロンのプラグインリポジトリ**として構築・配布されます。ユーザーはそれらを`~/.hermes/plugins/`に、またはpipのエントリポイント経由でインストールします。このガイドの内容はすべて、スタンドアロンリポジトリからでも同じように動作します。これは結合度と保守性に関する判断（コアは速く進化し、私たちはあなたのバックエンドを所有していません）であり、品質の基準ではありません — 優れたプラグインであっても、独自のリポジトリに属するべき場合があります。Nous Research Discordの`#plugins-skills-and-skins`チャネルで宣伝してください。ポリシーについては[CONTRIBUTING.md](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md)を参照してください。
+:::
+
+:::tip すでに組み込まれています: 自作する前にここを確認してください
+Hermesは、プラグイン作者向けに以下をすでに提供しています。
+
+- **カタログチェックをローカルで実行する:** `hermes plugins validate /path/to/your-plugin --install-deps`は、カタログのCIが実行するのと同じチェックを実行します。[Submitting to the Plugin Catalog](/docs/developer-guide/plugins/catalog-submission)を参照してください。
+- **プラグインを隔離してテストする:** `hermes plugins doctor [path-or-id]`は、一時的な`HERMES_HOME`を使って、Hermesが使うのと同じ検出、マニフェストパーサー、`register(ctx)`、レジストリを実行します。[Plugin Doctorで検証する](#validate-with-plugin-doctor)を参照してください。
+- **更新をまたいで状態を保持する:** `plugin_data_dir()`と`plugin_db()`は、`hermes plugins update`や`remove`を経ても残り、アクティブなプロファイルに従うデータディレクトリをプラグインに提供します。[永続的な状態を保存する](#store-durable-state)を参照してください。
+- **Python依存関係を宣言する:** `plugin.yaml`の`python_dependencies`配下か、その隣の`pyproject.toml`に列挙します。[Python依存関係](#python-dependencies)を参照してください。
+- **プラグインと一緒にスキルを配布する:** `ctx.register_skill()`で登録します。[スキルを同梱する](#bundle-skills)を参照してください。
+- **特権的なホストサーフェスを要求する:** ユーザーが単一の同意画面を得られるよう、`capabilities:`配下に宣言します。[ケイパビリティを宣言する](#declaring-capabilities)を参照してください。
+- **LLM呼び出しを行う:** ホスト所有の認証情報とフェイルクローズの信頼ゲートを備えた`ctx.llm`を使います。[Plugin LLM Access](/docs/developer-guide/plugin-llm-access)を参照してください。
 :::
 
 ## Portable Agent Plugins v1パッケージ {#portable-agent-plugins-v1-packages}
@@ -65,9 +78,9 @@ hermes plugins list
 hermes plugins enable <plugin-name>
 ```
 
-ポータブルパッケージは、明示的に有効化しない限りインストール後は無効のままです。有効化されたパッケージは、直下の`skills/*/SKILL.md`ディレクトリと、ルートの`mcp.json`にあるstdio MCPサーバーを提供できます。スキルは読み取り専用で名前空間付きであり、`skills_list`と`skill_view`を通じて読み込まれます。MCPコマンドは、1つの実行ファイルトークンと別個の引数リストとして渡され、シェルを経由することはありません。完全修飾スキル名を調べるには`skills_list`を使ってください。ポータブルスキルの名前空間は`agent-plugin-<slug>-<hash>`という決定論的な形式を持ち、検出されたプラグインキーから導出されるため、サニタイズ後の名前が衝突することはありません。ポータブルパッケージのMCPサーバーは、ユーザー自身の`mcp_servers`ブロックと同じルールで、`mcp.json`で付けられた名前をそのまま保持します。そのため、モデルに見える`mcp__<server>__<tool>`という名前は、ツールの動詞部分をプロバイダーの64文字上限内に収めたままになります。サーバー名の重複は読み込み時の衝突として扱われます。`config.yaml`のサーバーがパッケージより優先され、先に読み込まれたパッケージが次のパッケージより優先されます。負けた側は、両者の名前を示す警告とともにスキップされます。
+ポータブルパッケージは、明示的に有効化しない限りインストール後は無効のままです。有効化されたパッケージは、直下の`skills/*/SKILL.md`ディレクトリと、ルートの`mcp.json`にあるstdio MCPサーバーを提供できます。スキルは読み取り専用で名前空間付きであり、`skills_list`と`skill_view`を通じて読み込まれます。MCPコマンドは、1つの実行ファイルトークンと別個の引数リストとして渡され、シェルを経由することはありません。ポータブルパッケージのスキルは、ネイティブプラグインと同じ形式で、プラグイン名にちなんで`<plugin-name>:<skill>`（`blender:blender`）と名付けられます。読み込まれた2つのプラグインが同じ修飾名を登録しようとした場合、2つ目のスキルは両者の名前を示す警告とともにスキップされます。データディレクトリ`plugin-data/agent-plugin-<slug>-<hash>`は、検出されたプラグインキーから導出された名前を保持するため、サニタイズ後の名前がディスク上で衝突することはありません。ポータブルパッケージのMCPサーバーは、ユーザー自身の`mcp_servers`ブロックと同じルールで、`mcp.json`で付けられた名前をそのまま保持します。そのため、モデルに見える`mcp__<server>__<tool>`という名前は、ツールの動詞部分をプロバイダーの64文字上限内に収めたままになります。サーバー名の重複は読み込み時の衝突として扱われます。`config.yaml`のサーバーがパッケージより優先され、先に読み込まれたパッケージが次のパッケージより優先されます。負けた側は、両者の名前を示す警告とともにスキップされます。
 
-Hermesは、`plugin.json`、Agent Skillsのフロントマター、固定されたコンポーネントの配置場所、`mcp.json`、解決済みパス、シンボリックリンクの封じ込めをローカルで検証します。パッケージの読み込み中にJSONスキーマを取得することはありません。不正なスキルやMCPエントリは、有効な兄弟コンポーネントが読み込める場合、それぞれの境界でスキップされます。`PLUGIN_ROOT`は解決済みのパッケージルートを指します。`PLUGIN_DATA`は、Hermesが管理するプロファイル単位の書き込み可能ディレクトリを指します。ポータブルMCPの`env`で宣言された値は、可視のパッケージデータであり、シークレットの保存手段ではありません。`mcp.json`に認証情報を置かないでください。
+Hermesは、`plugin.json`、Agent Skillsのフロントマター、固定されたコンポーネントの配置場所、`mcp.json`、解決済みパス、シンボリックリンクの封じ込めをローカルで検証します。パッケージの読み込み中にJSONスキーマを取得することはありません。不正なスキルやMCPエントリは、有効な兄弟コンポーネントが読み込める場合、それぞれの境界でスキップされます。`PLUGIN_ROOT`は解決済みのパッケージルートを指します。`PLUGIN_DATA`は、Hermesが管理するプロファイル単位の書き込み可能ディレクトリを指します。ポータブルMCPの`env`で宣言された値は、可視のパッケージデータであり、シークレットの保存手段ではありません。`mcp.json`に認証情報を置かないでください。ユーザーの変数をstdioサーバーにそのまま渡すには（そうしない場合、HermesはMCPサーバーにフィルタリングされた環境を渡します）、`"NAME": "${NAME}"`として宣言してください。値はユーザーのシェルまたはプロファイルの`.env`から取得されます。変数が未設定（または空）の場合、そのエントリは存在しないものとして扱われます。サーバーがリテラルの`${NAME}`を受け取ることはなく、`NAME`はその行がなかった場合にサーバーが持つ値（通常は未設定）のままになります。オプションの変数も安全に転送できます。
 
 現在のポータブルサブセットは、stdioとStreamable HTTPのMCPエントリをサポートしています。ポータブルな`streamable-http`エントリは、Hermesの既存のネイティブリモートMCPクライアント（URLベースの`mcp_servers`設定を支えているのと同じランタイム）を通じてルーティングされ、v1の境界ルールが適用されます。URLはユーザー情報やフラグメントを含まない絶対http(s)でなければならず、平文のHTTPは`localhost`/ループバックホストに対してのみ受け付けられ、設定されたヘッダーはクロスオリジンのリダイレクトをまたいで転送されることはありません。レガシーの`sse`エントリは報告されたうえでスキップされます。Agent Plugins v1は、信頼、権限、来歴、サンドボックスを定義していません。パッケージを有効化すると、その指示とローカル実行ファイルに対して、インストール済みの他のHermesプラグインと同じフルトラストの扱いが与えられます。
 
@@ -85,7 +98,49 @@ Hermesは、`plugin.json`、Agent Skillsのフロントマター、固定され�
 }
 ```
 
-サーバー名は`mcp.json`のエントリと一致していなければなりません。`untrusted`の場合、そのサーバーへのツール呼び出しのうち`readOnlyHint: true`の注釈がないものはすべて、先にユーザーに確認し、誰も応答できない場合（cron、無人実行）はフェイルクローズします。他に受け付けられる値はデフォルトの`full`のみなので、パッケージはアクセスを狭めることはできても、広げることはできません。同じ名前の`config.yaml`サーバーは、trustを含めてパッケージのエントリを置き換えます。他のハーネスはこの拡張を無視します。`trust`は、同じサーバーエントリ内で`app`、`requires`、`liveness`と並べて置けます（[Application declarations](./application-declarations.md)を参照）。
+サーバー名は`mcp.json`のエントリと一致していなければなりません。`untrusted`の場合、そのサーバーへのツール呼び出しのうち`readOnlyHint: true`の注釈がないものはすべて、先にユーザーに確認し（ツールごとにOnce、Session、Alwaysのいずれか）、誰も応答できない場合（cron、無人実行）はフェイルクローズします。他に受け付けられる値はデフォルトの`full`のみなので、パッケージはアクセスを狭めることはできても、広げることはできません。同じ名前の`config.yaml`サーバーは、trustを含めてパッケージのエントリを置き換えますが、独自に設定しない限り、パッケージが宣言したコストと支出上限（後述）は保持します。他のハーネスはこの拡張を無視します。`trust`は、同じサーバーエントリ内で`app`、`requires`、`liveness`と並べて置けます（[Application declarations](/docs/developer-guide/plugins/application-declarations)を参照）。
+
+ツールがお金やクレジットを消費するサーバーは、各呼び出しのコストとチャットごとの予算を宣言できます。するとHermesは、承認プロンプトでそのコストをチャットの累計とともに示します。また、チャットの累計が`spend_limit`を超えることになる呼び出しは、ユーザーがそのサーバーを信頼済みにしていても、先に確認します。
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": {
+        "renders": {
+          "trust": "untrusted",
+          "costs": {
+            "create_image": 20,
+            "animate": { "credits": [5, 20], "note": "per animation" }
+          },
+          "spend_limit": 100,
+          "cost_unit": "credits"
+        }
+      }
+    }
+  }
+}
+```
+
+`costs`のキーは、サーバーが列挙するとおりのMCPツール名です。コストは、非負の数値、`[min, max]`の範囲、または`credits`（数値または範囲）と短い`note`を持つオブジェクトのいずれかです。`spend_limit`はオプション（`0`または省略 = 上限なし）で、`cost_unit`のデフォルトは`credits`です。テーブルが不正な場合、パッケージはそのキーを示すエラーとともに読み込みに失敗します。これらはネイティブの`tool_costs`、`spend_limit`、`cost_unit`キーに対応します（[Tool costs and spend limits](../../user-guide/features/mcp.md#tool-costs-and-spend-limits)を参照）。コストはサーバーに関する事実なので、ユーザーの同名の`config.yaml`エントリ（ユーザーがtrustを広げる方法）があっても、そのエントリ自身がキーを設定しない限り保持されます。`spend_limit`はユーザーのものが優先され、`0`にして無効化することもできます。
+
+長時間実行されるサーバーは、他のサーバーのデフォルトを変えることなく、Hermes固有のツール呼び出し`timeout`（秒単位）を`plugin.json`で宣言することもできます。
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": { "analysis": { "timeout": 1000 } }
+    }
+  }
+}
+```
+
+値は、プラットフォームのスレッド待機上限内の正の有限数でなければなりません。これはネイティブのサーバーごとの`timeout`に対応し、省略した場合は既存の`timeouts.mcp.tool_call`へのフォールバックが維持されます。同名のネイティブ`mcp_servers`エントリは、タイムアウトを含めてパッケージのエントリ全体を引き続き置き換えます。これは待機の予算を延ばすものであり、キャンセルや権限のポリシーを変えるものではありません。サーバー内部の解析期限は別途設定し、その結果がクライアントに届くまでの時間を残しておいてください。他のハーネスはこの拡張を無視します。
+
+このHermesが知らないサーバーエントリのキー（より新しいリリースで追加されたもの）は警告とともに無視され、`hermes plugins validate`がそれを列挙しますが、パッケージはインストールされます。このルールより前のリリースでは代わりにパッケージが拒否され、また、キーを無視するリリースは意図したより安全性の低い振る舞いをする可能性があるため、新しいキーはカタログの`requires_hermes`の下限とあわせて宣言してください。`plugin.json`には`requires_hermes`フィールドがないため、そのカタログの下限がポータブルパッケージにとって唯一の下限です。カタログ名によるインストールは古いHermesでは拒否され、`hermes plugins update`はHermesが更新されるまでインストール済みのピンを保持します。
+
+明示的なサーバーごとのMCP呼び出し予算は、Hermesの外側のツール実行器にも届きます。予算が共有の並行バッチ期限を超える呼び出しは、直接呼ばれた場合でもツール検索経由の場合でも、逐次実行のバリアになります。その呼び出しは、同じモデル応答内の無関係なツールを延長することなく、独自の予算を得ます。既存のより短いMCP呼び出しは通常の並列受け入れポリシーを維持し、中断と承認の扱いは変わりません。
 
 [レンダリングされた仕様](https://agent-plugins.org/specification)では現在v1.0.0をWorking Draftとしていますが、[バージョン管理された仕様リポジトリ](https://github.com/agentplugins/agent-plugins-spec/blob/main/spec/1.0.0.md)ではPublishedとして記録されています。Hermesは、変わりうるどちらのステータスラベルでもなく、正規のv1.0.0スキーマ識別子と規範テキストに基づいて動作を決定します。これは明示的にサポートされたサブセットであり、Agent Pluginsへの完全準拠を主張するものではありません。
 
@@ -142,7 +197,7 @@ cd ~/.hermes/plugins/calculator
 
 ### Plugin Doctorで検証する {#validate-with-plugin-doctor}
 
-`hermes plugins doctor [path-or-id]`は、Hermes自身が使っているのと同じディレクトリ検出、マニフェストパーサー、名前空間付きインポート、`register(ctx)`、フックレジストリ、ツールレジストリを実行します。無効なフック名、`**kwargs`を受け取らないコールバック、登録の失敗、そして宣言されたツール/フックと実際に登録されたものとのずれを報告します。`--ci`を渡すと、エラー時に非ゼロで終了します。
+`hermes plugins doctor [path-or-id]`は、Hermes自身が使っているのと同じディレクトリ検出、マニフェストパーサー、名前空間付きインポート、`register(ctx)`、フックレジストリ、ツールレジストリを実行します。無効なフック名、`**kwargs`を受け取らないコールバック、登録の失敗、そして宣言されたツール/フックと実際に登録されたものとのずれを報告します。`desktop/plugin.js`を持つパッケージについては、デスクトップアプリがその古いコピーを実行している場合にも警告します（[Developing a unified package](/docs/developer-guide/desktop-plugin-sdk#developing-a-unified-package)を参照）。`--ci`を渡すと、エラー時に非ゼロで終了します。
 
 ```bash
 hermes plugins doctor . --ci
@@ -167,18 +222,25 @@ provides_hooks:
 
 これはHermesに次のように伝えます。「私はcalculatorというプラグインで、ツールとフックを提供します」。`provides_tools`と`provides_hooks`フィールドは、プラグインが登録するものを列挙したリストです。
 
+`register()`が登録するすべてのツールを`provides_tools`に列挙してください。このフィールドは、ユーザーがインストールしたプラグインのツールが読み込まれるかどうかを決めるものでは**ありません**。プラグインが有効化されれば、宣言されているかどうかにかかわらず、`register()`が登録したものはすべて利用可能になります。このフィールドが実際に影響するもの:
+
+- **`hermes plugins validate`**: 登録されたツールがリストと一致しない場合、「declared tools」チェックが失敗し、カタログへの受け入れがブロックされます。
+- **カタログの一覧表示**: カタログおよびダッシュボード/デスクトップのPluginsページにおける「N tools」チップとツール名検索。
+- **ダッシュボードの認証ヒント**: 「needs auth」と`hermes auth <name>`コマンドの表示には、宣言されたツールの可用性チェックのみが使われます。
+- **バンドルされた`kind: platform`プラグインのみ**: このフィールドは、アダプターが遅延されたまま、CLI/TUIセッションで`tools.py`を読み込むスイッチになります。[Outbound client tools](/docs/developer-guide/adding-platform-adapters#outbound-client-tools-provides_tools)を参照してください。
+
 追加できるオプションフィールド:
 ```yaml
 author: Your Name
-requires_env:          # env変数で読み込みをゲートする。インストール時にプロンプト表示
-  - SOME_API_KEY       # シンプル形式 — 未設定ならプラグインは無効化される
-  - name: OTHER_KEY    # リッチ形式 — インストール時に説明/URLを表示
+requires_env:          # gate loading on env vars; prompted during install
+  - SOME_API_KEY       # simple format — plugin disabled if missing
+  - name: OTHER_KEY    # rich format — shows description/url during install
     description: "Key for the Other service"
     url: "https://other.com/keys"
     secret: true
-capabilities:          # 要求する特権的なホストサーフェス（同意フロー）
-  - tools.override     # 組み込みツールを置き換える（ユーザーの同意が必要）
-  - llm.model_override # ホスト所有のLLM呼び出しのモデルを選ぶ
+capabilities:          # privileged host surfaces you request (consent flow)
+  - tools.override     # replace built-in tools (needs user consent)
+  - llm.model_override # choose the model for host-owned LLM calls
 ```
 
 ### ケイパビリティを宣言する {#declaring-capabilities}
@@ -190,10 +252,10 @@ def register(ctx):
     if ctx.has_capability("tools.override"):
         ctx.register_tool(..., override=True)
     else:
-        ctx.register_tool(...)   # 衝突しない名前で登録する
+        ctx.register_tool(...)   # register under a non-conflicting name
 ```
 
-既知のケイパビリティID: `tools.override`、`llm.provider_override`、`llm.model_override`、`llm.agent_id_override`、`llm.profile_override`、`llm.task_override`（正規のレジストリは`hermes_cli/plugin_capabilities.py`を参照）。未知のIDは無視されます。以前のケイパビリティごとの設定キー（`plugins.entries.<id>.allow_tool_override`など）も引き続き動作しますが非推奨です — ユーザーが単一の監査可能な同意画面を得られるよう、代わりにケイパビリティを宣言してください。ケイパビリティは同意 + 監査であり、**サンドボックスではありません**。ホストのAPIサーフェスをゲートするだけで、それ以上のことはしません。
+既知のケイパビリティID: `tools.override`、`llm.provider_override`、`llm.model_override`、`llm.agent_id_override`、`llm.profile_override`、`llm.task_override`、`llm.side_question`（ターンの後にセッション自身のエージェントに質問する。[Plugin LLM Access](/docs/developer-guide/plugin-llm-access#asking-the-sessions-own-agent-ctxside_question)を参照）、`llm.session_fork`（セッションのエージェントの範囲を限定したバックグラウンドコピーを実行する。[Plugin LLM Access](/docs/developer-guide/plugin-llm-access#forking-the-sessions-own-agent-ctxfork_session)を参照）、`gateway.platform_actions`（正規のレジストリは`hermes_cli/plugin_capabilities.py`を参照）。未知のIDは無視されます。以前のケイパビリティごとの設定キー（`plugins.entries.<id>.allow_tool_override`など）も引き続き動作しますが非推奨です — ユーザーが単一の監査可能な同意画面を得られるよう、代わりにケイパビリティを宣言してください。ケイパビリティは同意 + 監査であり、**サンドボックスではありません**。ホストのAPIサーフェスをゲートするだけで、それ以上のことはしません。
 
 **pipで配布されるプラグイン**は、インストール後に`plugin.yaml`ディレクトリを持たないため、代わりにディストリビューションのメタデータで、対になる`hermes_agent.plugin_capabilities`エントリポイントグループを通じてケイパビリティを宣言します。各宣言は`<plugin-id>.<capability-id>`という名前を持ち、`hermes_agent.plugins`エントリポイントと同じオブジェクトを指します。
 
@@ -207,6 +269,103 @@ calculator = "my_pkg:register"
 
 Hermesはコードをインポートせずにインストール済みのメタデータからこれらを読み取るため、pipインストールでも`hermes plugins capabilities`と同意フローは正確なままです。
 
+### ユーザーのCodexサインインを使う（コアが行うリクエスト） {#use-the-users-codex-sign-in-core-made-requests}
+
+ユーザーのChatGPT / Codexサブスクリプションを必要とするプラグイン（OpenAI Realtimeのクライアントシークレットの発行、Codexバックエンドエンドポイントの呼び出し）は、`~/.codex/auth.json`やHermesの`auth.json`を読み取ったり、リフレッシュしたり、書き換えたりしては**いけません**。Codexのリフレッシュトークンは使い捨てです。独自にリフレッシュするプラグインはHermesのロック付きリフレッシュと競合し、負けた側のローテーションチェーンは失効させられ、ユーザーはサインアウトされてしまいます。代わりに、Hermesにリクエストを行わせてください。Hermesは自身のリフレッシュパスを通じて認証情報を解決し、`Authorization`を自ら付与し、レスポンスだけを返します。あなたのコードがトークンを目にすることはありません。
+
+`plugin.yaml`でサインインを宣言します。
+
+```yaml
+name: live-voice
+requires_auth:
+  - openai-codex
+```
+
+次に、公開ヘルパーを呼び出します。これは普通の関数なので、`register(ctx)`のコードだけでなく、ダッシュボードプラグイン（`dashboard/plugin_api.py`）やベンダリングされたモジュールからもインポートできます。
+
+```python
+from hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
+
+def mint_client_secret(session: dict) -> dict:
+    try:
+        resp = credentialed_provider_request(
+            "openai-codex", "POST", "https://api.openai.com/v1/realtime/client_secrets",
+            json={"session": session}, timeout=15)
+    except ProviderNotSignedIn as exc:
+        return {"ok": False, "error": str(exc)}  # tells the user how to sign in
+    if resp.status != 200:
+        return {"ok": False, "error": f"client secret failed ({resp.status}): {resp.text[:300]}"}
+    return {"ok": True, **resp.json()}
+```
+
+これは、`~/.codex/auth.json`を読み取り、トークンの期限が近づくと`auth.openai.com/oauth/token`にPOSTし、結果を書き戻すような自作ヘルパーを置き換えるものです。そのコードは削除してください。プラグインに残されたリフレッシュ手順はありません。
+
+`credentialed_provider_request(provider, method, url, *, json=None, headers=None, timeout=30.0)`は`ProviderResponse`（`status`、`headers`、`body`、`.text`、`.json()`）を返します。ルールは次のとおりです。
+
+- **宣言したプラグインのみ。** 呼び出し元は、コールスタック上にファイルがあるプラグインです。Hermesはそれをpluginsディレクトリ配下で見つけ、その`plugin.yaml`を読み取ります。`requires_auth`にプロバイダーを列挙していないプラグインや、インストール済みのどのプラグインにも属さないコードは`PermissionError`を受け取ります。ヘルパーは自分の関数の中から呼び出してください。素のヘルパーを`run_in_executor`に渡すと、スタック上にプラグインのフレームが残らないため、呼び出しは拒否されます。
+- **プロバイダーのオリジンのみ。** `openai-codex`の場合、トークンは`https://chatgpt.com`と`https://api.openai.com`にのみ送信されます。それ以外のURLは、リクエストが行われる前に`PermissionError`を発生させます。Codexの認証情報がカスタムゲートウェイにルーティングされるプロファイルも拒否されます。そのキーはゲートウェイのものだからです。
+- **リダイレクトなし。** 3xxレスポンスはそのまま返され、追従されることはないため、ヘッダーが第三のホストに届くことはありません。
+- **プロファイル単位。** 認証情報は、アクティブなプロファイルのCodexサインインであり、チャットが使うものと同じです（`hermes auth add openai-codex`、またはデスクトップアプリでのCodexサインイン）。サインインがない場合は`ProviderNotSignedIn`を受け取り、そのメッセージにはサインインコマンドが示されます。
+- 独自の`headers`も送信されますが、Hermesが付与する`Authorization`（またはアカウント）ヘッダーを置き換えるものは除きます。
+
+`requires_auth`は`hermes plugins show <name>`とインストール時に表示され、これを追加するカタログの再ピン留めでは、更新前にユーザーに確認します。ケイパビリティと同様に、これは同意と可視性のためのものです。**サンドボックスではありません**。プロセス内のプラグインコードは依然としてユーザーが読める任意のファイルを読めますが、そうするプラグインはレビュアーに拒否されます。
+
+**使用量パネル:** 使用量エンドポイントを自分で呼び出さないでください。`agent.account_usage.fetch_account_usage("openai-codex", read_only=True)`を使ってください。これは`AccountUsageSnapshot`（プラン、`used_percent`と`reset_at`を持つセッション/週単位のウィンドウ）を返し、認証情報をリフレッシュしたりローテーションしたりすることはありません。**サインアウト**はプラグインではなくHermesの役割です。認証情報ファイルを削除するのではなく、ユーザーに`hermes auth logout openai-codex`を案内してください。
+
+### 独自のOAuthクライアントを使う（Googleおよびその他のAPI） {#use-your-own-oauth-client-google-and-other-apis}
+
+ユーザー自身のOAuthクライアント（例えばGoogle Cloudの「Desktop app」クライアント）でサードパーティAPIを呼び出すプラグインは、同意フローを実行したり、リフレッシュトークンを保存したり、それをリフレッシュしたりしません。クライアントを宣言すれば、Hermesがグラントを管理します。
+
+```yaml
+name: gemini-voice
+requires_env:
+  - name: GEMINI_VOICE_CLIENT_ID
+  - name: GEMINI_VOICE_CLIENT_SECRET
+    secret: true
+oauth:
+  - id: google
+    authorize_url: https://accounts.google.com/o/oauth2/v2/auth
+    token_url: https://oauth2.googleapis.com/token
+    scopes:
+      - https://www.googleapis.com/auth/calendar.events.owned
+      - https://www.googleapis.com/auth/documents
+    client_id_env: GEMINI_VOICE_CLIENT_ID
+    client_secret_env: GEMINI_VOICE_CLIENT_SECRET  # optional: a public PKCE client has none
+    hosts: [www.googleapis.com, docs.googleapis.com]
+    authorize_params: {access_type: offline, prompt: consent}  # Google issues a refresh token only with these
+```
+
+ユーザーは、ターミナルから`hermes auth add gemini-voice:google`（プラグインのキー、コロン、エントリの`id`）で一度だけサインインします。これはモデルプロバイダーのヘルパーが実行するのと同じPKCEログインで、`127.0.0.1`へのループバックリダイレクトを使い、Hermesがリモートホストで動いている場合はSSHトンネルのヒントを表示します。IdPが宣言より少ないスコープしか付与しなかった場合、何も保存されません。`hermes auth status|refresh|logout gemini-voice:google`で、グラントの表示、リフレッシュ、削除ができます。グラントはアクティブなプロファイルの`auth.json`に保存されます。Hermesは残り時間が2分未満になると使用時にリフレッシュし、ゲートウェイやcronの下でサインインを開始することはありません。
+
+プラグインは、エントリの`id`をプロバイダーとして、同じヘルパーを通じてAPIを呼び出します。
+
+```python
+from hermes_cli.auth_constants import AuthError
+from hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
+
+def create_document(title: str) -> dict:
+    try:
+        resp = credentialed_provider_request(
+            "google", "POST", "https://docs.googleapis.com/v1/documents", json={"title": title}, timeout=20)
+    except ProviderNotSignedIn as exc:
+        return {"ok": False, "error": str(exc)}  # names `hermes auth add gemini-voice:google`
+    except AuthError as exc:
+        return {"ok": False, "error": f"{exc.code}: {exc}"}
+    return {"ok": resp.status < 300, "status": resp.status, "body": resp.json()}
+```
+
+上記のCodexのルールに加えて、次のルールが適用されます。
+
+- **HTTPSのみ。** `authorize_url`、`token_url`、およびすべての`hosts`エントリは`https`です（ループバックの例外はありません）。それ以外は`hermes plugins validate`とカタログの受け入れで失敗します。
+- **宣言したホストのみ。** ベアラートークンは、エントリの`hosts`に完全一致（サブドメインなし）する`https://<host>`（ポート443）に送られます。それ以外のURL、`http`、ユーザー情報を含むURLは、リクエストが行われる前に`PermissionError`を発生させます。サインインプロバイダーのドメイン外のホストは、レビュアーが確認する警告になります。
+- **独自のクライアント変数。** `client_id_env`と`client_secret_env`はプラグイン自身の変数を指定します。Hermes自身が使う変数（プロバイダーのAPIキー、プラットフォームのトークン）は拒否されます。Hermesはこれらを`token_url`に送信するためです。
+- **プラグイン自身のグラント。** グラントは呼び出し元プラグインのキーの下に保存されるため、同じ`id`を宣言した別のプラグインはそれを使えません。また、プラグイン自身のエントリが、同名のHermesのサインインより優先されます。
+- **グラントは宣言に従う。** グラントは作成時のエントリを記憶しています。トークンURL、ホスト、スコープ、クライアント変数を変更したプラグインのバージョンは、ユーザーが再度サインインするまで`ProviderNotSignedIn`を受け取ります。また、`oauth`エントリを追加したり、その認可ホスト、トークンホスト、ホスト、スコープを変更したりするカタログの再ピン留めでは、更新前に確認します。
+- **エラー。** `ProviderNotSignedIn`: サインインしていない、失効した、またはサインイン後にエントリが変更された。`AuthError`のコード: `oauth_client_id_missing`と`oauth_client_secret_missing`（変数が設定されていない）、`invalid_client`、`unauthorized_client`、`invalid_scope`（IdPがクライアントを拒否した。ユーザーが修正する必要がある）、`oauth_refresh_failed`（ネットワークまたはサーバーのエラー。後で再試行する）。失効したグラント（`invalid_grant`）は廃棄され、次のサインインまでネットワークには何も送られません。エラーはトレースバック、チェーン、リクエストオブジェクトなしでプラグインに届くため、トークン、リフレッシュトークン、クライアントシークレットにたどり着くものはありません。
+- **サインインと削除。** `hermes auth add`は、ブラウザを開く前に、コード、クライアントシークレット、トークンをどのホストが受け取るかを表示し、ゲートウェイ、cron、エージェントセッションからの実行を拒否します。`hermes plugins remove`はプラグインのグラントを削除し、`hermes auth logout <plugin>:<id>`はプラグインがなくなった後も引き続き動作します。
+
+`hermes plugins validate`は、`oauth:`ブロックとそのクライアント変数が宣言されていることをチェックし、プラグインのコードがトークンURLを指定している場合に警告します。`requires_auth`と同様に、これは同意と可視性のためのものであり、サンドボックスではありません。
+
 ### マニフェストv2リファレンス {#manifest-v2-reference}
 
 `plugin.yaml`は、追加的な**v2スキーマ**（#64165）もサポートしています。すべてのフィールドはオプションです。`manifest_version`のないマニフェストはv1マニフェストであり、今後も完全にサポートされ続けます。未知のフィールドが読み込みを壊すことはありません — 警告とともに無視されます（前方互換性）。また、このHermesが理解するものより新しい`manifest_version`も、警告付きで読み込まれます。
@@ -219,13 +378,16 @@ Hermesはコードをインポートせずにインストール済みのメタ�
 | `python_dependencies` | list of str | 宣言されたPython要件（例: `"requests>=2.0,<3"`）。インストール時に同意を求めます。有効化時には、既存のコア、エクストラ、有効化済みプラグインの和集合とともに、候補をPMを通じて受け入れます。準備が成功すると環境と設定がトランザクショナルに公開され、失敗すると以前の選択と有効化セットが保持されます。同意しなかった場合、インストールされたプラグインは無効のままです。上限をピン留めしてください。 |
 | `python_runtime` | str | `external` — プラグインが独自のインタープリタ/venvを管理します（サイドカーパターン）。Hermesは何もインストールせず、`pyproject.toml`にも手を付けません。 |
 | `config_schema` | mapping | `plugins.entries.<id>.settings`配下のキーをJSONスキーマ風に記述したもの: `api_url: {type: str, default: "", description: "...", required: false}`。読み込み時に検証されます。不一致があっても、キー名と期待される型を示す実用的な警告がログに出るだけで、読み込み失敗にはなりません。型: `str`、`int`、`float`、`bool`、`list`、`dict`（およびJSONスキーマのエイリアス）と`secret`。デスクトップのPluginsタブの設定フォームもこれで駆動されます — [デスクトップの設定フォーム](#settings-form-in-the-desktop)を参照。 |
+| `config_keys` | list | コードが読み取る、Hermes自身の設定セクション内のドット区切りパス（例: `memory.retaindb`）。各パスはそれ自身とその配下すべてをカバーするため、`hermes config get/set`は「not a recognized config key」と警告する代わりにそれらのキーを認識します。ただし、プラグインがアクティブな間（有効化されている、または選択された`memory.provider`である）に限ります。パスは少なくとも2階層の深さが必要で、Hermesがすでに定義しているパスは無視されるため、宣言によってセクション内の他の場所のタイプミスが隠れることはありません。自分のプラグイン専用の設定は`config_schema`に置いてください。これは、プラグインが読み取るコアのセクションにのみ使います。ポータブルな`plugin.json`パッケージは、これを`extensions."com.nousresearch.hermes".config_keys`配下に置きます。 |
 | `license` | str | SPDX形式のライセンスID（例: `MIT`）。 |
 | `homepage` | str | プロジェクトのURL。 |
 | `tags` | list of str | 自由形式の検出用タグ（例: `[gateway, telegram]`）。 |
 | `provides_locales` | list | 言語パックの宣言: ID（`- pl`）または`{id, endonym, rtl}`マッピング。ローダーは対応する`locales/<id>[.tui\|.desktop].yaml`を自動的に登録します — [言語パックを同梱する](#ship-a-language-pack)を参照。 |
+| `requires_auth` | list of str | プラグインがHermesを通じてサインインを利用するプロバイダー（現在は`openai-codex`）。`credentialed_provider_request`に必須で、インストール時と`hermes plugins show`で表示されます。[ユーザーのCodexサインインを使う](#use-the-users-codex-sign-in-core-made-requests)を参照。 |
+| `oauth` | list of mappings | プラグインがHermesを通じて使うOAuthクライアント: `id`、`authorize_url`、`token_url`、`scopes`、`client_id_env`、オプションの`client_secret_env`、`hosts`、オプションの`authorize_params`。`hermes auth add <plugin>:<id>`でサインインし、`credentialed_provider_request`を通じて使います。[独自のOAuthクライアントを使う](#use-your-own-oauth-client-google-and-other-apis)を参照。 |
 
 ```yaml
-# plugin.yaml — マニフェストv2の例
+# plugin.yaml — manifest v2 example
 name: my-plugin
 version: 1.2.0
 manifest_version: 2
@@ -237,7 +399,7 @@ requires_plugins:
   - id: other-plugin
     version_range: ">=1.0,<2"
 python_dependencies:
-  - "somepkg>=1.0,<2"     # PMによる受け入れの前に同意を求める
+  - "somepkg>=1.0,<2"     # consent before PM admission
 config_schema:
   api_url: {type: str, default: "", description: "Service endpoint"}
 ```
@@ -271,6 +433,7 @@ dependencies = [
 - **要件の衛生管理** — 不正なPEP 508要件は拒否されます。環境マーカーは、ターゲットのインタープリタが評価できるようそのまま保持されます。`hermes-agent`への自己依存は、チェックアウトがHermesを提供するため省略されます。直接URLの要件は管理されません。それらにはプラグイン所有の外部ランタイムを使ってください。
 - **`--no-deps`**は、依存関係への同意なしに新しいプラグインをダウンロードし、`--enable`を付けても無効のままにします。アクティブなプラグインを置き換える際のPMによる受け入れを迂回することはできません。
 - **`--yes-deps`**は依存関係に関する質問に前もって回答するため、ヘッドレスなインストール（CI、SSHによる自動化、コンテナのエントリポイント）でも、拒否されることなく宣言された依存関係が準備されます。`--no-deps`とは同時に指定できません。
+- **何もインストールしない`pyproject.toml`**（`dependencies = []`で、`[build-system]`、エクストラ、依存関係グループがない）は宣言なしとして扱われます。依存関係に関する質問はなく、プラグインを有効化または更新しても依存関係の環境はそのままです。
 - **`python_runtime: external`**は、サイドカーの依存関係を共有の和集合から除外します。HermesはそのPythonランタイムをインストールせず、その宣言も変更しません。
 - **読み込むものがないのはエラー** — `hermes plugins validate`は、隣に`__init__.py`、`desktop/plugin.js`、`plugin.json`のいずれもない`plugin.yaml`を拒否します。pipレイアウトのパッケージには、ディレクトリプラグインのラッパーが必要です。
 - `security.allow_lazy_installs: false`は、オンデマンドでの取得をブロックします。明示的な依存関係への同意と明示的な有効化がPMによる準備を許可します。検出によってインストールが行われることはありません。
@@ -279,13 +442,13 @@ dependencies = [
 
 ### 依存関係のセキュリティポリシー {#dependency-security-policy}
 
-Hermesは**自身の**依存関係を隔離しています。チェックアウトの`[tool.uv] exclude-newer = "14 days"`により、Hermes自身が依存するパッケージの公開されたばかりのリリースは、2週間のあいだ`hermes update`や組み込みの遅延インストールに取り込まれません。そのため、乗っ取られたアップロードはユーザーに届く前に上流で発見されます。**この隔離はあなたのプラグインの依存関係には適用されません。** Hermesがあなたのプラグインを自身の環境に解決する際、このカットオフはHermes自身がロックしているパッケージにのみ適用され、それ以外には適用されません。そのため、プラグインは昨日公開されたリリースを下限にして今日インストールすることができ、それが何を取り込むかについては、Hermesではなくプラグインの作者が責任を負います。（Hermes自身が依存するパッケージのより新しいバージョンを必要とするプラグインは、そのパッケージの期間が明けるのを引き続き待つことになります。）
+Hermesは、**自身の**依存関係をロックする際にその経過日数をチェックします。チェックアウトの`[tool.uv] exclude-newer = "3 days"`により、公開から3日未満のリリースは`uv.lock`に入りません。そのため、乗っ取られたアップロードがユーザーに届く前に上流で発見される時間が確保されます。ユーザーはその検証済みのロックからインストールし、ユーザーのマシンで日付が再チェックされることはありません。**このチェックはあなたのプラグインの依存関係には適用されません。** Hermesがあなたのプラグインを自身の環境に解決する際、Hermesの厳密なピンはそのまま維持され、Hermesが使う他のパッケージはHermesが宣言する範囲内で動く可能性があり、それ以外はすべてあなたの要件に従います。そのため、プラグインは昨日公開されたリリースを下限にして今日インストールすることができます。それが何を取り込むかについては、Hermesではなくプラグインの作者が責任を負います。Hermesが厳密にピン留めしているパッケージの別バージョンを要求するプラグインは、Hermesのピンが動くまでインストールに失敗します。
 
 独自のポリシーを定め、それを守ってください。強く推奨される事項:
 
 - **すべての依存関係に上限を付ける** — 安定版のパッケージには`>=floor,<next_major`、1.0未満のパッケージには`>=0.29,<0.32`。素の`>=X.Y`は、将来のすべてのリリースをレビューなしで採用してしまいます。
 - **下限は今週のリリースではなく、API互換性のある最も古いバージョンにする。** 新しいwheelを下限にすると、それが公開された日にすべてのインストーラーがそれを使うことを強制されます。`>=old,!=broken,<next`なら、広い範囲を保ちつつ問題のある1つのリリースだけをスキップできます。
-- **独自の新規リリース隔離を採用する** — 下限を新しいリリースに上げるまで約14日待ち、自身のCIでは`uv --exclude-newer "14 days"`（または`UV_EXCLUDE_NEWER`）で解決してください。そうすれば、テストしたロックがそのままユーザーに届きます。
+- **独自のリリース経過日数チェックを採用する**: 下限を新しいリリースに上げるまで数日待ち、自身のCIでは`uv --exclude-newer "3 days"`（または`UV_EXCLUDE_NEWER`）で解決してください。そうすれば、テストしたロックがそのままユーザーに届きます。
 - **ロックをピン留めし、更新をレビューする。** 依存関係の更新はコードの変更として扱ってください。上流の差分を読んでから、ピンを付け直します。
 
 プラグインカタログのレビューでは、ピン留めされたSHAの時点の依存関係リスト（`plugin.yaml`または`pyproject.toml`）を読み、素の下限や上限の欠落を指摘します。下限が単に最近のものであるという理由でエントリが保留されることはありません。
@@ -357,7 +520,7 @@ UNIT_CONVERT = {
 import json
 import math
 
-# 式評価のための安全なグローバル — ファイル/ネットワークアクセスなし
+# Safe globals for expression evaluation — no file/network access
 _SAFE_MATH = {
     "abs": abs, "round": round, "min": min, "max": max,
     "pow": pow, "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos,
@@ -390,7 +553,7 @@ def calculate(args: dict, **kwargs) -> str:
         return json.dumps({"expression": expression, "error": f"Invalid: {e}"})
 
 
-# 変換テーブル — 値は基本単位
+# Conversion tables — values are in base units
 _LENGTH = {"m": 1, "km": 1000, "mi": 1609.34, "ft": 0.3048, "in": 0.0254, "cm": 0.01}
 _WEIGHT = {"kg": 1, "g": 0.001, "lb": 0.453592, "oz": 0.0283495}
 _DATA = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
@@ -398,9 +561,9 @@ _TIME = {"s": 1, "ms": 0.001, "min": 60, "hr": 3600, "day": 86400}
 
 
 def _convert_temp(value, from_u, to_u):
-    # 摂氏に正規化
+    # Normalize to Celsius
     c = {"F": (value - 32) * 5/9, "K": value - 273.15}.get(from_u, value)
-    # ターゲットに変換
+    # Convert to target
     return {"F": c * 9/5 + 32, "K": c + 273.15}.get(to_u, c)
 
 
@@ -414,13 +577,13 @@ def unit_convert(args: dict, **kwargs) -> str:
         return json.dumps({"error": "Need value, from_unit, and to_unit"})
 
     try:
-        # 温度
+        # Temperature
         if from_unit.upper() in {"C","F","K"} and to_unit.upper() in {"C","F","K"}:
             result = _convert_temp(float(value), from_unit.upper(), to_unit.upper())
             return json.dumps({"input": f"{value} {from_unit}", "result": round(result, 4),
                              "output": f"{round(result, 4)} {to_unit}"})
 
-        # 比率ベースの変換
+        # Ratio-based conversions
         for table in (_LENGTH, _WEIGHT, _DATA, _TIME):
             lc = {k.lower(): v for k, v in table.items()}
             if from_unit.lower() in lc and to_unit.lower() in lc:
@@ -438,7 +601,9 @@ def unit_convert(args: dict, **kwargs) -> str:
 1. **シグネチャ:** `def my_handler(args: dict, **kwargs) -> str`
 2. **戻り値:** 常にJSON文字列。成功時もエラー時も同様です。
 3. **例外を投げない:** すべての例外をキャッチし、代わりにエラーJSONを返します。
-4. **`**kwargs`を受け取る:** Hermesはコンテキストキーワード（`task_id`、`session_id`、`user_task`、`parent_agent`など）を注入しますが、シグネチャで名前が指定されたものだけを転送します。そのため`def handler(args)`でも動作します。`**kwargs`は、追加的に拡張されていくコンテキスト全体を受け取るための手段です。
+4. **`**kwargs`を受け取る:** Hermesはコンテキストキーワード（`task_id`、`session_id`、`conversation_id`、`user_task`、`parent_agent`など）を注入しますが、シグネチャで名前が指定されたものだけを転送します。そのため`def handler(args)`でも動作します。`**kwargs`は、追加的に拡張されていくコンテキスト全体を受け取るための手段です。
+   プラグインの[セッションフォーク](/docs/developer-guide/plugin-llm-access#forking-the-sessions-own-agent-ctxfork_session)の内部では、ハンドラは`turn_origin="plugin_fork:<plugin id>"`も受け取ります。ライブのターンでの呼び出しには付きません。
+5. **会話ごとの状態は`conversation_id`をキーにする:** `session_id`は現在のトランスクリプトのセグメントを指し、ローテーションする圧縮（`compression.in_place: false`）によって会話の途中で置き換えられます。`conversation_id`は会話の最初のセッションのIDであり、変わりません。`/new`と`/branch`は新しい会話を開始します。委任されたサブエージェントの呼び出しは、自身の`session_id`と委任元の`conversation_id`を持ちます。呼び出しにセッションがない場合（例えば`execute_code`スクリプト内からのツール呼び出し）は、どちらも空です。
 
 ## ステップ5: 登録処理を書く {#step-5-write-the-registration}
 
@@ -453,7 +618,7 @@ from . import schemas, tools
 
 logger = logging.getLogger(__name__)
 
-# フック経由でツール使用状況を追跡する
+# Track tool usage via hooks
 _call_log = []
 
 def _on_post_tool_call(tool_name, args, result, task_id, **kwargs):
@@ -471,7 +636,7 @@ def register(ctx):
     ctx.register_tool(name="unit_convert", toolset="calculator",
                       schema=schemas.UNIT_CONVERT, handler=tools.unit_convert)
 
-    # このフックは自分のものだけでなく、すべてのツール呼び出しで発火する
+    # This hook fires for ALL tool calls, not just ours
     ctx.register_hook("post_tool_call", _on_post_tool_call)
 ```
 
@@ -491,10 +656,10 @@ def register(ctx):
 def handle_scan(ctx, raw_args: str):
     """Implement /scan by invoking the terminal tool through the registry."""
     result = ctx.dispatch_tool("terminal", {"command": f"find . -name '{raw_args}'"})
-    return result  # 呼び出し元のチャットUIに返される
+    return result  # returned to the caller's chat UI
 
 def register(ctx):
-    # ハンドラは raw_args 文字列を1つだけ受け取る。ctx は lambda でクロージャに閉じ込める。
+    # Handlers receive a single raw_args string; close over ctx via a lambda.
     ctx.register_command(
         "scan",
         lambda raw: handle_scan(ctx, raw),
@@ -551,7 +716,26 @@ config_schema:
   api_key: {type: secret, env: MY_PLUGIN_API_KEY, description: "Personal access token"}
 ```
 
-**シークレットが`config.yaml`に触れることはありません。** `secret`フィールドが持つのは`.env`の変数名と値が設定済みかどうかだけです。デスクトップは、プロバイダーのAPIキーと同じ認証情報ルート（`PUT /api/env`）を通じて値を保存し、プラグインは`requires_env`エントリとまったく同じように`os.environ.get("MY_PLUGIN_API_KEY")`でそれを読み取ります。`plugins.manage settings`アクションは、シークレットキーと、型や`choices`がスキーマと一致しない値を拒否します。
+**シークレットが`config.yaml`に触れることはありません。** `secret`フィールドが持つのは`.env`の変数名と値が設定済みかどうかだけです。デスクトップは、プロバイダーのAPIキーと同じ認証情報ルート（`PUT /api/env`）を通じて値を保存し、プラグインは`requires_env`エントリとまったく同じように`agent.secret_scope`の`get_secret("MY_PLUGIN_API_KEY")`でそれを読み取ります。`.env`、`auth.json`、その他のツールの認証情報ファイルを自分で読み取ることは決してしないでください（カタログのルール11）。`plugins.manage settings`アクションは、シークレットキーと、型や`choices`がスキーマと一致しない値を拒否します。
+
+**ポータブルパッケージ（`plugin.json`）**は、Agent Plugins v1が未知のトップレベルフィールドを拒否するため、同じスキーマをHermesのベンダー名前空間の下に宣言します。
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "config_schema": {
+        "api_key": { "type": "secret", "env": "MY_PLUGIN_API_KEY" },
+        "show_chip": { "type": "bool", "default": true, "label": "Show the status-bar chip" }
+      }
+    }
+  }
+}
+```
+
+`env`が`mcp.json`でパススルーされる変数（`"env": { "MY_PLUGIN_API_KEY": "${MY_PLUGIN_API_KEY}" }`）を指しているシークレットは、すぐにMCPサーバーに届きます。保存後、Hermesは解決済みの起動入力が変わったプラグインのサーバーを再接続します（新しいキーは該当し、トグルは該当しません）。そのため、このフォームはユーザーがサーバーのキーを設定する場所にもなります。
+
+**ポーリングせずに保存に反応する。** 保存のたびに`plugin.<id>.settings.changed`がブロードキャストされます（ペイロードは`{ written: [...keys] }`。シークレットのみの保存では空のリストが送られます）。そのため、デスクトップ側はすぐに設定を読み直せます: `ctx.onEvent('plugin.my-plugin.settings.changed', reload)`。値は、自分の`plugin_api.py`から`hermes_cli.config`の`load_config_readonly()`（`plugins.entries.<id>.settings`）で読み取り、スキーマのデフォルトにフォールバックしてください。
 
 ## ステップ6: テストする {#step-6-test-it}
 
@@ -616,10 +800,10 @@ hermes logs --level WARNING | grep -i plugin
 
 ```
 ~/.hermes/plugins/calculator/
-├── plugin.yaml      # 「私はcalculator、ツールとフックを提供します」
-├── __init__.py      # 配線: スキーマ → ハンドラ、フックの登録
-├── schemas.py       # LLMが読むもの（説明 + パラメータ仕様）
-└── tools.py         # 実行されるもの（calculate, unit_convert 関数）
+├── plugin.yaml      # "I'm calculator, I provide tools and hooks"
+├── __init__.py      # Wiring: schemas → handlers, register hooks
+├── schemas.py       # What the LLM reads (descriptions + parameter specs)
+└── tools.py         # What runs (calculate, unit_convert functions)
 ```
 
 4つのファイル、明確な分離:
@@ -635,7 +819,7 @@ hermes logs --level WARNING | grep -i plugin
 任意のファイルをプラグインディレクトリに配置し、インポート時に読み込めます。
 
 ```python
-# tools.py または __init__.py 内
+# In tools.py or __init__.py
 from pathlib import Path
 from ruamel.yaml import YAML
 
@@ -655,15 +839,25 @@ with open(_DATA_FILE) as f:
 ```python
 from plugins.plugin_storage import plugin_data_dir, plugin_db
 
-# <hermes home>/plugin-data/<name>/ — 初回使用時に作成される
+# <hermes home>/plugin-data/<name>/ — created on first use
 state_file = plugin_data_dir("my-plugin") / "state.json"
 
-# または <data dir>/data.db にある SQLite データベース（WAL モード、スレッドフレンドリー）
+# Or a SQLite database at <data dir>/data.db (WAL mode, thread-friendly)
 conn = plugin_db("my-plugin")
 conn.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY)")
 ```
 
 プラグインごとに1つのディレクトリがあるため、すべてのプラグインのデータを予測可能な1つの場所で確認できます。シークレットはここに置くべきではありません — 認証情報の読み取りは、他のすべての場所と同様に、標準の`.env` / シークレットスコープのパスを通じて行います。
+
+### テキストを保存・送信する前にシークレットをリダクトする {#redact-secrets-before-storing-or-sending-text}
+
+プラグインが保存またはアップロードするテキスト（トランスクリプト、差分、ログ）には、ユーザーが貼り付けたAPIキーが含まれている可能性があります。Hermesの内部をインポートするのではなく、まず`ctx.redact_text()`に通してください。
+
+```python
+safe = ctx.redact_text(transcript, force=True)  # force: this text leaves the machine
+```
+
+これはHermes自身の出力と同じスクラバーを、最も強い設定で使います。プレフィックス付きのキーは`«redacted:sk-…»`のようなセンチネルになり、キーの文字は一切残りません。また、`API_KEY=…`のような代入はマスクされます。`ctx.register_redaction_patterns()`で登録されたパターンも適用されます。`force`を付けない場合、`security.redact_secrets: false`を設定したユーザーには、テキストが変更されずに返されます。
 
 ### スキルを同梱する {#bundle-skills}
 
@@ -694,8 +888,8 @@ def register(ctx):
 エージェントは、名前空間付きの名前でスキルを読み込めるようになります。
 
 ```python
-skill_view("my-plugin:my-workflow")   # → プラグインのバージョン
-skill_view("my-workflow")              # → 組み込みバージョン（変更なし）
+skill_view("my-plugin:my-workflow")   # → plugin's version
+skill_view("my-workflow")              # → built-in version (unchanged)
 ```
 
 **主な特性:**
@@ -708,6 +902,76 @@ skill_view("my-workflow")              # → 組み込みバージョン（変�
 古い`shutil.copy2`パターン（スキルを`~/.hermes/skills/`にコピーする方法）も依然として動作しますが、組み込みスキルとの名前衝突リスクを生みます。新しいプラグインでは`ctx.register_skill()`を推奨します。
 :::
 
+### スキルカタログを読み取る {#read-the-skill-catalog}
+
+エージェントがどのスキルを参照できるかを表示するプラグイン（カタログビュー、「このスキルを開く」、インストール済みコピーとのずれのチェック）は、スキルのディレクトリを自分で走査するのではなく、`skills_list`および`skill_view`ツールが使うのと同じヘルパーを呼び出すべきです。これらの名前は公開されており、互換性コントラクトの対象です。
+
+| インポート | 得られるもの |
+|---|---|
+| `tools.skills_tool.find_all_skills(*, skip_disabled=False)` | 読み込み可能なスキルを`{"name", "description", "category"}`のdictとして返します。`skills_list`が使う、キャッシュ付き・先勝ち・プラットフォーム/環境でゲートされた走査です。`name`は`skill_view()`が受け付けるものです。 |
+| `tools.skills_tool.sort_skills(skills)` | 唯一の一覧の並び順（カテゴリ、次に名前）。 |
+| `tools.skills_tool.skill_search_dirs()` | `(roots, active_dir)`: 優先順位順（project、local、`create_dir`、external）の`(tier, dir)`ルートと、ライブプロファイルのskillsディレクトリ。 |
+| `tools.skills_tool.skill_lookup_path_error(name)` | `name`が絶対パスであるか`..`を含む場合はエラー文字列、それ以外は`None`。検索の前に必ずチェックしてください。 |
+| `tools.skills_tool.locate_skill(name, local_category_name, roots)` | `roots`全体にわたる1つの名前に対する`(error_json, skill_dir, skill_md)`: 階層の優先順位、同一階層での衝突の拒否、プロジェクトスキルの隔離ゲートを適用します。`local_category_name`は追加で試す相対パスであり（カテゴリフィルタではありません）、必要でなければ`None`を渡してください。`skill_md`は`error_json`が`None`の場合にのみ設定されます。 |
+| `tools.skills_sync.dir_hash(directory)` | バンドルされたスキルの同期処理が保存するパッケージハッシュ。ユーザーのコピーがインストールされたものとまだ一致しているかを判断できます。 |
+| `tools.skill_usage.read_skill_name(skill_md, fallback)` | `SKILL.md`のフロントマターの`name:`、なければ`fallback`。 |
+
+```python
+from tools.skills_tool import find_all_skills, locate_skill, skill_lookup_path_error, skill_search_dirs, sort_skills
+
+def list_skills():
+    return sort_skills(find_all_skills())
+
+def open_skill(name):
+    if err := skill_lookup_path_error(name):
+        return err
+    roots, _active = skill_search_dirs()
+    error, _skill_dir, skill_md = locate_skill(name, None, roots)
+    return error or skill_md.read_text(encoding="utf-8-sig", errors="replace")
+```
+
+プラグインが登録したスキル（`ctx.register_skill`）は、これらのルート配下のディスク上には存在しません。`find_all_skills()`はディスク上のカタログのみを返します。
+
+### Hermes自身のヘルパーでファイルパスをチェックし、YAMLを読み取る {#check-file-paths-and-read-yaml-with-hermess-own-helpers}
+
+モデルが選んだパス（添付ファイル、エクスポート先、要約するファイル）を読み書きするプラグインは、Hermes自身のファイルツールが拒否するのと同じパスを拒否すべきです。具体的には、認証情報ストア、skills-hubのキャッシュ、プロジェクトの`.env`ファイル、デバイスや`/proc`のプロセスファイル、そして`HERMES_WRITE_SAFE_ROOT`の外にあるものすべてです。独自の拒否リストを保持するのではなく、以下を呼び出してください。
+
+| インポート | 得られるもの |
+|---|---|
+| `agent.file_safety.get_read_block_error(path)` | Hermesのファイルツールが`path`の読み取りを拒否する場合はエラー文字列、それ以外は`None`。絶対パスを渡してください。 |
+| `agent.file_safety.raise_if_read_blocked(path)` | 同じチェックで、ブロック時に`ValueError`を発生させます。 |
+| `agent.file_safety.get_write_denied_error(path)` | Hermesのファイルツールが`path`への書き込みを拒否する場合はエラー文字列、それ以外は`None`。 |
+| `agent.file_safety.is_write_denied(path)` | その書き込みが拒否される場合は`True`。 |
+| `hermes_yaml.safe_load(text)` / `hermes_yaml.safe_dump(data)` | Hermesが自身の設定に使うYAMLのリーダーとライター。HermesはPyYAMLを同梱していないため、プラグインが宣言しない限り`import yaml`は失敗します。 |
+
+```python
+from agent.file_safety import get_read_block_error
+from hermes_yaml import safe_load
+
+def load_recipe(path):
+    if err := get_read_block_error(path):
+        return err
+    with open(path, encoding="utf-8") as fh:
+        return safe_load(fh)
+```
+
+上記のように、名前そのものをインポートしてください（`from hermes_yaml import safe_load`）。`hermes plugins validate`はそれらの書き方を受け付け、素の`import agent.file_safety`はプライベートインポートとして報告します。Hermes自身の設定を読み取るには、`config.yaml`を自分でパースするのではなく、`hermes_cli.config`の`load_config_readonly()`を使ってください。
+
+### リダイレクト時に漏らさずに認証情報付きHTTPリクエストを送る {#send-a-credentialed-http-request-without-leaking-it-on-redirect}
+
+素の`urllib.request.urlopen`は、`Authorization`ヘッダーを付けたまま別のホストへのリダイレクトに追従します。`hermes_cli.urllib_security.open_credentialed_url(request, timeout=...)`は、Hermes自身のプロバイダー呼び出しと同じ方法で`urllib.request.Request`を開きます。リダイレクトが元のオリジンを離れると認証情報ヘッダーは削除され、プロセスにインストールされたオープナー（プロキシ、TLSの信頼設定）は維持されます。
+
+```python
+import urllib.request
+
+from hermes_cli.urllib_security import open_credentialed_url
+
+def fetch_models(base_url, api_key):
+    request = urllib.request.Request(f"{base_url}/models", headers={"Authorization": f"Bearer {api_key}"})
+    with open_credentialed_url(request, timeout=10) as response:
+        return response.read()
+```
+
 ### 言語パックを同梱する {#ship-a-language-pack}
 
 プラグインは、UI言語を追加したり、既存の言語の文言を上書きしたりできます。これは、Python（`agent.i18n.t()`: 承認プロンプト、ゲートウェイの返信、ツールの動詞、ヒント）、`hermes --tui`インターフェース、デスクトップアプリのすべてのサーフェスに一度に適用されます。`provides_locales`を宣言してYAMLを同梱するだけで、**Pythonは不要**です。
@@ -716,9 +980,9 @@ skill_view("my-workflow")              # → 組み込みバージョン（変�
 ~/.hermes/plugins/hermes-lang-pl/
 ├── plugin.yaml
 └── locales/
-    ├── pl.yaml            # コア（Python）の文字列 — 同梱の locales/en.yaml と同じキーツリー
-    ├── pl.tui.yaml        # オプション: TUI の文字列（キーは locales/_keys.tui.json）
-    └── pl.desktop.yaml    # オプション: デスクトップの文字列（キーは locales/_keys.desktop.json）
+    ├── pl.yaml            # core (Python) strings — same key tree as the bundled locales/en.yaml
+    ├── pl.tui.yaml        # optional: TUI strings (keys in locales/_keys.tui.json)
+    └── pl.desktop.yaml    # optional: Desktop strings (keys in locales/_keys.desktop.json)
 ```
 
 ```yaml
@@ -726,8 +990,8 @@ name: hermes-lang-pl
 version: 1.0.0
 description: Polish language pack
 provides_locales:
-  - id: pl              # 小文字の BCP-47 形式の ID: pl, pt-br, zh-hant
-    endonym: Polski     # 言語切り替え UI に表示される名前
+  - id: pl              # lowercase BCP-47-style id: pl, pt-br, zh-hant
+    endonym: Polski     # what language switchers show
     rtl: false
 ```
 
@@ -738,20 +1002,20 @@ provides_locales:
 ```python
 def register(ctx):
     here = Path(__file__).parent
-    ctx.register_locale("pl", here / "locales" / "pl.yaml", endonym="Polski")        # YAML のパス
-    ctx.register_locale("pl", {"approval": {"denied": "      ✗ Odrzucono"}})          # マッピング（ネストまたはフラット）
+    ctx.register_locale("pl", here / "locales" / "pl.yaml", endonym="Polski")        # YAML path
+    ctx.register_locale("pl", {"approval": {"denied": "      ✗ Odrzucono"}})          # mapping, nested or flat
     ctx.register_locale("pl", here / "locales" / "pl.tui.yaml", surface="tui")       # core | tui | desktop
-    ctx.register_locale_dir(here / "locales")                                         # すべての <lang>[.surface].yaml
+    ctx.register_locale_dir(here / "locales")                                         # every <lang>[.surface].yaml
 ```
 
-`hermes plugins validate`は、宣言された各IDについて、パース可能でテキストのみの`locales/<id>.yaml`があるかをチェックし（テキスト以外のリーフはエラー）、そのサーフェスの英語カタログに存在しないキーの名前を**警告**します。レンダラーは、`i18n.languages` / `i18n.catalog` RPCを通じてパックのレイヤーを取得します。ユーザー向けガイド: [Language Packs](../../user-guide/features/language-packs.md)。
+`hermes plugins validate`は、宣言された各IDについて、パース可能でテキストのみの`locales/<id>.yaml`があるかをチェックし（テキスト以外のリーフはエラー）、そのサーフェスの英語カタログに存在しないキーの名前を**警告**します。レンダラーは、`i18n.languages` / `i18n.catalog` RPCを通じてパックのレイヤーを取得します。ユーザー向けガイド: [Language Packs](/docs/user-guide/features/language-packs)。
 
 ### 環境変数でゲートする {#gate-on-environment-variables}
 
 プラグインがAPIキーを必要とする場合:
 
 ```yaml
-# plugin.yaml — シンプル形式（後方互換）
+# plugin.yaml — simple format (backwards-compatible)
 requires_env:
   - WEATHER_API_KEY
 ```
@@ -763,7 +1027,7 @@ requires_env:
 より良いインストール体験のためには、説明とサインアップURLを含むリッチ形式を使ってください。
 
 ```yaml
-# plugin.yaml — リッチ形式
+# plugin.yaml — rich format
 requires_env:
   - name: WEATHER_API_KEY
     description: "API key for OpenWeather"
@@ -796,16 +1060,16 @@ def my_tool_handler(args, **kwargs):
         return {"error": str(exc)}
 
     import boto3
-    # ここで SDK を使う。
+    # Use the SDK here.
 ```
 
 引数は`pyproject.toml`のエクストラ名です。任意のパッケージ指定やプラグイン修飾されたキーではありません。古い`LAZY_DEPS`レジストリと`FeatureUnavailable`例外はもう存在しません。
 
 新しい環境が選択された場合、ヘルパーは再起動が必要であることを報告することがあります。実行中のプロセス内で2つ目の環境からインポートするのではなく、そのエラーを返してください。すでに利用可能な依存関係は、`security.allow_lazy_installs`がfalseであってもインストールの必要はありません。
 
-ディレクトリプラグイン自身のPython依存関係については、その`pyproject.toml`の`[project]`配下に`dependencies`を宣言してください。作者が書いたプロジェクトファイルがない場合、PMは`plugin.yaml`または`plugin.yml`にあるレガシーの`pip_dependencies`リストと`python_dependencies`リストを結合します。PMが以前に生成したプロジェクトファイルは、これらのリストを上書きしません。同意、ワークスペースへの所属、最新性のチェックには同じ宣言が使われます。PMは、プラグインを有効化する前に、コアの要件とともにそれらの依存関係を準備します。生成されたワークスペースが、プラグインディレクトリや同梱のロックファイルを書き換えることはありません。依存関係が衝突した場合は受け入れが拒否され、以前の選択が保持されます。PMが他のプラグインを自動的に無効化することはありません。
+ディレクトリプラグイン自身のPython依存関係については、その`pyproject.toml`の`[project]`配下に`dependencies`を宣言してください。作者が書いたプロジェクトファイルがない場合、PMは`plugin.yaml`または`plugin.yml`にあるレガシーの`pip_dependencies`リストと`python_dependencies`リストを結合します。PMが以前に生成したプロジェクトファイルは、これらのリストを上書きしません。同意、ワークスペースへの所属、最新性のチェックには同じ宣言が使われます。PMは、プラグインを有効化する前に、コアの要件とともにそれらの依存関係を準備します。生成されたワークスペースが、プラグインディレクトリや同梱のロックファイルを書き換えることはなく、インストールするインタープリタのプラットフォームに対してのみ解決されます。別のプラットフォーム向けのwheelを提供しない依存関係が、プラグインをブロックすることはありません。依存関係が衝突した場合は受け入れが拒否され、以前の選択が保持されます。PMが他のプラグインを自動的に無効化することはありません。
 
-pipで手動インストールした依存関係は、永続的なPMの宣言ではありません。後で環境が置き換えられた際に保持されるとは限りません。Pythonランタイムが PMの外側にあるラッパープラグインは、[memory-provider survival contract](../memory-provider-plugin.md#hermes_home-survival-contract-what-wrappers-can-rely-on)を利用できます。ランタイムのレイアウトと遅延インストールのポリシーについては、[Package management](../../reference/package-management.md)を参照してください。
+pipで手動インストールした依存関係は、永続的なPMの宣言ではありません。後で環境が置き換えられた際に保持されるとは限りません。Pythonランタイムが PMの外側にあるラッパープラグインは、[memory-provider survival contract](/docs/developer-guide/memory-provider-plugin#hermes_home-survival-contract-what-wrappers-can-rely-on)を利用できます。ランタイムのレイアウトと遅延インストールのポリシーについては、[Package management](/docs/reference/package-management)を参照してください。
 
 
 
@@ -820,7 +1084,7 @@ def get_client():
     global _client
     if _client is not None:
         return _client
-    _client = ExpensiveClient(...)   # ← TOCTOU 競合
+    _client = ExpensiveClient(...)   # ← TOCTOU race
     return _client
 ```
 
@@ -831,16 +1095,16 @@ def get_client():
 ```python
 from plugins.plugin_utils import lazy_singleton, SingletonSlot
 
-# 引数なしのアクセサー → デコレートする:
+# Zero-arg accessor → decorate it:
 @lazy_singleton
 def get_client():
-    return ExpensiveClient(load_config())   # 正確に1回だけ実行される
+    return ExpensiveClient(load_config())   # runs exactly once
 
-client = get_client()    # スレッド間で安全
-get_client.reset()       # インスタンスを破棄する（テスト / 後始末）
+client = get_client()    # safe across threads
+get_client.reset()       # drop the instance (tests / teardown)
 
 
-# 構築用の引数を取るアクセサー → スロットを使う:
+# Accessor that takes a build argument → use a slot:
 _slot: SingletonSlot = SingletonSlot()
 
 def get_client(config=None):
@@ -865,22 +1129,22 @@ ctx.register_tool(
     name="my_tool",
     schema={...},
     handler=my_handler,
-    check_fn=lambda: _has_optional_lib(),  # False = ツールはモデルから隠される
+    check_fn=lambda: _has_optional_lib(),  # False = tool hidden from model
 )
 ```
 
 ### 組み込みツールを上書きする {#overriding-a-built-in-tool}
 
-組み込みツールを独自の実装に置き換えるには（例えば、デフォルトのブラウザツールをheaded ChromeのCDPバックエンドに差し替える、`web_search`を社内のカスタムインデックスに置き換えるなど）、`override=True`を渡します。
+組み込みツールを独自の実装に置き換えるには（例えば、`web_search`を社内のカスタムインデックスに置き換えるなど）、`override=True`を渡します。
 
 ```python
 def register(ctx):
     ctx.register_tool(
-        name="browser_navigate",             # 組み込みと同じ名前
-        toolset="plugin_my_browser",         # 独自のツールセット名前空間
+        name="web_search",                   # same name as the built-in
+        toolset="plugin_my_search",          # your own toolset namespace
         schema={...},
-        handler=my_custom_navigate,
-        override=True,                       # 明示的なオプトイン
+        handler=my_corporate_search,
+        override=True,                       # explicit opt-in
     )
 ```
 
@@ -891,7 +1155,7 @@ def register(ctx):
 ```yaml
 plugins:
   entries:
-    my-plugin:                    # `hermes plugins list` に表示されるプラグインのレジストリキー
+    my-plugin:                    # the plugin's registry key from `hermes plugins list`
       allow_tool_override: true
 ```
 
@@ -910,6 +1174,17 @@ def register(ctx):
     ctx.register_hook("on_session_end", on_session_end)
 ```
 
+### ユーザーが目にする前に返信を書き換える {#rewrite-the-reply-before-the-user-sees-it}
+
+`transform_llm_output`フックは完成した返信を書き換えますが、ユーザーは通常、それがストリーミングされるのをすでに見ています。プラグインが先に返信を確認する必要がある場合（コンテンツをリダクト、フィルタリング、ブロックする場合）は、`hold_stream=True`を渡してください。
+
+```python
+def register(ctx):
+    ctx.register_hook("transform_llm_output", redact, hold_stream=True)
+```
+
+すると、そのプラグインを読み込むプロファイル内のすべてのセッションで、返信のストリーミングが停止します。リファレンスに列挙されたサーフェスでは、ユーザーには入力中または思考中のインジケーターが表示され、その後に書き換えられた最終版だけが表示されます。それらのターンでは、ツール呼び出しの合間のコメンタリーは破棄され、フックが例外を発生させたりタイムアウトしたりした場合、ユーザーには元の返信の代わりに短い「reply withheld」通知が表示されます。装飾的な変換（フッター、スタイリング）ではこのフラグをオフのままにして、返信のストリーミングを維持してください。サーフェスごとの詳細: [Holding the reply until it is rewritten](../../user-guide/features/hooks.md#hold-stream)。
+
 ### フックリファレンス {#hook-reference}
 
 各フックは、**[Event Hooks reference](../../user-guide/features/hooks.md#plugin-hooks)**で詳しく説明されています（コールバックシグネチャ、パラメータ表、各フックが正確にいつ発火するか、例）。以下はサマリーです。
@@ -919,7 +1194,7 @@ def register(ctx):
 | [`pre_tool_call`](../../user-guide/features/hooks.md#pre_tool_call) | 任意のツールが実行される前 | `tool_name: str, args: dict, task_id: str` | オプションのディレクティブ: `{"action": "block", "message": ...}`で呼び出しを拒否、`{"action": "approve", "message": ...}`で人間による承認ゲートにエスカレート |
 | [`post_tool_call`](../../user-guide/features/hooks.md#post_tool_call) | 任意のツールが返った後 | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | 無視される |
 | [`pre_llm_call`](../../user-guide/features/hooks.md#pre_llm_call) | ターンごとに1回、ツール呼び出しループの前 | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [コンテキストインジェクション](#pre_llm_call-context-injection) |
-| [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | ターンごとに1回、ツール呼び出しループの後（成功したターンのみ） | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | 無視される |
+| [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | ターンごとに1回、ツール呼び出しループの後（成功したターンのみ） | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str, side_question_token: str \| None, review_signals: dict` | 無視される |
 | `pre_api_request` | プロバイダーへの各生APIリクエストの前（モデルがツールを呼び出す場合はターンごとに複数回） | `session_id: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, message_count: int, tool_count: int, approx_input_tokens: int, max_tokens: int, request: dict` | 無視される |
 | `post_api_request` | プロバイダーへの各生APIリクエストが返った後 | `pre_api_request`のフィールドに加えて`api_duration: float, finish_reason: str, response_model: str \| None, usage: dict, response: dict, assistant_content_chars: int, assistant_tool_call_count: int` | 無視される |
 | `api_request_error` | プロバイダーAPI呼び出しが例外を発生させたとき | 相関フィールドに加えて`status_code: int \| None, retry_count: int \| None, max_retries: int \| None, retryable: bool \| None, reason: str \| None, error: dict, request: dict` | 無視される |
@@ -929,12 +1204,15 @@ def register(ctx):
 | [`on_session_end`](../../user-guide/features/hooks.md#on_session_end) | すべての`run_conversation`呼び出しの終了時 + CLI終了時 | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | 無視される |
 | [`on_session_finalize`](../../user-guide/features/hooks.md#on_session_finalize) | CLI/ゲートウェイがアクティブなセッションを破棄するとき | `session_id: str \| None, platform: str` | 無視される |
 | [`on_session_reset`](../../user-guide/features/hooks.md#on_session_reset) | ゲートウェイが新しいセッションキーに切り替えるとき（`/new`、`/reset`） | `session_id: str, platform: str` | 無視される |
-| [`gateway_platform_event`](../../user-guide/features/hooks.md#gateway_platform_event) | 認可されたプラットフォームネイティブのイベントがゲートウェイの境界で正規化されたとき（現在はTelegramのリアクション） | `platform: str, event_type: str, payload: dict` | 無視される |
+| [`on_session_delete`](../../user-guide/features/hooks.md#on_session_delete) | セッションの削除または意図的なアーカイブがコミットされたとき（すべてのサーフェス、スイープ、prune） | `session_id: str, reason: str, profile: str \| None`、オプションの`deleted_ids: list[str]`、`sessions_dir: str` | 無視される |
+| [`post_compaction`](../../user-guide/features/hooks.md#post_compaction) | コンパクションがコミットされたとき（任意のパス: auto、`/compress`、ゲートウェイ、Codex、micro、prune） | `session_id: str, old_session_id: str, kind: str, reason: str, before_tokens: int \| None, after_tokens: int \| None, messages_removed: int \| None` | 無視される |
+| [`post_curator_run`](../../user-guide/features/hooks.md#post_curator_run) | キュレーターのパスがレポートディレクトリを書き込んだとき | `run_dir: str, run_json_path: str, report_md_path: str, dry_run: bool` | 無視される |
+| [`gateway_platform_event`](../../user-guide/features/hooks.md#gateway_platform_event) | 認可されたプラットフォームネイティブのイベントがゲートウェイの境界で正規化されたとき（Telegramのリアクションとメッセージ編集、Discordのメッセージ編集と削除、スレッドの作成と名前変更。[イベントごとのコントラクト](../../user-guide/features/hooks.md#gateway_platform_event)を参照） | `platform: str, event_type: str, payload: dict` | 無視される |
 | `kanban_task_claimed` | kanbanタスクが取得されたとき（ディスパッチャープロセス、ワーカーの起動前） | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | 無視される |
 | `kanban_task_completed` | kanbanタスクが完了したとき（ワーカープロセス） | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | 無視される |
 | `kanban_task_blocked` | kanbanタスクがブロックされたとき（ワーカープロセス） | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | 無視される |
 
-ほとんどのフックは、fire-and-forget型のオブザーバーです — 戻り値は無視されます。例外は、会話にコンテキストをインジェクトできる`pre_llm_call`と、block/approveディレクティブを返せる`pre_tool_call`です。
+ほとんどのフックは、fire-and-forget型のオブザーバーです — 戻り値は無視されます。例外は、会話にコンテキストをインジェクトしたり、モデルに届く前にターンをブロックしたりできる`pre_llm_call`と、block/approveディレクティブを返せる`pre_tool_call`です。
 
 すべてのコールバックは、前方互換性のため`**kwargs`を受け取るべきです。フックコールバックがクラッシュした場合、ログに記録されてスキップされます。他のフックとエージェントは通常どおり続行します。
 
@@ -942,24 +1220,84 @@ kanbanのライフサイクルフックはボードDBの変更がコミットさ
 
 **APIリクエストフック**は、プロバイダーへの生リクエストを観測するオブザーバーで、ターン単位の`pre_llm_call` / `post_llm_call`ペアより1段下のレベルにあります。ツールを呼び出す1つのターンは複数のAPIリクエストを行い、これらのフックはそれぞれのリクエストの前後で発火します。これらはオブザーバビリティプラグイン（トレーシング、コスト計算、レイテンシダッシュボード）のために存在します。`request`と`response`のkwargsは、プロバイダーペイロードをサニタイズしてサイズ上限を設けたJSONビューであり（機密キーはリダクトされ、長い文字列は切り詰められ、SDKオブジェクトは正規化されます）、`usage`はプレーンなトークンサマリーのdictです。すべてのペイロードは相関フィールド`turn_id`、`api_request_id`、`task_id`、`session_id`、`api_call_count`を持つため、プラグインはリクエスト、ツール呼び出し、ターンを結びつけることができます。`api_request_error`はプロバイダー呼び出しが例外を発生させたときに発火し、`status_code`、`retry_count` / `max_retries`、`retryable`、`reason`、そして`type`と`message`を持つ`error` dictを追加します。
 
+### 各フックが発火する場所 {#hook-fire-sites}
+
+`hermes_cli.plugins.VALID_HOOKS`のすべての名前には、少なくとも1つのコアの発火箇所があります。この表は、それぞれを発火させる関数を示しているため、正確な呼び出しとペイロードを読むことができます。パスはリポジトリルートからの相対パスです。フックを追加するときは、同じ変更でここに行を追加してください。
+
+| フック | 発火させる箇所 |
+|------|----------|
+| `pre_tool_call` | `hermes_cli/plugins.py` `_dispatch_pre_tool_call_hooks`。`agent/tool_executor.py` `_pre_tool_block`、`agent/agent_runtime_helpers.py` `_pre_tool_block_message`、`model_tools.py` `_pre_dispatch_guards`から呼び出される |
+| `post_tool_call` | `model_tools.py` `_emit_post_tool_call_hook` |
+| `transform_terminal_output` | `tools/terminal_tool_result.py` `_apply_output_transform_hook` |
+| `transform_tool_result` | `model_tools.py` `_apply_transform_tool_result_hook` |
+| `transform_llm_output` | `agent/turn_finalizer.py` `apply_llm_output_transform` |
+| `pre_llm_call` | `agent/turn_context.py` `_collect_pre_llm_call_context` |
+| `post_llm_call` | `agent/turn_finalizer.py` `_apply_output_hooks` |
+| `on_stream_start` / `on_stream_end` | `agent/stream_delivery.py` `StreamDeliveryMixin._emit_stream_start` / `_emit_stream_end` |
+| `on_stream_delta` | `agent/stream_delivery.py` `StreamDeliveryMixin._fire_stream_delta`（テキスト）と`_fire_reasoning_delta`（推論） |
+| `on_interim_message` | `agent/stream_delivery.py` `StreamDeliveryMixin._emit_interim_assistant_message` |
+| `pre_verify` | `hermes_cli/plugins.py` `get_pre_verify_continue_message`。`agent/turn_stop_gates.py` `_pre_verify_nudge`から呼び出される |
+| `pre_api_request` | `agent/turn_api_request.py` `_fire_pre_api_request_hook` |
+| `post_api_request` | `agent/turn_response_intake.py` `_fire_post_api_request_hook` |
+| `api_request_error` | `agent/api_request_hooks.py` `ApiRequestHooksMixin._invoke_api_request_error_hook` |
+| `pre_auxiliary_call` / `post_auxiliary_call` | `agent/auxiliary_hooks.py` `_AuxCallHooks.pre` / `_AuxCallHooks.post` |
+| `transform_api_error_classification` | `hermes_cli/plugins.py` `get_plugin_error_classification`。`agent/error_classifier.py` `_plugin_verdict`から呼び出される |
+| `on_session_start` | `agent/conversation_loop.py` `_restore_or_build_system_prompt` |
+| `on_session_end` | `agent/turn_finalizer.py` `finalize_turn`。中断による終了: `hermes_cli/cli_shutdown.py` `_invoke_interrupted_session_end`、`tui_gateway/session_lifecycle.py` `_finalize_session` |
+| `on_session_finalize` | `hermes_cli/lifecycle.py` `finalize_session`。`hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`、`hermes_cli/cli_shutdown.py` `_notify_session_finalize`、`tui_gateway/session_lifecycle.py` `_notify_session_boundary`、`gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._finalize_session_off_loop`から呼び出される |
+| `on_session_reset` | `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`、`tui_gateway/session_registry.py` `_start_session_services`、`gateway/slash_commands_session.py` `GatewaySessionCommandsMixin._handle_reset_command`、`gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._reset_session_off_loop` |
+| `on_session_delete` | `hermes_state_common.py` `emit_session_deleted` |
+| `on_session_open` | `gateway/session_open.py` `_Open._deliver` |
+| `on_skill_lifecycle` | `tools/skill_usage.py` `_emit_skill_lifecycle` |
+| `subagent_start` | `tools/delegate_tool.py` `_build_child_agent` |
+| `subagent_stop` | `tools/delegate_tool_results.py` `_fire_subagent_stop_hooks` |
+| `pre_gateway_dispatch` | `gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_pre_gateway_dispatch_hook`。webhookとリレーの受信: `gateway/platforms/webhook_ingress.py` `_admit_once` |
+| `post_gateway_admission` | `gateway/run_inbound_consumer.py` `run_post_admission_hook`、`gateway/platforms/webhook_ingress.py` `_admit_once` |
+| `agent_loop_stopped` | `gateway/run_agent_cache.py` `GatewayAgentCacheMixin._interrupt_and_clear_session`、`tui_gateway/session_lifecycle.py` `_interrupt_session_turn` |
+| `pre_approval_request` / `post_approval_response` | `tools/approval_context.py` `_fire_approval_hook`。`tools/approval.py`、`tools/approval_prompt.py`、`tools/approval_gateway_wait.py`、`tools/approval_smart.py`、`tools/file_tools_write_guards.py`から呼び出される |
+| `on_human_input_request` / `on_human_input_resolved` | `tools/human_input_hooks.py` `human_input_request` |
+| `on_room_member_activity` | `tui_gateway/hosted_room_member_activity.py` `emit_room_member_activity` |
+| `pre_transcription` | `tools/transcription_command.py` `_apply_pre_transcription_hook` |
+| `kanban_task_claimed` | `hermes_cli/kanban_db.py` `claim_task`（`_fire_task_hook`経由） |
+| `kanban_task_completed` | `hermes_cli/kanban_db.py` `complete_task`（`_fire_task_hook`経由）、`hermes_cli/kanban_swarm.py` `create_swarm` |
+| `kanban_task_blocked` | `hermes_cli/kanban_db.py` `block_task`（`_fire_task_hook`経由） |
+| `on_kanban_worker_spawned` | `hermes_cli/kanban_db.py` `_fire_worker_spawned_hook` |
+| `on_kanban_worker_exited` | `hermes_cli/kanban_db_dispatch.py` `detect_crashed_workers` |
+| `on_kanban_worker_stale_claim` | `hermes_cli/kanban_db.py` `release_stale_claims` |
+| `on_kanban_task_updated` | `hermes_cli/kanban_db.py` `notify_task_updated` |
+| `on_kanban_dispatch_tick` | `hermes_cli/kanban_db.py` `_fire_dispatch_tick_hook` |
+| `gateway_platform_event` | `gateway/run_adapters.py` `GatewayAdapterLifecycleMixin._handle_gateway_platform_event`（イベントはTelegramとDiscordのアダプターから来る） |
+| `pre_command` | `hermes_cli/plugins.py` `fire_pre_command_hook`。`cli.py` `HermesCLI.process_command`、`gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks`、`gateway/session_commands.py`から呼び出される |
+| `post_compaction` | `agent/compaction_events.py` `fire_post_compaction` |
+| `post_curator_run` | `agent/curator.py` `_notify_post_curator_run` |
+
 ### `pre_llm_call`のコンテキストインジェクション {#pre_llm_call-context-injection}
 
-これは、戻り値が意味を持つ唯一のフックです。`pre_llm_call`コールバックが`"context"`キーを持つdict（または素の文字列）を返すと、Hermesはそのテキストを**現在のターンのユーザーメッセージ**にインジェクトします。これは、メモリプラグイン、RAG連携、ガードレール、そしてモデルに追加コンテキストを提供する必要があるあらゆるプラグインのための仕組みです。
+`pre_llm_call`コールバックが`"context"`キーを持つdict（または素の文字列）を返すと、Hermesはそのテキストを**現在のターンのユーザーメッセージ**にインジェクトします。これは、メモリプラグイン、RAG連携、ガードレール、そしてモデルに追加コンテキストを提供する必要があるあらゆるプラグインのための仕組みです。
 
 #### 戻り値の形式 {#return-format}
 
 ```python
-# context キーを持つ dict
+# Dict with context key
 return {"context": "Recalled memories:\n- User prefers dark mode\n- Last project: hermes-agent"}
 
-# 素の文字列（上記の dict 形式と等価）
+# Plain string (equivalent to the dict form above)
 return "Recalled memories:\n- User prefers dark mode"
 
-# None を返すか、何も返さない → インジェクションなし（オブザーバーのみ）
+# Block the turn before it reaches the model (DLP / policy plugins)
+return {"action": "block", "message": "Blocked by policy: prompt contains a customer ID."}
+
+# Return None or don't return → no injection (observer-only)
 return None
 ```
 
 `"context"`キーを持つNoneでない空でない戻り値（または素の空でない文字列）はすべて収集され、現在のターンのユーザーメッセージに追加されます。
+
+`{"action": "block", "message": "..."}`を返すと、**推論リクエストの前に**ターンが拒否されます。メッセージはモデルの返信の代わりにユーザーに表示され、アシスタントの返信として保存されます（そのためトランスクリプトは通常の`user → assistant`のペアを保ち、`--resume`も動作します）。ターンはモデル呼び出しを一切行わず、結果は`turn_exit_reason: "blocked_by_plugin_pre_llm_call"`を持ちます。最初のブロックが優先され、メッセージのないブロックは無視されます。
+
+ブロックされたプロンプトは`[Message withheld: a pre_llm_call policy hook blocked it.]`として保存されます。後続のターンがリプレイし、コンパクションのサマリー、`session_search`、外部メモリプロバイダー、バックグラウンドのメモリレビューが読み取るのはこのプレースホルダーです。そのため、プロンプトがこのターンでも後のターンでもモデルに届くことはありません。ユーザーが入力した内容は表示用メタデータとしてのみ保持されるため、CLIの`--resume`の要約、TUI、デスクトップアプリ、ダッシュボードには引き続き表示されます。フックはターン開始時のコンパクションの前に実行され、ブロックされたターンではコンパクション、タイトル付け、外部メモリのプリフェッチ/同期がスキップされます。
+
+ブロックは、コールバックがそれを返した場合にのみ適用されます。例外を発生させたコールバックや、`plugins.hook_callback_timeout`（デフォルトは30秒）を超えて実行されたコールバックは、ログに記録されてスキップされ、ターンはそのまま進みます。したがって、ポリシーフックは自身のエラーをキャッチし、判断できない場合はブロックを返すべきです。モデルのメタデータの検索（新しいセッションでの`/models`のコンテキスト長プローブなど）は、引き続きフックの前に実行される場合がありますが、それらはメッセージの内容を含みません。
 
 #### サイズ超過コンテキストの退避 {#oversized-context-spill}
 
@@ -968,11 +1306,11 @@ return None
 ```yaml
 hooks:
   output_spill:
-    enabled: true          # デフォルト: true
-    max_chars: 10000       # デフォルト。退避を無効にするには大きな値に設定
-    preview_head: 500      # プレビューの先頭に表示する文字数
-    preview_tail: 500      # プレビューの末尾に表示する文字数
-    # directory: null      # デフォルト: $HERMES_HOME/hook_outputs
+    enabled: true          # default: true
+    max_chars: 10000       # default; set higher to opt out of spilling
+    preview_head: 500      # chars shown at the top of the preview
+    preview_tail: 500      # chars shown at the bottom of the preview
+    # directory: null      # default: $HERMES_HOME/hook_outputs
 ```
 
 #### インジェクションの仕組み {#how-injection-works}
@@ -1001,13 +1339,13 @@ def recall_context(session_id, user_message, is_first_turn, **kwargs):
         }, timeout=3)
         memories = resp.json().get("results", [])
         if not memories:
-            return None  # インジェクトするものがない
+            return None  # nothing to inject
 
         text = "Recalled context from previous sessions:\n"
         text += "\n".join(f"- {m['text']}" for m in memories)
         return {"context": text}
     except Exception:
-        return None  # 静かに失敗し、エージェントを壊さない
+        return None  # fail silently, don't break the agent
 
 def register(ctx):
     ctx.register_hook("pre_llm_call", recall_context)
@@ -1043,7 +1381,7 @@ def log_turn(session_id, user_message, model, is_first_turn, **kwargs):
     """Fires before each LLM call. Returns None — no context injected."""
     logger.info("Turn: session=%s model=%s first=%s msg_len=%d",
                 session_id, model, is_first_turn, len(user_message or ""))
-    # 戻り値なし → インジェクションなし
+    # No return → no injection
 
 def register(ctx):
     ctx.register_hook("pre_llm_call", log_turn)
@@ -1067,7 +1405,7 @@ def cap_find_output(tool_name, args, **kwargs):
             "source": "my-plugin",
             "reason": "cap find output",
         }
-    return None  # 呼び出しを変更しない
+    return None  # leave the call unchanged
 
 def register(ctx):
     ctx.register_middleware("tool_request", cap_find_output)
@@ -1090,6 +1428,30 @@ def register(ctx):
 - 例外を発生させたミドルウェアコールバックは、ログに記録されてスキップされ、チェーンは続行されます。`next_call`の後に発生した下流の失敗は、そのまま伝播します。ミドルウェアがベースのランタイムパスを壊すことは決してありません。
 - ミドルウェアのペイロードは、オブザーバーのテレメトリフィールドと並んで`middleware_schema_version`（`hermes.middleware.v1`）を持ちます。
 - 未知の種類は失敗せず警告付きで登録されるため、新しいHermes向けに書かれたプラグインも古いHermesで読み込めます。
+
+### 各セッションのコマンドに独自の環境変数を与える {#give-each-sessions-commands-its-own-environment-variables}
+
+ツールは、セッションを提供するプロセス内で実行されます。共有ゲートウェイの場合、それはゲートウェイデーモンであるため、会話を表示しているターミナルやペインの変数は、エージェントが実行するコマンドの環境には含まれません。`ctx.register_session_env(names, resolver)`は、コマンドを変更することなくこのギャップを埋めます。
+
+```python
+def pane_env(session_id):
+    pane = find_pane_showing(session_id)  # your plugin's own lookup
+    if pane is None:
+        return {}  # the commands keep the gateway's own values
+    return {"MY_PANE": pane.id, "MY_PANE_SOCKET": pane.socket or None}
+
+def register(ctx):
+    ctx.register_session_env(["MY_PANE", "MY_PANE_SOCKET"], pane_env)
+```
+
+- Hermesは、セッションのためにローカルプロセスを起動するたびに`resolver(session_id)`を呼び出します。対象は、フォアグラウンドまたはバックグラウンドの`terminal`コマンド、`execute_code`からの`terminal()`呼び出し、そしてセッションの`HERMES_SESSION_*`変数を受け取るその他のサブプロセスです。値はその時点で読み取られるため、変更（会話が別のペインに移動するなど）は次のコマンドに適用されます。
+- `session_id`は、そのプロセスが実行されるセッションです。サブエージェントのコマンドはサブエージェントのIDを受け取ります。親の値を適用する必要がある場合は、リゾルバー内でそれを親セッションにマッピングしてください。
+- 宣言した名前から文字列へのマップを返してください。値が`None`の場合、その名前はプロセス環境から削除されます。省略した名前はゲートウェイ自身の値を保持します。宣言していない名前は無視されます。
+- 宣言された名前は共有シェルのスナップショットに保存されることがないため、あるセッションの値が別のセッションの後続コマンドに届くことはなく、これらの名前の`export`が次のコマンドに引き継がれることもありません。これはプラグイン自身のプロファイルにのみ適用されます。同じゲートウェイが提供する別のプロファイルは、その名前について独自のexportを保持します。
+- 各名前は、プロファイルごとに1つのプラグインが持ちます。同じプロファイルで読み込まれた別のプラグインがすでに宣言している名前を宣言すると、そのプラグインの名前を示す`ValueError`が発生します。プラグインをアンロードするとその名前は解放され、同じプラグインをリロードすると再び宣言されます。自分のプラグインは、1つの名前を複数回の呼び出しで宣言できます。後の登録の値が優先され、それを破棄すると前の登録の値が戻ります。
+- 名前は有効な環境変数名でなければなりません。`HERMES_*`の名前は拒否されます（コアに属するため）。サブプロセスのスクラブで削除されるプロバイダーやHermesの認証情報の名前も、あなたの値から削除されます。
+- 例外を発生させたリゾルバーはログに記録され、何も提供しません。コマンドは引き続き実行されます。すべての起動時に実行されるため、高速かつローカルに保ってください。
+- 値はローカルのターミナルバックエンドにのみ適用されます。リモートバックエンド（Docker、SSH、Modal、その他のサンドボックス）はそれらを受け取りません。
 
 ### CLIコマンドを登録する {#register-cli-commands}
 
@@ -1125,7 +1487,7 @@ def register(ctx):
 
 登録後、ユーザーは`hermes my-plugin status`、`hermes my-plugin config`などを実行できます。
 
-**メモリプロバイダープラグイン**は、代わりに規約ベースのアプローチを使います。プラグインの`cli.py`ファイルに`register_cli(subparser)`関数を追加してください。メモリプラグインの検出システムが自動的に見つけるため、`ctx.register_cli_command()`の呼び出しは不要です。詳細は[Memory Provider Plugin guide](../memory-provider-plugin.md#adding-cli-commands)を参照してください。
+**メモリプロバイダープラグイン**は、代わりに規約ベースのアプローチを使います。プラグインの`cli.py`ファイルに`register_cli(subparser)`関数を追加してください。メモリプラグインの検出システムが自動的に見つけるため、`ctx.register_cli_command()`の呼び出しは不要です。詳細は[Memory Provider Plugin guide](/docs/developer-guide/memory-provider-plugin#adding-cli-commands)を参照してください。
 
 **アクティブプロバイダーによるゲート:** メモリプラグインのCLIコマンドは、そのプロバイダーが設定内でアクティブな`memory.provider`である場合にのみ表示されます。ユーザーがあなたのプロバイダーをセットアップしていない場合、あなたのCLIコマンドがヘルプ出力を散らかすことはありません。
 
@@ -1155,7 +1517,7 @@ def register(ctx):
 | パラメータ | 型 | 説明 |
 |-----------|------|-------------|
 | `name` | `str` | 先頭のスラッシュを除いたコマンド名（例: `"lcm"`、`"mystatus"`） |
-| `handler` | `Callable[[str], str \| None]` | 生の引数文字列とともに呼び出される。`async`でもよい。 |
+| `handler` | `Callable[[str], str \| None]` | 生の引数文字列と、宣言した呼び出し元セッションのキーワード（後述）とともに呼び出される。`async`でもよい。 |
 | `description` | `str` | `/help`、オートコンプリート、Telegramボットメニューに表示される |
 
 **`register_cli_command()`との主な違い:**
@@ -1164,20 +1526,82 @@ def register(ctx):
 |---|---|---|
 | 呼び出し方 | セッション内で`/name` | ターミナルで`hermes name` |
 | 動作する場所 | CLIセッション、Telegram、Discordなど | ターミナルのみ |
-| ハンドラが受け取るもの | 生の引数文字列 | argparseの`Namespace` |
+| ハンドラが受け取るもの | 生の引数文字列（+ オプトインのセッションコンテキスト） | argparseの`Namespace` |
 | ユースケース | 診断、ステータス、クイックアクション | 複雑なサブコマンドツリー、セットアップウィザード |
 
 **衝突保護:** プラグインが組み込みコマンド（`help`、`model`、`new`など）と衝突する名前を登録しようとした場合、登録は静かに拒否され、ログに警告が出ます。組み込みコマンドが常に優先されます。
 
-**非同期ハンドラ:** ゲートウェイのディスパッチは非同期ハンドラを自動的に検出してawaitするため、同期・非同期のどちらの関数も使えます。
+**呼び出し元セッションのコンテキスト:** ハンドラは、以下のキーワードパラメータのいずれか（またはすべてを受け取る`**kwargs`）を宣言することで、どのチャットとセッションから呼び出されたかを知ることができます。何も宣言しないハンドラは、1引数の`handler(raw_args)`呼び出しのままなので、既存のプラグインは影響を受けません。
+
+| キーワード | 値 |
+|---|---|
+| `session_id` | 呼び出し元セッションのID（後に`on_session_reset`が`old_session_id`として報告するもの）。チャットにまだセッションがない場合は空。 |
+| `session_key` | 呼び出し元チャットのルーティングキー。 |
+| `platform` | コマンドがどこから来たか: `telegram`、`discord`、…、`local`（ゲートウェイが所有するCLI/デスクトップのセッション）、`cli`、`tui`、`desktop`。 |
+| `source` | ゲートウェイがコマンドをディスパッチした場合は、アダプターから導出された`gateway.session.SessionSource`（`user_id`、`chat_id`、`chat_type`、`thread_id`、…）、それ以外は`None`。 |
+
+すべてのサーフェス（メッセージングプラットフォーム、クラシックCLI、TUI、デスクトップ）がこれらを渡します。同期ハンドラはゲートウェイのエグゼキューターで実行され、非同期ハンドラはこれまでどおりawaitされます。
 
 ```python
-async def _handle_check(raw_args: str) -> str:
-    result = await some_async_operation()
-    return f"Check result: {result}"
+def _handle_whoami(raw_args: str, *, session_id: str = "", platform: str = "", source=None) -> str:
+    user = source.user_id if source is not None else "local user"
+    return f"{user} on {platform}, session {session_id or '(none yet)'}"
 
 def register(ctx):
-    ctx.register_command("check", handler=_handle_check, description="Run async check")
+    ctx.register_command("whoami", handler=_handle_whoami, description="Show the calling session")
+```
+
+`source`はトランスポート上の識別情報であり、認可の付与ではありません。認可は安定したID（`source.user_id`、`source.chat_id`）に基づいて行い、表示名やコマンドのテキストに基づいてはいけません。また、機密性の高いコマンドが`source=None`を受け取った場合はフェイルクローズしてください。ハンドラの例外はそのまま伝播します。Hermesが少ない引数で呼び出しを再試行することはありません。
+
+**ハンドラが実行される場所:** スラッシュコマンドハンドラは、セッションを所有するゲートウェイプロセス内で実行されます。ユーザーがクラシックな`hermes chat` CLIでコマンドを入力した場合も同様です。ハンドラはユーザーのターミナルやディレクトリで実行されているわけではないため、次の点に注意してください。
+
+- 表示するテキストを返してください。`print()`はゲートウェイのstdoutに書き込まれ、ユーザーには表示されません。
+- セッションの作業ディレクトリは、ゲートウェイ自身のディレクトリである`os.getcwd()`ではなく、`agent.runtime_cwd.resolve_agent_cwd()`から取得してください。相対パスはそれを基準に解決します。
+- セッションの識別情報は、`os.environ`ではなく、`get_session_env("HERMES_SESSION_PLATFORM")`、`get_session_env("HERMES_SESSION_CHAT_ID")`、その他の`HERMES_SESSION_*`の名前で読み取ってください。関数自体は`from gateway.session_context import get_session_env`でインポートしてください。その名前が公開の継ぎ目であり、`hermes plugins validate`は`import gateway.session_context`をプライベートインポートとして報告します。
+- 「このターンを誰が依頼したか」（認可、来歴）については、`HERMES_SESSION_ACTOR_ID` / `HERMES_SESSION_ACTOR_NAME`を読み取ってください。ターンに単一のアクターがいない場合（別のメンバーのメッセージが合流した場合）は、プロセス内でもターミナルや`execute_code`の子プロセスでも、どちらも空になります。そのため、空は特定の誰でもないものとして扱ってください。`HERMES_SESSION_USER_ID`はセッションのルートであり、共有チャット（Telegramのobserveモード）では空になります。そのため、そこから配信先を再構築するコードは共有の会話にとどまります。
+
+```python
+from agent.runtime_cwd import resolve_agent_cwd
+from gateway.session_context import get_session_env
+
+def _handle_todo(raw_args: str) -> str:
+    todo = resolve_agent_cwd() / "TODO.md"  # the session's folder, not the gateway's
+    return todo.read_text() if todo.exists() else "No TODO.md here."
+
+def _handle_where(raw_args: str) -> str:
+    platform = get_session_env("HERMES_SESSION_PLATFORM")  # unbound: falls back to os.environ, then ""
+    return f"{platform or 'local'} chat {get_session_env('HERMES_SESSION_CHAT_ID') or '(none)'}"
+```
+
+### ユーザーに選択肢を選んでもらう {#ask-the-user-to-pick-an-option}
+
+同期のスラッシュコマンドハンドラは、`ctx.ask_choice(question, choices)`で、コマンドを実行したユーザーに選択肢を1つ選んでもらうことができます。ユーザーが回答するまでブロックし、選ばれた選択肢の`value`、または`None`を返します。各サーフェスは、エージェントの`clarify`の質問と同じ方法でこれを表示します。
+
+| サーフェス | ユーザーに表示されるもの |
+|---|---|
+| Telegram、Discord、Slack | 選択肢ごとに1つのボタン（と「Other」）を持つカード |
+| その他のメッセージングプラットフォーム | 番号付きリスト。ユーザーは番号またはラベルで返信する |
+| クラシックCLI、Ink TUI、デスクトップ | clarifyピッカー |
+
+選択肢は、文字列（ラベル兼値）またはdict `{"value", "label", "description"}`です。descriptionはラベルの後に表示されます。値またはラベルを（大文字小文字を問わず）入力しても、その選択肢を選べます。`ask_choice`は、ユーザーがキャンセルした場合、選択肢でないものを入力した場合、clarifyのタイムアウト（`agent.clarify_timeout`）が経過した場合に`None`を返します。また、質問できる手段がない場合（フック、cronジョブ、非同期ハンドラ。ブロックすると回答を配信するイベントループが停止してしまうため）にも`None`を返します。その場合、ハンドラはテキストでの使い方にフォールバックします。
+
+```python
+_MODES = [
+    {"value": "default", "label": "Default", "description": "delegation.model / parent model"},
+    {"value": "model_map", "label": "Model routes", "description": "per-task model map"},
+    {"value": "profile_routes", "label": "Profiles", "description": "delegate to other profiles"},
+]
+
+def register(ctx):
+    def delegation(raw_args: str) -> str:
+        mode = raw_args.strip() or ctx.ask_choice("Delegation mode", _MODES)
+        if mode not in {m["value"] for m in _MODES}:
+            return "Usage: /delegation default|model_map|profile_routes"
+        ctx.set_config("mode", mode)
+        return f"Delegation mode: {mode}"
+
+    ctx.register_command("delegation", delegation, description="Switch the delegation mode",
+                         args_hint="[mode]")
 ```
 
 ### スラッシュコマンドからツールをディスパッチする {#dispatch-tools-from-slash-commands}
@@ -1231,7 +1655,7 @@ def register(ctx):
 ```python
 def register(ctx):
     def on_blocked(*, task_id, reason=None, **kw):
-        # ワーカープロセスで実行される。ここでは ctx._cli_ref は None。
+        # Runs in the worker process; ctx._cli_ref is None here.
         ctx.dispatch_tool("kanban_comment", {
             "task_id": task_id,
             "comment": f"[{ctx.profile_name}] auto-noted block: {reason}",
@@ -1241,9 +1665,91 @@ def register(ctx):
 
 完全な`hermes <subcommand>`（例: `hermes kanban show`）を実行するには、`ctx.dispatch_tool("terminal", {"command": "hermes kanban show ..."})`で`terminal`ツールを使ってシェルに処理を委ねてください — ヘッドレスなワーカーセッション向けのプロセス内スラッシュコマンドブリッジはなく、フックからHermesを駆動するためのサポートされた方法はツールです。
 
+### 独自のフロントエンドと通信する: プラグインRPCメソッドとセッションイベント {#talk-to-your-own-frontend-plugin-rpc-methods-and-session-events}
+
+ゲートウェイのJSON-RPCクライアントであるフロントエンド（共有ゲートウェイにアタッチされたターミナルフロントエンド、`/api/ws`上のカスタムWebクライアント）は、自身のPython側を呼び出すことができ、Python側は1つのセッションを表示しているクライアントにイベントをプッシュできます。
+
+```python
+def register(ctx):
+    def pane_state(params, *, session_id, **kwargs):
+        # session_id is the session the call named (None for a sessionless call), already authorized.
+        state = load_state(session_id)
+        ctx.emit_to_session(session_id, "pane.changed", {"rows": len(state)})
+        return {"rows": state}
+
+    ctx.register_rpc("pane.state", pane_state)
+```
+
+クライアントは任意のJSONパラメータ（`session_id`でセッションを指定）で`plugin.<plugin_id>.pane.state`を呼び出し、型が`plugin.<plugin_id>.pane.changed`のイベントフレームを待ち受けます。
+
+```json
+{"jsonrpc": "2.0", "id": 7, "method": "plugin.my-plugin.pane.state", "params": {"session_id": "local-…", "page": 2}}
+```
+
+- **名前は強制的にあなたの名前空間に入れられます**（`<plugin_id>`は`ctx.plugin_id`）。`ctx.register_rpc(name, handler)`は`plugin.<plugin_id>.<name>`を提供し、`ctx.emit_to_session(session_id, event, payload=None)`は`plugin.<plugin_id>.<event>`を送信します。`name`と`event`は、`broadcast_plugin_event`と同様に、素のドット区切りの名前（各セグメントは`[A-Za-z0-9_-]`）です。IDが`[a-z0-9_-]{1,64}`でないプラグイン（`image_gen/x`のようなカテゴリプラグイン）は登録できず、呼び出しは`ValueError`を発生させます。
+- **ハンドラ**は、ゲートウェイのループの外で、所有するプロファイルのスコープ内で`handler(params, session_id=...)`として呼び出されます。`async def`でもかまいません。その場合は、プラグインのスラッシュコマンドと同様に、ゲートウェイのループ上ではなく、そのワーカースレッド内の独自のイベントループで実行されます。`**kwargs`を受け取ってください。今後のリリースでより多くのコンテキストが渡される可能性があります。戻り値はJSONエンコード可能でなければならず、それが呼び出しの`result`になります。例外、またはJSONでエンコードできない値の場合、呼び出しにはエラー`4001`、理由`plugin_rpc_failed`、そして`error.data.detail`に例外のテキストが返されます。呼び出しは戻るまでそのクライアントのリクエストレーンを占有するため、短く保ってください。長い処理はスレッドで開始し、`emit_to_session`を通じて報告します。
+- **アンロードするとメソッドは削除されます。** プラグインが無効化または削除されると、そのメソッドは未知のメソッドと同様に`-32601`を返します。
+- **セッションイベントはそのセッションの閲覧者にのみ送られます**。送られるのはそのセッションのイベントストリーム上で、現在アタッチしているクライアントに届き、再接続したクライアントはそれらをリプレイします。`session_id`は会話のIDでも、そのエージェントの現在のID（圧縮によってエージェントは新しいIDを得ます）でもかまいません。そのため、ツールやフックは受け取った`session_id`をそのまま渡せます。`payload`はJSONのdictです。呼び出しは、ライブの閲覧者がフレームを受け取った場合は`True`を、閲覧しているクライアントがいない場合や、このプロセスがそのようなセッションを保持していない場合は`False`を返します。`ctx.emit_to_session`は、自分で開始したスレッドからであっても、プラグイン自身のプロファイル内でセッションを検索します。`hermes_cli.plugin_events.emit_plugin_session_event(plugin_id, session_id, event, payload)`は、`ctx`を持たないコード向けの同じ呼び出しです。これは呼び出し元のプロファイルスコープを使うため、複数のプロファイルを提供するゲートウェイ上で自分のスレッドから呼ぶ場合は、`ctx.emit_to_session`を使ってください。
+- **`plugins.isolation: host`:** ハンドラはプラグインホストプロセス内で実行され、両方のemit呼び出しはゲートウェイプロセスに転送され、ホストのプロファイル内で検索されます。そこでは、`emit_plugin_session_event`は呼び出しを行ったコードのプラグインとして送信されます。`plugin_id`がそのプラグイン自身のものでない場合や、コードがその後アンロードされた読み込みに由来する場合（リロードをまたいで実行され続けているタスクも含む）は、`False`を返して何も送信しません。また、自分で開始したスレッドからの場合も同様になることがあるため（ホストはそれがどのプラグインに属するか分からない場合があります）、そこでは`ctx.emit_to_session`を使ってください。プロセス内では、ヘルパーは`plugin_id`を与えられたとおりに受け取ります。
+- **動作する場所:** セッションを所有するゲートウェイ（そのセッションオーソリティ。アタッチされたフロントエンドが使う共有の`hermes gateway run`ゲートウェイなど）上です。それを持たないバックエンドは、メソッドに`-32601`を返します。それを持たないプロセス（`hermes chat`、cron、`dashboard.turn_isolation`の計算用子プロセス）では、`emit_to_session`は`False`を返します。
+- **まず検出してください。** プラグインメソッドを提供するオーナーは、`runtime.describe`の`capabilities`に`plugin-rpc-v1`を列挙します。それがある場合、`-32601`はそのプラグインメソッドが読み込まれていない（プラグインが無効、未インストール、またはそのようなメソッドがない）ことを意味します。`plugin-rpc-v1`がない場合、クライアントはプラグインRPCがサポートされていると仮定してはいけません（古いオーナーはケイパビリティを列挙せずに提供している可能性があります）。コントラクトは、名前空間を`plugin.{plugin_id}.{name}`として一度だけ宣言します（生成されたTypeScriptでは`CanonicalRpcNamespaces`、OpenRPCドキュメントでは`x-canonical-namespaces`）。paramsはオプションの`session_id`を持つオープンなオブジェクトで、resultはハンドラが返す任意のJSONです。
+
+**セキュリティ。** プラグインメソッドには、そのゲートウェイ上のプラグインのスラッシュコマンドと同じゲートが適用されます。接続には`session:control`ケイパビリティが必要で、`session_id`を指定する呼び出しは、そのセッションの認可（正しいプロファイル、ローカルセッションの所有者、置き換えられた会話は読み取り専用）を通過しなければなりません。それ以外では、ゲートウェイが認証した任意のクライアントが、任意のパラメータで任意のプラグインメソッドを呼び出せます。Hermesはメソッドごとに呼び出し元をチェックしません（`SECURITY.md` §2.6、ルール4）。プラグインメソッドはプラグインツールと同様に扱い、パラメータを検証し、プラグイン自身のデータとアクションを超えるものを決して公開しないでください。
+
+### ユーザーの自己学習のペースに従う（`review_signals`） {#follow-the-users-self-learning-cadence-review_signals}
+
+成功したターンのたびに、`post_llm_call`は`review_signals`を持ちます。これは、Hermes自身のバックグラウンドのメモリ/スキルレビューの背後にあるカウンター（`skills.creation_nudge_interval`、`memory.nudge_interval`）と、このターンでそのレビューが期限を迎えていて有効かどうかです。ターン後に独自の処理（例えば、ターンが触れたスキルの評価）を持つプラグインは、ツール呼び出しを自分で数える代わりに、ユーザーがすでに調整したのと同じペースで実行できます。
+
+```python
+def register(ctx):
+    def on_post_llm_call(review_signals=None, **kwargs):
+        if not review_signals or not review_signals["background_review_enabled"]:
+            return  # cron run, subagent, or the user turned background review off
+        if review_signals["skill_review_due"]:
+            ...  # the same turn Hermes reviews skills on
+
+    ctx.register_hook("post_llm_call", on_post_llm_call)
+```
+
+フックはHermesが判断する前に発火し、期限フラグはその判断が使う値です。キーとセマンティクス: [`post_llm_call`](../../user-guide/features/hooks.md#review_signals)。Hermes自身のレビューと同じ方法（範囲を絞ったツールリストを持つ、セッションのエージェントのバックグラウンドコピー）でその処理を行うには、このシグナルを[`ctx.fork_session`](/docs/developer-guide/plugin-llm-access#forking-the-sessions-own-agent-ctxfork_session)と組み合わせてください。
+
+### Hermesがアイドル状態のときにジョブを実行する（`ctx.register_idle_task`） {#run-a-job-when-hermes-is-idle-ctxregister_idle_task}
+
+実験的機能: シグネチャは今後のリリースで変更される可能性があります（[詳細](/docs/developer-guide/plugin-llm-access#idle-tasks-ctxregister_idle_task)）。
+
+一部の処理には、ぶら下がるべきターンがありません。1日に1回プラグインのデータを再スコアリングする、クリーンアップを提案する、キャッシュをコンパクションする、といったものです。`ctx.register_idle_task`は、スキルの[キュレーター](../../user-guide/features/curator.md)と同じスケジューラー上で、同じ場所（提供されるすべてのプロファイルに対するゲートウェイのハウスキーピング、CLI/TUIの起動時、`hermes serve`のメンテナンスティック）からそれを実行します。
+
+```python
+def register(ctx):
+    def suggest(run):
+        # run.name, run.idle_for_seconds, run.last_run_at (ISO or None), run.run_count
+        candidates = ctx.state.get("candidates", [])
+        if not candidates:
+            return None
+        result = ctx.llm.complete(
+            messages=[{"role": "user", "content": f"Rank these for promotion: {candidates}"}],
+            task="suggest",  # a task this plugin registered with ctx.register_auxiliary_task
+        )
+        ctx.state.set("ranking", result.text)
+        return f"ranked {len(candidates)} skills"  # optional summary, shown by `hermes plugins idle-tasks`
+
+    ctx.register_idle_task("suggest", suggest, interval_hours=24, min_idle_hours=2)
+```
+
+`register_idle_task(name, fn, *, interval_hours, min_idle_hours=2, first_run="defer")`は`PluginRegistration`を返します（破棄するとポーリングが停止します）。タスクは次の場合に実行されます。
+
+- ホストが`min_idle_hours`の間アイドル状態である（ゲートウェイのハウスキーピングとCLIの起動は完全なアイドルとみなされ、`hermes serve`はチャットの非アクティブ時間を測定します）。
+- 前回の実行から`interval_hours`（下限は1）が経過している。最初のポーリングでは、キュレーターと同様に「現在時刻」を記録して1インターバル待つため、インストールや更新の直後にジョブが実行されることはありません。`first_run="immediate"`を指定すると、代わりに最初のアイドルポーリングで実行されます。
+- 一時停止されていない（`hermes plugins idle-tasks <plugin> --pause <task>`）。
+- このプロセスでも別のプロセスでも、そのタスクの他の実行が進行中でない。
+
+`fn`は、それを登録したプロファイル内の独自のスレッドで実行され、ホストはそれを待ちません。ポーリングはすぐに戻り、実行中の間はそのタスクの2回目の実行は開始されません。1回の実行は短く、繰り返しても安全なものにしてください。ゲートウェイが停止したとき、まだ進行中の実行は何も記録せず、後で再度実行されます（[シャットダウンのコントラクト](/docs/developer-guide/plugin-llm-access#idle-tasks-ctxregister_idle_task)）。例外はログに記録され、`last_status: error`として記録され、ホストに届くことはありません。状態はプラグインのデータディレクトリ`<data dir>/idle-tasks/<name>.json`（`last_run_at`、`run_count`、`paused`、`last_summary`、`last_status`、`last_error`）に保存されるため、各プロファイルが独自のコピーをスケジュールします。
+
+これをゲートするケイパビリティはありません。スケジューラーはあなた自身の関数を呼び出すだけです。その関数が行う特権的な処理は、それぞれ独自のゲートを通過します（モデル呼び出しは[`ctx.llm`の信頼ゲート](/docs/developer-guide/plugin-llm-access#trust-gate)を通過する、など）。
+
 ### エージェントのブラウザに生のCDPコマンドを送る {#send-raw-cdp-commands-to-the-agents-browser}
 
-ブラウザツールより低いレベルでエージェントのブラウザを操作しなければならないプラグインは、`SUPERVISOR_REGISTRY.capture(task_id)`で、タスクのライブなスーパーバイザー接続に固定されたCDPハンドルを取得し、`call(method, params=None, *, session_id=None, timeout=10.0)`でコマンドを送ることができます。このハンドルは、その接続が失われると`CapturedCDPInvalid`を発生させ、より新しい接続に対象を切り替えることはありません。カタログが拒否する`CDPSupervisor`のプライベート属性の読み書きの代わりに、これを使ってください。これは信頼されたプロセス内のトランスポートにすぎず、オリジン、同意、所有権のチェックは一切行いません。完全なコントラクト: [Browser CDP Supervisor](../browser-supervisor.md#trusted-plugin-cdp-access)。
+ブラウザツールより低いレベルでエージェントのブラウザを操作しなければならないプラグインは、`SUPERVISOR_REGISTRY.capture(task_id)`で、タスクのライブなスーパーバイザー接続に固定されたCDPハンドルを取得し、`call(method, params=None, *, session_id=None, timeout=10.0)`でコマンドを送ることができます。このハンドルは、その接続が失われると`CapturedCDPInvalid`を発生させ、より新しい接続に対象を切り替えることはありません。カタログが拒否する`CDPSupervisor`のプライベート属性の読み書きの代わりに、これを使ってください。これは信頼されたプロセス内のトランスポートにすぎず、オリジン、同意、所有権のチェックは一切行いません。完全なコントラクト: [Browser CDP Supervisor](/docs/developer-guide/browser-supervisor#trusted-plugin-cdp-access)。
 
 ### どのcron実行の中にいるかを知る {#know-which-cron-run-you-are-in}
 
@@ -1271,7 +1777,7 @@ def register(ctx):
 
 ### Automation Blueprintsを追加する {#add-automation-blueprints}
 
-`ctx.register_automation_blueprint(key, *, title, description, schedule_template, prompt_template, category="general", slots=(), deliver_default="origin", skills=(), tags=())`は、空欄を埋めるだけで使える自動化を[Automation Blueprintsカタログ](../../reference/automation-blueprints-catalog.mdx)に追加します。それは`/blueprint`（CLI、TUI、メッセンジャー）、ダッシュボードのBlueprintsタブ、デスクトップのCronページで、組み込みのものと並んで、プラグイン名のラベル付きで表示されます。引数は組み込みの`AutomationBlueprint`（`cron/blueprint_catalog.py`）のフィールドで、各スロットは`BlueprintSlot`のフィールドからなるdictです。
+`ctx.register_automation_blueprint(key, *, title, description, schedule_template, prompt_template, category="general", slots=(), deliver_default="origin", skills=(), tags=())`は、空欄を埋めるだけで使える自動化を[Automation Blueprintsカタログ](/docs/reference/automation-blueprints-catalog)に追加します。それは`/blueprint`（CLI、TUI、メッセンジャー）、ダッシュボードのBlueprintsタブ、デスクトップのCronページで、組み込みのものと並んで、プラグイン名のラベル付きで表示されます。引数は組み込みの`AutomationBlueprint`（`cron/blueprint_catalog.py`）のフィールドで、各スロットは`BlueprintSlot`のフィールドからなるdictです。
 
 ```python
 def register(ctx):
@@ -1309,12 +1815,12 @@ def register(ctx):
 ```python
 def register(ctx):
     async def _on_approve(ack, body, action):
-        # 3秒以内に ack する — slack_bolt の要件。
+        # ack within 3 seconds — slack_bolt requirement.
         await ack()
         # body["channel"]["id"], body["user"]["id"], body["message"]["ts"]
         # action["action_id"], action["value"]
         sweep_id = (action.get("value") or "").split("|", 1)[-1]
-        # ...決定論的な処理を行い、フォローアップを投稿する。
+        # ...do the deterministic work, then post a follow-up.
 
     ctx.register_slack_action_handler("inbox_sweep_approve", _on_approve)
 ```
@@ -1342,9 +1848,9 @@ def register(ctx):
 ```python
 def register(ctx):
     def _wire(native, adapter):
-        # native: プラットフォームのクライアント/アプリオブジェクト（下の表を参照）
-        # adapter: プラットフォームアダプターのインスタンス（読み取り専用として扱う）
-        # register() が SDK なしでも動作するよう、プラットフォーム SDK はここでインポートする。
+        # native: the platform's client/app object (see table below)
+        # adapter: the platform adapter instance (treat as read-only)
+        # Import platform SDKs HERE so register() works without them.
         ...
 
     ctx.register_platform_handler("discord", _wire)
@@ -1391,7 +1897,7 @@ def register(ctx):
         async def _on_button(update, context):
             query = update.callback_query
             await query.answer()
-            # ..."myplugin:*" コールバックを処理する
+            # ...handle "myplugin:*" callbacks
 
         application.add_handler(
             CallbackQueryHandler(_on_button, pattern=r"^myplugin:")
@@ -1406,7 +1912,7 @@ def register(ctx):
 def register(ctx):
     def _wire(bot, adapter):
         async def on_raw_reaction_add(payload):
-            ...  # 例: リアクションによる投票 / モデレーション
+            ...  # e.g. reaction-based voting / moderation
 
         bot.add_listener(on_raw_reaction_add, "on_raw_reaction_add")
 
@@ -1470,7 +1976,7 @@ description: Acme Inference — OpenAI-compatible direct API
 
 何かが`get_provider_profile()`または`list_providers()`を初めて呼び出したときに遅延検出されます — `auth.py`、`config.py`、`doctor.py`、`models.py`、`runtime_provider.py`、そしてchat_completionsトランスポートが自動的に結びつきます。ユーザープラグインは、同じ名前のbundledプラグインを上書きします。
 
-**完全なガイド:** [Model Provider Plugins](../model-provider-plugin.md) — フィールドリファレンス、オーバーライド可能なフック（`prepare_messages`、`build_extra_body`、`build_api_kwargs_extras`、`fetch_models`）、api_modeの選択、認証タイプ、テスト。
+**完全なガイド:** [Model Provider Plugins](/docs/developer-guide/model-provider-plugin) — フィールドリファレンス、オーバーライド可能なフック（`prepare_messages`、`build_extra_body`、`build_api_kwargs_extras`、`fetch_models`）、api_modeの選択、認証タイプ、テスト。
 
 ### プラットフォームプラグイン — ゲートウェイチャネルを追加する {#platform-plugins--add-a-gateway-channel}
 
@@ -1486,12 +1992,12 @@ class MyPlatformAdapter(BasePlatformAdapter):
     async def disconnect(self): ...
 
 def check_requirements():
-    import os
-    return bool(os.environ.get("MYPLATFORM_TOKEN"))
+    from agent.secret_scope import get_secret
+    return bool(get_secret("MYPLATFORM_TOKEN"))
 
 def _env_enablement():
-    import os
-    tok = os.getenv("MYPLATFORM_TOKEN", "").strip()
+    from agent.secret_scope import get_secret
+    tok = (get_secret("MYPLATFORM_TOKEN") or "").strip()
     if not tok:
         return None
     return {"token": tok}
@@ -1503,10 +2009,10 @@ def register(ctx):
         adapter_factory=lambda cfg: MyPlatformAdapter(cfg),
         check_fn=check_requirements,
         required_env=["MYPLATFORM_TOKEN"],
-        # env 変数から PlatformConfig.extra を自動入力し、env のみのセットアップが
-        # SDK のインスタンス化なしで `hermes gateway status` に表示されるようにする。
+        # Auto-populate PlatformConfig.extra from env so env-only setups
+        # show up in `hermes gateway status` without SDK instantiation.
         env_enablement_fn=_env_enablement,
-        # cron 配信にオプトイン: `deliver=myplatform` がこの変数にルーティングされる。
+        # Opt in to cron delivery: `deliver=myplatform` routes to this var.
         cron_deliver_env_var="MYPLATFORM_HOME_CHANNEL",
         emoji="💬",
         platform_hint="You are chatting via MyPlatform. Keep responses concise.",
@@ -1530,7 +2036,7 @@ optional_env:
     password: false
 ```
 
-**完全なガイド:** [Adding Platform Adapters](../adding-platform-adapters.md) — 完全な`BasePlatformAdapter`コントラクト、メッセージルーティング、認証ゲート、セットアップウィザード連携。stdlibのみで動作する例としては`plugins/platforms/irc/`を見てください。
+**完全なガイド:** [Adding Platform Adapters](/docs/developer-guide/adding-platform-adapters) — 完全な`BasePlatformAdapter`コントラクト、メッセージルーティング、認証ゲート、セットアップウィザード連携。stdlibのみで動作する例としては`plugins/platforms/irc/`を見てください。
 
 ### メモリプロバイダープラグイン — セッションをまたいだ知識バックエンドを追加する {#memory-provider-plugins--add-a-cross-session-knowledge-backend}
 
@@ -1546,8 +2052,8 @@ class MyMemoryProvider(MemoryProvider):
         return "my-memory"
 
     def is_available(self) -> bool:
-        import os
-        return bool(os.environ.get("MY_MEMORY_API_KEY"))
+        from agent.secret_scope import get_secret
+        return bool(get_secret("MY_MEMORY_API_KEY"))
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = session_id
@@ -1560,7 +2066,7 @@ class MyMemoryProvider(MemoryProvider):
         ...
 
     def get_tool_schemas(self) -> list[dict]:
-        return []   # 必須の @abstractmethod — 完全なガイドを参照
+        return []   # required @abstractmethod — see full guide
 
 def register(ctx):
     ctx.register_memory_provider(MyMemoryProvider())
@@ -1570,7 +2076,7 @@ def register(ctx):
 
 プロバイダーが汎用プラグインとしても読み込まれる場合、そのライフサイクルフックは汎用の検出処理が所有します。メモリローダーがフックを提供するのは、同じプラグインソースが汎用の検出処理を通じて正常に読み込まれるまでのフォールバックとしてのみです。プロバイダーが繰り返し読み込まれると、フォールバックのフックグループが置き換えられます。グループ内の異なるコールバックは保持されます。これは、異なるプラグインソースからのフックの重複を排除したり、プロバイダーの有効化を変更したりするものではありません。
 
-**完全なガイド:** [Memory Provider Plugins](../memory-provider-plugin.md) — 完全な`MemoryProvider` ABC、スレッディングコントラクト、プロファイル分離、`cli.py`経由のCLIコマンド登録。
+**完全なガイド:** [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) — 完全な`MemoryProvider` ABC、スレッディングコントラクト、プロファイル分離、`cli.py`経由のCLIコマンド登録。
 
 ### コンテキストエンジンプラグイン — コンテキスト圧縮器を置き換える {#context-engine-plugins--replace-the-context-compressor}
 
@@ -1594,7 +2100,7 @@ def register(ctx):
 
 コンテキストエンジンは単一選択です — `config.yaml`の`context.engine`で選択します。
 
-**完全なガイド:** [Context Engine Plugins](../context-engine-plugin.md)。
+**完全なガイド:** [Context Engine Plugins](/docs/developer-guide/context-engine-plugin)。
 
 ### 画像生成バックエンド {#image-generation-backends}
 
@@ -1611,7 +2117,7 @@ class MyImageGenProvider(ImageGenProvider):
 
     def is_available(self) -> bool: ...
     def generate(self, prompt: str, aspect_ratio="landscape", **kwargs) -> dict:
-        # success_response(...) / error_response(...) を返す
+        # returns success_response(...) / error_response(...)
         ...
 
 def register(ctx):
@@ -1626,7 +2132,7 @@ version: 1.0.0
 description: Custom image generation backend
 ```
 
-**完全なガイド:** [Image Generation Provider Plugins](../image-gen-provider-plugin.md) — 完全な`ImageGenProvider` ABC、`list_models()` / `get_setup_schema()`メタデータ、`success_response()`/`error_response()`ヘルパー、base64 vs URL出力、ユーザーによる上書き、pip配布。
+**完全なガイド:** [Image Generation Provider Plugins](/docs/developer-guide/image-gen-provider-plugin) — 完全な`ImageGenProvider` ABC、`list_models()` / `get_setup_schema()`メタデータ、`success_response()`/`error_response()`ヘルパー、base64 vs URL出力、ユーザーによる上書き、pip配布。
 
 **リファレンス例:** `plugins/image_gen/openai/`（OpenAI SDK経由のDALL-E / GPT-Image）、`plugins/image_gen/openai-codex/`、`plugins/image_gen/xai/`（Grok画像生成）。
 
@@ -1641,8 +2147,8 @@ from tools.computer_use.backend import (
 )
 
 class MyBackend(ComputerUseBackend):
-    def start(self): ...                    # ドライバーセッションを開く
-    def stop(self): ...                     # セッションを破棄する（終了時にも呼ばれる）
+    def start(self): ...                    # open the driver session
+    def stop(self): ...                     # tear it down (also called at exit)
     def is_available(self): return True
     def capture(self, mode="som", app=None, pid=None, window_id=None):
         return CaptureResult(mode=mode, width=1920, height=1080, png_b64=...)
@@ -1654,7 +2160,7 @@ class MyBackend(ComputerUseBackend):
     def list_apps(self): return []
     def focus_app(self, app, raise_window=False): return ActionResult(ok=True, action="focus_app")
     def set_value(self, value, element=None):
-        # アクションを実行できないドライバーは呼び出しごとにそう伝える。ツールスキーマは決して変わらない。
+        # A driver that can't do an action says so per call; the tool schema never changes.
         return ActionResult(ok=False, action="set_value", code="unsupported_action",
                             message="my-driver has no accessibility value setter")
 
@@ -1665,10 +2171,10 @@ class MyDriverProvider(ComputerUseProvider):
     def create_backend(self, *, permission_mode):
         return MyBackend()                  # permission_mode: standard | bounded | unrestricted
 
-    def is_available(self):                 # ツールをゲートする。軽量で、ネットワークアクセスなし
+    def is_available(self):                 # gates the tool; cheap, no network
         return True
 
-    def doctor(self):                       # オプション: `hermes computer-use doctor`
+    def doctor(self):                       # optional: `hermes computer-use doctor`
         print("my-driver: ok")
         return 0
 
@@ -1680,7 +2186,7 @@ def register(ctx):
 # ~/.hermes/plugins/my-driver/plugin.yaml
 name: my-driver
 version: 1.0.0
-description: Alternative computer-use driver   # ピッカーに表示される
+description: Alternative computer-use driver   # shown in the picker
 ```
 
 `hermes tools` → Computer Useで選択するか（インストール済みのプロバイダーは、CLIとデスクトップのツールセットパネルでcua-driverの下に一覧表示されます）、直接設定します。`plugins.enabled`のエントリは不要です。
@@ -1688,7 +2194,7 @@ description: Alternative computer-use driver   # ピッカーに表示される
 ```yaml
 # config.yaml
 computer_use:
-  backend: my-driver     # デフォルト: cua
+  backend: my-driver     # default: cua
 ```
 
 ルール:
@@ -1739,7 +2245,7 @@ events:
 # ~/.hermes/hooks/long-task-alert/handler.py
 async def handle(event_type: str, context: dict) -> None:
     if context.get("duration_seconds", 0) > 120:
-        # 通知を送る …
+        # send notification …
         pass
 ```
 
@@ -1811,14 +2317,14 @@ my-plugin = "my_plugin_package"
 ## NixOS向けに配布する {#distribute-for-nixos}
 
 :::warning Nixは明示的なサポート対象ではなくなりました
-Nix/NixOSは、明示的にサポートされるインストール方法ではなくなりました（ベストエフォートのみ） — [Nix Setup](../../getting-started/nix-setup.md)を参照してください。このセクションは、すでにNixOS上でデプロイしているユーザーのために残されています。
+Nix/NixOSは、明示的にサポートされるインストール方法ではなくなりました（ベストエフォートのみ） — [Nix Setup](/docs/getting-started/nix-setup)を参照してください。このセクションは、すでにNixOS上でデプロイしているユーザーのために残されています。
 :::
 
 NixOSユーザーは、エントリポイントを持つ`pyproject.toml`を提供すれば、あなたのプラグインを宣言的にインストールできます。
 
 **エントリポイントプラグイン**（配布に推奨）:
 ```nix
-# ユーザーの configuration.nix
+# User's configuration.nix
 services.hermes-agent.extraPythonPackages = [
   (config.services.hermes-agent.package.python.pkgs.buildPythonPackage {
     pname = "my-plugin";
@@ -1847,40 +2353,40 @@ services.hermes-agent.extraPlugins = [
 ];
 ```
 
-オーバーレイの使い方や衝突チェックを含む完全なドキュメントについては、[Nix Setup guide](../../getting-started/nix-setup.md#plugins)を参照してください。
+オーバーレイの使い方や衝突チェックを含む完全なドキュメントについては、[Nix Setup guide](/docs/getting-started/nix-setup#plugins)を参照してください。
 
 ## よくある間違い {#common-mistakes}
 
 **ハンドラがJSON文字列を返していない:**
 ```python
-# 誤り — dict を返している
+# Wrong — returns a dict
 def handler(args, **kwargs):
     return {"result": 42}
 
-# 正しい — JSON 文字列を返している
+# Right — returns a JSON string
 def handler(args, **kwargs):
     return json.dumps({"result": 42})
 ```
 
 **ハンドラのシグネチャに`**kwargs`がない:**
 ```python
-# 動作する — ディスパッチャーはシグネチャで名前が指定されたコンテキストキーワードだけを転送する
+# Works — the dispatcher only forwards the context keywords a signature names
 def handler(args):
     ...
 
-# より良い — 注入されるすべてのコンテキストフィールド（task_id, session_id, parent_agent, ...）を受け取る
+# Better — receives every injected context field (task_id, session_id, parent_agent, ...)
 def handler(args, **kwargs):
     ...
 ```
 
 **ハンドラが例外を投げる:**
 ```python
-# 誤り — 例外が伝播し、ツール呼び出しが失敗する
+# Wrong — exception propagates, tool call fails
 def handler(args, **kwargs):
     result = 1 / int(args["value"])  # ZeroDivisionError!
     return json.dumps({"result": result})
 
-# 正しい — キャッチしてエラー JSON を返す
+# Right — catch and return error JSON
 def handler(args, **kwargs):
     try:
         result = 1 / int(args.get("value", 0))
@@ -1891,9 +2397,9 @@ def handler(args, **kwargs):
 
 **スキーマの説明が曖昧すぎる:**
 ```python
-# 悪い — モデルがいつ使えばよいか分からない
+# Bad — model doesn't know when to use it
 "description": "Does stuff"
 
-# 良い — モデルがいつどのように使うか正確に分かる
+# Good — model knows exactly when and how
 "description": "Evaluate a mathematical expression. Use for arithmetic, trig, logarithms. Supports: +, -, *, /, **, sqrt, sin, cos, log, pi, e."
 ```

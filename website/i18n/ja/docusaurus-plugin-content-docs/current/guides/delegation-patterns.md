@@ -48,18 +48,15 @@ Focus on recent developments and key players.
 delegate_task(tasks=[
     {
         "goal": "Research WebAssembly outside the browser in 2025",
-        "context": "Focus on: runtimes (Wasmtime, Wasmer), cloud/edge use cases, WASI progress",
-        "toolsets": ["web"]
+        "context": "Focus on: runtimes (Wasmtime, Wasmer), cloud/edge use cases, WASI progress"
     },
     {
         "goal": "Research RISC-V server chip adoption",
-        "context": "Focus on: server chips shipping, cloud providers adopting, software ecosystem",
-        "toolsets": ["web"]
+        "context": "Focus on: server chips shipping, cloud providers adopting, software ecosystem"
     },
     {
         "goal": "Research practical quantum computing applications",
-        "context": "Focus on: error correction breakthroughs, real-world use cases, key companies",
-        "toolsets": ["web"]
+        "context": "Focus on: error correction breakthroughs, real-world use cases, key companies"
     }
 ])
 ```
@@ -87,8 +84,7 @@ delegate_task(
     Auth files: src/auth/login.py, src/auth/jwt.py, src/auth/middleware.py
     Test command: pytest tests/auth/ -v
     Focus on: SQL injection, JWT validation, password hashing, session management.
-    Fix issues found and verify tests pass.""",
-    toolsets=["terminal", "file"]
+    Fix issues found and verify tests pass."""
 )
 ```
 
@@ -130,8 +126,7 @@ delegate_task(tasks=[
         Old format: return {"data": result, "status": "ok"}
         New format: return APIResponse(data=result, status=200).to_dict()
         Import: from src.responses import APIResponse
-        Run tests after: pytest tests/handlers/ -v""",
-        "toolsets": ["terminal", "file"]
+        Run tests after: pytest tests/handlers/ -v"""
     },
     {
         "goal": "Update all client SDK methods to handle the new response format",
@@ -139,16 +134,14 @@ delegate_task(tasks=[
         Files: sdk/python/client.py, sdk/python/models.py
         Old parsing: result = response.json()["data"]
         New parsing: result = response.json()["data"] (same key, but add status code checking)
-        Also update sdk/python/tests/test_client.py""",
-        "toolsets": ["terminal", "file"]
+        Also update sdk/python/tests/test_client.py"""
     },
     {
         "goal": "Update API documentation to reflect the new response format",
         "context": """Project at /home/user/api-server.
         Docs at: docs/api/. Format: Markdown with code examples.
         Update all response examples from old format to new format.
-        Add a 'Response Format' section to docs/api/overview.md explaining the schema.""",
-        "toolsets": ["terminal", "file"]
+        Add a 'Response Format' section to docs/api/overview.md explaining the schema."""
     }
 ])
 ```
@@ -164,7 +157,7 @@ delegate_task(tasks=[
 機械的なデータ収集には `execute_code` を使い、その後、推論の重い分析を委譲します。
 
 ```python
-# ステップ1: 機械的な収集（推論が不要なのでここでは execute_code が良い）
+# Step 1: Mechanical gathering (execute_code is better here — no reasoning needed)
 execute_code("""
 from hermes_tools import web_search, web_extract
 
@@ -174,25 +167,24 @@ for query in ["AI funding Q1 2026", "AI startup acquisitions 2026", "AI IPOs 202
     for item in r["data"]["web"]:
         results.append({"title": item["title"], "url": item["url"], "desc": item["description"]})
 
-# 最も関連性の高い上位5件から全文を抽出
+# Extract full content from top 5 most relevant
 urls = [r["url"] for r in results[:5]]
 content = web_extract(urls)
 
-# 分析ステップ用に保存
-import json
-with open("/tmp/ai-funding-data.json", "w") as f:
+# Save for the analysis step
+import json, os
+with open(os.path.expanduser("~/.hermes/cache/scratch/ai-funding-data.json"), "w") as f:
     json.dump({"search_results": results, "extracted": content["results"]}, f)
 print(f"Collected {len(results)} results, extracted {len(content['results'])} pages")
 """)
 
-# ステップ2: 推論の重い分析（ここでは委譲が良い）
+# Step 2: Reasoning-heavy analysis (delegation is better here)
 delegate_task(
     goal="Analyze AI funding data and write a market report",
-    context="""Raw data at /tmp/ai-funding-data.json contains search results and
+    context="""Raw data at ~/.hermes/cache/scratch/ai-funding-data.json contains search results and
     extracted web pages about AI funding, acquisitions, and IPOs in Q1 2026.
     Write a structured market report: key deals, trends, notable players,
-    and outlook. Focus on deals over $100M.""",
-    toolsets=["terminal", "file"]
+    and outlook. Focus on deals over $100M."""
 )
 ```
 

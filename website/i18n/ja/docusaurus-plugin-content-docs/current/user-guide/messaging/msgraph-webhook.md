@@ -94,7 +94,7 @@ platforms:
       allowed_source_cidrs:
         - "52.96.0.0/14"
         - "52.104.0.0/14"
-        # ...現在の Microsoft 365 の "Common" + "Teams" カテゴリのエグレス範囲を追加します
+        # ...add the current Microsoft 365 "Common" + "Teams" category egress ranges
 ```
 
 または環境変数として:

@@ -22,14 +22,15 @@ WSL2 では、実質的に 2 台のコンピュータが動いています: Wind
 
 このガイドでは、その分割のうち特に Hermes に影響する部分を扱います: WSL2 のインストール、Windows と Linux 間でファイルをやり取りすること、双方向のネットワーク、そして実際に人々がはまる落とし穴です。
 
-:::info 他の言語
-このページは複数の言語で提供されています。右上の**言語**メニューから切り替えられます。
+:::info 简体中文
+最小限のインストール手順を中国語で解説したウォークスルーが、この同じページで管理されています — **言語**メニュー（右上）から **简体中文** を選択して切り替えてください。
 :::
 
 ## なぜ WSL2 なのか（ネイティブ Windows との比較）
 
 ネイティブの Windows インストールは Windows 上で直接動作します: Windows のターミナル（PowerShell、Windows Terminal など）、Windows のファイルシステムパス（`C:\Users\…`）、Windows のプロセスです。Hermes はシェルコマンドの実行に Git Bash を使います。これは Claude Code やその他のエージェントが今日 Windows を扱う方法であり、完全な書き直しなしに POSIX 対 Windows のギャップを回避します。
 
+<!-- no-tmp: ok — lists /tmp as a POSIX feature WSL provides -->
 WSL2 は軽量な VM 内で本物の Linux カーネルを動かすため、その中の Hermes は実質的に Ubuntu 上で動かすのと同一です。本物の POSIX 環境が欲しいときに価値があります: `fork`、`/tmp`、UNIX ソケット、シグナルのセマンティクス、PTY ベースのターミナル、`bash`/`zsh` のようなシェル、そして `rg`、`git`、`ffmpeg` のような Linux 上での挙動どおりに動くツールです。
 
 WSL2 の実際的な帰結:
@@ -100,12 +101,12 @@ WSL ターミナルを開き直します。`ps -p 1 -o comm=` が `systemd` を�
 WSL2 シェルを開いたら:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 source ~/.bashrc
 hermes
 ```
 
-インストーラーは WSL2 を素の Linux として扱います。WSL 固有のことは何も必要ありません。完全なレイアウトは [インストール](/docs/getting-started/installation)を参照してください。
+インストーラーは WSL2 を素の Linux として扱います。WSL 固有のことは何も必要ありません。完全なレイアウトは [インストール](../getting-started/installation.md)を参照してください。
 
 ## ファイルシステム: Windows ↔ WSL2 の境界をまたぐ
 
@@ -154,9 +155,9 @@ cp ~/reports/output.pdf /mnt/c/Users/you/Desktop/
 **WSL のファイルを Windows アプリで開く**（GUI エディタ、ブラウザなど）: `explorer.exe` または `wslview` を使います:
 
 ```bash
-sudo apt install wslu     # 一度だけ — wslview、wslpath、wslopen などが使えるようになります
-wslview ~/reports/output.pdf    # Windows の既定のハンドラーで開く
-explorer.exe .                  # 現在の WSL ディレクトリを Windows エクスプローラーで開く
+sudo apt install wslu     # once — gives you wslview, wslpath, wslopen, etc.
+wslview ~/reports/output.pdf    # opens with the Windows default handler
+explorer.exe .                  # opens the current WSL dir in Windows Explorer
 ```
 
 **2 つの世界の間でパスを変換する:**
@@ -188,7 +189,7 @@ dos2unix path/to/script.sh
 
 WSL 内でクローンしてください。特別な理由がない限り、常にそうです。典型的な Hermes ワークフロー（`hermes chat`、リポジトリを `rg`/`ripgrep` するツール呼び出し、ファイルウォッチャー、バックグラウンドゲートウェイ）は、`/mnt/c/Users/you/myrepo` より `~/code/myrepo` に対する方が劇的に高速で信頼できます。
 
-例外が 1 つ: **Windows バイナリを起動する MCP ブリッジ。** `cmd.exe` を通じて `chrome-devtools-mcp` を使っている場合（[MCP ガイド: WSL → Windows Chrome](/docs/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome) を参照）、Hermes の現在の作業ディレクトリが `~` だと Windows が `UNC` 警告を出すことがあります。その場合は、Windows プロセスがドライブレターの cwd を持つよう、`/mnt/c/` 配下のどこかから Hermes を起動してください。
+例外が 1 つ: **Windows バイナリを起動する MCP ブリッジ。** `cmd.exe` を通じて `chrome-devtools-mcp` を使っている場合（[MCP ガイド: WSL → Windows Chrome](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome) を参照）、Hermes の現在の作業ディレクトリが `~` だと Windows が `UNC` 警告を出すことがあります。その場合は、Windows プロセスがドライブレターの cwd を持つよう、`/mnt/c/` 配下のどこかから Hermes を起動してください。
 
 ## ネットワーク: WSL ↔ Windows
 
@@ -200,7 +201,7 @@ WSL2 は独自のネットワークスタックを持つ軽量 VM で動作し�
 
 最も一般的: **Windows 上で Ollama、LM Studio、または llama-server を実行**していて、（WSL 内の）Hermes がそれに接続する必要がある場合。
 
-この標準的な手順はプロバイダーガイドにあります: **[ローカルモデル向けの WSL2 ネットワーク →](/docs/integrations/providers#wsl2-networking-windows-users)**
+この標準的な手順はプロバイダーガイドにあります: **[ローカルモデル向けの WSL2 ネットワーク →](../integrations/providers.md#wsl2-networking-windows-users)**
 
 要約:
 
@@ -214,7 +215,7 @@ WSL2 は独自のネットワークスタックを持つ軽量 VM で動作し�
 これは逆方向で、他の場所ではあまり文書化されていませんが、次の用途で必要になります:
 
 - Windows のブラウザから Hermes の **Web ダッシュボード**を使う。
-- Windows 側のツールから **OpenAI 互換 API サーバー**（`API_SERVER_ENABLED=true` のときに `hermes gateway` が公開）を使う。[API サーバーの機能ページ](/docs/user-guide/features/api-server)を参照。
+- Windows 側のツールから **OpenAI 互換 API サーバー**（`API_SERVER_ENABLED=true` のときに `hermes gateway` が公開）を使う。[API サーバーの機能ページ](./features/api-server.md)を参照。
 - プラットフォームがローカルの Webhook URL に ping する**メッセージングゲートウェイ**（Telegram、Discord など）をテストする。通常は素のポート転送よりも `cloudflared`/`ngrok` を使います。
 
 #### サブケース 2a: Windows ホスト自身から
@@ -235,15 +236,15 @@ WSL2 は独自のネットワークスタックを持つ軽量 VM で動作し�
 2. **Windows → WSL VM をポート転送する。** ミラーモードでは自動です。NAT モードでは、管理者 PowerShell で、ポートごとに自分で行う必要があります:
 
    ```powershell
-   # WSL VM の現在の IP を取得（NAT では WSL 再起動のたびに変わります）
+   # Grab the WSL VM's current IP (it changes on every WSL restart under NAT)
    $wslIp = (wsl hostname -I).Trim().Split(' ')[0]
 
-   # Windows ポート 8080 → WSL:8080 を転送
+   # Forward Windows port 8080 → WSL:8080
    netsh interface portproxy add v4tov4 `
      listenaddress=0.0.0.0 listenport=8080 `
      connectaddress=$wslIp connectport=8080
 
-   # Windows ファイアウォールを通過させる
+   # Allow it through Windows Firewall
    New-NetFirewallRule -DisplayName "Hermes WSL 8080" `
      -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
    ```
@@ -254,11 +255,37 @@ WSL2 は独自のネットワークスタックを持つ軽量 VM で動作し�
 
 NAT モードでは WSL VM の IP が再起動のたびに変わるため、1 回限りのルールは次の `wsl --shutdown` までしか持続しません。永続的なものには、ミラーモードを使うか、ポートプロキシ手順を Windows ログイン時に実行されるスクリプトに入れてください。
 
-クラウドメッセージングプロバイダーからの Webhook（Telegram `setWebhook`、Slack イベントなど）には、ポート転送と格闘せず `cloudflared` トンネルを使ってください。[Webhook ガイド](/docs/user-guide/messaging/webhooks)を参照してください。
+クラウドメッセージングプロバイダーからの Webhook（Telegram `setWebhook`、Slack イベントなど）には、ポート転送と格闘せず `cloudflared` トンネルを使ってください。[Webhook ガイド](./messaging/webhooks.md)を参照してください。
 
 ## Windows 上で Hermes サービスを長期的に実行する
 
-Hermes の [Tool Gateway](/docs/user-guide/features/tool-gateway) と API サーバーは長時間稼働するプロセスです。WSL2 では、これらを起動し続けるためにいくつかの選択肢があります。
+Hermes の [Tool Gateway](./features/tool-gateway.md) と API サーバーは長時間稼働するプロセスです。WSL2 では、これらを起動し続けるためにいくつかの選択肢があります。
+
+### Hermes を素早く開くためのデスクトップショートカット
+
+対話的な Hermes シェルをダブルクリックで起動したいだけなら、Windows 側に
+ランチャーを作成し、そこから WSL に入るようにします:
+
+1. Windows デスクトップを右クリックし、**新規作成 -> ショートカット**を選びます。
+2. リンク先には、ディストリビューション名を使います（必要に応じて `Ubuntu` を置き換えてください）:
+
+   ```text
+   wt.exe -w 0 -p "Ubuntu" wsl.exe -d Ubuntu --cd ~ -- bash -ic "hermes"
+   ```
+
+3. `Hermes` のような分かりやすい名前を付けます。
+
+これで Windows Terminal が開き、WSL ディストリビューションが起動し、Linux の
+ホームディレクトリに移動して Hermes が起動します。`hermes` がまだ PATH にない場合は、
+一度 WSL を手動で開いて `source ~/.bashrc` を実行するか、コマンドを
+PM で有効化したプロジェクトのチェックアウト内での `python hermes` に置き換えてください。
+
+任意の仕上げ:
+
+- **カスタムアイコン:** **プロパティ -> アイコンの変更**を開き、リポジトリの Hermes favicon などの
+  `.ico` ファイルを指定します。
+- **ピン留めしたランチャー:** ショートカットが動作したら、スタートまたはタスクバーにピン留めすれば、
+  再び探しに行く必要がなくなります。
 
 ### systemd を使って WSL 内で（推奨）
 
@@ -292,7 +319,7 @@ WSL2 内の AMD ROCm と Intel Arc のサポートはまだ発展途上で、Her
 ## よくある落とし穴
 
 **Windows ホストの Ollama / LM Studio への「Connection refused」。**
-[WSL2 ネットワーク](/docs/integrations/providers#wsl2-networking-windows-users)を参照してください。9 割方、サーバーが `127.0.0.1` にバインドされていて `0.0.0.0` が必要（Ollama: `OLLAMA_HOST=0.0.0.0`）か、ファイアウォールルールが欠けています。
+[WSL2 ネットワーク](../integrations/providers.md#wsl2-networking-windows-users)を参照してください。9 割方、サーバーが `127.0.0.1` にバインドされていて `0.0.0.0` が必要（Ollama: `OLLAMA_HOST=0.0.0.0`）か、ファイアウォールルールが欠けています。
 
 **リポジトリ内での `git status` / `hermes chat` が極端に遅い。**
 おそらく `/mnt/c/...` 配下で作業しています。リポジトリを `~/code/...`（Linux 側）に移動してください。桁違いに高速になります。
@@ -326,7 +353,7 @@ WSL2 は VM ディスクを `%LOCALAPPDATA%\Packages\...` 配下のスパース 
 
 ## 次に読むもの
 
-- **[インストール](/docs/getting-started/installation)** — 実際のインストール手順（Linux/WSL2/Termux はすべて同じインストーラーを使います）。
-- **[連携 → プロバイダー → WSL2 ネットワーク](/docs/integrations/providers#wsl2-networking-windows-users)** — ローカルモデルサーバー向けの標準的なネットワーク詳細解説。
-- **[MCP ガイド → WSL → Windows Chrome](/docs/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)** — WSL 内の Hermes からログイン済みの Windows Chrome を制御する。
-- **[Tool Gateway](/docs/user-guide/features/tool-gateway)** と **[Web ダッシュボード](/docs/user-guide/features/web-dashboard)** — WSL からネットワークの他の部分へ最も頻繁に公開したくなる、長時間稼働サービス。
+- **[インストール](../getting-started/installation.md)** — 実際のインストール手順（Linux/WSL2 は同じインストーラーを使います）。
+- **[連携 → プロバイダー → WSL2 ネットワーク](../integrations/providers.md#wsl2-networking-windows-users)** — ローカルモデルサーバー向けの標準的なネットワーク詳細解説。
+- **[MCP ガイド → WSL → Windows Chrome](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)** — WSL 内の Hermes からログイン済みの Windows Chrome を制御する。
+- **[Tool Gateway](./features/tool-gateway.md)** と **[Web ダッシュボード](./features/web-dashboard.md)** — WSL からネットワークの他の部分へ最も頻繁に公開したくなる、長時間稼働サービス。

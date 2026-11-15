@@ -55,8 +55,8 @@ WECOM_CALLBACK_AGENT_ID=1000002
 WECOM_CALLBACK_TOKEN=your-callback-token
 WECOM_CALLBACK_ENCODING_AES_KEY=your-43-char-aes-key
 
-# オプション
-# WECOM_CALLBACK_HOST=  # 任意の固定指定。未設定 = デュアルスタック（すべてのインターフェース、IPv4+IPv6）
+# Optional
+# WECOM_CALLBACK_HOST=  # optional pin; unset = dual-stack (all interfaces, IPv4+IPv6)
 WECOM_CALLBACK_PORT=8645
 WECOM_CALLBACK_ALLOWED_USERS=user1,user2
 ```
@@ -119,10 +119,10 @@ platforms:
 アプリと対話できるユーザーを制限します:
 
 ```bash
-# 特定のユーザーを許可リストに追加
+# Allowlist specific users
 WECOM_CALLBACK_ALLOWED_USERS=zhangsan,lisi,wangwu
 
-# またはすべてのユーザーを許可
+# Or allow all users
 WECOM_CALLBACK_ALLOW_ALL_USERS=true
 ```
 

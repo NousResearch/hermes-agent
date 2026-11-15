@@ -39,10 +39,10 @@ LINE は日本、台湾、タイで圧倒的に普及しているメッセージ
 LINE は公開 HTTPS 経由で Webhook を配信します。デフォルトポートは `8646` です — 必要に応じて `LINE_PORT` で上書きします。
 
 ```bash
-# Cloudflare Tunnel（本番環境推奨 — 固定ホスト名）
+# Cloudflare Tunnel (recommended for production — fixed hostname)
 cloudflared tunnel --url http://localhost:8646
 
-# ngrok（開発に最適）
+# ngrok (good for dev)
 ngrok http 8646
 
 # devtunnel
@@ -63,13 +63,13 @@ devtunnel host hermes-line
 LINE_CHANNEL_ACCESS_TOKEN=YOUR_LONG_LIVED_TOKEN
 LINE_CHANNEL_SECRET=YOUR_CHANNEL_SECRET
 
-# 許可リスト — 少なくともこれらのいずれか（または開発用に LINE_ALLOW_ALL_USERS=true）
-LINE_ALLOWED_USERS=U1234567890abcdef...           # カンマ区切りの U で始まる ID
-LINE_ALLOWED_GROUPS=C1234567890abcdef...          # 任意のグループ ID
-LINE_ALLOWED_ROOMS=R1234567890abcdef...           # 任意のルーム ID
+# Allowlist — at least one of these (or LINE_ALLOW_ALL_USERS=true for dev)
+LINE_ALLOWED_USERS=U1234567890abcdef...           # comma-separated U-prefixed IDs
+LINE_ALLOWED_GROUPS=C1234567890abcdef...          # optional group IDs
+LINE_ALLOWED_ROOMS=R1234567890abcdef...           # optional room IDs
 
-# 画像 / 音声 / 動画の送信に必須 — トンネルが解決する公開 HTTPS ベース URL。
-# これがないと、send_image/voice/video は拒否されます。
+# Required for image / audio / video sends — the public HTTPS base URL
+# the tunnel resolves to.  Without it, send_image/voice/video will refuse.
 LINE_PUBLIC_URL=https://my-tunnel.example.com
 ```
 
@@ -149,7 +149,7 @@ display:
 ## Cron / 通知の配信
 
 ```env
-LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # デフォルトの配信先
+LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # default delivery target
 ```
 
 `deliver: line` の Cron ジョブは `LINE_HOME_CHANNEL` にルーティングされます。アダプターは Push 専用のスタンドアロン送信機を備えているため、Cron がゲートウェイとは別プロセスで実行されても Cron ジョブが機能します。

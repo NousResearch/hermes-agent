@@ -14,23 +14,18 @@ Hermes は単なる CLI ツールではありません。`AIAgent` を直接イ�
 
 ## インストール
 
-Hermes をリポジトリから直接インストールします。
+Hermes をクローンし、PM を通じてソース環境を準備します。Bash での手順は次のとおりです。
 
 ```bash
-pip install git+https://github.com/NousResearch/hermes-agent.git
+git clone https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+source ./activate
 ```
 
-または [uv](https://docs.astral.sh/uv/) で。
-
-```bash
-uv pip install git+https://github.com/NousResearch/hermes-agent.git
-```
-
-`requirements.txt` にピン留めすることもできます。
-
-```text
-hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git
-```
+アクティベートしたチェックアウトから `python your_app.py` でアプリケーションを実行してください。
+PowerShell での準備や独立したインタープリターについては、
+[PM 開発者ワークフロー](/docs/reference/package-management#developer-workflow)を参照してください。
+Hermes は、`requirements.txt` によるインストール向けにサポート対象の wheel やソース配布物を公開していません。
 
 :::tip
 Hermes をライブラリとして使う場合、CLI が使うのと同じ環境変数が必要です。最低限、
@@ -48,7 +43,7 @@ Hermes を使う最も簡単な方法は `chat()` メソッドです。メッセ
 from run_agent import AIAgent
 
 agent = AIAgent(
-    model="anthropic/claude-sonnet-4",
+    model="anthropic/claude-sonnet-4.6",
     quiet_mode=True,
 )
 response = agent.chat("What is the capital of France?")
@@ -73,7 +68,7 @@ Hermes を自分のコードに組み込むときは、常に `quiet_mode=True` 
 
 ```python
 agent = AIAgent(
-    model="anthropic/claude-sonnet-4",
+    model="anthropic/claude-sonnet-4.6",
     quiet_mode=True,
 )
 
@@ -112,16 +107,16 @@ result = agent.run_conversation(
 制御します。
 
 ```python
-# web ツール（ブラウジング、検索）のみを有効化
+# Only enable web tools (browsing, search)
 agent = AIAgent(
-    model="anthropic/claude-sonnet-4",
+    model="anthropic/claude-sonnet-4.6",
     enabled_toolsets=["web"],
     quiet_mode=True,
 )
 
-# terminal アクセス以外のすべてを有効化
+# Enable everything except terminal access
 agent = AIAgent(
-    model="anthropic/claude-sonnet-4",
+    model="anthropic/claude-sonnet-4.6",
     disabled_toolsets=["terminal"],
     quiet_mode=True,
 )
@@ -141,15 +136,15 @@ agent = AIAgent(
 
 ```python
 agent = AIAgent(
-    model="anthropic/claude-sonnet-4",
+    model="anthropic/claude-sonnet-4.6",
     quiet_mode=True,
 )
 
-# 最初のターン
+# First turn
 result1 = agent.run_conversation("My name is Alice")
 history = result1["messages"]
 
-# 2 番目のターン — エージェントはコンテキストを覚えている
+# Second turn — agent remembers the context
 result2 = agent.run_conversation(
     "What's my name?",
     conversation_history=history,
@@ -169,13 +164,13 @@ print(result2["final_response"])  # "Your name is Alice."
 
 ```python
 agent = AIAgent(
-    model="anthropic/claude-sonnet-4",
+    model="anthropic/claude-sonnet-4.6",
     save_trajectories=True,
     quiet_mode=True,
 )
 
 agent.chat("Write a Python function to sort a list")
-# trajectory_samples.jsonl に ShareGPT 形式で保存される
+# Saves to trajectory_samples.jsonl in ShareGPT format
 ```
 
 各会話は単一の JSONL 行として追記されるため、自動実行からデータセットを簡単に収集できます。
@@ -226,7 +221,7 @@ prompts = [
 ]
 
 def process_prompt(prompt):
-    # スレッドセーフのためにタスクごとに新しいエージェントを作成
+    # Create a fresh agent per task for thread safety
     agent = AIAgent(
         model="anthropic/claude-sonnet-4",
         quiet_mode=True,
@@ -333,13 +328,13 @@ print(review)
 
 | パラメータ | 型 | デフォルト | 説明 |
 |-----------|------|---------|-------------|
-| `model` | `str` | `"anthropic/claude-opus-4.6"` | OpenRouter 形式のモデル |
+| `model` | `str` | `""` | OpenRouter 形式のモデル（デフォルトは空。実行時に hermes の設定から解決されます） |
 | `quiet_mode` | `bool` | `False` | CLI 出力を抑制する |
 | `enabled_toolsets` | `List[str]` | `None` | 特定のツールセットをホワイトリストにする |
 | `disabled_toolsets` | `List[str]` | `None` | 特定のツールセットをブラックリストにする |
 | `save_trajectories` | `bool` | `False` | 会話を JSONL に保存する |
 | `ephemeral_system_prompt` | `str` | `None` | カスタムシステムプロンプト（トラジェクトリには保存されない） |
-| `max_iterations` | `int` | `90` | 会話ごとのツール呼び出しの最大イテレーション数 |
+| `max_iterations` | `int` | `500` | 会話ごとのツール呼び出しの最大イテレーション数 |
 | `skip_context_files` | `bool` | `False` | AGENTS.md ファイルの読み込みをスキップする |
 | `skip_memory` | `bool` | `False` | 永続メモリの読み書きを無効にする |
 | `api_key` | `str` | `None` | API キー（環境変数にフォールバック） |
@@ -365,7 +360,7 @@ print(review)
 - **リソースのクリーンアップ**: エージェントは、会話が終了すると自動的にリソース（ターミナル
   セッション、ブラウザインスタンス）をクリーンアップします。長時間稼働するプロセスで実行している
   場合は、各会話が正常に完了するようにしてください。
-- **イテレーション制限**: デフォルトの `max_iterations=90` は寛大です。単純な Q&A のユースケースでは、
+- **イテレーション制限**: デフォルトの `max_iterations=500` は寛大です。単純な Q&A のユースケースでは、
   暴走するツール呼び出しループを防ぎコストを抑えるために、低くする（例: `max_iterations=10`）ことを
   検討してください。
 :::

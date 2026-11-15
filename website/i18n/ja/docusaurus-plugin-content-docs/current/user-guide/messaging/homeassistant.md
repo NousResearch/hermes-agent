@@ -1,16 +1,36 @@
 ---
 title: Home Assistant
-description: Home Assistant 連携を通じて Hermes Agent でスマートホームを制御します。
+description: プラグインカタログの Home Assistant プラグインを通じて Hermes Agent でスマートホームを制御します。
 sidebar_label: Home Assistant
 sidebar_position: 5
 ---
 
 # Home Assistant 連携
 
-Hermes Agent は [Home Assistant](https://www.home-assistant.io/) と2つの方法で連携します。
+Hermes Agent は、[プラグインカタログ](../features/plugins.md)の公式 **`homeassistant` プラグイン**を通じて [Home Assistant](https://www.home-assistant.io/) と連携します。このプラグインは Nous Research が [NousResearch/hermes-official-plugins](https://github.com/NousResearch/hermes-official-plugins/tree/main/homeassistant) でメンテナンスしており、Hermes コアの一部ではありません。プラグインは次の2つを提供します。
 
 1. **ゲートウェイプラットフォーム** — WebSocket を介してリアルタイムの状態変化を購読し、イベントに応答します
-2. **スマートホームツール** — REST API を介してデバイスを照会・制御する、LLMから呼び出し可能な4つのツール
+2. **スマートホームツール** — REST API を介してデバイスを照会・制御する、LLMから呼び出し可能な4つのツール（`homeassistant` ツールセット）
+
+## インストール
+
+```bash
+hermes plugins install homeassistant
+```
+
+プラグインはプロファイルごとにインストールされます。別のプロファイルで Home Assistant を使うには、そちらにもインストールします。
+
+```bash
+hermes -p <profile> plugins install homeassistant
+```
+
+プラグインは独自の Python 依存関係（`aiohttp`）を宣言しているため、pip のエクストラをインストールする必要はありません。旧来の `hermes-agent[homeassistant]` エクストラは削除されました。
+
+:::info Home Assistant を同梱していたリリースからのアップグレード
+何もする必要はありません。すでに Home Assistant を使っていたすべてのプロファイル — `.env` に `HASS_TOKEN` がある、`config.yaml` で `platforms.homeassistant` が有効（または `token` が指定されている）、あるいは `platform_toolsets` に `homeassistant` ツールセットが記載されている — には、`hermes update` によってカタログからプラグインが自動的にインストールされます（そのインストールを共有するすべてのプロファイルが対象）。このステップを実行できなかった場合、Hermes はそのプロファイルの初回起動時（エージェントまたはゲートウェイの起動時。`security.allow_lazy_installs` に従います）にインストールします。失敗した場合（オフライン、カタログに到達できないなど）、起動時のリトライは最大で1時間に1回です。`hermes update` は常にリトライします。結果はターミナル、Desktop アプリ、チャットで報告されます。これはプロファイルごとに1回だけ行われます: 後でプラグインを削除した場合（`hermes plugins remove homeassistant`）、削除されたままになります。
+
+設定は変更なしで引き継がれます: 同じ `HASS_TOKEN` / `HASS_URL` 変数、同じ `homeassistant` プラットフォーム名と `platforms.homeassistant` のキー、同じ `homeassistant` ツールセットとツール名、同じ cron の `deliver: homeassistant:<notify target>` 構文です。違いが1つあります: 他のすべてのプラグインツールと同様に、[Tool Search](../features/tools.md)（`tool_search` / `tool_call`）が有効な場合、`ha_*` ツールは直接一覧に載るのではなく、その背後に置かれます。
+:::
 
 ## セットアップ
 
@@ -25,17 +45,20 @@ Hermes Agent は [Home Assistant](https://www.home-assistant.io/) と2つの方�
 ### 2. 環境変数を設定する
 
 ```bash
-# ~/.hermes/.env に追加
+# Add to ~/.hermes/.env
 
-# 必須: 長期アクセストークン
+# Required: your Long-Lived Access Token
 HASS_TOKEN=your-long-lived-access-token
 
-# 任意: HA の URL（デフォルト: http://homeassistant.local:8123）
+# Optional: HA URL (default: http://homeassistant.local:8123)
 HASS_URL=http://192.168.1.100:8123
+
+# Optional: default notify target for a bare `deliver: homeassistant`
+HASS_HOME_CHANNEL=mobile_app_my_phone
 ```
 
 :::info
-`homeassistant` ツールセットは、`HASS_TOKEN` が設定されると自動的に有効になります。ゲートウェイプラットフォームとデバイス制御ツールの両方が、この1つのトークンから有効化されます。
+プラグインがインストールされていれば、`homeassistant` ツールセットは `HASS_TOKEN` が設定されると自動的に有効になります。ゲートウェイプラットフォームとデバイス制御ツールの両方が、この1つのトークンから有効化されます。
 :::
 
 ### 3. ゲートウェイを起動する
@@ -48,7 +71,7 @@ Home Assistant は、他のメッセージングプラットフォーム（Teleg
 
 ## 利用可能なツール
 
-Hermes Agent は、スマートホーム制御のために4つのツールを登録します。
+プラグインは、スマートホーム制御のために `homeassistant` ツールセットに4つのツールを登録します。
 
 ### `ha_list_entities`
 
@@ -137,6 +160,7 @@ platforms:
   homeassistant:
     enabled: true
     extra:
+      url: http://192.168.1.100:8123   # optional; same as HASS_URL
       watch_domains:
         - climate
         - binary_sensor
@@ -153,6 +177,7 @@ platforms:
 
 | 設定 | デフォルト | 説明 |
 |---------|---------|-------------|
+| `url` | `HASS_URL`、なければ `http://homeassistant.local:8123` | Home Assistant のベース URL |
 | `watch_domains` | *(なし)* | これらのエンティティドメインのみを監視（例: `climate`、`light`、`binary_sensor`） |
 | `watch_entities` | *(なし)* | これらの特定のエンティティIDのみを監視 |
 | `watch_all` | `false` | **すべての** 状態変化を受信するには `true` に設定（ほとんどの構成では非推奨） |
@@ -180,12 +205,25 @@ platforms:
 
 エージェントからの送信メッセージは、**Home Assistant の永続通知**（`persistent_notification.create` 経由）として配信されます。これらは「Hermes Agent」というタイトルで HA の通知パネルに表示されます。
 
+このプラットフォームは `minimal` の表示デフォルトを使います（通知にツールの進捗やストリーミングのおしゃべりは含まれません）。より多くを表示したい場合は、`config.yaml` の `display.platforms.homeassistant` で上書きしてください。
+
+### Cron と Webhook の配信
+
+スケジュールされたジョブと Webhook ルートは、Home Assistant に配信できます。
+
+```yaml
+deliver: homeassistant:mobile_app_my_phone   # explicit notify target
+deliver: homeassistant                       # uses HASS_HOME_CHANNEL
+```
+
+単なる `homeassistant` 形式を使うには、`HASS_HOME_CHANNEL` にデフォルトの通知ターゲットを設定する必要があります。[スケジュールされたタスク](../features/cron.md)と [Webhooks](webhooks.md) を参照してください。
+
 ### 接続管理
 
 - リアルタイムイベント用の **WebSocket**（30秒のハートビート付き）
 - バックオフ付きの **自動再接続**: 5s → 10s → 30s → 60s
 - 送信通知用の **REST API**（WebSocket の競合を避けるための別セッション）
-- **認可** — HA のイベントは常に認可されます（`HASS_TOKEN` が接続を認証するため、ユーザー許可リストは不要）
+- **認可** — HA のイベントは常に認可されます（ユーザー許可リストやペアリングは不要: `HASS_TOKEN` が接続を認証し、人間の送信者は存在しません）
 
 ## セキュリティ
 
@@ -250,3 +288,26 @@ Agent automatically:
      entity_id="light.hallway")
 3. Sends notification: "Front door opened. Hallway lights turned on."
 ```
+
+## トラブルシューティング
+
+**プラットフォームやツールが見つからない。**
+`hermes plugins list` で、プラグインがアクティブなプロファイルにインストールされ有効になっているか確認してください。
+見つからない場合は、`hermes plugins install homeassistant`
+（または `hermes -p <profile> plugins install homeassistant`）を実行してゲートウェイを再起動します。
+`security.allow_lazy_installs` がオフの場合、初回起動時の自動インストールは
+スキップされるため、自分でプラグインをインストールする必要があります。
+
+**環境変数が読み込まれない。**
+アダプターは、`~/.hermes/.env`（起動時に自動マージ）または
+`config.yaml` から認証情報を読み込みます。ファイルがアクティブな Hermes プロファイルの
+ホーム配下にあること、URL/トークンの周りに余計な引用符がないことを再確認してください。編集後は
+ゲートウェイを再起動してください — 環境変数の変更はプロセス起動時にのみ適用されます。
+
+**REST 認証が失敗する（`401 Unauthorized`）。**
+トークンは、HA のユーザープロフィールページ（**Profile → Security → Long-lived access tokens**）で
+作成した*長期アクセストークン*でなければなりません。短命な UI
+セッショントークンは機能しません。また、ベース URL にスキームと
+ポートが含まれていること（例: `http://homeassistant.local:8123`）、Hermes を実行しているホストから
+到達可能であることも確認してください — `curl -H "Authorization: Bearer <token>" <url>/api/` が
+`{"message": "API running."}` を返すはずです。

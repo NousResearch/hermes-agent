@@ -6,6 +6,10 @@ description: "Hermes AgentをMatrixボットとしてセットアップする"
 
 # Matrixセットアップ
 
+このページのPython依存関係コマンドは、
+[PMで準備したソースチェックアウト](/docs/reference/package-management#developer-workflow)を使います。
+依存関係を変更した後は、チェックアウトを再アクティベートしてHermesを再起動してください。
+
 Hermes Agentは、オープンで連合型のメッセージングプロトコルであるMatrixと統合されます。Matrixでは、自分のホームサーバーを運用することも、matrix.orgのような公開ホームサーバーを使うこともできます — いずれにしても、通信のコントロールはあなたが保持します。ボットは`mautrix` Python SDK経由で接続し、メッセージをHermes Agentのパイプライン（ツールの使用、メモリ、推論を含む）で処理し、リアルタイムで応答します。テキスト、ファイル添付、画像、音声、動画、そして任意のエンドツーエンド暗号化（E2EE）をサポートします。
 
 Hermesは、Synapse、Conduit、Dendrite、matrix.orgなど、あらゆるMatrixホームサーバーで動作します。
@@ -16,15 +20,41 @@ Hermesは、Synapse、Conduit、Dendrite、matrix.orgなど、あらゆるMatrix
 
 | コンテキスト | 振る舞い |
 |---------|----------|
-| **DM** | Hermesはすべてのメッセージに応答します。`@mention`は不要です。各DMは独自のセッションを持ちます。DMでボットが`@mention`されたときにスレッドを開始するには、`MATRIX_DM_MENTION_THREADS=true`を設定します。 |
-| **ルーム** | デフォルトでは、Hermesは応答に`@mention`を要求します。`MATRIX_REQUIRE_MENTION=false`を設定するか、フリーレスポンスルームとして`MATRIX_FREE_RESPONSE_ROOMS`にルームIDを追加します。ルームへの招待は自動承諾されます。 |
+| **DM** | Hermesはすべてのメッセージに応答します。`@mention`は不要です。各DMは独自のセッションを持ちます。DMでボットが`@mention`されたときにスレッドを開始するには、`MATRIX_DM_MENTION_THREADS=true`を設定します。参加メンバーが2人以下のルームは、明示的な名前があってもこの方法でDMとして扱われます — Matrixクライアントは1対1チャットに自動で名前を付けるため、名前だけでは信頼できる判断材料にならないからです。 |
+| **ルーム** | デフォルトでは、Hermesは応答に`@mention`を要求します。`MATRIX_REQUIRE_MENTION=false`を設定するか、フリーレスポンスルームとして`MATRIX_FREE_RESPONSE_ROOMS`にルームIDを追加します。ルームへの招待は自動承諾されます。意図的に作成した2人のルームも引き続きDMとして分類され（上記参照）、`MATRIX_ALLOWED_ROOMS`、`MATRIX_REQUIRE_MENTION`、`MATRIX_FREE_RESPONSE_ROOMS`を暗黙的にバイパスします — 通常のルームとして振る舞わせる必要がある場合は、3人目のメンバーを追加してください。 |
 | **スレッド** | HermesはMatrixのスレッド（MSC3440）をサポートします。スレッド内で返信すると、Hermesはスレッドのコンテキストをメインルームのタイムラインから分離して保ちます。ボットがすでに参加したスレッドでは、メンションは不要です。 |
-| **自動スレッド化** | デフォルトでは、Hermesはルームで応答する各メッセージについてスレッドを自動作成します。これにより会話が分離されます。無効化するには`MATRIX_AUTO_THREAD=false`を設定します。 |
+| **自動スレッド化** | デフォルトでは、Hermesはルームで応答する各メッセージについてスレッドを自動作成します。これにより会話が分離されます。無効化するには`MATRIX_AUTO_THREAD=false`を設定します。DMメッセージでもスレッドを自動作成するには`MATRIX_DM_AUTO_THREAD=true`（デフォルトはfalse）を設定します — これは、DMでボットが`@mention`されたときにのみスレッドを開始する`MATRIX_DM_MENTION_THREADS`とは別物です。参加メンバーが2人以下のルームはDMとして分類され（上記参照）、`MATRIX_AUTO_THREAD`ではなく`MATRIX_DM_AUTO_THREAD`に従います。 |
+| **コマンド** | Matrixクライアントが送信すれば、Hermesは通常の`/commands`を受け付けます。クライアントが`/`をローカルコマンド用に予約している場合は、代わりに`!commands`を使ってください。Hermesは既知の`!command`エイリアスを`/command`に正規化します。 |
+| **インタラクティブなコントロール** | 危険なコマンドの承認と`/model`の選択には、Matrixのリアクションを使えます。承認リアクションは、そのアクションを要求したユーザーに限定できます。 |
+| **思考とツールのアクティビティ** | ゲートウェイの進捗表示が有効な場合、Matrixはスレッド化された編集可能な思考/ツールアクティビティのペインを使うため、更新がメインルームのタイムラインを埋め尽くすことはありません。 |
 | **複数ユーザーがいる共有ルーム** | デフォルトでは、Hermesはルーム内のユーザーごとにセッション履歴を分離します。同じルームで会話する2人は、明示的に無効化しない限り、1つのトランスクリプトを共有しません。 |
+| **LaTeX数式** | 返信内の`$...$`（インライン）と`$$...$$`（ディスプレイ）は、Elementの`data-mx-maths`マークアップとして送信されるため、**Settings → Labs → Render LaTeX maths in messages**を有効にしたクライアントではKaTeXで組版されます。対になっていないドル記号（`$5 or $10`）はそのまま残り、プレーンテキストの`body`には他のクライアント向けに生のTeXが保持されます。 |
 
 :::tip
 ボットは招待されると自動的にルームに参加します。ボットのMatrixユーザーを任意のルームに招待するだけで、参加して応答を始めます。
 :::
+
+## 機能マトリクス
+
+この表は、Matrixアダプターの機能宣言とMatrixのテストカバレッジに基づいています。
+E2EEはモードベースです。デプロイごとに、暗号化ルームを無効にするか、
+可能なら使うか、必須にするかを選ぶためです。
+
+| 機能 | Matrix |
+|------------|--------|
+| テキスト | はい |
+| スレッド | はい |
+| リアクション | はい |
+| 承認 | はい |
+| モデルピッカー | はい |
+| 思考ペイン | はい |
+| 画像 | はい |
+| 複数画像 | はい |
+| ファイル | はい |
+| ボイス/音声 | はい |
+| 動画 | はい |
+| E2EE | off / optional / required |
+| 診断 | はい |
 
 ### Matrixでのセッションモデル
 
@@ -58,30 +88,80 @@ group_sessions_per_user: false
 
 ```yaml
 matrix:
-  require_mention: true           # ルームで @mention を要求する（デフォルト: true）
-  free_response_rooms:            # メンション要求から免除されるルーム
+  require_mention: true           # Require @mention in rooms (default: true)
+  allowed_users:                  # Matrix users allowed to trigger agent turns
+    - "@alice:matrix.org"
+  allowed_rooms:                  # Matrix rooms allowed to trigger agent turns
     - "!abc123:matrix.org"
-  auto_thread: true               # 応答用にスレッドを自動作成（デフォルト: true）
-  dm_mention_threads: false       # DMで @mention されたときスレッドを作成（デフォルト: false）
+  free_response_rooms:            # Rooms exempt from mention requirement
+    - "!abc123:matrix.org"
+  ignore_user_patterns:           # Bridge/appservice ghost users to ignore
+    - "^@telegram_"
+    - "^@whatsapp_"
+  process_notices: false          # Ignore m.notice by default
+  session_scope: room             # auto|room|thread; room is recommended for project rooms
+  auto_thread: true               # Auto-create threads for responses (default: true)
+  dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
+  max_message_length: 15000       # Outbound chunk size in UTF-8 bytes (default and max: 15000)
 ```
 
 または環境変数で:
 
 ```bash
 MATRIX_REQUIRE_MENTION=true
+MATRIX_ALLOWED_USERS=@alice:matrix.org
+MATRIX_ALLOWED_ROOMS=!abc123:matrix.org
 MATRIX_FREE_RESPONSE_ROOMS=!abc123:matrix.org,!def456:matrix.org
+MATRIX_IGNORE_USER_PATTERNS='^@telegram_,^@whatsapp_'
+MATRIX_PROCESS_NOTICES=false
+MATRIX_SESSION_SCOPE=room       # recommended for stable project-room context
 MATRIX_AUTO_THREAD=true
 MATRIX_DM_MENTION_THREADS=false
-MATRIX_REACTIONS=true          # デフォルト: true — 処理中の絵文字リアクション
+MATRIX_REACTIONS=true          # default: true — emoji reactions during processing
+MATRIX_ALLOW_ROOM_MENTIONS=false
 ```
 
 :::tip リアクションの無効化
 `MATRIX_REACTIONS=false`は、ボットが受信メッセージに付ける処理ライフサイクルの絵文字リアクション（👀/✅/❌）をオフにします。リアクションイベントがノイズになる、または参加するすべてのクライアントがサポートしていないルームに便利です。
 :::
 
+:::tip ルーム全体へのメンション
+Hermesは、`@alice:example.org`のような明示的なMatrix IDに対して、構造化されたMatrixユーザーメンションを送信します。ルーム全体への`@room`通知はデフォルトで無効です。ボットが全員に通知することを許可されたルームでのみ、`MATRIX_ALLOW_ROOM_MENTIONS=true`を設定してください。
+:::
+
 :::note
 `MATRIX_REQUIRE_MENTION`がなかったバージョンからアップグレードする場合、以前はボットがルーム内のすべてのメッセージに応答していました。その動作を維持するには、`MATRIX_REQUIRE_MENTION=false`を設定してください。
 :::
+
+### プロジェクトルームの分離
+
+同じMatrixボットを複数のプロジェクトルームで使う場合は、安定した
+ルームスコープのセッションを設定してください。
+
+```bash
+MATRIX_SESSION_SCOPE=room
+MATRIX_AUTO_THREAD=false
+```
+
+`MATRIX_SESSION_SCOPE`には次の値を指定できます。
+
+| スコープ | 振る舞い |
+|-------|----------|
+| `auto` | 後方互換のデフォルトです。既存の`MATRIX_AUTO_THREAD`の振る舞いが合成スレッドを制御します。 |
+| `room` | スレッド化されていないルームメッセージは、1つの安定したルームセッションに留まります。実際のMatrixスレッドは引き続きスレッドルートを使います。 |
+| `thread` | スレッド化されていないルームメッセージについて、トリガーとなったイベントIDからスレッド/セッションを合成します。 |
+
+Hermesは現在、エージェントのプロンプトに、現在のMatrixルーム名、ルームID、トピック、メッセージID、
+およびMatrixのルーム境界に関する注記を含めます。`/status`も現在の
+Matrixルーム/セッションスコープを表示し、`/resume`は、明示的に
+`/resume --cross-room <session name>`を使わない限り、別のMatrixルームの名前付きセッションを
+暗黙的に再開しません。
+
+`MATRIX_SESSION_SCOPE=room`はルーム/スレッドのレーンを制御します。既存の
+`group_sessions_per_user`設定は、引き続きそのルーム内のユーザーがレーンを
+共有するかどうかを制御します。`group_sessions_per_user: true`（デフォルト）では、AliceとBobは
+別々のProject Bセッションを持ちます。`group_sessions_per_user: false`では、そのルームには
+1つの共有されたProject Bトランスクリプトがあります。
 
 このガイドでは、ボットアカウントの作成から最初のメッセージの送信まで、完全なセットアッププロセスを順を追って説明します。
 
@@ -96,7 +176,7 @@ MATRIX_REACTIONS=true          # デフォルト: true — 処理中の絵文字
 1. admin APIまたは登録ツールを使って、新しいユーザーを作成します。
 
 ```bash
-# Synapse の例
+# Synapse example
 register_new_matrix_user -c /etc/synapse/homeserver.yaml http://localhost:8008
 ```
 
@@ -185,31 +265,80 @@ hermes gateway setup
 **アクセストークンを使う場合:**
 
 ```bash
-# 必須
+# Required
 MATRIX_HOMESERVER=https://matrix.example.org
 MATRIX_ACCESS_TOKEN=***
 
-# 任意: ユーザーID（省略するとトークンから自動検出）
+# Optional: user ID (auto-detected from token if omitted)
 # MATRIX_USER_ID=@hermes:matrix.example.org
 
-# セキュリティ: ボットと対話できる人を制限する
+# Security: restrict who can interact with the bot
 MATRIX_ALLOWED_USERS=@alice:matrix.example.org
 
-# 複数の許可ユーザー（カンマ区切り）
+# Optional: restrict which rooms can trigger the bot
+MATRIX_ALLOWED_ROOMS=!abc123:matrix.example.org
+
+# Multiple allowed users (comma-separated)
 # MATRIX_ALLOWED_USERS=@alice:matrix.example.org,@bob:matrix.example.org
 ```
 
 **パスワードログインを使う場合:**
 
 ```bash
-# 必須
+# Required
 MATRIX_HOMESERVER=https://matrix.example.org
 MATRIX_USER_ID=@hermes:matrix.example.org
 MATRIX_PASSWORD=***
 
-# セキュリティ
+# Security
 MATRIX_ALLOWED_USERS=@alice:matrix.example.org
 ```
+
+## プライベートデプロイの堅牢化
+
+プライベートなMatrixデプロイでは、ユーザーとルームの両方の許可リストを設定してください。
+`MATRIX_ALLOWED_USERS`が未設定の場合、参加済みのルームでボットに到達できる送信者は誰でも
+エージェントのターンをトリガーできます。`MATRIX_ALLOWED_ROOMS`が未設定の場合、ボットが
+参加したどのルームからでもエージェントのターンをトリガーできます。厳重に制限したデプロイでは両方を設定すべきです。
+
+```bash
+MATRIX_ALLOWED_USERS=@alice:matrix.example.org,@bob:matrix.example.org
+MATRIX_ALLOWED_ROOMS=!ops:matrix.example.org,!dmroom:matrix.example.org
+```
+
+ブリッジやappserviceのデプロイには、追加のループ保護が必要です。Hermesは常に、
+自身のイベント、ローカルパートが`_`で始まるMatrix appservice形式のユーザー、
+重複したイベントID、起動前の古いイベント、編集の置換イベント、そしてデフォルトでは
+`m.notice`イベントを無視します。ブリッジが異なる命名規則を使う場合は、
+デプロイ固有のブリッジゴーストのパターンを追加してください。
+
+```bash
+MATRIX_IGNORE_USER_PATTERNS='^@telegram_,^@slack_,^@whatsapp_'
+```
+
+信頼できる人間のワークフローが実際に`m.notice`を送る場合にのみ、noticeを有効にしてください。
+
+```bash
+MATRIX_PROCESS_NOTICES=true
+```
+
+処理されたnoticeはボットメッセージとして扱われます。ゲートウェイのボットループガードが適用され、
+ペアリングの返信は決して送られません。`m.notice`はどのMatrixユーザーでも送れるため、それ自体は
+アクセス権を与えません。noticeの送信者にも`MATRIX_ALLOWED_USERS`（または別の人間向けの段階）が必要です。
+ループガードはやり取りも終わらせます。デフォルトでは、Hermesがあるnotice送信者に応答した後、
+誰かがルームで通常のメッセージを送るか、ルームでnoticeのない状態が10分続くまで、その送信者の
+次のnoticeには返信しません。やり取りの往復が必要なワークフローでは、`config.yaml`で
+`gateway.bot_loop_guard.bot_replies_expect_reply: true`を設定してください（それでも`max_hops`、デフォルト4が上限です）。
+
+送信側のルーム全体への通知はデフォルトで無効です。ボットが`@room`でルーム全体を
+起こすことを明示的に許可されていない限り、`MATRIX_ALLOW_ROOM_MENTIONS=false`のままにしてください。
+
+診断およびデバッグのペイロードでは、Matrixのアクセストークン、リカバリーキー、
+デバイス識別子、メッセージ本文がマスクされます。メディアのダウンロードはMatrixの
+`mxc://`コンテンツURIに限定され、`MATRIX_MAX_MEDIA_BYTES`を超えると拒否されます。
+連合ルームや信頼できないホームサーバーは信頼できない入力として扱ってください。ルームの
+許可リストは厳しく保ち、ツールを多用する作業にはDMやプライベートルームを優先し、
+ブリッジゴーストやappserviceのパペットを許可ユーザーとして認可するのは避けてください。
 
 `~/.hermes/config.yaml`での任意の動作設定:
 
@@ -242,11 +371,8 @@ HermesはMatrixのエンドツーエンド暗号化をサポートするため�
 E2EEには、暗号化エクストラ付きの`mautrix`ライブラリと、`libolm` Cライブラリが必要です。
 
 ```bash
-# E2EEサポート付きで mautrix をインストール
-pip install 'mautrix[encryption]'
-
-# または hermes エクストラ付きでインストール
-pip install 'hermes-agent[matrix]'
+# Request the declared Matrix dependencies
+python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
 システムに`libolm`もインストールする必要があります。
@@ -267,8 +393,20 @@ sudo dnf install libolm-devel
 `~/.hermes/.env`に追加します。
 
 ```bash
-MATRIX_ENCRYPTION=true
+MATRIX_E2EE_MODE=required
 ```
+
+`MATRIX_E2EE_MODE`には次の値を指定できます。
+
+| モード | 振る舞い |
+|------|----------|
+| `off` | Matrix E2EEを初期化しません。 |
+| `optional` | 依存関係が利用可能ならE2EEを試みますが、暗号処理を初期化できない場合でも非暗号化ルームは動作し続けます。 |
+| `required` | E2EEの依存関係または暗号のセットアップが利用できない場合、フェイルクローズします。 |
+
+optionalモードでは、暗号のセットアップが利用できない場合に非E2EEの動作にフォールバックすることがあります。requiredモードでは、暗黙的にダウングレードせずにフェイルクローズします。
+
+後方互換性のため、`MATRIX_ENCRYPTION=true`でも引き続きrequiredのE2EE動作が有効になります。
 
 E2EEが有効になると、Hermesは:
 
@@ -276,6 +414,35 @@ E2EEが有効になると、Hermesは:
 - 初回接続時にデバイスキーをアップロードします
 - 受信メッセージを復号し、送信メッセージを自動的に暗号化します
 - 招待されると暗号化されたルームに自動参加します
+
+### Matrixのツールとコントロール
+
+Hermesは、Matrix固有のエージェントツール（ルームの作成、招待、redactionなど）を公開しません — エージェントは通常のメッセージ配信を通じてMatrixとやり取りします。アダプターは、承認プロンプトやピッカーを実現するために、内部でリアクションとredactionを使います。
+
+`MATRIX_ALLOWED_ROOMS`が設定されている場合、Hermesはそれらのルームでのみ応答します（DMは除外されます）。
+
+リアクションによるコントロール:
+
+- ✅ 1回だけ承認
+- ♾️ 常に承認
+- ❌ 拒否
+- `/model`の選択肢には数字のリアクション
+
+ルーム内の認可された任意のMatrixユーザーに承認/モデルピッカーのプロンプトを操作させたい場合は、意図的に`MATRIX_APPROVAL_REQUIRE_SENDER=false`を設定してください。Hermesがアクションの要求者を把握している場合、デフォルトでは要求者に限定されます。
+
+### メディアの制限
+
+Hermesは、MatrixのメディアAPIを通じてMatrixの画像、ファイル、音声、動画をアップロード/ダウンロードします。生成された複数の画像は、順序付けされた1つの論理バッチとして送信され、バッチ全体でキャプションとスレッドのコンテキストが保持されます。
+
+デフォルトでは、100 MBを超えるMatrixメディアはアップロード/ダウンロード前に拒否されます。次で上書きできます。
+
+```bash
+MATRIX_MAX_MEDIA_BYTES=104857600
+```
+
+受信メディアはMatrixの`mxc://`コンテンツURIを使う必要があります。Hermesは、連合ルームが
+無制限のダウンローダーになるのを避けるため、Matrixイベント内の任意のHTTP(S)メディアURLを
+拒否します。
 
 ### クロスサイニング検証（推奨）
 
@@ -288,6 +455,11 @@ MATRIX_RECOVERY_KEY=EsT... your recovery key here
 **見つける場所:** Elementで、**Settings** → **Security & Privacy** → **Encryption** → あなたのリカバリーキー（「セキュリティキー」とも呼ばれる）に移動します。これは、クロスサイニングを最初にセットアップしたときに保存するよう求められたキーです。
 
 各起動時、`MATRIX_RECOVERY_KEY`が設定されていれば、Hermesはホームサーバーのセキュアなシークレットストレージからクロスサイニングキーをインポートし、現在のデバイスに署名します。これは冪等であり、永続的に有効にしておいて安全です。
+
+Hermesが新しいMatrixリカバリーキーをブートストラップする場合、生のキーは決してログに出力しません。
+起動前に`MATRIX_RECOVERY_KEY_OUTPUT_FILE=/secure/path/matrix-recovery-key.txt`を設定すると、
+生成されたキーがファイルモード`0600`で一度だけ書き出されます。ファイルがすでに存在する場合は
+上書きされません。
 
 :::warning[暗号ストアの削除]
 `~/.hermes/platforms/matrix/store/crypto.db`を削除すると、ボットは暗号化アイデンティティを失います。同じデバイスIDで単に再起動しても、**完全には**回復しません — ホームサーバーは、古いアイデンティティキーで署名されたワンタイムキーをまだ保持しており、ピアは新しいOlmセッションを確立できません。
@@ -319,7 +491,7 @@ Hermesは起動時にこの状況を検出し、E2EEの有効化を拒否して�
 2. ローカルの暗号ストアを削除し、Hermesを再起動します。
    ```bash
    rm -f ~/.hermes/platforms/matrix/store/crypto.db*
-   # hermes を再起動
+   # restart hermes
    ```
 
 他のMatrixクライアント（Element、matrix-commander）は、古いデバイスキーをキャッシュしていることがあります。回復後、Elementで`/discardsession`と入力して、ボットとの新しい暗号化セッションを強制してください。
@@ -336,6 +508,7 @@ Hermesは起動時にこの状況を検出し、E2EEの有効化を拒否して�
 ### スラッシュコマンドを使う
 
 ボットが存在する任意のMatrixルームで`/sethome`を入力します。そのルームがホームルームになります。
+Matrixクライアントがスラッシュコマンドを横取りする場合は、代わりに`!sethome`と入力してください。
 
 ### 手動設定
 
@@ -345,17 +518,85 @@ Hermesは起動時にこの状況を検出し、E2EEの有効化を拒否して�
 MATRIX_HOME_ROOM=!abc123def456:matrix.example.org
 ```
 
+## ルームの許可リスト（`allowed_rooms`）
+
+ボットを固定のMatrixルームの集合に制限します。設定すると、ボットはIDがリストに含まれるルームで**のみ**応答します — それ以外のルームからのメッセージは、ボットがメンションされていても暗黙的に無視されます。
+
+**DM（ダイレクトチャットルーム）はこのフィルターから除外される**ため、認可されたユーザーはいつでも1対1でボットにアクセスできます。
+
+```yaml
+matrix:
+  allowed_rooms:
+    - "!abc123def456:matrix.example.org"
+    - "!opsroom789:matrix.example.org"
+```
+
+または環境変数で（カンマ区切り）:
+
+```bash
+MATRIX_ALLOWED_ROOMS="!abc123def456:matrix.example.org,!opsroom789:matrix.example.org"
+```
+
+振る舞い:
+
+- 空 / 未設定 → 制限なし（デフォルト）。
+- 空でない → ルームIDがリストに含まれている必要があります。このチェックは、他のどのゲーティング（メンション要求、送信者の許可リストなど）よりも**前に**実行されます。
+- エイリアス（`#room:server`）ではなく、ルームの**内部ID**（`!abc...:server`）を使ってください。ルームの内部IDは、ElementのRoom → Settings → Advancedで確認できます。
+
+関連項目: [admin/userのスラッシュコマンドの分割](../../reference/slash-commands.md#permissions-and-adminuser-split)。
+
+
 :::tip
 ルームIDを見つけるには: Elementで、ルーム → **Settings** → **Advanced** → **Internal room ID**がそこに表示されます（`!`で始まります）。
 :::
+
+## Matrixでのコマンド
+
+Hermesは、他のメッセージングプラットフォームでサポートしているのと同じゲートウェイコマンドを
+Matrixでもサポートします。これには`/commands`、`/model`、`/stop`、`/queue`、
+`/steer`、`/goal`、`/subgoal`、`/bg`、`/btw`、`/tasks`、
+`/yolo`が含まれます。
+
+一部のMatrixクライアントは、先頭の`/`をローカルのクライアントコマンド用に予約しており、
+未知のスラッシュコマンドをルームに送信しないことがあります。その場合は、Matrixで安全な
+エイリアスとして`!`を使ってください。
+
+```text
+!commands
+!model
+!model gpt-5.5 --provider openrouter
+!queue continue with the next task
+!stop
+```
+
+Hermesが`!command`を正規化するのは、そのコマンドがゲートウェイの既知のコマンド、
+登録済みのプラグインコマンド、またはインストール済みのスキルコマンドである場合のみです。
+`!important`のような通常の感嘆表現は、普通のチャットメッセージのままです。
 
 ## トラブルシューティング
 
 ### ボットがメッセージに応答しない
 
-**原因**: ボットがルームに参加していない、または`MATRIX_ALLOWED_USERS`にあなたのユーザーIDが含まれていません。
+**原因**: ボットがルームに参加していない、`MATRIX_ALLOWED_USERS`にあなたのユーザーIDが含まれていない、`MATRIX_ALLOWED_ROOMS`にそのルームが含まれていない、またはルームのメッセージがボットをメンションしていません。
 
-**修正**: ボットをルームに招待します — 招待で自動参加します。あなたのユーザーIDが`MATRIX_ALLOWED_USERS`にあることを検証します（完全な`@user:server`形式を使ってください）。ゲートウェイを再起動します。
+**修正**: ボットをルームに招待します — 招待で自動参加します。あなたのユーザーIDが`MATRIX_ALLOWED_USERS`にあること（完全な`@user:server`形式を使ってください）、そしてルームの許可リストを設定している場合はルームIDが`MATRIX_ALLOWED_ROOMS`にあることを検証します。ルームでは、ボットをメンションするか、ルームを`MATRIX_FREE_RESPONSE_ROOMS`に追加します。ゲートウェイを再起動します。
+
+### ボットはルームに参加するが、すべてのメッセージを暗黙的に破棄する（クロックのずれ）
+
+**原因**: ホストのシステムクロックが実際の時刻より進んでいます。Matrixアダプターは、初期同期で再生されるイベントを無視するため、5秒の起動猶予フィルター（`event_ts < startup_ts - 5`）を適用します。壁時計が進んでいると、すべての受信イベントが「起動より古い」ように見え、メッセージハンドラーに届く前に破棄されます — ボットは接続しているように見えますが、決して返信しません。[#12614](https://github.com/NousResearch/hermes-agent/issues/12614)を参照してください。
+
+**症状**: ゲートウェイのログに`Matrix: dropped N live events as 'too old' more than 30s after startup`と表示されます。
+
+**修正**: ホストのクロックをNTPで同期し、ボットを再起動します。
+
+```bash
+# Debian/Ubuntu
+sudo timedatectl set-ntp true
+timedatectl status   # confirm "System clock synchronized: yes"
+
+# macOS
+sudo sntp -sS time.apple.com
+```
 
 ### 起動時の「Failed to authenticate」 / 「whoami failed」
 
@@ -377,13 +618,13 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 **修正**: インストールします。
 
 ```bash
-pip install 'mautrix[encryption]'
+python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
 または Hermes エクストラ付きで:
 
 ```bash
-pip install 'hermes-agent[matrix]'
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
 ### 暗号化エラー / 「could not decrypt event」
@@ -480,9 +721,12 @@ IDに紐付けられています。同じデバイスIDを新しい暗号化キ�
 履歴のない新しいデバイスIDを得るため、他のクライアントは即座にそれを信頼します。
 :::
 
-## プロキシモード（macOSでのE2EE）
+## プロキシモード（macOSでのE2EE） {#proxy-mode-e2ee-on-macos}
 
-Matrix E2EEには`libolm`が必要ですが、これはmacOS ARM64（Apple Silicon）ではコンパイルできません。`hermes-agent[matrix]`エクストラはLinux限定にゲートされています。macOSの場合、プロキシモードを使うと、E2EEをLinux VM上のDockerコンテナで実行しつつ、実際のエージェントはmacOS上でネイティブに、あなたのローカルファイル、メモリ、スキルへの完全なアクセス付きで実行できます。
+`matrix`エクストラはLinux限定にゲートされています。macOSやWindowsでは、Matrix
+アダプターと暗号化の依存関係をLinuxコンテナで実行し、リクエストをネイティブの
+エージェントに転送します。以下の例はmacOSホストを使っていますが、同じ分離構成は、
+対応するホストアドレスと認証を使えばWindowsにも当てはまります。
 
 ### 仕組み
 
@@ -528,7 +772,7 @@ hermes gateway
 設定済みの他のプラットフォームと並んで、APIサーバーが起動するのが見えるはずです。VMから到達できることを検証します。
 
 ```bash
-# Linux VM から
+# From the Linux VM
 curl http://<mac-ip>:8642/health
 ```
 
@@ -543,32 +787,24 @@ services:
   hermes-matrix:
     build: .
     environment:
-      # Matrix の認証情報
+      # Matrix credentials
       MATRIX_HOMESERVER: "https://matrix.example.org"
       MATRIX_ACCESS_TOKEN: "syt_..."
       MATRIX_ALLOWED_USERS: "@you:matrix.example.org"
       MATRIX_ENCRYPTION: "true"
       MATRIX_DEVICE_ID: "HERMES_BOT"
 
-      # プロキシモード — ホストのエージェントに転送
+      # Proxy mode — forward to host agent
       GATEWAY_PROXY_URL: "http://192.168.1.100:8642"
       GATEWAY_PROXY_KEY: "your-secret-key-here"
     volumes:
       - ./matrix-store:/root/.hermes/platforms/matrix/store
 ```
 
-**`Dockerfile`:**
-
-```dockerfile
-FROM python:3.11-slim
-
-RUN apt-get update && apt-get install -y libolm-dev && rm -rf /var/lib/apt/lists/*
-RUN pip install 'hermes-agent[matrix]'
-
-CMD ["hermes", "gateway"]
-```
-
-これがコンテナのすべてです。OpenRouter、Anthropic、その他の推論プロバイダーのAPIキーは不要です。
+リポジトリの[Dockerビルド](../docker.md)を使ってください。これには、互換性のあるLinuxターゲット向けの
+Matrixエクストラと、必要なネイティブライブラリが含まれています。
+実行時に、封印されたイメージへ依存関係をインストールしないでください。コンテナに
+必要なのはMatrixの認証情報とプロキシへのアクセスであり、推論プロバイダーのAPIキーは不要です。
 
 ### ステップ3: 両方を起動する
 
@@ -615,6 +851,20 @@ CMD ["hermes", "gateway"]
 **制限（v1）:** リモートエージェントからのツール進捗メッセージは中継されません — ユーザーはストリームされた最終的な応答のみを見て、個々のツール呼び出しは見ません。危険なコマンドの承認プロンプトはホスト側で処理され、Matrixユーザーには中継されません。これらは将来のアップデートで対応される可能性があります。
 :::
 
+### ボットは接続して送信もできるが、受信メッセージを無視する
+
+**原因**: Matrixのイベントハンドラーは、同期ペイロードがmautrixの`handle_sync()`の仕組みを通じて
+ディスパッチされた場合にのみ発火します。`handle_sync()`を一度も呼ばない生の`client.sync()`ポーリングでは、
+アダプターは接続されたまま（送信は動作する）でも、受信メッセージが
+`_on_room_message`に届かないことがあります。
+
+**修正**: Hermesは、初期同期とすべての増分同期レスポンスの両方で`client.handle_sync()`を呼ぶ
+明示的な同期ループを使います。これはupstreamのissue #7914とクローズされたPR #37807での
+診断に一致しますが、ライフサイクル全体を`client.start()`に委ねるのではなく、Hermes独自の
+バックグラウンドのメンテナンスタスク（参加ルームの追跡、招待の処理、E2EEキーの
+共有）を維持します。ゲートウェイの再起動後も受信メッセージが失敗する場合は、最初の同期より前に
+ハンドラーが登録されていることを検証し、ログに`sync event dispatch error`がないか確認してください。
+
 ### 同期の問題 / ボットが遅れる
 
 **原因**: 長時間動作するツールの実行が同期ループを遅らせることがある、またはホームサーバーが遅いです。
@@ -633,10 +883,22 @@ CMD ["hermes", "gateway"]
 
 **修正**: `~/.hermes/.env`の`MATRIX_ALLOWED_USERS`にあなたのユーザーIDを追加し、ゲートウェイを再起動します。完全な`@user:server`形式を使ってください。
 
+### ボットがルーム全体を無視する
+
+**原因**: `MATRIX_ALLOWED_ROOMS`が設定されていて現在のルームIDが含まれていない、またはルームがメンションを要求していてメッセージがボットをメンションしていません。
+
+**修正**: ルームIDを`MATRIX_ALLOWED_ROOMS`に追加するか、個人用のデプロイであればルームの許可リストを削除します。ElementでルームIDを見つけるには、ルームの設定を開いて**Advanced**を確認してください。
+
+### ブリッジのメッセージがループまたはエコーする
+
+**原因**: ブリッジ/appserviceのパペットがボットの出力を新しいユーザーメッセージとして中継し返している、またはブリッジが非標準のゴーストユーザーIDを使っています。
+
+**修正**: ブリッジゴーストを`MATRIX_ALLOWED_USERS`に含めず、一致する`MATRIX_IGNORE_USER_PATTERNS`のエントリーを追加し、noticeが信頼できるワークフローの一部でない限り`MATRIX_PROCESS_NOTICES=false`のままにしてください。
+
 ## セキュリティ
 
 :::warning
-ボットと対話できる人を制限するため、必ず`MATRIX_ALLOWED_USERS`を設定してください。それがないと、ゲートウェイは安全策としてデフォルトですべてのユーザーを拒否します。信頼する人のユーザーIDだけを追加してください — 認可されたユーザーは、ツールの使用やシステムアクセスを含む、エージェントのあらゆる機能への完全なアクセス権を持ちます。
+必ず`MATRIX_ALLOWED_USERS`を設定し、共有/プライベートのデプロイでは`MATRIX_ALLOWED_ROOMS`も設定してください。それらがないと、参加済みのルームでボットにメッセージを送れる人は誰でもエージェントをトリガーできる可能性があります。信頼する人とルームだけを認可してください — 認可されたユーザーは、ツールの使用やシステムアクセスを含む、エージェントのあらゆる機能への完全なアクセス権を持ちます。
 :::
 
 Hermes Agentのデプロイを保護する方法の詳細については、[セキュリティガイド](../security.md)を参照してください。
@@ -647,4 +909,4 @@ Hermes Agentのデプロイを保護する方法の詳細については、[セ�
 - **連合（フェデレーション）**: 連合型のホームサーバー上にいる場合、ボットは他のサーバーのユーザーと通信できます — 彼らの完全な`@user:server` IDを`MATRIX_ALLOWED_USERS`に追加するだけです。
 - **自動参加**: ボットは自動的にルームへの招待を承諾して参加します。参加後すぐに応答を始めます。
 - **メディアサポート**: Hermesは画像、音声、動画、ファイル添付を送受信できます。メディアは、MatrixのコンテンツリポジトリAPIを使ってあなたのホームサーバーにアップロードされます。
-- **ネイティブのボイスメッセージ（MSC3245）**: Matrixアダプターは、送信するボイスメッセージに`org.matrix.msc3245.voice`フラグを自動的にタグ付けします。つまり、TTSの応答やボイス音声は、汎用の音声ファイル添付としてではなく、ElementやMSC3245をサポートする他のクライアントで**ネイティブのボイスバブル**としてレンダリングされます。MSC3245フラグ付きの受信ボイスメッセージも正しく識別され、音声テキスト変換にルーティングされます。設定は不要です — これは自動的に動作します。
+- **ネイティブのボイスメッセージ（MSC3245）**: Matrixアダプターは、送信するボイスメッセージに`org.matrix.msc3245.voice`フラグを自動的にタグ付けします。つまり、TTSの応答やボイス音声は、汎用の音声ファイル添付としてではなく、ElementやMSC3245をサポートする他のクライアントで**ネイティブのボイスバブル**としてレンダリングされます。MSC3245フラグ付きの受信ボイスメッセージも正しく識別され、音声テキスト変換にルーティングされます。設定は不要です — これは自動的に動作します。`MEDIA:`タグで添付された音声ファイル（エージェントが生成した`.mp3`/`.wav`で、`[[audio_as_voice]]`が付いていないもの）は、ボイスバブルではなく、元の形式のまま通常の`m.audio`添付として送信されます。

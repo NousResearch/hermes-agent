@@ -7,7 +7,7 @@ description: "Hermes AgentをDingTalkチャットボットとしてセットア�
 # DingTalkのセットアップ
 
 このページの Python 依存関係コマンドは、
-[PM で準備済みのソースチェックアウト](../../reference/package-management.md#developer-workflow)を前提としています。
+[PM で準備済みのソースチェックアウト](/docs/reference/package-management#developer-workflow)を前提としています。
 依存関係を変更した後は、チェックアウトを再アクティベートして Hermes を再起動してください。
 
 Hermes AgentはDingTalk（钉钉）とチャットボットとして連携し、ダイレクトメッセージやグループチャットを通じてAIアシスタントとチャットできるようにします。ボットはDingTalkのStream Mode（公開URLやWebhookサーバーを必要としない長寿命のWebSocket接続）経由で接続し、DingTalkのセッションWebhook APIを通じてmarkdown形式のメッセージで返信します。
@@ -114,17 +114,17 @@ DingTalkの `verification_uri_complete` はAPIレイヤーでopenClawのアイ�
 `~/.hermes/.env` ファイルに次を追加します。
 
 ```bash
-# 必須
+# Required
 DINGTALK_CLIENT_ID=your-app-key
 DINGTALK_CLIENT_SECRET=your-app-secret
 
-# セキュリティ: ボットと対話できる人を制限する
+# Security: restrict who can interact with the bot
 DINGTALK_ALLOWED_USERS=user-id-1
 
-# 複数の許可ユーザー（カンマ区切り）
+# Multiple allowed users (comma-separated)
 # DINGTALK_ALLOWED_USERS=user-id-1,user-id-2
 
-# 任意: グループチャットのゲーティング（Slack/Telegram/Discord/WhatsAppと同様）
+# Optional: group-chat gating (mirrors Slack/Telegram/Discord/WhatsApp)
 # DINGTALK_REQUIRE_MENTION=true
 # DINGTALK_FREE_RESPONSE_CHATS=cidABC==,cidDEF==
 # DINGTALK_MENTION_PATTERNS=^小马
@@ -141,12 +141,12 @@ gateway:
   platforms:
     dingtalk:
       extra:
-        # ボットが返信する前にグループで @mention を要求する（Slack/Telegram/Discordと同等）。
-        # DMはこれを無視する — ボットは1対1チャットでは常に返信する。
+        # Require @mention in groups before the bot replies (parity with Slack/Telegram/Discord).
+        # DMs ignore this — the bot always replies in 1:1 chats.
         require_mention: true
 
-        # プラットフォーム単位の許可リスト。設定すると、これらのDingTalkユーザーIDのみがボットと対話できる
-        # （DINGTALK_ALLOWED_USERS と同じ意味だが、.env ではなくここにスコープされる）。
+        # Per-platform allowlist. When set, only these DingTalk user IDs can interact with the bot
+        # (same semantics as DINGTALK_ALLOWED_USERS, but scoped here instead of in .env).
         allowed_users:
           - user-id-1
           - user-id-2
@@ -205,10 +205,10 @@ DingTalkの表示動作を、他のプラットフォームとは独立してカ
 display:
   platforms:
     dingtalk:
-      show_reasoning: false   # 返信にモデルの推論/思考を表示する
-      streaming: true         # ストリーミング応答を有効化する（AIカードで機能）
-      tool_progress: all      # ツール実行の進捗を表示する（all/new/off）
-      interim_assistant_messages: true  # 中間のコメントメッセージを表示する
+      show_reasoning: false   # Show model reasoning/thinking in replies
+      streaming: true         # Enable streaming responses (works with AI Cards)
+      tool_progress: all      # Show tool execution progress (all/new/off)
+      interim_assistant_messages: true  # Show intermediate commentary messages
 ```
 
 よりすっきりした体験のためにツールの進捗と中間メッセージを無効化するには:

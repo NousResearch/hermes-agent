@@ -68,10 +68,10 @@ hermes gateway setup
 WECOM_BOT_ID=your-bot-id
 WECOM_SECRET=your-secret
 
-# 任意: アクセスを制限する
+# Optional: restrict access
 WECOM_ALLOWED_USERS=user_id_1,user_id_2
 
-# 任意: cron/通知用のホームチャンネル
+# Optional: home channel for cron/notifications
 WECOM_HOME_CHANNEL=chat_id
 ```
 

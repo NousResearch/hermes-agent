@@ -9,7 +9,7 @@ description: "llama.cpp または MLX を使って macOS 上に OpenAI 互換の
 :::tip デスクトップユーザー向け: ワンクリックの方法があります
 Hermesデスクトップアプリでは、**Settings → Providers → Local Models** から
 ローカルのllama.cppサーバーをインストール・管理できます — モデルのダウンロード、メモリへの
-収まり具合の調整、コンテキストサイズの設定まで含まれます。[ローカルモデル](../user-guide/local-models.md)を参照してください。
+収まり具合の調整、コンテキストサイズの設定まで含まれます。[ローカルモデル](/docs/user-guide/local-models)を参照してください。
 このガイドは手動セットアップ向けです: MLX、カスタムビルド、または自分で
 実行したいサーバー向けです。
 :::
@@ -235,7 +235,7 @@ Hermesはローカルエンドポイント（localhost、LAN IP）を自動的�
 それでもタイムアウトエラーが発生する場合（例: 遅いハードウェア上での非常に大きなコンテキスト）は、ストリーミングの読み取りタイムアウトを上書きできます。
 
 ```bash
-# .env で — デフォルトの120秒から30分に引き上げる
+# In your .env — raise from the 120s default to 30 minutes
 HERMES_STREAM_READ_TIMEOUT=1800
 ```
 

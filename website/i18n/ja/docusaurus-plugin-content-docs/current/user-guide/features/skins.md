@@ -16,9 +16,9 @@ description: "組み込みおよびユーザー定義のスキンでHermes CLI�
 ## スキンを変更する
 
 ```bash
-/skin                # 現在のスキンを表示し、利用可能なスキンを一覧表示する
-/skin ares           # 組み込みスキンに切り替える
-/skin mytheme        # ~/.hermes/skins/mytheme.yaml のカスタムスキンに切り替える
+/skin                # show the current skin and list available skins
+/skin ares           # switch to a built-in skin
+/skin mytheme        # switch to a custom skin from ~/.hermes/skins/mytheme.yaml
 ```
 
 または `~/.hermes/config.yaml` でデフォルトのスキンを設定します。
@@ -42,6 +42,14 @@ display:
 | `sisyphus` | シーシュポステーマ — 厳粛なグレースケールと粘り強さ | `Sisyphus Agent` | くっきりとしたコントラストのライトグレー。岩をテーマにしたスピナー（"pushing uphill"、"resetting the boulder"、"enduring the loop"）。岩と丘のASCIIアートバナー。 |
 | `charizard` | 火山テーマ — バーントオレンジと残り火 | `Charizard Agent` | 温かいバーントオレンジから残り火へのグラデーション。火をテーマにしたスピナー（"banking into the draft"、"measuring burn"）。ドラゴンのシルエットのASCIIアートバナー。 |
 
+### デスクトップアプリの場合
+
+デスクトップアプリは、**Settings → Appearance** でCLIスキンを独自のテーマと並べて一覧表示しますが、いくつか違いがあります。
+
+- `default`（および `/skin default`）は、デスクトップのデフォルトテーマである **Nous** を意味します。そのため、標準の `display.skin: default` がデスクトップを塗り替えることはなく、CLI/TUIや `config.yaml` から実行時に `default` へ切り替えると、デスクトップでの選択はNousに戻ります。
+- クラシックなゴールドの外観は、`classic`（**Classic Hermes**）という名前の別のデスクトップテーマです。Appearanceで選ぶか、デスクトップのチャットで `/skin classic`、`/skin gold`、または `/skin hermes` を実行します。ライト/ダークの切り替えに従い、ダークモードではネイビー地にゴールド、ライトモードではCLIのライトターミナル用ゴールデンロッドのパレットになります。
+- `classic` は、他のデスクトップ組み込みテーマ（`mono`、`slate`、…）と同様に予約されたデスクトップテーマ名です。これらの名前のいずれかを持つユーザースキンファイルは、そこではデスクトップのパレットが維持されますが、その `customCSS` は引き続き適用されます。
+
 ## 設定可能なキーの完全な一覧
 
 ### 色（`colors:`）
@@ -56,7 +64,7 @@ CLI全体のすべての色の値を制御します。値は16進数の色文字
 | `banner_dim` | バナーの控えめなテキスト（区切り、補助ラベル） | `#B8860B`（ダークゴールデンロッド） |
 | `banner_text` | バナーの本文テキスト（ツール名、スキル名） | `#FFF8DC`（コーンシルク） |
 | `ui_accent` | 一般的なUIのアクセント色（ハイライト、アクティブ要素） | `#FFBF00` |
-| `ui_label` | UIのラベルとタグ | `#4dd0e1`（ティール） |
+| `ui_label` | UIのラベルとタグ | `#DAA520`（ゴールデンロッド） |
 | `ui_ok` | 成功インジケーター（チェックマーク、完了） | `#4caf50`（グリーン） |
 | `ui_error` | エラーインジケーター（失敗、ブロック） | `#ef5350`（レッド） |
 | `ui_warn` | 警告インジケーター（注意、承認プロンプト） | `#ffa726`（オレンジ） |
@@ -67,7 +75,7 @@ CLI全体のすべての色の値を制御します。値は16進数の色文字
 | `session_border` | セッションIDの控えめな枠線の色 | `#8B8682` |
 | `status_bar_bg` | TUIのステータス/使用量バーの背景色 | `#1a1a2e` |
 | `voice_status_bg` | 音声モードのステータスバッジの背景色 | `#1a1a2e` |
-| `selection_bg` | TUIのマウス選択ハイライターの背景色。未設定の場合は `completion_menu_current_bg` にフォールバックします。 | `#333355` |
+| `selection_bg` | TUIのマウス選択ハイライターの背景色。未設定の場合は `completion_menu_current_bg` にフォールバックします。 | `#3a3a55` |
 | `completion_menu_bg` | 補完メニューリストの背景色 | `#1a1a2e` |
 | `completion_menu_current_bg` | アクティブな補完行の背景色 | `#333355` |
 | `completion_menu_meta_bg` | 補完メタ列の背景色 | `#1a1a2e` |
@@ -94,8 +102,8 @@ CLIインターフェース全体で使用されるテキスト文字列。
 |-----|-------------|---------|
 | `agent_name` | バナーのタイトルとステータス表示に表示される名前 | `Hermes Agent` |
 | `welcome` | CLI起動時に表示されるウェルカムメッセージ | `Welcome to Hermes Agent! Type your message or /help for commands.` |
-| `goodbye` | 終了時に表示されるメッセージ | `Goodbye! ⚕` |
-| `response_label` | 応答ボックスのヘッダーのラベル | ` ⚕ Hermes ` |
+| `goodbye` | 終了時に表示されるメッセージ | `Goodbye! ☤` |
+| `response_label` | 応答ボックスのヘッダーのラベル | ` ☤ Hermes ` |
 | `prompt_symbol` | ユーザー入力プロンプトの前の記号（裸のトークン、レンダラーが末尾にスペースを追加） | `❯` |
 | `help_header` | `/help` コマンド出力のヘッダーテキスト | `(^_^)? Available Commands` |
 
@@ -107,6 +115,7 @@ CLIインターフェース全体で使用されるテキスト文字列。
 | `tool_emojis` | dict | スピナーと進捗用のツールごとの絵文字の上書き（`{tool_name: emoji}`） | `{}` |
 | `banner_logo` | string | Richマークアップ形式のASCIIアートロゴ（デフォルトの HERMES_AGENT バナーを置き換える） | `""` |
 | `banner_hero` | string | Richマークアップ形式のヒーローアート（デフォルトのカドゥケウスのアートを置き換える） | `""` |
+| `customCSS` | string | スキンがアクティブな間、デスクトップアプリとWebダッシュボードに注入される生のCSS（GUI面のみ。CLI/TUIでは無視されます）。上限は32 KiBです。 | `""` |
 
 ## カスタムスキン
 
@@ -116,8 +125,8 @@ CLIインターフェース全体で使用されるテキスト文字列。
 
 ```yaml
 # ~/.hermes/skins/mytheme.yaml
-# 完全なスキンテンプレート — すべてのキーを表示。不要なものは削除してよい。
-# 不足している値は 'default' スキンから自動的に継承される。
+# Complete skin template — all keys shown. Delete any you don't need;
+# missing values automatically inherit from the 'default' skin.
 
 name: mytheme
 description: My custom theme
@@ -174,13 +183,13 @@ branding:
 
 tool_prefix: "┊"
 
-# ツールごとの絵文字の上書き（任意）
+# Per-tool emoji overrides (optional)
 tool_emojis:
   terminal: "⚔"
   web_search: "🔮"
   read_file: "📄"
 
-# カスタムASCIIアートバナー（任意、Richマークアップ対応）
+# Custom ASCII art banners (optional, Rich markup supported)
 # banner_logo: |
 #   [bold #FFD700] MY AGENT [/]
 # banner_hero: |
@@ -211,6 +220,24 @@ branding:
 
 tool_prefix: "▏"
 ```
+
+### 生の `customCSS`
+
+色だけでは表現できないセレクター単位のスタイリング — フォントサイズ、余白、疑似要素、アニメーション — には、生のCSSを `customCSS` に入れます。デスクトップアプリとWebダッシュボードは、スキンがアクティブな間それを `<style>` タグとして注入し、`customCSS` を持たないスキンに切り替えると削除します。
+
+```yaml
+name: myskin
+
+colors:
+  background: "#1a1030"
+  ui_accent: "#ff5fd2"
+
+customCSS: |
+  .chat-input { font-size: 16px; }
+  .status-bar { background: rgba(0, 0, 0, 0.5); }
+```
+
+このフィールドの上限は32 KiBで、GUI面にのみ適用されます — CLIとTUIは無視します。`~/.hermes/skins/` 配下のスキンYAMLに保存されるため、アプリを更新しても残ります（もう `app.asar` をハックする必要はありません）。
 
 ## Hermes Mod — ビジュアルスキンエディター
 
@@ -259,7 +286,7 @@ npm start
 6. **Save** をクリックして、スキンのYAMLを `~/.hermes/skins/` に書き込みます。
 7. **Activate** をクリックして、それを現在のスキンとして設定します（`config.yaml` の `display.skin` を更新します）。
 
-Hermes Mod は `HERMES_HOME` 環境変数を尊重するため、[プロファイル](/docs/user-guide/profiles)とも連携します。
+Hermes Mod は `HERMES_HOME` 環境変数を尊重するため、[プロファイル](../profiles.md)とも連携します。
 
 ## 運用上のメモ
 

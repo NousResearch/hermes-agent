@@ -39,47 +39,6 @@ Open WebUI は Hermes とサーバー間で通信するため、この統合で�
 
 ## クイックセットアップ
 
-### ワンコマンドのローカルブートストラップ（macOS/Linux、Docker 不要）
-
-Hermes と Open WebUI を再利用可能なランチャーとともにローカルで連携させたい場合は、次を実行します。
-
-```bash
-cd ~/.hermes/hermes-agent
-bash scripts/setup_open_webui.sh
-```
-
-このスクリプトが行うこと:
-
-- `~/.hermes/.env` に `API_SERVER_ENABLED`、`API_SERVER_HOST`、`API_SERVER_KEY`、
-  `API_SERVER_PORT`、`API_SERVER_MODEL_NAME` が含まれていることを保証する
-- API サーバーが立ち上がるように Hermes ゲートウェイを再起動する
-- Open WebUI を `~/.local/open-webui-venv` にインストールする
-- `~/.local/bin/start-open-webui-hermes.sh` にランチャーを書き込む
-- macOS では `launchd` ユーザーサービスをインストールし、`systemd --user` を持つ Linux では
-  そこにユーザーサービスをインストールする
-
-デフォルト:
-
-- Hermes API: `http://127.0.0.1:8642/v1`
-- Open WebUI: `http://127.0.0.1:8080`
-- Open WebUI に通知されるモデル名: `Hermes Agent`
-
-便利なオーバーライド:
-
-```bash
-OPEN_WEBUI_NAME='My Hermes UI' \
-OPEN_WEBUI_ENABLE_SIGNUP=true \
-HERMES_API_MODEL_NAME='My Hermes Agent' \
-bash scripts/setup_open_webui.sh
-```
-
-Linux では、自動のバックグラウンドサービスのセットアップに、動作する `systemd --user` セッションが
-必要です。ヘッドレスの SSH ボックスにいてサービスのインストールをスキップしたい場合は、次を実行します。
-
-```bash
-OPEN_WEBUI_ENABLE_SERVICE=false bash scripts/setup_open_webui.sh
-```
-
 ### 1. API サーバーを有効化する
 
 ```bash
@@ -317,10 +276,10 @@ Connections** で保存された接続を更新または削除するか、Open W
 データベースをリセットしてください。
 :::
 
-## プロファイルによるマルチユーザーのセットアップ
+## プロファイルによるマルチユーザーのセットアップ {#multi-user-setup-with-profiles}
 
 ユーザーごとに別々の Hermes インスタンス（それぞれ独自の設定、メモリ、スキルを持つ）を実行するには、
-[プロファイル](/docs/user-guide/profiles) を使います。各プロファイルは異なるポートで独自の API
+[プロファイル](../profiles.md) を使います。各プロファイルは異なるポートで独自の API
 サーバーを実行し、Open WebUI でプロファイル名を自動的にモデルとして通知します。
 
 ### 1. プロファイルを作成して API サーバーを設定する
@@ -379,12 +338,12 @@ hermes -p alice config set API_SERVER_MODEL_NAME "Alice's Agent"
 Docker Desktop のない Linux では、`host.docker.internal` はデフォルトでは解決されません。選択肢:
 
 ```bash
-# Option 1: ホストマッピングを追加
+# Option 1: Add host mapping
 docker run --add-host=host.docker.internal:host-gateway ...
 
-# Option 2: ホストネットワーキングを使用
+# Option 2: Use host networking
 docker run --network=host -e OPENAI_API_BASE_URL=http://localhost:8642/v1 ...
 
-# Option 3: Docker ブリッジ IP を使用
+# Option 3: Use Docker bridge IP
 docker run -e OPENAI_API_BASE_URL=http://172.17.0.1:8642/v1 ...
 ```

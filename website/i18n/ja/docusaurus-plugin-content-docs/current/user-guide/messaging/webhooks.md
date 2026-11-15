@@ -50,7 +50,7 @@ hermes gateway setup
 
 ```bash
 WEBHOOK_ENABLED=true
-WEBHOOK_PORT=8644        # デフォルト
+WEBHOOK_PORT=8644        # default
 WEBHOOK_SECRET=your-global-secret
 ```
 
@@ -72,7 +72,7 @@ curl http://localhost:8644/health
 
 ## ルートの設定 {#configuring-routes}
 
-ルートは、異なる Webhook 送信元をどう処理するかを定義します。各ルートは、`config.yaml` の `platforms.webhook.extra.routes` の下にある名前付きエントリです。
+ルートは、異なる Webhook 送信元をどう処理するかを定義します。各ルートは、`config.yaml` の `platforms.webhook.extra.routes` の下にある名前付きエントリです。アダプターの設定（`port`、`host`、`secret`、`routes`）は `platforms.webhook:` の直下に書くこともできます — どちらの書き方でもアダプターに届きます。同じキーが両方に現れた場合は、`extra:` の下にネストされた値が優先されます。
 
 ### ルートのプロパティ
 
@@ -80,11 +80,19 @@ curl http://localhost:8644/health
 |----------|----------|-------------|
 | `events` | 不要 | 受け付けるイベントタイプのリスト（例: `["pull_request"]`）。空の場合、すべてのイベントが受け付けられます。イベントタイプは `X-GitHub-Event`、`X-GitLab-Event`、またはペイロード内の `event_type` から読み取られます。 |
 | `secret` | **必須** | 署名検証用の HMAC シークレット。ルートに設定されていない場合はグローバルの `secret` にフォールバックします。テスト目的のみ `"INSECURE_NO_AUTH"` に設定可能です（検証をスキップ）。 |
-| `prompt` | 不要 | ドット記法によるペイロードアクセスを使うテンプレート文字列（例: `{pull_request.title}`）。省略すると、JSON ペイロード全体がプロンプトにダンプされます。 |
+| `signature` | 不要 | ルートを 1 つの署名方式に固定します: `generic`（`X-Webhook-Signature-V2` + `X-Webhook-Timestamp`、または Standard Webhooks / Svix ヘッダー）、`github`（`X-Hub-Signature-256`）、`gitlab`（`X-Gitlab-Token`、または Standard Webhooks ヘッダーとして送信される GitLab の署名トークン）、`linear`（`Linear-Signature`）。それ以外のヘッダーファミリーはすべて `401` になります。省略すると、サポートされるすべての方式を受け付けます（このキーが存在する以前の動作）。`hermes webhook subscribe` は新しいルートに `signature: generic` を書き込みます。推奨設定です。[署名方式の固定](#pin-the-signature-scheme)を参照してください。 |
+| `profile` | 不要 | `gateway.multiplex_profiles` が有効な場合に、このルートの実行を許可されるプロファイル。省略するとデフォルトプロファイル専用のルートになります。プロファイル名（例: `coder`）を設定すると、ルートとそのシークレットが `/p/coder/webhooks/<route>` にバインドされます。動的サブスクリプションでは `hermes webhook subscribe <name> --route-profile coder` で設定します。 |
+| `prompt` | 不要 | ドット記法によるペイロードアクセスを使うテンプレート文字列（例: `{pull_request.title}`）。省略すると、JSON ペイロード全体がプロンプトにダンプされます。ペイロードのフィールドは信頼できません — [認証済みは信頼できることを意味しない](#authenticated-does-not-mean-trusted)を参照してください。 |
+| `filters` | 不要 | 認証/ボディ/イベントのフィルタリングの後、エージェントまたは直接配信の処理の前に評価される宣言的なペイロードフィルター。一致しない場合は HTTP 200 で `{"status":"ignored","reason":"filter"}` を返します。 |
+| `script` | 不要 | `~/.hermes/scripts/` 配下のフィルター/変換スクリプト。Webhook ペイロードは JSON として stdin に渡されます。stdout が JSON オブジェクトの場合はテンプレート処理の前にペイロードを置き換えます。テキストの stdout は `script_output` として公開されます。stdout が空、`[SILENT]`、または終了コードが 0 以外の場合、Webhook は無視されます。 |
 | `skills` | 不要 | エージェント実行時にロードするスキル名のリスト。 |
-| `deliver` | 不要 | 応答の送信先: `github_comment`、`telegram`、`discord`、`slack`、`signal`、`sms`、`whatsapp`、`matrix`、`mattermost`、`homeassistant`、`email`、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot`、または `log`（デフォルト）。 |
+| `toolsets` | 不要 | このルートでトリガーされた実行に限り、プラットフォームレベルの Webhook ツールセットを **置き換える** ツールセットキーのリスト（例: `["terminal", "file", "web"]`）。設定ファイルの手動編集でのみ設定可能で、`hermes webhook subscribe` では設定できません。そのため、エージェントが作成したサブスクリプションが自身に昇格したツールを付与することはできません。名前は `platform_toolsets` のエントリと同じ方法で検証されます（不明な名前やプラットフォーム制限のある名前は除外されます）。[ルートごとのツールセット](#per-route-toolsets)を参照してください。 |
+| `deliver` | 不要 | 応答の送信先: `github_comment`、`telegram`、`discord`、`slack`、`signal`、`sms`、`whatsapp`、`matrix`、`mattermost`、`homeassistant`（プラグイン）、`email`、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot`、または `log`（デフォルト）。 |
 | `deliver_extra` | 不要 | 追加の配信設定 — キーは `deliver` のタイプに依存します（例: `repo`、`pr_number`、`chat_id`）。値は `prompt` と同じ `{dot.notation}` テンプレートをサポートします。 |
 | `deliver_only` | 不要 | `true` の場合、エージェントを完全にスキップします — レンダリングされた `prompt` テンプレートが、そのまま配信されるリテラルなメッセージになります。LLM コストゼロ、サブ秒の配信。ユースケースについては[直接配信モード](#direct-delivery-mode)を参照してください。`deliver` が実際のターゲット（`log` 以外）である必要があります。 |
+| `cron_job` | 不要 | 新しい Webhook エージェントセッションを開始する代わりに、イベントごとに既存の cron ジョブ（ID または名前で指定）を発火します。レンダリングされた `prompt` は実行ごとの一時的なコンテキストになり、ジョブ自身のプロンプト、スキル、モデル、配信設定が適用されます。`deliver_only` とは併用できません。[イベントトリガーの cron ジョブ](#event-triggered-cron-jobs)を参照してください。 |
+| `coalesce` | 不要 | 同じ論理エンティティに対する立て続けの異なるイベントを、1 回のエージェント実行にまとめます（デバウンス）。必須の `key`（エンティティを識別するペイロードフィールドまたはテンプレート、例: `pull_request.number`）、任意の `window_seconds`（静止ウィンドウ、デフォルト 30）と `max_wait_seconds`（ディスパッチの上限、デフォルト 300）を持つブロックです。[イベントの集約](#event-coalescing)を参照してください。`deliver_only` および `cron_job` とは併用できません。 |
+| `mirror_to_session` | 不要 | デフォルトは `false`。`true` の場合、チャットプラットフォームへの配信が成功した後、配信されたメッセージがそのチャットのセッションのトランスクリプトにも書き込まれます（継続可能な cron ブリーフと同様に、ラベル付きのユーザーターンとして）。そのため、そのチャットで返信すると、エージェントは直前に何を送ったかを把握しています。[配信への返信](#replying-to-a-delivery)を参照してください。 |
 
 ### 完全な例
 
@@ -99,6 +107,7 @@ platforms:
         github-pr:
           events: ["pull_request"]
           secret: "github-webhook-secret"
+          signature: github
           prompt: |
             Review this pull request:
             Repository: {repository.full_name}
@@ -116,8 +125,111 @@ platforms:
           events: ["push"]
           secret: "deploy-secret"
           prompt: "New push to {repository.full_name} branch {ref}: {head_commit.message}"
+          filters:
+            - field: "ref"
+              equals: "refs/heads/main"
           deliver: "telegram"
 ```
+
+### ペイロードフィルター
+
+プロバイダーが広範なイベントストリームを送信するものの、一部のペイロードだけでエージェントを起動したり `deliver_only` の配信をトリガーしたりしたい場合は、`filters` を使います。フィルターは署名検証、ボディの解析、`events` の後、プロンプトのレンダリング、冪等性、エージェントのディスパッチ、直接配信の前に実行されます。
+
+```yaml
+platforms:
+  webhook:
+    extra:
+      routes:
+        todoist:
+          events: ["item:updated"]
+          secret: "todoist-secret"
+          filters:
+            - field: "payload.labels"
+              contains: "hermes"
+            - any:
+                - field: "payload.priority"
+                  equals: 4
+                - field: "payload.project_id"
+                  in_file: "~/.hermes/data/todoist/watchlist.json"
+          prompt: "Todoist task changed: {payload.content}"
+```
+
+サポートされる演算子:
+
+- `exists: true|false`
+- `missing: true`
+- `equals` / `not_equals`
+- `contains`（文字列、リスト、dict のキーに対応）
+- `in`（インラインのリスト）
+- `in_file`（JSON 配列、JSON オブジェクト（キーが使われます）、または改行区切りのテキストファイル）
+- `regex`
+- `all`、`any`、`not` のグループ
+
+フィールドパスはドット記法を使います。`payload.foo` は、トップレベルの `payload` オブジェクトが存在する場合はそこから、フラットなペイロードの場合は Webhook ボディのルートから読み取ります。`event` / `event_type` は解決されたイベントタイプに一致し、`headers.<Name>` はリクエストヘッダーを読み取ります。
+
+### イベントの集約 {#event-coalescing}
+
+プロバイダーは、同じ論理エンティティに対して複数の異なるイベントを立て続けに発火することがよくあります — 1 つのプルリクエストへの 5 回の連続 push、1 つのチケットへの一連の編集、フラッピングする監視アラートなどです。各イベントは新しい配信 ID を持つため、冪等性キャッシュではこれらを抑制できず、イベントごとに別々のエージェント実行が起動されます。
+
+ルートに `coalesce` を設定すると、これらをエンティティごとに 1 回の実行にまとめられます:
+
+```yaml
+platforms:
+  webhook:
+    extra:
+      routes:
+        github-pr:
+          events: ["pull_request"]
+          secret: "github-webhook-secret"
+          signature: github
+          coalesce:
+            key: "{repository.full_name}#{pull_request.number}"
+            window_seconds: 30      # quiet window (default 30)
+            max_wait_seconds: 300   # dispatch cap (default 300)
+          prompt: "Review PR #{pull_request.number}: {pull_request.title}"
+          deliver: "github_comment"
+          deliver_extra:
+            repo: "{repository.full_name}"
+            pr_number: "{pull_request.number}"
+```
+
+仕組み:
+
+- イベントは、レンダリングされた `key` によってルートごとにグループ化されます。ドット区切りのフィールドのみ（`pull_request.number`）でも、完全なテンプレート（`{repository.full_name}#{pull_request.number}`）でも機能します。
+- 新しいイベントはそれぞれ保留中のイベントを **置き換え**、静止ウィンドウのタイマーを延長します。新しいイベントがないまま `window_seconds` が経過すると、グループは最新のイベントのペイロード、プロンプト、配信テンプレートを使って **1 回** のエージェント実行をディスパッチします。
+- `max_wait_seconds` はグループの最初のイベントからのバッファリング時間の合計に上限を設けるため、イベントが絶え間なく届いてもディスパッチが永遠に先延ばしされることはありません。
+- 複数のイベントが集約された場合、プロンプトには、それ以前のイベントがいくつ置き換えられたかをエージェントに伝える短い注記が追加されます。
+- あるイベントで `key` が解決できない場合（ペイロードにそのフィールドがない場合 — 例: `pull_request.number` をキーとするルートでの `issue_comment` イベント）、そのイベントは集約されずに **即座にディスパッチ** されるため、無関係なエンティティが 1 つのグループにまとめられることはありません。ルートが受け付けるすべてのイベントタイプに存在するキーを選んでください。
+- 集約されたリクエストは `{"status": "coalesced"}` とともに HTTP 202 を返します。配信 ID による冪等性チェックは引き続き先に実行されるため、同じ配信に対するプロバイダーの再試行はカウントされずに破棄されます。
+- 保留中のグループは、アダプターの切断時（ゲートウェイの再接続または `hermes gateway stop`）に破棄されずにフラッシュ（即座にディスパッチ）されます。バッファされたイベントはメモリ上にあるため、プロセスが強制終了された場合に失われるのは、最大でも現在のウィンドウでバッファされた分だけです。
+- `coalesce` はエージェントモードのルートにのみ適用されます。`deliver_only` または `cron_job` との組み合わせは起動時に拒否されます。
+
+### スクリプトによるフィルターと変換 {#script-filters-and-transforms}
+
+宣言的なフィルターでは不十分な場合は `script` を使います。スクリプトはアクティブなプロファイルの `~/.hermes/scripts/` 配下に置く必要があります。相対パスはそこを基準に解決され、そのディレクトリ外へのパストラバーサルはブロックされます。`.sh` および `.bash` スクリプトは bash で実行され、それ以外の拡張子はすべて現在の Python インタープリターで実行されます。
+
+ルートのペイロードは JSON として stdin に送られます:
+
+```python
+# ~/.hermes/scripts/todoist-hermes-label.py
+import json
+import sys
+
+payload = json.load(sys.stdin)
+labels = payload.get("payload", {}).get("labels", [])
+if "hermes" not in labels:
+    print("[SILENT]")
+    raise SystemExit(0)
+
+payload["body"] = payload["payload"]["content"]
+print(json.dumps(payload))
+```
+
+スクリプトの結果:
+
+- stdout が JSON オブジェクトの場合、`prompt` と `deliver_extra` で使われるペイロードを置き換えます。
+- JSON 以外のテキストの stdout は、`script_output` としてペイロードに追加されます。
+- stdout が空、`[SILENT]` と完全一致、`{"__hermes_ignore__": true}`、タイムアウト、スクリプトが存在しない、または終了コードが 0 以外の場合は、HTTP 200 で `{"status":"ignored","reason":"script"}` を返します。
 
 ### プロンプトテンプレート
 
@@ -213,6 +325,7 @@ platforms:
         gitlab-mr:
           events: ["merge_request"]
           secret: "your-gitlab-secret-token"
+          signature: gitlab
           prompt: |
             Review this merge request:
             Project: {project.path_with_namespace}
@@ -241,7 +354,7 @@ platforms:
 | `whatsapp` | 応答を WhatsApp にルーティングします。ホームチャンネルを使うか、`deliver_extra` で `chat_id` を指定します。 |
 | `matrix` | 応答を Matrix にルーティングします。ホームチャンネルを使うか、`deliver_extra` で `chat_id` を指定します。 |
 | `mattermost` | 応答を Mattermost にルーティングします。ホームチャンネルを使うか、`deliver_extra` で `chat_id` を指定します。 |
-| `homeassistant` | 応答を Home Assistant にルーティングします。ホームチャンネルを使うか、`deliver_extra` で `chat_id` を指定します。 |
+| `homeassistant` | 応答を Home Assistant にルーティングします（[`homeassistant` プラグイン](homeassistant.md)が必要です）。ホームチャンネル（`HASS_HOME_CHANNEL`）を使うか、`deliver_extra` で `chat_id` を指定します。 |
 | `email` | 応答を Email にルーティングします。ホームチャンネルを使うか、`deliver_extra` で `chat_id` を指定します。 |
 | `dingtalk` | 応答を DingTalk にルーティングします。ホームチャンネルを使うか、`deliver_extra` で `chat_id` を指定します。 |
 | `feishu` | 応答を Feishu/Lark にルーティングします。ホームチャンネルを使うか、`deliver_extra` で `chat_id` を指定します。 |
@@ -250,6 +363,14 @@ platforms:
 | `bluebubbles` | 応答を BlueBubbles（iMessage）にルーティングします。ホームチャンネルを使うか、`deliver_extra` で `chat_id` を指定します。 |
 
 クロスプラットフォーム配信の場合、ターゲットプラットフォームもゲートウェイで有効化され接続されている必要があります。`deliver_extra` に `chat_id` が指定されていない場合、応答はそのプラットフォームに設定されたホームチャンネルに送信されます。
+
+### 配信への返信 {#replying-to-a-delivery}
+
+デフォルトでは、配信は送りっぱなしです。各 Webhook イベントはそれぞれ独自のセッションで実行されるため、配信されたメッセージにそのチャットで返信しても、そこにいるエージェントは何が送られたかの記録を持っていません。ルートに `mirror_to_session: true` を設定する（または `hermes webhook subscribe` に `--mirror-to-session` を渡す）と、配信されたテキストが `[Webhook delivery: <route>]` に続けてメッセージという形で、ターゲットのチャットのセッションにも追記されます。そのため、続けての質問（「じゃあ彼は欠席？」など）でもコンテキストが保たれます。
+
+- ミラーはベストエフォートです。配信を失敗させることはなく、チャットにまだゲートウェイセッションがない場合（そこで誰もエージェントと話していない場合）はスキップされます。
+- `/p/<profile>/` ルートでは、そのプロファイルのチャット用セッションに書き込まれ、他のプロファイルのセッションに書き込まれることはありません。
+- ミラーされたテキストは、あなたが送信したかのようにチャットの履歴に入ります。[`deliver_only`](#direct-delivery-mode) ルートでは、レンダリングされた生のペイロードになるため、その内容が会話に入っても信頼できる送信元（公開の issue トラッカーではなく、自分自身のサービス）に対してのみ有効化してください。
 
 ---
 
@@ -327,6 +448,55 @@ hermes webhook subscribe antenna-matches \
 
 ---
 
+## イベントトリガーの cron ジョブ {#event-triggered-cron-jobs}
+
+ルートに `cron_job` を設定すると、イベントが届くたびに **既存の cron ジョブ** を発火します — 固定間隔でのポーリングや、新しい Webhook エージェントセッションの開始の代わりです。これにより、あらゆるスケジュール済みジョブをイベント駆動のタスクに変えられます。スケジュールはフォールバックの定期巡回として残し（またはめったに発火しないものにし）、何かが実際に変化した瞬間に Webhook でジョブを発火させます。
+
+仕組み:
+
+1. イベントは、他のルートと同じ HMAC 認証、レート制限、`events`/`filters`/`script` によるフィルタリング、冪等性を通過します。
+2. ルートの `prompt` テンプレートがペイロードからレンダリングされ、**実行ごとの一時的なコンテキスト** としてジョブに注入されます（`cronjob(action='run', prompt=...)` と同じ経路で、ジョブに保存されたプロンプトが変更されることはありません）。
+3. ジョブはスケジューラーと同じ最大 1 回（at-most-once）のクレームを通じて発火するため、Webhook が集中しても既に実行中のジョブが二重に発火することはなく、ジョブ自身の配信ターゲットが出力を受け取ります。
+
+### 例: レビューのフィードバックで PR レビュージョブを発火する
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      routes:
+        pr-feedback:
+          events: ["pull_request_review"]
+          secret: "github-webhook-secret"
+          signature: github
+          cron_job: "pr-review-sweeper"        # existing job ID or name
+          prompt: |
+            PR #{number} in {repository.full_name} received new review feedback
+            from {review.user.login}: {review.body}
+```
+
+### CLI 経由
+
+```bash
+hermes webhook subscribe pr-feedback \
+  --events "pull_request_review" \
+  --signature github \
+  --cron-job "pr-review-sweeper" \
+  --prompt "PR #{number} received feedback: {review.body}"
+```
+
+ジョブの参照はサブスクリプションの作成時に検証されるため、タイプミスはすぐに判明します。
+
+### 注意事項
+
+- `cron_job` と `deliver_only` は併用できません（ルートが両方を設定している場合、アダプターは起動を拒否します）。cron ジョブは自身の配信を処理します。
+- ルートレベルの `deliver`、`deliver_extra`、`skills` フィールドは `cron_job` ルートでは無視されます — ジョブ自身の設定が適用されます。
+- 一時停止/無効化されたジョブは発火されません。イベントはログに記録されて破棄されます。
+- POST はすぐに `202 Accepted` を返し、ジョブはバックグラウンドで実行されます。
+
+---
+
 ## 動的サブスクリプション（CLI） {#dynamic-subscriptions}
 
 `config.yaml` の静的ルートに加えて、`hermes webhook` CLI コマンドを使って Webhook サブスクリプションを動的に作成できます。これは、エージェント自身がイベント駆動のトリガーをセットアップする必要がある場合に特に便利です。
@@ -336,13 +506,18 @@ hermes webhook subscribe antenna-matches \
 ```bash
 hermes webhook subscribe github-issues \
   --events "issues" \
+  --signature github \
   --prompt "New issue #{issue.number}: {issue.title}\nBy: {issue.user.login}\n\n{issue.body}" \
   --deliver telegram \
   --deliver-chat-id "-100123456789" \
   --description "Triage new GitHub issues"
 ```
 
-これにより、Webhook URL と自動生成された HMAC シークレットが返されます。その URL に POST するようサービスを設定してください。
+これにより、Webhook URL と、自動生成された HMAC シークレットのマスクされた形式が返されます。完全なシークレットは `~/.hermes/webhook_subscriptions.json` 内のルート名の下に保存されます（独自のシークレットを使うには `--secret` を渡します）。その URL に POST するようサービスを設定してください。
+
+新しいサブスクリプションは、独自の方法で署名するプロバイダー向けに `--signature github`、`gitlab`、`linear` を渡さない限り、`--signature generic`（タイムスタンプにバインドされた V2 または Standard Webhooks）に固定されます。既存のサブスクリプションを更新しても、その固定は維持されます。`signature` を省略して既存のルートをダッシュボードから再保存した場合も固定は維持され（明示的に選択した場合は置き換えられます）、MCP のイベントサブスクリプションは最初の作成時に `generic` に固定されます。
+
+ダッシュボードの **New subscription** フォーム（Web ダッシュボードとデスクトップアプリ）にも、同じ選択肢が **Signature** セレクトとして用意されており、デフォルトは `generic` です。GitHub、GitLab、Linear から配信されるルートでは、それぞれを選択してください。API 経由では、`POST /api/webhooks` は任意の `signature`（`generic`、`github`、`gitlab`、`linear` のいずれか。それ以外は `422`）を受け取ります。これを指定しない新しいルートは `generic` に固定され、指定せずに再 POST した場合は保存済みの固定が維持されます。
 
 ### サブスクリプションを一覧表示する
 
@@ -363,17 +538,62 @@ hermes webhook test github-issues
 hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "Test"}}'
 ```
 
+`test` は、ルートの `signature` の固定が期待する方法で署名します: `github` では `X-Hub-Signature-256`、`gitlab` では `X-Gitlab-Token`、`linear` では `Linear-Signature`、`generic` または固定されていないルートでは `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` です。
+
 ### 動的サブスクリプションの仕組み
 
 - サブスクリプションは `~/.hermes/webhook_subscriptions.json` に保存されます
-- Webhook アダプターは、受信リクエストごとにこのファイルをホットリロードします（mtime ゲート付き、オーバーヘッドは無視できる程度）
+- Webhook アダプターは、受信リクエストごとにこのファイルの一貫したスナップショットをホットリロードします（stat ゲート付き（mtime/size/inode）、ロックフリー）
 - `config.yaml` の静的ルートは、同名の動的ルートよりも常に優先されます
 - 動的サブスクリプションは、静的ルートと同じルート形式と機能（events、プロンプトテンプレート、スキル、配信）を使います
+- 作成、更新、有効化/無効化、削除の操作は直列化され、ストアをアトミックに置き換えます。古い状態に基づく並行更新は、別の操作で削除または無効化されたルートを復元するのではなく、拒否されます
+- 既存のルートを `--route-profile` で再バインドすると、その HMAC シークレットは自動的にローテーションされます。古いプロファイルのシークレットを持つ呼び出し元は、再バインドされたルートで認証できません。受信側のサービスがオペレーターの選んだ値を必要とする場合にのみ、別の `--secret` を渡してください
 - ゲートウェイの再起動は不要 — サブスクライブすればすぐに有効になります
 
 ### エージェント駆動のサブスクリプション
 
 エージェントは、`webhook-subscriptions` スキルにガイドされたときに、ターミナルツールを介してサブスクリプションを作成できます。エージェントに「GitHub issue 用の Webhook をセットアップして」と頼むと、適切な `hermes webhook subscribe` コマンドを実行します。
+
+---
+
+## ルートごとのツールセット {#per-route-toolsets}
+
+Webhook のペイロードには信頼できない第三者のコンテンツが含まれる可能性があるため、Webhook によるエージェント実行は、意図的に制限されたツールセット（`web_search`、`web_extract`、`vision_analyze`、`clarify`）がデフォルトになっています — 公開の PR タイトルや issue コメントが、プロンプトインジェクションによってターミナルに到達できてはなりません。
+
+**信頼できる** ルート — システムアラートをプッシュする localhost の監視デーモンや社内の CI システムなど — では、他のすべての Webhook ルートを広げることなく、そのルートに限ってより広いツールセットを付与できます:
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      routes:
+        oom-emergency:
+          secret: "monitor-secret"
+          prompt: "Memory emergency: {detail}. Diagnose with ps/free/py-spy and report."
+          toolsets: ["terminal", "file", "code_execution", "web"]
+          deliver: "telegram"
+```
+
+動的サブスクリプションの場合は、`~/.hermes/webhook_subscriptions.json` を直接編集して `toolsets` キーを追加します:
+
+```json
+{
+  "oom-emergency": {
+    "secret": "...",
+    "prompt": "...",
+    "toolsets": ["terminal", "file", "web"],
+    "deliver": "telegram"
+  }
+}
+```
+
+動作と安全性に関する特性:
+
+- ルートのリストは、そのルートの実行におけるプラットフォームレベルの Webhook ツールセットの解決結果を **置き換えます**（マージはされません）。明示的な空のリスト（`toolsets: []`）も上書きになります。そのルートにはプラットフォームのツールセットも MCP サーバーも与えられず、`platform_toolsets.webhook: []` と同じになります。
+- 名前は `platform_toolsets` の設定と同じ経路で検証されます — 不明な名前やプラットフォーム制限のあるツールセットは除外されます。
+- `hermes webhook subscribe` は意図的に toolsets フラグを受け付け **ません**。昇格したツールの付与は設定ファイルの手動編集であるため、実行時に自身のサブスクリプションを作成するエージェントが `terminal` を自身に付与することはできません。
+- 昇格したツールセットは、送信元を完全に管理でき、実際の HMAC シークレットを持つルートにのみ付与してください。そのルートに正しく署名されたペイロードを POST できる人は誰でも、実質的にそれらのツールを持つエージェントを実行していることになります。
 
 ---
 
@@ -387,13 +607,35 @@ Webhook アダプターには複数層のセキュリティが含まれていま
 
 - **GitHub**: `X-Hub-Signature-256` ヘッダー — `sha256=` がプレフィックスされた HMAC-SHA256 16 進ダイジェスト
 - **GitLab**: `X-Gitlab-Token` ヘッダー — プレーンなシークレット文字列の一致
-- **汎用**: `X-Webhook-Signature` ヘッダー — 生の HMAC-SHA256 16 進ダイジェスト
+- **Standard Webhooks**: `webhook-id`、`webhook-timestamp`、`webhook-signature` ヘッダー — 署名対象は `{id}.{timestamp}.{raw_body}` で、署名は `v1,<base64-hmac-sha256>` 形式
+- **汎用（V2、推奨）**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` ヘッダー — `<timestamp>.<body>` の HMAC-SHA256 16 進ダイジェスト。タイムスタンプ（Unix 秒）はサーバー時刻から ±300 秒以内である必要があり、これにより傍受されたリクエストが後でリプレイされることを防ぎます。
+- **汎用（V1、拒否）**: `X-Webhook-Signature` はボディのみに署名するため、傍受されたリクエストは配信 ID のキャッシュが期限切れになった後も有効なままです。V1 のみのリクエストは、ループバックであっても `401 Unauthorized` を受け取ります。送信元を上記のタイムスタンプにバインドされた V2 形式に切り替えてください。ゲートウェイはルートごとに一度、移行手順をログに出力します。
 
 シークレットが設定されているのに認識可能な署名ヘッダーが存在しない場合、リクエストは拒否されます。
+
+### 署名方式の固定 {#pin-the-signature-scheme}
+
+GitHub（`X-Hub-Signature-256`）、Linear（`Linear-Signature`）、および拒否される V1 ヘッダーは、いずれも同じ値を持ちます: ルートのシークレットによるボディの HMAC-SHA256 で、タイムスタンプはありません。そのため、`signature` のないルートでは、傍受された V1 リクエストの MAC を `Linear-Signature`（または `sha256=` プレフィックスを付けた `X-Hub-Signature-256`）に移し、新しい配信 ID を付けて送信することで、依然としてリプレイが可能です。すべてのルートに `signature` を設定し、送信元が使う方式のみを受け付けるようにしてください:
+
+```yaml
+routes:
+  github-pr:
+    secret: "github-webhook-secret"
+    signature: github      # only X-Hub-Signature-256
+  deploy-hook:
+    secret: "deploy-secret"
+    signature: generic     # only X-Webhook-Signature-V2 + X-Webhook-Timestamp, or Standard Webhooks
+```
+
+不明な値は設定エラーになります: 静的ルートの場合はアダプターが起動しなくなり、動的サブスクリプションの場合はスキップされます。どちらの場合も、すべての方式を受け付ける動作にフォールバックすることはありません。
+
+送信元がボディのみの V1（`X-Webhook-Signature`）を使っていた場合は、V2 に移行する際に **そのルートのシークレットをローテーション** してください。古い傍受データがすべてのヘッダーファミリーで検証されなくなるのは、シークレットが変更された後だけです。GitHub と Linear の署名には独自のタイムスタンプがないため、`github`/`linear` に固定されたルートでも、自身のプロバイダーからのリクエストのリプレイに対しては 1 時間の配信 ID キャッシュに依存します。
 
 ### シークレットは必須
 
 すべてのルートにはシークレットが必要です — ルートに直接設定するか、グローバルの `secret` から継承します。シークレットのないルートは、アダプターが起動時にエラーで失敗する原因になります。開発/テスト目的のみ、シークレットを `"INSECURE_NO_AUTH"` に設定して検証を完全にスキップできます。
+
+マルチプロファイルルーティングが有効な場合、ルートの `profile` フィールドは、そのシークレットを 1 つの実行ターゲットにもバインドします。`profile` のないルートはデフォルトプロファイル専用です。有効なルート署名を持つリクエストであっても、`/p/<profile>/` プレフィックスがルートのバインドと一致しない場合は拒否されます。
 
 `INSECURE_NO_AUTH` は、ゲートウェイがループバックホスト（`127.0.0.1`、`localhost`、`::1`）にバインドされている場合にのみ受け付けられます。`0.0.0.0` や LAN IP などの非ループバックバインドと組み合わされた場合、アダプターは起動を拒否します — これは、未認証のエンドポイントを公開インターフェースに誤って晒すことを防ぎます。
 
@@ -405,14 +647,14 @@ Webhook アダプターには複数層のセキュリティが含まれていま
 platforms:
   webhook:
     extra:
-      rate_limit: 60  # 1 分あたりのリクエスト数
+      rate_limit: 60  # requests per minute
 ```
 
 制限を超えるリクエストは `429 Too Many Requests` 応答を受け取ります。
 
 ### 冪等性
 
-配信 ID（`X-GitHub-Delivery`、`X-Request-ID`、またはタイムスタンプのフォールバックから取得）は **1 時間** キャッシュされます。重複配信（例: Webhook の再試行）は `200` 応答で静かにスキップされ、エージェントの重複実行を防ぎます。
+配信 ID（`X-GitHub-Delivery`、`svix-id`、`webhook-id`、`X-Request-ID`、またはリクエストごとのランダムな ID から取得）は **1 時間** キャッシュされます。重複配信（例: Webhook の再試行）は `200` 応答で静かにスキップされ、エージェントの重複実行を防ぎます。
 
 ### ボディサイズ制限
 
@@ -425,10 +667,17 @@ platforms:
       max_body_bytes: 2097152  # 2 MB
 ```
 
-### プロンプトインジェクションのリスク
+### 認証済みは信頼できることを意味しない {#authenticated-does-not-mean-trusted}
 
 :::warning
-Webhook ペイロードには攻撃者が制御できるデータが含まれます — PR タイトル、コミットメッセージ、issue の説明などにはすべて悪意ある命令が含まれる可能性があります。インターネットに公開する場合は、サンドボックス環境（Docker、VM）でゲートウェイを実行してください。隔離のために Docker または SSH ターミナルバックエンドの使用を検討してください。
+**HMAC 検証が認証するのは _送信者_ であり、_内容_ ではありません。** 有効な署名が証明するのは、リクエストがルートのシークレットを持つ当事者（例: GitHub）から来たということだけです。ペイロード内の _業務フィールド_ を誰が書いたかについては何も示しません — PR タイトル、コミットメッセージ、issue の説明、その他の上流のテキストは任意の第三者によって書かれたものであり、信頼できないものとして扱う必要があります。
+
+これは、エージェントが読み取るすべてのものに適用されるのと同じ信頼モデルです: Web ページ、ファイル、ツールの出力はすべて信頼できない入力です。Hermes は信頼できないテキストをブロックリストでサニタイズしません — また、確実にサニタイズすることもできません。言い回し、エンコーディング、翻訳によって簡単に回避できるからです。**信頼境界は入力チャンネルではなく、エージェントの能力の範囲です。** そこを強化してください:
+
+- **ランタイムをサンドボックス化する。** インターネットに公開する場合は、Docker または SSH ターミナルバックエンド（または VM）でゲートウェイを実行し、乗っ取られたターンがホストに触れられないようにします。
+- **ツールセットを絞る。** ルートが読み取りと要約だけを必要とする場合は、Webhook でトリガーされたセッションで `terminal`、`file`、および外部へのアクションを行うツールを無効にします。能力が少ないほど、ペイロードのフィールドに注入された命令が含まれていた場合の被害範囲が小さくなります。
+- **承認を有効にしておく。** 破壊的な操作や外部への操作に対して承認を有効にし、注入された命令が無人で実行されないようにします。
+- **テンプレートを狭くする。** ペイロード全体をダンプする `{__raw__}` や空のテンプレートよりも、名前付きフィールド（`{pull_request.title}`）を使った具体的な `prompt` を優先し、意図したフィールドだけがプロンプトに届くようにします。
 :::
 
 ---
@@ -447,6 +696,8 @@ Webhook ペイロードには攻撃者が制御できるデータが含まれま
 - ルート設定のシークレットが、Webhook 送信元に設定されたシークレットと完全に一致することを確認する
 - GitHub の場合、シークレットは HMAC ベースです — `X-Hub-Signature-256` を確認する
 - GitLab の場合、シークレットはプレーンなトークンの一致です — `X-Gitlab-Token` を確認する
+- 汎用の送信元の場合は、`X-Webhook-Signature-V2` と `X-Webhook-Timestamp` を使う。ボディのみの V1 署名は拒否されます
+- `signature` が設定されたルートは、それ以外のすべての方式を `401` で拒否します（ゲートウェイログで `is pinned to signature` を探してください）。`--signature` なしで `hermes webhook subscribe` により作成されたサブスクリプションは `generic` に固定されます
 - ゲートウェイログで `Invalid signature` の警告を確認する
 
 ### イベントが無視される
@@ -464,7 +715,7 @@ Webhook ペイロードには攻撃者が制御できるデータが含まれま
 
 ### 重複した応答
 
-- 冪等性キャッシュがこれを防ぐはずです — Webhook 送信元が配信 ID ヘッダー（`X-GitHub-Delivery` または `X-Request-ID`）を送信しているか確認する
+- 冪等性キャッシュがこれを防ぐはずです — Webhook 送信元が配信 ID ヘッダー（`X-GitHub-Delivery`、`svix-id`、`webhook-id`、または `X-Request-ID`）を送信しているか確認する
 - 配信 ID は 1 時間キャッシュされます
 
 ### `gh` CLI エラー（GitHub コメント配信）

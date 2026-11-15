@@ -38,7 +38,7 @@ hermes cron list
 
 cron ジョブは、60 秒ごとにティックするゲートウェイのバックグラウンドティッカースレッドによって発火します。通常の CLI チャットセッションは cron ジョブを自動的に発火**しません**。
 
-ジョブが自動的に発火することを期待している場合は、実行中のゲートウェイが必要です（フォアグラウンドなら `hermes gateway`、インストール済みサービスなら `hermes gateway start`）。一度限りのデバッグには、`hermes cron tick` で手動でティックをトリガーできます。
+ジョブが自動的に発火することを期待している場合は、実行中のゲートウェイが必要です（フォアグラウンドなら `hermes gateway`、インストール済みサービスなら `hermes gateway start`）。一度限りのデバッグには、`hermes cron tick` で手動でティックをトリガーできます — ただし、そのティックにもゲートウェイが必要です。ゲートウェイを起動することはなく、ゲートウェイが動いていない場合はエージェントジョブをスキップし（ログに記録され、`hermes cron list` に表示されます）、`hermes gateway start` 後の次のティックまで待ちます。
 
 **デスクトップアプリ:** デスクトップのプライマリバックエンドは独自のティッカーを実行し、**すべてのローカルプロファイル**の cron ストアをティックします。そのため、セカンダリプロファイルのバックエンドがスリープ中でも、そのプロファイルのジョブは発火し続けます（デスクトップはアイドル状態のプロファイルバックエンドを約 10 分後にスリープさせます）。スケジュールされたジョブを実行するためにプロファイルを開いたままにしておく必要はありません。
 
@@ -48,7 +48,7 @@ cron ジョブは、60 秒ごとにティックするゲートウェイのバッ
 
 ```bash
 date
-hermes cron list   # next_run の時刻をローカル時刻と比較
+hermes cron list   # Compare next_run times with local time
 ```
 
 ---
@@ -156,7 +156,7 @@ cron ジョブは、`cronjob`、`messaging`、`clarify` のツールセットが
 **スクリプトの「No such file or directory」**
 `script` のパスは絶対パス（または Hermes 設定ディレクトリからの相対パス）である必要があります。確認:
 ```bash
-ls ~/.hermes/scripts/your-script.py   # 存在する必要がある
+ls ~/.hermes/scripts/your-script.py   # Must exist
 hermes cron edit <job_id> --script ~/.hermes/scripts/your-script.py
 ```
 
@@ -176,7 +176,7 @@ hermes cron edit <job_id> --script ~/.hermes/scripts/your-script.py
 重複したゲートウェイプロセスを終了します:
 ```bash
 ps aux | grep hermes
-# 重複したプロセスを終了し、1 つだけ残す
+# Kill duplicate processes, keep only one
 ```
 
 ### チェック 4: jobs.json の権限
@@ -185,7 +185,7 @@ ps aux | grep hermes
 
 ```bash
 ls -la ~/.hermes/cron/jobs.json
-chmod 600 ~/.hermes/cron/jobs.json   # ユーザーが所有しているべき
+chmod 600 ~/.hermes/cron/jobs.json   # Your user should own it
 ```
 
 ---
@@ -209,11 +209,11 @@ chmod 600 ~/.hermes/cron/jobs.json   # ユーザーが所有しているべき
 ## 診断コマンド
 
 ```bash
-hermes cron list                    # すべてのジョブ、状態、next_run の時刻を表示
-hermes cron run <job_id>            # 次のティックでスケジュール（テスト用）
-hermes cron edit <job_id>           # 設定の問題を修正
-hermes logs                         # 最近の Hermes ログを表示
-hermes skills list                  # インストール済みスキルを確認
+hermes cron list                    # Show all jobs, states, next_run times
+hermes cron run <job_id>            # Schedule for next tick (for testing)
+hermes cron edit <job_id>           # Fix configuration issues
+hermes logs                         # View recent Hermes logs
+hermes skills list                  # Verify installed skills
 ```
 
 ---

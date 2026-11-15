@@ -10,7 +10,7 @@ description: "すぐに使える自動化ブループリント — スケジュ�
 
 すべてのブループリントは**任意のモデル**で動作します — 特定のプロバイダーに固定されません。
 
-cron構文の代わりにフォームを使うパラメータ化されたブループリントについては、[自動化ブループリントカタログ](../reference/automation-blueprints-catalog.mdx)を参照してください。
+cron構文の代わりにフォームを使うパラメータ化されたブループリントについては、[自動化ブループリントカタログ](/docs/reference/automation-blueprints-catalog)を参照してください。
 
 :::tip 3種類のトリガー
 | トリガー | 仕組み | ツール |
@@ -60,6 +60,7 @@ Format as a clean digest. If no new issues, respond with [SILENT]." \
 ```bash
 hermes webhook subscribe github-pr-review \
   --events "pull_request" \
+  --signature github \
   --prompt "Review this pull request:
 Repository: {repository.full_name}
 PR #{pull_request.number}: {pull_request.title}
@@ -189,10 +190,14 @@ If healthy, keep it brief. If degraded or failed, provide detailed diagnostics."
 CI/CDパイプラインからは次のようにトリガーします:
 
 ```bash
+BODY='{"service":"api","environment":"prod","version":"2.1.0","deployer":"ci","health_url":"https://api.example.com/health"}'
+TS=$(date +%s)
+SIG=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac 'your-secret' | cut -d' ' -f2)
 curl -X POST http://your-server:8644/webhooks/deploy-verify \
   -H "Content-Type: application/json" \
-  -H "X-Hub-Signature-256: sha256=$(echo -n '{"service":"api","environment":"prod","version":"2.1.0","deployer":"ci","health_url":"https://api.example.com/health"}' | openssl dgst -sha256 -hmac 'your-secret' | cut -d' ' -f2)" \
-  -d '{"service":"api","environment":"prod","version":"2.1.0","deployer":"ci","health_url":"https://api.example.com/health"}'
+  -H "X-Webhook-Timestamp: $TS" \
+  -H "X-Webhook-Signature-V2: $SIG" \
+  -d "$BODY"
 ```
 
 ### アラートのトリアージ
@@ -355,6 +360,7 @@ hermes cron create "0 8 * * *" \
 ```bash
 hermes webhook subscribe github-issues \
   --events "issues" \
+  --signature github \
   --prompt "New GitHub issue received:
 Repository: {repository.full_name}
 Issue #{issue.number}: {issue.title}
@@ -380,7 +386,7 @@ CIの失敗を分析し、診断結果をPRに投稿します。
 **トリガー:** GitHubウェブフック
 
 ```yaml
-# config.yaml のルート
+# config.yaml route
 platforms:
   webhook:
     enabled: true
@@ -417,6 +423,7 @@ platforms:
 ```bash
 hermes webhook subscribe auto-port \
   --events "pull_request" \
+  --signature github \
   --prompt "PR merged in the source repository:
 Repository: {repository.full_name}
 PR #{pull_request.number}: {pull_request.title}

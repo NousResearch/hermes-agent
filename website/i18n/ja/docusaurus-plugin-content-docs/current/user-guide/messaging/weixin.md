@@ -7,7 +7,7 @@ description: "iLink Bot APIを介してHermes Agentを個人WeChatアカウン�
 # Weixin（WeChat）
 
 このページの Python 依存関係コマンドは、
-[PM で準備済みのソースチェックアウト](../../reference/package-management.md#developer-workflow)を前提としています。
+[PM で準備済みのソースチェックアウト](/docs/reference/package-management#developer-workflow)を前提としています。
 依存関係を変更した後は、チェックアウトを再アクティベートして Hermes を再起動してください。
 
 Hermesを、Tencentの個人向けメッセージングプラットフォームである[WeChat](https://weixin.qq.com/)（微信）に接続します。アダプターは個人WeChatアカウント向けにTencentの **iLink Bot API** を使用します — これはWeCom（企業向けWeChat）とは別物です。メッセージはロングポーリングで配信されるため、公開エンドポイントやwebhookは不要です。
@@ -36,7 +36,7 @@ QRログインは、Hermesを **iLinkボットのアイデンティティ**（�
 必要な依存関係をインストールします：
 
 ```bash
-# aiohttp とターミナルでのQRコード表示のサポートを含みます
+# Includes aiohttp and terminal QR code support
 python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"
 ```
 
@@ -73,17 +73,17 @@ hermes gateway setup
 ```bash
 WEIXIN_ACCOUNT_ID=your-account-id
 
-# オプション: トークンを上書き（通常はQRログインから自動保存される）
+# Optional: override the token (normally auto-saved from QR login)
 # WEIXIN_TOKEN=your-bot-token
 
-# オプション: アクセスを制限
+# Optional: restrict access
 WEIXIN_DM_POLICY=open
 WEIXIN_ALLOWED_USERS=user_id_1,user_id_2
 
-# オプション: 従来の複数行分割の振る舞いを復元
+# Optional: restore legacy multiline splitting behavior
 # WEIXIN_SPLIT_MULTILINE_MESSAGES=true
 
-# オプション: cron/通知用のホームチャンネル
+# Optional: home channel for cron/notifications
 WEIXIN_HOME_CHANNEL=chat_id
 WEIXIN_HOME_CHANNEL_NAME=Home
 ```
@@ -170,8 +170,8 @@ QRコードをスキャンしたアカウントしかHermesと会話できない
 
 ```bash
 WEIXIN_GROUP_POLICY=allowlist
-# 注意: これは変数名に "USERS" が含まれているにもかかわらず、メンバーのユーザーIDではなく
-# グループチャットIDのカンマ区切りリストです。設定時にこの点を念頭に置いてください。
+# NOTE: this is a comma-separated list of group chat IDs, NOT member user IDs,
+# despite the variable name containing "USERS". Keep this in mind when configuring.
 WEIXIN_GROUP_ALLOWED_USERS=group_id_1,group_id_2
 ```
 

@@ -96,10 +96,10 @@ hermes gateway setup
 次の行を `~/.hermes/.env` に追加します:
 
 ```bash
-# BotFatherから取得したTelegramボットトークン
+# Telegram bot token from BotFather
 TELEGRAM_BOT_TOKEN=7123456789:AAH1bGciOiJSUzI1NiIsInR5cCI6Ikp...
 
-# あなたのTelegramユーザーID（数値）
+# Your Telegram user ID (numeric)
 TELEGRAM_ALLOWED_USERS=123456789
 ```
 
@@ -143,31 +143,31 @@ Telegramを開いてボットを見つけ、メッセージを送信します。
 
 ```bash
 hermes gateway install
-sudo hermes gateway install --system   # Linuxのみ: 起動時に立ち上がるシステムサービス
+sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
 これによりバックグラウンドサービスが作成されます: Linuxではデフォルトでユーザーレベルの **systemd** サービス、macOSでは **launchd** サービス、`--system` を渡した場合はLinuxの起動時システムサービスになります。
 
 ```bash
-# Linux — デフォルトのユーザーサービスを管理
+# Linux — manage the default user service
 hermes gateway start
 hermes gateway stop
 hermes gateway status
 
-# ライブログを表示
+# View live logs
 journalctl --user -u hermes-gateway -f
 
-# SSHログアウト後も実行し続ける
+# Keep running after SSH logout
 sudo loginctl enable-linger $USER
 
-# Linuxサーバー — システムサービス用の明示的なコマンド
+# Linux servers — explicit system-service commands
 sudo hermes gateway start --system
 sudo hermes gateway status --system
 journalctl -u hermes-gateway -f
 ```
 
 ```bash
-# macOS — サービスを管理
+# macOS — manage the service
 hermes gateway start
 hermes gateway stop
 tail -f ~/.hermes/logs/gateway.log
@@ -196,7 +196,7 @@ hermes gateway status
 各チームメンバーのTelegramユーザーIDを集め（[@userinfobot](https://t.me/userinfobot) にメッセージを送ってもらいます）、カンマ区切りのリストとして追加します:
 
 ```bash
-# ~/.hermes/.env 内
+# In ~/.hermes/.env
 TELEGRAM_ALLOWED_USERS=123456789,987654321,555555555
 ```
 
@@ -228,13 +228,13 @@ DMペアリングはより柔軟です — ユーザーIDを事前に集める�
 **ペアリング済みユーザーの管理:**
 
 ```bash
-# 保留中および承認済みの全ユーザーを表示
+# See all pending and approved users
 hermes pairing list
 
-# 特定ユーザーのアクセスを取り消す
+# Revoke someone's access
 hermes pairing revoke telegram 987654321
 
-# 期限切れの保留中コードをクリア
+# Clear expired pending codes
 hermes pairing clear-pending
 ```
 
@@ -351,13 +351,13 @@ partitions above 80%, containers that have restarted, or high memory usage.
 ### スケジュールタスクを管理する
 
 ```bash
-# CLIから
-hermes cron list          # スケジュール済みジョブをすべて表示
-hermes cron status        # スケジューラが稼働中か確認
+# From the CLI
+hermes cron list          # View all scheduled jobs
+hermes cron status        # Check if scheduler is running
 
-# Telegramチャットから
-/cron list                # ジョブを表示
-/cron remove <job_id>     # ジョブを削除
+# From Telegram chat
+/cron list                # View jobs
+/cron remove <job_id>     # Remove a job
 ```
 
 :::warning
@@ -373,7 +373,7 @@ cronジョブのプロンプトは、過去の会話の記憶を持たない完�
 共有のチームボットでは、エージェントのコマンドがホスト上ではなくコンテナ内で実行されるよう、ターミナルバックエンドとしてDockerを使います:
 
 ```bash
-# ~/.hermes/.env 内
+# In ~/.hermes/.env
 TERMINAL_ENV=docker
 TERMINAL_DOCKER_IMAGE=nousresearch/hermes-sandbox:desktop
 ```
@@ -393,13 +393,13 @@ terminal:
 ### ゲートウェイを監視する
 
 ```bash
-# ゲートウェイが稼働中か確認
+# Check if the gateway is running
 hermes gateway status
 
-# ライブログを監視（Linux）
+# Watch live logs (Linux)
 journalctl --user -u hermes-gateway -f
 
-# ライブログを監視（macOS）
+# Watch live logs (macOS)
 tail -f ~/.hermes/logs/gateway.log
 ```
 

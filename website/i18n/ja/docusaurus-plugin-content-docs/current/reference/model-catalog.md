@@ -29,7 +29,7 @@ https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
     "openrouter": {
       "metadata": {},
       "models": [
-        {"id": "z-ai/glm-5.2",         "description": "default", "default": true},
+        {"id": "z-ai/glm-5.3",         "description": "default", "default": true},
         {"id": "moonshotai/kimi-k3",   "description": "recommended", "metadata": {}},
         {"id": "openai/gpt-5.4",       "description": ""}
       ]
@@ -37,7 +37,7 @@ https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
     "nous": {
       "metadata": {},
       "models": [
-        {"id": "z-ai/glm-5.2", "default": true},
+        {"id": "z-ai/glm-5.3", "default": true},
         {"id": "anthropic/claude-opus-4.7"},
         {"id": "moonshotai/kimi-k3"}
       ]
@@ -115,8 +115,8 @@ model_catalog:
 メンテナー向け:
 
 ```bash
-# リポジトリ内のハードコードされたリストから再生成します（hermes_cli/models.py の
-# OPENROUTER_MODELS または _PROVIDER_MODELS["nous"] を編集した後、マニフェストを同期状態に保ちます）。
+# Re-generate from the in-repo hardcoded lists (keeps manifest in sync after
+# editing OPENROUTER_MODELS or _PROVIDER_MODELS["nous"] in hermes_cli/models.py).
 python scripts/build_model_catalog.py
 ```
 

@@ -9,7 +9,11 @@ sidebar_position: 7
 
 [OpenRouter](https://openrouter.ai) を LLM プロバイダーとして使用する場合、Hermes Agent は**プロバイダールーティング**をサポートします — どの基盤 AI プロバイダーがリクエストを処理し、それらをどのように優先付けするかをきめ細かく制御できます。
 
-OpenRouter は多数のプロバイダー（例: Anthropic、Google、AWS Bedrock、Together AI）にリクエストをルーティングします。プロバイダールーティングを使うと、コスト・速度・品質を最適化したり、特定のプロバイダー要件を強制したりできます。
+OpenRouter は多数のプロバイダー（例: Anthropic、Google、AWS Bedrock、Together AI）にリクエストをルーティングします。プロバイダールーティングを使うと、コスト・速度・品質を最適化したり、特定のプロバイダー要件を強制したりできます。2 つのゲートウェイを比較したい場合は、[Nous Portal vs OpenRouter](https://portal.nousresearch.com/compare/openrouter) で料金、無料モデル、プランを確認できます。
+
+:::note
+[Nous Portal](/docs/integrations/nous-portal) はモデルごとに中央でルーティングを決定し、呼び出し元が指定したプロバイダー設定を受け付けません。Hermes は Portal に `provider` オブジェクトを送信しないため、そこでは `provider_routing` は単に無視されます。
+:::
 
 ## 設定
 
@@ -17,16 +21,16 @@ OpenRouter は多数のプロバイダー（例: Anthropic、Google、AWS Bedroc
 
 ```yaml
 provider_routing:
-  sort: "price"           # プロバイダーのランク付け方法
-  only: []                # ホワイトリスト: これらのプロバイダーのみ使用
-  ignore: []              # ブラックリスト: これらのプロバイダーは決して使用しない
-  order: []               # 明示的なプロバイダー優先順位
-  require_parameters: false  # すべてのパラメータをサポートするプロバイダーのみ使用
-  data_collection: null   # データ収集の制御（"allow" または "deny"）
+  sort: "price"           # How to rank providers
+  only: []                # Whitelist: only use these providers
+  ignore: []              # Blacklist: never use these providers
+  order: []               # Explicit provider priority order
+  require_parameters: false  # Only use providers that support all parameters
+  data_collection: null   # Control data collection ("allow" or "deny")
 ```
 
 :::info
-プロバイダールーティングは OpenRouter を使用する場合にのみ適用されます。直接のプロバイダー接続（例: Anthropic API への直接接続）では効果がありません。
+プロバイダールーティングは OpenRouter を使用する場合にのみ適用されます。Nous Portal や直接のプロバイダー接続（例: Anthropic API への直接接続）では効果がありません。
 :::
 
 ## オプション
@@ -48,13 +52,13 @@ provider_routing:
 
 ### `only`
 
-プロバイダー名のホワイトリスト。設定すると、**これらのプロバイダーのみ**が使用されます。それ以外はすべて除外されます。
+プロバイダースラッグのホワイトリスト。設定すると、**これらのプロバイダーのみ**が使用されます。それ以外はすべて除外されます。各プロバイダーについて OpenRouter が表示する小文字のスラッグを使用してください。
 
 ```yaml
 provider_routing:
   only:
-    - "Anthropic"
-    - "Google"
+    - "anthropic"
+    - "google"
 ```
 
 ### `ignore`
@@ -64,8 +68,8 @@ provider_routing:
 ```yaml
 provider_routing:
   ignore:
-    - "Together"
-    - "DeepInfra"
+    - "together"
+    - "deepinfra"
 ```
 
 ### `order`
@@ -75,9 +79,9 @@ provider_routing:
 ```yaml
 provider_routing:
   order:
-    - "Anthropic"
-    - "Google"
-    - "AWS Bedrock"
+    - "anthropic"
+    - "google"
+    - "amazon-bedrock"
 ```
 
 ### `require_parameters`
@@ -97,6 +101,31 @@ provider_routing:
 provider_routing:
   data_collection: "deny"
 ```
+
+### モデルごとのオーバーライド（`models`） {#per-model-overrides-models}
+
+モデルごとに異なるプロバイダーセットをピン留めします。`models` 配下のキーはモデル ID で、各エントリは同じ
+`sort` / `only` / `ignore` / `order` / `require_parameters` / `data_collection` キーを取り、そのモデルに対してのみ
+フラットな値をオーバーライドします。モデルごとに設定しなかった項目は、フラットなデフォルトにフォールスルーします。
+
+```yaml
+provider_routing:
+  sort: "price"                      # applies to every model
+  models:
+    "openai/gpt-6-astra":
+      only: ["openai"]               # never let a reseller serve this one
+    "anthropic/claude-fable-5.1":
+      only: ["anthropic"]
+    "moonshotai/kimi-k2.6":
+      order: ["moonshotai", "together"]
+      sort: "throughput"
+```
+
+マッチングは `agent.reasoning_overrides` と同様に表記ゆれを許容します（`claude-fable-5.1` / `claude-fable-5-1`、
+`openrouter/` プレフィックスの有無を問わない）。オーバーライドはエージェントが *現在* 使用しているモデルに従うため、
+`/model` による切り替え、フォールバックの有効化、cron ジョブ、別のモデルで動く委任サブエージェントは、それぞれ独自の
+ピン留めを得ます。これらのキーは `config.yaml` を直接編集してください: モデル ID にはドットが含まれ、`hermes config set`
+はそれをパス区切りとして読み取ります。
 
 ## 実践例
 
@@ -134,7 +163,7 @@ provider_routing:
 ```yaml
 provider_routing:
   only:
-    - "Anthropic"
+    - "anthropic"
 ```
 
 ### 特定プロバイダーの回避
@@ -144,8 +173,8 @@ provider_routing:
 ```yaml
 provider_routing:
   ignore:
-    - "Together"
-    - "Lepton"
+    - "together"
+    - "lepton"
   data_collection: "deny"
 ```
 
@@ -156,27 +185,27 @@ provider_routing:
 ```yaml
 provider_routing:
   order:
-    - "Anthropic"
-    - "Google"
+    - "anthropic"
+    - "google"
   require_parameters: true
 ```
 
 ## 仕組み
 
-プロバイダールーティングの設定は、すべての API 呼び出しで `extra_body.provider` フィールドを介して OpenRouter API に渡されます。これは次の両方に適用されます:
+プロバイダールーティングの設定は、エージェントのチャットリクエストと反復上限時のサマリーにおいて、`extra_body.provider` フィールドを介して OpenRouter に渡されます。（`extra_body` は OpenAI Python SDK の引数で、JSON リクエストではトップレベルの `provider` オブジェクトになります。）圧縮やタイトル生成などの補助タスクは、`auxiliary.<task>.extra_body` で個別に設定します。
 
 - **CLI モード** — `~/.hermes/config.yaml` で設定され、起動時に読み込まれます
-- **ゲートウェイモード** — 同じ設定ファイルで、ゲートウェイ起動時に読み込まれます
+- **ゲートウェイモード** — 同じ設定ファイルです。メッセージングプラットフォームのターンは、ゲートウェイ起動時に読み込まれたコピーを使用します。ローカルの `hermes chat` / TUI セッションは、ゲートウェイがセッションを作成する時点で自身のプロファイルから読み込みます: 編集はゲートウェイを再起動せずに次の新しいセッションに適用され、開いているセッションは作成時の値を保持します
 
 ルーティング設定は `config.yaml` から読み込まれ、`AIAgent` の作成時にパラメータとして渡されます:
 
 ```
-providers_allowed  ← provider_routing.only から
-providers_ignored  ← provider_routing.ignore から
-providers_order    ← provider_routing.order から
-provider_sort      ← provider_routing.sort から
-provider_require_parameters ← provider_routing.require_parameters から
-provider_data_collection    ← provider_routing.data_collection から
+providers_allowed  ← from provider_routing.only
+providers_ignored  ← from provider_routing.ignore
+providers_order    ← from provider_routing.order
+provider_sort      ← from provider_routing.sort
+provider_require_parameters ← from provider_routing.require_parameters
+provider_data_collection    ← from provider_routing.data_collection
 ```
 
 :::tip
@@ -185,7 +214,7 @@ provider_data_collection    ← provider_routing.data_collection から
 ```yaml
 provider_routing:
   sort: "price"
-  ignore: ["Together"]
+  ignore: ["together"]
   require_parameters: true
   data_collection: "deny"
 ```
@@ -193,8 +222,8 @@ provider_routing:
 
 ## デフォルトの動作
 
-`provider_routing` セクションが設定されていない場合（デフォルト）、OpenRouter は独自のデフォルトルーティングロジックを使用し、一般にコストと可用性を自動的にバランスします。
+`provider_routing` セクションが設定されていない場合（デフォルト）、アグリゲーターは独自のデフォルトルーティングロジックを使用し、一般にコストと可用性を自動的にバランスします。
 
 :::tip プロバイダールーティング vs. フォールバックモデル
-プロバイダールーティングは、**OpenRouter 内のどのサブプロバイダー**がリクエストを処理するかを制御します。プライマリモデルが失敗したときに、まったく別のプロバイダーへ自動フェイルオーバーする方法については、[フォールバックプロバイダー](/docs/user-guide/features/fallback-providers)を参照してください。
+プロバイダールーティングは、**OpenRouter 内のどのサブプロバイダー**がリクエストを処理するかを制御します。プライマリモデルが失敗したときに、まったく別のプロバイダーへ自動フェイルオーバーする方法については、[フォールバックプロバイダー](./fallback-providers.md)を参照してください。
 :::

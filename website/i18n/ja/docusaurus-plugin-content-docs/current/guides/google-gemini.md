@@ -1,14 +1,12 @@
 ---
 sidebar_position: 16
 title: "Google Gemini"
-description: "Hermes AgentをGoogle Geminiで使う — ネイティブAI Studio API、APIキーのセットアップ、OAuthオプション、ツール呼び出し、ストリーミング、クォータガイダンス"
+description: "Hermes AgentをGoogle Geminiで使う — ネイティブAI Studio API、APIキーのセットアップ、ツール呼び出し、ストリーミング、クォータガイダンス"
 ---
 
 # Google Gemini
 
-Hermes Agentは、**Google AI Studio / Gemini API** を使ってGoogle Geminiをネイティブプロバイダーとしてサポートします（OpenAI互換エンドポイントではありません）。これにより、Hermesは内部のOpenAI形式のメッセージとツールループを、ツール呼び出し、ストリーミング、マルチモーダル入力、Gemini固有のレスポンスメタデータを保持しながら、Geminiのネイティブ `generateContent` APIに変換できます。
-
-Hermesは、GoogleのGemini CLIと同じCloud Code Assistバックエンドを使用する別の **Google Gemini（OAuth）** プロバイダーもサポートしています。最もリスクの低い公式APIパスには、APIキープロバイダー（`gemini`）を使用してください。
+Hermes Agentは、**Google AI Studio / Gemini API** を使ってGoogle Geminiをネイティブプロバイダーとしてサポートします（OpenAI互換エンドポイントではありません）。これにより、Hermesは内部のOpenAI形式のメッセージとツールループを、ツール呼び出し、ストリーミング、マルチモーダル入力、Gemini固有のレスポンスメタデータを保持しながら、GeminiのネイティブAPI（Gemini 3以降では[Interactions API](#interactions-api)、それより古いモデルでは `generateContent`）に変換できます。
 
 ## 前提条件
 
@@ -23,16 +21,16 @@ Hermesは、GoogleのGemini CLIと同じCloud Code Assistバックエンドを�
 ## クイックスタート
 
 ```bash
-# Gemini APIキーを追加する
+# Add your Gemini API key
 echo "GOOGLE_API_KEY=..." >> ~/.hermes/.env
 
-# プロバイダーとしてGeminiを選択する
+# Select Gemini as your provider
 hermes model
-# → "More providers..." → "Google AI Studio" を選択
-# → Hermesがキーのティアを確認し、Geminiモデルを表示
-# → モデルを選択
+# → Choose "More providers..." → "Google AI Studio"
+# → Hermes checks your key tier and shows Gemini models
+# → Select a model
 
-# チャットを開始する
+# Start chatting
 hermes chat
 ```
 
@@ -40,7 +38,7 @@ hermes chat
 
 ```yaml
 model:
-  default: gemini-3-flash-preview
+  default: gemini-3.7-flash
   provider: gemini
   base_url: https://generativelanguage.googleapis.com/v1beta
 ```
@@ -51,7 +49,7 @@ model:
 
 ```yaml
 model:
-  default: gemini-3-flash-preview
+  default: gemini-3.7-flash
   provider: gemini
   base_url: https://generativelanguage.googleapis.com/v1beta
 ```
@@ -78,6 +76,8 @@ Hermesはこのエンドポイントを検出し、ネイティブGeminiアダ�
 - ツール結果 → Gemini `functionResponse` パーツ
 - ストリーミング応答 → Hermesループ用のOpenAI形式のストリームチャンク
 
+`"type": ["number", "null"]` のようなツールパラメータの型配列は、Geminiのスカラー型と `nullable` の形式に変換されます。複数の型のユニオンは、ネストされたプロパティや配列の要素も含め、`anyOf` によってすべての選択肢が保持されます。これは自動的に行われ、MCPサーバーやプロバイダーの設定を変更する必要はありません。
+
 :::note Gemini 3のthought signature
 Gemini 3のツール使用では、Hermesは関数呼び出しパーツに付随する `thoughtSignature` の値を保持し、次のツールターンで再生します。これは複数ステップのエージェントワークフローにおける検証上重要なパスをカバーします。
 
@@ -92,7 +92,7 @@ GoogleはOpenAI互換のエンドポイントも公開しています。
 https://generativelanguage.googleapis.com/v1beta/openai/
 ```
 
-Hermesのエージェントセッションでは、上記のネイティブGeminiエンドポイントを優先してください。Hermesにはネイティブのアダプターが含まれているため、複数ターンのツール使用、ツール呼び出しの結果、ストリーミング、マルチモーダル入力、Geminiのレスポンスメタデータを、Geminiの `generateContent` APIに直接マッピングできます。OpenAI互換エンドポイントは、OpenAI APIの互換性が特に必要な場合に依然として有用です。
+Hermesのエージェントセッションでは、上記のネイティブGeminiエンドポイントを優先してください。Hermesにはネイティブのアダプターが含まれているため、複数ターンのツール使用、ツール呼び出しの結果、ストリーミング、マルチモーダル入力、Geminiのレスポンスメタデータを、GeminiのネイティブAPIに直接マッピングできます。OpenAI互換エンドポイントは、OpenAI APIの互換性が特に必要な場合に依然として有用です。
 
 以前 `GEMINI_BASE_URL` を `/openai` のURLに設定していた場合は、それを削除するか変更してください。
 
@@ -100,16 +100,36 @@ Hermesのエージェントセッションでは、上記のネイティブGemin
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 ```
 
-### OAuthプロバイダー
+GoogleホストのホストルートのベースURLは自動的に正規化されます。URLがAPIバージョンのセグメント（`v1beta`、`v1alpha`、`v1` など）で終わっていない場合、Hermesが `/v1beta` を付加するため、`GEMINI_BASE_URL=https://generativelanguage.googleapis.com` は `/v1beta` サフィックスを明記した場合と同じように動作します。同じ正規化はGemini TTSのベースURL（`tts.gemini.base_url`）にも適用されます。チャットリクエストがネイティブGeminiのパスを通るのは、ベースURLが `generativelanguage.googleapis.com` または後述のVertex AI expressホストを指している場合のみです。別のホスト上のプロキシはOpenAI互換エンドポイントとして扱われるため、`/openai` 形式のURLで設定してください。
 
-Hermesには `google-gemini-cli` プロバイダーもあります。
+### Interactions API
 
-```bash
-hermes model
-# → "Google Gemini (OAuth)" を選択
+Google AI Studioでは、HermesはGemini 3以降のモデル（および `gemini-*-latest` エイリアス）を、Googleがそれらに推奨するAPIである[Interactions API](https://aistudio.google.com/docs/interactions-overview)経由で送信します。Gemini 2.xとGemmaモデルは `generateContent` を使用します。
+
+APIは、すべてのモデルに対して、またはモデルごとに自分で選択できます。
+
+```yaml
+providers:
+  gemini:
+    gemini_api: generate_content    # every Gemini model
+    models:
+      gemini-3.8-flash:
+        gemini_api: interactions    # except this one
 ```
 
-これはブラウザPKCEログインとCloud Code Assistバックエンドを使用します。Gemini CLIスタイルのOAuthを望むユーザーには有用な場合がありますが、GoogleがサードパーティソフトウェアからのGemini CLI OAuthクライアントの使用をポリシー違反とみなす可能性があるため、Hermesは明示的な警告を表示します。本番環境または最もリスクの低い利用には、上記のAPIキープロバイダーを優先してください。
+各設定には `interactions`、`generate_content`、または `auto`（デフォルト。上記の動作）を指定します。モデルごとの設定はプロバイダー全体の設定より優先されます。変更は次のリクエストから適用され、再起動は不要です。Gemini 2.xはトークンバジェットでthinkingを制御しますが、Interactions APIにはその設定がないため、2.xモデルを強制的に `interactions` にすると、そのバジェットは失われます。
+
+HermesはInteractionsをステートレス（`store: false`）で呼び出します。`generateContent` と同様に、リクエストごとに会話全体を送信するため、Googleは会話のコピーを保持せず、プロンプトキャッシュも同じように機能します。例外はlong decode（`xhigh` 以上のeffortでのGemini 4）です。Googleはこうした複数リクエストにまたがる回答を、保存されたinteractionからのみ継続するため、それらのリクエストは `store: true` を設定し、Googleは標準の期間（有料ティアでは55日、無料ティアでは1日）それらを保持します。InteractionsはAI Studioのホスト（`generativelanguage.googleapis.com`）でのみ利用できます。Vertex AI expressやプロキシのベースURLでは常に `generateContent` が使用されます。
+
+### Vertex AI Expressモードのキー
+
+Googleは現在、Google AI StudioとVertex AI expressモードの**両方**に `AQ.…` で始まるキーを発行しています（従来の `AIza…` 形式のStudioキーは段階的に廃止されています）。そのため、キーのプレフィックスでは対象のサーフェスを判別できなくなりました。Hermesはキーの形でルートを変更することはなく、設定されたベースURLがサーフェスを決定します。デフォルトのAI Studioホストを使う場合は、`GEMINI_API_KEY` を設定し、`GEMINI_BASE_URL` は未設定のままにします。Vertex AI expressモードのキーの場合は、`GEMINI_BASE_URL` を `https://aiplatform.googleapis.com`（`/v1beta1` の有無は問いません）に設定すると、Hermesが `publishers/google` の形式に補完します。各サーフェスは自身のキーのみを受け付けます。`403 PERMISSION_DENIED` は通常、キーとホストの組み合わせが食い違っていることを意味し、Hermesはもう一方のサーフェスを示すガイダンスを付け加えます。その他のホスト（プロキシ）上のベースURLが書き換えられることはありません。ExpressキーはOAuthベースの[Vertex AIプロバイダー](/docs/guides/google-vertex)とは別物で、こちらはAPIキーを必要としません。
+
+`global` ロケーションでのみ提供されるモデル（Gemini 4 Argon）は、`us-central1` にルーティングされる素のexpressホストからは到達できません。そうしたモデルでは、ベースURLをプロジェクトスコープの形式 `https://aiplatform.googleapis.com/v1beta1/projects/<project>/locations/global` に設定すると、Hermesが同じように `…/publishers/google` に補完します。
+
+:::warning 既存のexpressキー利用者向けのアップグレードに関する注意
+以前のHermesリリースは `AQ.` プレフィックスを検出し、そのようなキーを自動的に `aiplatform.googleapis.com` にルーティングしていたため、ドキュメント上のセットアップは「`GEMINI_API_KEY` にexpressキーを設定し、`GEMINI_BASE_URL` は未設定のままにする」というものでした。この自動ルーティングは廃止されました。`GEMINI_BASE_URL` が未設定の場合、チャット、`hermes doctor`、TTSのすべてのリクエストはAI Studioホストに送られ、Vertexのexpressキーはそこで `403 PERMISSION_DENIED` になります。`~/.hermes/.env` に `GEMINI_BASE_URL=https://aiplatform.googleapis.com` を追加する（またはプロバイダーに `base_url` を設定する）操作を一度行い、再起動してください。
+:::
 
 ## 利用可能なモデル
 
@@ -117,20 +137,43 @@ hermes model
 
 | モデル | ID | 備考 |
 |-------|----|-------|
-| Gemini 3.1 Pro Preview | `gemini-3.1-pro-preview` | 利用可能な場合、最も高性能なプレビューモデル |
-| Gemini 3 Pro Preview | `gemini-3-pro-preview` | 強力な推論とコーディングのモデル |
-| Gemini 3 Flash Preview | `gemini-3-flash-preview` | 推奨されるデフォルト。速度と性能のバランス |
-| Gemini 3.1 Flash Lite Preview | `gemini-3.1-flash-lite-preview` | 利用可能な場合、最速/最低コストのオプション |
+| Gemini 4 Hydrogen | `gemini-4-hydrogen` | 日常的なコーディングとエージェント的な作業向けの高速なGemini 4モデル。Argonと同じウィンドウとlong decodeに加え、`xhigh` のthinkingレベルを備えます。無料ティアと有料ティア |
+| Gemini 4 Carbon | `gemini-4-carbon` | 最も強力な推論モデル。Argonよりもターンごとに多くのthinkingを行い、ウィンドウ、long decode、価格はArgonと同じです。有料ティアのみ |
+| Gemini 4 Argon | `gemini-4-argon` | フラッグシップの推論モデル。入力と出力で共有の1Mウィンドウ、最大1M出力トークンのlong decode |
+| Gemini 3.8 Flash | `gemini-3.8-flash` | 長期的なエージェント作業やコーディング作業向けの、最も高性能なFlashモデル |
+| Gemini 3.7 Flash | `gemini-3.7-flash` | 推奨されるデフォルト。速度、性能、マルチモーダル理解のバランス |
+| Gemini 3.1 Pro Preview | `gemini-3.1-pro-preview` | 推論、数学、コーディングで最も高性能なモデル |
+| Gemini 3.5 Flash Lite | `gemini-3.5-flash-lite` | 軽量なタスク向けの最速かつ最低コストのオプション |
+| Gemini 2.5 Flash | `gemini-2.5-flash` | thinking機能を備えた前世代の高速モデル |
+| Gemini 2.5 Pro | `gemini-2.5-pro` | 前世代の複雑な推論モデル |
 
 モデルの利用可否は時間とともに変化します。モデルが消えたり、あなたのキーで有効化されていない場合は、`hermes model` を再度実行し、現在のリストから1つ選んでください。
 
 :::info モデルID
-`provider: gemini` の場合は、`google/gemini-3-flash-preview` のようなOpenRouterスタイルのIDではなく、`gemini-3-flash-preview` のようなGeminiのネイティブモデルIDを使用してください。
+`provider: gemini` の場合は、`google/gemini-3.7-flash` のようなOpenRouterスタイルのIDではなく、`gemini-3.7-flash` のようなGeminiのネイティブモデルIDを使用してください。
 :::
+
+### Gemini 4 Argon: Reasoning effortとlong decode
+
+以下のすべてについて、Gemini 4 CarbonはArgonと同じように動作します。Gemini 4 Argonは常にthinkingを行います。Hermesはreasoning effort（`/reasoning`、`agent.reasoning_effort`）をその `thinkingLevel` にマッピングします。
+
+| Hermesのeffort | `thinkingLevel` | 合計出力バジェット |
+|---------------|-----------------|---------------------|
+| `none`、`minimal`、`low` | `low`（`none` ではthoughtは非表示） | リクエストごとの上限 |
+| `medium`（Googleのデフォルト） | `medium` | リクエストごとの上限 |
+| `high` | `high` | リクエストごとの上限 |
+| `xhigh` | `high` | 262,144トークン（long decode） |
+| `max`、`ultra` | `high` | 1,048,576トークンから入力を引いた値（long decode） |
+
+Gemini 4 Hydrogenには4番目のレベル `xhigh` があります。Hydrogenでは、Hermesは `xhigh`、`max`、`ultra` のeffortに対して `xhigh` を送信し、出力バジェットは上記と同じです。Hydrogenに対するGoogle自身のデフォルトレベルは `high` です。
+
+long decodeを使わない場合、1回のリクエストはストリーミング時に65,536出力トークン（非ストリーミング時は32,768）で停止し、これにはthinkingも含まれます。`xhigh` または `max` では、Hermesは `maxOutputTokens` を引き上げ、リクエストがバジェットを残したままリクエストごとの上限に達した場合（`finishReason: CONTINUATION`）、モデルが完了するまでGoogleの `continuationToken` を付けて同じリクエストを再送信します。これらのホップは1つの応答に結合されます。
+
+ホップをまたぐ使用量は、Googleの課金方法に従って報告されます。各ホップはプロンプトとそれまでの出力を再度読み込むため、合計された入力数は実際のコンテキストよりもはるかに大きくなります。Hermesは合計値で料金を計算しますが、コンテキスト圧縮とコンテキストメーターには最初のホップのプロンプトサイズを渡すため、long decodeのターンが早期の圧縮を引き起こすことはありません。long decodeはネイティブエンドポイント（AI StudioとVertex AI express）でのみ実行されます。Googleの `/openai` 互換エンドポイント、OpenRouter、OAuthの[Vertex AIプロバイダー](/docs/guides/google-vertex)では、リクエストごとの上限で停止します。
 
 ### 最新エイリアス
 
-Googleは、ProとFlashのGeminiファミリー向けに移動するエイリアスを公開しています。`gemini-pro-latest` と `gemini-flash-latest` は、Hermesの設定を変更せずにGoogleにモデルを自動的に進化させてほしい場合に便利です。
+Googleは、ProとFlashのGeminiファミリー向けに移動するエイリアスを公開しています。`gemini-pro-latest` と `gemini-flash-latest` は、Hermesの設定を変更せずにGoogleにモデルを自動的に進化させてほしい場合に便利です。新しいモデルで料金体系が異なる場合、利用料金に影響する可能性があることに注意してください。
 
 | エイリアス | 現在の追跡対象 | 備考 |
 |-------|------------------|-------|
@@ -144,7 +187,7 @@ model:
   base_url: https://generativelanguage.googleapis.com/v1beta
 ```
 
-厳密な再現性が必要な場合は、`gemini-3.1-pro-preview` や `gemini-3-flash-preview` のような明示的なモデルIDを優先してください。
+厳密な再現性が必要な場合は、`gemini-3.1-pro-preview` や `gemini-3.7-flash` のような明示的なモデルIDを優先してください。
 
 ### Gemini API経由のGemma
 
@@ -173,9 +216,9 @@ model:
 会話中に `/model` コマンドを使用します。
 
 ```text
-/model gemini-3-flash-preview
+/model gemini-3.7-flash
 /model gemini-flash-latest
-/model gemini-3-pro-preview
+/model gemini-3.1-pro-preview
 /model gemini-pro-latest
 /model gemma-4-31b-it
 /model gemini-3.1-flash-lite-preview
@@ -192,16 +235,7 @@ hermes doctor
 doctorは次を確認します。
 
 - `GOOGLE_API_KEY` または `GEMINI_API_KEY` が利用可能かどうか
-- `google-gemini-cli` 用のGemini OAuth認証情報が存在するかどうか
 - 設定されたプロバイダーの認証情報が解決できるかどうか
-
-OAuthのクォータ使用状況については、Hermesセッション内で次を実行してください。
-
-```text
-/gquota
-```
-
-`/gquota` は `google-gemini-cli` のOAuthプロバイダーに適用され、AI StudioのAPIキープロバイダーには適用されません。
 
 ## ゲートウェイ（メッセージングプラットフォーム）
 
@@ -222,7 +256,7 @@ Hermesが使用可能なAPIキーを見つけられませんでした。次の�
 
 ```bash
 GOOGLE_API_KEY=...
-# または
+# or
 GEMINI_API_KEY=...
 ```
 
@@ -264,17 +298,13 @@ GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 ```
 
-### OAuthログインの警告
-
-`google-gemini-cli` プロバイダーは、Gemini CLI / Cloud Code AssistのOAuthフローを使用します。これは公式のAI Studio APIキーのパスとは異なるため、Hermesは開始前に警告します。公式のAPIキー連携には、`GOOGLE_API_KEY` を伴う `provider: gemini` を使用してください。
-
 ### ツール呼び出しがスキーマエラーで失敗する
 
 Hermesをアップグレードし、`hermes model` を再実行してください。ネイティブGeminiアダプターは、Geminiのより厳格な関数宣言形式に合わせてツールスキーマをサニタイズします。古いビルドやカスタムエンドポイントではそうでない場合があります。
 
 ## 関連
 
-- [AIプロバイダー](/docs/integrations/providers)
-- [設定](/docs/user-guide/configuration)
-- [フォールバックプロバイダー](/docs/user-guide/features/fallback-providers)
-- [AWS Bedrock](/docs/guides/aws-bedrock) — AWS認証情報を使用したネイティブなクラウドプロバイダー連携
+- [AIプロバイダー](../integrations/providers.md)
+- [設定](../user-guide/configuration.md)
+- [フォールバックプロバイダー](../user-guide/features/fallback-providers.md)
+- [AWS Bedrock](./aws-bedrock.md) — AWS認証情報を使用したネイティブなクラウドプロバイダー連携

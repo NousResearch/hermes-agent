@@ -43,17 +43,18 @@ platforms:
   webhook:
     enabled: true
     extra:
-      port: 8644          # デフォルト。このポートを別のサービスが使っている場合は変更
-      rate_limit: 30      # ルートごとの1分あたり最大リクエスト数（グローバルな上限ではない）
+      port: 8644          # default; change if another service occupies this port
+      rate_limit: 30      # max requests per minute per route (not a global cap)
 
       routes:
         github-pr-review:
-          secret: "your-webhook-secret-here"   # GitHubのwebhookシークレットと完全に一致させること
+          secret: "your-webhook-secret-here"   # must match the GitHub webhook secret exactly
+          signature: github                    # accept only X-Hub-Signature-256 on this route
           events:
             - pull_request
 
-          # エージェントはレビュー前に実際のdiffを取得するよう指示される。
-          # {number} と {repository.full_name} はGitHubのペイロードから解決される。
+          # The agent is instructed to fetch the actual diff before reviewing.
+          # {number} and {repository.full_name} are resolved from the GitHub payload.
           prompt: |
             A pull request event was received (action: {action}).
 
@@ -166,7 +167,7 @@ curl -s -X POST http://localhost:8644/webhooks/github-pr-review \
   -H "X-GitHub-Event: pull_request" \
   -H "X-Hub-Signature-256: $SIG" \
   -d "$BODY"
-# 期待される結果: {"status":"accepted","route":"github-pr-review","event":"pull_request","delivery_id":"..."}
+# Expected: {"status":"accepted","route":"github-pr-review","event":"pull_request","delivery_id":"..."}
 ```
 
 その後、エージェントの実行を監視します：
@@ -214,6 +215,7 @@ platforms:
       routes:
         github-pr-review:
           secret: "your-webhook-secret-here"
+          signature: github
           events: [pull_request]
           prompt: |
             A pull request event was received (action: {action}).
@@ -243,17 +245,17 @@ platforms:
 ルート内の `deliver` と `deliver_extra` フィールドを、対象のプラットフォームに置き換えます：
 
 ```yaml
-# platforms.webhook.extra.routes.<route-name>: の中
+# Inside platforms.webhook.extra.routes.<route-name>:
 
 # Slack
 deliver: slack
 deliver_extra:
-  chat_id: "C0123456789"   # SlackチャンネルID（省略すると設定済みのホームチャンネルを使用）
+  chat_id: "C0123456789"   # Slack channel ID (omit to use the configured home channel)
 
 # Discord
 deliver: discord
 deliver_extra:
-  chat_id: "987654321012345678"  # DiscordチャンネルID（省略するとホームチャンネルを使用）
+  chat_id: "987654321012345678"  # Discord channel ID (omit to use home channel)
 ```
 
 対象のプラットフォームもゲートウェイで有効化され接続されている必要があります。`chat_id` を省略すると、応答はそのプラットフォームの設定済みホームチャンネルに送信されます。
@@ -264,11 +266,12 @@ deliver_extra:
 
 ## GitLabのサポート
 
-同じアダプターはGitLabでも動作します。GitLabは認証に `X-Gitlab-Token` を使用します（HMACではなく単純な文字列一致） — Hermesは両方を自動的に処理します。
+同じアダプターはGitLabでも動作します。GitLabは `X-Gitlab-Token`（HMACではなく単純な文字列一致）で認証するか、署名トークンが設定されている場合はStandard Webhooksの `webhook-signature` で認証します。ルートのピンを `signature: gitlab` に変更してください: `signature: github` のままのルートは、正しいシークレットであってもすべてのGitLabの配信を `401` で拒否します。
 
 イベントフィルタリングについては、GitLabは `X-GitLab-Event` を `Merge Request Hook`、`Push Hook`、`Pipeline Hook` のような値に設定します。`events` には正確なヘッダー値を使用してください：
 
 ```yaml
+signature: gitlab
 events:
   - Merge Request Hook
 ```
@@ -311,19 +314,19 @@ platforms:
   webhook:
     enabled: true
     extra:
-      port: 8644               # リッスンポート（デフォルト: 8644）
-      secret: ""               # オプションのグローバルフォールバックシークレット
-      rate_limit: 30           # ルートごとの1分あたりリクエスト数
-      max_body_bytes: 1048576  # ペイロードサイズ上限（バイト単位、デフォルト: 1 MB）
+      port: 8644               # listen port (default: 8644)
+      secret: ""               # optional global fallback secret
+      rate_limit: 30           # requests per minute per route
+      max_body_bytes: 1048576  # payload size limit in bytes (default: 1 MB)
 
       routes:
         <route-name>:
           secret: "required-per-route"
-          events: []            # [] = すべて受け付ける。それ以外は X-GitHub-Event の値をリスト化
-          prompt: ""            # {field} / {nested.field} がペイロードから解決される
-          skills: []            # 最初に一致したスキルが読み込まれる（1つのみ）
+          events: []            # [] = accept all; otherwise list X-GitHub-Event values
+          prompt: ""            # {field} / {nested.field} resolved from payload
+          skills: []            # first matching skill is loaded (only one)
           deliver: "log"        # log | github_comment | telegram | discord | slack | signal | sms
-          deliver_extra: {}     # github_comment には repo + pr_number、それ以外には chat_id
+          deliver_extra: {}     # repo + pr_number for github_comment; chat_id for others
 ```
 
 ---

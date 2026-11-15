@@ -33,13 +33,13 @@ Hermes Agent は、[MiniMax ポータル](https://www.minimax.io) と同じク�
 ## クイックスタート
 
 ```bash
-# プロバイダーとモデルのピッカーを起動
+# Launch the provider and model picker
 hermes model
-# → プロバイダーリストから "MiniMax (OAuth)" を選択
-# → Hermes が MiniMax 認可ページをブラウザで開く
-# → ブラウザでアクセスを承認
-# → モデルを選択（MiniMax-M2.7 または MiniMax-M2.7-highspeed）
-# → チャット開始
+# → Select "MiniMax (OAuth)" from the provider list
+# → Hermes opens your browser to the MiniMax authorization page
+# → Approve access in the browser
+# → Select a model (MiniMax-M2.7 or MiniMax-M2.7-highspeed)
+# → Start chatting
 
 hermes
 ```
@@ -106,8 +106,8 @@ hermes doctor
 
 ```bash
 hermes model
-# → "MiniMax (OAuth)" を選択
-# → モデルリストから選択
+# → Select "MiniMax (OAuth)"
+# → Pick from the model list
 ```
 
 または、モデルを直接設定します:
@@ -140,10 +140,10 @@ model:
 次のすべては `minimax-oauth` に解決されます:
 
 ```bash
-hermes --provider minimax-oauth    # 正式名
-hermes --provider minimax-portal   # エイリアス
-hermes --provider minimax-global   # エイリアス
-hermes --provider minimax_oauth    # エイリアス（アンダースコア形式）
+hermes --provider minimax-oauth    # canonical
+hermes --provider minimax-portal   # alias
+hermes --provider minimax-global   # alias
+hermes --provider minimax_oauth    # alias (underscore form)
 ```
 
 ## 環境変数

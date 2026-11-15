@@ -15,7 +15,7 @@ description: "エージェントの軌跡を大規模に生成 — 並列処理�
 ## クイックスタート
 
 ```bash
-# 基本的なバッチ実行
+# Basic batch run
 python batch_runner.py \
     --dataset_file=data/prompts.jsonl \
     --batch_size=10 \
@@ -23,14 +23,14 @@ python batch_runner.py \
     --model=anthropic/claude-sonnet-4.6 \
     --num_workers=4
 
-# 中断された実行を再開
+# Resume an interrupted run
 python batch_runner.py \
     --dataset_file=data/prompts.jsonl \
     --batch_size=10 \
     --run_name=my_first_run \
     --resume
 
-# 利用可能なツールセット分布を一覧表示
+# List available toolset distributions
 python batch_runner.py --list_distributions
 ```
 
@@ -49,7 +49,7 @@ python batch_runner.py --list_distributions
 ```
 
 エントリにはオプションで次を含められます:
-- `image` または `docker_image`: このプロンプトのサンドボックスで使用するコンテナイメージ（Docker、Modal、Singularity バックエンドで動作）
+- `image` または `docker_image`: このプロンプトのサンドボックスで使用するコンテナイメージ（Docker、Modal、Daytona、および Singularity などのプラグインバックエンドで動作）
 - `cwd`: タスクのターミナルセッションの作業ディレクトリの上書き
 
 ## 設定オプション
@@ -106,12 +106,12 @@ python batch_runner.py --list_distributions
 
 ```text
 data/my_run/
-├── trajectories.jsonl    # 結合された最終出力（すべてのバッチをマージ）
-├── batch_0.jsonl         # 個々のバッチ結果
+├── trajectories.jsonl    # Combined final output (all batches merged)
+├── batch_0.jsonl         # Individual batch results
 ├── batch_1.jsonl
 ├── ...
-├── checkpoint.json       # 再開用チェックポイント
-└── statistics.json       # ツール使用統計の集計
+├── checkpoint.json       # Resume checkpoint
+└── statistics.json       # Aggregate tool usage stats
 ```
 
 ### 軌跡形式

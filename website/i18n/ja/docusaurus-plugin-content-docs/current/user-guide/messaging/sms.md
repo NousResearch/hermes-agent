@@ -8,7 +8,7 @@ description: "Twilio を使って Hermes Agent を SMS チャットボットと�
 # SMS セットアップ（Twilio）
 
 このページの Python 依存関係コマンドは、
-[PM で準備済みのソースチェックアウト](../../reference/package-management.md#developer-workflow)を前提としています。
+[PM で準備済みのソースチェックアウト](/docs/reference/package-management#developer-workflow)を前提としています。
 依存関係を変更した後は、チェックアウトを再アクティベートして Hermes を再起動してください。
 
 Hermes は [Twilio](https://www.twilio.com/) API を通じて SMS に接続します。人々があなたの Twilio 電話番号にテキストを送ると、AI の応答が返ってきます — Telegram や Discord と同じ会話体験を、標準のテキストメッセージ越しに得られます。
@@ -55,10 +55,10 @@ TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_AUTH_TOKEN=your_auth_token_here
 TWILIO_PHONE_NUMBER=+15551234567
 
-# セキュリティ: 特定の電話番号に制限（推奨）
+# Security: restrict to specific phone numbers (recommended)
 SMS_ALLOWED_USERS=+15559876543,+15551112222
 
-# オプション: cron ジョブ配信用のホームチャンネルを設定
+# Optional: set a home channel for cron job delivery
 SMS_HOME_CHANNEL=+15559876543
 ```
 
@@ -78,10 +78,10 @@ Twilio は、受信メッセージをどこに送るかを知る必要があり�
 Hermes をローカルで実行している場合は、トンネルを使って Webhook を公開します:
 
 ```bash
-# cloudflared を使用
+# Using cloudflared
 cloudflared tunnel --url http://localhost:8080
 
-# ngrok を使用
+# Using ngrok
 ngrok http 8080
 ```
 
@@ -91,7 +91,7 @@ ngrok http 8080
 **`SMS_WEBHOOK_URL` を、Twilio で設定したのと同じ URL に設定してください。** これは Twilio の署名検証に必要です — アダプターはこれがないと起動を拒否します:
 
 ```bash
-# Twilio Console の Webhook URL と一致する必要がある
+# Must match the webhook URL in your Twilio Console
 SMS_WEBHOOK_URL=https://your-server:8080/webhooks/twilio
 ```
 
@@ -159,7 +159,7 @@ Hermes は、`X-Twilio-Signature` ヘッダー（HMAC-SHA1）を検証するこ�
 公開 URL のないローカル開発では、検証を無効化できます:
 
 ```bash
-# ローカル開発のみ — 本番では使用しない
+# Local dev only — NOT for production
 SMS_INSECURE_NO_SIGNATURE=true
 ```
 
@@ -168,10 +168,10 @@ SMS_INSECURE_NO_SIGNATURE=true
 **ゲートウェイはデフォルトですべてのユーザーを拒否します。** 許可リストを設定してください:
 
 ```bash
-# 推奨: 特定の電話番号に制限
+# Recommended: restrict to specific phone numbers
 SMS_ALLOWED_USERS=+15559876543,+15551112222
 
-# またはすべてを許可（ターミナルアクセスを持つボットには非推奨）
+# Or allow all (NOT recommended for bots with terminal access)
 SMS_ALLOW_ALL_USERS=true
 ```
 

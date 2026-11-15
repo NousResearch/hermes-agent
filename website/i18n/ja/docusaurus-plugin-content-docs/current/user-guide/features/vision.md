@@ -9,6 +9,10 @@ sidebar_position: 7
 
 Hermes Agent は**マルチモーダルビジョン**をサポートします — クリップボードから画像を CLI に直接貼り付けて、エージェントに分析、説明、または操作を依頼できます。画像は base64 エンコードされたコンテンツブロックとしてモデルに送られるため、ビジョン対応の任意のモデルがそれを処理できます。
 
+:::tip
+Portal のサブスクライバーは、同じカタログでビジョン対応モデル（Claude、GPT-5、Gemini）を利用できます — 追加の認証情報は不要です。[Nous Portal](/docs/integrations/nous-portal) を参照してください。
+:::
+
 ## 仕組み
 
 1. 画像をクリップボードにコピーします（スクリーンショット、ブラウザ画像など）
@@ -117,7 +121,7 @@ sudo pacman -S wl-clipboard
 :::tip Wayland かどうかを確認する方法
 ```bash
 echo $XDG_SESSION_TYPE
-# "wayland" = Wayland、"x11" = X11、"tty" = ディスプレイサーバーなし
+# "wayland" = Wayland, "x11" = X11, "tty" = no display server
 ```
 :::
 
@@ -134,15 +138,15 @@ WSLg（GUI サポート付きの WSL2）を実行している場合、Hermes は
 #### WSL2 クリップボードアクセスの検証
 
 ```bash
-# 1. WSL 検出を確認
+# 1. Check WSL detection
 grep -i microsoft /proc/version
 
-# 2. PowerShell がアクセス可能か確認
+# 2. Check PowerShell is accessible
 which powershell.exe
 
-# 3. 画像をコピーしてから確認
+# 3. Copy an image, then check
 powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::ContainsImage()"
-# "True" を出力するはず
+# Should print "True"
 ```
 
 ## SSH とリモートセッション {#ssh--remote-sessions}
@@ -190,15 +194,67 @@ powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms;
 
 GPT-4 Vision、Claude（ビジョン付き）、Gemini、OpenRouter 経由で提供されるオープンソースのマルチモーダルモデルを含む、ほとんどのモダンなモデルがこの形式をサポートします。
 
-## 画像ルーティング（ビジョン対応 vs テキストのみのモデル）
+## 画像ルーティング（ビジョン対応 vs テキストのみのモデル） {#image-routing-vision-capable-vs-text-only-models}
 
 ユーザーが画像を添付すると — CLI クリップボード、ゲートウェイ（Telegram/Discord の写真）、その他の任意の入口から — Hermes は、現在のモデルが実際にビジョンをサポートしているかどうかに基づいてそれをルーティングします:
 
 | あなたのモデル | 画像に何が起こるか |
 |---|---|
-| **ビジョン対応**（GPT-4V、ビジョン付き Claude、Gemini、Qwen-VL、MiMo-VL など） | 上記のプロバイダーのネイティブ画像コンテンツ形式を使って**実際のピクセル**として送られます。テキスト要約レイヤーなし。 |
-| **テキストのみ**（DeepSeek V3、小型のオープンソースモデル、古いチャット専用エンドポイント） | `vision_analyze` 補助ツールを通じてルーティングされます — 補助のビジョンモデルが画像を説明し、そのテキスト説明が会話に注入されます。 |
+| **ビジョン対応**（GPT-4V、ビジョン付き Claude、Gemini、Qwen-VL、MiMo-VL、DeepSeek Flash / V4.1-Flash など） | 上記のプロバイダーのネイティブ画像コンテンツ形式を使って**実際のピクセル**として送られます。テキスト要約レイヤーなし。 |
+| **テキストのみ**（DeepSeek V4 Pro、DeepSeek V3、小型のオープンソースモデル、古いチャット専用エンドポイント） | `vision_analyze` 補助ツールを通じてルーティングされます — 補助のビジョンモデルが画像を説明し、そのテキスト説明が会話に注入されます。 |
 
 これは設定不要です — Hermes はプロバイダーメタデータで現在のモデルの能力を調べ、正しいパスを自動的に選択します。実際の効果として、セッション途中でビジョンモデルと非ビジョンモデルを切り替えても、ワークフローを変えることなく画像処理が「ちゃんと動く」ようになります。テキストのみのモデルは、拒否せざるを得ない壊れたマルチモーダルペイロードではなく、画像についての一貫したコンテキストを得ます。
 
-テキスト説明のパスをどの補助モデルが処理するかは、`auxiliary.vision` の下で設定可能です — [Auxiliary Models](/docs/user-guide/configuration#auxiliary-models) を参照してください。
+自動選択をオーバーライドするには、`config.yaml` で `agent.image_input_mode` を設定します:
+
+| 値 | 動作 |
+|-------|----------|
+| `auto`（デフォルト） | モデルがビジョンサポートを報告している場合はネイティブのピクセル、そうでなければ `vision_analyze` による説明。明示的な `auxiliary.vision` バックエンド（`auto` 以外の `provider`、または `model` / `base_url`）を設定した場合も、メインモデルがビジョン対応であっても説明パスが選択されます。 |
+| `native` | カタログがモデルをテキストのみとしている場合でも、常にピクセルを添付します。 |
+| `text` | 常に画像を `vision_analyze` の説明器経由でルーティングし、メインリクエストにピクセルを添付しません。 |
+
+これは、バックエンドがテキストは受け付けるがネイティブの画像入力を拒否する場合（例えば、画像リクエストに `server_error` を返すバックエンドを持つ `openai-codex` アカウント）に使う設定です: メインモデルはそのままにして、`auxiliary.vision` を別のビジョン対応プロバイダーとモデルに向けてください（`auxiliary.vision.provider: auto` だと、説明器は同じメインモデルを再び自動検出してしまいます）。それだけで `auto` モードでは画像が説明パスに切り替わります。`agent.image_input_mode: text` は同じ選択を明示的にします。
+
+テキスト説明のパスをどの補助モデルが処理するかは、`auxiliary.vision` の下で設定可能です — [補助モデル](../configuration.md#auxiliary-models) を参照してください。
+
+### `vision_analyze` も同じ二重の動作を持つ {#vision_analyze-has-the-same-dual-behavior}
+
+`vision_analyze` ツール自体も同じルーティングに従います。アクティブなメインモデルがビジョン対応で、**かつ** そのプロバイダーがツール結果内の画像コンテンツをサポートしている場合（現在は Anthropic、OpenAI、Azure-OpenAI、Gemini 3.x のスタック）、`vision_analyze` は補助の説明器をショートカットし、生の画像ピクセルをマルチモーダルなツール結果エンベロープとして返します。メインモデルは次のターンで画像をネイティブに見ます — 補助呼び出しなし、テキスト要約による情報損失なし、追加のレイテンシなし。例外が 1 つあります: 現在のユーザーメッセージにすでにネイティブに添付されている画像は再埋め込みされません — 同じパスに対する `vision_analyze` は、画像がすでにコンテキスト内にあることを伝える短いテキスト結果を返します（一部を拡大するには `region` を渡してください。切り抜きは埋め込まれます）。
+
+テキストのみのメインモデル（またはツール結果チャネルで画像を運べないプロバイダー）の場合、`vision_analyze` はレガシーなパスにフォールバックします: 設定された補助ビジョンモデルに画像の説明を依頼し、その説明をプレーンテキストとして返します。いずれの場合も呼び出し側のツールシグネチャは同じです — ツールはアクティブなモデルに基づいて、実行時にどちらのパスを取るかを決定します。
+
+モデルに画像を渡す他のすべてのツールも、この同じ判断を使用します: ブラウザのスクリーンショット、`computer_use` のキャプチャ（メインモデルがネイティブに受け取れない場合は補助ビジョンモデルによって説明されます）、そして [MCP の画像結果](mcp.md#image-results) です。したがって `agent.image_input_mode: text` は、それらすべてからピクセルを排除します。
+
+### Responses バックエンドでの SVG やその他の非ラスター画像
+
+Responses 形式のバックエンド（例えば `openai-codex`）は、インラインの JPEG、PNG、GIF、WebP のみを受け付けます。それ以外の `data:image/*` パートがあると、**リクエスト全体** が拒否されます。そしてそのパートは履歴に残るため、以降のすべてのターンが同じように失敗します。Hermes はこれを送信レイヤーで処理します: ラスタライザー（`cairosvg`、`svglib`+`reportlab`、`rsvg-convert`、または `inkscape` — `vision_analyze` が使うのと同じソフト依存関係）がインストールされている場合、インラインの **SVG** は PNG にラスタライズされるため、モデルは引き続き図を見ることができます。ラスタライザーがない場合、SVG — および BMP や TIFF など、その他のサポートされていないインライン形式 — は短いテキストのプレースホルダー（`[image omitted: image/svg+xml is not a supported image format]`）に置き換えられ、同じメッセージ内の有効な画像は引き続き送信されます。
+
+### ネイティブ埋め込みはセッションに乗り続ける: `vision.embed_target_bytes` と `vision.max_calls_per_image` {#native-embeds-ride-the-session-visionembed_target_bytes-and-visionmax_calls_per_image}
+
+ネイティブな `vision_analyze` の結果は画像をツール結果に焼き込み、その結果はセッションの以降のすべての API 呼び出しで再送信されます。2 つの `config.yaml` キーが、この繰り返し発生するコストを制限します:
+
+```yaml
+vision:
+  embed_target_bytes: 262144   # per-embed byte budget; clamped 64 KiB..4 MiB (default 256 KB)
+  max_calls_per_image: 3       # unset = 3 inside delegated subagents, unlimited for the main agent
+```
+
+- **`embed_target_bytes`** — 予算を超える（または幅が 1568 px を超える）画像は、収まる JPEG に縮小されます。256 KB なら通常のスクリーンショットを安価に保てますが、表を含む高密度なスマートフォンのスクリーンショットはそのサイズでは判読できなくなることがあるため、モデルが図を「判読できない」と言い続ける場合は値を上げてください（例えば `1048576`）。ネイティブに配信されるブラウザのスクリーンショットも同じ予算を使用します。
+- **`max_calls_per_image`** — *同じ* 画像（その領域の切り抜きを含む。ローカルパスは解決済みのパスで比較）をセッションあたり何回埋め込めるか。上限に達すると、ツールは別の埋め込みの代わりに `"vision_analyze refused: this image has already been loaded into context N time(s) …"` を返すため、モデルはすでに見えているものから回答します。未設定の場合、上限（3）がかかるのは委任された `delegate_task` サブエージェントだけです: それらは無人で実行され、CLI からループ途中で誘導できず、かつてそこでの再ロードのループが 5 つのファイルで 158 回の呼び出しを消費したことがあります。すべてのセッションに上限をかけるには数値を設定し、どこでも無制限にするには `0` を設定します。
+
+### フォローアップターンでの画像: `vision.replay_recent_images`
+
+セッションデータベースはユーザーメッセージをテキストとして保存し、添付された画像ごとに 1 行の `[screenshot]` を記録します。データベースから履歴が再構築されるターン（`X-Hermes-Session-Id` でセッションを継続する [API サーバー](api-server.md) へのすべてのリクエスト、`hermes chat --resume`、ゲートウェイの再起動）では、以前はモデルにそのプレースホルダーが表示されていたため、1 つ前のメッセージで送った写真についてのフォローアップの質問には推測で答えることになっていました。
+
+モデルが画像をネイティブに受け取れる場合（[画像ルーティング](#image-routing-vision-capable-vs-text-only-models) を参照）、Hermes は現在、最新の画像を元のメッセージ内で再送信します:
+
+```yaml
+vision:
+  replay_recent_images: 3   # default; 0 = never re-send earlier images
+```
+
+- バイトは、Hermes がプロファイル内の `cache/documents/native-inputs/` 配下に、添付されたすべての画像についてすでに保持しているコピーから取得されます。新たに保存されるものはなく、データベースとセッションメッセージ API はテキストのみのままです。
+- 再送信されるメッセージは、最初に画像を運んだリクエストとバイト単位で同一であるため、プロバイダーのプロンプトキャッシュは有効なままです。古い画像はバッチ単位でウィンドウから外れます: デフォルトの 3 では、最新の 3〜5 枚の画像が再送信され、新しい画像が 3 枚増えるごとに最も古いバッチが一度に外れます。以前のメッセージが書き換えられるのはバッチごとに最大 1 回で、新しい写真のたびではありません。また、ウィンドウから外れた画像が戻ってくることはありません。
+- リプレイが届くのは、保持されたコピーがまだ存在する画像だけです。ゲートウェイでは、チャットで添付された画像の保持コピーはメディアキャッシュの保持期間（24 時間）を過ぎると削除されるため、1 日以上後のフォローアップでは再び `[screenshot]` が表示されます。削除はセッションの途中で起こることもあり、その場合リクエストは一度変化します。API サーバーに送られた画像は、それを運んだ API リクエストの記録とともに保持され、その 24 時間のクリーンアップでは削除されません。
+- ウィンドウ外の画像、リモート URL として送られた画像（期限切れになる可能性があり、そうなると以降のすべてのターンが失敗するため）、および欠落または変更された保持ファイルは、`[screenshot]` テキストのままになります。
+- `agent.image_input_mode: text` の場合、またはネイティブなビジョンを持たないモデルの場合は、何も再送信されません。非負の整数でない値を指定すると警告がログに記録され、リプレイは無効になります。

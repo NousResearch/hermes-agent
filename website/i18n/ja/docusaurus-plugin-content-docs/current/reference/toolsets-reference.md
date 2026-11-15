@@ -22,22 +22,22 @@ description: "Hermes のコア、複合、プラットフォーム、動的ツ�
 
 ```bash
 hermes chat --toolsets web,file,terminal
-hermes chat --toolsets debugging        # 複合 — file + terminal + web に展開
-hermes chat --toolsets all              # すべて
+hermes chat --toolsets debugging        # composite — expands to file + terminal + web
+hermes chat --toolsets all              # everything
 ```
 
 ### プラットフォームごと（config.yaml）
 
 ```yaml
 toolsets:
-  - hermes-cli          # CLI のデフォルト
-  # - hermes-telegram   # Telegram ゲートウェイ用のオーバーライド
+  - hermes-cli          # default for CLI
+  # - hermes-telegram   # override for Telegram gateway
 ```
 
 ### 対話的な管理
 
 ```bash
-hermes tools                            # プラットフォームごとに有効/無効を切り替える curses UI
+hermes tools                            # curses UI to enable/disable per platform
 ```
 
 またはセッション内で:
@@ -45,17 +45,19 @@ hermes tools                            # プラットフォームごとに有�
 ```
 /tools list
 /tools disable browser
-/tools enable rl
+/tools enable discord
 ```
 
 ## コアツールセット
 
 | ツールセット | ツール | 目的 |
 |---------|-------|------|
-| `browser` | `browser_back`, `browser_cdp`, `browser_click`, `browser_console`, `browser_dialog`, `browser_get_images`, `browser_navigate`, `browser_press`, `browser_scroll`, `browser_snapshot`, `browser_type`, `browser_vision`, `web_search` | コアのブラウザ自動化。手早い検索のフォールバックとして `web_search` を含む。`browser_cdp` と `browser_dialog` は実行時にゲートされる — セッション開始時に CDP エンドポイントが到達可能な場合にのみ登録される（`/browser connect`、`browser.cdp_url` 設定、Browserbase、または Camofox 経由）。`browser_dialog` は、CDP スーパーバイザーがアタッチされているときに `browser_snapshot` が追加する `pending_dialogs` と `frame_tree` フィールドと連携して動作する。 |
+| `browser` | `browser_cdp`, `browser_dialog`, `browser_exec`, `browser_vault` | コアのブラウザ自動化。`browser_exec` は、ヘルパーが事前インポートされた Python を実行してブラウザを操作する（`terminal` も持つセッションにのみ提供される）。`browser_cdp`、`browser_dialog`、`browser_vault` は同じブラウザセッション上で動作する。`browser_vault` は認証情報フォーム用にブラウザに付随し、デフォルトではツール検索の背後に遅延される。ブラウジングをオフにするには、このツールセットを無効にする。手早い検索は `web`/`search` ツールセットの役割 — `web_search` は意図的にメンバーに含まれていないため、`disabled_toolsets: [browser]` で取り除かれることはない（#64503）。 |
 | `clarify` | `clarify` | エージェントが明確化を必要とするときにユーザーへ質問する。 |
 | `code_execution` | `execute_code` | Hermes ツールをプログラム的に呼び出す Python スクリプトを実行する。 |
-| `cronjob` | `cronjob` | 繰り返しタスクのスケジュールと管理。 |
+| `connections` | `manage_connections` | ユーザーをアプリに接続する: Nous ゲートウェイ経由のマネージドコネクタアカウントと、カタログからのローカル MCP サーバー。アプリの 2 つ目の名前付きアカウントを追加したり、アカウント名を変更したりできる。デスクトップでは各アクションがユーザーが確定するまでブロックするカードになる。デスクトップ以外では、マネージドアクションはアプリごとの接続リンクを返す。 |
+| `coding` | 複合（`file` + `terminal` + `search` + `web` + `skills` + `browser` + `todo` + `memory` + `session_search` + `clarify` + `code_execution` + `delegation` + `vision`） | ソフトウェア作業向けのコーディング特化バンドル: ファイル編集、ターミナル、検索、Web ドキュメント、スキル、ブラウザ、委譲、コード実行。 |
+| `cronjob` | `cronjob_manage` | 繰り返しタスクのスケジュールと管理。 |
 | `debugging` | 複合（`file` + `terminal` + `web`） | デバッグバンドル — ファイル、プロセス/ターミナル、web 抽出/検索。 |
 | `delegation` | `delegate_task` | 並列作業のために分離されたサブエージェントインスタンスを生成する。 |
 | `discord` | `discord` | コアの Discord テキスト/埋め込み/DM アクション（ゲートウェイ専用）。`hermes-discord` ツールセットでアクティブ。 |
@@ -63,26 +65,26 @@ hermes tools                            # プラットフォームごとに有�
 | `feishu_doc` | `feishu_doc_read` | Feishu/Lark ドキュメントのコンテンツを読む。Feishu のドキュメントコメント向け知的返信ハンドラーで使用。 |
 | `feishu_drive` | `feishu_drive_add_comment`, `feishu_drive_list_comments`, `feishu_drive_list_comment_replies`, `feishu_drive_reply_comment` | Feishu/Lark drive のコメント操作。コメントエージェントにスコープされており、`hermes-cli` や他のメッセージングツールセットには公開されない。 |
 | `file` | `patch`, `read_file`, `search_files`, `write_file` | ファイルの読み取り、書き込み、検索、編集。 |
-| `homeassistant` | `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services` | Home Assistant 経由のスマートホーム制御。`HASS_TOKEN` が設定されている場合のみ利用可能。 |
-| `computer_use` | `computer_use` | cua-driver 経由のバックグラウンド macOS デスクトップ制御 — カーソル/フォーカスを奪わない。ツール対応の任意のモデルで動作。macOS のみ；`$PATH` 上に `cua-driver` が必要。 |
+| `computer_use` | `computer_use` | cua-driver 経由のバックグラウンドデスクトップ制御 — カーソル/フォーカスを奪わない。ツール対応の任意のモデルで動作。macOS、Windows、Linux に対応；`$PATH` 上に `cua-driver` が必要。 |
+| `context_engine` | （可変） | アクティブなコンテキストエンジンプラグインが公開するランタイムツール（プラグインが追加するまでは空）。 |
 | `image_gen` | `image_generate` | FAL.ai 経由のテキスト→画像生成（オプトインの OpenAI / xAI バックエンド付き）。 |
-| `kanban` | `kanban_block`, `kanban_comment`, `kanban_complete`, `kanban_create`, `kanban_heartbeat`, `kanban_link`, `kanban_show` | マルチエージェント連携ツール — エージェントが kanban ディスパッチャーによって生成されたとき（`HERMES_KANBAN_TASK` env が設定されているとき）にのみ登録される。ワーカーが構造化された引き継ぎでタスクを完了とマークし、人間の入力のためにブロックし、長時間の操作中にハートビートし、スレッドにコメントし、（オーケストレーター向けに）子タスクにファンアウトできる。 |
+| `video_gen` | `video_generate`, `xai_video_edit`, `xai_video_extend` | プラグインが登録したバックエンド（xAI Grok-Imagine、FAL.ai Veo 3.1 / Pixverse v6 / Kling 3.0 / Kling O3）によるテキスト→動画および画像→動画生成。画像をアニメーション化するには `image_url` を渡し、テキスト→動画では省略する。`xai_video_edit` / `xai_video_extend` はプロバイダー固有の編集/延長ツールで、xAI Imagine の認証情報でゲートされる。 |
+| `kanban` | `kanban_attach`, `kanban_attach_url`, `kanban_attachments`, `kanban_block`, `kanban_comment`, `kanban_complete`, `kanban_create`, `kanban_heartbeat`, `kanban_link`, `kanban_list`, `kanban_request_changes`, `kanban_request_review`, `kanban_show`, `kanban_unblock` | マルチエージェント連携ツール。ディスパッチャーが生成したタスクワーカー（`HERMES_KANBAN_TASK`）と、保存済みの選択に `kanban` を含むプラットフォーム（`hermes tools enable kanban --platform <p>`。`all`/`*` ワイルドカードでは有効に**ならない**）に登録される。ワーカーはタスクを完了とマークし、正式なレビューを依頼し、ブロックし、ハートビートし、コメントし、フォローアップタスクを作成/リンクできる。オーケストレータープロファイルには、さらに list/unblock などのボードルーティングツールが与えられる。`delegate_task` の子は Kanban 実行のオーナーではない: 親の `HERMES_KANBAN_*` 環境変数が存在していても、その子のスキーマではこのツールセットが除去/無効化され、ランタイムガードがボードへの直接の変更を拒否する。 |
 | `memory` | `memory` | セッションをまたぐ永続メモリの管理。 |
-| `messaging` | `send_message` | セッション内から他のプラットフォーム（Telegram、Discord など）にメッセージを送る。 |
-| `moa` | `mixture_of_agents` | Mixture of Agents によるマルチモデル合意。 |
-| `rl` | `rl_check_status`, `rl_edit_config`, `rl_get_current_config`, `rl_get_results`, `rl_list_environments`, `rl_list_runs`, `rl_select_environment`, `rl_start_training`, `rl_stop_training`, `rl_test_inference` | RL 学習環境の管理（Atropos）。 |
+| `desktop_ui` | `annotate_preview`, `close_terminal`, `desktop_preview`, `drive_preview`, `focus_pane`, `gui_tour`, `react_to_message`, `read_terminal`, `read_window_below`, `set_theme`, `show_tip` | Hermes デスクトップアプリ自体に作用する機能 — 埋め込みターミナルペインの読み取り/クローズ、アプリ内ブラウザのオープン・読み取り・クローズ・操作・注釈付け、アプリの背後にある OS ウィンドウの特定、ペインの表示、メッセージへのリアクション、ガイドツアーの実行（アプリまたはプレビューペインの UI 要素をハイライト＋ナレーション）、アクセントカラー・ライト/ダークモード・レイアウトの設定（またはユーザーが選ぶためのピッカーカードの表示）。接続先のバックエンド（ローカル、SSH、URL、Hermes Cloud）にかかわらず、ソースがデスクトップアプリのセッションで有効。CLI、TUI、メッセージング、cron セッションには決して存在しない。 |
+| `project` | `desktop_project` | 1 つの `create`/`switch`/`list` アクション enum で、デスクトップの [Projects](../user-guide/cli.md)（名前付きの複数フォルダーのワークスペース）を作成・切り替える。GUI / デスクトップセッションのみ。 |
+| `catalog` | `manage_catalog` | プラグインカタログとスキルハブを検索し、承認カードを通じてこのチャットのプロファイルにアイテムをインストールする。接続先のバックエンド（ローカル、SSH、URL、Hermes Cloud）にかかわらず、ソースがデスクトップアプリのセッションで有効。設定リストで指定されていても、CLI、TUI、メッセージング、cron セッションには決して存在しない。`all` には含まれない。デフォルトでは `tool_search` の背後に遅延される。`agent.disabled_toolsets: [catalog]` で削除できる。 |
 | `safe` | `image_generate`, `vision_analyze`, `web_extract`, `web_search`（`includes` 経由） | 読み取り専用のリサーチ ＋ メディア生成。ファイル書き込み、ターミナル、コード実行はなし。 |
 | `search` | `web_search` | Web 検索のみ（抽出なし）。 |
 | `session_search` | `session_search` | 過去の会話セッションを検索する。 |
 | `skills` | `skill_manage`, `skill_view`, `skills_list` | スキルの CRUD と閲覧。 |
-| `spotify` | `spotify_albums`, `spotify_devices`, `spotify_library`, `spotify_playback`, `spotify_playlists`, `spotify_queue`, `spotify_search` | ネイティブの Spotify 制御（再生、キュー、検索、プレイリスト、アルバム、ライブラリ）。バンドルされた `spotify` プラグインによって登録される。 |
-| `terminal` | `process`, `terminal` | シェルコマンドの実行とバックグラウンドプロセスの管理。 |
-| `todo` | `todo` | セッション内のタスクリスト管理。 |
+| `terminal` | `process_manage`, `terminal` | シェルコマンドの実行とバックグラウンドプロセスの管理。 |
+| `todo` | `todo_list` | セッション内のタスクリスト管理。 |
 | `tts` | `text_to_speech` | テキスト読み上げ音声生成。 |
 | `vision` | `vision_analyze` | vision 対応モデルによる画像分析。 |
 | `video` | `video_analyze` | 動画分析・理解ツール（オプトイン、デフォルトツールセットには含まれない — `--toolsets` で明示的に追加）。 |
 | `web` | `web_extract`, `web_search` | Web 検索とページコンテンツの抽出。 |
-| `yuanbao` | `yb_query_group_info`, `yb_query_group_members`, `yb_search_sticker`, `yb_send_dm`, `yb_send_sticker` | Yuanbao の DM/グループアクションとスタンプ検索。`hermes-yuanbao` でのみ登録される。 |
+| `x_search` | `x_search` | xAI の組み込み `x_search` Responses ツールによる、読み取り専用の公開 X 探索。認証付きの X API の読み取りやアカウント操作には `xurl` スキルを使う。デフォルトではオフ。`hermes tools` でオプトインする。xAI の認証情報（SuperGrok OAuth または `XAI_API_KEY`）が設定されている場合にのみスキーマが登録される。 |
 
 ## プラットフォームツールセット
 
@@ -90,9 +92,9 @@ hermes tools                            # プラットフォームごとに有�
 
 | ツールセット | `hermes-cli` との差分 |
 |---------|-------------------------------|
-| `hermes-cli` | フルツールセット — 対話的 CLI セッションのデフォルト。file、terminal、web、browser、memory、skills、vision、image_gen、todo、tts、delegation、code_execution、cronjob、session_search、clarify、`safe`（読み取り専用）の各バンドルに加え、標準的なメッセージングツールを含む。 |
-| `hermes-acp` | `clarify`、`cronjob`、`image_generate`、`send_message`、`text_to_speech`、および 4 つの Home Assistant ツールすべてを除外。IDE コンテキストでのコーディングタスクに特化。 |
-| `hermes-api-server` | `clarify`、`send_message`、`text_to_speech` を除外。それ以外はすべて維持 — ユーザー操作が不可能なプログラム的アクセスに適する。 |
+| `hermes-cli` | フルツールセット — 対話的 CLI セッションのデフォルト。file、terminal、web、browser、memory、skills、vision、image_gen、todo、tts、delegation、code_execution、cronjob、session_search、clarify、computer_use、および kanban ツールを含む（すべて実行時に check_fn でゲートされる）。 |
+| `hermes-acp` | `clarify`、`cronjob`、`image_generate`、`text_to_speech`、`computer_use`、および kanban ツールを除外。IDE コンテキストでのコーディングタスクに特化。 |
+| `hermes-api-server` | `clarify`、`text_to_speech`、`computer_use`、および kanban ツールを除外。それ以外はすべて維持 — ユーザー操作が不可能なプログラム的アクセスに適する。 |
 | `hermes-cron` | `hermes-cli` と同じ。 |
 | `hermes-telegram` | `hermes-cli` と同じ。 |
 | `hermes-discord` | `hermes-cli` に加えて `discord` と `discord_admin` を追加。 |
@@ -110,10 +112,10 @@ hermes tools                            # プラットフォームごとに有�
 | `hermes-wecom` | `hermes-cli` と同じ。 |
 | `hermes-wecom-callback` | `hermes-cli` と同じ。 |
 | `hermes-weixin` | `hermes-cli` と同じ。 |
-| `hermes-yuanbao` | `hermes-cli` に加えて 5 つの `yb_*` ツール（DM/グループ/スタンプ）を追加。 |
-| `hermes-homeassistant` | `hermes-cli` と同じ（Home Assistant ツールはデフォルトで既に存在し、`HASS_TOKEN` が設定されるとアクティブになる）。 |
-| `hermes-webhook` | `hermes-cli` と同じ。 |
+| `hermes-webhook` | 制限された安全なサブセット — `web_search`、`web_extract`、`vision_analyze`、`clarify` のみ。Webhook でトリガーされた実行には、ターミナル、ファイル、ブラウザへのアクセスはない。 |
 | `hermes-gateway` | 内部のゲートウェイオーケストレーターツールセット — すべての `hermes-<platform>` ツールセットの和集合；ゲートウェイが任意のメッセージソースを受け入れる必要があるときに使用。 |
+
+プラグインが提供するプラットフォームには、`hermes-gateway` に含まれない暗黙の `hermes-<platform>` バンドルが与えられます。例えば、`hermes-homeassistant` と `hermes-yuanbao` は `homeassistant` / `yuanbao` カタログプラグインをインストールすれば引き続き解決されますが、組み込みのツールセットではなくなりました。
 
 ## 動的ツールセット
 
@@ -129,7 +131,9 @@ mcp_servers:
     args: ["-y", "@modelcontextprotocol/server-github"]
 ```
 
-これにより、`--toolsets` やプラットフォーム設定で参照できる `mcp-github` ツールセットが作成されます。
+これにより、`--toolsets` やプラットフォーム設定で参照できる `mcp-github` ツールセットが作成されます。素のサーバー名（`github`）もエイリアスとして使えます。サーバーが組み込みツールセットと同じ名前（`browser`、`web`）の場合、その名前は組み込みツール**に加えて**そのサーバーの `mcp__<server>__*` ツールに解決され、どちらも他方を隠しません。
+
+`platform_toolsets.<platform>` では、MCP サーバーを 1 つも指定しないリストは有効なすべてのサーバーを取得し、サーバーを指定したリストはそのサーバーのみを取得し、`no_mcp` はすべてを除外します。明示的な空リスト（`email: []`）は MCP サーバーを 1 つも取得しません。
 
 ### プラグインツールセット
 
@@ -154,6 +158,11 @@ custom_toolsets:
 ### ワイルドカード
 
 - `all` または `*` — 登録されたすべてのツールセット（組み込み ＋ 動的 ＋ プラグイン）に展開されます
+
+いくつかのツールには、ツールセットへの所属に加えて追加の利用可否チェックがあり、`all`/`*` だけでは有効に**なりません**:
+
+- **機能ゲート**のツール（browser、`computer_use`、`code_execution`、Feishu、cronjob）は、そのバックエンド/認証情報の前提条件が設定されている場合にのみ表示されます。
+- **ワークフローゲート**のツール — `kanban` ツールセット — は意図的にオプトインです。`all`/`*` では kanban は有効に**なりません**。`kanban` を明示的に指定する（または `HERMES_KANBAN_TASK` が設定されたディスパッチャー生成のワーカーである）必要があります。Kanban ツールは共有ボードの状態を変更するため、`all` の下でもデフォルトではオフのままです。
 
 ## `hermes tools` との関係
 

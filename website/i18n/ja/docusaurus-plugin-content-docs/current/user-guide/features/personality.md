@@ -63,7 +63,7 @@ $HERMES_HOME/SOUL.md
 $HERMES_HOME/SOUL.md
 ```
 
-## SOUL.mdには何を書くべきか？
+## SOUL.mdには何を書くべきか？ {#what-should-go-in-soulmd}
 
 以下のような、永続的な語り口とパーソナリティのガイダンスに使用します。
 - トーン

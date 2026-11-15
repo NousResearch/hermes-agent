@@ -17,10 +17,10 @@ description: "スキルを見つけ、インストールし、使い、作成す
 すべてのHermesインストールには、同梱のスキルが付属しています。利用可能なものを確認しましょう。
 
 ```bash
-# 任意のチャットセッション内で:
+# In any chat session:
 /skills
 
-# またはCLIから:
+# Or from the CLI:
 hermes skills list
 ```
 
@@ -37,7 +37,7 @@ excalidraw        Create hand-drawn style diagrams using Excalidraw...
 ### スキルを検索する
 
 ```bash
-# キーワードで検索
+# Search by keyword
 /skills search docker
 /skills search music
 ```
@@ -47,10 +47,10 @@ excalidraw        Create hand-drawn style diagrams using Excalidraw...
 公式のオプションスキル（デフォルトでは有効化されていない、より重い、またはニッチなスキル）は、ハブ経由で利用できます。
 
 ```bash
-# 公式のオプションスキルを閲覧する
+# Browse official optional skills
 /skills browse
 
-# ハブを検索する
+# Search the hub
 /skills search blockchain
 ```
 
@@ -61,12 +61,12 @@ excalidraw        Create hand-drawn style diagrams using Excalidraw...
 インストールされたすべてのスキルは、自動的にスラッシュコマンドになります。その名前を入力するだけです。
 
 ```bash
-# スキルを読み込んでタスクを与える
+# Load a skill and give it a task
 /ascii-art Make a banner that says "HELLO WORLD"
 /plan Design a REST API for a todo app
 /github-pr-workflow Create a PR for the auth refactor
 
-# スキル名だけ（タスクなし）を入力すると、読み込んだうえで必要なことを記述できる
+# Just the skill name (no task) loads it and lets you describe what you need
 /excalidraw
 ```
 
@@ -89,13 +89,13 @@ excalidraw        Create hand-drawn style diagrams using Excalidraw...
 公式のオプションスキルはHermesに同梱されていますが、デフォルトでは有効化されていません。明示的にインストールしてください。
 
 ```bash
-# 公式のオプションスキルをインストールする
+# Install an official optional skill
 hermes skills install official/research/arxiv
 
-# チャットセッション内でハブからインストールする
+# Install from the hub in a chat session
 /skills install official/creative/songwriting-and-ai-music
 
-# HTTP(S) URLからSKILL.mdとそれが参照するサポートファイルをインストールする
+# Install SKILL.md and its referenced support files from an HTTP(S) URL
 hermes skills install https://sharethis.chat/SKILL.md
 /skills install https://example.com/SKILL.md --name my-skill
 ```
@@ -112,10 +112,10 @@ hermes skills install https://sharethis.chat/SKILL.md
 ### インストールの確認
 
 ```bash
-# そこにあることを確認する
+# Check it's there
 hermes skills list | grep arxiv
 
-# またはチャット内で
+# Or in chat
 /skills search arxiv
 ```
 
@@ -126,10 +126,10 @@ hermes skills list | grep arxiv
 プラグインは、名前空間付きの名前（`plugin:skill`）を使って独自のスキルを同梱できます。これにより、組み込みスキルとの名前の衝突を防ぎます。
 
 ```bash
-# 完全修飾名でプラグインスキルを読み込む
+# Load a plugin skill by its qualified name
 skill_view("superpowers:writing-plans")
 
-# 同じベース名の組み込みスキルは影響を受けない
+# Built-in skill with the same base name is unaffected
 skill_view("writing-plans")
 ```
 
@@ -158,10 +158,10 @@ metadata:
 CLIからスキル設定を管理します。
 
 ```bash
-# 特定のスキルの対話的な設定
+# Interactive config for a specific skill
 hermes skills config gif-search
 
-# すべてのスキル設定を表示する
+# View all skill config
 hermes config get skills.config --json
 ```
 
@@ -214,14 +214,14 @@ Run `check-command` to confirm the result is correct.
 
 ```
 my-skill/
-├── SKILL.md                    # メインのスキルドキュメント
+├── SKILL.md                    # Main skill document
 ├── references/
-│   ├── api-docs.md             # エージェントが参照できるAPIリファレンス
-│   └── examples.md             # 入出力の例
+│   ├── api-docs.md             # API reference the agent can consult
+│   └── examples.md             # Example inputs/outputs
 ├── templates/
-│   └── config.yaml             # エージェントが使えるテンプレートファイル
+│   └── config.yaml             # Template files the agent can use
 └── scripts/
-    └── setup.sh                # エージェントが実行できるスクリプト
+    └── setup.sh                # Scripts the agent can execute
 ```
 
 これらをSKILL.md内で参照します。

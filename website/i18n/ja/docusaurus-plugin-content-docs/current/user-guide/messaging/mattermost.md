@@ -6,7 +6,7 @@ description: "Hermes AgentをMattermostボットとしてセットアップす�
 
 # Mattermostのセットアップ
 
-Hermes AgentはMattermostとボットとして統合され、ダイレクトメッセージやチームチャンネルを通じてAIアシスタントとチャットできます。Mattermostはセルフホスト型のオープンソースのSlack代替です — 自分のインフラ上で運用するため、データを完全に管理できます。ボットはMattermostのREST API（v4）とリアルタイムイベント用のWebSocketを介して接続し、メッセージをHermes Agentのパイプライン（ツール利用、メモリ、推論を含む）で処理し、リアルタイムで応答します。テキスト、ファイル添付、画像、スラッシュコマンドをサポートします。
+Hermes AgentはMattermostとボットとして統合され、ダイレクトメッセージやチームチャンネルを通じてAIアシスタントとチャットできます。Mattermostはセルフホスト型のオープンソースのSlack代替です — 自分のインフラ上で運用するため、データを完全に管理できます。ボットはMattermostのREST API（v4）とリアルタイムイベント用のWebSocketを介して接続し、メッセージをHermes Agentのパイプライン（ツール利用、メモリ、推論を含む）で処理し、リアルタイムで応答します。テキスト、ファイル添付、画像、スラッシュコマンドをサポートします。受信した添付ファイルは、ゲートウェイが認可した送信者からのものだけがダウンロードされ、それぞれ `gateway.max_inbound_media_bytes` のサイズ上限が適用されます。
 
 外部のMattermostライブラリは不要です — アダプターは、すでにHermesの依存関係に含まれている `aiohttp` を使用します。
 
@@ -100,23 +100,27 @@ DMの場合は、ボットとのダイレクトメッセージを開くだけで
 
 ## ステップ4: あなたのMattermostユーザーIDを調べる
 
-Hermes Agentは、誰がボットとやり取りできるかを制御するために、あなたのMattermostユーザーIDを使用します。調べるには：
+Hermes Agentは、誰がボットとやり取りできるかを制御するために、あなたのMattermostユーザーIDを使用します。プロフィールダイアログ（アバター → Profile）にはユーザーIDは表示されません。
 
-1. **アバター**（左上隅）→ **Profile** をクリックします。
-2. プロフィールダイアログにユーザーIDが表示されます — クリックしてコピーします。
+次のいずれかの方法を使用してください（Mattermostの[Identify a user's ID](https://docs.mattermost.com/administration-guide/configure/user-management-configuration-settings#identify-a-users-id)を参照）：
+
+1. **System Console**（システム管理者）：**User Management** → **Users** → 自分のユーザーを開きます。IDはUser Configurationページに表示されます。
+2. **ブラウザ**（すべてのユーザー）：Mattermostにログインした状態で、新しいタブで `https://your-mattermost-server/api/v4/users/me` を開きます。`id` フィールドがあなたのユーザーIDです。
+3. **ボットトークンを使ったAPI**：自分のユーザー名で検索します。レスポンスの `id` フィールドがあなたのIDです：
+
+   ```bash
+   curl -s -H "Authorization: Bearer YOUR_BOT_TOKEN" \
+     https://your-mattermost-server/api/v4/users/username/YOUR_USERNAME
+   ```
+
+   ボットトークンで `/api/v4/users/me` を呼び出さないでください。それはあなたのIDではなく、**ボットの**IDを返します。
+4. **mmctl**（システム管理者）：`mmctl user list --all` は、ユーザーごとに `<id>: <username> (<email>)` の形式で1行ずつ出力します。
 
 ユーザーIDは `3uo8dkh1p7g1mfk49ear5fzs5c` のような26文字の英数字文字列です。
 
 :::warning
 ユーザーIDはユーザー名では**ありません**。ユーザー名は `@` の後に表示されるもの（例 `@alice`）です。ユーザーIDは、Mattermostが内部的に使用する長い英数字の識別子です。
 :::
-
-**代替方法**: APIを通じてユーザーIDを取得することもできます：
-
-```bash
-curl -H "Authorization: Bearer YOUR_TOKEN" \
-  https://your-mattermost-server/api/v4/users/me | jq .id
-```
 
 :::tip
 **チャンネルID** を取得するには：チャンネル名をクリック → **View Info** をクリックします。情報パネルにチャンネルIDが表示されます。ホームチャンネルを手動で設定したい場合に必要です。
@@ -139,22 +143,28 @@ hermes gateway setup
 `~/.hermes/.env` ファイルに以下を追加します：
 
 ```bash
-# 必須
+# Required
 MATTERMOST_URL=https://mm.example.com
 MATTERMOST_TOKEN=***
 MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 
-# 複数の許可ユーザー（カンマ区切り）
+# Multiple allowed users (comma-separated)
 # MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c,8fk2jd9s0a7bncm1xqw4tp6r3e
 
-# オプション: 返信モード（thread または off、デフォルト: off）
+# Optional: reply mode (thread or off, default: off)
 # MATTERMOST_REPLY_MODE=thread
 
-# オプション: @mention なしで応答する（デフォルト: true = メンションを要求）
+# Optional: respond without @mention (default: true = require mention)
 # MATTERMOST_REQUIRE_MENTION=false
 
-# オプション: ボットが @mention なしで応答するチャンネル（カンマ区切りのチャンネルID）
+# Optional: channels where bot responds without @mention (comma-separated channel IDs)
 # MATTERMOST_FREE_RESPONSE_CHANNELS=channel_id_1,channel_id_2
+
+# Optional: peer bot user IDs. Posts from Mattermost bot accounts (props.from_bot) are
+# recognised on their own; list personal-access-token bots here. These senders use the bot
+# loop guard; set MATTERMOST_ALLOW_BOTS=all (or mentions) only when bot-to-bot messages are
+# intentional. The config.yaml spelling is `mattermost: bot_users: [...]`.
+# MATTERMOST_BOT_USERS=peer_bot_user_id_1,peer_bot_user_id_2
 ```
 
 `~/.hermes/config.yaml` の任意の振る舞い設定：

@@ -6,9 +6,17 @@ description: "CLI、Telegram、Discord、Discordのボイスチャンネルに�
 
 # Hermesでボイスモードを使う
 
-このガイドは、[ボイスモード機能リファレンス](/docs/user-guide/features/voice-mode)の実践的な手引きです。
+このページのPython依存関係コマンドは、
+[PMで準備されたソースチェックアウト](/docs/reference/package-management#developer-workflow)を前提としています。
+依存関係を変更した後は、チェックアウトを再アクティベートしてHermesを再起動してください。
+
+このガイドは、[ボイスモード機能リファレンス](../user-guide/features/voice-mode.md)の実践的な手引きです。
 
 機能ページがボイスモードで何ができるかを説明するのに対し、このガイドは実際にそれをうまく使う方法を示します。
+
+:::tip
+[Nous Portal](/docs/integrations/nous-portal)は1つのOAuthでLLMとTTSの両方をまとめて提供します — 追加の認証情報なしで、ボイスモードがエンドツーエンドで動作します。
+:::
 
 ## ボイスモードが役立つ場面
 
@@ -57,32 +65,36 @@ What tools do you have available?
 ### CLIマイク + 再生
 
 ```bash
-pip install "hermes-agent[voice]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['voice'], explicit=True)"
 ```
 
 ### メッセージングプラットフォーム
 
 ```bash
-pip install "hermes-agent[messaging]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"
 ```
 
 ### プレミアムElevenLabs TTS
 
 ```bash
-pip install "hermes-agent[tts-premium]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['tts-premium'], explicit=True)"
 ```
 
 ### ローカルNeuTTS（オプション）
 
+宣言された `neutts` 依存関係はPython 3.14未満を必要とします。Hermesのランタイムは
+Python 3.14を必要とするため、このエクストラを要求してもそこにはNeuTTSはインストールされません。
+互換性のあるプロバイダーを選択してください。別途管理されるNeuTTSコマンドプロバイダーには、
+それ自身のサポートされたPython環境が必要です。
+
+### ボイスとメッセージングを組み合わせたセットアップ
+
 ```bash
-python -m pip install -U neutts[all]
+python -c "import pm; pm.sync_venv(['voice', 'messaging', 'tts-premium', 'edge-tts'], explicit=True)"
 ```
 
-### すべて
-
-```bash
-pip install "hermes-agent[all]"
-```
+`all` エクストラはすべてのオプション機能を含むわけではありません。これらのボイスおよび
+メッセージングのエクストラは含まれません。
 
 ## ステップ3: システム依存関係をインストールする
 
@@ -123,11 +135,11 @@ Hermesはローカルとクラウドの両方の音声スタックをサポー�
 `~/.hermes/.env` に追加します。
 
 ```bash
-# クラウドSTTのオプション（localはキー不要）
+# Cloud STT options (local needs no key)
 GROQ_API_KEY=***
 VOICE_TOOLS_OPENAI_KEY=***
 
-# プレミアムTTS（オプション）
+# Premium TTS (optional)
 ELEVENLABS_API_KEY=***
 ```
 
@@ -149,19 +161,22 @@ ELEVENLABS_API_KEY=***
 
 ### `hermes setup` を使う場合
 
-セットアップウィザードでNeuTTSを選択すると、Hermesは `neutts` がすでにインストールされているかどうかを確認します。見つからない場合、ウィザードはNeuTTSにPythonパッケージ `neutts` とシステムパッケージ `espeak-ng` が必要であることを伝え、それらをインストールするか提案し、プラットフォームのパッケージマネージャーで `espeak-ng` をインストールしてから、次を実行します。
+セットアップは、宣言されたPythonエクストラをPM経由で要求します。それらのPythonバージョンや
+プラットフォームのマーカーを上書きすることはできません:
 
-```bash
-python -m pip install -U neutts[all]
-```
+宣言された `neutts` 依存関係はPython 3.14未満を必要とします。Hermesのランタイムは
+Python 3.14を必要とするため、このエクストラを要求してもそこにはNeuTTSはインストールされません。
+互換性のあるプロバイダーを選択してください。別途管理されるNeuTTSコマンドプロバイダーには、
+それ自身のサポートされたPython環境が必要です。
 
-そのインストールをスキップした場合や失敗した場合、ウィザードはEdge TTSにフォールバックします。
+依存関係がお使いのプラットフォームで実行できない場合は、別のプロバイダーを選択してください。
 
 ## ステップ5: 推奨設定
 
 ```yaml
 voice:
   record_key: "ctrl+b"
+  submit_mode: "direct"  # TUI: direct | draft
   max_recording_seconds: 120
   auto_tts: false
   beep_enabled: true
@@ -180,6 +195,18 @@ tts:
 ```
 
 これはほとんどの人にとって良い保守的なデフォルトです。
+
+TUIでは、`voice.submit_mode` が文字起こし後の動作を制御します。
+
+- `direct`（デフォルト）はトランスクリプトを即座に送信します。
+- `draft` はトランスクリプトをコンポーザーに入れるため、Enterを押す前に編集またはキャンセルできます。
+
+編集可能な音声ドラフトにするには、次のように設定します。
+
+```yaml
+voice:
+  submit_mode: "draft"
+```
 
 代わりにローカルTTSが欲しい場合は、`tts` ブロックを次のように切り替えます。
 
@@ -440,7 +467,7 @@ HermesはDiscordのVCに参加し、ユーザーの発話を聞き、文字起�
 成功への最短経路が欲しい場合:
 
 1. テキストのHermesを動作させる
-2. `hermes-agent[voice]` をインストールする
+2. `hermes setup tts` を実行して音声サポートを有効にする
 3. ローカルSTT + Edge TTSでCLIボイスモードを使う
 4. 次にTelegramまたはDiscordで `/voice on` を有効にする
 5. その後でのみ、Discord VCモードを試す
@@ -449,8 +476,8 @@ HermesはDiscordのVCに参加し、ユーザーの発話を聞き、文字起�
 
 ## 次に読むもの
 
-- [ボイスモード機能リファレンス](/docs/user-guide/features/voice-mode)
-- [メッセージングゲートウェイ](/docs/user-guide/messaging)
-- [Discordのセットアップ](/docs/user-guide/messaging/discord)
-- [Telegramのセットアップ](/docs/user-guide/messaging/telegram)
-- [設定](/docs/user-guide/configuration)
+- [ボイスモード機能リファレンス](../user-guide/features/voice-mode.md)
+- [メッセージングゲートウェイ](../user-guide/messaging/index.md)
+- [Discordのセットアップ](../user-guide/messaging/discord.md)
+- [Telegramのセットアップ](../user-guide/messaging/telegram.md)
+- [設定](../user-guide/configuration.md)

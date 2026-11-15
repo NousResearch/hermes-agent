@@ -9,7 +9,7 @@ description: "Hermes Agentに同梱され、ライフサイクルフック経由
 
 Hermesには、リポジトリに同梱された少数のプラグインが付属しています。これらは `<repo>/plugins/<name>/` 配下にあり、`~/.hermes/plugins/` のユーザーインストール済みプラグインと並んで自動的に読み込まれます。これらはサードパーティプラグインと同じプラグイン面（フック、ツール、スラッシュコマンド）を使用し、ツリー内でメンテナンスされる点だけが異なります。
 
-一般的なプラグインシステムについては[プラグイン](/docs/user-guide/features/plugins)ページを、独自のものを書くには[Hermesプラグインを構築する](/docs/developer-guide/plugins)を参照してください。
+一般的なプラグインシステムについては[プラグイン](./plugins.md)ページを、独自のものを書くには[Hermesプラグインを構築する](../../developer-guide/plugins/index.md)を参照してください。
 
 ## ディスカバリーの仕組み
 
@@ -46,20 +46,21 @@ plugins:
 
 ```bash
 hermes plugins disable disk-cleanup
-# または: config.yaml の plugins.enabled から削除する
+# or: remove it from plugins.enabled in config.yaml
 ```
 
 ## 現在出荷されているもの
+
 
 リポジトリは `plugins/` 配下に次の同梱プラグインを出荷しています。すべてオプトインです。`hermes plugins enable <name>` で有効化してください。
 
 | プラグイン | 種類 | 目的 |
 |---|---|---|
 | `disk-cleanup` | フック + スラッシュコマンド | 一時ファイルを自動追跡し、セッション終了時にクリーンアップする |
-| `observability/langfuse` | フック | ターン / LLM呼び出し / ツールを[Langfuse](https://langfuse.com)にトレースする |
-| `spotify` | バックエンド（7ツール） | ネイティブなSpotifyの再生、キュー、検索、プレイリスト、アルバム、ライブラリ |
+| `security-guidance` | フック | `write_file`/`patch` で危険なコードをパターンマッチし、セキュリティ警告を付加する（またはブロックする） — 25ルール（Anthropicの `claude-plugins-official` パターンのApache-2.0フォーク） |
+| `teams_pipeline` | スタンドアロン | Microsoft Teamsミーティングパイプライン — Graphを基盤とした、トランスクリプト優先のミーティング要約 |
 | `google_meet` | スタンドアロン | Meet通話への参加、ライブキャプションの文字起こし、任意のリアルタイム双方向音声 |
-| `image_gen/openai` | 画像バックエンド | OpenAI `gpt-image-2` 画像生成バックエンド（FALの代替） |
+| `image_gen/openai` | 画像バックエンド | OpenAI GPT Image 2 および 2.5 Flare/Sunburst による画像の生成と編集（APIキー） |
 | `image_gen/openai-codex` | 画像バックエンド | Codex OAuth経由のOpenAI画像生成 |
 | `image_gen/xai` | 画像バックエンド | xAI `grok-2-image` バックエンド |
 | `hermes-achievements` | ダッシュボードタブ | 実際のHermesセッション履歴から生成されるSteam風の収集可能バッジ |
@@ -75,7 +76,7 @@ hermes plugins disable disk-cleanup
 
 | フック | 動作 |
 |---|---|
-| `post_tool_call` | `write_file` / `terminal` / `patch` が、`HERMES_HOME` または `/tmp/hermes-*` 内で `test_*`、`tmp_*`、`*.test.*` に一致するファイルを作成すると、それを `test` / `temp` / `cron-output` として静かに追跡する。 |
+| `post_tool_call` | `write_file` / `terminal` / `patch` が、`HERMES_HOME` または `/tmp/hermes-*` 内で `test_*`、`tmp_*`、`*.test.*` に一致するファイルを作成すると、それを `test` / `temp` / `cron-output` として静かに追跡する。 | <!-- no-tmp: ok — documents the plugin's scope guard -->
 | `on_session_end` | ターン中にテストファイルが自動追跡された場合、安全な `quick` クリーンアップを実行し、1行の要約をログに記録する。それ以外の場合は沈黙を保つ。 |
 
 **削除ルール:**
@@ -93,12 +94,12 @@ hermes plugins disable disk-cleanup
 **スラッシュコマンド** — `/disk-cleanup` はCLIとゲートウェイの両方のセッションで利用可能:
 
 ```
-/disk-cleanup status                     # 内訳 + 最大の上位10件
-/disk-cleanup dry-run                    # 削除せずにプレビュー
-/disk-cleanup quick                      # 今すぐ安全なクリーンアップを実行
-/disk-cleanup deep                       # quick + 確認が必要な項目を列挙
-/disk-cleanup track <path> <category>    # 手動追跡
-/disk-cleanup forget <path>              # 追跡を停止（削除はしない）
+/disk-cleanup status                     # breakdown + top-10 largest
+/disk-cleanup dry-run                    # preview without deleting
+/disk-cleanup quick                      # run safe cleanup now
+/disk-cleanup deep                       # quick + list items needing confirmation
+/disk-cleanup track <path> <category>    # manual tracking
+/disk-cleanup forget <path>              # stop tracking (does not delete)
 ```
 
 **状態** — すべては `$HERMES_HOME/disk-cleanup/` にあります:
@@ -109,74 +110,116 @@ hermes plugins disable disk-cleanup
 | `tracked.json.bak` | 上記のアトミック書き込みバックアップ |
 | `cleanup.log` | すべての追跡 / スキップ / 拒否 / 削除の追記専用監査証跡 |
 
-**安全性** — クリーンアップは `HERMES_HOME` または `/tmp/hermes-*` 配下のパスにのみ影響します。Windowsマウント（`/mnt/c/...`）は拒否されます。よく知られたトップレベルの状態ディレクトリ（`logs/`、`memories/`、`sessions/`、`cron/`、`cache/`、`skills/`、`plugins/`、`disk-cleanup/` 自体）は、空であっても決して削除されません。新規インストールが初回のセッション終了で台無しになることはありません。
+<!-- no-tmp: ok — documents the plugin's scope guard -->
+**安全性** — クリーンアップは `HERMES_HOME` または `/tmp/hermes-*` 配下のパスにのみ影響します。Windowsマウント（`/mnt/c/...`）は拒否されます。よく知られたトップレベルの状態ディレクトリ（`logs/`、`memories/`、`sessions/`、`cron/`、`cache/`、`skills/`、`plugins/`、`disk-cleanup/` 自体）は、空であっても決して削除されません。新規インストールが初回のセッション終了で台無しになることはありません。ユーザーのプロジェクトツリー（`workspace/`、`projects/`、`plans/`、`home/`）は、追跡もスイープもまったくされません。プロジェクト内の `test_*.py` や `tmp_*` ファイルはソースコードであり、スクラッチではないからです。`kanban/`（タスクの添付ファイルとワークスペース）も追跡されることはなく、`cache/` のような保護されたトップレベル配下で追跡された*ディレクトリ*が削除されることもありません。期限切れになるのはその中のファイルだけです。
 
 **有効化:** `hermes plugins enable disk-cleanup`（または `hermes plugins` でチェックボックスをオンにする）。
 
 **再び無効化:** `hermes plugins disable disk-cleanup`。
 
-### observability/langfuse
+### security-guidance
 
-Hermesのターン、LLM呼び出し、ツール呼び出しを、オープンソースのLLM可観測性プラットフォームである[Langfuse](https://langfuse.com)にトレースします。ターンごとに1スパン、API呼び出しごとに1生成、ツール呼び出しごとに1ツール観測です。使用量の合計、タイプごとのトークン数、コスト見積もりは、Hermesの正規の `agent.usage_pricing` の数値から得られるため、Langfuseダッシュボードは `hermes logs` に表示されるのと同じ内訳（input / output / `cache_read_input_tokens` / `cache_creation_input_tokens` / `reasoning_tokens`）を見ます。
+ファイル書き込み時の、高速なパターンマッチによるセキュリティ警告です。エージェントの `write_file` / `patch` / `skill_manage` 呼び出しが、既知の危険なコードパターン（`pickle.load`、`SafeLoader` なしの `yaml.load`、`eval(`、`os.system`、`subprocess(...,  shell=True)`、JSの `child_process.exec`、Reactの `dangerouslySetInnerHTML`、生の `.innerHTML =` / `.outerHTML =` / `document.write`、Nodeの `crypto.createCipher`、AES ECBモード、TLS検証の無効化、XXEを起こしやすい `xml.etree` / `minidom` パーサー、SRIなしの `<script src="//..." >`、`weights_only=True` なしの `torch.load`、GitHub Actionsの `${{ github.event.* }}` インジェクション）に一致するコンテンツを含む場合、プラグインはツールの結果に `⚠️ Security guidance` ブロックを付加します。
 
-このプラグインはフェイルオープンです。SDKがインストールされていない、認証情報がない、またはLangfuseの一時的なエラー — これらはすべてフック内で静かなノーオペレーションになります。エージェントループが影響を受けることはありません。
+ファイルは引き続き書き込まれます。モデルは次のターンのツールメッセージで警告を読み、コードを修正するか、その構文がこのコンテキストで安全である理由を文書化できます。パターンマッチングには無視できない誤検知率があるため、デフォルトはブロックではなく警告です。
 
-**セットアップ（対話的 — 推奨）:**
+**カバレッジ:** 合計25ルールで、安全でないデシリアライズ、コマンドインジェクション、XSSシンク、暗号の落とし穴、XXE、サプライチェーン（SRI）、CI/CDワークフローインジェクションをカバーします。パターンデータは[Anthropicの `claude-plugins-official`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/security-guidance/hooks)をそのままApache-2.0でフォークしたものです。帰属表示については、プラグインの `LICENSE` および `NOTICE` ファイルを参照してください。
 
-```bash
-hermes tools          # → Langfuse Observability → Cloud or Self-Hosted
-```
+**モード:**
 
-ウィザードはあなたのキーを収集し、`langfuse` SDKを `pip install` し、`observability/langfuse` を `plugins.enabled` に追加してくれます。Hermesを再起動すると、次のターンでトレースが送信されます。
-
-**セットアップ（手動）:**
-
-```bash
-pip install langfuse
-hermes plugins enable observability/langfuse
-```
-
-その後、認証情報を `~/.hermes/.env` に入れます。
-
-```bash
-HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...
-HERMES_LANGFUSE_SECRET_KEY=sk-lf-...
-HERMES_LANGFUSE_BASE_URL=https://cloud.langfuse.com   # またはセルフホストのURL
-```
-
-**動作の仕組み:**
-
-| フック | 動作 |
+| 環境変数 | 効果 |
 |---|---|
-| `pre_api_request` / `pre_llm_call` | ターンごとのルートスパン "Hermes turn" を開く（または再利用する）。シリアライズされた最近のメッセージを入力として、このAPI呼び出しの `generation` 子観測を開始する。 |
-| `post_api_request` / `post_llm_call` | 生成を閉じ、`usage_details`、`cost_details`、`finish_reason`、アシスタント出力 + ツール呼び出しを付加する。ツール呼び出しがなく、コンテンツが空でない場合、ターンを閉じる。 |
-| `pre_tool_call` | サニタイズされた `args` で `tool` 子観測を開始する。 |
-| `post_tool_call` | サニタイズされた `result` でツール観測を閉じる。`read_file` のペイロードは要約され（先頭 + 末尾 + 省略行数）、巨大なファイル読み取りが `HERMES_LANGFUSE_MAX_CHARS` 未満に収まるようにする。 |
+| （未設定） | **警告モード**（デフォルト） — ファイルは書き込まれ、警告が結果に付加される |
+| `SECURITY_GUIDANCE_BLOCK=1` | **ブロックモード** — 書き込みが拒否され、警告がブロック理由として返される |
+| `SECURITY_GUIDANCE_DISABLE=1` | キルスイッチ — プラグインは読み込まれるが何もしない |
 
-セッションのグルーピングは、`langfuse.propagate_attributes` を介してHermesのセッションID（サブエージェントの場合はタスクID）に基づくため、単一の `hermes chat` セッション内のすべてが1つのLangfuseセッションの下に存在します。
+**有効化:** `hermes plugins enable security-guidance`（または `hermes plugins` でチェックボックスをオンにする）。
 
-**確認:**
+**再び無効化:** `hermes plugins disable security-guidance`。
+
+**（まだ）行わないこと:** 上流のAnthropicプラグインにはさらに2つのレイヤーがあります。ファイルに触れた各エージェントターンでのLLMによる差分レビューと、ファイルをまたいでデータフローを追跡するエージェント的なコミット時レビューです。どちらも移植されていません。エージェントは `delegate_task` を介して、これらのレビューをオンデマンドですでに実行できます。
+
+### Langfuse（プラグインカタログに移動）
+
+LangfuseトレーシングはHermesに同梱されなくなりました。同じフック、`HERMES_LANGFUSE_*`
+環境変数、キャプチャモードを備えた公式の
+[`langfuse`](https://github.com/NousResearch/hermes-official-plugins/tree/main/langfuse) カタログプラグインとして提供されています:
 
 ```bash
-hermes plugins list                 # observability/langfuse が "enabled" と表示されるはず
-hermes chat -q "hello"              # Langfuse UIで "Hermes turn" トレースを確認する
+hermes plugins install langfuse
 ```
 
-**任意のチューニング**（`.env` 内）:
+`observability/langfuse` を有効にしていたプロファイルでは、`hermes update`（または更新後の初回起動時）によって
+プラグインが自動的にインストールされて有効化され、同じLangfuseプロジェクトへのトレースが継続されます。セットアップ、チューニング、キャプチャモードは
+[プラグインのREADME](https://github.com/NousResearch/hermes-official-plugins/tree/main/langfuse)に記載されています。
 
-| 変数 | デフォルト | 目的 |
-|---|---|---|
-| `HERMES_LANGFUSE_ENV` | — | トレースの環境タグ（`production`、`staging`、…） |
-| `HERMES_LANGFUSE_RELEASE` | — | リリース/バージョンのタグ |
-| `HERMES_LANGFUSE_SAMPLE_RATE` | `1.0` | SDKに渡されるサンプリングレート（0.0〜1.0） |
-| `HERMES_LANGFUSE_MAX_CHARS` | `12000` | メッセージコンテンツ / ツール引数 / ツール結果のフィールドごとの切り詰め |
-| `HERMES_LANGFUSE_DEBUG` | `false` | `agent.log` への詳細なプラグインログ |
+### NeMo Relayネイティブ統合（移行に関する注意） {#nemo-relay-native-integration-migration-note}
 
-Hermesプレフィックス付きと標準SDKの環境変数（`LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`、`LANGFUSE_BASE_URL`）の両方が受け付けられます。両方が設定されている場合はHermesプレフィックス付きが優先されます。
+NeMo Relayは同梱のHermesプラグインではなくなりました。`hermes plugins enable observability/nemo_relay` は実行しないでください。Relayのセッション、ターン、LLM、ツールのライフサイクルは、現在Hermesコアが管理しています。
 
-**パフォーマンス:** Langfuseクライアントは最初のフック呼び出しの後にキャッシュされます。認証情報またはSDKが欠けている場合、その判定もキャッシュされ、以降のフックは環境変数の再確認や設定の再読み込みなしに高速に返ります。
+Relayのミドルウェアやエクスポーターは、標準のRelay `plugins.toml` で設定します。HermesはRelayのユーザー設定（`~/.config/nemo-relay/plugins.toml`）を読み込み、次にマシン全体のシステム設定（`/etc/nemo-relay/plugins.toml`、Windowsでは `%ProgramData%\nemo-relay\plugins.toml`）を読み込みます。明示的なファイルでユーザー設定を置き換えたい場合にのみ、Hermesを起動する前に `HERMES_NEMO_RELAY_PLUGINS_TOML` を設定してください。その場合もシステム設定のほうが優先順位は高くなります。このポリシーはプロセス全体に適用され、そのHermesプロセスがホストするすべてのプロファイルに及びます。どのファイルが適用されるかは `hermes doctor` で確認できます。ATOF、ATIF、OpenTelemetryのオプションについては、[NeMo Relayの可観測性設定](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about)を参照してください。
 
-**無効化:** `hermes plugins disable observability/langfuse`。プラグインモジュールは引き続き検出されますが、再び有効化するまでモジュールのコードは実行されません。
+従来の `HERMES_NEMO_RELAY_ATOF_*` および `HERMES_NEMO_RELAY_ATIF_*` 設定では、エクスポーターを設定できなくなりました。`HERMES_NEMO_RELAY_PLUGINS_TOML` が未設定の場合、ゲートウェイは残っている従来の変数について警告し、`hermes doctor` がそれらを報告します。独立して検出されたRelayのユーザーまたはシステムのエクスポーターは引き続き適用されます。
+
+**自動移行。** `hermes update`（および `hermes migrate relay`、またはすべてのプロファイルホームを対象とする `hermes migrate relay --all-profiles`）は、従来の変数を `<hermes home>/relay-plugins.toml` に変換し、そのプロファイルの `.env` に `HERMES_NEMO_RELAY_PLUGINS_TOML` を設定し、従来の行をコメントアウトします（何も削除されません）。多重化されたゲートウェイでは、各プロファイルホームにそれぞれのファイルが作成されます。生成されたファイルは書き込まれる前にRelayで検証されます。生成される形は次のとおりです（`type = "file"` のシンク識別子に注意してください。これがないシンクは拒否されます）:
+
+```toml
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 4
+enable_full_payloads = false
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.sinks]]
+type = "file"
+output_directory = "/home/you/.hermes/telemetry/nemo-relay/atof"
+filename = "hermes-atof.jsonl"
+mode = "append"
+
+[components.config.atif]
+enabled = true
+agent_name = "Hermes Agent"
+model_name = "unknown"
+output_directory = "/home/you/.hermes/telemetry/nemo-relay/atif"
+filename_template = "trajectory-{session_id}.json"
+
+[components.config.opentelemetry]
+enabled = false
+endpoints = []
+
+[components.config.policy]
+unknown_component = "warn"
+unknown_field = "warn"
+unsupported_value = "error"
+```
+
+その後、`.env` に `HERMES_NEMO_RELAY_PLUGINS_TOML=/home/you/.hermes/relay-plugins.toml` を追加し、ゲートウェイを再起動します。
+
+#### セッションスパンの分割（継続セッション）
+
+Relayはスコープが閉じたときにスパンをエクスポートします。継続的なゲートウェイセッションでは、各ターンのスパンが通常どおりエクスポートされていても、セッションスパンが何日も開いたままになることがあります。オプションの分割機能は、ターンの境界でセッションスコープだけをローテーションします:
+
+```yaml
+gateway:
+  telemetry:
+    session_segments:
+      on_compaction: false  # rotate after context compaction
+      max_turns: 0          # 0 = unlimited; N = turns per segment
+```
+
+| キー | デフォルト | 動作 |
+|---|---:|---|
+| `on_compaction` | `false` | 圧縮の完了後、次のターン境界でローテーションする。 |
+| `max_turns` | `0` | N回のターンが完了するごとにローテーションする。`0` で上限を無効化。 |
+
+どちらのデフォルトも、セッション全体で1つのセッションスコープを維持します。ローテーションされたスパンは同じ `session_id` を保持し、`hermes.session.segment` と `hermes.session.segment_reason`（`compaction` または `max_turns`）を追加します。
 
 ### google_meet
 
@@ -185,17 +228,18 @@ Hermesプレフィックス付きと標準SDKの環境変数（`LANGFUSE_PUBLIC_
 **追加される機能:**
 
 - ブラウザ自動化を使ってMeet URLに参加するヘッドレスの仮想参加者
-- 設定されたSTTプロバイダー経由のミーティング音声のライブ文字起こし
-- 聞いた内容に基づいて動作するためにエージェントが呼び出す `meet_summarize` / `meet_speak` / `meet_followup` ツールセット
-- `~/.hermes/cache/google_meet/<meeting_id>/` 配下に保存されるミーティング後のアーティファクト（トランスクリプト、話者帰属付きメモ、アクションアイテム）
+- Meet自身のライブキャプションから得られるライブ文字起こし（ボットはミーティング音声をデコードしないため、STTの課金は発生しません。ただし、キャプションは情報が欠落しやすく、英語に偏っています）
+- 通話への参加、ライブトランスクリプトのポーリング、聞いた内容に基づく動作のためにエージェントが呼び出す `meet_join` / `meet_status` / `meet_transcript` / `meet_leave` / `meet_say` ツールセット
+- `~/.hermes/workspace/meetings/<meeting_id>/` 配下に保存されるミーティング後のアーティファクト（トランスクリプト、ステータス）
 
 **セットアップ:**
 
 ```bash
 hermes plugins enable google_meet
-# 初回使用時にプラグインのOAuthフロー経由でのサインインを求められます。
-# Meetアクセス権を持つGoogleアカウントが必要です。ミーティングが
-# 「招待された参加者のみ参加可能」を強制している場合、主催者の承認が必要な場合があります。
+hermes meet setup   # preflight: playwright, chromium, auth file
+hermes meet auth    # opens a browser to sign into Google and saves session state —
+                    # needs a Google account with Meet access. Host approval may be
+                    # required if the meeting enforces "only invited participants can join".
 ```
 
 チャットからの使い方:
@@ -204,9 +248,11 @@ hermes plugins enable google_meet
 
 エージェントはミーティングへの参加を開始し、通話の進行に合わせて文字起こしをコンテキストにストリーミングし、ミーティングが終了したとき（または停止を指示したとき）に構造化された要約を生成します。
 
+**リアルタイムモード（`mode='realtime'`）は、音声面では発話専用です。** ボットの返答はOpenAI Realtimeで合成され、仮想マイクを通じて通話に再生されます。ボットが*聞いている*のは引き続きキャプションストリームであり、ミーティング音声ではありません。通話の内容がRealtimeセッションに送られることはありません。`meet_status` は `micState`（`unmuted`、参加承認後にボットが自分でミュートを解除する必要があった場合は `unmuted_clicked`、Meetのトグルが見つからなかった場合は `unknown`）を報告するため、ボットが無音の場合に原因を診断できます。
+
 **いつ使うか:** 非同期の参加者のためにボットに文字起こし + 要約をしてほしい定例スタンドアップ、構造化されたメモが欲しい証言録取スタイルのインタビュー、Fireflies / Otter / Grain が必要になるあらゆるケース。AIに聞かれたくない場合は有効化しないでください。
 
-**無効化:** `hermes plugins disable google_meet`。キャッシュされたトランスクリプトと録画は、削除するまで `~/.hermes/cache/google_meet/` に残ります。
+**無効化:** `hermes plugins disable google_meet`。保存されたトランスクリプトは、削除するまで `~/.hermes/workspace/meetings/` に残ります。
 
 ### hermes-achievements
 
@@ -261,7 +307,7 @@ hermes plugins enable google_meet
 
 ## 同梱プラグインを追加する
 
-同梱プラグインは、他のあらゆるHermesプラグインとまったく同じように書かれます。[Hermesプラグインを構築する](/docs/developer-guide/plugins)を参照してください。唯一の違いは次のとおりです。
+同梱プラグインは、他のあらゆるHermesプラグインとまったく同じように書かれます。[Hermesプラグインを構築する](../../developer-guide/plugins/index.md)を参照してください。唯一の違いは次のとおりです。
 
 - ディレクトリが `~/.hermes/plugins/<name>/` ではなく `<repo>/plugins/<name>/` にある
 - マニフェストのソースが `hermes plugins list` で `bundled` として報告される
@@ -269,7 +315,7 @@ hermes plugins enable google_meet
 
 プラグインが同梱の良い候補となるのは、次の場合です。
 
-- オプションの依存関係がない（または、それらがすでに `pip install .[all]` の依存関係である）
+- オプションの依存関係がない（または、それらがすでに宣言済みの `all` extra に含まれている）
 - その動作がほとんどのユーザーにとって有益であり、オプトインではなくオプトアウトである
 - ロジックが、エージェントがそうでなければ呼び出すのを覚えておく必要があるライフサイクルフックに結びついている
 - モデルから見えるツール面を拡大せずに、コア機能を補完する

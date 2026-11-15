@@ -7,18 +7,18 @@
 - ボードに接続するレーンを選ぶ **オペレーター**（どのプロファイルを作成し、どの担当者を使用するか）。
 - 新しいレーンの形状を追加したい **プラグイン/連携の作者**（Codex / Claude Code / OpenCode をラップする CLI ワーカー、コンテナ化されたレビューワーカー、API 経由でタスクをプルする非 Hermes サービスなど）。
 
-ワーカーコード自体 — レーンの *内部* で実行されるエージェント — を書いている場合は、[`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) スキルがより深い手続き的な詳細を提供します。
+ワーカーコード自体 — レーンの *内部* で実行されるエージェント — を書いている場合、カンバンのライフサイクルとリファレンスの詳細はワーカーのシステムプロンプトに自動的に注入されます（[`agent/prompt_builder.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/prompt_builder.py) の `KANBAN_GUIDANCE` ブロック）。
 
 ## 階層
 
 ```text
-Hermes Kanban  =  正規のタスクライフサイクル + 監査証跡
-Worker lane    =  割り当てられた 1 枚のカードの実装実行者
-Reviewer       =  「完了」をゲートする人間または人間プロキシ
-GitHub PR      =  アップストリーム可能な成果物（オプション、コードレーン用）
+Hermes Kanban  =  canonical task lifecycle + audit trail
+Worker lane    =  implementation executor for one assigned card
+Reviewer       =  human or human-proxy that gates "done"
+GitHub PR      =  upstreamable artifact (optional, for code lanes)
 ```
 
-Hermes Kanban はライフサイクルの真実を所有します — `ready` → `running` → `blocked` / `done` / `archived`。ワーカーレーンは作業を実行しますが、その真実を所有することはありません。ワーカーが行うすべては、`kanban_*` ツール（または、非 Hermes の外部ワーカーの場合は API）を介してカンバンカーネルにフローバックします。レビュアーは「コード変更が書かれた」状態から「タスク完了」への遷移をゲートします。
+Hermes Kanban はライフサイクルの真実を所有します — `ready` → `running` → `review` / `blocked` / `done` / `archived`。ワーカーレーンは作業を実行しますが、その真実を所有することはありません。ワーカーが行うすべては、`kanban_*` ツール（または、非 Hermes の外部ワーカーの場合は API）を介してカンバンカーネルにフローバックします。レビュアーは「コード変更が書かれた」状態から「タスク完了」への遷移をゲートします。
 
 ## レーンが提供するもの
 
@@ -46,32 +46,48 @@ Hermes プロファイルレーンの場合、ディスパッチャーの `_defa
 
 非 Hermes レーン（プラグイン経由で登録）の場合、プラグインは独自の `spawn_fn` 呼び出し可能オブジェクトを提供します。これは `task`、`workspace`、`board` を受け取り、クラッシュ検出用のオプションの pid を返します。
 
+### 子孫プロセスのスコープ
+
+タスクの割り当ては、ディスパッチャーのワーカーに属するものであり、そのワーカーが起動するすべてのプログラムに属するわけではありません。
+Hermes のサブプロセスヘルパーは、シェル、実行カーネル、cron の配信、フック、言語サーバー、通常の stdio MCP サーバーに非オーナーのフェンスを持ち込みます。スクリプトが継承したタスク ID を削除した場合でも、それ以降の子プロセスはフェンスされたままです: そのスクリプトをオーケストレーターとして扱うのではなく、CLI とツールによる変更操作は拒否されます。
+ボード/データベースのルーティングとワークスペースのパスは保持されます。子孫プロセスはスキーママイグレーションを実行せずに既存のボードを読み取れますが、ボードの初期化はそのオーナーが行う必要があります。
+フェンスは系統のボードルートにスコープされます（マーカーの値はそのルートと、ディスパッチャーがピン留めした `HERMES_KANBAN_DB` です）: 別のカンバンホーム — スクラッチの `HERMES_HOME` 配下でのテストや再現 — に対して作業する子孫プロセスは、通常の読み書き可能なボードを得ます。
+
+ディスパッチャーは、新たに割り当てられたワーカーに明示的に独自のスコープを付与します。マネージドな Hermes-tools MCP エンドポイントも同様に、その監督ワーカーに代わって動作できますが、エグゼキューターの通常のシェルの子プロセスはフェンスされたままです。ワーカーが実行できるのは、ライフサイクルのハンドオフと、割り当てられたタスクへのファイル添付だけです。`unblock` は引き続きオーケストレーター専用です。
+タスクをまたぐコメントとフォローアップタスクの作成は、既存の動作を維持します。
+
+コードをスポーンする連携の作者は、環境変数のオーバーライドをマージした後、実際のスポーン時に `agent.delegation_context.delegated_child_subprocess_env` を使用してください。これは呼び出し元の認証情報/プロファイルのポリシーを保持します。
+これは協調的なランタイムスコープであり、**OS レベルの隔離ではありません**: 任意のコードが意図的に系統メタデータを消去したり、SQLite を直接開いたりすることは防げません。
+
 ### 3. ライフサイクルターミネーター
 
 すべてのクレームは、次のいずれか 1 つだけで終了しなければなりません:
 
 - `kanban_complete(summary=..., metadata=...)` — タスクが成功し、ステータスが `done` に切り替わります。
+- `kanban_request_review(summary=..., metadata=..., reviewer=...)` — 同一カードでの実装が完了し、ファーストクラスのレビューに入ります。ステータスが `review` に切り替わります。`kanban.review_dispatch` が無効化されていない限り、ディスパッチャーはバンドルされた `sdlc-review` スキルをロードします。レビュアーは `kanban_complete` で承認するか、`kanban_request_changes` で対応可能な手戻りを返すか、真の外部ブロッカーを `kanban_block` でエスカレートします。
 - `kanban_block(reason=...)` — タスクが人間の入力を待ち、ステータスが `blocked` に切り替わります。`kanban_unblock` が実行されるとディスパッチャーが再スポーンします。
 - ワーカープロセスがツール呼び出しなしで終了します。カーネルがそれを回収し、`crashed`（PID が死んだ）、`gave_up`（連続失敗ブレーカーが作動した）、または `timed_out`（max_runtime を超過した）を発行します。これは失敗パスです。健全なワーカーはここで終わりません。
 
-カンバンカーネルは、これらのいずれか 1 つだけが各実行を終了させることを強制します。どちらも呼び出さずに正常終了するワーカーはクラッシュとして扱われます。
+カンバンカーネルは、これらのいずれか 1 つだけが各実行を終了させることを強制します。どれも呼び出さずに正常終了するワーカーはクラッシュとして扱われます。
 
-## 出力とレビュー必須の慣例
+## 出力とレビューへのハンドオフ
 
-ほとんどのコード変更タスクでは、ワーカーが終了した瞬間に作業が本当に *完了* するわけではありません — 人間のレビュアーが必要です。カンバンカーネルはこの区別を強制しません（「コード変更タスク」は曖昧であり、すべてのコードワーカーに complete の代わりに block を強制すると、レビューが不要なフローが壊れてしまうため）。これはその上に重ねられた慣例です:
+コード変更タスクでは、タスクグラフにエンコードされたレビューモデルを選んでください:
 
-- **complete の代わりに block** し、`reason` に `review-required: ` というプレフィックスを付けて、ダッシュボード / `hermes kanban show` がその行をレビュー待ちとして表示するようにします。
-- **構造化されたメタデータを先に `kanban_comment` に投入** します。`kanban_block` は人間が読める `reason` のみを保持するためです。コメントは耐久性のある注釈チャネルです — 監査関連のすべてのフィールド（changed_files、tests_run、diff_path または PR URL、決定事項）はそこに属します。
-- **レビュアーは承認してブロック解除** し（コメントスレッドを引き継ぎ用にしてワーカーを再スポーンします）、または別のコメントで変更を要求します（次のワーカー実行が `kanban_show` のコンテキストの一部として確認します）。
+- **同一カードでのレビュー:** `kanban_request_review(summary=..., metadata=..., reviewer=...)` を呼び出します。タスクはブロック再発のカウントに触れることなく `review` に入ります。ディスパッチャーはデフォルトで、バンドルされた `sdlc-review` スキルを使ってこれをクレームします。レビュアーは `kanban_complete` で承認するか、`kanban_request_changes(reason=...)` を呼び出してレビュー実行を閉じタスクを元の実装者に戻すか、真の外部エスカレーションの場合に限りブロックします。
+- **事前作成された下流のレビュー/QA/リリースカード:** `kanban_show` は子の ID を一覧表示します。終端アクションを選ぶ前に、`kanban_show(task_id=...)` でそれらのカードを確認してください。子が下流のレビュー/QA/リリースフェーズである場合は、実装フェーズで `kanban_complete` を呼び出します。子はこの親が `done`/`archived` になるまで昇格できません。追加で同一カードのレビューを要求したり、親を `review-required:` で sticky-block したりしないでください — どちらを選んでも下流のレーンが取り残されるか重複します。
+- **人間のみのボード:** `kanban.review_dispatch: false` を設定します。この場合、タスクは人間が承認するか、`reopen-review`/ダッシュボードを使って `ready`/`todo` に戻すまで `review` に留まれます。
 
-[`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) スキルには、`kanban_complete`（真に終端的なタスク — タイポ修正、ドキュメント変更、リサーチの書き起こし）と `review-required` ブロックパターンの両方の実例があります。
+どちらのレビューモデルも、構造化されたハンドオフをライフサイクル遷移そのものに載せて運びます。`summary` や `metadata` にシークレット、トークン、生の PII を入れないでください。実行の行は永続的に保存されます。
+
+注入される `KANBAN_GUIDANCE` は、両方のグラフ形状、`kanban_complete`、同一カードのレビューループ、そして真のブロッカーに対する `kanban_block` をカバーしています。
 
 ## ログと監査証跡
 
 ディスパッチャーは、タスクごとのワーカーの stdout/stderr を `<board-root>/logs/<task_id>.log` に書き込みます。ログはカンバンメタデータから監査可能です:
 
 - `task_runs` の行には、`log_path`、終了コード（利用可能な場合）、サマリー、メタデータが含まれます。
-- `task_events` の行には、すべての状態遷移（`promoted`、`claimed`、`heartbeat`、`completed`、`blocked`、`gave_up`、`crashed`、`timed_out`、`reclaimed`、`claim_extended`）が含まれます。
+- `task_events` の行には、すべての状態遷移（`promoted`、`claimed`、`heartbeat`、`completed`、`blocked`、`review_requested`、`changes_requested`、`review_reopened`、`gave_up`、`crashed`、`timed_out`、`reclaimed`、`claim_extended`）が含まれます。
 - `kanban_show` は両方を返すため、タスクを読むレビュアー（またはフォローアップワーカー）は、ダッシュボードへのアクセスを必要とせずに完全な履歴を取得できます。
 
 ダッシュボードは、サマリー、メタデータブロック、終了ステータスバッジとともに実行履歴をレンダリングします。CLI ユーザーは、ライブで追跡するには `hermes kanban tail <task_id>` を、過去の試行リストには `hermes kanban runs <task_id>` を実行できます。
@@ -80,9 +96,9 @@ Hermes プロファイルレーンの場合、ディスパッチャーの `_defa
 
 ### Hermes プロファイルレーン（デフォルト）
 
-現在すべてのカンバンワーカーが取る形状です: 担当者はプロファイル名で、ディスパッチャーが `hermes -p <profile>` をスポーンし、ワーカーが [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) スキルと `KANBAN_GUIDANCE` システムプロンプトブロックを自動ロードし、`kanban_*` ツールを使用して実行を終了します。プロファイルを定義する以外のセットアップは不要です。
+現在すべてのカンバンワーカーが取る形状です: 担当者はプロファイル名で、ディスパッチャーが `hermes -p <profile>` をスポーンし、ワーカーには `KANBAN_GUIDANCE` システムプロンプトブロックが自動的に注入され、`kanban_*` ツールを使用して実行を終了します。プロファイルを定義する以外のセットアップは不要です。
 
-フリート用のプロファイルを作成する際は、オーケストレーターにルーティングさせたい *役割* に一致する名前を選んでください。オーケストレーター（存在する場合）は、`hermes profile list` を介してあなたのプロファイル名を発見します — システムが想定する固定のロスターはありません（契約のオーケストレーター側については [`kanban-orchestrator`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-orchestrator/SKILL.md) スキルを参照してください）。
+フリート用のプロファイルを作成する際は、オーケストレーターにルーティングさせたい *役割* に一致する名前を選んでください。オーケストレーター（存在する場合）は、`hermes profile list` を介してあなたのプロファイル名を発見します — システムが想定する固定のロスターはありません（契約のオーケストレーター側は、注入される `KANBAN_GUIDANCE` の一部です）。
 
 ### オーケストレータープロファイルレーン
 
@@ -105,10 +121,12 @@ CLI レーンの追加を検討している場合は、具体的な CLI と有�
 - **実行レベルのリトライ** — タスクがリトライされる（block 後、crash 後、reclaim 後）とき、ワーカーは終了ツールの `expected_run_id` パラメーターを使用して、自身の実行がすでに置き換えられていた場合に高速に失敗できます。
 - **タスクごとの最大ランタイム** — `task.max_runtime_seconds` は、PID の生存状態に関係なく、実行ごとの実時間をハードキャップします。ライブ PID 延長が実行し続けてしまう、真にデッドロックしたワーカーを捕捉します。
 - **取り残されたタスクの検出** — 担当者が `kanban.stranded_threshold_seconds`（デフォルト 30 分）以内にクレームを生成しない ready タスクは、`hermes kanban diagnostics` で `stranded_in_ready` 警告として表示されます。重大度はしきい値の 2 倍で error に、6 倍で critical にエスカレートします。タイポした担当者、削除されたプロファイル、ダウンした外部ワーカープールを 1 つのシグナルで捕捉します — アイデンティティに依存せず、ボードごとに管理する許可リストは不要です。
+- **未解決のオーナーレシートの背後にある死んだ試行** — 再起動によって kill されたワーカーは、ディスパッチャーが解決できない `owner_admitted` レシートを残すことがあり、以前は再クレームがその理由だけで永久に拒否されていました: カードは `running` のままで、そのプロファイルの `kanban.max_in_progress_per_profile` スロットを占有し続け、アラームは原因ではなくその後ろに並んだカードを指していました。現在、この拒否は試行を実行しているものが何もあり得なくなった時点で失効します — オーナーのプロセスが消えているかリサイクルされており、`DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS` 以内にハートビートがなく、実行が記録したすべての pid（`worker_pid`、`spawned`、`worker_bound`）が死んでいる場合です — `worker_bound` イベントを一度も書き込まなかった実行も含みます。証明できないもの（生きている pid、欠落したフィンガープリント、記録された pid がない、別ホストのロック）は引き続きクレームを保持します。それでも残ったカードは `hermes kanban diagnostics` で `stale_running` として表示され、`kanban.diagnostics.stale_running_grace_seconds`（デフォルト 1 時間）を超えた経過時間に応じてエスカレートします。
+- **親が未完了のまま実行中** — 直接の親が `done`/`archived` ではない `running` カード（実行中に親が再オープンされた、またはリンクが running 状態の子に対する拒否より前に作成された）は、`running_with_open_parents` 警告を表示します: 依存関係ゲートが 2 つの実行を直列化しておらず、親が完了するまで `kanban_complete` は拒否されます。読み取り専用で、`hermes kanban unlink` を提案します。
+- **レガシーなレビュー依存デッドロック** — 親が `review-required:` で sticky-block されている一方で、1 つ以上の直接の子が `todo` で依存関係ゲートされたままになっている場合、即座に `review_dependency_deadlock` エラーが発生します。この診断は読み取り専用です: 完了したフェーズを complete にするか、誤ったエッジを unlink することを提案しますが、ユーザーのブロックを自動的に削除することはありません。
 
 ## 関連
 
 - [カンバン概要](./kanban) — ユーザー向けの導入。
 - [カンバンチュートリアル](./kanban-tutorial) — ダッシュボードを開いた状態でのウォークスルー。
-- [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) — ワーカープロセスがロードするスキル。
-- [`kanban-orchestrator`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-orchestrator/SKILL.md) — オーケストレーター側。
+- [`KANBAN_GUIDANCE`](https://github.com/NousResearch/hermes-agent/blob/main/agent/prompt_builder.py) — すべてのカンバンワーカーのシステムプロンプトに注入される、ワーカーとオーケストレーターのライフサイクル。

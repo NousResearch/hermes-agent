@@ -5,12 +5,12 @@ Hermes Kanbanシステムが設計対象とした4つのユースケースを、
 ## セットアップ
 
 ```bash
-hermes kanban init           # オプション。最初の `hermes kanban <なにか>` で自動初期化される
-hermes dashboard             # ブラウザで http://127.0.0.1:9119 を開く
-# 左ナビの Kanban をクリック
+hermes kanban init           # optional; first `hermes kanban <anything>` auto-inits
+hermes dashboard             # opens http://127.0.0.1:9119 in your browser
+# click Kanban in the left nav
 ```
 
-ダッシュボードは、**あなた**がシステムを眺めるのに最も快適な場所です。ディスパッチャーが起動するエージェントワーカーは、ダッシュボードもCLIも一切目にしません — 専用の `kanban_*` [ツールセット](./kanban#how-workers-interact-with-the-board)（`kanban_show`、`kanban_list`、`kanban_complete`、`kanban_block`、`kanban_heartbeat`、`kanban_comment`、`kanban_create`、`kanban_link`、`kanban_unblock`）を通じてボードを操作します。3つの面 — ダッシュボード、CLI、ワーカーツール — はすべて、ボードごとの同じSQLite DB（デフォルトボードは `~/.hermes/kanban.db`、後で作成する任意のボードは `~/.hermes/kanban/boards/<slug>/kanban.db`）を経由するため、変更が垣根のどちら側から来たものであっても、各ボードは一貫しています。
+ダッシュボードは、**あなた**がシステムを眺めるのに最も快適な場所です。ディスパッチャーが起動するエージェントワーカーは、ダッシュボードもCLIも一切目にしません — 専用の `kanban_*` [ツールセット](./kanban#how-workers-interact-with-the-board)（`kanban_show`、`kanban_list`、`kanban_complete`、`kanban_request_review`、`kanban_request_changes`、`kanban_block`、`kanban_heartbeat`、`kanban_comment`、`kanban_attach`、`kanban_attach_url`、`kanban_attachments`、`kanban_create`、`kanban_link`、`kanban_unblock`）を通じてボードを操作します。3つの面 — ダッシュボード、CLI、ワーカーツール — はすべて、ボードごとの同じSQLite DB（デフォルトボードは `~/.hermes/kanban.db`、後で作成する任意のボードは `~/.hermes/kanban/boards/<slug>/kanban.db`）を経由するため、変更が垣根のどちら側から来たものであっても、各ボードは一貫しています。
 
 このチュートリアルでは全体を通して `default` ボードを使います。複数の隔離されたキュー（プロジェクト/リポジトリ/ドメインごとに1つ）が欲しい場合は、概要の[Boards（マルチプロジェクト）](./kanban#boards-multi-project)を参照してください — 同じCLI / ダッシュボード / ワーカーのフローがボードごとに適用され、ワーカーは物理的に他のボードのタスクを見ることができません。
 
@@ -22,7 +22,7 @@ hermes dashboard             # ブラウザで http://127.0.0.1:9119 を開く
 
 左から右に6つのカラム：
 
-- **Triage** — 生のアイデア。誰かが作業に取りかかる前に、specifierが仕様を肉付けします。任意のtriageカードの **✨ Specify** ボタンをクリックする（またはチャットから `hermes kanban specify <id>` / `/kanban specify <id>` を実行する）と、補助LLMが一行のメモを完全な仕様（ゴール、アプローチ、受け入れ基準）に変換し、一気に `todo` へ昇格させます。これを実行するモデルは `config.yaml` の `auxiliary.triage_specifier` で設定します。
+- **Triage** — 生のアイデア。デフォルトでは、ディスパッチャーがここにあるタスクに対して**decomposer**を自動実行します。組み込みのdecomposerは `auxiliary.kanban_decomposer` を使い、プロファイルの一覧と説明を読み取って、最適なスペシャリストに振り分けられた子タスクのグラフを生成します。元のタスクは親として保持されるため、その担当者（`kanban.orchestrator_profile`、未設定の場合はアクティブなデフォルトプロファイル）は、すべてが終わったときに再び起きて完了を判定します。モードを切り替えるには、kanbanページ上部の **Orchestration: Auto/Manual** ピルを切り替えます。Manualモードでは、カードの **⚗ Decompose** をクリックするか、`hermes kanban decompose <id>` / `/kanban decompose <id>` を実行します。ファンアウトが不要な単一タスクには、**✨ Specify** が一発で仕様を書き直し（ゴール、アプローチ、受け入れ基準）、`todo` へ昇格させます。モデルは `config.yaml` の `auxiliary.kanban_decomposer` と `auxiliary.triage_specifier` で設定します。メインのKanbanガイドの[Auto vs Manual orchestration](./kanban#auto-vs-manual-orchestration)を参照してください。
 - **Todo** — 作成済みだが依存関係を待っている、またはまだ割り当てられていない。
 - **Ready** — 割り当て済みで、ディスパッチャーがクレームするのを待っている。
 - **In progress** — ワーカーがタスクをアクティブに実行中。「Lanes by profile」がオン（デフォルト）の場合、このカラムは担当者ごとにサブグループ化され、各ワーカーが何をしているか一目で分かります。
@@ -64,12 +64,12 @@ hermes kanban create "Write auth integration tests" \
 次のディスパッチャーティック（デフォルトで60秒ごと、または **Nudge dispatcher** を押せば即座）で、`backend-dev` プロファイルが環境に `HERMES_KANBAN_TASK=$SCHEMA` を持つワーカーとして起動します。エージェントの内側から見たワーカーのツール呼び出しループは次のようになります：
 
 ```python
-# worker tool calls — あなたが実行するコマンドではない
+# worker tool calls — NOT commands you run
 kanban_show()
-# → title、body、worker_context、parents、prior attempts、comments を返す
+# → returns title, body, worker_context, parents, prior attempts, comments
 
-# （ワーカーは worker_context を読み、terminal/file ツールを使ってスキーマを設計し、
-#  マイグレーションを書き、自前のチェックを実行し、コミットする — 実作業はここで行われる）
+# (worker reads worker_context, uses terminal/file tools to design the schema,
+#  write migrations, run its own checks, commit — the real work happens here)
 
 kanban_heartbeat(note="schema drafted, writing migrations now")
 
@@ -149,56 +149,36 @@ hermes gateway start
 
 ![複数ロールの機能のパイプラインビュー](/img/kanban-tutorial/08-pipeline-auth.png)
 
-3段階のチェーンが一度に見えます：`Spec: password reset flow`（DONE、pm）、`Implement password reset flow`（DONE、backend-dev）、`Review password reset PR`（READY、reviewer）。それぞれ下部に親が緑色で、子が依存関係として表示されます。
+このスクリーンショットは**事前作成された下流カード**モデルを使っています：実装カードには専用のレビュアー子カードがあります。このモデルでは、レビュアー子カードが `todo` から出られるよう、エンジニアは実装の準備ができたら `kanban_complete` を呼ぶ必要があります。レビューを依頼するためだけに実装の親をブロックしてはいけません。
 
-興味深いのは実装タスクです。なぜなら、これはブロックされて再試行されたからです。各ワーカーのモデルが行うツール呼び出しとして示した、3エージェントの完全な振り付けがこちらです：
-
-```python
-# --- PMワーカーが $SPEC で起動し、受け入れ基準を書く ---
-# worker tool calls
-kanban_show()
-kanban_complete(
-    summary="spec approved; POST /forgot-password sends email, "
-            "GET /reset/:token renders form, POST /reset applies new password",
-    metadata={"acceptance": [
-        "expired token returns 410",
-        "reused last-3 password returns 400 with message",
-        "successful reset invalidates all active sessions",
-    ]},
-)
-# → $SPEC が done になる。$IMPL が todo から ready へ自動昇格
-
-# --- エンジニアワーカーが $IMPL で起動（最初の試行） ---
-# worker tool calls
-kanban_show()   # worker_context 内で $SPEC のサマリー + 受け入れメタデータを読む
-# （エンジニアがコードを書き、テストを実行し、PRを開く）
-# レビュアーのフィードバックが届く — エンジニアは懸念が妥当だと判断しブロックする
-kanban_block(
-    reason="Review: password strength check missing, reset link isn't "
-           "single-use (can be replayed within 30min)",
-)
-# → $IMPL が blocked に遷移。run 1 は outcome='blocked' でクローズ
-```
-
-ここであなた（人間、または別のレビュアープロファイル）がブロック理由を読み、修正の方向性が明確だと判断し、ダッシュボードの「Unblock」ボタンから — またはCLI / スラッシュコマンドから — ブロックを解除します：
-
-```bash
-hermes kanban unblock $IMPL
-# またはチャットから: /kanban unblock $IMPL
-```
-
-ディスパッチャーは `$IMPL` を `ready` に戻し、次のティックで `backend-dev` ワーカーを再起動します。この2度目の起動は、同じタスク上の**新しい実行**です：
+同じカードが実装とレビューの両方を担うワークフローでは、代わりにファーストクラスのレビューライフサイクルを使います。実装 → レビュー → 変更 → 再レビューの完全な振り付けは次のとおりです：
 
 ```python
-# --- エンジニアワーカーが $IMPL で起動（2回目の試行） ---
-# worker tool calls
+# --- Engineer: first implementation attempt ---
 kanban_show()
-# → worker_context には run 1 のブロック理由が含まれるようになるため、このワーカーは
-#   仕様全体を読み直す代わりに、修正すべき2点を把握している
-# （エンジニアが zxcvbn チェックを追加し、reset トークンを単回使用にし、テストを再実行）
-kanban_complete(
-    summary="added zxcvbn strength check, reset tokens are now single-use "
-            "(stored + deleted on success)",
+# (write code, run tests, prepare the candidate)
+kanban_request_review(
+    summary="implemented reset flow; candidate is ready for review",
+    metadata={"changed_files": ["auth/reset.py"], "tests_run": 8},
+    reviewer="reviewer",
+)
+# → the same card enters review; the implementation run closes as
+#   outcome='review_requested'
+
+# --- Reviewer: request concrete changes ---
+kanban_show()
+# (inspect the handoff and candidate)
+kanban_request_changes(
+    reason="Add password-strength validation and make reset tokens single-use."
+)
+# → the review run closes as outcome='changes_requested'; the card returns
+#   to backend-dev in ready/todo without touching block-loop accounting
+
+# --- Engineer: second implementation attempt ---
+kanban_show()  # prior review evidence is in worker_context
+# (apply feedback and re-run tests)
+kanban_request_review(
+    summary="added zxcvbn validation and single-use reset tokens",
     metadata={
         "changed_files": [
             "auth/reset.py",
@@ -208,23 +188,21 @@ kanban_complete(
         "tests_run": 11,
         "review_iteration": 2,
     },
+    reviewer="reviewer",
 )
+
+# --- Reviewer: approve ---
+kanban_complete(summary="review passed; acceptance criteria verified")
+# → done
 ```
 
-実装タスクをクリックします。ドロワーは**2回の試行**を表示します：
+タスクの実行履歴には `review_requested → changes_requested → review_requested → completed` が記録されます。各試行は独自のアクター、サマリー、メタデータ、結果を持つため、2回目のエンジニアはレビュアーが何を却下したかを正確に把握でき、最終承認も監査可能なまま残ります。`kanban_block` は本当の外部エスカレーション（アクセス権の欠如、プロダクト上の判断、利用できないインフラ）のためのもので、通常のレビューフィードバックには使いません。
 
-![2回の実行を持つ実装タスク — ブロック後に完了](/img/kanban-tutorial/04b-drawer-retry-history-scrolled.png)
-
-- **Run 1** — `@backend-dev` によって `blocked`。レビューのフィードバックが結果のすぐ下にあります：「password strength check missing, reset link isn't single-use (can be replayed within 30min)」。
-- **Run 2** — `@backend-dev` によって `completed`。新しいサマリー、新しいメタデータ。
-
-各実行は、独自の結果、サマリー、メタデータを持つ `task_runs` の行です。再試行履歴は「最新状態」のタスクの上に重ねられた概念的な後付けではありません — それが主要な表現です。再試行するワーカーがタスクを開くと、`build_worker_context` が以前の試行を表示するため、2回目のワーカーは最初のパスがなぜブロックされたかを見て、最初からやり直すのではなく、それらの具体的な指摘に対処します。
-
-次にレビュアーが拾い上げます。`Review password reset PR` を開くと、次が見えます：
+スクリーンショットに示した下流カードモデルを意図的に使う場合、レビュアーは実装の親が完了した後に `Review password reset PR` を開きます：
 
 ![パイプラインのレビュアーのドロワービュー](/img/kanban-tutorial/09-drawer-pipeline-review.png)
 
-親リンクは完了した実装です。レビュアーのワーカーが `Review password reset PR` で起動して `kanban_show()` を呼び出すと、返される `worker_context` には親の直近で完了した実行のサマリー + メタデータが含まれます — そのためレビュアーは「added zxcvbn strength check, reset tokens are now single-use」を読み、diffを見る前に変更されたファイルのリストを手にします。
+レビュアーカードの `worker_context` には、完了した実装のハンドオフが含まれます。これは別のカードワークフローです。同じカードでの `kanban_request_review` と組み合わせないでください。組み合わせるとレビューレーンが重複します。
 
 ## ストーリー4 — サーキットブレーカーとクラッシュ回復
 
@@ -236,10 +214,11 @@ kanban_complete(
 
 ```bash
 hermes kanban create "Deploy to staging (missing creds)" \
-    --assignee deploy-bot --tenant ops
+    --assignee deploy-bot --tenant ops \
+    --max-retries 3
 ```
 
-ディスパッチャーはワーカーの起動を試みます。起動が失敗します（`RuntimeError: AWS_ACCESS_KEY_ID not set`）。ディスパッチャーはクレームを解放し、失敗カウンターをインクリメントし、次のティックで再試行します。3回連続で失敗する（デフォルトの `failure_limit`）と、サーキットが作動します：タスクは結果 `gave_up` で `blocked` になります。人間がブロックを解除するまで、それ以上の再試行はありません。
+ディスパッチャーはワーカーの起動を試みます。起動が失敗します（`RuntimeError: AWS_ACCESS_KEY_ID not set`）。ディスパッチャーはクレームを解放し、失敗カウンターをインクリメントし、次のティックで再試行します。この例では `--max-retries 3` を設定しているため、3回連続で失敗するとサーキットが作動します：タスクは結果 `gave_up` で `blocked` になります。このフラグを省略した場合、Hermesは `kanban.failure_limit`（デフォルト: 2）を使います。人間がブロックを解除するまで、それ以上の再試行はありません。
 
 ブロックされたタスクをクリックします：
 
@@ -269,9 +248,9 @@ Telegram / Discord / Slackが接続されている場合、`gave_up` イベン�
 シードデータの例は、メモリ不足になっていたマイグレーションです：
 
 ```bash
-# ワーカーがクレームし、240万行のスキャンを開始、約230万行でOOMキルされる
-# ディスパッチャーが死んだpidを検出し、クレームを解放し、試行カウンターをインクリメント
-# チャンク化戦略での再試行が成功する
+# Worker claims, starts scanning 2.4M rows, OOM kills it at ~2.3M
+# Dispatcher detects dead pid, releases claim, increments attempt counter
+# Retry with a chunked strategy succeeds
 ```
 
 ドロワーは2回の試行履歴の全体を表示します：
@@ -292,6 +271,28 @@ Run 1 — `crashed`、エラー `OOM kill at row 2.3M (process 99999 gone)`。Ru
 これは、フラットなkanbanシステムを悩ませる「コメントと作業出力を掘り返す」やり取りを置き換えます。PMが仕様のメタデータに受け入れ基準を書くと、エンジニアのワーカーは親のハンドオフでそれを構造的に見ます。エンジニアがどのテストを実行し何件パスしたかを記録すると、レビュアーのワーカーはdiffを開く前にそのリストを手にします。
 
 一括クローズのガードが存在するのは、このデータが実行ごとだからです。`hermes kanban complete a b c --summary X`（CLIからのあなた）は拒否されます — 同じサマリーを3つのタスクにコピペするのは、ほぼ常に間違いです。ハンドオフフラグなしの一括クローズは、よくある「事務的なタスクの山を終わらせた」ケースのために依然として機能します。ツール面には一括版がまったく公開されていません。`kanban_complete` は同じ理由で常に1タスクずつです。
+
+## 完了したカードのフォローアップ — 親リンクによるCI修正
+
+ストーリー1の実装カードは `done` です。2時間後、マージされたブランチでCIが失敗します。完了したカードを再オープンしてはいけません — 完了したカードは履歴であり、そのハンドオフは前方へ流れます。完了したカードを**親**として、修正用のカードを作成します：
+
+```bash
+hermes kanban create "Fix CI: test_backoff_jitter flakes on 3.11" \
+    --assignee backend-dev \
+    --parent t_impl \
+    --workspace worktree --branch wt/ci-fix-backoff \
+    --body "CI run #4812 failed after t_impl completed.
+FAILED tests/test_retry.py::test_backoff_jitter - TimeoutError
+Acceptance: tests/test_retry.py green on 3.11 and 3.12."
+```
+
+これがうまく機能する理由は3つあります：
+
+- **即時ディスパッチ。** 親がすでに `done` なので、子は直接 `ready` で作成されます — ディスパッチャーは次のティックでクレームできます。（まだ完了していない親の子は `todo` で待機します。）
+- **引き継がれるコンテキスト。** 修正ワーカーのコンテキストには、`t_impl` の完了サマリーとメタデータ — 元のワーカーが記録した変更ファイルと決定事項 — を含む *Parent task results* セクションが含まれます。そのため、コードを1行も読む前に、なぜそのような形になっているかを把握できます。
+- **本文に新しい証拠。** CIログは `t_impl` の完了時には存在しなかったため、親のハンドオフには含まれません — 明示的な受け入れ基準とともに、新しいカードの本文に入れます。
+
+修正カードには新しいworktree/ブランチを使うことを推奨します。元のブランチをチェックアウトすると、ワーカーはリポジトリの*状態*は得られますが、*理由*は何も得られません — それを運ぶのは親のハンドオフです。通常は同じ担当者プロファイルが適切です：コードを書いたプロファイルは、それを修正するスキルを持っています。
 
 ## 現在実行中のタスクを確認する
 

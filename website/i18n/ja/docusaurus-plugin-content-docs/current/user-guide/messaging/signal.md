@@ -28,7 +28,7 @@ Signal アダプターは、すべての通信に `httpx`（すでに Hermes の
 # macOS
 brew install signal-cli
 
-# Linux（最新リリースをダウンロード）
+# Linux (download latest release)
 VERSION=$(curl -Ls -o /dev/null -w %{url_effective} \
   https://github.com/AsamK/signal-cli/releases/latest | sed 's/^.*\/v//')
 curl -L -O "https://github.com/AsamK/signal-cli/releases/download/v${VERSION}/signal-cli-${VERSION}.tar.gz"
@@ -47,7 +47,7 @@ signal-cli は apt や snap のリポジトリには **ありません**。上�
 signal-cli は **リンクされたデバイス** として動作します。WhatsApp Web に似ていますが、Signal 向けです。あなたの電話がプライマリデバイスのままです。
 
 ```bash
-# リンク用 URI を生成（QRコードまたはリンクを表示）
+# Generate a linking URI (displays a QR code or link)
 signal-cli link -n "HermesAgent"
 ```
 
@@ -61,7 +61,7 @@ signal-cli link -n "HermesAgent"
 ## ステップ2: signal-cli デーモンを起動する
 
 ```bash
-# +1234567890 を自分の Signal 電話番号（E.164 形式）に置き換えてください
+# Replace +1234567890 with your Signal phone number (E.164 format)
 signal-cli --account +1234567890 daemon --http 127.0.0.1:8080
 ```
 
@@ -73,7 +73,7 @@ signal-cli --account +1234567890 daemon --http 127.0.0.1:8080
 
 ```bash
 curl http://127.0.0.1:8080/api/v1/check
-# 次のような出力になるはずです: {"versions":{"signal-cli":...}}
+# Should return: {"versions":{"signal-cli":...}}
 ```
 
 ---
@@ -99,24 +99,24 @@ hermes gateway setup
 `~/.hermes/.env` に追加します。
 
 ```bash
-# 必須
+# Required
 SIGNAL_HTTP_URL=http://127.0.0.1:8080
 SIGNAL_ACCOUNT=+1234567890
 
-# セキュリティ（推奨）
-SIGNAL_ALLOWED_USERS=+1234567890,+0987654321    # カンマ区切りの E.164 番号または UUID
+# Security (recommended)
+SIGNAL_ALLOWED_USERS=+1234567890,+0987654321    # Comma-separated E.164 numbers or UUIDs
 
-# 任意
-SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # グループを有効化（省略で無効、* ですべて）
-SIGNAL_HOME_CHANNEL=+1234567890                  # cronジョブのデフォルト配信先
+# Optional
+SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # Enable groups (omit to disable, * for all)
+SIGNAL_HOME_CHANNEL=+1234567890                  # Default delivery target for cron jobs
 ```
 
 その後、ゲートウェイを起動します。
 
 ```bash
-hermes gateway              # フォアグラウンド
-hermes gateway install      # ユーザーサービスとしてインストール
-sudo hermes gateway install --system   # Linux のみ: 起動時のシステムサービス
+hermes gateway              # Foreground
+hermes gateway install      # Install as a user service
+sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
 ---

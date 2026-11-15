@@ -6,27 +6,32 @@ description: "OpenClaw / Clawdbot のセットアップを Hermes Agent に移�
 
 # OpenClaw から移行する
 
-`hermes claw migrate` は、OpenClaw（または旧 Clawdbot/Moldbot）のセットアップを Hermes にインポートします。このガイドでは、何が移行されるか、設定キーのマッピング、移行後に何を確認すべきかを正確に説明します。
+`hermes import-agent openclaw` は、OpenClaw（または旧 Clawdbot/Moldbot）のセットアップを Hermes にインポートします。このガイドでは、何が移行されるか、設定キーのマッピング、移行後に何を確認すべきかを正確に説明します。どちらを使うかまだ検討中ですか？ [Hermes Agent vs OpenClaw](https://hermes-agent.nousresearch.com/compare/openclaw) では、ライセンス、モデル、ホスティングを出典付きで比較しています。
 
-:::note
-**Claude Code** や **OpenAI Codex CLI** から移行する場合は、[`hermes import-agent`](../user-guide/import-from-other-agents.md) を使ってください。
+このコマンドは、[プラグインカタログ](../user-guide/features/plugins.md)にある公式の **`agent-importers` プラグイン**によって提供されます。このプラグインは Claude Code、Codex CLI、Cursor のセットアップもインポートできます（[他のエージェントからのインポート](/docs/user-guide/import-from-other-agents)）。旧来の `hermes claw migrate` という書き方も、プラグインをインストールすれば引き続き動作し、同じインポートを実行します。
+
+:::tip 簡単な方法
+新規インストールでは `hermes setup` を実行してください。`~/.openclaw` が見つかると **"Import your setup from OpenClaw?"** と尋ねられます。yes と答えると、setup がプラグインをインストールして `hermes import-agent openclaw --migrate-secrets` を実行し（プレビューと確認も含みます）、その後インポートで埋まらなかったセクションの設定を続けます。
 :::
 
 :::tip
-OpenClaw のセットアップが複数プロバイダー構成だった場合、`hermes setup --portal` で 1 つの OAuth にまとめられます — 1 回のログインで 300 以上のモデルと Tool Gateway が使えます。[Nous Portal](../integrations/nous-portal.md) を参照してください。
+OpenClaw のセットアップが複数プロバイダー構成だった場合、`hermes setup --portal` で 1 つの OAuth にまとめられます — 1 回のログインで 300 以上のモデルと Tool Gateway が使えます。[Nous Portal](/docs/integrations/nous-portal) を参照してください。
 :::
 
 ## クイックスタート
 
 ```bash
-# プレビューしてから移行（常に最初にプレビューを表示し、確認を求めます）
-hermes claw migrate
+# Once per profile: the command comes from this plugin
+hermes plugins install agent-importers
 
-# プレビューのみ、変更なし
-hermes claw migrate --dry-run
+# Preview then migrate (always shows a preview first, then asks to confirm)
+hermes import-agent openclaw
 
-# APIキーを含む完全な移行、確認をスキップ
-hermes claw migrate --preset full --migrate-secrets --yes
+# Preview only, no changes
+hermes import-agent openclaw --dry-run
+
+# Full migration including API keys, skip confirmation
+hermes import-agent openclaw --preset full --migrate-secrets --yes
 ```
 
 移行は、変更を加える前に、インポートされる内容の完全なプレビューを常に表示します。リストを確認してから、続行を確定してください。
@@ -203,13 +208,13 @@ TTS 設定は、次の優先順位で **2つの** OpenClaw の設定場所から
 トークンと APIキーの OpenClaw 設定値は、3つの形式のいずれかになります。
 
 ```json
-// プレーン文字列
+// Plain string
 "channels": { "telegram": { "botToken": "123456:ABC-DEF..." } }
 
-// 環境変数テンプレート
+// Environment template
 "channels": { "telegram": { "botToken": "${TELEGRAM_BOT_TOKEN}" } }
 
-// SecretRef オブジェクト
+// SecretRef object
 "channels": { "telegram": { "botToken": { "source": "env", "id": "TELEGRAM_BOT_TOKEN" } } }
 ```
 
@@ -250,3 +255,7 @@ OpenClaw のバージョンによって、キーはいくつかの場所に保�
 ### TTS のボイスが移行されない
 
 OpenClaw は TTS 設定を2か所に保存します。`messages.tts.providers.*` とトップレベルの `talk` 設定です。移行は両方を確認します。ボイスID が OpenClaw の UI を介して（別のパスに保存されて）設定された場合、手動で設定する必要があるかもしれません: `hermes config set tts.elevenlabs.voice_id YOUR_VOICE_ID`。
+
+## `hermes claw` が組み込まれていたバージョンからのアップグレード
+
+OpenClaw の移行機能は、以前は Hermes コアに `hermes claw migrate` およびオプションの `openclaw-migration` スキルとして同梱されていました。どちらも `agent-importers` プラグインに移動しましたが、フラグも秘密情報の扱い（キーは `--migrate-secrets` を指定した場合のみ移行される）も同じです。プラグインなしで `hermes claw` を実行するとインストールコマンドが表示され、`~/.openclaw` を検出した新規の `hermes setup` はプラグインのインストールを提案します。ガイド付き移行スキルは `agent-importers:openclaw-migration` としてプラグインに含まれています。旧 `official/migration/openclaw-migration` オプションスキルは削除されました。すでに移行済みの OpenClaw セットアップには何の変更もありません。

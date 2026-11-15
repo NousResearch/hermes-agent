@@ -95,13 +95,13 @@ Microsoft はまさにこのために Teams 向けの**アプリケーション�
 MicrosoftTeams モジュールをインストールして接続した管理者 PowerShell（`Connect-MicrosoftTeams`）から:
 
 ```powershell
-# Hermes アプリにスコープを限定したポリシーを作成
+# Create a policy scoped to the Hermes app
 New-CsApplicationAccessPolicy `
   -Identity "Hermes-Meeting-Pipeline-Policy" `
   -AppIds "<MSGRAPH_CLIENT_ID>" `
   -Description "Restrict Hermes meeting pipeline to allow-listed users"
 
-# パイプラインが会議を読み取れる特定ユーザーにポリシーを付与
+# Grant the policy to specific users whose meetings the pipeline may read
 Grant-CsApplicationAccessPolicy `
   -PolicyName "Hermes-Meeting-Pipeline-Policy" `
   -Identity "alice@example.com"

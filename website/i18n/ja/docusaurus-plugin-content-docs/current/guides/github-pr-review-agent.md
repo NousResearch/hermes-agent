@@ -37,17 +37,17 @@ description: "リポジトリを監視し、プルリクエストをレビュー
 - **Hermes Agentがインストール済み** — [インストールガイド](../getting-started/installation.md)を参照
 - cronジョブ用に**ゲートウェイが実行中**：
   ```bash
-  hermes gateway install   # サービスとしてインストール
-  # または
-  hermes gateway           # フォアグラウンドで実行
+  hermes gateway install   # Install as a service
+  # or
+  hermes gateway           # Run in foreground
   ```
 - **GitHub CLI（`gh`）がインストール・認証済み**：
   ```bash
-  # インストール
+  # Install
   brew install gh        # macOS
   sudo apt install gh    # Ubuntu/Debian
 
-  # 認証
+  # Authenticate
   gh auth login
   ```
 - **メッセージングの設定**（オプション） — [Telegram](../user-guide/messaging/telegram.md)または[Discord](../user-guide/messaging/discord.md)
@@ -285,8 +285,8 @@ Format as a clean summary." \
 
 ### cronジョブが実行されない
 ```bash
-hermes gateway status    # ゲートウェイは実行中か？
-hermes cron list         # ジョブは有効か？
+hermes gateway status    # Is the gateway running?
+hermes cron list         # Is the job enabled?
 ```
 
 ### レート制限

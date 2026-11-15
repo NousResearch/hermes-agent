@@ -12,6 +12,8 @@ Slack の Socket Mode や Telegram のロングポーリングと同等の使い
 プロセスは公開 URL、トンネル、TLS 証明書を必要としません。Telegram ボットがトークンで
 リッスンするのと同じように、接続し、認証し、サブスクリプションでリッスンします。
 
+> ガイド付きの手順を見るには、`hermes gateway setup` を実行して **Google Chat** を選択してください。
+
 :::note Workspace エディション
 Google Chat は Google Workspace の一部です。この統合は、個人の Workspace
 （Google を通じて登録した `@yourdomain.com`）でも、アプリを公開する管理者権限を持つ
@@ -150,24 +152,41 @@ GOOGLE_CHAT_PROJECT_ID=my-chat-bot-123
 GOOGLE_CHAT_SUBSCRIPTION_NAME=projects/my-chat-bot-123/subscriptions/hermes-chat-events-sub
 GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=/home/you/.hermes/google-chat-sa.json
 
-# Authorization — ボットと会話を許可する人のメールアドレスを貼り付ける
+# Authorization — paste the emails of people allowed to talk to the bot
 GOOGLE_CHAT_ALLOWED_USERS=you@yourdomain.com,coworker@yourdomain.com
 
 # Optional
-GOOGLE_CHAT_HOME_CHANNEL=spaces/AAAA...         # cron ジョブのデフォルト配信先
-GOOGLE_CHAT_MAX_MESSAGES=1                      # Pub/Sub FlowControl; 1 はセッションごとにコマンドを直列化する
-GOOGLE_CHAT_MAX_BYTES=16777216                  # 16 MiB — 処理中のメッセージバイト数の上限
+GOOGLE_CHAT_HOME_CHANNEL=spaces/AAAA...         # default delivery destination for cron jobs
+GOOGLE_CHAT_MAX_MESSAGES=1                      # Pub/Sub FlowControl; 1 serializes commands per session
+GOOGLE_CHAT_MAX_BYTES=16777216                  # 16 MiB — cap on in-flight message bytes
 ```
 
 プロジェクト ID は `GOOGLE_CLOUD_PROJECT` にもフォールバックし、サービスアカウントのパスは
 `GOOGLE_APPLICATION_CREDENTIALS` にフォールバックします。好みの慣習を使ってください。
 
-Google Chat アダプターが必要とする依存関係をインストールします（現在 Hermes の extra は
-公開されていないため、直接インストールします）。
+[マルチプロファイルゲートウェイ](/docs/user-guide/multi-profile-gateways)では、すべての
+`GOOGLE_CHAT_*` 設定はルーティング先プロファイル自身の `.env` から読み取られます。
+セカンダリプロファイルが、デフォルトプロファイルのプロジェクト、サブスクリプション、
+サービスアカウントを継承することはありません。あるプロファイルにサービスアカウントが
+設定されておらず、プロセス環境には別のプロファイル用のものがある場合、アダプターは
+アプリケーションのデフォルト認証情報（その別のプロファイルとして認証してしまいます）への
+フォールバックを拒否し、代わりに明示的なエラーをログに記録します — そのプロファイルの
+`.env` に `GOOGLE_CHAT_SERVICE_ACCOUNT_JSON` を設定してください。
+
+Google Chat アダプターの依存関係は、メンテナンスされているインストーラーを通じて
+インストールします。これはランタイムチェックで使われるのと同じ、固定されたセキュリティ上の
+最低バージョンを適用します。
 
 ```bash
-pip install google-cloud-pubsub google-api-python-client google-auth google-auth-oauthlib
+python -m plugins.platforms.google_chat.oauth --install-deps
 ```
+
+`--install-deps` は、管理対象の Python 環境に `google-chat` extra を追加するよう PM に
+要求します（`pm.sync_venv`）。完了したら、新しい環境が有効になるようにゲートウェイを
+再起動してください。Docker / ホスト型イメージでは venv が読み取り専用で、オンデマンドの
+インストールは無効化されている（`HERMES_DISABLE_LAZY_INSTALLS=1`）ため、このステップでは
+何も追加できません。代わりに公開イメージには `[google-chat]` extra が組み込まれているので、
+新しいコンテナで初回起動時のインストールは不要です。
 
 ゲートウェイを起動します。
 
@@ -185,6 +204,22 @@ hermes gateway
 テスト DM で「hola」と送信します。ボットは「Hermes is thinking…」というマーカーを投稿し、
 その同じメッセージをその場で編集して実際の応答に置き換えます。「message deleted」の
 墓標は残りません。
+
+### 作業中マーカーのカスタマイズ
+
+マーカーのテキストは `~/.hermes/config.yaml` の `typing_status_text` で設定できます —
+たとえば Ada という名前の子猫アシスタントの場合:
+
+```yaml
+platforms:
+  google_chat:
+    # Custom working-state marker text (default: "Hermes is thinking…").
+    typing_status_text: "is pouncing… 🐾"
+```
+
+Slack の一時的なステータス行とは異なり、これは応答でその場で編集される**実際に投稿された
+メッセージ**です — そのため、ここで設定した内容は通常のメッセージとしてチャットに一時的に
+表示されます。マーカーを完全に無効にするには `typing_indicator: false` を設定してください。
 
 ---
 
@@ -207,6 +242,15 @@ Google Chat は限定的な markdown のサブセットをレンダリングし�
 スレッドのサポート: ユーザーがスレッド内で返信すると、Hermes は `thread.name` を検出して
 同じスレッド内に返信を投稿します。これにより、各スレッドが個別の Hermes セッションになります。
 
+### 確認質問をインタラクティブなカードとして表示
+
+エージェントが選択式の確認（clarify）質問をすると、アダプターはそれを番号付きのプレーンな
+テキストリストではなく、選択肢ごとに 1 つのボタンと **「Other / type answer」** ボタンを
+持つネイティブの **Card v2** としてレンダリングします。ボタンをクリックすると質問に直接
+回答できます（`CARD_CLICKED` イベントが選択を待機中のセッションに戻します）。カードの送信に
+失敗した場合や、質問に固定の選択肢がない場合、アダプターは標準のテキストによる確認に
+フォールバックします。設定は不要です。
+
 ---
 
 ## ステップ 10: ネイティブ添付ファイルの配信（オプション）
@@ -227,21 +271,29 @@ Google Chat の `media.upload` エンドポイントは、サービスアカウ�
 受け付けます。そのため、ボットはファイルをアップロードするたびに*ユーザーとして*、具体的には
 そのファイルを要求したユーザーとして振る舞う必要があります。
 
-### ホストの 1 回限りのセットアップ
+### 1 回限りのセットアップ（プロファイルごと）
 
 1. 同じ GCP プロジェクトで **APIs & Services → Credentials** に移動します。
 2. **Create credentials → OAuth client ID → Desktop app** を選択します。
 3. JSON をダウンロードします。Hermes を実行するホストに移動します。
-4. ホスト上で、クライアントを Hermes に登録します。
+4. クライアントを Hermes に登録します（スコープを設定したいプロファイルで実行します）。
 
 ```bash
-python -m gateway.platforms.google_chat_user_oauth \
+# Default profile:
+python -m plugins.platforms.google_chat.oauth \
+    --client-secret /path/to/client_secret.json
+
+# A named profile gets its own separate registration:
+hermes -p <profile> python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 
-これにより `~/.hermes/google_chat_user_client_secret.json` が書き込まれます。これは
-共有インフラであり、個々のユーザーではなく OAuth *アプリ*を識別します。後で何人の
-ユーザーが承認しても、ホストごとに 1 ファイルあれば十分です。
+これにより、アクティブなプロファイルの Hermes ホームにクライアントシークレットが
+書き込まれます（例: デフォルトプロファイルでは `~/.hermes/google_chat_user_client_secret.json`）。
+クライアントシークレットは**プロファイル単位であり、プロファイル間で共有されません** —
+各プロファイルが独自に登録します。これは意図的なものです。プロファイルは分離された認証境界であり、
+2 つのプロファイルが異なる Google OAuth アプリ / アカウントを指すことができます。Google Chat の
+添付ファイル配信が必要なプロファイルごとに 1 回登録してください。
 
 ### ユーザーごとの承認（チャット内）
 
@@ -320,13 +372,19 @@ Chat API のデフォルトのクォータでは、スペースごとに 1 分�
 ユーザーの DM で `/setup-files` を実行し、ステップ 10 に従ってください。交換が完了すれば、
 次のファイルリクエストはゲートウェイの再起動なしにネイティブでアップロードされます。
 
-**`/setup-files start` が「No client credentials stored on the host.」と表示します。**
+**`/setup-files start` が「No client credentials stored.」と表示します。**
 
-1 回限りのホストセットアップが行われていません。Hermes を実行するホストのターミナルから
-次を実行します。
+1 回限りのセットアップが*このプロファイルに対して*行われていません（クライアントシークレットは
+プロファイル単位のため、あるプロファイルでの登録は別のプロファイルからは見えません）。
+ターミナルから、ゲートウェイが使用するプロファイルで実行してください。
 
 ```bash
-python -m gateway.platforms.google_chat_user_oauth \
+# Default profile:
+python -m plugins.platforms.google_chat.oauth \
+    --client-secret /path/to/client_secret.json
+
+# Named profile:
+hermes -p <profile> python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 

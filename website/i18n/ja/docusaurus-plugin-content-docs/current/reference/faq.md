@@ -6,6 +6,10 @@ description: "Hermes Agent に関するよくある質問と一般的な問題�
 
 # FAQ・トラブルシューティング
 
+このページの Python 依存関係のコマンドは、
+[PM で準備したソースチェックアウト](/docs/reference/package-management#developer-workflow) を前提としています。
+依存関係を変更した後は、チェックアウトを再アクティベートして Hermes を再起動してください。
+
 最もよくある質問や問題に対する手早い回答と対処法をまとめています。
 
 ---
@@ -17,10 +21,10 @@ description: "Hermes Agent に関するよくある質問と一般的な問題�
 Hermes Agent は OpenAI 互換 API であればどれでも動作します。対応プロバイダーには次のものがあります。
 
 - **[OpenRouter](https://openrouter.ai/)** — 1 つの API キーで何百ものモデルにアクセスできます（柔軟性の高さからおすすめです）
-- **Nous Portal** — Nous Research 独自の推論エンドポイント
+- **[Nous Portal](/docs/integrations/nous-portal)** — Nous Research のサブスクリプション型ゲートウェイ — 1 回の OAuth ログインで 300 以上のモデルに加えて Web／画像／TTS／ブラウザを利用できます（初めての方におすすめです）
 - **OpenAI** — GPT-5.4、GPT-5-codex、GPT-4.1、GPT-4o など
-- **Anthropic** — Claude モデル（直接 API、`hermes login anthropic` による OAuth、OpenRouter、または互換プロキシ経由）
-- **Google** — Gemini モデル（`gemini` プロバイダー経由の直接 API、`google-gemini-cli` OAuth プロバイダー、OpenRouter、または互換プロキシ経由）
+- **Anthropic** — Claude モデル（直接 API、`hermes auth add anthropic` による OAuth、OpenRouter、または互換プロキシ経由）
+- **Google** — Gemini モデル（`gemini` プロバイダー経由の直接 API、OpenRouter、または互換プロキシ経由）
 - **z.ai / ZhipuAI** — GLM モデル
 - **Kimi / Moonshot AI** — Kimi モデル
 - **MiniMax** — グローバルおよび中国向けエンドポイント
@@ -28,13 +32,8 @@ Hermes Agent は OpenAI 互換 API であればどれでも動作します。対
 
 プロバイダーは `hermes model` で設定するか、`~/.hermes/.env` を編集して設定します。すべてのプロバイダーキーについては [環境変数](./environment-variables.md) リファレンスを参照してください。
 
-### Windows で動作しますか？
-
-**ネイティブでは動作しません。** Hermes Agent は Unix 系の環境を必要とします。Windows では [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) をインストールし、その内部から Hermes を実行してください。標準のインストールコマンドは WSL2 で問題なく動作します。
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
-```
+### Windows／Android／自分のプラットフォームで動作しますか？
+プラットフォームごとの対応状況の一覧については **[プラットフォームサポート](/docs/getting-started/platform-support)** を参照してください。
 
 ### WSL2 で Hermes を実行しています。通常の Windows 版 Chrome を操作するにはどうするのがベストですか？
 
@@ -54,23 +53,9 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 - [Hermes で MCP を使う](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
 - [ブラウザ自動化](../user-guide/features/browser.md#wsl2--windows-chrome-prefer-mcp-over-browser-connect)
 
-### Android / Termux で動作しますか？
+### 自分のデータはどこかに送信されますか？ {#is-my-data-sent-anywhere}
 
-はい — Hermes には Android スマートフォン向けにテスト済みの Termux インストール手順が用意されています。
-
-クイックインストール:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
-```
-
-完全に明示的な手動手順、対応する追加機能、現在の制限については [Termux ガイド](../getting-started/termux.md) を参照してください。
-
-重要な注意点: `voice` 追加機能が `faster-whisper` → `ctranslate2` に依存しており、`ctranslate2` が Android 向けの wheel を公開していないため、現在 `.[all]` のフル追加機能は Android では利用できません。代わりにテスト済みの `.[termux]` 追加機能を使用してください。
-
-### 自分のデータはどこかに送信されますか？
-
-API 呼び出しは **設定したLLM プロバイダー（例: OpenRouter、ローカルの Ollama インスタンス）にのみ** 送信されます。Hermes Agent はテレメトリ、利用データ、アナリティクスを収集しません。会話、メモリ、スキルはすべて `~/.hermes/` 内にローカル保存されます。
+API 呼び出しは **設定した LLM プロバイダー（例: OpenRouter、ローカルの Ollama インスタンス）にのみ** 送信されます。Hermes Agent はテレメトリ、利用データ、アナリティクスを収集しません。会話、メモリ、スキルはすべて `~/.hermes/` 内にローカル保存されます。
 
 ### オフラインで / ローカルモデルで使えますか？
 
@@ -78,11 +63,11 @@ API 呼び出しは **設定したLLM プロバイダー（例: OpenRouter、ロ
 
 ```bash
 hermes model
-# 選択: Custom endpoint (enter URL manually)
+# Select: Custom endpoint (enter URL manually)
 # API base URL: http://localhost:11434/v1
 # API key: ollama
 # Model name: qwen3.5:27b
-# Context length: 32768   ← サーバーの実際のコンテキストウィンドウに合わせて設定してください
+# Context length: 64000   ← Hermes minimum; set this to match your server's actual context window
 ```
 
 または `config.yaml` で直接設定します。
@@ -99,7 +84,7 @@ Hermes はエンドポイント、プロバイダー、ベース URL を `config
 これは Ollama、vLLM、llama.cpp server、SGLang、LocalAI などで動作します。詳細は [設定ガイド](../user-guide/configuration.md) を参照してください。
 
 :::tip Ollama ユーザーの方へ
-Ollama でカスタムの `num_ctx` を設定している場合（例: `ollama run --num_ctx 16384`）、Hermes 側でも一致するコンテキスト長を必ず設定してください — Ollama の `/api/show` はモデルの *最大* コンテキストを報告し、設定した実効的な `num_ctx` は報告しません。
+Ollama でカスタムの `num_ctx` を設定している場合（例: `ollama run --num_ctx 64000`）、Hermes 側でも一致するコンテキスト長を必ず設定してください — Ollama の `/api/show` はモデルの *最大* コンテキストを報告し、設定した実効的な `num_ctx` は報告しません。
 :::
 
 :::tip ローカルモデルでのタイムアウト
@@ -146,11 +131,11 @@ response = agent.chat("Explain quantum computing briefly")
 
 **解決策:**
 ```bash
-# シェルプロファイルを再読み込みする
+# Reload your shell profile
 source ~/.bashrc    # bash
 source ~/.zshrc     # zsh
 
-# または新しいターミナルセッションを開始する
+# Or start a new terminal session
 ```
 
 それでも動作しない場合は、インストール場所を確認してください。
@@ -163,20 +148,18 @@ ls ~/.local/bin/hermes
 インストーラーは `~/.local/bin` を PATH に追加します。標準的でないシェル設定を使っている場合は、`export PATH="$HOME/.local/bin:$PATH"` を手動で追加してください。
 :::
 
-#### Python のバージョンが古すぎる
+#### サポートされていない Python バージョン
 
-**原因:** Hermes には Python 3.11 以降が必要です。
+現在のファーストパーティのインストールには、任意の新しいバージョンではなく **Python 3.14** が必要です。
+`pyproject.toml` の `>=3.11,<3.15` という範囲は、古いインストールが 3.14 に切り替わる前に
+アップデーターを実行できるようにするためのものであり、現在のランタイムが 3.11〜3.13 をサポートするという意味ではありません。
+インストーラーとパッケージ化されたディストリビューションは、固定されたインタープリターを同梱しています。
 
-**解決策:**
-```bash
-python3 --version   # 現在のバージョンを確認
-
-# 新しい Python をインストールする
-sudo apt install python3.12   # Ubuntu/Debian
-brew install python@3.12      # macOS
-```
-
-インストーラーはこれを自動的に処理します — 手動インストール中にこのエラーが表示された場合は、先に Python をアップグレードしてください。
+手動でソース環境を構築する場合は、
+[開発環境のセットアップ](/docs/developer-guide/contributing#development-setup) を使用してください。
+インストール済みのアプリやコンテナ内のインタープリターを置き換えないでください。
+管理されたインストールでエラーが出た場合は、`hermes doctor` を実行し、そのインストールの
+[アップデート方法](../getting-started/updating.md) を使用してください。
 
 #### ターミナルコマンドで `node: command not found`（または `nvm`、`pyenv`、`asdf` …）と表示される
 
@@ -187,16 +170,18 @@ brew install python@3.12      # macOS
 ```yaml
 terminal:
   shell_init_files:
-    - ~/.zshrc                     # zsh ユーザー: zsh で管理される PATH を bash スナップショットに取り込む
-    - ~/.nvm/nvm.sh                # nvm の直接初期化（シェルに関係なく動作）
-    - /etc/profile.d/cargo.sh      # システム全体の rc ファイル
-  # このリストを設定すると、デフォルトの ~/.bashrc 自動読み込みは追加されません —
-  # 両方が必要な場合は明示的に含めてください:
+    - ~/.zshrc                     # zsh users: pulls zsh-managed PATH into the bash snapshot
+    - ~/.nvm/nvm.sh                # direct nvm init (works regardless of shell)
+    - /etc/profile.d/cargo.sh      # system-wide rc files
+  # When this list is set, the default ~/.bashrc auto-source is NOT added —
+  # include it explicitly if you want both:
   #   - ~/.bashrc
   #   - ~/.zshrc
 ```
 
 存在しないファイルは黙ってスキップされます。読み込みは bash で行われるため、zsh 専用の構文に依存するファイルはエラーになる可能性があります — それが懸念される場合は、rc ファイル全体ではなく、PATH を設定する部分だけ（例: nvm の `nvm.sh` を直接）読み込んでください。
+
+初期化ファイルとは別に、すべてのターミナルコマンドの `PATH` は、標準のシステムディレクトリ（`/usr/local/bin`、`/opt/homebrew/bin` …）、Hermes が管理するランタイムディレクトリ、および存在する場合は `~/.local/bin`（`pip --user` / `pipx` / `uv tool` のインストール先）で補完されます — これらはあなた自身のエントリの後ろに追加されるため、優先順位は変わりません。これにより、最小限の非対話的な PATH で起動されるバックエンド（systemd、GUI ランチャー、Desktop の SSH リモートバックエンド）も、設定なしでカバーされます。
 
 自動読み込みの動作を無効にする（厳密なログインシェルのセマンティクスのみにする）には:
 
@@ -221,16 +206,53 @@ source ~/.bashrc
 
 **解決策:**
 ```bash
-# インストーラーで sudo を使わないでください — ~/.local/bin にインストールされます
-# 以前 sudo でインストールした場合は、後始末してください:
+# Don't use sudo with the installer — it installs to ~/.local/bin
+# If you previously installed with sudo, clean up:
 sudo rm /usr/local/bin/hermes
-# その後、標準のインストーラーを再実行します
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+# Then re-run the standard installer
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
 ---
 
 ### プロバイダー・モデルに関する問題
+
+#### エージェントが「Hermes policy」や「Hermes guardrails」によってリクエストを拒否したと言う
+
+モデルは、自分がなぜリクエストを拒否したのかを確実に特定することはできません。拒否がアシスタントの文章の中にしか現れない場合、隠れた Hermes のランタイムポリシーが原因だという主張は、幻覚による説明であるか、選択したモデルやプロバイダーが適用した制限である可能性があります。
+
+Hermes による制御は明示的です。ブロックされたツール操作は、拒否されたコマンドやパスを示すツールエラーを返し、承認が必要な操作は承認プロンプトを表示します。Hermes がこれらの実行制御を、黙って一般的なコンテンツ拒否レイヤーに変えることはありません。ただし、Amazon Bedrock Guardrails のように、設定されている場合はプロバイダーレベルの制御が適用されることがあります。
+
+原因を切り分けるには:
+
+1. `/status` を実行して、有効なモデルとプロバイダーを確認します。
+2. 拒否に実際の Hermes のツールエラーや承認プロンプトが含まれているか確認します。文章だけの場合は、モデルによる原因の説明をランタイムの証拠として扱わないでください。
+3. 新しいセッションで、別の設定済みモデルやプロバイダーを使って再試行します。モデルによって変わる拒否は、モデル／プロバイダーの挙動であり、Hermes の実行制御ではありません。
+4. 明示的なツールエラーが表示された場合は、問題を報告する際にその正確なテキストを使ってください。
+
+Hermes のドキュメント化された実行制御については [セキュリティ](../user-guide/security.md) を、プロバイダーの設定については [プロバイダー](../integrations/providers.md) を参照してください。
+
+#### 「…refused this request because of a policy on your account」
+
+**意味:** プロバイダーが、再試行しても変わらないアカウントレベルの理由でリクエストを拒否しました — アグリゲーターのデータ／プライバシー設定によってそのモデルのすべてのエンドポイントが除外されたか、モデルの上流プロバイダーがアカウントをブロックしています（例: `this user has been blocked for a previous policy violation`。OpenRouter は、これを本来は成功した HTTP 200 ストリームの中で中継することがあります）。Hermes はリクエストを 1 回だけ送信し、再試行や認証情報のローテーションは行わず、フォールバックチェーンが設定されていればそちらに移ります。
+
+**解決策:** 応答に示されたプロバイダーで、アカウントのステータスとデータ／プライバシー設定を確認するか、`/model` で別のモデルやプロバイダーに切り替えてください。`hermes fallback add` を使うと、今後のブロックを自動的にバックアップへルーティングできます。
+
+#### 「Could not open a stream to `<host>` after N attempts (request X KB)」
+
+**意味:** そのエンドポイントへの接続試行が、ストリームイベントが 1 つも届く前にすべて失敗したため、課金は発生していません。通常の再試行／フォールバックチェーンはその後も実行されます。この行には、実際に接続したホスト、試行回数、シリアライズされたリクエストサイズが示されます — これらは障害とリクエストサイズ制限を区別するための 3 つの手がかりです。
+
+**解決策:** リクエストが大きく（数百 KB — 長いコーディングセッションではコンテキストが増えるとこの大きさに達します）、短い新規チャットは動作する場合、エンドポイントやその前段のプロキシがそのサイズのボディを拒否している可能性が高いです。ボディサイズの上限を引き上げるか、`/compress` を実行してコンテキストを縮小してください。リクエストが小さい場合は、エンドポイントに到達できていません — `base_url` を確認してから `/retry` で再試行してください。`logs/agent.log` には各試行の例外チェーンが記録されます。
+
+#### メッセージングでの応答:「interrupted mid-request」と「not running or is unreachable」と「could not reach」の違い
+
+チャット画面（Telegram、Discord、Slack など）には、生のトランスポート例外は表示されません。ゲートウェイはそれを 3 つの短い応答のいずれかに対応付けており、その違いからどこを確認すべきかがわかります。
+
+| 応答 | 何が起きたか | 対処法 |
+|---|---|---|
+| 「The connection to the AI model service was **interrupted mid-request** — usually transient.」 | 確立済みの接続が切断されました（`Connection reset by peer`、EOF、`RemoteProtocolError`）。エンドポイントは接続に応答したので、実行中です。 | `/retry`。大きなリクエストで繰り返し発生する場合は、上記の「stream」の項目を参照してください。 |
+| 「The AI model service isn't reachable right now — the configured model endpoint is **not running or is unreachable**.」 | 接続を受け付けるものがありませんでした（`Connection refused`、ホストへのルートなし、DNS の失敗）。 | モデルサーバーを起動する／`base_url` を確認してから `/retry`。ホスト上で `hermes doctor` を実行します。 |
+| 「Hermes **could not reach** the AI model service (no further detail from the SDK).」 | SDK が汎用的な `APIConnectionError` を報告し、原因を保持していませんでした。上記のどちらとも断定できません。 | `/retry`。解消しない場合は `hermes doctor`。生の例外は `hermes logs` で確認できます。 |
 
 #### `/model` に 1 つのプロバイダーしか表示されない / プロバイダーを切り替えられない
 
@@ -239,12 +261,12 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 **解決策:** セッションを抜けて、ターミナルから `hermes model` を使って新しいプロバイダーを追加します。
 
 ```bash
-# まず Hermes チャットセッションを抜ける（Ctrl+C または /quit）
+# Exit the Hermes chat session first (Ctrl+C or /quit)
 
-# プロバイダーの完全なセットアップウィザードを実行する
+# Run the full provider setup wizard
 hermes model
 
-# これにより、プロバイダーの追加、OAuth の実行、API キーの入力、エンドポイントの設定ができます
+# This lets you: add providers, run OAuth, enter API keys, configure endpoints
 ```
 
 `hermes model` で新しいプロバイダーを追加したら、新しいチャットセッションを開始してください — `/model` に設定済みのすべてのプロバイダーが表示されるようになります。
@@ -264,13 +286,13 @@ hermes model
 
 **解決策:**
 ```bash
-# 設定を確認する
+# Check your configuration
 hermes config show
 
-# プロバイダーを再設定する
+# Re-configure your provider
 hermes model
 
-# または直接設定する
+# Or set directly
 hermes config set OPENROUTER_API_KEY sk-or-v1-xxxxxxxxxxxx
 ```
 
@@ -284,13 +306,13 @@ hermes config set OPENROUTER_API_KEY sk-or-v1-xxxxxxxxxxxx
 
 **解決策:**
 ```bash
-# プロバイダーで利用可能なモデルを一覧表示する
+# List available models for your provider
 hermes model
 
-# 有効なモデルを設定する
-hermes config set HERMES_MODEL anthropic/claude-opus-4.7
+# Set a valid model
+hermes config set model.default anthropic/claude-opus-4.7
 
-# またはセッションごとに指定する
+# Or specify per-session
 hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
 ```
 
@@ -309,13 +331,13 @@ hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
 
 **解決策:**
 ```bash
-# 現在のセッションを圧縮する
+# Compress the current session
 /compress
 
-# または新しいセッションを開始する
+# Or start a fresh session
 hermes chat
 
-# より大きなコンテキストウィンドウを持つモデルを使う
+# Use a model with a larger context window
 hermes chat --model openrouter/google/gemini-3-flash-preview
 ```
 
@@ -323,25 +345,31 @@ hermes chat --model openrouter/google/gemini-3-flash-preview
 
 CLI の起動行を見てください — 検出されたコンテキスト長が表示されます（例: `📊 Context limit: 128000 tokens`）。セッション中に `/usage` で確認することもできます。
 
+**エラーを返さずに沈黙してしまうローカルサーバー（llama.cpp、Ollama）:** プロバイダーがリクエストを大きすぎるとして拒否すると、Hermes は会話を圧縮してリクエストを再構築します。Hermes は再試行の前に、再構築したリクエスト *全体*（システムプロンプト + ツールスキーマ + メッセージ）を測り直し、まだしきい値を超えている場合は上限付きの圧縮パスをさらに実行します。それでもリクエストが収まらない場合、llama.cpp が黙って切り詰めてしまう（サーバーログに `stop processing: n_tokens = 65535, truncated = 1` と出る）ような大きすぎるリクエストを送るのではなく、`Context length exceeded: compression could not reduce the rebuilt request below the safe threshold` でターンを終了します。このメッセージが出た場合、対処法はほぼ必ず上記の `context_length` の設定です。サーバーの実際の `-c` / `--ctx-size` に一致させてください。
+
+**「The model server rejected this request as too large, but this conversation is only about N tokens…」:** ローカルサーバー（localhost、LAN、Tailscale）が測定値を示さずに「context exceeded」と返したものの、Hermes 自身によるリクエストの見積もりが、そのモデルについて把握しているウィンドウを大きく下回っている状態です — そのため Hermes は圧縮を **行わず**、会話のせいにもせず、ターンは再試行可能なままになります。シングルスロットのローカルサーバー（LM Studio、Ollama）では、これはほぼ必ず、その時点で別のリクエストがサーバーのコンテキストを占有していることが原因です — 典型的には、以前のセッションによるバックグラウンドのメモリレビュー（`logs/agent.log` 内の `thread=bg-review`）です。少し待ってから `/retry` してください。他の Hermes プロセスが動いていないのに繰り返し発生する場合、サーバーは Hermes が想定するよりも小さいウィンドウでモデルを読み込んでいます。サーバーのコンテキスト設定を引き上げるか、`model.context_length` をそれに合わせて下げてください。ホスト型プロバイダーでは、Claude サブスクリプションの DirectSDK プラグインのような外部プロセス型プロバイダーも含め、このメッセージは表示されません。それらには待つべき共有スロットがないため、同じ拒否はそのルートの実際のウィンドウが Hermes の想定より小さいことを意味し、Hermes は代わりに圧縮して再試行します。
+
 コンテキスト検出を修正するには、明示的に設定します。
 
 ```yaml
-# ~/.hermes/config.yaml 内
+# In ~/.hermes/config.yaml
 model:
   default: your-model-name
-  context_length: 131072  # モデルの実際のコンテキストウィンドウ
+  context_length: 131072  # your model's actual context window
 ```
 
-またはカスタムエンドポイントの場合は、モデルごとに追加します。
+またはカスタムエンドポイントの場合は、プロバイダーのエントリにモデルごとに追加します。
 
 ```yaml
-custom_providers:
-  - name: "My Server"
-    base_url: "http://localhost:11434/v1"
+providers:
+  my-server:
+    api: "http://localhost:11434/v1"
     models:
       qwen3.5:27b:
-        context_length: 32768
+        context_length: 64000
 ```
+
+（古い設定では従来の `custom_providers:` リストが使われています — 引き続きサポートされており、`providers:` に自動移行されます。）
 
 自動検出の仕組みとすべての上書きオプションについては [コンテキスト長の検出](../integrations/providers.md#context-length-detection) を参照してください。
 
@@ -376,14 +404,14 @@ custom_providers:
 
 **解決策:**
 ```bash
-# Docker が実行中か確認する
+# Check Docker is running
 docker info
 
-# ユーザーを docker グループに追加する
+# Add your user to the docker group
 sudo usermod -aG docker $USER
 newgrp docker
 
-# 検証する
+# Verify
 docker run hello-world
 ```
 
@@ -397,13 +425,13 @@ docker run hello-world
 
 **解決策:**
 ```bash
-# ゲートウェイが実行中か確認する
+# Check if the gateway is running
 hermes gateway status
 
-# ゲートウェイを起動する
+# Start the gateway
 hermes gateway start
 
-# エラーがないかログを確認する
+# Check logs for errors
 cat ~/.hermes/logs/gateway.log | tail -50
 ```
 
@@ -436,31 +464,31 @@ cat ~/.hermes/logs/gateway.log | tail -50
 
 **解決策:**
 ```bash
-# コアのメッセージングゲートウェイ依存関係をインストールする
-pip install "hermes-agent[messaging]"  # Telegram、Discord、Slack、および共有ゲートウェイの依存関係
+# Install core messaging gateway dependencies
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"  # Telegram, Discord, Slack, and shared gateway deps
 
-# ポートの競合を確認する
+# Check for port conflicts
 lsof -i :8080
 
-# 設定を検証する
+# Verify configuration
 hermes config show
 ```
 
-#### WSL: ゲートウェイが切断され続ける、または `hermes gateway start` が失敗する
+#### WSL: ゲートウェイが切断され続ける、または `hermes gateway start` が失敗する {#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails}
 
 **原因:** WSL の systemd サポートは信頼性が低いです。多くの WSL2 インストールでは systemd が有効になっておらず、有効にしていても、サービスが WSL の再起動や Windows のアイドルシャットダウンを生き延びられない場合があります。
 
 **解決策:** systemd サービスの代わりにフォアグラウンドモードを使用します。
 
 ```bash
-# オプション 1: フォアグラウンドで直接実行（最もシンプル）
+# Option 1: Direct foreground (simplest)
 hermes gateway run
 
-# オプション 2: tmux で永続化（ターミナルを閉じても生き残る）
+# Option 2: Persistent via tmux (survives terminal close)
 tmux new -s hermes 'hermes gateway run'
-# 後で再アタッチ: tmux attach -t hermes
+# Reattach later: tmux attach -t hermes
 
-# オプション 3: nohup でバックグラウンド実行
+# Option 3: Background via nohup
 nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &
 ```
 
@@ -489,8 +517,8 @@ nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &
 **解決策:** ゲートウェイは `hermes gateway install` を実行したときにシェルの PATH をキャプチャします。ゲートウェイのセットアップ後にツールをインストールした場合は、インストールを再実行して更新後の PATH をキャプチャしてください。
 
 ```bash
-hermes gateway install    # 現在の PATH を再スナップショットする
-hermes gateway start      # 更新された plist を検出して再読み込みする
+hermes gateway install    # Re-snapshots your current PATH
+hermes gateway start      # Detects the updated plist and reloads
 ```
 
 plist に正しい PATH が設定されているか検証できます。
@@ -519,12 +547,18 @@ plist に正しい PATH が設定されているか検証できます。
 
 **解決策:**
 ```bash
-# 会話を圧縮してトークンを削減する
+# See exactly what the fixed prompt costs — breakdown by block
+# (system prompt, skills index, memory, tool schemas). Runs offline.
+hermes prompt-size
+
+# Compress the conversation to reduce tokens
 /compress
 
-# セッションのトークン使用量を確認する
+# Check session token usage
 /usage
 ```
+
+まだ何も入力していないのにベースラインが高く見える場合、それは固定のプロンプト予算 — 毎回の呼び出しで送信されるシステムプロンプトとツールスキーマ — です。[`hermes prompt-size`](./cli-commands.md#hermes-prompt-size) を実行して測定し、削減してください。使わないツールセットを無効化し（`hermes tools`）、不要なスキルをアンインストールまたは無効化します（`hermes skills`）。
 
 :::tip
 長いセッション中は `/compress` を定期的に使用してください。会話履歴を要約し、コンテキストを保ちながらトークン使用量を大幅に削減します。
@@ -536,13 +570,13 @@ plist に正しい PATH が設定されているか検証できます。
 
 **解決策:**
 ```bash
-# 現在のセッションを圧縮する（重要なコンテキストを保持）
+# Compress current session (preserves key context)
 /compress
 
-# 古いセッションへの参照を持って新しいセッションを開始する
+# Start a new session with a reference to the old one
 hermes chat
 
-# 必要に応じて後で特定のセッションを再開する
+# Resume a specific session later if needed
 hermes chat --continue
 ```
 
@@ -556,15 +590,15 @@ hermes chat --continue
 
 **解決策:**
 ```bash
-# MCP の依存関係がインストールされていることを確認する（標準インストールには含まれています）
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+# Ensure MCP dependencies are installed (already included in standard install)
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 
-# npm ベースのサーバーの場合は、Node.js が利用可能であることを確認する
+# For npm-based servers, ensure Node.js is available
 node --version
 npx --version
 
-# サーバーを手動でテストする
-npx -y @modelcontextprotocol/server-filesystem /tmp
+# Test the server manually
+npx -y @modelcontextprotocol/server-filesystem /path/to/allowed/dir
 ```
 
 `~/.hermes/config.yaml` の MCP 設定を確認してください。
@@ -587,17 +621,17 @@ mcp_servers:
 - 設定を変更したら `/reload-mcp` を使う
 
 ```bash
-# MCP サーバーが設定されているか検証する
+# Verify MCP servers are configured
 hermes config show | grep -A 12 mcp_servers
 
-# 設定変更後は Hermes を再起動するか MCP を再読み込みする
+# Restart Hermes or reload MCP after config changes
 hermes chat
 ```
 
 あわせて参照:
-- [MCP（Model Context Protocol）](/docs/user-guide/features/mcp)
-- [Hermes で MCP を使う](/docs/guides/use-mcp-with-hermes)
-- [MCP 設定リファレンス](/docs/reference/mcp-config-reference)
+- [MCP（Model Context Protocol）](../user-guide/features/mcp.md)
+- [Hermes で MCP を使う](../guides/use-mcp-with-hermes.md)
+- [MCP 設定リファレンス](./mcp-config-reference.md)
 
 #### MCP タイムアウトエラー
 
@@ -614,6 +648,16 @@ MCP サーバーがリクエストの途中でクラッシュすると、Hermes 
 
 ---
 
+### スキルに関する問題
+
+#### デスクトップアプリで Skills Hub のページが読み込まれない（403 / ブロック）
+
+**原因:** ドキュメントサイト（`hermes-agent.nousresearch.com`）は Vercel 経由で配信されており、Vercel の WAF は問題があると判定した一部の住宅用 IP レンジを拒否します。お使いのネットワークがそのようなレンジにある場合、このドメインへのすべてのリクエストが 403 のブロックページを返します。
+
+**解決策:** Skills Hub のピッカーはプライマリドメインを確認し、同じカタログを配信している同等の GitHub Pages デプロイ（`nousresearch.github.io/hermes-agent`）へ自動的にフォールバックします。両方のオリジンでページが読み込めない場合は、プロキシ、DNS フィルター、ファイアウォールが両方のホストをブロックしていないか確認してください — また、デプロイ側で確認できるよう、影響を受けるレンジをメンテナーに報告してください。
+
+---
+
 ## プロファイル {#profiles}
 
 ### プロファイルは HERMES_HOME を設定するだけの場合とどう違うのですか？
@@ -626,7 +670,9 @@ MCP サーバーがリクエストの途中でクラッシュすると、Hermes 
 
 ### プロファイルはメモリやセッションを共有しますか？
 
-いいえ。各プロファイルには独自のメモリストア、セッションデータベース、スキルディレクトリがあります。これらは完全に分離されています。既存のメモリとセッションを持つ新しいプロファイルを開始したい場合は、`hermes profile create newname --clone-all` を使って現在のプロファイルからすべてをコピーします。
+いいえ。各プロファイルには独自のメモリストア、セッションデータベース、スキルディレクトリがあります。これらは完全に分離されています。既存のメモリとセッションを持つ新しいプロファイルを開始したい場合は、`hermes profile create newname --clone-all` を使って現在のプロファイルからすべてをコピーするか、`--clone-from <profile>` を追加して特定のプロファイルからコピーします。
+
+この分離は、*同じ* プロファイルや Hermes ホームに対して 2 つのエージェントを決して実行してはいけない理由でもあります。どちらもメモリを自動的に書き込み、セッション開始時に互いの書き込みを読み込むため、保存された状態がセッションごとに劣化していきます。プロファイル 1 つにつきエージェントは 1 つにしてください。エージェント間で本当にメモリを共有したい場合は、[外部メモリプロバイダー](../user-guide/features/memory-providers.md) を使ってください。
 
 ### `hermes update` を実行すると何が起こりますか？
 
@@ -635,7 +681,7 @@ MCP サーバーがリクエストの途中でクラッシュすると、Hermes 
 
 ### いくつのプロファイルを実行できますか？
 
-明確な上限はありません。各プロファイルは `~/.hermes/profiles/` 配下の単なるディレクトリです。実用上の上限は、ディスク容量と、システムが処理できる同時実行ゲートウェイの数（各ゲートウェイは軽量な Python プロセスです）に依存します。数十のプロファイルを実行しても問題ありません。アイドル状態の各プロファイルはリソースを消費しません。
+明確な上限はありません。各プロファイルは `~/.hermes/profiles/` 配下のディレクトリで、少なくとも 1 つの識別ファイル（`config.yaml`、`.env`、`SOUL.md`、`profile.yaml`、`auth.json`、`state.db` のいずれか）を持ちます。それを持たない空のディレクトリ（ログローテーションや cron の実行の残骸）はプロファイルではありません — 一覧にも表示されず、提供もされず、`-p <name>` は存在しないと報告し、`hermes profile create <name>` はそのディレクトリを移動または削除するまで上書きを拒否します。実用上の上限は、ディスク容量と、システムが処理できる同時実行ゲートウェイの数（各ゲートウェイは軽量な Python プロセスです）に依存します。数十のプロファイルを実行しても問題ありません。アイドル状態の各プロファイルはリソースを消費しません。
 
 ---
 
@@ -649,8 +695,8 @@ MCP サーバーがリクエストの途中でクラッシュすると、Hermes 
 
 ```yaml
 delegation:
-  model: "google/gemini-3-flash-preview"   # サブエージェントはこのモデルを使う
-  provider: "openrouter"                    # サブエージェント用のプロバイダー
+  model: "google/gemini-3-flash-preview"   # subagents use this model
+  provider: "openrouter"                    # provider for subagents
 ```
 
 これで、Hermes に「X についての Twitter スレッドを書いて」と伝えて `delegate_task` サブエージェントを生成すると、そのサブエージェントはメインモデルではなく Gemini で実行されます。メインの会話は GPT-5.4 のままです。
@@ -660,10 +706,14 @@ delegation:
 委任を使わない一回限りのモデル切り替えには、CLI で `/model` を使います。
 
 ```bash
-/model google/gemini-3-flash-preview    # このセッション用に切り替える
-# ... コンテンツを書く ...
-/model openai/gpt-5.4                   # 元に戻す
+/model google/gemini-3-flash-preview    # switch for this session
+# ... write your content ...
+/model openai/gpt-5.4                   # switch back
 ```
+
+:::warning
+`/model` で切り替えるたびにプロンプトキャッシュがリセットされます — キャッシュキーにはモデルが含まれるため、切り替え後の最初のメッセージでは会話全体が通常の入力料金で再度読み込まれます。長いセッションでは、何度も行ったり来たり切り替えるよりも、委任（サブエージェントは独自の新しいコンテキストを持ちます）や新しいセッションを使うことをおすすめします。
+:::
 
 委任の仕組みの詳細については [サブエージェントへの委任](../user-guide/features/delegation.md) を参照してください。
 
@@ -693,7 +743,7 @@ delegation:
 
 ```yaml
 display:
-  tool_progress: "off"   # オプション: off、new、all、verbose
+  tool_progress: "off"   # options: off, new, all, verbose
 ```
 
 - **`off`** — 最終的な応答のみ。ツール呼び出し、推論、ログは表示されません。
@@ -707,7 +757,7 @@ display:
 
 ```yaml
 display:
-  tool_progress_command: true   # ゲートウェイで /verbose を有効にする
+  tool_progress_command: true   # enables /verbose in the gateway
 ```
 
 ### Telegram でスキルを管理する（スラッシュコマンドの上限）
@@ -718,9 +768,9 @@ display:
 
 ```yaml
 skills:
-  disabled: []                    # グローバルに無効化されたスキル
+  disabled: []                    # globally disabled skills
   platform_disabled:
-    telegram: [skill-a, skill-b]  # telegram でのみ無効化
+    telegram: [skill-a, skill-b]  # disabled only on telegram
 ```
 
 これを変更した後は、**ゲートウェイを再起動** してください（`hermes gateway restart`、または kill して再起動）。Telegram ボットのコマンドメニューは起動時に再構築されます。
@@ -743,7 +793,7 @@ skills:
 
 3. **Discord チャンネルを使う。** Discord のセッションはチャンネルをキーにしているため、同じチャンネル内のすべてのユーザーがコンテキストを共有します。共有会話用に専用のチャンネルを使ってください。
 
-### Hermes を別のマシンにエクスポートする
+### Hermes を別のマシンにエクスポートする {#exporting-hermes-to-another-machine}
 
 **シナリオ:** 1 つのマシンでスキル、cron ジョブ、メモリを蓄積してきて、それらすべてを新しい専用の Linux マシンに移したいです。
 
@@ -751,49 +801,67 @@ skills:
 
 1. 新しいマシンに Hermes Agent をインストールします:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
    ```
 
 2. **元のマシン** で、完全なバックアップを作成します:
    ```bash
    hermes backup
    ```
-   これにより、`~/.hermes/` ディレクトリ全体 — 設定、API キー、メモリ、スキル、セッション、プロファイル — の zip が作成され、ホームディレクトリに `~/hermes-backup-<timestamp>.zip` として保存されます。
+   これにより、zip アーカイブが `~/hermes-backup-<timestamp>.zip` に保存されます。
+   完全なバックアップには、Hermes のデータルート配下の設定、認証情報、メモリ、スキル、セッション、
+   プロファイルが含まれます。アプリケーションやランタイムのイメージではありません。
 
 3. zip を新しいマシンにコピーしてインポートします:
    ```bash
-   # 元のマシンで
+   # On the source machine
    scp ~/hermes-backup-<timestamp>.zip newmachine:~/
 
-   # 新しいマシンで
+   # On the new machine
    hermes import ~/hermes-backup-<timestamp>.zip
    ```
 
 4. 新しいマシンで `hermes setup` を実行し、API キーとプロバイダー設定が機能していることを確認します。
 
-### 単一のプロファイルを別のマシンに移す
+### 単一のプロファイルを別のマシンに移す {#moving-a-single-profile-to-another-machine}
 
 **シナリオ:** インストール全体ではなく、特定の 1 つのプロファイルだけを移動または共有したいです。
 
 ```bash
-# 元のマシンで
+# On the source machine
 hermes profile export work ./work-backup.tar.gz
 
-# ファイルを対象マシンにコピーしてから:
+# Copy the file to the target machine, then:
 hermes profile import ./work-backup.tar.gz work
 ```
 
 インポートされたプロファイルには、エクスポート元のすべての設定、メモリ、セッション、スキルが含まれます。新しいマシンのセットアップが異なる場合は、パスを更新したり、プロバイダーで再認証したりする必要があるかもしれません。
 
-### `hermes backup` と `hermes profile export` の違い
+### `hermes backup` と `hermes profile export` の違い {#hermes-backup-vs-hermes-profile-export}
 
 | 機能 | `hermes backup` | `hermes profile export` |
 | :--- | :--- | :--- |
 | **用途** | **マシン全体の移行** | **特定プロファイルの移植／共有** |
-| **範囲** | グローバル（`~/.hermes` ディレクトリ全体） | ローカル（単一のプロファイルディレクトリ） |
+| **範囲** | Hermes のデータルート（下記の除外項目を除く） | 単一のプロファイルディレクトリ |
 | **含まれるもの** | すべてのプロファイル、グローバル設定、API キー、セッション | 単一プロファイル: SOUL.md、メモリ、セッション、スキル |
 | **認証情報** | **含まれる**（`.env` と `auth.json`） | **除外される**（安全な共有のため取り除かれる） |
 | **形式** | `.zip` | `.tar.gz` |
+
+完全なバックアップから除外されるもの:
+
+- ソースチェックアウト、依存関係の環境、ダウンロードしたツール、モデル、ランタイム。
+- ビルドキャッシュ、チェックポイント、以前のバックアップ、クイックスナップショット。
+- ブラウザプロファイル（実際のブラウザの認証情報のコピーを含む）。
+- バイトコード、SQLite のサイドカーファイル、`gateway.pid`、`cron.pid`、`.backup.lock`。
+
+`hermes backup --quick` は、完全なアーカイブの代わりに選択した状態ファイルを保存します。
+マシン移行前の完全なバックアップの代わりにはなりません。
+
+完全なバックアップでは、コピーに失敗したファイルが報告されます。そのため、アーカイブが存在していても
+データが欠けている場合があります。元のインストールを削除する前に、スキップされたファイルの報告を確認してください。
+復元されたパッケージ宣言により、PM は依存関係を再度ダウンロードできます。バイトコードと
+SQLite のサイドカーファイルはローカルで再生成されます。これらの除外によって、完全なバックアップから `.env` や
+`auth.json` が取り除かれることはありません。
 
 **手動の代替手段（rsync）:** ファイルを直接コピーしたい場合は、コードリポジトリを除外します。
 ```bash
@@ -812,16 +880,16 @@ rsync -av --exclude='hermes-agent' ~/.hermes/ newmachine:~/.hermes/
 
 **解決策:**
 ```bash
-# 権限を確認する
+# Check permissions
 ls -la ~/.zshrc
 
-# 必要なら修正する（-rw-r--r-- または 644 であるべき）
+# Fix if needed (should be -rw-r--r-- or 644)
 chmod 644 ~/.zshrc
 
-# その後、再読み込みする
+# Then reload
 source ~/.zshrc
 
-# または新しいターミナルウィンドウを開くだけでも — PATH の変更が自動的に反映されます
+# Or just open a new terminal window — it picks up PATH changes automatically
 ```
 
 インストーラーが PATH 行を追加したのに権限が正しくない場合は、手動で追加できます。
@@ -837,13 +905,13 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 
 **解決策:**
 ```bash
-# どのモデルとプロバイダーが設定されているか確認する
+# Check what model and provider are configured
 hermes config show | head -20
 
-# モデル選択を再実行する
+# Re-run model selection
 hermes model
 
-# または既知の動作するモデルでテストする
+# Or test with a known-good model
 hermes chat -q "hello" --model anthropic/claude-opus-4.7
 ```
 

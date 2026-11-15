@@ -110,8 +110,8 @@ platforms:
       client_secret: "your-teams-client-secret"
       tenant_id: "your-teams-tenant-id"
 
-      # アウトバウンド要約配信
-      delivery_mode: "graph" # または incoming_webhook
+      # outbound summary delivery
+      delivery_mode: "graph" # or incoming_webhook
       team_id: "team-id"
       channel_id: "channel-id"
       # incoming_webhook_url: "https://..."

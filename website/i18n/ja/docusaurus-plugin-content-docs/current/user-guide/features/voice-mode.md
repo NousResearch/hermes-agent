@@ -8,18 +8,24 @@ description: "Hermes Agent とのリアルタイム音声会話 — CLI、Telegr
 
 Hermes Agent は、CLI とメッセージングプラットフォームの両方で完全な音声インタラクションをサポートします。マイクを使ってエージェントに話しかけ、音声による返答を聞き、Discord のボイスチャンネルでライブの音声会話を行えます。
 
-推奨設定や実際の利用パターンを含む実践的なセットアップ手順については、[Hermes でボイスモードを使う](/docs/guides/use-voice-mode-with-hermes)を参照してください。
+推奨設定や実際の利用パターンを含む実践的なセットアップ手順については、[Hermes でボイスモードを使う](../../guides/use-voice-mode-with-hermes.md)を参照してください。
+
+ハンズフリーでのセッション開始 — 「hey hermes」（または任意のフレーズ）と話しかけて、CLI、TUI、デスクトップアプリで新しい音声セッションを開く — については、[ウェイクワード](/docs/user-guide/features/wake-word)を参照してください。
 
 ## 前提条件
 
 音声機能を使う前に、以下を確認してください:
 
-1. **Hermes Agent がインストール済みであること** — `pip install hermes-agent`（[インストール](/docs/getting-started/installation)を参照）
+1. **Hermes Agent がインストール済みであること** — インストールスクリプト経由（[インストール](../../getting-started/installation.md)を参照）
 2. **LLM プロバイダーが設定済みであること** — `hermes model` を実行するか、`~/.hermes/.env` に希望するプロバイダーの認証情報を設定する
 3. **動作するベースセットアップがあること** — `hermes` を実行し、音声を有効化する前にエージェントがテキストに応答することを確認する
 
 :::tip
 `~/.hermes/` ディレクトリとデフォルトの `config.yaml` は、初めて `hermes` を実行したときに自動的に作成されます。API キー用の `~/.hermes/.env` のみ手動で作成する必要があります。
+:::
+
+:::tip Nous Portal で両方をカバー
+有料の [Nous Portal](./tool-gateway.md) サブスクリプションは、LLM（手順 2）**と**、Tool Gateway 経由の OpenAI TTS の両方を提供します — 別途 OpenAI キーは不要です。新規インストールでは、`hermes setup --portal` で両方を一度に設定できます。
 :::
 
 ## 概要
@@ -34,30 +40,19 @@ Hermes Agent は、CLI とメッセージングプラットフォームの両方
 
 ### Python パッケージ
 
-```bash
-# CLI ボイスモード（マイク + 音声再生）
-pip install "hermes-agent[voice]"
+ボイスプロバイダーの設定には `hermes tools` を使います。不足している組み込み機能の依存関係は、`security.allow_lazy_installs` とターゲットの依存関係サポートに従って PM 経由で導入されます。選択した依存関係の環境が変わった場合は、Hermes を再起動してください。
 
-# Discord + Telegram メッセージング（VC サポート用の discord.py[voice] を含む）
-pip install "hermes-agent[messaging]"
-
-# プレミアム TTS（ElevenLabs）
-pip install "hermes-agent[tts-premium]"
-
-# ローカル TTS（NeuTTS、オプション）
-python -m pip install -U neutts[all]
-
-# すべてまとめて
-pip install "hermes-agent[all]"
-```
+バンドル版アプリには、サポートされるエンジンの依存関係が含まれています。Docker には厳選されたサブセットが含まれ、オンデマンドのインストールは無効になっています。署名済みのペイロードやシステムの Python を pip で変更しないでください。手動の開発環境では、[開発環境のセットアップ](/docs/developer-guide/contributing#development-setup)で必要なエクストラを選択してください。
 
 | エクストラ | パッケージ | 必要な用途 |
 |-------|----------|-------------|
-| `voice` | `sounddevice`, `numpy` | CLI ボイスモード |
+| `voice` | `sounddevice`、`numpy`、およびサポートされる環境では Faster-Whisper | CLI のオーディオとオプションのローカル STT |
 | `messaging` | `discord.py[voice]`, `python-telegram-bot`, `aiohttp` | Discord & Telegram ボット |
 | `tts-premium` | `elevenlabs` | ElevenLabs TTS プロバイダー |
 
-オプションのローカル TTS プロバイダー: `neutts` は `python -m pip install -U neutts[all]` で個別にインストールします。初回使用時にモデルが自動的にダウンロードされます。
+ネイティブ Windows ARM64 と Intel macOS では、ローカルの Faster-Whisper は除外されます。これらのターゲットでは、クラウドまたはコマンドベースの STT プロバイダーを使ってください。`audio-io` には、ローカル STT を除いたマイク/再生の依存関係が含まれます。`all` エクストラは、すべての音声エンジンやウェイクエンジンを意味するわけではありません。
+
+NeuTTS は別のオプションのランタイムで、初回使用時にモデルをダウンロードします。その依存関係を署名済みのアプリやシステムの Python にインストールしないでください。
 
 :::info
 `discord.py[voice]` は **PyNaCl**（音声暗号化用）と **opus バインディング**を自動的にインストールします。これは Discord ボイスチャンネルのサポートに必要です。
@@ -68,11 +63,11 @@ pip install "hermes-agent[all]"
 ```bash
 # macOS
 brew install portaudio ffmpeg opus
-brew install espeak-ng   # NeuTTS 用
+brew install espeak-ng   # for NeuTTS
 
 # Ubuntu/Debian
 sudo apt install portaudio19-dev ffmpeg libopus0
-sudo apt install espeak-ng   # NeuTTS 用
+sudo apt install espeak-ng   # for NeuTTS
 ```
 
 | 依存関係 | 目的 | 必要な用途 |
@@ -87,19 +82,28 @@ sudo apt install espeak-ng   # NeuTTS 用
 `~/.hermes/.env` に追加します:
 
 ```bash
-# Speech-to-Text — ローカルプロバイダーはキーが一切不要
-# pip install faster-whisper          # 無料、ローカル実行、推奨
-GROQ_API_KEY=your-key                 # Groq Whisper — 高速、無料枠あり（クラウド）
-VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — 有料（クラウド）
+# Speech-to-Text — local provider needs NO key at all
+# PM prepares local Faster-Whisper on supported targets; no STT API key is needed.
+GROQ_API_KEY=your-key                 # Groq Whisper — fast, free tier (cloud)
+VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — paid (cloud)
 
-# Text-to-Speech（オプション — Edge TTS と NeuTTS はキーなしで動作）
-ELEVENLABS_API_KEY=***           # ElevenLabs — プレミアム品質
-# 上記の VOICE_TOOLS_OPENAI_KEY は OpenAI TTS も有効化します
+# Text-to-Speech (optional — Edge TTS and NeuTTS work without any key)
+ELEVENLABS_API_KEY=***           # ElevenLabs — premium quality
+# VOICE_TOOLS_OPENAI_KEY above also enables OpenAI TTS
 ```
 
 :::tip
 `faster-whisper` がインストールされていれば、ボイスモードは STT に **API キーゼロ**で動作します。モデル（`base` で約 150 MB）は初回使用時に自動的にダウンロードされます。
 :::
+
+初回のダウンロードは通常 `huggingface.co` から行われます。ネットワーク上でこのホストが利用できない場合は、Hermes を起動するシェルまたはサービスで、アクセス可能なミラーを export してください:
+
+```bash
+HF_ENDPOINT=https://your-hugging-face-mirror.example
+HF_HUB_DISABLE_XET=1
+```
+
+Xet を無効にすると、ミラー使用時に Xet の別の CAS ホストで発生する認証エラーを回避できます。モデルがキャッシュされた後は、Hermes はオンラインでのリビジョン確認なしにそのスナップショットをロードします。
 
 ---
 
@@ -112,17 +116,17 @@ ELEVENLABS_API_KEY=***           # ElevenLabs — プレミアム品質
 CLI を起動してボイスモードを有効化します:
 
 ```bash
-hermes                # インタラクティブ CLI を起動
+hermes                # Start the interactive CLI
 ```
 
 次に、CLI 内で以下のコマンドを使います:
 
 ```
-/voice          ボイスモードのオン/オフを切り替え
-/voice on       ボイスモードを有効化
-/voice off      ボイスモードを無効化
-/voice tts      TTS 出力を切り替え
-/voice status   現在の状態を表示
+/voice          Toggle voice mode on/off
+/voice on       Enable voice mode
+/voice off      Disable voice mode
+/voice tts      Toggle TTS output
+/voice status   Show current state
 ```
 
 ### 仕組み
@@ -153,13 +157,109 @@ hermes                # インタラクティブ CLI を起動
 
 `silence_threshold` と `silence_duration` はどちらも `config.yaml` で設定できます。また、`voice.beep_enabled: false` で録音開始/停止のビープ音を無効化できます。
 
+### 音声でボイスチャットを終了する
+
+**「stop」** とだけ話すと、ハンズフリーで音声会話を終了できます。一致判定は意図的に厳格です: 発話全体（大文字と小文字を区別せず、前後の句読点は無視）が設定されたフレーズと一致する必要があるため、「stop doing that and try X instead」のような発話は通常どおりエージェントに届きます。フレーズのリストは `config.yaml` の `voice.stop_phrases` でカスタマイズでき（例: `["stop", "goodbye hermes"]`）、`[]` に設定すると無効になります。フレーズはどの言語でも構いません（例: `stt.language: ru` と組み合わせた `["отбой", "стоп"]`）。デスクトップアプリも同じリストに従います。`voice.stop_phrases` がデフォルトのままの場合は、いくつかの英語の追加フレーズ（「goodbye」、「never mind」、「cancel」など）も受け付けますが、カスタマイズしたリストはそれらを置き換えます。ボイスチャットは、3 回連続で無音のサイクル（発話が検出されない）が続いた場合にも自動的に終了します。
+
+ボイスチャット中に停止フレーズだけを **入力** した場合も、すべてのサーフェス（CLI、TUI、デスクトップ）で同じように動作します: そのメッセージはエージェントに送信されず、ボイスチャットを終了します。ボイスチャット以外では、入力された「stop」は通常のメッセージです。
+
+### ライブ文字起こし（ストリーミング STT）
+
+`stt.streaming: true` を設定すると、話し終えた後ではなく話している最中に文字起こしが行われます。話している間に途中のテキストが表示され（クラシック CLI と TUI の入力プレースホルダー、およびデスクトップのディクテーションピル）、全体のアップロードを待つことなく、話し終えた時点で文字起こしが完了しています。
+
+```yaml
+stt:
+  provider: openai        # or xai, elevenlabs
+  streaming: true
+  openai:
+    streaming_model: gpt-live-transcribe   # the default; the one OpenAI model that streams text mid-utterance
+```
+
+| プロバイダー | ライブエンドポイント | 備考 |
+|---|---|---|
+| `openai` | Realtime 文字起こしセッション | 自分の `OPENAI_API_KEY` が必要。Nous が管理するオーディオゲートウェイはファイルの文字起こしのみ対応 |
+| `xai` | `wss://api.x.ai/v1/stt` | `XAI_API_KEY` が必要（Grok の OAuth ログインはライブ STT には使われません） |
+| `elevenlabs` | Scribe v2 realtime | `ELEVENLABS_API_KEY` |
+| プラグイン | `TranscriptionProvider.streaming_capable` | プラグインは `open_stream_session()` でオプトイン |
+
+ライブ文字起こしは、CLI と TUI のボイスモード、およびデスクトップのディクテーションに対応します。ローカルの whisper、Groq、Mistral、DeepInfra は引き続きファイル経由の方式を使います。ライブセッションを開けない場合や録音中に失敗した場合は、Hermes が通常どおり録音を文字起こしするため、これを有効にしても録音が失われることはありません。
+
 ### ストリーミング TTS
 
-TTS が有効な場合、エージェントはテキストを生成しながら **文単位で** 返答を話します — 応答全体を待つ必要はありません:
+TTS が有効な場合、エージェントはテキストを生成しながら **文単位で** 返答を話します — 応答全体を待つ必要はありません。これは **すべての TTS プロバイダー** で動作します:
 
 1. テキストのデルタを完全な文にバッファリングします（最小 20 文字）
-2. Markdown 書式と `<think>` ブロックを除去します
-3. 文ごとに音声をリアルタイムで生成・再生します
+2. Markdown 書式、絵文字、`<think>` ブロックを除去します
+3. 文ごとに音声をリアルタイムで再生します — チャンク化された PCM API を持つプロバイダー（ElevenLabs、OpenAI）は最初の単語までの時間を最短にするために生のオーディオをストリーミングし、それ以外のすべてのプロバイダー（デフォルトの Edge を含む）は文が完成するたびにその文を合成して再生します
+
+同じパイプラインが、クラシック CLI、TUI、デスクトップアプリで動作します。デスクトップの音声会話では、モデルが生成する返答テキストが返答ごとの音声 WebSocket に **ライブで** 送られるため、音声の再生と生成が並行します — 返答ごとに 1 つのソケットと 1 つのオーディオクロックを使い、文ごとの接続の切れ目はありません。
+
+### デスクトップのリモート接続: クライアント直結の音声（最短経路）
+
+Hermes Desktop が **リモートゲートウェイ** に接続されている場合、オーディオをゲートウェイ経由で中継する必要はまったくありません。音声セッションの開始時に、デスクトップは認証済みの REST チャンネル（`GET /api/audio/voice-config`）を通じて、アクティブなプロファイルの解決済み STT/TTS 設定（プロバイダー、モデル、言語/音声、認証情報）をゲートウェイから取得し、その後プロバイダーを **直接** 呼び出します:
+
+- **ディクテーション / 音声入力:** マイクの録音はデスクトップからプロファイルの STT プロバイダーに直接送られ、結果の *テキスト* だけがプロンプトとしてゲートウェイに送信されます。
+- **音声による返答:** 返答テキストはすでにチャットソケット経由でデスクトップにストリーミングされているため、デスクトップはプロファイルの TTS プロバイダーでローカルに合成して再生します — ゲートウェイとの接続がオーディオを運ぶことはありません。
+
+クライアント側で設定するものはありません: 話しかけているプロファイルが、ゲートウェイ自身が処理した場合とまったく同じように、プロバイダーとキーの唯一の情報源になります。キーはセッションの間だけデスクトップのメモリに保持され、クライアントのディスクに書き込まれることはありません。
+
+ゲートウェイホスト上でしか実行できないプロバイダー（ローカルの whisper、`edge` TTS、コマンドプロバイダー、プラグイン）は、このエンドポイントを持たない古いバックエンドと同様に、自動的に中継経路（`/api/audio/transcribe` と音声 WebSocket）にフォールバックします。Webapp（ブラウザで動作するデスクトップ UI）は常に中継します: ブラウザのタブはクロスオリジンリクエストを許可しないプロバイダー（Nous が管理するオーディオなど）を呼び出せず、キーはホスト上に留まります。すべてのプロバイダーで中継を強制するには、次のように設定します:
+
+```yaml
+voice:
+  client_direct: false
+```
+
+クライアント直結の対応状況: OpenAI 互換の形式による OpenAI（Nous が管理するオーディオを含む）、Groq、Mistral、DeepInfra、xAI Grok STT、ElevenLabs STT + TTS。OAuth で設定された xAI は中継のままです（OAuth のベアラートークンはサーバー側で更新されるため）。
+
+### デスクトップ: GPT-Live ボイスチャットモード（全二重、Hermes に委譲）
+
+上記の連鎖ループは、デスクトップアプリにある 2 つのボイスチャットモードのうちの 1 つです。もう 1 つは、STT → ターン → TTS の連鎖全体を **1 つの全二重音声モデル**、OpenAI の `gpt-live-1` に置き換えます: 話しながら聞き取り、割り込み、相づち、背景ノイズを自ら処理し、**独自のツールは持ちません**。実際の作業を依頼するたびに Hermes に *委譲* し、Hermes は通常どおり — セッションで選択されているモデルとプロバイダー、フルツールセット、メモリ、承認を使って — 回答し、音声がその回答を言い換えて読み上げます。
+
+```yaml
+voice:
+  voice_chat_mode: gpt-live     # chained (default) | gpt-live
+  gpt_live:
+    voice: marin                # marin, cedar, quartz, ripple, vesper, willow, stone, gleam, meridian, …
+    instructions: ""            # optional extra persona sentences (tone, pace, language)
+```
+
+要件: OpenAI の API キー（`OPENAI_API_KEY`、`VOICE_TOOLS_OPENAI_KEY`、または `voice.gpt_live.api_key`）。音声レイヤーは OpenAI によって **セッション時間 1 分あたり $0.05** で課金されます（アイドル時間も含まれます）。Hermes のターンは、これまでどおりそのプロバイダーで課金されます。このモードは Settings → Voice → *Voice Chat Mode* でも設定できます。
+
+仕組み: 音声ボタンを押すと、デスクトップから GPT-Live への WebRTC セッションが開かれます。デスクトップが受け取るのはセッション ID と SDP アンサーだけです — キーはゲートウェイホストに留まり、ゲートウェイホストがセッションの作成（`POST /api/audio/voice-live/session`）を行います。各 `session.delegation.created` は、開いているチャットでの通常のターンになります（バブルにはあなたが話した内容が表示されます。直近の音声でのやり取りは、システムプロンプトではなくターンごとの注記としてモデル入力に含まれるため、返答は読み上げやすい文章になります）。ツールのアクティビティは控えめなコンテキスト（「Hermes is working: terminal」）として音声に渡されるため、尋ねれば何が起きているかを教えてくれます。最終的な回答は文単位でストリーミングされて返されます。停止フレーズを話すと会話が終了します。`gpt-live` が選択されているのにキーが解決できない場合、ボタンは通知とともに連鎖モードにフォールバックします。
+
+このモードでサポートされないもの: Nous が管理するオーディオプロキシ（直接のキーのみ）、CLI/TUI（`/voice` は連鎖ループのまま）、`tts` ツール（引き続き `tts.provider` を使います）。
+
+### ボイスチャットモデル {#voice-chat-model}
+
+音声によるターンは、入力するときとは別の（通常はより高速な）モデルで実行できます。`voice_chat` 補助スロットを、デスクトップの Settings → Models → Auxiliary models、`hermes model` → Auxiliary models、または config.yaml で設定します:
+
+```yaml
+auxiliary:
+  voice_chat:
+    provider: openrouter          # "auto" = the session's model (default)
+    model: google/gemini-3-flash-preview   # empty with a provider = that provider's fast model
+    reasoning_effort: none        # default: reasoning off on voice turns (see below)
+```
+
+音声ターンでは、スロットが `auto` のままでセッションのモデルが回答する場合も含めて、デフォルトで推論がオフになります。推論をオフにできないモデル（gpt-6-astra、思考が必須の Claude、カタログで必須とされているルート）には、代わりに受け付けられる最低のレベルが使われます。また、実行時に無効化を拒否したルートは、次の音声ターンのために記憶されます。任意のレベルを設定するか、`""` でセッションの effort を使います。
+
+これは、CLI と TUI のボイスモード、デスクトップの音声会話、メッセージングプラットフォームのボイスノートなど、すべての連鎖型の音声ターンに適用されます。音声ターンはフルツールセットを持ち、変わるのは回答するモデルだけです。次に入力したメッセージはセッションのモデルに戻り、ターン後のメモリとスキルのレビューも同様です。使用量は `voice_chat` タスクとして記録されるため、セッションは選択したモデルを自身のモデルとして保持します。
+
+音声モデルが圧縮を強制することはありません: 会話がすでにそのコンテキストウィンドウより大きい場合、そのターンはセッションのモデルで実行され、一度だけその旨の通知が表示されます。GPT-Live ボイスチャットはこのスロットを無視します。そこでは音声レイヤー自体がすでに高速なモデルであり、実際の作業はセッションのモデルに委譲されるためです。
+
+### 割り込み（バージイン）
+
+エージェントのターン中、いつでも割り込めます — マイクは話し終えた瞬間から返答の再生が完全に終わるまで有効なままです（全二重）:
+
+- **考え中に割り込む** — 連続ボイスモードでは、LLM の生成中（音声が再生される前）に話すと進行中のターンが中断され、割り込んだ発話が次のメッセージになります。実行中のターンに対して入力するのと同じです。
+- **話をさえぎる** — エージェントの返答の再生中に話すと、話し始めた瞬間に再生が止まり、話した内容が送信されます。検出器はターン開始時の *静かな室内* に対してノイズフロアを調整するため（再生音そのものに対しては調整しません）、スピーカーからの音漏れで聞こえなくなることはなく、通常の発話で確実にトリガーされます。
+- **入力するか録音キーを押す** — 新しいメッセージを送信するか、プッシュトゥトークのキーを押すと、すべてのサーフェスで即座に再生が止まります。
+- **「stop」と話す** — 停止フレーズは両方のフェーズで機能します: 生成中はターンを中断し、かつボイスチャットを終了します。再生中は音声を止めてチャットを終了します。
+
+調整（config.yaml）: `voice.barge_in: false` で無効になります。`voice.barge_in_threshold_multiplier`（デフォルト `3.0`）は、静かな室内のフロアに対する発話トリガーの倍率で、低いほど感度が上がります。デスクトップアプリは再生フェーズのトリガーにもこの倍率を適用するため、返答に割り込めない静かな Bluetooth ヘッドセットでは、例えば `1.5` を使えます。`voice.barge_in_grace_seconds`（デフォルト `0.5`）は、再生開始直後のトリガーを抑制します。`HERMES_VOICE_DEBUG=1` を設定すると、ライブ調整用にブロックごとの VAD 診断情報（調整されたフロア、RMS、トリガーの判定）が stderr にストリーミングされます。
+
+エージェントは割り込まれたことを **認識** します: 次のメッセージには、音声での返答が途中で切られたことをモデルに伝える短い注記が含まれるため、気づかないままでいるのではなく、自然に反応したり（「失礼な！」）、中断したところから続けたりできます。
 
 ### ハルシネーションフィルター
 
@@ -176,8 +276,8 @@ Whisper は無音や背景ノイズから幻のテキスト（"Thank you for wat
 メッセージングプラットフォームに接続するためにゲートウェイを起動します:
 
 ```bash
-hermes gateway        # ゲートウェイを起動（設定済みのプラットフォームに接続）
-hermes gateway setup  # 初回設定用のインタラクティブセットアップウィザード
+hermes gateway        # Start the gateway (connects to configured platforms)
+hermes gateway setup  # Interactive setup wizard for first-time configuration
 ```
 
 ### Discord: チャンネル vs DM
@@ -209,11 +309,11 @@ DISCORD_FREE_RESPONSE_CHANNELS=123456789,987654321
 これらは Telegram と Discord（DM とテキストチャンネル）の両方で動作します:
 
 ```
-/voice          ボイスモードのオン/オフを切り替え
-/voice on       ボイスメッセージを送信したときのみボイス返信
-/voice tts      すべてのメッセージにボイス返信
-/voice off      ボイス返信を無効化
-/voice status   現在の設定を表示
+/voice          Toggle voice mode on/off
+/voice on       Voice replies only when you send a voice message
+/voice tts      Voice replies for ALL messages
+/voice off      Disable voice replies
+/voice status   Show current setting
 ```
 
 ### モード
@@ -259,13 +359,13 @@ DISCORD_FREE_RESPONSE_CHANNELS=123456789,987654321
 
 | レベル | 整数 | 含まれる内容 |
 |-------|---------|----------------|
-| テキストのみ | `274878286912` | チャンネル表示、メッセージ送信、履歴読み取り、埋め込み、添付、スレッド、リアクション |
-| テキスト + 音声 | `274881432640` | 上記すべて + Connect、Speak |
+| テキストのみ | `309237763136` | チャンネル表示、メッセージ送信、履歴読み取り、埋め込み、添付、スレッド、リアクション、公開スレッドの作成 |
+| テキスト + 音声 | `309240908864` | 上記すべて + Connect、Speak |
 
 更新後の権限 URL で **ボットを再招待** します:
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=274881432640
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309240908864
 ```
 
 `YOUR_APP_ID` を Developer Portal のアプリケーション ID に置き換えてください。
@@ -291,7 +391,7 @@ https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+application
 ゲートウェイを実行するマシンに Opus コーデックライブラリがインストールされている必要があります:
 
 ```bash
-# macOS（Homebrew）
+# macOS (Homebrew)
 brew install opus
 
 # Ubuntu/Debian
@@ -307,22 +407,22 @@ sudo apt install libopus0
 ```bash
 # ~/.hermes/.env
 
-# Discord ボット（テキスト用にすでに設定済み）
+# Discord bot (already configured for text)
 DISCORD_BOT_TOKEN=your-bot-token
 DISCORD_ALLOWED_USERS=your-user-id
 
-# STT — ローカルプロバイダーはキー不要（pip install faster-whisper）
-# GROQ_API_KEY=your-key            # 代替: クラウドベース、高速、無料枠あり
+# PM prepares local Faster-Whisper on supported targets; no STT API key is needed.
+# GROQ_API_KEY=your-key            # Alternative: cloud-based, fast, free tier
 
-# TTS — オプション。Edge TTS と NeuTTS はキー不要。
-# ELEVENLABS_API_KEY=***      # プレミアム品質
+# TTS — optional. Edge TTS and NeuTTS need no key.
+# ELEVENLABS_API_KEY=***      # Premium quality
 # VOICE_TOOLS_OPENAI_KEY=***  # OpenAI TTS / Whisper
 ```
 
 ### ゲートウェイの起動
 
 ```bash
-hermes gateway        # 既存の設定で起動
+hermes gateway        # Start with existing configuration
 ```
 
 ボットは数秒以内に Discord でオンラインになるはずです。
@@ -332,10 +432,10 @@ hermes gateway        # 既存の設定で起動
 ボットがいる Discord のテキストチャンネルで以下を使います:
 
 ```
-/voice join      ボットが現在のボイスチャンネルに参加
-/voice channel   /voice join のエイリアス
-/voice leave     ボットがボイスチャンネルから切断
-/voice status    ボイスモードと接続中のチャンネルを表示
+/voice join      Bot joins your current voice channel
+/voice channel   Alias for /voice join
+/voice leave     Bot disconnects from voice channel
+/voice status    Show voice mode and connected channel
 ```
 
 :::info
@@ -359,6 +459,7 @@ hermes gateway        # 既存の設定で起動
 - 文字起こしがテキストチャンネルに表示されます: `[Voice] @user: あなたが話した内容`
 - エージェントの応答はチャンネルにテキストとして送信され、かつ VC で読み上げられます
 - テキストチャンネルは `/voice join` が実行されたチャンネルです
+- 別のテキストチャンネルから `/voice join` を実行すると、バインドがそちらに移ります。移動前に取得された発話は、文字起こし中かまだ終わっていないかにかかわらず破棄され、新しいチャンネルには投稿されません
 
 ### エコー防止
 
@@ -366,7 +467,7 @@ hermes gateway        # 既存の設定で起動
 
 ### アクセス制御
 
-`DISCORD_ALLOWED_USERS` にリストされているユーザーのみが音声でやり取りできます。それ以外のユーザーの音声は静かに無視されます。
+`DISCORD_ALLOWED_USERS` または `DISCORD_ALLOWED_ROLES` で許可されたユーザーのみが音声でやり取りできます。ロールは、話者が話すたびにチェックされます。それ以外のユーザーの音声は静かに無視されます。
 
 ```bash
 # ~/.hermes/.env
@@ -380,34 +481,53 @@ DISCORD_ALLOWED_USERS=284102345871466496
 ### config.yaml
 
 ```yaml
-# 音声録音（CLI）
+# Voice recording (CLI)
 voice:
-  record_key: "ctrl+b"            # 録音の開始/停止キー
-  max_recording_seconds: 120       # 最大録音時間
-  auto_tts: false                  # ボイスモード開始時に TTS を自動有効化
-  beep_enabled: true               # 録音開始/停止のビープ音を再生
-  silence_threshold: 200           # これ未満を無音とみなす RMS レベル（0-32767）
-  silence_duration: 3.0            # 自動停止までの無音秒数
+  record_key: "ctrl+b"            # Key to start/stop recording
+  max_recording_seconds: 120       # Maximum recording length
+  auto_tts: false                  # Auto-enable TTS when voice mode starts
+  beep_enabled: true               # Play record start/stop beeps
+  silence_threshold: 200           # RMS level (0-32767) below which counts as silence
+  silence_duration: 3.0            # Seconds of silence before auto-stop
+  stop_phrases: ["stop"]           # Saying exactly one of these ends the voice chat; [] disables
 
 # Speech-to-Text
 stt:
-  provider: "local"                  # "local"（無料） | "groq" | "openai"
+  enabled: true                     # set to false to skip auto-transcription —
+                                    # the gateway still caches the audio file and
+                                    # passes its path to the agent as part of the
+                                    # inbound message, useful for custom pipelines
+                                    # (diarization, alignment, archival, etc.).
+                                    # When enabled, the agent gets the quoted
+                                    # transcript followed by a
+                                    # "[User sent audio: <path>]" line, so the
+                                    # recording stays reachable after STT succeeds
+  provider: "local"                  # "local" (free) | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
+  language: "en"                     # global hint for every provider; set "" to auto-detect
   local:
-    model: "base"                    # tiny, base, small, medium, large-v3
-  # model: "whisper-1"              # レガシー: provider が未設定のときに使用
+    model: "base"                    # tiny, base, small, medium, large-v3, turbo
+    language: ""                     # optional ISO-639-1 hint; blank = stt.language, then HERMES_LOCAL_STT_LANGUAGE, then auto-detect
+  groq:
+    language: ""                     # optional ISO-639-1 hint; blank = stt.language, then HERMES_LOCAL_STT_LANGUAGE, then auto-detect
+  # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
 tts:
-  provider: "edge"                 # "edge"（無料） | "elevenlabs" | "openai" | "neutts" | "minimax"
+  provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts" | "minimax" | "mistral" | "gemini" | "xai" | "kittentts" | "piper"
   edge:
-    voice: "en-US-AriaNeural"      # 322 種類の音声、74 言語
+    voice: "en-US-AriaNeural"      # 322 voices, 74 languages
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"    # Adam
-    model_id: "eleven_multilingual_v2"
+    model_id: "eleven_multilingual_v2"   # or eleven_v3, eleven_flash_v2_5, ... (Desktop Settings → Voice accepts any model id)
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"                 # alloy, echo, fable, onyx, nova, shimmer
-    base_url: "https://api.openai.com/v1"  # オプション: セルフホストや OpenAI 互換エンドポイント用に上書き
+    base_url: "https://api.openai.com/v1"  # optional: override for self-hosted or OpenAI-compatible endpoints
+    # The `text_to_speech` tool accepts an optional per-call `instructions`
+    # argument (tone, emotion, pacing, accent, whispering) that is forwarded
+    # to `gpt-4o-mini-tts` and to OpenAI-compatible voice-design servers
+    # (e.g. Qwen3-TTS-VoiceDesign via oMLX). See OpenAI's voice-design guide:
+    # https://platform.openai.com/docs/guides/text-to-speech
   neutts:
     ref_audio: ''
     ref_text: ''
@@ -415,25 +535,27 @@ tts:
     device: cpu
 ```
 
+プロバイダーの言語設定が空の場合は、環境変数を参照する前にグローバルの `stt.language` の値（デフォルト `"en"`）を継承します。自動検出の条件とコマンドバックエンドの制限については、[STT の言語解決](../configuration.md#speech-to-text-stt)を参照してください。
+
 ### 環境変数
 
 ```bash
-# Speech-to-Text プロバイダー（local はキー不要）
-# pip install faster-whisper        # 無料のローカル STT — API キー不要
-GROQ_API_KEY=...                    # Groq Whisper（高速、無料枠あり）
-VOICE_TOOLS_OPENAI_KEY=...         # OpenAI Whisper（有料）
+# Speech-to-Text providers (local needs no key)
+# PM prepares local Faster-Whisper on supported targets; no STT API key is needed.
+GROQ_API_KEY=...                    # Groq Whisper (fast, free tier)
+VOICE_TOOLS_OPENAI_KEY=...         # OpenAI Whisper (paid)
 
-# STT 上級者向け上書き（オプション）
-STT_GROQ_MODEL=whisper-large-v3-turbo    # デフォルトの Groq STT モデルを上書き
-STT_OPENAI_MODEL=whisper-1               # デフォルトの OpenAI STT モデルを上書き
-GROQ_BASE_URL=https://api.groq.com/openai/v1     # カスタム Groq エンドポイント
-STT_OPENAI_BASE_URL=https://api.openai.com/v1    # カスタム OpenAI STT エンドポイント
+# STT advanced overrides (optional)
+STT_GROQ_MODEL=whisper-large-v3-turbo    # Override default Groq STT model
+STT_OPENAI_MODEL=whisper-1               # Override default OpenAI STT model
+GROQ_BASE_URL=https://api.groq.com/openai/v1     # Custom Groq endpoint
+STT_OPENAI_BASE_URL=https://api.openai.com/v1    # Custom OpenAI STT endpoint
 
-# Text-to-Speech プロバイダー（Edge TTS と NeuTTS はキー不要）
-ELEVENLABS_API_KEY=***             # ElevenLabs（プレミアム品質）
-# 上記の VOICE_TOOLS_OPENAI_KEY は OpenAI TTS も有効化します
+# Text-to-Speech providers (Edge TTS and NeuTTS need no key)
+ELEVENLABS_API_KEY=***             # ElevenLabs (premium quality)
+# VOICE_TOOLS_OPENAI_KEY above also enables OpenAI TTS
 
-# Discord ボイスチャンネル
+# Discord voice channel
 DISCORD_BOT_TOKEN=...
 DISCORD_ALLOWED_USERS=...
 ```
@@ -449,8 +571,15 @@ DISCORD_ALLOWED_USERS=...
 | **Groq** | `whisper-large-v3` | 高速（約 1 秒） | より良い | 無料枠 | 必要 |
 | **OpenAI** | `whisper-1` | 高速（約 1 秒） | 良好 | 有料 | 必要 |
 | **OpenAI** | `gpt-4o-transcribe` | 中程度（約 2 秒） | 最良 | 有料 | 必要 |
+| **OpenAI** | `gpt-transcribe` | 高速 | 最良 | 有料（$0.0045/分） | 必要 |
+| **Mistral** | `voxtral-mini-latest` | 高速 | 良好 | 有料 | 必要 |
+| **xAI** | `grok-voice-transcribe-2.0` | 高速 | 最良 | 有料（バッチで $0.10/時間） | 必要 |
 
 プロバイダーの優先順位（自動フォールバック）: **local** > **groq** > **openai**
+
+### 長時間の録音とアップロードの制限 {#long-recordings-and-upload-limits}
+
+クラウドプロバイダーは 1 回のリクエストに上限を設けています: OpenAI と Groq は 25 MB、Mistral は 500 MB（60 分）、xAI は 500 MB、ElevenLabs は 5 GB 弱まで受け付けます。一部の OpenAI モデルには、リクエストあたりの実質的な長さの制限もあります: `gpt-4o-transcribe` と `gpt-4o-mini-transcribe` は約 7.5 分（出力の上限が 2,000 トークンのため）、`whisper-1` は 10 分（各リクエストがデフォルトの 60 秒のタイムアウト内に終わるようにするため）です。ボイスノート、音声の添付ファイル、ボイスモードの録音がアクティブなプロバイダーの制限を超えている場合、Hermes はまずコンパクトな 16 kHz モノラル AAC に再エンコードし、ほとんどの録音を 1 回のリクエストに収めます。それでも大きすぎる場合は、Hermes が無音の箇所で分割し、各部分を順番に文字起こししてテキストを結合します。ローカルプロバイダーにはアップロードの制限がなく、分割されることはありません。どちらのステップにも ffmpeg が必要です。
 
 ### TTS プロバイダー比較
 
@@ -462,6 +591,8 @@ DISCORD_ALLOWED_USERS=...
 | **NeuTTS** | 良好 | 無料 | CPU/GPU に依存 | 不要 |
 
 NeuTTS は上記の `tts.neutts` 設定ブロックを使用します。
+
+`openai` では、`text_to_speech` ツールがオプションの `instructions` 引数を受け付け、`gpt-4o-mini-tts` の voice-design 機能（口調、感情、ペース、アクセント、ささやき声）を利用できます。同じフィールドは、`tts.openai.base_url` で指定した OpenAI 互換の voice-design サーバー（例: oMLX 経由の Qwen3-TTS-VoiceDesign）にもルーティングされます。
 
 ---
 
@@ -475,6 +606,8 @@ PortAudio がインストールされていません:
 brew install portaudio    # macOS
 sudo apt install portaudio19-dev  # Ubuntu
 ```
+
+Linux デスクトップ上の Docker 内で Hermes を実行している場合、コンテナはホストのオーディオソケットにもアクセスする必要があります。PulseAudio/PipeWire 互換のセットアップについては、[Docker オーディオブリッジ](../docker.md#optional-linux-desktop-audio-bridge)の注記を参照してください。
 
 ### Discord サーバーチャンネルでボットが応答しない
 

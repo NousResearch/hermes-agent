@@ -11,7 +11,7 @@ description: "トピックを調べ、調査結果を要約し、毎朝Telegram�
 最後には、**ウェブ検索**、**cronスケジューリング**、**委譲**、**メッセージング配信**を組み合わせた完全に自動化されたワークフローが手に入ります — コードは不要です。
 
 :::tip
-このレシピはウェブ検索、要約、そして任意でTTSを使います — いずれもPortalサブスクリプションにまとめて含まれています。最速のセットアップは `hermes setup --portal` です。[Nous Portal](../integrations/nous-portal.md)を参照してください。
+このレシピはウェブ検索、要約、そして任意でTTSを使います — いずれもPortalサブスクリプションにまとめて含まれています。最速のセットアップは `hermes setup --portal` です。[Nous Portal](/docs/integrations/nous-portal)を参照してください。
 :::
 
 ## 構築するもの
@@ -33,10 +33,10 @@ description: "トピックを調べ、調査結果を要約し、毎朝Telegram�
 - **Hermes Agentがインストールされていること** — [インストールガイド](../getting-started/installation.md)を参照
 - **ゲートウェイが実行中であること** — ゲートウェイデーモンがcronの実行を処理します:
   ```bash
-  hermes gateway install   # ユーザーサービスとしてインストール
-  sudo hermes gateway install --system   # Linuxサーバー: 起動時のシステムサービス
-  # または
-  hermes gateway           # フォアグラウンドで実行
+  hermes gateway install   # Install as a user service
+  sudo hermes gateway install --system   # Linux servers: boot-time system service
+  # or
+  hermes gateway           # Run in foreground
   ```
 - **Firecrawl APIキー** — ウェブ検索のために環境変数 `FIRECRAWL_API_KEY` を設定
 - **メッセージングが設定されていること**（任意だが推奨） — [Telegram](../user-guide/messaging/telegram.md) またはDiscordをホームチャンネルで設定
@@ -253,7 +253,7 @@ hermes cron status
 
 ```bash
 hermes gateway install
-# またはLinuxサーバーで
+# or on Linux servers
 sudo hermes gateway install --system
 ```
 

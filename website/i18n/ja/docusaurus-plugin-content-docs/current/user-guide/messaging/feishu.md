@@ -6,6 +6,10 @@ description: "Hermes AgentをFeishuまたはLarkのボットとしてセット�
 
 # Feishu / Lark のセットアップ
 
+このページのPython依存関係のコマンドは、
+[PMで準備したソースチェックアウト](/docs/reference/package-management#developer-workflow)を使用します。
+依存関係を変更した後は、チェックアウトを再アクティブ化してHermesを再起動してください。
+
 Hermes Agentは、フル機能のボットとしてFeishuおよびLarkと統合します。接続すると、ダイレクトメッセージやグループチャットでエージェントとチャットでき、ホームチャットでcronジョブの結果を受け取り、通常のゲートウェイフローを通じてテキスト、画像、音声、ファイル添付を送信できます。
 
 この統合は両方の接続モードをサポートします。
@@ -55,6 +59,41 @@ hermes gateway setup
 App Secretは非公開に保ってください。これを持つ者は誰でもあなたのアプリになりすませます。
 :::
 
+### 権限の設定
+
+Feishu開発者コンソールで **Permission Management** に移動し、次のスコープを追加します。権限ページで一括インポートできます。
+
+**必須の権限:**
+
+| スコープ | 目的 |
+|-------|---------|
+| `im:message` | メッセージの受信と読み取り |
+| `im:message:send_as_bot` | ボットとしてメッセージを送信 |
+| `im:resource` | ユーザーが送信した画像、ファイル、音声へのアクセス |
+| `im:chat` | チャット/グループのメタデータへのアクセス |
+| `im:chat:readonly` | チャット一覧とメンバーシップの読み取り |
+
+**推奨の権限（全機能を使う場合）:**
+
+| スコープ | 目的 |
+|-------|---------|
+| `im:message.reactions:readonly` | 絵文字リアクションイベントの受信 |
+| `admin:app.info:readonly` | @メンションのゲーティングのためにボットのアイデンティティを自動検出 |
+| `contact:user.id:readonly` | 許可リストの照合のためにユーザーIDを解決 |
+
+### イベントの設定
+
+**Events and Callbacks** で次を行います。
+
+1. 接続モードを **Long Connection (WebSocket)**（推奨）に設定するか、webhook URLを設定します
+2. **Event Configuration** タブで、次をサブスクライブします。
+   - `im.message.receive_v1` — メッセージの受信に必須
+3. **Callback Configuration** タブ（イベントとは別のタブ）で、同じ接続モードを設定し、`card.action.trigger`コールバックを追加します — 承認 / 更新プロンプトのボタンに必須です。[必要なFeishuアプリの設定](#required-feishu-app-configuration)を参照してください。
+
+### アプリの公開
+
+権限とイベントを設定した後、**Version Management** に移動してアプリの新しいバージョンを公開します。バージョンが公開され承認されるまで、権限は有効になりません（エンタープライズアプリの場合、管理者の承認が必要になることがあります）。
+
 ## ステップ2: 接続モードの選択
 
 ### 推奨: WebSocketモード
@@ -67,7 +106,7 @@ FEISHU_CONNECTION_MODE=websocket
 
 **要件:** `websockets` Pythonパッケージがインストールされている必要があります。SDKが接続のライフサイクル、ハートビート、自動再接続を内部で処理します。
 
-**仕組み:** アダプターは、Lark SDKのWebSocketクライアントをバックグラウンドのexecutorスレッドで実行します。インバウンドイベント（メッセージ、リアクション、カードアクション）はメインのasyncioループにディスパッチされます。切断時には、SDKが自動的に再接続を試みます。
+**仕組み:** アダプターは、Lark SDKのWebSocketクライアントをバックグラウンドのexecutorスレッドで実行します。インバウンドイベント（メッセージ、リアクション、カードアクション）はメインのasyncioループにディスパッチされます。切断時には、SDKが自動的に再接続を試みます。リンクが完全に切れた場合（SDKのリトライの段階が尽きた場合や、クライアントスレッドが終了した場合）、Hermesのスーパーバイザーが上限付きのバックオフでクライアントを再構築します。リンクがダウンしている間、`hermes gateway status`は接続が再確立されるまでプラットフォームを`retrying`として表示します。
 
 ### 任意: Webhookモード
 
@@ -88,12 +127,12 @@ webhookモードでは、Hermesは（`aiohttp`経由で）HTTPサーバーを起
 webhookサーバーのバインドアドレスとパスはカスタマイズできます。
 
 ```bash
-FEISHU_WEBHOOK_HOST=127.0.0.1   # デフォルト: 127.0.0.1
-FEISHU_WEBHOOK_PORT=8765         # デフォルト: 8765
-FEISHU_WEBHOOK_PATH=/feishu/webhook  # デフォルト: /feishu/webhook
+FEISHU_WEBHOOK_HOST=127.0.0.1   # default: 127.0.0.1
+FEISHU_WEBHOOK_PORT=8765         # default: 8765
+FEISHU_WEBHOOK_PATH=/feishu/webhook  # default: /feishu/webhook
 ```
 
-FeishuがURL検証チャレンジ（`type: url_verification`）を送信すると、webhookは自動的に応答するため、Feishu開発者コンソールでサブスクリプションのセットアップを完了できます。
+FeishuがURL検証チャレンジ（`type: url_verification`）を送信すると、webhookは自動的に応答するため、Feishu開発者コンソールでサブスクリプションのセットアップを完了できます。`FEISHU_VERIFICATION_TOKEN`が設定されている場合、チャレンジ応答はそれによってゲートされます — トークンが欠落または不一致のチャレンジリクエストは拒否されるため、認証されていないリモートが攻撃者の制御するチャレンジデータをエコーしてエンドポイントの制御を証明することはできません。
 
 ## ステップ3: Hermesの設定
 
@@ -115,7 +154,7 @@ FEISHU_APP_SECRET=secret_xxx
 FEISHU_DOMAIN=feishu
 FEISHU_CONNECTION_MODE=websocket
 
-# 任意だが強く推奨
+# Optional but strongly recommended
 FEISHU_ALLOWED_USERS=ou_xxx,ou_yyy
 FEISHU_HOME_CHANNEL=oc_xxx
 ```
@@ -192,7 +231,7 @@ FEISHU_VERIFICATION_TOKEN=your-verification-token
 `FEISHU_GROUP_POLICY`環境変数は、Hermesがグループチャットで応答するかどうか、またどのように応答するかを制御します。
 
 ```bash
-FEISHU_GROUP_POLICY=allowlist   # デフォルト
+FEISHU_GROUP_POLICY=allowlist   # default
 ```
 
 | 値 | 振る舞い |
@@ -202,6 +241,8 @@ FEISHU_GROUP_POLICY=allowlist   # デフォルト
 | `disabled` | Hermesはすべてのグループメッセージを完全に無視します。 |
 
 いずれのモードでも、メッセージが処理される前に、ボットがグループ内で明示的に@メンション（または@all）される必要があります。ダイレクトメッセージは常にこのゲートをバイパスします。
+
+デフォルトの`allowlist`ポリシーで`FEISHU_ALLOWED_USERS`が空の場合、DMは引き続き動作しますが、人間からのグループメッセージはすべて拒否されます。最初の破棄は、設定すべきキーとともに`WARNING`で一度だけログに記録され、それ以降の破棄は`DEBUG`になります。[多重化ゲートウェイ](/docs/user-guide/multi-profile-gateways)では、各プロファイルは**自身の**`.env`のみを読み込みます — デフォルトプロファイルの`.env`にある`FEISHU_GROUP_POLICY=open`は、セカンダリプロファイルのボットには適用されません。`FEISHU_GROUP_POLICY` / `FEISHU_ALLOWED_USERS`を`profiles/<name>/.env`に置くか、そのプロファイルの`config.yaml`で`group_rules`を使ってください。
 
 `FEISHU_REQUIRE_MENTION=false`を設定すると、@メンションを要求せずにHermesがすべてのグループのやり取りを読めるようになります。
 
@@ -216,9 +257,9 @@ FEISHU_REQUIRE_MENTION=false
 Hermesは起動時にボットの`open_id`と表示名を自動検出します。これらを手動で設定する必要があるのは、自動検出がFeishu APIに到達できない場合や、アプリがテナントスコープのユーザーIDを使用する場合のみです。
 
 ```bash
-FEISHU_BOT_OPEN_ID=ou_xxx     # 自動検出が失敗した場合のみ
-FEISHU_BOT_USER_ID=xxx        # アプリがsender_id_type=user_idを使う場合に必要
-FEISHU_BOT_NAME=MyBot         # 自動検出が失敗した場合のみ
+FEISHU_BOT_OPEN_ID=ou_xxx     # only when auto-detection fails
+FEISHU_BOT_USER_ID=xxx        # required if your app uses sender_id_type=user_id
+FEISHU_BOT_NAME=MyBot         # only when auto-detection fails
 ```
 
 ## ボット間メッセージング {#bot-to-bot-messaging}
@@ -226,7 +267,7 @@ FEISHU_BOT_NAME=MyBot         # 自動検出が失敗した場合のみ
 デフォルトでは、Hermesは他のボットが送信したメッセージを無視します。HermesにA2Aオーケストレーションに参加させたい場合や、同じグループ内の他のボットから通知を受け取りたい場合に、ボット間メッセージングを有効にします。
 
 ```bash
-FEISHU_ALLOW_BOTS=mentions   # デフォルト: none
+FEISHU_ALLOW_BOTS=mentions   # default: none
 ```
 
 | 値 | 振る舞い |
@@ -253,24 +294,33 @@ FEISHU_ALLOW_BOTS=mentions   # デフォルト: none
 
 カードアクションイベントは`MessageType.COMMAND`でディスパッチされるため、通常のコマンド処理パイプラインを通って流れます。
 
+**確認の質問（clarify）** もカードを使います: エージェントが`clarify`ツールで多肢選択の質問をすると、カードには選択肢ごとに番号付きのボタンが1つずつと、「✏️ Other (type answer)」が表示されます。タップすると即座に回答され、カードはチャット内の全員に対してその場で更新されます。「Other」はテキスト入力の受け付けに切り替わり、次のメッセージが回答になります。タップする代わりに番号や選択肢のテキストを入力しても機能します。自由回答の質問はプレーンテキストで届きます。承認ボタンと同じ認可が適用されます: 許可されたユーザーのみが回答できます。
+
+**有限の選択肢を持つスラッシュコマンド**（`/reasoning`、`/fast`）はカードピッカーを送信します: 1回のタップで設定が適用され、カードは選択内容で確定し、コマンドの確認がチャットに続きます。
+
 これは**コマンド承認**の仕組みでもあります — エージェントが危険なコマンドを実行する必要があるとき、Allow Once / Session / Always / Denyのボタンを持つインタラクティブカードを送信します。ユーザーがボタンをクリックすると、カードアクションのコールバックが承認の決定をエージェントに返します。
 
 ### 必要なFeishuアプリの設定 {#required-feishu-app-configuration}
 
-インタラクティブカードには、Feishu開発者コンソールでの**3つ**の設定ステップが必要です。いずれかが欠けていると、ユーザーがカードボタンをクリックしたときにエラー**200340**が発生します。
+インタラクティブカードには、Feishu開発者コンソールで次の設定が必要です。ここに不足があると、通常はユーザーがカードボタンをクリックしたときにエラー**200340**が発生します。
 
-1. **カードアクションイベントをサブスクライブする:**
-   **Event Subscriptions** で、サブスクライブするイベントに`card.action.trigger`を追加します。
+1. **カードアクションのコールバックをサブスクライブする（イベントではありません）:**
+   **Development Configuration > Events and Callbacks** で **Callback Configuration** タブを開き — これは`im.message.receive_v1`がある **Event Configuration** タブとは別です — *Subscribed Callbacks* の下に`card.action.trigger`を追加します。イベントとして追加しても、ボタンのクリックは配信されません。
 
-2. **Interactive Card機能を有効化する:**
-   **App Features > Bot** で、**Interactive Card** トグルが有効になっていることを確認します。これは、あなたのアプリがカードアクションのコールバックを受け取れることをFeishuに伝えます。
+2. **コールバックの配信モードを設定する:**
+   同じタブで、Hermesを`websocket`モードで実行している場合は **Long Connection** を選択するか（Lark SDKが既存の接続でコールバックを受信します）、webhookモードではリクエストURL（イベントwebhookと同じエンドポイント、例: `https://your-server:8765/feishu/webhook`）を入力します。FeishuがそのURLに到達して名前解決できる必要があります。そうでないと、クリックは200342/200343で失敗します。
 
-3. **Card Request URLを設定する（webhookモードのみ）:**
-   **App Features > Bot > Message Card Request URL** で、URLをイベントwebhookと同じエンドポイント（例: `https://your-server:8765/feishu/webhook`）に設定します。WebSocketモードでは、これはSDKによって自動的に処理されます。
+3. **Interactive Card機能を有効化する:**
+   **App Features > Bot** で、**Interactive Card** トグルが有効になっていることを確認します。
+
+4. **新しいアプリバージョンを公開する:**
+   コールバックの変更は、**Version Management > Create version** が公開されて（エンタープライズアプリの場合は承認されて）初めて有効になります。Feishu自身による200340の説明は「the application has not configured the card callback address or the configured address is invalid … ensure that you have created and published the latest version of the app」です。
 
 :::warning
-3つのステップすべてがないと、Feishuはインタラクティブカードの*送信*には成功しますが（送信には`im:message:send`権限だけが必要です）、いずれかのボタンをクリックするとエラー200340が返されます。カードは動作しているように見えます — エラーはユーザーがそれを操作したときにのみ表面化します。
+公開されたカードコールバックがない場合でも、Feishuはインタラクティブカードの*送信*には成功しますが（送信には`im:message:send`権限だけが必要です）、いずれかのボタンをクリックするとエラー200340が返されます。カードは動作しているように見えます — エラーはユーザーがそれを操作したときにのみ表面化し、Feishuがコールバックを配信する前に拒否するため、クリックはHermesに到達しません（何もログに記録されません）。
 :::
+
+エラーコード200672 / 200673は、コールバックがHermesに*到達した*うえでFeishuが応答を拒否したことを示します。これらが表示された場合は、該当する`gateway.log`の行を添えてissueを登録してください。
 
 ## ドキュメントコメントのインテリジェント返信
 
@@ -301,13 +351,13 @@ FEISHU_ALLOW_BOTS=mentions   # デフォルト: none
 CLI:
 
 ```bash
-# 現在のルールとペアリングの状態を確認
+# Inspect current rules and pairing state
 python -m gateway.platforms.feishu_comment_rules status
 
-# 特定のドキュメント + ユーザーのアクセスチェックをシミュレート
+# Simulate an access check for a specific doc + user
 python -m gateway.platforms.feishu_comment_rules check <fileType:fileToken> <user_open_id>
 
-# 実行時にペアリングの付与を管理
+# Manage pairing grants at runtime
 python -m gateway.platforms.feishu_comment_rules pairing list
 python -m gateway.platforms.feishu_comment_rules pairing add <user_open_id>
 python -m gateway.platforms.feishu_comment_rules pairing remove <user_open_id>
@@ -319,6 +369,29 @@ python -m gateway.platforms.feishu_comment_rules pairing remove <user_open_id>
 
 - **Event Subscriptions** で`drive.notice.comment_add_v1`をサブスクライブします。
 - ハンドラがドキュメントの内容を読めるよう、`docs:doc:readonly`と`drive:drive:readonly`のスコープを付与します。
+
+## 会議招待イベント
+
+人間の参加者を招待するのと同じ方法で、HermesのFeishu/Larkボットをビデオ会議に招待できます。ボットが会議招待イベントを受信すると、Hermesは会議への参加を試みるエージェントのターンを自動的に開始できます。
+
+`vc.bot.meeting_invited_v1`イベントを使い、フローは次のとおりです。
+
+- ユーザーがFeishu/Larkのビデオ会議にボットを招待します。
+- Feishu/LarkがHermesに会議招待イベントを送信します。
+- Hermesは招待者、会議のトピック、会議番号を抽出します。
+- 招待者が通常のゲートウェイの許可リストまたはペアリングポリシーで認可されている場合、エージェントは会議番号を受け取り、自動的に参加を試みます。
+- 招待の形式が不正な場合、またはエージェントが参加できない場合、Hermesはイベントを破棄するか、簡潔な説明とともに招待者に返信します。
+
+招待者と`meeting_no`の両方を含まない不正な形式の招待は無視されます。
+
+### 必要なFeishuアプリの設定
+
+既に付与されているチャット/カードの権限に加えて、ビデオ会議の招待イベントを追加します。
+
+- **Event Subscriptions** で`vc.bot.meeting_invited_v1`をサブスクライブします。
+- そのイベントに対してFeishu/Lark開発者コンソールが求めるVideo Conferencingの権限スコープを有効にします。
+- Hermesが招待者に返信できるよう、`im:message`と`im:message:send_as_bot`を有効のままにします。
+- ゲートウェイのユーザー許可リストまたはペアリングポリシーで招待者が認可されていることを確認します。会議招待は通常のゲートウェイのアクセスチェックをバイパスしません。
 
 ## メディアのサポート
 
@@ -333,9 +406,9 @@ python -m gateway.platforms.feishu_comment_rules pairing remove <user_open_id>
 | **動画** | .mp4, .mov, .avi, .mkv, .webm, .m4v, .3gp | ダウンロードしてドキュメントとしてキャッシュ |
 | **ファイル** | .pdf, .doc, .docx, .xls, .xlsx, .ppt, .pptx など | ダウンロードしてドキュメントとしてキャッシュ |
 
-リッチテキスト（post）メッセージのメディア（インライン画像やファイル添付を含む）も抽出されてキャッシュされます。
+リッチテキスト（post）メッセージのメディアも抽出されてキャッシュされます — postの本文内のインライン画像/ファイルと、作成画面がトップレベルの`files`リストで送信する添付（1つのバブル内のキャプションとファイル）の両方です。すべての添付が収集されます。フォルダーのエントリはスキップされ、各添付はテキストに`[Attachment: <name>]`マーカーを残します。
 
-小さなテキストベースのドキュメント（.txt、.md）については、ファイルの内容が自動的にメッセージテキストに注入されるため、エージェントはツールを必要とせずに直接読めます。
+小さなテキストベースのドキュメント（.txt、.md）については、ファイルの内容がメッセージテキストの後に自動的に追加されるため、エージェントはツールを必要とせずに直接読めます — ファイルと一緒に入力したキャプションはそのまま残ります。
 
 ### アウトバウンド（送信）
 
@@ -405,6 +478,8 @@ webhookモードでは、アダプターは悪用から保護するためにIP�
 
 上限を超えるリクエストはHTTP 429（Too Many Requests）を受け取ります。
 
+検証トークンと署名のチェックを通過したリクエストのみが上限にカウントされるため、偽造されたトラフィックが本物のFeishuコールバックのためのウィンドウを使い切ることはできません。署名のない`url_verification`チャレンジは、検証トークンによって認証された場合にのみカウントされます。
+
 ### Webhookの異常検出
 
 アダプターはIPアドレスごとの連続したエラー応答を追跡します。6時間のウィンドウ内に同じIPから25回連続でエラーが発生すると、警告がログに記録されます。これは、誤設定されたクライアントや探索の試みの検出に役立ちます。
@@ -422,8 +497,8 @@ webhookモードでは、アダプターは悪用から保護するためにIP�
 platforms:
   feishu:
     extra:
-      ws_reconnect_interval: 120   # 再接続試行間の秒数（デフォルト: 120）
-      ws_ping_interval: 30         # WebSocket ping間の秒数（任意。未設定の場合はSDKのデフォルト）
+      ws_reconnect_interval: 120   # Seconds between reconnect attempts (default: 120)
+      ws_ping_interval: 30         # Seconds between WebSocket pings (optional; SDK default if unset)
 ```
 
 | 設定 | 設定キー | デフォルト | 説明 |
@@ -439,8 +514,8 @@ platforms:
 platforms:
   feishu:
     extra:
-      default_group_policy: "open"     # group_rulesにないグループのデフォルト
-      admins:                          # ボット設定を管理できるユーザー
+      default_group_policy: "open"     # Default for groups not in group_rules
+      admins:                          # Users who can manage bot settings
         - "ou_admin_open_id"
       group_rules:
         "oc_group_chat_id_1":
@@ -456,7 +531,7 @@ platforms:
             - "ou_blocked_user"
         "oc_free_chat":
           policy: "open"
-          require_mention: false       # このチャットについてFEISHU_REQUIRE_MENTIONを上書き
+          require_mention: false       # overrides FEISHU_REQUIRE_MENTION for this chat
 ```
 
 | ポリシー | 説明 |
@@ -512,9 +587,9 @@ WebSocketおよびグループごとのACL設定は、`config.yaml`の`platforms
 
 | 問題 | 対処 |
 |---------|-----|
-| `lark-oapi not installed` | SDKをインストール: `pip install lark-oapi` |
-| `websockets not installed; websocket mode unavailable` | websocketsをインストール: `pip install websockets` |
-| `aiohttp not installed; webhook mode unavailable` | aiohttpをインストール: `pip install aiohttp` |
+| `lark-oapi not installed` | SDKをインストール: `python -c "import pm; pm.sync_venv(['feishu'], explicit=True)"` |
+| `websockets not installed; websocket mode unavailable` | websocketsをインストール: `hermes pm repair` |
+| `aiohttp not installed; webhook mode unavailable` | aiohttpをインストール: `python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"` |
 | `FEISHU_APP_ID or FEISHU_APP_SECRET not set` | 両方の環境変数を設定するか、`hermes gateway setup`経由で設定する |
 | `Another local Hermes gateway is already using this Feishu app_id` | 同じapp_idを一度に使えるHermesインスタンスは1つだけです。先に他のゲートウェイを停止してください。 |
 | ボットがグループで応答しない | ボットが@メンションされていることを確認し、`FEISHU_GROUP_POLICY`をチェックし、ポリシーが`allowlist`の場合は送信者が`FEISHU_ALLOWED_USERS`にいることを確認する |
@@ -525,8 +600,9 @@ WebSocketおよびグループごとのACL設定は、`config.yaml`の`platforms
 | ボットのアイデンティティが自動検出されない | 通常、Feishuのボット情報エンドポイントへの到達における一時的なネットワークの問題です。回避策として`FEISHU_BOT_OPEN_ID`と`FEISHU_BOT_NAME`を手動で設定してください。 |
 | `FEISHU_ALLOW_BOTS`を有効にした後もピアボットのメッセージが無視される | Hermesがまだ自身を識別できていません — `FEISHU_BOT_OPEN_ID`（アプリが`sender_id_type=user_id`を使う場合は`FEISHU_BOT_USER_ID`も）を設定してください。 |
 | ピアボットが名前ではなく`ou_xxxxxx`として表示される | `application:bot.basic_info:read`スコープを付与してください。 |
-| 承認ボタンをクリックするとエラー200340 | Feishu開発者コンソールで**Interactive Card**機能を有効化し、**Card Request URL**を設定してください。上記の[必要なFeishuアプリの設定](#required-feishu-app-configuration)を参照してください。 |
-| `Webhook rate limit exceeded` | 同じIPから1分あたり120リクエストを超えました。これは通常、誤設定またはループです。 |
+| 承認ボタンをクリックするとエラー200340（220340として表示されることもある） | 公開されたアプリバージョンに有効なカードコールバックがありません: **Callback Configuration** タブ（Event Configurationではありません）で`card.action.trigger`を追加し、Long Connection / リクエストURLを選択し、**Interactive Card**を有効にしてから、新しいバージョンを公開してください。[必要なFeishuアプリの設定](#required-feishu-app-configuration)を参照してください。クリックはHermesに到達しないため、`gateway.log`には何も表示されません。 |
+| 承認ボタンをクリックするとエラー200342 / 200343 | webhookモード: FeishuがコールバックのリクエストURLに接続できない / 名前解決できません。URLを修正するか、Long Connectionに切り替えてください。 |
+| `Webhook rate limit exceeded` | 同じIPから1分あたり120件の認証済みリクエストを超えました。これは通常、誤設定またはループです。 |
 
 ## ツールセット
 

@@ -1825,9 +1825,9 @@ def _command_detection_variants(command: str):
     faithful = _normalize_command_for_detection(_mark_command_starts(_mask_quoted_newlines(command), marker=" \n"))
     if fresh(faithful):
         yield faithful
-    # An escaped separator is literal text inside its word (`git push -o ci\;skip -f`), but
-    # normalization strips the backslash and leaves a real `;` that ends a segment-bounded match.
-    joined = re.sub(r'\\(.)', lambda m: '_' if m.group(1) in ';&|' else m.group(0), command)
+    # An escaped separator is literal text in its word (`git push -o ci\;skip -f`; normalization would leave a real
+    # `;`), and `>|` (noclobber-overriding redirect) is a `>` write the `>\s*<target>` rules otherwise never see.
+    joined = re.sub(r'\\(.)', lambda m: '_' if m.group(1) in ';&|' else m.group(0), command).replace('>|', '>')
     if joined != command and fresh(variant := _normalize_command_for_detection(_mask_quoted_newlines(joined))):
         yield variant
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped

@@ -34,38 +34,18 @@ from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_R
 from tools.approval_quoted_newlines import _mask_quoted_newlines
 from tools.approval_variation_selectors import _EMOJI_RANGE, _HIDDEN_VARIATION_SELECTOR_RE
 from tools.approval_wmic import WmicShadowDeleteMatcher
-from agent.file_safety import (
-    SHELL_RC_RELATIVE_PATHS,
-    SHELL_RC_ZSH_FILENAMES,
-    _guard_homes,
-    build_shell_rc_approval_paths,
+from tools.approval_shell_rc import (
+    _HERMES_CONFIG_PATH, _HERMES_ENV_PATH,
+    _CREDENTIAL_FILES, _SECRET_CREDENTIAL_FILES, _SHELL_RC_FILES, _SSH_SENSITIVE_PATH,
+    _WRITE_TARGET_BOUNDARY, _rewrite_resolved_shell_rc_paths,
 )
 
 
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
 # home is folded into these forms at detection time by _normalize_command_for_detection(), so no
 # import-time path snapshot (stale once HERMES_HOME is set after import) lives in the patterns.
-_SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
-# Shell word boundary used by exact-file targets. `#` is deliberately not
-# included: a glued `#` is part of the filename, while a comment has leading
-# whitespace and is already covered by `\s`.
-_WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
-# A Hermes home: the default root or a named profile under it (profiles/<name>/ has its own config.yaml/.env).
-_HERMES_HOME_DIR = (
-    r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)'
-    r'(?:profiles/[^/\s"\'`]+/)?'
-)
-_HERMES_ENV_PATH = (
-    _HERMES_HOME_DIR + r'(?:\.op)?\.env\b'
-)
-# ~/.hermes/config.yaml IS the security policy (approvals.mode, yolo, allowlist) and the config cache is mtime-keyed,
-# so a write takes effect mid-session. Terminal-side coverage (sed -i, tee, >, cp) pairs the file_tools deny.
-_HERMES_CONFIG_PATH = (
-    _HERMES_HOME_DIR + r'config\.yaml\b'
-)
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)?)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
-_SECRET_CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
 _HOME_PREFIX = r'(?:~|\$home|\$\{home\})/'
 _SECRET_FILE = (
     rf'(?:{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_SECRET_CREDENTIAL_FILES}|{_PROJECT_ENV_PATH}(?![\w-])'
@@ -83,25 +63,6 @@ _CREDENTIAL_UPLOAD_DESCRIPTION = "upload a secret or credential file via curl/wg
 # flag, so a long run that never reaches the subcommand fails in linear time instead of holding the
 # GIL for minutes (#129281). Whole groups still backtrack to expose the target flag or verb.
 _GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
-_SHELL_RC_RELATIVE_PATTERN = "|".join(
-    re.escape(path) for path in SHELL_RC_RELATIVE_PATHS
-)
-_SHELL_RC_ZSH_PATTERN = "|".join(
-    re.escape(filename) for filename in SHELL_RC_ZSH_FILENAMES
-)
-_SHELL_RC_FILES = (
-    rf'(?:'
-    rf'(?:~|\$home|\$\{{home\}})/(?:{_SHELL_RC_RELATIVE_PATTERN})'
-    rf'|(?:\$zdotdir|\$\{{zdotdir\}})/(?:{_SHELL_RC_ZSH_PATTERN})'
-    rf'|(?:\$xdg_config_home|\$\{{xdg_config_home\}})/fish/config\.fish'
-    rf'|(?:\$bash_env|\$\{{bash_env\}})'
-    rf'|(?:\$env|\$\{{env\}})'
-    rf'){_WRITE_TARGET_BOUNDARY}'
-)
-_CREDENTIAL_FILES = (
-    r'(?:~|\$home|\$\{home\})/\.'
-    rf'(?:netrc|pgpass|npmrc|pypirc){_WRITE_TARGET_BOUNDARY}'
-)
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
@@ -957,34 +918,6 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
     return _PATTERN_KEY_ALIASES.get(pattern_key, {pattern_key})
 
 
-def _rewrite_resolved_shell_rc_paths(command: str) -> str:
-    """Fold relocated shell startup paths into the shared canonical forms."""
-    try:
-        paths: dict[str, str] = {}
-        for home in _guard_homes():
-            for path in build_shell_rc_approval_paths(home):
-                relative = os.path.relpath(path, home)
-                path_name = os.path.basename(path)
-                if relative in SHELL_RC_RELATIVE_PATHS:
-                    canonical = f"~/{relative}"
-                elif path_name in SHELL_RC_ZSH_FILENAMES:
-                    canonical = f"~/{path_name}"
-                elif path.endswith(os.path.join("fish", "config.fish")):
-                    canonical = "~/.config/fish/config.fish"
-                else:
-                    # Arbitrary BASH_ENV / ENV filenames use the same rc gate.
-                    canonical = "~/.bashrc"
-                paths.setdefault(path, canonical)
-    except Exception:
-        logger.debug("Could not resolve relocated shell startup paths", exc_info=True)
-        return command
-
-    for path in sorted(paths, key=lambda value: len(value), reverse=True):
-        candidates: set[str] = {path, path.replace(os.sep, "/")}
-        for candidate in candidates:
-            command = re.sub(re.escape(candidate) + _WRITE_TARGET_BOUNDARY,
-                             lambda match: paths[path], command)
-    return command
 
 
 # ---- Detection ----------------------------------------------------------------------------

@@ -17,7 +17,9 @@ from tools import approval_parser_budget as _parser_budget
 from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_end, _scan_shell
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
+from tools.approval_shell_spans import _backtick_end_from
 from tools.approval_env_split import _split_env_string
+from tools.shell_heredoc import strip_inert_heredoc_bodies
 
 logger = logging.getLogger("tools.approval")
 
@@ -513,6 +515,12 @@ def hardline_scan_incomplete(command: str) -> bool:
 def _detect_hardline_command(command: str) -> tuple:
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
+    # A heredoc body that only feeds a data consumer is data: `cat > notes.md <<'EOF'` with a
+    # `reboot the board after the flash` line writes a note, it does not reboot, and the hardline
+    # tier has no approval that could let it through (#149601). `require_quoted_delimiter=False`
+    # because the floor asks what RUNS: plain expansion in an unquoted body executes nothing.
+    # Shell/interpreter carriers, `$(...)`/backtick or list-operator bodies and everything after the terminator keep their text; `bash <<'EOF'` still hits.
+    command = strip_inert_heredoc_bodies(command, require_quoted_delimiter=False)
     # The malformed-quoting verdict needs the author's quote state. Normalization strips escapes
     # (`\"` -> `"`), so a shell-valid pattern like `grep -o "[^\"]*"` lexed as unterminated and was
     # reported as a hardline block (118 of 125 hardline blocks in one week of real use, every one a
@@ -1141,14 +1149,6 @@ def _command_parser_limit_exceeded(command: str) -> bool:
             > _MAX_SUBSTITUTION_DEPTH:
         return True
     return sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS
-
-
-def _backtick_end_from(segment: str, i: int) -> int | None:
-    """Index of the backtick closing the one opened at ``i``, or None when none follows."""
-    j = segment.find("`", i + 1)
-    while j != -1 and segment[j - 1] == "\\":
-        j = segment.find("`", j + 1)
-    return None if j == -1 else j
 
 
 def _shell_tokens_with_spans(segment: str, start: int):

@@ -253,7 +253,7 @@ def _carried_payloads(command: str):
                 yield payload
 
 
-def carried_command_variants(command: str):
+def carried_command_variants(command: str, capped: list[str] | None = None):
     """Detection variants for literal carried command strings, recursing a bounded depth; each is
     wrapper-peeled and command-start marked like the top-level command."""
     from tools.approval_detection import _command_detection_variants
@@ -266,12 +266,12 @@ def carried_command_variants(command: str):
                 if payload in seen:
                     continue
                 seen.add(payload)
-                yield from _command_detection_variants(payload)
+                yield from _command_detection_variants(payload, capped=capped)
                 # A literal heredoc body inside the payload is text here too, as at the top level.
                 payload = _blank_literal_heredoc_bodies(payload)
                 nested.append(payload)
                 peeled = strip_wrapper_prefixes(payload)
-                yield from _command_detection_variants(peeled)
+                yield from _command_detection_variants(peeled, capped=capped)
                 # The peeled form can expose a carrier the raw walk stops before (`xargs su -c ...`).
                 if peeled not in seen:
                     seen.add(peeled)
@@ -295,8 +295,8 @@ def hardline_detection_variants(command: str, capped: list[str] | None = None):
     # The peeled command gets the full variant set, not just normalization: a quoted verb behind a
     # wrapper (`nice "reboot"`) needs the same dequoting the bare `"reboot"` gets.
     # Its carried payloads too: `xargs sh -c 'nice reboot'` only exposes `sh -c` once peeled.
-    peeled = itertools.chain(_command_detection_variants(stripped, capped=capped), carried_command_variants(stripped)) if stripped != masked else ()
-    carried = carried_command_variants(_blank_literal_heredoc_bodies(command))
+    peeled = itertools.chain(_command_detection_variants(stripped, capped=capped), carried_command_variants(stripped, capped)) if stripped != masked else ()
+    carried = carried_command_variants(_blank_literal_heredoc_bodies(command), capped)
     for variant in itertools.chain(_command_detection_variants(command, capped=capped), peeled, carried):
         for candidate in (variant, dequote_rm_operands(variant) if "rm" in variant.lower() else variant):
             if candidate not in seen:

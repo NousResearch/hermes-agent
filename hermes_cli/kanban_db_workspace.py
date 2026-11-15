@@ -8,7 +8,6 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import os
-import shutil
 import sqlite3
 import subprocess
 import time
@@ -19,6 +18,7 @@ from typing import TYPE_CHECKING
 import contextlib
 
 from hermes_cli.worktree_ops import release_lsp_clients
+from utils import rmtree_readonly
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -404,7 +404,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             if _is_managed_scratch_path(wp):
                 if not _defer_shared_workspace_cleanup(conn, task_id, path):
                     release_lsp_clients(str(wp))
-                    shutil.rmtree(wp, ignore_errors=True)
+                    rmtree_readonly(wp, ignore_errors=True)
                     _kb._log.debug("Removed scratch workspace: %s", wp)
             else:
                 _kb._log.warning(
@@ -531,7 +531,7 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 if _defer_shared_workspace_cleanup(conn, parent_id, ws_path):
                     continue
                 release_lsp_clients(str(wp))
-                shutil.rmtree(wp, ignore_errors=True)
+                rmtree_readonly(wp, ignore_errors=True)
                 _kb._log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
     except Exception:
         pass  # best-effort

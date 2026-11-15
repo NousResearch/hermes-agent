@@ -365,7 +365,7 @@ def _maybe_apply_moa_cache_control(
         # None → "5m"; cache-disabled routes already returned above. Envelope routes
         # reject part-level markers in tool_result.content[].
         return apply_anthropic_cache_control(
-            messages, cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model),
+            messages, cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model, base_url=base_url),
             native_anthropic=native_layout,
             tool_part_markers=envelope_tool_part_cache_markers_supported(provider, base_url),
         )

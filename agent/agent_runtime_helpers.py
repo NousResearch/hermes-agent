@@ -1656,7 +1656,7 @@ def plan_cache_sections_for_destination(
     plan = build_prompt_cache_plan(
         messages, tools,
         # effective_cache_ttl resolves None → "5m"; cache-disabled agents never reach here.
-        cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model),
+        cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model, base_url=base_url),
         native_anthropic=native_layout,
         static_system_prefix=static_system_prefix if isinstance(static_system_prefix, str) else None,
         direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(stub, **dest),

@@ -950,7 +950,7 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
         raw = payload.get('source')
         source = raw if isinstance(raw, str) else None
         payload = {k: v for k, v in payload.items() if k != 'source'}
-    allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute', 'task'})
+    allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute', 'task', 'prompt_cache_clock'})
     if set(payload) - allowed:
         raise RuntimeStoreError('invalid_params')
     for key, value in payload.items():

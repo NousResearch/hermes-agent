@@ -435,6 +435,14 @@ gateway:
       provider_usage_plus_estimate: "プロバイダーの使用量 + 新規メッセージの推定"
     source_line: "ソース: {source}。カテゴリ別の値はローカル推定です。"
     hint_all: "スキル別・ツールセット別のコストを見るには /context all を使ってください。"
+    cache_warm: "プロンプトキャッシュ: {until} まで有効 (残り {remaining}、{ttl}、{confidence})。"
+    cache_expired: "プロンプトキャッシュ: {ago} 前に失効 ({ttl}、{confidence})。次のメッセージでプロンプト全体が再処理されます。"
+    cache_unknown_moved: "プロンプトキャッシュ: 不明 (最後のキャッシュ済みリクエスト以降にルート、セッション、またはコンテキストが変わりました)。"
+    cache_unknown_route: "プロンプトキャッシュ: 不明 (このプロバイダーはキャッシュ保持期間を公開していません)。"
+    cache_confidence:
+      proven: "実証済み"
+      declared: "申告"
+      assumed: "推定"
   status:
     header: "📊 **Hermes ゲートウェイ状態**"
     matrix_scope_header: "**Matrix スコープ:**"

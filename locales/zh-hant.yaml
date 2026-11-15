@@ -435,6 +435,14 @@ gateway:
       provider_usage_plus_estimate: "提供方用量 + 新訊息估算"
     source_line: "來源：{source}；各類別數量為本機估算值。"
     hint_all: "使用 /context all 查看各技能與各工具集的成本。"
+    cache_warm: "提示詞快取：有效至 {until}（剩餘 {remaining}；{ttl}，{confidence}）。"
+    cache_expired: "提示詞快取：已於 {ago} 前過期（{ttl}，{confidence}）；下一則訊息將重新處理完整提示詞。"
+    cache_unknown_moved: "提示詞快取：未知（自上次快取請求以來，路由、工作階段或上下文已變更）。"
+    cache_unknown_route: "提示詞快取：未知（此供應商未公布其快取保留時間）。"
+    cache_confidence:
+      proven: "已證實"
+      declared: "已宣告"
+      assumed: "推定"
   status:
     header: "📊 **Hermes 閘道狀態**"
     matrix_scope_header: "**Matrix 範圍：**"

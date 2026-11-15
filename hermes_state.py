@@ -1615,9 +1615,11 @@ class SessionDB(
         "api_call_count",
     )
     _TOKEN_DELTA_COST_FIELDS = ("estimated_cost_usd", "actual_cost_usd")
+    # ``prompt_cache_clock`` is keyed like a route field: deltas carrying different cache events
+    # apply in order (the last write wins in the column) rather than merging.
     _TOKEN_DELTA_ROUTE_FIELDS = (
         "model", "cost_status", "cost_source", "pricing_version", "billing_provider", "billing_base_url",
-        "billing_mode", "source", "task",
+        "billing_mode", "source", "task", "prompt_cache_clock",
     )
 
     MAX_TITLE_LENGTH = 100

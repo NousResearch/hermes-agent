@@ -435,6 +435,14 @@ gateway:
       provider_usage_plus_estimate: "verskaffer-gebruik + geskatte nuwe boodskappe"
     source_line: "Bron: {source}; kategorietellings is plaaslike skattings."
     hint_all: "Gebruik /context all vir koste per vaardigheid en per gereedskapstel."
+    cache_warm: "Prompt-kas: warm tot {until} ({remaining} oor; {ttl}, {confidence})."
+    cache_expired: "Prompt-kas: {ago} gelede verval ({ttl}, {confidence}); die volgende boodskap verwerk die volle prompt weer."
+    cache_unknown_moved: "Prompt-kas: onbekend (die roete, sessie of konteks het sedert die laaste gekaste versoek verander)."
+    cache_unknown_route: "Prompt-kas: onbekend (hierdie verskaffer publiseer nie sy kasretensie nie)."
+    cache_confidence:
+      proven: "bewys"
+      declared: "verklaar"
+      assumed: "aanvaar"
   status:
     header: "📊 **Hermes Gateway-status**"
     matrix_scope_header: "**Matrix-omvang:**"

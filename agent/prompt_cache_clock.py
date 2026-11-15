@@ -401,9 +401,17 @@ def _agent_invalid_reason(agent: Any, event: CacheEvent, generation: Optional[in
                            route=_display_route(agent))
 
 
-def _set_event(agent: Any, event: Optional[CacheEvent]) -> None:
+def context_witness(agent: Any) -> tuple[str, Optional[int], int, tuple[str, str, str]]:
+    """What identifies the prompt and route the session's next request uses: session id, durable
+    generation, this process's rewrite count and the display route. A request sent outside the loop
+    (a keep-alive) captures it when armed and folds its reply only while it still matches."""
+    return (str(getattr(agent, "session_id", "") or ""), _agent_generation(agent), _compression_count(agent),
+            _display_route(agent))
+
+
+def _set_event(agent: Any, event: Optional[CacheEvent], *, mark: Optional[int] = None) -> None:
     agent._prompt_cache_clock = event
-    agent._prompt_cache_compression_mark = _compression_count(agent)
+    agent._prompt_cache_compression_mark = _compression_count(agent) if mark is None else mark
 
 
 # ── Response side ───────────────────────────────────────────────────────────
@@ -431,11 +439,14 @@ def _moa_destination(agent: Any) -> tuple[Optional[dict], Optional[dict]]:
 
 
 def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, base_url: str,
-                          api_mode: str, attempt: Optional[dict[str, Any]] = None) -> Optional[CacheEvent]:
+                          api_mode: str, attempt: Optional[dict[str, Any]] = None,
+                          witness: Optional[tuple[str, Optional[int], int, tuple[str, str, str]]] = None,
+                          ) -> Optional[CacheEvent]:
     """Fold one response into the clock. ``model``/``provider``/``base_url``/``api_mode`` are the
     request's destination; a MoA client's resolved aggregator route and payload win over them.
-    ``attempt`` (:func:`attempt_facts`) is for a request sent outside the loop (a keep-alive),
-    which must not overwrite the loop's own stamped attempt.
+    ``attempt`` (:func:`attempt_facts`) and ``witness`` (:func:`context_witness` when it was armed)
+    are for a request sent outside the loop (a keep-alive): the event is stamped with the context
+    that request was built from, so a rewrite committed meanwhile leaves the window unknown.
     Returns the new event, or None when the response touched no cache (the previous window stands)."""
     read, write = int(getattr(usage, "cache_read_tokens", 0) or 0), int(getattr(usage, "cache_write_tokens", 0) or 0)
     if read + write <= 0:
@@ -444,7 +455,8 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
     if moa_route is not None:
         model, provider = moa_route.get("model") or model, moa_route.get("provider") or provider
         base_url, api_mode = moa_route.get("base_url") or "", moa_route.get("api_mode") or ""
-    generation = _agent_generation(agent)
+    session_id, generation, mark, route = witness or (
+        str(getattr(agent, "session_id", "") or ""), _agent_generation(agent), None, _display_route(agent))
     previous = _valid_previous(agent, generation)
     attempt = moa_attempt or attempt or getattr(agent, "_prompt_cache_attempt", None) or {}
     ctx = _Ctx(
@@ -464,15 +476,14 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
     guaranteed, estimated = _ends(coverage, verdict, at)
     confidence, reason = _confidence(verdict, previous, carried, write)
     event = CacheEvent(
-        route=_display_route(agent), destination=destination, route_class=ctx.route_class,
+        route=route, destination=destination, route_class=ctx.route_class,
         requested_ttl=ctx.requested_ttl, sent_at=at, read_tokens=read, write_tokens=write,
         tier=min(coverage, key=coverage.__getitem__) if coverage else verdict.tier,
         confidence=confidence if estimated is not None else UNKNOWN, reason=reason, coverage=coverage,
-        guaranteed_until=guaranteed, estimated_until=estimated, session_id=str(getattr(agent, "session_id", "") or ""),
-        generation=generation,
+        guaranteed_until=guaranteed, estimated_until=estimated, session_id=session_id, generation=generation,
     )
     agent._prompt_cache_clock_restored = True  # a live event supersedes a store that could not be read
-    _set_event(agent, event)
+    _set_event(agent, event, mark=mark)
     return event
 
 

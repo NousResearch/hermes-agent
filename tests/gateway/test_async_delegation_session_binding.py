@@ -102,7 +102,8 @@ class TestGatewayPinningFailsClosed:
         current = self._entry("sess_current")
         pinned = self._entry("sess_live")
         runner = self._make_runner(
-            {"sess_live": {"id": "sess_live", "ended_at": None}},
+            {"sess_live": {"id": "sess_live", "ended_at": None},
+             "sess_current": {"id": "sess_current", "source": "telegram", "ended_at": None}},
             switched_entry=pinned,
         )
 
@@ -526,3 +527,34 @@ async def test_delegate_completion_preserves_real_route_ownership(
                 after = db.get_session(sid)
                 for field in ("ended_at", "end_reason", "source", "session_key", "model_config"):
                     assert after[field] == row[field], (case, sid, field)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pin", ["former-worker", "descendant", "execution-parent", "sibling"])
+async def test_former_worker_human_route_rejects_foreign_completions(tmp_path, request, private_db_probe_cleanup, pin):
+    """Resuming a worker makes it a human conversation, not a route for its old family."""
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner, _profile_runtime_scope
+    from gateway.session import SessionSource
+
+    with _profile_runtime_scope(tmp_path):
+        runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+        store = runner.session_store
+        request.addfinalizer(runner.close_all_session_db_handles)
+        request.addfinalizer(store.close_all_db_handles)
+        entry = store.get_or_create_session(SessionSource(platform=Platform.TELEGRAM, chat_id="human", chat_type="dm"))
+        db = store._db
+        db.create_session("execution-parent", source="telegram")
+        for sid, parent in (("former-worker", "execution-parent"), ("sibling", "execution-parent"),
+                            ("descendant", "former-worker")):
+            db.create_session(sid, source="subagent", model_config={"_delegate_from": parent})
+        entry = store.switch_session(entry.session_key, "former-worker")
+        assert entry is not None
+        before = {sid: db.get_session(sid) for sid in ("former-worker", "execution-parent", "sibling", "descendant")}
+        allowed = pin in {"former-worker", "descendant"}
+        verdict, _, _ = await runner._classify_completion_owner(pin, entry.session_key)
+        assert verdict == ("deliver" if allowed else "terminal")
+        resolved = await runner._resolve_async_delegation_session(entry, pin)
+        assert (resolved.session_id if resolved else None) == ("former-worker" if allowed else None)
+        assert store.lookup_by_session_key(entry.session_key).session_id == "former-worker"
+        assert {sid: db.get_session(sid) for sid in before} == before

@@ -128,12 +128,10 @@ class TestHandleResumeCommand:
     @pytest.mark.asyncio
     async def test_resume_other_session_notices_paused_messages_left_behind(self, tmp_path, monkeypatch):
         """A /resume route switch must tell the chat about queued messages left behind (#145177)."""
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("saved_session", "telegram", user_id="12345", chat_id="67890")
-        db.set_session_title("saved_session", "Earlier Work")
-        db.create_session("paused_session", "telegram", user_id="12345", chat_id="67890")
+        db = _storage_handle(tmp_path)
+        seed_session(db, "saved_session", "telegram", user_id="12345", chat_id="67890")
+        db.sessions.set_title("saved_session", "Earlier Work")
+        seed_session(db, "paused_session", "telegram", user_id="12345", chat_id="67890")
 
         async def count_paused(_runner, session_id):
             assert session_id == "paused_session"  # must inspect the departed route, not the target

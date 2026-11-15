@@ -131,7 +131,7 @@ def referenced_archive_refs(home) -> set | None:
     """``cache/<dir>/<name>`` archive references held by any message in *home*'s ``state.db``.
 
     ``set()`` when no database exists (no sessions → nothing references anything), ``None``
-    when the reference set is UNKNOWN (unreadable / truncated query) so callers fail closed
+    when the reference set is UNKNOWN (unreadable database/query) so callers fail closed
     and keep the files; a plain read-only connection is enough, the write path owns the locks."""
     db_path = home / "state.db"
     if not db_path.exists():
@@ -142,18 +142,15 @@ def referenced_archive_refs(home) -> set | None:
 
         conn = connect_tracked(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0, tracking_path=db_path)
         try:
-            rows = conn.execute(
-                f"SELECT content, api_content FROM messages WHERE {SPILLOVER_SQL_FILTER} LIMIT 20001"
-            ).fetchall()
+            refs: set = set()
+            for content, api_content in conn.execute(
+                f"SELECT content, api_content FROM messages WHERE {SPILLOVER_SQL_FILTER}"
+            ):
+                refs.update(archive_refs_in_text(content, api_content))
         finally:
             conn.close()
     except (sqlite3.Error, OSError):
         return None
-    if len(rows) > 20000:  # truncated reference set: treat as unknown, never guess
-        return None
-    refs: set = set()
-    for content, api_content in rows:
-        refs |= archive_refs_in_text(content, api_content)
     return refs
 
 

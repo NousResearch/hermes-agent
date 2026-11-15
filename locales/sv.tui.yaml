@@ -841,3 +841,42 @@ slashCmd.core.save.saved: "konversationen sparades i: {0}"
 slashCmd.core.save.savedOnHost: "konversationen sparades som rå JSON på värddatorn för gatewayen: {0}"
 slashCmd.core.save.legacyRefused: "sparades inte: den här gatewayen tillhandahåller inte /save-export (en äldre gateway eller en sidoprocess utan sessionsbehörighet), så den kan inte skriva en rensad, namngiven eller md/html-kopia. Anslut till gatewayen som äger sessionen, uppdatera den eller kör vanlig /save för att skriva rå JSON på värddatorn för gatewayen."
 slashCmd.core.save.failed: "det gick inte att spara"
+
+slashCmd.core.history.noConversation: "ingen konversation ännu"
+slashCmd.core.history.youTag: "Du #{0}"
+slashCmd.core.history.hermesTag: "Hermes #{0}"
+slashCmd.core.history.toolCallsOne: "({0} verktygsanrop)"
+slashCmd.core.history.toolCallsOther: "({0} verktygsanrop)"
+slashCmd.core.history.empty: "(tom)"
+slashCmd.core.history.pageTitle: "Historik"
+
+slashCmd.core.focus.statusOn: "fokusvyn är på — bara din prompt och det slutliga svaret"
+slashCmd.core.focus.statusOff: "fokusvyn är av"
+slashCmd.core.focus.usage: "användning: /focus [on|off|status]"
+slashCmd.core.focus.enabled: "fokusvyn är på — bara din prompt och det slutliga svaret"
+slashCmd.core.focus.disabled: "fokusvyn är av"
+
+slashCmd.core.statusbar.usage: "användning: /statusbar [on|off|top|bottom|toggle]"
+slashCmd.core.statusbar.state: "statusraden {0}"
+
+slashCmd.core.status.noActiveSession: "ingen aktiv session"
+slashCmd.core.status.empty: "(ingen status)"
+slashCmd.core.status.pageTitle: "Status"
+
+slashCmd.core.title.noActiveSession: "ingen aktiv session"
+slashCmd.core.title.current: "rubrik: {0}"
+slashCmd.core.title.none: "ingen rubrik är angiven"
+slashCmd.core.title.usage: "användning: /title <din sessionsrubrik>"
+slashCmd.core.title.queuedSuffix: " (köad medan sessionen startas)"
+slashCmd.core.title.set: "sessionsrubrik angiven: {0}{1}"
+
+slashCmd.core.redraw.done: "gränssnittet ritades om"
+
+slashCmd.core.density.usage: "användning: /density [on|off|toggle]"
+slashCmd.core.density.state: "kompakthet {0}"
+
+slashCmd.core.details.usage: "användning: /details [hidden|collapsed|expanded|cycle] eller /details <sektion> [hidden|collapsed|expanded|reset]"
+slashCmd.core.details.sectionUsage: "användning: /details <sektion> [hidden|collapsed|expanded|reset]"
+slashCmd.core.details.current: "detaljnivå: {0}{1}"
+slashCmd.core.details.section: "detaljnivå {0}: {1}"
+slashCmd.core.details.reset: "återställ"

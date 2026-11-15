@@ -105,6 +105,17 @@ def _fold_moa_usage(agent, canonical_usage):
     return _moa_client, canonical_usage, _moa_ref_cost
 
 
+def _with_declared_write_tier(usage: Any, event: Any) -> Any:
+    """A route that honours the tier it was sent but reports no split (OpenRouter Claude) bills its
+    writes at the requested tier: name it so pricing charges a 1h write at the 1h rate."""
+    if usage.cache_write_by_ttl or not usage.cache_write_tokens or event is None:
+        return usage
+    if event.requested_ttl != "1h" or event.tier != "1h" or event.confidence != "declared":
+        return usage
+    from dataclasses import replace
+    return replace(usage, cache_write_by_ttl=(("1h", usage.cache_write_tokens),))
+
+
 def record_response_usage(
     agent: Any, response: Any, *, messages: list[dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
@@ -269,7 +280,7 @@ def record_response_usage(
         agent, aggregator_usage, model=agent.model, provider=agent.provider, base_url=agent.base_url,
         api_mode=agent.api_mode)
     cost_result = estimate_usage_cost(
-        _agg_cost_model, aggregator_usage, provider=_agg_cost_provider,
+        _agg_cost_model, _with_declared_write_tier(aggregator_usage, _cache_event), provider=_agg_cost_provider,
         base_url=_agg_cost_base_url, api_key=getattr(agent, "api_key", ""),
     )
     # Cost delta = aggregator + MoA advisor cost (already priced per-advisor at each

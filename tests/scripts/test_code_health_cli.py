@@ -1,8 +1,8 @@
 """scripts/check runner, git hooks, CLI output modes and regex-rule scope, on real git repos.
 
 Fixture repos carry a copy of this checkout's engine (scripts/check, scripts/code_health, the
-guard scripts, pyproject's ruff pin) so the runner and the hooks execute exactly as they would
-in a clone, against tiny trees that keep every check fast.
+guard scripts, pyproject's ruff pin, ruff.toml) so the runner and the hooks execute exactly as
+they would in a clone, against tiny trees that keep every check fast.
 """
 
 from __future__ import annotations
@@ -88,6 +88,7 @@ def _init(path: Path) -> Path:
     _git(path, "config", "user.name", "t")
     (path / ".gitignore").write_text(".venv\n", encoding="utf-8")
     shutil.copy(REPO / "pyproject.toml", path / "pyproject.toml")
+    shutil.copy(REPO / "ruff.toml", path / "ruff.toml")
     return path
 
 
@@ -119,7 +120,7 @@ def _engine_repo(tmp_path: Path) -> Path:
     repo = _init(tmp_path / "repo")
     _write(repo, {"pkg/a.py": "def a():\n    return 1\n"})
     staged = _add_engine(repo)
-    _git(repo, "add", "--all", "--", ".gitignore", "pyproject.toml", "pkg", *staged)
+    _git(repo, "add", "--all", "--", ".gitignore", "pyproject.toml", "ruff.toml", "pkg", *staged)
     _git(repo, "commit", "-q", "-m", "base")
     return repo
 
@@ -139,7 +140,7 @@ def _ratchet_repo(tmp_path: Path, switch: str | None = None) -> tuple[Path, str]
     shutil.copy2(REPO / "scripts/ci/profile_scope_patterns.json", repo / "scripts/ci/")
     files: dict[str, str | None] = {"pkg/a.py": _LEGACY, **({_SWITCH: switch} if switch else {})}
     _write(repo, files)
-    _git(repo, "add", "--all", "--", ".gitignore", "pyproject.toml", "scripts", "pkg")
+    _git(repo, "add", "--all", "--", ".gitignore", "pyproject.toml", "ruff.toml", "scripts", "pkg")
     _git(repo, "commit", "-q", "-m", "base")
     return repo, _git(repo, "rev-parse", "HEAD")
 
@@ -224,7 +225,7 @@ def _pushable(tmp_path: Path) -> tuple[Path, Path]:
     repo = _init(tmp_path / "repo")
     _write(repo, {"pkg/a.py": "def a():\n    return 1\n"})
     staged = _add_engine(repo, checker=False)
-    _git(repo, "add", "--all", "--", ".gitignore", "pyproject.toml", "pkg", *staged)
+    _git(repo, "add", "--all", "--", ".gitignore", "pyproject.toml", "ruff.toml", "pkg", *staged)
     _git(repo, "commit", "-q", "-m", "main before scripts/check")
     (repo / ".venv").symlink_to(Path(sys.prefix), target_is_directory=True)
     remote = tmp_path / "remote.git"

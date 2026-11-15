@@ -732,6 +732,28 @@ def normalize_usage(
     )
 
 
+# Anthropic bills a 1-hour cache write at 2x base input; the table's cache_write rate is the 5-minute
+# tier (1.25x). Pricing every write at the 5m rate under-reports a 1h session's spend by ~37%.
+_ONE_HOUR_WRITE_MULTIPLIER = Decimal(2)
+_WRITE_NOTE = ("cache-write pricing unavailable for route",)
+
+
+def _cache_write_buckets(usage: CanonicalUsage, entry: PricingEntry) -> tuple[tuple[Any, ...], ...]:
+    """``(tokens, rate, rate_above, note)`` rows for the cache writes: the 1h-tier tokens the usage
+    names at 2x input, the rest at the table's (5-minute) write rate."""
+    one_hour = min(dict(usage.cache_write_by_ttl).get("1h", 0), usage.cache_write_tokens)
+    if not one_hour or entry.input_cost_per_million is None:
+        return ((usage.cache_write_tokens, entry.cache_write_cost_per_million,
+                 entry.cache_write_cost_per_million_above, _WRITE_NOTE),)
+    above = entry.input_cost_per_million_above
+    return (
+        (usage.cache_write_tokens - one_hour, entry.cache_write_cost_per_million,
+         entry.cache_write_cost_per_million_above, _WRITE_NOTE),
+        (one_hour, entry.input_cost_per_million * _ONE_HOUR_WRITE_MULTIPLIER,
+         above * _ONE_HOUR_WRITE_MULTIPLIER if above is not None else None, _WRITE_NOTE),
+    )
+
+
 def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
     return CostResult(amount_usd=None, status="unknown", source=source, label="n/a", notes=notes)
 
@@ -773,8 +795,7 @@ def estimate_usage_cost(
         (usage.output_tokens, entry.output_cost_per_million, entry.output_cost_per_million_above, ()),
         (usage.cache_read_tokens, entry.cache_read_cost_per_million, entry.cache_read_cost_per_million_above,
          ("cache-read pricing unavailable for route",)),
-        (usage.cache_write_tokens, entry.cache_write_cost_per_million, entry.cache_write_cost_per_million_above,
-         ("cache-write pricing unavailable for route",)),
+        *_cache_write_buckets(usage, entry),
     ):
         if above and rate_above is not None:
             rate = rate_above

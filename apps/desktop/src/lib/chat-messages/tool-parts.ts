@@ -1,6 +1,7 @@
 import type { ToolLabel } from '@hermes/shared'
 
 import { TOOL_LABELS_ARG } from '@/lib/connector-tools'
+import { hasLossyJsonNumber } from '@/lib/json-precision'
 import { firstStringField, normalize } from '@/lib/text'
 import { isTodoToolName, parseTodos } from '@/lib/todos'
 import { effectiveToolCall } from '@/lib/tool-media-renderers'
@@ -1026,7 +1027,10 @@ function parseStoredToolResult(content: unknown): unknown {
   }
 
   try {
-    return JSON.parse(textContent)
+    const parsed: unknown = JSON.parse(textContent)
+
+    // Keep the stored text when parsing would round a 64-bit id; readers re-parse it.
+    return hasLossyJsonNumber(textContent) ? textContent : parsed
   } catch {
     return textContent
   }

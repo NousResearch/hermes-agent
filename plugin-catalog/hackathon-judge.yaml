@@ -1,0 +1,15 @@
+name: "hackathon-judge"
+repo: "https://github.com/Brianmacu-BMS/hermes-hackathon-judge"
+sha: "8195f132d538b9cfd7bb1f270cdeb9eb72fd826e"
+description: "Source-linked Hermes hackathon and catalog preflight with explicit human review gates Disclosure — the optional `validate` action runs `hermes plugins validate` on the plugin directory the agent names, through Hermes's terminal tool, which imports and executes that candidate plugin's code; it is gated only by a `trusted_code` flag the agent sets, and no approval prompt appears for that command. The default audit is static and read-only, with no network calls."
+maintainer: "Brianmacu-BMS"
+tier: "community"
+category: "tools"
+requires_hermes: ">=0.22.5"
+version: "0.3.0"
+platforms: ["linux"]
+capabilities:
+  provides_tools: ["hackathon_judge"]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

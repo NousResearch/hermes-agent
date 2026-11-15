@@ -37,6 +37,7 @@ def _patch_daytona_imports(monkeypatch):
 
     daytona_mod = _types.ModuleType("daytona")
     daytona_mod.Daytona = MagicMock
+    daytona_mod.DaytonaConfig = lambda **kw: SimpleNamespace(**kw)
     daytona_mod.CreateSandboxFromImageParams = MagicMock
     daytona_mod.DaytonaError = type("DaytonaError", (Exception,), {})
     daytona_mod.Resources = MagicMock(name="Resources")
@@ -109,6 +110,52 @@ def make_env(daytona_sdk, monkeypatch):
         return env
 
     return _factory
+
+
+# ---------------------------------------------------------------------------
+# Credentials
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def served_profile(tmp_path, monkeypatch):
+    """A served profile home beside the launch home, whose os.environ holds the launch key."""
+    launch = tmp_path / "launch"
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("DAYTONA_API_KEY", "dtn-launch-key")
+    home = tmp_path / "profiles" / "served"
+    home.mkdir(parents=True)
+
+    def _with_env(dotenv: str):
+        (home / ".env").write_text(dotenv, encoding="utf-8")
+        return home
+
+    return _with_env
+
+
+class TestCredentials:
+    def test_served_profile_uses_its_own_key_not_the_launch_key(self, make_env, daytona_sdk, served_profile):
+        from agent.runtime_scope import bind_profile_scope
+
+        with bind_profile_scope(served_profile("DAYTONA_API_KEY=dtn-profile-key\n")):
+            make_env()
+        (config,), _ = daytona_sdk.Daytona.call_args
+        assert config.api_key == "dtn-profile-key"
+
+    @pytest.mark.parametrize("dotenv", ["OTHER=1\n", "DAYTONA_API_KEY=\n"], ids=["absent", "empty"])
+    def test_served_profile_without_a_key_never_borrows_the_launch_key(self, make_env, daytona_sdk,
+                                                                        served_profile, dotenv):
+        from agent.runtime_scope import bind_profile_scope
+
+        with bind_profile_scope(served_profile(dotenv)), pytest.raises(ValueError, match="DAYTONA_API_KEY"):
+            make_env()
+        assert not daytona_sdk.Daytona.called
+
+    def test_single_profile_keeps_the_process_key(self, make_env, daytona_sdk, monkeypatch):
+        monkeypatch.setenv("DAYTONA_API_KEY", "dtn-env-key")
+        make_env()
+        (config,), _ = daytona_sdk.Daytona.call_args
+        assert config.api_key == "dtn-env-key"
 
 
 # ---------------------------------------------------------------------------

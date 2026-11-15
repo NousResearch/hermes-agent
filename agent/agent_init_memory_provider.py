@@ -1,8 +1,14 @@
-"""Resolve the configured memory provider at agent init, telling the user once why it will not run."""
+"""Memory provider at agent init: resolve the configured one (telling the user once why it will not run)
+and build the kwargs ``MemoryProvider.initialize`` receives."""
 
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
+from typing import Any
+
+from agent.agent_init_params import _GATEWAY_IDENTITY_PARAMS
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger("run_agent")
 
@@ -80,3 +86,61 @@ def resolve_memory_provider(name: str, say=None):
             logger.debug("unavailable_reason() failed for %s", name, exc_info=True)
         _warn_memory_provider_unavailable(name, reason, say=say)
     return None
+
+
+def _stored_transcript_kwargs(agent) -> dict[str, Any]:
+    """``resumed`` / ``message_count`` for ``MemoryProvider.initialize``. ``message_count`` is how many
+    messages the session store holds for this session id when the agent is built; ``resumed`` is
+    whether one of them is an assistant reply, i.e. an earlier turn ran. TUI/Desktop store the prompt
+    being submitted before the build, so a brand-new chat can count 1 and still be not resumed."""
+    db, sid = agent._session_db, agent.session_id
+    count, resumed = 0, False
+    if db:
+        with suppress(Exception):
+            count = int((db.get_session_list_row(sid) or {}).get("message_count") or 0)
+            resumed = count > 0 and db.latest_message_row_id(sid, role="assistant", require_text=False) is not None
+    return {"resumed": resumed, "message_count": count}
+
+
+def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
+    """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
+    gateway status travels a different path and the indicator no-ops without it)."""
+    kwargs = {
+        "session_id": agent.session_id,
+        "platform": platform or "cli",
+        "hermes_home": str(get_hermes_home()),
+        # platform="cron" (scheduler) / "subagent" (delegate_task) → providers skip writes (MemoryProvider.initialize);
+        # a fork that loads a provider only for the checkpoint gate names its scope (memory_agent_context).
+        "agent_context": getattr(agent, "memory_agent_context", None)
+        or (platform if platform in ("cron", "subagent") else "primary"),
+    }
+    # Documented in MemoryProvider.initialize: forks tell their shape apart by platform + parent.
+    if getattr(agent, "_parent_session_id", None):
+        kwargs["parent_session_id"] = agent._parent_session_id
+    if kwargs["platform"] == "cli":
+        kwargs["warning_callback"] = agent._emit_warning
+        kwargs["status_callback"] = agent._emit_status
+    kwargs.update(_stored_transcript_kwargs(agent))
+    # Session title (e.g. honcho derives chat-scoped session keys from it).
+    if agent._session_db:
+        with suppress(Exception):
+            _st = agent._session_db.get_session_title(agent.session_id)
+            if _st:
+                kwargs["session_title"] = _st
+                _source = agent._session_db.get_session_title_source(agent.session_id)
+                if _source:
+                    kwargs["session_title_source"] = _source
+    # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
+    # Honcho session isolation).
+    for _ident in _GATEWAY_IDENTITY_PARAMS:
+        _val = getattr(agent, f"_{_ident}")
+        if _val:
+            kwargs[_ident] = _val
+    if agent.session_cwd:
+        kwargs["cwd"] = agent.session_cwd
+    # Profile identity for per-profile provider scoping
+    with suppress(Exception):
+        from hermes_cli.profiles import get_active_profile_name
+        kwargs["agent_identity"] = get_active_profile_name()
+        kwargs["agent_workspace"] = "hermes"
+    return kwargs

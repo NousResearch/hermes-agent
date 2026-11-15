@@ -58,6 +58,8 @@ from tools.code_execution_tool import (
     _TOOL_DOC_LINES,
     _execute_remote,
     _format_interrupted_output,
+    _sandbox_tools_for,
+    _sandbox_failure_hint,
 )
 from tools.registry import registry
 
@@ -733,21 +735,104 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
 
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
-    def test_nonoverlapping_tools_fallback(self):
-        """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
-        should fall back to all allowed tools."""
-        code = (
-            "from hermes_tools import terminal\n"
-            "print('fallback ok')\n"
-        )
+    def test_empty_enabled_tools_denies_all(self):
+        """``enabled_tools=[]`` is an explicit deny-all: no sandbox tool stubs
+        are generated, so ``from hermes_tools import terminal`` raises
+        ImportError. Previously ``[]`` was conflated with ``None`` and
+        broadened to every sandbox tool (#84271)."""
+        code = "from hermes_tools import terminal\nprint('should not reach')\n"
         with patch("model_tools.handle_function_call",
-                    return_value=json.dumps({"ok": True})):
+                   side_effect=_mock_handle_function_call):
+            result = json.loads(execute_code(
+                code, task_id="test-empty-deny-all",
+                enabled_tools=[],
+            ))
+        self.assertEqual(result["status"], "error", msg=result)
+        self.assertIn(
+            "ImportError",
+            result.get("error", "") + result.get("output", ""),
+        )
+
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_nonoverlapping_tools_deny_all(self):
+        """A non-empty ``enabled_tools`` with no sandbox overlap must not fall
+        back to every sandbox tool — the exact authenticated manifest is used,
+        and an empty intersection denies all (#84271)."""
+        code = "from hermes_tools import terminal\nprint('fallback')\n"
+        with patch("model_tools.handle_function_call",
+                   side_effect=_mock_handle_function_call):
             result = json.loads(execute_code(
                 code, task_id="test-nonoverlap",
                 enabled_tools=["vision_analyze", "browser_snapshot"],
             ))
-        self.assertEqual(result["status"], "success")
-        self.assertIn("fallback ok", result["output"])
+        self.assertEqual(result["status"], "error", msg=result)
+        self.assertIn(
+            "ImportError",
+            result.get("error", "") + result.get("output", ""),
+        )
+
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_none_enabled_tools_legacy_default(self):
+        """``enabled_tools=None`` keeps the documented legacy default (every
+        sandbox tool) — the mode is explicit (``is None``), not derived from
+        truthiness, so the empty-list deny-all does not shadow it (#84271)."""
+        code = (
+            "from hermes_tools import terminal\n"
+            "r = terminal('echo hi')\n"
+            "print(r.get('output', ''))\n"
+        )
+        with patch("model_tools.handle_function_call",
+                   side_effect=_mock_handle_function_call):
+            result = json.loads(execute_code(
+                code, task_id="test-none-default",
+                enabled_tools=None,
+            ))
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertIn("mock output for: echo hi", result["output"])
+
+
+class TestResolveSandboxTools(unittest.TestCase):
+    """Shared helper used by both the local UDS and remote file-RPC paths."""
+
+    def test_none_is_legacy_default(self):
+        self.assertEqual(_sandbox_tools_for(None), SANDBOX_ALLOWED_TOOLS)
+
+    def test_empty_list_is_deny_all(self):
+        self.assertEqual(_sandbox_tools_for([]), frozenset())
+
+    def test_nonoverlapping_is_deny_all(self):
+        self.assertEqual(
+            _sandbox_tools_for(["vision_analyze", "browser_snapshot"]),
+            frozenset(),
+        )
+
+    def test_intersection_keeps_only_sandbox_tools(self):
+        self.assertEqual(
+            _sandbox_tools_for(["terminal", "vision_analyze"]),
+            frozenset(["terminal"]),
+        )
+
+
+class TestSandboxFailureHints(unittest.TestCase):
+    _IMPORT_ERROR = "ImportError: cannot import name 'terminal' from 'hermes_tools'"
+
+    def test_empty_grant_does_not_advertise_sandbox_tools(self):
+        hint = _sandbox_failure_hint(self._IMPORT_ERROR, enabled_tools=[])
+
+        assert hint is not None
+        self.assertIn("Importable tools here: none.", hint)
+
+    def test_partial_grant_advertises_only_the_intersection(self):
+        hint = _sandbox_failure_hint(
+            self._IMPORT_ERROR,
+            enabled_tools=["terminal", "vision_analyze"],
+        )
+
+        assert hint is not None
+        self.assertIn("Importable tools here: terminal.", hint)
+        self.assertNotIn("write_file", hint)
 
 
 # ---------------------------------------------------------------------------
@@ -867,6 +952,66 @@ class TestHeadTailTruncation(unittest.TestCase):
             body = f.read()
         self.assertIn("HEAD", body)
         self.assertIn("TAIL", body)
+
+    def test_remote_stdout_spill_is_sanitized_and_private(self):
+        """The spilled full output must not keep on disk the secrets the inline
+        result masked; the warning directs the model to read that file."""
+        import stat as stat_mod
+        secret = "ghp_" + "0123456789abcdef"
+
+        class FakeEnv:
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, cwd=None, timeout=None):
+                if "command -v python3" in command:
+                    return {"output": "OK\n", "returncode": 0}
+                if "python3 script.py" in command:
+                    return {"output": ("HEAD\n" + secret + "\n\x1b[31m"
+                                       + ("x" * 80_000) + "\x1b[0m\nTAIL\n"),
+                            "returncode": 0}
+                return {"output": "", "returncode": 0}
+
+        fake_thread = MagicMock()
+
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env", return_value=(FakeEnv(), "ssh")), \
+             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
+            result = json.loads(_execute_remote("print('x')", "task-1", ["terminal"]))
+
+        self.assertEqual(result["status"], "success")
+        self.assertNotIn(secret, result["output"])  # inline copy is masked
+        spill = result["stdout_spill_path"]
+        with open(spill, encoding="utf-8") as f:
+            body = f.read()
+        from agent.redact import redact_sensitive_text
+        self.assertNotIn(secret, body)
+        # Masked remnant proves the pipeline ran; derive it so the mask format is not frozen.
+        self.assertIn(redact_sensitive_text(secret, code_file=True), body)
+        self.assertNotIn("\x1b[", body)       # ANSI-stripped like the inline copy
+        self.assertIn("TAIL", body)
+        if os.name == "posix":
+            self.assertEqual(stat_mod.S_IMODE(os.stat(spill).st_mode), 0o600)
+            self.assertEqual(stat_mod.S_IMODE(os.stat(os.path.dirname(spill)).st_mode), 0o700)
+
+    @pytest.mark.platforms("posix")
+    def test_spill_keeps_group_bits_of_existing_cache_dir(self):
+        """Tightening an existing cache/exec drops world bits only: a shared-group home
+        (HERMES_HOME_MODE=2770) keeps group access; the spill file itself is 0600."""
+        import stat as stat_mod
+        from hermes_constants import get_hermes_dir
+        from tools.code_execution_tool import _spill_full_stdout
+        cache_dir = get_hermes_dir("cache/exec", "exec_spill")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        # macOS gives a new dir its parent's group and drops setgid on chmod when the
+        # caller isn't in that group; own the group first, as a shared-group home does.
+        os.chown(cache_dir, -1, os.getegid())
+        os.chmod(cache_dir, 0o2777)
+        spill = _spill_full_stdout("group-shared spill\n")
+        self.assertTrue(spill)
+        self.assertEqual(os.stat(cache_dir).st_mode & 0o7777, 0o2770)
+        self.assertEqual(stat_mod.S_IMODE(os.stat(spill).st_mode), 0o600)
 
 
 class TestRpcTokenAuthorization(unittest.TestCase):

@@ -19,7 +19,7 @@ def launchers(tmp_path, monkeypatch):
     module = root / "tools" / "bot_relay.py"
     module.parent.mkdir(parents=True)
     module.touch()
-    monkeypatch.setattr(bot_relay, "__file__", str(module))
+    monkeypatch.setattr("hermes_cli._startup_fast.project_root_str", lambda: str(root))
     old_bin = tmp_path / "old generation" / "bin"
     old_bin.mkdir(parents=True)
     name = "hermes.exe" if sys.platform == "win32" else "hermes"
@@ -108,7 +108,7 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
         "def main():\n    print('old-generation')\n    return 0\n", encoding="utf-8")
     (old_package.parent / "hermes_bootstrap.py").write_text("", encoding="utf-8")
     assert _launchers.mint_launcher("hermes", old_package.parent, old_bin, real_python, None)
-    monkeypatch.setattr(bot_relay, "__file__", str(root / "tools" / "bot_relay.py"))
+    monkeypatch.setattr("hermes_cli._startup_fast.project_root_str", lambda: str(root))
     monkeypatch.setattr(sys, "executable", str(old_bin / "python.exe"))
     argv = _delivery_argv("researcher", str(tmp_path / "message&extra.txt"))
     for generation in ("first", "new-plugin"):

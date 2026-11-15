@@ -69,7 +69,13 @@ const ImageGenerateTool: FC<TimelineToolCallProps> = props => {
 const DelegateToolPart: FC<TimelineToolCallProps> = props => {
   // A call that failed outright dispatched nothing — there are no children to
   // list, only an error. The generic row extracts and expands it properly.
-  if (props.isError || settledWithoutResult(props)) {
+  //
+  // The gateway carries that failure inside `result` (a rejected batch answers
+  // `{"error": ...}`, never the top-level error that sets isError), so the body
+  // has to be read too. Without it a rejected batch still listed one row per
+  // goal it was handed — rows a sibling retry's live children then matched by
+  // goal text, so the same subagents painted twice.
+  if (toolCallFailed(props) || settledWithoutResult(props)) {
     return <ToolFallback {...props} />
   }
 

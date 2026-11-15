@@ -115,7 +115,7 @@ def _refusal(reason, *, admitted=None):
 
 def _group(authority, actor, method, params, *, host_scope=False):
     from gateway import hosted_rooms as rooms
-    from gateway.hosted_room_context import room_context, set_room_context
+    from gateway.hosted_room_context import groups_state_result, set_room_context
     if method == 'groups.disband':
         params = {**params, 'room_id': rooms._room_id(params.get('room_id'))}
     db_path = authority.db.db_path
@@ -237,13 +237,7 @@ def _group(authority, actor, method, params, *, host_scope=False):
         return _disband(getattr(authority, 'hosted_room_service', None), service, db_path, gateway_id, params)
 
     def state():
-        room = rooms.room_state(db_path, **params)
-        result = {'room': room}
-        if room.get('disbanded_at') is None:
-            result['context'] = room_context(db_path, room_id=room['room_id'])
-            if service is not None:
-                result['driver_status'] = service.status(room['room_id'])
-        return result
+        return groups_state_result(db_path, rooms.room_state(db_path, **params), service)
 
     handlers = {
         'groups.capabilities': capabilities,

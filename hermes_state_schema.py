@@ -22,13 +22,14 @@ from hermes_state_legacy_refusal import LEGACY_REFUSAL_REPAIR_DONE, advance_lega
 from hermes_startup_watchdog import report_startup_progress
 from utils import safe_json_loads
 from hermes_state_common import (
-    DEFERRED_INDEX_SQL, FTS_CJK_STALE_KEY, FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, FTS_SQL,
+    DEFERRED_INDEX_SQL, FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, FTS_SQL,
     FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
-    SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
+    SCHEMA_VERSION, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
+    fts_trigram_session_sql,
 )
 from hermes_state_fts import (_drop_orphan_fts_shadow_tables, base_index_recognised, base_source_view_is_stale,
-                              fts_layout_current)
+                              drop_retired_cjk_index, fts_layout_current)
 from hermes_state_holders import _read_proc_argv
 from hermes_state_search import _delete_meta, _meta_row
 from hermes_state_errors import is_sqlite_lock_error
@@ -224,9 +225,6 @@ class SessionSchemaMixin:
 
     def _drop_all_fts_triggers(self, cursor: sqlite3.Cursor) -> None:
         self._drop_fts_triggers(cursor)
-        for trigger in _FTS_CJK_TRIGGERS:
-            with contextlib.suppress(sqlite3.OperationalError):
-                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
 
     @staticmethod
     def _fts_triggers_missing(cursor: sqlite3.Cursor, names: Sequence[str]) -> bool:
@@ -249,12 +247,8 @@ class SessionSchemaMixin:
         """Replace broad AFTER UPDATE FTS triggers with AFTER UPDATE OF variants (``IF NOT EXISTS``
         never replaces an existing broad trigger). No FTS rebuild: correctness was already
         gated by WHEN clauses; OF only skips trigger evaluation. Returns the number dropped."""
-        # CJK is v23-only. Decide the layout before selecting destructive candidates so the
-        # legacy branch never drops a trigger it won't recreate.
         legacy_layout = self._db_has_legacy_inline_fts(cursor)
-        update_names = ("messages_fts_update", "messages_fts_trigram_update") + (
-            () if legacy_layout else ("messages_fts_cjk_update",)
-        )
+        update_names = ("messages_fts_update", "messages_fts_trigram_update")
         placeholders = ", ".join("?" for _ in update_names)
         sql = f"SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN ({placeholders})"
         rows = cursor.execute(sql, update_names).fetchall()
@@ -268,24 +262,6 @@ class SessionSchemaMixin:
         base_sql, trigram_sql = _FTS_DDL[legacy_layout]
         self._ensure_fts_schema(cursor, "messages_fts", base_sql)
         self._ensure_fts_schema(cursor, "messages_fts_trigram", trigram_sql)
-        # Only recreate the CJK trigger this migration dropped. ``_ensure_fts_cjk_schema`` soft-fails
-        # (never raises), so afterwards require a narrowed trigger or durable quarantine.
-        if "messages_fts_cjk_update" in to_drop:
-            try:
-                self._ensure_fts_cjk_schema(cursor)
-            except Exception:
-                self._quarantine_cjk_after_update_of_migration(cursor)
-                logger.exception("CJK FTS re-ensure after UPDATE OF migration failed")
-                raise
-            row = cursor.execute(
-                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?", ("messages_fts_cjk_update",),
-            ).fetchone()
-            if not row or self._fts_update_trigger_needs_narrowing(row[0]):
-                self._quarantine_cjk_after_update_of_migration(cursor)
-                logger.warning(
-                    "CJK FTS UPDATE trigger missing or still broad after "
-                    "UPDATE OF migration; marked stale and unavailable"
-                )
         logger.info("Migrated %d broad FTS UPDATE trigger(s) to AFTER UPDATE OF (no rebuild required)", len(to_drop))
         return len(to_drop)
 
@@ -436,20 +412,6 @@ class SessionSchemaMixin:
             lambda: cursor.execute("INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild')"),
         )
         return True
-
-    def _quarantine_cjk_after_update_of_migration(self, cursor: sqlite3.Cursor) -> None:
-        """Fail closed after dropping the CJK UPDATE trigger mid-migration: clear availability,
-        persist ``fts_cjk_stale``, drop any residual trigger so a later open cannot
-        IF-NOT-EXISTS over a gap."""
-        self._fts_cjk_available = False
-        try:
-            self.set_meta(FTS_CJK_STALE_KEY, "1", cursor=cursor)
-        except Exception:
-            logger.debug("Could not persist CJK FTS stale breadcrumb", exc_info=True)
-        try:
-            cursor.execute("DROP TRIGGER IF EXISTS messages_fts_cjk_update")
-        except Exception:
-            logger.debug("Could not drop residual CJK UPDATE trigger after quarantine", exc_info=True)
 
     @staticmethod
     def _rebuild_fts_indexes(cursor: sqlite3.Cursor, *, legacy: bool = False, include_trigram: bool = True) -> None:
@@ -642,9 +604,6 @@ class SessionSchemaMixin:
                 legacy = self._db_has_legacy_inline_fts(cursor)
                 recovered = self._recover_stale_fts(cursor, legacy=legacy, timeout_seconds=0.0)
                 if recovered:
-                    # CJK was detached alongside the base indexes; its own ensure path
-                    # decides when it comes back online.
-                    self._ensure_fts_cjk_schema(cursor)
                     self._fts_stale_retry_interval = 0.0
                 with contextlib.suppress(sqlite3.Error):
                     self._conn.commit()
@@ -880,6 +839,52 @@ class SessionSchemaMixin:
             "FROM gateway_routing_legacy_pk ORDER BY updated_at ASC",
         )
 
+    def _heal_reset_rows_carrying_a_delegate_marker(self, cursor: sqlite3.Cursor) -> None:
+        """Strip ``_delegate_from`` from a chat's /new continuation (``session_key`` set, ``_reset_from``
+        set) that picked it up: the marker hides the row from every session list while the gateway keeps
+        routing the chat into it (#109073). ``_reset_from`` already says what the row is, so the pair is
+        contradictory and the delegate marker is the stray. A keyed row WITHOUT ``_reset_from`` is a real
+        delegate child that captured a route (#138210) and keeps its marker: routing moves the chat off
+        it instead. Idempotent; probes first so a clean store takes no write lock on open."""
+        polluted = (
+            "session_key IS NOT NULL AND session_key != '' AND json_valid(model_config) "
+            f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NOT NULL "
+            f"AND {_sql_json_extract('model_config', '$._reset_from')} IS NOT NULL"
+        )
+        try:
+            ids = [row[0] for row in cursor.execute(f"SELECT id FROM sessions WHERE {polluted}").fetchall()]
+            if not ids:
+                return
+            healed = cursor.execute(
+                f"UPDATE sessions SET model_config = json_remove(model_config, '$._delegate_from') WHERE {polluted}"
+            ).rowcount
+        except sqlite3.OperationalError as exc:
+            logger.debug("reset-row delegate-marker heal skipped: %s", exc)
+            return
+        self._index_healed_rows_for_trigram(cursor, ids)
+        logger.warning("Healed %d chat session(s) hidden by a stray _delegate_from marker (#109073)", healed)
+
+    def _index_healed_rows_for_trigram(self, cursor: sqlite3.Cursor, session_ids: list[str]) -> None:
+        """The marker kept these sessions' messages out of the external-content trigram index (the triggers
+        skipped them on write), so a heal that admits them must index them too, or substring search misses
+        them and a later edit sends the index a delete for a row it never held. Same window rule as the
+        triggers: ids a pending deferred rebuild will still backfill are left to it. A legacy inline layout
+        indexed every row already; a missing table or tokenizer has nothing to keep consistent."""
+        if self._db_has_legacy_inline_fts(cursor) or not self._fts_table_probe(cursor, "messages_fts_trigram"):
+            return
+        marks = ", ".join("?" for _ in session_ids)
+        cursor.execute(
+            "INSERT INTO messages_fts_trigram(rowid, content, tool_name) "
+            "SELECT m.id, m.content, m.tool_name FROM messages m JOIN sessions s ON s.id = m.session_id "
+            f"WHERE m.session_id IN ({marks}) AND m.role <> 'tool' AND {fts_trigram_session_sql('s')} "
+            "AND (m.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta "
+            "WHERE key = 'fts_rebuild_high_water'), -1) "
+            "OR m.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta "
+            "WHERE key = 'fts_rebuild_progress'), -1)) "
+            "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)",
+            session_ids,
+        )
+
     def _heal_session_model_usage_pk(self, cursor: sqlite3.Cursor) -> None:
         """Rebuild ``session_model_usage`` when its PRIMARY KEY lacks ``task``: installs already at
         v22+ when ``task`` landed carry the 5-column PK, the reconciler ADDs ``task`` but
@@ -955,6 +960,14 @@ class SessionSchemaMixin:
         report_startup_progress(600.0, phase="state_db_init_schema")
         cursor = self._conn.cursor()
         cursor.executescript(SCHEMA_SQL)
+        # Before the table rebuilds below: renaming a table re-parses every trigger, and the retired
+        # index's triggers name a tokenizer this process cannot load.
+        if drop_retired_cjk_index(cursor):
+            logger.warning(
+                "Removed the retired messages_fts_cjk index; CJK search now uses the trigram index. "
+                "`hermes sessions optimize-storage` reclaims its disk space. "
+                "%s is no longer loaded and can be deleted.", get_hermes_home() / "lib" / "libfts5_cjk.so",
+            )
 
         # Column reconciliation, then the two table-shape repairs ADD COLUMN cannot express.
         self._reconcile_columns(cursor)
@@ -963,6 +976,7 @@ class SessionSchemaMixin:
         # already at v22+ when the column landed — the version-gated rebuild is unreachable there, #73823).
         # Same PK-rebuild constraint as gateway_routing above.
         self._heal_session_model_usage_pk(cursor)
+        self._heal_reset_rows_carrying_a_delegate_marker(cursor)
 
         # Indexes referencing reconciler-added columns must be created AFTER _reconcile_columns
         # (in SCHEMA_SQL the executescript would fail on legacy DBs).
@@ -1106,6 +1120,24 @@ class SessionSchemaMixin:
         if current_version < 25:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
+        if current_version < 33:
+            # v33: re-tag delegate subagent rows whose reservation-time row lost ``_delegate_from`` to the
+            # keep-existing upsert (an early first-turn model_config patch froze it). Untagged, the parent's
+            # resume tip walk followed the child as a continuation and opened the subagent transcript.
+            # source='subagent' alone: the reservation path always wrote it, and v16 already covered the rest.
+            # Skip compression continuations of subagent rows: a misrouted child resumed as the chat wrote
+            # its continuation as source='subagent' without the marker, and it must stay a continuation.
+            # json_valid: one malformed model_config would make json_set raise and drop the whole UPDATE.
+            with contextlib.suppress(sqlite3.OperationalError):
+                cursor.execute(
+                    "UPDATE sessions SET model_config = json_set("
+                    "COALESCE(model_config, '{}'), '$._delegate_from', parent_session_id) "
+                    "WHERE source = 'subagent' AND parent_session_id IS NOT NULL "
+                    "AND json_valid(COALESCE(model_config, '{}')) "
+                    f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM sessions p WHERE p.id = sessions.parent_session_id "
+                    "AND p.source = 'subagent' AND p.end_reason = 'compression')"
+                )
         self._advance_message_uid_backfill(cursor)
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:
@@ -1259,16 +1291,13 @@ class SessionSchemaMixin:
         # below would fail on the first shadow. Drop only orphaned families, then rebuild the
         # recreated (empty) index like a missing-trigger repair (#103840).
         orphan_repaired = _drop_orphan_fts_shadow_tables(
-            cursor, ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"),
+            cursor, ("messages_fts", "messages_fts_trigram"),
         )
         if not self._fts_stale:
             self._migrate_misaligned_fts_source(cursor, legacy=legacy_fts)
         if self._fts_stale:
-            if self._recover_stale_fts(cursor, legacy=legacy_fts):
-                # CJK was detached alongside the base indexes; its ensure path decides when it returns.
-                self._ensure_fts_cjk_schema(cursor)
-            else:
-                self._fts_enabled = self._trigram_available = self._fts_cjk_available = False
+            if not self._recover_stale_fts(cursor, legacy=legacy_fts):
+                self._fts_enabled = self._trigram_available = False
         else:
             base_sql, trigram_sql = _FTS_DDL[legacy_fts]
             # Measure before any DDL. Publishing missing base triggers before rebuild admission lets
@@ -1288,8 +1317,6 @@ class SessionSchemaMixin:
                 self._rebuild_fts_indexes(
                     cursor, legacy=legacy_fts, include_trigram=self._trigram_available,
                 )
-                if not legacy_fts:
-                    self._ensure_fts_cjk_schema(cursor)
 
             if base_triggers_missing:
                 # The authority covers the whole first-publication sequence, not merely the final rebuild.
@@ -1309,9 +1336,6 @@ class SessionSchemaMixin:
                                 cursor, legacy=legacy_fts, include_trigram=trigram_enabled,
                             ),
                         )
-            if self._fts_enabled and not legacy_fts and not base_triggers_missing:
-                # CJK-bigram index: strictly additive, gated on the loadable tokenizer.
-                self._ensure_fts_cjk_schema(cursor)
         # IF NOT EXISTS cannot rewrite pre-existing broad AFTER UPDATE triggers.
         if self._fts_enabled:
             self._migrate_broad_fts_update_triggers(cursor)
@@ -1338,7 +1362,7 @@ class SessionSchemaMixin:
         cursor.execute(_STALE_KEY_UPSERT_SQL, (FTS_STALE_KEY,))
         self._drop_all_fts_triggers(cursor)
         self._fts_stale = True
-        self._fts_enabled = self._trigram_available = self._fts_cjk_available = False
+        self._fts_enabled = self._trigram_available = False
 
     def _backfill_gateway_metadata_from_sessions_json(self, cursor: sqlite3.Cursor) -> None:
         """One-time v18 backfill of gateway metadata from sessions.json. Only fills NULL

@@ -1,0 +1,33 @@
+name: bundlebees
+title: bundlebees
+repo: https://github.com/mojomast/bundlebees
+sha: "f251c069d8360607dee10301b6cdad7fae90d24b"
+subdir: ""
+description: "bundlebees: dispatch sandboxed coding workers (bees) from Hermes, watch their attempts, and keep the apply, test and push step in your own hands. Four tools with 571 o200k tokens of schema between them. bundlebees_status reports launcher health, capacity, live attempts, events, containers and authorized projects. bundlebees_dispatch validates a file-leased brief and starts a worker in a disposable Cua sandbox (default model deepseek-v4.1-flash), optionally linked to a Hermes kanban card. bundlebees_attempt gets, follows, cancels or reviews one attempt (cancel and review need confirm=true and a Hermes approval). bundlebees_host_prompt writes a paste-ready setup prompt for a worker host and never takes a host, token or URL. When an attempt finishes, you run hermes bundlebees verify <attempt_id>: it applies the patch on a clean feature-branch worktree, enforces the file lease, runs the named tests and a secret scan, and on green commits and pushes that feature branch (main and master are refused; --dry-run applies and tests without pushing). The plugin never merges, tags or force-pushes. Hermes Desktop 0.23 or newer shows a dark pane with Health, Containers, Models, Concurrency, Projects, Live attempts, Verify results and Remote host tabs; the four tools still run without it. Skill id bundlebees:bundlebees-operator. It is for developers who split repo work into small parallel briefs and want cheap workers on a machine they control, with a human gate before anything lands. To start, you need Hermes 0.23.0 or newer and a worker launcher (by default the Orbit local-workers adapter on the same machine). Run hermes plugins install bundlebees and hermes plugins enable bundlebees, store the launcher token as the Hermes secret BUNDLEBEES_LAUNCHER_TOKEN (never in chat), load bundlebees:bundlebees-operator, and begin with bundlebees_status op=health. hermes bundlebees doctor checks the token, the adapter and the schema size without printing values. Disclosure — network and cost: talks to a local or user-configured worker launcher (loopback by default; a private or LAN launcher URL requires allow_private=true in plugin settings and is never a tool argument); dispatching a bee can spend model budget on that worker machine. Worker events and logs are treated as untrusted text. Cancelling or reviewing an attempt asks for Hermes approval first. Disclosure — credentials and CLI: secrets are read only through Hermes get_secret. The user-run hermes bundlebees verify applies a worker's patch to your feature-branch worktree and runs that code's named tests on this machine outside any sandbox before it commits and pushes the branch; verify and deploy run their child processes with a minimal environment and deploy, when you invoke it, reaches a remote host over ssh. A Cua sandbox is not a sandbox for the Hermes process. The Desktop pane uses ctx.rest and never shows tokens or host addresses."
+maintainer: mojomast
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/mojomast/bundlebees#readme
+version: "0.1.1"
+image: https://raw.githubusercontent.com/mojomast/bundlebees/f251c069d8360607dee10301b6cdad7fae90d24b/docs/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/bundlebees/f251c069d8360607dee10301b6cdad7fae90d24b/docs/screenshots/pane-health.png
+readme: true
+platforms: []
+known_issues:
+  - >-
+    The Desktop pane backend has been mounted through Hermes 0.23's own
+    dashboard plugin loader and the pane module loaded through its default
+    export; it has not yet been proven in a live Hermes Desktop window.
+capabilities:
+  provides_tools:
+    - bundlebees_status
+    - bundlebees_dispatch
+    - bundlebees_attempt
+    - bundlebees_host_prompt
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - BUNDLEBEES_LAUNCHER_TOKEN

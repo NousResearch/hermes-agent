@@ -18,9 +18,9 @@ from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 from agent.skill_commands import describe_skill_invocation
 from hermes_state_errors import is_malformed_db_error
 from hermes_state_common import (
-    FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
+    FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
-    MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
+    MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION,
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
 from hermes_state_fts import fts_layout_current, fts_layout_drift
@@ -31,10 +31,10 @@ logger = logging.getLogger("hermes_state")
 
 @dataclass
 class _BackfillProgress:
-    """How many messages a backfill pass (``backfill`` = base + trigram, ``backfill_cjk``) has
+    """How many messages a backfill pass (``backfill`` = base + trigram) has
     indexed out of the messages at or below its high water. Counts rows, never ids: a pruned
     store's id gaps would otherwise read 0% then jump to 99%. The step engine adds the rows each
-    window covered (:meth:`SessionSearchMixin._rebuild_step`)."""
+    window covered (:meth:`SessionSearchMixin.fts_rebuild_step`)."""
 
     phase: str
     total: int = 0
@@ -205,8 +205,8 @@ def _like_params(term: str) -> list[str]:
 def _strip_cjk_wildcards(raw_query: str) -> str:
     """Drop the trailing prefix wildcard callers append for ASCII ("nimb" -> "nimb*").
 
-    None of the CJK routes can honour that star: the bigram and trigram routes
-    quote every token before MATCH (so ``*`` matches a literal asterisk) and
+    None of the CJK routes can honour that star: the trigram route
+    quotes every token before MATCH (so ``*`` matches a literal asterisk) and
     LIKE has no ``*`` wildcard at all (only ``%``/``_``). Left in place, every
     CJK search arriving from the web/desktop search box — which appends the
     star to each unquoted token so partial English words match — searches for
@@ -320,25 +320,18 @@ class SessionSearchMixin:
             # (#90734, #85079).
             logger.warning("FTS incremental merge failed after commit: %s", exc)
 
-    # ── Deferred rebuild engine (base + CJK backfills) ─────────────────────
+    # ── Deferred rebuild engine ─────────────────────
 
     def fts_rebuild_status(self) -> Optional[dict[str, Any]]:
         """Deferred-rebuild progress ``{"pending", "total", "indexed", "percent"}`` or None. Reads
         via the pooled reader (not get_meta/self._lock) so search never blocks on the writer."""
-        return self._rebuild_status("fts_rebuild")
-
-    def fts_cjk_rebuild_status(self) -> Optional[dict[str, Any]]:
-        """CJK-index backfill progress, or None when none is pending."""
-        return self._rebuild_status("fts_cjk_rebuild")
-
-    def _rebuild_status(self, prefix: str) -> Optional[dict[str, Any]]:
         rows = self._read_all("SELECT key, value FROM state_meta WHERE key IN (?, ?)",
-                              (f"{prefix}_high_water", f"{prefix}_progress"))
+                              ("fts_rebuild_high_water", "fts_rebuild_progress"))
         meta = {r["key"]: r["value"] for r in rows}
-        high_water = meta.get(f"{prefix}_high_water")
+        high_water = meta.get("fts_rebuild_high_water")
         if high_water is None or int(high_water) <= 0:
             return None
-        total, progress = int(high_water), int(meta.get(f"{prefix}_progress") or 0)
+        total, progress = int(high_water), int(meta.get("fts_rebuild_progress") or 0)
         return {"pending": True, "total": total, "indexed": progress, "percent": min(100, int(100 * progress / total))}
 
     # Re-index rows in an id window the index is missing. docsize has one row
@@ -348,11 +341,6 @@ class SessionSearchMixin:
     # feeds ``messages_fts`` through the ONE stable per-row expression:
     # tool rows are truncated to FTS_TOOL_CONTENT_PREFIX_CHARS, everything
     # else is verbatim, and nothing consults a moving state_meta marker.
-    _BOUNDARY_SWEEP_SQL = (
-        "INSERT INTO {table}(rowid, content, tool_name, tool_calls) "
-        "SELECT m.id, m.content, m.tool_name, m.tool_calls FROM messages m WHERE m.id > ? AND m.id <= ? {extra}"
-        "AND NOT EXISTS (SELECT 1 FROM {table}_docsize d WHERE d.id = m.id)"
-    )
     _BASE_BOUNDARY_SWEEP_SQL = (
         "INSERT INTO messages_fts(rowid, content, tool_name, tool_calls) "
         "SELECT m.id, CASE WHEN m.role = 'tool' THEN substr(COALESCE(m.content, ''), 1, ?) "
@@ -367,10 +355,10 @@ class SessionSearchMixin:
         "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)"
     )
     _CHUNK_INSERT_SQL = (
-        "INSERT INTO {table}(rowid, content, tool_name, tool_calls) "
+        "INSERT INTO messages_fts(rowid, content, tool_name, tool_calls) "
         "SELECT id, CASE WHEN role = 'tool' "
         f"THEN substr(COALESCE(content, ''), 1, {FTS_TOOL_CONTENT_PREFIX_CHARS}) "
-        "ELSE content END, tool_name, tool_calls FROM messages WHERE id > ? AND id <= ?{extra}"
+        "ELSE content END, tool_name, tool_calls FROM messages WHERE id > ? AND id <= ?"
     )
     _TRIGRAM_CHUNK_INSERT_SQL = (
         "INSERT INTO messages_fts_trigram(rowid, content, tool_name) "
@@ -383,31 +371,16 @@ class SessionSearchMixin:
         insurance against a write that slipped between high_water capture and trigger
         activation. The trigram half is gated on ``_trigram_available``: without the
         tokenizer/table an unconditional INSERT raises and aborts the whole rebuild."""
-        sweeps = [(self._BASE_BOUNDARY_SWEEP_SQL, True)]
-        if self._trigram_available:
-            sweeps.append((self._TRIGRAM_BOUNDARY_SWEEP_SQL, False))
-        self._rebuild_finish("fts_rebuild", sweeps)
-        logger.info("Deferred FTS rebuild complete — all messages indexed.")
-
-    def _fts_cjk_rebuild_finish(self) -> None:
-        """Boundary sweep + clear the cjk markers; index becomes servable."""
-        sweep = self._BOUNDARY_SWEEP_SQL.format(table="messages_fts_cjk", extra="AND m.role <> 'tool' ")
-        self._rebuild_finish("fts_cjk_rebuild", [(sweep, False)])
-        self._fts_cjk_available = True
-        logger.info("CJK FTS index backfill complete — serving CJK search.")
-
-    def _rebuild_finish(self, prefix: str, sweep_sqls: list[tuple[str, bool]]) -> None:
-        """Sweep a generous window around the high-water boundary, then clear the markers.
-        ``(sql, bounded)``: a bounded sweep takes the tool-content prefix_chars param first."""
         def _do(conn):
-            hw_row = _meta_row(conn, f"{prefix}_high_water")
+            hw_row = _meta_row(conn, "fts_rebuild_high_water")
             if hw_row is not None:
                 hw = int(hw_row[0])
-                for sql, bounded in sweep_sqls:
-                    params = (FTS_TOOL_CONTENT_PREFIX_CHARS,) if bounded else ()
-                    conn.execute(sql, (*params, hw - 1000, hw + 1000))
-            _delete_meta(conn, f"{prefix}_high_water", f"{prefix}_progress")
+                conn.execute(self._BASE_BOUNDARY_SWEEP_SQL, (FTS_TOOL_CONTENT_PREFIX_CHARS, hw - 1000, hw + 1000))
+                if self._trigram_available:
+                    conn.execute(self._TRIGRAM_BOUNDARY_SWEEP_SQL, (hw - 1000, hw + 1000))
+            _delete_meta(conn, "fts_rebuild_high_water", "fts_rebuild_progress")
         self._execute_write(_do)
+        logger.info("Deferred FTS rebuild complete — all messages indexed.")
 
     def fts_rebuild_step(self, progress: Optional[_BackfillProgress] = None) -> bool:
         """Backfill one chunk (``_fts_chunk_rows`` messages) of the deferred FTS rebuild; True while
@@ -416,24 +389,10 @@ class SessionSearchMixin:
         the caller decides whether to retry). *progress* gains the messages the chunk covered."""
         if not self._fts_enabled:
             return False
-        inserts = [self._CHUNK_INSERT_SQL.format(table="messages_fts", extra="")]
+        inserts = [self._CHUNK_INSERT_SQL]
         if self._trigram_available:
             inserts.append(self._TRIGRAM_CHUNK_INSERT_SQL)
-        return self._rebuild_step("fts_rebuild", inserts, finish=self._fts_rebuild_finish, finish_when_empty=True,
-                                  progress=progress)
-
-    def fts_cjk_rebuild_step(self, progress: Optional[_BackfillProgress] = None) -> bool:
-        """Backfill one chunk of the CJK index. True while work remains."""
-        if not self._fts_enabled or not self._fts_cjk_loaded:
-            return False
-        insert = self._CHUNK_INSERT_SQL.format(table="messages_fts_cjk", extra=" AND role <> 'tool'")
-        return self._rebuild_step("fts_cjk_rebuild", [insert], finish=self._fts_cjk_rebuild_finish, progress=progress)
-
-    def _rebuild_step(self, prefix: str, insert_sqls: list[str], *, finish, finish_when_empty: bool = False,
-                      progress: Optional[_BackfillProgress] = None) -> bool:
-        """Shared chunk engine for the base and CJK deferred backfills. ``finish_when_empty``
-        finalizes a high_water <= 0 marker (empty messages table) instead of leaving it pending."""
-        high_water_raw = self.get_meta(f"{prefix}_high_water")
+        high_water_raw = self.get_meta("fts_rebuild_high_water")
         if high_water_raw is None:
             return False
         high_water = int(high_water_raw)
@@ -442,7 +401,7 @@ class SessionSearchMixin:
         def _do(conn):
             # Re-reading progress inside the BEGIN IMMEDIATE held by _execute_write IS
             # the claim: two workers cannot read the same value.
-            row = _meta_row(conn, f"{prefix}_progress")
+            row = _meta_row(conn, "fts_rebuild_progress")
             if row is None:
                 return False, 0  # finished (or cleared) by another process
             done = int(row[0])
@@ -457,10 +416,10 @@ class SessionSearchMixin:
             if nth is None and progress is not None:  # the last, short window (< chunk rows)
                 covered = conn.execute("SELECT COUNT(*) FROM messages WHERE id > ? AND id <= ?",
                                        (done, upper)).fetchone()[0]
-            for sql in insert_sqls:
+            for sql in inserts:
                 conn.execute(sql, (done, upper))
             # Progress lands in the same transaction as its rows (crash-atomic).
-            conn.execute("UPDATE state_meta SET value = ? WHERE key = ?", (str(upper), f"{prefix}_progress"))
+            conn.execute("UPDATE state_meta SET value = ? WHERE key = ?", (str(upper), "fts_rebuild_progress"))
             return upper < high_water, covered
 
         more, covered = self._execute_write(_do)
@@ -468,11 +427,9 @@ class SessionSearchMixin:
             # Counted after the commit: _execute_write may replay _do on contention.
             progress.indexed += covered
         if more is False:
-            status = self._rebuild_status(prefix)
-            if (finish_when_empty and high_water <= 0) or (
-                status is not None and status["indexed"] >= status["total"]
-            ):
-                finish()
+            status = self.fts_rebuild_status()
+            if high_water <= 0 or (status is not None and status["indexed"] >= status["total"]):
+                self._fts_rebuild_finish()
             return False
         return bool(more)
 
@@ -561,30 +518,6 @@ class SessionSearchMixin:
         self._fts_chunk_rows = self._FTS_REBUILD_CHUNK_ROWS
         progress.table = tbl
 
-    def _fts_cjk_reset_if_stale(self) -> None:
-        """From-scratch rebuild of a stale cjk index (triggers were dropped, gap extent unknown):
-        drop table + triggers, clear the breadcrumb, recreate (fresh backfill markers)."""
-        if not self._fts_cjk_loaded:
-            return
-
-        def _do(conn):
-            if _meta_row(conn, FTS_CJK_STALE_KEY) is None:
-                return False
-            for trig in _FTS_CJK_TRIGGERS:
-                conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
-            conn.execute("DROP TABLE IF EXISTS messages_fts_cjk")
-            conn.execute("DROP VIEW IF EXISTS messages_fts_cjk_src")
-            _delete_meta(conn, FTS_CJK_STALE_KEY, "fts_cjk_rebuild_high_water", "fts_cjk_rebuild_progress")
-            return True
-        if self._execute_write(_do):
-            # Recreate OUTSIDE the write transaction: executescript() implicitly commits.
-            self._ensure_cjk_schema_committed()
-
-    def _ensure_cjk_schema_committed(self) -> None:
-        with self._lock:
-            self._ensure_fts_cjk_schema(self._conn)
-            self._conn.commit()
-
     def _fts_external_index_empty_with_messages(self, conn) -> bool:
         """True when the base FTS table indexes nothing while ``messages`` has rows (post-demote
         empty-index shape). Caller holds ``self._lock``. docsize is the authoritative "is this
@@ -659,19 +592,13 @@ class SessionSearchMixin:
     def fts_optimize_available(self) -> bool:
         """True when `optimize_fts_storage()` has work: legacy inline FTS or a v23 trigram still
         carrying ``tool_calls`` (``_db_needs_fts_storage_upgrade``), an interrupted optimize
-        (markers/trash), a CJK backfill on this tokenizer-capable host, or an empty external
-        index without markers. False when FTS5 is unavailable."""
+        (markers/trash), or an empty external index without markers. False when FTS5 is unavailable."""
         if not self._fts_enabled or self.read_only:
             return False
         with self._read_ctx() as conn:
             return (
                 self._db_needs_fts_storage_upgrade(conn)
                 or _meta_row(conn, "fts_rebuild_high_water") is not None  # interrupted optimize
-                # CJK work is only offerable when THIS process can tokenize.
-                or (self._fts_cjk_loaded and (
-                    _meta_row(conn, "fts_cjk_rebuild_high_water") is not None
-                    or _meta_row(conn, FTS_CJK_STALE_KEY) is not None
-                ))
                 or self._has_fts_trash(conn)
                 or self._fts_external_index_empty_with_messages(conn)
             )
@@ -698,13 +625,7 @@ class SessionSearchMixin:
                 for row in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' "
                     "AND (name LIKE 'messages_fts_%' ESCAPE '\\' "
-                    "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\') "
-                    # messages_fts_cjk* is an independent v23+ index, not part of the
-                    # demoted legacy layout: fts5's xRename renames the entire shadow
-                    # family in one step, so sweeping the cjk vtable here aborts the
-                    # loop on the next cjk shadow entry and drags _config — needed by
-                    # the vtable constructor — into the trash family (#103647).
-                    "AND name NOT LIKE 'messages\\_fts\\_cjk%' ESCAPE '\\'"
+                    "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\')"
                 ).fetchall():
                     conn.execute(f"ALTER TABLE {row[0]} RENAME TO fts_v22_trash_{row[0]}")
             # Claim the backfill BEFORE the empty v23 tables exist so a crash before
@@ -729,10 +650,10 @@ class SessionSearchMixin:
                 raise sqlite3.OperationalError(failure_message)
             self._conn.commit()
 
-    def _backfill_progress(self, phase: str, prefix: str) -> Optional[_BackfillProgress]:
-        """Messages at or below *prefix*'s high water, and how many of them the resume marker already
+    def _backfill_progress(self, phase: str) -> Optional[_BackfillProgress]:
+        """Messages at or below the rebuild high water, and how many of them the resume marker already
         covers (one scan per pass); None when the pass has nothing pending."""
-        st = self._rebuild_status(prefix)
+        st = self.fts_rebuild_status()
         if st is None:
             return None
         with self._read_ctx() as conn:
@@ -855,7 +776,7 @@ class SessionSearchMixin:
         legacy-v22 inline -> external-content, or a v23 ``messages_fts_trigram`` that still stores
         ``tool_calls``. Re-running resumes; a chunk that keeps failing raises (nothing is lost).
         ``progress_cb`` receives {"phase", "percent", "indexed", "total", "paced"} after every chunk
-        (``backfill``/``backfill_cjk`` count messages; plus :meth:`_TeardownProgress.info` fields)
+        (``backfill`` counts messages; plus :meth:`_TeardownProgress.info` fields)
         and every second of the VACUUM (:meth:`_VacuumProgress.info`). Whenever another process holds
         state.db (re-scanned every ``_HOLDER_SCAN_INTERVAL_S``) chunks are paced so its writes get
         through. A missing trigram tokenizer is not fatal (CJK falls back to LIKE)."""
@@ -876,23 +797,15 @@ class SessionSearchMixin:
             # commit and schema ensure.
             self._ensure_v23_fts_tables("failed to re-create v23 messages_fts on optimize-storage resume")
 
-        # A stale CJK index can only be recovered from scratch; then ensure table +
-        # markers exist (a v23 DB gaining the cjk index for the first time).
-        self._fts_cjk_reset_if_stale()
-        if self._fts_cjk_loaded:
-            self._ensure_cjk_schema_committed()
-
         emit = progress_cb or (lambda _info: None)
         teardown = _TeardownProgress(counted=progress_cb is not None)
-        passes = (("backfill", "fts_rebuild", self.fts_rebuild_step), ("backfill_cjk", "fts_cjk_rebuild",
-                                                                        self.fts_cjk_rebuild_step))
         with _HolderWatch(self._foreign_state_db_holders, self._HOLDER_SCAN_INTERVAL_S) as watch:
-            # Phase 1: base backfill; 1b: CJK-bigram backfill (own marker pair, own progress line).
-            for phase, prefix, step in passes:
-                bf = self._backfill_progress(phase, prefix) if progress_cb else None
-                if bf is not None:
-                    emit({**bf.info(), "paced": watch.held})
-                self._optimize_drive(partial(step, bf) if bf else step, bf.info if bf else None, emit, watch)
+            # Phase 1: base backfill.
+            bf = self._backfill_progress("backfill") if progress_cb else None
+            if bf is not None:
+                emit({**bf.info(), "paced": watch.held})
+            step = partial(self.fts_rebuild_step, bf) if bf else self.fts_rebuild_step
+            self._optimize_drive(step, bf.info if bf else None, emit, watch)
             # Phase 2: tear down the demoted legacy shadow tables in chunks.
             self._optimize_drive(partial(self._fts_teardown_trash_step, teardown), teardown.info, emit, watch)
         with self._read_ctx() as conn:
@@ -1054,20 +967,6 @@ class SessionSearchMixin:
         return sum(1 for ch in text if _is_cjk(ord(ch)))
 
     @staticmethod
-    def _has_lone_cjk_run(query: str) -> bool:
-        """True when any maximal CJK run is a single char: the cjk-bigram index stores unigrams
-        only for isolated chars, so such a term can't match inside longer runs — keep LIKE."""
-        run = 0
-        for ch in query:
-            if _is_cjk(ord(ch)):
-                run += 1
-            else:
-                if run == 1:
-                    return True
-                run = 0
-        return run == 1
-
-    @staticmethod
     def _or_relaxed_query(query: str) -> Optional[str]:
         """The sanitized implicit-AND query rewritten as an any-term OR query, or ``None`` when
         relaxation does not apply: fewer than two searchable units (a single term cannot relax)
@@ -1112,8 +1011,6 @@ class SessionSearchMixin:
             if not self._contains_cjk(sanitized):
                 return "fts5"
             raw = sanitized.strip('"').strip()
-            if self._fts_cjk_available and not self._has_lone_cjk_run(raw):
-                return "fts_cjk"
             return "trigram" if self._trigram_route_ok(raw) else "like_scan"
         except Exception:
             return "unknown"
@@ -1221,7 +1118,7 @@ class SessionSearchMixin:
             return
         if stale is not None:
             self._fts_stale = True
-            self._fts_enabled = self._trigram_available = self._fts_cjk_available = False
+            self._fts_enabled = self._trigram_available = False
 
     def _finalize_search_matches(
         self, matches: list[dict[str, Any]], result_fields: Optional[Collection[str]] = None) -> list[dict[str, Any]]:
@@ -1313,8 +1210,8 @@ class SessionSearchMixin:
 
         order_by_sql = _FTS_ORDER_BY.get(sort.strip().lower() if isinstance(sort, str) else None, "ORDER BY rank")
         route = dict(order_by_sql=order_by_sql, limit=limit, offset=offset, **filters)
-        # Tool rows and FTS_TRIGRAM_EXCLUDED_SOURCES sessions are excluded from the trigram/cjk
-        # indexes (see FTS_TRIGRAM_SQL); an explicit filter for them must scan the base table.
+        # Tool rows and FTS_TRIGRAM_EXCLUDED_SOURCES sessions are excluded from the trigram
+        # index (see FTS_TRIGRAM_SQL); an explicit filter for them must scan the base table.
         wants_unindexed_rows = (bool(role_filter) and "tool" in role_filter) or (
             bool(source_filter) and any(src in FTS_TRIGRAM_EXCLUDED_SOURCES for src in source_filter))
         is_cjk = self._contains_cjk(query)
@@ -1350,21 +1247,11 @@ class SessionSearchMixin:
 
         # unicode61 puts no boundary between Latin and adjacent CJK ("修改youer服务端" is
         # one token, so MATCH "youer" misses). On a zero-result Latin miss retry the
-        # substring-capable indexes: cjk first (exact ranked match), then trigram (>=3-char
-        # tokens). Gated on a miss so hits keep their ranking ("cat" may then match
-        # "concatenate"). Skipped for role='tool' (both indexes exclude tool rows).
+        # trigram index (>=3-char tokens). Gated on a miss so hits keep their ranking ("cat"
+        # may then match "concatenate"). Skipped for role='tool' (trigram excludes tool rows).
         if not matches and not is_cjk and not (bool(role_filter) and "tool" in role_filter):
             fb_query = _quote_fts_tokens(query.strip('"').strip())
-            # ── CJK-bigram route (messages_fts_cjk, cjk_unicode61) ────── When the bigram index is
-            # available it serves EVERY CJK query shape the legacy code split between trigram (>=3
-            # chars/token) and LIKE full scans (1-2 char tokens) — the whole point of the index (PR #65544).
-            # Exceptions stay on the legacy routes: - role_filter=['tool'] queries (tool rows aren't in the
-            # cjk index, same exclusion as trigram), - queries containing a LONE 1-char CJK run: the index
-            # stores bigrams for runs >=2, so a single-char term can only match isolated chars — LIKE
-            # substring semantics are broader.
-            if self._fts_cjk_available:
-                matches = self._match_rows("messages_fts_cjk", fb_query, **route) or matches
-            if not matches and self._trigram_available and self._trigram_eligible_tokens(query):
+            if self._trigram_available and self._trigram_eligible_tokens(query):
                 matches = self._match_rows("messages_fts_trigram", fb_query, **route) or matches
 
         # OR-relaxed retry: the implicit AND between terms means a paraphrased multi-word query
@@ -1385,19 +1272,11 @@ class SessionSearchMixin:
 
     def _search_cjk(self, query: str, wants_unindexed_rows: bool, route: dict[str, Any]) -> list[dict[str, Any]]:
         """CJK routing: the unicode61 table splits CJK into single characters (false positives,
-        missed phrases). cjk-bigram serves every shape except queries wanting rows the
-        substring indexes exclude (role='tool', cron/subagent sources) and LONE
-        1-char CJK runs (bigrams only exist for runs >=2 — LIKE is broader); then trigram
-        (>=3 CJK chars per token); then a LIKE substring scan with one clause per
-        non-operator token so "广西 OR 桂林 OR 漓江" matches each term."""
+        missed phrases). Trigram serves >=3 CJK chars per token unless the query wants rows it
+        excludes (role='tool', cron/subagent sources); everything else is a LIKE substring scan
+        with one clause per non-operator token so "广西 OR 桂林 OR 漓江" matches each term."""
         raw_query = _strip_cjk_wildcards(query).strip('"').strip()
         match_query = _quote_fts_tokens(raw_query)
-        if self._fts_cjk_available and not wants_unindexed_rows and not self._has_lone_cjk_run(raw_query):
-            matches = self._match_rows(
-                "messages_fts_cjk", match_query, fail_open="CJK-bigram",
-                operational_debug="messages_fts_cjk query failed; falling back to trigram/LIKE", **route)
-            if matches is not None:
-                return matches
         if self._trigram_route_ok(raw_query) and not wants_unindexed_rows:
             matches = self._match_rows("messages_fts_trigram", match_query, fail_open="Trigram", **route)
             if matches is not None:

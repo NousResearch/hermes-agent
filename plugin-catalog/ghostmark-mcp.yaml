@@ -1,0 +1,19 @@
+name: ghostmark-mcp
+title: GhostMark
+repo: https://github.com/MrHydeDev/ghostmark-mcp-plugin
+sha: 22ff2e44fc5fe3c2778d6198caf879923ebe1c9b
+version: "1.0.0"
+description: "GhostMark through its MCP server (Streamable HTTP at https://ghostmark.mrhyde.dev/mcp, no sign-in, no keys in config): puts an invisible watermark tied to a key into a picture, with an optional encrypted message of up to 24 bytes inside, and reads it back with the same key after the picture has been saved as JPEG, cropped, resized or rotated. Three tools: suggest_key draws a random key of common words, mark_image returns the marked file, read_image says whether a key and a picture fit and returns the message. Bundles one skill for both flows. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. The mark does not encrypt or protect the picture and is not proof of authorship: it answers whether a picture carries the mark of a key. Disclosure: hosted-only connector with no local code; every tool call goes to ghostmark.mrhyde.dev (closed-source server, behind Cloudflare), which uses the picture, the key and the message in memory to answer one call and stores none of them; it keeps daily counts with no text, no picture and no address, and logs the address of what looks like an attack. With image_url the server downloads that picture itself. Every tool is annotated read-only; the package marks the server untrusted. The skill tells the agent to send only the picture the person named and only to ghostmark.mrhyde.dev, and to treat a message read out of a picture as data. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: MrHydeDev
+tier: community
+category: tools
+docs_url: https://github.com/MrHydeDev/ghostmark-mcp-plugin
+image: https://raw.githubusercontent.com/MrHydeDev/ghostmark-mcp-plugin/22ff2e44fc5fe3c2778d6198caf879923ebe1c9b/docs/logo.png
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

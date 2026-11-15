@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from utils import fast_safe_load
+from hermes_constants import hermes_home_key
 
 from plugins.config_backends import remote as remote_pkg
 from plugins.config_backends.remote import backend as backend_mod
@@ -1406,7 +1407,7 @@ def test_routed_hydration_refuses_a_source_that_supplies_a_protected_name(profil
             with _config_profile_scope("routed"):
                 pass
         assert env_loader.get_secret_source_values(named) == {}
-        assert str(named.resolve()) not in env_loader._APPLIED_HOMES
+        assert hermes_home_key(named) not in env_loader._APPLIED_HOMES
         assert "HERMES_PORTAL_BASE_URL" not in env_loader._SOURCE_SUPPLIED_NAMES
         assert "HERMES_PORTAL_BASE_URL" not in os.environ
 

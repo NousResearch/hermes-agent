@@ -98,7 +98,6 @@ import {
   TERMINAL_FONT_FAMILY,
 } from "@/lib/terminal-font-refit";
 import { generateChannelId } from "@/lib/chat-channel-id";
-import { sendCopyLastCommand } from "@/lib/chat-copy-last";
 import { CopyLastButton } from "@/lib/chat-copy-last-button";
 import {
   probeWebglSupport,
@@ -186,8 +185,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // server could not start it at all (close 1011; the reason is in the terminal).
   const [endedReason, setEndedReason] = useState<"exited" | "start-failed">("exited");
   const navigate = useNavigate();
-  const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
-  const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const forceFreshPtyRef = useRef(false);
@@ -481,16 +478,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     );
     return () => setEnd(null);
   }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
-
-  const handleCopyLast = () => {
-    sendCopyLastCommand({
-      wsRef,
-      termRef,
-      copyResetRef,
-      onCopied: () => setCopyState("copied"),
-      onCopyReset: () => setCopyState("idle"),
-    });
-  };
 
   useEffect(() => {
     // Don't spawn the chat PTY (and the TUI/agent bootstrap it triggers)
@@ -1591,10 +1578,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
-      if (copyResetRef.current) {
-        clearTimeout(copyResetRef.current);
-        copyResetRef.current = null;
-      }
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
@@ -1985,8 +1968,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           )}
 
           <CopyLastButton
-            onClick={handleCopyLast}
-            copied={copyState === "copied"}
+            channel={channel}
+            sessionId={resumeParam}
+            profile={scopedProfile}
             color={terminalFg}
           />
 

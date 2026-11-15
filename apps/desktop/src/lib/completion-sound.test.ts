@@ -62,6 +62,20 @@ it('rechecks mute after ownership resolves, including a failed claim and a later
   expect($hapticsMuted.get()).toBe(false)
 })
 
+it('stays silent while the OS is in Do Not Disturb, and plays once it ends', async () => {
+  let dnd = true
+  window.hermesDesktop = { ...original, claimAmbientCue: vi.fn(async () => true), doNotDisturbActive: async () => dnd }
+
+  playCompletionSound('session')
+  await vi.waitFor(() => expect(window.hermesDesktop.claimAmbientCue).toHaveBeenCalled())
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(getAudioContext).not.toHaveBeenCalled()
+
+  dnd = false
+  playCompletionSound('other-session')
+  await vi.waitFor(() => expect(getAudioContext).toHaveBeenCalledTimes(1))
+})
+
 it('stays silent on None and never claims the cue from an audible peer', () => {
   const claim = vi.fn(async () => true)
   window.hermesDesktop = { ...original, claimAmbientCue: claim }

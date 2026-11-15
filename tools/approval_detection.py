@@ -19,6 +19,8 @@ from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 from tools.approval_git_options import _GIT, _GIT_PUSH, _GIT_PUSH_ARGS, _join_escaped_word_chars
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
 from tools.approval_env_split import _split_env_string
+from tools.approval_shell_tokens import _shell_tokens_with_spans
+from tools.approval_windows_hardline import whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns
 
 logger = logging.getLogger("tools.approval")
 
@@ -181,7 +183,7 @@ _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 # Vetoes the drive-root rules when THIS PowerShell delete carries a literal -Include that narrows it (`*.tmp`):
 # not after cmd `/s` or GNU `--` (a file name there), not inside quotes/comments, not `*`/`*.*`/a list/`$x`,
 # and never past a `)` that closes rm's own `$(...)`/subshell (`echo $(rm -rf C:/) -Include x` is echo's flag).
-_PS_INCLUDE_NARROWS = r'(?!(?!(?:[^\r\n;&|]*\s)?(?:/s\b|--(?:\s|$)))(?:[^\r\n;&|#"\'`)]|"[^"\n]*"|\'[^\'\n]*\')*\s-inc[a-z]*(?::|\s+)["\']?(?=[^\s,;&|"\'$`(){}@]*[^\s,;&|"\'$`(){}@*?.])[^\s,;&|"\'$`(){}@]+["\']?(?!\s*,)(?:[\s;&|)]|$))'
+_PS_INCLUDE_NARROWS = r'(?!(?!(?:[^\r\n;&|]*\s)?(?:/s\b|--(?:\s|$)))(?:[^\r\n;&|#"\'`)]|"[^"\n]*"|\'[^\'\n]*\')*[^\S\r\n]-inc[a-z]*(?::|\s+)["\']?(?=[^\s,;&|"\'$`(){}@]*[^\s,;&|"\'$`(){}@*?.])[^\s,;&|"\'$`(){}@]+["\']?(?!\s*,)(?:[\s;&|)]|$))'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
@@ -225,6 +227,7 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    *windows_hardline_patterns(_CMDPOS),
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out
@@ -234,6 +237,11 @@ _RE_FLAGS = re.IGNORECASE | re.DOTALL
 _QUOTE_MASKED_HARDLINE_DESCRIPTIONS = frozenset({"redirect to raw block device", "fork bomb"})
 HARDLINE_PATTERNS_COMPILED = [
     (re.compile(p, _RE_FLAGS), d, d in _QUOTE_MASKED_HARDLINE_DESCRIPTIONS) for p, d in HARDLINE_PATTERNS
+]
+_WHATIF_STRICT = windows_whatif_strict_patterns(_CMDPOS)
+_HARDLINE_PATTERNS_NO_WHATIF = [
+    (re.compile(_WHATIF_STRICT[d], _RE_FLAGS), d, q) if d in _WHATIF_STRICT else (r, d, q)
+    for r, d, q in HARDLINE_PATTERNS_COMPILED
 ]
 # Commands that hand a quoted argument to another shell to EXECUTE: quoted text is code, not
 # prose, so quote-masked hardline rules scan the raw string.
@@ -521,11 +529,16 @@ def _detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(expand_ansi_c_quotes(command)))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
+    # The -WhatIf preview exemption holds only when every guarded statement previews on its own (judged on the raw
+    # command: masking a quoted newline joins statements); otherwise those rules apply without it.
+    patterns = HARDLINE_PATTERNS_COMPILED
+    if "whatif" in command.lower() and not whatif_preview_is_real(command):
+        patterns = _HARDLINE_PATTERNS_NO_WHATIF
     capped: list[str] = []
     for command_variant in _command_detection_variants(command, capped=capped):
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
-        for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
+        for pattern_re, description, quote_masked in patterns:
             if quote_masked and masked_lower is None:
                 # Positionless rules see quoted prose as DATA, except under shell carriers
                 # (sh -c, eval, source) whose quoted argument is code — those scan raw. bash -c
@@ -1130,82 +1143,6 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     return sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS
 
 
-def _backtick_end_from(segment: str, i: int) -> int | None:
-    """Index of the backtick closing the one opened at ``i``, or None when none follows."""
-    j = segment.find("`", i + 1)
-    while j != -1 and segment[j - 1] == "\\":
-        j = segment.find("`", j + 1)
-    return None if j == -1 else j
-
-
-def _shell_tokens_with_spans(segment: str, start: int):
-    """Return shell words as ``(value, start, end, quoted)`` or ``None`` on malformed quoting.
-    Deliberately small lexer that never expands shell syntax; it exists to keep source spans (which
-    ``shlex`` does not expose) for deciding which quoted grep operand is data, not another command.
-
-    Lexing stops at the end of the simple command that begins at *start*: an unquoted ``;``, ``|``,
-    ``&`` or newline, or the ``)`` / backtick that closes the substitution the command sits inside.
-    Without that, a grep nested as ``"$(grep … | cut …)"`` was lexed together with the enclosing
-    command's closing quote, read as unbalanced quoting, and reported as a hardline block (546
-    blocked turns in one run, every one a false positive; ``sed -n "$(grep -n X f | cut -d: -f1),+3p" f``
-    is the canonical shape)."""
-    tokens, value, token_start, quote = [], [], None, None
-    depth = 0  # $(...) nesting opened AFTER start; a closer at depth 0 ends the enclosing substitution
-    # A backtick opened AFTER start is an operand substitution (``grep -e `cmd` f``); the matching
-    # closer belongs to it, not to an enclosing backtick the command might sit inside.
-    in_backtick = False
-
-    def flush(end: int) -> None:
-        raw = segment[token_start:end]
-        # Only a wholly single-quoted operand is inert shell data. Double quotes still execute $()
-        # and backticks; unquoted substitutions do too.
-        inert = (raw.startswith("'") and raw.endswith("'")) or ("='" in raw and raw.endswith("'"))
-        tokens.append(("".join(value), token_start, end, inert))
-
-    end_at = len(segment)
-    for kind, i, _, _ in _scan_shell(segment, start):
-        ch = segment[i]
-        if kind == "char" and not quote:
-            if ch.isspace() and ch != "\n":
-                if token_start is not None:
-                    flush(i)
-                    value, token_start = [], None
-                continue
-            if segment.startswith("$(", i):
-                depth += 1
-            elif ch == "`":
-                if in_backtick:
-                    in_backtick = False
-                elif depth == 0 and _backtick_end_from(segment, i) is None:
-                    end_at = i  # unmatched: it closes the substitution this command sits inside
-                    break
-                else:
-                    in_backtick = True
-            elif ch == ")":
-                if depth == 0:
-                    end_at = i
-                    break
-                depth -= 1
-            elif ch in ";|&\n":
-                end_at = i
-                break
-        if token_start is None:
-            token_start = i
-        if kind == "quote":
-            quote = None if quote else ch
-        elif kind == "esc":
-            value.append(segment[i + 1])
-        elif ch == "\\" and not quote:
-            return None  # dangling backslash
-        else:
-            value.append(ch)
-    if quote:
-        return None
-    if token_start is not None:
-        flush(end_at)
-    return tokens
-
-
 def _quoted_grep_pattern_spans(command: str) -> tuple[list[tuple[int, int]], bool]:
     """Structurally locate quoted grep PCRE operands -> (spans, malformed). On an ambiguous or
     malformed grep parse callers fail closed and use the original command: no text is hidden on
@@ -1409,6 +1346,23 @@ def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
     return None
 
 
+def _powershell_command_payload(args: list[str]) -> str | None:
+    """The script text ``-Command``/``-c`` runs (every remaining argument, joined as PowerShell does),
+    so commands after its first one reach the command-position rules. ``-File`` runs a path."""
+    skip_value = False
+    for index, token in enumerate(args):
+        if skip_value:
+            skip_value = False
+            continue
+        option = token.lower()
+        if option in ("-command", "-c"):
+            return " ".join(args[index + 1:]) or None
+        if option in ("-file", "-f") or not option.startswith("-"):
+            return None
+        skip_value = option in _INTERPRETER_WITH_ARG["powershell"]
+    return None
+
+
 def _execution_flag_findings(command: str):
     """Yield scoped execution mechanisms and any executable payloads."""
     for segment in _iter_top_level_shell_segments(command):
@@ -1425,7 +1379,8 @@ def _execution_flag_findings(command: str):
                 continue
             args = tokens[1:]
             if family and _interpreter_exec_flag(family, args):
-                yield ("script execution via -e/-c flag", None)
+                yield ("script execution via -e/-c flag",
+                       _powershell_command_payload(args) if family == "powershell" else None)
             elif family and any(token.startswith("<<") for token in args):
                 yield ("script execution via heredoc", None)
             else:
@@ -1618,7 +1573,7 @@ def _mask_quoted_newlines(command: str) -> str:
     ``_iter_shell_command_starts``. Unquoted newlines pass through and ``_mark_command_starts``
     still re-inserts newlines at genuine starts; an unclosed quote absorbs following newlines
     exactly as the shell would, so masking them cannot hide a runnable command."""
-    if "\n" not in command:
+    if "\n" not in command and "\r" not in command:
         return command
     return _mask_quoted_newlines_span(command, 0, len(command))
 
@@ -1638,7 +1593,7 @@ def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
             out.append(command[i:body_start])
             out.append(_mask_quoted_newlines_span(command, body_start, body_end))
             out.append(command[body_end:j])
-        elif quote and kind == "char" and command[i] == "\n":
+        elif quote and kind == "char" and command[i] in "\r\n":  # a CR too: PowerShell rules treat it as a break
             out.append(" ")
         else:
             out.append(command[i:j])
@@ -1804,20 +1759,20 @@ def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[
     # path, also yield a variant with backslashes flattened to `/` BEFORE normalization. Gated on a real path shape so
     # POSIX escape semantics (`echo a\"b`) are untouched elsewhere.
     # See #69472.
+    pending = [(normalized, eval_depth)]
     if re.search(r"(?:[A-Za-z]:|\\\\)[\\\\]", command) or re.search(r"[A-Za-z]:\\", command):
         win_variant = _normalize_command_for_detection(_mask_quoted_newlines(command.replace("\\", "/")))
         if fresh(win_variant):
             yield win_variant
-        # The marked variants below see the backslash-stripped text (`a && rm -rf C:\*` -> `C:*`), so the
-        # command-start-anchored rm floor needs a marked copy of the flattened path too. Mark on the RAW
-        # command (faithful quote state, see `faithful` below), then flatten.
+            # Its payloads too: from the normalized text `pwsh -c "ls; ri -r C:\\"` loses the root's slash.
+            pending.append((win_variant, eval_depth))
+        # Its command starts (`a; rd /s /q C:\`): marked on the RAW command (faithful quote state), then flattened.
         marked_win = _normalize_command_for_detection(
             _mark_command_starts(_mask_quoted_newlines(command), marker=" \n").replace("\\", "/"))
         if fresh(marked_win):
             yield marked_win
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
-    pending = [(normalized, eval_depth)]
     while pending:
         source, depth = pending.pop()
         for payload, payload_depth in _nested_payloads(source, depth, capped):

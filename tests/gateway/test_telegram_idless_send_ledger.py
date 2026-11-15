@@ -16,6 +16,9 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from persistence_assembly import profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import storage_handle
 
 pytest.importorskip("telegram")
 
@@ -24,7 +27,7 @@ TABLE_REPLY = "Results:\n\n| a | b |\n|---|---|\n| 1 | 2 |\n"
 
 @pytest.mark.asyncio
 async def test_rich_send_without_message_id_stays_recoverable_and_is_sent_once(tmp_path, monkeypatch):
-    monkeypatch.setattr(dl, "_db_path", lambda: tmp_path / "state.db")
+    monkeypatch.setattr(dl, "_scope", lambda: profile_scope(home=tmp_path))
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token", extra={"rich_messages": True}))
     bot = MagicMock()
     bot.do_api_request = AsyncMock(return_value={})  # Telegram accepted the call; the result has no id
@@ -37,7 +40,7 @@ async def test_rich_send_without_message_id_stays_recoverable_and_is_sent_once(t
     result, _ = await adapter.send_final_ledgered(event, "agent:main:telegram:dm:111", TABLE_REPLY, {}, reply_to=None)
 
     assert result.success is False, "a send with no message id is no proof of delivery"
-    with dl._connect() as conn:
+    with raw_holder(storage_handle(dl._scope().profile_dir))._read_ctx() as conn:
         states = [row[0] for row in conn.execute("SELECT state FROM delivery_obligations")]
     assert states == ["failed"], "the row must stay for redelivery, not be finalized as delivered and pruned"
     assert bot.do_api_request.await_count == 1 and bot.send_message.await_count == 0, (

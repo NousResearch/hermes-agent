@@ -3013,7 +3013,8 @@ export const frOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Aucun jeton de bot requis',
-      intro: (platform: string) => `${platform} atteint cet agent via le bot Hermes partagé. Associez votre compte ${platform} et écrivez au bot pour parler à votre agent.`,
+      intro: (platform: string) =>
+        `${platform} atteint cet agent via le bot Hermes partagé. Associez votre compte ${platform} et écrivez au bot pour parler à votre agent.`,
       link: (platform: string) => `Associer ${platform}`,
       linkAnother: (platform: string) => `Associer un autre compte ${platform}`,
       linkedAccounts: 'Comptes associés',
@@ -3031,10 +3032,12 @@ export const frOverrides = {
       refused: (platform: string) => `${platform} a refusé l’association. Demandez un nouveau code et réessayez.`,
       qrAlt: (platform: string) => `Code QR du bot ${platform} partagé`,
       managed: 'Géré par Team Gateway',
-      managedNote: (platform: string) => `Team Gateway assure la messagerie sur cette instance : le gateway désactive donc la connexion directe ${platform} à chaque démarrage. Pour l’utiliser en plus du relais, définissez GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true dans l’environnement du gateway (une connexion directe empêche l’instance de descendre à zéro et peut livrer les messages deux fois).`,
+      managedNote: (platform: string) =>
+        `Team Gateway assure la messagerie sur cette instance : le gateway désactive donc la connexion directe ${platform} à chaque démarrage. Pour l’utiliser en plus du relais, définissez GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true dans l’environnement du gateway (une connexion directe empêche l’instance de descendre à zéro et peut livrer les messages deux fois).`,
       managedIntro: 'Les comptes de cet agent se lient depuis Nous Portal.',
       openPortal: 'Lier des comptes dans Nous Portal',
-      noNewAccount: (platform: string) => `Le code n’est plus actif et aucun nouveau compte n’est apparu. Si votre compte ${platform} n’est pas listé, obtenez un nouveau code et réessayez.`
+      noNewAccount: (platform: string) =>
+        `Le code n’est plus actif et aucun nouveau compte n’est apparu. Si votre compte ${platform} n’est pas listé, obtenez un nouveau code et réessayez.`
     },
     telegramQr: {
       title: 'Choisissez comment connecter votre bot Telegram',
@@ -5521,6 +5524,36 @@ export const frOverrides = {
     modelSwitchKeepLabel: 'Conserver le modèle actuel',
     modelSwitchStaleNotice: "La sélection a changé — le changement de modèle n'a pas été appliqué.",
     hydrationSyncing: (profile: string) => `Synchronisation de ${profile}…`,
+    sessionExportAction: 'Exporter',
+    sessionExportFormat: 'Format du fichier',
+    sessionExportNeedsLive:
+      "Ouvrez cette conversation et réessayez. Ce format ou le masquage nécessite un backend connecté prenant en charge l'exportation.",
+    sessionExportRedact: 'Masquer les secrets détectés',
+    sessionExportRedactHint:
+      "Masquer les secrets détectés avant l'enregistrement. Vérifiez le fichier avant de le partager.",
+    sessionExportTitle: 'Exporter la conversation',
+    sessionExportUnsupported: "L'exportation de fichiers n'est pas disponible dans cette fenêtre.",
+    sessionExportAsides: 'Apartés /btw enregistrés',
+    sessionExportCollapse: 'Replier les détails inclus',
+    sessionExportContents: 'Contenu de la transcription',
+    sessionExportFiles: 'Références de fichiers',
+    sessionExportFoldDocx:
+      'Les versions compatibles de Word pour ordinateur peuvent replier les titres de détails. D’autres lecteurs peuvent les afficher développés.',
+    sessionExportFoldHtml: 'Les appels aux outils et le raisonnement inclus peuvent être développés dans le fichier.',
+    sessionExportFoldJson: 'JSON contient les données sélectionnées, sans repli visuel.',
+    sessionExportFoldMd: 'Le repli et les images intégrées dépendent du lecteur Markdown.',
+    sessionExportFoldOdt: 'ODT utilise des titres de détails ; leur repli dépend de votre éditeur.',
+    sessionExportImagePrivacy:
+      'Les pixels des images ne sont pas analysés pour détecter des secrets. Vérifiez les images avant de les partager.',
+    sessionExportImages: 'Images',
+    sessionExportLinkHint:
+      'Désactiver les liens cliquables conserve le texte original. Aucun téléchargement ni téléversement.',
+    sessionExportLinks: 'Liens cliquables',
+    sessionExportMediaHint:
+      'Les images disponibles sont intégrées. Les vidéos et fichiers restent des références ; les chemins locaux peuvent ne pas fonctionner sur un autre ordinateur. Les échanges /btw non enregistrés ne peuvent pas être récupérés.',
+    sessionExportReasoning: 'Raisonnement enregistré',
+    sessionExportTools: 'Appels aux outils et résultats',
+    sessionExportVideos: 'Références vidéo',
     sessionExported: 'Session exportée',
     sessionExportFailed: "Impossible d'exporter la session",
     imageSaved: 'Image enregistrée',

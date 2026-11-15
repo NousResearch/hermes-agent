@@ -3005,7 +3005,8 @@ export const deOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Kein Bot-Token nötig',
-      intro: (platform: string) => `${platform} erreicht diesen Agenten über den gemeinsamen Hermes-Bot. Verknüpfe dein ${platform}-Konto damit und schreib dem Bot, um mit deinem Agenten zu sprechen.`,
+      intro: (platform: string) =>
+        `${platform} erreicht diesen Agenten über den gemeinsamen Hermes-Bot. Verknüpfe dein ${platform}-Konto damit und schreib dem Bot, um mit deinem Agenten zu sprechen.`,
       link: (platform: string) => `${platform} verknüpfen`,
       linkAnother: (platform: string) => `Weiteres ${platform}-Konto verknüpfen`,
       linkedAccounts: 'Verknüpfte Konten',
@@ -3020,13 +3021,16 @@ export const deOverrides = {
       waiting: 'Warte darauf, dass der Bot deine Nachricht sieht. Der Code gilt einmal.',
       linked: (platform: string) => `${platform}-Konto verknüpft. Schreib dem Bot, um mit deinem Agenten zu sprechen.`,
       expired: 'Der Code ist abgelaufen, bevor er benutzt wurde. Hol dir einen neuen Code und versuch es erneut.',
-      refused: (platform: string) => `${platform} hat die Verknüpfung abgelehnt. Hol dir einen neuen Code und versuch es erneut.`,
+      refused: (platform: string) =>
+        `${platform} hat die Verknüpfung abgelehnt. Hol dir einen neuen Code und versuch es erneut.`,
       qrAlt: (platform: string) => `QR-Code für den gemeinsamen ${platform}-Bot`,
       managed: 'Von Team Gateway verwaltet',
-      managedNote: (platform: string) => `Team Gateway übernimmt auf dieser Instanz das Messaging, daher schaltet das Gateway die direkte ${platform}-Verbindung bei jedem Start ab. Um sie parallel zum Relay zu betreiben, setze GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in der Umgebung des Gateways (eine direkte Verbindung verhindert das Herunterskalieren auf null und kann Nachrichten doppelt zustellen).`,
+      managedNote: (platform: string) =>
+        `Team Gateway übernimmt auf dieser Instanz das Messaging, daher schaltet das Gateway die direkte ${platform}-Verbindung bei jedem Start ab. Um sie parallel zum Relay zu betreiben, setze GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in der Umgebung des Gateways (eine direkte Verbindung verhindert das Herunterskalieren auf null und kann Nachrichten doppelt zustellen).`,
       managedIntro: 'Die Konten dieses Agenten werden im Nous Portal verknüpft.',
       openPortal: 'Konten im Nous Portal verknüpfen',
-      noNewAccount: (platform: string) => `Der Code ist nicht mehr aktiv und es ist kein neues Konto erschienen. Falls dein ${platform}-Konto nicht aufgeführt ist, hol dir einen neuen Code und versuche es erneut.`
+      noNewAccount: (platform: string) =>
+        `Der Code ist nicht mehr aktiv und es ist kein neues Konto erschienen. Falls dein ${platform}-Konto nicht aufgeführt ist, hol dir einen neuen Code und versuche es erneut.`
     },
     telegramQr: {
       title: 'Wählen Sie, wie Sie Ihren Telegram-Bot verbinden',
@@ -5512,6 +5516,34 @@ export const deOverrides = {
     modelSwitchKeepLabel: 'Aktuelles Modell behalten',
     modelSwitchStaleNotice: 'Auswahl geändert – der Modellwechsel wurde nicht angewendet.',
     hydrationSyncing: (profile: string) => `Synchronisiert ${profile}…`,
+    sessionExportAction: 'Exportieren',
+    sessionExportFormat: 'Dateiformat',
+    sessionExportNeedsLive:
+      'Öffne diese Unterhaltung und versuche es erneut. Dieses Format oder die Schwärzung benötigt ein verbundenes Backend mit Export-Unterstützung.',
+    sessionExportRedact: 'Erkannte Geheimnisse schwärzen',
+    sessionExportRedactHint: 'Erkannte Geheimnisse vor dem Speichern maskieren. Prüfe die Datei, bevor du sie teilst.',
+    sessionExportTitle: 'Unterhaltung exportieren',
+    sessionExportUnsupported: 'Der Dateiexport ist in diesem Fenster nicht verfügbar.',
+    sessionExportAsides: 'Gespeicherte /btw-Notizen',
+    sessionExportCollapse: 'Enthaltene Details einklappen',
+    sessionExportContents: 'Transkriptinhalt',
+    sessionExportFiles: 'Dateiverweise',
+    sessionExportFoldDocx:
+      'Unterstützte Word-Desktopversionen können Detailüberschriften einklappen. Andere Programme zeigen sie möglicherweise aufgeklappt.',
+    sessionExportFoldHtml: 'Enthaltene Werkzeugaufrufe und Überlegungen lassen sich in der Datei aufklappen.',
+    sessionExportFoldJson: 'JSON enthält die ausgewählten Daten, aber keine visuelle Einklappfunktion.',
+    sessionExportFoldMd: 'Einklappen und eingebettete Bilder hängen vom Markdown-Programm ab.',
+    sessionExportFoldOdt: 'ODT nutzt Detailüberschriften; das Einklappen hängt vom Editor ab.',
+    sessionExportImagePrivacy: 'Bildinhalte werden nicht auf Geheimnisse geprüft. Bilder vor dem Teilen prüfen.',
+    sessionExportImages: 'Bilder',
+    sessionExportLinkHint:
+      'Ohne anklickbare Links bleibt der Originaltext erhalten. Nichts wird abgerufen oder hochgeladen.',
+    sessionExportLinks: 'Anklickbare Links',
+    sessionExportMediaHint:
+      'Verfügbare Bilder werden eingebettet. Videos und Dateien bleiben Verweise; lokale Pfade funktionieren möglicherweise nicht auf anderen Computern. Nicht gespeicherte /btw-Dialoge können nicht wiederhergestellt werden.',
+    sessionExportReasoning: 'Gespeicherte Überlegungen',
+    sessionExportTools: 'Werkzeugaufrufe und Ergebnisse',
+    sessionExportVideos: 'Videoverweise',
     sessionExported: 'Session exportiert',
     sessionExportFailed: 'Session konnte nicht exportiert werden',
     imageSaved: 'Bild gespeichert',

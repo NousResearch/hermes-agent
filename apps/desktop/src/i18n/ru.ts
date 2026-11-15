@@ -1898,7 +1898,8 @@ export const ruOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Токен бота не нужен',
-      intro: (platform: string) => `${platform} связывается с этим агентом через общий бот Hermes. Привяжите свой аккаунт ${platform} и напишите боту, чтобы говорить с агентом.`,
+      intro: (platform: string) =>
+        `${platform} связывается с этим агентом через общий бот Hermes. Привяжите свой аккаунт ${platform} и напишите боту, чтобы говорить с агентом.`,
       link: (platform: string) => `Привязать ${platform}`,
       linkAnother: (platform: string) => `Привязать ещё один аккаунт ${platform}`,
       linkedAccounts: 'Привязанные аккаунты',
@@ -1916,10 +1917,12 @@ export const ruOverrides = {
       refused: (platform: string) => `${platform} отклонил привязку. Получите новый код и попробуйте снова.`,
       qrAlt: (platform: string) => `QR-код общего бота ${platform}`,
       managed: 'Под управлением Team Gateway',
-      managedNote: (platform: string) => `На этом экземпляре сообщения идут через Team Gateway, поэтому шлюз отключает прямое подключение ${platform} при каждом запуске. Чтобы использовать его вместе с ретранслятором, задайте GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true в окружении шлюза (прямое подключение не даёт экземпляру масштабироваться до нуля и может доставлять сообщения дважды).`,
+      managedNote: (platform: string) =>
+        `На этом экземпляре сообщения идут через Team Gateway, поэтому шлюз отключает прямое подключение ${platform} при каждом запуске. Чтобы использовать его вместе с ретранслятором, задайте GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true в окружении шлюза (прямое подключение не даёт экземпляру масштабироваться до нуля и может доставлять сообщения дважды).`,
       managedIntro: 'Аккаунты этого агента привязываются в Nous Portal.',
       openPortal: 'Привязать аккаунты в Nous Portal',
-      noNewAccount: (platform: string) => `Код больше не активен, и новый аккаунт не появился. Если вашего аккаунта ${platform} нет в списке, получите новый код и попробуйте снова.`
+      noNewAccount: (platform: string) =>
+        `Код больше не активен, и новый аккаунт не появился. Если вашего аккаунта ${platform} нет в списке, получите новый код и попробуйте снова.`
     },
     telegramQr: {
       title: 'Выберите способ подключения Telegram-бота',
@@ -3871,6 +3874,35 @@ export const ruOverrides = {
     modelSwitchFailed: 'Смена модели не удалась',
     modelSwitchKeepLabel: 'Оставить текущую модель',
     modelSwitchStaleNotice: 'Выбор изменился — смена модели не применена.',
+    sessionExportAction: 'Экспортировать',
+    sessionExportFormat: 'Формат файла',
+    sessionExportNeedsLive:
+      'Откройте этот разговор и повторите попытку. Для этого формата или скрытия секретов нужен подключённый сервер с поддержкой экспорта.',
+    sessionExportRedact: 'Скрыть обнаруженные секреты',
+    sessionExportRedactHint:
+      'Скрыть обнаруженные секреты перед сохранением. Проверьте файл перед отправкой другим людям.',
+    sessionExportTitle: 'Экспорт разговора',
+    sessionExportUnsupported: 'Экспорт файлов недоступен в этом окне.',
+    sessionExportAsides: 'Сохранённые отступления /btw',
+    sessionExportCollapse: 'Свернуть включённые подробности',
+    sessionExportContents: 'Содержимое стенограммы',
+    sessionExportFiles: 'Ссылки на файлы',
+    sessionExportFoldDocx:
+      'Поддерживаемые настольные версии Word позволяют сворачивать заголовки подробностей. Другие программы могут показывать их развёрнутыми.',
+    sessionExportFoldHtml: 'Включённые вызовы инструментов и рассуждения можно развернуть в файле.',
+    sessionExportFoldJson: 'JSON содержит выбранные данные без визуального сворачивания.',
+    sessionExportFoldMd: 'Сворачивание и встроенные изображения зависят от программы просмотра Markdown.',
+    sessionExportFoldOdt: 'ODT использует заголовки подробностей; сворачивание зависит от редактора.',
+    sessionExportImagePrivacy: 'Содержимое изображений не проверяется на секреты. Просмотрите их перед отправкой.',
+    sessionExportImages: 'Изображения',
+    sessionExportLinkHint:
+      'Отключение кликабельных ссылок сохраняет исходный текст. Ничего не скачивается и не загружается.',
+    sessionExportLinks: 'Кликабельные ссылки',
+    sessionExportMediaHint:
+      'Доступные изображения встраиваются. Видео и файлы остаются ссылками; локальные пути могут не работать на другом компьютере. Несохранённые диалоги /btw восстановить нельзя.',
+    sessionExportReasoning: 'Сохранённые рассуждения',
+    sessionExportTools: 'Вызовы инструментов и результаты',
+    sessionExportVideos: 'Ссылки на видео',
     sessionExported: 'Сеанс экспортирован',
     sessionExportFailed: 'Не удалось экспортировать сеанс',
     imageSaved: 'Изображение сохранено',

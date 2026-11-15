@@ -335,8 +335,10 @@ declare global {
         title?: string
       }) => Promise<null | string>
       /** Save dialog + main-process write of renderer-supplied text (/save; the gateway may be remote). */
+      saveTextFileEncodings?: readonly ['base64']
       saveTextFileAs?: (request: {
         content: string
+        encoding?: 'base64'
         defaultPath?: string
         filters?: Array<{ extensions: string[]; name: string }>
         title?: string

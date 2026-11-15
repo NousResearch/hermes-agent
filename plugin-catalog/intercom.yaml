@@ -1,0 +1,22 @@
+name: intercom
+version: "1.0.0"
+repo: https://github.com/levinkin/hermes-intercom
+sha: dc0bf703120dc68754f547939f533f53fb664570
+title: Intercom
+description: "Lets desktop, cli and tui chats on one machine list each other and send/ask/reply through one intercom tool. An idle chat starts a turn when a message arrives, a busy one gets it at its next turn. Messages between the gateway and the desktop backend go over a 0600 unix socket, sealed with aes-256-gcm. Based on majordave/hermes-intercom (cli/tui), rewritten to run in the gateway and the desktop host. Messaging-platform sessions (discord, telegram) are refused. Disclosure: needs plugins.entries.intercom.allow_gateway_injection: true; reads the gateway's and desktop host's live session lists through private core modules (gateway.session_authorities, gateway.session_policy, gateway.session_context, tui_gateway.server), so a core update can break discovery; writes a key and a session registry under HERMES_HOME/intercom; every delivered message starts or joins a turn in the receiving chat and uses model tokens there."
+maintainer: levinkin
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/levinkin/hermes-intercom#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - intercom
+  provides_hooks:
+    - pre_llm_call
+    - on_session_end
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

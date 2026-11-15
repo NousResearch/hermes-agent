@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { PROFILE_ID_ARG_RE } from './profile-id-guard'
+import { PROFILE_ID_ARG_RE } from '../../shared/src/profile-id'
 
 export interface DesktopBootPreference {
   profile: string | null

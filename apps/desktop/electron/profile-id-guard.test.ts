@@ -4,15 +4,10 @@ import path from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import type * as ProfileIdGuard from './profile-id-guard'
-
-// Every Electron profile-id gate takes its grammar from PROFILE_ID_ARG_RE (state-24, #155595).
-// Swapping the owner for a different grammar shows each gate follows it; a re-declared copy of
-// `^[a-z0-9][a-z0-9_-]{0,63}$` keeps accepting `work` and fails here.
-vi.mock('./profile-id-guard', async importOriginal => ({
-  ...(await importOriginal<typeof ProfileIdGuard>()),
-  PROFILE_ID_ARG_RE: /^zz\.[a-z]+$/
-}))
+// Every Electron profile-id gate takes its grammar from the shared PROFILE_ID_ARG_RE owner
+// (state-24, #155595). Swapping the owner for a different grammar shows each gate follows it; a
+// re-declared copy of `^[a-z0-9][a-z0-9_-]{0,63}$` keeps accepting `work` and fails here.
+vi.mock('../../shared/src/profile-id', () => ({ PROFILE_ID_ARG_RE: /^zz\.[a-z]+$/ }))
 
 const OLD_ONLY = 'work'
 const NEW_ONLY = 'zz.custom'
@@ -55,5 +50,15 @@ describe('profile-id gates follow PROFILE_ID_ARG_RE', () => {
     expect(normalizeSshConfig({ mode: 'ssh', host: 'h', remoteProfile: OLD_ONLY })?.remoteProfile).toBeUndefined()
     expect(normalizeRemoteProfileName(NEW_ONLY)).toEqual({ remoteProfile: NEW_ONLY })
     expect(normalizeRemoteProfileName(OLD_ONLY)).toBeNull()
+  })
+})
+
+describe('backendProfileArg follows the owner', () => {
+  it('keeps `default`, normalizes, and pins only owner-accepted ids', async () => {
+    const { backendProfileArg } = await import('./profile-id-guard')
+
+    expect(backendProfileArg(' ZZ.Custom ')).toBe(NEW_ONLY)
+    expect(backendProfileArg(OLD_ONLY)).toBeNull()
+    expect(backendProfileArg('default')).toBe('default')
   })
 })

@@ -1,6 +1,6 @@
-import type { DesktopProfileRoute } from '@/global'
+import { PROFILE_ID_ARG_RE } from '@hermes/shared/profile-id'
 
-import { PROFILE_ID_ARG_RE } from '../../electron/profile-id-guard'
+import type { DesktopProfileRoute } from '@/global'
 
 import { requireBrowserConnection } from './browser-connection'
 import { readJson, writeJson } from './storage'

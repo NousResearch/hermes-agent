@@ -1,11 +1,10 @@
+import type * as ProfileId from '@hermes/shared/profile-id'
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { browserDefaultProjectDirKey } from '@/lib/browser-settings'
 import { browserStartupProfileKey } from '@/lib/browser-startup-profile'
-
-import type * as ProfileIdGuard from '../../../electron/profile-id-guard'
 
 import { CreateProfileDialog, isValidProfileName } from './create-profile-dialog'
 
@@ -15,8 +14,8 @@ vi.mock('@/hermes', () => api)
 // The dialog's name check takes its grammar from PROFILE_ID_ARG_RE (state-24, #155595): the owner is
 // swappable here so a test can prove the check follows it rather than a copied regex.
 const owner = vi.hoisted(() => ({ re: null as null | RegExp }))
-vi.mock('../../../electron/profile-id-guard', async importOriginal => {
-  const actual = await importOriginal<typeof ProfileIdGuard>()
+vi.mock('@hermes/shared/profile-id', async importOriginal => {
+  const actual = await importOriginal<typeof ProfileId>()
 
   return {
     ...actual,

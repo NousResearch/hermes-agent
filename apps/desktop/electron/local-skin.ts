@@ -7,7 +7,7 @@ import path from 'node:path'
 import type { HermesSkin, SkinColors } from '@hermes/shared/skin'
 import { parse } from 'yaml'
 
-import { PROFILE_ID_ARG_RE } from './profile-id-guard'
+import { PROFILE_ID_ARG_RE } from '../../shared/src/profile-id'
 
 const SKIN_FILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/
 const MAX_CONFIG_BYTES = 1_000_000

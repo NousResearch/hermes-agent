@@ -7,7 +7,10 @@
 // case-fold + slug test) without pulling desktop-profile's fs/path imports
 // into the pure spawn-arg builders that need it.
 
-export const PROFILE_ID_ARG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+// Relative, not `@hermes/shared/profile-id`: esbuild bundles electron/ without tsconfig paths.
+import { PROFILE_ID_ARG_RE } from '../../shared/src/profile-id'
+
+export { PROFILE_ID_ARG_RE }
 
 /**
  * A profile value safe to pin via `--profile <name>`, normalized the way the

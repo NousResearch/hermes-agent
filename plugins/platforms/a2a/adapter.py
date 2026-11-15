@@ -482,7 +482,8 @@ class A2AAdapter(BasePlatformAdapter):
         # an unanswered clarification: it is off the short sweep, never off the clock.
         job = _job_timeout()
         expired = self.tasks.fail_orphans(job, exclude=active_tasks - parked, only=parked | awaiting_input,
-                                          reason=f"[task exceeded A2A_JOB_TIMEOUT={job:.0f}s — no reply within the job budget]")
+                                          reason=f"[task exceeded A2A_JOB_TIMEOUT={job:.0f}s — no reply within the job budget]",
+                                          force_terminal=True)
         for tid in expired:
             logger.warning("A2A: parked task %s marked failed (job budget %.0fs)", tid, job)
             # Full teardown, not just a _parked removal: a pending entry left here keeps the task id at
@@ -994,7 +995,16 @@ class A2AAdapter(BasePlatformAdapter):
         out = self._await_reply(pending, keepalive)
         if out is _TIMED_OUT or out is _CLIENT_GONE:
             note = _window_elapsed_note() if out is _TIMED_OUT else _STILL_WORKING
-            task = self._park_task(pending, note)
+            # The park IS the handoff: `_park_task` registers the late finalizer that ends the task
+            # once the agent answers, and `_pop_pending` only runs after that registration. If the
+            # registration itself fails the task has no watcher, so it must take the ordinary cleanup
+            # path (record + pop) rather than be left in _pending with nothing able to end it.
+            try:
+                task = self._park_task(pending, note)
+            except Exception:
+                logger.warning("A2A: park handoff failed for %s; recording the failure",
+                               pending["task_id"], exc_info=True)
+                return self._finalize_task(pending, protocol.STATE_FAILED, "[agent reply lost]")
             status = task.get("status", {})
             return status.get("state", protocol.STATE_WORKING), protocol.extract_text(status.get("message", {}) or {})
         return self._finalize_task(pending, *out)
@@ -1143,7 +1153,9 @@ class A2AAdapter(BasePlatformAdapter):
             return error
         if rec["state"] in protocol.TERMINAL_STATES:
             return _err(req_id, protocol.ERR_TASK_NOT_CANCELABLE, f"task {task_id} already {rec['state']}")
-        self.tasks.complete(task_id, protocol.STATE_CANCELED, "")
+        # An explicit cancel must be able to end a clarification: the barrier in complete() refuses to
+        # re-settle an INPUT_REQUIRED task on an ordinary completion, and a cancel is not ordinary.
+        self.tasks.complete(task_id, protocol.STATE_CANCELED, "", force_terminal=True)
         self._turns.reset(rec["context_id"])
         self._resolve_task(task_id, protocol.STATE_CANCELED, "")
         rec = self.tasks.get(task_id, *self._scope_for_agent(agent)) or rec

@@ -405,11 +405,19 @@ class TaskStore:
         with self._lock:
             return dict(rec) if (rec := self._scoped(task_id, agent_slug, tenant)) else None
 
-    def complete(self, task_id: str, state: str, reply: str = "") -> Optional[dict]:
-        """Transition a task to a terminal state. Idempotent."""
+    def complete(self, task_id: str, state: str, reply: str = "", *, force_terminal: bool = False) -> Optional[dict]:
+        """Transition a task to a terminal state. Idempotent.
+
+        ``force_terminal`` overrides the clarification barrier: a task in ``STATE_INPUT_REQUIRED`` is
+        not re-settled by an ordinary completion, because a worker answering late must not overwrite a
+        question that is still waiting on the user. A hard timeout or an explicit cancel passes the
+        flag — otherwise nothing could ever end a clarification that outlives its budget.
+        """
         with self._lock:
             rec = self._tasks.get(task_id)
             if not rec or rec["state"] in TERMINAL_STATES:
+                return None
+            if rec["state"] == STATE_INPUT_REQUIRED and not force_terminal:
                 return None
             rec.update(state=state, reply=reply, completed_at=time.time())
             watchers = self._watchers.pop(task_id, [])
@@ -447,17 +455,26 @@ class TaskStore:
 
     def fail_orphans(self, timeout_seconds: float = 300, *, exclude: set[str] | None = None,
                      only: set[str] | None = None,
-                     reason: str = "[task orphaned — no reply produced]") -> list[str]:
+                     reason: str = "[task orphaned — no reply produced]",
+                     force_terminal: bool = False) -> list[str]:
         """Fail non-terminal tasks older than ``timeout_seconds``. ``exclude`` protects tasks a live
         request still owns; ``only`` narrows the sweep to a named subset (the adapter uses it to give
-        parked tasks their own, longer budget without touching ordinary orphans)."""
+        parked tasks their own, longer budget without touching ordinary orphans).
+
+        A task in ``STATE_INPUT_REQUIRED`` is never taken by the ordinary sweep: it is waiting on the
+        user, not orphaned, and an age timeout would destroy a question that was never answered.
+        ``force_terminal`` is the hard-bound mode — it lifts that barrier and passes the flag through
+        to ``complete``, which would otherwise refuse to re-settle a clarification — so the job budget
+        still ends a clarification that outlives it.
+        """
         excluded = exclude or set()
         with self._lock:
             stale = [tid for tid, rec in self._tasks.items()
                      if tid not in excluded and (only is None or tid in only)
                      and rec["state"] not in TERMINAL_STATES
+                     and (force_terminal or rec["state"] != STATE_INPUT_REQUIRED)
                      and time.time() - rec["created_at"] > timeout_seconds]
-        return [tid for tid in stale if self.complete(tid, STATE_FAILED, reason)]
+        return [tid for tid in stale if self.complete(tid, STATE_FAILED, reason, force_terminal=force_terminal)]
 
     def _trim_locked(self) -> None:
         terminal = [tid for tid, rec in self._tasks.items() if rec["state"] in TERMINAL_STATES]

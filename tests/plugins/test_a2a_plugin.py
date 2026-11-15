@@ -1221,6 +1221,12 @@ class TestInboundRoundTrip:
             rec = adapter.tasks.get(task_id)
             assert rec["state"] == protocol.STATE_COMPLETED
             assert rec["reply"] == "LATE_RESULT"
+            # The state flips inside TaskStore.complete(), but the counters are bumped a few lines later
+            # in _record_outcome — so wait for the counter rather than racing it.
+            for _ in range(100):
+                if protocol.metrics.tasks_completed == completed_before + 1:
+                    break
+                await asyncio.sleep(0.05)
             assert protocol.metrics.tasks_completed == completed_before + 1
             assert protocol.metrics.tasks_failed == failed_before
             await adapter.disconnect()

@@ -434,8 +434,8 @@ def _skin_cache_key(name: str, user_file: Path) -> Optional[tuple]:
     """Cache key for ``load_skin(name)``, or None when a hit could serve pre-edit content.
 
     Built-ins key on the name alone: their definitions are module constants, so nothing can change
-    under the process. A user file joins its path, mtime and size, so any real edit (rewrite,
-    replacement, truncation) misses. A file whose mtime is too fresh to rule out a same-tick
+    under the process. User files key on path, mtime, size, inode and ctime. Inode/ctime also detect
+    atomic replacements that preserve mtime and size. A file whose mtime is too fresh to rule out a same-tick
     rewrite after the stat — filesystem timestamps tick in ~4 ms steps, whole seconds on some
     mounts — gets no key at all and the caller re-reads, as git does for a racily-clean index entry.
     """
@@ -447,13 +447,13 @@ def _skin_cache_key(name: str, user_file: Path) -> Optional[tuple]:
         return (name,)
     if mtime_is_racy(st.st_mtime_ns):
         return None
-    return (name, str(user_file), st.st_mtime_ns, st.st_size)
+    return (name, str(user_file), st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
 
 
 def load_skin(name: str) -> SkinConfig:
     """Load a skin by name: user skins first, then built-in, then default.
 
-    Cached on the skin file's ``(path, mtime, size)``: a repeated load of an unchanged skin reuses
+    Cached on the skin file's metadata: a repeated load of an unchanged skin reuses
     the parsed config, while an edited file misses and is read again (see ``_skin_cache_key``).
     """
     user_file = _skins_dir() / f"{name}.yaml"

@@ -12,11 +12,11 @@ def reset_skin_state():
     from hermes_cli import skin_engine
     skin_engine._active_skin = None
     skin_engine._active_skin_name = "default"
-    skin_engine._skin_cache.clear()
+    getattr(skin_engine, "_skin_cache", {}).clear()
     yield
     skin_engine._active_skin = None
     skin_engine._active_skin_name = "default"
-    skin_engine._skin_cache.clear()
+    getattr(skin_engine, "_skin_cache", {}).clear()
 
 
 
@@ -324,6 +324,31 @@ class TestSkinParseCache:
         self._write_skin(skins_dir, monkeypatch, title="#0000FF00", age_s=30)
         os.utime(path, ns=(stamp, stamp))
         assert load_skin("cached").get_color("banner_title") == "#0000FF00"
+
+    def test_atomic_replacement_preserving_mtime_and_size_reloads(self, tmp_path, monkeypatch):
+        """An atomic replacement must invalidate the cache even with preserved metadata."""
+        from hermes_cli import skin_engine
+        import hermes_yaml as yaml
+
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        path = self._write_skin(skins_dir, monkeypatch, title="#112233", age_s=60)
+
+        first = skin_engine.load_skin("cached")
+        assert first is skin_engine.load_skin("cached")  # Baseline without caching is RED.
+        before = path.stat()
+
+        replacement = skins_dir / "replacement.tmp"
+        replacement.write_text(
+            yaml.safe_dump({"name": "cached", "colors": {"banner_title": "#445566"}}),
+            encoding="utf-8",
+        )
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        assert replacement.stat().st_size == before.st_size
+        assert replacement.stat().st_mtime_ns == before.st_mtime_ns
+
+        os.replace(replacement, path)
+        assert skin_engine.set_active_skin("cached").get_color("banner_title") == "#445566"
 
     def test_a_just_written_skin_file_is_never_cached(self, tmp_path, monkeypatch):
         """A same-tick rewrite can land after the stat, so a fresh mtime cannot be a cache key."""

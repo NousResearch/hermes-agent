@@ -15,7 +15,8 @@ def _config_edit(tmp_path, monkeypatch, cfg, *, template):
     monkeypatch.setattr(cfg.subprocess, "run", lambda *a, **k: None)
     if not template:
         monkeypatch.setattr(cfg, "get_project_root", lambda: tmp_path / "no-checkout")
-    cfg.edit_config()
+    from hermes_cli.config_edit import edit_config
+    edit_config()
 
 
 def _setup_agent_enter(tmp_path, monkeypatch, cfg):
@@ -93,8 +94,10 @@ def test_config_edit_refusal_without_a_config_file_exits_nonzero(tmp_path, monke
     monkeypatch.setattr(cfg, "is_managed", lambda: False)
     monkeypatch.setattr(cfg, "supports_file_tooling", lambda: False)
     monkeypatch.setattr(cfg.subprocess, "run", lambda *a, **k: pytest.fail("no editor may open"))
+    from hermes_cli.config_edit import edit_config
+
     with pytest.raises(SystemExit) as exc:
-        cfg.edit_config()
+        edit_config()
     assert exc.value.code == 1
     assert "hermes config set" in capsys.readouterr().err
     assert not (tmp_path / "config.yaml").exists()

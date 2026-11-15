@@ -2866,7 +2866,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "You are a test agent.",
@@ -2879,7 +2878,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "list files",
@@ -2906,7 +2904,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "a.txt\nb.txt",
@@ -2920,7 +2917,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "thanks, now summarize",
@@ -2966,7 +2962,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "You are a test agent.",
@@ -2979,7 +2974,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "list files",
@@ -3006,7 +3000,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "a.txt\nb.txt",
@@ -3020,7 +3013,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "thanks, now summarize",
@@ -3065,7 +3057,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "You are a test agent.",
@@ -3078,7 +3069,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "list files",
@@ -3105,7 +3095,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "a.txt\nb.txt",
@@ -3119,7 +3108,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "thanks, now summarize",
@@ -7758,7 +7746,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "You are a test agent.",
@@ -7771,7 +7758,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "list files",
@@ -7798,7 +7784,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "a.txt\nb.txt",
@@ -7812,7 +7797,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "thanks, now summarize",
@@ -7860,7 +7844,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "You are a test agent.",
@@ -7873,7 +7856,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "list files",
@@ -7900,7 +7882,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "a.txt\nb.txt",
@@ -7914,7 +7895,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "thanks, now summarize",
@@ -7965,7 +7945,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "You are a test agent.",
@@ -7978,7 +7957,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "list files",
@@ -8005,7 +7983,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "a.txt\nb.txt",
@@ -8019,7 +7996,6 @@
      "content": [
       {
        "cache_control": {
-        "ttl": "1h",
         "type": "ephemeral"
        },
        "text": "thanks, now summarize",

@@ -845,13 +845,13 @@ class TestTapsManager:
         taps_file = tmp_path / "taps.json"
         taps_file.write_text("bad json")
         mgr = TapsManager(path=taps_file)
-        assert mgr.load() == []
+        assert mgr.list_taps() == []
 
     def test_remove_existing_tap(self, tmp_path):
         mgr = TapsManager(path=tmp_path / "taps.json")
         mgr.add("owner/repo")
         assert mgr.remove("owner/repo") is True
-        assert mgr.load() == []
+        assert mgr.list_taps() == []
 
 # ---------------------------------------------------------------------------
 # LobeHubSource._convert_to_skill_md

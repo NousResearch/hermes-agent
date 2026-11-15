@@ -197,8 +197,9 @@ class ProactivePruneMixin:
                 self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
                 return messages, 0
             except Exception as exc:  # health: allow BLE001 -- the commit boundary keeps the original transcript on any store failure (#124102)
+                # Uncertain outcome (a worker may have committed and lost the reply): the transcript may already
+                # point at these archives, so they stay; the reference-aware retention sweep reclaims unused ones.
                 logger.warning("Proactive tool-result prune DB commit failed; keeping the original transcript: %s", exc)
-                discard_archives(archives)
                 return messages, 0
             # Shared post-commit stamp site with the in-place commit and micro-compaction sync.
             # See #98450. The in-place rewrite wrote no new rows, so only already-durable messages

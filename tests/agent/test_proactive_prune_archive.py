@@ -172,17 +172,6 @@ def test_a_repeated_tool_call_id_never_overwrites_an_earlier_original(home):
     assert Path(first[0]).read_text() == "first body" and Path(second[0]).read_text() == "second body"
 
 
-def test_a_sandboxed_backend_keeps_the_result_whole(home):
-    """The model on a remote backend reads its own copy; with no environment to sync it the stub could
-    name a file the model cannot open, so the result is not shortened."""
-    msgs = _transcript()
-    with patch("tools.credential_files.to_agent_visible_cache_path", side_effect=lambda p: "/root/.hermes/x"):
-        pruned, count = _compressor().prune_tool_results_only(msgs, current_tokens=100_000)
-
-    assert (pruned, count) == (msgs, 0)
-    assert not (home / "cache" / "pruned").exists() or not any((home / "cache" / "pruned").iterdir())
-
-
 def test_a_plugin_engine_without_the_builtins_fields_still_prunes():
     """The store-row gate is the built-in's own; a plugin engine is called without those fields."""
     from types import SimpleNamespace

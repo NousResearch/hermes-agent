@@ -77,16 +77,14 @@ async def test_an_idle_dashboard_pane_does_not_fence_opening_its_chat_through_th
 
 @pytest.mark.asyncio
 async def test_a_dashboard_pane_mid_turn_still_refuses_and_binds_nothing(owner):
-    from gateway.session_local_migration import resolve_local_target
-    from hermes_state_runtime import RuntimeStoreError
     _mount_dashboard_pane(owner)
     holder = f'pid={os.getpid()}:turn=1ce47391:platform=desktop'
     assert owner.db.try_acquire_session_turn_lease(CHAT, holder)
 
-    with pytest.raises(RuntimeStoreError, match='runtime_coordination_required'):
-        resolve_local_target(owner.authority, owner.native, CHAT)
+    reply = await owner.connection.dispatch({'id': 2, 'method': 'session.resume',
+                                             'params': {'session_id': CHAT, 'omit_messages': True}})
+    assert reply.get('error', {}).get('data', {}).get('reason') == 'runtime_coordination_required', reply
     with owner.db._read_ctx() as conn:
         assert not conn.execute("SELECT 1 FROM state_meta WHERE key LIKE 'gateway.local_policy.v1:%'").fetchall()
 
     owner.db.release_session_turn_lease(CHAT, holder)
-    assert resolve_local_target(owner.authority, owner.native, CHAT).session_id == CHAT

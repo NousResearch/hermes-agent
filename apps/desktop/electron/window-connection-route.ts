@@ -114,4 +114,30 @@ export class WindowConnectionRouteRegistry {
   delete(webContentsId: number): void {
     this.routes.delete(webContentsId)
   }
+
+  /** Version scope for a window's route; a missing or destroyed window means the primary. */
+  versionScopeFor(win: { isDestroyed: () => boolean; webContents: { id: number } } | null): VersionScope {
+    return win && !win.isDestroyed() ? windowRouteVersionScope(this.routes.get(win.webContents.id)) : {}
+  }
+}
+
+export interface VersionScope {
+  connectionId?: string
+  profile?: string
+}
+
+/**
+ * The gateway scope a window-level query (e.g. the native About panel version)
+ * should use for a window. Only a registry-scoped route pins a connection;
+ * a legacy route contributes its profile; no route means the primary.
+ */
+export function windowRouteVersionScope(route: WindowConnectionRoute | null | undefined): VersionScope {
+  if (!route) {
+    return {}
+  }
+
+  return {
+    ...(route.registryScoped && route.connectionId ? { connectionId: route.connectionId } : {}),
+    ...(route.profile ? { profile: route.profile } : {})
+  }
 }

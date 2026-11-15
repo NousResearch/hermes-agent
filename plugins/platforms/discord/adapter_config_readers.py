@@ -1,8 +1,11 @@
-"""config.yaml readers for the Discord adapter: DM role-auth guild opt-in and button-view timeout.
+"""config.yaml readers for the Discord adapter: DM role-auth guild opt-in, button-view timeout and
+exec-approval admin gate.
 
 Re-exported from ``plugins.platforms.discord.adapter`` (callers and tests import them there).
 """
 from typing import Any, Optional
+
+from agent.deadline import MAX_SAFE_TIMEOUT_S
 
 
 def _read_dm_role_auth_guild() -> Optional[int]:
@@ -24,16 +27,15 @@ def _read_dm_role_auth_guild() -> Optional[int]:
     return guild_id if guild_id > 0 else None
 
 
-# Default timeout for Discord button views when ``approvals.discord_prompt_timeout`` is unset;
-# Discord interaction tokens expire at ~15 minutes, so 900s is the practical ceiling.
+# All Discord prompt views share this setting; command approval waits have their own timeout.
 _DISCORD_PROMPT_TIMEOUT_DEFAULT = 300
 _DISCORD_PROMPT_TIMEOUT_MIN = 30
-_DISCORD_PROMPT_TIMEOUT_MAX = 900
+_DISCORD_PROMPT_TIMEOUT_MAX = int(MAX_SAFE_TIMEOUT_S)
 
 
 def _read_discord_prompt_timeout() -> int:
     """Timeout (seconds) for Discord button views from ``approvals.discord_prompt_timeout``
-    (default 300), clamped to [MIN, MAX] so a typo can't make prompts vanish or outlive tokens."""
+    (default 300), clamped to [MIN, MAX] to keep their UI lifetime bounded."""
     raw: Any = None
     try:
         from hermes_cli.config import read_raw_config
@@ -53,3 +55,21 @@ def _read_discord_prompt_timeout() -> int:
     if seconds > _DISCORD_PROMPT_TIMEOUT_MAX:
         return _DISCORD_PROMPT_TIMEOUT_MAX
     return seconds
+
+
+def _resolve_exec_approval_admin_gate(config_extra: Optional[dict]) -> tuple[bool, set]:
+    """Resolve the exec-approval admin gate from ``extra``; returns ``(require_admin, admin_user_ids)``.
+    Default OFF (user-scope buttons). When ``require_admin_for_exec_approval`` is true only
+    ``allow_admin_from`` ids may click; on with no admins -> ``(True, set())`` (fail closed, log once).
+    """
+    extra = config_extra if isinstance(config_extra, dict) else {}
+    raw_toggle = extra.get("require_admin_for_exec_approval", False)
+    require_admin = str(raw_toggle).strip().lower() in {"true", "1", "yes"}
+    if not require_admin:
+        return (False, set())
+    try:
+        from gateway.slash_access import _coerce_id_list
+        admin_ids = set(_coerce_id_list(extra.get("allow_admin_from")))
+    except Exception:
+        admin_ids = set()
+    return (True, admin_ids)

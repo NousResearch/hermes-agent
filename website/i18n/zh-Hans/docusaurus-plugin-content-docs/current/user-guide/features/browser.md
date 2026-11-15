@@ -207,7 +207,7 @@ browser:
 
 禁用自动路由后，私有 URL 将被拒绝并返回 `"Blocked: URL targets a private or internal address"`，除非同时设置 `browser.allow_private_urls: true`（允许云端提供商尝试访问，但通常无法成功，因为 Browserbase 等无法访问您的 LAN）。
 
-辅助进程就是[上文](#local-chromium-default)所述的本地 Chromium，因此需要安装该 Chromium。从公网 URL 导航后重定向到私有地址的情况仍会被阻止（无法通过公网路径的重定向访问 LAN）。
+辅助进程就是[上文](#local-chromium-default)所述的本地 Chromium，因此需要安装该 Chromium。
 
 ## 真实 profile 浏览（使用您自己的登录状态） {#real-profile-browsing-use-your-own-logins}
 

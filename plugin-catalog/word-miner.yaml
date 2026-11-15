@@ -1,0 +1,32 @@
+name: word-miner
+repo: https://github.com/trenthalden/word-miner
+sha: "510119b9ffd48eedbc007791e4edf4b809c45c1f"
+description: >
+  Turn any text you are consuming (lyrics, subtitles, articles, chat) into a
+  personal vocabulary deck and run short daily spaced-repetition sessions inside
+  Hermes. Any language pair. Local only — SQLite event log, SM-2-like scheduler
+  with response-time adjustment, 3+3+3+1 sessions, two-stage graduation. No Anki,
+  no AnkiConnect, no network. The model extracts lemmas; four tools plus /deck
+  and a bundled mining skill. Disclosure — stores decks and review history under
+  HERMES_HOME/plugin-data/word-miner; no outbound calls, no shell, no credentials.
+maintainer: trenthalden
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/trenthalden/word-miner#readme
+image: https://raw.githubusercontent.com/trenthalden/word-miner/510119b9ffd48eedbc007791e4edf4b809c45c1f/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/trenthalden/word-miner/510119b9ffd48eedbc007791e4edf4b809c45c1f/assets/shot-1.png
+  - https://raw.githubusercontent.com/trenthalden/word-miner/510119b9ffd48eedbc007791e4edf4b809c45c1f/assets/shot-2.png
+  - https://raw.githubusercontent.com/trenthalden/word-miner/510119b9ffd48eedbc007791e4edf4b809c45c1f/assets/shot-3.png
+version: "0.1.2"
+platforms: [macos, linux, windows]
+capabilities:
+  provides_tools:
+    - deck_add_words
+    - deck_session
+    - deck_grade
+    - deck_stats
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

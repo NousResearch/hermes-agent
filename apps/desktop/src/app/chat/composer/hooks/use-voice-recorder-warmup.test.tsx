@@ -120,6 +120,28 @@ describe('useVoiceRecorder STT readiness barrier', () => {
     )
   }
 
+  it('does not reopen the dictation lease after unmount during detector startup', async () => {
+    vi.useFakeTimers()
+    const ready = Promise.withResolvers<void>()
+    micHandle.start.mockImplementationOnce(() => ready.promise)
+    const transcribe = vi.fn(async () => 'hello')
+    const hook = renderRecorder(transcribe)
+
+    try {
+      act(() => hook.result.current.dictate())
+      hook.unmount()
+      await act(async () => {
+        ready.resolve()
+        await Promise.resolve()
+      })
+
+      expect(syncSttLeaseSpy).not.toHaveBeenCalledWith('desktop:voice-input:test', true, OWNER_A)
+      expect(transcribe).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not submit the clip to transcription while the mic-open warm-up is still settling', async () => {
     // Model the cold load: the acquire stays on the wire after the mic opens.
     let settleWarmup!: () => void

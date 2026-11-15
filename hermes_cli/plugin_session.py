@@ -30,6 +30,17 @@ def session_surface() -> str:
     return get_session_env("HERMES_SESSION_PLATFORM", "")
 
 
+def session_client() -> dict | None:
+    """The client that created the calling local session, as it declared itself on ``session.create``:
+    a copy of ``{"name": ..., "version": ...}`` (``version`` only when sent). ``None`` outside a local
+    session, for a messaging chat, and for a client that sent no ``client`` (Ink, Desktop, the CLI and
+    ACP today). A label the client chose, not an authentication: never grant anything on it.
+    Under ``plugins.isolation: host`` the plugin's own process has no session context; read
+    ``info["client"]`` in a prompt section there."""
+    from gateway.session_client import policy_client
+    return policy_client(_active_policy())
+
+
 def session_cwd() -> str:
     """The calling session's recorded working directory (a local session's workspace, else the
     profile's terminal cwd), ``""`` when it has none. Never the gateway process's own cwd.

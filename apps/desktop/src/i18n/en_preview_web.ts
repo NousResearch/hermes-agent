@@ -54,5 +54,15 @@ export const enPreviewWeb: Translations['preview']['web'] = {
   commentPlaceholder: 'Add a comment...',
   commentTitle: n => `Comment ${n}`,
   saveComment: 'Save',
-  cancelComment: 'Cancel comment'
+  cancelComment: 'Cancel comment',
+  vaultFill: 'Fill a saved login',
+  vaultTitle: site => `Saved logins for ${site}`,
+  vaultLoading: 'Loading saved logins…',
+  vaultEmpty: 'No saved login for this site',
+  vaultUnlock: name => `Unlock ${name}`,
+  vaultOpenSettings: 'Open Credential Vault settings',
+  vaultFilled: label => `Filled ${label}. Review the form, then sign in.`,
+  vaultFillFailed: 'Could not fill the login',
+  vaultLoadFailed: 'Could not load saved logins',
+  vaultPageNotReady: 'The page is still loading. Try again when it has finished.'
 }

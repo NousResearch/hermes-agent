@@ -1,11 +1,11 @@
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
+import { TUI_SESSION_MODEL_FLAG } from '@hermes/shared/slash-input'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type * as EnvModule from '../config/env.js'
-import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import { applyLocale, resetLocale, t } from '../i18n/runtime.js'
 import * as ClipboardModule from '../lib/clipboard.js'
 import * as Osc52Module from '../lib/osc52.js'
@@ -1121,6 +1121,47 @@ describe('createSlashHandler', () => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('/tmp/hermes_conversation_test.json'))
     })
   })
+
+  it.each(['md notes.md redact', 'json --redact', 'json out.json', 'html'])(
+    '/save %s on a gateway without session.export refuses instead of writing raw JSON on its host',
+    arg => {
+      patchUiState({ sid: 'sid-abc' })
+
+      const rpc = vi.fn(() => Promise.resolve({ file: '/gateway/host/hermes_conversation.json' }))
+
+      const ctx = buildCtx({
+        gateway: { ...buildGateway(), rpc },
+        local: { ...buildLocal(), getHistoryItems: vi.fn(() => [{ role: 'user', text: 'hello' }]) }
+      })
+
+      createSlashHandler(ctx)(`/save ${arg}`)
+
+      expect(rpc).not.toHaveBeenCalled()
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('not saved'))
+    }
+  )
+
+  it.each(['', 'JSON', 'snapshot'])(
+    '/save %s on a gateway without session.export still saves raw JSON on its host and says so',
+    async arg => {
+      patchUiState({ sid: 'sid-abc' })
+
+      const file = '/gateway/host/hermes_conversation.json'
+      const rpc = vi.fn(() => Promise.resolve({ file }))
+
+      const ctx = buildCtx({
+        gateway: { ...buildGateway(), rpc },
+        local: { ...buildLocal(), getHistoryItems: vi.fn(() => [{ role: 'user', text: 'hello' }]) }
+      })
+
+      createSlashHandler(ctx)(`/save ${arg}`.trim())
+
+      expect(rpc).toHaveBeenCalledWith('session.save', { session_id: 'sid-abc' })
+      await vi.waitFor(() => {
+        expect(ctx.transcript.sys).toHaveBeenCalledWith(t('slashCmd.core.save.savedOnHost', file))
+      })
+    }
+  )
 
   it('/save reports empty state without calling the RPC or slash worker', () => {
     const rpc = vi.fn(() => Promise.resolve({}))

@@ -219,6 +219,7 @@ def launch_lightpanda(session_name: str, *, block_private_networks: bool = False
     try:
         with open(log_path, "wb") as log_file:
             proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    # detached-spawn: ok — a crashed owner's server is reaped from its state record by the next Hermes (reap_orphaned_lightpanda); owning it is a follow-up with the launcher's Chromium
                                     stderr=log_file, env=_browser_env(), start_new_session=True)
     except (OSError, subprocess.SubprocessError) as e:
         return None, f"Failed to launch lightpanda serve ({binary}): {e}"

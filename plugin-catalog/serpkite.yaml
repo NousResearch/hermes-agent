@@ -1,0 +1,17 @@
+name: serpkite
+title: SerpKite
+repo: https://github.com/SerpKite/serpkite-hermes-plugin
+sha: d1f81443140ee693c416ca428ac698c299430520
+description: "SerpKite web search and extract provider for Hermes Agent. Google web results through /v1/search and pages as Markdown through /v1/webpage. Requires SERPKITE_API_KEY (https://app.serpkite.com/keys). Disclosure — Sends the search queries and the URLs the agent issues to SerpKite's API at `api.serpkite.com`, authenticated with `SERPKITE_API_KEY`."
+maintainer: SerpKite
+tier: community
+category: web
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/SerpKite/serpkite-hermes-plugin#readme
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - SERPKITE_API_KEY

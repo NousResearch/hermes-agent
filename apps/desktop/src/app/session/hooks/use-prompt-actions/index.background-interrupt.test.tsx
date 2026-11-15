@@ -1,4 +1,4 @@
-import { cleanup } from '@testing-library/react'
+import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getLatestSessionMessages } from '@/hermes'
@@ -74,6 +74,7 @@ describe('usePromptActions background processes: interrupt vs rewind', () => {
     $busy.set(false)
     $backgroundStatusBySession.set({})
     $gateway.set(null)
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -112,6 +113,42 @@ describe('usePromptActions background processes: interrupt vs rewind', () => {
     const rows = $backgroundStatusBySession.get()[RUNTIME_SESSION_ID] ?? []
 
     expect(rows.map(row => [row.id, row.state])).toEqual([[procId, 'running']])
+  })
+
+  it('cancelRun preserves queued text before interrupting a turn with parked timers', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const handle = await mount(requestGateway)
+    await handle.submitText('stream until stopped')
+    vi.useFakeTimers()
+    vi.spyOn(performance, 'now').mockReturnValue(0)
+
+    handle.handleEvent({ type: 'message.start', session_id: RUNTIME_SESSION_ID, payload: {} })
+    handle.handleEvent({
+      type: 'message.delta',
+      session_id: RUNTIME_SESSION_ID,
+      payload: { text: 'received before Stop' }
+    })
+    expect(handle.state().messages.at(-1)?.role).toBe('user')
+
+    await handle.cancelRun()
+
+    expect(handle.state()).toMatchObject({ busy: false, interrupted: true, streamId: null })
+    expect(handle.state().messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      pending: false,
+      parts: [expect.objectContaining({ type: 'text', text: 'received before Stop' })]
+    })
+    handle.handleEvent({
+      type: 'message.delta',
+      session_id: RUNTIME_SESSION_ID,
+      payload: { text: ' late straggler' }
+    })
+    act(() => vi.advanceTimersByTime(400))
+    expect(handle.state().messages.at(-1)?.parts).toEqual([
+      expect.objectContaining({ type: 'text', text: 'received before Stop' })
+    ])
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
+    expect(killed()).toBe(false)
   })
 
   it('reloadFromMessage (regenerate) kills processes from the truncated turns', async () => {

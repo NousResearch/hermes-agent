@@ -177,7 +177,7 @@ def _mode_guidance_notes(job: dict[str, Any], user_deliver: Optional[str]) -> li
             parts = target.strip().split(":")
             if (
                 len(parts) == 2
-                and parts[0] not in ("bot-chat", "sms")
+                and parts[0] not in ("bot-chat", "room", "sms")
                 and parts[1]
                 and not parts[1].startswith("#")):
                 notes.append(
@@ -470,7 +470,7 @@ def _validate_context_from_refs(refs: list[Any]) -> Optional[str]:
 # Optional fields echoed by _format_job only when truthy (order = JSON key order).
 _FORMAT_JOB_OPTIONAL_KEYS = (
     "script", "reasoning_effort", "monitor_script", "monitor_url",
-    "monitor_state", "no_agent", "enabled_toolsets", "workdir", "interpreter")
+    "monitor_state", "no_agent", "enabled_toolsets", "workdir", "interpreter", "timezone")
 
 
 def _format_job(job: dict[str, Any]) -> dict[str, Any]:

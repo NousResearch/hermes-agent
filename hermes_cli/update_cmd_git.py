@@ -526,6 +526,20 @@ def _checkout_rejected_by_git(stderr: str, git_cmd, root: Path) -> bool:
         os.path.realpath(root))
 
 
+def _enclosing_repo_of_checkout(git_cmd, root: Path) -> Optional[str]:
+    """The other repository git resolves *root* to, or None when git sees *root* itself (or cannot run).
+
+    With a damaged ``.git`` git walks up to the nearest enclosing repository (a git-managed home
+    directory), and every stash, reset and clean would then run on the user's files there (#146032).
+    """
+    top = _git_run(git_cmd, ["rev-parse", "--show-toplevel"], cwd=root)
+    found = top.stdout.strip()
+    if top.returncode != 0 or not found:
+        return None
+    same = os.path.normcase(os.path.realpath(found)) == os.path.normcase(os.path.realpath(root))
+    return None if same else found
+
+
 # Ordered (predicate, diagnosis): curl reports HTTP errors as ``unable to access '<url>': ... error: 429``,
 # so rate-limit/outage checks must run BEFORE the generic "unable to access" check. An anonymous fetch
 # answered with HTTP 401 ("could not read Username") is GitHub during an outage (or a renamed/private
@@ -593,24 +607,36 @@ def _git_is_trampoline(git_cmd: list) -> bool:
     report False so a probe failure can't block an update.
 
     Git for Windows ships two ~46KB shims (``bin\\git.exe``, ``cmd\\git.exe``) that re-exec the real
-    ``mingw64\\libexec\\git-core\\git.exe``. See #87876.
+    ``<prefix>\\libexec\\git-core\\git.exe`` (``ucrt64`` from 2.56 on x64, ``mingw64`` before). See #87876.
     """
     return _probe_fork_bomb(git_cmd) is True
 
 
 def _portable_git_candidates() -> list:
-    """PortableGit candidates: shared root first (where the managed tree actually lives, not the
-    profile-scoped HERMES_HOME), then profile home as a fallback for custom layouts.
+    """PortableGit candidates: legacy ``<root>/git`` trees (shared root first, then profile home), then
+    the pm store entries ``<store>/git-<version>-<target>/`` newest first, each under every MSYS2 prefix.
 
-    The Hermes-managed PortableGit tree lives under the SHARED root (``<root>/git/...``), not the
-    profile-scoped HERMES_HOME (``<root>/profiles/<name>``), so a profile-scoped ``hermes update`` must look
-    there (monerostar review, #87876).
+    Pre-pm trees lived under the SHARED root (``<root>/git/...``), not the profile-scoped HERMES_HOME
+    (``<root>/profiles/<name>``), so a profile-scoped ``hermes update`` must look there (monerostar
+    review, #87876). install.ps1 (``Get-PinnedGit``) and pm stage the managed tree in the store.
     """
     from hermes_constants import get_default_hermes_root, get_hermes_home
-    candidates = []
+    trees = []
     with suppress(Exception):
-        candidates += [root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe" for root in (get_default_hermes_root(), Path(get_hermes_home()))]
-    return candidates
+        trees += [root / "git" for root in (get_default_hermes_root(), Path(get_hermes_home()))]
+    with suppress(Exception):  # install.ps1 and pm stage it at <store>/git-<version>-<target>/
+        import re
+        from pm.paths import store_root
+        trees += sorted(
+            store_root().glob("git-*-win32-*"),
+            key=lambda entry: [int(n) for n in re.findall(r"\d+", entry.name)],  # 2.56.10 before 2.56.9
+            reverse=True,
+        )
+    return [
+        tree / prefix / "libexec" / "git-core" / "git.exe"
+        for tree in trees
+        for prefix in ("ucrt64", "clangarm64", "mingw64")
+    ]
 
 
 def _locate_real_git() -> Optional[Path]:
@@ -625,7 +651,7 @@ def _locate_real_git() -> Optional[Path]:
     candidates = [
         Path(base) / "Git" / arch / "libexec" / "git-core" / "git.exe"
         for base in (r"C:\Program Files", r"C:\Program Files (x86)")
-        for arch in ("clangarm64", "mingw64", "mingw32")
+        for arch in ("clangarm64", "ucrt64", "mingw64", "mingw32")
     ] + _portable_git_candidates()
     return next((c for c in candidates if c.exists() and _probe_fork_bomb([str(c)]) is False), None)
 
@@ -645,42 +671,17 @@ def _ensure_non_trampoline_git(git_cmd: list) -> list:
     return [str(real_git)] + list(git_cmd[1:])
 
 
-def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
-    """Manifest directories whose specs the single root ``package-lock.json`` records: the root plus every
-    workspace from the root ``workspaces`` globs (same model as ``update_cmd_deps._npm_manifest_paths``).
-    A manifest outside that graph (``website/``, ``scripts/whatsapp-bridge/``) has its own lockfile."""
-    owners = {Path(".")}
-    try:
-        import json
-        package = json.loads((repo_root / "package.json").read_text(encoding="utf-8-sig"))
-        workspaces = package.get("workspaces", [])
-        if isinstance(workspaces, dict):
-            workspaces = workspaces.get("packages", [])
-        if not isinstance(workspaces, list):
-            return owners
-        for pattern in workspaces:
-            # One bad glob (absolute pattern -> NotImplementedError) degrades to "not an owner"
-            # instead of aborting the whole churn cleanup through the caller's suppress(Exception).
-            with suppress(Exception):
-                for directory in repo_root.glob(str(pattern)):
-                    if (directory / "package.json").is_file():
-                        owners.add(directory.relative_to(repo_root))
-    except (OSError, ValueError, TypeError):
-        pass
-    return owners
-
-
 def _no_move(*_targets, **_bound):
     """The ``checkout_move`` of a run with no paused gateways: the step runs unbound."""
     return nullcontext({})
 
 
 def _discard_lockfile_churn(git_cmd, repo_root, *, checkout_move=None):
-    """Restore ``package-lock.json`` files npm rewrote non-deterministically, so the update sees a clean tree
-    instead of autostashing every run. A lockfile is kept when a manifest it records is dirty: for the root
-    lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty ``apps/desktop``
-    manifest desyncs spec and lock and every later ``npm ci`` fails, #112378); a nested lock is kept only
-    with its sibling manifest. Best-effort."""
+    """Restore ``package-lock.json`` files npm rewrote non-deterministically (the npm projects: WhatsApp
+    bridge, Photon sidecar), so the update sees a clean tree instead of autostashing every run. A lock is
+    kept when its sibling ``package.json`` is dirty: reverting it alone desyncs spec and lock and every
+    later ``npm ci`` fails (#112378). ``pnpm-lock.yaml`` is never touched: pnpm's frozen installs do not
+    rewrite it, so a change there is the user's own. Best-effort."""
     from hermes_cli.update_cmd_git import _git_run
     with suppress(Exception):
         diff = _git_run(git_cmd, ["diff", "--name-only"], repo_root)
@@ -688,17 +689,8 @@ def _discard_lockfile_churn(git_cmd, repo_root, *, checkout_move=None):
             return
         changed = [line.strip() for line in diff.stdout.splitlines()]
         dirty_manifests = {Path(p).parent for p in changed if p.endswith("package.json")}
-        root_owners = _npm_lockfile_owners(Path(repo_root))
-        dirty = []
-        for path in changed:
-            if not path.endswith("package-lock.json"):
-                continue
-            lock_dir = Path(path).parent
-            protected = (lock_dir == Path(".") and bool(dirty_manifests & root_owners)) or (
-                lock_dir != Path(".") and lock_dir in dirty_manifests
-            )
-            if not protected:
-                dirty.append(path)
+        dirty = [path for path in changed
+                 if path.endswith("package-lock.json") and Path(path).parent not in dirty_manifests]
         if not dirty:
             return
         with (checkout_move or _no_move)(paths=dirty):

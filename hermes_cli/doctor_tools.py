@@ -1,4 +1,4 @@
-"""External-tool checks for hermes doctor: terminal backends, git/rg, Node + Chromium, npm audit, tool availability.
+"""External-tool checks for hermes doctor: terminal backends, git/rg, Node + Chromium, pnpm/npm audit, tool availability.
 Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_cli.doctor.<name>`` keeps resolving (and monkeypatching)."""
 
 from __future__ import annotations
@@ -387,29 +387,34 @@ def _plural(n: int) -> str:
     return "vulnerability" if n == 1 else "vulnerabilities"
 
 
-def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], manual_issues: list[str]) -> None:
-    """Run one `npm audit --json` and report; any failure is silently skipped.
+def _audit_one(tool: str, cwd, label: str, audit_extra: list[str], manual_issues: list[str]) -> None:
+    """Run one `pnpm audit --json` / `npm audit --json` and report; any failure is silently skipped.
 
     Every row here audits a tree whose versions come from a COMMITTED lockfile
-    (`npm ci` in `_run_npm_install_deterministic` reifies exactly that state on
-    every `hermes update`), so a local `npm audit fix` never persists — the next
-    update's deterministic install restores the pinned (vulnerable) versions and
-    the finding reappears. The durable remedy in every case is a lockfile bump
-    on main (update `package-lock.json` and ship it); the doctor therefore never
-    prescribes a local mutating fix command. See #116774.
+    (the frozen install every `hermes update` runs reifies exactly that state),
+    so a local `audit --fix` never persists — the next update's deterministic
+    install restores the pinned (vulnerable) versions and the finding reappears.
+    The durable remedy in every case is a lockfile bump on main (update
+    `pnpm-lock.yaml` / `package-lock.json` and ship it); the doctor therefore
+    never prescribes a local mutating fix command. See #116774.
     """
     import json
     from hermes_constants import with_hermes_node_path
+    from pm.packages import pnpm_env
+    env = with_hermes_node_path()
+    if audit_extra:  # pnpm rows: its state and metadata cache stay Hermes-owned, not in the user's XDG dirs
+        env = pnpm_env(env)
     try:
         # Resolved absolute path so Windows can execute npm.cmd (CreateProcessW can't run bare .cmd names).
-        audit_result = subprocess.run([npm_bin, "audit", "--json", *audit_extra], cwd=str(npm_dir),
+        audit_result = subprocess.run([tool, "audit", "--json", *audit_extra], cwd=str(cwd),
                                       capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
-                                      env=with_hermes_node_path(), check=False)
-        audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
-        counts = audit_data.get("metadata", {}).get("vulnerabilities", {})
+                                      env=env, check=False)
+        # A failed audit (no lockfile, registry without the audit endpoint) prints its error to stderr
+        # or as JSON without counts: never report that as "no known vulnerabilities".
+        counts = json.loads(audit_result.stdout)["metadata"]["vulnerabilities"]
         critical, high, moderate = (counts.get(k, 0) for k in ("critical", "high", "moderate"))
         total = critical + high + moderate
-        workspace_scoped = bool(audit_extra) and audit_extra[0] == "--workspace"
+        workspace_scoped = bool(audit_extra) and audit_extra[-1] != "."
         if total == 0:
             check_ok(f"{label} deps", "(no known vulnerabilities)")
         elif critical > 0 or high > 0:
@@ -417,10 +422,10 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], manual
                       " (the next `hermes update` reinstalls from the committed lockfile)")
             check_warn(f"{label} deps", f"({critical} critical, {high} high, {moderate} moderate — {remedy})")
             if workspace_scoped:
-                check_info("  ^ workspace audit includes runtime and build dependencies; if manual npm remediation "
-                           "errors with an arborist crash it's a known npm bug — clears via a lockfile bump")
+                check_info("  ^ workspace audit includes runtime and build dependencies")
             else:
-                check_info("  ^ runtime dependency tree; report/pin the fix in package-lock.json — see #116774")
+                lockfile = "pnpm-lock.yaml" if audit_extra else "package-lock.json"
+                check_info(f"  ^ runtime dependency tree; report/pin the fix in {lockfile} — see #116774")
             manual_issues.append(
                 f"{label} has {total} npm {_plural(total)}; wait for an upstream lockfile fix, then update "
                 "your installation (Docker: pull a rebuilt image; recreating the same image restores the same dependencies)"
@@ -433,37 +438,36 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], manual
 
 @doctor_check()
 def _check_npm_audit(should_fix: bool, f: Finding) -> None:
-    """npm audit per Node package tree (root, web/ui-tui workspaces, WhatsApp bridge).
+    """pnpm audit per installed workspace (root, web, ui-tui); npm audit for the WhatsApp bridge.
 
-    PROJECT_ROOT is audited with --workspaces=false so the apps/* glob (Electron, node-pty, ...) is never
-    resolved for a routine check; web and ui-tui via --workspace. The WhatsApp bridge may live under a writable
-    HERMES_HOME mirror rather than the (possibly read-only) Docker install tree, hence the shared resolver.
+    The workspaces are audited one --filter each, so the desktop app's tree (Electron, node-pty, ...) is
+    never part of a routine check (#38772). The WhatsApp bridge may live under a writable HERMES_HOME
+    mirror rather than the (possibly read-only) Docker install tree, hence the shared resolver.
     """
     from hermes_cli.doctor import PROJECT_ROOT
     staged = _pm_tool_path("npm")
     npm_bin = str(staged) if staged else (_safe_which("npm") if _is_termux() else None)
-    if npm_bin:
-        try:
-            # Each entry: (cwd, label, extra_audit_args) PROJECT_ROOT is audited with --workspaces=false so
-            # that the apps/* glob (which pulls in Electron, node-pty, etc.) is never resolved for a routine
-            # security check. The web and ui-tui workspaces are audited separately via --workspace flags.
-            # See #38772. The WhatsApp bridge may live under a writable HERMES_HOME mirror instead of the
-            # (possibly read-only) install tree in Docker — resolve it through the shared helper so we audit
-            # the dir that actually holds node_modules. See #49561.
-            from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
-            whatsapp_bridge_dir = resolve_whatsapp_bridge_dir()
-        except Exception:
-            whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
-        for npm_dir, label, audit_extra in (
-            # The root package.json itself (js-yaml, semver, eslint tooling). See #122223.
-            (PROJECT_ROOT, "Root npm package", ["--workspaces=false"]),
-            (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
-            (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
-            (whatsapp_bridge_dir, "WhatsApp bridge", []),
-        ):
-            # Workspace-scoped audits check the root node_modules; standalone dirs check their own.
-            if ((PROJECT_ROOT if audit_extra else npm_dir) / "node_modules").exists():
-                _audit_one(npm_bin, npm_dir, label, audit_extra, f.manual_issues)
+    # Termux has no pnpm: nothing installs the JS workspaces on device.
+    pnpm_bin = _pm_tool_path("pnpm")
+    try:
+        # The WhatsApp bridge may live under a writable HERMES_HOME mirror instead of the (possibly
+        # read-only) install tree in Docker — resolve it through the shared helper so we audit the dir
+        # that actually holds node_modules. See #49561.
+        from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+        whatsapp_bridge_dir = resolve_whatsapp_bridge_dir()
+    except Exception:
+        whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
+    for tool, tree, label, audit_extra in (
+        # The root package.json itself (js-yaml, semver, eslint tooling). See #122223.
+        (pnpm_bin, PROJECT_ROOT, "Root npm package", ["--filter", "."]),
+        # `{./X}...`: the workspace and the sibling workspaces it depends on (apps/shared, hermes-ink).
+        (pnpm_bin, PROJECT_ROOT / "web", "web workspace", ["--filter", "{./web}..."]),
+        (pnpm_bin, PROJECT_ROOT / "ui-tui", "ui-tui workspace", ["--filter", "{./ui-tui}..."]),
+        (npm_bin, whatsapp_bridge_dir, "WhatsApp bridge", []),
+    ):
+        # Only installed trees: pnpm links each installed workspace's own node_modules.
+        if tool and (tree / "node_modules").exists():
+            _audit_one(str(tool), PROJECT_ROOT if audit_extra else tree, label, audit_extra, f.manual_issues)
     if _is_termux():
         check_info("Termux compatibility fallbacks:")
         for note in _TERMUX_INSTALL_ALL_FALLBACK_NOTES:
@@ -473,7 +477,8 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
 @doctor_check("Could not check tool availability", "({e})")
 def _check_tool_availability(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import PROJECT_ROOT
-    sys.path.insert(0, str(PROJECT_ROOT))
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     available, unavailable = _apply_doctor_tool_availability_overrides(*check_tool_availability())
     # Web is split into search/extract readiness rows so an explicitly

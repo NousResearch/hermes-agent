@@ -83,8 +83,11 @@ def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any]
             key = _server_key(server_name)
         _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
         _record_cost_policy(server_name, config, key)
-        hints = _core._tool_read_only_hints.setdefault(key, {})
-        hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
+        # Reconnects retain handlers even when a tool disappears from tools/list.
+        # Missing metadata must fail closed, not preserve a stale read-only hint.
+        _core._tool_read_only_hints[key] = {
+            t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)
+        }
 
 
 def _warn_unknown_cost_keys(server_name: str, key, tool_names: list[str]) -> None:

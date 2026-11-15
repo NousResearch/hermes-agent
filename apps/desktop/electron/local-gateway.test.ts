@@ -21,6 +21,22 @@ test('the ensure client inherits the caller-scrubbed parent env, not the raw Des
   expect(JSON.parse(result.stdout)).toEqual({ leak: null, home: '/home/x/.hermes', own: '1' })
 })
 
+test('the ensure client never hands a dev renderer origin to the long-lived local gateway', async () => {
+  // A dev Desktop's own env names its renderer (HERMES_DESKTOP_DEV_SERVER). The gateway `ensure`
+  // starts outlives that session, and Desktop reaches it through main-process HTTP and Origin-less
+  // socket dials, so it needs no renderer origin; inherited, it would keep trusting that port.
+  const printEnv = ['-e', 'process.stdout.write(JSON.stringify(process.env.HERMES_DESKTOP_DEV_SERVER ?? null))']
+
+  const result = await runGatewayEnsure(
+    { command: process.execPath, args: printEnv, env: { HERMES_DESKTOP_DEV_SERVER: 'http://127.0.0.1:5174' }, shell: false },
+    process.cwd(),
+    '/home/x/.hermes',
+    { PATH: process.env.PATH ?? '', HERMES_DESKTOP_DEV_SERVER: 'http://127.0.0.1:5174' }
+  )
+
+  expect(JSON.parse(result.stdout)).toBeNull()
+})
+
 test('a shell-delegated ensure quotes a spaced Windows install path (#74064)', async () => {
   // cmd.exe cuts an unquoted `C:\Users\John Doe\...\hermes.cmd` at the first space.
   const spawned: string[] = []

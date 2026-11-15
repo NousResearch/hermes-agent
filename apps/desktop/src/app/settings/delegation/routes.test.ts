@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest'
 
 import type { DelegationModelMap } from '@/hermes'
 
-import { removeRoute, routeFromDraft, toggleProfileRoute, upsertRoute, validateRouteDraft } from './routes'
+import {
+  draftFromRoute,
+  removeRoute,
+  routeFromDraft,
+  toggleProfileRoute,
+  upsertRoute,
+  validateRouteDraft
+} from './routes'
 
 const route = (name: string, extra: Record<string, unknown> = {}) => ({
   name,
@@ -36,7 +43,15 @@ describe('route editing keeps a default while routes exist', () => {
   })
 
   it('refuses incomplete or clashing drafts; an edit keeps keys the dialog does not edit and names its source', () => {
-    const draft = { name: 'deep', description: '', provider: '', model: '', reasoning_effort: '', service_tier: '' }
+    const draft = {
+      name: 'deep',
+      description: '',
+      provider: '',
+      model: '',
+      reasoning_effort: '',
+      service_tier: '',
+      daybreak: false
+    }
 
     expect(validateRouteDraft(draft, ['deep'])).toEqual({
       name: 'duplicate',
@@ -65,5 +80,15 @@ describe('route editing keeps a default while routes exist', () => {
       base_url: 'http://127.0.0.1:8080/v1',
       api_key: '«redacted:sk-…1234»'
     })
+  })
+
+  it('stores Daybreak only as true, and turning it off drops the key', () => {
+    const stored = route('daybreak', { provider: 'openai-codex', model: 'gpt-6-sol', daybreak: true })
+    const draft = draftFromRoute(stored)
+
+    expect(draft.daybreak).toBe(true)
+    expect(routeFromDraft(draft, stored).daybreak).toBe(true)
+    expect('daybreak' in routeFromDraft({ ...draft, daybreak: false }, stored)).toBe(false)
+    expect(draftFromRoute(route('plain', { daybreak: 'yes' })).daybreak).toBe(false)
   })
 })

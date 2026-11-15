@@ -279,7 +279,11 @@ def _run_worker_turns(agent, frame, history):
     try:
         result = _run_task_turns(agent, frame, history, context)
         code = turn_exit_code(result, kanban_worker=True)
-        last_output = str(result.get('final_response') or '')[-500:] if isinstance(result, dict) else ''
+        if isinstance(result, dict):
+            # Redact before the tail cut: a cut through a PEM header or a token prefix
+            # leaves a body the redactor no longer recognises.
+            from hermes_cli import kanban_db as kb
+            last_output = kb.redact_review_value(str(result.get('final_response') or ''))[-500:]
         return result
     except Exception as exc:
         code = turn_exit_code(None, kanban_worker=True, **credential_failure_flags(exc))
@@ -310,6 +314,33 @@ def _record_worker_result(context, code, last_output):
             kb._append_event(conn, context['task_id'], 'worker_result',
                 {'pid': os.getpid(), 'claim_lock': context['claim_lock'], 'exit_code': code,
                  'last_output': last_output}, run_id=context['run_id'])
+
+
+def record_worker_loss(policy, reason, *, pid=None, bound=False):
+    """Append a run-scoped ``worker_lost`` event for this attempt to the card's board.
+
+    Dropped when the card has moved past the run (it says nothing about the current attempt).
+    Never raises: the caller's own loss handling must not depend on the board write.
+    """
+    try:
+        context = json.loads(policy.kanban_json or 'null')
+        if not context:
+            return
+        from hermes_cli.kanban_db_connect import connect_closing
+        from hermes_cli import kanban_db as kb
+        run_id = int(context['run_id'])
+        with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
+            row = conn.execute('SELECT status, current_run_id FROM tasks WHERE id=?',
+                               (context['task_id'],)).fetchone()
+            if row is None or row[0] != 'running' or row[1] != run_id:
+                return
+            kb._append_event(conn, context['task_id'], 'worker_lost',
+                             {'reason': str(reason)[:200], 'claim_lock': context['claim_lock'],
+                              'run_id': run_id, 'pid': pid, 'bound': bool(bound)},
+                             run_id=run_id)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception('kanban worker_lost record failed')
 
 
 def _bound_worker_matches(conn, context):

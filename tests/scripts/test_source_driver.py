@@ -137,6 +137,28 @@ def test_observer_preserves_no_desktop_and_refuses_incomplete_app(tmp_path):
     assert (release / "hermes").read_bytes() == b"incomplete fixture"
 
 
+def test_observer_judges_only_the_live_app_not_rollback_copies_beside_it(tmp_path):
+    # An update from a release whose raw Windows pack kept release/win-unpacked.bak
+    # (the stage-and-swap promotion never touches it) must be judged on the live
+    # win-unpacked the product launches; a rollback copy alone is no desktop at all.
+    driver = runpy.run_path(str(ASSETS / "source_driver.py"))
+    release = tmp_path / "source/apps/desktop/release"
+    for name in ("win-unpacked", "win-unpacked.bak", "win-unpacked.previous", "mac-arm64.previous"):
+        dist = release / name / "resources/app.asar.unpacked/dist"
+        dist.mkdir(parents=True)
+        (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+        (release / name / "Hermes.exe").write_bytes(b"MZ fixture")
+    assert driver["desktop_outputs"](tmp_path / "source") == [
+        release / "win-unpacked/resources/app.asar.unpacked/dist"]
+    driver["verify_products"](tmp_path / "source", "present")
+    (release / "win-unpacked/Hermes.exe").unlink()
+    with pytest.raises(RuntimeError, match="desktop executable is missing or empty"):
+        driver["verify_products"](tmp_path / "source", "present")
+    shutil.rmtree(release / "win-unpacked")
+    with pytest.raises(RuntimeError, match="desktop"):
+        driver["verify_products"](tmp_path / "source", "present")
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("fault,error", [
     ("uv-lock", "dependency generation is not current"),

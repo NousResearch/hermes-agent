@@ -66,7 +66,10 @@ def _side_scope(authority, policy, task_id):
     home = authority.profile_id
     profile = served_profile_name(home) if _is_routed_home(home) else ''
     with owner_scope(authority, hydrate_secrets=True), policy_scope(policy, authority=authority):
-        tokens = set_session_vars(session_key=task_id, session_id=task_id, cwd=policy.cwd, profile=profile)
+        # async_delivery=False: the side agent's answer is one ``*.complete`` event, and its bg_* session
+        # has no later turn to wake, so a background delegate_task joins in this run (#140569).
+        tokens = set_session_vars(session_key=task_id, session_id=task_id, cwd=policy.cwd, profile=profile,
+                                  async_delivery=False)
         try:
             # The session's workspace, as its own turns get it (#140665): mounted at /workspace in a
             # per-task container, or the session's own persistent workspace container (same digest).

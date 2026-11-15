@@ -52,6 +52,10 @@ class GatewayJob:
         self._status: int | None = None
         self._checked = 0.0
 
+    def extend_deadline(self, deadline: float) -> None:
+        """The ensure moved its deadline (a progressing slow start): keep polling the job until then."""
+        self._deadline = deadline
+
     def poll(self) -> int | None:
         if self._status is not None:
             return self._status

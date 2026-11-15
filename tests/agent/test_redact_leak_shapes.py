@@ -307,6 +307,14 @@ class TestGoogleOAuthCredentials:
         for out in _both_modes(text):
             assert out.startswith("backup-sk-\x1blearn-model-weights-final\n") and "Q7mZ2xW9rT4kL8vB" not in out, out
 
+    @pytest.mark.parametrize("key", ["gh" + "p_Lx7zP2\u200bmX9vLk4nRt8wYb1cDf6gHj3sA0",
+                                     "sk-" + "proj-Lx7zP2\u200bmX9vLk4nRt8wYb1cDf6gHj3sA0",
+                                     "1//" + "0gLx7z_P2\u200bmX9vLk4n-Rt8wYb1cDf6gHj3sA0"])
+    def test_split_key_after_a_line_ending_in_a_glued_identifier_is_masked(self, key):
+        text = "my-sk-learn-config.\n" + key
+        for out in _both_modes(text):
+            assert out.startswith("my-sk-learn-config.\n") and "mX9vLk4n" not in out, out
+
     @pytest.mark.parametrize("text", ["see /usr/lib/\x1bfoo/bar.so", "https://example.com/a\u200b/b/c",
                                       "v1//\x1bapi/" + "a" * 24])
     def test_paths_with_control_chars_kept(self, text):

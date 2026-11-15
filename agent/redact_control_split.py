@@ -67,13 +67,19 @@ def mask_control_split_tokens(text: str, mask_fn, prefix_re: re.Pattern,
     shadow, noise, orig_idx = _strip_shadow(text)
     if len(shadow) == len(text):
         return text
-    matches = []
-    for m in (sub_re or prefix_re).finditer(shadow):
+    matches, first = [], None
+    # A skipped glued run (``my-sk-learn-config.`` + a stripped ``\n``) can run on into the next line
+    # and swallow a key there that ``finditer`` then never yields. ``prefix_re``'s own candidates
+    # never start glued, so a second pass over them restores it, filling only the gaps between
+    # first-pass spans. Rescanning from the next field after each skip is quadratic on many short
+    # glued lines (``my-sk-a.\n`` x 10k: 10 s at 100k chars).
+    passes = [(sub_re, skip), (prefix_re, None)] if sub_re is not None else [(prefix_re, skip)]
+    for n, m, skip_fn in ((n, m, f) for n, (pattern, f) in enumerate(passes) for m in pattern.finditer(shadow)):
         body, body_start = m.group(1), m.start(1)
         start = orig_idx[body_start]
         end = orig_idx[m.end(1) - 1] + 1
         span = text[start:end]
-        if skip is not None and skip(m, "".join(
+        if skip_fn is not None and skip_fn(m, "".join(
                 c for k, c in enumerate(re.split(r"[\t\n\r]", span, maxsplit=1)[0]) if not noise[start + k])):
             continue
         # A span crossing a LINE boundary whose fragment already self-matches is a complete token
@@ -92,8 +98,15 @@ def mask_control_split_tokens(text: str, mask_fn, prefix_re: re.Pattern,
                 continue
         if (all(noise[start + k] or c in _TOKEN_BODY_CHARS for k, c in enumerate(span.rstrip("=")))
                 and (end >= len(text) or text[end] != "=")):
-            matches.append((start, end, mask_fn(body)))
+            if n == 0:
+                matches.append((start, end, mask_fn(body)))
+                continue
+            if first is None:
+                first = [(s, e) for s, e, _ in matches]  # sorted and disjoint: one finditer
+            i = bisect_left(first, (start, -1))
+            if not ((i < len(first) and first[i][0] < end) or (i and first[i - 1][1] > start)):
+                matches.append((start, end, mask_fn(body)))
     out = list(text)
-    for start, end, replacement in reversed(matches):
+    for start, end, replacement in sorted(matches, reverse=True):
         out[start:end] = list(replacement)
     return "".join(out)

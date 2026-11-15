@@ -42,6 +42,7 @@
         "gateway.platforms.base",
         "gateway.platforms.event",
         "gateway.platforms.helpers",
+        "gateway.platforms.send_targets:StandaloneSendPolicy",
         "gateway.status",
         "hermes_cli.auth_oauth_pkce_plugin",
         "hermes_cli.config",

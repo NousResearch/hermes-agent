@@ -6,7 +6,7 @@ import inspect
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from agent.auxiliary_client import AuxiliaryExplicitCancellation
+from agent.auxiliary_client import AuxiliaryExplicitCancellation, _aux_interrupt_cancel_requested, _capture_aux_cancel_check
 
 if TYPE_CHECKING:
     from agent.context_compressor import _HandoffScan
@@ -69,6 +69,8 @@ class SummaryDispatchMixin:
                     return content
             except Exception as exc:  # health: allow BLE001 -- warm path is an optimisation; the normal call below is the fallback
                 logger.warning("Warm-prefix summary call failed, using the normal summary call: %s", exc)
+            if self._compression_cancelled() or _aux_interrupt_cancel_requested():
+                raise AuxiliaryExplicitCancellation()  # a stopped compaction never falls back to a second call
         return self._call_summary_llm(messages, prompt_started_at)
 
     def _warm_prefix_summary(self, warm: Any, turns_to_summarize: list[dict[str, Any]], prompt_args: tuple) -> Optional[str]:
@@ -82,9 +84,11 @@ class SummaryDispatchMixin:
         instructions, source = (m["content"] for m in self._build_summary_prompt(
             pointer, summary_budget, focus_topic, memory_context, has_user_turn))
         log_budget = _LEAN_SESSION_LOG_BUDGET_TOKENS if getattr(self, "tail_mode", "lean") == "lean" else 0
+        host_cancel = _capture_aux_cancel_check()  # the dispatch's stop/fence check, bound to this thread
         reply, usage = ask_on_live_prefix(
             warm.agent, warm.history, f"{instructions}\n\n{source}", task=WARM_SUMMARY_TASK,
-            max_output_tokens=2 * (summary_budget + log_budget))
+            max_output_tokens=2 * (summary_budget + log_budget),
+            cancel_check=lambda: self._compression_cancelled() or bool(host_cancel and host_cancel()))
         if reply is None:
             return None
         logger.info(
@@ -93,9 +97,12 @@ class SummaryDispatchMixin:
                 "input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens")))
         if self._compression_cancelled():
             raise AuxiliaryExplicitCancellation()
-        return self._validated_summary_text(
-            reply, str(getattr(reply, "finish_reason", "") or "").lower(),
-            f"(warm prefix model={getattr(warm.agent, 'model', '?')})")
+        where = f"(warm prefix model={getattr(warm.agent, 'model', '?')})"
+        finish_reason = str(getattr(reply, "finish_reason", "") or "").lower()
+        # The normalized reply keeps an explicit provider refusal in provider_data, not on the message.
+        if (getattr(reply, "provider_data", None) or {}).get("refusal") or finish_reason == "content_filter":
+            raise RuntimeError(f"Context compression LLM returned refusal content {where}")
+        return self._validated_summary_text(reply, finish_reason, where)
 
     def _validated_summary_text(self, response: Any, finish_reason: str, where: str) -> str:
         """The summary text of ``response``; RuntimeError for an empty, refused or length-cut reply, so

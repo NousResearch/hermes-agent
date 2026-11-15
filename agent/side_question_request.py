@@ -296,13 +296,29 @@ def ask_text_only(
         _log_audit(audit)
 
 
+def _interrupt_on_cancel(fork: Any, cancel_check: Any, done: threading.Event) -> None:
+    """Interrupt ``fork``'s request once ``cancel_check()`` holds (a non-streamed call watches only
+    the fork's own interrupt flag)."""
+    while not done.wait(0.25):
+        try:
+            cancelled = bool(cancel_check())
+        except Exception:  # health: allow BLE001 -- a broken check must not kill the watcher; keep polling
+            logger.debug("warm-prefix cancel check failed", exc_info=True)
+            continue
+        if cancelled:
+            fork.interrupt(None, tool_reason="compression cancelled")
+            return
+
+
 def ask_on_live_prefix(
     agent: Any, history: list[dict[str, Any]], prompt: str, *, task: str, max_output_tokens: int,
+    cancel_check: Optional[Any] = None,
 ) -> tuple[Any, dict[str, Any]]:
     """One text-only request on a cache-parity fork of the live ``agent``: ``history`` (what its
     last request sent, plus that reply) with ``prompt`` appended as the final user message, so the
     request reads ``agent``'s warm prompt cache. ``(reply, usage)``: the normalized reply (None on
     refusal or a cancelled call) and the fork's usage, billed to ``agent``'s session as ``task``.
+    ``cancel_check()`` turning true (a stop, a host deadline) interrupts the in-flight request.
     Errors propagate; the fork is released either way."""
     from agent.background_review import release_cache_parity_fork
 
@@ -313,11 +329,17 @@ def ask_on_live_prefix(
         _log_audit(audit)
         return None, {}
     fork = _build_fork(agent)
+    done = threading.Event()
+    if cancel_check is not None:
+        from agent.memory_provider import spawn_context_thread
+
+        spawn_context_thread(lambda: _interrupt_on_cancel(fork, cancel_check, done), name="warm-prefix-cancel").start()
     try:
         reply = _send(fork, history, prompt, audit, turn_id=str(getattr(agent, "_current_turn_id", None) or task),
                       aux_task=task, max_output_tokens=max_output_tokens)
         audit.outcome = "ok" if reply is not None else audit.outcome
     finally:
+        done.set()
         audit.usage = release_cache_parity_fork(agent, fork, task=task)
         _log_audit(audit)
     return reply, audit.usage

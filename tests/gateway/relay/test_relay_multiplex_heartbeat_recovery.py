@@ -4,6 +4,7 @@ import json
 import pytest
 
 from gateway.runtime_ownership import process_ownership
+from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.relay.test_relay_native_recovery_and_passthrough import (
     _Connector, _multiplexed_runner, _reserve_homes, _rows, _stub_turns, _wired_relay, websockets,
 )
@@ -13,8 +14,8 @@ from tests.waiting import async_wait_until
 def _replace_connector(authority) -> None:
     payload = _rows(authority)[0]['payload']
     payload['native_text_v1']['provenance']['connector'] = 'replaced-connector'
-    with authority.db._conn:
-        authority.db._conn.execute('UPDATE session_admissions SET payload_json=?', (json.dumps(payload),))
+    raw_holder(authority.persistence)._execute_write(
+        lambda conn: conn.execute('UPDATE session_admissions SET payload_json=?', (json.dumps(payload),)))
 
 
 @pytest.mark.asyncio
@@ -62,6 +63,6 @@ async def test_settled_multiplex_relay_heartbeat_restores_verified_owner(tmp_pat
                             assert seen == [], 'unverified admission provenance authorized a Relay fallback'
             finally:
                 for authority in list(runner.session_authorities):
-                    authority.db.close()
+                    authority.persistence.close()
                 for _, home in homes:
                     process_ownership.release(home)

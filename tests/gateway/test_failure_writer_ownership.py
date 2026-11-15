@@ -550,7 +550,7 @@ def test_turn_built_without_a_session_db_still_reaches_state_db(tmp_path):
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="nodb", user_id="u")
         entry = store.get_or_create_session(source)
         sid = entry.session_id
-        db = store._db_for_session_id(sid)
+        db = store._persistence_for_session_id(sid)
         # What the turn runner now returns for an agent built without a handle.
         result = {
             "failed": False, "final_response": "ok", "messages": [
@@ -568,10 +568,10 @@ def test_turn_built_without_a_session_db_still_reaches_state_db(tmp_path):
             response="ok", agent_failed_early=False, hidden_reasoning_incomplete=False,
             is_context_overflow_failure=False,
         )
-        rows = [m for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        rows = [m for m in transcript_rows(db, sid) if m["role"] != "session_meta"]
         assert [(m["role"], m["content"]) for m in rows] == [("user", "hello"), ("assistant", "ok")]
         assert rows[0]["platform_message_id"] == "m-9"
-        db.close()
+        close_stores_under(db.scope.profile_dir)
 
     asyncio.run(check())
 
@@ -609,7 +609,7 @@ def test_failed_agent_flush_with_handle_falls_back_to_gateway_writer(tmp_path):
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="failed-flush", user_id="u")
         entry = store.get_or_create_session(source)
         sid = entry.session_id
-        db = store._db_for_session_id(sid)
+        db = store._persistence_for_session_id(sid)
         result = {
             "failed": True,
             "failure_reason": "session_persistence_failed:locked",
@@ -629,12 +629,12 @@ def test_failed_agent_flush_with_handle_falls_back_to_gateway_writer(tmp_path):
             response="", agent_failed_early=True, hidden_reasoning_incomplete=False,
             is_context_overflow_failure=False,
         )
-        rows = [m for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        rows = [m for m in transcript_rows(db, sid) if m["role"] != "session_meta"]
         assert [m["role"] for m in rows] == ["user", "assistant"]
         assert rows[0]["content"] == "please remember"
         assert rows[0]["platform_message_id"] == "m-locked"
         assert rows[1]["display_kind"] == FAILED_TURN_DISPLAY_KIND
-        db.close()
+        close_stores_under(db.scope.profile_dir)
 
     asyncio.run(check())
 
@@ -665,8 +665,8 @@ def test_failed_tool_round_after_turn_start_flush_writes_the_user_row_once(tmp_p
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="tool-round", user_id="u")
         entry = store.get_or_create_session(source)
         sid = entry.session_id
-        db = store._db_for_session_id(sid)
-        db.append_message(sid, "user", "watch fired")  # the agent's turn-start flush
+        db = store._persistence_for_session_id(sid)
+        _append(db, sid, "user", "watch fired")  # the agent's turn-start flush
         messages = [{"role": "user", "content": "watch fired", "_db_persisted": True},
                     {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]}]
         failed = {"failure_reason": "session_persistence_failed:locked", "messages": messages}
@@ -681,9 +681,9 @@ def test_failed_tool_round_after_turn_start_flush_writes_the_user_row_once(tmp_p
             response="", agent_failed_early=True, hidden_reasoning_incomplete=False,
             is_context_overflow_failure=False,
         )
-        rows = [m for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        rows = [m for m in transcript_rows(db, sid) if m["role"] != "session_meta"]
         assert [(m["role"], m["content"]) for m in rows if m["role"] == "user"] == [("user", "watch fired")]
         assert rows[-1]["display_kind"] == FAILED_TURN_DISPLAY_KIND
-        db.close()
+        close_stores_under(db.scope.profile_dir)
 
     asyncio.run(check())

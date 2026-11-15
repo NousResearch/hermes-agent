@@ -1,0 +1,3874 @@
+{
+ "agent.agent_cache.idle_ttl_secs": {
+  "label": "缓存空闲过期",
+  "desc": "缓存中的智能体空闲超过该秒数即被淘汰。默认 3600。"
+ },
+ "agent.agent_cache.max_evictions_per_pass": {
+  "label": "单次最多淘汰数",
+  "desc": "每次内存清理最多卸载的会话数，避免集中清理卡住网关。默认 16。"
+ },
+ "agent.agent_cache.max_size": {
+  "label": "智能体缓存上限",
+  "desc": "网关中按会话缓存的智能体实例数（LRU 上限）；缓存保留热提示前缀与完整对话。默认 128。"
+ },
+ "agent.agent_cache.memory_high_mb": {
+  "label": "缓存内存高水位",
+  "desc": "匿名内存（RSS）超过该 MB 数时卸载最久未用的会话记录（下轮从磁盘重载）；auto-按 cgroup 内存限制或总内存推算，数字-显式指定，0/off-关闭该清理。"
+ },
+ "agent.agent_cache.protect_recent": {
+  "label": "保护最近会话数",
+  "desc": "内存清理时始终不触碰的最近使用会话数量。默认 8。"
+ },
+ "agent.api_max_retries": {
+  "label": "API 最大重试次数",
+  "desc": "API 出错（断连、超时、5xx）时 PDR 智能体层面的重试次数；设为 1 可更快切换到备用提供商。默认 3。"
+ },
+ "agent.auto_recovery_cycles": {
+  "label": "自动恢复轮次",
+  "desc": "重试与备用链都用尽且尚无输出时，再自动等待并重试的轮数（带倒计时，可按 Esc 中止）；鉴权/计费等错误不进入。0 表示关闭。默认 5。"
+ },
+ "agent.bot_mode_protocol": {
+  "label": "Bot 模式协议说明",
+  "desc": "在系统提示中加入 Bot 模式队友消息协议段（仅在桌面端 Bot 模式管理时生效）。默认开启。"
+ },
+ "agent.budget_warning_ratio": {
+  "label": "轮数预警比例",
+  "desc": "轮数上限即将耗尽前，向模型发送一次性预警的比例（0~1 之间，如 0.75）；留空表示关闭。"
+ },
+ "agent.build_wait_timeout": {
+  "label": "智能体构建等待上限",
+  "desc": "提交的提示等待延迟构建（MCP 发现、模型元数据、技能扫描）完成的最长秒数，超时则明确报错。默认 600。"
+ },
+ "agent.clarify_timeout": {
+  "label": "澄清问题等待时限",
+  "desc": "智能体通过澄清工具提问后等待用户回复的最长秒数，超时则以“用户未在规定时间内回复”继续；0 或负数为不限制。默认 90。"
+ },
+ "agent.coding_context": {
+  "label": "编程上下文模式",
+  "desc": "在交互式编程界面中为系统提示加入编程简报与 git/工作区快照：auto-交互且当前目录是代码仓库时启用，focus-auto 基础上精简为编程工具集，on-处处强制，off-关闭。"
+ },
+ "agent.coding_instructions": {
+  "label": "编程常驻指令",
+  "desc": "附加到编程简报后的常驻指令（字符串或列表），如项目级工作流规则；下一会话生效，不破坏提示缓存。"
+ },
+ "agent.cron_drain_timeout": {
+  "label": "定时任务排空时限",
+  "desc": "停止/排空时为定时任务与 api_server 运行保留的最短等待秒数（被中断的定时任务会记为失败）；0 表示不保留。默认 30。"
+ },
+ "agent.daybreak": {
+  "label": "Daybreak 网络安全通道",
+  "desc": "在 ChatGPT/Codex 订阅中启用 OpenAI Daybreak（可信网络安全访问），仅对账号目录中列出的模型生效，本身不授予权限。默认关闭。"
+ },
+ "agent.disabled_toolsets": {
+  "label": "禁用的工具集",
+  "desc": "从主智能体中排除的工具集名称列表。默认空。"
+ },
+ "agent.empty_response_guard.cost_threshold_usd": {
+  "label": "空响应成本阈值",
+  "desc": "单次空响应估算输入成本 ≥ 该美元数时，重试次数从 3 次降为 1 次。默认 0.25。"
+ },
+ "agent.empty_response_guard.enabled": {
+  "label": "空响应重试保护",
+  "desc": "开启时对确定性空响应（无声拒答、零输出 token）减少重试以免重复计费；关闭则恢复无条件重试 3 次。默认开启。"
+ },
+ "agent.environment_hint": {
+  "label": "环境提示文本",
+  "desc": "追加到系统提示环境说明中的文本，供宿主（沙箱、托管平台）描述代理/凭据/挂载布局；环境变量 HERMES_ENVIRONMENT_HINT 优先。默认空。"
+ },
+ "agent.environment_probe": {
+  "label": "环境探测",
+  "desc": "仅在检测到非默认状态（缺 pip、pip/python 不匹配、PEP 668 无 uv）时，把 Python 工具链信息写入系统提示；docker/modal/ssh 后端跳过。默认开启。"
+ },
+ "agent.execution_guidance": {
+  "label": "执行纪律提示",
+  "desc": "注入执行纪律提示块（坚持用工具、写后回读、核对计数等），按模型名每会话选定一次：auto-常见需要的模型系列，true/false-强制开/关，或模型名子串列表。"
+ },
+ "agent.fast_auto_seconds": {
+  "label": "快速模式时长",
+  "desc": "快速模式为 auto/cold 时，每轮（或首轮）使用快速档位的秒数。默认 60。"
+ },
+ "agent.gateway_auto_continue_freshness": {
+  "label": "中断续接有效期",
+  "desc": "崩溃/重启打断运行后，仅当最后一条记录新于该秒数时，才在下条用户消息前注入“上一轮被中断”提示；0 表示总是注入。默认 3600。"
+ },
+ "agent.gateway_notify_interval": {
+  "label": "“仍在处理”提示间隔",
+  "desc": "网关定期发送“仍在处理”状态消息的间隔秒数；0 表示关闭。默认 180。"
+ },
+ "agent.gateway_startup_restore_drain_timeout": {
+  "label": "启动恢复等待上限",
+  "desc": "网关启动时等待自动恢复轮次后再放行新消息的最长秒数，超时后恢复任务转入后台；0 表示一直等待。默认 30。"
+ },
+ "agent.gateway_startup_warmup_timeout": {
+  "label": "启动预热等待上限",
+  "desc": "网关启动预热（导入、工具 schema、上下文文件）可阻挡新消息的最长秒数，超时后在后台继续预热；0 表示关闭预热（惰性初始化）。默认 20。"
+ },
+ "agent.gateway_timeout": {
+  "label": "网关空闲超时",
+  "desc": "网关中智能体完全空闲（未调用工具、未接收 API 响应）超过该秒数即终止本轮；0 表示不限制。默认 1800。"
+ },
+ "agent.gateway_timeout_warning": {
+  "label": "空闲超时预警",
+  "desc": "在达到网关空闲超时前，空闲该秒数时发出一次警告（不中断）；0 表示关闭。默认 900。"
+ },
+ "agent.gateway_turn_lease_timeout": {
+  "label": "会话租约等待超时",
+  "desc": "同一会话已有活跃轮次时，新消息最多等待的秒数，超时则拒绝并提示重发；应保持较短。非正数按 5 秒处理。"
+ },
+ "agent.image_input_mode": {
+  "label": "图片输入方式",
+  "desc": "用户附图如何传给主模型：auto-模型支持视觉且未单独配置视觉辅助模型时原生传图，否则转文字；native-始终原生传图；text-始终先用视觉分析转为文字描述。"
+ },
+ "agent.intent_ack_continuation": {
+  "label": "意图后自动续行",
+  "desc": "模型只说“我去做…”却未调用工具时，注入“立即执行”提醒并继续（每轮最多 2 次）：auto-仅 codex_responses 模式，true-所有模式，false-从不，或模型名子串列表。"
+ },
+ "agent.local_stream_stale_timeout": {
+  "label": "本地模型流停滞上限",
+  "desc": "本地提供商（Ollama、llama-cpp 等）流式输出停滞判定的上限秒数，防止本地服务卡死时无限等待；环境变量 HERMES_LOCAL_STREAM_STALE_TIMEOUT 优先。默认 900。"
+ },
+ "agent.max_turns": {
+  "label": "单次最大轮数",
+  "desc": "每次运行的工具调用轮数上限；留空为不限制（默认），正整数为上限，\"none\"/\"unlimited\"/0/-1 也表示不限制。"
+ },
+ "agent.max_verify_nudges": {
+  "label": "最多验证提醒次数",
+  "desc": "每轮最多连续发出的 pre_verify “继续”提醒次数，防止死循环。默认 3。"
+ },
+ "agent.parallel_tool_call_guidance": {
+  "label": "并行工具调用指引",
+  "desc": "提示模型把相互独立的读取/搜索/只读命令合并到同一轮并行调用。约 70 个缓存 token。默认开启。"
+ },
+ "agent.reasoning_echo": {
+  "label": "推理回显补位",
+  "desc": "在无推理内容的工具调用轮补发空推理字段（DeepSeek、Kimi、MiMo 等要求，按提供商自动识别）；仅自定义网关代理这类模型时需手动开启。默认关闭。"
+ },
+ "agent.reasoning_overrides": {
+  "label": "按模型推理强度",
+  "desc": "模型名 → 推理强度的映射，当前模型匹配时覆盖“推理强度”全局设置；键含点号，请在 config.yaml 或页面键值编辑器中填写。默认空。"
+ },
+ "agent.reconnect_attention_after": {
+  "label": "重连告警时长",
+  "desc": "平台持续重连失败超过该秒数后，在网关状态中标记为需要关注（不会停止重试）；0 表示关闭。默认 7200。"
+ },
+ "agent.restart_after_turn_timeout": {
+  "label": "空闲重启告警间隔",
+  "desc": "就地重启（/restart、更新等）会等到无工作进行时才执行；每过该秒数仍有任务在跑就记录一次警告并继续等待。默认 1800。"
+ },
+ "agent.restart_drain_timeout": {
+  "label": "停止时强制中断时限",
+  "desc": "网关开始停止/排空后，强制中断仍在运行轮次前的等待秒数；0 表示立即中断。应小于 systemd TimeoutStopSec。"
+ },
+ "agent.run_budget_seconds": {
+  "label": "运行时长预算",
+  "desc": "每次运行的墙钟时间预算（秒）；设置后在用到 80% 时提示收尾，并把提供商超时限制在剩余预算内。留空表示关闭。"
+ },
+ "agent.sanitizer_heal_escalation_threshold": {
+  "label": "记录修复升级阈值",
+  "desc": "10 分钟内发送前记录修复次数达到该值时，记录一次错误并提示使用 /debug 或 doctor 排查；0 表示不升级。默认 3。"
+ },
+ "agent.service_tier": {
+  "label": "快速模式",
+  "desc": "请求快速服务档位的策略：留空/normal-关闭，fast-始终使用，auto-每轮前 fast_auto_seconds 秒使用，cold-仅会话首轮使用。"
+ },
+ "agent.session_stall_timeout": {
+  "label": "会话停滞检测",
+  "desc": "会话有排队消息但智能体活动时钟停滞超过该秒数时，提醒用户尝试 /new（仅通知）；0 表示关闭。默认 300。"
+ },
+ "agent.stall_guards": {
+  "label": "防停滞保护",
+  "desc": "开启后检测相同参数与结果的重复工具调用（3 次以上追加提示），并在模型说要继续却无动作时重新提示一次；关闭则两者均禁用。默认开启。"
+ },
+ "agent.stream_drain_timeout": {
+  "label": "流结束排空时间",
+  "desc": "Codex/Responses 流收到终止帧后继续读取的秒数，以便中继完成收尾；0 表示不等待。默认 2.0。"
+ },
+ "agent.stream_max_lifetime": {
+  "label": "流最长存活时间",
+  "desc": "单个流式响应的总时长上限（秒）；0 表示关闭（默认）。"
+ },
+ "agent.task_completion_guidance": {
+  "label": "任务完成指引",
+  "desc": "为所有模型加入“把事做完”的提示块：不停在半成品，受阻时不编造结果。约 80 个缓存 token。默认开启。"
+ },
+ "agent.text_verbosity": {
+  "label": "回复详略程度",
+  "desc": "仅 Responses 接口的 text.verbosity 参数：留空-不发送，可选 low（简略）/ medium（适中）/ high（详细）。"
+ },
+ "agent.tool_use_enforcement": {
+  "label": "强制工具调用提示",
+  "desc": "在系统提示中要求模型直接调用工具而非描述动作：auto-仅 gpt/codex 模型，true/false-对所有模型强制开/关，或填写模型名子串列表。"
+ },
+ "agent.turn_liveness.poll_s": {
+  "label": "进展检测间隔",
+  "desc": "轮次活性看门狗的采样间隔（秒）。默认 15。"
+ },
+ "agent.turn_liveness.timeout_s": {
+  "label": "轮次无进展超时",
+  "desc": "一轮在该秒数内没有任何可观测进展时，记录并强制中断以便重试；≤0 表示关闭。默认 600。"
+ },
+ "agent.verify_guidance": {
+  "label": "验证补充指引",
+  "desc": "验证闭环发现修改缺少新鲜验证证据时，附加针对 UI 创作与干净 diff 的指导；关闭则只保留简短提醒。默认开启。"
+ },
+ "agent.verify_on_stop": {
+  "label": "结束前要求验证",
+  "desc": "代码修改后，在有新鲜验证证据或说明无法验证前拒绝给出最终答复：false-关闭（默认），true-处处开启，auto-仅交互式编程界面与程序化调用方开启。"
+ },
+ "approvals.approvers": {
+  "label": "审批人",
+  "desc": "聊天中可以响应审批/确认/澄清请求的人：[\"*\"]-任何已准入成员（默认） []-仅请求者和管理员（及列出的 ID）。"
+ },
+ "approvals.cron_mode": {
+  "label": "定时任务审批策略",
+  "desc": "定时任务遇到危险命令时的处理：deny-立即拒绝，让智能体另寻办法（默认） approve-自动批准。"
+ },
+ "approvals.denial_breaker_threshold": {
+  "label": "连续拒绝熔断阈值",
+  "desc": "同一会话中守护模型连续拒绝多少次后升级为硬停（要求向用户报告或请求人工批准）；批准会重置计数，0 表示关闭。默认 3。"
+ },
+ "approvals.deny": {
+  "label": "命令黑名单",
+  "desc": "不区分大小写的 fnmatch 通配模式列表，匹配的终端命令即使在 --yolo 或审批关闭时也会被阻止，例如 \"git push --force*\"。"
+ },
+ "approvals.destructive_slash_confirm": {
+  "label": "破坏性命令确认",
+  "desc": "/clear、/new、/reset、/undo 等会丢弃状态的命令执行前先确认。默认开启。"
+ },
+ "approvals.discord_prompt_timeout": {
+  "label": "Discord 审批超时",
+  "desc": "Discord 审批按钮保持可点击的时长（秒，最少 30），默认 300。"
+ },
+ "approvals.mcp_reload_confirm": {
+  "label": "重载 MCP 前确认",
+  "desc": "执行 /reload-mcp 前先确认（重载会使提示缓存失效）。选择“始终批准”后会设为关闭。默认开启。"
+ },
+ "approvals.mode": {
+  "label": "危险命令审批模式",
+  "desc": "执行危险命令前的审批方式：manual-每次都需人工确认 smart-由辅助模型自动批准低风险命令、其余需人工确认（默认） off-关闭审批，全部自动执行（等同 --yolo）。"
+ },
+ "approvals.single_query_mode": {
+  "label": "单次查询审批策略",
+  "desc": "单次查询（-q）模式下遇到危险命令（无人可以应答）时的处理：deny-立即拒绝（默认） approve-自动批准。"
+ },
+ "approvals.smart_policy": {
+  "label": "智能审批附加规则",
+  "desc": "追加到智能审批守护模型系统提示词中的额外规则，例如“涉及 /etc 的命令一律升级为人工审批”。"
+ },
+ "approvals.timeout": {
+  "label": "审批超时",
+  "desc": "审批请求无人响应多少秒后按拒绝处理（CLI 与网关通用），默认 300。"
+ },
+ "approvals.unattended_mode": {
+  "label": "无人值守审批策略",
+  "desc": "无人值守平台（webhook、API 服务等无审批通道）遇到危险命令时的处理：deny-立即拒绝（默认） approve-自动批准。"
+ },
+ "attachments.storage": {
+  "label": "附件存放位置",
+  "desc": "会话附件（上传文件、粘贴文本）的暂存位置：hermes-home-存放在配置档主目录的 attachments 下（默认，容器后端会挂载此目录） workspace-存放在会话工作区的 .hermes/attachments 下，使智能体总能读回自己的附件。"
+ },
+ "auth.adopt_external_logins": {
+  "label": "借用外部登录",
+  "desc": "当 PDR 智能体自身没有可用登录时，自动借用并刷新 Codex CLI / Claude Code 的登录凭据。关闭则只使用 PDR 智能体自己的登录（两个程序共用一个登录可能互相登出）。默认开启。"
+ },
+ "auth.codex_login_flow": {
+  "label": "Codex 登录方式",
+  "desc": "登录 OpenAI Codex 的方式：device_code-打开网址并输入验证码（默认） browser-本地回调（localhost:1455）的授权码 + PKCE 浏览器登录，适用于禁用设备码授权的组织；端口被占用时回退为设备码。"
+ },
+ "auxiliary.approval.api_key": {
+  "label": "审批 API 密钥",
+  "desc": "危险命令审批分类器（建议用快速廉价模型）自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.approval.base_url": {
+  "label": "审批接口地址",
+  "desc": "危险命令审批分类器（建议用快速廉价模型）的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.approval.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.approval.model": {
+  "label": "审批模型",
+  "desc": "危险命令审批分类器（建议用快速廉价模型）所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.approval.provider": {
+  "label": "审批提供商",
+  "desc": "危险命令审批分类器（建议用快速廉价模型）所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.approval.reasoning_effort": {
+  "label": "审批推理强度",
+  "desc": "危险命令审批分类器（建议用快速廉价模型）的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.approval.timeout": {
+  "label": "审批超时",
+  "desc": "危险命令审批分类器（建议用快速廉价模型）单次请求的超时秒数。默认 30。"
+ },
+ "auxiliary.background_review.api_key": {
+  "label": "后台复盘 API 密钥",
+  "desc": "回合结束后的自我改进复盘（保存记忆/修补技能）自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.background_review.base_url": {
+  "label": "后台复盘接口地址",
+  "desc": "回合结束后的自我改进复盘（保存记忆/修补技能）的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.background_review.enabled": {
+  "label": "启用后台复盘",
+  "desc": "每轮结束后自动派生复盘任务以保存记忆或修补技能；关闭后仅可手动 /refine。默认开启。"
+ },
+ "auxiliary.background_review.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.background_review.model": {
+  "label": "后台复盘模型",
+  "desc": "回合结束后的自我改进复盘（保存记忆/修补技能）所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.background_review.provider": {
+  "label": "后台复盘提供商",
+  "desc": "回合结束后的自我改进复盘（保存记忆/修补技能）所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.background_review.reasoning_effort": {
+  "label": "后台复盘推理强度",
+  "desc": "回合结束后的自我改进复盘（保存记忆/修补技能）的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认；保持在主模型上时该项被忽略（为复用提示缓存）。"
+ },
+ "auxiliary.background_review.timeout": {
+  "label": "后台复盘超时",
+  "desc": "回合结束后的自我改进复盘（保存记忆/修补技能）单次请求的超时秒数。默认 120。"
+ },
+ "auxiliary.compression.api_key": {
+  "label": "压缩 API 密钥",
+  "desc": "上下文压缩摘要自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.compression.base_url": {
+  "label": "压缩接口地址",
+  "desc": "上下文压缩摘要的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.compression.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.compression.model": {
+  "label": "压缩模型",
+  "desc": "上下文压缩摘要所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.compression.no_progress_timeout": {
+  "label": "压缩流无进展超时",
+  "desc": "流式压缩调用在没有实质内容块的情况下多久判定失败并进入重试/回退（秒）；留空用内置 60 秒。与总超时相互独立。"
+ },
+ "auxiliary.compression.provider": {
+  "label": "压缩提供商",
+  "desc": "上下文压缩摘要所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.compression.reasoning_effort": {
+  "label": "压缩推理强度",
+  "desc": "上下文压缩摘要的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.compression.timeout": {
+  "label": "压缩超时",
+  "desc": "上下文压缩摘要单次请求的超时秒数。默认 120。"
+ },
+ "auxiliary.curator.api_key": {
+  "label": "技能管理员 API 密钥",
+  "desc": "Curator 技能使用情况审查自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.curator.base_url": {
+  "label": "技能管理员接口地址",
+  "desc": "Curator 技能使用情况审查的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.curator.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.curator.model": {
+  "label": "技能管理员模型",
+  "desc": "Curator 技能使用情况审查所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.curator.provider": {
+  "label": "技能管理员提供商",
+  "desc": "Curator 技能使用情况审查所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.curator.reasoning_effort": {
+  "label": "技能管理员推理强度",
+  "desc": "Curator 技能使用情况审查的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.curator.timeout": {
+  "label": "技能管理员超时",
+  "desc": "Curator 技能使用情况审查单次请求的超时秒数。默认 600。"
+ },
+ "auxiliary.free_only": {
+  "label": "仅用免费辅助模型",
+  "desc": "开启后，自动链中的 OpenRouter 步骤只在回退模型以 \":free\" 结尾时使用，后台辅助流量绝不走付费线路。默认关闭。"
+ },
+ "auxiliary.goal_judge.api_key": {
+  "label": "目标判定 API 密钥",
+  "desc": "/goal 目标是否达成的判定与契约起草自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.goal_judge.base_url": {
+  "label": "目标判定接口地址",
+  "desc": "/goal 目标是否达成的判定与契约起草的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.goal_judge.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.goal_judge.model": {
+  "label": "目标判定模型",
+  "desc": "/goal 目标是否达成的判定与契约起草所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.goal_judge.provider": {
+  "label": "目标判定提供商",
+  "desc": "/goal 目标是否达成的判定与契约起草所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.goal_judge.reasoning_effort": {
+  "label": "目标判定推理强度",
+  "desc": "/goal 目标是否达成的判定与契约起草的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.goal_judge.timeout": {
+  "label": "目标判定超时",
+  "desc": "/goal 目标是否达成的判定与契约起草单次请求的超时秒数。默认 60。"
+ },
+ "auxiliary.group_router.api_key": {
+  "label": "群聊路由 API 密钥",
+  "desc": "群聊 auto 模式下决定由谁回答自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.group_router.base_url": {
+  "label": "群聊路由接口地址",
+  "desc": "群聊 auto 模式下决定由谁回答的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.group_router.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.group_router.model": {
+  "label": "群聊路由模型",
+  "desc": "群聊 auto 模式下决定由谁回答所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.group_router.provider": {
+  "label": "群聊路由提供商",
+  "desc": "群聊 auto 模式下决定由谁回答所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.group_router.reasoning_effort": {
+  "label": "群聊路由推理强度",
+  "desc": "群聊 auto 模式下决定由谁回答的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.group_router.timeout": {
+  "label": "群聊路由超时",
+  "desc": "群聊 auto 模式下决定由谁回答单次请求的超时秒数。默认 20。"
+ },
+ "auxiliary.kanban_decomposer.api_key": {
+  "label": "看板拆解 API 密钥",
+  "desc": "看板任务拆解为 JSON 任务图自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.kanban_decomposer.base_url": {
+  "label": "看板拆解接口地址",
+  "desc": "看板任务拆解为 JSON 任务图的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.kanban_decomposer.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.kanban_decomposer.model": {
+  "label": "看板拆解模型",
+  "desc": "看板任务拆解为 JSON 任务图所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.kanban_decomposer.provider": {
+  "label": "看板拆解提供商",
+  "desc": "看板任务拆解为 JSON 任务图所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.kanban_decomposer.reasoning_effort": {
+  "label": "看板拆解推理强度",
+  "desc": "看板任务拆解为 JSON 任务图的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.kanban_decomposer.timeout": {
+  "label": "看板拆解超时",
+  "desc": "看板任务拆解为 JSON 任务图单次请求的超时秒数。默认 180。"
+ },
+ "auxiliary.mcp.api_key": {
+  "label": "MCP API 密钥",
+  "desc": "MCP 相关辅助任务自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.mcp.base_url": {
+  "label": "MCP接口地址",
+  "desc": "MCP 相关辅助任务的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.mcp.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.mcp.model": {
+  "label": "MCP模型",
+  "desc": "MCP 相关辅助任务所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.mcp.provider": {
+  "label": "MCP提供商",
+  "desc": "MCP 相关辅助任务所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.mcp.reasoning_effort": {
+  "label": "MCP推理强度",
+  "desc": "MCP 相关辅助任务的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.mcp.timeout": {
+  "label": "MCP超时",
+  "desc": "MCP 相关辅助任务单次请求的超时秒数。默认 30。"
+ },
+ "auxiliary.memory_query_rewrite.api_key": {
+  "label": "记忆查询改写 API 密钥",
+  "desc": "记忆检索查询改写自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.memory_query_rewrite.base_url": {
+  "label": "记忆查询改写接口地址",
+  "desc": "记忆检索查询改写的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.memory_query_rewrite.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.memory_query_rewrite.model": {
+  "label": "记忆查询改写模型",
+  "desc": "记忆检索查询改写所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.memory_query_rewrite.provider": {
+  "label": "记忆查询改写提供商",
+  "desc": "记忆检索查询改写所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.memory_query_rewrite.timeout": {
+  "label": "记忆查询改写超时",
+  "desc": "记忆检索查询改写单次请求的超时秒数。默认 8。"
+ },
+ "auxiliary.moa_aggregator.api_key": {
+  "label": "MoA 聚合 API 密钥",
+  "desc": "混合智能体（MoA）聚合模型自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.moa_aggregator.base_url": {
+  "label": "MoA 聚合接口地址",
+  "desc": "混合智能体（MoA）聚合模型的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.moa_aggregator.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.moa_aggregator.model": {
+  "label": "MoA 聚合模型",
+  "desc": "混合智能体（MoA）聚合模型所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.moa_aggregator.provider": {
+  "label": "MoA 聚合提供商",
+  "desc": "混合智能体（MoA）聚合模型所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.moa_aggregator.timeout": {
+  "label": "MoA 聚合超时",
+  "desc": "混合智能体（MoA）聚合模型单次请求的超时秒数。默认 900。"
+ },
+ "auxiliary.moa_reference.api_key": {
+  "label": "MoA 参考 API 密钥",
+  "desc": "混合智能体（MoA）参考模型自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.moa_reference.base_url": {
+  "label": "MoA 参考接口地址",
+  "desc": "混合智能体（MoA）参考模型的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.moa_reference.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.moa_reference.model": {
+  "label": "MoA 参考模型",
+  "desc": "混合智能体（MoA）参考模型所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.moa_reference.provider": {
+  "label": "MoA 参考提供商",
+  "desc": "混合智能体（MoA）参考模型所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.moa_reference.timeout": {
+  "label": "MoA 参考超时",
+  "desc": "混合智能体（MoA）参考模型单次请求的超时秒数。默认 900。"
+ },
+ "auxiliary.monitor.api_key": {
+  "label": "邮件监控 API 密钥",
+  "desc": "重要邮件 0~10 打分自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.monitor.base_url": {
+  "label": "邮件监控接口地址",
+  "desc": "重要邮件 0~10 打分的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.monitor.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.monitor.model": {
+  "label": "邮件监控模型",
+  "desc": "重要邮件 0~10 打分所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.monitor.provider": {
+  "label": "邮件监控提供商",
+  "desc": "重要邮件 0~10 打分所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.monitor.reasoning_effort": {
+  "label": "邮件监控推理强度",
+  "desc": "重要邮件 0~10 打分的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.monitor.timeout": {
+  "label": "邮件监控超时",
+  "desc": "重要邮件 0~10 打分单次请求的超时秒数。默认 60。"
+ },
+ "auxiliary.openrouter_model": {
+  "label": "OpenRouter 辅助模型",
+  "desc": "覆盖自动链中 OpenRouter 回退模型（默认 google/gemini-3.6-flash，付费）；可配合 free_only 使用 \":free\" 模型。留空用默认。"
+ },
+ "auxiliary.profile_describer.api_key": {
+  "label": "配置档描述 API 密钥",
+  "desc": "生成 1~2 句的配置档（profile）简介自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.profile_describer.base_url": {
+  "label": "配置档描述接口地址",
+  "desc": "生成 1~2 句的配置档（profile）简介的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.profile_describer.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.profile_describer.model": {
+  "label": "配置档描述模型",
+  "desc": "生成 1~2 句的配置档（profile）简介所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.profile_describer.provider": {
+  "label": "配置档描述提供商",
+  "desc": "生成 1~2 句的配置档（profile）简介所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.profile_describer.reasoning_effort": {
+  "label": "配置档描述推理强度",
+  "desc": "生成 1~2 句的配置档（profile）简介的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.profile_describer.timeout": {
+  "label": "配置档描述超时",
+  "desc": "生成 1~2 句的配置档（profile）简介单次请求的超时秒数。默认 60。"
+ },
+ "auxiliary.review.api_key": {
+  "label": "评审 API 密钥",
+  "desc": "/review 评审子智能体自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.review.api_mode": {
+  "label": "评审接口协议",
+  "desc": "/review 评审子智能体强制使用的传输协议：chat_completions-OpenAI 聊天补全，anthropic_messages-Anthropic Messages，codex_responses-Codex Responses；留空自动判断。"
+ },
+ "auxiliary.review.base_url": {
+  "label": "评审接口地址",
+  "desc": "/review 评审子智能体的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.review.model": {
+  "label": "评审模型",
+  "desc": "/review 评审子智能体所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.review.provider": {
+  "label": "评审提供商",
+  "desc": "/review 评审子智能体所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等；auto 且模型留空时使用主智能体模型。"
+ },
+ "auxiliary.stream_only_base_urls": {
+  "label": "仅流式端点列表",
+  "desc": "拒绝非流式请求的端点 URL 子串列表（不区分大小写），对这些端点的辅助调用会以流式发送并聚合结果。"
+ },
+ "auxiliary.title_generation.api_key": {
+  "label": "标题生成 API 密钥",
+  "desc": "会话标题生成自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.title_generation.base_url": {
+  "label": "标题生成接口地址",
+  "desc": "会话标题生成的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.title_generation.enabled": {
+  "label": "启用标题生成",
+  "desc": "是否为会话自动生成标题。默认开启。"
+ },
+ "auxiliary.title_generation.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.title_generation.language": {
+  "label": "标题语言",
+  "desc": "生成标题使用的语言（如 zh、en）；留空则跟随对话语言。"
+ },
+ "auxiliary.title_generation.model": {
+  "label": "标题生成模型",
+  "desc": "会话标题生成所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.title_generation.model_upgrade_enabled": {
+  "label": "模型优化标题",
+  "desc": "开启时先给出即时推导标题，再调用模型优化；关闭则只保留即时标题、不调用模型。默认开启。"
+ },
+ "auxiliary.title_generation.prefer_fast_model": {
+  "label": "优先快速模型",
+  "desc": "标题生成优先使用提供商的快速档模型；否则 auto 使用主模型。默认关闭。"
+ },
+ "auxiliary.title_generation.provider": {
+  "label": "标题生成提供商",
+  "desc": "会话标题生成所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.title_generation.reasoning_effort": {
+  "label": "标题生成推理强度",
+  "desc": "会话标题生成的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.title_generation.timeout": {
+  "label": "标题生成超时",
+  "desc": "会话标题生成单次请求的超时秒数。默认 30。"
+ },
+ "auxiliary.transient_retries": {
+  "label": "辅助调用瞬时重试",
+  "desc": "辅助模型调用遇到瞬时故障（重置/超时/5xx/408）时在同一提供商重试的次数（0~6），之后才回退。默认 2。"
+ },
+ "auxiliary.triage_specifier.api_key": {
+  "label": "分诊规格化 API 密钥",
+  "desc": "看板 Triage 一句话需求扩写为规格自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.triage_specifier.base_url": {
+  "label": "分诊规格化接口地址",
+  "desc": "看板 Triage 一句话需求扩写为规格的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.triage_specifier.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.triage_specifier.model": {
+  "label": "分诊规格化模型",
+  "desc": "看板 Triage 一句话需求扩写为规格所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.triage_specifier.provider": {
+  "label": "分诊规格化提供商",
+  "desc": "看板 Triage 一句话需求扩写为规格所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.triage_specifier.reasoning_effort": {
+  "label": "分诊规格化推理强度",
+  "desc": "看板 Triage 一句话需求扩写为规格的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.triage_specifier.timeout": {
+  "label": "分诊规格化超时",
+  "desc": "看板 Triage 一句话需求扩写为规格单次请求的超时秒数。默认 120。"
+ },
+ "auxiliary.tts_audio_tags.api_key": {
+  "label": "TTS 音频标签 API 密钥",
+  "desc": "为语音合成文本添加音频标签自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.tts_audio_tags.base_url": {
+  "label": "TTS 音频标签接口地址",
+  "desc": "为语音合成文本添加音频标签的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.tts_audio_tags.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.tts_audio_tags.model": {
+  "label": "TTS 音频标签模型",
+  "desc": "为语音合成文本添加音频标签所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.tts_audio_tags.provider": {
+  "label": "TTS 音频标签提供商",
+  "desc": "为语音合成文本添加音频标签所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.tts_audio_tags.reasoning_effort": {
+  "label": "TTS 音频标签推理强度",
+  "desc": "为语音合成文本添加音频标签的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.tts_audio_tags.timeout": {
+  "label": "TTS 音频标签超时",
+  "desc": "为语音合成文本添加音频标签单次请求的超时秒数。默认 30。"
+ },
+ "auxiliary.vision.api_key": {
+  "label": "视觉 API 密钥",
+  "desc": "图片分析（vision_analyze）自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.vision.base_url": {
+  "label": "视觉接口地址",
+  "desc": "图片分析（vision_analyze）的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.vision.download_timeout": {
+  "label": "图片下载超时",
+  "desc": "视觉分析前通过 HTTP 下载图片的超时秒数。默认 30。"
+ },
+ "auxiliary.vision.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.vision.model": {
+  "label": "视觉模型",
+  "desc": "图片分析（vision_analyze）所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.vision.provider": {
+  "label": "视觉提供商",
+  "desc": "图片分析（vision_analyze）所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.vision.reasoning_effort": {
+  "label": "视觉推理强度",
+  "desc": "图片分析（vision_analyze）的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.vision.timeout": {
+  "label": "视觉超时",
+  "desc": "图片分析（vision_analyze）单次请求的超时秒数。默认 120。"
+ },
+ "auxiliary.voice_chat.api_key": {
+  "label": "语音对话 API 密钥",
+  "desc": "语音对话轮次自定义端点使用的 API 密钥；留空时（仅 OpenAI 主机）回退到 OPENAI_API_KEY。"
+ },
+ "auxiliary.voice_chat.base_url": {
+  "label": "语音对话接口地址",
+  "desc": "语音对话轮次的 OpenAI 兼容自定义端点地址，设置后优先于提供商；留空不使用。"
+ },
+ "auxiliary.voice_chat.extra_body": {
+  "label": "额外请求体",
+  "desc": "该辅助任务调用模型时合并进请求体 extra_body 的键值对（如提供商路由参数）；默认空。"
+ },
+ "auxiliary.voice_chat.model": {
+  "label": "语音对话模型",
+  "desc": "语音对话轮次所用的模型名；留空表示使用提供商默认或主模型。"
+ },
+ "auxiliary.voice_chat.provider": {
+  "label": "语音对话提供商",
+  "desc": "语音对话轮次所用的提供商；auto-沿用主模型/自动选择，也可指定如 openrouter、nous 等。"
+ },
+ "auxiliary.voice_chat.reasoning_effort": {
+  "label": "语音对话推理强度",
+  "desc": "语音对话轮次的推理强度：none/minimal/low/medium/high/xhigh/max/ultra，留空为提供商默认。"
+ },
+ "auxiliary.voice_chat.timeout": {
+  "label": "语音对话超时",
+  "desc": "语音对话轮次单次请求的超时秒数。默认 120。"
+ },
+ "bedrock.discovery.enabled": {
+  "label": "自动发现模型",
+  "desc": "通过 ListFoundationModels 自动发现 Bedrock 可用模型。默认开启。"
+ },
+ "bedrock.discovery.provider_filter": {
+  "label": "模型提供方过滤",
+  "desc": "仅发现这些模型提供方的模型，例如 [\"anthropic\", \"amazon\"]；留空表示全部。"
+ },
+ "bedrock.discovery.refresh_interval": {
+  "label": "发现结果刷新间隔",
+  "desc": "模型发现结果的缓存时长（秒），默认 3600。"
+ },
+ "bedrock.guardrail.guardrail_identifier": {
+  "label": "护栏 ID",
+  "desc": "Bedrock Guardrails 护栏 ID（需先在控制台创建），例如 abc123def456。留空则不启用护栏。"
+ },
+ "bedrock.guardrail.guardrail_version": {
+  "label": "护栏版本",
+  "desc": "Bedrock 护栏版本，例如 1 或 DRAFT。"
+ },
+ "bedrock.guardrail.stream_processing_mode": {
+  "label": "护栏流式处理模式",
+  "desc": "流式响应的护栏检查方式：sync-同步检查后再输出 async-异步检查（默认，延迟更低）。"
+ },
+ "bedrock.guardrail.trace": {
+  "label": "护栏追踪",
+  "desc": "护栏追踪信息输出：enabled-开启 disabled-关闭（默认） enabled_full-输出完整追踪。"
+ },
+ "bedrock.region": {
+  "label": "Bedrock 区域",
+  "desc": "AWS Bedrock 区域；留空则使用 AWS_REGION 环境变量，再回退 us-east-1。仅当提供商为 bedrock 时使用。"
+ },
+ "bot_desktop.auto_start": {
+  "label": "自动启动桌面",
+  "desc": "computer_use 首次在无头主机上需要显示器时自动启动机器人桌面。默认关闭。"
+ },
+ "bot_desktop.geometry": {
+  "label": "机器人桌面分辨率",
+  "desc": "无头机器人桌面（Xfce 屏幕）的分辨率，默认 1440x900。"
+ },
+ "bot_desktop.idle_stop_minutes": {
+  "label": "空闲停止时间",
+  "desc": "桌面无人使用多少分钟后停止（下次使用时重启）；0 表示一直保持。默认 30。"
+ },
+ "bot_desktop.min_free_memory_mb": {
+  "label": "最低空闲内存",
+  "desc": "空闲内存低于此值（MB）时拒绝启动桌面，避免内存不足导致网关被杀；0 表示不检查。默认 1536。"
+ },
+ "bot_desktop.placement": {
+  "label": "桌面运行位置",
+  "desc": "机器人桌面（及 computer_use、浏览器）的运行位置：auto-跟随终端后端（沙箱可承载时在沙箱内，local 时在网关主机；modal/daytona/vercel 无法承载时拒绝）（默认） terminal-始终在终端后端内 gateway-始终在网关主机上（在沙箱之外运行，需明确选择）。"
+ },
+ "bot_mode.envelope_ttl_seconds": {
+  "label": "消息信封有效期",
+  "desc": "Bot 模式跨连接消息在发件箱中的有效秒数，过期不再投递并回复发送方 queued_expired；0 表示不过期。默认 900。"
+ },
+ "bot_mode.turn_wait_seconds": {
+  "label": "目标忙碌等待时长",
+  "desc": "投递到忙碌的目标配置档时排队等待当前轮结束的最长秒数，超时返回 target_busy 错误。默认 120。"
+ },
+ "browser.allow_private_urls": {
+  "label": "允许私有地址",
+  "desc": "旧版的私有网络地址访问开关（同 security.allow_private_urls），本地/边车 Chromium 会忽略此项。默认关闭。"
+ },
+ "browser.auto_local_for_private_urls": {
+  "label": "私有地址用本地浏览器",
+  "desc": "使用云浏览器时，局域网/localhost 地址自动改用本地 Chromium 打开；关闭则拒绝访问此类地址。默认开启。"
+ },
+ "browser.camofox": {
+  "label": "Camofox 插件配置",
+  "desc": "Camofox 浏览器插件读取的自由键值配置（该能力已移出核心）。默认空。"
+ },
+ "browser.cdp_url": {
+  "label": "CDP 连接地址",
+  "desc": "持久 CDP 端点地址，用于连接已在运行的 Chromium/Chrome。留空则不使用。"
+ },
+ "browser.chromium_args": {
+  "label": "Chromium 额外参数",
+  "desc": "本地会话额外传给 Chromium 的启动参数列表，例如 [\"--lang=de\"]。"
+ },
+ "browser.command_timeout": {
+  "label": "浏览器启动超时",
+  "desc": "本地 Chromium 打开 DevTools 端口的等待时间（秒），默认 30；实际启动至少等待 120 秒（首次冷启动需解包配置）。"
+ },
+ "browser.dialog_policy": {
+  "label": "弹窗处理策略",
+  "desc": "浏览器 JS 弹窗（alert/confirm 等）的处理方式：must_respond-必须由智能体响应（默认） auto_dismiss-自动取消 auto_accept-自动确认。仅在支持 CDP 的后端生效。"
+ },
+ "browser.dialog_timeout_s": {
+  "label": "弹窗超时",
+  "desc": "must_respond 策略下，弹窗无人响应多少秒后自动取消，默认 300。"
+ },
+ "browser.engine": {
+  "label": "浏览器引擎",
+  "desc": "本地浏览器引擎：auto-使用 Chromium（默认） lightpanda-每个会话运行 lightpanda serve（导航更快，不支持截图）；chrome 视同 auto。使用云浏览器、cdp_url 或真实配置时忽略。"
+ },
+ "browser.executable_path": {
+  "label": "浏览器程序路径",
+  "desc": "本地会话使用的 Chromium 可执行文件路径。留空则依次使用包管理器安装的 chromium、Docker 镜像内置版本或系统 chromium。"
+ },
+ "browser.headed": {
+  "label": "有界面模式",
+  "desc": "以有界面模式（可见窗口）运行本地浏览器，并在轮次之间保持窗口打开；空闲会话仍会按 browser.inactivity_timeout 回收。默认关闭。"
+ },
+ "browser.inactivity_timeout": {
+  "label": "浏览器空闲超时",
+  "desc": "浏览器会话在智能体循环之间无活动多少秒后自动关闭，默认 120。"
+ },
+ "browser.real_profile_autoclose": {
+  "label": "自动关闭占用浏览器",
+  "desc": "仅 Windows：正在运行的 Chrome/Edge/Brave 会锁定 Cookie 数据库。开启后智能体会先征询，批准后关闭该配置的浏览器（未保存标签会丢失）以便复制配置；不会自动强杀。默认关闭。"
+ },
+ "browser.real_profile_pin": {
+  "label": "固定浏览器配置",
+  "desc": "指定真实配置浏览时快照哪个源配置目录（例如 Profile 2）。留空使用浏览器最近使用的配置；指定目录不存在时不会回退，而是使用未登录的新浏览器。"
+ },
+ "browser.use_real_profile": {
+  "label": "使用真实浏览器配置",
+  "desc": "同意使用你真实的登录状态浏览：复制默认 Chromium 配置（Cookie、登录、偏好）的快照供智能体使用。关闭时会删除该快照，避免凭据残留。仅支持 Chromium 系浏览器。默认关闭。"
+ },
+ "browser.user_data_dir": {
+  "label": "浏览器用户数据目录",
+  "desc": "本地会话共享的持久 Chromium 配置目录；留空则每个会话使用一次性的全新配置。"
+ },
+ "checkpoints.auto_prune": {
+  "label": "自动清理检查点",
+  "desc": "后台定期删除超过保留天数的项目快照并压缩存储（不会删除工作目录已丢失的孤儿项）。默认开启。"
+ },
+ "checkpoints.enabled": {
+  "label": "启用文件检查点",
+  "desc": "每轮首次写文件时为工作目录做快照，可用 /rollback 回滚。默认关闭。"
+ },
+ "checkpoints.max_file_size_mb": {
+  "label": "单文件大小上限",
+  "desc": "大于该 MB 的文件（数据集、模型权重等）不纳入快照；0 表示不过滤。默认 10。"
+ },
+ "checkpoints.max_snapshots": {
+  "label": "最多快照数",
+  "desc": "每个工作目录保留的检查点数量上限，超出后清理旧快照。默认 20。"
+ },
+ "checkpoints.max_total_size_mb": {
+  "label": "检查点总容量上限",
+  "desc": "检查点存储总大小上限（MB），超出时按项目轮流删除最旧检查点；0 表示不限制。默认 500。"
+ },
+ "checkpoints.min_interval_hours": {
+  "label": "清理最小间隔",
+  "desc": "两次自动清理之间的最短间隔（小时）。默认 24。"
+ },
+ "checkpoints.retention_days": {
+  "label": "检查点保留天数",
+  "desc": "项目最后使用超过该天数后，其检查点会被自动清理。默认 7。"
+ },
+ "code_execution.kernel_idle_timeout": {
+  "label": "内核空闲超时",
+  "desc": "会话代码内核空闲超过该秒数后被关闭。默认 1800。"
+ },
+ "code_execution.max_session_kernels": {
+  "label": "最大会话内核数",
+  "desc": "同时保留的会话代码内核数量上限，超出按 LRU 淘汰。默认 4。"
+ },
+ "code_execution.mode": {
+  "label": "代码执行模式",
+  "desc": "execute_code 的运行方式：project-在会话工作目录使用当前 venv/conda 的 Python（可用项目依赖），strict-在隔离临时目录使用 PDR 智能体自身的 Python（最大隔离）。默认 project。"
+ },
+ "command_allowlist": {
+  "label": "命令永久白名单",
+  "desc": "已永久允许的危险命令模式列表（通过“始终允许”审批添加）。"
+ },
+ "compression.abort_on_summary_failure": {
+  "label": "摘要失败时中止",
+  "desc": "开启后，自动压缩摘要失败时中止压缩而不是用“摘要不可用”占位替换中间内容；会话保持原大小直到 /compress 或 /new。默认关闭。"
+ },
+ "compression.checkpoint_required": {
+  "label": "压缩前要求检查点",
+  "desc": "开启后，除非活动记忆提供方确认并完成检查点，否则拒绝有损压缩。默认关闭。"
+ },
+ "compression.codex_app_server_auto": {
+  "label": "Codex 应用服务压缩",
+  "desc": "Codex app-server 线程的压缩方式：native-由 Codex 自行决定，hermes-按 PDR 智能体阈值触发线程压缩，off-从不自动触发。默认 native。"
+ },
+ "compression.codex_gpt55_autoraise": {
+  "label": "Codex 模型阈值上调",
+  "desc": "在 ChatGPT Codex OAuth 线路上，对 gpt-5.4/5.5/5.6 等被限制为 272K 窗口的模型把压缩触发点提高到 85%；关闭则使用全局阈值。默认开启。"
+ },
+ "compression.codex_gpt55_autoraise_notice": {
+  "label": "阈值上调提示",
+  "desc": "显示一次性的阈值上调提示横幅；关闭仅隐藏提示，不影响上调。默认开启。"
+ },
+ "compression.codex_responses_compact_threshold": {
+  "label": "服务端压缩阈值",
+  "desc": "服务端压缩触发的绝对输入 token 数；留空则跟随本地阈值并留安全余量，显式值只会向下钳制。"
+ },
+ "compression.codex_responses_native": {
+  "label": "Responses 服务端压缩",
+  "desc": "在 Responses API 上启用 OpenAI 服务端压缩（仅 gpt-5.6 系列于官方或 Codex 后端），本地压缩作为后备。默认关闭。"
+ },
+ "compression.context_timeout_seconds": {
+  "label": "压缩无进展超时",
+  "desc": "智能体内部压缩（自动、/compress、预检）无进展的最长等待秒数；0 表示不使用该包装。不低于辅助压缩请求超时。默认 120。"
+ },
+ "compression.context_total_ceiling_seconds": {
+  "label": "压缩总时限",
+  "desc": "压缩摘要阶段即使仍在输出也不超过的绝对等待秒数。默认 600。"
+ },
+ "compression.enabled": {
+  "label": "启用上下文压缩",
+  "desc": "上下文接近窗口上限时自动摘要压缩历史。默认开启。"
+ },
+ "compression.hygiene_failure_cooldown_seconds": {
+  "label": "卫生压缩失败冷却",
+  "desc": "卫生压缩失败后再次尝试前的冷却秒数。默认 300。"
+ },
+ "compression.hygiene_hard_message_limit": {
+  "label": "会话强制压缩条数",
+  "desc": "网关会话卫生检查中，消息条数达到该值即强制压缩。默认 5000。"
+ },
+ "compression.hygiene_max_turn_hold_seconds": {
+  "label": "压缩时消息最长挂起",
+  "desc": "卫生摘要进行中时，新到用户消息最多被挂起的秒数，超时则不压缩直接处理。默认 10。"
+ },
+ "compression.hygiene_timeout_seconds": {
+  "label": "卫生压缩无进展超时",
+  "desc": "网关等待会话卫生压缩在无进展情况下的最长秒数（仍在输出 token 会延长等待）。默认 30。"
+ },
+ "compression.hygiene_total_ceiling_seconds": {
+  "label": "卫生压缩总时限",
+  "desc": "即使仍在输出 token，卫生压缩等待的绝对上限秒数（不小于无进展超时）。默认 600。"
+ },
+ "compression.idle_compact_after_seconds": {
+  "label": "空闲后预先压缩",
+  "desc": "会话空闲超过该秒数后再恢复时，先压缩再回复（如 1800 = 30 分钟）；0 表示关闭（默认）。"
+ },
+ "compression.in_place": {
+  "label": "原地压缩",
+  "desc": "压缩时不更换会话 ID（无父会话链、不重新编号），压缩前的内容在同一 ID 下软归档且仍可搜索；关闭则使用旧的轮换式压缩。默认开启。"
+ },
+ "compression.max_attempts": {
+  "label": "压缩最大尝试次数",
+  "desc": "一轮内压缩重试的最大回合数（1~10），用尽后报“已达最大压缩次数”。默认 3。"
+ },
+ "compression.micro_compact": {
+  "label": "微压缩",
+  "desc": "每轮结束后把最旧的一段对话折叠进滚动摘要以分摊压缩成本；会每轮打断提示缓存，默认关闭。"
+ },
+ "compression.micro_compact_defrag_threshold_tokens": {
+  "label": "滚动摘要整理阈值",
+  "desc": "滚动摘要超过该 token 数时，下一次微压缩会重新摘要整理。默认 2000。"
+ },
+ "compression.micro_compact_every_n_turns": {
+  "label": "微压缩频率",
+  "desc": "每 N 轮执行一次微压缩（最小 1）；仅在启用微压缩时生效。默认 1。"
+ },
+ "compression.min_tail_user_messages": {
+  "label": "尾部最少用户消息",
+  "desc": "压缩后尾部保证保留的真实用户消息条数；工具输出很大时可调高（如 3）。默认 1。"
+ },
+ "compression.model_thresholds": {
+  "label": "按模型压缩阈值",
+  "desc": "模型名子串 → 压缩触发比例（覆盖全局阈值，最长匹配优先），键可加 <提供商>: 前缀限定路由，如 {\"glm-5.2\": 0.40}。默认空。"
+ },
+ "compression.prepare_ahead": {
+  "label": "提前准备摘要",
+  "desc": "接近触发点时在后台预先生成下一份摘要，压缩时若仍覆盖相同消息则直接使用。默认关闭。"
+ },
+ "compression.proactive_prune_min_reclaim_tokens": {
+  "label": "裁剪最少回收量",
+  "desc": "主动裁剪至少能回收该数量 token 时才执行；0 表示不设门槛。默认 4096。"
+ },
+ "compression.proactive_prune_min_result_chars": {
+  "label": "裁剪最小结果长度",
+  "desc": "主动裁剪仅处理大于该字符数的工具结果（最小 200）。默认 8000。"
+ },
+ "compression.proactive_prune_tokens": {
+  "label": "主动裁剪触发 token",
+  "desc": "独立于比例阈值、不调用 LLM 的工具结果裁剪触发点（token 数），如 48000；0 表示关闭。每次裁剪会打断提示缓存。"
+ },
+ "compression.progress_notices": {
+  "label": "压缩进度通知",
+  "desc": "开启后，常规压缩进度状态也推送到聊天网关；失败通知与手动 /compress 反馈始终可见。默认关闭。"
+ },
+ "compression.protect_first_n": {
+  "label": "保留开头消息数",
+  "desc": "除系统提示外始终原样保留的开头消息条数；0 表示只保留系统提示、摘要与尾部。默认 3。"
+ },
+ "compression.protect_last_n": {
+  "label": "保留最近消息数",
+  "desc": "压缩时至少不压缩的最近消息条数（尾部总量仍受 token 限制）。默认 20。"
+ },
+ "compression.tail_mode": {
+  "label": "尾部保留模式",
+  "desc": "lean-精简尾部（约窗口 2.5%，1 万~2.5 万 token）加分块摘要与索引，保留 token 少约 3 倍；legacy-按 0.20×阈值原样保留尾部。默认 lean。"
+ },
+ "compression.target_ratio": {
+  "label": "保留尾部比例",
+  "desc": "压缩后作为最近尾部保留的阈值比例。默认 0.20。"
+ },
+ "compression.threshold": {
+  "label": "压缩触发比例",
+  "desc": "上下文占用超过该比例时触发压缩；窗口小于 512K 的模型下限为 0.75（只升不降）。默认 0.50。"
+ },
+ "compression.threshold_tokens": {
+  "label": "压缩触发 token 数",
+  "desc": "可选的绝对 token 阈值，与比例阈值取较低者触发压缩；留空表示仅按比例。"
+ },
+ "computer_use.allow_unsigned_driver": {
+  "label": "允许未签名驱动",
+  "desc": "仅 macOS：允许未签名的 CuaDriver.app 用于私有会话守护进程，仅供本地开发驱动使用。默认关闭。"
+ },
+ "computer_use.autostart": {
+  "label": "开机自启驱动",
+  "desc": "仅 Windows：注册每次登录启动 cua-driver-serve 的计划任务（通过 SSH 操控 Windows 时需要）；关闭则按需启动。默认关闭。"
+ },
+ "computer_use.ax_max_elements": {
+  "label": "无障碍元素上限",
+  "desc": "每次捕获遍历无障碍树时收集的元素数上限，过大会显著变慢；0 表示使用驱动默认（2000）。默认 200。"
+ },
+ "computer_use.capability_manifest": {
+  "label": "能力清单路径",
+  "desc": "bounded 权限模式下使用的已审核能力清单文件路径（支持 ~）。"
+ },
+ "computer_use.capture_after_mode": {
+  "label": "操作后捕获模式",
+  "desc": "每次操作后捕获屏幕的方式：som-截图加元素标注，ax-仅无障碍元素无图片（更快），vision-仅像素截图。默认 som。"
+ },
+ "computer_use.cua_telemetry": {
+  "label": "cua-driver 遥测",
+  "desc": "是否允许 cua-driver 上游的 PostHog 遥测；关闭（默认）时在子进程环境中设置 CUA_DRIVER_RS_TELEMETRY_ENABLED=0。"
+ },
+ "computer_use.max_image_dimension": {
+  "label": "截图最长边",
+  "desc": "驱动截图最长边的像素上限，用于缩小多模态负载；0 表示不限制。默认 1456。"
+ },
+ "computer_use.native_wayland": {
+  "label": "原生 Wayland",
+  "desc": "Linux 下存在 WAYLAND_DISPLAY 时，为 cua-driver 启用原生 Wayland 桥接。默认关闭。"
+ },
+ "computer_use.no_overlay": {
+  "label": "禁用光标覆盖层",
+  "desc": "是否禁用 cua-driver 光标覆盖层（空闲时可能占满 CPU）：留空-自动（macOS 与无头/WSL2 上禁用），true-始终禁用，false-始终启用。"
+ },
+ "computer_use.permission_mode": {
+  "label": "权限模式",
+  "desc": "电脑操控的审批边界：standard-使用 cua-driver 自身审批，bounded-无运行时提示，能力清单以外的操作一律拒绝。不接受 unrestricted。默认 standard。"
+ },
+ "context.engine": {
+  "label": "上下文管理引擎",
+  "desc": "接近 token 上限时如何管理上下文：default-内置有损摘要压缩器，custom-使用插件提供的上下文引擎（如 lcm）。"
+ },
+ "context.memory_trim.cooldown_seconds": {
+  "label": "内存回收冷却",
+  "desc": "两次内存回收之间的最短间隔秒数。默认 60。"
+ },
+ "context.memory_trim.enabled": {
+  "label": "内存回收",
+  "desc": "在智能体/TUI 清理节点归还空闲的 glibc 内存页。默认开启。"
+ },
+ "context.memory_trim.info_log_min_delta_mb": {
+  "label": "回收日志最小变化",
+  "desc": "内存变化小于该 MB 时不记录 INFO 日志；0 表示全部记录。"
+ },
+ "context.memory_trim.log_every_n": {
+  "label": "回收日志频率",
+  "desc": "每 N 次周期性回收记录一次 INFO 日志。默认 1。"
+ },
+ "context_file_max_chars": {
+  "label": "上下文文件字符上限",
+  "desc": "单个自动加载的上下文文件（SOUL.md、AGENTS.md、CLAUDE.md 等）截断前的最大字符数；留空则随模型窗口自动缩放（2 万~50 万），正整数为固定上限。"
+ },
+ "context_file_read_timeout": {
+  "label": "上下文文件读取超时",
+  "desc": "读取单个上下文文件的最长等待秒数，超时则跳过并警告，防止网络文件系统阻塞启动。默认 5。"
+ },
+ "credential_pool_strategies": {
+  "label": "凭据池轮换策略",
+  "desc": "按提供商指定多把密钥的轮换策略：fill_first-用满再换 round_robin-轮询 least_used-最少使用 random-随机。默认空（使用内置策略）。"
+ },
+ "cron.allow_agent_scheduling": {
+  "label": "允许智能体建定时任务",
+  "desc": "允许定时任务中运行的智能体使用 cronjob 工具集创建任务；默认关闭以防无人值守的调度循环。"
+ },
+ "cron.catch_up_missed": {
+  "label": "补跑错过的任务",
+  "desc": "开启时补跑错过的周期任务；关闭则跳过超出宽限窗口的错过任务。默认开启。"
+ },
+ "cron.chronos.callback_url": {
+  "label": "Chronos 回调地址",
+  "desc": "本智能体可公网访问的基础地址，NAS 会 POST 到 {callback_url}/api/cron/fire；留空则 Chronos 不可用并回退内置定时器。"
+ },
+ "cron.chronos.expected_audience": {
+  "label": "JWT 受众",
+  "desc": "触发 JWT 预期的 audience 值（如 agent:{instance_id}）。"
+ },
+ "cron.chronos.nas_jwks_url": {
+  "label": "NAS JWKS 地址",
+  "desc": "用于校验触发 JWT 签名的 JWKS 地址；留空则拒绝所有令牌。"
+ },
+ "cron.chronos.portal_url": {
+  "label": "Chronos Portal 地址",
+  "desc": "Chronos 调度所用的 NAS/Portal 基础地址（负责设置/取消一次性任务并签发触发 JWT）。默认 https://portal.nousresearch.com。"
+ },
+ "cron.delivery.notify": {
+  "label": "投递推送通知",
+  "desc": "将定时任务投递标记为需推送通知（例如 Telegram 不静音）；关闭则静默投递。默认开启。"
+ },
+ "cron.failure_repeat_alert_hours": {
+  "label": "重复失败提醒间隔",
+  "desc": "同一错误重复失败时，首次告警后静默该小时数再提醒一次；0 表示每次失败都告警。默认 6。"
+ },
+ "cron.max_parallel_jobs": {
+  "label": "最大并行任务数",
+  "desc": "每次调度最多并行运行的到期任务数；留空/0 表示不限制，1 表示串行。"
+ },
+ "cron.media_send_timeout_seconds": {
+  "label": "媒体发送超时",
+  "desc": "网关投递时每个媒体附件的发送超时秒数。默认 300。"
+ },
+ "cron.mirror_delivery": {
+  "label": "可续接投递",
+  "desc": "让定时任务投递可被回复续接（结果进入目标会话上下文/线程）；关闭则投递仅存在于任务自身会话。默认关闭。"
+ },
+ "cron.model": {
+  "label": "定时任务模型",
+  "desc": "定时任务默认使用的模型；优先级：任务固定模型 > cron.model > 主模型。留空则跟随主模型。"
+ },
+ "cron.model_provider": {
+  "label": "定时任务模型提供商",
+  "desc": "与 cron.model 配套的推理提供商（不是调度器提供商）；留空按全局配置解析。"
+ },
+ "cron.output_retention": {
+  "label": "输出保留份数",
+  "desc": "每个任务保留的最近输出 .md 文件数；0 或负数表示不清理。默认 50。"
+ },
+ "cron.preflight": {
+  "label": "定时任务预检",
+  "desc": "派发前校验 API 密钥、技能与投递平台是否就绪，失败时标记 blocked_config 并告警一次，不调用 LLM；关闭则在运行中失败。默认开启。"
+ },
+ "cron.provider": {
+  "label": "调度器提供商",
+  "desc": "决定任务何时触发的调度器：留空-内置进程内 60 秒定时器，或填写已安装的调度插件名（如 chronos）；不可用时回退内置。"
+ },
+ "cron.require_restart_safe_scope": {
+  "label": "要求重启安全作用域",
+  "desc": "无用户会话的 systemd 网关中：false-以外部子进程直接运行任务（警告一次，无 cgroup 隔离），true-拒绝运行并提示启用 linger。默认关闭。"
+ },
+ "cron.script_timeout_seconds": {
+  "label": "脚本任务超时",
+  "desc": "无智能体的脚本型定时任务超时秒数。默认 3600。"
+ },
+ "cron.session_db_timeout_seconds": {
+  "label": "会话库初始化超时",
+  "desc": "定时任务中打开/迁移会话数据库（state.db）的超时秒数；0 表示不限制。默认 10。"
+ },
+ "cron.wrap_response": {
+  "label": "包装任务输出",
+  "desc": "投递定时任务结果时加上任务名标题和“智能体看不到此消息”页脚；关闭则输出干净内容。默认开启。"
+ },
+ "curator.archive_after_days": {
+  "label": "归档判定天数",
+  "desc": "技能未使用超过多少天移入 skills/.archive/（可恢复），默认 30。"
+ },
+ "curator.archive_ttl_days": {
+  "label": "归档保留天数",
+  "desc": "已归档技能的保留天数；0 表示永久保留，大于 0 时允许手动清除命令删除更早的归档（不会自动执行）。默认 0。"
+ },
+ "curator.backup.enabled": {
+  "label": "合并前备份",
+  "desc": "在合并（会就地改写技能内容）之前对技能目录做快照备份，可回滚。默认开启。"
+ },
+ "curator.backup.keep": {
+  "label": "备份保留份数",
+  "desc": "保留最近多少份技能快照，默认 2。"
+ },
+ "curator.consolidate": {
+  "label": "合并相似技能",
+  "desc": "启用基于大模型的技能合并（构建综合技能）；关闭则只做确定性的闲置清理，无辅助模型开销。默认关闭。"
+ },
+ "curator.enabled": {
+  "label": "启用技能整理",
+  "desc": "启用技能整理器：后台维护智能体自建的技能，将长期未用的标记为过期，并归档（不删除）已过时的技能。默认开启。"
+ },
+ "curator.interval_hours": {
+  "label": "整理间隔",
+  "desc": "两次整理运行之间的间隔（小时），默认 168（7 天）。"
+ },
+ "curator.min_idle_hours": {
+  "label": "最小空闲时间",
+  "desc": "智能体空闲至少多少小时后才运行整理，默认 2。"
+ },
+ "curator.prune_builtins": {
+  "label": "清理内置技能",
+  "desc": "开启后内置技能也会像自建技能一样因闲置而被清理；从技能中心安装的技能永不清理。默认关闭。"
+ },
+ "curator.stale_after_days": {
+  "label": "过期判定天数",
+  "desc": "技能未使用超过多少天标记为过期，默认 14。"
+ },
+ "dashboard.basic_auth.password": {
+  "label": "基础认证密码",
+  "desc": "明文密码（在内存中哈希）；建议改用 password_hash。"
+ },
+ "dashboard.basic_auth.password_hash": {
+  "label": "基础认证密码哈希",
+  "desc": "密码的 scrypt 哈希值（推荐，优先于明文密码）。"
+ },
+ "dashboard.basic_auth.secret": {
+  "label": "会话签名密钥",
+  "desc": "用于签名会话令牌的密钥，建议 32 字节以上随机值；留空则每进程随机生成（重启后会话失效）。"
+ },
+ "dashboard.basic_auth.session_ttl_seconds": {
+  "label": "登录会话有效期",
+  "desc": "基础认证登录会话的有效秒数；0 表示使用插件默认值（12 小时）。"
+ },
+ "dashboard.basic_auth.username": {
+  "label": "基础认证用户名",
+  "desc": "仪表盘用户名/密码登录的用户名；留空则不启用基础认证。"
+ },
+ "dashboard.compute_host_heartbeat_secs": {
+  "label": "计算宿主心跳间隔",
+  "desc": "进程隔离模式下计算宿主进程的心跳间隔（秒）。默认 15。"
+ },
+ "dashboard.compute_host_respawn_max": {
+  "label": "计算宿主重启上限",
+  "desc": "计算宿主进程崩溃后最多自动重启的次数。默认 3。"
+ },
+ "dashboard.drain_auth.min_secret_chars": {
+  "label": "排空密钥最短长度",
+  "desc": "排空控制密钥（环境变量 HERMES_DASHBOARD_DRAIN_SECRET）的最少字符数，弱密钥会被拒绝。默认 43（约 256 位）。"
+ },
+ "dashboard.drain_auth.scope": {
+  "label": "排空认证范围",
+  "desc": "排空控制令牌认证的授权范围（scope）。默认 drain。"
+ },
+ "dashboard.oauth.client_id": {
+  "label": "OAuth 客户端 ID",
+  "desc": "仪表盘 OAuth 登录门禁使用的客户端 ID（由 Portal 分配）；留空表示不启用 OAuth 提供方。环境变量优先。"
+ },
+ "dashboard.oauth.portal_url": {
+  "label": "OAuth Portal 地址",
+  "desc": "OAuth 门禁使用的 Portal 地址；留空表示生产环境默认地址。"
+ },
+ "dashboard.public_url": {
+  "label": "仪表盘公网地址",
+  "desc": "仪表盘对外完整地址（协议+主机+可选前缀，如 https://example.com/pdr），用于 OAuth 回调与 Host/Origin 校验；留空则根据请求头推断。"
+ },
+ "dashboard.session_token_auth.enabled": {
+  "label": "会话令牌认证",
+  "desc": "允许预置的仪表盘会话令牌（HERMES_DASHBOARD_SESSION_TOKEN，字面值或 file:<路径>）访问受保护仪表盘；关闭则不使用。默认开启。"
+ },
+ "dashboard.show_token_analytics": {
+  "label": "显示 token 统计",
+  "desc": "显示 token/费用分析页面；数据为本地下限估算（不含辅助调用、重试等），可能远低于实际账单。默认关闭。"
+ },
+ "dashboard.startup_orphan_sweep": {
+  "label": "启动清理孤儿会话",
+  "desc": "网关启动时关闭由已退出网关遗留的 tui/桌面/子智能体会话记录（仍可恢复），避免显示为永久“活跃”。默认开启。"
+ },
+ "dashboard.theme": {
+  "label": "仪表盘主题",
+  "desc": "Web 仪表盘视觉主题：default-默认，midnight-午夜深色，ember-余烬暖色，mono-单色，cyberpunk-赛博朋克，rose-玫瑰色。"
+ },
+ "dashboard.trusted_proxies": {
+  "label": "受信反向代理",
+  "desc": "可信任其 X-Forwarded-Proto/-For 头的反向代理 IP 或 CIDR 列表；回环地址始终可信，拒绝通配与 /0。"
+ },
+ "dashboard.turn_isolation": {
+  "label": "回合进程隔离",
+  "desc": "仪表盘回合进程隔离的灰度开关。默认关闭。"
+ },
+ "dashboard.ws_orphan_activity_stale_s": {
+  "label": "断连运行判停时长",
+  "desc": "断连后仍在运行的回合，仅在活动时钟空闲超过该秒数后才中断；0 表示宽限期到即中断。默认 600。"
+ },
+ "dashboard.ws_orphan_reap_grace_s": {
+  "label": "断连会话回收宽限",
+  "desc": "客户端断开后，孤立会话被中断/回收前的宽限秒数；0 表示永久保留。默认 20。"
+ },
+ "dashboard.ws_ping_interval": {
+  "label": "WebSocket 心跳间隔",
+  "desc": "非回环绑定时 WebSocket 保活 ping 的间隔秒数。默认 20。"
+ },
+ "dashboard.ws_ping_timeout": {
+  "label": "WebSocket 心跳超时",
+  "desc": "非回环绑定时 WebSocket ping 无响应的超时秒数。默认 20。"
+ },
+ "database.journal_mode": {
+  "label": "数据库日志模式",
+  "desc": "所有 PDR 智能体 SQLite 数据库的日志模式。默认 wal；在 fsync 不可靠或共享文件系统（macOS virtiofs、NFS、SMB）上可改为 delete，因为 WAL 在这些环境下不保证崩溃安全。"
+ },
+ "database.journal_size_limit": {
+  "label": "日志文件大小上限",
+  "desc": "WAL/日志文件的大小上限（字节，整数）。留空使用 SQLite 默认值（不限制）。"
+ },
+ "database.wal_autocheckpoint": {
+  "label": "WAL 自动检查点",
+  "desc": "WAL 自动检查点阈值（页数，整数）。留空使用 SQLite 默认值（1000 页）。"
+ },
+ "delegation.api_key": {
+  "label": "子智能体 API 密钥",
+  "desc": "delegation.base_url 对应的 API 密钥；留空时回退到 OPENAI_API_KEY。"
+ },
+ "delegation.api_mode": {
+  "label": "子智能体接口协议",
+  "desc": "delegation.base_url 的传输协议：chat_completions、codex_responses、anthropic_messages；留空则根据 URL 自动识别。"
+ },
+ "delegation.auto_resume": {
+  "label": "自动恢复子任务",
+  "desc": "自动恢复中断的子智能体任务（会无人值守消耗 token），超过截止时间仍失败则放弃。默认关闭。"
+ },
+ "delegation.auto_resume_deadline_minutes": {
+  "label": "自动恢复截止时间",
+  "desc": "自动恢复子任务的截止时间（分钟），超时后以失败结束。默认 360。"
+ },
+ "delegation.backend": {
+  "label": "委派后端",
+  "desc": "子智能体任务路由策略：default-使用下方各项设置，也可填写其他后端名（如 profile_routes），对应设置在 delegation.backends 中。"
+ },
+ "delegation.backends": {
+  "label": "委派后端配置",
+  "desc": "按委派后端名称存放的专属设置（与“委派后端”选项配合）。默认空。"
+ },
+ "delegation.base_url": {
+  "label": "子智能体接口地址",
+  "desc": "子智能体直连的 OpenAI 兼容端点地址；留空不使用。"
+ },
+ "delegation.child_timeout_seconds": {
+  "label": "子智能体无进展超时",
+  "desc": "子智能体无任何进展的最长秒数（最低 30），并非总时长；0 表示不限制（默认）。"
+ },
+ "delegation.compression_threshold_tokens": {
+  "label": "子智能体压缩阈值",
+  "desc": "子智能体压缩触发点的绝对 token 上限（≥16000 才生效），与比例阈值取较低者；0 表示与父智能体一致（默认）。"
+ },
+ "delegation.fallback_providers": {
+  "label": "子智能体备用链",
+  "desc": "子智能体的备用提供商链（格式同顶层）；留空则未固定的子智能体继承父链，[] 表示禁用回退。"
+ },
+ "delegation.gateway_mode": {
+  "label": "网关委派模式",
+  "desc": "网关中委派的执行方式：inline-在当前轮内等待合并结果，background-后台运行，auto-在关闭中间消息的平台上用 inline。默认 auto。"
+ },
+ "delegation.independent_completions": {
+  "label": "独立返回结果",
+  "desc": "开启时后台批量任务每完成一个（或一组）就单独返回；关闭则整批完成后合并为一条消息返回。默认关闭。"
+ },
+ "delegation.inherit_mcp_toolsets": {
+  "label": "继承 MCP 工具集",
+  "desc": "限定子智能体工具集时仍保留父智能体的 MCP 工具集；关闭则严格按指定工具集。默认开启。"
+ },
+ "delegation.max_concurrent_children": {
+  "label": "最大并行子智能体",
+  "desc": "每批并行运行的子智能体数及并发后台任务数上限（最少 1），超出的异步任务改为同步执行。默认 10。"
+ },
+ "delegation.max_iterations": {
+  "label": "子智能体最大轮数",
+  "desc": "每个子智能体的工具调用轮数上限（独立于父智能体）。默认 250。"
+ },
+ "delegation.max_resumable": {
+  "label": "可恢复任务上限",
+  "desc": "最多保留的可恢复子智能体任务数。默认 32。"
+ },
+ "delegation.max_spawn_depth": {
+  "label": "最大委派深度",
+  "desc": "委派树深度上限：1-扁平（子智能体不能再委派），2-编排者→执行者，3 及以上更深；每层都会倍增成本。默认 1。"
+ },
+ "delegation.max_summary_chars": {
+  "label": "子结果摘要上限",
+  "desc": "子智能体返回结果的单条字符硬上限，超出部分溢出到缓存文件可再读取；0 表示仅用动态预算。默认 24000。"
+ },
+ "delegation.model": {
+  "label": "子智能体模型",
+  "desc": "子智能体使用的模型，如 google/gemini-3-flash-preview；留空则继承父智能体。"
+ },
+ "delegation.oneshot_max_children": {
+  "label": "单次运行子智能体上限",
+  "desc": "一次性运行（chat -q / --oneshot）最多可派生的子智能体总数；0 表示不限制。默认 2。"
+ },
+ "delegation.orchestrator_enabled": {
+  "label": "允许编排者角色",
+  "desc": "是否允许 role=\"orchestrator\" 的子智能体（总开关）。默认开启。"
+ },
+ "delegation.prefix_stagger_seconds": {
+  "label": "首块等待时间",
+  "desc": "兄弟子智能体等待第一个子智能体首个输出块（以共享缓存前缀）的最长秒数；0 表示关闭。"
+ },
+ "delegation.provider": {
+  "label": "子智能体提供商",
+  "desc": "子智能体使用的提供商，如 openrouter；留空则继承父智能体的提供商与凭据。"
+ },
+ "delegation.reasoning_effort": {
+  "label": "子智能体推理强度",
+  "desc": "子智能体的推理强度：留空-继承父智能体，minimal-最小，low-低，medium-中，high-高，xhigh-很高，max-最大，ultra-极致。"
+ },
+ "delegation.request_overrides": {
+  "label": "子任务请求覆盖",
+  "desc": "每次委派调用都附加的请求参数（如 service_tier），其中 extra_body 子项合并进请求体；显式值优先。默认空。"
+ },
+ "delegation.resumable_ttl_hours": {
+  "label": "可恢复保留时长",
+  "desc": "可恢复的子智能体任务保留的小时数。默认 48。"
+ },
+ "delegation.subagent_auto_approve": {
+  "label": "子智能体自动审批",
+  "desc": "子智能体的审批总是非交互处理：false-自动拒绝，true-自动批准一次；均记录审计日志，仅建议在可信批处理中开启。默认关闭。"
+ },
+ "delegation.surface_child_process_notifications": {
+  "label": "转发子进程通知",
+  "desc": "将子智能体后台进程的完成/匹配通知转发给父智能体；关闭则不转发（异步委派结果始终送达）。默认关闭。"
+ },
+ "desktop.auto_continue.enabled": {
+  "label": "崩溃后自动续跑",
+  "desc": "因崩溃中断的轮次在恢复时，若中断时间较近则自动重新提交被中断的提示；过旧则仅显示已恢复的部分记录。默认开启。"
+ },
+ "desktop.auto_continue.freshness_minutes": {
+  "label": "续跑时效",
+  "desc": "中断发生在多少分钟内才自动续跑，默认 15。"
+ },
+ "desktop.auto_continue.max_attempts": {
+  "label": "最大续跑次数",
+  "desc": "同一被中断轮次最多自动重跑次数（防止崩溃循环），默认 2。"
+ },
+ "desktop.disable_gpu": {
+  "label": "禁用 GPU 加速",
+  "desc": "GPU 加速策略：auto-仅在远程显示（SSH/VNC/RDP）时禁用（默认） true-始终使用软件渲染（适用于无 GPU 虚拟机） false-始终启用 GPU。"
+ },
+ "desktop.electron_flags": {
+  "label": "Electron 启动参数",
+  "desc": "每次启动附加的 Electron 参数列表，例如 [\"--ozone-platform=x11\"] 或 GPU 兼容参数。"
+ },
+ "desktop.font_family": {
+  "label": "界面字体",
+  "desc": "桌面应用聊天与界面文字的 CSS font-family（如 OpenDyslexic），置于主题字体之前；留空使用主题字体。终端字体见 terminal.font_family。"
+ },
+ "desktop.macos_signing_identity": {
+  "label": "macOS 签名身份",
+  "desc": "仅 macOS：本地重建应用时用于重新签名的代码签名身份（登录钥匙串证书，自签名亦可），使系统权限授予在更新后保留；留空使用默认临时签名。"
+ },
+ "desktop.manage_launcher_entry": {
+  "label": "管理启动器条目",
+  "desc": "Linux：开启时每次启动更新自动生成的 XDG 启动器条目；关闭则保留已有的自定义条目（缺失时仍会创建）。默认开启。"
+ },
+ "desktop.ozone_platform_hint": {
+  "label": "Linux 显示后端",
+  "desc": "Linux Ozone 显示后端：auto-使用 Chromium 默认（默认） x11-通过 XWayland 运行（适用于不支持 Wayland 置顶的合成器，如 COSMIC） wayland-强制原生 Wayland。"
+ },
+ "desktop.password_store": {
+  "label": "Linux 密钥存储",
+  "desc": "Linux 下存储令牌的密钥环（Chromium --password-store）：auto-自动检测 KWallet 或 freedesktop secrets（默认） gnome-libsecret/kwallet/kwallet5/kwallet6-强制指定 basic-不加密存储。非 Linux 忽略。"
+ },
+ "desktop.renderer_accessibility": {
+  "label": "无障碍树",
+  "desc": "向系统（macOS/Windows）暴露渲染进程的无障碍树，使听写/输入法等工具能向输入框输入文字；关闭可提升性能。默认开启。"
+ },
+ "desktop.renderer_max_old_space_mb": {
+  "label": "渲染进程内存上限",
+  "desc": "渲染进程 V8 老生代内存上限（MB），超出时仅重载渲染进程而非卡死整机；0 表示使用 Chromium 默认值。默认 0。"
+ },
+ "desktop.repo_scan_enabled": {
+  "label": "扫描 Git 仓库",
+  "desc": "为项目侧边栏扫描发现 Git 仓库；未配置扫描根目录时不会扫描。默认开启。"
+ },
+ "desktop.repo_scan_exclude_paths": {
+  "label": "扫描排除路径",
+  "desc": "扫描仓库时排除的路径列表。"
+ },
+ "desktop.repo_scan_roots": {
+  "label": "仓库扫描根目录",
+  "desc": "扫描 Git 仓库的根目录列表，需显式配置。"
+ },
+ "desktop.ssh_path": {
+  "label": "SSH 程序路径",
+  "desc": "仅 Windows：用于 SSH 连接与终端的 ssh 客户端路径（如 Git for Windows 的 ssh.exe）；留空依次使用系统 OpenSSH、Git 自带 ssh.exe、PATH。修改后需重启应用。"
+ },
+ "discord.allow_any_attachment": {
+  "label": "允许任意附件（已弃用）",
+  "desc": "已弃用、无实际作用（附件总会缓存，由消息授权控制访问），仅为兼容旧配置保留。"
+ },
+ "discord.allowed_channels": {
+  "label": "允许的频道",
+  "desc": "设置后仅在这些 Discord 频道 ID 中回复（白名单），逗号分隔；留空不限制。"
+ },
+ "discord.approval_mentions": {
+  "label": "审批时提及用户",
+  "desc": "发出审批请求时 @ 允许的用户，便于在共享频道中及时注意到。默认关闭。"
+ },
+ "discord.auto_thread": {
+  "label": "自动创建话题",
+  "desc": "在频道中被 @ 时自动创建话题（thread）进行回复。默认开启。"
+ },
+ "discord.bots_require_inline_mention": {
+  "label": "机器人需显式提及",
+  "desc": "其他机器人发送的消息必须在正文中 @本机器人 才触发回复，仅回复引用不算。仅对可信旧中继可关闭；不影响人类用户。默认开启。"
+ },
+ "discord.channel_prompts": {
+  "label": "Discord 频道提示",
+  "desc": "频道 ID → 临时系统提示（仅对该频道生效）。默认空。"
+ },
+ "discord.dm_role_auth_guild": {
+  "label": "私信角色授权服务器",
+  "desc": "填写服务器（guild）ID 后，该服务器中拥有允许角色的成员也可通过私信使用机器人；留空或 0 表示关闭。"
+ },
+ "discord.free_response_auto_thread": {
+  "label": "免提及频道自动话题",
+  "desc": "免提及频道默认直接回复；开启后每条顶层消息也会单独开一个话题。默认关闭。"
+ },
+ "discord.free_response_channels": {
+  "label": "免提及频道",
+  "desc": "无需 @ 即可回复的 Discord 频道 ID，逗号分隔。"
+ },
+ "discord.history_backfill": {
+  "label": "回填历史消息",
+  "desc": "被触发时附带频道近期消息记录（找回因需提及而被忽略的消息）。默认开启。"
+ },
+ "discord.history_backfill_limit": {
+  "label": "历史回填条数",
+  "desc": "历史回填时最多扫描的消息条数，默认 50。"
+ },
+ "discord.max_attachment_bytes": {
+  "label": "附件大小上限",
+  "desc": "单个缓存附件的最大字节数（写入时会占用内存）；0 表示不限。默认 33554432（32MB）。"
+ },
+ "discord.missed_message_backfill.channels": {
+  "label": "补发频道",
+  "desc": "需要补发的频道 ID，逗号分隔；留空则使用免提及频道。"
+ },
+ "discord.missed_message_backfill.enabled": {
+  "label": "补发离线消息",
+  "desc": "重连或启动后重放离线期间错过的消息。默认关闭。"
+ },
+ "discord.missed_message_backfill.limit": {
+  "label": "补发扫描上限",
+  "desc": "每次重连最多扫描的消息总数，默认 100。"
+ },
+ "discord.missed_message_backfill.max_attempts": {
+  "label": "单条最大重试",
+  "desc": "单条消息在整个生命周期内最多重新处理的次数，默认 3。"
+ },
+ "discord.missed_message_backfill.max_dispatches": {
+  "label": "补发处理上限",
+  "desc": "每次重连最多处理的补发消息数，默认 10。"
+ },
+ "discord.missed_message_backfill.window_seconds": {
+  "label": "补发时间窗口",
+  "desc": "仅检查最近多少秒内的消息，默认 21600（6 小时）。"
+ },
+ "discord.reactions": {
+  "label": "处理状态表情",
+  "desc": "处理消息时添加 👀/✅/❌ 表情反应表示状态。默认开启。"
+ },
+ "discord.require_mention": {
+  "label": "频道需 @ 提及",
+  "desc": "Discord 服务器频道中需 @机器人 才会回复。默认开启。"
+ },
+ "discord.server_actions": {
+  "label": "允许的服务器操作",
+  "desc": "discord 管理工具允许执行的操作，逗号分隔（如 list_guilds、list_channels、fetch_messages、pin_message、add_role 等）；留空表示全部（受机器人权限限制）。"
+ },
+ "discord.thread_require_mention": {
+  "label": "话题内需提及",
+  "desc": "在话题中也需要 @ 提及（适用于多机器人话题）。默认关闭。"
+ },
+ "discord.voice_channel_inactivity_timeout_seconds": {
+  "label": "语音频道空闲超时",
+  "desc": "语音频道无活动多少秒后自动离开；0 表示一直停留直到手动离开。默认 300。"
+ },
+ "discord.voice_fx.ack_enabled": {
+  "label": "口头确认",
+  "desc": "在第一次工具调用前说一句简短确认语。默认开启。"
+ },
+ "discord.voice_fx.ack_phrases": {
+  "label": "确认语列表",
+  "desc": "随机选用的口头确认语列表；空列表表示禁用。"
+ },
+ "discord.voice_fx.ambient_enabled": {
+  "label": "播放思考背景音",
+  "desc": "工具运行时播放空闲“思考”背景音。默认开启。"
+ },
+ "discord.voice_fx.ambient_gain": {
+  "label": "背景音音量",
+  "desc": "空闲背景音音量，0.0~1.0，默认 0.18。"
+ },
+ "discord.voice_fx.ambient_path": {
+  "label": "背景音文件",
+  "desc": "自定义循环背景音频文件路径；留空使用合成音。"
+ },
+ "discord.voice_fx.duck_gain": {
+  "label": "说话时背景音量",
+  "desc": "播放语音时背景音被压低后的音量，默认 0.06。"
+ },
+ "discord.voice_fx.enabled": {
+  "label": "启用语音混音",
+  "desc": "语音频道软件混音器总开关（思考背景音、口头确认与 TTS 叠加）。默认关闭。"
+ },
+ "discord.voice_fx.speech_gain": {
+  "label": "语音音量",
+  "desc": "TTS 与口头确认的音量，0.0~1.0，默认 1.0。"
+ },
+ "discord.voice_playback_timeout_seconds": {
+  "label": "语音播放超时",
+  "desc": "强制停止语音频道播放前的最短秒数（会根据音频时长自动延长），默认 120。"
+ },
+ "discord.websocket_event_max_silence_seconds": {
+  "label": "事件最长静默",
+  "desc": "连接仍回应心跳但超过多少秒未收到任何事件即视为失聪并重连，默认 14400（4 小时）；0 表示禁用。"
+ },
+ "discord.websocket_heartbeat_ack_max_age_seconds": {
+  "label": "心跳确认最大间隔",
+  "desc": "心跳 ACK 超过多少秒未更新视为异常，默认 60。"
+ },
+ "discord.websocket_liveness_failure_threshold": {
+  "label": "探活失败阈值",
+  "desc": "连续探活失败多少次判定连接异常，默认 2。"
+ },
+ "discord.websocket_liveness_interval_seconds": {
+  "label": "连接探活间隔",
+  "desc": "检查 Discord WebSocket 就绪/心跳状态的间隔（秒），默认 15；任一探活参数为 0 即禁用探活。"
+ },
+ "discord.websocket_max_latency_seconds": {
+  "label": "最大连接延迟",
+  "desc": "WebSocket 延迟超过多少秒视为异常，默认 30。"
+ },
+ "display.background_process_notifications": {
+  "label": "后台进程通知",
+  "desc": "后台终端进程结束时网关的通知方式：concise-一行摘要（失败附输出尾部），all-运行更新与最终原始输出，result-仅最终输出，error-仅非零退出时输出，off-不通知。默认 concise。"
+ },
+ "display.battery": {
+  "label": "显示电量",
+  "desc": "在状态栏最前显示电池电量（无电池时无效果）。默认关闭。"
+ },
+ "display.bell_on_complete": {
+  "label": "完成时响铃",
+  "desc": "智能体完成回复时发出终端响铃。默认关闭。"
+ },
+ "display.bell_on_prompt": {
+  "label": "提问时响铃",
+  "desc": "出现需要用户处理的阻塞提示（澄清/审批/sudo）时响铃。默认关闭。"
+ },
+ "display.busy_input_mode": {
+  "label": "运行中输入行为",
+  "desc": "智能体运行时用户输入的处理方式：interrupt-打断当前运行，queue-排队等待本轮结束，steer-引导注入当前运行。默认 interrupt。"
+ },
+ "display.busy_steer_ack_enabled": {
+  "label": "引导确认气泡",
+  "desc": "steer 模式下是否显示“已引导到当前运行”的确认气泡（关闭不影响引导本身）。默认开启。"
+ },
+ "display.cli_layout": {
+  "label": "CLI 布局风格",
+  "desc": "命令行界面外观：modern-现代（符号行，状态栏在输入框下），classic-经典（带边框面板）。默认 modern。"
+ },
+ "display.cli_multiline_shortcuts": {
+  "label": "CLI 多行快捷键",
+  "desc": "经典 CLI 中启用 Ctrl+J 换行、行尾反斜杠续行、Shift+Enter 等多行输入快捷键。默认开启。"
+ },
+ "display.cli_rebuild_scrollback_on_redraw": {
+  "label": "重绘时清空滚动区",
+  "desc": "经典 CLI 完整重绘/调整大小时同时清空终端滚动历史，用于终端或 tmux 残留旧提示的情况。默认关闭。"
+ },
+ "display.cli_refresh_interval": {
+  "label": "CLI 刷新间隔",
+  "desc": "经典 CLI 空闲时重绘的间隔秒数，保持状态栏时钟等实时更新；0 表示关闭。默认 1.0。"
+ },
+ "display.compact": {
+  "label": "紧凑横幅",
+  "desc": "开启时以单行紧凑横幅代替完整 ASCII 横幅与工具/技能摘要。默认关闭。"
+ },
+ "display.credits_notices": {
+  "label": "额度提醒",
+  "desc": "在状态栏显示 Nous 额度相关提醒（用量区间、赠额用尽、余额耗尽/恢复）；关闭不影响 /usage。默认开启。"
+ },
+ "display.ephemeral_system_ttl": {
+  "label": "系统通知自动删除",
+  "desc": "在支持删除的平台（Telegram）上，N 秒后自动删除临时系统通知（如“新会话已开始”）；0 表示关闭。"
+ },
+ "display.file_mutation_verifier": {
+  "label": "文件写入核验",
+  "desc": "本轮有文件写入/补丁失败且之后未成功覆盖时，在最终回复后附一行提醒，防止模型误报成功。默认开启。"
+ },
+ "display.final_response_markdown": {
+  "label": "最终回复 Markdown",
+  "desc": "最终回复中 Markdown 的处理方式：render-渲染显示，strip-去除标记，raw-原样输出。默认 strip。"
+ },
+ "display.focus_saved_tool_progress": {
+  "label": "专注前工具进度",
+  "desc": "退出专注视图时恢复的工具进度显示级别（如 off/new/all/verbose）。默认 all。"
+ },
+ "display.focus_view": {
+  "label": "专注视图",
+  "desc": "专注视图（/focus）：仅影响显示，隐藏工具进度并统计隐藏行数，不影响模型所见内容。默认关闭。"
+ },
+ "display.friendly_tool_labels": {
+  "label": "友好工具标签",
+  "desc": "内置工具使用人性化状态标签（如“正在读取 <文件>”）；自定义/插件/MCP 工具仍显示原始预览。默认开启。"
+ },
+ "display.inline_diffs": {
+  "label": "内联 diff 预览",
+  "desc": "对 write_file/patch/skill_manage 显示内联差异预览。默认开启。"
+ },
+ "display.inline_images": {
+  "label": "内联图片显示",
+  "desc": "CLI/TUI 对话中图片的显示方式：auto-自动检测，kitty-Kitty 图形协议，iterm-iTerm2 协议，unicode-字符块近似，off-不显示。默认 auto。"
+ },
+ "display.interface": {
+  "label": "默认界面",
+  "desc": "启动 chat 时使用的界面：cli-prompt_toolkit 命令行，tui-Ink 终端界面；--cli/--tui 参数优先。默认 cli。"
+ },
+ "display.interim_assistant_messages": {
+  "label": "中间过程消息",
+  "desc": "网关：发送轮次中途的自然状态消息；桌面端：保留工具调用间的叙述而不折叠为最终消息。默认开启。"
+ },
+ "display.language": {
+  "label": "界面语言",
+  "desc": "静态界面文本（审批提示、部分网关命令回复）的语言：en、zh、ja、de、es、fr、tr、uk，未知值按 en 处理；不影响智能体回复。"
+ },
+ "display.memory_notifications": {
+  "label": "记忆更新通知",
+  "desc": "后台自我改进（记忆更新）在聊天中的通知方式：off-不通知（复盘仍运行），on-简短提示“记忆已更新”，verbose-附带内容预览。默认 on。"
+ },
+ "display.persist_prompts": {
+  "label": "保留已处理提示",
+  "desc": "已处理的审批/澄清提示在滚动历史中保留一行摘要。默认开启。"
+ },
+ "display.persistent_output": {
+  "label": "保留输出历史",
+  "desc": "经典 CLI 在 Ctrl+L、/redraw 与窗口调整清屏后保留最近输出。默认开启。"
+ },
+ "display.persistent_output_max_lines": {
+  "label": "保留输出行数",
+  "desc": "清屏后重放的最近输出最大行数。默认 200。"
+ },
+ "display.personality": {
+  "label": "当前人格",
+  "desc": "当前选中的人格名称（如 helpful、concise、technical 或自定义人格），可通过 /personality 切换；留空为默认。"
+ },
+ "display.pet.enabled": {
+  "label": "启用桌宠",
+  "desc": "启用 Petdex 动画吉祥物（纯装饰，跨 CLI/TUI/桌面端，不影响提示缓存）。默认关闭。"
+ },
+ "display.pet.render_mode": {
+  "label": "桌宠渲染方式",
+  "desc": "auto-自动检测（kitty/iTerm2/sixel，否则字符块），kitty/iterm/sixel-对应终端图形协议，unicode-半块字符，off-不显示。默认 auto。"
+ },
+ "display.pet.scale": {
+  "label": "桌宠缩放",
+  "desc": "相对原始 192×208 帧的缩放比例。默认 0.33。"
+ },
+ "display.pet.slug": {
+  "label": "桌宠标识",
+  "desc": "当前桌宠的 slug（位于 pets/ 目录）；留空则使用第一个已安装的。"
+ },
+ "display.pet.unicode_cols": {
+  "label": "桌宠字符列宽",
+  "desc": "终端中桌宠占用列宽的强制值；0 表示按缩放比例推算。"
+ },
+ "display.platforms.discord.streaming": {
+  "label": "Discord 流式输出",
+  "desc": "Discord 上是否流式输出回复（基于编辑消息，可能闪烁）；仍受总开关控制。默认关闭。"
+ },
+ "display.platforms.slack.streaming": {
+  "label": "Slack 流式输出",
+  "desc": "Slack 上是否流式输出回复（基于编辑消息，可能闪烁）；仍受总开关控制。默认关闭。"
+ },
+ "display.platforms.telegram.streaming": {
+  "label": "Telegram 流式输出",
+  "desc": "Telegram 上是否流式输出回复（原生草稿流式，较流畅）；仍受 streaming.enabled 总开关控制。默认开启。"
+ },
+ "display.platforms.wecom.streaming": {
+  "label": "企业微信流式输出",
+  "desc": "企业微信（WeCom）上是否使用原生流式消息输出回复；仍受总开关控制。默认开启。"
+ },
+ "display.reasoning_full": {
+  "label": "完整推理回顾",
+  "desc": "回复后的推理回顾默认折叠为 10 行；开启则完整显示。默认关闭。"
+ },
+ "display.reasoning_style": {
+  "label": "推理摘要样式",
+  "desc": "推理摘要的渲染样式：code-代码块，blockquote-引用块（> ），subtext-Discord 小号灰字（-# ）。默认 code。"
+ },
+ "display.resume_display": {
+  "label": "恢复会话显示方式",
+  "desc": "恢复会话时如何显示历史：minimal-简要回顾，full-完整回顾最近对话，off-不显示。默认 full。"
+ },
+ "display.resume_exchanges": {
+  "label": "回顾对话轮数",
+  "desc": "恢复会话回顾中最多显示的用户+助手对话对数。默认 10。"
+ },
+ "display.resume_last_session": {
+  "label": "桌面端恢复上次会话",
+  "desc": "桌面端冷启动时重新打开上次的对话/页面。默认开启。"
+ },
+ "display.resume_max_assistant_chars": {
+  "label": "回顾助手消息长度",
+  "desc": "回顾中非最后一条助手消息截断的最大字符数。默认 200。"
+ },
+ "display.resume_max_assistant_lines": {
+  "label": "回顾助手消息行数",
+  "desc": "回顾中非最后一条助手消息截断的最大行数。默认 3。"
+ },
+ "display.resume_max_user_chars": {
+  "label": "回顾用户消息长度",
+  "desc": "回顾中用户消息截断的最大字符数。默认 300。"
+ },
+ "display.resume_skip_tool_only": {
+  "label": "回顾跳过纯工具调用",
+  "desc": "回顾中跳过只有工具调用的助手条目，避免被“[N 个工具调用]”刷屏。默认开启。"
+ },
+ "display.runtime_footer.enabled": {
+  "label": "运行信息页脚",
+  "desc": "在网关最终消息末尾附加运行信息页脚（如 模型 · 上下文占比 · 工作目录）。默认关闭。"
+ },
+ "display.runtime_footer.fields": {
+  "label": "页脚字段",
+  "desc": "页脚显示的字段及顺序，默认 [model, context_pct, cwd]；可选附加 latency、served_model。"
+ },
+ "display.show_commentary": {
+  "label": "显示评述通道",
+  "desc": "Codex Responses 的评述内容：开启-作为中途更新推送，关闭-归入推理内容（仅在显示推理时可见）。默认开启。"
+ },
+ "display.show_cost": {
+  "label": "显示费用",
+  "desc": "在状态栏显示美元费用。默认关闭。"
+ },
+ "display.show_reasoning": {
+  "label": "显示推理过程",
+  "desc": "在回复前实时流式显示模型的推理/思考内容；关闭则思考期间只显示加载动画。默认开启。"
+ },
+ "display.skin": {
+  "label": "界面主题",
+  "desc": "CLI 视觉主题：default-默认，ares-Ares 风格，mono-单色，slate-石板灰；也可用 ~/.hermes/skins/ 中的自定义主题。"
+ },
+ "display.spinner_token_flow": {
+  "label": "动画显示 token 数",
+  "desc": "CLI 加载动画上显示本轮累计输出 token 数。默认开启。"
+ },
+ "display.status_bar.fields": {
+  "label": "状态栏字段",
+  "desc": "CLI/TUI 状态栏显示的字段（如 model、context_pct、cache_hit、latency、git_branch、duration 等）；非空时仅显示所列字段，空则用默认集合。"
+ },
+ "display.status_phrases": {
+  "label": "自定义状态短语",
+  "desc": "长时间运行时显示的状态短语来源：path/paths 指向 YAML 文件或目录，mode 取 append-追加（默认） replace-替换。默认空（使用内置短语）。"
+ },
+ "display.streaming": {
+  "label": "流式输出",
+  "desc": "在终端中逐 token 流式显示回复，而非等待完整回复后再渲染。"
+ },
+ "display.suppress_warning_notifications": {
+  "label": "屏蔽警告通知",
+  "desc": "开启后隐藏引擎警告/失败通知（不影响任务结果、手动命令与日志）。默认关闭。"
+ },
+ "display.timestamp_format": {
+  "label": "时间戳格式",
+  "desc": "时间戳的 strftime 格式，如 \"%H:%M\" 或 \"%b-%d %H:%M\"。默认 %H:%M。"
+ },
+ "display.timestamps": {
+  "label": "显示时间戳",
+  "desc": "在消息上显示时间戳（CLI 标签、TUI 行、桌面端对话记录）。默认关闭。"
+ },
+ "display.tool_preview_length": {
+  "label": "工具预览长度",
+  "desc": "工具调用预览的最大字符数；0 表示不限制。"
+ },
+ "display.tool_progress_command": {
+  "label": "网关 /verbose 命令",
+  "desc": "在消息网关中启用 /verbose 命令以调整工具进度显示。默认关闭。"
+ },
+ "display.tool_progress_grouping": {
+  "label": "工具进度分组",
+  "desc": "支持编辑消息的网关中工具进度的展示：accumulate-合并到一个气泡持续编辑，separate-每个工具单独一条消息。默认 accumulate。"
+ },
+ "display.tui_agents_nudge": {
+  "label": "子智能体提示",
+  "desc": "首次委派子智能体时在 TUI 中显示一次“/agents 可实时查看”的提示。默认开启。"
+ },
+ "display.tui_auto_resume_recent": {
+  "label": "TUI 自动恢复会话",
+  "desc": "启动 TUI 时自动恢复最近一次面向用户的会话（类似 -c）。默认关闭。"
+ },
+ "display.tui_native": {
+  "label": "TUI 原生滚动",
+  "desc": "TUI 使用终端主缓冲区与原生滚动历史，而非自定义备用屏幕视口。默认关闭。"
+ },
+ "display.tui_status_indicator": {
+  "label": "TUI 忙碌指示器",
+  "desc": "TUI 忙碌时的指示样式：kaomoji-颜文字，emoji-表情，unicode-盲文点阵动画，ascii-纯 ASCII。可用 /indicator 切换。默认 kaomoji。"
+ },
+ "display.turn_completion_explainer": {
+  "label": "无回复原因说明",
+  "desc": "一轮结束却没有可用回复时（重试后为空、流截断、达到上限等）附一行原因说明，而非仅显示“(empty)”。默认开启。"
+ },
+ "display.turn_summary": {
+  "label": "回合摘要行",
+  "desc": "CLI 每轮结束显示一行摘要（耗时、编辑文件数、读取文件数、执行命令数）。默认开启。"
+ },
+ "display.user_message_preview.first_lines": {
+  "label": "消息预览首行数",
+  "desc": "CLI 中回显已提交用户消息时显示的开头行数。默认 2。"
+ },
+ "display.user_message_preview.last_lines": {
+  "label": "消息预览末行数",
+  "desc": "CLI 中回显已提交用户消息时显示的结尾行数。默认 2。"
+ },
+ "display.vim_mode": {
+  "label": "Vim 键位",
+  "desc": "在 CLI 输入框中启用 Vi/Vim 键位绑定（默认使用 emacs 风格）。默认关闭。"
+ },
+ "doctor.live_probe_timeout": {
+  "label": "诊断探测超时",
+  "desc": "`doctor --live` 实际调用探测的单次超时秒数。默认 10。"
+ },
+ "fallback.min_switch_reset_seconds": {
+  "label": "限流不切换阈值",
+  "desc": "主提供商被限流且声明的重置时间短于此秒数时，留在主模型上等待重试而不切换到备用模型；0 表示关闭（默认）。"
+ },
+ "fallback_providers": {
+  "label": "备用提供商链",
+  "desc": "主模型出错或被限流时按顺序切换的备用提供商/模型列表，每项形如 {provider, model}；空列表表示不启用回退。"
+ },
+ "file_read_max_chars": {
+  "label": "单次读文件字符上限",
+  "desc": "read_file 单次调用最多返回的字符数，超出时要求使用偏移/分段读取。默认 100000。"
+ },
+ "gateway.allow_all_users": {
+  "label": "允许所有用户",
+  "desc": "允许所有用户使用机器人，无需白名单（安全相关，需谨慎）。默认关闭。"
+ },
+ "gateway.api_server.history_tool_output_max_chars": {
+  "label": "历史工具输出上限",
+  "desc": "存储的 /v1/responses 对话历史中，每条工具输出和参数的最大字符数；0 表示原样存储。默认 0。"
+ },
+ "gateway.api_server.max_concurrent_runs": {
+  "label": "API 最大并发运行",
+  "desc": "OpenAI 兼容 API 服务的最大并发智能体运行数，超出返回 HTTP 429；0 表示不限。默认 10。"
+ },
+ "gateway.auto_multiplex_migration": {
+  "label": "自动迁移为复用网关",
+  "desc": "升级后是否自动将多配置档安装迁移为单一复用网关；关闭则由你手动决定何时迁移。默认开启。"
+ },
+ "gateway.bot_loop_guard.bot_replies_expect_reply": {
+  "label": "机器人回复期待应答",
+  "desc": "将机器人的回复视为期待再次应答的消息。默认关闭。"
+ },
+ "gateway.bot_loop_guard.cooldown_seconds": {
+  "label": "冷却时长",
+  "desc": "触发保护后的冷却时间（秒），默认 600。"
+ },
+ "gateway.bot_loop_guard.enabled": {
+  "label": "机器人互聊保护",
+  "desc": "防止机器人之间无限对话循环。默认开启。"
+ },
+ "gateway.bot_loop_guard.max_events": {
+  "label": "窗口内最大事件数",
+  "desc": "时间窗口内允许的机器人消息数，超过后进入冷却。默认 20。"
+ },
+ "gateway.bot_loop_guard.max_hops": {
+  "label": "最大往返次数",
+  "desc": "单次交流中允许的机器人消息往返次数，默认 4。"
+ },
+ "gateway.bot_loop_guard.window_seconds": {
+  "label": "统计时间窗口",
+  "desc": "统计机器人消息数的时间窗口（秒），默认 300。"
+ },
+ "gateway.delivery_ledger": {
+  "label": "投递记录账本",
+  "desc": "在数据库中记录最终回复的投递状态；网关在发送确认前崩溃时，重启后会重新投递（可能重复，至少投递一次）。关闭则崩溃时可能丢失正在投递的回复。默认开启。"
+ },
+ "gateway.loop_watchdog": {
+  "label": "事件循环看门狗",
+  "desc": "守护线程探测 asyncio 事件循环，连续未响应时转储线程堆栈并以重启码退出，由 systemd/launchd 拉起，避免僵死。默认开启。"
+ },
+ "gateway.loop_watchdog_max_strikes": {
+  "label": "看门狗最大失败次数",
+  "desc": "连续失败多少次后强制退出重启，默认 3。"
+ },
+ "gateway.loop_watchdog_probe_interval_s": {
+  "label": "看门狗探测间隔",
+  "desc": "两次探测之间的秒数，默认 30。"
+ },
+ "gateway.loop_watchdog_probe_timeout_s": {
+  "label": "看门狗探测超时",
+  "desc": "探测超过多少秒未被处理即记为一次失败，默认 10。"
+ },
+ "gateway.max_inbound_media_bytes": {
+  "label": "入站媒体大小上限",
+  "desc": "网关接收图片/音频/视频时允许缓冲到内存并缓存的最大字节数，防止超大文件导致内存溢出；0 表示不限。默认 134217728（128MiB）。"
+ },
+ "gateway.media_delivery_allow_dirs": {
+  "label": "媒体投递允许目录",
+  "desc": "允许上传文件的额外根目录（项目目录、挂载共享等）绝对路径列表，缓存目录始终受信任。严格与非严格模式均生效。"
+ },
+ "gateway.message_timestamps.enabled": {
+  "label": "消息时间戳",
+  "desc": "在模型上下文中为用户消息添加时间戳前缀（如 [Tue 2026-04-28 13:40:53 CEST]），增强时间感知；保存的记录不受影响。默认关闭。"
+ },
+ "gateway.multiplex_profiles": {
+  "label": "多配置档复用网关",
+  "desc": "主机上所有配置档共用一个网关：默认配置档的网关同时连接各配置档的机器人（各自独立的密钥与配置）。这是唯一支持的拓扑，设为 false 会被警告并忽略。默认开启。"
+ },
+ "gateway.platform_connect_timeout": {
+  "label": "平台连接超时",
+  "desc": "启动或重连时等待单个消息平台连接完成的秒数，默认 30；Discord 斜杠命令很多时可调大。0 或负数表示无限等待。"
+ },
+ "gateway.profile_routes": {
+  "label": "配置档路由规则",
+  "desc": "将默认配置档机器人收到的聊天路由到其他配置档的规则列表，每项含 profile、platform 以及 chat_id/user_id/guild_id 等匹配条件，最具体的规则优先。"
+ },
+ "gateway.respawn_storm.max_starts": {
+  "label": "重启风暴阈值",
+  "desc": "滑动窗口内允许的启动次数，超过后启动前进行指数退避等待；0 或负数表示禁用。默认 5。"
+ },
+ "gateway.respawn_storm.window_seconds": {
+  "label": "重启风暴窗口",
+  "desc": "统计启动次数的滑动窗口（秒），默认 120。"
+ },
+ "gateway.restart_loop_guard.max_gap_seconds": {
+  "label": "重启最大间隔",
+  "desc": "两次启动间隔不超过多少秒视为同一重启链，默认 300。"
+ },
+ "gateway.restart_loop_guard.max_restarts": {
+  "label": "重启循环上限",
+  "desc": "自动恢复会话导致连续重启的次数上限，超过后本次启动跳过自动恢复（仍正常处理消息）；0 表示禁用。默认 3。"
+ },
+ "gateway.restart_loop_guard.window_seconds": {
+  "label": "重启统计窗口",
+  "desc": "判定连续重启的最小时间窗口（秒），默认 60。"
+ },
+ "gateway.scale_to_zero.idle_timeout_minutes": {
+  "label": "缩容空闲超时",
+  "desc": "启用缩容到零（scale-to-zero）时，空闲多少分钟后让中继传输进入休眠以便平台挂起机器；0 或负数使用默认值。默认 2。"
+ },
+ "gateway.service_install_choice": {
+  "label": "系统服务安装选择",
+  "desc": "是否将网关安装为系统服务的记录：留空-未选择 install-安装 decline-拒绝。"
+ },
+ "gateway.sessiondb_loop_guard": {
+  "label": "数据库调用检查",
+  "desc": "调试用：检测在事件循环上执行的会话数据库调用：off-关闭（默认） warn-每处记录一次警告 raise-直接报错。"
+ },
+ "gateway.signal_interrupt_grace_timeout": {
+  "label": "中断宽限时间",
+  "desc": "收到 SIGTERM 后被中断的智能体在销毁前可收尾的秒数，默认 1。"
+ },
+ "gateway.startup_watchdog": {
+  "label": "启动看门狗",
+  "desc": "进程启动时启用看门狗，若在期限内事件循环未就绪则强制退出重启。默认开启。"
+ },
+ "gateway.startup_watchdog_timeout_seconds": {
+  "label": "启动看门狗超时",
+  "desc": "启动看门狗的期限（秒），默认 300。"
+ },
+ "gateway.strict": {
+  "label": "严格媒体投递",
+  "desc": "开启后，仅允许投递缓存目录、允许目录列表中或最近生成的文件，防止提示词注入窃取主机机密（推荐公开网关开启）；关闭则除系统/凭据敏感路径外均可投递。默认关闭。"
+ },
+ "gateway.trust_env": {
+  "label": "使用环境代理设置",
+  "desc": "允许各平台适配器读取 HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_FILE 等环境变量并自动检测系统代理；若网关继承了不该使用的代理可关闭（各平台专用代理变量仍有效）。默认开启。"
+ },
+ "gateway.trust_recent_files": {
+  "label": "信任最近文件",
+  "desc": "严格模式下，信任修改时间在 trust_recent_files_seconds 内的文件（即使不在允许目录中），系统路径仍被阻止；关闭则为纯白名单模式。默认开启。"
+ },
+ "gateway.trust_recent_files_seconds": {
+  "label": "最近文件时间窗口",
+  "desc": "判定为“最近文件”的时间窗口（秒），仅在严格模式下生效。默认 600。"
+ },
+ "gateway.unmanaged_idle_exit_seconds": {
+  "label": "非托管网关空闲退出",
+  "desc": "由客户端自动启动的网关空闲多少秒后退出；0 表示禁用。默认 600。"
+ },
+ "gateway.write_sessions_json": {
+  "label": "写入 sessions.json",
+  "desc": "继续写入旧版 sessions/sessions.json 路由索引镜像（主副本在数据库中），供外部工具和降级使用。默认开启。"
+ },
+ "goals.max_turns": {
+  "label": "目标最大续行轮数",
+  "desc": "/goal 持续目标循环自动暂停前的最大续行轮数，防止判定失误导致无限消耗。默认 20。"
+ },
+ "hooks": {
+  "label": "Shell 钩子",
+  "desc": "按事件注册的 Shell 钩子命令；首次使用需审批，审批记录存于 shell-hooks-allowlist.json。默认空。"
+ },
+ "hooks_auto_accept": {
+  "label": "自动接受 Shell 钩子",
+  "desc": "无需 TTY 确认自动接受新注册的 Shell 钩子（网关/定时任务等非交互运行需开启才能加载新钩子）。默认关闭。"
+ },
+ "hosted_rooms.discussion.max_messages": {
+  "label": "讨论最大消息数",
+  "desc": "托管房间中每次讨论的最大消息数（正整数），修改后需重启所属服务。默认 10。"
+ },
+ "hosted_rooms.discussion.max_rounds": {
+  "label": "讨论最大轮数",
+  "desc": "托管房间中每次讨论的最大轮数（正整数），修改后需重启所属服务。默认 3。"
+ },
+ "human_delay.max_ms": {
+  "label": "最大延迟",
+  "desc": "模拟延迟的最大毫秒数。默认 2500。"
+ },
+ "human_delay.min_ms": {
+  "label": "最小延迟",
+  "desc": "模拟延迟的最小毫秒数。默认 800。"
+ },
+ "human_delay.mode": {
+  "label": "模拟打字延迟",
+  "desc": "消息平台中模拟人类回复节奏：off-关闭，typing-按自然打字节奏延迟，fixed-在 min_ms~max_ms 之间随机延迟。默认 off。"
+ },
+ "kanban.auto_decompose": {
+  "label": "自动拆解",
+  "desc": "每次调度自动对 Triage 任务运行拆解器；关闭则需手动执行 decompose 或在仪表盘点击。默认开启。"
+ },
+ "kanban.auto_decompose_per_tick": {
+  "label": "每次拆解数量",
+  "desc": "每次调度最多拆解的 Triage 任务数，限制辅助 LLM 突发调用。默认 3。"
+ },
+ "kanban.auto_subscribe_on_create": {
+  "label": "创建时自动订阅",
+  "desc": "从有持久投递通道的会话创建看板任务时，自动订阅其完成与阻塞事件。默认开启。"
+ },
+ "kanban.default_assignee": {
+  "label": "默认指派对象",
+  "desc": "编排者无法匹配已安装配置档时的默认指派对象；留空为 default 配置档。"
+ },
+ "kanban.dispatch_in_gateway": {
+  "label": "网关内运行调度器",
+  "desc": "在网关进程内运行看板调度器；单独部署调度器或不希望网关派生执行者时关闭。默认开启。"
+ },
+ "kanban.dispatch_interval_seconds": {
+  "label": "调度间隔",
+  "desc": "看板调度器两次运行之间的秒数；越小响应越快，越大数据库压力越小。默认 60。"
+ },
+ "kanban.dispatch_profiles": {
+  "label": "可认领配置档",
+  "desc": "多个主目录共享看板时，本调度器可认领的配置档名称（列表或逗号分隔）；留空表示任何已有配置档，设置后严格限制（空列表不认领任何任务）。"
+ },
+ "kanban.dispatch_stale_timeout_seconds": {
+  "label": "心跳超时回收",
+  "desc": "运行中任务超过该秒数无心跳即回收至就绪状态（先终止仍在运行的本地执行者）；0 表示关闭。默认 14400。"
+ },
+ "kanban.done_sub_retention_days": {
+  "label": "完成订阅保留天数",
+  "desc": "从不归档的看板上，已完成且无活动超过该天数的任务订阅会被清理；0 表示关闭。默认 30。"
+ },
+ "kanban.failure_limit": {
+  "label": "连续失败上限",
+  "desc": "同一任务/配置档连续非成功尝试达到该次数后自动阻塞；重新指派会重置计数。默认 2。"
+ },
+ "kanban.max_in_progress": {
+  "label": "全局运行任务上限",
+  "desc": "整机同时处于运行状态的任务数上限（跨所有看板与调度通道）；留空则按内存推算（约 总内存/512MiB，限制在 2~8），无法读取内存时不限制。"
+ },
+ "kanban.max_in_progress_per_profile": {
+  "label": "单配置档运行上限",
+  "desc": "单个配置档同时运行的执行者数上限，超出任务延到下次调度；留空表示不限制。"
+ },
+ "kanban.notify_in_gateway": {
+  "label": "网关投递看板通知",
+  "desc": "由本网关轮询并投递看板订阅通知；不负责通知的配置档可关闭以省去空闲探测。默认开启。"
+ },
+ "kanban.orchestrator_profile": {
+  "label": "编排配置档",
+  "desc": "Triage 拆解后根/编排任务使用的配置档；留空为 default 配置档。"
+ },
+ "kanban.reconcile_orphans": {
+  "label": "修复孤儿任务",
+  "desc": "每次调度重新排队认领记录损坏且执行者已退出的运行中任务；关闭则保留现场供人工排查。默认开启。"
+ },
+ "kanban.review_dispatch": {
+  "label": "自动派发评审",
+  "desc": "自动认领评审列中的任务，并用内置 sdlc-review 技能启动指派的配置档；全部手动评审时可关闭。默认开启。"
+ },
+ "kanban.worker_log_backup_count": {
+  "label": "日志备份份数",
+  "desc": "执行者日志轮转保留的备份数。默认 1。"
+ },
+ "kanban.worker_log_rotate_bytes": {
+  "label": "执行者日志轮转大小",
+  "desc": "执行者 stdout/stderr 日志在启动时轮转的字节阈值。默认 2 MiB。"
+ },
+ "local_runtime.backend": {
+  "label": "本地推理后端",
+  "desc": "llama.cpp 计算后端：auto-自动（NVIDIA 用 CUDA、macOS 用 Metal、其他 GPU 用 Vulkan，否则 CPU）（默认）；也可显式指定 cuda、metal、vulkan、hip、cpu。"
+ },
+ "local_runtime.detect_ports": {
+  "label": "额外探测端口",
+  "desc": "检测外部 llama-server 时额外探测的端口列表（8080 之外）。"
+ },
+ "local_runtime.enabled": {
+  "label": "启用本地模型运行时",
+  "desc": "启用托管的 llama.cpp 本地运行时（受监管的 llama-server 路由模式）；关闭时仅检测你自行运行的外部 llama-server。默认关闭。"
+ },
+ "local_runtime.models_max": {
+  "label": "最大驻留模型数",
+  "desc": "路由进程中同时驻留内存的最大模型数，默认 4。"
+ },
+ "local_runtime.port": {
+  "label": "本地服务端口",
+  "desc": "托管 llama-server 的端口；0 表示启动时自动选择空闲端口。默认 0。"
+ },
+ "logging.backup_count": {
+  "label": "日志备份数量",
+  "desc": "保留的轮转日志备份数量，默认 3。"
+ },
+ "logging.level": {
+  "label": "日志级别",
+  "desc": "agent.log 记录的最低日志级别：DEBUG-调试详细信息 INFO-常规信息（默认） WARNING-仅警告及以上 ERROR-仅错误。"
+ },
+ "logging.max_size_mb": {
+  "label": "日志文件大小",
+  "desc": "单个日志文件轮转前的最大大小（MB），默认 5。"
+ },
+ "loops.max_ticks": {
+  "label": "循环最大次数",
+  "desc": "未指定次数时，循环唤醒达到此次数后自动暂停；0 表示不限。默认 100。"
+ },
+ "loops.min_interval_seconds": {
+  "label": "循环最小间隔",
+  "desc": "/loop 固定间隔的最小值（秒），更短的间隔会被提高到此值。默认 30。"
+ },
+ "loops.self_paced_ceiling_seconds": {
+  "label": "自适应间隔上限",
+  "desc": "自适应节奏循环在回复不再变化时指数退避的最大间隔（秒），默认 900。"
+ },
+ "loops.self_paced_floor_seconds": {
+  "label": "自适应间隔下限",
+  "desc": "自适应节奏（未指定间隔）循环的起始/最小间隔（秒），默认 60。"
+ },
+ "lsp.broken_retry_seconds": {
+  "label": "故障重试间隔",
+  "desc": "语言服务器失败后多少秒再重试；0 表示在进程生命周期内不再重试。默认 0。"
+ },
+ "lsp.enabled": {
+  "label": "启用 LSP 诊断",
+  "desc": "在 write_file/patch 后使用语言服务器（pyright、gopls、rust-analyzer 等）进行诊断检查，仅在 git 工作树中生效；关闭则完全不启动语言服务器。默认开启。"
+ },
+ "lsp.exclude_roots": {
+  "label": "排除的工作区",
+  "desc": "不运行语言服务器的工作区根目录（glob 模式，支持 ~），例如超大的单体仓库。必须为列表。"
+ },
+ "lsp.idle_timeout": {
+  "label": "服务器空闲超时",
+  "desc": "语言服务器空闲多少秒后关闭（按需重启）；0 表示一直保留。默认 600。"
+ },
+ "lsp.install_strategy": {
+  "label": "服务器安装策略",
+  "desc": "缺少语言服务器时：auto-首次使用时通过 npm/go/pip 自动安装（默认） manual-仅使用 PATH 中已有程序 off-同 manual。"
+ },
+ "lsp.package_manager": {
+  "label": "Node 包管理器",
+  "desc": "安装 npm 类语言服务器使用的包管理器：npm（默认）、pnpm 或 yarn；指定的管理器未安装时跳过安装，不会静默回退。"
+ },
+ "lsp.servers": {
+  "label": "自定义语言服务",
+  "desc": "自定义 LSP 服务：command 启动命令、extensions 文件扩展名、root_markers 根目录标记等；需手动安装。默认空。"
+ },
+ "lsp.trusted_workspaces": {
+  "label": "受信任工作区",
+  "desc": "允许语言服务器加载项目代码（项目虚拟环境、node_modules、构建文件等）的目录列表；启动目录与会话工作区始终受信任，其他检出仅运行不执行项目代码的服务器。"
+ },
+ "lsp.wait_mode": {
+  "label": "诊断等待模式",
+  "desc": "诊断等待方式：document-仅等待当前文件的诊断（默认） full-同时请求整个工作区诊断（较慢）。"
+ },
+ "lsp.wait_timeout": {
+  "label": "诊断等待超时",
+  "desc": "等待诊断结果的最长秒数，默认 5。"
+ },
+ "lsp.warmup_timeout": {
+  "label": "首次预热超时",
+  "desc": "语言服务器尚未启动时首次请求的时间预算（含启动、初始化、首次构建）；0 表示与 wait_timeout 相同。默认 0。"
+ },
+ "matrix.allowed_rooms": {
+  "label": "允许的房间",
+  "desc": "设置后仅在这些 Matrix 房间 ID 中回复（白名单），逗号分隔。"
+ },
+ "matrix.free_response_rooms": {
+  "label": "免提及房间",
+  "desc": "无需 @ 即可回复的 Matrix 房间 ID，逗号分隔。"
+ },
+ "matrix.require_mention": {
+  "label": "房间需 @ 提及",
+  "desc": "Matrix 房间中需 @机器人 才会回复。默认开启。"
+ },
+ "mattermost.allowed_channels": {
+  "label": "允许的频道",
+  "desc": "设置后仅在这些 Mattermost 频道 ID 中回复（白名单），逗号分隔。"
+ },
+ "mattermost.channel_prompts": {
+  "label": "Mattermost 频道提示",
+  "desc": "频道 ID → 临时系统提示（仅对该频道生效）。默认空。"
+ },
+ "mattermost.free_response_channels": {
+  "label": "免提及频道",
+  "desc": "无需 @ 即可回复的 Mattermost 频道 ID，逗号分隔。"
+ },
+ "mattermost.require_mention": {
+  "label": "频道需 @ 提及",
+  "desc": "Mattermost 频道中需 @机器人 才会回复。默认开启。"
+ },
+ "max_concurrent_sessions": {
+  "label": "最大并发会话数",
+  "desc": "CLI、TUI/仪表盘与消息平台合计的活跃对话会话上限；留空或 0 表示不限制。"
+ },
+ "max_live_sessions": {
+  "label": "内存常驻会话上限",
+  "desc": "TUI/桌面/仪表盘会话在内存中的软性 LRU 上限，超出后淘汰最久未活动且无客户端连接的会话（重新打开时从磁盘恢复）；0/空表示关闭。默认 16。"
+ },
+ "mcp.auto_reload_on_config_change": {
+  "label": "配置变更自动重载 MCP",
+  "desc": "config.yaml 中 mcp_servers 变更时自动重连 MCP（会使提示缓存失效）；关闭时仅提示使用 /reload-mcp。默认开启。"
+ },
+ "mcp.discovery_concurrency": {
+  "label": "MCP 并发连接数",
+  "desc": "每次发现过程中同时连接（并启动子进程）的 MCP 服务器数量上限；0 表示不限制。默认 4。"
+ },
+ "mcp_discovery_timeout": {
+  "label": "MCP 发现等待时间",
+  "desc": "首次构建智能体时等待后台 MCP 服务器发现的最长秒数；未赶上的服务器会在后续轮次间补充加载。默认 1.5。"
+ },
+ "mcp_single_query_discovery_timeout": {
+  "label": "单次查询 MCP 等待",
+  "desc": "单次查询模式（-q/-z）下等待 MCP 发现的最长秒数；该模式无后续刷新，因此更长。默认 15。"
+ },
+ "memory.memory_char_limit": {
+  "label": "记忆字符上限",
+  "desc": "智能体记忆的字符上限，默认 2200（约 800 tokens）。"
+ },
+ "memory.memory_enabled": {
+  "label": "启用长期记忆",
+  "desc": "启用持久化记忆：将有限的精选记忆注入系统提示词。默认开启。"
+ },
+ "memory.nudge_interval": {
+  "label": "记忆回顾间隔",
+  "desc": "内置记忆的定期回顾间隔（轮次），默认 10；使用会自动提取的外部记忆提供商时可设为 0。"
+ },
+ "memory.prefetch_spill_enabled": {
+  "label": "预取溢出",
+  "desc": "允许外部记忆召回结果使用输出溢出机制（hooks.output_spill）。默认关闭。"
+ },
+ "memory.provider": {
+  "label": "外部记忆提供商",
+  "desc": "外部记忆插件：空-仅使用内置记忆（默认） byterover-ByteRover 本地优先记忆 retaindb-RetainDB 持久记忆。也可使用插件目录中安装的 honcho、mem0 等。"
+ },
+ "memory.user_char_limit": {
+  "label": "用户画像字符上限",
+  "desc": "用户画像的字符上限，默认 1375（约 500 tokens）。"
+ },
+ "memory.user_profile_enabled": {
+  "label": "启用用户画像",
+  "desc": "启用用户画像记忆（记录用户偏好与背景）。默认开启。"
+ },
+ "memory.write_approval": {
+  "label": "记忆写入审批",
+  "desc": "开启后前台记忆写入需即时确认，后台写入进入待审批队列（可在记忆管理中批准/拒绝）。默认关闭。"
+ },
+ "moa.active_preset": {
+  "label": "当前 MoA 预设",
+  "desc": "当前激活的 MoA 预设名称；留空表示未启用。"
+ },
+ "moa.default_preset": {
+  "label": "默认 MoA 预设",
+  "desc": "/moa 使用的默认混合智能体（Mixture of Agents）预设名称，默认 default。"
+ },
+ "moa.presets.default.aggregator.model": {
+  "label": "聚合模型",
+  "desc": "default 预设中负责综合参考意见的聚合模型，默认 anthropic/claude-opus-4.8。"
+ },
+ "moa.presets.default.aggregator.provider": {
+  "label": "聚合模型提供商",
+  "desc": "default 预设中聚合模型的提供商，默认 openrouter。"
+ },
+ "moa.presets.default.enabled": {
+  "label": "启用默认预设",
+  "desc": "是否启用 default 预设。默认开启。"
+ },
+ "moa.presets.default.reference_models": {
+  "label": "参考模型列表",
+  "desc": "default 预设的参考（顾问）模型列表，每项包含 provider 和 model，例如 openai-codex/gpt-5.5、openrouter/deepseek/deepseek-v4-pro。"
+ },
+ "moa.privacy_filter": {
+  "label": "MoA 隐私过滤",
+  "desc": "对顾问模型输出中的个人信息/凭据进行脱敏：空-关闭（默认） display-仅脱敏界面展示和追踪记录（聚合模型仍看到原文） full-同时脱敏注入聚合模型提示词的内容。"
+ },
+ "moa.save_traces": {
+  "label": "保存 MoA 追踪",
+  "desc": "将每次 MoA 轮次（参考模型与聚合模型的输入/输出/用量）以 JSONL 写入追踪目录以便审计。默认关闭。"
+ },
+ "moa.trace_dir": {
+  "label": "MoA 追踪目录",
+  "desc": "MoA 追踪文件的保存目录；留空使用数据目录下的 moa-traces。"
+ },
+ "model": {
+  "label": "默认模型",
+  "desc": "主智能体默认使用的模型名，如 anthropic/claude-sonnet-4.6；可被 --model 参数临时覆盖，留空则按已配置的提供商自动选择。"
+ },
+ "model_catalog.enabled": {
+  "label": "远程模型目录",
+  "desc": "从远程地址获取精选的 OpenRouter / Nous Portal 模型列表（失败时使用内置快照），使模型选择列表无需升级即可更新。默认开启。"
+ },
+ "model_catalog.providers": {
+  "label": "自建模型清单地址",
+  "desc": "按提供商覆盖模型精选清单的地址（同一 schema），如 openrouter: {url: ...}。默认空。"
+ },
+ "model_catalog.ttl_minutes": {
+  "label": "目录缓存时长",
+  "desc": "模型目录磁盘缓存的有效期（分钟），网络失败时继续使用过期缓存。默认 20。"
+ },
+ "model_catalog.url": {
+  "label": "模型目录地址",
+  "desc": "远程模型目录清单的 URL。"
+ },
+ "model_context_length": {
+  "label": "上下文窗口覆盖",
+  "desc": "手动指定模型的上下文窗口大小（token 数）；0 表示根据模型元数据自动检测。"
+ },
+ "model_overrides": {
+  "label": "模型元数据覆盖",
+  "desc": "按模型覆盖上下文长度、能力等元数据，参与模型元数据解析链。默认空。"
+ },
+ "models_dev.url": {
+  "label": "models.dev 地址",
+  "desc": "模型注册表（上下文窗口、能力、价格）的获取地址，可指向镜像；留空为默认 https://models.dev/api.json。"
+ },
+ "monitoring.export.otlp.enabled": {
+  "label": "启用 OTLP 导出",
+  "desc": "启用 OTLP 导出目标。默认关闭。"
+ },
+ "monitoring.export.otlp.endpoint": {
+  "label": "OTLP 端点",
+  "desc": "OTLP 接收端地址（如 OTEL Collector、DataDog）。"
+ },
+ "monitoring.export.otlp.headers_env": {
+  "label": "OTLP 请求头环境变量",
+  "desc": "OTLP 导出请求头名 → 存放其值的环境变量名（值本身放 .env）。默认空。"
+ },
+ "monitoring.gateway_health_export.diagnostic_events_enabled": {
+  "label": "导出诊断事件",
+  "desc": "导出诊断事件。默认开启（需总开关启用）。"
+ },
+ "monitoring.gateway_health_export.enabled": {
+  "label": "导出网关健康数据",
+  "desc": "通过 OTLP 向运维端点导出网关健康与脱敏诊断数据（不含提示词、消息、工具参数等内容）。默认关闭。"
+ },
+ "monitoring.gateway_health_export.export_interval_seconds": {
+  "label": "指标导出间隔",
+  "desc": "指标导出间隔（秒），默认 60。"
+ },
+ "monitoring.gateway_health_export.logs_export_interval_seconds": {
+  "label": "日志导出间隔",
+  "desc": "日志事件导出间隔（秒），默认 5。"
+ },
+ "monitoring.gateway_health_export.metrics_enabled": {
+  "label": "导出指标",
+  "desc": "导出网关运行指标。默认开启（需总开关启用）。"
+ },
+ "monitoring.gateway_health_export.resource_attributes.deployment.environment.name": {
+  "label": "部署环境名称",
+  "desc": "导出数据中的 deployment.environment.name 资源属性，默认 production。"
+ },
+ "monitoring.gateway_health_export.resource_attributes.service.name": {
+  "label": "服务名称",
+  "desc": "导出数据中的 service.name 资源属性，默认 hermes-gateway。"
+ },
+ "monitoring.gateway_health_export.warning_error_events_enabled": {
+  "label": "导出警告错误事件",
+  "desc": "导出警告与错误事件。默认开启（需总开关启用）。"
+ },
+ "monitoring.install_id": {
+  "label": "安装实例 ID",
+  "desc": "附加在导出监控信号上的稳定实例标识，便于运维区分实例；留空则首次使用时自动生成 UUID，清空可轮换。不含任何账号身份信息。"
+ },
+ "network.force_ipv4": {
+  "label": "强制 IPv4",
+  "desc": "跳过 IPv6 仅使用 IPv4，避免 IPv6 不可用时连接长时间挂起。默认关闭。"
+ },
+ "nous.anthropic_wire": {
+  "label": "Anthropic 模型线路",
+  "desc": "Nous Portal 上 anthropic/* 模型的传输线路：chat-/v1/chat/completions（默认），native-/v1/messages 原生 Messages 协议，auto-先用 chat，在已知安全的上游自动切换到 native。"
+ },
+ "nous.guest": {
+  "label": "Nous 免费层",
+  "desc": "未配置其他提供商时，首次使用自动建立免费 Nous 身份并可通过 /login 登录；关闭则完全禁用免费层。默认开启。"
+ },
+ "nous.keepalive_interval_seconds": {
+  "label": "Nous 保活间隔上限",
+  "desc": "Nous 认证保活任务的间隔上限（秒），实际由服务器签发的凭据有效期推算；0 表示关闭保活线程。默认 900。"
+ },
+ "onboarding.profile_build": {
+  "label": "首次画像引导",
+  "desc": "首次对话时的引导方式：ask-主动提议建立用户画像，off-仅普通自我介绍。默认 ask。"
+ },
+ "onboarding.run": {
+  "label": "桌面端首次运行状态",
+  "desc": "桌面端首次运行引导状态（仅根配置档）：留空-全新安装，true-下次启动时运行，false-已完成。"
+ },
+ "onboarding.seen": {
+  "label": "已展示的引导提示",
+  "desc": "系统自动记录已展示过的首次引导提示，一般无需手动修改。默认空。"
+ },
+ "openrouter.min_coding_score": {
+  "label": "最低编码评分",
+  "desc": "pareto-code 路由的最低编码能力评分（0.0~1.0），仅当模型为 openrouter/pareto-code 时生效；越高越强也越贵，0.65 为中档，留空则由 OpenRouter 选择最强模型。默认 0.65。"
+ },
+ "openrouter.response_cache": {
+  "label": "OpenRouter 响应缓存",
+  "desc": "启用 OpenRouter 响应缓存（X-OpenRouter-Cache 头）：相同请求直接返回缓存结果且不计费；与 Anthropic 提示缓存相互独立。默认开启。"
+ },
+ "openrouter.response_cache_ttl": {
+  "label": "响应缓存有效期",
+  "desc": "OpenRouter 响应缓存的有效期（秒，1~86400），仅在启用响应缓存时生效。默认 300。"
+ },
+ "paste_collapse_char_threshold": {
+  "label": "粘贴折叠字符数",
+  "desc": "单行粘贴达到该字符数也折叠为文件引用；0 表示关闭。默认 2000。"
+ },
+ "paste_collapse_threshold": {
+  "label": "粘贴折叠行数",
+  "desc": "支持括号粘贴的终端中，粘贴内容达到该换行数即折叠为文件引用；0 表示关闭。默认 5。"
+ },
+ "paste_collapse_threshold_fallback": {
+  "label": "粘贴折叠行数(兼容)",
+  "desc": "不支持括号粘贴的终端使用的同类换行数阈值（结合字符/换行启发式判断）；0 表示关闭。默认 5。"
+ },
+ "personalities": {
+  "label": "自定义人格",
+  "desc": "名称 → 系统提示，或名称 → {description, system_prompt, tone, style}。默认空。"
+ },
+ "platform_hints": {
+  "label": "平台提示覆盖",
+  "desc": "按平台名覆盖系统提示中的平台提示：{append: 文本}-在内置提示后追加 {replace: 文本}-替换内置提示；直接写字符串等同 append。默认空。"
+ },
+ "plugins.auto_apply": {
+  "label": "自动应用插件更新",
+  "desc": "无人值守自动应用目录插件与跟踪 git 插件的更新（经过相同的扫描/同意流程）。默认关闭。"
+ },
+ "plugins.auto_update_check_hours": {
+  "label": "插件更新检查间隔",
+  "desc": "只读检查插件更新的间隔小时数；0 表示关闭。应用更新仍需显式操作或开启自动应用。默认 24。"
+ },
+ "plugins.clone_timeout_seconds": {
+  "label": "插件克隆超时",
+  "desc": "单次插件 Git 克隆/拉取/检出的超时秒数（单次网络操作最长 1 小时）。默认 300。"
+ },
+ "plugins.hook_callback_timeout": {
+  "label": "插件钩子超时",
+  "desc": "进程内 Python 插件钩子回调的墙钟时长上限（秒）；pre_tool_call 超时按拒绝处理；0 表示不限制，超过 600 会被钳制。默认 30。"
+ },
+ "plugins.host.launcher": {
+  "label": "插件宿主启动器",
+  "desc": "插件宿主进程的 argv 前缀（如沙箱运行器）；[] 表示普通子进程。"
+ },
+ "plugins.isolation": {
+  "label": "插件隔离方式",
+  "desc": "第三方 Python 插件的运行位置：in_process-导入主进程运行（默认），host-在每个配置档独立的插件宿主进程中运行，崩溃不影响主程序。"
+ },
+ "plugins.load_timeout_seconds": {
+  "label": "插件加载超时",
+  "desc": "单个插件导入与 register() 的时限（秒），超时则跳过该插件（原因“load timed out”），其余继续加载；0 表示不限制，超过 600 会被钳制。默认 10。"
+ },
+ "prefill_messages_file": {
+  "label": "预填充消息文件",
+  "desc": "JSON 文件路径，内容为 {role, content} 列表，在每次 API 调用开头注入作少样本引导；不会保存到会话或日志。留空不使用。"
+ },
+ "privacy.redact_pii": {
+  "label": "隐私信息脱敏",
+  "desc": "开启后对发送给大模型的上下文中的用户 ID 做哈希处理并去除电话号码。默认关闭。"
+ },
+ "prompt_caching.cache_ttl": {
+  "label": "提示缓存时长",
+  "desc": "Anthropic 提示缓存 TTL：5m-5 分钟，1h-1 小时，auto-人工交互会话用 1h、子智能体/定时任务等用 5m；false/off/none 等表示关闭缓存。默认 5m。"
+ },
+ "providers": {
+  "label": "自定义提供商",
+  "desc": "按名称定义的自定义模型提供商（base_url、api_mode、模型列表等）；密钥放 .env，不写在这里。默认空。"
+ },
+ "proxy.allow_env_fallback": {
+  "label": "允许回退环境变量",
+  "desc": "凭据来源为 bitwarden 但缺少令牌/项目 ID 或拉取为空时，回退使用主机环境变量（迁移期间有用）；关闭则直接报错。默认关闭。"
+ },
+ "proxy.auto_install": {
+  "label": "自动安装代理",
+  "desc": "自动下载固定版本的 iron-proxy 到数据目录的 bin 下；关闭则需 iron-proxy 已在 PATH 中。默认开启。"
+ },
+ "proxy.credential_source": {
+  "label": "真实凭据来源",
+  "desc": "iron-proxy 启动时加载真实上游凭据的来源：env-从进程环境变量读取（默认） bitwarden-每次代理重启时通过 bws 从 Bitwarden 拉取（需启用 secrets.bitwarden）。"
+ },
+ "proxy.enabled": {
+  "label": "启用出站凭据代理",
+  "desc": "仅 Docker：启用出站凭据防火墙（iron-proxy），沙箱中只看到占位令牌，出站时由代理替换为真实凭据。需先完成出站代理设置并启动；Modal/SSH/Daytona 暂不支持。默认关闭。"
+ },
+ "proxy.enforce_on_docker": {
+  "label": "强制 Docker 走代理",
+  "desc": "已启用出站代理但未配置/未运行时，拒绝启动 Docker 沙箱；关闭则回退为携带真实凭据直接出站。默认开启。"
+ },
+ "proxy.extra_allowed_hosts": {
+  "label": "额外允许主机",
+  "desc": "除内置主流提供商外额外允许访问的上游主机列表，支持 *.foo.com 通配。"
+ },
+ "proxy.tunnel_port": {
+  "label": "代理隧道端口",
+  "desc": "代理隧道监听端口，沙箱会获得 HTTPS_PROXY=http://<主机>:<端口>。默认 9090。"
+ },
+ "proxy.upstream_deny_cidrs": {
+  "label": "上游禁止网段",
+  "desc": "SSRF 防护禁止访问的 CIDR 网段；留空则默认禁止回环、链路本地（含 169.254.169.254 元数据）和 RFC1918 私有网段。"
+ },
+ "quick_commands": {
+  "label": "快捷命令",
+  "desc": "用户自定义、绕过智能体循环直接执行的快捷命令（仅支持 exec 类型）：名称 → {type, command}。默认空。"
+ },
+ "runtime.malloc_arena_max": {
+  "label": "malloc 分配区上限",
+  "desc": "glibc MALLOC_ARENA_MAX 上限，用于抑制多线程内存膨胀；0/false/null 表示不设置。默认 4。"
+ },
+ "runtime.nofile_soft_limit": {
+  "label": "文件描述符软上限",
+  "desc": "服务进程的打开文件数（nofile）软限制，会被钳制到硬上限；0/false/null 表示不调整。默认 4096。"
+ },
+ "secrets.bitwarden.access_token_env": {
+  "label": "访问令牌变量",
+  "desc": "保存机器账号访问令牌的环境变量名（应放在 .env 或 shell 中），默认 BWS_ACCESS_TOKEN。"
+ },
+ "secrets.bitwarden.auto_install": {
+  "label": "自动安装 bws",
+  "desc": "首次使用时自动下载 bws 到数据目录的 bin 下；关闭则需 bws 已在 PATH 中。默认开启。"
+ },
+ "secrets.bitwarden.cache_ttl_seconds": {
+  "label": "机密缓存时长",
+  "desc": "在再次请求 Bitwarden 前复用缓存的秒数；0 表示不复用缓存。默认 300。"
+ },
+ "secrets.bitwarden.enabled": {
+  "label": "启用 Bitwarden 机密",
+  "desc": "启动时从 Bitwarden Secrets Manager 拉取凭据（代替写入 .env）；关闭则不会连接 BSM，也不会自动安装 bws。默认关闭。"
+ },
+ "secrets.bitwarden.encrypted_cache.enabled": {
+  "label": "启用加密缓存",
+  "desc": "网络/超时故障时回退使用 AES-GCM 加密的本地最近一次有效缓存（认证失败不回退）。默认关闭。"
+ },
+ "secrets.bitwarden.encrypted_cache.max_stale_seconds": {
+  "label": "缓存最长过期时间",
+  "desc": "加密缓存在故障时可继续使用的最长过期秒数，默认 0。"
+ },
+ "secrets.bitwarden.override_existing": {
+  "label": "覆盖已有环境变量",
+  "desc": "BSM 中的值覆盖已有环境变量，使在 Bitwarden 中轮换后无需修改 .env 即生效。默认开启。"
+ },
+ "secrets.bitwarden.project_id": {
+  "label": "BSM 项目 ID",
+  "desc": "要同步的 Bitwarden Secrets Manager 项目 UUID。"
+ },
+ "secrets.bitwarden.server_url": {
+  "label": "Bitwarden 服务器地址",
+  "desc": "传给 bws 的 BWS_SERVER_URL；留空为美国云，欧盟用 https://vault.bitwarden.eu，自托管填自己的地址。"
+ },
+ "secrets.onepassword.account": {
+  "label": "1Password 账号",
+  "desc": "op read --account 使用的账号简称或登录地址；留空使用默认账号。"
+ },
+ "secrets.onepassword.binary_path": {
+  "label": "op 程序路径",
+  "desc": "op 可执行文件的绝对路径（避免依赖 PATH）；留空从 PATH 查找。"
+ },
+ "secrets.onepassword.cache_ttl_seconds": {
+  "label": "机密缓存时长",
+  "desc": "在进程内和磁盘上缓存读取值的秒数；0 同时禁用两层缓存。默认 300。"
+ },
+ "secrets.onepassword.enabled": {
+  "label": "启用 1Password 机密",
+  "desc": "启动时通过 op CLI 从 1Password 读取凭据；关闭则从不调用 op。默认关闭。"
+ },
+ "secrets.onepassword.env": {
+  "label": "1Password 变量映射",
+  "desc": "环境变量名 → op://保险库/条目/字段，每项用一次 op read 解析。默认空。"
+ },
+ "secrets.onepassword.override_existing": {
+  "label": "覆盖已有环境变量",
+  "desc": "覆盖已有环境变量使轮换生效；关闭则以 .env 中的值为准。默认开启。"
+ },
+ "secrets.onepassword.service_account_token_env": {
+  "label": "服务账号令牌变量",
+  "desc": "保存 1Password 服务账号令牌的环境变量名，用于无头认证；未设置则使用交互/桌面端会话。默认 OP_SERVICE_ACCOUNT_TOKEN。"
+ },
+ "security.acked_advisories": {
+  "label": "已确认安全公告",
+  "desc": "用户已阅读并处理的供应链安全公告 ID 列表，已确认的公告不再在启动时提示。"
+ },
+ "security.allow_data_training_tiers_noninteractive": {
+  "label": "允许训练数据级别",
+  "desc": "确认在非交互模式下允许切换到会用提示词训练的服务商级别（启动时仍会警告）。默认关闭。"
+ },
+ "security.allow_lazy_installs": {
+  "label": "允许按需安装依赖",
+  "desc": "首次启用某个需要额外依赖的后端（如 elevenlabs）时，自动从 PyPI 安装其依赖包；关闭则需手动安装（适用于受限/离线环境）。默认开启。"
+ },
+ "security.allow_private_urls": {
+  "label": "允许访问私有地址",
+  "desc": "允许网页、视觉、媒体工具及云/CDP 浏览器访问私有 IP 地址（不影响本地/边车 Chromium）。默认关闭。"
+ },
+ "security.approval.transport": {
+  "label": "审批呈现通道",
+  "desc": "人工审批请求的呈现通道：builtin-使用内置的 CLI/TUI/网关/ACP 界面（默认）；填写插件名则使用该插件通道。"
+ },
+ "security.approval.transport_fallback": {
+  "label": "审批通道回退",
+  "desc": "审批通道超时/出错/响应无效时的处理：deny-直接拒绝（默认） builtin-回退到内置审批界面。"
+ },
+ "security.fake_ip_ranges": {
+  "label": "Fake-IP 网段",
+  "desc": "本地 TUN 代理（Mihomo/Clash fake-ip、Surge 增强模式）用于应答 DNS 的 CIDR 网段；这些网段内的地址视为代理占位地址而非内网主机。留空按常规私有地址判定。"
+ },
+ "security.protected_instruction_extra_patterns": {
+  "label": "额外保护文件模式",
+  "desc": "额外需要保护的文件名通配模式（匹配文件名），例如 \"*.mdc\"。"
+ },
+ "security.protected_instruction_files": {
+  "label": "保护指令文件",
+  "desc": "写入智能体指令文件（AGENTS.md、CLAUDE.md、SOUL.md、.cursorrules、项目内 .hermes 配置）始终需要人工审批，即使在 yolo 模式下。默认开启。"
+ },
+ "security.redact_phone_numbers": {
+  "label": "脱敏电话号码",
+  "desc": "遮蔽回复和聊天中的 E.164 电话号码；关闭后仅显示电话号码，其他机密仍会脱敏。默认开启。"
+ },
+ "security.redact_secrets": {
+  "label": "脱敏密钥信息",
+  "desc": "在输出与日志中自动遮蔽 API Key、Token 等机密信息。默认开启。"
+ },
+ "security.website_blocklist.domains": {
+  "label": "黑名单域名",
+  "desc": "禁止访问的域名列表。"
+ },
+ "security.website_blocklist.enabled": {
+  "label": "启用网站黑名单",
+  "desc": "启用网站访问黑名单。默认关闭。"
+ },
+ "security.website_blocklist.shared_files": {
+  "label": "共享黑名单文件",
+  "desc": "共享的黑名单文件路径列表，文件中的域名会一并加入黑名单。"
+ },
+ "session.terminal_continue": {
+  "label": "按终端续接会话",
+  "desc": "开启时 `-c/--continue` 恢复当前终端（tmux/kitty 窗格、tty）上次的会话；关闭则恢复全局最近一次会话。默认开启。"
+ },
+ "sessions.auto_archive": {
+  "label": "自动归档会话",
+  "desc": "将长时间无活动的会话自动归档（仅隐藏，不删除），置顶会话除外。默认关闭。"
+ },
+ "sessions.auto_archive_days": {
+  "label": "自动归档天数",
+  "desc": "会话空闲多少天后自动归档（需开启自动归档），默认 3。"
+ },
+ "sessions.auto_prune": {
+  "label": "自动清理会话",
+  "desc": "定期删除超过保留天数且已结束的会话（打开、置顶或进行中的会话不会删除）。默认关闭（删除历史需主动开启）。"
+ },
+ "sessions.fts_optimize_notice": {
+  "label": "全文索引优化提示",
+  "desc": "关于紧凑全文索引布局（可回收约 60% 数据库空间）的提示：advise-升级时提示可回收空间（默认） require-以“必需”措辞提示 off-不提示。"
+ },
+ "sessions.max_export_messages": {
+  "label": "导出消息上限",
+  "desc": "导出单个会话时允许的最大消息数；0 表示不限。默认 20000。"
+ },
+ "sessions.max_resume_messages": {
+  "label": "恢复会话消息上限",
+  "desc": "交互式恢复会话时允许加载的最大活跃消息数，防止超大会话耗尽内存；0 表示不限。默认 20000。"
+ },
+ "sessions.min_interval_hours": {
+  "label": "维护最小间隔",
+  "desc": "两次自动维护（清理/归档）之间的最少小时数，默认 24。"
+ },
+ "sessions.min_vacuum_interval_days": {
+  "label": "压缩最小间隔",
+  "desc": "两次 VACUUM 之间的最少天数，默认 30。"
+ },
+ "sessions.orphan_end_grace_s": {
+  "label": "无人查看会话结束",
+  "desc": "本地会话在轮次结束后无人查看多少秒即标记结束（仍可恢复）；0 表示永不。默认 300。"
+ },
+ "sessions.retention_days": {
+  "label": "会话保留天数",
+  "desc": "已结束会话历史的保留天数（按最后活动时间计算），默认 90。"
+ },
+ "sessions.search_slow_ms": {
+  "label": "慢搜索阈值",
+  "desc": "会话搜索耗时达到此毫秒数时记录一条日志；0 表示记录每次搜索。默认 1000。"
+ },
+ "sessions.show_subagents": {
+  "label": "显示子智能体会话",
+  "desc": "在会话列表（桌面侧边栏、仪表盘）中显示子智能体运行记录，嵌套在父会话下。默认关闭。"
+ },
+ "sessions.vacuum_after_prune": {
+  "label": "清理后压缩数据库",
+  "desc": "清理删除数据后执行 VACUUM 回收磁盘空间（会短暂阻塞写入，仅在启动时且碎片超过 25% 时执行）。默认开启。"
+ },
+ "skills.auto_load": {
+  "label": "自动加载技能",
+  "desc": "在每个新会话中固定完整加载的技能名称列表；不存在或已禁用的会警告并跳过。"
+ },
+ "skills.create_dir": {
+  "label": "新技能保存目录",
+  "desc": "智能体通过 skill_manage 创建的技能保存位置；留空为当前配置档本地目录。"
+ },
+ "skills.external_dirs": {
+  "label": "外部技能目录",
+  "desc": "额外加载的共享技能目录列表（只读，支持 ~ 与 ${VAR}），如 [\"~/.agents/skills\"]。"
+ },
+ "skills.guard_agent_created": {
+  "label": "扫描智能体创建技能",
+  "desc": "对智能体自行编写的技能进行安全扫描，危险结果作为工具错误返回；从技能中心安装的始终会扫描。默认关闭。"
+ },
+ "skills.inline_shell": {
+  "label": "技能内联命令",
+  "desc": "预先执行 SKILL.md 中的 !`cmd` 片段并内联其输出；存在执行技能作者代码的风险，社区安装的技能从不自动执行。默认关闭。"
+ },
+ "skills.inline_shell_timeout": {
+  "label": "内联命令超时",
+  "desc": "每个 !`cmd` 片段的执行超时秒数。默认 10。"
+ },
+ "skills.ledger": {
+  "label": "技能审计账本",
+  "desc": "每次技能修改都追加到审计账本（含前后哈希），支持 curator ledger / rollback 回滚；不作为门禁。默认开启。"
+ },
+ "skills.ledger_max_bytes": {
+  "label": "账本大小上限",
+  "desc": "审计账本文件的字节上限，超出后去重并删除最旧条目；0 表示永久只追加。默认 5 MiB。"
+ },
+ "skills.project_discovery": {
+  "label": "项目技能发现",
+  "desc": "在 git 仓库中加载 <根>/.hermes/skills/ 与 .agents/skills/ 作为最高优先级技能（仅限受信项目）；关闭则不扫描。默认开启。"
+ },
+ "skills.template_vars": {
+  "label": "技能模板变量",
+  "desc": "在 SKILL.md 中替换 ${HERMES_SKILL_DIR}、${HERMES_SESSION_ID} 等模板变量。默认开启。"
+ },
+ "skills.tier1_advisory": {
+  "label": "Tier1 安全建议扫描",
+  "desc": "安装技能时额外运行 NVIDIA SkillEvaluator Tier 1 扫描（需 skillevaluator 在 PATH 中），仅提示不阻断。默认开启。"
+ },
+ "skills.trusted_project_dirs": {
+  "label": "受信项目目录",
+  "desc": "允许加载项目内技能的受信项目根目录列表，由 `skills trust/untrust` 命令管理。"
+ },
+ "skills.write_approval": {
+  "label": "技能修改审批",
+  "desc": "开启后 skill_manage 的修改一律暂存待审批（/skills pending、diff、approve/reject）。默认关闭。"
+ },
+ "slack.allowed_channels": {
+  "label": "允许的频道",
+  "desc": "设置后仅在这些 Slack 频道 ID 中回复（白名单），逗号分隔；留空不限制。"
+ },
+ "slack.channel_prompts": {
+  "label": "Slack 频道提示",
+  "desc": "频道 ID → 临时系统提示（仅对该频道生效，不进入缓存前缀）。默认空。"
+ },
+ "slack.free_response_channels": {
+  "label": "免提及频道",
+  "desc": "无需 @ 即可回复的 Slack 频道 ID，逗号分隔。"
+ },
+ "slack.ignore_other_user_mentions": {
+  "label": "忽略提及他人的消息",
+  "desc": "消息开头 @ 了其他用户且未同时 @ 机器人时忽略该消息。默认关闭。"
+ },
+ "slack.require_mention": {
+  "label": "频道需 @ 提及",
+  "desc": "Slack 频道中需 @机器人 才会回复。默认开启。"
+ },
+ "slack.require_mention_channels": {
+  "label": "强制提及频道",
+  "desc": "始终需要 @ 提及才回复的 Slack 频道 ID，逗号分隔。"
+ },
+ "slack.thread_require_mention": {
+  "label": "话题回复需提及",
+  "desc": "在 Slack 话题（thread）回复中也需要 @ 提及。默认关闭。"
+ },
+ "streaming.buffer_threshold": {
+  "label": "缓冲刷新阈值",
+  "desc": "累积多少字符后刷新缓冲区，使短回复感觉即时。默认 24。"
+ },
+ "streaming.cursor": {
+  "label": "流式光标",
+  "desc": "附加在生成中消息末尾的光标字符，默认 ▉。"
+ },
+ "streaming.edit_interval": {
+  "label": "编辑最小间隔",
+  "desc": "两次逐步编辑之间的最小秒数（Telegram 约每秒 1 次限制），默认 0.8。"
+ },
+ "streaming.enabled": {
+  "label": "流式输出",
+  "desc": "向消息平台实时流式推送回复（修改后需重启网关）；关闭则每次回复作为一条完整消息发送。会额外消耗编辑/草稿 API 调用。默认关闭。"
+ },
+ "streaming.fresh_final_after_seconds": {
+  "label": "最终消息重发阈值",
+  "desc": "仅 Telegram：大于 0 时，若预览已显示至少这么多秒，最终结果作为新消息发送，使时间戳反映完成时间。默认 0（关闭）。"
+ },
+ "streaming.transport": {
+  "label": "流式传输方式",
+  "desc": "流式推送方式：auto-支持时用原生草稿（Telegram 私聊），其他平台用编辑消息（默认） draft-使用草稿，不支持时回退编辑 edit-仅逐步编辑消息 off-关闭。"
+ },
+ "stt.cloud_trim_keep_ms": {
+  "label": "停顿保留时长",
+  "desc": "每段停顿保留的毫秒数，以保持自然节奏，默认 300。"
+ },
+ "stt.cloud_trim_silence": {
+  "label": "上传前裁剪静音",
+  "desc": "上传云端识别前用 ffmpeg 裁剪静音（本地 whisper 使用 VAD），失败则上传原始音频。默认开启。"
+ },
+ "stt.cloud_trim_threshold_db": {
+  "label": "静音阈值",
+  "desc": "低于此音量（dB）视为静音，默认 -40。"
+ },
+ "stt.deepinfra.model": {
+  "label": "DeepInfra 识别模型",
+  "desc": "DeepInfra 语音识别模型；留空使用在线目录中第一个 STT 模型。"
+ },
+ "stt.echo_transcripts": {
+  "label": "回显识别文本",
+  "desc": "将网关收到的语音消息识别出的原文以 🎙️ 消息回显给用户。默认开启。"
+ },
+ "stt.elevenlabs.diarize": {
+  "label": "说话人分离",
+  "desc": "区分不同说话人并标注。默认关闭。"
+ },
+ "stt.elevenlabs.language_code": {
+  "label": "ElevenLabs 语言代码",
+  "desc": "ElevenLabs 识别语言代码（三字母，如 eng、spa、zho）；留空继承 stt.language。"
+ },
+ "stt.elevenlabs.model_id": {
+  "label": "ElevenLabs 识别模型",
+  "desc": "ElevenLabs Scribe 转写模型：scribe_v2-新版（默认） scribe_v1-旧版。"
+ },
+ "stt.elevenlabs.tag_audio_events": {
+  "label": "标注音频事件",
+  "desc": "在转写文本中标注笑声、掌声等音频事件。默认关闭。"
+ },
+ "stt.enabled": {
+  "label": "启用语音识别",
+  "desc": "启用语音转文字（处理语音消息和语音输入）。默认开启。"
+ },
+ "stt.groq.language": {
+  "label": "Groq 识别语言",
+  "desc": "Groq 识别语言；留空继承 stt.language。"
+ },
+ "stt.groq.model": {
+  "label": "Groq Whisper 模型",
+  "desc": "Groq 语音识别模型：whisper-large-v3-turbo-速度更快（默认） whisper-large-v3-准确率更高。"
+ },
+ "stt.language": {
+  "label": "识别语言",
+  "desc": "全局语音识别语言提示（各提供商的语言设置可覆盖），默认 en（Whisper 对短音频自动检测易出错）；留空表示自动检测，中文可设 zh。"
+ },
+ "stt.local.initial_prompt": {
+  "label": "初始提示词",
+  "desc": "传给本地 Whisper 的初始提示文本，可用于引导专有名词或标点风格。"
+ },
+ "stt.local.language": {
+  "label": "本地识别语言",
+  "desc": "本地识别语言；留空继承 stt.language，可设 en、zh 等强制指定。"
+ },
+ "stt.local.logprob_threshold": {
+  "label": "对数概率阈值",
+  "desc": "与无语音概率阈值配合使用，平均对数概率低于此值的片段可能被丢弃。默认 -1.0。"
+ },
+ "stt.local.model": {
+  "label": "本地 Whisper 模型",
+  "desc": "本地 faster-whisper 模型大小：tiny-最小最快 base-基础（默认） small-小 medium-中 large-v3-最大最准 turbo-大模型加速版。"
+ },
+ "stt.local.no_speech_prob_threshold": {
+  "label": "无语音概率阈值",
+  "desc": "片段的无语音概率高于此值且平均对数概率低于 logprob_threshold 时丢弃该片段。默认 0.6。"
+ },
+ "stt.local.unload_after_idle_seconds": {
+  "label": "空闲卸载时间",
+  "desc": "本地模型空闲多少秒后卸载以释放内存；0 表示永不卸载（例如 300 表示 5 分钟后释放）。"
+ },
+ "stt.local.vad": {
+  "label": "语音活动检测",
+  "desc": "启用 Silero VAD 过滤非语音片段以减少幻觉；处理音乐/环境音时可关闭。默认开启。"
+ },
+ "stt.local.vad_min_silence_ms": {
+  "label": "最小静音切分",
+  "desc": "分割语音块所需的最短静音时长（毫秒），默认 500。"
+ },
+ "stt.mistral.language": {
+  "label": "Mistral 识别语言",
+  "desc": "Mistral 识别语言；留空继承 stt.language。"
+ },
+ "stt.mistral.model": {
+  "label": "Mistral 识别模型",
+  "desc": "Mistral Voxtral 转写模型：voxtral-mini-latest-最新版（默认） voxtral-mini-2602-固定版本。"
+ },
+ "stt.openai.language": {
+  "label": "OpenAI 识别语言",
+  "desc": "OpenAI 识别语言；留空继承 stt.language。"
+ },
+ "stt.openai.max_retries": {
+  "label": "OpenAI 重试次数",
+  "desc": "OpenAI SDK 传输层重试次数，默认 1。"
+ },
+ "stt.openai.model": {
+  "label": "OpenAI 识别模型",
+  "desc": "OpenAI 转写模型：whisper-1-经典 Whisper（默认） gpt-4o-mini-transcribe-轻量版 gpt-4o-transcribe-高精度版 gpt-transcribe-新一代转写模型。"
+ },
+ "stt.openai.streaming_model": {
+  "label": "OpenAI 实时识别模型",
+  "desc": "开启 stt.streaming 时使用的实时转写模型：gpt-live-transcribe-支持说话中途增量输出（默认） gpt-transcribe gpt-4o-transcribe gpt-4o-mini-transcribe。"
+ },
+ "stt.openai.timeout": {
+  "label": "OpenAI 识别超时",
+  "desc": "请求超时（秒），为自托管后端冷启动留出时间。默认 60。"
+ },
+ "stt.streaming": {
+  "label": "实时识别",
+  "desc": "说话时实时显示部分识别文本（支持 openai/xai/elevenlabs），失败时回退到文件识别。默认关闭。"
+ },
+ "stt.xai.language": {
+  "label": "xAI 识别语言",
+  "desc": "xAI 识别语言；留空继承 stt.language。"
+ },
+ "stt.xai.model": {
+  "label": "xAI 识别模型",
+  "desc": "xAI 转写模型：grok-voice-transcribe-2.0-新版（默认） grok-voice-transcribe-1.0-旧版。"
+ },
+ "telegram.allowed_chats": {
+  "label": "允许的群聊",
+  "desc": "设置后仅在这些 Telegram 群组/超级群组 ID 中回复，逗号分隔；留空不限制。"
+ },
+ "telegram.channel_prompts": {
+  "label": "Telegram 会话提示",
+  "desc": "会话/群组 ID → 临时系统提示（仅对该会话生效）。默认空。"
+ },
+ "telegram.extra.allow_cjk_rich_messages": {
+  "label": "中日韩富文本",
+  "desc": "中日韩文本默认使用 MarkdownV2（Telegram 桌面/macOS 客户端会显示乱码）；在不受影响的客户端上可开启以获得原生富文本表格。默认关闭。"
+ },
+ "telegram.extra.dm_topic_auto_transfer": {
+  "label": "私信自动开话题",
+  "desc": "话题模式下，私信根消息会自动开启一个新话题。默认关闭。"
+ },
+ "telegram.extra.plain_drafts": {
+  "label": "纯文本草稿",
+  "desc": "使用只会增长的纯文本原始预览草稿。默认关闭。"
+ },
+ "telegram.extra.rich_drafts": {
+  "label": "富文本草稿（实验）",
+  "desc": "实验性：私聊中的富文本流式预览草稿。默认关闭。"
+ },
+ "telegram.extra.rich_messages": {
+  "label": "原生富文本消息",
+  "desc": "使用 Bot API 10.1 原生富文本消息（表格、任务列表、公式）；关闭则使用传统 MarkdownV2（更便于复制纯文本）。默认关闭。"
+ },
+ "telegram.reactions": {
+  "label": "处理状态表情",
+  "desc": "处理消息时添加 👀/✅/❌ 表情反应表示状态。默认关闭。"
+ },
+ "telemetry.shared_metrics.enabled": {
+  "label": "收集匿名指标",
+  "desc": "在本地收集隐私安全的聚合指标。默认关闭。"
+ },
+ "telemetry.shared_metrics.endpoint": {
+  "label": "指标上传地址",
+  "desc": "聚合指标的接收端点；非 HTTPS 地址仅允许 localhost。"
+ },
+ "telemetry.shared_metrics.send": {
+  "label": "上传匿名指标",
+  "desc": "将收集的聚合指标上传（需同时开启收集）。默认关闭。"
+ },
+ "terminal.auto_source_bashrc": {
+  "label": "自动加载 bashrc",
+  "desc": "在快照登录 shell 中依次 source ~/.profile、~/.bash_profile、~/.bashrc，以捕获 PATH、函数和别名。若某个 rc 文件在非交互模式下出错可关闭。默认开启。"
+ },
+ "terminal.backend": {
+  "label": "终端执行后端",
+  "desc": "智能体执行终端命令的环境：local-本机直接执行 docker-在 Docker 容器中执行 ssh-通过 SSH 在远程主机执行 modal-在 Modal 云沙箱执行 daytona-在 Daytona 云沙箱执行 vercel_sandbox-在 Vercel Sandbox 中执行。默认 local。"
+ },
+ "terminal.client_env_passthrough": {
+  "label": "客户端环境透传",
+  "desc": "CLI/TUI 客户端为其工具额外传递的非机密工具链环境变量名列表。"
+ },
+ "terminal.container_cpu": {
+  "label": "容器 CPU 核数",
+  "desc": "容器类后端（docker、modal、daytona、vercel_sandbox）的 CPU 限制，默认 1 核；对 local/ssh 无效。"
+ },
+ "terminal.container_disk": {
+  "label": "容器磁盘",
+  "desc": "容器类后端的磁盘限制（MB），默认 51200（50GB）。"
+ },
+ "terminal.container_memory": {
+  "label": "容器内存",
+  "desc": "容器类后端的内存限制（MB），默认 5120（5GB）。"
+ },
+ "terminal.container_persistent": {
+  "label": "容器持久化",
+  "desc": "开启后容器文件系统在会话之间保留；关闭则每次会话使用全新环境。默认开启。"
+ },
+ "terminal.cwd": {
+  "label": "工作目录",
+  "desc": "终端命令的工作目录，消息网关等场景使用此目录。默认 .（当前目录）。"
+ },
+ "terminal.daemon_term_grace_seconds": {
+  "label": "终止宽限时间",
+  "desc": "向宿主进程树（如浏览器守护进程）发送 SIGTERM 后，等待多少秒再升级为 SIGKILL。0 表示只发 SIGTERM。默认 2。"
+ },
+ "terminal.daytona_image": {
+  "label": "Daytona 镜像",
+  "desc": "daytona 后端使用的沙箱镜像，默认与 Docker 默认镜像相同。"
+ },
+ "terminal.degraded_mode": {
+  "label": "远程后端降级模式",
+  "desc": "远程后端连接类故障（SSH 主机不可达、Docker 守护进程未运行）时的处理：warn-返回带原因和重试提示的降级结果（默认） fail-直接抛出错误和堆栈。"
+ },
+ "terminal.docker_env": {
+  "label": "Docker 容器环境变量",
+  "desc": "在 Docker 沙箱容器内设置的固定环境变量键值对（与转发宿主变量不同），如 SSH_AUTH_SOCK。默认空。"
+ },
+ "terminal.docker_extra_args": {
+  "label": "Docker 额外参数",
+  "desc": "原样追加到 docker run 的额外参数列表。"
+ },
+ "terminal.docker_forward_env": {
+  "label": "Docker 转发环境变量",
+  "desc": "从宿主机读取并转发到 Docker 容器内的环境变量名列表。"
+ },
+ "terminal.docker_image": {
+  "label": "Docker 镜像",
+  "desc": "docker 后端使用的容器镜像，默认 nousresearch/hermes-sandbox:desktop（含 Python、Node 及桌面显示栈）。"
+ },
+ "terminal.docker_mount_cwd_to_workspace": {
+  "label": "挂载工作目录",
+  "desc": "开启后将宿主机当前目录挂载到容器 /workspace（会削弱隔离性）。默认关闭。"
+ },
+ "terminal.docker_network": {
+  "label": "容器网络访问",
+  "desc": "关闭时以 --network=none 运行，容器内命令无法访问网络。默认开启。"
+ },
+ "terminal.docker_run_as_host_user": {
+  "label": "以宿主用户运行",
+  "desc": "开启后以宿主机 uid:gid 运行容器（--user），使写入挂载目录的文件归属当前用户而非 root。需要以 root 启动的镜像请保持关闭。默认关闭。"
+ },
+ "terminal.docker_shared_container_key": {
+  "label": "共享容器标识",
+  "desc": "多个受信任配置档共用同一 Docker 容器时使用的共享标识；留空则每个配置档独立容器。"
+ },
+ "terminal.docker_shm_size": {
+  "label": "共享内存大小",
+  "desc": "Docker 沙箱的 /dev/shm 大小，默认 1g（Docker 默认 64MB 会导致 Chromium/Playwright、PyTorch 异常）。留空或 0 表示使用 Docker 默认值。"
+ },
+ "terminal.docker_snap_compat": {
+  "label": "Snap Docker 兼容",
+  "desc": "兼容 AppArmor 下 Snap 安装的 Docker（如 Ubuntu 云镜像）：开启后去掉 --init 和 no-new-privileges 两个参数，其余加固保留。默认关闭。"
+ },
+ "terminal.docker_volumes": {
+  "label": "Docker 卷挂载",
+  "desc": "Docker 卷挂载列表，格式 宿主路径:容器路径（同 docker -v）。网关投递媒体时应写入容器内 /output 并输出宿主机可见路径。"
+ },
+ "terminal.env_passthrough": {
+  "label": "环境变量透传",
+  "desc": "允许传入沙箱终端/代码执行环境的环境变量名列表（技能声明的必需变量会自动加入）。"
+ },
+ "terminal.font_family": {
+  "label": "终端字体",
+  "desc": "桌面应用内置终端（xterm.js）的 CSS font-family，例如 'CaskaydiaCoveNerdFont', monospace。留空使用内置默认字体（JetBrains Mono 等）。"
+ },
+ "terminal.home_mode": {
+  "label": "HOME 目录策略",
+  "desc": "工具子进程使用的 HOME：auto-本机使用真实用户 HOME、容器使用数据目录下的 home（默认） real-强制使用真实 HOME profile-强制使用配置档目录下的 home，实现严格的配置档隔离。"
+ },
+ "terminal.modal_image": {
+  "label": "Modal 镜像",
+  "desc": "modal 后端使用的沙箱镜像，默认与 Docker 默认镜像相同。"
+ },
+ "terminal.modal_mode": {
+  "label": "Modal 接入方式",
+  "desc": "Modal 后端的接入方式。运行时实际识别的值为 auto-自动选择 direct-使用自己的 Modal 凭据 managed-使用托管的 Modal；界面中的 sandbox/function 不是运行时有效值，会回退为 auto。默认 auto。"
+ },
+ "terminal.oneshot_completion_wait_seconds": {
+  "label": "单次运行等待后台",
+  "desc": "单次命令行运行（-q/-Q/-z）结束前，最多等待带完成通知的后台进程多少秒，以免过早退出导致结果无法投递。0 表示不等待。默认 600。"
+ },
+ "terminal.persistent_shell": {
+  "label": "持久化 Shell",
+  "desc": "SSH 后端下，在命令之间保留导出的环境变量（工作目录总是保留）；关闭则每条命令都从登录环境重新开始。默认开启。"
+ },
+ "terminal.process_wait_auto_notify": {
+  "label": "后台等待自动通知",
+  "desc": "开启后，对后台进程连续两次无变化的等待/轮询会自动转为完成通知并停止轮询；关闭则保持旧的轮询方式。默认开启。"
+ },
+ "terminal.shell_init_files": {
+  "label": "Shell 初始化文件",
+  "desc": "构建会话环境快照时额外 source 的文件列表（用于 nvm/pyenv/asdf 等 PATH 设置），支持 ~ 和 ${VAR}，不存在的文件会跳过。留空且为 bash 时自动加载 ~/.profile、~/.bash_profile、~/.bashrc。"
+ },
+ "terminal.sync_back_max_bytes": {
+  "label": "回同步大小上限",
+  "desc": "远程后端回同步时，允许解压的状态归档最大字节数，默认 2 GiB；数据目录确实超过此大小时可调大。"
+ },
+ "terminal.temp_dir": {
+  "label": "临时文件目录",
+  "desc": "终端会话临时文件（后台日志、pid、代码执行沙箱）的根目录。留空则用 TMPDIR/TMP/TEMP，否则用数据目录下的 cache/terminal（72 小时后自动清理）。必须是已存在的绝对路径，自定义路径不会自动清理。"
+ },
+ "terminal.timeout": {
+  "label": "命令超时",
+  "desc": "单条终端命令的默认超时时间（秒），默认 180。"
+ },
+ "terminal.vercel_image": {
+  "label": "Vercel 沙箱镜像",
+  "desc": "vercel_sandbox 后端使用的镜像：Vercel 托管镜像（如 vercel/sandbox/universal:latest）或 VCR 仓库[:tag]。"
+ },
+ "terminal.vercel_runtime": {
+  "label": "Vercel 旧版运行时",
+  "desc": "旧版 Vercel Sandbox 运行时（已被 Vercel 弃用），设置后会覆盖镜像设置：node24-Node.js 24 node22-Node.js 22 python3.13-Python 3.13。留空则使用镜像。"
+ },
+ "timezone": {
+  "label": "时区",
+  "desc": "IANA 时区名，如 Asia/Shanghai、America/New_York；留空使用系统/服务器本地时区。"
+ },
+ "tool_loop_guardrails.hard_stop_after.exact_failure": {
+  "label": "相同失败停止阈值",
+  "desc": "完全相同的工具调用连续失败多少次后强制停止，默认 5。"
+ },
+ "tool_loop_guardrails.hard_stop_after.idempotent_no_progress": {
+  "label": "无进展停止阈值",
+  "desc": "幂等工具调用连续无进展多少次后强制停止，默认 5。"
+ },
+ "tool_loop_guardrails.hard_stop_after.same_tool_failure": {
+  "label": "同工具失败停止阈值",
+  "desc": "同一工具连续失败多少次后强制停止，默认 8。"
+ },
+ "tool_loop_guardrails.hard_stop_enabled": {
+  "label": "循环强制停止",
+  "desc": "达到硬停阈值时强制终止重复的工具调用（交互会话）。默认关闭，以免打断交互流程。"
+ },
+ "tool_loop_guardrails.loop_caps.max_subagents": {
+  "label": "每轮子智能体上限",
+  "desc": "每一轮最多派生的子智能体数量，每轮重置且始终生效。0 表示不限。默认 50。"
+ },
+ "tool_loop_guardrails.loop_caps.max_web_searches": {
+  "label": "每轮搜索上限",
+  "desc": "每一轮最多调用 web_search 的次数，每轮重置且始终生效。0 表示不限。默认 50。"
+ },
+ "tool_loop_guardrails.non_interactive_hard_stop_enabled": {
+  "label": "非交互强制停止",
+  "desc": "在无人值守的网关/定时任务中启用硬停（无人可以手动 /stop）；交互式 CLI/TUI/桌面端仍只警告。默认开启。"
+ },
+ "tool_loop_guardrails.warn_after.exact_failure": {
+  "label": "相同失败警告阈值",
+  "desc": "完全相同的工具调用连续失败多少次后发出警告，默认 2。"
+ },
+ "tool_loop_guardrails.warn_after.idempotent_no_progress": {
+  "label": "无进展警告阈值",
+  "desc": "幂等工具调用连续无进展多少次后发出警告，默认 2。"
+ },
+ "tool_loop_guardrails.warn_after.same_tool_failure": {
+  "label": "同工具失败警告阈值",
+  "desc": "同一工具连续失败多少次后发出警告，默认 3。"
+ },
+ "tool_loop_guardrails.warnings_enabled": {
+  "label": "循环警告",
+  "desc": "当模型重复失败或无进展的工具调用时发出软性提醒。默认开启。"
+ },
+ "tool_output.max_bytes": {
+  "label": "终端输出上限",
+  "desc": "终端工具输出的字符上限（保留首尾），默认 50000（约 1.2~1.5 万 tokens）。"
+ },
+ "tool_output.max_line_length": {
+  "label": "单行长度上限",
+  "desc": "read_file 带行号视图中每行的最大字符数，默认 2000。"
+ },
+ "tool_output.max_lines": {
+  "label": "读取行数上限",
+  "desc": "单次 read_file 可请求的最大行数，超过将被截断。默认 2000。"
+ },
+ "tools.connectors.enabled": {
+  "label": "启用远程连接器",
+  "desc": "通过工具网关发现和管理远程连接器；还需要已登录门户账号才可用。默认开启。"
+ },
+ "tools.tool_search.defer": {
+  "label": "延迟加载工具",
+  "desc": "默认由桥接工具代替、按需加载的工具名列表（如 computer_use、session_search、image_generate 等）；填写后整体替换默认列表，[] 表示全部直接加载。"
+ },
+ "tools.tool_search.enabled": {
+  "label": "工具搜索",
+  "desc": "工具搜索模式：用 tool_search/tool_describe/tool_call 桥接工具替代延迟加载的工具，按需展开。auto/on-存在延迟工具时启用（默认 auto） off-关闭，所有工具直接提供给模型。"
+ },
+ "tools.tool_search.listing": {
+  "label": "嵌入工具清单",
+  "desc": "是否在桥接工具描述中嵌入工具目录：auto-放得下时嵌入，否则降级为仅名称（默认） on-同 auto，显式开启 off-始终只提供桥接工具。"
+ },
+ "tools.tool_search.listing_max_tokens": {
+  "label": "清单 Token 上限",
+  "desc": "嵌入工具清单的绝对 Token 上限（200~60000），默认 4000。"
+ },
+ "tools.tool_search.max_search_limit": {
+  "label": "最大搜索条数",
+  "desc": "模型每次查询可请求的最大条数（1~50），默认 25。"
+ },
+ "tools.tool_search.search_default_limit": {
+  "label": "默认搜索条数",
+  "desc": "模型未指定 limit 时每次工具搜索返回的条数，默认 5。"
+ },
+ "tools.tool_search.threshold_pct": {
+  "label": "清单预算比例",
+  "desc": "工具清单预算占模型上下文长度的百分比（0~100），实际预算取此值与 listing_max_tokens 的较小者。默认 5。"
+ },
+ "toolsets": {
+  "label": "启用的工具集",
+  "desc": "主智能体启用的工具集列表，默认 [\"hermes-cli\"]（PDR 智能体的标准工具集）。"
+ },
+ "tts.deepinfra.model": {
+  "label": "DeepInfra TTS 模型",
+  "desc": "DeepInfra 语音合成模型；留空则使用在线目录中第一个 TTS 模型。"
+ },
+ "tts.deepinfra.voice": {
+  "label": "DeepInfra 音色",
+  "desc": "DeepInfra TTS 音色，默认 default。"
+ },
+ "tts.edge.voice": {
+  "label": "Edge 发音人",
+  "desc": "Edge TTS 使用的音色，默认 en-US-AriaNeural；中文可用 zh-CN-XiaoxiaoNeural 等。"
+ },
+ "tts.elevenlabs.model_id": {
+  "label": "ElevenLabs 模型",
+  "desc": "ElevenLabs 语音合成模型，默认 eleven_multilingual_v2。"
+ },
+ "tts.elevenlabs.voice_id": {
+  "label": "ElevenLabs 音色 ID",
+  "desc": "ElevenLabs 语音的 voice_id，默认 pNInz6obpgDQGcFmaJgB（Adam）。"
+ },
+ "tts.gemini.audio_tags": {
+  "label": "Gemini 音频标签",
+  "desc": "Gemini 3.1：开启后由辅助模型改写 TTS 脚本并插入 [音频标签] 以增强表现力。默认关闭。"
+ },
+ "tts.gemini.model": {
+  "label": "Gemini TTS 模型",
+  "desc": "Gemini 语音合成模型，默认 gemini-2.5-flash-preview-tts。"
+ },
+ "tts.gemini.persona_prompt_file": {
+  "label": "表演指导文件",
+  "desc": "可选的本地文本文件，提供语音表演指导；可包含 {transcript} 占位符，否则会将实际文本追加在后面。"
+ },
+ "tts.gemini.voice": {
+  "label": "Gemini 音色",
+  "desc": "Gemini TTS 音色，默认 Kore。"
+ },
+ "tts.keep_warm_seconds": {
+  "label": "本地引擎保温时长",
+  "desc": "本地 TTS 引擎（Piper、KittenTTS）在最后一次关闭语音后继续保持加载的秒数，以便快速重新启用。0 表示立即卸载。默认 60。"
+ },
+ "tts.kittentts.model": {
+  "label": "KittenTTS 模型",
+  "desc": "本地 KittenTTS 模型，默认 KittenML/kitten-tts-nano-0.8-int8（nano 25MB、micro 41MB、mini 80MB）。"
+ },
+ "tts.kittentts.voice": {
+  "label": "KittenTTS 音色",
+  "desc": "KittenTTS 音色，默认 Jasper。"
+ },
+ "tts.minimax.model": {
+  "label": "MiniMax TTS 模型",
+  "desc": "MiniMax 语音合成模型，默认 speech-02-hd。"
+ },
+ "tts.minimax.voice_id": {
+  "label": "MiniMax 音色 ID",
+  "desc": "MiniMax 音色 ID，默认 English_expressive_narrator。"
+ },
+ "tts.mistral.model": {
+  "label": "Mistral TTS 模型",
+  "desc": "Mistral 语音合成模型，默认 voxtral-mini-tts-2603。"
+ },
+ "tts.mistral.voice_id": {
+  "label": "Mistral 音色 ID",
+  "desc": "Mistral 语音音色 ID，默认为 Paul - Neutral 音色。"
+ },
+ "tts.neutts.device": {
+  "label": "NeuTTS 运行设备",
+  "desc": "NeuTTS 推理设备：cpu-CPU（默认） cuda-NVIDIA GPU mps-Apple 芯片 GPU。"
+ },
+ "tts.neutts.model": {
+  "label": "NeuTTS 模型",
+  "desc": "NeuTTS 使用的 HuggingFace 模型仓库，默认 neuphonic/neutts-air-q4-gguf。"
+ },
+ "tts.neutts.ref_audio": {
+  "label": "NeuTTS 参考音频",
+  "desc": "NeuTTS 参考语音音频文件路径；留空使用内置默认音色。"
+ },
+ "tts.neutts.ref_text": {
+  "label": "NeuTTS 参考文本",
+  "desc": "NeuTTS 参考语音对应的文本文件路径；留空使用内置默认。"
+ },
+ "tts.openai.consent_attestation": {
+  "label": "声音克隆授权声明",
+  "desc": "原样放入请求体的授权声明字段，供要求克隆音色授权的 OpenAI 兼容服务使用（否则返回 consent_required）；留空不发送。"
+ },
+ "tts.openai.model": {
+  "label": "OpenAI TTS 模型",
+  "desc": "OpenAI 语音合成模型，默认 gpt-4o-mini-tts。"
+ },
+ "tts.openai.pcm_sample_rate": {
+  "label": "PCM 采样率",
+  "desc": "流式播放的原始 PCM 采样率，OpenAI 输出 24000 Hz；兼容服务若通过响应头报告采样率会自动覆盖。默认 24000。"
+ },
+ "tts.openai.voice": {
+  "label": "OpenAI 音色",
+  "desc": "OpenAI TTS 音色，默认 alloy；可选 ash、ballad、cedar、coral、echo、fable、marin、nova、onyx、sage、shimmer、verse。"
+ },
+ "tts.piper.voice": {
+  "label": "Piper 音色",
+  "desc": "Piper 音色名称（首次使用时下载）或 .onnx 文件的绝对路径，默认 en_US-lessac-medium。"
+ },
+ "tts.provider": {
+  "label": "语音合成服务",
+  "desc": "文字转语音提供商：edge-微软 Edge 免费语音（默认） elevenlabs-高品质付费语音 openai-OpenAI TTS xai-xAI 语音 minimax-MiniMax mistral-Mistral Voxtral gemini-Google Gemini TTS neutts-本地 NeuTTS kittentts-本地 KittenTTS piper-本地 Piper。"
+ },
+ "tts.streaming.min_len": {
+  "label": "流式首句最短长度",
+  "desc": "流式 TTS 单独朗读的首句最短字符数，更短的开头会与下一句合并。英文建议 20，中文等 CJK 语音建议约 6。默认 20。"
+ },
+ "tts.xai.auto_speech_tags": {
+  "label": "xAI 自动语气标签",
+  "desc": "开启后通过大模型改写自动插入富有表现力的音频标签。默认关闭。"
+ },
+ "tts.xai.bit_rate": {
+  "label": "xAI 码率",
+  "desc": "MP3 码率（仅在编码为 mp3 时生效），默认 128000。"
+ },
+ "tts.xai.language": {
+  "label": "xAI 语音语言",
+  "desc": "xAI 合成语言，BCP-47 代码（如 en、pt-BR）或 auto。默认 en。"
+ },
+ "tts.xai.optimize_streaming_latency": {
+  "label": "流式延迟优化",
+  "desc": "流式延迟优化级别 0~2，越高延迟越低但音质可能下降。默认 0。"
+ },
+ "tts.xai.sample_rate": {
+  "label": "xAI 采样率",
+  "desc": "xAI 输出采样率：22050/24000/44100/48000，默认 24000。"
+ },
+ "tts.xai.speed": {
+  "label": "xAI 语速",
+  "desc": "xAI 语速倍率，范围 0.7~1.5，默认 1.0。"
+ },
+ "tts.xai.voice_id": {
+  "label": "xAI 音色 ID",
+  "desc": "xAI 语音音色 ID，默认 eve，也可填自定义音色 ID。"
+ },
+ "updates.auto_switch_parked_branch": {
+  "label": "自动切换停留分支",
+  "desc": "代码停留在功能分支且工作区干净时，自动切换到更新目标分支（提交保留在原分支）；工作区有修改则跳过更新。默认开启。"
+ },
+ "updates.backup_keep": {
+  "label": "保留备份份数",
+  "desc": "保留的完整备份 zip 数量（至少 1），快速快照始终只保留 1 份。默认 5。"
+ },
+ "updates.check": {
+  "label": "检查更新",
+  "desc": "启用被动的版本/横幅更新检查（显式 update --check 始终可用）。默认开启。"
+ },
+ "updates.non_interactive_local_changes": {
+  "label": "非交互更新本地改动",
+  "desc": "在聊天应用/网关中更新 PDR 智能体（无终端提示）时如何处理未提交的本地源码修改：stash-暂存并在更新后重新应用，discard-丢弃。终端更新总是会询问。"
+ },
+ "updates.parked_branch_strategy": {
+  "label": "停留分支策略",
+  "desc": "停留分支有未合并提交时：switch-切换到更新目标（提交保留在原分支，不冲突），update_in_place-打标签后把目标分支合并进当前分支（冲突则停止）。默认 switch。"
+ },
+ "updates.pre_update_backup": {
+  "label": "更新前备份",
+  "desc": "更新前的安全备份：quick-快照关键小文件（配置、.env、定时任务等，跳过 >1GiB），full-quick 加完整备份 zip，off-不备份。默认 quick。"
+ },
+ "updates.refresh_cua_driver": {
+  "label": "更新 cua-driver",
+  "desc": "更新时同时刷新已安装的 cua-driver（仅 macOS）；在 /Applications 不可写的非管理员账户上请关闭。默认开启。"
+ },
+ "vault.bitwarden.binary_path": {
+  "label": "bw 程序路径",
+  "desc": "bw 可执行文件的绝对路径；留空从 PATH 查找。"
+ },
+ "vault.bitwarden.enabled": {
+  "label": "启用 Bitwarden 登录源",
+  "desc": "允许浏览器凭据保险库使用 Bitwarden（bw CLI，密码管理器）登录项，需先执行一次 bw login。默认开启。"
+ },
+ "vault.key_storage": {
+  "label": "保险库密钥存储",
+  "desc": "新建凭据保险库的密钥存放方式：file-存为权限 0600 的 vault.key 文件（默认） keychain-存入系统钥匙串（不可用时回退文件）。"
+ },
+ "vault.onepassword.account": {
+  "label": "1Password 账号",
+  "desc": "op --account 使用的账号简称；留空使用默认账号。"
+ },
+ "vault.onepassword.binary_path": {
+  "label": "op 程序路径",
+  "desc": "op 可执行文件的绝对路径；留空从 PATH 查找。"
+ },
+ "vault.onepassword.enabled": {
+  "label": "启用 1Password 登录源",
+  "desc": "允许浏览器凭据保险库使用 1Password（op CLI）中带网址的登录项。默认开启。"
+ },
+ "vault.onepassword.service_account_token_env": {
+  "label": "服务账号令牌变量",
+  "desc": "保存 1Password 服务账号令牌的环境变量名（无头认证，无需解锁提示），默认 OP_SERVICE_ACCOUNT_TOKEN。"
+ },
+ "vertex.project_id": {
+  "label": "GCP 项目 ID",
+  "desc": "Google Vertex AI（Gemini）使用的 GCP 项目 ID；留空则从服务账号 JSON（或 ADC）中读取。"
+ },
+ "vertex.region": {
+  "label": "Vertex 区域",
+  "desc": "Vertex AI 区域，默认 global（Gemini 3.x 预览模型必须使用 global，区域端点会 404）；仅当模型固定在某区域时才填如 us-central1。"
+ },
+ "vision.embed_target_bytes": {
+  "label": "图片嵌入字节预算",
+  "desc": "单张嵌入图片的字节预算（限制在 64KiB~4MiB），默认 256KiB；密集表格截图看不清时可调大。"
+ },
+ "vision.max_calls_per_image": {
+  "label": "单图分析次数上限",
+  "desc": "每个会话中 vision_analyze 对同一图片（含区域裁剪）的嵌入次数上限。留空表示子智能体内为 3 次、主智能体不限；填数字则全局生效；0 表示不限。"
+ },
+ "vision.replay_recent_images": {
+  "label": "重放最近图片数",
+  "desc": "从数据库重建的轮次中重新发送最近多少张用户图片；0 表示关闭。默认 3。"
+ },
+ "voice.auto_tts": {
+  "label": "自动朗读回复",
+  "desc": "开启后自动将智能体的回复转为语音播放。默认关闭。"
+ },
+ "voice.auto_tts_mode": {
+  "label": "自动朗读范围",
+  "desc": "自动朗读的触发范围：all-所有回复都朗读（默认） voice_only-仅在用户使用语音输入时朗读。"
+ },
+ "voice.barge_in": {
+  "label": "允许插话打断",
+  "desc": "用户开始说话时打断智能体并停止语音播放。默认开启。"
+ },
+ "voice.barge_in_grace_seconds": {
+  "label": "插话保护时间",
+  "desc": "TTS 开始播放后多少秒内不触发插话检测（麦克风保持开启），默认 0.5。"
+ },
+ "voice.barge_in_threshold_multiplier": {
+  "label": "插话触发倍数",
+  "desc": "插话触发阈值 = 安静环境底噪 × 此倍数（底噪在播放前校准），默认 3.0。"
+ },
+ "voice.beep_enabled": {
+  "label": "录音提示音",
+  "desc": "CLI 语音模式下录音开始/结束时播放提示音。默认开启。"
+ },
+ "voice.beep_volume": {
+  "label": "提示音音量",
+  "desc": "提示音音量倍率，0.0~1.0，默认 0.3。"
+ },
+ "voice.client_direct": {
+  "label": "客户端直连语音服务",
+  "desc": "桌面远程客户端直接调用 STT/TTS 提供商（会话开始时经认证接口获取配置与密钥），而不经网关中转。默认开启。"
+ },
+ "voice.gpt_live.instructions": {
+  "label": "GPT-Live 附加指令",
+  "desc": "追加到实时语音模型人设中的额外说明（语气、节奏、语言等）。"
+ },
+ "voice.gpt_live.model": {
+  "label": "GPT-Live 模型",
+  "desc": "gpt-live 模式使用的实时语音模型，默认 gpt-live-1。"
+ },
+ "voice.gpt_live.voice": {
+  "label": "GPT-Live 音色",
+  "desc": "gpt-live 模式的音色，默认 marin；可选 quartz、ripple、vesper、willow、stone、gleam、meridian 等。"
+ },
+ "voice.max_recording_seconds": {
+  "label": "最长录音时长",
+  "desc": "单次录音的最大时长（秒），默认 120。"
+ },
+ "voice.record_key": {
+  "label": "录音快捷键",
+  "desc": "CLI/TUI 中开始/停止录音的快捷键，默认 ctrl+b。"
+ },
+ "voice.silence_duration": {
+  "label": "静音自动停止",
+  "desc": "连续静音多少秒后自动停止录音，默认 3.0。"
+ },
+ "voice.silence_threshold": {
+  "label": "静音判定阈值",
+  "desc": "RMS 音量低于此值视为静音（0~32767），默认 200。"
+ },
+ "voice.stop_phrases": {
+  "label": "结束语音口令",
+  "desc": "完整说出其中某个短语（不区分大小写、忽略标点）即结束语音对话而不发送给智能体，默认 [\"stop\"]；空列表表示禁用。"
+ },
+ "voice.submit_mode": {
+  "label": "语音提交方式",
+  "desc": "TUI 中语音识别结果的提交方式：direct-识别后立即发送（默认） draft-作为可编辑草稿放入输入框。"
+ },
+ "voice.thinking_sound": {
+  "label": "思考提示音",
+  "desc": "智能体工作时播放环境气泡音（音量同提示音音量）。默认开启。"
+ },
+ "voice.voice_chat_mode": {
+  "label": "语音对话模式",
+  "desc": "桌面端语音对话的实现方式：chained-语音识别→智能体处理→语音合成串联（默认，使用 stt/tts 配置） gpt-live-由 OpenAI GPT-Live 全双工语音模型接管麦克风与扬声器，并将实际请求委托给智能体（需 OpenAI API Key）。"
+ },
+ "wake_word.capture": {
+  "label": "音频采集方式",
+  "desc": "唤醒词音频来源：auto-自动（默认） local-本机麦克风 client-由桌面客户端推送麦克风音频。"
+ },
+ "wake_word.confirmation_frames": {
+  "label": "确认帧数",
+  "desc": "仅 openWakeWord：需连续多少帧超过阈值才触发；越高误触越少但延迟越大，1 表示单帧触发。默认 3。"
+ },
+ "wake_word.enabled": {
+  "label": "启用唤醒词",
+  "desc": "启用免手动的唤醒词：常驻设备端热词检测，检测到后开启新的语音会话。默认关闭。"
+ },
+ "wake_word.input_device": {
+  "label": "麦克风设备",
+  "desc": "PortAudio 输入设备的索引或名称；留空使用系统默认设备。"
+ },
+ "wake_word.openwakeword.model": {
+  "label": "openWakeWord 模型",
+  "desc": "openWakeWord 模型：hey_hermes（默认）、内置模型名（如 hey_jarvis、alexa）或自定义 .tflite 模型路径。"
+ },
+ "wake_word.phrase": {
+  "label": "唤醒短语",
+  "desc": "唤醒短语；对 sherpa 引擎即实际检测的短语，对其他引擎仅为显示标签（检测由模型/关键词决定）。默认 hey hermes。"
+ },
+ "wake_word.porcupine.keyword": {
+  "label": "Porcupine 关键词",
+  "desc": "Porcupine 内置关键词（如 jarvis、computer）或自定义 .ppn 文件路径，默认 jarvis。"
+ },
+ "wake_word.profile_routing": {
+  "label": "按配置档路由",
+  "desc": "仅 sherpa：同时监听所有启用唤醒词的配置档的短语，并路由到对应配置档。默认开启。"
+ },
+ "wake_word.provider": {
+  "label": "唤醒词引擎",
+  "desc": "唤醒词检测引擎：auto-自动选择当前平台支持的引擎（默认） openwakeword-免费开源引擎 sherpa-sherpa-onnx 关键词检测 porcupine-Picovoice Porcupine（需 PORCUPINE_ACCESS_KEY）。"
+ },
+ "wake_word.sensitivity": {
+  "label": "唤醒灵敏度",
+  "desc": "检测阈值 0.0~1.0，越高越严格（误触发越少）。默认 0.6。"
+ },
+ "wake_word.sherpa.model_dir": {
+  "label": "sherpa 模型目录",
+  "desc": "sherpa-onnx 关键词检测模型目录；留空则自动下载小型英文 zipformer 模型。"
+ },
+ "wake_word.start_new_session": {
+  "label": "唤醒时新建会话",
+  "desc": "唤醒后开启全新会话；关闭则继续当前会话。默认开启。"
+ },
+ "wake_word.surface": {
+  "label": "唤醒词生效界面",
+  "desc": "由哪个界面响应唤醒词：auto-第一个申请的界面（默认） cli-命令行 tui-终端界面 gui-桌面图形界面。"
+ },
+ "web.backend": {
+  "label": "网页工具后端",
+  "desc": "web_search 与 web_extract 共用的默认后端（如 firecrawl、exa、tavily、parallel、searxng 等）。留空则自动选择。"
+ },
+ "web.cache_enabled": {
+  "label": "启用网页缓存",
+  "desc": "为 web_search 和 web_extract 启用 TTL 缓存：TTL 内相同查询直接返回缓存结果，并发相同搜索合并为一次请求，仅缓存成功结果。默认开启。"
+ },
+ "web.cache_exempt_hosts": {
+  "label": "缓存豁免主机",
+  "desc": "始终实时抓取、不使用提取缓存的主机列表（如预发布环境、隧道地址）。支持精确匹配、*.通配符和域名后缀；localhost 和私有 IP 总是豁免。"
+ },
+ "web.cache_ttl_minutes": {
+  "label": "缓存有效期",
+  "desc": "网页搜索/提取缓存的有效期（分钟），默认 20。"
+ },
+ "web.extract_backend": {
+  "label": "网页提取后端",
+  "desc": "单独覆盖 web_extract 的后端（例如 native）；留空则使用 web.backend。"
+ },
+ "web.extract_char_limit": {
+  "label": "提取字符上限",
+  "desc": "web_extract 每个页面的字符预算，超出部分截断（完整文本保存在缓存中）。默认 15000。"
+ },
+ "web.keyless_fallback": {
+  "label": "免密钥回退",
+  "desc": "未配置任何网页后端或密钥时，在 exa、parallel、firecrawl、keenable 的免费公开接口间轮询使用，遇限流自动切换。不会抢占已配置的后端。默认开启。"
+ },
+ "web.keyless_rescue": {
+  "label": "免密钥救援",
+  "desc": "已选后端调用失败时，本次调用改用免密钥轮询重试一次，下次仍使用原后端。web.keyless_fallback 关闭时无效。默认开启。"
+ },
+ "web.provider_tier": {
+  "label": "网页工具供应商档位",
+  "desc": "按供应商指定免费/付费通道：free-始终走匿名免费端点 paid-始终用密钥（缺密钥报错）；未设置则有密钥走付费、否则走免费轮换。默认空。"
+ },
+ "web.search_backend": {
+  "label": "网页搜索后端",
+  "desc": "单独覆盖 web_search 的后端（例如 searxng）；留空则使用 web.backend。"
+ },
+ "webapp.enabled": {
+  "label": "启用 Web 应用",
+  "desc": "启用网关内置的 Web 应用监听服务。默认关闭。"
+ },
+ "webapp.host": {
+  "label": "Web 应用监听地址",
+  "desc": "Web 应用绑定的主机地址，默认 127.0.0.1（仅本机访问）。"
+ },
+ "webapp.port": {
+  "label": "Web 应用端口",
+  "desc": "Web 应用监听端口，默认 9120。"
+ },
+ "webapp.public_url": {
+  "label": "Web 应用公开地址",
+  "desc": "Web 应用对外访问的公开 URL（经反向代理时填写）；留空则自动推断。"
+ },
+ "whatsapp": {
+  "label": "WhatsApp 配置",
+  "desc": "WhatsApp 适配器的平台专属设置键值对。默认空。"
+ },
+ "worktrees.archive_dirty": {
+  "label": "归档未提交工作树",
+  "desc": "清理过期 git 工作树时，对有未提交/未推送改动的工作树先归档再删除；关闭则永不删除此类工作树。默认开启。"
+ },
+ "worktrees.archive_max_file_mb": {
+  "label": "归档文件大小上限",
+  "desc": "大于此大小（MB）的未跟踪文件不归档，包含此类文件的工作树将被保留。默认 50。"
+ },
+ "worktrees.archive_retention_days": {
+  "label": "归档保留天数",
+  "desc": "清理任务删除超过此天数的归档引用；0 表示永久保留。默认 30。"
+ },
+ "worktrees.install_state_retention_days": {
+  "label": "安装状态保留天数",
+  "desc": "已不存在的检出所对应的安装状态目录，超过此天数未使用即删除；0 表示永不删除。默认 14。"
+ },
+ "worktrees.max_total_gb": {
+  "label": "工作树总容量上限",
+  "desc": "空闲工作树的总大小预算（GB），超出时优先归档并删除最旧的空闲工作树。0 表示不限制。默认 0。"
+ },
+ "x_search.model": {
+  "label": "X 搜索模型",
+  "desc": "X（Twitter）搜索调用的 xAI 模型，任何具备 x_search 能力的 Grok 模型均可，默认 grok-4.5。"
+ },
+ "x_search.reasoning_effort": {
+  "label": "X 搜索推理强度",
+  "desc": "支持推理的模型使用的推理强度；留空保持模型默认。"
+ },
+ "x_search.retries": {
+  "label": "X 搜索重试次数",
+  "desc": "遇到 5xx、读取超时或连接错误时的重试次数，默认 2。"
+ },
+ "x_search.timeout_seconds": {
+  "label": "X 搜索超时",
+  "desc": "请求超时（秒，最少 30），复杂查询可能需要 60~120 秒。默认 180。"
+ }
+}

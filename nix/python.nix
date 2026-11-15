@@ -18,7 +18,12 @@ let
   python = pythonLock.interpreter;
   pythonPackages = python.pkgs;
 
-  workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = pythonSrc; };
+  # uv2nix reads uv.lock/pyproject.toml at eval time, so load the workspace
+  # from the unfiltered root: under read-only eval (`nix flake check
+  # --no-build`) the filtered pythonSrc is never written to the store and
+  # that read fails (#141750). The hermes-agent override below rebinds its
+  # build-time src to pythonSrc, so rebuild scoping is unchanged.
+  workspace = uv2nix.lib.workspace.loadWorkspace { inherit workspaceRoot; };
   hacks = callPackage pyproject-nix.build.hacks { };
 
   overlay = workspace.mkPyprojectOverlay {
@@ -138,6 +143,7 @@ let
           # must remain blocked.
           (final: prev: {
             hermes-agent = prev.hermes-agent.overrideAttrs (_old: {
+              src = pythonSrc;
               HERMES_NIX_BUILD = "1";
             });
           })
@@ -151,8 +157,7 @@ let
   # buys nothing here anyway: the editable install reads from
   # $HERMES_PYTHON_SRC_ROOT at runtime.
   workspaceRoot = ./..;
-  editableWorkspace = uv2nix.lib.workspace.loadWorkspace { inherit workspaceRoot; };
-  editableOverlay = editableWorkspace.mkEditablePyprojectOverlay {
+  editableOverlay = workspace.mkEditablePyprojectOverlay {
     root = "$HERMES_PYTHON_SRC_ROOT"; # resolved at shellHook time
   };
 

@@ -973,9 +973,6 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         # Advisory second opinion — warn-and-continue by design (PII-class findings are
         # informational); the install confirmation below is where the user decides.
         _print_tier1_advisory(q_path, c)
-        if official and (upstream_repo := _upstream_repo(bundle)) and (force or skip_confirm):
-            c.print(f"[yellow]Third-party content:[/] '{bundle.name}' installs the live default branch of "
-                    f"[cyan]https://github.com/{upstream_repo}[/] (not maintained by Nous Research).")
         metadata_lines = _format_extra_metadata_lines(extra_metadata)
         if metadata_lines:
             c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
@@ -994,7 +991,13 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         discard_quarantine(q_path)
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.resolve().relative_to(Path(SKILLS_DIR).resolve()).as_posix()}")
-    c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
+    c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]")
+    # Unprompted installs never showed the Third-Party panel; print its notice last, so a log view that
+    # keeps only the tail (the dashboard's action log) still shows it after a long file list.
+    if official and (upstream_repo := _upstream_repo(bundle)) and (force or skip_confirm):
+        c.print(f"[yellow]Third-party content:[/] '{bundle.name}' installs the live default branch of "
+                f"[cyan]https://github.com/{upstream_repo}[/] (not maintained by Nous Research).")
+    c.print()
     _announce_blueprint(c, bundle.name)
     _finish_change(c, invalidate_cache, "Skill will be available", "activate")
     return bundle, None if existing else "success", True

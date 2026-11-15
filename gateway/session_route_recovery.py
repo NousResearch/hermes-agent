@@ -186,10 +186,10 @@ async def conversation_head(runner, session_id):
 
 async def settled_handoff_db(runner, authority, session_id):
     """Refuse the watcher's repoint while durable work still owns *session_id*
-    (``gateway.session_handoff.require_settled``), on the store ``conversation_head`` reads."""
+    (``check_handoff_settled``), on the store ``conversation_head`` reads."""
     from gateway.session_handoff import check_settled
-    db = authority.db if authority is not None else getattr(runner._session_db, '_db', runner._session_db)
-    await check_settled(db, session_id)
+    store = authority_persistence(authority) if authority is not None else runner.persistence
+    await check_settled(store, session_id)
 
 
 def follow_hand_off(authority, source, route, owner, local_owner):

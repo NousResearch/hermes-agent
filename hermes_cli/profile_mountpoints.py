@@ -18,6 +18,7 @@ the fallback (the procfs read fails and yields no mount points).
 from __future__ import annotations
 
 import os
+import re
 import stat
 
 _MOUNTINFO_PATH = "/proc/self/mountinfo"
@@ -43,7 +44,7 @@ def _read_mount_points(mountinfo_path: str = _MOUNTINFO_PATH) -> frozenset[str]:
             continue
         point = fields[4]
         if "\\" in point:  # octal escapes (\040 = space, \011 = tab)
-            point = point.encode("latin-1", "ignore").decode("unicode_escape")
+            point = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), point)
         points.add(point)
     return frozenset(points)
 

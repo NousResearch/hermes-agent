@@ -153,6 +153,9 @@ signal:
   group_allowed_chats: ["groupId1"]
 ```
 
+With `require_mention: true` (or `SIGNAL_REQUIRE_MENTION=true`) the bot answers a group message only
+when it @mentions the bot, replies to one of the bot's messages, or starts with a `/command`.
+
 ---
 
 ## Features

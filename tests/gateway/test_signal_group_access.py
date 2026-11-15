@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import Platform, load_gateway_config
+from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 OWNER, MEMBER = "+15550001111", "+15550002222"
 ACCOUNT, ACCOUNT_UUID = "+15551234567", "aaaaaaaa-1111-4222-8333-444444444444"
@@ -81,3 +81,40 @@ async def test_monitoring_a_group_does_not_authorize_its_members(monkeypatch, tm
     """``SIGNAL_GROUP_ALLOWED_USERS`` picks the groups the adapter listens to, nothing more."""
     assert not await _member_is_authorized(*_gateway(monkeypatch, tmp_path))
 
+
+# ------------------------------------------------------------------ addressing the bot
+
+def _mention_gated_adapter(monkeypatch):
+    from plugins.platforms.signal.adapter import SignalAdapter
+    monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "*")
+    adapter = SignalAdapter(PlatformConfig(enabled=True, extra={
+        "http_url": "http://localhost:8080", "account": ACCOUNT, "require_mention": True}))
+    adapter.set_authorization_check(lambda *args, **kwargs: True)  # the runner wires one at startup
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_a_group_message_that_does_not_address_the_bot_is_dropped(monkeypatch):
+    assert await _group_events(_mention_gated_adapter(monkeypatch), {"message": "hello all"}) == []
+
+
+@pytest.mark.asyncio
+async def test_a_reply_to_a_message_the_bot_sent_addresses_the_bot(monkeypatch):
+    adapter = _mention_gated_adapter(monkeypatch)
+    adapter._track_sent_timestamp({"timestamp": 1699999999000})
+    events = await _group_events(adapter, {"message": "and then?", "quote": {"id": 1699999999000}})
+    assert [event.reply_to_is_own_message for event in events] == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_quoting_the_bot_by_uuid_addresses_the_bot(monkeypatch):
+    adapter = _mention_gated_adapter(monkeypatch)
+    adapter._remember_recipient_identifiers(ACCOUNT, ACCOUNT_UUID)
+    events = await _group_events(adapter, {"message": "and then?", "quote": {"id": 1, "authorUuid": ACCOUNT_UUID}})
+    assert [event.reply_to_is_own_message for event in events] == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_slash_command_addresses_the_bot(monkeypatch):
+    events = await _group_events(_mention_gated_adapter(monkeypatch), {"message": "/status"})
+    assert [event.text for event in events] == ["/status"]

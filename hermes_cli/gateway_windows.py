@@ -590,12 +590,9 @@ def _whoami_user() -> str | None:
 
 
 def _resolve_task_user() -> str | None:
-    """Return ``DOMAIN\\USER`` for the current account, else bare USERNAME, else None.
+    """Prefer the current logon token for Task Scheduler principal selection.
 
-    Env ``USERDOMAIN`` is untrustworthy in SSH sessions — there it reports ``WORKGROUP``, and
-    ``WORKGROUP\\user`` maps to no SID, so ``schtasks /Create /XML`` fails with "account name
-    and SID do not map" (帐户名与安全标识间无任何映射完成). ``whoami`` reads the real logon
-    token instead, so prefer it and fall back to the env vars when it is unavailable.
+    SSH can set USERDOMAIN=WORKGROUP, which is not a SID-mappable account domain.
     """
     username = os.environ.get("USERNAME") or os.environ.get("USER") or os.environ.get("LOGNAME")
     env_candidate: str | None = None
@@ -604,6 +601,8 @@ def _resolve_task_user() -> str | None:
             env_candidate = username
         else:
             domain = os.environ.get("USERDOMAIN")
+            if domain and domain.upper() == "WORKGROUP":
+                domain = None
             env_candidate = f"{domain}\\{username}" if domain else username
     return _whoami_user() or env_candidate
 

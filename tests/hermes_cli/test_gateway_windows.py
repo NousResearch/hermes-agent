@@ -932,3 +932,14 @@ def test_resolve_task_user_falls_back_to_env_when_whoami_unavailable(monkeypatch
     monkeypatch.delenv("USER", raising=False)
     monkeypatch.delenv("LOGNAME", raising=False)
     assert gateway_windows._resolve_task_user() is None
+
+
+def test_resolve_task_user_when_whoami_fails_does_not_emit_workgroup_principal(monkeypatch):
+    """SSH fallback must not create the unmappable WORKGROUP-prefixed task principal (#155032)."""
+    monkeypatch.setattr(gateway_windows, "_whoami_user", lambda: None)
+    monkeypatch.setenv("USERNAME", "alice")
+    monkeypatch.setenv("USERDOMAIN", "WORKGROUP")
+    xml = gateway_windows._build_scheduled_task_xml(
+        "Hermes_Gateway", Path("gateway.vbs"), gateway_windows._resolve_task_user(),
+    )
+    assert "<UserId>alice</UserId>" in xml

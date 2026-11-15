@@ -316,8 +316,8 @@ class TestWrapCommandWindowsNativeCwd:
         env._snapshot_ready = True
         wrapped = env._wrap_command("pwd", r"C:\Users\liush")
 
-        assert "builtin cd -- /c/Users/liush || exit 126" in wrapped
-        assert r"builtin cd -- C:\Users\liush || exit 126" not in wrapped
+        assert "builtin cd -- /c/Users/liush " in wrapped
+        assert r"builtin cd -- C:\Users\liush" not in wrapped
 
     def test_init_session_bootstrap_rewrites_backslash_snapshot_paths(self, monkeypatch):
         captured = {}

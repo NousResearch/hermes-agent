@@ -1492,8 +1492,8 @@ _PRE_EXEC_GUARD_MIN_TIMEOUT_S = 30
 
 def _refuse_missing_local_workdir(workdir: str, env: Any) -> None:
     """An explicit ``workdir`` the model named is never swapped for a parent: a typo would run
-    ``rm -f ./*`` one level up. Only a cwd the session inherited falls back (``_usable_cwd``),
-    and only ``LocalEnvironment`` falls back at all."""
+    ``rm -f ./*`` one level up. Only a cwd the session inherited falls back (``_usable_cwd``);
+    sandbox wrappers refuse it themselves under ``explicit_workdir_scope``."""
     from tools.environments.local import LocalEnvironment
     if not isinstance(env, LocalEnvironment):
         return
@@ -1613,8 +1613,9 @@ def terminal_tool(
             command, background = auto_bg, True
         env = _acquire_env(plan, task_id)
         # _lookup_active_env stamps whichever of the two keys holds the env.
-        from tools.environments.base import shell_state_scope
-        with _call_in_flight(plan.effective_task_id, task_id), shell_state_scope(_shell_state_chain(task_id)):
+        from tools.environments.base import explicit_workdir_scope, shell_state_scope
+        with (_call_in_flight(plan.effective_task_id, task_id), shell_state_scope(_shell_state_chain(task_id)),
+              explicit_workdir_scope(bool(workdir))):
             env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
 
             # Session key for cwd records: the contextvar doesn't cross tool-worker

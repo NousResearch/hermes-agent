@@ -14,5 +14,8 @@ def test_powershell_mkdir_md_registry_paths_require_approval():
         assert "registry" in description
         assert is_unsafe_class(description)
 
-    # Filesystem mkdir is not a registry mutation.
+    # Filesystem mkdir is not a registry mutation, and neither is a `.md` file name before a registry path.
     assert not detect_dangerous_command(r"mkdir C:\tmp\HermesApprovalProbe")[0]
+    assert not detect_dangerous_command(r"cat README.md HKCU:\Software\HermesApprovalProbe")[0]
+    # A `.md` argument must not end the scan for an earlier verb either.
+    assert detect_dangerous_command(r"New-Item -Name README.md -Path HKCU:\Software")[0]

@@ -621,7 +621,7 @@ DANGEROUS_PATTERNS = [
     # The short aliases are common words, so they only count when aimed at a registry provider path,
     # which may sit after any other parameter (`-Force`, `-Name`, `-LiteralPath`, `-Path:`) within the
     # same segment. The scan stops at the next verb token so a run of `si si si ...` stays linear.
-    (r'\b' + _REG_WRITE_VERB + r'\s(?:(?!\b' + _REG_WRITE_VERB + r'\s)[^\n;|&])*?(?:hk(?:cu|lm|cr|u|cc):|registry::)', "registry write (sp/ni/Set-Item/New-Item on a registry path)"),
+    (r'(?<![\w.])' + _REG_WRITE_VERB + r'\s(?:(?!(?<![\w.])' + _REG_WRITE_VERB + r'\s)[^\n;|&])*?(?:hk(?:cu|lm|cr|u|cc):|registry::)', "registry write (sp/ni/Set-Item/New-Item on a registry path)"),
     (r'\bsetx(?:\.exe)?\s+[^\s;&|]', "registry write (setx persistent environment variable)"),
     (r'\b(?:set|new)-itemproperty\b', "registry value write (Set-ItemProperty / New-ItemProperty)"),
     # Windows service/system stop — analogue of systemctl stop.

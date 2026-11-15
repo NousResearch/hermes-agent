@@ -119,9 +119,11 @@ describe('__runDeadSessionPrunePass', () => {
   it('drops unread markers for a dead session from every bucket and keeps live ones', async () => {
     $sessions.set([row('unrelated')])
     $unreadFinishedMarkers.set({ default: ['dead-unread', 'hidden-live'], work: ['dead-unread'] })
-    getSessionMock.mockImplementation(async id => {
-      if (id === 'hidden-live') {
-        return row(id)
+    // `hidden-live` 404s on the active profile and exists only on `work`: a miss
+    // in one profile must not erase a marker for a session alive in another.
+    getSessionMock.mockImplementation(async (id, profileName) => {
+      if (id === 'hidden-live' && profileName === 'work') {
+        return row(id, { profile: 'work' })
       }
 
       throw notFound()
@@ -129,6 +131,8 @@ describe('__runDeadSessionPrunePass', () => {
 
     await __runDeadSessionPrunePass()
 
+    expect(getSessionMock).toHaveBeenCalledWith('hidden-live', undefined)
+    expect(getSessionMock).toHaveBeenCalledWith('hidden-live', 'work')
     expect($unreadFinishedMarkers.get()).toEqual({ default: ['hidden-live'] })
   })
 

@@ -113,7 +113,7 @@ def test_delegated_child_reports_its_delegators_conversation(tmp_path, probe, mo
     from tools import delegate_tool
     import tools.delegate_tool_config as delegate_config
 
-    monkeypatch.setattr(delegate_tool, "_load_config", dict)
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", dict)
     monkeypatch.setattr(delegate_config, "_load_config", dict)
     parent = _agent(None, session_id="parent-root")
     child = delegate_tool._build_child_agent(task_index=0, goal="goal", context=None, toolsets=["conv_probe"],

@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from tools import delegate_tool_config
+from tools.delegate_tool_config import _get_max_concurrent_children, _get_max_spawn_depth
 from tools.registry import tool_error
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -88,7 +90,6 @@ def _refusal(parent_agent: Any) -> Optional[str]:
     if is_spawn_paused():
         return ("Delegation spawning is paused. Clear the pause via the TUI (`p` in /agents) or the "
                 "`delegation.pause` RPC before retrying.")
-    from tools.delegate_tool import _get_max_spawn_depth
     depth, max_spawn = getattr(parent_agent, "_delegate_depth", 0), _get_max_spawn_depth()
     if isinstance(depth, int) and depth >= max_spawn:  # the same limit a spawn from here hits
         return f"Delegation depth limit reached (depth={depth}, max_spawn_depth={max_spawn})."
@@ -97,13 +98,12 @@ def _refusal(parent_agent: Any) -> Optional[str]:
 
 def _durable_spec(sid: str, record: dict[str, Any], parent_agent: Any) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """A resume spec from the durable record: its route re-resolved from the task's own routing request."""
-    from tools.delegate_tool import _load_config
     from tools.delegate_tool_routes import resolve_task_routes
     request = record.get("route_request")
     if not isinstance(request, dict) or not record.get("session_id"):
         return None, (f"Subagent '{sid}' ran on a route that cannot be rebuilt after a restart. "
                       "Spawn a new task instead.")
-    routes, err = resolve_task_routes([{"goal": record.get("goal"), **request}], _load_config(), parent_agent)
+    routes, err = resolve_task_routes([{"goal": record.get("goal"), **request}], delegate_tool_config._load_config(), parent_agent)
     if err or not routes or routes[0].error:
         return None, err or (routes[0].error if routes else "no route")
     return {**record, "route": routes[0], "endpoint": tuple(record.get("endpoint") or ()) or None}, None
@@ -155,8 +155,7 @@ def _start(
     """Rebuild, hydrate and dispatch the continued child: ``(tool result JSON, None)`` or ``(None, error)`` when
     it was refused before anything ran."""
     from tools.delegate_tool import (
-        DEFAULT_MAX_ITERATIONS, _build_children, _get_max_concurrent_children, _load_config, _oneshot_spawn_budget,
-        _parent_live_home,
+        DEFAULT_MAX_ITERATIONS, _build_children, _oneshot_spawn_budget, _parent_live_home,
     )
     from tools.delegate_tool_dispatch import _Batch, _capture_origin, _run_batch
     from tools.delegation_live_log import create_live_transcripts
@@ -183,7 +182,7 @@ def _start(
         origin = _capture_origin()  # before the build: child construction clobbers the session-id binding
         children, err = _build_children(
             [{"goal": spec["goal"], "context": spec.get("context")}], [None], [route], top_role="leaf",
-            max_iterations=_load_config().get("max_iterations", DEFAULT_MAX_ITERATIONS), parent_agent=parent_agent,
+            max_iterations=delegate_tool_config._load_config().get("max_iterations", DEFAULT_MAX_ITERATIONS), parent_agent=parent_agent,
             live_deleg_id=live_id, live_writers=writers,
             rebuild=[{"toolsets": spec.get("toolsets") or None, "model": spec.get("model") or route.creds["model"],
                       "subagent_id": sid, "session_id": session_id, "expect_endpoint": spec.get("endpoint")}],

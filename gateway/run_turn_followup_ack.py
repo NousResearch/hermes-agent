@@ -17,12 +17,14 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, Processing
 def _followup_processing_hooks_apply(adapter, event: MessageEvent | None) -> bool:
     """Both conditions are necessary: a real inbound platform message to acknowledge (adapters key their
     marker off ``message_id`` — Slack/Telegram/Feishu/Matrix/Photon — or off ``raw_message`` — Signal,
-    Discord; synthetic drains such as ``/goal`` continuations, wake-ups and startup auto-resume carry
-    neither and must stay silent), and an adapter that overrides ``on_processing_start``. We bracket, so
+    Discord; synthetic drains such as ``/goal`` continuations, wake-ups and startup auto-resume must
+    stay silent, even when restoration gives them a producer identity as ``message_id``), and an adapter
+    that overrides ``on_processing_start``. We bracket, so
     both halves must belong to us: a complete-only adapter (Google Chat reaps its typing card there,
     webhook ends its per-delivery session) would otherwise be handed a completion for a turn whose reply
     is delivered only after the drain chain unwinds back into ``_process_message_background``."""
-    if adapter is None or event is None:
+    # Restored automation carries its producer identity in message_id, not a platform message.
+    if adapter is None or event is None or event.internal:
         return False
     if not (getattr(event, "message_id", None) or getattr(event, "raw_message", None)):
         return False

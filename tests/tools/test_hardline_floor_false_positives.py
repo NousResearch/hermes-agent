@@ -24,6 +24,8 @@ _BLOCKED = [
     "nice rm -rf " + _Q + "$HOME" + _Q + "/*",
     "nice rm -rf " + _Q + "/" + _Q + "etc",
     "rm -rf " + _Q + "/etc" + _Q + "/*",
+    # An unquoted glob in a partly quoted word is still a glob, so that word is dequoted.
+    "rm -rf " + _Q + "/" + _Q + "etc/*",
     # A trailing slash after a quoted (or bare) system dir is still that dir.
     "rm -rf " + _Q + "/etc" + _Q + "/",
     "nice rm -rf '/usr'/",

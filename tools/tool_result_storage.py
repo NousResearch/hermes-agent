@@ -99,7 +99,7 @@ def referenced_archive_refs(home) -> set | None:
     """``cache/<dir>/<name>`` archive references held by any message in *home*'s ``state.db``.
 
     ``set()`` when no database exists (no sessions → nothing references anything), ``None``
-    when the reference set is UNKNOWN (unreadable / truncated query) so callers fail closed
+    when the reference set is UNKNOWN (unreadable database/query) so callers fail closed
     and keep the files; a read-only handle is enough, the write path owns the locks."""
     from persistence.core.errors import STORE_FAILURES
     from persistence_assembly import open_persistence_reader
@@ -108,15 +108,12 @@ def referenced_archive_refs(home) -> set | None:
     if not db_path.exists():
         return set()
     try:
+        refs: set = set()
         with open_persistence_reader(db_path) as store:
-            rows = store.messages.spillover_reference_rows()
+            for content, api_content in store.messages.spillover_reference_rows():
+                refs.update(archive_refs_in_text(content, api_content))
     except (OSError, *STORE_FAILURES):
         return None
-    if len(rows) > 20000:  # truncated reference set: treat as unknown, never guess
-        return None
-    refs: set = set()
-    for content, api_content in rows:
-        refs |= archive_refs_in_text(content, api_content)
     return refs
 
 

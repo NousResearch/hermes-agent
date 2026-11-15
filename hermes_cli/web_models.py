@@ -260,9 +260,9 @@ class TTSLeaseRequest(BaseModel):
     active: bool = True
 
 class STTLeaseRequest(BaseModel):
-    """POST /api/audio/stt-lease: ``lease`` names the voice-input session holding the lease
-    (``desktop:voice-input:<renderer>``); ``active`` True acquires + pre-loads the local
-    STT model, False releases. Unlike TTS, release never unloads (shared engine)."""
+    """POST /api/audio/stt-lease: ``lease`` names the voice-input session
+    (``desktop:voice-input:<renderer>``); ``active`` True pre-loads the local STT model,
+    False is a no-op. Unlike TTS, nothing unloads (shared engine)."""
     lease: str
     active: bool = True
 

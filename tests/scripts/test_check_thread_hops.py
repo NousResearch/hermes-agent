@@ -269,7 +269,10 @@ def test_explicit_paths_outside_the_root_are_refused(tmp_path, monkeypatch):
     assert guard.main(['../outside.py']) == 2
 
 
-def test_an_undeclared_old_copy_beside_its_moved_file_counts_both(tmp_path):
+def test_an_undeclared_old_copy_beside_its_moved_file_fails_closed(tmp_path):
     _moved_repo(tmp_path)
     put(tmp_path, '.gitattributes', '')
-    assert len(guard.scan(root=tmp_path)) == 2
+    head = commit(tmp_path, 'undeclared')
+    for tree in (None, head):
+        with pytest.raises(ValueError, match='undeclared old-path copy'):
+            guard.scan(root=tmp_path, tree=tree)

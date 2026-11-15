@@ -136,8 +136,10 @@ class Visitor(ast.NodeVisitor):
 
 
 def sites(path, text, identity_path=None):
-    if not any(word in unicodedata.normalize('NFKC', text) for word in HANDOFF_WORDS):
-        return {}
+    if not any(word in text for word in HANDOFF_WORDS):
+        normalized = unicodedata.normalize('NFKC', text)
+        if not any(word in normalized for word in HANDOFF_WORDS):
+            return {}
     tree = ast.parse(text, filename=path)
     visitor = Visitor(path, text, tree, identity_path)
     visitor.visit(tree)
@@ -187,8 +189,9 @@ def scan(paths=None, root=ROOT, tree=None):
             rel = resolved.relative_to(root.resolve()).as_posix()
             if path.suffix == '.py' and in_scope(rel):
                 files[rel] = original(rel)
-    shared = Counter(files.values())
-    files = {rel: rel if shared[old] > 1 else old for rel, old in files.items()}
+    if clashes := sorted(old for old, n in Counter(files.values()).items() if n > 1):
+        raise ValueError(f'{clashes[0]} is both a moved file and an undeclared old-path copy; '
+                         'mark the copy generated in .gitattributes or delete it')
     hits = {}
     for rel, text in source_texts(root, tree, sorted(files)):
         hits.update(sites(rel, text, files[rel]))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import io
 import re
+import subprocess
 import tokenize
 from pathlib import Path
 
@@ -36,7 +37,7 @@ def production_files(root: Path, tree: str | None = None, *, untracked: bool = F
             listed -= set(gitio.git(root, "ls-files", "--deleted", "-z").split("\0"))
         original = original_paths(root, tree)
         generated = gitio.generated_files(root, tree)
-    except (OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         raise RuntimeError(f"cannot list the tracked files under {root}: {exc}") from exc
     files = {rel: original(rel) for rel in listed if rel and rel not in generated}
     return {rel: old for rel, old in sorted(files.items()) if is_production(old)}

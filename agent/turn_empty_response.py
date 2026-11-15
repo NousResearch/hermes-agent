@@ -11,19 +11,17 @@ short-circuit) → fallback provider → terminal ``(empty)`` sentinel. Nothing 
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent import empty_response_guard as _empty_guard
 from agent.message_metadata import append_message
 from agent.message_sanitization import _sanitize_surrogates
+from agent.reasoning_channels import has_inline_reasoning_tag, has_separate_reasoning_channel
 from agent.turn_context_compaction import _refund_api_call
 from agent.turn_recovery import interruptible_backoff_sleep
 
 logger = logging.getLogger("agent.conversation_loop")
-
-_INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
 
 # The persisted user-row display kinds the gateway types as machinery: the self-injected
 # internal_notification turn plus the producer-notice cards (background-process completions,
@@ -316,8 +314,12 @@ def recover_empty_response(
     # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.
     _prior_was_tool = any(m.get("role") == "tool" for m in messages[-5:])
     # Ollama puts <think> in content, not reasoning_content, so _has_structured misses
-    # it; detect here to route to the thinking-only reminder.
-    _has_inline_thinking = bool(_INLINE_THINK_RE.search(final_response or ""))
+    # it; detect here to route to the thinking-only reminder. The detector matches
+    # OPENING and CLOSING tags in every canonical name: MiniMax M2 is an
+    # interleaved-thinking model whose chat template prefills the opening <think>, so
+    # the completion arrives as …</think> with no opener, and an opener-only match
+    # missed it (#21811 residual).
+    _has_inline_thinking = has_inline_reasoning_tag(final_response)
     if (
         _prior_was_tool
         and not getattr(agent, "_post_tool_empty_retried", False)
@@ -335,12 +337,12 @@ def recover_empty_response(
 
     # A thinking-only assistant prefill is stripped by the send-time sanitizer, making
     # that retry byte-identical. Send a completion reminder on the input instead.
-    _has_structured = bool(
-        getattr(assistant_message, "reasoning", None)
-        or getattr(assistant_message, "reasoning_content", None)
-        or getattr(assistant_message, "reasoning_details", None)
-        or _has_inline_thinking
-    )
+    # The channel set is the same one the shared helper reads (reasoning /
+    # reasoning_content / reasoning_details / thinking, as an attribute, a dict key,
+    # or through the SDK's model_extra fall-through), so a response whose reasoning
+    # arrives in one of those shapes reaches THIS branch rather than falling through
+    # the empty-response retry as if the model had said nothing.
+    _has_structured = has_separate_reasoning_channel(assistant_message) or _has_inline_thinking
     if _has_structured and agent._thinking_prefill_retries < 2:
         agent._thinking_prefill_retries += 1
         logger.info(

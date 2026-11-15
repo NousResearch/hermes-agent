@@ -55,6 +55,28 @@ def stamp_entry(client: Any, entry: Any, api_key: str) -> Any:
     return client
 
 
+def stamp_chosen_client(client: Any, picked: Any) -> Any:
+    """Keep a derived credential's row identity on the client that sends it."""
+    if client is not None and picked is not None and uses_runtime_credentials(picked.pool):
+        stamp_entry(client, picked.entry, picked.api_key)
+    return client
+
+
+def resolve_chosen_api_key_client(req: Any, pconfig: Any, api_key: str, raw_base_url: str) -> Any:
+    """Build the auxiliary API-key client with an admitted pool credential pair, if chosen."""
+    from agent import auxiliary_client as aux
+    picked = None
+    if req.pool_choice is not None and not req.explicit_api_key:
+        picked = req.pool_choice.choose(req.original_provider, req.provider, req.model, raw_base_url)
+        if picked is not None:
+            api_key = picked.api_key
+            # A derived pair travels together; an explicitly admitted relay stays authoritative.
+            if picked.base_url and not req.explicit_base_url:
+                raw_base_url = picked.base_url
+    client, model = aux._resolve_api_key_client(req, pconfig, req.provider, api_key, raw_base_url)
+    return stamp_chosen_client(client, picked), model
+
+
 def api_key_chain_credentials(provider_id: str, pconfig: Any, model: str,
                               resolve_ambient: Callable[[str], dict]) -> Optional[tuple[str, str, Any, str]]:
     """``(api_key, raw_base_url, pool_entry, via)`` for the auto api-key chain, or None to skip the provider.

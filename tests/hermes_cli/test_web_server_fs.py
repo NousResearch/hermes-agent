@@ -237,6 +237,9 @@ def test_fs_backend_resolves_ssh_connection_from_profile_env(monkeypatch):
 
 def test_fs_download_rejects_sensitive_resolved_ssh_path_before_streaming(client, monkeypatch):
     class FakeSshFs:
+        def normalize(self, path):  # identity: this fake takes the request as sent
+            return path
+
         def inspect_file(self, _path):
             return "/srv/repos/.env", 8
 
@@ -261,6 +264,9 @@ def test_ssh_requested_credential_store_stays_denied_after_remote_realpath(clien
     resolved = "/home/dev/keys/id_ed25519"
 
     class FakeSshFs:
+        def normalize(self, path):  # identity: this fake takes the request as sent
+            return path
+
         def inspect_file(self, path):
             assert path == requested
             return resolved, 6
@@ -281,6 +287,34 @@ def test_ssh_requested_credential_store_stays_denied_after_remote_realpath(clien
         assert response.json()["detail"] == "Access to sensitive files is not allowed"
 
 
+def test_ssh_requested_credential_store_checked_as_normalized(client, monkeypatch):
+    """The SSH normalizer strips whitespace and joins a relative path onto the cwd before the remote
+    realpath, so the requested-name check judges that normalized spelling, not the raw text."""
+    from hermes_cli.ssh_workspace_fs import SshWorkspaceFs
+
+    links = {"/home/dev/.netrc": "/home/dev/dotfiles/netrc", "/home/dev/.config/gh/hosts.yml": "/home/dev/gh-store/hosts.yml"}
+
+    class Env:
+        _remote_home = "/home/dev"
+        cwd = "/home/dev/.config"
+
+    class LinkedSshFs(SshWorkspaceFs):
+        def inspect_file(self, path):
+            return links[self.normalize(path)], 6
+
+        def read_bytes(self, path, *, max_bytes, read_limit=None):
+            return b"secret", 6, path
+
+        def stream_file(self, path):
+            yield b"secret"
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: LinkedSshFs(Env()))
+    for requested in ("~/.netrc ", "gh/hosts.yml"):
+        for endpoint in ("/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download"):
+            response = client.get(endpoint, params={"path": requested, "profile": "remote-dev"})
+            assert response.status_code == 403, (requested, endpoint, response.status_code)
+
+
 @pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url"])
 @pytest.mark.parametrize("resolved", ["/srv/repos/.env", "/home/dev/.hermes/auth.json",
                                       "/home/dev/.hermes/mcp-tokens/github.json"])
@@ -288,6 +322,9 @@ def test_fs_readers_reject_sensitive_resolved_ssh_path_before_reading(client, mo
     """An SSH profile's previews refuse what download refuses, judged on the path the SSH machine
     resolves (a harmless-looking link to a credential file included), before any byte is read."""
     class FakeSshFs:
+        def normalize(self, path):  # identity: this fake takes the request as sent
+            return path
+
         def inspect_file(self, _path):
             return resolved, 8
 
@@ -308,6 +345,9 @@ def test_fs_ssh_readers_read_the_resolved_path_they_vetted(client, monkeypatch, 
     reads = []
 
     class FakeSshFs:
+        def normalize(self, path):  # identity: this fake takes the request as sent
+            return path
+
         def inspect_file(self, _path):
             return "/srv/repos/notes.txt", 2
 
@@ -332,6 +372,9 @@ def test_fs_ssh_preview_keeps_html_alias_mime_after_resolving_link(client, monke
     reads = []
 
     class FakeSshFs:
+        def normalize(self, path):  # identity: this fake takes the request as sent
+            return path
+
         def inspect_file(self, path):
             assert path == alias
             return resolved, len(html)
@@ -386,6 +429,9 @@ def test_fs_ssh_readers_refuse_a_resolved_name_the_adapter_would_rewrite(client,
 
 def test_fs_download_streams_ssh_files_without_preview_cap(client, monkeypatch):
     class FakeSshFs:
+        def normalize(self, path):  # identity: this fake takes the request as sent
+            return path
+
         def inspect_file(self, _path):
             return "/srv/repos/report.txt", 6
 
@@ -430,6 +476,9 @@ def test_a_browser_download_reads_the_ssh_workspace_file_it_listed(client, monke
     streamed = []
 
     class FakeSshFs:
+        def normalize(self, path):  # identity: this fake takes the request as sent
+            return path
+
         def inspect_file(self, path):
             return path, len(b"remote copy")
 
@@ -833,6 +882,9 @@ def test_fs_read_data_url_reads_a_browser_paste_from_the_host_for_an_ssh_profile
     go looking on the SSH machine; every other path still does."""
 
     class FakeSshFs:
+        def normalize(self, path):  # identity: this fake takes the request as sent
+            return path
+
         def read_bytes(self, path, *, max_bytes, read_limit=None):
             raise ssh_workspace_fs.SshWorkspaceFsError("ENOENT", f"{path} is not on the SSH machine")
 

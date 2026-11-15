@@ -1419,7 +1419,9 @@ def _remote_download_target(backend, path: str) -> tuple[str, int]:
         _raise_fs_backend_error(exc)
     # SSH inspect_file realpaths symlinks; guard the requested name too, so
     # ~/.ssh -> ~/keys cannot make a requested ~/.ssh/id_ed25519 readable.
-    if _is_sensitive_path(PurePosixPath(path)) or _is_sensitive_path(PurePosixPath(target)):
+    # Judge the spelling inspect_file resolved too: normalize strips whitespace and joins a relative path to the cwd.
+    requested = (PurePosixPath(path), PurePosixPath(backend.normalize(path)))
+    if any(_is_sensitive_path(p) for p in (*requested, PurePosixPath(target))):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return target, size
 

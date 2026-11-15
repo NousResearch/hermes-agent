@@ -1550,9 +1550,10 @@ def _deny_command_variants(command: str):
     the original quote state, preserve path-specific rules, and fold only the
     executable basename (never arbitrary argument paths).
     """
-    yield from _command_detection_variants(command)
+    yield from _command_detection_variants(command, floors=True)
     # Heredoc bodies are masked first, then ANSI-C expanded: `$'...'` inside a body is literal data.
-    pending = list(dict.fromkeys(expand_ansi_c_quotes(source) for source in heredoc_scan_sources(command, _SHELL_NAMES_RE)))
+    pending = list(dict.fromkeys(
+        expand_ansi_c_quotes(source) for source in heredoc_scan_sources(command, _SHELL_NAMES_RE, floors=True)))
     seen = set()
     while pending:
         source = pending.pop()
@@ -1596,23 +1597,27 @@ def _deny_command_variants(command: str):
                 pending.append(payload)
 
 
-def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[str] | None = None):
+def _command_detection_variants(
+        command: str, eval_depth: int = 0, capped: list[str] | None = None, *, floors: bool = False):
     """Variants of the command with provably inert heredoc bodies dropped (#140704).
 
     A quote in a body (`it's`) desynced every quote-aware pass and hid the command after the
-    heredoc; body lines projected as commands. `cat` bodies are data (unless the string runs the
-    written file), python/osascript dropped copies are scanned IN ADDITION. Bodies a shell runs
-    (`bash <<EOF`, `cat <<EOF | sh`, `ssh host <<EOF`) and unterminated/mis-parsed `<<` stay.
+    heredoc; body lines projected as commands. `cat` bodies are data for the dangerous-prompt layer
+    (unless the string runs the written file); the hardline and deny floors (*floors*) also scan the
+    raw command, as main does. python/osascript dropped copies are scanned
+    IN ADDITION. Bodies a shell runs (`bash <<EOF`, `cat <<EOF | sh`, `ssh host <<EOF`) and
+    unterminated/mis-parsed `<<` stay.
     """
     seen: set[str] = set()
-    for source in heredoc_scan_sources(command, _SHELL_NAMES_RE):
-        for variant in _single_command_detection_variants(source, eval_depth, capped):
+    for source in heredoc_scan_sources(command, _SHELL_NAMES_RE, floors=floors):
+        for variant in _single_command_detection_variants(source, eval_depth, capped, floors=floors):
             if variant not in seen:
                 seen.add(variant)
                 yield variant
 
 
-def _single_command_detection_variants(command: str, eval_depth: int = 0, capped: list[str] | None = None):
+def _single_command_detection_variants(
+        command: str, eval_depth: int = 0, capped: list[str] | None = None, *, floors: bool = False):
     from tools.approval_wrappers import literal_heredoc_bodies
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
@@ -1669,7 +1674,7 @@ def _single_command_detection_variants(command: str, eval_depth: int = 0, capped
     # too and treat it as new shell input; each payload is shorter than its source, so recursion ends.
     for payload, payload_depth in _nested_payloads(_mask_quoted_newlines(command), eval_depth, capped):
         if payload != command:
-            for variant in _command_detection_variants(payload, payload_depth, capped):
+            for variant in _command_detection_variants(payload, payload_depth, capped, floors=floors):
                 if fresh(variant):
                     yield variant
     # Subshell `(cmd)` / brace-group `{ cmd; }` openers put `cmd` at a real command position the flat `_CMDPOS`

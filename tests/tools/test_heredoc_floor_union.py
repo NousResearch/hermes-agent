@@ -123,8 +123,11 @@ def test_command_after_a_dropped_body_is_still_a_command(gate_mode, command):
 
 
 def test_dropped_multiline_body_keeps_only_its_terminator():
+    # The dangerous layer's copy drops every body line but the terminator; the hardline floor still
+    # reads the body, as on main.
     command = f"cat > notes.md <<'EOF'\nintro\n{RM_ROOT}\nEOF\ngit add notes.md"
-    assert detect_hardline_command(command)[0] is False
+    assert detect_dangerous_command(command)[0] is False
+    assert detect_hardline_command(command)[0] is True
 
 
 @pytest.mark.parametrize("opener", ["python3 - <<'EOF'\n# it's code", "osascript <<'EOF'\n-- it's code"])

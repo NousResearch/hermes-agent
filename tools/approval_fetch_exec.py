@@ -185,10 +185,19 @@ class DownloadThenRunMatcher:
 _CAT_WRITERS: dict[str, DownloadThenRunMatcher] = {}
 
 
-def heredoc_scan_sources(command: str, shell_names_re: str) -> tuple[str, ...]:
+def heredoc_scan_sources(command: str, shell_names_re: str, *, floors: bool = False) -> tuple[str, ...]:
     """Body-dropped copies, plus the raw command when a dropped `cat` body's file runs later in it
-    (`cat > job.sh <<'EOF'` ... `bash job.sh`: the body is code, not data)."""
+    (`cat > job.sh <<'EOF'` ... `bash job.sh`: the body is code, not data).
+
+    The hardline and deny floors (*floors*) always take the raw command as well, so they read every
+    body as main does. What can execute a file written earlier in the string has no end (`mv` then
+    run, a variable, `make`, git hooks, a bin dir, rc files), so recognizing runs cannot keep a body
+    off the floors; only the dangerous-prompt layer, where a miss costs a prompt, drops it. The
+    dropped copies still expose a command after the terminator that a body quote hid (#140704)."""
     data_dropped = mask_heredoc_bodies_for_shell_scan(command, code_consumers=False)
+    if floors:
+        code_dropped = mask_heredoc_bodies_for_shell_scan(command, code_consumers=True)
+        return tuple(dict.fromkeys((data_dropped, code_dropped, command)))
     if shell_names_re not in _CAT_WRITERS:
         _CAT_WRITERS[shell_names_re] = DownloadThenRunMatcher(shell_names_re, writer_re=re.compile(r"\bcat\b"))
     runs_written = data_dropped != command and _CAT_WRITERS[shell_names_re].search(data_dropped)

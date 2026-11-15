@@ -60,7 +60,8 @@ class _SlashWorker:
         argv = [sys.executable, "-P", "-m", "tui_gateway.slash_worker", "--session-key", session_key] \
             + (["--model", model] if model else []) \
             + (["--provider", provider] if provider else []) \
-            + (["--base-url", base_url] if base_url else [])
+            + (["--base-url", base_url] if base_url else []) \
+            + (["--session-cwd", cwd] if cwd else [])
         self._closed = False
         from hermes_cli._subprocess_compat import windows_hide_flags
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets

@@ -153,9 +153,26 @@ def _reply(**fields) -> None:
     sys.stdout.flush()
 
 
+def _pin_session_cwd(session_cwd: str) -> None:
+    """Re-pin the session's project after the ``cli`` import (below). ``import cli`` runs
+    ``load_hermes_dotenv`` -> ``_reapply_terminal_config_bridge`` -> ``apply_terminal_config_to_env``,
+    which with an explicit ``terminal.cwd`` in config.yaml REWRITES ``TERMINAL_CWD`` — clobbering
+    the spawn pin this process was launched with, so the stdio MCP children it parents would
+    resolve every session to the configured cwd instead of the session's project (#151827 port,
+    review finding 7). Both halves are load-bearing: ``resolve_agent_cwd`` reads the session
+    ContextVar before ``TERMINAL_CWD`` on the worker's main thread (commands), while the MCP
+    loop/discovery threads cannot see ContextVars and read the restored env var."""
+    if not session_cwd:
+        return
+    os.environ["TERMINAL_CWD"] = session_cwd
+    from agent.runtime_cwd import set_session_cwd
+    set_session_cwd(session_cwd)
+
+
 def main():
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--session-key", required=True)
+    p.add_argument("--session-cwd", default="")
     p.add_argument("--model", default="")
     p.add_argument("--provider", default="")
     p.add_argument("--base-url", default="")
@@ -167,8 +184,10 @@ def main():
     # Before the heavy cli import, so a legacy parent dying during startup is still noticed.
     _start_legacy_parent_watchdog(args.parent_pid)
     # Import cli ahead of MCP discovery: importing it loads ~/.hermes/.env and sets HERMES_QUIET,
-    # which MCP ``${VAR}`` interpolation in the runtime prep depends on.
+    # which MCP ``${VAR}`` interpolation in the runtime prep depends on. The import also re-applies
+    # the terminal config, so the session project must be re-pinned right after it.
     from cli import HermesCLI
+    _pin_session_cwd(args.session_cwd)
     _prepare_slash_worker_runtime()
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

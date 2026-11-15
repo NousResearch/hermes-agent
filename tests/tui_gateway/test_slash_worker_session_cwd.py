@@ -26,7 +26,7 @@ def spawned(monkeypatch):
             return 0
 
     def _spawn(argv, purpose, **kw):
-        calls.append(kw)
+        calls.append(dict(kw, argv=list(argv)))
         return _Proc()
 
     monkeypatch.setattr(server, "spawn_owned", _spawn)
@@ -106,3 +106,51 @@ def test_a_session_without_a_worker_does_not_spawn_one(live_session):
     _set_cwd(tmp_path / "new")
 
     assert restarts == []
+
+
+def test_worker_argv_carries_the_session_cwd(spawned):
+    """The child must receive the project as ``--session-cwd`` so it can re-pin after its cli
+    import; off the local backend there is no project and the flag stays absent (review finding 7)."""
+    server._SlashWorker("sess", "", cwd="/tmp/proj")
+    argv = spawned[0]["argv"]
+    assert "--session-cwd" in argv, argv
+    assert argv[argv.index("--session-cwd") + 1] == "/tmp/proj"
+
+    server._SlashWorker("sess", "", cwd=None)
+    assert "--session-cwd" not in spawned[1]["argv"]
+
+
+def test_slash_worker_child_repins_the_session_cwd_after_the_cli_import(monkeypatch, tmp_path):
+    """Gate twin: the child's ``import cli`` runs the dotenv bridge, which re-applies an explicit
+    ``terminal.cwd`` from config.yaml and clobbers the spawn's ``TERMINAL_CWD`` pin; the child
+    must re-pin the session project afterwards or the MCP children it parents resolve to the
+    configured cwd instead of the session's project (review finding 7)."""
+    import sys
+    import types
+
+    import tui_gateway.slash_worker as sw
+
+    project, other = tmp_path / "proj", tmp_path / "other"
+    project.mkdir()
+    other.mkdir()
+
+    class _FakeCLI:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(HermesCLI=_FakeCLI))
+    monkeypatch.setattr(sw, "_prepare_slash_worker_runtime", lambda: None)
+    monkeypatch.setattr(sw.sys, "stdin", type("S", (), {"readline": lambda self: ""})())
+    # The bridge's damage, as the child finds its env after the import: the config's terminal.cwd won.
+    monkeypatch.setenv("TERMINAL_CWD", str(other))
+    monkeypatch.setattr(sys, "argv", ["slash_worker", "--session-key", "s",
+                                      "--session-cwd", str(project)])
+    from agent.runtime_cwd import clear_session_cwd, scoped_session_cwd
+    try:
+        sw.main()
+        assert os.environ["TERMINAL_CWD"] == str(project), \
+            "the cli import's terminal.cwd bridge clobbered the spawn pin and the child never re-pinned it"
+        assert scoped_session_cwd() == str(project), \
+            "the session cwd ContextVar was never pinned in the child"
+    finally:
+        clear_session_cwd()

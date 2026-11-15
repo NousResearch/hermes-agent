@@ -1016,7 +1016,9 @@ class StoreHolder:
         """Snapshot inode plus the on-disk generation header when present."""
         self._db_file_identity = _stat_db_file_identity(self.db_path)
         self._db_sidecar_identity = _stat_sqlite_sidecar_identity(self.db_path)
-        disk_id = _read_sqlite_application_id(self.db_path)
+        # A read-only holder asks its own connection: the raw header read caches a probe fd that
+        # outlives the holder and undoes a sweep that just released the home's probes.
+        disk_id = None if self.read_only else _read_sqlite_application_id(self.db_path)
         if disk_id:
             self._db_file_application_id = disk_id
         elif self._conn is not None and not self._db_file_application_id:

@@ -30,6 +30,17 @@ export interface ThemeColors {
   syntaxKeyword: string
   syntaxComment: string
 
+  /**
+   * Markdown element roles. Each defaults to `accent`, so a skin that only
+   * sets `ui_accent` renders exactly as before — but a skin CAN now colour
+   * headings differently from inline code / links / math, the way
+   * opencode's theme schema does (`markdownHeading` vs `markdownCode`).
+   */
+  markdownHeading: string
+  markdownCode: string
+  markdownLink: string
+  markdownMath: string
+
   prompt: string
   sessionLabel: string
   sessionBorder: string
@@ -349,6 +360,13 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
     syntaxNumber: seeds.text,
     syntaxKeyword: seeds.border ?? tones.border,
     syntaxComment: muted,
+
+    // Markdown element roles default to `accent` — the pre-split behaviour,
+    // so every existing skin renders identically until it opts in.
+    markdownHeading: seeds.accent,
+    markdownCode: seeds.accent,
+    markdownLink: seeds.accent,
+    markdownMath: seeds.accent,
 
     prompt: seeds.prompt ?? seeds.text,
     // sessionLabel/sessionBorder track the muted tone — "same role, same
@@ -837,6 +855,19 @@ export function skinIsLight(colors: SkinColors, env: NodeJS.ProcessEnv = process
   return authored === null ? detectLightMode(env) : authored >= LUMA_LIGHT_THRESHOLD
 }
 
+/**
+ * Markdown element roles: a skin may split them (opencode-style), and each
+ * falls back to the accent so an un-split skin renders identically.
+ */
+function markdownRoles(c: (k: string) => string | undefined, derived: ThemeColors) {
+  return {
+    markdownHeading: c('markdown_heading') ?? derived.markdownHeading,
+    markdownCode: c('markdown_code') ?? derived.markdownCode,
+    markdownLink: c('markdown_link') ?? derived.markdownLink,
+    markdownMath: c('markdown_math') ?? derived.markdownMath
+  }
+}
+
 export function fromSkin(
   colors: SkinColors,
   branding: SkinBranding,
@@ -929,7 +960,8 @@ export function fromSkin(
     syntaxString: c('syntax_string') ?? derived.syntaxString,
     syntaxNumber: c('syntax_number') ?? derived.syntaxNumber,
     syntaxKeyword: c('syntax_keyword') ?? derived.syntaxKeyword,
-    syntaxComment: c('syntax_comment') ?? c('banner_dim') ?? derived.syntaxComment
+    syntaxComment: c('syntax_comment') ?? c('banner_dim') ?? derived.syntaxComment,
+    ...markdownRoles(c, derived)
   }
 
   // 4. Guard: contrast floors against the real background + fill polarity.

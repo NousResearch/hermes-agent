@@ -2769,6 +2769,14 @@ class _StreamingCall(StreamingWaitMonitor):
         self._fire_first_delta()
         self.agent._fire_reasoning_delta(text)
 
+    def _registered_tool_name(self, wire_name: str) -> str:
+        """Anthropic OAuth routes send every tool as ``mcp__<name>``. Map a streamed wire name back to the
+        registered one, as ``normalize_response`` does, so the display and warnings show the real tool."""
+        from agent.transports.anthropic import _MCP_PREFIX, _unprefix_oauth_tool_name
+        if getattr(self.agent, "_is_anthropic_oauth", False) is True and wire_name.startswith(_MCP_PREFIX):
+            return _unprefix_oauth_tool_name(wire_name)
+        return wire_name
+
     def _emit_tool_started(self, name: str) -> None:
         self._fire_first_delta()
         self.agent._fire_tool_gen_started(name)
@@ -3369,10 +3377,11 @@ class _StreamingCall(StreamingWaitMonitor):
                     if block and getattr(block, "type", None) == "tool_use":
                         has_tool_use = True
                         if getattr(block, "name", None):
-                            self._emit_tool_started(block.name)
+                            tool_name = self._registered_tool_name(block.name)
+                            self._emit_tool_started(tool_name)
                             # Same as the chat_completions wire: a stream that dies inside the
                             # tool args is retried (no tool has run yet) instead of stubbed.
-                            self.result["partial_tool_names"].append(block.name)
+                            self.result["partial_tool_names"].append(tool_name)
                 elif event_type == "content_block_delta":
                     delta = getattr(event, "delta", None)
                     delta_type = getattr(delta, "type", None) if delta else None

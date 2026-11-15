@@ -508,6 +508,18 @@ class SignalAdapter(BasePlatformAdapter):
         logger.debug("Signal: message from %s in %s: %s", redact_phone(sender), chat_id[:20], (text or "")[:50])
         await self.handle_message(event)
 
+    def is_sender_owner(self, source) -> bool:
+        """Whether *source*'s sender is the owner: listed by explicit id in SIGNAL_ALLOWED_USERS
+        ("*" is open DM access, never an owner). A group sender is often only a UUID, so it resolves
+        to its phone via the number<->uuid cache. The gateway's ``_is_owner`` calls this per turn."""
+        owner_ids = {x for x in self.dm_allow_from if x and x != "*"}
+        sender, sender_uuid = getattr(source, "user_id", None) or "", getattr(source, "user_id_alt", None) or ""
+        if not owner_ids or not sender:
+            return False
+        sender_phone = sender if _looks_like_e164_number(sender) else (
+            self._recipient_number_by_uuid.get(sender_uuid or sender, ""))
+        return bool(owner_ids & ({sender, sender_uuid, sender_phone} - {""}))
+
     def _group_allowed(self, group_id: str) -> bool:
         """Group policy from SIGNAL_GROUP_ALLOWED_USERS: unset → groups disabled; IDs → only those
         groups; "*" → all. DM auth is run.py's (_is_user_authorized)."""
@@ -520,8 +532,10 @@ class SignalAdapter(BasePlatformAdapter):
         return True
 
     def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
-        """Cache any number↔UUID mapping observed from Signal envelopes."""
-        if number and service_id and _is_signal_service_id(service_id):
+        """Cache any number↔UUID mapping observed from Signal envelopes. A UUID-only envelope (the
+        sender's number is hidden) passes its UUID as ``number`` too; recording that would overwrite
+        the learned mapping with UUID→UUID, so it is skipped."""
+        if number and service_id and number != service_id and _is_signal_service_id(service_id):
             self._recipient_uuid_by_number[number] = service_id
             self._recipient_number_by_uuid[service_id] = number
 

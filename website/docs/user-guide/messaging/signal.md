@@ -156,6 +156,15 @@ signal:
 With `require_mention: true` (or `SIGNAL_REQUIRE_MENTION=true`) the bot answers a group message only
 when it @mentions the bot, replies to one of the bot's messages, or starts with a `/command`.
 
+### Owner Detection
+
+The sender listed by explicit number or UUID in `SIGNAL_ALLOWED_USERS` is the owner (`*` never makes
+anyone the owner), also in a group where Signal shows them only by UUID. The bot is told whether the
+sender is the owner: a session's context carries an `**Owner:** yes` or `**Owner:** no` line, and when
+group members share one session (`group_sessions_per_user: false`) the owner's messages carry a
+`[SYSTEM: sender NAME is the owner]` marker instead. Your persona (for example `SOUL.md`) can key
+owner-only behavior off either.
+
 ---
 
 ## Features

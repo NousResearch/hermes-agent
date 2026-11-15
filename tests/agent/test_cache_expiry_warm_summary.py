@@ -76,7 +76,7 @@ def test_cache_expiry_summary_request_extends_the_last_conversation_request(prov
     agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", model=MODEL, quiet_mode=True,
                     skip_context_files=True, skip_memory=True)
     agent._cached_system_prompt = "You are helpful."
-    agent.save_trajectories = agent.skip_background_review = True
+    agent.save_trajectories, agent.skip_background_review = False, True
     compressor = agent.context_compressor
     compressor.tail_mode, compressor.protect_first_n, compressor.protect_last_n = "legacy", 1, 2
     compressor._tail_token_budget = 600

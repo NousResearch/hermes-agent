@@ -29,6 +29,7 @@ import os
 import platform
 import re
 import socket
+import stat
 import time
 import zipfile
 from dataclasses import dataclass, field
@@ -130,7 +131,23 @@ def portable_config(raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """``(config, dropped_top_level_keys)``: machine-local sections and credential values removed."""
     dropped = sorted(k for k in raw if k in _MACHINE_LOCAL_CONFIG_KEYS or k.startswith("_"))
     kept = {k: v for k, v in raw.items() if k not in dropped}
+    if isinstance(kept.get("mcp_servers"), dict):
+        # The inventory lists these as staying behind; the config must agree or the cloud agent
+        # would try to launch a binary that only exists on this disk.
+        kept["mcp_servers"] = {name: spec for name, spec in kept["mcp_servers"].items()
+                               if _mcp_unportable_reason(spec) is None}
     return _scrub_secrets(kept), dropped
+
+
+def _mcp_unportable_reason(spec: Any) -> Optional[str]:
+    """Why an MCP server cannot run anywhere but this machine, or ``None`` when it can."""
+    spec = spec if isinstance(spec, dict) else {}
+    command = spec.get("command")
+    if spec.get("url"):
+        return None
+    if isinstance(command, str) and (command.startswith(("/", "~", ".")) or "\\" in command):
+        return "runs a program from this computer's disk"
+    return None if command else "has no url or command"
 
 
 def _mcp_inventory(raw: dict[str, Any]) -> list[dict[str, Any]]:
@@ -140,15 +157,10 @@ def _mcp_inventory(raw: dict[str, Any]) -> list[dict[str, Any]]:
         return []
     out = []
     for name, spec in sorted(servers.items()):
-        spec = spec if isinstance(spec, dict) else {}
-        url = spec.get("url")
-        command = spec.get("command")
-        local_path = isinstance(command, str) and (command.startswith(("/", "~", ".")) or "\\" in command)
+        reason = _mcp_unportable_reason(spec)
         out.append({
-            "name": str(name), "transport": "http" if url else "stdio",
-            "portable": bool(url) or (bool(command) and not local_path),
-            "reason": None if url or (command and not local_path) else
-                      "runs a program from this computer's disk" if local_path else "has no url or command",
+            "name": str(name), "transport": "http" if isinstance(spec, dict) and spec.get("url") else "stdio",
+            "portable": reason is None, "reason": reason,
         })
     return out
 
@@ -201,9 +213,10 @@ def keys_to_reenter(home: Path) -> list[dict[str, str]]:
 # --------------------------------------------------------------------------- secret values
 
 
-# auth.json fields that hold a credential value (``access_token``, ``api_key``, ``client_secret``…),
-# not the labels beside them (``secret_source``, ``key_id``, ``token_type``).
-_AUTH_SECRET_FIELD_RE = re.compile(r"(?i)(token|secret|api_?key|password|credential)$")
+# auth.json fields that are NOT credentials. Everything else long enough is treated as one: a new
+# provider's field name (``agent_key``…) must not have to match a pattern to be protected.
+_AUTH_NON_SECRET_FIELD_RE = re.compile(
+    r"(?i)(_at|_url|^(client_id|scope|token_type|label|source|secret_source|provider|auth_type|id|key_id))$")
 _AUTH_SECRET_MIN_LEN = 16
 _MIN_SECRET_LEN = 8
 
@@ -220,13 +233,15 @@ def _known_secret_values(home: Path) -> dict[str, str]:
         key, sep, value = line.strip().partition("=")
         key = key.removeprefix("export ").strip()
         value = value.strip().strip("\"'")
-        if sep and key and not key.startswith("#") and len(value) >= _MIN_SECRET_LEN and _SECRET_KEY_RE.search(key):
+        # .env holds secrets only, so every value is one whatever its name (FAL_KEY…); the length
+        # floor keeps flags like ``true`` from being redacted out of ordinary text.
+        if sep and key and not key.startswith("#") and len(value) >= _MIN_SECRET_LEN:
             values[value] = key
 
     def walk(node: Any, path: str) -> None:
         if isinstance(node, dict):
             for k, v in node.items():
-                if isinstance(v, str) and len(v) >= _AUTH_SECRET_MIN_LEN and _AUTH_SECRET_FIELD_RE.search(str(k)):
+                if isinstance(v, str) and len(v) >= _AUTH_SECRET_MIN_LEN and not _AUTH_NON_SECRET_FIELD_RE.search(str(k)):
                     values.setdefault(v, f"auth.json:{k}")
                 else:
                     walk(v, f"{path}.{k}")
@@ -417,6 +432,14 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _skill_member(name: str, path: Path) -> zipfile.ZipInfo:
+    """A zip entry carrying the file's permission bits, so a skill's scripts stay executable."""
+    info = zipfile.ZipInfo(name, time.localtime()[:6])
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = (stat.S_IMODE(path.stat().st_mode) & 0o777 | stat.S_IFREG) << 16
+    return info
+
+
 def build_bundle(home: Path, profile: str, out_path: Path, *, include_history: bool = True,
                  history_limit: int = HISTORY_DEFAULT_LIMIT, dry_run: bool = False) -> BundleReport:
     """Write the move bundle for ``home`` to ``out_path`` (or only inventory it with ``dry_run``)."""
@@ -453,30 +476,34 @@ def build_bundle(home: Path, profile: str, out_path: Path, *, include_history: b
     out_path.parent.mkdir(parents=True, exist_ok=True)
     partial = out_path.with_name(out_path.name + ".partial")
     red = _Redactor(_known_secret_values(home))
-    members: list[tuple[str, bytes]] = [
+    members: list[tuple[str | zipfile.ZipInfo, bytes]] = [
         ("config.yaml", red.text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True)).encode()),
     ]
     if report.has_soul and soul:
         members.append(("SOUL.md", red.text(soul).encode()))
     members += [(f"memories/{name}", red.text(text).encode()) for name, text in memory.items() if text]
     for rel, skill_dir, files in carried:
-        members += [(f"skills/{rel}/{path.relative_to(skill_dir).as_posix()}", red.data(path.read_bytes()))
-                    for path in files]
+        members += [(_skill_member(f"skills/{rel}/{path.relative_to(skill_dir).as_posix()}", path),
+                     red.data(path.read_bytes())) for path in files]
     if jobs:
         members.append(("cron/jobs.json", red.text(json.dumps({"jobs": jobs}, indent=2, ensure_ascii=False)).encode()))
     members += [(f"sessions/{index:04d}.json", red.text(json.dumps(session, ensure_ascii=False)).encode())
                 for index, session in enumerate(sessions)]
     report.redacted = dict(sorted(red.replaced.items()))
     manifest["inventory"]["redacted"] = report.redacted
-    with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2, ensure_ascii=False))
-        for name, data in members:
-            zf.writestr(name, data)
-    os.replace(partial, out_path)
+    # The bundle quotes the user's memory and transcripts: owner-only from the first byte, not
+    # chmod'd after the fact. A leftover partial is removed first so O_EXCL never inherits its mode.
+    partial.unlink(missing_ok=True)
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
     try:
-        os.chmod(out_path, 0o600)
-    except OSError:
-        pass
+        with os.fdopen(fd, "wb") as fh, zipfile.ZipFile(fh, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2, ensure_ascii=False))
+            for name, data in members:
+                zf.writestr(name, data)
+        os.replace(partial, out_path)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
     report.path, report.bytes, report.sha256 = out_path, out_path.stat().st_size, _sha256(out_path)
     return report
 

@@ -17,7 +17,6 @@ import tools.terminal_tool as terminal_module
 def test_wedged_lifecycle_probe_returns_bounded_error_without_running(monkeypatch):
     from tools import process_registry
 
-    monkeypatch.setattr(cet, "SANDBOX_AVAILABLE", True)
     monkeypatch.setattr(cet, "_load_config", lambda: {"timeout": 0.05})
     monkeypatch.setattr(terminal_module, "_PRE_EXEC_GUARD_MIN_TIMEOUT_S", 0)
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: time.sleep(1))

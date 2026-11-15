@@ -689,7 +689,7 @@ class WebhookAdapter(BasePlatformAdapter):
         from gateway.platforms.webhook_coalesce_recovery import ingress_revision
         route_config = deepcopy(route_config)
         revision = (ingress_revision(self, route_name, route_config, profile, _header_delivery_id(request.headers))
-                    if route_config and isinstance(route_config.get('coalesce'), dict) else None)
+                    if route_config else None)
         if error_response is None:
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
         if error_response is not None:
@@ -743,36 +743,10 @@ class WebhookAdapter(BasePlatformAdapter):
             # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
             if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)
-        now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
-        delivery_identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
-        coalesce = route_config.get("coalesce")
-        from gateway.platforms.webhook_coalesce_recovery import prior_coalesced
-        try:
-            if await prior_coalesced(self._coalescer, profile, route_name, delivery_id):
-                return web.json_response({'status': 'duplicate', 'delivery_id': delivery_id}, status=200)
-        except Exception:
-            logger.exception('[webhook] Coalesced receipt lookup unavailable')
-            return _json_error('Receipt lookup unavailable; retry this delivery', 503)
-        # Direct-send and cron routes retain their existing replay policy. Coalesced agent work
-        # has its own durable pending records; ordinary agent work uses the admission ledger.
-        non_durable = bool(route_config.get("deliver_only") or route_config.get("cron_job"))
-        if non_durable and not self._record_delivery_id(delivery_identity, now):
-            logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
-            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
-        if route_config.get("cron_job"):
-            return self._handle_cron_trigger(prompt, route_config, route_name, event_type, delivery_id, profile)
-        if route_config.get("deliver_only"):
-            return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id,
-                                                   profile)
-        if isinstance(coalesce, dict):
-            from gateway.platforms.webhook_coalesce_recovery import accept_coalesced
-            response = await accept_coalesced(self._coalescer, route_name=route_name, coalesce=coalesce,
-                payload=payload, event_type=event_type, prompt=prompt, delivery_id=delivery_id, profile=profile,
-                revision=revision)
-            if response is not None:
-                return response
-        return await self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
-                                        delivery_id, now)
+        from gateway.platforms.webhook_coalesce_ingress import dispatch_received
+        return await dispatch_received(self, request=request, route_config=route_config, route_name=route_name,
+            profile=profile, payload=payload, prompt=prompt, event_type=event_type, delivery_id=delivery_id,
+            revision=revision)
 
     async def _dispatch_agent_run(self, request, route_config: dict, route_name: str, profile, payload: Any, prompt: str,
                             event_type: str, delivery_id: str, now: float) -> web.Response:

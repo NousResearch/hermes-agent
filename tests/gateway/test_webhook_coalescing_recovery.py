@@ -207,10 +207,24 @@ async def test_binding_is_checked_in_actual_producer_snapshot(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_authenticated_route_cannot_change_while_reading_body(monkeypatch):
+@pytest.mark.parametrize('mode', ['coalesce', 'agent', 'direct', 'cron'])
+async def test_authenticated_route_cannot_change_while_reading_body(monkeypatch, mode):
+    from aiohttp import web
     route = _coalesce_route(key='pull_request.number', window_seconds=60)
+    if mode != 'coalesce':
+        route.pop('coalesce')
+    if mode == 'direct':
+        route['deliver_only'] = True
+    elif mode == 'cron':
+        route['cron_job'] = 'example'
     adapter = _make_adapter(routes={'pr': route})
     _capture_admissions(adapter, monkeypatch)
+
+    async def delivered(*args):
+        return web.json_response({'status': 'accepted'}, status=202)
+
+    monkeypatch.setattr(adapter, '_handle_deliver_only', delivered)
+    monkeypatch.setattr(adapter, '_handle_cron_trigger', lambda *args: web.json_response({}, status=202))
     request = _mock_request(_payload(7), delivery_id='auth-race')
 
     async def changed_during_read():
@@ -270,3 +284,151 @@ def test_future_schema_is_refused_without_downgrading(tmp_path):
         store.accept('id', 'group', {}, 1, 2)
     with sqlite3.connect(str(store.path)) as conn:
         assert conn.execute('PRAGMA user_version').fetchone()[0] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancel_flush', [False, True])
+async def test_flush_joins_cancelled_physical_handoff(monkeypatch, cancel_flush):
+    import threading
+    from agent.async_utils import drain_thread
+    from gateway.platforms import webhook_coalesce_recovery as recovery
+
+    adapter = _make_adapter(routes={'pr': _coalesce_route()})
+    coalescer = adapter._coalescer
+    coalescer.store.path.touch()
+    monkeypatch.setattr(coalescer.store, 'schedule', list)
+    loop = asyncio.get_running_loop()
+    entered, at_wait = asyncio.Event(), asyncio.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def physical():
+        loop.call_soon_threadsafe(entered.set)
+        release.wait()
+        finished.set()
+
+    async def handoff():
+        await drain_thread(physical)
+
+    task = asyncio.create_task(handoff())
+    coalescer._inflight['held'] = task
+    await asyncio.wait_for(entered.wait(), 2)
+    real_wait = asyncio.wait
+
+    async def controlled_wait(tasks, *, timeout):
+        at_wait.set()
+        if cancel_flush:
+            return await real_wait(tasks, timeout=timeout)
+        return set(), set(tasks)
+
+    monkeypatch.setattr(recovery.asyncio, 'wait', controlled_wait)
+    flush = asyncio.create_task(coalescer.flush())
+    try:
+        await asyncio.wait_for(at_wait.wait(), 2)
+        if cancel_flush:
+            flush.cancel()
+            flush.cancel()
+        await async_wait_until(lambda: task.cancelling() or flush.done(), timeout=2, what='handoff cancellation')
+        assert not flush.done()
+        assert not finished.is_set()
+        assert coalescer._closed
+    finally:
+        release.set()
+        result = await asyncio.gather(flush, return_exceptions=True)
+        await asyncio.gather(task, return_exceptions=True)
+    assert finished.is_set()
+    assert isinstance(result[0], asyncio.CancelledError) if cancel_flush else result[0] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('other_mode', ['agent', 'direct', 'cron'])
+@pytest.mark.parametrize('coalesced_first', [False, True])
+@pytest.mark.parametrize('cancel_first', [False, True])
+async def test_mode_change_serializes_delivery_until_physical_completion(
+        monkeypatch, other_mode, coalesced_first, cancel_first):
+    import threading
+    from aiohttp import web
+    from gateway.platforms import webhook_coalesce_ingress as ingress
+
+    route = _coalesce_route(key='pull_request.number', window_seconds=60)
+    coalesce = route.pop('coalesce')
+
+    def set_mode(coalesced):
+        route.pop('coalesce', None)
+        route.pop('deliver_only', None)
+        route.pop('cron_job', None)
+        if coalesced:
+            route['coalesce'] = coalesce
+        elif other_mode == 'direct':
+            route['deliver_only'] = True
+        elif other_mode == 'cron':
+            route['cron_job'] = 'example'
+
+    set_mode(coalesced_first)
+    adapter = _make_adapter(routes={'pr': route})
+    _capture_admissions(adapter, monkeypatch)
+    loop = asyncio.get_running_loop()
+    entered, release_async = asyncio.Event(), asyncio.Event()
+    release_thread = threading.Event()
+    calls = []
+
+    def dispatched(*args, **kwargs):
+        calls.append(other_mode)
+        return web.json_response({'status': 'accepted'}, status=202)
+
+    async def dispatched_async(*args, **kwargs):
+        return dispatched()
+
+    monkeypatch.setattr(adapter, '_handle_cron_trigger', dispatched)
+    monkeypatch.setattr(adapter, '_handle_deliver_only', dispatched_async)
+    monkeypatch.setattr(adapter, '_dispatch_agent_run', dispatched_async)
+    original_accept = adapter._coalescer.store.accept
+    original_seen = ingress.prior_coalesced
+
+    def held_accept(*args):
+        loop.call_soon_threadsafe(entered.set)
+        assert release_thread.wait(5), 'test failed to release physical acceptance'
+        return original_accept(*args)
+
+    async def held_seen(*args):
+        entered.set()
+        await release_async.wait()
+        return await original_seen(*args)
+
+    if coalesced_first:
+        monkeypatch.setattr(adapter._coalescer.store, 'accept', held_accept)
+    else:
+        monkeypatch.setattr(ingress, 'prior_coalesced', held_seen)
+    request = lambda: _mock_request(_payload(7), delivery_id='mode-race')
+    first = asyncio.create_task(adapter._handle_webhook(request()))
+    second = None
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        set_mode(not coalesced_first)
+        second = asyncio.create_task(adapter._handle_webhook(request()))
+        await async_wait_until(lambda: any(entry[1] == 2 for entry in adapter._coalescer.delivery_turns.values())
+                               or second.done(), timeout=2, what='same-delivery waiter')
+        if cancel_first:
+            first.cancel()
+            first.cancel()
+        assert not second.done()
+        release_thread.set()
+        release_async.set()
+        result, = await asyncio.gather(first, return_exceptions=True)
+        if cancel_first:
+            assert isinstance(result, asyncio.CancelledError)
+        else:
+            assert not isinstance(result, BaseException) and result.status == 202
+        retry = await asyncio.wait_for(second, 2)
+        assert retry.status == 200 and json.loads(retry.text)['status'] == 'duplicate'
+        assert calls == ([] if coalesced_first else [other_mode])
+        assert adapter._coalescer.delivery_turns == {}
+        rows = await asyncio.to_thread(adapter._coalescer.store.pending) if coalesced_first else []
+        assert len(rows) == (1 if coalesced_first else 0)
+        if not coalesced_first:
+            assert not adapter._coalescer.store.path.exists()
+    finally:
+        release_thread.set()
+        release_async.set()
+        await asyncio.gather(*[task for task in (first, second) if task is not None], return_exceptions=True)
+        await adapter.disconnect()

@@ -27,6 +27,7 @@ class DurableWebhookCoalescer:
         self._changed = asyncio.Event()
         self._worker = None
         self._inflight = {}
+        self.delivery_turns = {}
         self._closed = False
 
     async def binding(self, route_name, profile, delivery_id, payload):
@@ -154,25 +155,53 @@ class DurableWebhookCoalescer:
 
     async def flush(self):
         self._closed = True
-        if self._worker is not None:
-            self._worker.cancel()
-            await asyncio.gather(self._worker, return_exceptions=True)
-        if not self.store.path.exists():
-            return
-        # The two-second limit bounds handoff waits, not physical SQLite I/O above/below.
+        owner = asyncio.create_task(self._flush_closed())
+        cancelled = None
+        while True:
+            try:
+                await asyncio.shield(owner)
+                break
+            except asyncio.CancelledError as exc:
+                if owner.cancelled():
+                    raise
+                if cancelled is None:
+                    cancelled = exc
+                    # Let a newly created owner enter its try/finally before cancelling it.
+                    asyncio.get_running_loop().call_soon(owner.cancel)
+            except Exception:
+                if cancelled is not None:
+                    raise cancelled
+                raise
+        if cancelled is not None:
+            raise cancelled
+
+    async def _flush_closed(self):
         try:
-            rows = await drain_thread(self.store.schedule)
-        except Exception:
-            logger.exception('[webhook] Flush storage unavailable; pending work retained')
-            return
-        for row in rows:
-            if row['id'] not in self._inflight and len(self._inflight) < MAX_HANDOFFS:
-                self._launch(row['id'], flush=True)
-        tasks = list(self._inflight.values())
-        if tasks:
-            _, pending = await asyncio.wait(tasks, timeout=2)
-            for task in pending:
+            if self._worker is not None:
+                self._worker.cancel()
+                await asyncio.gather(self._worker, return_exceptions=True)
+            if not self.store.path.exists():
+                return
+            # The logical limit does not bound cancellation-safe physical SQLite I/O.
+            try:
+                rows = await drain_thread(self.store.schedule)
+            except Exception:
+                logger.exception('[webhook] Flush storage unavailable; pending work retained')
+                return
+            for row in rows:
+                if row['id'] not in self._inflight and len(self._inflight) < MAX_HANDOFFS:
+                    self._launch(row['id'], flush=True)
+            tasks = list(self._inflight.values())
+            if tasks:
+                await asyncio.wait(tasks, timeout=2)
+        finally:
+            tasks = list(self._inflight.values())
+            if self._worker is not None:
+                tasks.append(self._worker)
+            for task in tasks:
                 task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def ingress_revision(adapter, route_name, route, profile, delivery_id):

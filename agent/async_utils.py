@@ -52,7 +52,11 @@ def consume_detached_task_result(task: asyncio.Future[Any]) -> None:
 
 async def drain_thread(operation, *args):
     """Keep the caller's I/O ownership until its physical operation ends, even after cancellation."""
-    pending = asyncio.create_task(asyncio.to_thread(operation, *args))
+    return await drain_task(asyncio.create_task(asyncio.to_thread(operation, *args)))
+
+
+async def drain_task(pending):
+    """Retain ownership of an already-started task until it finishes, then propagate cancellation."""
     cancelled = None
     while True:
         try:

@@ -767,7 +767,7 @@ class LineAdapter(BasePlatformAdapter):
         try:
             from hermes_constants import get_hermes_home
             base = Path(get_hermes_home())
-        except Exception:
+        except ImportError:
             base = Path.home().joinpath(".hermes")
         return str(base / "data" / "line" / "media_tokens.json")
 
@@ -782,11 +782,11 @@ class LineAdapter(BasePlatformAdapter):
         if not path:
             return
         try:
-            with open(path, encoding="utf-8") as f:
+            with open(path, encoding="utf-8-sig") as f:
                 raw = json.load(f)
         except FileNotFoundError:
             return
-        except Exception:
+        except (OSError, ValueError):
             logger.debug("LINE: could not read media token registry", exc_info=True)
             return
         entries = raw.get("tokens") if isinstance(raw, dict) else None
@@ -794,10 +794,9 @@ class LineAdapter(BasePlatformAdapter):
             return
         restored = 0
         for token, meta in entries.items():
-            try:
-                file_path = str(meta["path"])
-            except Exception:
+            if not isinstance(meta, dict) or "path" not in meta:
                 continue
+            file_path = str(meta["path"])
             if not Path(file_path).is_file():
                 continue
             # expires_at is kept for backward compat with older registry files
@@ -929,6 +928,25 @@ class LineAdapter(BasePlatformAdapter):
         content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         return web.FileResponse(path, headers={"Content-Type": content_type})
 
+    @staticmethod
+    def _media_path_allowed(resolved: Path) -> bool:
+        """Is ``resolved`` inside an allowed root? (tempdir, /tmp, HERMES_HOME).
+
+        Synchronous on purpose — the caller runs it via ``asyncio.to_thread`` so
+        the blocking path calls stay off the event loop.
+        """
+        try:
+            from hermes_constants import get_hermes_home
+            hermes_home = Path(get_hermes_home()).resolve()
+        except ImportError:
+            hermes_home = Path.home().joinpath(".hermes").resolve()
+        allowed_roots = (
+            Path(tempfile.gettempdir()).resolve(),
+            Path("/tmp").resolve(),  # no-tmp: ok — macOS /private/tmp alias in the allowed-roots check, not a write target
+            hermes_home,
+        )
+        return any(resolved.is_relative_to(r) for r in allowed_roots)
+
     async def _handle_media_publish(self, request) -> Any:
         """Publish a local file for an out-of-process sender (standalone cron lane).
 
@@ -955,23 +973,18 @@ class LineAdapter(BasePlatformAdapter):
 
         try:
             body = await request.json()
-        except Exception:
+        except (ValueError, TypeError):
             return web.Response(status=400, text="bad request")
         path = (body or {}).get("path") or ""
         if not path:
             return web.Response(status=400, text="missing path")
         target = Path(path)
-        if not target.is_file():
+        # Path stat/resolve are blocking calls — keep them off the event loop.
+        if not await asyncio.to_thread(target.is_file):
             return web.Response(status=404, text="not found")
         # Same allow-roots rule as _handle_media (defence in depth).
-        try:
-            from hermes_constants import get_hermes_home
-            hermes_home = Path(get_hermes_home()).resolve()
-        except Exception:
-            hermes_home = Path.home().joinpath(".hermes").resolve()
-        resolved = target.resolve()
-        if not any(resolved.is_relative_to(r) for r in (
-                Path(tempfile.gettempdir()).resolve(), Path("/tmp").resolve(), hermes_home)):
+        resolved = await asyncio.to_thread(target.resolve)
+        if not await asyncio.to_thread(self._media_path_allowed, resolved):
             return web.Response(status=403, text="forbidden")
 
         url = self._serve_file(target)
@@ -1215,17 +1228,19 @@ async def _standalone_publish_media(media_files: list[str]) -> Optional[dict[str
     Returns None when the gateway cannot be reached — the caller then falls back
     to a plain-text notice rather than dropping the attachment silently.
     """
-    paths = [p for p in (media_files or []) if p and os.path.isfile(p)]
+    paths = [p for p in (media_files or []) if p and await asyncio.to_thread(os.path.isfile, p)]
     if not paths:
         return None
     try:
         from gateway.media_publish import publish_media_file
-    except Exception:
+    except ImportError:
         return None
     try:
-        published = publish_media_file(paths[0])
-    except Exception:
-        logger.warning("LINE: standalone media publish failed", exc_info=True)
+        published = await asyncio.to_thread(publish_media_file, paths[0])
+    except Exception as exc:
+        logger.warning(
+            "LINE: standalone media publish failed: %s", exc, exc_info=True
+        )
         return None
     if not isinstance(published, dict):
         return None

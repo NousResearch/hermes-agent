@@ -41,16 +41,20 @@ _TIMEOUT_SECONDS = 10
 
 def _line_secret() -> str:
     """The LINE channel secret, used as the bearer credential for the publish endpoint."""
-    secret = os.environ.get("LINE_CHANNEL_SECRET", "").strip()
+    try:
+        from gateway.platforms._shared import get_scoped_secret
+        secret = str(get_scoped_secret("LINE_CHANNEL_SECRET", "") or "").strip()
+    except ImportError:
+        secret = ""
     if secret:
         return secret
     try:
         from hermes_constants import get_hermes_home
         env_path = os.path.join(str(get_hermes_home()), ".env")
-    except Exception:
-        env_path = os.path.expanduser("~/.hermes/.env")
+    except ImportError:
+        env_path = os.path.expanduser("~/.hermes/.env")  # health: allow HX001 -- fallback when hermes_constants is unavailable; the profile home is the default location
     try:
-        with open(env_path, encoding="utf-8") as f:
+        with open(env_path, encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if line.startswith("LINE_CHANNEL_SECRET="):
@@ -61,7 +65,12 @@ def _line_secret() -> str:
 
 
 def _local_base() -> str:
-    return os.environ.get("LINE_LOCAL_BASE", DEFAULT_LOCAL_BASE).rstrip("/")
+    try:
+        from gateway.platforms._shared import get_scoped_secret
+        scoped = str(get_scoped_secret("LINE_LOCAL_BASE", "") or "")
+    except ImportError:
+        scoped = ""
+    return (scoped or os.environ.get("LINE_LOCAL_BASE", DEFAULT_LOCAL_BASE)).rstrip("/")
 
 
 def publish_media_file(path: str, timeout: float = _TIMEOUT_SECONDS):
@@ -96,10 +105,10 @@ def publish_media_file(path: str, timeout: float = _TIMEOUT_SECONDS):
     except urllib.error.HTTPError as exc:
         try:
             detail = exc.read().decode("utf-8", "ignore")[:200]
-        except Exception:
+        except (OSError, ValueError):
             detail = ""
         raise RuntimeError(f"media publish HTTP {exc.code}: {detail}") from exc
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         raise RuntimeError(f"media publish failed: {exc}") from exc
 
 

@@ -102,10 +102,11 @@ _USER_SENSITIVE_WRITE_TARGET = rf'(?:{_SSH_SENSITIVE_PATH}|{_SHELL_RC_FILES}|{_C
 # like `mkdir -p /etc/apt/keyrings` would be mislabelled as credential/SSH/shell-rc writes.
 _HOME_SENSITIVE_WRITE_TARGET = rf'(?:{_USER_SENSITIVE_WRITE_TARGET}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH})'
 # Same set for touch/mkdir/ln, but a named FILE must end the shell word: `ln -s a ~/.bashrc.bak` /
-# `touch ~/.bashrc.d/x` name a sibling, not the startup or credential file (`~/.ssh/` is a directory: any entry).
+# `touch ~/.bashrc.d/x` name a sibling, not the startup or credential file (`~/.ssh/` is a directory: any entry;
+# a bare `~/.ssh` operand anywhere in the command names the directory itself, `~/.sshx` does not).
 # A glued redirect (`touch ~/.bashrc>/dev/null`) ends the word too; the ln rule also allows trailing redirects.
 _HOME_SENSITIVE_CREATE_TARGET = (
-    rf'(?:{_SSH_SENSITIVE_PATH}|(?:{_SHELL_RC_FILES}|{_CREDENTIAL_FILES}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH})'
+    rf'(?:{_SSH_SENSITIVE_PATH}|(?:{_HOME_PREFIX}\.ssh|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH})'
     r'(?=["\'\s;&|)`<>]|$))'
 )
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'

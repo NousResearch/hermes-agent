@@ -44,7 +44,7 @@ def escape(value: str) -> str:
 
 
 def process(path: str, alt: str, hint: str, check_only: bool) -> bool:
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:
         src = f.read()
     if "    document:\n" in src and "attachment_alt" in src:
         print(f"  = {os.path.basename(path):<16} 已有 document key，略過")

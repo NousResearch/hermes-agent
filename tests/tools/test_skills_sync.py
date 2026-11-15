@@ -717,6 +717,33 @@ class TestSymlinkedCategoryDiagnostic:
             assert not result["relocated"], "hub content or symlinked copy was moved"
             assert dir_hash(hub_dir) == origin_hash, "hub install was mutated"
 
+    def test_recovery_never_relocates_a_hub_install_reached_by_a_real_path(self, tmp_path, capsys):
+        """A hub install whose lock names a symlinked path still owns the real directory: the
+        relocation loop and the visible-copy guard must both apply inode ownership, or the
+        copy would be moved through its visible real path."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        real_dir = self._skill(skills_dir, "realarea/hub-skill", name="hub-skill")
+        origin_hash = dir_hash(real_dir)
+        manifest_file.write_text(f"hub-skill:{origin_hash}\n")
+        # The lock addresses the same directory through a symlinked category.
+        (skills_dir / "alias").symlink_to(skills_dir / "realarea", target_is_directory=True)
+        lock = skills_dir / ".hub" / "lock.json"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(json.dumps(
+            {"version": 1, "installed": {"hub-skill": {"install_path": "alias/hub-skill"}}}))
+        self._skill(bundled, "web/hub-skill", name="hub-skill", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=False)
+
+        assert "hub-skill" not in result["relocated"], "hub-managed copy was relocated by real-path alias"
+        assert not result["relocation_warnings"], "a visible hub install is not stranded"
+        assert dir_hash(real_dir) == origin_hash, "hub content was mutated"
+        assert real_dir.is_dir(), "the visible copy was moved away"
+
     def test_hub_owned_match_does_not_hide_a_later_non_hub_copy(self, tmp_path, capsys):
         """Hub ownership attaches to the install PATH, not to every copy of the identity:
         a hub-owned match must be skipped, not end the search — a non-hub copy later in the

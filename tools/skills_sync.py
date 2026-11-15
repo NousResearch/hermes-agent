@@ -313,17 +313,10 @@ def _warn_invisible_renamed_copy(st: "_SyncState", skill_name: str, dest: Path, 
             rel = _rel_skills_posix(md.parent)
         except ValueError:
             continue
-        if rel in st.hub_paths:
-            # The hub owns THIS install path, not every copy of the identity — skip it and
-            # keep searching: a later non-hub copy still deserves its warning.
-            continue
-        try:
-            info = md.parent.stat()
-        except OSError:
-            info = None
-        if info and (info.st_dev, info.st_ino) in st.hub_inodes:
-            # Alias of a hub-installed directory: whichever symlink reached the inode first,
-            # the content is hub-managed — silence must not depend on traversal order.
+        if _hub_owned(st, md.parent, rel):
+            # The hub owns this copy (install path or inode alias) but not every copy of the
+            # identity — skip it and keep searching: a later non-hub copy still deserves its
+            # warning, order-independently.
             continue
         if not _reached_through_category_symlink(md.parent):
             # A plain visible directory is not the stranding scenario — the label
@@ -378,6 +371,19 @@ def _ensure_recovery_index(st: "_SyncState") -> dict[str, list[Path]]:
     return st.active_index
 
 
+def _hub_owned(st: "_SyncState", directory: Path, rel: str) -> bool:
+    """True when a copy is hub-managed: by install-path string or by real-directory inode (a
+    hub install reached through an alias path is still the hub's). Applied consistently by
+    the diagnostic, the relocation loop, and the visible-copy guard."""
+    if rel in st.hub_paths:
+        return True
+    try:
+        info = directory.stat()
+    except OSError:
+        return False
+    return (info.st_dev, info.st_ino) in st.hub_inodes
+
+
 def _visible_non_hub_copy(skill_name: str, dest: Path, active_index: dict[str, list[Path]], st: "_SyncState") -> bool:
     """True when a visible copy exists that recovery could actually act on. A hub-owned
     install path is visible but untouchable — it must not suppress the read-only diagnostic
@@ -389,7 +395,7 @@ def _visible_non_hub_copy(skill_name: str, dest: Path, active_index: dict[str, l
             rel = _rel_skills_posix(candidate)
         except ValueError:
             continue
-        if rel not in st.hub_paths:
+        if not _hub_owned(st, candidate, rel):
             return True
     return False
 
@@ -414,7 +420,7 @@ def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Opt
             rel = _rel_skills_posix(candidate)
         except ValueError:
             continue
-        if rel in st.hub_paths:  # the hub owns its install paths
+        if _hub_owned(st, candidate, rel):  # the hub owns its install paths, aliases included
             continue
         if not _matches_origin_hash(candidate, origin_hash):  # moving a customized copy would edit user work
             st.say(

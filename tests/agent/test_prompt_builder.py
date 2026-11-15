@@ -461,21 +461,24 @@ class TestBuildContextFilesPrompt:
         assert "Never give up" not in result
         assert result == ""
 
-    def test_deleted_default_cwd_skips_project_context_and_loads_soul(self, monkeypatch, tmp_path, caplog):
-        """Regression for #138780: a deleted launch directory must not abort prompt assembly."""
+    @pytest.mark.platforms("linux", "macos")
+    def test_deleted_launch_dir_skips_project_context_and_loads_soul(self, monkeypatch, tmp_path):
+        """A Kanban worker's workspace is removed under it (#138015): the prompt rebuild and the
+        /context manifest must skip project context, not raise from os.getcwd()."""
+        from agent.context_file_sources import list_context_file_sources
+
         home = tmp_path / "hermes_home"
         home.mkdir()
         (home / "SOUL.md").write_text("Keep responses concise.", encoding="utf-8")
+        doomed = tmp_path / "workspace"
+        doomed.mkdir()
+        (doomed / "AGENTS.md").write_text("project rules", encoding="utf-8")
+        monkeypatch.chdir(doomed)
+        doomed.joinpath("AGENTS.md").unlink()
+        doomed.rmdir()
 
-        def deleted_cwd():
-            raise FileNotFoundError("working directory was deleted")
-
-        monkeypatch.setattr("agent.prompt_builder.os.getcwd", deleted_cwd)
-        with caplog.at_level(logging.WARNING):
-            result = build_context_files_prompt(home_override=home)
-
-        assert "Keep responses concise." in result
-        assert "skipping project-context discovery" in caplog.text
+        assert "Keep responses concise." in build_context_files_prompt(home_override=home)
+        assert [s["label"] for s in list_context_file_sources(home_override=home)] == ["SOUL.md"]
 
 
 

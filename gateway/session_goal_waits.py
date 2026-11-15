@@ -195,7 +195,8 @@ async def pause_route(runner, route):
             state.status, state.paused_reason = 'paused', 'stop_command'
             state.clear_wait()
             persist_state(conn, target, state)
-    await tracked_write(authority, partial(authority.db._execute_write, authority._admission_gate(write)), ordered=True)
+    # Stop controls existing work during drain; only the owning epoch may write its pause.
+    await tracked_write(authority, partial(authority.db._execute_write, write), ordered=True)
 
 
 async def claim(authority, ref, live, first):

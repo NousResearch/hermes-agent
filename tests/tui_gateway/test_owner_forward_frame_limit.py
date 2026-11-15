@@ -92,7 +92,6 @@ def test_the_forward_and_client_paths_share_one_frame_bound(monkeypatch):
     async def fake_connect(url, **kwargs):
         seen.update(kwargs)
         yield SimpleNamespace(subprotocol=gateway_client.GATEWAY_WS_PROTOCOL)
-        return
 
     import websockets.asyncio.client as ws_client
     monkeypatch.setattr(ws_client, "connect", fake_connect)
@@ -100,7 +99,7 @@ def test_the_forward_and_client_paths_share_one_frame_bound(monkeypatch):
 
     async def dial():
         async with owner_forward.connect_owner(Path("."), SimpleNamespace(api_origin="http://127.0.0.1:1")):
-            return None
+            pass
 
     asyncio.run(dial())
     assert seen["max_size"] == bound
@@ -129,7 +128,7 @@ def test_an_explicit_frame_bound_is_honoured(tmp_path, monkeypatch):
     async def call():
         async with owner_forward.connect_owner(Path(tmp_path), SimpleNamespace(api_origin="http://127.0.0.1:1"),
                                                scope="host", max_size=expected):
-            return None
+            pass
 
     asyncio.run(call())
     assert seen["max_size"] == expected

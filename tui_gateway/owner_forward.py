@@ -76,7 +76,7 @@ def discover_owner(home: Path):
 
 
 @contextlib.asynccontextmanager
-async def connect_owner(home: Path, endpoint, *, scope=None, max_size: int = None):
+async def connect_owner(home: Path, endpoint, *, scope=None, max_size: int | None = None):
     """A ``GatewayClient`` on ``endpoint``, the ready gateway serving ``home``; ``scope``: the
     ticket's profile scope (``"host"``: the one native Desktop holds); ``max_size``: the largest
     answer frame accepted (the client path's bound: a forwarded prompt's answer carries the

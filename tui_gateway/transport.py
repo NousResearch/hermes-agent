@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import threading
-from typing import Any, Callable, Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Collection, Optional, Protocol, runtime_checkable
 
 # Errno values that mean "the peer is gone" rather than "the host has a real I/O problem". Anything
 # outside this set re-raises so it surfaces in the crash log instead of looking like a clean disconnect.
@@ -159,9 +159,10 @@ class FanoutTransport:
     _MAX_PENDING_FRAMES = 16384
     _MAX_PENDING_BYTES = 4 * 1024 * 1024
 
-    def __init__(self, *transports: Transport) -> None:
+    def __init__(self, *transports: Transport, coalesce_events: bool = False) -> None:
         self._lock = threading.Lock()
         self._peers: list[_FanoutPeer] = []
+        self._coalesce_events = coalesce_events
         for transport in transports:
             self.attach(transport)
 
@@ -202,9 +203,21 @@ class FanoutTransport:
                     return attached
         return False
 
-    def contains(self, transport: Transport) -> bool:
+    def contains(self, transport: object) -> bool:
         with self._lock:
             return any(peer.attached and peer.transport is transport for peer in self._peers)
+
+    def __contains__(self, transport: object) -> bool:
+        return self.contains(transport)
+
+    def __bool__(self) -> bool:
+        return self.has_transports()
+
+    def __iter__(self):
+        return iter(self.transports())
+
+    def clear(self) -> None:
+        self.close()
 
     def transports(self) -> list[Transport]:
         with self._lock:
@@ -281,7 +294,13 @@ class FanoutTransport:
         except Exception:
             logger.debug("fanout overflow close failed; membership already dropped", exc_info=True)
 
-    def write(self, obj: dict, *, overflow: Callable[[Transport], Optional[dict]] | None = None) -> bool:
+    def write(
+        self,
+        obj: dict,
+        *,
+        overflow: Callable[[Transport], Optional[dict]] | None = None,
+        skip: Collection[Transport] = (),
+    ) -> bool:
         """Fan *obj* out. A peer whose bounded backlog is full loses its subscription; *overflow*
         (called with its transport, under the membership lock) may return one final frame that
         replaces the dropped backlog, so a socket that is still healthy learns it must resume
@@ -295,8 +314,20 @@ class FanoutTransport:
         overflowed: list[Transport] = []
         with self._lock:
             for peer in list(self._peers):
-                if not peer.attached:
+                if not peer.attached or peer.transport in skip:
                     continue
+                if self._coalesce_events:
+                    params = frame.get("params") if isinstance(frame, dict) else None
+                    event_type = params.get("type") if isinstance(params, dict) else None
+                    # Only full-state invalidations may replace pending events.
+                    # In particular, distinct session.reclaimed payloads must survive.
+                    if event_type in {"sessions.changed", "skin.changed"}:
+                        for index, (pending_frame, pending_size) in enumerate(peer.pending):
+                            pending_params = pending_frame.get("params") if isinstance(pending_frame, dict) else None
+                            if isinstance(pending_params, dict) and pending_params.get("type") == event_type:
+                                del peer.pending[index]
+                                peer.pending_bytes -= pending_size
+                                break
                 if (len(peer.pending) >= self._MAX_PENDING_FRAMES
                         or peer.pending_bytes + size > self._MAX_PENDING_BYTES):
                     logger.warning("fanout subscriber backlog full; detaching peer")

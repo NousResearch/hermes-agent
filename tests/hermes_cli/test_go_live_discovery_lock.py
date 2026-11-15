@@ -88,6 +88,29 @@ def test_go_live_snapshot_belongs_to_its_forced_pass(monkeypatch):
     assert result["live_now"] == {"mcp_servers": [{"generation": 1}], "skills": ["1"]}
 
 
+@pytest.mark.parametrize("snapshot_fails", [True, False])
+def test_summary_failure_preserves_snapshot_exception_precedence(monkeypatch, snapshot_fails):
+    manager = plugins.PluginManager()
+    monkeypatch.setattr(manager, "_discover_and_load_inner", lambda: None)
+    monkeypatch.setattr(manager, "_refresh_secret_sources_after_discovery", lambda: None)
+    snapshot_error = RuntimeError("snapshot failed")
+    summary_error = ValueError("summary failed")
+
+    def snapshot():
+        if snapshot_fails:
+            raise snapshot_error
+
+    def summaries(_):
+        raise summary_error
+
+    monkeypatch.setattr(plugins_activation, "activation_summaries", summaries)
+    manager.on_plugin_loaded(lambda _: None)
+    with pytest.raises(RuntimeError if snapshot_fails else ValueError) as caught:
+        manager.discover_and_load(snapshot=snapshot)
+    assert caught.value is (snapshot_error if snapshot_fails else summary_error)
+    assert manager._discovered
+
+
 def test_snapshot_failure_still_notifies_outside_lock(monkeypatch):
     manager = plugins.PluginManager()
     monkeypatch.setattr(manager, "_discover_and_load_inner", lambda: None)

@@ -112,7 +112,7 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
         return late.undeliverable, False
     if response == clarify_mod.CANCELLED:
         return response, False
-    if response == "":
+    if response is not None and not response.strip():
         # Clients send "" for a skipped card (Desktop, TUI), and Desktop sends the same for Stop.
         # A skip reads as SKIPPED, like a typed "skip"; during a stopped turn it is a cancel.
         from tools.interrupt import is_interrupted

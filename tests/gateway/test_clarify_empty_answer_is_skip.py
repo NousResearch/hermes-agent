@@ -129,6 +129,21 @@ def test_whitespace_only_answer_reads_as_skipped():
     assert statuses == ["skipped"]
 
 
+def test_whitespace_only_free_text_is_a_skip_at_the_delivery_seam():
+    """Even a direct resolver's whitespace-only open response has no chosen value."""
+    from tools import clarify_gateway
+
+    clarify_id, session_key = "open-text-whitespace", "open-text-whitespace-session"
+    clarify_gateway.register(clarify_id, session_key, "Anything else? Leave blank if none.", None)
+    try:
+        assert clarify_gateway.resolve_gateway_clarify(clarify_id, " \t ")
+        assert _clarify_send_then_wait(
+            _Sent(), clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_gateway,
+        ) == (SKIPPED, True)
+    finally:
+        clarify_gateway.clear_session(session_key)
+
+
 def test_skip_then_no_answer_is_a_timeout_after_the_skip():
     adapter = _CardAdapter()
     reply, _labels = _run_clarify(adapter, questions=_THREE_QUESTIONS[:2], answers=("",))

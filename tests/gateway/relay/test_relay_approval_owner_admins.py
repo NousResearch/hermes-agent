@@ -55,6 +55,7 @@ def _pending(adapter, platform, key):
     finally:
         clear_session_vars(tokens)
     approval._gateway_queues[key] = [entry]
+    approval.restrict_gateway_approval_card_to_deny(key, entry.data["request_id"], restricted=False)
     prompt_id = adapter._mint_prompt("exec_approval", {"session_key": key, "request_id": entry.data["request_id"],
                                                        "chat_id": "c1"})
     return entry, prompt_id

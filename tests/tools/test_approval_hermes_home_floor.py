@@ -137,3 +137,40 @@ def test_credential_tree_overwrites_prompt(home, template):
     dangerous, key, _ = detect_dangerous_command(command)
     assert dangerous is True, command
     assert key is not None
+
+
+
+# (command with {p} for the target, target relative to the home)
+_STORE_FILE_OVERWRITES = (
+    ("echo wiped > {p}", "vault/vault.key"),
+    ("cp /dev/null {p}", "vault/vault.json.enc"),
+    ("echo revoked | tee {p}", "mcp-tokens/fixture.json"),
+    ("cp /tmp/a {p}", "vault/key"),
+    ("dd if=/dev/zero of={p}", "vault/vault.key"),
+)
+_STORE_NEIGHBOUR_WRITES = (
+    ("echo x > {p}", "skills/x"),
+    ("cp /tmp/a {p}", "skills/x"),
+    ("echo x | tee {p}", "vaultish/x"),
+    ("cp /tmp/a {p}", "vaultish/x"),
+    ("echo x > {p}", "vault.md"),
+    ("cp /tmp/a {p}", "vault.md"),
+    ("echo x > {p}", "sessions/new.jsonl"),
+    ("cp {p} /tmp/k", "vault/vault.key"),
+)
+_SHELL_HOMES = ("~/.hermes/{}", '"$HERMES_HOME/{}"')
+
+
+@pytest.mark.parametrize("shell_home", _SHELL_HOMES)
+@pytest.mark.parametrize(("template", "target"), _STORE_FILE_OVERWRITES)
+def test_overwrite_inside_directory_store_prompts_for_shell_home(home, shell_home, template, target):
+    # #155452 review: the overwrite rules matched only a directory store's root, never a file in it.
+    command = template.format(p=shell_home.format(target))
+    assert detect_dangerous_command(command)[0] is True, command
+
+
+@pytest.mark.parametrize("shell_home", _SHELL_HOMES)
+@pytest.mark.parametrize(("template", "target"), _STORE_NEIGHBOUR_WRITES)
+def test_writes_beside_directory_stores_stay_clean(home, shell_home, template, target):
+    command = template.format(p=shell_home.format(target))
+    assert detect_dangerous_command(command) == (False, None, None), command

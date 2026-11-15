@@ -11,10 +11,8 @@ from __future__ import annotations
 
 import collections
 import contextvars
-import json
 import logging
 import os
-import sqlite3
 import threading
 import time
 import uuid
@@ -62,11 +60,6 @@ _MAX_COMPLETION_REPLAY_AGE_S = DELEGATION_REPLAY_MAX_AGE_SECONDS
 # A delivery claim older than this is abandoned and may be re-claimed.
 _CLAIM_LEASE_S = DELEGATION_CLAIM_STALE_SECONDS
 _DB_LOCK = threading.Lock()
-# Database path -> ((device, inode), schema_version) last reconciled by this process.
-# Per connection the replay ran ~30 PRAGMA table_info plus the DDL on every ledger call,
-# three times per 30 s orphan sweep (after #135351).
-_SCHEMA_READY: dict[str, tuple[tuple[int, int], int]] = {}
-_SCHEMA_READY_LOCK = threading.Lock()
 
 # ── Orphaned-completion sweep ────────────────────────────────────────────────
 # Startup replay runs once per process, so a completion whose owner died while THIS process was
@@ -127,12 +120,6 @@ def _scope():
     return profile_scope()
 
 
-def _db_path():
-    """The store file main's raw boot recovery opens (``store_location`` of the ledger's scope)."""
-    from persistence_assembly import store_location
-    return store_location(_scope())
-
-
 def _ledger_exists():
     """Whether the ledger's store exists yet; a read or a sweep never creates it."""
     from persistence_assembly import store_exists
@@ -146,86 +133,6 @@ def _ledger():
         raise WorkerPersistenceError('worker_delegation_ledger_unavailable')
     from persistence_assembly import open_persistence
     return open_persistence(_scope())
-
-
-def _connect() -> sqlite3.Connection:
-    """A raw writer connection to the ledger's ``state.db``: boot recovery writes the ledger rows and the resumable
-    subagent records it finishes in one transaction on it."""
-    from agent.runtime_session_store import WorkerPersistenceError, is_worker_process
-    if is_worker_process():
-        raise WorkerPersistenceError('worker_delegation_ledger_unavailable')
-    return open_state_db(_db_path(), "state.db (async_delegation)")
-
-
-def open_state_db(path: Path, db_label: str) -> sqlite3.Connection:
-    """A short-lived writer connection to a profile's ``state.db`` that never resurrects a removed named profile
-    (#123265) and keeps the file and its sidecars owner-only (0600, as ``hermes_state.SessionDB`` does)."""
-    from hermes_cli.sqlite_util import open_db
-    from hermes_constants import mkdir_under_hermes_home
-    from hermes_state import _secure_state_db_files
-
-    mkdir_under_hermes_home(path.parent)
-    _secure_state_db_files(path, create_main=True)
-    identity = _db_identity(path)
-    # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
-    conn = open_db(path, db_label=db_label, busy_timeout_ms=10_000,
-                   wal=False, row_factory=None,
-                   initialize=lambda conn: _initialize_schema(conn, identity=identity))
-    try:
-        _secure_state_db_files(path)
-    except BaseException:
-        conn.close()
-        raise
-    return conn
-
-
-def _db_identity(path) -> tuple[int, int] | None:
-    """Stat only: opening/closing another fd would release SQLite's POSIX locks."""
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    return (st.st_dev, st.st_ino) if st.st_ino else None
-
-
-def _initialize_schema(conn: sqlite3.Connection, *, identity: tuple[int, int] | None = None) -> None:
-    from hermes_state_repair import apply_durability_barriers
-    from hermes_state_schema import reconcile_state_schema
-    # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
-    # every short-lived connection collides with live transcript/FTS writers.
-    apply_durability_barriers(conn)
-    # schema_version is a per-file DDL counter, not an identity: different files can share it.
-    # Pair it with the inode to detect replacements, retaining the version for recycled empty
-    # files and same-file migrations. In-place restores must be done offline with a process
-    # restart: neither an inode nor a DDL counter identifies arbitrary overwritten bytes.
-    row = conn.execute("PRAGMA database_list").fetchone()
-    key = os.path.normcase(os.path.abspath(row[2])) if row and row[2] else None
-    # Match a stat taken BEFORE open to one after it; never associate an old connection's
-    # schema with a replacement path. Unnamed, unstatable or unverified connections don't cache.
-    if key is None or identity is None or _db_identity(key) != identity:
-        reconcile_state_schema(conn)
-        return
-    version = conn.execute("PRAGMA schema_version").fetchone()[0]
-    with _SCHEMA_READY_LOCK:
-        if _SCHEMA_READY.get(key) == (identity, version):
-            return
-    # Single durable-shape authority: the canonical SCHEMA_SQL drives both
-    # table creation and column backfill (reconcile_state_schema replays the
-    # canonical DDL and reuses SessionDB's declarative reconciliation). This
-    # module previously carried its own CREATE TABLE + ALTER column list,
-    # which drifted from SCHEMA_SQL — same-name columns with different
-    # nullability/defaults depending on which authority touched the database
-    # first (#94691).
-    reconcile_state_schema(conn)
-    if _db_identity(key) == identity:
-        with _SCHEMA_READY_LOCK:  # version AFTER replay; don't mark a replacement as reconciled
-            _SCHEMA_READY[key] = (identity, conn.execute("PRAGMA schema_version").fetchone()[0])
-
-
-def _transaction():
-    from hermes_cli.sqlite_util import transaction
-
-    return transaction(_connect())
 
 
 def _ledger_reader():
@@ -309,9 +216,9 @@ def record_unit_child(delegation_id: str, entry: dict[str, Any]) -> None:
         logger.warning("Async delegation %s: could not record finished child %s", delegation_id, entry.get("task_index"), exc_info=True)
 
 
-def _recovered_results(task: dict[str, Any], result_json: Optional[str], error: str) -> Optional[list[dict[str, Any]]]:
+def _recovered_results(task: dict[str, Any], stored: Any, error: str) -> Optional[list[dict[str, Any]]]:
     """Per-task results for an abandoned unit: recorded children as they finished, the rest ``unknown``."""
-    partial = json.loads(result_json or "{}") or {}
+    partial = stored if isinstance(stored, dict) else {}
     if not (task.get("is_batch") and partial.get("partial") and partial.get("results")):
         return None
     recorded = {r["task_index"]: r for r in partial["results"] if isinstance(r.get("task_index"), int)}
@@ -340,67 +247,81 @@ def recover_abandoned_delegations() -> int:
     alive = _owner_liveness()
     if alive is None:
         return 0
-    now, recovered = time.time(), 0
-    from tools.delegate_tool_resumable import continuable_of, plan_recovery, recover_abandoned
-    plan = plan_recovery(_db_path(), alive)  # its git probes run before the write lock below
-    recovered_records: dict[str, dict[str, Any]] = {}
-    with _DB_LOCK, _transaction() as conn:
-        recover_abandoned(conn, plan, recovered_records)
-        rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
-                      parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id, result_json, state
-               FROM async_delegations WHERE state='running'""").fetchall()
-        for row in rows:
-            delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json, last_state = row
-            if alive(pid, started):
-                continue
-            task = json.loads(task_json or "{}")
-            error = "Delegation owner exited before recording a terminal result; outcome unknown."
-            recovered_results = _recovered_results(task, result_json, error)
-            if recovered_results:
-                done = sum(1 for r in recovered_results if r.get("status") != "unknown")
-                error = (f"Delegation owner exited before the unit finished; {done}/{len(recovered_results)} child "
-                         "results were recorded and are included below, the rest are unknown.")
-            diagnostics = {"last_known_status": last_state, "task_transcripts": task.get("task_transcripts") or {}}
-            # Verbatim transcript tails + a git snapshot of the owner's cwd, so the parent can
-            # continue or re-dispatch from the event alone instead of opening files (#116000).
-            from tools.async_delegation_recovery_hints import git_state_hint, transcript_tails
-            if tails := transcript_tails(diagnostics["task_transcripts"]):
-                diagnostics["transcript_tails"] = tails
-            if hint := git_state_hint(task.get("owner_cwd")):
-                diagnostics["git_state_hint"] = hint
-            silent = False
-            if continuable := continuable_of(conn, delegation_id):
-                diagnostics["resumable_subagent_ids"] = continuable
-                from tools.delegate_tool_auto_resume import boot_notice
-                notice, promised = boot_notice(conn, continuable, recovered_records)
-                error += notice or (
-                    " Its subagents can be continued on their own conversation and worktree: "
-                    "delegate_task(action='continue', subagent_id=..., message=...); check git state and the "
-                    "last tool before re-running side effects.")
-                n_tasks = len(task.get("task_indexes") or task.get("goals") or [0])
-                finished = any(r.get("status") != "unknown" for r in recovered_results or ())
-                silent = len(promised) >= n_tasks and not finished  # the scheduler reports each child: no wake
-                diagnostics.update({"waiting_to_resume": promised} if silent else {})
-            event = {
-                "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
-                "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
-                "parent_session_id": parent_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
-                "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
-                "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
-                "status": "unknown", "summary": None, "error": error, **diagnostics,
-                **({"results": recovered_results} if recovered_results else {}),
-                "dispatched_at": dispatched_at, "completed_at": now,
-                **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
-            result = {"status": "unknown", "summary": None, "error": event["error"], **diagnostics,
-                      **({"results": recovered_results} if recovered_results else {})}
-            event, result = redact_completion_event(event), redact_child_result(result)
-            conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
-                   updated_at=?, event_json=?, result_json=?, delivery_state=?
-                   WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result),
-                                              "delivered" if silent else "pending", delegation_id))
-            recovered += 1
-    return recovered
+    if not _ledger_exists():
+        return 0  # nothing to recover; a recovery must not create the ledger
+    from tools.delegate_tool_resumable import _limits, recovered_records, recovery_plan, subagent_recoveries
+    # Everything is read and built before the one recovery write (the plan's git probes first, holding no lock); a
+    # ledger with nothing abandoned is never opened for writing. The write lands each record and row only while it
+    # is still the one read here.
+    with _ledger_reader() as reader:
+        recovered = recovered_records(recovery_plan(reader.coordination.list_inflight_subagents(), alive))
+        recoveries, promised = _recoveries(reader.coordination, alive, recovered)
+    if not (recoveries or recovered):
+        return 0
+    with _DB_LOCK, _ledger() as store:
+        return store.coordination.recover_abandoned_delegations(
+            recoveries=recoveries, subagent_recoveries=subagent_recoveries(recovered, promised), limits=_limits())
+
+
+def _recoveries(ledger, alive: Callable[[Any, Any], bool], recovered: dict[str, Any]) -> tuple[list[Any], set[str]]:
+    """``(recoveries, promised ids)``: the ``unknown`` outcome of every ``running`` unit whose owner
+    is gone, and the subagents among *recovered* the scheduler will report on (``boot_notice``)."""
+    from persistence import DelegationId
+    from persistence.authority.coordination import DelegationRecovery
+    from tools.delegate_tool_resumable import continuable_of
+    now = time.time()
+    records = {sid: record for sid, (record, _stopped) in recovered.items()}
+    recoveries, promised_ids = [], set()
+    for row in ledger.list_inflight_delegations():
+        if alive(row.owner_pid, row.owner_started_at):
+            continue
+        delegation_id, last_state = row.delegation_id, row.state
+        task = row.task if isinstance(row.task, dict) else {}
+        error = "Delegation owner exited before recording a terminal result; outcome unknown."
+        recovered_results = _recovered_results(task, row.result, error)
+        if recovered_results:
+            done = sum(1 for r in recovered_results if r.get("status") != "unknown")
+            error = (f"Delegation owner exited before the unit finished; {done}/{len(recovered_results)} child "
+                     "results were recorded and are included below, the rest are unknown.")
+        diagnostics = {"last_known_status": last_state, "task_transcripts": task.get("task_transcripts") or {}}
+        # Verbatim transcript tails + a git snapshot of the owner's cwd, so the parent can
+        # continue or re-dispatch from the event alone instead of opening files (#116000).
+        from tools.async_delegation_recovery_hints import git_state_hint, transcript_tails
+        if tails := transcript_tails(diagnostics["task_transcripts"]):
+            diagnostics["transcript_tails"] = tails
+        if hint := git_state_hint(task.get("owner_cwd")):
+            diagnostics["git_state_hint"] = hint
+        silent = False
+        if continuable := continuable_of(ledger, delegation_id, recovered):
+            diagnostics["resumable_subagent_ids"] = continuable
+            from tools.delegate_tool_auto_resume import boot_notice
+            notice, promised = boot_notice(continuable, records)
+            promised_ids.update(promised)
+            error += notice or (
+                " Its subagents can be continued on their own conversation and worktree: "
+                "delegate_task(action='continue', subagent_id=..., message=...); check git state and the "
+                "last tool before re-running side effects.")
+            n_tasks = len(task.get("task_indexes") or task.get("goals") or [0])
+            finished = any(r.get("status") != "unknown" for r in recovered_results or ())
+            silent = len(promised) >= n_tasks and not finished  # the scheduler reports each child: no wake
+            diagnostics.update({"waiting_to_resume": promised} if silent else {})
+        event = {
+            "type": "async_delegation", "delegation_id": delegation_id, "session_key": row.origin_session,
+            "origin_ui_session_id": row.origin_ui_session_id, "origin_session_id": row.origin_session_id or "",
+            "parent_session_id": row.parent_session_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
+            "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
+            "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+            "status": "unknown", "summary": None, "error": error, **diagnostics,
+            **({"results": recovered_results} if recovered_results else {}),
+            "dispatched_at": row.dispatched_at, "completed_at": now,
+            **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
+        result = {"status": "unknown", "summary": None, "error": event["error"], **diagnostics,
+                  **({"results": recovered_results} if recovered_results else {})}
+        event, result = redact_completion_event(event), redact_child_result(result)
+        recoveries.append(DelegationRecovery(
+            delegation_id=DelegationId(delegation_id), expected_state=last_state, expected_updated_at=row.updated_at,
+            completed_at=now, event=event, result=result, delivery="delivered" if silent else "pending"))
+    return recoveries, promised_ids
 
 
 def restore_undelivered_completions(target_queue) -> int:
@@ -1499,5 +1420,3 @@ def _reset_for_tests() -> None:
         _reoffered_at.clear()
     with _held_lock:
         _held_copies.clear()
-    with _SCHEMA_READY_LOCK:
-        _SCHEMA_READY.clear()

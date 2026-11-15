@@ -33,10 +33,10 @@ def _tree(repo, name, *, dirty):
 def _unpinned_record(parent, sid, tree):
     """A resumable record that lost its pin to the cap while staying continuable."""
     from tools import delegate_tool_resumable as r
-    with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
-        r._upsert(conn, sid, {"owners": [parent.session_id], "session_id": "child", "cwd": str(tree),
-                              "pin_paths": [str(tree)], "worktrees_at_start": []},
-                  state="resumable", pinned=False, expires_at=time.time() + 3600)
+    assert r._write(r._db_path_for(parent), lambda ledger: r._upsert(
+        ledger, sid, {"owners": [parent.session_id], "session_id": "child", "cwd": str(tree),
+                      "pin_paths": [str(tree)], "worktrees_at_start": []},
+        state="resumable", pinned=False, expires_at=time.time() + 3600, expected=None))
 
 
 def _continue_now(parent, sid, tree):

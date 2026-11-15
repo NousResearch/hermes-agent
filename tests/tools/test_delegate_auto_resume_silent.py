@@ -290,7 +290,9 @@ def test_a_stop_while_auto_resume_is_off_still_cancels_a_promised_child(tmp_path
 
 
 def test_retention_limits_never_eat_a_waiting_childs_report(tmp_path):
-    from tools.async_delegation import _MAX_RETAINED_COMPLETED, _prune_durable_records, _transaction
+    import sqlite3
+
+    from tools.async_delegation import _MAX_RETAINED_COMPLETED, _prune_durable_records
     from tools.delegate_tool_auto_resume import tick
     from pathlib import Path
     from tools.delegate_tool_resumable import _apply_limits, _write
@@ -298,7 +300,8 @@ def test_retention_limits_never_eat_a_waiting_childs_report(tmp_path):
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
     now = time.time()
-    with _transaction() as conn:  # rows the count cap may not delete must not count against it either
+    conn = sqlite3.connect(parent._session_db.db_path)  # health: allow HX015 -- test seeds a temp-home store
+    with conn:  # rows the count cap may not delete must not count against it either
         for i in range(_MAX_RETAINED_COMPLETED):
             conn.execute("INSERT INTO async_delegations (delegation_id, origin_session, state, dispatched_at, "
                          "updated_at, delivery_state) VALUES (?, '', 'error', ?, ?, 'delivered')", (f"kept-{i}", now, now))
@@ -308,6 +311,7 @@ def test_retention_limits_never_eat_a_waiting_childs_report(tmp_path):
         conn.execute("INSERT INTO async_delegations (delegation_id, origin_session, state, dispatched_at, updated_at, "
                      "delivery_state, event_json) VALUES ('fresh-pending', '', 'completed', ?, ?, 'pending', '{}')",
                      (now, now))
+    conn.close()
     _prune_durable_records()
     assert _ledger(parent, "fresh-pending") is not None and _ledger(parent, unit) is not None
     _sql(parent, "UPDATE resumable_subagents SET expires_at=? WHERE subagent_id=?", (time.time() - 1, sid))
@@ -406,7 +410,7 @@ def _manual_claim_then(tmp_path, cancel):
     a disabled tick runs inside that window, then the continue is refused before anything ran and ticks follow
     (enabled ones only after a cancel: a cancelled child must not be resumed)."""
     from tools.delegate_tool_auto_resume import tick
-    from tools.delegate_tool_resumable import _db_path_for, _write, claim, release
+    from tools.delegate_tool_resumable import claim, release
     _enable()
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
@@ -419,8 +423,8 @@ def _manual_claim_then(tmp_path, cancel):
     dispatched = []
     tick(_scheduler(parent, dispatched), capacity=3)
     release(parent, sid, record)
-    _write(_db_path_for(parent), lambda c: c.execute("UPDATE resumable_subagents SET record_json=json_set("
-                                                     "record_json, '$.next_attempt_at', 0) WHERE subagent_id=?", (sid,)))
+    _sql(parent, "UPDATE resumable_subagents SET record_json=json_set(record_json, '$.next_attempt_at', 0) "
+                 "WHERE subagent_id=?", (sid,))
     with patch("run_agent.AIAgent", side_effect=_AlwaysLimited()):
         tick(_scheduler(parent, dispatched), capacity=3)
     _turn_off()
@@ -462,9 +466,8 @@ def test_a_stop_racing_the_refused_continues_hand_back_is_never_lost(tmp_path):
     with patch.object(res, "_write", side_effect=hand_back_first):
         out = json.loads(delegate_task(action="stop", subagent_id=sid, parent_agent=parent))
     assert out.get("status") == "dismissed", out
-    res._write(res._db_path_for(parent), lambda c: c.execute("UPDATE resumable_subagents SET record_json=json_set("
-                                                             "record_json, '$.next_attempt_at', 0) WHERE subagent_id=?",
-                                                             (sid,)))
+    _sql(parent, "UPDATE resumable_subagents SET record_json=json_set(record_json, '$.next_attempt_at', 0) "
+                 "WHERE subagent_id=?", (sid,))
     dispatched = []
     with patch("run_agent.AIAgent", side_effect=_AlwaysLimited()):
         tick(_scheduler(parent, dispatched), capacity=3)

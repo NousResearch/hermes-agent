@@ -8,10 +8,12 @@ BINDING_PREFIX = 'gateway.history_control.v1.'
 def _history_row(row):
     """Local surfaces' unrouted rows are owner history: every row the native resume adopts
     (``legacy_history_row``: old ``desktop`` chats, ``oneshot``/``tool`` CLI runs and phone apps'
-    self-labelled chats too) plus imports. A row resume can adopt must also take a sidebar edit
+    self-labelled chats too) plus the importer labels (``IMPORTED_LOCAL_SOURCES``: a foreign
+    transcript imported on this machine). A row resume can adopt must also take a sidebar edit
     (pin/archive/hide/rename)."""
-    from hermes_state_local_migration import legacy_history_row
-    return row['source'] == 'import' or legacy_history_row(dict(row))
+    from hermes_state_local_migration import IMPORTED_LOCAL_SOURCES, legacy_history_row
+    return (row['source'] == 'import' or row['source'] in IMPORTED_LOCAL_SOURCES
+            or legacy_history_row(dict(row)))
 
 
 def _owner_user(row):
@@ -78,8 +80,12 @@ def authorize_history(conn, actor, session_id, *, claim=False):
     if row is None:
         return False
     # Import intentionally strips routes. Never reinterpret a cold native/API
-    # transcript as imported history, even if stale import metadata exists.
-    if row['session_key'] or row['chat_id'] or row['origin_json']:
+    # transcript as imported history, even if stale import metadata exists. An
+    # imported row is the exception its own importer stamps: provenance in
+    # ``origin_json`` and no route at all, so a sidebar edit reaches it the way
+    # resume's adoption already does (#142091).
+    from hermes_state_local_migration import unrouted_import
+    if (row['session_key'] or row['chat_id'] or row['origin_json']) and not unrouted_import(dict(row)):
         return False
     key = BINDING_PREFIX + session_id
     binding = json.dumps([actor.profile_id, actor.subject], separators=(',', ':'))

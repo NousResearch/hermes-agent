@@ -1,10 +1,5 @@
-"""A header-less Chat Completions conversation that opens like a deleted one is a new conversation.
-
-The header-less session id is derived from the system prompt + first user message, and a deleted
-session's id stays retired for good. A new conversation with the same opening moves to the next
-generation of that opening instead of being refused forever; its later turns keep landing there.
-An explicit X-Hermes-Session-Id and a spent Idempotency-Key are never moved.
-"""
+"""No-header Chat Completions requests get independent sessions; explicit retries keep identity."""
+import asyncio
 import json
 
 import pytest
@@ -68,31 +63,22 @@ def served(api, owner):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('past_horizon', [False, True], ids=['within-horizon', 'past-horizon'])
-async def test_a_new_conversation_with_a_deleted_opening_gets_a_new_session(api, owner, served, past_horizon):
+async def test_no_header_requests_with_the_same_opening_get_independent_sessions(api, owner, served):
     async with TestClient(TestServer(_app(api))) as client:
         status, first, deleted_sid = await _post(client, _OPENING)
         assert status == 200, first
         await _delete(client, deleted_sid)
-        if past_horizon:
-            _prune_past_horizon(owner)
 
         status, opened, new_sid = await _post(client, _OPENING)
         assert status == 200, opened
         assert new_sid and new_sid != deleted_sid
         follow_up = [*_OPENING, {'role': 'assistant', 'content': _content(opened)}, {'role': 'user', 'content': 'next'}]
-        status, second, same_sid = await _post(client, follow_up)
+        status, second, follow_up_sid = await _post(client, follow_up)
         assert status == 200, second
-        assert same_sid == new_sid, 'the second turn of the new conversation left its session'
+        assert follow_up_sid not in (deleted_sid, new_sid)
         assert served == ['hi', 'hi', 'next']
         assert owner.db.get_session(deleted_sid) is None, 'the deleted session was recreated'
         assert owner.db.get_session(new_sid) is not None
-
-        # Deleting the replacement moves the next new conversation on again, never back.
-        await _delete(client, new_sid)
-        status, third, third_sid = await _post(client, _OPENING)
-        assert status == 200, third
-        assert third_sid not in (deleted_sid, new_sid)
 
 
 @pytest.mark.asyncio
@@ -127,6 +113,50 @@ async def test_an_idempotency_key_retry_keeps_its_deleted_session(api, owner, se
 
 
 @pytest.mark.asyncio
+async def test_concurrent_keyed_retries_share_their_session(api, owner, monkeypatch):
+    api._api_key = _API_KEY
+    started = asyncio.Event()
+    retry_resolving = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+    resolver_calls = 0
+    original_resolver = api._implicit_chat_session
+
+    async def observe_resolver(request, session_id):
+        nonlocal resolver_calls
+        resolver_calls += 1
+        if resolver_calls == 2:
+            retry_resolving.set()
+        return await original_resolver(request, session_id)
+
+    monkeypatch.setattr(api, "_implicit_chat_session", observe_resolver)
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        calls.append(event.text)
+        started.set()
+        await release.wait()
+        execution_result.get()['result'] = {'final_response': 'answer', 'messages': []}
+        return 'answer'
+
+    owner.runner._handle_message = handle
+    headers = {'Authorization': 'Bearer ' + _API_KEY, 'Idempotency-Key': 'concurrent'}
+    async with TestClient(TestServer(_app(api))) as client:
+        first_task = asyncio.create_task(client.post(
+            '/v1/chat/completions', json={'model': 'hermes-agent', 'messages': _OPENING}, headers=headers))
+        await asyncio.wait_for(started.wait(), 5)
+        second_task = asyncio.create_task(client.post(
+            '/v1/chat/completions', json={'model': 'hermes-agent', 'messages': _OPENING}, headers=headers))
+        await asyncio.wait_for(retry_resolving.wait(), 5)
+        release.set()
+        first, second = await asyncio.gather(first_task, second_task)
+
+    assert first.status == second.status == 200
+    assert first.headers['X-Hermes-Session-Id'] == second.headers['X-Hermes-Session-Id']
+    assert calls == ['hi']
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('stream', [False, True], ids=['json', 'stream'])
 async def test_a_store_that_cannot_answer_the_lookup_returns_an_openai_error(api, owner, served, monkeypatch, stream):
     """A busy or unreadable store is retryable: 503 ``storage_unavailable`` with Retry-After, the
@@ -150,7 +180,7 @@ async def test_a_store_that_cannot_answer_the_lookup_returns_an_openai_error(api
 
 
 @pytest.mark.asyncio
-async def test_a_key_spent_on_another_session_stays_spent_on_a_new_generation(api, owner, served):
+async def test_idempotency_key_is_scoped_to_its_session_header(api, owner, served):
     async with TestClient(TestServer(_app(api))) as client:
         status, first, deleted_sid = await _post(client, _OPENING)
         assert status == 200, first
@@ -158,6 +188,6 @@ async def test_a_key_spent_on_another_session_stays_spent_on_a_new_generation(ap
                                           session_id='other-session', key='spent')
         assert status == 200, other
         await _delete(client, deleted_sid)
-        status, refused, _sid = await _post(client, _OPENING, key='spent')
-        assert status == 409 and refused['error']['code'] == 'admission_conflict', refused
-    assert served == ['hi', 'elsewhere']
+        status, new_session, _sid = await _post(client, _OPENING, key='spent')
+        assert status == 200, new_session
+    assert served == ['hi', 'elsewhere', 'hi']

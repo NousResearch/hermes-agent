@@ -27,13 +27,10 @@ def declared_api_session(db, key):
 
 
 def implicit_api_session(db, session_id, request_id=None):
-    """The session a header-less Chat Completions turn lands on. Its id is derived from the
-    conversation's opening, and a deleted id stays retired for good, so a NEW conversation that
-    opens like a deleted one moves to the next generation of that opening, the way a deleted Bot
-    Chat is replaced: the first ``api-<digest(id, n)>`` that is not retired. Read from durable rows
-    only, so every later turn of that conversation (same opening) lands on the same session. An
-    exact retry stays on the generation holding its request id's terminal identity; explicit ids
-    never come here."""
+    """Resolve a header-less Chat Completions id's generation in the owning profile.
+
+    New requests supply a fresh id. A deleted id stays retired, and an exact retry stays on the
+    generation holding its request id's terminal identity; explicit ids never come here."""
     from hermes_state_mutation_retirement import first_generation
     from hermes_state_terminal import identity_key
     pinned = None if not request_id else lambda conn, sid: conn.execute(

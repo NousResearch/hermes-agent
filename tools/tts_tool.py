@@ -24,7 +24,7 @@ from typing import Callable, Dict, Any, List, Optional
 
 import copy
 
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, get_hermes_dir
 
 logger = logging.getLogger(__name__)
 
@@ -112,29 +112,12 @@ def _check_piper_available() -> bool: return _package_installed("piper")
 DEFAULT_PROVIDER = "edge"
 
 
-def _get_default_output_dir() -> str:
-    from hermes_constants import get_hermes_dir
-    return str(get_hermes_dir("cache/audio", "audio_cache"))
-
-
-DEFAULT_OUTPUT_DIR = _DEFAULT_OUTPUT_DIR_AT_IMPORT = _get_default_output_dir()
-
-
 def _default_output_dir() -> str:
-    """The active profile's audio output dir at call time (long-lived runtimes switch profiles
-    after import); a monkeypatched ``DEFAULT_OUTPUT_DIR`` wins.
-
-    Same bug class as skills_tool (f8723c478) and skills_sync (#65828): long-lived multi-profile runtimes
-    (dashboard console, TUI/Desktop backend, cron, kanban workers) import this module once under the launch
-    HERMES_HOME and later scope requests to a different profile via
-    ``hermes_constants.set_hermes_home_override()`` — a frozen module constant keeps writing synthesized
-    audio into the launch profile's cache instead of the active profile's (#98749). Keep the legacy
-    ``DEFAULT_OUTPUT_DIR`` module attribute for tests and external patchers; when it has not been patched,
-    re-resolve from the live profile-scoped HERMES_HOME on every call.
-    """
-    if DEFAULT_OUTPUT_DIR != _DEFAULT_OUTPUT_DIR_AT_IMPORT:
-        return DEFAULT_OUTPUT_DIR
-    return _get_default_output_dir()
+    """The active profile's audio output dir, resolved per call: long-lived multi-profile runtimes
+    (dashboard console, TUI/Desktop backend, cron, kanban workers) import this module once under the
+    launch HERMES_HOME and later scope requests to another profile via
+    ``hermes_constants.set_hermes_home_override()`` (#98749)."""
+    return str(get_hermes_dir("cache/audio", "audio_cache"))
 
 
 def _load_tts_config() -> dict[str, Any]:

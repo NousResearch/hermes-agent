@@ -99,6 +99,7 @@ _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
                                'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
+                               'session.account_usage',
                                'approval.respond', 'clarify.respond'})
 
 
@@ -267,8 +268,9 @@ class AuthorityConnection:
         handlers['complete.path'] = partial(complete_path, self)
         from gateway.session_prune import prune
         handlers['session.prune'] = partial(prune, self)
-        from gateway.session_usage import stats
+        from gateway.session_usage import account_usage, stats
         handlers['session.stats'] = partial(stats, self)
+        handlers['session.account_usage'] = partial(account_usage, self)
         from gateway.session_active_list import active_list
         handlers['session.active_list'] = partial(active_list, self)
         from gateway.session_viewer_automation import automation

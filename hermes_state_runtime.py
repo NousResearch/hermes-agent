@@ -969,6 +969,10 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
             raise RuntimeStoreError('invalid_params')
         db._record_model_usage(conn, session_id, **({'api_call_count': 1} | payload))
     else:
+        if payload.get('prompt_cache_clock') is not None:
+            from hermes_state_worker_context import stamp_cache_generation
+            payload = dict(payload, prompt_cache_clock=stamp_cache_generation(conn, session_id,
+                                                                              payload['prompt_cache_clock']))
         db._update_token_counts_in_transaction(conn, session_id, **payload)
         # The managed worker's platform is the policy label (gui), not the in-process
         # agent surface (desktop). Stamp the same created_surface the insert uses.
@@ -993,8 +997,8 @@ def _worker_finish(db, conn, session_id, payload):
 def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
                             sequence, operation, payload):
     """One closed durable mutation and receipt; never call a self-committing API here."""
-    from hermes_state_worker_context import (worker_cache_generation, worker_context, worker_prompt, worker_row_role,
-                                             worker_sidecars, worker_tail_role, worker_tool_names)
+    from hermes_state_worker_context import (worker_context, worker_prompt, worker_row_role, worker_sidecars,
+                                             worker_tail_role, worker_tool_names)
     from hermes_state_worker_compression import WORKER_COMPRESSION_HANDLERS
     from hermes_state_worker_lifecycle import WORKER_LIFECYCLE_HANDLERS
     handlers = {
@@ -1006,7 +1010,6 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
         'session.tools': worker_tool_names,
         'session.tail_role': worker_tail_role,
         'session.row_role': worker_row_role,
-        'session.cache_generation': worker_cache_generation,
         'transcript.append': _worker_append,
         'execution.finish': _worker_finish,
         'usage.main': _worker_usage,

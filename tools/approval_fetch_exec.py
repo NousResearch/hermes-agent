@@ -61,7 +61,7 @@ class DownloadThenRunMatcher:
         # options such as `sudo -u USER`, `timeout 60`), script interpreters and `shell < FILE` run FILE too.
         self._run_re = re.compile(
             rf"[;&|\n(]\s*+(?:(?:[{{!]|if|then|do|else|elif|while|until){_H}++)*+(?:\w++=\S*+{_H}++)*+"
-            rf"{_LINE_WRAPPERS_RE}(?:{_PIPE_PATH_PREFIX_RE}(?P<tool>{shell_names_re}|{_SCRIPT_INTERPRETERS_RE}){_H}++"
+            rf"{_LINE_WRAPPERS_RE}(?:(?P<prog>['\"]?{_PIPE_PATH_PREFIX_RE}(?P<tool>{shell_names_re}|{_SCRIPT_INTERPRETERS_RE})(?:\.exe)?['\"]?){_H}++"
             rf"(?P<flags>(?:-\S++{_H}++)*+)(?:<{_H}*+)?|(?:source|\.){_H}++)?"
             rf"['\"]?(?:\./)?(?P<file>[^\s;&|<>'\"`()]++){_TERMINATOR}",
             re.IGNORECASE,
@@ -92,8 +92,11 @@ class DownloadThenRunMatcher:
         if not targets:
             return None
         for run in self._run_re.finditer(text, min(targets.values())):
-            if run.start() >= targets.get(_base(run.group("file")), len(text)) and not self._syntax_check_only(run) \
-                    and not _LOOKUP_ONLY_RE.search(run.group()):
+            # A path-qualified program word can itself be the download (`./node.exe --version`).
+            prog = (run.group("prog") or "").strip("'\"")
+            prog_ran = "/" in prog and run.start() >= targets.get(_base(prog), len(text))
+            file_ran = run.start() >= targets.get(_base(run.group("file")), len(text)) and not self._syntax_check_only(run)
+            if (prog_ran or file_ran) and not _LOOKUP_ONLY_RE.search(run.group()):
                 return run
         return None
 

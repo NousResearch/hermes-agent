@@ -56,6 +56,28 @@ def test_standalone_named_home_still_served_by_host_record_is_refused_with_resca
     assert "--force" not in out
 
 
+def test_standalone_refusal_is_retried_and_only_the_config_refusal_parks(standalone_home, monkeypatch, capsys):
+    """The standalone refusal ends at the host's next rescan (its own text says to wait 30 s), so the
+    supervisor has to retry it. Exit 78 parked the systemd unit for good on it."""
+    from gateway import host_attach
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE, GATEWAY_SERVICE_RESTART_EXIT_CODE
+    gw, home = standalone_home
+    monkeypatch.setattr(gw, "named_profile_served_by_running_multiplexer", lambda name=None: True)
+    with pytest.raises(SystemExit) as service_verb:
+        gw._guard_named_profile_under_multiplexer()
+    assert service_verb.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+    assert "rescan-profiles" in capsys.readouterr().out
+    # `gateway run`: the live gateways no longer serve us (decide() starts), only the record lists us.
+    monkeypatch.setattr(host_attach, "decide", lambda *a, **kw: host_attach.HostAttachDecision(host_attach.START, ""))
+    with pytest.raises(SystemExit) as run:
+        gw._attach_to_host_gateway_or_guard()
+    assert run.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+    (home / "config.yaml").write_text("{}\n", encoding="utf-8")  # no opt-out: config decides, permanent
+    with pytest.raises(SystemExit) as no_opt_out:
+        gw._guard_named_profile_under_multiplexer()
+    assert no_opt_out.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+
 def test_non_standalone_refusal_names_the_opt_out(standalone_home):
     gw, home = standalone_home
     (home / "config.yaml").write_text("{}\n", encoding="utf-8")

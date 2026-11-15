@@ -4169,13 +4169,9 @@ def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
 
 
 def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
-    """Exit-78 form of ``_named_profile_refused_under_multiplexer`` for the CLI entry points."""
+    """Exit form of ``_named_profile_refused_under_multiplexer`` for the CLI entry points: 78, or 75."""
     if not _named_profile_refused_under_multiplexer(force=force):
         return
-    # EX_CONFIG, not 1: the refusal is decided purely by config, so it is permanent. The systemd unit
-    # (Restart=always, StartLimitIntervalSec=0) relies on RestartPreventExitStatus=78 as its only
-    # backstop — exit 1 turned a correct refusal into an unbounded restart loop; s6 maps 78 to
-    # "permanent failure" too.
     # This refusal is decided entirely by configuration (multiplex_profiles plus the allowlist), so it is
     # permanent: no number of retries can change the answer. Exiting 1 made it look transient to a service
     # manager -- and the systemd unit this module generates pairs Restart=always/RestartSec=5 with
@@ -4184,7 +4180,10 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     # that backstop unarmed with the limiter already off, so a correct refusal became an unbounded restart
     # loop. 78 also reaches the s6 finish script's 125 "permanent failure" translation (see #51228), the
     # same path the other fatal-config exits take.
-    sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+    # The exception is a standalone profile: it is refused only while the host's record still lists it,
+    # which the host's next rescan ends. Parking the unit on that stranded the profile, so it is retried.
+    from hermes_cli.gateway_multiplex_mode import _standalone_launcher
+    sys.exit(GATEWAY_SERVICE_RESTART_EXIT_CODE if _standalone_launcher() else GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
 
 def _host_decision_exit_code(decision) -> int:

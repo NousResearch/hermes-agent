@@ -339,7 +339,7 @@ def _restore_file(home: Path, move_dir: Path, rel: str, how: str) -> None:
         # The live ticker shares this file: restore under its lock, as a wholesale rewrite.
         from agent.runtime_scope import bind_profile_scope
         from cron import jobs as cron_jobs
-        kept = json.loads((move_dir / _SNAPSHOT / rel).read_text(encoding="utf-8")) if how == "existed" else {}
+        kept = json.loads((move_dir / _SNAPSHOT / rel).read_text(encoding="utf-8-sig")) if how == "existed" else {}
         jobs = kept.get("jobs") if isinstance(kept, dict) else kept
         with bind_profile_scope(home, hydrate_secrets=False), cron_jobs.use_cron_store(home):
             cron_jobs.save_jobs(jobs if isinstance(jobs, list) else [], replace=True)

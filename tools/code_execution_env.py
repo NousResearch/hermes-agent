@@ -182,6 +182,15 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     _pp_parts = [tmpdir]
     if _runtime_path is not None:
         _pp_parts.append(_runtime_path)
+    # The runtime venv's site-packages has to stay on the interpreter's startup path (a bare
+    # bundled Python keeps its dependencies there), but it must not stay on the env a cell's
+    # own subprocesses inherit: pip treats a site-packages directory on PYTHONPATH as a tree it
+    # may uninstall from, so `other-env/bin/pip install "pydantic<2.10"` inside a cell could
+    # remove the gateway's pinned pydantic and crash-loop it on the next restart (#155952).
+    # sys.path is already fixed from the startup PYTHONPATH, so the session kernel drops this
+    # entry from its own env right after startup, before any cell runs.
+    if _runtime_path is not None:
+        child_env["HERMES_CHILD_STRIP_PYTHONPATH"] = _runtime_path
     if _uses_hermes_python_environment(child_python):
         from hermes_cli._startup_fast import project_root_str
         _pp_parts.append(project_root_str())

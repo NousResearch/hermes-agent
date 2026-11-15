@@ -1437,3 +1437,7 @@ slashCmd.session.usage.rowModel: "Modell"
 slashCmd.session.usage.rowOutputTokens: "Utdatatoken"
 slashCmd.session.usage.rowTotalTokens: "Token totalt"
 slashCmd.session.usage.usageTitle: "Användning"
+
+hubs.list.moreAbove: " ↑ {0} till ovanför"
+hubs.list.moreBelow: " ↓ {0} till nedanför"
+hubs.list.errorLine: "fel: {0}"

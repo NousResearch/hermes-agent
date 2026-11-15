@@ -113,3 +113,27 @@ def test_any_backend_other_than_local_keeps_the_result_whole(home, monkeypatch, 
 
     assert (pruned, count) == (msgs, 0)
     assert not (home / "cache" / "pruned").exists() or not any((home / "cache" / "pruned").iterdir())
+
+
+def test_a_resumed_history_without_timestamps_reads_the_store_clock(home):
+    """Gateway/TUI replays drop assistant timestamps: the live run's resumed turn never read the cache as
+    cold until the clock fell back to the store's newest assistant row."""
+    from types import SimpleNamespace
+
+    from agent.prompt_caching import provider_cache_expired
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        db.create_session("s1", "cli")
+        db.append_message("s1", role="user", content="q")
+        db.append_message("s1", role="assistant", content="a")
+        saved = db.latest_assistant_timestamp("s1")
+        replay = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]  # no timestamps
+        agent = SimpleNamespace(_use_prompt_caching=True, _cache_disabled=False, _cache_ttl="5m", model="m",
+                                provider="p", _last_api_response_at=None, _session_db=db, session_id="s1")
+
+        assert provider_cache_expired(agent, replay, now=saved + 331) is True
+        assert provider_cache_expired(agent, replay, now=saved + 60) is False
+    finally:
+        db.close()

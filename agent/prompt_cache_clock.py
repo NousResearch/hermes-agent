@@ -323,7 +323,11 @@ def _display_route(agent: Any) -> tuple[str, str, str]:
 
 
 def _compression_count(agent: Any) -> int:
-    return int(getattr(getattr(agent, "context_compressor", None), "compression_count", 0) or 0)
+    """This process's witness of context rewrites: compressions, plus the in-place archives
+    (prune, micro-compaction) a worker store counts, which leave ``compression_count`` alone."""
+    rewrites = getattr(getattr(agent, "_session_db", None), "context_rewrites", 0)
+    return (int(getattr(getattr(agent, "context_compressor", None), "compression_count", 0) or 0)
+            + (rewrites if isinstance(rewrites, int) else 0))
 
 
 def _storage_errors() -> tuple[type[BaseException], ...]:

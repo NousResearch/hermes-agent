@@ -176,11 +176,15 @@ def test_a_managed_worker_clock_carries_the_owner_generation(tmp_path, monkeypat
             store.queue_token_counts("s1", input_tokens=10, cache_write_tokens=4800, api_call_count=1,
                                      prompt_cache_clock=event_to_json(event))
             assert store.failure is None
+            assert event_from_json(db.get_session("s1")["prompt_cache_clock"]).generation == owner_generation
+            stored = stored_cache_window(db.get_session("s1")["prompt_cache_clock"], session_id="s1",
+                                         generation=db.prompt_cache_generation("s1"))
+            assert (stored["confidence"], stored["tier"]) == ("declared", "1h")
+            # A prune in the same worker archives in place without moving compression_count: the
+            # window it folded is gone, and the next response must not carry its coverage.
+            store.archive_and_compact("s1", [{"role": "user", "content": "[pruned]"}])
+            assert (cache_window(agent).confidence, cache_window(agent).reason) == ("unknown", "compacted")
         finally:
             store.close()
-        assert event_from_json(db.get_session("s1")["prompt_cache_clock"]).generation == owner_generation
-        stored = stored_cache_window(db.get_session("s1")["prompt_cache_clock"], session_id="s1",
-                                     generation=db.prompt_cache_generation("s1"))
-        assert (stored["confidence"], stored["tier"]) == ("declared", "1h")
     finally:
         db.close()

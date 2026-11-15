@@ -1,7 +1,10 @@
 """CLI diagnostics must not emit contributor-controlled terminal codes."""
+import pytest
+
 from scripts.ci import check_thread_hops as guard
 
 
+@pytest.mark.platforms("posix")  # ESC is not a legal Windows file-name character
 def test_untrusted_path_and_source_controls_are_escaped(tmp_path, monkeypatch, capsys):
     path = tmp_path / "tools" / "bad\x1b[31m.py"
     path.parent.mkdir()

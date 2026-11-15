@@ -131,6 +131,7 @@ def test_worktree_add_delete_and_exact_tree(tmp_path):
     assert guard.scan(root=tmp_path, tree=head) == expected
 
 
+@pytest.mark.platforms('posix')  # a newline is not a legal Windows file-name character
 def test_revision_sources_use_one_batch_process(tmp_path, monkeypatch):
     git(tmp_path, 'init', '-q')
     for name in ('a', 'b', 'has space', 'line\nbreak'):
@@ -196,6 +197,24 @@ def test_marker_reasons_with_explanations_remain_valid(separator):
     for marker in ('thread-hop: ok', 'detached-spawn: ok'):
         assert comment_lines(f'x.submit(f) # {marker} {separator} process-scoped work\n', marker) == {1}
     assert guard.sites('tools/a.py', f'x.submit(f) # thread-hop: ok {separator} process-scoped work\n') == {}
+
+
+def test_constructors_without_a_callable_are_not_handoffs():
+    source = 'import threading\nthreading.Thread()\nthreading.Thread(name="x")\nthreading.Timer(1)\n'
+    assert guard.sites('tools/a.py', source) == {}
+
+
+def test_initial_baseline_rejects_changed_sources_and_mismatch(tmp_path, monkeypatch):
+    git(tmp_path, 'init', '-q')
+    put(tmp_path, 'tools/a.py', 'x.submit(a)\n')
+    initial = commit(tmp_path, 'initial')
+    monkeypatch.setattr(guard, 'ROOT', tmp_path)
+    put(tmp_path, 'scripts/ci/thread_hops_baseline.json', json.dumps(sorted(guard.sites('tools/a.py', 'x.submit(a)\n'))))
+    put(tmp_path, 'tools/b.py', 'pass\n')
+    assert guard.main(['--base', initial]) == 2
+    (tmp_path / 'tools/b.py').unlink()
+    put(tmp_path, 'scripts/ci/thread_hops_baseline.json', '[]')
+    assert guard.main(['--base', initial]) == 2
 
 @pytest.mark.parametrize('source', [
     'pool.submit(safe); pool.submit(unbound)  # thread-hop: ok — safe is process scoped\n',

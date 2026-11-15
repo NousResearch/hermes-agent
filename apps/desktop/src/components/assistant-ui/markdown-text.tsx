@@ -473,6 +473,11 @@ function MarkdownImageContent({
   // the w-fit container hugs it so the download button and shadow sit on the
   // image, not on the letterbox. Without a frame (a source that failed last
   // time) it lays out as a plain capped image, like before frames existed.
+  // The click target takes the frame's height so the image's max-h-full has a
+  // definite height to resolve against. Without it a portrait image ignores
+  // the cap and paints over the text below the frame (#154409). A button
+  // centres its content vertically, so it is a top-aligned flex box: a shorter
+  // image stays at the top, under the download button.
   const framed = Boolean(image.frameStyle)
 
   return (
@@ -481,6 +486,7 @@ function MarkdownImageContent({
         <ZoomableImage
           {...props}
           alt={alt}
+          buttonClassName={framed ? 'flex h-full items-start' : undefined}
           className={cn(
             'm-0 block h-auto w-auto max-w-full rounded-lg object-scale-down shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
             framed ? 'max-h-full' : 'max-h-(--image-preview-height)',

@@ -152,6 +152,7 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
 def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
+    cwd_key: Optional[str] = None,
     notify_on_complete: bool, watch_patterns: Optional[list[str]], approval_note: Optional[str],
     completion_output_chars: int = 0,
     pty_disabled_reason: Optional[str],
@@ -174,7 +175,7 @@ def spawn_background_process(
     )
 
     effective_cwd = _resolve_command_cwd(
-        workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
+        workdir=workdir, default_cwd=cwd, session_key=cwd_key or session_key, env_type=env_type,
         mounted_host=mounted_host if mounted_host is not None else getattr(env, "host_cwd", None),
         env=env,
     )

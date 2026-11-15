@@ -18,7 +18,7 @@ import time
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 
-from agent.file_safety import get_nt_namespace_error, get_read_block_error
+from agent.file_safety import get_nt_namespace_error, get_read_block_error, is_blocked_device_path
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
 from tools.binary_extensions import has_binary_extension
 from tools.skill_provenance import is_background_review
@@ -118,21 +118,6 @@ def _apply_char_budget(result_dict: dict, content: str, offset: int, total_lines
 # Above this size, a wide read (limit > 200) gets a hint toward targeted reads.
 _LARGE_FILE_HINT_BYTES = 512_000
 
-# Device/fd paths whose reads hang the process. Checked by path only — no I/O.
-_BLOCKED_DEVICE_PATHS = frozenset({
-    "/dev/zero", "/dev/random", "/dev/urandom", "/dev/full",     # never reach EOF
-    "/dev/stdin", "/dev/tty", "/dev/console",                    # block on input
-    "/dev/stdout", "/dev/stderr",                                # nonsensical to read
-    "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",                       # fd aliases
-})
-# /proc/<pid>/... (and /proc/<pid>/task/<tid>/...) files that leak secrets,
-# argv, memory layout (ASLR oracle: maps family, auxv, pagemap) or raw memory.
-_BLOCKED_PROC_SUFFIXES = (
-    "/fd/0", "/fd/1", "/fd/2",  # stdio aliases
-    "/environ", "/cmdline", "/maps", "/smaps", "/smaps_rollup", "/numa_maps",
-    "/mem", "/auxv", "/pagemap")
-
-
 def _file_ops_uses_host_paths(file_ops) -> bool:
     """True when *file_ops* targets the host filesystem (only then may we stat paths
     or rewrite V4A headers to host-absolute paths; sandboxes have their own namespace)."""
@@ -185,14 +170,6 @@ def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, path_t
         else f"{m.group(1)}{_res(m.group(2), entry=True)} -> {_res(m.group(3), entry=True)}", patch)
 
 
-def _is_blocked_device_path(path: str) -> bool:
-    """Return True for concrete device/fd/proc paths that can hang reads or leak process state."""
-    normalized = os.path.normpath(_expand_tilde(path))
-    if normalized in _BLOCKED_DEVICE_PATHS:
-        return True
-    return normalized.startswith("/proc/") and normalized.endswith(_BLOCKED_PROC_SUFFIXES)
-
-
 def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> bool:
     """True if the path (literal, any symlink hop, or final realpath) is a blocked device.
 
@@ -204,7 +181,7 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     if base_dir is not None and not os.path.isabs(expanded):
         expanded = os.path.join(os.fspath(base_dir), expanded)
     normalized = os.path.normpath(expanded)
-    if _is_blocked_device_path(normalized):
+    if is_blocked_device_path(normalized):
         return True
     if hosted_scope() is not None:
         return False  # a sandbox path: its symlinks are not this host's to follow
@@ -219,7 +196,7 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
         if not os.path.isabs(target):
             target = os.path.join(os.path.dirname(current), target)
         target = os.path.normpath(target)
-        if _is_blocked_device_path(target):
+        if is_blocked_device_path(target):
             return True
         if target in seen:
             break
@@ -230,7 +207,7 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
         resolved = os.path.normpath(os.path.realpath(normalized))
     except (OSError, ValueError):
         return False
-    return _is_blocked_device_path(resolved)
+    return is_blocked_device_path(resolved)
 
 
 def _resolved_match_path(path: str, task_id: str) -> str:

@@ -26,8 +26,8 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional
 from hermes_cli.process_identity import (
     own_process_groups, register_child, release_process_group_once_empty, spawn_env, spawned_by_this_process)
 from hermes_constants import get_hermes_home, hermes_home_key
-from tools.browser_harness_dirs import (daemon_env, daemon_identity, fit_default_socket_dir, harness_pid_file,
-                                        namespace_harness_dirs)
+from tools.browser_harness_dirs import (
+    daemon_env, daemon_identity, harness_current_target, harness_pid_file, namespace_harness_dirs)
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,8 @@ def _hermes_ensure_own_tab():
     except Exception:
         pass  # best-effort: worst case is pre-fix behavior
     try:
-        open(_marker, "w").close()
+        # Shared temp root + predictable name: never truncate through a planted symlink.
+        _os.close(_os.open(_marker, _os.O_WRONLY | _os.O_CREAT | getattr(_os, "O_NOFOLLOW", 0), 0o600))
     except OSError:
         pass
 _hermes_ensure_own_tab()
@@ -196,7 +197,9 @@ def _base_subprocess_env() -> dict:
         env.pop("PYTHONPATH", None)
     env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
-    namespace_harness_dirs(env, _served_profile_tag())  # a served profile's own harness runtime/tmp dirs
+    # The harness reuses any live daemon of a BU_NAME in its runtime dir, and that dir is per OS user:
+    # every profile (served, CLI, cron) gets its own, or one drives another's attached browser (#149829).
+    namespace_harness_dirs(env, hermes_home_key())
     # A daemon the CLI starts inherits this tag; _own_harness_daemon owns only one that names us.
     env.update(spawn_env("browser-harness-daemon"))
     return env
@@ -520,6 +523,17 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
         logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
 
 
+def _record_driven_tab(env: dict, task_id: Optional[str]) -> None:
+    """Tell the task's vault supervisor which tab this exec's daemon drives, so a later
+    ``browser_vault`` fill lands in that tab rather than the first one on the origin."""
+    if not (env.get("BU_CDP_WS") or env.get("BU_CDP_URL")):
+        return
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    supervisor = SUPERVISOR_REGISTRY.get(task_id or "default")
+    if supervisor is not None:
+        supervisor.set_driven_target(harness_current_target(env))
+
+
 def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool,
                    force_local_sidecar: bool = False, real_profile: bool = True) -> Optional[str]:
     """Resolve where the harness connects; returns an error string or None. Real-profile consent runs
@@ -815,7 +829,6 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         return tool_error(route_err)
     if local_sidecar:
         env["BU_NAME"] = _sidecar_daemon_name(session)
-    fit_default_socket_dir(env)  # BU_NAME is final: a deep HOME's socket would overflow sun_path
     _exec_route_is_sidecar[route_key] = local_sidecar
     local_engine = env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None)
     bot_desktop_browser = bool(local_engine)
@@ -864,6 +877,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
         finally:
             owning.cancel(wait=5)  # an in-flight check finishes before the post-call one runs
+            _record_driven_tab(env, task_id)  # only a call that ran: the supervisor is this call's browser's
 
     if bot_desktop_browser:
         from tools.browser_session import run_fenced

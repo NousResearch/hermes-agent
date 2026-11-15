@@ -5,6 +5,7 @@ session row it owned; pickers then listed it as resumable. The stamp itself is t
 ``session.detach {end_reason}`` (``session_acp_lifecycle.end_idle_viewer_session``); this module only
 decides which live rows read as closed.
 """
+from gateway.session_history_mount import is_history_mount
 from hermes_state_local import local_receipt
 from hermes_state_runtime import RuntimeStoreError
 
@@ -21,8 +22,8 @@ def closed_idle_unviewed(live, execution_state, target_ended_at):
     in one off-loop query (``gateway/session_live_listing``)."""
     if live is None or live.subscribers or execution_state != 'idle':
         return False
-    if live.superseded:
-        return True  # an old messaging conversation opened read-only: history once no one views it
+    if live.detached or is_history_mount(live):
+        return True  # an old messaging conversation or a stored one: history once no one views it
     return target_ended_at is not None
 
 
@@ -31,7 +32,7 @@ def closed_and_unviewed(authority, session_id, handle):
     live = authority.sessions.get(session_id)
     if live is None or live.subscribers or handle.execution_state != 'idle':
         return False
-    if live.superseded:
+    if live.detached or is_history_mount(live):
         return True
     target = _local_target(authority, session_id)
     row = authority.db.get_session_list_row(target) if target else None

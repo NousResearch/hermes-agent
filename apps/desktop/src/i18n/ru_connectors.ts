@@ -7,7 +7,7 @@ export const ruConnectors = {
       allApps: 'Все приложения',
       receiptConnected: apps => `Подключены: ${apps}`,
       receiptNone: 'Новые приложения не подключены',
-      receiptTimedOut: 'Закрыто через 5 минут',
+      receiptTimedOut: 'Закрыто через 10 минут',
       finishInBrowser: 'Завершите в браузере',
       signInFailed: 'Не удалось подключиться. Нажмите, чтобы повторить'
     }

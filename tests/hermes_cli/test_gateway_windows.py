@@ -386,7 +386,8 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "pythonw.exe" in content
     assert "hermes_cli.main" in content
     assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
+    assert ", 0, True)" in content  # hidden window; waits, so the task sees the gateway's exit (#146976)
+    assert content.rstrip().endswith("WScript.Quit code")
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content
@@ -490,6 +491,23 @@ def test_reconcile_leaves_one_autostart_mechanism(monkeypatch, tmp_path):
     gateway_windows.reconcile_autostart_launchers()
     assert gateway_windows.redundant_autostart_entries() == []
     assert [p.name for p in (tmp_path / "no-task" / "Startup").iterdir()] == ["Hermes_Gateway_alice.vbs"]
+
+
+def test_reconcile_rewrites_an_older_startup_entry_as_utf16(monkeypatch, tmp_path):
+    """wscript.exe reads a BOM-less .vbs in the ANSI code page: an older UTF-8 Startup entry chaining a
+    non-ASCII path quits silently at logon (FileExists on the garbled target is false). The update
+    reconcile rewrites it as UTF-16 with a BOM."""
+    import codecs
+    startup, script = _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path / "Usuário 方舟")
+    (startup / "Hermes_Gateway_alice.cmd").unlink()
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script)
+
+    assert gateway_windows.reconcile_autostart_launchers() == ([], [])
+    raw = (startup / "Hermes_Gateway_alice.vbs").read_bytes()
+    assert raw.startswith(codecs.BOM_UTF16_LE)
+    assert raw.decode("utf-16") == gateway_windows._build_startup_launcher(script)
+    assert sorted(p.name for p in startup.iterdir()) == ["Hermes_Gateway_alice.vbs"]
 
 
 def test_reconcile_warns_when_legacy_entry_cannot_be_removed(monkeypatch, tmp_path):
@@ -669,6 +687,43 @@ def test_scheduled_task_drift_is_silent_when_aligned_or_unqueryable(monkeypatch)
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
     gateway_windows._print_scheduled_task_drift("Hermes_Gateway")
     assert printed == []
+
+
+def test_install_scheduled_task_registers_the_xml_principal_only(monkeypatch, tmp_path):
+    """#152218: ``/RU <user> /NP`` on top of ``/XML`` replaced the template's InteractiveToken +
+    LeastPrivilege principal with S4U, which an elevated install ran at High integrity in session 0.
+    The task must be created from the XML alone, and that XML must carry the user's principal."""
+    creates: list[list[str]] = []
+    xml_seen: dict[str, str] = {}
+
+    def fake_schtasks(args):
+        if args[0] == "/Create":
+            creates.append(list(args))
+            xml_seen["text"] = Path(args[args.index("/XML") + 1]).read_text(encoding="utf-16")
+        return (0, "SUCCESS", "")
+
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    ok, _detail = gateway_windows._install_scheduled_task("Hermes_Gateway", tmp_path / "gateway.cmd")
+
+    assert ok is True
+    assert len(creates) == 1
+    assert not {"/RU", "/RP", "/NP", "/IT", "/RL"} & set(creates[0])
+    assert "<UserId>PC\\me</UserId>" in xml_seen["text"]
+    assert "<LogonType>InteractiveToken</LogonType>" in xml_seen["text"]
+    assert "<RunLevel>LeastPrivilege</RunLevel>" in xml_seen["text"]
+
+
+def test_scheduled_task_drift_flags_an_s4u_principal():
+    """An install registered before #152218 (S4U principal) is drift, so ``start()`` / ``hermes
+    update`` re-register it; an export that omits LogonType is not."""
+    launcher = Path(r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    s4u = template.replace("<LogonType>InteractiveToken</LogonType>", "<LogonType>S4U</LogonType>")
+    assert s4u != template
+    assert gateway_windows.compare_scheduled_task_drift(s4u, template) == ["LogonType S4U"]
+    no_logon = template.replace("<LogonType>InteractiveToken</LogonType>", "")
+    assert gateway_windows.compare_scheduled_task_drift(no_logon, template) == []
 
 
 def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_path):

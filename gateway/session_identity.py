@@ -107,10 +107,18 @@ def clear_identity(source: Any) -> None:
 
 
 def transport_profile_of(source: Any) -> Optional[str]:
-    """The receiving bot's profile to persist alongside a routing entry (``SessionEntry.transport_profile``);
-    None outside multiplexing or when nothing resolved the source (an unknown transport is never guessed)."""
+    """The receiving bot's profile to persist alongside a routing entry (``SessionEntry.transport_profile``,
+    ``sessions.transport_profile``): the bot a live adapter or a persisted record named. None outside
+    multiplexing, when nothing resolved the source, or when a messaging transport was only inferred:
+    a restored row is trusted as the receiving bot, so the primary-profile guess must never be saved.
+    A LOCAL chat has no bot; its inferred transport is the launch profile's authority (#139060), a fact."""
+    from gateway.config import Platform
     identity = identity_of(source)
-    return identity.transport_profile if identity is not None and identity.multiplexed else None
+    if identity is None or not identity.multiplexed:
+        return None
+    if identity.transport_inferred and getattr(source, "platform", None) != Platform.LOCAL:
+        return None
+    return identity.transport_profile
 
 
 def replace_source(source: SessionSource, **changes: Any) -> SessionSource:
@@ -178,9 +186,17 @@ def restore_identity(
     authorization_home = (
         Path(get_process_hermes_home()) if transport_name == primary_profile
         else get_profile_dir(transport_name))
-    runtime_home = (
-        authorization_home if runtime_name == transport_name
-        else Path(runner._resolve_profile_home_for_source(source)))
+    from gateway.profile_routing import ProfileRouteRejected
+    try:
+        runtime_home = (
+            authorization_home if runtime_name == transport_name
+            else Path(runner._resolve_profile_home_for_source(source)))
+    except ProfileRouteRejected as exc:
+        # A restored origin naming a profile this gateway no longer serves is refused, not revived
+        # under the launch home; nothing is pinned, so later scope reads refuse it too.
+        source.profile_route_rejected = True
+        source._rejected_route_profile = exc.profile
+        return None
     source._authorization_profile_home = authorization_home
     identity = RoutingIdentity(
         transport_profile=transport_name, runtime_profile=runtime_name,
@@ -263,11 +279,16 @@ def resolve_identity(
         source.profile = routed or adapter_profile
 
     runtime_name = _name(source.profile) or primary_profile
-    # A routed runtime goes through the runner's resolver (missing-profile fallback + warning);
-    # a bot serving its own profile runs where it authorizes.
-    runtime_home = (
-        authorization_home if runtime_name == transport_name
-        else Path(runner._resolve_profile_home_for_source(source)))
+    # A routed runtime goes through the runner's resolver, which refuses a missing or unserved
+    # named profile; a bot serving its own profile runs where it authorizes.
+    try:
+        runtime_home = (
+            authorization_home if runtime_name == transport_name
+            else Path(runner._resolve_profile_home_for_source(source)))
+    except ProfileRouteRejected as exc:
+        source.profile_route_rejected = True
+        source._rejected_route_profile = exc.profile
+        raise IdentityUnresolved(f"{where}: {exc}") from exc
     identity = RoutingIdentity(
         transport_profile=transport_name, runtime_profile=runtime_name,
         authorization_home=authorization_home, runtime_home=runtime_home,

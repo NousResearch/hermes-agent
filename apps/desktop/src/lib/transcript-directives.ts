@@ -30,6 +30,13 @@ export interface TranscriptDirectiveProps {
   source: string
   /** True while the surrounding message is still streaming. */
   streaming: boolean
+  /** The session whose transcript renders this directive (stored id, else the
+   *  runtime id), or null while that chat has no session yet. Pass it to
+   *  `host.composer.*` so an action lands in THIS chat's composer rather than
+   *  whichever one is active. Hosts before this field omit it, so plugins
+   *  feature-detect (`props.sessionId !== undefined`) and keep their old
+   *  call otherwise. */
+  sessionId: null | string
 }
 
 /** Payload of a `transcript.directives` contribution's `data`. */

@@ -30,8 +30,13 @@ import json
 import re
 import subprocess
 import sys
+from pathlib import Path
 
-SRC_DIRS = ("agent", "gateway", "hermes_cli", "tools", "tui_gateway", "cron", "acp_adapter", "plugins")
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+from hermes_agent.compat.paths import original_path
+from scripts.code_health import gitio
+
+SRC_DIRS = ("agent", "gateway", "hermes_cli", "tools", "tui_gateway", "cron", "acp_adapter", "plugins", "hermes_agent")
 _TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def test_", re.MULTILINE)
 
 
@@ -39,9 +44,13 @@ def _git(*args: str) -> str:
     return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", check=False).stdout
 
 
-def _changed_py(base: str, head: str) -> list[str]:
-    out = _git("diff", "--name-only", "--diff-filter=M", base, head)
-    return [f for f in out.split() if f.endswith(".py")]
+def _changed_py(base: str, head: str) -> list[tuple[str, str]]:
+    """``(path at base, path at head)`` for every modified or renamed ``.py`` file; a moved file is
+    compared with its old self (``-l0``: no rename-detection limit, so a large move is still seen; a
+    file moved by a chunk is paired with its base file through ``MOVES``). The old-path files the shim
+    generator writes are left out: they are not the module any more."""
+    changes = gitio.changed_files(gitio.repo_root(Path.cwd()), base, head, "-l0")
+    return [(c.old, c.new) for c in changes if c.status in "MR" and c.new.endswith(".py")]
 
 
 def _show(rev: str, path: str) -> str | None:
@@ -101,6 +110,7 @@ def public_methods(src: str) -> set[str]:
 
 
 def _is_source(path: str) -> bool:
+    path = original_path(path)
     return "/" not in path or path.split("/", 1)[0] in SRC_DIRS
 
 
@@ -108,16 +118,16 @@ def diff_surface(base: str, head: str) -> dict:
     dropped_names: dict[str, list[str]] = {}
     dropped_methods: dict[str, list[str]] = {}
     test_drops: dict[str, tuple[int, int]] = {}
-    for path in _changed_py(base, head):
-        before, after = _show(base, path), _show(head, path)
+    for old, path in _changed_py(base, head):
+        before, after = _show(base, old), _show(head, path)
         if before is None or after is None:
             continue
-        if path.startswith("tests/"):
+        if old.startswith("tests/"):
             nb, na = len(_TEST_DEF_RE.findall(before)), len(_TEST_DEF_RE.findall(after))
             if na < nb:
                 test_drops[path] = (nb, na)
             continue
-        if not _is_source(path) or path.startswith("tests"):
+        if not (_is_source(old) or _is_source(path)):
             continue
         pb, pa = public_toplevel(before), public_toplevel(after)
         if pb is not None and pa is not None and (gone := sorted(pb - pa)):

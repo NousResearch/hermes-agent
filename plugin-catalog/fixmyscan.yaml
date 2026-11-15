@@ -1,0 +1,35 @@
+name: fixmyscan
+title: FixMyScan
+repo: https://github.com/FixMyScan/fixmyscan-mcp
+sha: 1c87e4a19752910abaab5688dc8e8cf66282899e
+version: "1.0.0"
+description: >-
+  Turn scanned books (PDF or DjVu, up to 1,000 pages) into clean, searchable PDFs for Kindle, Kobo,
+  reMarkable and tablets through FixMyScan's hosted MCP server (Streamable HTTP at
+  https://mcp.fixmyscan.com/mcp, OAuth 2.1 with dynamic client registration and PKCE, no keys in
+  config): crop pages to the text, straighten them, make them sharp black and white or greyscale,
+  split two-page spreads and add a searchable text layer, then return a download link. Bundles the
+  fixmyscan workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/),
+  configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to
+  FixMyScan's server at mcp.fixmyscan.com, signed in as the user through FixMyScan's OAuth sign-in,
+  and counts against that account's FixMyScan allowance or plan. The tool list comes from the
+  server at run time, so the pinned commit doesn't cover it. fix_scan uploads the user's file or
+  downloads the public link they give; files are deleted 24 hours after a book is ready.
+  Write-capable tools: fix_scan and create_upload_link (start a book), cancel_scan and delete_scan
+  (stop or delete one of the user's books). Tool results enter the session context and so reach the
+  user's model provider. The package marks the server untrusted. OAuth must be enabled with
+  `hermes mcp add fixmyscan --url https://mcp.fixmyscan.com/mcp --auth oauth`; the bundled mcp.json
+  alone yields 401 on tool calls.
+maintainer: FixMyScan
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://fixmyscan.com/ai
+platforms: []
+known_issues:
+  - "Sign in once after installing: hermes mcp add fixmyscan --url https://mcp.fixmyscan.com/mcp --auth oauth"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

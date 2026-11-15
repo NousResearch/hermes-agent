@@ -143,9 +143,6 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
         (legs[('darwin-arm64', 'commit')], 'darwin-arm64', [
             'HermesBundled-0.33.0-mac-arm64.dmg', 'HermesBundled-0.33.0-mac-arm64.zip',
             'HermesBundled-0.33.0-mac-arm64.zip.blockmap']),
-        (legs[('darwin-x64', 'commit')], 'darwin-x64', [
-            'HermesBundled-0.33.0-mac-x64.dmg', 'HermesBundled-0.33.0-mac-x64.zip',
-            'HermesBundled-0.33.0-mac-x64.zip.blockmap']),
         (universal_assembler(jobs), 'windows-universal', ['HermesBundled-0.33.0.0-win.msixbundle']),
     ]
     artifact_keys = set()
@@ -214,11 +211,11 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     r2_server.store[receipt_key] = original
 
     # The actual summary command remains useful after an admitted matrix failure.
-    r2_server.store.pop(f'releases/commit/{sha}/handoff-darwin-x64.json')
+    r2_server.store.pop(f'releases/commit/{sha}/handoff-darwin-arm64.json')
     summary.unlink()
     summary_env['RELEASE_NEEDS'] = json.dumps({'validate': {'result': 'success'},
-                                             gates['darwin-x64']: {'result': 'failure'}})
+                                             gates['darwin-arm64']: {'result': 'failure'}})
     incomplete = shell_step(tmp_path, r2_server, summary_job,
                             'Render the full expected-binary matrix', summary_env)
     assert incomplete.returncode == 0, incomplete.stdout + incomplete.stderr
-    assert f"failed: {gates['darwin-x64']}" in summary.read_text(encoding='utf-8-sig')
+    assert f"failed: {gates['darwin-arm64']}" in summary.read_text(encoding='utf-8-sig')

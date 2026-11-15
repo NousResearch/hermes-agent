@@ -14,8 +14,8 @@ import subprocess
 import sys
 import time
 
-from agent.managed_worker import accept_result, encode_frame, read_frame
-from gateway.session_worker_reservation import reserve_admission_worker
+from agent.managed_worker import ACTIVITY_FRAME, accept_result, activity_interval, encode_frame, read_frame
+from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
 from hermes_state_runtime import RuntimeStoreError
 
 # The interpreter only imports psutil before it introduces itself; a child silent this long
@@ -24,8 +24,12 @@ HELLO_SECONDS = 60
 # After Stop the child interrupts its agent and emits its result; the owner terminates a
 # child that has not acknowledged within this window instead of waiting on the pipe forever.
 STOP_ACK_SECONDS = 30
+# How long a lost attempt's board note may hold up settling its admission (the note is
+# advisory; a busy board's write finishes in the background).
+LOSS_RECORD_WAIT_S = 10
 # Own session (POSIX): a worker whose owner died kills its whole group (managed_worker
 # _die_with_owner); on Windows it exits itself.
+# detached-spawn: ok — covered: the worker kills its own group when its owner dies (_die_with_owner)
 WORKER_POPEN = {'start_new_session': True, 'close_fds': True}
 
 
@@ -34,13 +38,16 @@ class ManagedExecutionUnknown(RuntimeError):
 
 
 def managed_policy(authority, ref):
-    """Bypass (safe / config-only) sessions always execute out of process; other local
-    sessions only under the explicit custom-provider opt-in.
+    from gateway.session_policy import policy_for_source
+    return policy_if_managed(policy_for_source(authority.runner, authority.sessions[ref.session_id].source))
+
+
+def policy_if_managed(policy):
+    """``policy`` when its session executes out of process, else None. Bypass (safe / config-only)
+    sessions always do; other local sessions only under the explicit custom-provider opt-in.
 
     The frozen creation snapshot, not current profile config, chooses execution.
     """
-    from gateway.session_policy import policy_for_source
-    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is None:
         return None
     if policy.ignore_user_config or policy.kanban_json is not None:
@@ -72,7 +79,10 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
         **({'surface_v1': row['payload']['surface_v1']} if row['payload'].get('surface_v1') else {}),
         **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {})})
     from gateway.session_worker_construct import construct_inputs
-    request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id)
+    request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id, live.source)
+    # This owner consumes the worker's ACTIVITY_FRAME, often enough for its wedge timeout.
+    from gateway.run import _float_env
+    request['activity_frames_v1'] = {'interval': activity_interval(_float_env("HERMES_AGENT_TIMEOUT", 1800))}
     config = _worker_config(authority, policy)
     hydrated = replace(policy, config_json=json.dumps(config), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
@@ -152,6 +162,8 @@ class ManagedWorker:
         self.write_lock = threading.Lock()
         self.commands = queue.Queue(maxsize=16)
         self.closed = threading.Event()
+        # Owner-side activity clock: a turn with no frame past agent.gateway_timeout is wedged.
+        self.last_frame_at = time.monotonic()
         # Latched the moment Stop is admitted, before any pipe write: the owner's read loop
         # supervises it even while the child has not yet said hello or read its bootstrap.
         self.stop = asyncio.Event()
@@ -188,10 +200,7 @@ class ManagedWorker:
         """Reader thread body. It owns ``stdout``: no other thread closes it under a blocked read."""
         try:
             while self._demand.acquire() and not self.closed.is_set():
-                try:
-                    item = read_frame(self.process.stdout)
-                except (EOFError, ValueError, OSError, RecursionError) as exc:
-                    item = exc  # EOF / invalid or oversized frame / closed pipe: the owner raises it
+                item = self._read_turn_frame()
                 try:
                     loop.call_soon_threadsafe(self._deliver, item)
                 except RuntimeError:
@@ -201,7 +210,21 @@ class ManagedWorker:
         finally:
             self.process.stdout.close()
 
+    def _read_turn_frame(self):
+        """The next frame the turn loop handles. ``ACTIVITY_FRAME`` (the worker's agent is still
+        active) only moves ``last_frame_at`` and never reaches it, so it renders nowhere and never
+        counts as a Stop acknowledgment."""
+        while True:
+            try:
+                item = read_frame(self.process.stdout)
+            except (EOFError, ValueError, OSError, RecursionError) as exc:
+                return exc  # EOF / invalid or oversized frame / closed pipe: the owner raises it
+            if item != ACTIVITY_FRAME:
+                return item
+            self.last_frame_at = time.monotonic()
+
     def _deliver(self, item):
+        self.last_frame_at = time.monotonic()
         self._frames.append(item)
         self._arrived.set()
 
@@ -293,8 +316,8 @@ class ManagedWorker:
             return
         try:
             proc = psutil.Process(self.worker[0])
-            from hermes_cli.process_identity import process_birth
-            if process_birth(proc) == self.worker[1]:
+            from hermes_cli.process_identity import worker_birth
+            if worker_birth(proc) == self.worker[1]:
                 (proc.kill if kill else proc.terminate)()
         except psutil.Error:
             pass
@@ -545,6 +568,39 @@ def _stopped_before_spawn(authority, ref, row):
     return True
 
 
+def _record_lost_attempt(authority, policy, exc, reason, scope):
+    """Start the board disposition (``worker_lost``) for a lost Kanban card attempt; the task, or None.
+
+    A worker that dies in ``worker.adopt`` never writes ``worker_bound``/``worker_result``, so
+    without it the card's run learns nothing from its own loss. A deliberate Stop or a
+    superseded generation is not a loss. Tracked, so retirement joins the write.
+    """
+    if (not getattr(policy, 'kanban_json', None) or isinstance(exc, asyncio.CancelledError)
+            or reason in ('managed_worker_stopped', 'stale_generation')):
+        return None
+    from gateway.session_kanban import record_worker_loss
+    from gateway.session_runtime_workers import track_mutation
+    return track_mutation(authority, asyncio.to_thread(partial(record_worker_loss, policy, reason,
+                                                               pid=(scope or {}).get('pid'), bound=scope is not None)))
+
+
+async def _settle_lost(authority, row, scope, recording):
+    """Settle a lost worker's admission ``unknown`` once its board note (``recording``) landed.
+
+    The note comes first: the submitter exits on the settled 'unknown' and the crash sweep then
+    books the bound interpreter, so a later write is dropped and an exit-0 worker_result reads
+    as a protocol violation. A busy board holds this up ``LOSS_RECORD_WAIT_S`` at most (the
+    write carries on, tracked), and a cancellation during the wait still settles.
+    """
+    from gateway.session_worker_reservation import lose_admission_worker
+    from gateway.session_runtime_workers import tracked_write
+    try:
+        if recording is not None:
+            await asyncio.wait({recording}, timeout=LOSS_RECORD_WAIT_S)
+    finally:
+        await tracked_write(authority, partial(lose_admission_worker, authority, row, scope))
+
+
 async def _spawn_registered_worker(authority, ref, row):
     """Spawn the turn's child and register it for Stops: ``(worker, process)``, or None when the spawn was cancelled (the
     interrupted result is already recorded). The generation stays marked spawning until registration."""
@@ -588,7 +644,50 @@ async def admit_managed(authority, ref, row, policy):
         result = workspace_unavailable_result(policy)
         authority.pending_results[row['admission_id']] = {'result': result, 'usage': {}}
         return result['final_response']
+    result = _unsupported_command_result(row)
+    if result is not None:
+        authority.pending_results[row['admission_id']] = {'result': result, 'usage': {}}
+        return result['final_response']
     return await execute_managed(authority, ref, row, policy)
+
+
+def _unsupported_command_result(row):
+    """The never-run result for a managed turn whose text is ``/moa``, else None. The worker runs the
+    session's frozen route and never binds a preset, so every route into it (raw ``prompt.submit``,
+    a queued row, a slash.exec that got past its own check) is refused here instead of handing the
+    worker the literal command. A finite prompt's exit code is its only verdict, so it fails."""
+    text = row['payload'].get('text')
+    if not isinstance(text, str):
+        return None
+    from gateway.platforms.event import MessageEvent
+    from hermes_cli.commands import resolve_command
+    name = MessageEvent(text=text).get_command()
+    command = resolve_command(name) if name else None
+    if command is None or command.name != 'moa':
+        return None
+    from agent.i18n import t
+    text = t('gateway.moa.managed_session')
+    if row['payload'].get('finite') is not True:
+        return {'final_response': text, 'messages': []}
+    from agent.turn_failure_copy import stamp_failure
+    return stamp_failure({'final_response': text, 'messages': [], 'api_calls': 0, 'tools': [],
+                          'failed': True, 'completed': False, 'error': text}, 'command_unavailable', False)
+
+
+async def _finalize_managed_refusal(authority, session_id, accepted):
+    """Owner-side drop of a managed worker's safety-refused turn (Bot Chat / safe-mode).
+
+    The worker flushed the refused turn to the SHARED transcript and has now exited (its lease
+    released), but a managed worker cannot rewind its own transcript — so the refused turn must be
+    dropped HERE or the next worker reloads it and the deterministic safety filter re-refuses every
+    later message (the "stuck session" report; #149708 review). No cached owner agent to evict (the
+    subprocess is gone), so session_key is None. Best-effort: a refusal must never crash settlement.
+    """
+    if accepted.get('failure_reason') != 'content_policy_blocked':
+        return
+    with suppress(Exception):
+        await authority.runner._hmwa_retain_content_policy_refused_turn(
+            session_id, None, accepted.get('refused_turn_boundary_row_id'))
 
 
 async def execute_managed(authority, ref, row, policy):
@@ -627,7 +726,8 @@ async def execute_managed(authority, ref, row, policy):
         # psutil + BEGIN IMMEDIATE: off-loop and retirement-tracked, like admission and claim.
         from gateway.session_runtime_workers import tracked_write
         scope = await tracked_write(authority, partial(reserve_admission_worker, authority,
-                    admission_id=row['admission_id'], process=process, principal_id=row['principal_id'], hello=hello))
+                    admission_id=row['admission_id'], process=process, principal_id=row['principal_id'], hello=hello,
+                    worker_subject=owner_worker_subject()))
         worker.worker = (scope['pid'], scope['birth'])
         # The child reads nothing else until the exact reservation has committed.
         frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope, text)
@@ -666,6 +766,7 @@ async def execute_managed(authority, ref, row, policy):
                 with suppress(subprocess.TimeoutExpired):
                     await asyncio.to_thread(process.wait, 10)
                 accepted = _with_stop_cause(accepted, worker)
+                await _finalize_managed_refusal(authority, scope['session_id'], accepted)
                 # Like in-process execution, settlement belongs to the drain's stream lock.
                 authority.pending_results[row['admission_id']] = {
                     'result': {**accepted, 'local_viewer': True}, 'usage': usage,
@@ -674,18 +775,17 @@ async def execute_managed(authority, ref, row, policy):
             raise RuntimeStoreError('invalid_worker_frame')
     except (Exception, asyncio.CancelledError) as exc:
         import logging
-        logging.getLogger(__name__).warning('Managed worker lost: %s',
-            exc.reason if isinstance(exc, RuntimeStoreError) else type(exc).__name__)
+        reason = exc.reason if isinstance(exc, RuntimeStoreError) else type(exc).__name__
+        logging.getLogger(__name__).warning('Managed worker lost: %s', reason)
         if scope is None:
             if isinstance(exc, asyncio.CancelledError) or (
                     isinstance(exc, RuntimeStoreError) and exc.reason == 'managed_worker_stopped'):
                 # Stopped before the child ever received its bootstrap: nothing executed, so
                 # this settles like an ordinary interrupted turn (the finally kills the child).
                 return _interrupted_before_bootstrap(authority, row, worker.stop_cause)
+            _record_lost_attempt(authority, policy, exc, reason, scope)  # nothing bound: a late note is dropped, never misbooked
             raise
-        from gateway.session_worker_reservation import lose_admission_worker
-        from gateway.session_runtime_workers import tracked_write
-        await tracked_write(authority, partial(lose_admission_worker, authority, row, scope))
+        await _settle_lost(authority, row, scope, _record_lost_attempt(authority, policy, exc, reason, scope))
         live = authority.sessions[ref.session_id]
         with live.event_stream.lock:
             live.controls.snapshot(ref.session_id, None)

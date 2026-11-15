@@ -78,6 +78,14 @@ async function loadRfb(): Promise<
   ) => RfbLike
 }
 
+/** The viewer hashes its lease id with crypto.subtle and noVNC needs a secure context: over plain
+ *  HTTP from another machine there is neither, so the pane says why instead of a stream. */
+function ScreenNeedsHttps({ label }: { label: string }) {
+  return globalThis.crypto?.subtle ? null : (
+    <div className="absolute inset-0 grid place-items-center p-6 text-center text-xs text-white/70">{label}</div>
+  )
+}
+
 export function BotScreenPane({ bot }: { bot: RosterRow }) {
   const t = useBots()
   const screen = useValue($screenState)
@@ -183,6 +191,16 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       }
 
       detach()
+
+      // The viewer hashes its lease id with crypto.subtle, and noVNC needs a secure context too.
+      // A Webapp opened over plain HTTP from another machine has neither: never ask the bot for a
+      // viewer there (the pane says why) instead of failing on a missing digest afterwards.
+      if (!globalThis.crypto?.subtle) {
+        setConn('error')
+
+        return
+      }
+
       const generation = attachGeneration.current
       setConn('attaching')
       setError(null)
@@ -563,6 +581,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         {conn === 'error' && error ? (
           <div className="absolute inset-x-0 bottom-0 bg-red-950/80 px-3 py-1.5 text-xs text-red-200">{error}</div>
         ) : null}
+        <ScreenNeedsHttps label={t.screen.needsHttps} />
       </div>
     </div>
   )

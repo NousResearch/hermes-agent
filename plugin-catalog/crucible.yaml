@@ -1,0 +1,20 @@
+name: crucible
+repo: https://github.com/samshapley/hermes-crucible
+sha: c8d73eb0da87ffb6274be6b7294be58a85eea7a9
+description: "Adversarial research and code audits. Proposer agents commit quoted claims, attackers try to break them, a blind referee checks every quote against its source and re-runs every proof of concept in a sandbox, and you get a map of what survived and what was held back. Disclosure — Crucible runs spend tokens on your configured model through parallel subagents (each run has a USD cap). Research mode fetches the web pages its agents cite directly from your machine (public addresses only), plus NCBI PubMed and OpenAlex for papers. Code mode copies the repository you name into the plugin's data folder and gives its subagents the file and terminal tools on your terminal backend. Proofs of concept are re-run only in a network-less, read-only Docker container (image python:3.12-slim by default, pulled if missing). The optional guard mode (`/crucible guard on|strict`, off by default) rewrites the agent's answers to flag unsupported claims. Run records stay local under the plugin data folder. No telemetry."
+maintainer: samshapley
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "0.1.0"
+title: "Crucible"
+readme: true
+capabilities:
+  provides_tools: [crucible_run, crucible_check, crucible_ledger]
+  provides_hooks: [post_tool_call, transform_llm_output, subagent_start, subagent_stop, post_api_request, post_auxiliary_call]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "A full run takes a few minutes and spends your model's tokens; each run has a USD cap."
+  - "Code mode's agents run commands through your terminal backend: audit untrusted repositories with terminal.backend set to docker."
+  - "Some providers refuse security-audit agents; set the plugin's agent_model to a model that accepts the work."

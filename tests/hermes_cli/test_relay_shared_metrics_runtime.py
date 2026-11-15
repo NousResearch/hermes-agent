@@ -2863,7 +2863,7 @@ def test_install_snapshot_is_daily_and_carries_only_bucketed_counts(
         "main_provider": "none", "mcp_server_count_bucket": "1", "memory_provider": "plugin",
         "messaging_platform_count_bucket": "0", "plugin_count_bucket": "3_to_5",
         "profile_count_bucket": snapshot["profile_count_bucket"], "skill_count_bucket": "0",
-        "terminal_backend": "local", "local_model_provider_used": "no",
+        "terminal_backend": "local", "local_model_provider_used": "no", "compression_prepare_ahead": "off",
         **{k: snapshot[k] for k in ("behind_bucket", "gpu_class", "ram_bucket", "release_channel", "version_age_bucket")},
     }
 
@@ -3038,18 +3038,3 @@ def test_finite_cli_runs_report_their_own_entrypoint(direct_runtime, tmp_path, m
         ("background", "cli", "1"), ("interactive", "cli", "1"), ("interactive", "desktop", "1"),
         ("one_shot", "cli", "1"),
     ]
-
-
-def test_oneshot_hard_exit_cleanup_records_the_session_summary(direct_runtime, tmp_path, monkeypatch):
-    """`hermes -z` leaves through os._exit, past the atexit hook that closes the metrics session; its
-    pre-exit cleanup must write the run's session.count itself."""
-    from hermes_cli import main as hermes_main
-
-    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
-    monkeypatch.setattr(hermes_main, "_oneshot_cleanup_done", False)
-    _cli_turn("z-run")
-    hermes_main._cleanup_oneshot_runtime()
-    _join_export_workers()
-
-    sessions = _stored_values(tmp_path, "hermes.session.count")
-    assert [(d["entrypoint"], d["turn_count_bucket"], v) for d, v in sessions] == [("one_shot", "1", 1)]

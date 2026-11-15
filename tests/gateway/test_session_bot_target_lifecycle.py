@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 
 
 @pytest_asyncio.fixture
@@ -31,7 +31,7 @@ async def bot(tmp_path, monkeypatch):
                              _evict_cached_agent=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='fixture')
-    owner = Principal('uid:1000', 'default', frozenset({'session:create', 'session:read', 'session:submit'}), 'native')
+    owner = SessionActor('uid:1000', 'default', frozenset({'session:create', 'session:read', 'session:submit'}), 'native')
     try:
         yield SimpleNamespace(authority=authority, owner=owner, home=tmp_path)
     finally:

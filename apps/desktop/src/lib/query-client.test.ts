@@ -106,4 +106,30 @@ describe('keepWarmNousRow', () => {
     expect(row?.usage_levels).toEqual(warm.providers?.[0].usage_levels)
     expect(row?.unavailable_models).toEqual([])
   })
+
+  it("keeps the warm subscription-billed ids (no Free tag) on the pending row's fresh plan_usage", () => {
+    const gauges = [{ label: 'day', left_fraction: 0.5, style: 'bar' }]
+    const fresh = [{ label: 'day', left_fraction: 0.2, style: 'bar' }]
+
+    const warmSubscribed: ModelOptionsResult = {
+      providers: [
+        {
+          ...warm.providers![0],
+          plan_usage: { gauges, kind: 'usage_window', subscription_model_ids: ['example/model-sub'] },
+          usage_levels: { ...warm.providers![0].usage_levels, 'example/model-sub': 'free' }
+        }
+      ]
+    }
+
+    const pendingSubscribed: ModelOptionsResult = {
+      providers: [{ ...pending.providers![0], plan_usage: { gauges: fresh, kind: 'usage_window' } }]
+    }
+
+    const row = (keepWarmNousRow(warmSubscribed, pendingSubscribed) as ModelOptionsResult).providers?.[0]
+
+    expect(row?.usage_levels?.['example/model-sub']).toBe('free')
+    expect(row?.plan_usage?.subscription_model_ids).toEqual(['example/model-sub'])
+    // The gauges are the pending row's own (fresh), not the warm row's.
+    expect(row?.plan_usage?.gauges).toEqual(fresh)
+  })
 })

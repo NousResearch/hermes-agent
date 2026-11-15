@@ -1,6 +1,7 @@
 name: hermes-wsl-terminal
-repo: https://github.com/Yicheng-Mark/hermes-wsl-terminal
-sha: 9e0f0d02d28a5db04cd1f0b916f9c633279fbdfc
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: 5bad3fb2baf04ce6befecfefce6d14f4c9c98934
+subdir: wsl-terminal
 description: >-
   Run Hermes' terminal tools inside an existing WSL distro on Windows: one bash -c per
   command as the distro's default user, over the same files Windows sees at /mnt/<drive>, with
@@ -23,7 +24,7 @@ maintainer: Yicheng-Mark
 tier: community
 category: tools
 requires_hermes: ">=0.21.6"
-docs_url: https://github.com/Yicheng-Mark/hermes-wsl-terminal#readme
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/wsl-terminal
 version: "0.1.0"
 platforms:
 - windows

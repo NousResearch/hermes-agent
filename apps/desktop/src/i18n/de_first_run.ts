@@ -28,6 +28,8 @@ export const deFirstRun: FirstRunCopy = {
   skip: 'Einrichtung überspringen',
   skipTip: 'Beendet die geführte Einrichtung und öffnet einen neuen Chat.',
   skipFailed: 'Einrichtung konnte nicht übersprungen werden',
+  slashOffTitle: 'Slash-Befehle sind während der Einrichtung aus',
+  slashOffBody: 'Nach der Einrichtung funktionieren sie wie gewohnt.',
   localModel: {
     title: 'Dieser Computer kann ein Modell lokal ausführen',
     text: (model, size) =>

@@ -11,6 +11,11 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 from __future__ import annotations
 
 import ast
+import codecs
+import io
+import os
+import subprocess
+import tokenize
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
@@ -18,16 +23,16 @@ from typing import Iterator, List, Optional, Tuple
 from tools.plugin_guard_context import (
     STEP_DOWN, catalog_cap, is_agent_facing, is_authorized_keys_prose, is_base64_archive_roundtrip,
     is_base64_media, is_benign_lazy_os_import, is_ci_workflow, is_coin_name_only,
-    is_disclosed_config_note, is_doc_prose, is_env_dump_in_safety_clause, is_google_installed_app_secret,
-    is_hex_in_char_class, is_inert_fixture_line, is_json_prose_value, is_locale_catalog,
-    is_loopback_continuation, is_loopback_only, is_pip_install_in_prose_literal,
+    is_disclosed_config_note, is_doc_prose, is_env_dump_in_safety_clause, is_hex_in_char_class,
+    is_inert_fixture_line, is_json_prose_value, is_locale_catalog, is_loopback_continuation,
+    is_loopback_only, is_own_proc_read, is_pip_install_in_prose_literal, is_public_client_key,
     is_quoted_injection_phrase, is_regex_alternation_token, is_repo_root_traversal,
     is_self_uninstall_doc, is_sudo_inert, is_test_tree, is_trusted_installer_pipe, logical_line, prose_cap)
 from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v11"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v15"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
@@ -107,6 +112,11 @@ MAX_PLUGIN_FILE_COUNT = 400
 MAX_PLUGIN_TOTAL_SIZE_KB = 10 * 1024   # 10MB of scannable tree
 MAX_PLUGIN_SINGLE_FILE_KB = 1024       # 1MB single file
 
+# Committed bytecode (catalog rule 17): an unchecked-hash or sourceless ``.pyc`` is imported in
+# place of the ``.py`` this scanner read, so it is the same reviewable-but-unscannable tier as a
+# bundled binary (``SEVERITY_REMAP["binary_file"]``).
+_BYTECODE_SUFFIXES = (".pyc", ".pyo")
+
 
 def _walk(plugin_dir: Path) -> Iterator[tuple[Path, str]]:
     """Yield (path, "a/b/c" relative path) for every non-excluded entry under plugin_dir."""
@@ -140,15 +150,22 @@ def _is_main_guard(node: ast.If) -> bool:
     )
 
 
+def _parse_python_source(file_path: Path) -> Optional[ast.Module]:
+    """Parse *file_path* as Python; unreadable or invalid source returns ``None``."""
+    try:
+        return ast.parse(file_path.read_text(encoding="utf-8-sig"))
+    except (OSError, SyntaxError, ValueError):  # ValueError: UnicodeDecodeError, NUL bytes
+        return None
+
+
 def _main_guard_body_lines(file_path: Path) -> set[int]:
     """Return lines executed only by ``if __name__ == '__main__'`` blocks.
 
     Invalid Python deliberately returns no lines so its findings retain the
     conservative severity.
     """
-    try:
-        tree = ast.parse(file_path.read_text(encoding="utf-8-sig"))
-    except (OSError, SyntaxError, ValueError):  # ValueError: UnicodeDecodeError, NUL bytes
+    tree = _parse_python_source(file_path)
+    if tree is None:
         return set()
     lines: set[int] = set()
     for node in ast.walk(tree):
@@ -159,14 +176,74 @@ def _main_guard_body_lines(file_path: Path) -> set[int]:
     return lines
 
 
+# Nodes that can own a docstring: only the first statement of a module, class or function is one.
+_DOCSTRING_OWNERS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _declares_non_utf8_source(file_path: Path) -> bool:
+    """A PEP 263 cookie (``# coding: utf-7``) makes CPython run a different text than the UTF-8 parse
+    the docstring spans come from, so those spans say nothing about what executes. Fail closed."""
+    try:
+        raw = file_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        codec = tokenize.detect_encoding(io.BytesIO(raw).readline)[0]
+        return codecs.lookup(codec).name not in ("utf-8", "utf-8-sig")
+    except (OSError, SyntaxError, LookupError, UnicodeError):
+        return True
+
+
+def _docstring_lines(file_path: Path) -> set[int]:
+    """Return the lines holding module/class/function docstrings and nothing else.
+
+    A docstring is prose that documents a defense for a reader, so its findings take the same
+    one-step cap as a whole-line comment (#155823). ``ast`` reports a docstring only for the first
+    statement of a module/class/function, so a triple-quoted *constant* (``PAYLOAD = \\"\\"\\"...
+    \\"\\"\\"``) is not included: prose cannot execute, but a string the code can hand to ``exec`` can.
+    A line any other node also occupies (``\\"\\"\\"x\\"\\"\\"; os.system(...)``, a default argument on a
+    multi-line ``def`` header) is code. Invalid Python returns no lines, keeping every finding at
+    its conservative severity.
+    """
+    tree = _parse_python_source(file_path)
+    if tree is None or _declares_non_utf8_source(file_path):
+        return set()
+    lines: set[int] = set()
+    docstrings: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, _DOCSTRING_OWNERS) or not node.body:
+            continue
+        first = node.body[0]
+        if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)):
+            docstrings.update((id(first), id(first.value)))
+            lines.update(range(first.lineno, getattr(first, "end_lineno", first.lineno) + 1))
+    for node in ast.walk(tree):
+        first_line = getattr(node, "lineno", None)
+        if id(node) in docstrings or first_line is None:
+            continue
+        # A compound statement's span is its whole body: drop only its first line here; the
+        # header's own parts (decorators, arguments, defaults, bases) are nodes of their own.
+        last = first_line if hasattr(node, "body") else getattr(node, "end_lineno", first_line)
+        lines.difference_update(range(first_line, last + 1))
+    return lines
+
+
+def _docstring_cap(f: Finding) -> str:
+    """The comment cap, floored at ``high`` for a critical. A docstring is runtime data any file can
+    read back (``x.__doc__``, ``getattr(x, "__" + "doc__")``, ``inspect.getdoc``) by names no static
+    scan can enumerate, so a critical one stays visible and needs the user's confirmation
+    (``caution``): never ``safe``, and never the un-overridable ``dangerous`` that prose alone caused."""
+    return "high" if f.severity == "critical" else _comment_severity(f)
+
+
 def _filter_findings(findings: list[Finding], rel_path: str, file_path: Path) -> list[Finding]:
     """Apply plugin-specific exemptions and severity remaps to raw findings."""
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
-    main_guard_lines = _main_guard_body_lines(file_path) if file_path.suffix.lower() == ".py" else set()
+    is_python = file_path.suffix.lower() == ".py"
+    main_guard_lines = _main_guard_body_lines(file_path) if is_python else set()
     is_js = Path(rel_path).suffix.lower() in {".js", ".ts"}
     # A CI workflow definition runs on the forge's runner, not the host: same cap as a README.
     is_ci = is_ci_workflow(rel_path)
     doc_prose = is_doc_prose(rel_path) or is_ci
+    docstring_lines = _docstring_lines(file_path) if is_python else set()
     locale_catalog = is_locale_catalog(rel_path)
     lines = _file_lines(file_path) if findings else []
     out: list[Finding] = []
@@ -183,8 +260,8 @@ def _filter_findings(findings: list[Finding], rel_path: str, file_path: Path) ->
         joined = logical_line(lines, f.line - 1) if 0 < f.line <= len(lines) else line
         f.severity = _context_severity(f, rel_path, line, joined, doc_prose or locale_catalog, is_code,
                                        locale_catalog)
-        if _is_defensive_documentation(f, rel_path):
-            f.severity = _comment_severity(f)
+        if _is_defensive_documentation(f, rel_path, docstring_lines):
+            f.severity = _docstring_cap(f) if f.line in docstring_lines else _comment_severity(f)
             # A quoted injection phrase in a defensive doc (``"ignore previous instructions"`` in a
             # CHANGELOG / code comment describing the filter that refuses it) is a note, not caution.
             if is_quoted_injection_phrase(f, line):
@@ -258,6 +335,7 @@ def _inert_context_cap(f: Finding, rel_path: str, line: str, joined: str, is_cod
         or is_loopback_continuation(f, line, joined)   # loopback health check over a `\`-continuation
         or is_hex_in_char_class(f, line)          # `[\x00-\x1F]`: a control-char filter, not a payload
         or (is_code and is_pip_install_in_prose_literal(f, line))  # "no pip install is needed" message
+        or is_own_proc_read(f, joined)            # `/proc/self/cgroup`: container placement, read only
     )
     if to_low:
         return "low"
@@ -275,18 +353,20 @@ def _inert_context_cap(f: Finding, rel_path: str, line: str, joined: str, is_cod
     )
     if to_medium:
         return _at_most(sev, "medium")
-    if is_google_installed_app_secret(f, line):
-        return _at_most(sev, "high")    # public installed-app OAuth client secret, reviewable caution
+    if is_public_client_key(f, line):
+        return _at_most(sev, "high")    # public-by-design client key (GOCSPX-, phc_), reviewable caution
     return sev
 
 
-def _is_defensive_documentation(finding: Finding, rel_path: str) -> bool:
-    """A whole-line code comment or a changelog entry *describes* threats (the attack a
-    defense rejects, the hardening a release shipped) instead of executing them, so its
+def _is_defensive_documentation(finding: Finding, rel_path: str, docstring_lines: Optional[set[int]] = None) -> bool:
+    """A whole-line code comment, a Python docstring or a changelog entry *describes* threats (the
+    attack a defense rejects, the hardening a release shipped) instead of executing them, so its
     findings cap one severity step lower — visible and reviewable, never un-overridable
     ``dangerous`` from prose alone. Runtime code and agent-facing docs keep full severity.
     """
     if Path(rel_path).name.lower() in CHANGELOG_FILENAMES:
+        return True
+    if docstring_lines and finding.line in docstring_lines:
         return True
     prefix = COMMENT_PREFIXES_BY_EXTENSION.get(Path(rel_path).suffix.lower())
     if prefix is None or not finding.match:
@@ -307,9 +387,31 @@ def _dangerous_findings_summary(findings: list[Finding]) -> str:
     return f"{len(critical)} critical of {len(findings)} findings{names}"
 
 
+def _tracked_bytecode(plugin_dir: Path) -> set[str]:
+    """``.pyc``/``.pyo`` the checkout tracks. ``hermes plugins validate`` imports the plugin before
+    it scans, so an untracked ``__pycache__`` that run wrote is not shipped content; only the index
+    says what the pinned commit carries. Not a checkout (or no git) → empty."""
+    try:
+        out = subprocess.run(
+            ["git", "-c", "core.fsmonitor=false", "-C", str(plugin_dir), "ls-files", "-z", "--", "*.pyc", "*.pyo"],
+            capture_output=True, check=True, timeout=60, stdin=subprocess.DEVNULL).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {os.fsdecode(p) for p in out.split(b"\0") if p}
+
+
+def _bytecode_findings(plugin_dir: Path) -> list[Finding]:
+    """Tracked bytecode anywhere, plus bytecode outside ``__pycache__`` (CPython 3 never writes it
+    there, so it was shipped even when the tree is not a checkout)."""
+    loose = {rel for f, rel in _walk(plugin_dir) if rel.endswith(_BYTECODE_SUFFIXES) and f.is_file()}
+    return [_finding("bytecode_file", SEVERITY_REMAP["binary_file"], "structural", rel, "committed bytecode",
+                     "committed Python bytecode runs in place of the scanned source (catalog rule 17)")
+            for rel in sorted(loose | _tracked_bytecode(plugin_dir))]
+
+
 def _check_plugin_structure(plugin_dir: Path) -> list[Finding]:
     """Structural checks sized for plugin repositories."""
-    findings: list[Finding] = []
+    findings: list[Finding] = _bytecode_findings(plugin_dir)
     file_count = 0
     total_size = 0
     resolved_root = plugin_dir.resolve()

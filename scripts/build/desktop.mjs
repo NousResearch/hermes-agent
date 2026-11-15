@@ -20,7 +20,11 @@ function validateNativeTree(nativeDeps, platform) {
       throw new Error(`Prepared node-pty binding does not match ${platform}: ${binding}`)
     }
   }
-  if (platform === 'darwin' && !existsSync(join(nativeDeps, 'get-windows/main'))) {
+  // get-windows is optional: stage-native-deps leaves it out (a degraded tree) when the install
+  // left it absent or half-extracted (#90829) or its helper is missing, and the app ships without
+  // read_window_below. Only a staged package without its macOS helper is an incomplete tree.
+  const getWindows = join(nativeDeps, 'get-windows')
+  if (platform === 'darwin' && existsSync(getWindows) && !existsSync(join(getWindows, 'main'))) {
     throw new Error('Prepared get-windows is missing its macOS helper')
   }
 }
@@ -40,7 +44,7 @@ export async function buildDesktop({ source, out, icons, stamp, nativeDeps, type
     // Source children can be symlinks outside the checkout. Protect their
     // canonical paths, but leave generated dist/build trees to productOutput.
     ...readdirSync(join(resolve(source), app)).filter(name => !['dist', 'build'].includes(name)).map(name => `${app}/${name}`),
-    `${app}/scripts`, 'scripts/build', 'package.json', 'package-lock.json',
+    `${app}/scripts`, 'scripts/build', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml',
     'apps/shared', 'node_modules',
     ...[join(resolve(icons), app, 'public'), stamp, nativeDeps].map(input => relative(resolve(source), resolve(input))),
   ]))

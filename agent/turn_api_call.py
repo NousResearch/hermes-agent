@@ -92,8 +92,10 @@ def perform_api_call(
 
     def _perform_api_call(next_api_kwargs):
         if agent.api_mode == "codex_responses":
+            from agent.codex_responses_adapter import drops_replay_item_ids
+
             next_api_kwargs = agent._get_transport().preflight_kwargs(
-                next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
+                next_api_kwargs, allow_stream=False, drop_replay_item_ids=drops_replay_item_ids(agent.base_url),
                 sanitize_harmony_tokens=agent._is_codex_backend(),
             )
         if _use_streaming:
@@ -266,6 +268,7 @@ def nous_rate_limit_guard(
                 agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
                 agent._buffer_diagnostic_status(f"⏳ {_nous_msg}")
                 if agent._try_activate_fallback():
+                    logger.warning("%sNous rate limit recorded (resets in %s) — switched to fallback", agent.log_prefix, reset)
                     active_system_prompt = _arm_fallback_restart(
                         agent, api_messages, active_system_prompt, _retry)
                     retry_count = 0

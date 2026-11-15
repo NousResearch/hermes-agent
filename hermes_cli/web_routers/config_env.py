@@ -12,12 +12,13 @@ import time
 import urllib.parse
 from fastapi import APIRouter
 from hermes_cli.web_routers._common import (
-    REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
-    redacted_credential_preview, scoped_to_thread,
+    REDACTED_CREDENTIAL_WRITE_DETAIL, config_scoped_to_thread, http_failure,
+    is_redacted_credential_preview, redacted_credential_preview, scoped_to_thread,
 )
-from hermes_cli.web_deps import LateState, late
+from hermes_cli.config_backend import CONFIG_MUTATION_LOCK, refusing_locked_omissions
+from hermes_cli.web_deps import late
 from hermes_cli.web_server_config import (
-    _apply_main_model_assignment, _denormalize_config_from_web, _normalize_config_for_web, _schema_with_dynamic_provider_options,
+    _denormalize_config_from_web, _normalize_config_for_web, _schema_with_dynamic_provider_options,
     _validated_main_model_selection,
 )
 from hermes_cli.web_server_profiles import (
@@ -25,7 +26,9 @@ from hermes_cli.web_server_profiles import (
 )
 from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
-from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
+from hermes_cli.config_providers import (
+    _CAMEL_ALIASES, ENDPOINT_ADDRESS_FIELDS, _canonical_api_mode, _custom_provider_entry_to_provider_config,
+)
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -43,7 +46,6 @@ load_env = late("load_env", "hermes_cli.config")
 remove_env_value = late("remove_env_value", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 save_env_value = late("save_env_value", "hermes_cli.config")
-_CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: list[float] = []
@@ -100,9 +102,12 @@ async def get_defaults():
 async def get_schema(profile: Optional[str] = None):
     # Discovery-driven provider options (voice command providers + memory
     # provider plugins) are merged per-request so providers added after server
-    # start still show up, scoped to the requested profile's config.
-    with _config_profile_scope(profile):
-        fields = _schema_with_dynamic_provider_options()
+    # start still show up, scoped to the requested profile's config. That merge
+    # walks the schema and scans plugin dirs on disk, so it runs on a worker
+    # thread: on the event loop it froze every other request — including
+    # /api/ws — for as long as the scan took. asyncio.to_thread copies the
+    # contextvar context, so the profile override stays scoped to the worker.
+    fields = await config_scoped_to_thread(profile, _schema_with_dynamic_provider_options)
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
 
 
@@ -110,8 +115,26 @@ async def get_schema(profile: Optional[str] = None):
 async def get_egress_status(profile: Optional[str] = None):
     """Dashboard/Desktop-readable egress proxy status and remediation text."""
     from hermes_cli.proxy_cli import format_status_text
-    with _config_profile_scope(profile):  # reads the profile's ``proxy:`` config block
-        return {"text": format_status_text()}
+    # Reads the profile's ``proxy:`` config block from disk; on the event loop
+    # that read stalled every other dashboard request for its duration.
+    return {"text": await config_scoped_to_thread(profile, format_status_text)}
+
+
+def _drop_carried_route_state(existing: dict, merged: dict) -> None:
+    """The form never sends key_env/api_mode and re-sends base_url unchanged, so the merge keeps
+    the old route's under a new ``model``/``auxiliary.<task>``/``delegation`` provider (#141832)."""
+    from hermes_cli.config_route_guard import drop_carried_route_state
+    drop_carried_route_state(existing.get("model"), merged.get("model"), merged)
+    deleg = merged.get("delegation")
+    # A keyless delegation.base_url runs on the PARENT's key (_resolve_delegation_credentials), so a drop
+    # there sends the main model's key to the new URL; only a named provider resolves its own key.
+    if not (isinstance(deleg, dict) and deleg.get("base_url")
+            and str(deleg.get("provider") or "").strip().lower() in ("", "custom", "auto")):
+        drop_carried_route_state(existing.get("delegation"), deleg, merged)
+    old_aux, new_aux = existing.get("auxiliary"), merged.get("auxiliary")
+    if isinstance(old_aux, dict) and isinstance(new_aux, dict):
+        for task, block in new_aux.items():
+            drop_carried_route_state(old_aux.get(task), block, merged)
 
 
 @router.put("/api/config")
@@ -125,12 +148,13 @@ async def update_config(
             # schema (``custom_providers``, ``agent.personalities``, ...) are not
             # in the PUT body, so deep-merge incoming over disk rather than
             # full-replace — the frontend can only overwrite what it sends.
-            with _CONFIG_MUTATION_LOCK:
+            with CONFIG_MUTATION_LOCK:
                 # Strict read: the merge below builds a new dict, so a swallowed read error here
                 # would save the PUT body alone over the whole file.
                 existing = require_readable_config_before_write()
                 incoming = _denormalize_config_from_web(body.config)
                 merged = _deep_merge(existing, incoming)
+                _drop_carried_route_state(existing, merged)
                 # Compare normalized approvals.mode across the in-memory
                 # documents, not config blocks and not cache re-reads: the page
                 # PUTs the defaulted GET record while disk holds sparse YAML (a
@@ -190,7 +214,7 @@ def _catalog_provider_env_metadata() -> dict:
 
     # Env vars declared with a NON-provider category (e.g. the shared
     # GITHUB_TOKEN, a Skills-Hub "tool" credential) must not be promoted into a
-    # provider card even when a provider (Copilot) lists them as auth aliases.
+    # provider card even when a provider lists them as auth aliases.
     _non_provider_keys = {
         k for k, v in OPTIONAL_ENV_VARS.items()
         if (v or {}).get("category") and (v or {}).get("category") != "provider"
@@ -570,6 +594,105 @@ def _detach_main_model_from_provider(cfg: dict[str, Any], provider_key: str, ent
     cfg["model"] = model_cfg
 
 
+_SNAKE_ORIGIN_BOUND_FIELDS = ("api_key", "key_env", "api_key_env", "key_cmd", "extra_headers")
+# The readers accept camelCase aliases (``apiKey``/``keyEnv``/``apiKeyEnv``) for the same credentials.
+_ORIGIN_BOUND_FIELDS = (*_SNAKE_ORIGIN_BOUND_FIELDS,
+                        *(camel for camel, snake in _CAMEL_ALIASES.items() if snake in _SNAKE_ORIGIN_BOUND_FIELDS))
+
+
+def _pooled_keys_left_on(old_url: str, new_url: str, pool_keys: tuple[str, ...]) -> bool:
+    """Bind the entry's manual pool rows that recorded no address to *old_url* (they were entered
+    while the entry pointed there), then report whether any manual row stays bound to another
+    origin than *new_url*. Those rows never serve the new address (``entry_scoped_pool``)."""
+    from agent.credential_pool import _is_manual_source, load_pool
+    from agent.custom_entry_pool import bind_unrecorded_rows, recorded_address
+    from utils import same_base_url_origin
+
+    left = False
+    for key in dict.fromkeys(k for k in pool_keys if k):
+        pool = load_pool(key)
+        bind_unrecorded_rows(pool, old_url)
+        left |= any(_is_manual_source(str(row.source or "")) and not same_base_url_origin(recorded_address(row, key), new_url)
+                    for row in pool.entries())
+    return left
+
+
+def _drop_credentials_on_origin_move(entry: dict[str, Any], existing: dict[str, Any], new_url: str,
+                                     submitted_key: Optional[str], pool_keys: tuple[str, ...] = ()) -> None:
+    """Strip *entry*'s stored credentials when the edit changes the endpoint's origin.
+
+    Raises 400 when credentials exist (config fields, or ``hermes auth add`` / dashboard pool
+    rows for the entry) and the payload left the key untouched (``None``): reusing them would
+    authenticate to a host they were never entered for. Pool rows stay bound to the old origin.
+    """
+    from utils import same_base_url_origin
+
+    # Migrated, legacy and hand-written entries store the address under ``api``/``url``/``baseUrl`` too.
+    old_url = next((url for url in (str(existing.get(field) or "").strip() for field in ENDPOINT_ADDRESS_FIELDS)
+                    if url and not same_base_url_origin(url, new_url)), "")
+    if not old_url:
+        return
+    stored = [field for field in _ORIGIN_BOUND_FIELDS if entry.get(field)]
+    # Always run: it binds unrecorded rows to old_url, which config credentials must not short-circuit.
+    pooled_left = _pooled_keys_left_on(old_url, new_url, pool_keys)
+    if (stored or pooled_left) and submitted_key is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"The saved API key is for {old_url}, not {new_url}. "
+                    "Enter the API key for the new address to save this change."),
+        )
+    for field in stored:
+        if field != "key_env":  # _apply_endpoint_key clears or rewrites it, and its .env value
+            entry.pop(field)
+
+
+def _drop_stale_addresses(entry: dict[str, Any]) -> None:
+    """``base_url`` is the address from now on; a stale ``api``/``url``/``baseUrl`` would outrank or shadow it."""
+    for field in ENDPOINT_ADDRESS_FIELDS:
+        if field != "base_url":
+            entry.pop(field, None)
+
+
+def _store_endpoint_key(entry: dict[str, Any], env_var: str, key: str, base_url: str, own_provider: Any) -> None:
+    """Save the key to ``.env`` and point the row at it; refuse (400) a variable another endpoint
+    reads, so a save never sends this endpoint's key to that host."""
+    from hermes_cli.config_secret_refs import store_secret
+    try:
+        store_secret(env_var, key, base_url, own_provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    entry["key_env"] = env_var
+    entry.pop("api_key", None)
+
+
+def _apply_endpoint_key(entry: dict[str, Any], body: CustomEndpointUpdate, endpoint_id: str, base_url: str,
+                        stored_key: Any) -> None:
+    from hermes_cli.config_secret_refs import dashboard_endpoint_key_env
+    env_var = dashboard_endpoint_key_env(entry, endpoint_id)
+    submitted_key = body.api_key.strip() if body.api_key is not None else None
+    if submitted_key:
+        # ``${KEY_ENV}`` is the GET display for key_env entries; the helper covers the
+        # sentinel and legacy masks. Either one is display-only, current or stale.
+        if _ENV_REF_RE.fullmatch(submitted_key) or is_redacted_credential_preview(submitted_key):
+            raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
+        _store_endpoint_key(entry, env_var, submitted_key, base_url, stored_key)
+    elif submitted_key is not None:
+        # Blank field means "clear the key", not "leave it alone". Keep a variable another block
+        # still reads: model.api_key (the main picker reuses this row's variable) or a legacy name.
+        from hermes_cli.config import read_raw_config
+        from hermes_cli.config_secret_refs import env_reference_owners
+        raw = read_raw_config()
+        own = raw["providers"].get(stored_key) if isinstance(raw.get("providers"), dict) else None
+        if not any(block is not own for block in env_reference_owners(raw, env_var)):
+            remove_env_value(env_var)
+        entry.pop("key_env", None)
+        entry.pop("api_key", None)
+    elif str(entry.get("api_key") or "").strip() and not _config_api_key_is_env_ref(endpoint_id):
+        # Migrate a plaintext key an earlier release wrote, on the next save,
+        # without the user having to re-enter it.
+        _store_endpoint_key(entry, env_var, entry["api_key"].strip(), base_url, stored_key)
+
+
 def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> tuple[str, dict[str, Any]]:
     name = (body.name or "").strip()
     base_url = (body.base_url or "").strip().rstrip("/")
@@ -625,6 +748,7 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     # credentials — ``request_overrides``); rebuilding from scratch silently
     # dropped them on an unrelated edit.
     entry: dict[str, Any] = dict(existing)
+    _drop_stale_addresses(entry)
     entry.update({
         "name": name, "base_url": base_url, "model": model,
         "discover_models": bool(body.discover_models),
@@ -684,31 +808,20 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
         entry["context_length"] = int(body.context_length)
         entry["models"][model]["context_length"] = int(body.context_length)
 
+    # A stored credential (and hand-written headers, which may carry one) is
+    # bound to the origin it was entered for: an edit that moves the endpoint
+    # to another scheme/host/port must supply that host's key, or an explicit
+    # blank for none, rather than ship the old secret to the new address.
+    from agent.credential_pool import _pool_keys_for_custom_entry, _normalize_custom_pool_name
+    pool_keys = _pool_keys_for_custom_entry(_normalize_custom_pool_name(str(existing.get("name") or name)),
+                                            {"provider_key": endpoint_id})
+    _drop_credentials_on_origin_move(entry, existing, base_url, body.api_key, tuple(pool_keys))
+
     # API keys never belong in config.yaml: write to .env and reference it via
     # ``key_env`` — the indirection built-in providers use and that
     # runtime_provider.py resolves at load time.
     # See #69449.
-    env_var = custom_endpoint_key_env(endpoint_id)
-    submitted_key = body.api_key.strip() if body.api_key is not None else None
-    if submitted_key:
-        # ``${KEY_ENV}`` is the GET display for key_env entries; the helper covers the
-        # sentinel and legacy masks. Either one is display-only, current or stale.
-        if _ENV_REF_RE.fullmatch(submitted_key) or is_redacted_credential_preview(submitted_key):
-            raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
-        save_env_value(env_var, submitted_key)
-        entry["key_env"] = env_var
-        entry.pop("api_key", None)
-    elif submitted_key is not None:
-        # Blank field means "clear the key", not "leave it alone".
-        remove_env_value(env_var)
-        entry.pop("key_env", None)
-        entry.pop("api_key", None)
-    elif str(entry.get("api_key") or "").strip() and not _config_api_key_is_env_ref(endpoint_id):
-        # Migrate a plaintext key an earlier release wrote, on the next save,
-        # without the user having to re-enter it.
-        save_env_value(env_var, entry["api_key"].strip())
-        entry["key_env"] = env_var
-        entry.pop("api_key", None)
+    _apply_endpoint_key(entry, body, endpoint_id, base_url, stored_key)
 
     if stored_key is not None and stored_key != endpoint_id:
         providers.pop(stored_key, None)
@@ -716,13 +829,18 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     cfg["providers"] = providers
 
     if body.make_default:
+        from hermes_cli.model_assignment import apply_main_model_assignment, drop_model_key
         result = _validated_main_model_selection(cfg, endpoint_id, model, base_url)
-        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
+        cfg["model"] = apply_main_model_assignment(cfg.get("model", {}), result)
         if entry.get("key_env") and isinstance(cfg["model"], dict):
             cfg["model"]["key_env"] = entry["key_env"]
-            cfg["model"].pop("api_key", None)
+            drop_model_key(cfg["model"], "api_key")
 
     return endpoint_id, entry
+
+
+# Sections a custom-endpoint default assignment writes together: the route and its provider entry.
+_ROUTE_SECTIONS = ("model", "providers", "custom_providers")
 
 
 @router.get("/api/providers/custom-endpoints")
@@ -743,15 +861,18 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
     """Create or update a v12+ ``providers`` custom endpoint entry."""
     with http_failure("POST /api/providers/custom-endpoints failed", 500, detail="Failed to save custom endpoint"):
         # Sync-def endpoints run on worker threads: the load→mutate→save span
-        # holds _CONFIG_MUTATION_LOCK so a concurrent config autosave cannot
+        # holds CONFIG_MUTATION_LOCK so a concurrent config autosave cannot
         # drop this write (or vice versa).
-        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
+        with _config_profile_scope(profile), CONFIG_MUTATION_LOCK:
             cfg = load_config()
             providers = cfg.get("providers")
             created = _resolve_custom_endpoint_entry(
                 providers if isinstance(providers, dict) else {}, body.id or body.name)[1] is None
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
-            save_config(cfg)
+            # make_default: the model route and the provider definition it names are one change,
+            # so a lock on either refuses both (never a model.provider naming an omitted entry).
+            with refusing_locked_omissions(*_ROUTE_SECTIONS) if body.make_default else contextlib.nullcontext():
+                save_config(cfg)
             response = _custom_endpoint_response(cfg)
             from hermes_constants import get_hermes_home
             home = get_hermes_home()
@@ -772,11 +893,12 @@ def _record_custom_endpoint_setup(home: Any) -> None:
 @router.post("/api/providers/custom-endpoints/{endpoint_id}/activate")
 def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Set a configured custom endpoint as the default model provider."""
+    from hermes_cli.model_assignment import apply_main_model_assignment, drop_model_key
     with http_failure(
         f"POST /api/providers/custom-endpoints/{endpoint_id}/activate failed", 500,
         detail="Failed to activate custom endpoint",
     ):
-        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
+        with _config_profile_scope(profile), CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
             stored_key, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), endpoint_id)
             if entry is None:
@@ -800,11 +922,11 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
             if not model or not base_url:
                 raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
 
-            model_cfg = _apply_main_model_assignment(
+            model_cfg = apply_main_model_assignment(
                 cfg.get("model", {}), _validated_main_model_selection(cfg, provider_key, model, base_url))
             if entry.get("key_env"):
                 model_cfg["key_env"] = entry["key_env"]
-                model_cfg.pop("api_key", None)
+                drop_model_key(model_cfg, "api_key")
             elif entry.get("api_key"):
                 # `cfg` is env-expanded, so a raw `${VAR}` api_key would land as
                 # plaintext; copy the raw template when that's what's on disk.
@@ -817,7 +939,8 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 else:
                     model_cfg["api_key"] = entry["api_key"]
             cfg["model"] = model_cfg
-            save_config(cfg)
+            with refusing_locked_omissions(*_ROUTE_SECTIONS):
+                save_config(cfg)
         return {"ok": True, "provider": provider_key, "model": model}
 
 
@@ -828,7 +951,7 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         f"DELETE /api/providers/custom-endpoints/{endpoint_id} failed", 500,
         detail="Failed to delete custom endpoint",
     ):
-        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
+        with _config_profile_scope(profile), CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
             providers = cfg.get("providers")
             stored_key, entry = _resolve_custom_endpoint_entry(providers, endpoint_id)
@@ -842,7 +965,11 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 if _pop_legacy_custom_provider(cfg, provider_key) is None:
                     raise HTTPException(status_code=404, detail="custom endpoint not found")
             _detach_main_model_from_provider(cfg, provider_key, entry)
-            remove_env_value(custom_endpoint_key_env(provider_key))
+            from hermes_cli.config_secret_refs import dashboard_endpoint_key_env, env_still_referenced
+            env_var = (dashboard_endpoint_key_env(entry, provider_key) if entry is not None
+                       else custom_endpoint_key_env(provider_key))
+            if not env_still_referenced(cfg, env_var):  # another block may still read the key
+                remove_env_value(env_var)
             save_config(cfg)
             response = _custom_endpoint_response(cfg)
         response["ok"] = True

@@ -44,7 +44,7 @@ async def test_finite_follower_does_not_wait_forever_after_worker_loss(before_ac
     assert len(peer.calls) == 1
     assert peer.calls[0][1]['text'] == 'queued'
     output = capsys.readouterr()
-    assert 'accepted input is retained' in output.err and 'do not resend' in output.err
+    assert 'Your message is saved' in output.err and "don't send it again" in output.err
     if stream_json:
         records = [json.loads(line) for line in output.out.splitlines()]
         assert records[-1]['type'] == 'result' and records[-1]['exit_code'] == 3
@@ -100,4 +100,4 @@ async def test_own_lost_turn_exits_from_its_unknown_completion_not_queued_detach
 
     view = GatewayChatView(Peer(), {'stored_session_id': 's'}, quiet=True)
     assert await asyncio.wait_for(view.run('work', oneshot=True), 5) == 1
-    assert 'accepted input is retained' not in capsys.readouterr().err
+    assert 'Your message is saved' not in capsys.readouterr().err

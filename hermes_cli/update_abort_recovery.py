@@ -115,10 +115,14 @@ def _run_fresh_recovery_process(
             return None
         command = [systemd_run, "--user", "--scope", "--quiet", "--collect", "--", *command]
 
+    # The child inherits this environ's values but not their provenance: without it, a sibling's restart
+    # env keeps every name only a secret source (or a since-removed .env line) supplied (#135792).
+    from hermes_cli.env_loader import env_provenance
     kwargs = {
         "input": json.dumps({
             "profiles": profiles, "supervisors": candidates,
-            "serve_units": {"recover": recover_serve, "skip": _qualified_serve_skips(skip_units)}}),
+            "serve_units": {"recover": recover_serve, "skip": _qualified_serve_skips(skip_units)},
+            "env_provenance": env_provenance()}),
         "capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace",
         "env": env,
         # Gateway profiles run sequentially at up to 90s each, plus the serve pass's own
@@ -128,6 +132,7 @@ def _run_fresh_recovery_process(
         kwargs["creationflags"] = (
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0))
     else:
+        # detached-spawn: ok — awaited with a timeout; the gateway restart it runs must not share the updater's group
         kwargs["start_new_session"] = True
     try:
         return subprocess.run(command, **kwargs, check=False)

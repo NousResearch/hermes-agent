@@ -148,8 +148,8 @@ def _warm_gateway_module() -> None:
     """
     for mod in (
         "hermes_cli.gateway",
-        "hermes_cli.auth",  # provider auth state → copilot_auth → subprocess
-        "hermes_cli.copilot_auth",
+        "hermes_cli.auth",  # provider auth state
+        "providers",  # provider plugin discovery (below) imports every profile's module chain
         "hermes_cli.runtime_provider",
         "hermes_cli.skin_engine",  # resolve_skin() config + skin engine init
         "hermes_cli.inventory",  # provider catalogs + models.dev cache
@@ -157,8 +157,14 @@ def _warm_gateway_module() -> None:
     ):
         try:
             __import__(mod)
-        except Exception:
-            pass
+        except Exception:  # health: allow BLE001 -- best-effort warm-up; the real import reports
+            _log.debug("warm-up import of %s failed", mod, exc_info=True)
+    try:
+        # Provider plugins carry their own auth chains (token exchange, CLI probes): warm them too.
+        import providers
+        providers.list_providers()
+    except Exception:  # health: allow BLE001 -- best-effort warm-up; discovery reports on real use
+        _log.debug("warm-up provider discovery failed", exc_info=True)
 
 
 def _resolve_restart_drain_timeout() -> float:
@@ -575,6 +581,11 @@ def build_listener_server(served_app, host: str, port: int, *, auth_required: bo
         except (TypeError, ValueError):
             return default
 
+    # permessage-deflate runs zlib on the event loop for every outbound frame, and the gateway sends
+    # one frame per streamed token of every running session: under load it was the largest single
+    # cost on the loop. Loopback bytes are free, so only a listener remote peers reach (a non-loopback
+    # bind, or a loopback bind behind a public URL / tunnel, which engages the auth gate) compresses.
+    per_message_deflate = auth_required or host not in _LOOPBACK_HOST_VALUES
     if ws_ping is None:
         ws_ping = (None, None) if host in _LOOPBACK_HOST_VALUES else (
             _ws_ping_setting("ws_ping_interval"), _ws_ping_setting("ws_ping_timeout"))
@@ -590,6 +601,7 @@ def build_listener_server(served_app, host: str, port: int, *, auth_required: bo
         forwarded_allow_ips=_dashboard_forwarded_allow_ips(dash_cfg),
         ws_ping_interval=ws_ping[0],
         ws_ping_timeout=ws_ping[1],
+        ws_per_message_deflate=per_message_deflate,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
         # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
         # uvicorn's default (None) waits on lingering ASGI tasks forever, so a

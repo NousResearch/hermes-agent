@@ -56,6 +56,8 @@ class CompressionTelemetryMixin:
             "method": "none", "items_dropped": 0, "messages_before": None, "messages_after": None,
             "tokens_before": None, "tokens_after": None, "tokens_reclaimed": None, "token_count_method": None,
             "tool_results_pruned": None, "reasoning_items_pruned": None, "has_focus_topic": False,
+            # True when the summary came from an opt-in prepared (background) pass (compression.prepare_ahead).
+            "prepared_summary": False,
         }
         self._active_compression_telemetry = self._last_compression_telemetry = telemetry
         return telemetry
@@ -99,6 +101,24 @@ class CompressionTelemetryMixin:
             # Wait and generation phases accumulate across retries; the rest are point readings.
             accumulate = key in {"queue_wait_ms", "summary_generation_ms"} and value is not None
             telemetry[key] = (telemetry.get(key) or 0) + value if accumulate else value
+
+    def _note_aux_route_fallback(self, route: dict[str, str]) -> None:
+        """``call_llm`` answered the summary from a fallback route after the configured one failed (dead
+        endpoint, quota): record it like the compressor's own main-model fallback, so telemetry says
+        ``fallback_used`` and, when the main model answered, the user is told their compression model is broken."""
+        failed_model = route.get("failed_model")
+        if not failed_model:
+            return
+        telemetry = getattr(self, "_active_compression_telemetry", None)
+        if isinstance(telemetry, dict):
+            telemetry["fallback_used"] = True
+            telemetry["failure_class"] = telemetry.get("failure_class") or "aux_model_fallback"
+        # The user warning says "summarised with your main model": only the main-agent route earns it, never a
+        # fallback_chain entry that happens to share the model name on another provider.
+        if str(route.get("fallback_label") or "").startswith("main-agent("):
+            self._last_aux_model_failure_model = failed_model
+            failure = route.get("failure") or "unknown error"
+            self._last_aux_model_failure_error = failure if len(failure) <= 220 else failure[:217].rstrip() + "..."
 
     def _compression_method(self) -> str:
         """How the summary that replaced the middle window was produced."""

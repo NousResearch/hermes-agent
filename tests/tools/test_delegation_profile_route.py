@@ -296,12 +296,26 @@ def test_profile_route_is_refused_under_a_managed_worker_config_snapshot(two_pro
 def test_profile_pinned_to_a_missing_acp_command_is_refused_at_routing(two_profiles, monkeypatch):
     """Same rule as ``delegation.provider`` (#80450): a profile whose provider is pinned to an ACP binary
     that is not on PATH refuses the spawn, naming the profile, instead of building a broken child."""
+    import providers
+    from hermes_cli import auth
+    from providers.base import ProviderProfile
+
     _, coder = two_profiles
-    _set_config(coder, model={"provider": "copilot-acp", "default": "coder-model"})
+    profile = ProviderProfile(name="acme-acp", auth_type="external_process", base_url="acp://acme",
+                              process_command="acme", process_args=("--acp", "--stdio"),
+                              process_command_env_vars=("HERMES_ACME_ACP_COMMAND",),
+                              base_url_env_var="ACME_ACP_BASE_URL")
+    monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+    monkeypatch.setattr(auth, "PROVIDER_REGISTRY", dict(auth.PROVIDER_REGISTRY))
+    auth.PROVIDER_REGISTRY[profile.name] = auth.ProviderConfig(
+        profile.name, profile.name, profile.auth_type, inference_base_url=profile.base_url,
+        base_url_env_var=profile.base_url_env_var)
+    _set_config(coder, model={"provider": "acme-acp", "default": "coder-model"})
     # An acp+tcp endpoint keeps the configured command unresolved (the runtime resolver only refuses a missing
     # binary when it would spawn one); the delegation pin rule still refuses it.
-    monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", "hermes-test-missing-acp-binary")
-    monkeypatch.setenv("COPILOT_ACP_BASE_URL", "acp+tcp://127.0.0.1:9")
+    monkeypatch.setenv("HERMES_ACME_ACP_COMMAND", "hermes-test-missing-acp-binary")
+    monkeypatch.setenv("ACME_ACP_BASE_URL", "acp+tcp://127.0.0.1:9")
 
     (route,), error = _resolve_coder_task()
     assert error is None and route.creds == {}
@@ -365,6 +379,129 @@ def test_profile_child_uses_the_target_profiles_persistent_container(two_profile
             assert get_session_env("HERMES_SESSION_PROFILE", "") == "default"
     finally:
         clear_session_vars(tokens)
+
+
+def test_routed_child_in_a_room_turn_is_gated_by_its_own_stricter_approval_mode(two_profiles):
+    """A Group Chat member turn (room policy ``smart``) delegating to ``coder`` (``approvals.mode: manual``):
+    the child's dangerous command is gated at ``manual`` inside its profile scope, while the member's own
+    turn keeps the room's ``smart``."""
+    from gateway.hosted_room_execution_policy import (
+        RoomExecutionPolicy, bind_room_execution_policy, execution_policy_mapping, reset_room_execution_policy)
+    from tools import approval_context
+    from tools.delegate_tool_child_run import _ChildRun
+
+    launch, coder = two_profiles
+    _set_config(launch, approvals={"mode": "smart"})
+    _set_config(coder, approvals={"mode": "manual"})
+    seen = {}
+
+    class _Child:
+        provider, model, _delegate_profile_home = "custom", "coder-model", coder
+
+        def run_conversation(self, user_message, **kw):
+            seen["child"] = approval_context._get_approval_mode()
+            return {"final_response": "ok", "completed": True}
+
+    class _Parent:
+        _current_task_id = None
+
+    policy = RoomExecutionPolicy.from_mapping(execution_policy_mapping(target_profile="default"))
+    assert policy.approval_mode == "smart"
+    token = bind_room_execution_policy(policy)
+    try:
+        run = _ChildRun(_Child(), _Parent(), 0, "rm -rf ~/scratch/old", None, None)
+        with patch("tools.delegate_tool_child_run._create_isolated_worktree", return_value=None):
+            run.seed_workspace()
+            result, failure, _ = run.await_child()
+        assert failure is None and result["final_response"] == "ok"
+        assert seen["child"] == "manual"
+        assert approval_context._get_approval_mode() == "smart"
+    finally:
+        reset_room_execution_policy(token)
+
+
+def test_room_members_session_grant_cannot_preapprove_a_profile_routed_child(two_profiles, monkeypatch):
+    """A 'session' grant on the member's terminal must not authorize a different profile's terminal."""
+    from gateway.hosted_room_execution_policy import (
+        RoomExecutionPolicy, bind_room_execution_policy, execution_policy_mapping, reset_room_execution_policy)
+    from tools import approval, approval_context
+    from tools.approval_context import reset_current_session_key, set_current_session_key
+    from tools.approval_detection import detect_dangerous_command
+    from tools.delegate_tool_child_run import _ChildRun
+
+    launch, coder = two_profiles
+    _set_config(launch, approvals={"mode": "smart"})
+    _set_config(coder, approvals={"mode": "manual"})
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.setattr(approval, "_session_approved", {})
+    monkeypatch.setattr(approval, "_permanent_approved", set())
+    monkeypatch.setattr(approval, "_permanent_approved_by_home", {})
+    monkeypatch.setattr(approval, "_permanent_baseline_by_home", {})
+
+    command = "chmod 777 scratch-output"
+    dangerous, pattern_key, _ = detect_dangerous_command(command)
+    assert dangerous
+    session_key = "room-member-grant-test"
+    prompts, seen = [], {}
+
+    def deny_on_prompt(*args, **kwargs):
+        prompts.append(kwargs["command"])
+        return {"approved": False, "message": "routed profile approval required"}
+
+    monkeypatch.setattr(approval, "_human_decision", deny_on_prompt)
+
+    class _Child:
+        provider, model, _delegate_profile_home = "custom", "coder-model", coder
+
+        def run_conversation(self, user_message, **kw):
+            seen["home_mode"] = approval_context._get_approval_mode()
+            seen["verdict"] = approval.check_dangerous_command(
+                command, "local", approval_callback=lambda *args: None)
+            return {"final_response": "ok", "completed": True}
+
+    class _Parent:
+        _current_task_id = None
+
+    policy = RoomExecutionPolicy.from_mapping(execution_policy_mapping(target_profile="default"))
+    assert policy.approval_mode == "smart"
+    session_token = set_current_session_key(session_key)
+    policy_token = bind_room_execution_policy(policy)
+    try:
+        approval.approve_session(session_key, pattern_key)
+        # The existing grant stays valid for the member's own terminal.
+        assert approval.check_dangerous_command(command, "local")["approved"]
+        run = _ChildRun(_Child(), _Parent(), 0, command, None, None)
+        with patch("tools.delegate_tool_child_run._create_isolated_worktree", return_value=None):
+            run.seed_workspace()
+            result, failure, _ = run.await_child()
+        assert failure is None and result["final_response"] == "ok"
+        assert seen["home_mode"] == "manual"
+        assert seen["verdict"]["approved"] is False
+        assert prompts == [command]
+        assert approval.check_dangerous_command(command, "local")["approved"]
+    finally:
+        reset_room_execution_policy(policy_token)
+        reset_current_session_key(session_token)
+
+
+def test_routed_childs_session_grant_stays_in_its_profile_and_ends_with_the_session(two_profiles, monkeypatch):
+    """A 'session' grant given inside a profile-routed child covers that child's profile only, and
+    ``clear_session`` (gateway /new, /stop) retires it with the conversation's other grants."""
+    from tools import approval
+    from tools.delegate_tool_routes import delegated_profile_scope
+
+    _, coder = two_profiles
+    monkeypatch.setattr(approval, "_session_approved", {})
+    session_key, pattern_key = "routed-child-grant-test", "world/other-writable permissions"
+    with delegated_profile_scope(coder):
+        approval.approve_session(session_key, pattern_key)
+        assert approval.is_approved(session_key, pattern_key)
+    assert not approval.is_approved(session_key, pattern_key)
+    approval.clear_session(session_key)
+    with delegated_profile_scope(coder):
+        assert not approval.is_approved(session_key, pattern_key)
 
 
 def test_child_routed_back_to_the_launch_profile_uses_the_launch_profiles_container(two_profiles):

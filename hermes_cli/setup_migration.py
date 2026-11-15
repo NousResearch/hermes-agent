@@ -47,9 +47,11 @@ def _model_section_has_credentials(config: dict) -> bool:
     # OpenRouter aggregator fallback (no provider declared in config).
     if any_openrouter_key:
         return True
-    # Skip copilot in auto-detect: GH_TOKEN / GITHUB_TOKEN are commonly set for git tooling.
-    # Mirrors resolve_provider in auth.py.
-    return any(_has_key(pconfig) for pid, pconfig in PROVIDER_REGISTRY.items() if pid != "copilot")
+    # Skip providers whose credentials are commonly ambient (a token exported for other tooling):
+    # auto-detect never selects them. Mirrors resolve_provider in auth.py.
+    from providers import get_provider_profile
+    return any(_has_key(pconfig) and not getattr(get_provider_profile(pid), "ambient_credentials", False)
+               for pid, pconfig in PROVIDER_REGISTRY.items())
 
 
 def _model_summary(config: dict) -> Optional[str]:

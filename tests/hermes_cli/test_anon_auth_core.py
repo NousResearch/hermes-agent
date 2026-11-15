@@ -374,7 +374,7 @@ class TestIdentityOfRecordIsTheSharedStore:
         from hermes_cli.auth_nous import _write_shared_nous_state
         _write_shared_nous_state({"access_token": _jwt(client_id="hermes-cli", account_tier="free"),
                                   "refresh_token": "rt-sibling", "expires_at": "2030-01-01T00:00:00+00:00",
-                                  "auth_method": "oauth_device_code"})
+                                  "auth_method": "oauth_device_code"}, renewal=False)
         state = anon_auth.ensure_portal_identity(explicit=True)
         assert not anon_auth.is_guest_state(state)
         assert state["refresh_token"] == "rt-sibling"
@@ -395,7 +395,8 @@ class TestIdentityOfRecordIsTheSharedStore:
         anon_auth.ensure_portal_identity(explicit=True)
         from hermes_cli.auth_nous import _write_shared_nous_state
         _write_shared_nous_state({"access_token": _jwt(client_id="hermes-cli"), "refresh_token": "rt-sibling",
-                                  "expires_at": "2030-01-01T00:00:00+00:00", "auth_method": "oauth_device_code"})
+                                  "expires_at": "2030-01-01T00:00:00+00:00", "auth_method": "oauth_device_code"},
+                                 renewal=False)
         anon_auth.clear_dead_guest("test")
         assert "nous" not in _load_auth_store().get("providers", {})
         assert _shared_store(tmp_path)["refresh_token"] == "rt-sibling"

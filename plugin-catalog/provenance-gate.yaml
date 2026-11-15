@@ -1,8 +1,8 @@
 name: provenance-gate
 title: Provenance Gate
 repo: https://github.com/simin-yuan/hermes-provenance-gate
-sha: 8813469d45c82fb0f5af6724c3761169ca7c3e86
-version: "0.1.0"
+sha: d8ded75deef198694639d8653c1834a26f3b0372
+version: "0.1.3"
 description: >-
   Flags memory and skill_manage writes that state a user decision ("the user decided ...", "用户决定 ...")
   without the user's own words: each such sentence needs a quote that appears verbatim in text the user

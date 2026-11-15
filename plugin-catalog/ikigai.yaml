@@ -1,0 +1,39 @@
+name: ikigai
+repo: https://github.com/Pierrem57/hermes-ikigai
+sha: 59f405f8b98c2f0ecb4a29fe90322c76ea47ce95
+description: >-
+  Getting-to-know-you interview and periodic check-ins that build a detailed, sourced picture of
+  the person using Hermes. 76 questions in 11 modules with a 12-question express path (English and
+  French). The interview runs itself: a pre_llm_call hook consumes each answer and returns the next
+  question, so no model call is spent on it and a reply cannot drift into another topic. Every answer
+  is stored locally with the user's exact words and a source tag (declared, inferred, corrected);
+  guesses are held back until confirmed. /ikigai compile proposes a merge into USER.md that fits the
+  1,375-character limit and touches only the lines Ikigai owns (applied by the agent through the
+  built-in memory tool, so write approval still applies), a SOUL.md draft that is never applied
+  automatically, and detailed sheets
+  kept outside the prompt. /ikigai show reads the profile back in the chat. Weekly 3-question
+  check-ins and an offer to turn a thrice-repeated correction into a lasting rule. Disclosure: no
+  network calls, no telemetry, no dependencies; reads USER.md (to show a diff) and the current turn's
+  user message (local keyword matching to count corrections); writes only under
+  $HERMES_HOME/plugin-data/ikigai/ (0600 files, 0700 directory); answers tagged local-only never
+  reach USER.md, SOUL.md or the sheets.
+maintainer: Pierrem57
+tier: community
+category: memory
+docs_url: https://github.com/Pierrem57/hermes-ikigai#readme
+version: "0.2.2"
+requires_hermes: ">=0.22.6"
+platforms: []
+capabilities:
+  provides_tools:
+    - ikigai_next
+    - ikigai_save
+    - ikigai_status
+    - ikigai_compile
+    - ikigai_snooze
+    - ikigai_rule_done
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

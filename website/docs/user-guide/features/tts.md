@@ -380,7 +380,7 @@ Your command template can reference these placeholders. Hermes substitutes them 
 |------------------|------------------------------------------------------|
 | `{input_path}`   | Path to the temp UTF-8 text file Hermes wrote        |
 | `{text_path}`    | Alias for `{input_path}`                             |
-| `{output_path}`  | Path the command must write audio to                 |
+| `{output_path}`  | Path the command must write audio to (a Hermes-named temp file, moved to the requested location afterwards) |
 | `{format}`       | `mp3` / `wav` / `ogg` / `flac`                       |
 | `{voice}`        | `tts.providers.<name>.voice`, empty when unset       |
 | `{model}`        | `tts.providers.<name>.model`                         |
@@ -409,7 +409,7 @@ Use `{{` and `}}` for literal braces.
 
 #### Security
 
-Command-type providers run whatever shell command you configure, with your user's permissions. Hermes quotes placeholder values and enforces the configured timeout, but the command template itself is trusted local input — treat it the same way you would a shell script on your PATH.
+Command-type providers run whatever shell command you configure, with your user's permissions. Hermes quotes placeholder values, never puts a caller-chosen output path into the command (the command writes a Hermes-named temp file), and enforces the configured timeout, but the command template itself is trusted local input — treat it the same way you would a shell script on your PATH.
 
 ### Python plugin providers
 

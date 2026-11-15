@@ -56,6 +56,14 @@ def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> dic
     return config
 
 
+def auxiliary_output_limit(task: str, default: int) -> int:
+    """A task's explicit output budget overrides its caller's short-response default."""
+    value = _get_auxiliary_task_config(task).get("max_tokens", default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"auxiliary.{task}.max_tokens must be a positive integer")
+    return value
+
+
 def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
     aux = _SESSION_AUXILIARY.get()
     if aux is None:

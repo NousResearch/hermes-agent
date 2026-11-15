@@ -976,9 +976,6 @@ class TestProfileHomeExemptsHermesRoot:
         monkeypatch.setattr(
             ft, "_protected_instruction_config", lambda: (True, [])
         )
-        # The resolved-home slot is filled once per process; keep the fixture honest.
-        monkeypatch.setattr(ft, "_real_hermes_home_loaded", False)
-        monkeypatch.setattr(ft, "_real_hermes_home_cached", None)
         yield
 
     @pytest.fixture

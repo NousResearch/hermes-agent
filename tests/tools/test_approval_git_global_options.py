@@ -39,7 +39,12 @@ from tools.approval import detect_dangerous_command
         # A command substitution is one word even unquoted.
         "git -C $(git rev-parse --show-toplevel) push --force",
         "git -C $(realpath $(pwd)) push --force origin main",
+        "git -C $(dirname $(realpath $(pwd))) push --force origin main",
+        "git -C $(a $(b $(c $(d)))) reset --hard",
         "git -C `git rev-parse --show-toplevel` reset --hard",
+        # An option git doesn't list never takes the verb as its value.
+        "git --new-flag push --force",
+        "git -q push -f",
     ],
 )
 def test_flagged(cmd):
@@ -60,6 +65,10 @@ def test_flagged(cmd):
         "git -C $(git rev-parse --show-toplevel) push origin main",
         "git -C $(realpath $(pwd)) push origin main",
         "git --no-pager log --oneline push --force",
+        # A value-less option, or an unknown one with no option after its word, takes no value.
+        "git -P log --oneline push --force",
+        "git -q log push --force",
+        "git -C $(dirname $(realpath $(pwd))) push origin main",
     ],
 )
 def test_not_flagged(cmd):
@@ -110,6 +119,24 @@ def test_options_outside_the_value_list_still_reach_the_subcommand():
         for bulk in ("--exclude " * 58, "--opt val " * 58, "--opt=val " * 58,
                      "-C'/tmp/a b' -c 'k=v' " * 58, "-C /a\\ b\\ c -c k=v\\ w " * 58, "-C " + "$(pwd)" * 58 + " "):
             assert not detect_dangerous_command(f"{prefix} {bulk}log --oneline")[0], prefix
+    assert time.monotonic() - start < 2
+
+
+@pytest.mark.parametrize("value", ["$(" * 30000, "$(a " * 25000, "$(" + "(a)" * 30000, "$(" + "((a)" * 25000])
+def test_an_unclosed_nested_substitution_is_scanned_linearly(value):
+    """Each `$(` nesting level is atomic: an unclosed run must fail in one pass, not re-split per level.
+    The detector's parser budget refuses such a command before the rules run, so time the git rules."""
+    import re
+    import time
+
+    from tools.approval_detection import DANGEROUS_PATTERNS
+    from tools.approval_git_options import _GIT
+
+    rules = [re.compile(p, re.IGNORECASE) for p, _ in DANGEROUS_PATTERNS if isinstance(p, str) and _GIT in p]
+    assert rules
+    start = time.monotonic()
+    for rule in rules:
+        assert not rule.search(f"git -C {value} log --oneline")
     assert time.monotonic() - start < 2
 
 

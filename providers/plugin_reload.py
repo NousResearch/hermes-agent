@@ -78,6 +78,18 @@ def tree_fingerprint(plugin_dir: Path) -> str:
 def import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
     """Import *plugin_dir* into the layer being scanned unless that exact tree is already live there; an
     updated tree replaces the live one only once it imported completely."""
+    # One import+publish at a time: a second thread scanning the same home would find the module already in
+    # ``sys.modules`` (still executing on the first thread, registering into the first thread's staging layer)
+    # and publish its own empty staging layer over the first one's registrations.
+    with _import_lock:
+        _import_into_layer(plugin_dir, source, base_name)
+
+
+# Re-entrant: a plugin whose import lists providers re-enters the scan of its own home on the same thread.
+_import_lock = threading.RLock()
+
+
+def _import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
     import providers as P
 
     layer = P._REGISTRATION_TARGET.get()
@@ -86,6 +98,10 @@ def import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
     if live is not None and live[0] == fingerprint:
         return
     module_name = f"{base_name}_{fingerprint}"
+    if module_name in sys.modules:
+        # This exact tree is mid-import further up this thread's stack (the re-entrant scan above): that
+        # import publishes its registrations when it completes; an empty staging layer here would erase them.
+        return
     staging = P._HomeLayer()
     token = P._REGISTRATION_TARGET.set(staging)
     try:

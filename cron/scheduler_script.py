@@ -613,6 +613,33 @@ def _run_job_script_with_claim_heartbeat(
         heartbeat_thread.join(timeout=1.0)
 
 
-# Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
-# populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched
+# Late-bound origin namespace (see module docstring). Resolved lazily via _LazyMod
+# to prevent Python 3.14 _ModuleLock cycles.
+if TYPE_CHECKING:
+    from cron import scheduler as _sched
+else:
+    class _LazyMod:
+        __slots__ = ("_n",)
+
+        def __init__(self, n: str) -> None:
+            object.__setattr__(self, "_n", n)
+
+        def __getattr__(self, a: str):
+            import importlib
+
+            n = object.__getattribute__(self, "_n")
+            m = sys.modules.get(n)
+            if m is None or getattr(getattr(m, "__spec__", None), "_initializing", False):
+                m = importlib.import_module(n)
+            return getattr(m, a)
+
+        def __setattr__(self, a: str, v) -> None:
+            import importlib
+
+            n = object.__getattribute__(self, "_n")
+            m = sys.modules.get(n)
+            if m is None or getattr(getattr(m, "__spec__", None), "_initializing", False):
+                m = importlib.import_module(n)
+            setattr(m, a, v)
+
+    _sched = _LazyMod("cron.scheduler")

@@ -728,11 +728,13 @@ class RelayRuntime:
             if session_root is not None and _same_handle(top, session_root) and handle is not session_root:
                 break
             try:
-                orphan_output = self._take_deferred_scope_output(top) or {
+                deferred_output = self._take_deferred_scope_output(top)
+                orphan_output = deferred_output or {
                     "outcome": "cancelled", "hermes.orphan_drain": True,
                 }
                 pop_relay_scope(self.relay, top, output=orphan_output, metadata=metadata)
-                drained += 1
+                if deferred_output is None:
+                    drained += 1
             except Exception:
                 logger.warning("Hermes Relay orphaned scope drain failed", exc_info=True)
                 break
@@ -743,6 +745,44 @@ class RelayRuntime:
             return None
         except Exception as retry_exc:
             return retry_exc
+
+    def _pop_deferred_top_scopes(
+        self, *, metadata: dict[str, Any], session_root: Any, stop_handle: Any = None, drain_limit: int = 32,
+    ) -> None:
+        """Pop any top-of-stack scopes that already recorded a deferred completion output."""
+        for _ in range(drain_limit):
+            top = _current_top(self.relay)
+            if top is None or (stop_handle is not None and _same_handle(top, stop_handle)):
+                break
+            if session_root is not None and _same_handle(top, session_root):
+                break
+            deferred_output = self._take_deferred_scope_output(top)
+            if deferred_output is None:
+                break
+            try:
+                pop_relay_scope(self.relay, top, output=deferred_output, metadata=metadata)
+            except Exception:
+                self.defer_scope_output(top, deferred_output)
+                logger.warning("Hermes Relay deferred scope drain failed", exc_info=True)
+                break
+
+    def drain_deferred_scopes(
+        self, session: RelaySession | None, *, stop_handle: Any = None,
+        drain_limit: int = 32, operation_already_held: bool = False,
+    ) -> None:
+        """Pop completed deferred scopes currently sitting at the top of ``session``'s stack."""
+        if session is None:
+            return
+        with self._deferred_scope_outputs_lock:
+            if not self._deferred_scope_outputs:
+                return
+        run_in_session = (self._run_in_session_untracked if operation_already_held else self.run_in_session)
+        with contextlib.suppress(Exception):
+            run_in_session(
+                session, self._pop_deferred_top_scopes,
+                metadata=runtime_metadata(self.runtime_id), session_root=session.handle,
+                stop_handle=stop_handle, drain_limit=drain_limit, timeout=SCOPE_OP_TIMEOUT,
+            )
 
     def _close_scope_handle(
         self, session: RelaySession, handle: Any, *, output: dict[str, Any] | None = None, allow_closing: bool = False,
@@ -1216,6 +1256,9 @@ class RelaySessionCoordinator:
                     turn.logical_llm_calls.setdefault(pending_request_id, pending_handle)
             logger.warning("Hermes Relay logical LLM finalization failed: %s", failure)
             break
+        drain_deferred = getattr(host, "drain_deferred_scopes", None)
+        if callable(drain_deferred):
+            drain_deferred(lease.session, stop_handle=turn.handle)
 
     @staticmethod
     def _reset_turn_context(turn: RelayTurnContext) -> None:

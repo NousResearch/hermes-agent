@@ -4,9 +4,9 @@ import threading
 import time
 from collections import OrderedDict
 
+from hermes_state_common import LOCAL_POLICY_PREFIX as POLICY_PREFIX, NONDEFAULT_POLICY_WHERE
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
-POLICY_PREFIX = 'gateway.local_policy.v1:'
 API_BINDING_PREFIX = 'gateway.api.binding.v1.'
 API_DECLARED_PREFIX = 'gateway.api.conversation.v1.'
 
@@ -159,10 +159,14 @@ def retire_local_receipts(conn, session_ids):
     targets = set(session_ids)
     if not targets:
         return
-    # Prefix scans (GLOB uses the key index), not one LIKE per id: a prune retires thousands.
-    gone = [key for key, value in conn.execute('SELECT key,value FROM state_meta WHERE key GLOB ?',
-                                               (POLICY_PREFIX + '*',))
-            if _policy_target(value) in targets]
+    # Single-snapshot UNION: direct PK probe for default receipts (entry.session_id == key suffix)
+    # plus partial index idx_state_meta_local_policy_special for repointed receipts.
+    rows = conn.execute(
+        'SELECT key,value FROM state_meta WHERE key IN (SELECT ? || value FROM json_each(?)) '
+        f'UNION SELECT key,value FROM state_meta WHERE {NONDEFAULT_POLICY_WHERE}',
+        (POLICY_PREFIX, json.dumps(sorted(targets))),
+    ).fetchall()
+    gone = [key for key, value in rows if _policy_target(value) in targets]
     gone += [key for key, value in conn.execute('SELECT key,value FROM state_meta WHERE key GLOB ?',
                                                 (API_DECLARED_PREFIX + '*',)) if value in targets]
     gone += [API_BINDING_PREFIX + sid for sid in targets]
@@ -179,8 +183,9 @@ def moved_receipts(conn, target_ids=None):
     scan to the rows one repoint rewrote."""
     rows = conn.execute(
         "SELECT substr(m.key, ?), s.id, s.source FROM state_meta m JOIN sessions s "
-        "ON s.id = CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END "
-        "WHERE m.key GLOB ? AND s.session_key IS NOT NULL "
+        "ON s.id = CASE WHEN m.key NOT GLOB 'gateway.local_policy.v1:local-*' AND json_valid(m.value) "
+        "THEN json_extract(m.value, '$.entry.session_id') END "
+        "WHERE m.key GLOB ? AND m.key NOT GLOB 'gateway.local_policy.v1:local-*' AND s.session_key IS NOT NULL "
         "AND s.session_key IS NOT CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.route') END",
         (len(POLICY_PREFIX) + 1, POLICY_PREFIX + '*')).fetchall()
     return {owner: (target, source) for owner, target, source in rows

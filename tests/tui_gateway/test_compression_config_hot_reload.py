@@ -326,3 +326,93 @@ def test_apply_live_compression_config_is_self_contained():
     _apply_live_compression_config(agent, {"compression": {"enabled": True}})
     assert agent.compression_enabled is True
     assert agent.codex_responses_native_compaction is False
+
+
+def test_live_in_place_false_applies_and_arms_rotation_for_bloated_legacy_session(monkeypatch):
+    session, compressor = _session_with_compressor()
+    agent = session["agent"]
+    agent.session_id = "20291231_235959_future"
+    agent.compression_in_place = True
+    compressor.last_prompt_tokens = 120_000
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "model": {
+                "default": "gpt-5.6-sol",
+                "provider": "openai-codex",
+                "context_length": 1_048_576,
+            },
+            "compression": {
+                "in_place": False,
+                "proactive_prune_tokens": 0,
+                "threshold": 0.185,
+            },
+        },
+    )
+    server._sync_agent_compression_with_config("20291231_235959_future", session)  # type: ignore[attr-defined]
+    assert agent.compression_in_place is False
+    assert compressor.proactive_prune_tokens == 0
+    assert compressor.threshold_tokens == 75_000
+    assert getattr(compressor, "_force_rotate_restore_threshold", 0) > 100_000
+
+
+def test_rotated_child_session_inherits_europe_west2_affinity_and_restores_threshold():
+    from typing import Any, cast
+
+    from agent.conversation_compression import _publish_rotated_compaction
+    from agent.vertex_adapter import (
+        EUROPE_WEST2_VERTEX_REGION,
+        _record_session_vertex_region_affinity,
+        get_session_vertex_region_affinity,
+    )
+
+    compressor = ContextCompressor(
+        model="google/gemini-4-argon",
+        threshold_percent=0.185,
+        config_context_length=1_048_576,
+        quiet_mode=True,
+    )
+    compressor._force_rotate_restore_threshold = 193_986  # type: ignore[attr-defined]
+    compressor.threshold_tokens = 75_000
+
+    class _StubDB:
+        def get_active_message_watermark(self, _sid):
+            return 10
+
+        def get_session_title(self, _sid):
+            return "test"
+
+        def publish_compression_child(self, **_kwargs):
+            return None
+
+        def update_session_title(self, _sid, _title):
+            return None
+
+    _record_session_vertex_region_affinity("20261114_010000_old", EUROPE_WEST2_VERTEX_REGION)
+    agent = SimpleNamespace(
+        session_id="20261114_010000_old",
+        model="google/gemini-4-argon",
+        context_compressor=compressor,
+        _session_db=_StubDB(),
+        _session_init_model_config={},
+        _flush_messages_to_session_db=lambda *_a, **_k: None,
+    )
+    _publish_rotated_compaction(
+        agent,
+        [{"role": "user", "content": "hi"}],
+        [{"role": "user", "content": "hi"}],
+        new_system_prompt="system",
+        lease=cast(Any, SimpleNamespace(holder=None, ttl=0.0, watermark=None)),
+        old_session_id="20261114_010000_old",
+        compressed_user_turn_outcome="none",
+    )
+    new_sid = agent.session_id
+    assert new_sid != "20261114_010000_old"
+    assert getattr(agent, "_rotated_to_child_session", False) is True
+    assert getattr(compressor, "_force_rotate_restore_threshold", 0) == 0
+    assert compressor.threshold_tokens == 193_986
+    assert get_session_vertex_region_affinity(new_sid) == EUROPE_WEST2_VERTEX_REGION
+    assert get_session_vertex_region_affinity("20261114_010000_old") is None
+

@@ -250,11 +250,13 @@ class TestF4CooldownClearOrdering:
 
 class TestF6ExecutorSaturation:
     def test_saturated_pool_fails_fast_and_never_runs_stale_job(self):
-        """4 blocked summaries + 5th submission fails fast; recovery does not
+        """All pool workers blocked + next submission fails fast; recovery does not
         run the refused job."""
         _drain_admission_slots()
+        max_workers = cc._COMPRESS_EXECUTOR_MAX_WORKERS
+        assert max_workers == 8
         release = threading.Event()
-        started = threading.Barrier(5, timeout=10)  # 4 workers + main
+        started = threading.Barrier(max_workers + 1, timeout=10)  # N workers + main
 
         def blocked_worker(fence: CompressionCommitFence):
             started.wait()
@@ -274,18 +276,18 @@ class TestF6ExecutorSaturation:
             )
 
         try:
-            for i in range(4):
+            for i in range(max_workers):
                 t = threading.Thread(target=host, args=(i,), name=f"sat-{i}")
                 t.start()
                 hosts.append(t)
-            started.wait()  # all 4 workers occupy the pool
+            started.wait()  # all workers occupy the pool
             for t in hosts:
                 t.join(timeout=5)  # hosts time out; workers stay wedged
                 assert not t.is_alive()
 
-            # All 4 slots still admitted (workers blocked).
+            # All slots still admitted (workers blocked).
             with cc._compress_admission_lock:
-                assert cc._compress_admitted_count == 4
+                assert cc._compress_admitted_count == max_workers
 
             fifth_ran = threading.Event()
 

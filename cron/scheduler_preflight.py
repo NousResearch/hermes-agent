@@ -12,7 +12,7 @@ import errno
 import json
 import logging
 import os
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from cron.env_settings import cron_env_setting
 
@@ -494,7 +494,37 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
     return None
 
 
-# Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
-# populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched
-from cron import scheduler_delivery as _delivery
+# Late-bound origin namespace (see module docstring). Resolved lazily via _LazyMod
+# to prevent Python 3.14 _ModuleLock cycles.
+if TYPE_CHECKING:
+    from cron import scheduler as _sched
+    from cron import scheduler_delivery as _delivery
+else:
+    class _LazyMod:
+        __slots__ = ("_n",)
+
+        def __init__(self, n: str) -> None:
+            object.__setattr__(self, "_n", n)
+
+        def __getattr__(self, a: str):
+            import importlib
+            import sys
+
+            n = object.__getattribute__(self, "_n")
+            m = sys.modules.get(n)
+            if m is None or getattr(getattr(m, "__spec__", None), "_initializing", False):
+                m = importlib.import_module(n)
+            return getattr(m, a)
+
+        def __setattr__(self, a: str, v) -> None:
+            import importlib
+            import sys
+
+            n = object.__getattribute__(self, "_n")
+            m = sys.modules.get(n)
+            if m is None or getattr(getattr(m, "__spec__", None), "_initializing", False):
+                m = importlib.import_module(n)
+            setattr(m, a, v)
+
+    _sched = _LazyMod("cron.scheduler")
+    _delivery = _LazyMod("cron.scheduler_delivery")

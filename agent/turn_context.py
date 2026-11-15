@@ -319,9 +319,10 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
     Compaction handoffs must never become the fallback anchor (#80622) — they are reference-only
     scaffolding, not the active ask.
     """
-    from agent.context_compressor import user_originated_turn_view
+    from agent.context_compressor import split_inflight_replay_turn, user_originated_turn_view
 
     fallback = -1
+    inflight_fallback = -1
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
@@ -332,6 +333,12 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
             return i
         live_view = user_originated_turn_view(msg)
         if live_view is None:
+            _, inflight_view = split_inflight_replay_turn(msg)
+            if inflight_view is not None:
+                if inflight_view.get("content") == user_message:
+                    return i
+                if inflight_fallback < 0:
+                    inflight_fallback = i
             continue
         if live_view.get("content") == user_message:
             return i
@@ -339,7 +346,7 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
         # when the exact content was rewritten by merge-into-tail.
         if fallback < 0:
             fallback = i
-    return fallback
+    return fallback if fallback >= 0 else inflight_fallback
 
 
 def history_before_current_turn(
@@ -357,7 +364,13 @@ def history_before_current_turn(
     """
     if (isinstance(messages, list) and isinstance(current_turn_user_idx, int)
             and 0 <= current_turn_user_idx <= len(messages)):
-        return list(messages[:current_turn_user_idx])
+        prefix = list(messages[:current_turn_user_idx])
+        if current_turn_user_idx < len(messages):
+            from agent.context_compressor import split_inflight_replay_turn
+            handoff, live_view = split_inflight_replay_turn(messages[current_turn_user_idx])
+            if handoff is not None and live_view is not None:
+                prefix.append(handoff)
+        return prefix
     return list(fallback) if isinstance(fallback, list) else []
 
 
@@ -431,8 +444,18 @@ def compression_made_progress(
     return new_len < orig_len or (orig_tokens > 0 and new_tokens < orig_tokens * 0.95)
 
 
-class PreflightCompressionTimedOut(RuntimeError):
+_prev_preflight_timed_out = globals().get("PreflightCompressionTimedOut")
+
+
+class _PreflightCompressionTimedOut(RuntimeError):
     """Raised when an oversized turn cannot safely finish preflight."""
+
+
+PreflightCompressionTimedOut = (
+    _prev_preflight_timed_out
+    if isinstance(_prev_preflight_timed_out, type) and issubclass(_prev_preflight_timed_out, RuntimeError)
+    else _PreflightCompressionTimedOut
+)
 
 
 def _fail_closed_after_preflight_timeout(agent, request_tokens: int) -> None:
@@ -660,6 +683,8 @@ def _bind_turn_identity(
 # verifier). ``_turns_since_memory`` / ``_iters_since_skill`` are deliberately NOT reset.
 _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     ("_invalid_tool_retries", 0), ("_invalid_json_retries", 0), ("_empty_content_retries", 0),
+    ("_truncated_tool_call_retries", 0),
+    ("_content_filter_retries", 0), ("_content_filter_fallback_sticky", False),
     ("_incomplete_scratchpad_retries", 0), ("_codex_incomplete_retries", 0),
     # Consecutive Codex reasoning-only (no answer, no tool call) responses, kept apart from
     # the aggregate incomplete count so a visible partial resets it (#67321).

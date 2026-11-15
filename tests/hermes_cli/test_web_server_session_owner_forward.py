@@ -397,3 +397,40 @@ async def test_a_signed_in_owner_forwards_through_the_real_ticket_verifier(tmp_p
             request, None, 'session-8', request_id='req-8', expected_revision=0,
             operation='archive', payload={})
     assert [grant['subject'] for grant in grants] == [host_owner_subject()]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner_state', ['starting', 'draining', 'conflict', 'inaccessible'])
+async def test_standalone_mutation_during_gateway_startup_returns_retryable_503_not_409(
+    tmp_path, monkeypatch, owner_state,
+):
+    """During gateway cold-start (state='starting', before publish_gateway_runtime_ready),
+    discover_gateway_endpoint returns endpoint=None with state!='absent'. Standalone serve
+    must surface a retryable 503 (owner_unavailable) when the offline reservation loses to
+    the (starting) owner — never the bare 409 Exclusive-maintenance refusal that pinned
+    sessions in maintenanceFenced (CF-36, graduated to upstream #144141)."""
+    from contextlib import contextmanager
+    from gateway.runtime_ownership import OwnershipConflict
+    from hermes_cli import web_server_sessions
+    from hermes_cli.gateway_runtime import GatewayDiscovery
+
+    request = _standalone_request(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        'hermes_cli.gateway_runtime.discover_gateway_endpoint',
+        lambda home, timeout=1.5: GatewayDiscovery(owner_state, reason_code=None),
+    )
+
+    @contextmanager
+    def owner_holds_the_lock(homes):
+        raise OwnershipConflict('Exclusive maintenance refused: held. Drain and stop the gateway, then retry.')
+        yield
+
+    monkeypatch.setattr('gateway.runtime_ownership.exclusive_maintenance', owner_holds_the_lock)
+    with pytest.raises(HTTPException) as exc:
+        await web_server_sessions._mutate_session_request(
+            request, None, 'session-pin', request_id='req-pin', expected_revision=0,
+            operation='pin', payload={'pinned': True},
+        )
+    assert exc.value.status_code == 503
+    assert exc.value.detail.startswith(f'owner_unavailable: {owner_state}: ')
+    assert 'Drain and stop the gateway' in exc.value.detail

@@ -55,3 +55,31 @@ def test_interpreter_kill_rejection_names_the_owned_process_route(tmp_path, monk
     # Absence on the wrong side: a plain foreground `hermes gateway run` carries no launch marker.
     monkeypatch.delenv("HERMES_SUPERVISED_CHILD")
     assert run("pkill -9 python3") is None
+
+
+def test_local_backend_does_not_exhaust_remote_read_budget_on_js_wrapper(tmp_path, monkeypatch):
+    """On ``env_type == 'local'``, ``_read_referenced_script`` already reads the host filesystem;
+    passing ``read_remote_script`` caused nonexistent slash-bearing tokens inside ``./node_modules/.bin/eslint``
+    (``/* ... */``, ``//---``) to burn all 8 ``remote_reads_remaining`` slots and fail closed."""
+    from tools import process_registry
+
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
+    bin_dir = tmp_path / "node_modules" / ".bin"
+    bin_dir.mkdir(parents=True)
+    eslint_bin = bin_dir / "eslint"
+    eslint_bin.write_text(
+        "#!/usr/bin/env node\n"
+        + "\n".join(f"//--- comment {i} /a/b/c_{i} /* block_{i} */" for i in range(12))
+        + "\n",
+        encoding="utf-8",
+    )
+    blocked = gateway_lifecycle_block(
+        command="./node_modules/.bin/eslint --max-warnings=0 src/index.ts",
+        env=object(),
+        env_type="local",
+        cwd=str(tmp_path),
+        workdir=str(tmp_path),
+        session_key="local-eslint-test",
+    )
+    assert blocked is None
+

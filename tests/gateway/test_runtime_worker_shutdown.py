@@ -313,3 +313,33 @@ def test_shutdown_interrupt_reaches_counted_side_agents():
                              _interrupt_deferred_agent_workers=lambda reason: 0)
     GatewayShutdownMixin._interrupt_running_agents(runner, 'Gateway shutting down')
     assert interrupts == ['Gateway shutting down']
+
+
+def test_uncounted_runtime_work_excludes_canonical_cron_sessions():
+    """Canonical cron sessions in ``authority.sessions`` are already counted by
+    ``_active_cron_job_count`` / ``_restart_wait_cron_counts``. Counting them again in
+    ``uncounted_runtime_work`` doubles ``active_agents`` and prevents ``wedged`` cron
+    exclusions from releasing ``Restart deferred`` (RCA 2026-11-03)."""
+    from gateway.session_runtime_workers import uncounted_runtime_work
+    from hermes_state_keys import CRON_PRINCIPAL_ID
+
+    task = SimpleNamespace(done=lambda: False)
+    cron_live = SimpleNamespace(
+        task=task, route='cron-route',
+        source=SimpleNamespace(user_id=CRON_PRINCIPAL_ID),
+        event_stream=SimpleNamespace(execution={'execution_generation': 1, 'admission_id': 'adm-1'}),
+    )
+    chat_live = SimpleNamespace(
+        task=task, route='chat-route',
+        source=SimpleNamespace(user_id='user-1'),
+        event_stream=SimpleNamespace(execution={'execution_generation': 1, 'admission_id': 'adm-2'}),
+    )
+    authority = SimpleNamespace(
+        sessions={'local-cron': cron_live, 'local-chat': chat_live},
+        _managed_workers={}, _mutation_tasks=set(), _bot_mailbox_operations=set(),
+        _side_agents={}, _cron_cancellations={'adm-1': object()},
+    )
+    runner = SimpleNamespace(_running_agents={}, session_authority=authority,
+                             _profile_session_authorities={})
+    assert uncounted_runtime_work(runner) == 1
+

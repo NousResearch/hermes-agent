@@ -57,6 +57,7 @@ MISSING_SIGNATURE_MESSAGE = (
     "correctly, and missing thought_signature may lead to degraded model performance. Additional data, function "
     "call `default_api:{name}` , position {pos}. Please refer to https://ai.google.dev/gemini-api/docs/"
     "thought-signatures for more details.")
+SKIP_SIGNATURES = frozenset({"skip_thought_signature_validator", "context_engineering_is_the_way_to_go"})
 # HTTP status -> google.rpc canonical status name (https://cloud.google.com/apis/design/errors).
 GRPC_STATUS = {400: "INVALID_ARGUMENT", 401: "UNAUTHENTICATED", 403: "PERMISSION_DENIED", 404: "NOT_FOUND",
                429: "RESOURCE_EXHAUSTED", 500: "INTERNAL", 503: "UNAVAILABLE", 504: "DEADLINE_EXCEEDED"}
@@ -78,6 +79,7 @@ class Say:
     completion_tokens: int = 20
     chunk_chars: int = 16
     expire_tokens_after: bool = False  # the ~1h boundary passes right after this response
+    thought: str | None = None
 
 
 @dataclass
@@ -89,6 +91,7 @@ class Call:
     signed: bool = True
     prompt_tokens: int | None = None
     expire_tokens_after: bool = False
+    thought: str | None = None
 
 
 @dataclass
@@ -270,7 +273,7 @@ def _check_signatures(messages: list[dict[str, Any]], issued: set[str]) -> str |
             continue
         for pos, tc in enumerate(calls):
             sig = _first_signature(tc)
-            if sig is not None and sig not in issued:
+            if sig is not None and sig not in issued and sig not in SKIP_SIGNATURES:
                 return "Corrupted thought signature."
             if i > last_user and pos == 0 and sig is None:
                 return MISSING_SIGNATURE_MESSAGE.format(name=tc.get("function", {}).get("name"), pos=step + 1)
@@ -640,9 +643,15 @@ def _handler_for(fake: FakeVertex) -> type[BaseHTTPRequestHandler]:
             self.close_connection = True
 
         def _deltas(self, resp: Say | Call, record: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+            thought_deltas: list[dict[str, Any]] = (
+                [{"content": resp.thought, "extra_content": {"google": {"thought": True}}}]
+                if getattr(resp, "thought", None)
+                else []
+            )
             if isinstance(resp, Say):
                 size = max(1, resp.chunk_chars)
-                return [{"content": resp.text[i:i + size]} for i in range(0, len(resp.text), size)] or [{"content": ""}], "stop"
+                text_deltas = [{"content": resp.text[i:i + size]} for i in range(0, len(resp.text), size)] or [{"content": ""}]
+                return thought_deltas + text_deltas, "stop"
             tool_calls = []
             for pos, (name, args) in enumerate(resp.calls):
                 call_id, sig = fake.next_ids()
@@ -656,7 +665,9 @@ def _handler_for(fake: FakeVertex) -> type[BaseHTTPRequestHandler]:
             record["tool_calls"] = tool_calls
             with fake._lock:
                 fake.signature_by_call.update({tc["id"]: _first_signature(tc) for tc in tool_calls})
-            deltas: list[dict[str, Any]] = [{"content": resp.text}] if resp.text else []
+            deltas: list[dict[str, Any]] = list(thought_deltas)
+            if resp.text:
+                deltas.append({"content": resp.text})
             deltas.append({"tool_calls": tool_calls})
             return deltas, "tool_calls"
 

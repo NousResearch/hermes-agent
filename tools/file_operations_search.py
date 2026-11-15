@@ -614,6 +614,7 @@ class SearchMixin:
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE if merge_stderr else subprocess.DEVNULL,
                 # detached-spawn: ok — awaited rg under a deadline; the group is killed on timeout or interrupt
                 start_new_session=True)
+            proc._hermes_pgid = proc.pid  # type: ignore[attr-defined]
         except OSError as exc:
             return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
         # Record the group at spawn, as LocalEnvironment._run_bash does: rg can exit between the
@@ -658,7 +659,10 @@ class SearchMixin:
                 exit_code = 124
                 break
         if proc.poll() is None:
-            _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            try:
+                _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            except ProcessLookupError:
+                pass
         proc.wait()
         drainer.join()
         proc.stdout.close()
@@ -1041,19 +1045,26 @@ class SearchMixin:
         escaped_pattern = self._escape_shell_arg(pattern)
         q_roots = [escaped_path]
         hidden_prune = self._hidden_prune_expr(q_roots)
+        prune_terms: list[str] = []
+        for dirname in sorted(SEARCH_PRUNE_DIR_NAMES):
+            prune_terms.append(f"-name {shlex.quote(dirname)}")
+        prune_names = " -o ".join(prune_terms)
+        heavy_prune = f"\\( -type d \\( {prune_names} \\) \\) -prune" if prune_names else ""
+        prune_clause = f"{hidden_prune} -o {heavy_prune}" if heavy_prune else hidden_prune
         cmd = (
-            f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
-            f"! -name '.*' -name {escaped_pattern} -printf '%T@ %p\\n' "
+            f"find -H {escaped_path} -mindepth 1 {prune_clause} -o \\( -type d "
+            f"! -name '.*' -name {escaped_pattern} -printf '%T@ %p\\n' \\) "
             f"2>/dev/null | sort -rn"
         )
         result = self._exec(cmd, timeout=30)
         stdout, limit_reason = _search_stdout_and_limit(result)
 
         if not stdout.strip() and not limit_reason:
-            # Try without -printf (BSD find compatibility -- macOS)
+            # Try without -printf (BSD find compatibility -- macOS); explicit -print
+            # prevents BSD find from echoing pruned directories when -o has no action.
             cmd_simple = (
-                f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
-                f"! -name '.*' -name {escaped_pattern} 2>/dev/null"
+                f"find -H {escaped_path} -mindepth 1 {prune_clause} -o \\( -type d "
+                f"! -name '.*' -name {escaped_pattern} -print \\) 2>/dev/null"
             )
             result = self._exec(cmd_simple, timeout=30)
             stdout, limit_reason = _search_stdout_and_limit(result)

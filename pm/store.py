@@ -360,6 +360,8 @@ def _tree_digest(root: Path, *, skip_metadata: bool) -> str:
                 descend.append(name)
         dirnames[:] = descend
         for fname in filenames:
+            if fname.startswith(".hermes-ssh-runtime-"):
+                continue
             path = Path(dirpath) / fname
             if skip_metadata and _is_os_metadata(path):
                 continue

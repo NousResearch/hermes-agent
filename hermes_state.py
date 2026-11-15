@@ -473,6 +473,28 @@ def _foreign_state_db_holders(db_path: Path) -> list[tuple[int, str]]:
 # one-shots, recovery flows, and read-only cross-profile opens use SessionDB() directly with their own close().
 
 
+# ── Write-retry receipt (2026-09-28, RCA-state-db-lock-child-death) ──
+# Every jittered lock-retry sleep stamps this process-wide timestamp so the turn-liveness
+# watchdog can distinguish "blocked in a persistence flush, still retrying" from a silent
+# wedge. With the transcript patience at storm-class scale (240s), a turn waiting out a
+# sibling's hold must not accrue "no progress" toward its liveness abort. The stamp is
+# deliberately process-global: while retries land continuously, the writer queue IS the
+# process's forward progress. Reader: agent/turn_liveness.py.
+_LAST_WRITE_RETRY_MONOTONIC = 0.0
+_WRITE_RETRY_RECEIPT_FRESH_S = 2.0
+
+
+def note_write_retry() -> None:
+    """Receipt: a state.db write-lock retry sleep starts now (jittered, GIL-releasing)."""
+    global _LAST_WRITE_RETRY_MONOTONIC
+    _LAST_WRITE_RETRY_MONOTONIC = time.monotonic()
+
+
+def write_retry_in_progress(max_age_s: float = _WRITE_RETRY_RECEIPT_FRESH_S) -> bool:
+    """True when a write-lock retry landed within the freshness window (best-effort)."""
+    return (time.monotonic() - _LAST_WRITE_RETRY_MONOTONIC) < max_age_s
+
+
 class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
@@ -497,7 +519,16 @@ class SessionDB(
     # optimize); attempt-counted budgets destroyed turns on a healthy store. Transcript
     # writes (failure aborts the turn) get the long budget; observation-only activity
     # writes sit on the response-critical path and get a sub-second one.
-    _WRITE_PATIENCE_S, _TRANSCRIPT_WRITE_PATIENCE_S, _ACTIVITY_WRITE_PATIENCE_S = 20.0, 60.0, 0.5
+    # Transcript budget raised 60→240s (2026-09-28, RCA-state-db-lock-child-death): four
+    # turns died when their 60s budget ran out ~77s before a GIL-starved holder let go
+    # (observed holds: 8.2/9.3/15.2/276.3s). 240s keeps a full storm-class wait inside
+    # the turn-lease TTL (300s, agent/turn_facade_lease.LEASE_TTL_SECONDS) minus headroom
+    # for the turn's remaining work — a patient flush must never outlive its own lease
+    # and trade one kill for another. Retry sleeps are jittered and GIL-releasing, so
+    # waiting writers starve nobody; exhaustion still raises the classified locked-error
+    # (loud failure intact), and the liveness watchdog treats fresh write-retry receipts
+    # as progress (hermes_state.note_write_retry / write_retry_in_progress).
+    _WRITE_PATIENCE_S, _TRANSCRIPT_WRITE_PATIENCE_S, _ACTIVITY_WRITE_PATIENCE_S = 20.0, 240.0, 0.5
     # A live compression lock gets a short wait (compression publishes in seconds), but the lease
     # is a correctness boundary: a writer still locked out afterwards is refused.
     # Observation-only activity heartbeat/label writes (#76354 review S1): these run on (or adjacent to) the
@@ -515,6 +546,11 @@ class SessionDB(
     _WRITE_RETRY_SLOW_MIN_S, _WRITE_RETRY_SLOW_MAX_S = 0.250, 1.000
     # PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
+    # Hold-time observability: a write txn holding the lock this long starves sibling processes'
+    # lease heartbeats (their patience budget is 20s). Warn so the culprit FUNCTION is named in
+    # the log instead of only the downstream 'database is locked' victims (2026-09-14 storm:
+    # 10 timeouts, zero culprit rows).
+    _SLOW_TXN_HOLD_WARN_S = 5.0
     # Bounded FTS ``'merge'`` (ms of lock each) instead of ``'optimize'`` (9-18s per index on a 10GB
     # DB, longer than a writer's patience); up to _COMMANDS_PER_PASS per index, stopping on no-progress.
     _FTS_MERGE_EVERY_N_WRITES, _FTS_MERGE_MAX_PAGES_PER_INDEX, _FTS_MERGE_COMMANDS_PER_PASS = 1000, 500, 4
@@ -536,7 +572,22 @@ class SessionDB(
         return prompt_hash
 
     @staticmethod
-    def _delete_unreferenced_system_prompts(conn) -> None:
+    def _delete_unreferenced_system_prompts(
+        conn: sqlite3.Connection,
+        candidate_hashes: Optional[Any] = None,
+    ) -> None:
+        if candidate_hashes is not None:
+            candidates = list(dict.fromkeys(h for h in candidate_hashes if isinstance(h, str) and h))
+            if not candidates:
+                return
+            placeholders = ", ".join("?" for _ in candidates)
+            conn.execute(
+                f"DELETE FROM system_prompts WHERE hash IN ({placeholders}) AND NOT EXISTS ("
+                "SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash) AND NOT EXISTS ("
+                "SELECT 1 FROM sessions WHERE sessions.tool_names = system_prompts.hash)",
+                candidates,
+            )
+            return
         conn.execute(
             "DELETE FROM system_prompts WHERE NOT EXISTS ("
             "SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash) AND NOT EXISTS ("
@@ -1021,7 +1072,11 @@ class SessionDB(
             self._wal_lock_guard = _lockguard.hold(self.db_path)
 
     def _execute_write(
-        self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,
+        self,
+        fn: Callable[[sqlite3.Connection], T],
+        patience_s: Optional[float] = None,
+        *,
+        quiet_lock_timeout: bool = False,
     ) -> T:
         """Run *fn(conn)* inside BEGIN IMMEDIATE with jittered lock retry; commit
         is handled here (callers must not commit). Returns *fn*'s result.
@@ -1057,17 +1112,47 @@ class SessionDB(
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
+                    assert self._conn is not None
+                    _wait_t0 = time.monotonic()
                     self._conn.execute("BEGIN IMMEDIATE")
+                    _txn_t0 = time.monotonic()
+                    _wait_s = _txn_t0 - _wait_t0
                     try:
                         fn_started = True
                         result = fn(self._conn)
                         self._conn.commit()
                     except BaseException:
+                        # d1 (skeptic deleg_01d53160): a rollback releases the lock too, and a
+                        # rollback storm (failures after a long fn) starves siblings exactly
+                        # like a slow commit — measure BOTH paths, not only the success one.
+                        _txn_hold_s = time.monotonic() - _txn_t0
                         try:
                             self._conn.rollback()
                         except Exception:
                             pass
+                        if _txn_hold_s > self._SLOW_TXN_HOLD_WARN_S:
+                            logger.warning(
+                                "state.db write txn held the lock %.1fs before ROLLBACK "
+                                "(>%ss budget) via %s — siblings' lease heartbeats are "
+                                "starved by holds like this",
+                                _txn_hold_s, self._SLOW_TXN_HOLD_WARN_S,
+                                getattr(fn, "__qualname__", getattr(fn, "__name__", "<fn>")),
+                            )
                         raise
+                    _txn_hold_s = time.monotonic() - _txn_t0
+                if _wait_s > self._SLOW_TXN_HOLD_WARN_S:
+                    logger.warning(
+                        "state.db write txn waited %.1fs to acquire lock (>%ss budget) before %s",
+                        _wait_s, self._SLOW_TXN_HOLD_WARN_S,
+                        getattr(fn, "__qualname__", getattr(fn, "__name__", "<fn>")),
+                    )
+                if _txn_hold_s > self._SLOW_TXN_HOLD_WARN_S:
+                    logger.warning(
+                        "state.db write txn held the lock %.1fs (>%ss budget) via %s — "
+                        "siblings' lease heartbeats are starved by holds like this",
+                        _txn_hold_s, self._SLOW_TXN_HOLD_WARN_S,
+                        getattr(fn, "__qualname__", getattr(fn, "__name__", "<fn>")),
+                    )
                 # Success — periodic best-effort checkpoint + FTS merge.
                 maintain_after_commit(self)
                 return result
@@ -1103,10 +1188,11 @@ class SessionDB(
                         # Say what actually happened, not disk/permission damage. The holder goes to
                         # the log, not the message: classify_persistence_error() buckets by phrase and
                         # a holder's argv (a worktree named fix-corrupt-db) would flip the bucket.
-                        log_write_lock_holders(self.db_path, patience_s)
+                        if not quiet_lock_timeout:
+                            log_write_lock_holders(self.db_path, patience_s)
                         raise sqlite3.OperationalError(
                             f"database is locked (another Hermes process held the "
-                            f"state.db write lock for over {patience_s:.0f}s — "
+                            f"state.db write lock for over {patience_s:g}s — "
                             "likely a long maintenance operation such as VACUUM, "
                             "a large WAL checkpoint, or an older pre-update "
                             "process; the database itself is healthy)"
@@ -1139,12 +1225,18 @@ class SessionDB(
                 raise
 
     def _write_sql(
-        self, sql: str, params: Any = (), *, many: bool = False, patience_s: Optional[float] = None,
+        self,
+        sql: str,
+        params: Any = (),
+        *,
+        many: bool = False,
+        patience_s: Optional[float] = None,
+        quiet_lock_timeout: bool = False,
     ) -> None:
         """Run one INSERT/UPDATE/DELETE through ``_execute_write``."""
         def _do(conn):
             (conn.executemany if many else conn.execute)(sql, params)
-        self._execute_write(_do, patience_s=patience_s)
+        self._execute_write(_do, patience_s=patience_s, quiet_lock_timeout=quiet_lock_timeout)
 
     def _write_rowcount(self, sql: str, params: Any = (), *, patience_s: Optional[float] = None) -> int:
         """Run one UPDATE/DELETE through ``_execute_write``; return rows changed
@@ -1472,12 +1564,56 @@ class SessionDB(
             (self._WRITE_RETRY_SLOW_MIN_S, self._WRITE_RETRY_SLOW_MAX_S) if slow
             else (self._WRITE_RETRY_MIN_S, self._WRITE_RETRY_MAX_S)
         ))
+        note_write_retry()  # liveness receipt: waiting on the lock is progress, not a silent wedge
         time.sleep(min(jitter, max(deadline - now, 0.001)))
         return True
 
     def _foreign_state_db_holders(self) -> list[tuple[int, str]]:
         """Foreign processes holding this DB or its WAL sidecars (see hermes_state_holders)."""
         return _foreign_state_db_holders(self.db_path)
+
+    def _log_write_lock_holders(self, patience_s: float, fn) -> None:
+        """Log WHO plausibly holds the state.db write lock once patience is exhausted.
+
+        Runs only on the exhausted-patience path (rare and pathological), so a
+        best-effort open-file scan is affordable. Cross-references foreign DB
+        holders against live turn leases so the operator can map a blocking pid
+        to its session instead of staring at a bare 'database is locked'.
+        """
+        try:
+            holders = self._foreign_state_db_holders()
+            holder_pids = {pid for pid, _path in holders if pid and pid > 0}
+            try:
+                leases = self._read_all(
+                    "SELECT conversation_id, holder, expires_at "
+                    "FROM session_turn_leases ORDER BY expires_at"
+                )
+            except Exception:
+                leases = []
+            lease_refs = []
+            for row in leases:
+                holder = str(row["holder"] or "")
+                pid = None
+                if holder.startswith("pid="):
+                    pid_str = holder.split(":", 1)[0][4:]
+                    if pid_str.isdigit():
+                        pid = int(pid_str)
+                if pid in holder_pids:
+                    lease_refs.append(
+                        f"{row['conversation_id']}->{holder[:60]}"
+                        f"(exp {float(row['expires_at']):.0f})"
+                    )
+            if holders or lease_refs:
+                logger.warning(
+                    "state.db write lock contended for >%.0fs while running %s; "
+                    "foreign holders: %s; matching turn leases: %s",
+                    patience_s,
+                    getattr(fn, "__qualname__", getattr(fn, "__name__", "<fn>")),
+                    sorted(holders)[:8] or "none",
+                    lease_refs[:8] or "none",
+                )
+        except Exception:
+            logger.debug("write-lock holder scan failed", exc_info=True)
 
     def _quarantine_reason(self) -> Optional[str]:
         """Why this handle must not checkpoint or run in-file repair, or None. A corrupted image has
@@ -1725,7 +1861,8 @@ class SessionDB(
         if not prefix:
             return []
         rows = self._read_all(
-            "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\'", (_escape_like(prefix) + "%",),
+            "SELECT key, value FROM state_meta WHERE key >= ? AND key < ? AND key LIKE ? ESCAPE '\\'",
+            (prefix, prefix + "\uffff", _escape_like(prefix) + "%"),
         )
         return [(row[0], row[1]) for row in rows]
 

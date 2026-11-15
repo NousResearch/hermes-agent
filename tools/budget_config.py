@@ -101,14 +101,30 @@ def budget_for_context_window(context_length: int | None) -> BudgetConfig:
     oversized request (#23767).
     """
     mcp_result_size = _configured_mcp_result_size()
+    cfg_default = DEFAULT_RESULT_SIZE_CHARS
+    cfg_turn = DEFAULT_TURN_BUDGET_CHARS
+    cfg_preview = DEFAULT_PREVIEW_SIZE_CHARS
+    try:
+        from hermes_cli.config import load_config_readonly
+        block = (load_config_readonly() or {}).get('tool_budget')
+        if isinstance(block, dict):
+            if int(block.get('default_result_size_chars') or 0) >= _MIN_RESULT_SIZE_CHARS:
+                cfg_default = int(block['default_result_size_chars'])
+            if int(block.get('turn_budget_chars') or 0) >= _MIN_TURN_BUDGET_CHARS:
+                cfg_turn = int(block['turn_budget_chars'])
+            if int(block.get('preview_size_chars') or 0) >= 500:
+                cfg_preview = int(block['preview_size_chars'])
+    except Exception:
+        pass
     if not context_length or context_length <= 0:
-        if mcp_result_size == DEFAULT_MCP_RESULT_SIZE_CHARS:
+        if (mcp_result_size == DEFAULT_MCP_RESULT_SIZE_CHARS and cfg_default == DEFAULT_RESULT_SIZE_CHARS
+                and cfg_turn == DEFAULT_TURN_BUDGET_CHARS and cfg_preview == DEFAULT_PREVIEW_SIZE_CHARS):
             return DEFAULT_BUDGET
-        return BudgetConfig(mcp_result_size=mcp_result_size)
+        return BudgetConfig(default_result_size=cfg_default, turn_budget=cfg_turn, preview_size=cfg_preview, mcp_result_size=mcp_result_size)
     window_chars = context_length * _CHARS_PER_TOKEN
     return BudgetConfig(
-        default_result_size=max(_MIN_RESULT_SIZE_CHARS, min(int(window_chars * _PER_RESULT_WINDOW_FRACTION), DEFAULT_RESULT_SIZE_CHARS)),
-        turn_budget=max(_MIN_TURN_BUDGET_CHARS, min(int(window_chars * _PER_TURN_WINDOW_FRACTION), DEFAULT_TURN_BUDGET_CHARS)),
-        preview_size=DEFAULT_PREVIEW_SIZE_CHARS,
+        default_result_size=max(_MIN_RESULT_SIZE_CHARS, min(int(window_chars * _PER_RESULT_WINDOW_FRACTION), cfg_default)),
+        turn_budget=max(_MIN_TURN_BUDGET_CHARS, min(int(window_chars * _PER_TURN_WINDOW_FRACTION), cfg_turn)),
+        preview_size=cfg_preview,
         mcp_result_size=mcp_result_size,
     )

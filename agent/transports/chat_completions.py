@@ -452,9 +452,13 @@ def _mistral_tool_id(key: str) -> str:
     return "".join(chars)
 
 
+_GEMINI_SKIP_THOUGHT_SIGNATURE = {"google": {"thought_signature": "skip_thought_signature_validator"}}
+
+
 def _sanitize_message(
     msg: Any, strip_extra_content: bool, strip_reasoning: frozenset = frozenset(),
     native_reasoning_details_type: str | None = None, *, mistral_tool_ids: bool = False,
+    inject_skip_signature: bool = False,
 ) -> dict | None:
     """Sanitized copy of ``msg``, or None when nothing needs stripping.
 
@@ -513,12 +517,21 @@ def _sanitize_message(
                 strip_extra_content or not _has_replayable_thought_signature(tc["extra_content"])
             ):
                 keys.append("extra_content")
+            needs_skip_sig = (
+                tc_idx == 0
+                and inject_skip_signature
+                and not _has_replayable_thought_signature(tc.get("extra_content"))
+            )
             key = coalesce_tool_call_id(tc) if mistral_tool_ids else ""
             mapped = _mistral_tool_id(key) if key else None
-            if keys or (mapped is not None and mapped != tc.get("id")):
+            if keys or needs_skip_sig or (mapped is not None and mapped != tc.get("id")):
                 if copied_tool_calls is None:
                     copied_tool_calls = list(tool_calls)
                 copied_tool_calls[tc_idx] = {k: v for k, v in tc.items() if k not in keys}
+                if needs_skip_sig:
+                    copied_tool_calls[tc_idx]["extra_content"] = {
+                        "google": dict(_GEMINI_SKIP_THOUGHT_SIGNATURE["google"])
+                    }
                 if mapped is not None:
                     copied_tool_calls[tc_idx]["id"] = mapped
         if copied_tool_calls is not None:
@@ -552,9 +565,19 @@ class ChatCompletionsTransport(ProviderTransport):
             carriers = carriers | {"reasoning_details"}
         strip_reasoning = frozenset({"reasoning_content", "reasoning", "reasoning_details"}) - carriers
         mistral_ids = _route_requires_mistral_tool_ids(provider, kwargs.get("model"), kwargs.get("base_url"))
+        last_user_idx = max(
+            (idx for idx, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "user"),
+            default=-1,
+        )
+        require_gemini_step_sig = (
+            not strip_extra_content
+            and "reasoning_details" in strip_reasoning
+            and last_user_idx >= 0
+        )
         sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning, native_type,
-                                                 mistral_tool_ids=mistral_ids))
-                           for m in messages]
+                                                 mistral_tool_ids=mistral_ids,
+                                                 inject_skip_signature=require_gemini_step_sig and idx > last_user_idx))
+                           for idx, m in enumerate(messages)]
         if all(s is None for _, s in sanitized_pairs):
             return messages
         return [m if s is None else s for m, s in sanitized_pairs]
@@ -630,11 +653,17 @@ class ChatCompletionsTransport(ProviderTransport):
         if str(params.get("provider_name") or "").strip().lower() == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
             if _is_gemini_openai_compat_base_url(base_url):
+                from agent.gemini_native_adapter import GEMINI_SAFETY_SETTINGS_OFF
                 thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
+                openai_compat_extra = extra_body.get("extra_body", {})
+                google_extra = {
+                    **openai_compat_extra.get("google", {}),
+                    "safety_settings": [dict(item) for item in GEMINI_SAFETY_SETTINGS_OFF],
+                }
                 if thinking_config:
-                    openai_compat_extra = extra_body.get("extra_body", {})
-                    openai_compat_extra["google"] = {**openai_compat_extra.get("google", {}), "thinking_config": thinking_config}
-                    extra_body["extra_body"] = openai_compat_extra
+                    google_extra["thinking_config"] = thinking_config
+                openai_compat_extra["google"] = google_extra
+                extra_body["extra_body"] = openai_compat_extra
             elif raw_thinking_config:
                 extra_body["thinking_config"] = raw_thinking_config
 

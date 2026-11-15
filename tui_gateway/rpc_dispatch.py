@@ -71,7 +71,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         from hermes_cli.backend_retirement import retirement
 
         # Reserve BEFORE enqueueing: a queued handler has accepted work even though no worker runs yet.
-        if not retirement.acquire():
+        if not retirement.acquire(bind_thread=False):
             return _err(req.get("id"), 5035, "backend is retiring; reconnect to continue")
         try:
             ctx = contextvars.copy_context()  # the pool worker must see the bound transport
@@ -80,19 +80,20 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
                 ctx.run(_capture_connector_rpc_owner, normalized[2])
 
             def run():
-                try:
-                    resp = _handle_admitted_request(req)
-                except Exception as exc:
-                    logger.exception("pool RPC handler failed for method=%r id=%r", normalized[1], req.get("id"))
-                    resp = _err(req.get("id"), -32000, f"handler error: {exc}")
-                if resp is not None:
-                    t.write(resp)
+                with retirement.worker_thread_scope():
+                    try:
+                        resp = _handle_admitted_request(req)
+                    except Exception as exc:
+                        logger.exception("pool RPC handler failed for method=%r id=%r", normalized[1], req.get("id"))
+                        resp = _err(req.get("id"), -32000, f"handler error: {exc}")
+                    if resp is not None:
+                        t.write(resp)
             future = _pool.submit(lambda: ctx.run(run))
         except BaseException:
-            retirement.release()
+            retirement.release(bind_thread=False)
             raise
         # Also releases cancelled queued futures; the worker's own finally would never execute.
-        future.add_done_callback(lambda _: retirement.release())
+        future.add_done_callback(lambda _: retirement.release(bind_thread=False))
         return None
     finally:
         reset_transport(token)

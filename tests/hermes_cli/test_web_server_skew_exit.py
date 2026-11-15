@@ -66,6 +66,24 @@ def test_a_busy_backend_waits_instead_of_cutting_off_its_client():
     assert _run(fence, [_SKEW, _SKEW, _SKEW]).should_exit is False
 
 
+def test_skew_watchdog_skips_prepare_while_active_count_is_positive():
+    class _ActiveFence(_Fence):
+        def __init__(self):
+            super().__init__(idle=False)
+            self.prepares = 0
+
+        def active_count(self):
+            return 2
+
+        def prepare(self):
+            self.prepares += 1
+            return super().prepare()
+
+    fence = _ActiveFence()
+    assert _run(fence, [_SKEW, _SKEW, _SKEW]).should_exit is False
+    assert fence.prepares == 0
+
+
 def test_never_retires_while_an_update_is_in_flight():
     fence = _Fence(idle=True)
     assert _run(fence, [_SKEW, _SKEW, _SKEW], update=True).should_exit is False

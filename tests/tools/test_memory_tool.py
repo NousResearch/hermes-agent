@@ -349,10 +349,13 @@ class TestMemoryConsolidationGracefulDegrade:
     def test_apply_batch_failures_count_toward_budget(self, store):
         """apply_batch is the primary at-capacity consolidation path; its
         failures must also degrade so a looping batch can't exhaust the turn
-        (#42405 whole-bug-class — sibling call path)."""
+        (#42405 whole-bug-class — sibling call path). Unmatched ops are now
+        SKIPS, so batch-failure degradation needs an op that stays fatal —
+        overflow (over the final budget) — to exercise the loop-guard path."""
         store.add("memory", "fact A")
         cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN
-        bad_batch = [{"action": "replace", "old_text": "nope", "content": "x"}]
+        # A batch whose FINAL state overflows the budget fails atomically every time.
+        bad_batch = [{"action": "add", "content": "y" * 4000}]
         for _ in range(cap):
             r = store.apply_batch("memory", bad_batch)
             assert r["success"] is False
@@ -487,6 +490,26 @@ class TestMemoryToolDispatcher:
         result = json.loads(memory_tool(action=None, operations=None, store=store))
         assert result["success"] is False
         assert "Missing required parameter" in result["error"]
+
+    def test_dropped_action_with_patch_shape_is_repaired(self, store):
+        # Fallback models drop the `action` key while keeping old_text+content and
+        # never re-read the error (state.db 16/10: 3 identical rejects in one
+        # session, zero retries). {old_text, content} without action can only mean
+        # patch (add takes no old_text, remove takes no content) — repair it.
+        store.add("memory", "old fact")
+        result = json.loads(memory_tool(
+            target="memory", old_text="old fact", content="new fact", store=store))
+        assert result["success"] is True, result
+        assert store.memory_entries == ["new fact"]
+
+    def test_dropped_action_with_ambiguous_shape_still_rejected(self, store):
+        # content-only or old_text-only without action stays ambiguous (add?
+        # remove? patch?) — keep the actionable error.
+        for kwargs in ({"content": "new fact"}, {"old_text": "some anchor"},
+                       {"old_text": "some anchor", "content": ""}):
+            result = json.loads(memory_tool(target="memory", store=store, **kwargs))
+            assert result["success"] is False, kwargs
+            assert "Missing required parameter" in result["error"], kwargs
 
 
 
@@ -917,6 +940,62 @@ class TestBomToleranceInMemoryFiles:
 # =========================================================================
 
 
+# =========================================================================
+# Failure-payload size bound + batch action inference (Sep 2026 token-bloat fix)
+#
+# Observed traffic (48h window on state.db): 171 memory-tool failures averaging
+# ~19k chars each — 87% of it the `current_entries` full-store echo repeated on
+# every consolidation retry, ~2.9M chars total. The full text already sits in
+# the model's system prompt (frozen memory block), so failure payloads now carry
+# bounded PREVIEWS (head + total-size). The largest failure class (48×) was batch
+# ops with no `action` field (patch-tool shape confusion) — now inferred from the
+# op shape instead of failing the whole batch.
+# =========================================================================
+
+
+class TestFailurePayloadBounded:
+    """current_entries in ANY failure must be previews, never the full store."""
+
+    def test_overflow_failure_payload_is_bounded(self, store):
+        big = "x" * 490
+        store.add("memory", big)
+        result = store.add("memory", "this will exceed the limit")
+        assert result["success"] is False
+        previews = result["current_entries"]
+        # Preview keeps the head but caps it well under the entry's 490 chars.
+        assert all(len(p) <= 120 + 40 for p in previews)  # cap + ellipsis suffix
+        assert any("490 chars total" in p for p in previews)
+        # Overall payload is small, not a full-store echo.
+        assert len(json.dumps(result)) < 1500
+
+    def test_no_match_failure_uses_previews(self, store):
+        store.add("memory", "e" * 400)
+        result = store.remove("memory", "nonexistent")
+        assert result["success"] is False
+        assert any("400 chars total" in p for p in result["current_entries"])
+
+    def test_batch_failure_payload_is_bounded(self, store):
+        store.add("memory", "z" * 490)
+        # Overflow stays batch-fatal; its failure payload must stay bounded.
+        result = store.apply_batch("memory", [
+            {"action": "add", "content": "y" * 4000}])
+        assert result["success"] is False
+        assert len(json.dumps(result)) < 1500
+
+class TestNearestEntryHint:
+    def test_no_match_includes_nearest_hint(self, store):
+        store.add("memory", "SE-FI sync job runs nightly via Bull queue")
+        result = store.remove("memory", "SE-FI sync job runs nightly via Bull queues")
+        assert result["success"] is False
+        assert "Nearest existing entry" in result["error"]
+
+    def test_no_hint_when_nothing_similar(self, store):
+        store.add("memory", "completely unrelated fact")
+        result = store.remove("memory", "zzzz totally different qqqq")
+        assert result["success"] is False
+        assert "Nearest existing entry" not in result["error"]
+
+
 class TestBatchRefusesToEmptyNonEmptyStore:
     @pytest.mark.parametrize(
         ("target", "seed"),
@@ -1050,3 +1129,74 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+
+class TestRetryOldTextSingleOp:
+    def test_single_op_no_match_carries_retry_old_text(self, store):
+        store.add("memory", "OVERNIGHT-WATCH-mönster: sentinel = cron monitor-mode")
+        result = store.replace("memory",
+                               "OVERNIGHT-WATCH-mönster 13/9: sentinel = cron monitor-mode",
+                               "updated")
+        assert result["success"] is False
+        assert result["retry_old_text"]
+        matches = [e for e in store.memory_entries if result["retry_old_text"] in e]
+        assert len(matches) == 1
+
+    def test_single_op_no_match_without_similar_entry_has_no_retry(self, store):
+        store.add("memory", "completely unrelated fact")
+        result = store.remove("memory", "zzzz totally different qqqq")
+        assert result["success"] is False
+        assert "retry_old_text" not in result
+
+
+class TestOperationsStringUnwrap:
+    def test_json_string_operations_is_unwrapped(self, store):
+        store.add("memory", "kept fact")
+        result = json.loads(memory_tool(
+            target="memory",
+            operations='[{"action": "add", "content": "via json string"}]',
+            store=store))
+        assert result["success"] is True
+        assert "via json string" in store._entries_for("memory")
+
+    def test_garbage_string_operations_still_rejected(self, store):
+        result = json.loads(memory_tool(
+            target="memory", operations="not json at all", store=store))
+        assert result["success"] is False
+
+    def test_action_key_repair_on_string_operations(self, store):
+        # '[{"replace", "old_text": ...' — action VALUE present, KEY missing. The carried
+        # unwrap+repair still fires; the merged (post-patch-action) contract then answers
+        # with upstream's explicit _REPLACE_REMOVED guidance instead of writing.
+        store.add("memory", "old fact to replace")
+        result = json.loads(memory_tool(
+            target="memory",
+            operations='[{"replace", "old_text": "old fact to replace", "content": "new fact"}]',
+            store=store))
+        assert result["success"] is False
+        assert "use 'patch'" in result["error"]
+        assert "old fact to replace" in store._entries_for("memory")  # nothing was written
+
+    def test_action_key_repair_patch_succeeds(self, store):
+        # Same malformed shape with the live action set: repair unwraps the string,
+        # then patch applies under the new contract.
+        store.add("memory", "old fact to replace")
+        result = json.loads(memory_tool(
+            target="memory",
+            operations='[{"patch", "old_text": "old fact to replace", "content": "new fact"}]',
+            store=store))
+        assert result["success"] is True
+        assert "new fact" in store._entries_for("memory")
+        assert "old fact to replace" not in store._entries_for("memory")
+
+    def test_non_dict_operations_element_returns_structured_error_before_write_gate(self, store):
+        res = json.loads(
+            memory_tool(
+                target="memory",
+                operations=["patch", "old_text", "foo"],
+                store=store,
+            )
+        )
+        assert res["success"] is False
+        assert "operations must be a list of {action, content?, old_text?} objects." in res["error"]

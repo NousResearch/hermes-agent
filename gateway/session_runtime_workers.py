@@ -12,6 +12,18 @@ def executing_sessions(authority):
             yield sid, live, execution['execution_generation']
 
 
+def _is_cron_execution(authority, live):
+    """Canonical cron runs are already counted in the scheduler's in-flight ledger
+    (``_active_cron_job_count`` / ``_restart_wait_cron_counts``). Excluding them from
+    ``uncounted_runtime_work`` prevents double-counting in ``active_agents`` and lets the
+    restart drain's ``wedged`` cron exclusion release the wait."""
+    execution = getattr(getattr(live, 'event_stream', None), 'execution', None) or {}
+    if execution.get('admission_id') in getattr(authority, '_cron_cancellations', {}):
+        return True
+    from hermes_state_keys import CRON_PRINCIPAL_ID
+    return getattr(getattr(live, 'source', None), 'user_id', None) == CRON_PRINCIPAL_ID
+
+
 def uncounted_runtime_work(runner):
     """Count claims absent from the ordinary agent map, including pre-bootstrap managed turns."""
     running = getattr(runner, '_running_agents', {})
@@ -19,6 +31,7 @@ def uncounted_runtime_work(runner):
     managed = sum(not worker.closed.is_set() for authority in authorities
                   for worker in getattr(authority, '_managed_workers', {}).values())
     return (managed + sum(live.route not in running and sid not in getattr(authority, '_managed_workers', {})
+                          and not _is_cron_execution(authority, live)
                 for authority in authorities for sid, live, _ in executing_sessions(authority))
             + sum(len(mutation_tasks(authority)) + len(side_agents(authority)) for authority in authorities))
 
@@ -198,6 +211,8 @@ def stop_authority_work(authority):
         if holder and holder[0] is not None:
             request_hard_interrupt(holder[0], 'Profile runtime is stopping')
     for cancel in getattr(authority, '_cron_cancellations', {}).values():
+        if getattr(cancel, 'reason', None) is None:
+            cancel.reason = 'gateway draining for restart'
         cancel.set()
 
 

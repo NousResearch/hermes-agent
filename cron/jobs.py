@@ -345,6 +345,30 @@ def _jobs_lock():
             _jobs_lock_state.load_stamp = None
 
 
+_FENCE_COMPLAINT_INTERVAL_SECONDS = 600.0
+_fire_fence_complaints: "dict[str, float]" = {}
+_fire_fence_complaints_lock = threading.Lock()
+
+
+def _fence_timeout_log(lock_key: str, message: str, *args) -> None:
+    """One ERROR per fence-hold episode, DEBUG for repeats inside the interval.
+
+    A bot-chat delivery turn holding the fire fence for minutes timed out the NEXT
+    occurrence's claim on every scheduler tick — one episode became an 8-ERROR storm
+    plus restore warnings (2026-09-19). Repeats inside the interval log at DEBUG; a
+    genuinely stuck fence re-alerts at ERROR every interval; a successful acquire
+    clears the episode."""
+    now = time.monotonic()
+    with _fire_fence_complaints_lock:
+        last = _fire_fence_complaints.get(lock_key)
+        if last is not None and now - last < _FENCE_COMPLAINT_INTERVAL_SECONDS:
+            level = logger.debug
+        else:
+            _fire_fence_complaints[lock_key] = now
+            level = logger.error
+    level(message, *args)
+
+
 @contextlib.contextmanager
 def _fire_job_lock(job_id: str):
     """Serialize one job's owner mutations and external side effects. Unlike the global jobs lock
@@ -356,7 +380,8 @@ def _fire_job_lock(job_id: str):
         local_lock = _fire_fence_locks.setdefault(lock_key, threading.RLock())
 
     if not local_lock.acquire(timeout=_JOBS_LOCK_TIMEOUT_SECONDS):
-        logger.error("Timed out waiting for local fire fence %s; failing closed", lock_key)
+        _fence_timeout_log(lock_key,
+                           "Timed out waiting for local fire fence %s; failing closed", lock_key)
         yield False
         return
 
@@ -380,7 +405,11 @@ def _fire_job_lock(job_id: str):
             if result is None:  # pragma: no cover - supported platforms provide one backend
                 logger.error("No cross-process lock backend for cron fire fence")
             elif not result:
-                logger.error("Timed out waiting for fire fence %s; failing closed", lock_path)
+                _fence_timeout_log(lock_key,
+                                   "Timed out waiting for fire fence %s; failing closed", lock_path)
+            else:
+                with _fire_fence_complaints_lock:
+                    _fire_fence_complaints.pop(lock_key, None)
             acquired = bool(result)
         except OSError as exc:
             logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
@@ -522,6 +551,12 @@ def _normalize_job_record(job: dict[str, Any]) -> dict[str, Any]:
         )
         name = label_source[:50].strip() or "cron job"
     normalized["name"] = name
+    if not (
+        _coerce_job_text(normalized.get("owner")).strip()
+        or _coerce_job_text(normalized.get("business_owner")).strip()
+        or _coerce_job_text(normalized.get("sponsor")).strip()
+    ):
+        normalized["owner"] = (os.environ.get("HERMES_CRON_OWNER") or "emir").strip()
     normalized["schedule_display"] = _schedule_display_for_job(normalized)
     # Derived from the scheduler-honoured ``enabled`` flag so a half-paused record cannot render
     # "paused" while still firing. See effective_job_state().
@@ -1189,6 +1224,36 @@ def get_timezone_migration_catchup_stats() -> dict[str, Any]:
     }
 
 
+def _rearm_next_run(job: dict[str, Any], now_iso: str) -> Optional[str]:
+    """Next run for a recurring job, anchored on the instant that was SCHEDULED, not on the
+    moment the tick actually claimed it.
+
+    Kvitto 2026-10-23 (disk-full chain): anchoring on the claim time folded every tick's lateness
+    into the following due time, so a job configured ``every 5m`` ran every 5.99-6.00 min —
+    measured across the estate, 33/33 interval jobs late, median +0.95 min, range +0.20..+2.39.
+    A watchdog whose configured cadence is a lie is an alarm that can arrive a full interval after
+    the cliff it watches. Anchoring on the due instant keeps the grid; if the anchored next is
+    already in the past (a run longer than its interval), fall back to now so a slow job cannot
+    accumulate catch-up bursts. Upstream 2026-10-29 added the per-job pinned
+    ``timezone``; the anchored base and the fallback both honor it.
+    """
+    due = job.get("next_run_at")
+    base = now_iso
+    if due:
+        try:
+            if _parse_aware(due) is not None and _parse_aware(due) <= _parse_aware(now_iso):
+                base = due
+        except Exception:
+            base = now_iso
+    nxt = compute_next_run(job.get("schedule") or {}, base, timezone=job.get("timezone"))
+    try:
+        if nxt and _parse_aware(nxt) is not None and _parse_aware(nxt) <= _parse_aware(now_iso):
+            nxt = compute_next_run(job.get("schedule") or {}, now_iso, timezone=job.get("timezone"))
+    except Exception:
+        pass
+    return nxt
+
+
 def compute_next_run(
     schedule: dict[str, Any], last_run_at: Optional[str] = None, *, timezone: Any = None,
 ) -> Optional[str]:
@@ -1445,6 +1510,13 @@ def load_jobs() -> list[dict[str, Any]]:
             except (TypeError, ValueError, OverflowError):
                 rep["completed"] = 0
             repair = repair or "invalid repeat.completed normalized"
+        if not (
+            _coerce_job_text(job.get("owner")).strip()
+            or _coerce_job_text(job.get("business_owner")).strip()
+            or _coerce_job_text(job.get("sponsor")).strip()
+        ):
+            job["owner"] = (os.environ.get("HERMES_CRON_OWNER") or "emir").strip()
+            repair = repair or "missing owner backfilled"
     # Persist even an empty result, or an all-junk store repeats the repair on every tick.
     if repair:
         if not getattr(_jobs_lock_state, "depth", 0):
@@ -1556,6 +1628,14 @@ def _unlink_quiet(path: Optional[str]) -> None:
 
 def _stage_jobs_payload(jobs_file: Path, jobs: list[dict[str, Any]]) -> str:
     """Serialize the store payload to a fsynced temp file beside the resolved *jobs_file*; return its path."""
+    _default_owner = (os.environ.get("HERMES_CRON_OWNER") or "emir").strip()
+    for _j in jobs:
+        if isinstance(_j, dict) and not (
+            _coerce_job_text(_j.get("owner")).strip()
+            or _coerce_job_text(_j.get("business_owner")).strip()
+            or _coerce_job_text(_j.get("sponsor")).strip()
+        ):
+            _j["owner"] = _default_owner
     fd, tmp_path = mkstemp_beside(jobs_file, suffix=".tmp", prefix=".jobs_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -1831,6 +1911,7 @@ def create_job(
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
     grace_minutes: Optional[int] = None,
+    owner: Optional[str] = None,
     wrap_response: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
@@ -1927,6 +2008,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": f["enabled_toolsets"],
         "workdir": f["workdir"],
+        "owner": (owner or os.environ.get("HERMES_CRON_OWNER") or "emir").strip(),
     }
     # Optional keys are persisted only when explicitly set: an absent key falls back to global
     # config (attach/reasoning) or to ``deliver`` (failure_deliver), byte-identical to pre-feature
@@ -2685,8 +2767,7 @@ def advance_next_runs(job_ids) -> int:
                 or extra_fire.queued(job)  # the claim restores its slot; advancing erases the intent
             ):
                 continue
-            new_next = compute_next_run(
-                job["schedule"], now, timezone=job.get("timezone"))
+            new_next = _rearm_next_run(job, now)
             if new_next and new_next != job.get("next_run_at"):
                 job["next_run_at"] = new_next
                 advanced += 1

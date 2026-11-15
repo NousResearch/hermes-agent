@@ -13,7 +13,18 @@ from __future__ import annotations
 import re
 from typing import Tuple
 
-__all__ = ["THINK_CLOSE_TAGS", "THINK_OPEN_TAGS", "THINK_TAG_NAMES", "StreamingThinkScrubber"]
+__all__ = [
+    "CODE_FENCE_OR_SPAN",
+    "THINK_CLOSE_TAGS",
+    "THINK_OPEN_TAGS",
+    "THINK_TAG_NAMES",
+    "StreamingThinkScrubber",
+]
+
+# Left-to-right regex alternation branch matching fenced code blocks or single-line inline code spans
+# so post-stream regex strippers/extractors never treat backtick-quoted tag mentions in visible prose
+# as real reasoning delimiters while still stripping code blocks nested INSIDE outer reasoning blocks.
+CODE_FENCE_OR_SPAN: str = r"(```[\s\S]*?```|`[^`\n]+`)"
 
 # The one list of model reasoning tag names. Every surface that hides reasoning (this scrubber,
 # the CLI stream filter, the gateway stream filter, the final-response regex stripper) binds to
@@ -44,7 +55,8 @@ class StreamingThinkScrubber:
     _MAX_TAG_LEN: int = max(len(tag) for tag in _ALL_TAGS)
     # Orphan close tag plus trailing whitespace (matches _strip_think_blocks case 3).
     _ORPHAN_CLOSE_RE = re.compile(
-        "(?:" + "|".join(re.escape(t) for t in _CLOSE_TAGS) + r")[ \t\n\r]*", re.IGNORECASE
+        rf"{CODE_FENCE_OR_SPAN}|(?<!`)(?:" + "|".join(re.escape(t) for t in _CLOSE_TAGS) + r")(?!`)[ \t\n\r]*",
+        re.IGNORECASE,
     )
 
     def __init__(self) -> None:
@@ -55,15 +67,28 @@ class StreamingThinkScrubber:
         self._in_block: bool = False
         self._buf: str = ""
         self._last_emitted_ended_newline: bool = True
+        self._last_emitted_ended_backtick: bool = False
+        self._last_hidden_ended_backtick: bool = False
+        self._block_accum: str = ""
+        self._emitted_accum: str = ""
         # Reasoning text the most recent feed() stripped from inside think blocks (tags excluded).
         self.last_hidden: str = ""
 
     def _emit(self, out: list[str], text: str) -> None:
         """Append visible prose to *out* (orphan close tags stripped) and track the newline flag."""
-        text = self._strip_orphan_close_tags(text)
+        text = self._strip_orphan_close_tags(text, self._last_emitted_ended_backtick, self._emitted_accum)
         if text:
             out.append(text)
+            self._emitted_accum += text
             self._last_emitted_ended_newline = text.endswith("\n")
+            self._last_emitted_ended_backtick = text.endswith("`")
+
+    def _hide(self, hidden: list[str], text: str) -> None:
+        """Append hidden reasoning text and track whether it ended with a backtick."""
+        if text:
+            hidden.append(text)
+            self._last_hidden_ended_backtick = text.endswith("`")
+            self._block_accum += text
 
     def feed(self, text: str) -> str:
         """Feed one delta; return the scrubbed visible portion ("" when it is all reasoning or held back)."""
@@ -77,30 +102,40 @@ class StreamingThinkScrubber:
 
         while buf:
             if self._in_block:
-                close_idx, close_len = self._find_first_tag(buf, self._CLOSE_TAGS)
+                prior_bt = hidden[-1].endswith("`") if hidden else self._last_hidden_ended_backtick
+                close_idx, close_len = self._find_first_tag(
+                    buf, self._CLOSE_TAGS, prior_bt, self._block_accum
+                )
                 if close_idx == -1:
                     # No close yet: hold back a possible partial close-tag prefix; the rest is reasoning.
-                    hidden.append(self._hold_partial(buf, self._CLOSE_TAGS))
+                    self._hide(hidden, self._hold_partial(buf, self._CLOSE_TAGS))
                     break
-                hidden.append(buf[:close_idx])
+                self._hide(hidden, buf[:close_idx])
                 buf = buf[close_idx + close_len:]
                 self._in_block = False
+                self._last_hidden_ended_backtick = False
+                self._block_accum = ""
                 continue
 
             # Priority 1: closed <tag>X</tag> pair anywhere (even inline pairs are almost
             # certainly leaked reasoning). Priority 2: unterminated open tag at a block
             # boundary (gated so prose mentioning '<think>' isn't over-stripped). Earliest wins.
-            pair = self._find_earliest_closed_pair(buf)
+            prior_bt = out[-1].endswith("`") if out else self._last_emitted_ended_backtick
+            pair = self._find_earliest_closed_pair(buf, prior_bt)
             open_idx, open_len = self._find_open_at_boundary(buf, out)
             if pair is not None and (open_idx == -1 or pair[0] <= open_idx):
                 self._emit(out, buf[:pair[0]])
                 # Pair tags are exact ``<name>``/``</name>``: inner text sits between them.
-                hidden.append(buf[buf.index(">", pair[0]) + 1:buf.rindex("<", pair[0], pair[1])])
+                self._hide(hidden, buf[buf.index(">", pair[0]) + 1:buf.rindex("<", pair[0], pair[1])])
                 buf = buf[pair[1]:]
+                self._last_hidden_ended_backtick = False
+                self._block_accum = ""
                 continue
             if open_idx != -1:
                 self._emit(out, buf[:open_idx])
                 self._in_block = True
+                self._last_hidden_ended_backtick = False
+                self._block_accum = ""
                 buf = buf[open_idx + open_len:]
                 continue
 
@@ -124,27 +159,91 @@ class StreamingThinkScrubber:
         Always resets the boundary flag — intra-turn retries flush then stream again without ``reset()``,
         and a stale False flag made the new stream's opening ``<think>`` look mid-line."""
         tail = "" if self._in_block else self._buf
+        prior_bt = self._last_emitted_ended_backtick
+        emitted_prefix = self._emitted_accum
         self._buf = ""
         self._in_block = False
         self._last_emitted_ended_newline = True
-        return self._strip_orphan_close_tags(tail) if tail else ""
+        self._last_emitted_ended_backtick = False
+        self._last_hidden_ended_backtick = False
+        self._block_accum = ""
+        self._emitted_accum = ""
+        return self._strip_orphan_close_tags(tail, prior_bt, emitted_prefix) if tail else ""
 
     # ── internal helpers ───────────────────────────────────────────────
 
     @staticmethod
-    def _find_first_tag(buf: str, tags: tuple[str, ...]) -> tuple[int, int]:
+    def _is_backtick_quoted(
+        buf: str,
+        idx: int,
+        tag_len: int,
+        prior_ended_backtick: bool = False,
+        fence_prefix: str = "",
+    ) -> bool:
+        """True iff the tag at ``buf[idx:idx+tag_len]`` is adjacent to a backtick or inside an open ``` fence."""
+        before_bt = prior_ended_backtick if idx == 0 else (buf[idx - 1] == "`")
+        after_bt = (idx + tag_len < len(buf)) and (buf[idx + tag_len] == "`")
+        if before_bt or after_bt:
+            return True
+        if (fence_prefix + buf[:idx]).count("```") % 2 == 1:
+            return True
+        return False
+
+    @classmethod
+    def _find_unquoted_tag(
+        cls,
+        buf_lower: str,
+        buf: str,
+        tag: str,
+        start: int = 0,
+        prior_ended_backtick: bool = False,
+        fence_prefix: str = "",
+        fence_start: int = 0,
+    ) -> int:
+        """Find earliest occurrence of *tag* at or after *start* that is not adjacent to a backtick or in a ``` fence."""
+        idx = buf_lower.find(tag, start)
+        tag_len = len(tag)
+        while idx != -1 and cls._is_backtick_quoted(
+            buf, idx, tag_len, prior_ended_backtick, fence_prefix if fence_start == 0 else ""
+        ) or (idx != -1 and fence_start > 0 and buf.count("```", fence_start, idx) % 2 == 1):
+            idx = buf_lower.find(tag, idx + 1)
+        return idx
+
+    @classmethod
+    def _find_first_tag(
+        cls,
+        buf: str,
+        tags: tuple[str, ...],
+        prior_ended_backtick: bool = False,
+        fence_prefix: str = "",
+    ) -> tuple[int, int]:
         """Return (earliest_index, tag_length) over *tags* (case-insensitive), or (-1, 0)."""
         buf_lower = buf.lower()
-        hits = [(idx, len(tag)) for tag in tags if (idx := buf_lower.find(tag)) != -1]
+        hits = [
+            (idx, len(tag))
+            for tag in tags
+            if (idx := cls._find_unquoted_tag(buf_lower, buf, tag, 0, prior_ended_backtick, fence_prefix)) != -1
+        ]
         return min(hits) if hits else (-1, 0)
 
-    def _find_earliest_closed_pair(self, buf: str):
+    def _find_earliest_closed_pair(self, buf: str, prior_ended_backtick: bool = False):
         """(start_idx, end_idx) of the earliest ``<tag>...</tag>`` pair (non-greedy, case-insensitive), else None."""
         buf_lower = buf.lower()
         pairs = []
         for open_tag, close_tag in zip(self._OPEN_TAGS, self._CLOSE_TAGS):
-            open_idx = buf_lower.find(open_tag)
-            close_idx = buf_lower.find(close_tag, open_idx + len(open_tag)) if open_idx != -1 else -1
+            open_idx = self._find_unquoted_tag(buf_lower, buf, open_tag, 0, prior_ended_backtick)
+            close_idx = (
+                self._find_unquoted_tag(
+                    buf_lower,
+                    buf,
+                    close_tag,
+                    open_idx + len(open_tag),
+                    False,
+                    fence_start=open_idx + len(open_tag),
+                )
+                if open_idx != -1
+                else -1
+            )
             if close_idx != -1:
                 pairs.append((open_idx, close_idx + len(close_tag)))
         return min(pairs) if pairs else None
@@ -183,6 +282,25 @@ class StreamingThinkScrubber:
         return 0
 
     @classmethod
-    def _strip_orphan_close_tags(cls, text: str) -> str:
+    def _strip_orphan_close_tags(
+        cls, text: str, prior_ended_backtick: bool = False, emitted_prefix: str = ""
+    ) -> str:
         """Remove close tags with no matching open (always noise) plus trailing whitespace."""
-        return cls._ORPHAN_CLOSE_RE.sub("", text) if "</" in text else text
+        if "</" not in text:
+            return text
+        probe = f"`{text}" if prior_ended_backtick else text
+        offset = 1 if prior_ended_backtick else 0
+
+        def _replace(m: re.Match[str]) -> str:
+            if m.group(1) is not None:
+                return m.group(1)
+            raw_start = max(0, m.start() - offset)
+            full_before = emitted_prefix + text[:raw_start]
+            if full_before.count("```") % 2 == 1:
+                return m.group(0)
+            if full_before.rsplit("\n", 1)[-1].count("`") % 2 == 1:
+                return m.group(0)
+            return ""
+
+        cleaned = cls._ORPHAN_CLOSE_RE.sub(_replace, probe)
+        return cleaned[1:] if prior_ended_backtick else cleaned

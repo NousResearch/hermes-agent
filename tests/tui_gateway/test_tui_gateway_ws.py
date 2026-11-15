@@ -583,3 +583,97 @@ def test_legacy_fallback_never_writes_an_authority_owned_session(monkeypatch, tm
         row = db.get_session("owned")
         assert row is not None and not row.get("archived") and row["runtime_revision"] == revision
         assert "owned" in authority.sessions
+
+
+def test_events_since_rebinds_live_transport_after_ws_disconnect(monkeypatch):
+    """After a mid-turn WS disconnect leaves ``session['transport'] = _detached_ws_transport``,
+    a reconnect calling ``session.events.since`` must rebind ``session['transport']`` to the
+    live client transport so subsequent ``_emit('message.complete', ...)`` pushes reach the UI."""
+    sid = "88b30ebb"
+    fake_live = ws_mod.WSTransport(object(), asyncio.new_event_loop(), peer="127.0.0.1:62798")
+    sess = {
+        "session_id": f"20261112_210035_{sid}",
+        "transport": server._detached_ws_transport,
+        "viewers": {},
+    }
+    monkeypatch.setitem(server._sessions, sid, sess)
+    monkeypatch.setattr(server, "_reattach_refusal", lambda rid, s_id, s: None)
+    monkeypatch.setattr(server, "current_transport", lambda: fake_live)
+    try:
+        resp = server._methods["session.events.since"]("req-1", {"session_id": sid, "last_seen": 0})
+        assert "result" in resp
+        assert sess["transport"] is fake_live
+        assert fake_live in sess["viewers"]
+    finally:
+        fake_live._loop.close()
+
+
+def test_reload_split_modules_preserves_turn_scopes_contextvars_and_pollers(monkeypatch):
+    """W8 regression: atomic ``reload_split_modules`` must rebind ``_TurnRun``'s ``_TurnScopes``
+    factory, preserve in-flight ``ContextVar`` singletons so post-reload ``.reset(token)`` never
+    raises ``ValueError``, tolerate legacy scope stubs without ``.profile``, and respawn dead
+    notification poller threads without duplicating live ones."""
+    import threading
+    from typing import Any
+    from tui_gateway.method_ctx import reload_split_modules
+
+    srv: Any = server
+    token = srv._connector_rpc_origin.set(("test", "origin"))
+    dead_thread = threading.Thread(target=lambda: None, daemon=True)
+    dead_thread.start()
+    dead_thread.join(timeout=1.0)
+    assert not dead_thread.is_alive()
+
+    sid = "w8poller"
+    sess = {"session_id": f"20261113_020000_{sid}", "closed": False}
+    respawned_calls = []
+
+    def _fake_start_poller(s_id, s_dict):
+        respawned_calls.append(s_id)
+        live_evt = threading.Event()
+        th = threading.Thread(target=live_evt.wait, args=(0.5,), name=f"tui-notif-poller-{s_id}", daemon=True)
+        th.start()
+        s_dict["_notif_thread"] = th
+        srv._notification_pollers.append((live_evt, th))
+        return live_evt
+
+    try:
+        res = reload_split_modules(srv)
+        assert res["reloaded_modules"] >= 3
+        # In-flight token created BEFORE reload must reset cleanly on post-reload ContextVar
+        srv._connector_rpc_origin.reset(token)
+        token = None
+
+        run = srv._TurnRun(
+            agent=None,
+            one_turn_restore=None,
+            terminal_callback=None,
+            receipt_committed=False,
+        )
+        assert isinstance(run.scopes, srv._TurnScopes)
+        assert hasattr(run.scopes, "profile")
+        assert hasattr(run.scopes, "secret")
+        assert hasattr(run.scopes, "terminal")
+        assert hasattr(run.scopes, "__dict__")
+
+        # Negative polarity: legacy scope stub lacking .profile must not crash _release_turn_scopes
+        class _LegacyStubScopes:
+            approval = None
+            session_tokens = []
+
+        run.scopes = _LegacyStubScopes()
+        srv._release_turn_scopes(sid, sess, run)
+
+        # Dead poller respawn check
+        monkeypatch.setitem(srv._sessions, sid, sess)
+        monkeypatch.setattr(srv, "_start_notification_poller", _fake_start_poller)
+        monkeypatch.setattr(srv, "_notification_pollers", [(threading.Event(), dead_thread)])
+        assert srv._ensure_all_notification_pollers_alive() == 1
+        assert respawned_calls == [sid]
+        # Second call with live thread must be a no-op (0 respawned)
+        assert srv._ensure_all_notification_pollers_alive() == 0
+    finally:
+        if token is not None:
+            srv._connector_rpc_origin.reset(token)
+
+

@@ -424,3 +424,84 @@ def test_cmd_install_reports_dependency_failure(monkeypatch, capsys):
     from plugins.google_meet import cli
     assert cli._cmd_install(realtime=False, assume_yes=True) == 1
     assert "dependency resolution failed" in capsys.readouterr().out
+
+
+def test_rtc_transcriber_thread_safe_whisper_init_and_queue_drain(tmp_path, monkeypatch):
+    import sys
+    import threading
+    import time
+    from types import SimpleNamespace
+    from plugins.google_meet.meet_bot import _BotConfig, _BotState, _RtcTranscriber
+
+    init_count = 0
+
+    class _FakeWhisperModel:
+        def __init__(self, *args, **kwargs):
+            nonlocal init_count
+            time.sleep(0.05)
+            init_count += 1
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=_FakeWhisperModel))
+    cfg = _BotConfig(out_dir=tmp_path, whisper_model="small")
+    state = _BotState(tmp_path, "abc-defg-hij", "https://meet.google.com/abc-defg-hij")
+    rtc = _RtcTranscriber(cfg, state, {"stop": False})
+
+    threads = [threading.Thread(target=rtc._whisper) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert init_count == 1
+
+    rtc._queue.extend([(2, 100), (3, 200), (2, 150)])
+    assert rtc._drain_stream_queue(2) == 250
+    assert list(rtc._queue) == [(3, 200)]
+
+
+def test_ensure_ct2_int8_on_disk_converts_float16_model_bin(tmp_path):
+    import struct
+    import numpy as np
+    from plugins.google_meet.meet_bot import _ensure_ct2_int8_on_disk, _is_ct2_float16
+
+    model_bin = tmp_path / "model.bin"
+    arr = np.array([[1.0, -2.0], [0.5, 0.25]], dtype=np.float16)
+    raw = arr.tobytes()
+
+    with model_bin.open("wb") as f:
+        def write_str(s: str):
+            b = s.encode("utf-8")
+            f.write(struct.pack("H", len(b) + 1))
+            f.write(b)
+            f.write(struct.pack("B", 0))
+        f.write(struct.pack("I", 6))
+        write_str("WhisperSpec")
+        f.write(struct.pack("I", 3))
+        f.write(struct.pack("I", 2))
+        write_str("decoder/embeddings/weight")
+        f.write(struct.pack("B", 2))
+        f.write(struct.pack("I", 2))
+        f.write(struct.pack("I", 2))
+        f.write(struct.pack("B", 4))  # float16 -> float32 (non-quantizable embedding)
+        f.write(struct.pack("I", len(raw)))
+        f.write(raw)
+        write_str("encoder/layers_0/self_attn/linear_0/weight")
+        f.write(struct.pack("B", 2))
+        f.write(struct.pack("I", 2))
+        f.write(struct.pack("I", 2))
+        f.write(struct.pack("B", 4))  # float16 -> int8 + scale
+        f.write(struct.pack("I", len(raw)))
+        f.write(raw)
+        f.write(struct.pack("I", 1))
+        write_str("decoder/projection/weight")
+        write_str("decoder/embeddings/weight")
+
+    assert _is_ct2_float16(model_bin) is True
+    assert _ensure_ct2_int8_on_disk(str(tmp_path)) is True
+    assert _is_ct2_float16(model_bin) is False
+    assert _ensure_ct2_int8_on_disk(str(tmp_path)) is False
+
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
+    from plugins.google_meet.meet_bot import _patch_silero_vad_batch_limit
+    _patch_silero_vad_batch_limit(1500)
+    silence = np.zeros(16000 * 2, dtype=np.float32)
+    assert get_speech_timestamps(silence, VadOptions(threshold=0.5, min_speech_duration_ms=350)) == []

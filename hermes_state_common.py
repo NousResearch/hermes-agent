@@ -614,6 +614,10 @@ CREATE TABLE IF NOT EXISTS session_admissions (
 );
 CREATE INDEX IF NOT EXISTS session_admissions_pending
     ON session_admissions(target_session_id, status, seq);
+CREATE INDEX IF NOT EXISTS idx_session_admissions_status_outcome
+    ON session_admissions(status, outcome, owner_epoch);
+CREATE INDEX IF NOT EXISTS idx_session_admissions_target_request
+    ON session_admissions(target_session_id, request_id, admission_id);
 -- Cron run history finds a job's unified-runtime runs by the scheduler principal's request ids
 -- (``cron:<job>:<execution>``); without this a lookup walked
 -- every cron admission of every job. Partial: interactive turns, the bulk of admissions, pay
@@ -636,6 +640,10 @@ CREATE TABLE IF NOT EXISTS worker_executions (
 -- inside the write transaction; without this each probe scanned the whole (only-growing) table.
 CREATE INDEX IF NOT EXISTS idx_worker_executions_session_status
     ON worker_executions(session_id, status);
+CREATE INDEX IF NOT EXISTS idx_worker_executions_kind_status
+    ON worker_executions(kind, status, owner_epoch);
+CREATE INDEX IF NOT EXISTS idx_worker_executions_status_epoch
+    ON worker_executions(status, owner_epoch);
 CREATE TABLE IF NOT EXISTS worker_receipts (
     execution_id TEXT NOT NULL REFERENCES worker_executions(execution_id) ON DELETE RESTRICT,
     sequence INTEGER NOT NULL CHECK (sequence > 0),
@@ -783,6 +791,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_assistant_calls_by_session
     ON messages(session_id)
     WHERE role = 'assistant' AND tool_calls IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_tool_names_by_session
+    ON messages(session_id, tool_name)
+    WHERE role = 'tool' AND tool_name IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_session_role
+    ON messages(session_id, role);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
@@ -791,13 +804,27 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
 """
 
+LOCAL_POLICY_PREFIX = "gateway.local_policy.v1:"
+_LOCAL_POLICY_ID_OFFSET = len(LOCAL_POLICY_PREFIX) + 1
+# Shared partial-index predicate for non-default local policy receipts in state_meta:
+# every valid receipt outside this predicate has key='gateway.local_policy.v1:'||sid,
+# session_id=sid, lineage=None, entry.session_id=sid, and a non-derived request_id.
+NONDEFAULT_POLICY_WHERE = (
+    f"key GLOB '{LOCAL_POLICY_PREFIX}*' AND json_valid(value) AND ("
+    f"json_type(value, '$.lineage') IS NOT NULL "
+    f"OR json_extract(value, '$.entry.session_id') IS NOT substr(key, {_LOCAL_POLICY_ID_OFFSET}) "
+    f"OR json_extract(value, '$.session_id') IS NOT substr(key, {_LOCAL_POLICY_ID_OFFSET}) "
+    "OR json_extract(value, '$.request_id') GLOB 'bot-chat:*' "
+    "OR json_extract(value, '$.request_id') GLOB 'a2a:*')"
+)
+
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.
 # sessions_runtime_ledger_delete_guard: every delete path in this release retires a session's ledger rows
 # (session_admissions / worker_executions, ON DELETE RESTRICT) first, so only a release that predates the
 # gateway runtime reaches it. Such a release (schema_version 31 too, and it never refuses a newer schema)
 # otherwise dies on the bare FK with no hint. It prints the RAISE text verbatim and buckets errors by phrase,
 # so the text must stay free of the words it reads as storage damage, lock contention or disk trouble.
-DEFERRED_INDEX_SQL = """
+DEFERRED_INDEX_SQL = f"""
 DROP TRIGGER IF EXISTS sessions_runtime_ledger_delete_guard;
 CREATE TRIGGER IF NOT EXISTS sessions_runtime_ledger_delete_guard
 BEFORE DELETE ON sessions
@@ -938,6 +965,23 @@ CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
 CREATE INDEX IF NOT EXISTS idx_sessions_local_created_started
     ON sessions(created_source, started_at DESC)
     WHERE source = 'local';
+CREATE INDEX IF NOT EXISTS idx_session_admissions_status_outcome
+    ON session_admissions(status, outcome, owner_epoch);
+CREATE INDEX IF NOT EXISTS idx_worker_executions_kind_status
+    ON worker_executions(kind, status, owner_epoch);
+CREATE INDEX IF NOT EXISTS idx_worker_executions_status_epoch
+    ON worker_executions(status, owner_epoch);
+CREATE INDEX IF NOT EXISTS idx_state_meta_local_policy_lineage
+    ON state_meta(key)
+    WHERE json_valid(value) AND json_array_length(value, '$.lineage') > 1;
+CREATE INDEX IF NOT EXISTS idx_state_meta_local_policy_special
+    ON state_meta(key)
+    WHERE {NONDEFAULT_POLICY_WHERE};
+CREATE INDEX IF NOT EXISTS idx_sessions_end_reason
+    ON sessions(end_reason, id)
+    WHERE end_reason IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_source_started
+    ON sessions(source, started_at DESC);
 """
 
 
@@ -1099,7 +1143,7 @@ CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
     SELECT m.id, m.role, m.content, m.tool_name
     FROM messages AS m
     JOIN sessions AS s ON s.id = m.session_id
-    WHERE m.role <> 'tool' AND {fts_trigram_session_sql('s')};
+    WHERE m.active = 1 AND m.role <> 'tool' AND {fts_trigram_session_sql('s')};
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     content,

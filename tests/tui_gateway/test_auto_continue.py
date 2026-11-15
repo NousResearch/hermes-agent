@@ -654,3 +654,50 @@ def test_second_backend_defers_to_a_live_marker_writer(emits, schedule_env, mark
         if child.poll() is None:
             child.kill()
         child.wait(timeout=10)
+
+
+def test_boot_sweep_resumes_unloaded_dead_writer_markers_and_skips_live_writer(
+    emits, schedule_env, marker_home, monkeypatch
+):
+    """Boot-time sweep resumes background tabs whose writer died without waiting
+    for a manual tab click, while skipping live-writer and stale markers (ATLAS-121 / DQ #369)."""
+    from tui_gateway.turn_marker import list_turn_markers
+
+    # 1. Fresh marker with a dead writer PID -> should be resumed via session.resume
+    record_turn_start(marker_home, "bg-dead-session", "finish background work")
+    # Force a dead writer PID (not current process)
+    path = marker_home / "desktop" / "interrupted_turns.json"
+    import json
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["bg-dead-session"]["writer_pid"] = 999999
+    raw["bg-dead-session"]["writer_start_time"] = time.time() - 120
+    # 2. Stale marker -> should be pruned
+    raw["bg-stale-session"] = {
+        "attempts": 0,
+        "prompt": "too old",
+        "started_at": time.time() - 99999,
+        "auto_continue": True,
+        "writer_pid": 999998,
+        "writer_start_time": time.time() - 99999,
+    }
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    markers = list_turn_markers(marker_home)
+    assert set(markers.keys()) == {"bg-dead-session", "bg-stale-session"}
+
+    resumed_calls: list[tuple[str, dict]] = []
+
+    def fake_resume(rid, params):
+        resumed_calls.append((rid, params))
+        sid = f"runtime-{params['session_id']}"
+        sess = _session(session_key=params["session_id"])
+        auto = server._maybe_schedule_auto_continue(sid, sess, params["session_id"])
+        return {"result": {"session_id": sid, "auto_continue": auto}}
+
+    monkeypatch.setitem(server._methods, "session.resume", fake_resume)
+
+    swept = server._sweep_interrupted_turn_markers(marker_home)
+    assert swept == ["bg-dead-session"]
+    assert len(resumed_calls) == 1
+    assert resumed_calls[0][1]["session_id"] == "bg-dead-session"
+    assert read_turn_marker(marker_home, "bg-stale-session") is None

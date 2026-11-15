@@ -1135,6 +1135,27 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"cwd": target_cwd, "branch": branch, "git_repo_root": root})
 
 
+def _rebind_if_detached_ws(rid, sid: str, session: dict) -> None:
+    """If a live WS session was parked on ``_detached_ws_transport`` by a socket blip and an
+    authenticated client is now polling it over a live transport, reattach the transport and cancel
+    any pending orphan-reap timer."""
+    if not sid or not isinstance(session, dict) or session.get("close_on_disconnect"):
+        return
+    if session.get("transport") is not _detached_ws_transport:
+        return
+    t = current_transport()
+    if t is None or t is _stdio_transport or t is _detached_ws_transport:
+        return
+    owner_user = session.get("auth_user_id")
+    if owner_user and _transport_auth_user_id(t) != owner_user:
+        return
+    with _session_resume_lock:
+        if _reattach_refusal(rid, sid, session) is None:
+            lock = session.get("history_lock")
+            with (lock if lock is not None else contextlib.nullcontext()):
+                _rebind_live_transport(sid, session, t)
+
+
 @method("session.active_list")
 def _(rid, params: dict) -> dict:
     """Live TUI sessions in this process (not a DB browser)."""
@@ -1142,6 +1163,9 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     current = str(params.get("current_session_id") or "")
+    for sid, session in snapshot or ():
+        if not session.get("_finalized"):
+            _rebind_if_detached_ws(rid, sid, session)
     # ``_finalized`` sessions linger until the reaper pops them (they inflated the footer). Do NOT filter on
     # the WS-detached sentinel: detached is attachable until grace-reap, and ``hermes --tui`` rides stdio.
     # Keep insertion order (focused must not jump).
@@ -1951,6 +1975,7 @@ def _try_get_session(db, key: str) -> dict:
 @_session_method("session.status")
 def _(rid, params: dict, session: dict) -> dict:
     from hermes_cli.status_report import build_status_fields, status_lines
+    _rebind_if_detached_ws(rid, str(params.get("session_id") or ""), session)
     key = session.get("session_key") or params.get("session_id") or ""
     mirror = _metadata_mirror(session)
     # Under turn isolation the compute host owns the live route: a stale in-process agent object
@@ -1975,7 +2000,9 @@ def _(rid, params: dict, session: dict) -> dict:
 
 @_session_method("session.history")
 def _(rid, params: dict, session: dict) -> dict:
-    history = list(session.get("history", []))
+    _rebind_if_detached_ws(rid, str(params.get("session_id") or ""), session)
+    in_memory = list(session.get("history", []))
+    history = in_memory
     # Address the session the live agent writes to, not session_key: a compression rotation moves the
     # tip mid-session, and include_ancestors walks parent pointers, so a stale parent materializes
     # root..parent and NEVER the continuation — a reconnect in that window renders a transcript missing
@@ -1989,9 +2016,16 @@ def _(rid, params: dict, session: dict) -> dict:
                 with contextlib.suppress(Exception):
                     # The projection in _history_to_messages only forwards row_id when the row carries a
                     # stamp, so an unstamped read here silently strips the one durable address clients can
-                    # use. See #87059.
-                    history = db.get_messages_as_conversation(
-                        row_session, include_ancestors=True, include_row_ids=True)
+                    # use. See #87059. Include compacted display history and reconcile with live in-memory
+                    # turns so session.history matches session.resume / _live_visible_history.
+                    try:
+                        persisted = db.get_messages_as_conversation(
+                            row_session, include_ancestors=True, include_row_ids=True, include_compacted=True)
+                    except TypeError:
+                        persisted = db.get_messages_as_conversation(
+                            row_session, include_ancestors=True, include_row_ids=True)
+                    if persisted:
+                        history = _reconcile_display_with_live(persisted, in_memory)
     return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
 
 
@@ -2281,6 +2315,13 @@ def _(rid, params: dict) -> dict:
         last_seen = int(params.get("last_seen", 0))
     except (TypeError, ValueError):
         return _err(rid, -32602, "invalid params: last_seen must be an integer")
+    session = _sessions.get(sid)
+    if session is not None:
+        with _session_resume_lock:
+            if _reattach_refusal(rid, sid, session) is None and (t := current_transport()) is not None:
+                lock = session.get("history_lock")
+                with (lock if lock is not None else contextlib.nullcontext()):
+                    _rebind_live_transport(sid, session, t)
     from tui_gateway import event_replay as er
     frames = er.events_since(sid, last_seen)
     # ``epoch``: in-process seq — clients reset watermarks when this differs from gateway.ready's.

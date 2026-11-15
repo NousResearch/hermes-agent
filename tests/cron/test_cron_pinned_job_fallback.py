@@ -217,3 +217,42 @@ def test_pinned_job_failure_notice_does_not_promise_a_backup(monkeypatch):
     assert "pinned" in phrase and "--unpin" in phrase
     assert "succeeded" not in phrase
     assert scheduler._fallback_chain_phrase(_job()) == "No backup provider succeeded either."
+
+
+def test_job_matching_fleet_cron_default_model_inherits_fallback_chain():
+    """A job whose model matches ``cron.model`` (fleet default stamp from cron-model-drift-guard)
+    and has no provider/endpoint pin is following the fleet cron default, so it keeps the fallback
+    chain for runaway-repetition and latency-breaker escalation."""
+    cfg = {
+        "cron": {"model": "z-ai/glm-5.3-flash"},
+        "fallback_providers": list(_CHAIN),
+    }
+    job = _job(model="z-ai/glm-5.3-flash")
+    assert scheduler._job_route_pinned(job, cfg) is False
+    assert scheduler._job_fallback_chain(job, cfg) == _CHAIN
+    # Custom model different from cron.model remains pinned (no inherited chain).
+    custom_job = _job(model="claude-sonnet-5")
+    assert scheduler._job_route_pinned(custom_job, cfg) is True
+    assert scheduler._job_fallback_chain(custom_job, cfg) is None
+    # MAJOR-2: A provider-pinned job must NOT inherit cron.fallback_providers unless job-scoped.
+    cfg_with_cron_fb = {
+        "cron": {"model": "z-ai/glm-5.3-flash", "fallback_providers": list(_CHAIN)},
+    }
+    provider_pinned = _job(provider="anthropic", model="z-ai/glm-5.3-flash")
+    assert scheduler._job_route_pinned(provider_pinned, cfg_with_cron_fb) is True
+    assert scheduler._job_fallback_chain(provider_pinned, cfg_with_cron_fb) is None
+    # Inherited global chain strips entries matching cron.model so cron failover does not
+    # emit 'Fallback skip: chain entry ... resolves to the same backend as the current one'.
+    cfg_self_in_global = {
+        "cron": {"model": "z-ai/glm-5.3-flash"},
+        "fallback_providers": [
+            {"provider": "openrouter", "model": "z-ai/glm-5.3-flash"},
+            {"provider": "openrouter", "model": "google/gemini-2.5-flash-lite"},
+        ],
+    }
+    assert scheduler._job_fallback_chain(job, cfg_self_in_global) == [
+        {"provider": "openrouter", "model": "google/gemini-2.5-flash-lite"}
+    ]
+
+
+

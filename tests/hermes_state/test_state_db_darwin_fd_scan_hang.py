@@ -119,3 +119,39 @@ def test_healthy_scan_still_reports_holder(monkeypatch, tmp_path, caplog):
     assert not any(
         "timed out" in record.getMessage() for record in caplog.records
     ), "a successful scan must not log a timeout warning"
+
+
+def test_system_daemon_pids_skipped_before_pidfdinfo(monkeypatch, tmp_path):
+    """Apple system daemons (/System/Library, /usr/libexec, /usr/sbin) hold Data Vault
+    descriptors that emit kernel Sandbox deny(1) file-read-metadata when probed with
+    proc_pidfdinfo; proc_pidpath must filter them out while still scanning user processes."""
+    watched = os.path.realpath(os.path.join(os.fspath(tmp_path), "state.db-wal"))
+    probed_pids: list[int] = []
+
+    class _MixedLibproc(_HealthyLibproc):
+        def __init__(self):
+            super().__init__(watched, (0xDEAD, 0xBEEF))
+            self._paths = {
+                1001: b"/usr/libexec/routined",
+                1002: b"/System/Library/PrivateFrameworks/ScreenTimeCore.framework/ScreenTimeAgent",
+                1003: b"/usr/sbin/cfprefsd",
+                2002: b"/Users/test/.hermes/hermes-agent/.venv/bin/python3",
+            }
+
+        def proc_pidpath(self, pid, buf, size):
+            raw = self._paths.get(pid, b"")
+            if not raw:
+                return 0
+            ctypes.memmove(buf, raw, len(raw))
+            return len(raw)
+
+        def proc_pidfdinfo(self, pid, fd, flavor, record, size):
+            probed_pids.append(pid)
+            return super().proc_pidfdinfo(pid, fd, flavor, record, size)
+
+    monkeypatch.setattr(dbfile, "_darwin_libproc", lambda: _MixedLibproc())
+    monkeypatch.setattr(dbfile, "_darwin_all_pids", lambda _lib: [1001, 1002, 1003, 2002])
+    holders = _iter_darwin_sidecar_holders(tmp_path / "state.db")
+    assert probed_pids == [2002], f"system daemons must not reach proc_pidfdinfo: {probed_pids}"
+    assert holders == [(2002, watched)]
+

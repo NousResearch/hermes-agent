@@ -42,7 +42,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.turn_scripted_prelude import Prelude, play_prelude
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
-from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
+from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call, provider_latency_escalation_guard
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, failed_turn_notice, site_copy
@@ -302,7 +302,17 @@ def _join_truncated_parts(parts: list[tuple[str, bool]]) -> str:
             # Overlap can't exceed len(part): scan only that tail of ``joined``.
             part = part[_continuation_overlap_length(joined[-len(part):], part):]
         if joined and not joined[-1].isspace() and part and not part[0].isspace():
-            joined += "\n"
+            last_line = joined.rsplit("\n", 1)[-1]
+            in_open_table_row = (
+                last_line.lstrip().startswith("|") and not last_line.rstrip().endswith("|")
+            )
+            mid_number = (
+                previous_was_partial_stub
+                and joined[-1].isdigit()
+                and part[0].isdigit()
+            )
+            if not (in_open_table_row or mid_number):
+                joined += "\n"
         joined += part
         previous_was_partial_stub = is_partial_stub
     return joined
@@ -1586,6 +1596,10 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
             return _ng.result
         if _ng.action == "break":
             return None
+        # DQ #218: all providers of the current model latency-demoted → escalate MODEL.
+        _lg = _run_phase(provider_latency_escalation_guard, agent, s)
+        if _lg.action == "break":
+            return None
         try:
             _run_phase(build_api_request, agent, s)
             if _run_phase(perform_api_call, agent, s).action == "break":
@@ -1750,7 +1764,12 @@ def _run_conversation_turn(
     if _prelude_action == "return":
         return _prelude_result
     while _prelude_action != "break" and (
-        (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call
+        (
+            min(s.api_call_count, getattr(agent.iteration_budget, "used", s.api_call_count))
+            < max(agent.max_iterations, getattr(agent.iteration_budget, "max_total", 0) or 0)
+            and agent.iteration_budget.remaining > 0
+        )
+        or agent._budget_grace_call
     ):
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
@@ -1766,7 +1785,16 @@ def _run_conversation_turn(
         _run_phase(announce_api_call, agent, s)
 
         s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
-        s._retry, s.finish_reason, s.response, s.api_kwargs = TurnRetryState(), "stop", None, None
+        _prev_wrap_attempted = bool(
+            getattr(s._retry, "primary_fallback_wrap_attempted", False)
+            and getattr(agent, "_rebuilt_restarts_since_response", 0) > 0
+        )
+        s._retry, s.finish_reason, s.response, s.api_kwargs = (
+            TurnRetryState(primary_fallback_wrap_attempted=_prev_wrap_attempted),
+            "stop",
+            None,
+            None,
+        )
         s.api_request_id = agent._current_api_request_id = f"{s.turn_id}:api:{s.api_call_count}"
 
         early_result = _run_api_retry_loop(agent, s)
@@ -1837,6 +1865,18 @@ def run_conversation(
 
     # Steer / redirect / interrupt set this mid-turn; the result reports whether the turn ran untouched.
     agent._turn_user_intervened = False
+    # P1-1: If the incoming user_message is a slash-skill / bundle / auto-load scaffold (which in
+    # Desktop/TUI may have been expanded before the session_id was assigned on Turn 1), seed the
+    # active task's skill_view dedup tracker so a redundant skill_view(name=...) call in this turn
+    # immediately returns the unchanged stub instead of re-injecting the full SKILL.md a second time.
+    if isinstance(user_message, str) and user_message.startswith("[IMPORTANT: The "):
+        eff_tid = task_id or getattr(agent, "session_id", None)
+        if eff_tid:
+            try:
+                from tools.skills_tool_dedup import seed_skill_view_dedup_from_messages
+                seed_skill_view_dedup_from_messages(str(eff_tid), [{"role": "user", "content": user_message}])
+            except Exception:
+                pass
     # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
     # it does not embed the same pixels a second time into the same request (#76411).
     with native_turn_images(user_message):

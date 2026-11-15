@@ -30,9 +30,15 @@ def worker_prompt(db, conn, session_id, payload):
     if set(payload) != {'system_prompt'} or not (
             payload['system_prompt'] is None or isinstance(payload['system_prompt'], str)):
         raise RuntimeStoreError('invalid_params')
-    conn.execute('UPDATE sessions SET system_prompt_hash=?, system_prompt=NULL WHERE id=?',
-                 (db._store_system_prompt(conn, payload['system_prompt']), session_id))
-    db._delete_unreferenced_system_prompts(conn)
+    old_row = conn.execute('SELECT system_prompt_hash FROM sessions WHERE id=?', (session_id,)).fetchone()
+    old_hash = old_row[0] if old_row else None
+    new_hash = db._store_system_prompt(conn, payload['system_prompt'])
+    cur = conn.execute('UPDATE sessions SET system_prompt_hash=?, system_prompt=NULL WHERE id=?',
+                       (new_hash, session_id))
+    db._delete_unreferenced_system_prompts(
+        conn,
+        (old_hash if old_hash != new_hash else None, new_hash if cur.rowcount == 0 else None),
+    )
     return {'value': None}
 
 
@@ -65,9 +71,15 @@ def worker_tool_names(db, conn, session_id, payload):
     encoded = None if pin is None else json.dumps(pin)
     if encoded is not None and len(encoded) > 4 * 1024 * 1024:
         raise RuntimeStoreError('invalid_params')
-    conn.execute('UPDATE sessions SET tool_names=? WHERE id=?',
-                 (db._store_system_prompt(conn, encoded), session_id))
-    db._delete_unreferenced_system_prompts(conn)
+    old_row = conn.execute('SELECT tool_names FROM sessions WHERE id=?', (session_id,)).fetchone()
+    old_hash = old_row[0] if old_row else None
+    new_hash = db._store_system_prompt(conn, encoded)
+    cur = conn.execute('UPDATE sessions SET tool_names=? WHERE id=?',
+                       (new_hash, session_id))
+    db._delete_unreferenced_system_prompts(
+        conn,
+        (old_hash if old_hash != new_hash else None, new_hash if cur.rowcount == 0 else None),
+    )
     return {'value': None}
 
 

@@ -249,3 +249,49 @@ def test_render_handles_all_none_stats():
     empty["fts_tables"] = None
     lines = _render_state_db_stats(empty, holders=None)
     assert isinstance(lines, list)  # must not raise
+
+
+def test_state_db_stats_respects_explicit_auto_prune_config(tmp_path, monkeypatch):
+    import hermes_state_dbfile
+    from hermes_cli.doctor_state import STATE_DB_SIZE_WARN_BYTES, _state_db_stats
+
+    db = tmp_path / "state.db"
+    db.write_bytes(b"")
+    monkeypatch.setattr(
+        hermes_state_dbfile,
+        "collect_state_db_stats",
+        lambda _p: _base_stats(logical_size_bytes=STATE_DB_SIZE_WARN_BYTES + 1, fts_storage_version=3),
+    )
+    monkeypatch.setattr(hermes_state_dbfile, "count_db_holders", lambda _p: 0)
+
+    # Undecided config -> warns and records issue.
+    issues_undecided: list[str] = []
+    _state_db_stats(issues_undecided, db)
+    assert any("enable sessions.auto_prune" in i for i in issues_undecided)
+
+    # Explicitly decided in config.yaml (auto_prune: false) with modern FTS -> info only, no issue.
+    (tmp_path / "config.yaml").write_text("sessions:\n  auto_prune: false\n", encoding="utf-8")
+    issues_decided: list[str] = []
+    _state_db_stats(issues_decided, db)
+    assert issues_decided == []
+
+
+def test_list_meta_prefix_uses_primary_key_range_index(populated_db):
+    db = SessionDB(db_path=populated_db)
+    try:
+        db.set_meta("loop:s1", '{"status":"active"}')
+        db.set_meta("loop_other", '{"status":"active"}')
+        assert db.list_meta_prefix("loop:") == [("loop:s1", '{"status":"active"}')]
+        assert db.list_meta_prefix("loop_") == [("loop_other", '{"status":"active"}')]
+        with db._read_ctx() as conn:
+            plan = conn.execute(
+                "EXPLAIN QUERY PLAN SELECT key, value FROM state_meta "
+                "WHERE key >= ? AND key < ? AND key LIKE ? ESCAPE '\\'",
+                ("loop:", "loop:\uffff", "loop:%"),
+            ).fetchall()
+        detail = " ".join(str(r[-1]) for r in plan)
+        assert "SEARCH state_meta USING INDEX" in detail
+    finally:
+        db.close()
+
+

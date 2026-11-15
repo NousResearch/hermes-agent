@@ -302,3 +302,220 @@ class TestPreApiLockDeferDoesNotBurnBudget:
         assert result["final_response"] == "Recovered after lock release"
         assert not result.get("compression_exhausted")
         assert not result.get("compression_deferred")
+
+
+# ---------------------------------------------------------------------------
+# Pool-saturated refusals: transient block, attempt refund, E5 & E6 (DQ #1302)
+# ---------------------------------------------------------------------------
+
+
+class TestPoolSaturatedTransientDefer:
+    def test_pool_saturated_marks_transient_and_records_trigger_source(self, agent):
+        """When ``_try_admit_compression_job`` refuses, ``agent._compress_context``
+        marks ``_compression_blocked_transient = 'pool_saturated'`` and emits
+        the caller's ``trigger_source`` in telemetry."""
+        from agent.conversation_compression import compression_blocked_transiently
+
+        captured_seeds = []
+
+        def _capture_telemetry(_agent, **_kwargs):
+            captured_seeds.append(_kwargs.get("attempt_seed"))
+
+        msgs = list(_PREFILL)
+        with (
+            patch("agent.conversation_compression._try_admit_compression_job", return_value=False),
+            patch(
+                "agent.conversation_compression._emit_compression_attempt_telemetry",
+                side_effect=_capture_telemetry,
+            ),
+        ):
+            out_msgs, _ = agent._compress_context(
+                msgs, "You are helpful.", approx_tokens=50_000, trigger="post_tool"
+            )
+
+        assert out_msgs is msgs
+        assert agent._compression_blocked_transient == "pool_saturated"
+        assert compression_blocked_transiently(agent) is True
+        assert len(captured_seeds) == 1
+        assert captured_seeds[0]["trigger_source"] == "post_tool"
+
+    def test_post_tool_and_pre_api_refund_attempts_on_pool_saturated(self, agent):
+        """Three consecutive ``pool_saturated`` refusals across ``post_tool`` and
+        ``pre_api`` must refund ``compression_attempts`` so the session never
+        locks into ``attempts_exhausted:3``."""
+        from agent.turn_preflight import (
+            PreflightGateVerdict,
+            compress_after_tool_results,
+            run_preflight_compression,
+        )
+
+        agent.context_compressor = SimpleNamespace(
+            protect_first_n=1,
+            protect_last_n=1,
+            threshold_tokens=1_000,
+            context_length=200_000,
+            summary_target_ratio=0.2,
+            last_prompt_tokens=5_000,
+            last_compression_rough_tokens=0,
+            awaiting_real_usage_after_compression=False,
+            should_compress=lambda _t: True,
+            get_active_compression_failure_cooldown=lambda: None,
+        )
+        agent._compression_feasibility_checked = True
+        msgs = [
+            {"role": "user", "content": "x" * 8_000},
+            {"role": "assistant", "content": "y" * 8_000},
+            {"role": "user", "content": "ask"},
+        ]
+
+        with patch("agent.conversation_compression._try_admit_compression_job", return_value=False):
+            for _ in range(3):
+                post_v = compress_after_tool_results(
+                    agent,
+                    messages=msgs,
+                    system_message="sys",
+                    user_message="ask",
+                    active_system_prompt="sys",
+                    conversation_history=None,
+                    compression_attempts=0,
+                    max_compression_attempts=3,
+                    effective_task_id="task",
+                    final_response=None,
+                    turn_exit_reason=None,
+                    current_turn_user_idx=2,
+                )
+                assert post_v.compression_attempts == 0
+
+            verdict = PreflightGateVerdict(
+                action="fallthrough",
+                pending_moa_prepared_request=None,
+                messages=msgs,
+                active_system_prompt="sys",
+                conversation_history=None,
+                api_call_count=1,
+                compression_attempts=0,
+                final_response=None,
+                failed=False,
+                _turn_exit_reason=None,
+                _compression_timeout_exhausted=False,
+                _preflight_compression_blocked=False,
+                _provider_overflow_recovery_pending=False,
+                _last_preflight_pressure=0,
+            )
+            pre_v = run_preflight_compression(
+                agent,
+                verdict,
+                compressor=agent.context_compressor,
+                request_pressure_tokens=5_000,
+                provider_overflow_preflight=False,
+                defer_preflight=lambda _t: False,
+                moa_prepared_request=None,
+                system_message="sys",
+                user_message="ask",
+                max_compression_attempts=3,
+                effective_task_id="task",
+            )
+            assert pre_v.compression_attempts == 0
+            assert pre_v.action == "fallthrough"
+
+    def test_over_window_or_overflow_preflight_defers_on_pool_saturated(self, agent):
+        """Edge Case E5: when ``provider_overflow_preflight=True`` or
+        ``request_exceeds_model_window=True`` hits ``pool_saturated``,
+        ``run_preflight_compression`` returns ``compression_deferred=True``
+        instead of falling through to ``_exhausted_result()``."""
+        from agent.turn_preflight import PreflightGateVerdict, run_preflight_compression
+
+        agent.context_compressor = SimpleNamespace(
+            protect_first_n=1,
+            protect_last_n=1,
+            threshold_tokens=1_000,
+            context_length=100_000,
+            summary_target_ratio=0.2,
+            last_prompt_tokens=150_000,
+            last_compression_rough_tokens=0,
+            awaiting_real_usage_after_compression=False,
+            should_compress=lambda _t: True,
+            get_active_compression_failure_cooldown=lambda: None,
+        )
+        agent._compression_feasibility_checked = True
+        msgs = [
+            {"role": "user", "content": "x" * 8_000},
+            {"role": "assistant", "content": "y" * 8_000},
+            {"role": "user", "content": "ask"},
+        ]
+        verdict = PreflightGateVerdict(
+            action="fallthrough",
+            pending_moa_prepared_request=None,
+            messages=msgs,
+            active_system_prompt="sys",
+            conversation_history=None,
+            api_call_count=1,
+            compression_attempts=0,
+            final_response=None,
+            failed=False,
+            _turn_exit_reason=None,
+            _compression_timeout_exhausted=False,
+            _preflight_compression_blocked=False,
+            _provider_overflow_recovery_pending=True,
+            _last_preflight_pressure=0,
+        )
+
+        with (
+            patch("agent.conversation_compression._try_admit_compression_job", return_value=False),
+            patch.object(agent, "_persist_session"),
+        ):
+            out = run_preflight_compression(
+                agent,
+                verdict,
+                compressor=agent.context_compressor,
+                request_pressure_tokens=150_000,
+                provider_overflow_preflight=True,
+                defer_preflight=lambda _t: False,
+                moa_prepared_request=None,
+                system_message="sys",
+                user_message="ask",
+                max_compression_attempts=3,
+                effective_task_id="task",
+            )
+
+        assert out.action == "return"
+        assert out.result is not None
+        assert out.result["compression_deferred"] is True
+        assert not out.result.get("compression_exhausted")
+        assert out.compression_attempts == 0
+
+    def test_manual_compress_pool_saturated_returns_lock_skipped(self, agent):
+        """Edge Case E6: manual ``/compress`` when ``pool_saturated`` persists
+        past the admission grace returns ``status='lock_skipped'`` with
+        ``lock_holder='pool_saturated'`` instead of ``No changes from compression``."""
+        from agent.conversation_compression_manual import (
+            CompressRequest,
+            compress_now,
+            render_compress_result,
+        )
+
+        msgs = list(_PREFILL)
+        with patch("agent.conversation_compression._try_admit_compression_job", return_value=False):
+            res = compress_now(
+                agent, msgs, CompressRequest(), system_message="You are helpful."
+            )
+
+        assert res.status == "lock_skipped"
+        assert res.lock_holder == "pool_saturated"
+        lines = render_compress_result(res)
+        assert any("worker pool is busy" in line for line in lines)
+
+    def test_admit_with_grace_succeeds_when_slot_frees_on_second_poll(self):
+        """Bounded admission grace polls ``_try_admit_compression_job`` and
+        succeeds as soon as a worker slot frees."""
+        from agent.conversation_compression import _admit_compression_job_with_grace
+
+        calls = []
+
+        def _flaky_admit():
+            calls.append(1)
+            return len(calls) >= 2
+
+        with patch("agent.conversation_compression._try_admit_compression_job", side_effect=_flaky_admit):
+            assert _admit_compression_job_with_grace(1.0) is True
+        assert len(calls) == 2

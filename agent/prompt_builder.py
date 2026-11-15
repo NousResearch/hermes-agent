@@ -1227,12 +1227,18 @@ def _plugin_skill_prompt_rows(
 
 def _current_session_platform_hint() -> str:
     """Active platform without importing the gateway package on CLI startup."""
-    platform = os.environ.get("HERMES_PLATFORM") or os.environ.get("HERMES_SESSION_PLATFORM")
+    platform = (os.environ.get("HERMES_PLATFORM")
+                or os.environ.get("HERMES_SESSION_PLATFORM")
+                or os.environ.get("HERMES_SESSION_SOURCE"))
     if platform:
         return platform
     get_session_env = getattr(sys.modules.get("gateway.session_context"), "get_session_env", None)
     try:
-        return (get_session_env("HERMES_SESSION_PLATFORM") if get_session_env else "") or ""
+        if get_session_env:
+            return (get_session_env("HERMES_SESSION_PLATFORM")
+                    or get_session_env("HERMES_SESSION_SOURCE")
+                    or "")
+        return ""
     except Exception:
         return ""
 

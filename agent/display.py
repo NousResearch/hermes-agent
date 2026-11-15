@@ -713,6 +713,8 @@ def _diff_from_snapshot(snapshot: LocalEditSnapshot | None) -> str | None:
     """Generate unified diff text from a stored before-state and current files."""
     if not snapshot:
         return None
+    from agent.redact import _is_secret_file_arg, redact_sensitive_text
+
     chunks: list[str] = []
     for path in snapshot.paths:
         before, after = snapshot.before.get(str(path)), _snapshot_text(path)
@@ -724,6 +726,8 @@ def _diff_from_snapshot(snapshot: LocalEditSnapshot | None) -> str | None:
             fromfile=f"a/{display_path}", tofile=f"b/{display_path}",
         ))
         if diff:
+            diff = redact_sensitive_text(
+                diff, file_read=True, secret_file=_is_secret_file_arg(str(path)))
             chunks.append(diff if diff.endswith("\n") else diff + "\n")
     return "".join(chunks) or None
 

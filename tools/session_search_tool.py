@@ -441,14 +441,37 @@ def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detai
         detail=result_detail)
 
 
+def _lineage_session_ids(db, target_session_id: str) -> list[str]:
+    """Session ids in *target_session_id*'s compression/reset chain (plus *target_session_id* itself)."""
+    root = _resolve_lineage(db, target_session_id) or target_session_id
+    out: set[str] = {target_session_id, root}
+
+    def _lookup() -> list[str]:
+        with db._lock:
+            rows = db._conn.execute(
+                "WITH RECURSIVE tree(id) AS ("
+                "  SELECT ? UNION ALL "
+                "  SELECT s.id FROM sessions s JOIN tree t ON s.parent_session_id = t.id"
+                ") SELECT id FROM tree LIMIT 100",
+                (root,),
+            ).fetchall()
+            return [str(r[0]) for r in rows if r and r[0]]
+
+    for sid in _quiet(_lookup, [], "lineage_session_ids lookup failed for %s", root):
+        if sid == target_session_id or sid == root or _session_left_live_context(db, sid):
+            out.add(sid)
+    return sorted(out)
+
+
 def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str | None = None, link_profile: str | None = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
-              exclude_session_ids: Optional[list[str]] = None) -> str:
+              exclude_session_ids: Optional[list[str]] = None,
+              target_session_id: str | None = None) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     excluded_roots = _excluded_lineage_roots(db, exclude_session_ids or [])
-    title_result = _title_match_result(db, query, current_lineage_root)
+    title_result = None if target_session_id else _title_match_result(db, query, current_lineage_root)
     # FTS rows are time-bounded in SQL (_search_filter_clauses); the title match bypasses that
     # query, so it is the one place the window is re-checked in Python.
     if title_result:
@@ -456,10 +479,18 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         title_started = _coerce_started_ts((_get_session_meta(db, title_root) or _get_session_meta(db, title_sid)).get("started_at"))
         if {title_sid, title_root} & excluded_roots or not _in_time_window(title_started, after_ts, before_ts):
             title_result = None
-    raw_results, err = _loud(lambda: db.search_messages(
-        query=query, role_filter=role_filter or ["user", "assistant"],
-        exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
-        fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
+    scoped_sids = _lineage_session_ids(db, target_session_id) if target_session_id else None
+    effective_roles = role_filter or (["user", "assistant", "tool"] if target_session_id else ["user", "assistant"])
+    effective_exclude_sources = None if target_session_id else list(_HIDDEN_SESSION_SOURCES)
+    search_kwargs: dict[str, Any] = dict(
+        query=query, role_filter=effective_roles,
+        exclude_sources=effective_exclude_sources, limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
+        fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts)
+    if scoped_sids is not None:
+        search_kwargs["session_ids"] = scoped_sids
+    raw_results, err = _loud(
+        lambda: db.search_messages(**search_kwargs),
+        "FTS5 search failed: %s", "Search failed")
     if err:
         return err
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
@@ -472,7 +503,7 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
             "No matching sessions found. FTS5 ANDs all terms by default — "
             "broaden with OR (`alpha OR beta`), exact-match with quoted "
             "phrases, exclude with NOT, or prefix-match with `deploy*`."))
-    seen_sessions: dict[str, dict[str, Any]] = {}
+    seen_sessions: dict[Any, dict[str, Any]] = {}
     results = [title_result] if title_result else []
     if title_result and (title_lineage := title_result.pop("_lineage_root", None)):
         seen_sessions[title_lineage] = {"_title_only": True}
@@ -480,8 +511,9 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
     # FTS row and deduped per session so the payload can disclose the hiding instead of
     # returning 0 results with no signal.
     hidden_rows, hidden_sessions = 0, {}
-    # Dedupe by lineage (lineage_root -> first surviving FTS row) up to `limit`. The raw
-    # owning session_id stays on the row — only it pairs validly with the FTS match id.
+    # Dedupe by lineage (lineage_root -> first surviving FTS row) up to `limit`, or per message
+    # `(resolved_sid, id)` when scoped to `target_session_id`. The raw owning session_id stays on
+    # the row — only it pairs validly with the FTS match id.
     # Current-lineage hits are skipped UNLESS the transcript left live context
     # (compression-ended, /new-reset predecessor, or an in-place compacted row on the
     # SAME session); a live delegation child (end_reason=None) stays excluded.
@@ -491,38 +523,33 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         raw_sid, resolved_sid = r["session_id"], _resolve_lineage(db, r["session_id"])
         if raw_sid in excluded_roots or resolved_sid in excluded_roots:
             continue
-        # Skip the current session lineage — UNLESS the hit's transcript has left live context. Three
-        # sub-cases: Legacy compression rotation: the FTS hit lives in a session that itself ended with
-        # end_reason='compression'. That session's content has been replaced by a summary in the
-        # continuation child, so it must stay discoverable. /new-reset (and idle/daily/CLI new_session): the
-        # predecessor was ended without carrying any transcript into the child. Same lineage root, but the
-        # prior conversation is NOT in the active context — hiding it made gateway recall go blind after
-        # every /new (#85756). A live delegation child has end_reason=None, so it stays excluded. In-place
-        # compaction: the FTS hit lives on the SAME session_id as the current session, but the matched
-        # message row is an archived (active=0, compacted=1) row. The live-context load filters active=1, so
-        # that content is no longer in context — let it through.
         is_compacted_hit = _is_compacted_message(db, r.get("id"))
-        if current_lineage_root and resolved_sid == current_lineage_root and not (
-                _session_left_live_context(db, raw_sid) or is_compacted_hit):
-            # An unended same-lineage row (e.g. a gateway predecessor whose end-write was
-            # lost across a restart) is dropped here with no signal, so the agent
-            # concludes the conversation never existed (#103184). Disclose it; the
-            # current session's own live rows are not counted — they are already in
-            # context (the same-session skip below) and hiding them is expected.
-            if raw_sid != current_session_id:
-                hidden_rows += 1
-                if raw_sid not in hidden_sessions:
-                    meta = _get_session_meta(db, raw_sid)
-                    hidden_sessions[raw_sid] = {"session_id": raw_sid,
-                                                "end_reason": meta.get("end_reason"),
-                                                "last_activity": _format_timestamp(meta.get("last_activity_at"))}
-            continue
-        if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
-            continue
-        seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
-    for lineage_root, match_info in seen_sessions.items():
+        if target_session_id and raw_sid == target_session_id:
+            pass
+        else:
+            if current_lineage_root and resolved_sid == current_lineage_root and not (
+                    _session_left_live_context(db, raw_sid) or is_compacted_hit):
+                # An unended same-lineage row (e.g. a gateway predecessor whose end-write was
+                # lost across a restart) is dropped here with no signal, so the agent
+                # concludes the conversation never existed (#103184). Disclose it; the
+                # current session's own live rows are not counted — they are already in
+                # context (the same-session skip below) and hiding them is expected.
+                if raw_sid != current_session_id:
+                    hidden_rows += 1
+                    if raw_sid not in hidden_sessions:
+                        meta = _get_session_meta(db, raw_sid)
+                        hidden_sessions[raw_sid] = {"session_id": raw_sid,
+                                                    "end_reason": meta.get("end_reason"),
+                                                    "last_activity": _format_timestamp(meta.get("last_activity_at"))}
+                continue
+            if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
+                continue
+        dedup_key = (resolved_sid, r.get("id")) if target_session_id else resolved_sid
+        seen_sessions.setdefault(dedup_key, {**r, "_lineage_root": resolved_sid})
+    for match_info in seen_sessions.values():
         if match_info.get("_title_only"):
             continue
+        lineage_root = match_info.get("_lineage_root") or match_info.get("session_id")
         # Adaptive: only the top-ranked result is fully hydrated.
         entry = _hydrate_hit(db, lineage_root, match_info, "full" if detail == "full" or not results else "compact")
         if entry is not None:
@@ -733,7 +760,21 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
     if isinstance(session_id, str) and session_id.strip():
         if around_message_id is not None:
             return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
-        return _read_scoped(db, session_id.strip(), profile)
+        if not query or not isinstance(query, str) or not query.strip():
+            return _read_scoped(db, session_id.strip(), profile)
+        limit = _clamp_int(limit, 3, 1, 10)
+        sort_norm = sort.strip().lower() if isinstance(sort, str) else None
+        try:
+            after_ts, before_ts = _parse_iso_bound(after), _parse_iso_bound(before)
+        except ValueError as e:
+            return tool_error(str(e), success=False)
+        return _discover(
+            db=db, query=query.strip(), limit=limit, sort=sort_norm if sort_norm in ("newest", "oldest") else None,
+            role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
+            detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
+            current_session_id=current_session_id, link_profile=profile, after_ts=after_ts, before_ts=before_ts,
+            exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids),
+            target_session_id=session_id.strip())
     browse = not query or not isinstance(query, str) or not query.strip()
     # Browse lists enough recent sessions to pick from; discovery returns a few ranked hits.
     limit = _clamp_int(limit, 10 if browse else 3, 1, 10)

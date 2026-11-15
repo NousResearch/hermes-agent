@@ -122,13 +122,14 @@ def _sync_persisted_markers(target_messages, source_messages) -> None:
 
 def _run_under_progress_timeout(
     agent, run, messages, system_message, *, active_fence, registration, fence_registration_lock,
-    idle_timeout, total_ceiling, approx_tokens=None,
+    idle_timeout, total_ceiling, approx_tokens=None, trigger=None, force: bool = False,
 ):
     """Run ``run(fence, target_messages=snapshot)`` on the pool under the progress-aware timeout.
     The pooled worker must NEVER share the caller's live transcript — a late engine after a host timeout could
     rewrite it. It deep-snapshots on the worker and publishes only via an ADMITTED commit; a no-op/abort
     returns the snapshot unchanged, so the ORIGINAL list is handed back to keep identity semantics."""
     from agent.conversation_compression import (
+        _COMPRESS_POOL_ADMISSION_GRACE_SECONDS,
         CompressionCommitFence, request_exceeds_model_window, run_compress_context_with_progress_timeout,
     )
 
@@ -175,6 +176,13 @@ def _run_under_progress_timeout(
                 agent._active_compression_commit_fence = retry_fence
         return retry_fence
 
+    _exceeds = request_exceeds_model_window(agent, approx_tokens) is True
+    _grace = (
+        _COMPRESS_POOL_ADMISSION_GRACE_SECONDS
+        if (force or trigger == "overflow" or _exceeds)
+        else 0.0
+    )
+    _trigger_source = "manual" if force else (trigger or None)
     return run_compress_context_with_progress_timeout(
         worker=_snapshot_worker, messages=messages,
         system_prompt_fallback=lambda: _timeout_fallback_prompt(agent, system_message),
@@ -182,7 +190,9 @@ def _run_under_progress_timeout(
         on_timeout_cause=_on_timeout_cause,
         on_commit_overrun=lambda waited, ceiling: _warn_commit_overrun(agent, waited, ceiling), fence=active_fence,
         telemetry_agent=agent, new_fence=_publish_new_fence, fallback_worker=_same_turn_fallback_worker,
-        request_exceeds_window=request_exceeds_model_window(agent, approx_tokens) is True,
+        request_exceeds_window=_exceeds,
+        admission_grace_seconds=_grace,
+        trigger_source=_trigger_source,
     )
 
 
@@ -249,6 +259,8 @@ class CompressionFacadeMixin:
             resolve_context_compression_timeouts,
         )
         reset_context_compression_timeout_outcome(self)
+        self._compression_skipped_due_to_lock = None
+        self._compression_blocked_transient = None
         from agent.portal_tags import (
             get_affinity_scope, get_conversation_context, reset_affinity_scope, reset_conversation_context,
             set_affinity_scope, set_conversation_context,
@@ -306,6 +318,7 @@ class CompressionFacadeMixin:
                     active_fence=active_fence, registration=registration,
                     fence_registration_lock=fence_registration_lock,
                     idle_timeout=idle_timeout, total_ceiling=total_ceiling, approx_tokens=approx_tokens,
+                    trigger=trigger, force=force,
                 )
             _mirror_result_onto_live_lists(self, result, messages, direct_path=direct_path)
             _rebind_caller_session_context(self)

@@ -84,8 +84,10 @@ class WhatsAppOnboardingApply(BaseModel):
     profile: Optional[str] = None
 
 class AudioTranscriptionRequest(BaseModel):
-    data_url: str
+    data_url: Optional[str] = None
     mime_type: Optional[str] = None
+    audio: Optional[str] = None
+    mime: Optional[str] = None
 
 class ManagedFileUpload(BaseModel):
     path: str

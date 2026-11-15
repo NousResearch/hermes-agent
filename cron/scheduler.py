@@ -93,22 +93,55 @@ def _set_cron_session_title(session_db, session_id, base_title):
         return deduped
 
 
-def _job_route_pinned(job: dict) -> bool:
+def _job_route_pinned(job: dict, cfg: Any = None) -> bool:
     """True when the job carries its own provider, model or endpoint. Unpinned jobs store none of
-    these (they follow the main model at fire time), so any value is an explicit operator pin."""
-    return any(isinstance(job.get(k), str) and job[k].strip() for k in ("provider", "model", "base_url"))
+    these (they follow the main model at fire time), so any value is an explicit operator pin —
+    except when ``job["model"]`` merely repeats the fleet-wide ``cron.model`` default (with no
+    provider or endpoint pin), which is a fleet-default stamp rather than a custom route pin."""
+    if any(isinstance(job.get(k), str) and job[k].strip() for k in ("provider", "base_url")):
+        return True
+    raw_model = job.get("model")
+    job_model = raw_model.strip() if isinstance(raw_model, str) else ""
+    if not job_model:
+        return False
+    cron_cfg = (cfg.get("cron") if isinstance(cfg, dict) else None) or {}
+    cron_default_model = str(cron_cfg.get("model") or "").strip() if isinstance(cron_cfg, dict) else ""
+    if cron_default_model and job_model == cron_default_model:
+        return False
+    return True
 
 
 def _job_fallback_chain(job: dict, cfg: Any) -> Optional[list]:
     """The fallback chain this job may walk, at credential resolution AND mid-run (#100437).
 
-    A pinned job never borrows the global ``fallback_providers`` chain, the same rule a pinned
-    ``delegate_task`` child follows (``scoped_fallback_chain``): a chain entry is a different
-    provider and usually a different model, which is exactly what the pin ruled out. Same-provider
-    credential-pool rotation is not the chain and still applies. Unpinned jobs inherit the chain.
+    A pinned job never borrows the global or cron-wide ``fallback_providers`` chain, the same rule
+    a pinned ``delegate_task`` child follows (``scoped_fallback_chain``): a chain entry is a
+    different provider and usually a different model, which is exactly what the pin ruled out.
+    Same-provider credential-pool rotation is not the chain and still applies. Unpinned jobs (and
+    jobs whose model merely matches the fleet ``cron.model`` default) inherit the chain.
     """
-    return scoped_fallback_chain(
-        get_fallback_chain(cfg), None, pinned=_job_route_pinned(job), owner="cron job")
+    pinned = _job_route_pinned(job, cfg)
+    cron_cfg = (cfg.get("cron") if isinstance(cfg, dict) else None) or {}
+    declared = (
+        job.get("fallback_providers")
+        if isinstance(job, dict) and job.get("fallback_providers") is not None
+        else (None if pinned else (cron_cfg.get("fallback_providers") if isinstance(cron_cfg, dict) else None))
+    )
+    chain = scoped_fallback_chain(
+        get_fallback_chain(cfg), declared, pinned=pinned, owner="cron job")
+    if chain and declared is None:
+        eff_model = str(
+            (job.get("model") if isinstance(job, dict) else None)
+            or (cron_cfg.get("model") if isinstance(cron_cfg, dict) else None)
+            or ""
+        ).strip().lower()
+        if eff_model:
+            filtered = [
+                entry for entry in chain
+                if not (isinstance(entry, dict) and str(entry.get("model") or "").strip().lower() == eff_model)
+            ]
+            return filtered or None
+    return chain
 
 
 def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
@@ -116,14 +149,17 @@ def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
     failed too" vs "none configured" (most installs). Fails open to "the backups failed too" if
     config can't be read — never crash delivery.
     """
-    if job is not None and _job_route_pinned(job):
+    try:
+        cfg = load_config() or {}
+    except Exception:
+        return "No backup provider succeeded either."
+    if job is not None and _job_route_pinned(job, cfg):
         return (
             "This job is pinned to its own provider/model, so it does not fall back to "
             f"`fallback_providers`; `hermes cron edit {job.get('id')} --unpin` lets it follow the "
             "main model and its fallback chain."
         )
     try:
-        cfg = load_config() or {}
         chain = get_fallback_chain(cfg)
     except Exception:
         return "No backup provider succeeded either."
@@ -1777,7 +1813,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             "Job '%s': primary provider resolve failed (%s: %s), %s",
             job_id, "auth" if is_auth else "transient network", resolve_exc,
             "trying fallback" if chain else (
-                "not falling back: the job is pinned" if _job_route_pinned(job) else "no fallback configured"))
+                "not falling back: the job is pinned" if _job_route_pinned(job, jc.cfg) else "no fallback configured"))
         for entry in chain:
             if not isinstance(entry, dict):
                 continue
@@ -2434,19 +2470,49 @@ class _CronAgentSetup:
     fallback_notice: Optional[str] = None
 
 
+def _positive_int_or_none(val: Any) -> Optional[int]:
+    """Return ``int(val)`` when *val* is a strictly positive integer (> 0), else ``None``."""
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        parsed = int(val)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _resolve_cron_max_iterations(job: Any, _cfg: Any) -> int:
+    """Resolve per-job -> cron-section -> agent-section max_iterations/max_turns ceiling.
+
+    Non-positive values (``<= 0``) fall through to the next tier rather than failing open to
+    ``sys.maxsize`` via ``resolve_turn_limit``.
+    """
+    from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+    candidates: list[Any] = []
+    if isinstance(job, dict):
+        candidates.extend([job.get("max_iterations"), job.get("max_turns")])
+    if isinstance(_cfg, dict):
+        _cron_sec = _cfg.get("cron")
+        if isinstance(_cron_sec, dict):
+            candidates.extend([_cron_sec.get("max_iterations"), _cron_sec.get("max_turns")])
+        _agent_sec = _cfg.get("agent")
+        if isinstance(_agent_sec, dict):
+            candidates.append(_agent_sec.get("max_turns"))
+        candidates.append(_cfg.get("max_turns"))
+    for cand in candidates:
+        pos = _positive_int_or_none(cand)
+        if pos is not None:
+            return pos
+    return _resolve_turn_limit(None)
+
+
 def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _CronAgentSetup:
     """Resolve model/runtime/reasoning/pool for the run, in the original gate order: exfil guard ->
     preflight (may block) -> runtime (+ fallback chain) -> credential pool -> MCP."""
     _cfg = jc.cfg
     setup = _CronAgentSetup(model=jc.model)
     setup.prefill_messages = _load_prefill_messages(_cfg, job_id)
-
-    # resolve_turn_limit() honors none/unlimited (sys.maxsize) and explicit 0 / null.
-    from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
-    _mt = _cfg.get("agent", {}).get("max_turns")
-    if _mt is None:
-        _mt = _cfg.get("max_turns")
-    setup.max_iterations = _resolve_turn_limit(_mt)
+    setup.max_iterations = _resolve_cron_max_iterations(job, _cfg)
 
     # Runtime backstop (CWE-200/522): fail closed BEFORE resolution on a provider/base_url pair
     # that would ship a stored credential off-host; hand-written jobs bypass create-time checks.
@@ -2561,9 +2627,21 @@ def run_job(
     if owner_execution is not None and owner_execution[2:] != (job['id'], execution_id):
         owner_execution = None
     if not job.get("no_agent") and owner_execution is None:
-        from cron.scheduler_authority import run_canonical_job
-        return run_canonical_job(job, extra_prompt=extra_prompt, cancel_event=cancel_event,
-                                 execution_id=execution_id)
+        from cron.scheduler_authority import journal_path, run_canonical_job
+        res = run_canonical_job(job, extra_prompt=extra_prompt, cancel_event=cancel_event,
+                                execution_id=execution_id)
+        if not res[0] and "not_found" in str(res[3]):
+            from cron.jobs import get_job
+            fresh_job = get_job(job.get("id", "")) or job
+            if fresh_job.get("no_agent"):
+                req_id = execution_id or job.get("execution_id")
+                if req_id:
+                    journal_path(job["id"], req_id).unlink(missing_ok=True)
+                job.update(fresh_job)
+            else:
+                return res
+        else:
+            return res
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
@@ -2602,6 +2680,11 @@ def run_job(
         agent = _construct_cron_agent(
             AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
             session_db=_session_db)
+        try:
+            agent.cron_job_id = str(job_id or "")
+            agent.cron_job_name = str(job_name or "")
+        except Exception:
+            pass
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(
@@ -3104,7 +3187,12 @@ def _save_compose_deliver(
         # Cron silence suppression — see _is_cron_silence_response. Replaces the old `SILENT_MARKER in
         # ...upper()` substring check, which both leaked bracketless near-markers ("SILENT" / "NO_REPLY")
         # and wrongly swallowed a real report that merely quoted "[SILENT]" mid-sentence (#51438, #46917).
-        logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+        logger.info(
+            "Job '%s': %s %s — skipping delivery",
+            job["id"],
+            "gate/script returned" if job.get("script") and not job.get("prompt") else "agent/gate returned",
+            SILENT_MARKER,
+        )
         d.should_deliver = False
 
     if d.should_deliver and fence.lost():
@@ -3123,6 +3211,9 @@ def _save_compose_deliver(
         # Nothing to send: an origin-less job is ``not_configured``, never a queued "delivery".
         if d.unresolved_origin or _normalize_deliver_value(
                 _delivery_lane_value(job, for_failure=not d.success)) == "local":
+            if job.get("last_delivery_queued"):
+                update_job(job["id"], {"last_delivery_queued": None})
+                job["last_delivery_queued"] = None
             return
         queued_job = dict(job)
         if d.failure_incident_id:
@@ -3191,7 +3282,10 @@ def _deliver_crash_failure(
         normalized_deliver=normalized_deliver, incident_acked=False, success=False,
         delivery_queued=job.get("last_delivery_queued"),
         notification_suppressed=bool(job.get("_notification_all_targets_suppressed")))
-    if delivery_outcome in ("delivered", "not_configured"):
+    if delivery_outcome in ("delivered", "not_configured") or (
+        (delivery_error or "").startswith(ORIGIN_NULL_DELIVERY_ERROR_PREFIX)
+    ):
+        # Same origin-null rule as the normal failure gate: no channel exists to alert on.
         _mark_incident_alerted(failure_incident_id)
     return delivery_error, delivery_outcome
 
@@ -4373,7 +4467,8 @@ from cron.scheduler_tick import tick
 # ``_sched``). Only names this module itself calls; everything else lives in the split module.
 # ---------------------------------------------------------------------------
 from cron.scheduler_delivery import (
-    _deliver_result, _delivery_lane_value, _normalize_deliver_value, _resolve_delivery_target,
+    ORIGIN_NULL_DELIVERY_ERROR_PREFIX, _deliver_result, _delivery_lane_value,
+    _normalize_deliver_value, _resolve_delivery_target,
     _resolve_delivery_targets,
 )
 from cron.scheduler_script import (

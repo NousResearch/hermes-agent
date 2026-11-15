@@ -270,4 +270,46 @@ describe('session transcript pagination ownership', () => {
     expect(transcriptTailState('stored-session', { connectionId: 'source-a', profile: 'default' })).toBe(defaultA)
     expect(transcriptTailState('stored-session', ownerB)).toBe(defaultB)
   })
+
+  it('fetches additional older pages on cold hydration when a tool-heavy turn crowds out conversational user turns', async () => {
+    setApiRequestConnection(null)
+    const owner = { connectionId: 'local', profile: 'default' }
+    const newestToolHeavyPage = [
+      row(201),
+      ...Array.from({ length: LATEST_SESSION_MESSAGES_LIMIT - 1 }, (_, index) => ({
+        id: 202 + index,
+        role: (index % 2 === 0 ? 'assistant' : 'tool') as 'assistant' | 'tool',
+        content: `step-${index}`,
+        timestamp: 2_000 + index
+      }))
+    ]
+    const olderConversationalPage = Array.from({ length: LATEST_SESSION_MESSAGES_LIMIT }, (_, index) =>
+      row(81 + index)
+    )
+
+    api.mockResolvedValueOnce({
+      session_id: 'stored-session',
+      profile: 'default',
+      messages: newestToolHeavyPage,
+      pagination: { limit: LATEST_SESSION_MESSAGES_LIMIT, offset: 0, order: 'latest', returned: 120 }
+    })
+    api.mockResolvedValueOnce({
+      session_id: 'stored-session',
+      profile: 'default',
+      messages: olderConversationalPage,
+      pagination: { limit: LATEST_SESSION_MESSAGES_LIMIT, offset: 120, order: 'latest', returned: 120 }
+    })
+
+    const hydrated = await getLatestSessionMessages('stored-session')
+
+    expect(api).toHaveBeenCalledTimes(2)
+    expect(hydrated.messages).toHaveLength(240)
+    expect(hydrated.messages[0].id).toBe(81)
+    expect(hydrated.messages[239].id).toBe(320)
+    expect(transcriptTailState('stored-session', owner)).toEqual({
+      nextOffset: 240,
+      possiblyTruncated: true,
+      profile: {}
+    })
+  })
 })

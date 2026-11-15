@@ -411,12 +411,17 @@ def _state_db_stats(issues: list, state_db_path: Path) -> None:
     """Health/stats snapshot: strictly read-only (mode=ro) so it is safe against a live DB held by
     the gateway; any failure degrades to one info line rather than failing doctor."""
     with warn_on_error("state.db stats unavailable ({e})", "", report=lambda t, _d: check_info(t)):
+        from hermes_cli.prune_advisor import _effective_sessions
         from hermes_state_dbfile import collect_state_db_stats, count_db_holders
         rows = _render_state_db_stats(collect_state_db_stats(state_db_path), holders=count_db_holders(state_db_path),
                                       host_note=host_gateway_note())
+        sessions_cfg = _effective_sessions(state_db_path.parent) or {}
         for _kind, _text, _detail in rows:
             if _kind != "warn":
                 check_info(_text + (f" {_detail}" if _detail else ""))
+                continue
+            if "auto_prune" in _detail and "optimize-storage" not in _detail and "auto_prune" in sessions_cfg:
+                check_info(f"{_text} (sessions.auto_prune configured in config.yaml)")
                 continue
             check_warn(_text, _detail)
             if "auto_prune" in _detail:

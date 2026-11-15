@@ -27,8 +27,10 @@ USAGE_ANCHOR_MODEL_CONFIG_KEY = "_usage_anchor"
 
 # Identity of a priced message = the provider-visible fields that round-trip the session DB
 # byte-for-byte. Display/persistence metadata (timestamps, row ids, display kinds) is rewritten
-# on reload and would only ever fail the match closed.
-_FINGERPRINT_KEYS = ("role", "content", "api_content", "tool_call_id", "tool_calls")
+# on reload and would only ever fail the match closed. When ``api_content`` is present on a
+# message, it is the wire payload sent to the provider while ``content`` may be rewritten at
+# turn finalization by ``_apply_persist_user_message_override``.
+_FINGERPRINT_KEYS = ("role", "tool_call_id", "tool_calls")
 
 
 def message_fingerprint(msg: Any) -> Optional[str]:
@@ -36,6 +38,9 @@ def message_fingerprint(msg: Any) -> Optional[str]:
     if not isinstance(msg, dict):
         return None
     payload = {k: msg.get(k) for k in _FINGERPRINT_KEYS if msg.get(k) is not None}
+    effective_content = msg.get("api_content") or msg.get("content")
+    if effective_content is not None:
+        payload["content"] = effective_content
     try:
         raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=True, separators=(",", ":"))
     except (TypeError, ValueError):
@@ -109,8 +114,17 @@ def anchored_context_tokens(messages: list[dict[str, Any]], anchor: Optional[dic
     """Anchored prompt+completion tokens plus a rough estimate of ONLY the messages appended since;
     None when the anchor is missing or stale. The anchored response's own reply is skipped (already
     in completion_tokens). ``charge_stale_thinking`` is forwarded to the delta estimate."""
-    if not isinstance(anchor, dict) or not isinstance(messages, list) or not _anchor_matches(messages, anchor):
+    if not isinstance(anchor, dict) or not isinstance(messages, list):
         return None
+    if not _anchor_matches(messages, anchor):
+        try:
+            from agent.message_sanitization import repair_message_alternation
+            repaired, rep_cnt = repair_message_alternation(list(messages))
+        except Exception:
+            repaired, rep_cnt = messages, 0
+        if not (rep_cnt and _anchor_matches(repaired, anchor)):
+            return None
+        messages = repaired
     from agent.model_metadata import estimate_messages_tokens_rough
 
     total = int(anchor["prompt_tokens"]) + int(anchor.get("completion_tokens") or 0)
@@ -167,6 +181,52 @@ def set_usage_anchor(agent: Any, anchor: Optional[dict[str, Any]], *, turn_base:
     persist_usage_anchor(agent, anchor)
 
 
+def rebind_usage_anchor_after_prune(
+    agent: Any, old_messages: list[dict[str, Any]], new_messages: list[dict[str, Any]],
+) -> int:
+    """Update the agent's usage anchor and compressor prompt-token baseline in-place after a
+    deterministic tool-result prune so ``anchored_context_tokens`` stays valid without an extra API call.
+    Returns estimated tokens reclaimed from the priced prefix (or full transcript if unanchored)."""
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    anchor = getattr(agent, "_usage_anchor", None)
+    reclaimed = max(
+        0,
+        estimate_messages_tokens_rough(old_messages) - estimate_messages_tokens_rough(new_messages),
+    )
+    if isinstance(anchor, dict) and len(old_messages) == len(new_messages) and new_messages:
+        try:
+            base_count = int(anchor.get("base_count") or 0)
+        except (TypeError, ValueError):
+            base_count = 0
+        if 0 < base_count <= len(new_messages):
+            prefix_reclaimed = max(
+                0,
+                estimate_messages_tokens_rough(old_messages[:base_count])
+                - estimate_messages_tokens_rough(new_messages[:base_count]),
+            )
+            new_pt = max(1, int(anchor.get("prompt_tokens") or 0) - prefix_reclaimed)
+            base_last = new_messages[base_count - 1]
+            new_anchor = {
+                **anchor,
+                "prompt_tokens": new_pt,
+                "base_last_role": base_last.get("role") if isinstance(base_last, dict) else None,
+                "base_last_fp": message_fingerprint(base_last),
+                "base_prefix_fp": _priced_prefix_fingerprint(new_messages, base_count),
+            }
+            set_usage_anchor(agent, new_anchor)
+            reclaimed = prefix_reclaimed or reclaimed
+    cc = getattr(agent, "context_compressor", None)
+    if cc is not None:
+        last_pt = getattr(cc, "last_prompt_tokens", 0)
+        if isinstance(last_pt, int) and not isinstance(last_pt, bool) and last_pt > 0 and reclaimed > 0:
+            cc.last_prompt_tokens = max(1, last_pt - reclaimed)
+        last_real_pt = getattr(cc, "last_real_prompt_tokens", 0)
+        if isinstance(last_real_pt, int) and not isinstance(last_real_pt, bool) and last_real_pt > 0 and reclaimed > 0:
+            cc.last_real_prompt_tokens = max(1, last_real_pt - reclaimed)
+    return reclaimed
+
+
 def restore_usage_anchor(agent: Any, conversation_history: Optional[list[dict[str, Any]]]) -> None:
     """On a resumed session, adopt the persisted anchor when ``conversation_history`` still carries
     the priced prefix; otherwise clear the stale blob so it can never suppress compression."""
@@ -183,7 +243,15 @@ def restore_usage_anchor(agent: Any, conversation_history: Optional[list[dict[st
         return
     if anchor is None:
         return
-    if _anchor_matches(conversation_history, anchor):
+    matched = _anchor_matches(conversation_history, anchor)
+    if not matched:
+        try:
+            from agent.message_sanitization import repair_message_alternation
+            repaired, rep_cnt = repair_message_alternation(list(conversation_history))
+            matched = bool(rep_cnt and _anchor_matches(repaired, anchor))
+        except Exception:
+            matched = False
+    if matched:
         agent._usage_anchor = anchor
     else:
         persist_usage_anchor(agent, None)

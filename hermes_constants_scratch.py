@@ -371,9 +371,14 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
     return len(victims)
 
 
-def _linked_worktree_repos(entry: Path) -> set[str]:
-    """Repos whose linked worktrees live inside *entry* (``.git`` FILES, ``gitdir: <repo>/.git/worktrees/<n>``)."""
-    repos: set[str] = set()
+def _linked_worktree_gitdirs(entry: Path) -> set[Path]:
+    """``<repo>/.git/worktrees/<name>`` dirs for the linked worktrees inside *entry*.
+
+    This is a worktree's real activity home: a commit, reset or checkout writes
+    *here*, never into the entry, which only gains files when the checkout is
+    created. It is therefore the one place the idle clock can see a live worktree.
+    """
+    gitdirs: set[Path] = set()
     stack = [(str(entry), 0)]
     while stack:
         current, depth = stack.pop()
@@ -387,15 +392,43 @@ def _linked_worktree_repos(entry: Path) -> set[str]:
                             continue
                         if line.startswith("gitdir:"):
                             gitdir = Path(line[len("gitdir:"):].strip())
-                            # <repo>/.git/worktrees/<name> -> <repo>
                             if gitdir.parent.name == "worktrees" and gitdir.parent.parent.name == ".git":
-                                repos.add(str(gitdir.parent.parent.parent))
+                                gitdirs.add(gitdir)
                     elif child.is_dir(follow_symlinks=False) and depth < _GIT_FILE_MAX_DEPTH \
                             and child.name not in ("node_modules", ".venv", "venv"):
                         stack.append((child.path, depth + 1))
         except OSError:
             continue
-    return repos
+    return gitdirs
+
+
+def _linked_worktree_repos(entry: Path) -> set[str]:
+    """Repos whose linked worktrees live inside *entry*."""
+    return {str(gitdir.parent.parent.parent) for gitdir in _linked_worktree_gitdirs(entry)}
+
+
+def _worktree_gitdir_touched(entry: Path, cutoff: float) -> bool:
+    """True when a linked worktree inside *entry* has been written since *cutoff*.
+
+    Fail-closed: an unreadable gitdir counts as touched, so an uninspectable
+    worktree is kept instead of reaped on a scan that cannot see its activity.
+    """
+    if not entry.is_dir() or entry.is_symlink():
+        return False
+    for gitdir in _linked_worktree_gitdirs(entry):
+        try:
+            if os.lstat(gitdir).st_mtime >= cutoff:
+                return True
+            with os.scandir(gitdir) as items:
+                for item in items:
+                    try:
+                        if item.stat(follow_symlinks=False).st_mtime >= cutoff:
+                            return True
+                    except OSError:
+                        return True
+        except OSError:
+            return True
+    return False
 
 
 def release_git_worktrees(repos: set[str]) -> None:
@@ -444,6 +477,10 @@ def _prune_idle_entries(
     doomed = []
     for e in entries:
         state, denied_dir = _scan_subtree(e, cutoff)
+        if state == _IDLE and _worktree_gitdir_touched(e, cutoff):
+            # A linked worktree stays live while its gitdir moves even though
+            # nothing under the entry itself changed.
+            state = _TOUCHED
         if state == _IDLE:
             doomed.append(e)
         elif denied_dir is not None and stuck.tracking_supported():
@@ -483,6 +520,8 @@ def _prune_idle_entries(
         # walk to be destroyed (review F6 on #139850).
         size = _tree_bytes(entry)
         state = subtree_touch_state(entry, cutoff)
+        if state == _IDLE and _worktree_gitdir_touched(entry, cutoff):
+            state = _TOUCHED
         if state != _IDLE:
             # Only a missing path is a vanish: a stat that raises PermissionError means
             # the entry is there but unreadable, and reporting it as vanished would be

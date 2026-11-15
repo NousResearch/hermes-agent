@@ -2029,3 +2029,63 @@ class TestEnsureCronDirWidened:
         with pytest.raises(FileNotFoundError):
             jobs._ensure_cron_dir(scripts_dir)
         assert not deleted_home.exists()
+
+    def test_create_job_sets_default_and_explicit_owner(self, tmp_cron_dir):
+        """KYA Layer 2: every created cron job records accountable owner attribution."""
+        j_default = create_job(prompt="check health", schedule="every 1h")
+        assert j_default["owner"] == "emir"
+        j_explicit = create_job(prompt="check health", schedule="every 1h", owner="ops-team")
+        assert j_explicit["owner"] == "ops-team"
+
+    def test_normalize_job_record_backfills_missing_owner_and_tool_defaults_skill(self, tmp_cron_dir):
+        """R6 SPM hygiene: legacy/un-recycled records get owner backfilled on normalize,
+        and cronjob_manage(action='create') defaults LLM jobs without skills to ['always-verify']."""
+        from cron.jobs import _normalize_job_record
+        from tools import cronjob_tools
+        import json
+
+        raw = {"id": "legacy1", "name": "legacy", "prompt": "run check", "schedule": {"kind": "interval", "minutes": 60}}
+        norm = _normalize_job_record(raw)
+        assert norm["owner"] == "emir"
+
+        sponsored = {"id": "legacy2", "name": "sponsored", "prompt": "run check", "sponsor": "sec-team"}
+        norm_sp = _normalize_job_record(sponsored)
+        assert norm_sp.get("sponsor") == "sec-team"
+        assert "owner" not in norm_sp
+
+        res = json.loads(cronjob_tools.cronjob(action="create", prompt="soak verify", schedule="every 1h", name="soak-verify"))
+        assert res["success"] is True
+        assert res["skills"] == ["always-verify"]
+        assert res["skill"] == "always-verify"
+
+    def test_load_and_save_jobs_persist_backfilled_owner_on_disk(self, tmp_cron_dir):
+        """R6 SPM persistence: load_jobs auto-repairs ownerless disk records and save_jobs
+        never serializes an unowned record, while preserving business_owner/sponsor."""
+        import json
+        from cron import jobs as jobs_mod
+
+        jobs_file = jobs_mod._current_cron_store().jobs_file
+        jobs_file.parent.mkdir(parents=True, exist_ok=True)
+        jobs_file.write_text(
+            json.dumps({
+                "jobs": [
+                    {"id": "unowned-disk", "name": "unowned", "prompt": "p", "schedule": {"kind": "interval", "minutes": 60}},
+                    {"id": "biz-owned", "name": "biz", "prompt": "p", "business_owner": "celina", "schedule": {"kind": "interval", "minutes": 60}},
+                ]
+            }),
+            encoding="utf-8",
+        )
+        loaded = load_jobs()
+        assert loaded[0]["owner"] == "emir"
+        assert "owner" not in loaded[1] and loaded[1]["business_owner"] == "celina"
+
+        on_disk = json.loads(jobs_file.read_text(encoding="utf-8"))["jobs"]
+        assert on_disk[0]["owner"] == "emir"
+        assert "owner" not in on_disk[1] and on_disk[1]["business_owner"] == "celina"
+
+        save_jobs([{"id": "raw-save", "name": "raw", "prompt": "p"}])
+        saved_disk = json.loads(jobs_file.read_text(encoding="utf-8"))["jobs"]
+        assert saved_disk[0]["owner"] == "emir"
+
+
+

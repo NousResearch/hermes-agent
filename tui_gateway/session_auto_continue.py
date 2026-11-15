@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from pathlib import Path
 
 from .method_ctx import bind_module
 
@@ -37,10 +38,90 @@ def _session_home(session: dict) -> Path:
     return Path(session.get("profile_home") or _hermes_home)
 
 
+def _resolve_compression_chain_state(home: Path, session_key: str) -> tuple[str, list[str], float]:
+    """Resolve ``(leaf_session_key, chain_ids, max_last_activity_at)`` across ``#CF-91`` compression segments.
+
+    When mid-turn context compression runs with ``in_place: false``, ``agent.session_id`` rotates to a new child row
+    in ``state.db`` (``parent_session_id = old_id`` and parent ``end_reason = 'compression'``) before ``run_conversation``
+    returns. If the backend process dies mid-turn after a compression, ``interrupted_turns.json`` is still keyed by the
+    ancestor segment AND ``marker["started_at"]`` reflects turn start rather than the latest tool/model activity.
+    """
+    if not session_key:
+        return session_key, [], 0.0
+    db_path = Path(home) / "state.db"
+    if not db_path.exists():
+        return session_key, [session_key], 0.0
+    import sqlite3
+    con = None
+    try:
+        con = sqlite3.connect(str(db_path), timeout=2.0)
+        con.row_factory = sqlite3.Row
+        # Walk up to root across compression parents
+        up_chain: list[str] = []
+        cur = session_key
+        seen: set[str] = set()
+        max_act = 0.0
+        while cur and cur not in seen and len(seen) < 64:
+            seen.add(cur)
+            row = con.execute(
+                "SELECT id, parent_session_id, end_reason, COALESCE(last_activity_at, started_at, 0) AS act "
+                "FROM sessions WHERE id = ?",
+                (cur,),
+            ).fetchone()
+            if not row:
+                break
+            up_chain.append(str(row["id"]))
+            max_act = max(max_act, float(row["act"] or 0.0))
+            pid = str(row["parent_session_id"] or "")
+            if not pid:
+                break
+            prow = con.execute("SELECT end_reason FROM sessions WHERE id = ?", (pid,)).fetchone()
+            if not prow or str(prow["end_reason"] or "") != "compression":
+                break
+            cur = pid
+        # Walk down from session_key to the newest compression child leaf
+        leaf = session_key
+        cur_down = session_key
+        down_chain: list[str] = []
+        while cur_down and len(seen) < 128:
+            drow = con.execute("SELECT end_reason, COALESCE(last_activity_at, started_at, 0) AS act FROM sessions WHERE id = ?", (cur_down,)).fetchone()
+            if not drow:
+                break
+            max_act = max(max_act, float(drow["act"] or 0.0))
+            if str(drow["end_reason"] or "") != "compression":
+                leaf = cur_down
+                break
+            child = con.execute(
+                "SELECT id, COALESCE(last_activity_at, started_at, 0) AS act FROM sessions "
+                "WHERE parent_session_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                (cur_down,),
+            ).fetchone()
+            if not child:
+                break
+            cid = str(child["id"])
+            if cid in seen:
+                break
+            seen.add(cid)
+            down_chain.append(cid)
+            max_act = max(max_act, float(child["act"] or 0.0))
+            leaf = cid
+            cur_down = cid
+        all_ids = list(dict.fromkeys([leaf, *reversed(down_chain), *up_chain]))
+        return leaf, (all_ids or [session_key]), max_act
+    except Exception:
+        return session_key, [session_key], 0.0
+    finally:
+        if con is not None:
+            with contextlib.suppress(Exception):
+                con.close()
+
+
 def _retire_turn_marker(session: dict, *keys: str) -> None:
     """Drop the crash marker right before the terminal frame (not at turn-thread end: post-turn work outlives the
     client's answer, and quitting in that window would leave a marker that re-runs a finished turn). Extra ``keys``
     cover a session_key that compression rotated mid-turn."""
+    if session.get("_stopped_for_process_exit"):
+        return
     home = _session_home(session)
     for key in dict.fromkeys((*keys, str(session.get("session_key") or ""))):
         if key:
@@ -64,7 +145,16 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
     if session.get("source") == "bot_room":
         return None
     home = _session_home(session)
-    if (marker := read_turn_marker(home, session_key)) is None:
+    _, chain_ids, chain_last_act = _resolve_compression_chain_state(home, session_key)
+    marker = read_turn_marker(home, session_key)
+    if marker is None:
+        from tui_gateway.turn_marker import rekey_turn_marker
+        for cid in chain_ids:
+            if cid != session_key and (m := read_turn_marker(home, cid)) is not None:
+                rekey_turn_marker(home, cid, session_key)
+                marker = m
+                break
+    if marker is None:
         return None
     if not marker.get("auto_continue", True):
         return None  # The mailbox owns recovery and receipt identity for imported turns.
@@ -78,9 +168,11 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                     marker.get("writer_pid"), os.getpid())
         return None
     enabled, freshness_secs, max_attempts = _auto_continue_config()
-    age = time.time() - marker["started_at"]
+    interrupted_ref = max(float(marker.get("interrupted_at") or marker["started_at"]), chain_last_act)
+    age = max(0.0, time.time() - interrupted_ref)
     if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
-        clear_turn_marker(home, session_key)  # stale/disabled/crash-looping: a manual message continues
+        for cid in dict.fromkeys([session_key, *chain_ids]):
+            clear_turn_marker(home, cid)  # stale/disabled/crash-looping: a manual message continues
         return None
     if session.get("_auto_continue_scheduled"):
         return None
@@ -607,6 +699,108 @@ def _queued_prompt_snapshot(session: dict) -> dict | None:
     return {"user": user} if user else None
 
 
+_STARTUP_AUTO_CONTINUE_DELAY_S = max(
+    0.0, float(os.environ.get("HERMES_STARTUP_AUTO_CONTINUE_DELAY_S") or 5.0)
+)
+_startup_auto_continue_sweep_ran = False
+_startup_auto_continue_sweep_lock = None
+
+
+def _sweep_interrupted_turn_markers(home: Path | str | None = None) -> list[str]:
+    """Boot-time sweep of ``desktop/interrupted_turns.json`` so background tabs
+    whose mid-turn process died auto-continue without waiting for a manual tab click
+    (ATLAS-121 / DQ #369)."""
+    enabled, freshness_secs, max_attempts = _auto_continue_config()
+    if not enabled:
+        return []
+    target_home = Path(home or _hermes_home)
+    markers = list_turn_markers(target_home)
+    if not markers:
+        return []
+    resumed: list[str] = []
+    now = time.time()
+    for raw_session_key, marker in list(markers.items()):
+        if not marker.get("auto_continue", True):
+            continue
+        writer_state = marker_writer_state(marker)
+        if writer_state == "alive":
+            continue
+        leaf_key, chain_ids, chain_last_act = _resolve_compression_chain_state(target_home, raw_session_key)
+        session_key = leaf_key or raw_session_key
+        if session_key != raw_session_key:
+            from tui_gateway.turn_marker import rekey_turn_marker
+            rekey_turn_marker(target_home, raw_session_key, session_key)
+        interrupted_at = marker.get("interrupted_at")
+        base_ref_ts = float(interrupted_at) if interrupted_at is not None else float(marker["started_at"])
+        turn_ref_ts = max(base_ref_ts, chain_last_act)
+        age = max(0.0, now - turn_ref_ts)
+        if age > freshness_secs or marker["attempts"] >= max_attempts:
+            for cid in dict.fromkeys([raw_session_key, session_key, *chain_ids]):
+                clear_turn_marker(target_home, cid)
+            continue
+        live = _find_live_session_by_key(session_key, None) or (
+            _find_live_session_by_key(raw_session_key, None) if session_key != raw_session_key else None
+        )
+        if live is not None:
+            live_sid, live_session = live
+            if _maybe_schedule_auto_continue(live_sid, live_session, session_key) is not None:
+                resumed.append(session_key)
+            continue
+        resume_fn = _methods.get("session.resume")
+        if not callable(resume_fn):
+            continue
+        token = bind_transport(_detached_ws_transport)
+        try:
+            resp = resume_fn(
+                f"auto-continue-boot-{session_key}",
+                {"session_id": session_key, "omit_messages": True},
+            )
+        except Exception:
+            logger.debug("boot auto-continue resume failed for %s", session_key, exc_info=True)
+            continue
+        finally:
+            reset_transport(token)
+        result = resp.get("result") if isinstance(resp, dict) else None
+        if isinstance(result, dict) and result.get("auto_continue"):
+            resumed.append(session_key)
+    if resumed:
+        logger.info(
+            "Boot auto-continue sweep scheduled %d interrupted session(s): %s",
+            len(resumed),
+            ", ".join(resumed),
+        )
+    return resumed
+
+
+def _schedule_startup_auto_continue_sweep() -> None:
+    """Schedule the once-per-process boot auto-continue sweep after a short grace window."""
+    global _startup_auto_continue_sweep_ran
+    if "PYTEST_CURRENT_TEST" in os.environ and "HERMES_STARTUP_AUTO_CONTINUE_DELAY_S" not in os.environ:
+        return
+    enabled, _, _ = _auto_continue_config()
+    if not enabled:
+        return
+    with _sessions_lock:
+        if _startup_auto_continue_sweep_ran:
+            return
+        _startup_auto_continue_sweep_ran = True
+    _reaper_daemon_timer(
+        _STARTUP_AUTO_CONTINUE_DELAY_S,
+        _sweep_interrupted_turn_markers,
+        "startup auto-continue sweep failed",
+        level="warning",
+    )
+
+
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
-    bind_module(globals(), server, skip=("_",))
+    prior_ran = getattr(server, "_startup_auto_continue_sweep_ran", False)
+    prior_lock = getattr(server, "_startup_auto_continue_sweep_lock", None)
+    bind_module(
+        globals(),
+        server,
+        skip=("_", "_startup_auto_continue_sweep_ran", "_startup_auto_continue_sweep_lock"),
+    )
+    server._startup_auto_continue_sweep_ran = prior_ran
+    if prior_lock is not None:
+        server._startup_auto_continue_sweep_lock = prior_lock

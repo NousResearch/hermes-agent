@@ -116,7 +116,11 @@ class Pruner:
         if cap_bytes <= 0 or self.dir_size(self.store) <= cap_bytes:
             return False
         changed = False
-        for ref in self._git(["for-each-ref", "--format=%(refname)", self.refs_prefix]).splitlines():
+        for line in self._git(["for-each-ref", "--format=%(refname) %(parent)", self.refs_prefix]).splitlines():
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            ref = parts[0]
             commits = self._commits(ref)
             if len(commits) > 1:
                 self._rewrite(ref, commits, commits[1:], gc=False)

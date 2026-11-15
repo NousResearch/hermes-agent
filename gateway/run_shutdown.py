@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, Optional
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.restart import (
-    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    CRON_DRAIN_CLEANUP_RESERVE_S, DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
@@ -173,7 +173,12 @@ def _effective_watchdog_leash(runner: object) -> float:
     """Thread-watchdog leash for the stop in progress: effective drain + grace, clamped under
     launchd's live ``ExitTimeOut`` minus the dump margin. Lives here (not in gateway.restart)
     because restart.py cannot import shutdown_watchdog without a cycle."""
-    return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
+    drain = effective_stop_drain_timeout(runner)
+    if not getattr(runner, "_stop_requested_by_signal", False):
+        cron_cfg = getattr(runner, "_cron_drain_timeout", None)
+        if isinstance(cron_cfg, (int, float)) and cron_cfg > 0:
+            drain = max(drain, float(cron_cfg) + CRON_DRAIN_CLEANUP_RESERVE_S)
+    return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(drain))
 
 
 def _active_async_delegation_count() -> int:
@@ -1776,9 +1781,15 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         # before cleanup runs.
         # ``timeout`` is already the effective (launchd-capped) drain, so this is the same
         # leash the thread watchdog is armed with — dump margin included.
-        _cron_leash = effective_stop_watchdog_delay(self, resolve_shutdown_watchdog_delay(timeout))
+        _cron_leash = _effective_watchdog_leash(self)
+        _cleanup_reserve = (
+            max(CRON_DRAIN_CLEANUP_RESERVE_S, 20.0)
+            if getattr(self, "_stop_requested_by_signal", False)
+            else CRON_DRAIN_CLEANUP_RESERVE_S
+        )
         _cron_timeout = resolve_cron_drain_budget(
             timeout, _cron_drain_cfg, watchdog_delay=_cron_leash, elapsed=ctx.elapsed(),
+            cleanup_reserve_s=_cleanup_reserve,
         )
         if (_cron_at_start or _api_at_start or _deleg_at_start) and _cron_timeout > timeout:
             logger.info(

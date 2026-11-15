@@ -63,6 +63,27 @@ afterEach(() => {
 })
 
 describe('__runDeadSessionPrunePass', () => {
+  it('unpins a rowless pin whose backend session is archived or unpinned while preserving drafts (C3)', async () => {
+    $sessions.set([row('unrelated')])
+    $pinnedSessionIds.set(['archived-pin', 'unpinned-pin'])
+    stashSessionDraft('archived-pin', 'keep draft on archived session', [])
+    getSessionMock.mockImplementation(async id => {
+      if (id === 'archived-pin') {
+        return row(id, { archived: true, pinned: false })
+      }
+      if (id === 'unpinned-pin') {
+        return row(id, { archived: false, pinned: false })
+      }
+      throw notFound()
+    })
+
+    await __runDeadSessionPrunePass()
+
+    expect($pinnedSessionIds.get()).toEqual([])
+    expect(takeSessionDraft('archived-pin').text).toBe('keep draft on archived session')
+    clearSessionDraft('archived-pin')
+  })
+
   it('unpins a pin whose session 404s on every profile', async () => {
     $sessions.set([row('unrelated')])
     $pinnedSessionIds.set(['dead-pin'])

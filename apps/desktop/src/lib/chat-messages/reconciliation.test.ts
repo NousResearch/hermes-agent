@@ -521,3 +521,50 @@ it.each([
   expect(errorCards).toHaveLength(1)
   expect(errorCards[0]).toMatchObject({ error: 'rate limited', errorSurface: { code: 'rate_limit' } })
 })
+
+it('does not split an active tool-calling assistant turn across a mid-turn hidden compaction summary row', () => {
+  const messages = toChatMessages([
+    { id: 10, role: 'user', content: 'Audit and fix the drift', timestamp: 10 },
+    {
+      id: 11,
+      role: 'assistant',
+      reasoning: '**Analyzing Audit Trigger**\n\nInspecting files.',
+      content: 'Checking first batch.',
+      timestamp: 11,
+      tool_calls: [{ id: 'call-pre-1', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }]
+    },
+    { id: 12, role: 'tool', tool_call_id: 'call-pre-1', tool_name: 'read_file', content: 'file-a', timestamp: 12 },
+    {
+      id: 13,
+      role: 'user',
+      content: '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.',
+      display_kind: 'hidden',
+      timestamp: 13
+    },
+    {
+      id: 14,
+      role: 'assistant',
+      content: 'Checking second batch after compaction.',
+      timestamp: 14,
+      tool_calls: [{ id: 'call-post-1', function: { name: 'read_file', arguments: '{"path":"b.ts"}' } }]
+    },
+    { id: 15, role: 'tool', tool_call_id: 'call-post-1', tool_name: 'read_file', content: 'file-b', timestamp: 15 },
+    {
+      id: 16,
+      role: 'assistant',
+      content: 'Final audit summary complete.',
+      timestamp: 16
+    }
+  ])
+
+  expect(messages).toHaveLength(2)
+  expect(messages[0]).toMatchObject({ role: 'user', rowId: 10 })
+  expect(messages[1]).toMatchObject({
+    role: 'assistant',
+    rowId: 11,
+    durableComplete: true
+  })
+  const toolIds = messages[1].parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+  expect(toolIds).toEqual(['call-pre-1', 'call-post-1'])
+  expect(chatMessageText(messages[1])).toContain('Final audit summary complete.')
+})

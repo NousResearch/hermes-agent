@@ -86,8 +86,16 @@ _MAX_TOKEN_SENDS = 3  # requests one long-decode token may ride, so a network th
 _TOOL_CHOICE_MODES = {"auto": "AUTO", "required": "ANY", "none": "NONE"}
 _FINISH_REASON_MAP = {
     "STOP": "stop", "MAX_TOKENS": "length", "SAFETY": "content_filter", "RECITATION": "content_filter", "OTHER": "stop",
+    "BLOCKLIST": "content_filter", "PROHIBITED_CONTENT": "content_filter", "SPII": "content_filter", "IMAGE_SAFETY": "content_filter",
     "CONTINUATION": "length",  # only reachable without a continuationToken: the output was cut short
 }
+GEMINI_SAFETY_SETTINGS_OFF: tuple[dict[str, str], ...] = (
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "OFF"},
+)
 _HTTP_ERROR_CODES = {401: "gemini_unauthorized", 429: "gemini_rate_limited", 404: "gemini_model_not_found"}
 _MISSING_KEY_ERROR = (
     "Gemini native client requires an API key, but none was provided. Set GOOGLE_API_KEY or GEMINI_API_KEY in your "
@@ -585,6 +593,7 @@ def build_gemini_request(
                      "tool_choice forces function calling (mode ANY)" if forced_call else "pre-Gemini-3 model with tools")
         json_output = {}
     request["generationConfig"] = {**{k: v for k, v in generation if v is not None}, **json_output}
+    request["safetySettings"] = [dict(item) for item in GEMINI_SAFETY_SETTINGS_OFF]
     return request
 
 
@@ -713,14 +722,19 @@ def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespa
             text_signature = _text_part_signature(part) or text_signature
         elif fc := _part_function_call(part):
             tool_calls.append(_tool_call_ns(str(fc["name"]), _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
-    mapped_finish = _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
+    raw_finish_reason = str((cand or {}).get("finishReason") or "").upper()
+    mapped_finish = _FINISH_REASON_MAP.get(raw_finish_reason, "stop")
     finish_reason = "tool_calls" if tool_calls and mapped_finish == "stop" else mapped_finish
     usage = _usage_from_metadata((resp.get("usageMetadata") or {}) if cand is not None else {})
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
                               tool_calls=tool_calls or None, reasoning=reasoning, reasoning_content=reasoning, reasoning_details=None,
                               extra_content=_tool_call_extra_from_part({"thoughtSignature": text_signature}))
-    return _envelope(model, "chat.completion", SimpleNamespace(index=0, message=message, finish_reason=finish_reason), usage)
+    env = _envelope(model, "chat.completion", SimpleNamespace(index=0, message=message, finish_reason=finish_reason), usage)
+    if finish_reason == "content_filter" and raw_finish_reason:
+        env.stop_reason = raw_finish_reason
+        env.stop_details = {"category": raw_finish_reason, "safetyRatings": (cand or {}).get("safetyRatings")}
+    return env
 
 
 class _GeminiStreamChunk(SimpleNamespace): ...

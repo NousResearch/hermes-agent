@@ -38,14 +38,77 @@ FAILURE_CLASS: ContextVar[str] = ContextVar("memory_failure_class", default="oth
 _BACKUP_FAILED = " (BACKUP FAILED — file unchanged on disk)"
 
 
-def _error(message: str, failure_class: str, **extra) -> dict[str, Any]:
+def _error(message: str, failure_class: str = "other", **extra) -> dict[str, Any]:
     FAILURE_CLASS.set(failure_class)
+    if "current_entries" in extra:
+        extra["current_entries"] = _previews(extra["current_entries"])  # bounded, never a full-store echo
     return {"success": False, "error": message, **extra}
 
 
 def _store_target(filename: str) -> str:
     """The memory tool target that owns a store file, for hints that show the call to make."""
     return "user" if filename == "USER.md" else "memory"
+
+
+# --- Local hardening (carried): bounded failure payloads + nearest-entry guidance ---
+# state.db forensics (48h): failure payloads echoing the FULL store blow the turn
+# budget, and 12/23 no-match failures were >=95% similar (stale-snapshot old_text).
+ENTRY_PREVIEW_CHARS = 120
+PREVIEW_LIST_BUDGET = 2400
+
+
+def _entry_preview(entry: str, cap: int = ENTRY_PREVIEW_CHARS) -> str:
+    if len(entry) <= cap:
+        return entry
+    return f"{entry[:cap]} ...[{len(entry)} chars total]"
+
+
+def _previews(entries: list[str]) -> list[str]:
+    previews = [_entry_preview(e) for e in entries]
+    total = sum(len(p) + 3 for p in previews)
+    if total <= PREVIEW_LIST_BUDGET or not previews:
+        return previews
+    kept, used = [], 0
+    for p in previews:
+        if used + len(p) + 3 > PREVIEW_LIST_BUDGET:
+            break
+        kept.append(p)
+        used += len(p) + 3
+    kept.append(f"[+{len(previews) - len(kept)} more entries -- full text in your memory block in the system prompt]")
+    return kept
+
+
+def _nearest_entry_hint(entries: list[str], old_text: str) -> Optional[str]:
+    """Closest existing entry to a non-matching *old_text*, for the observed
+    retry loop where the model resubmits the same stale substring. None when
+    nothing is similar enough to be a useful hint."""
+    if not entries:
+        return None
+    import difflib
+    best = max(entries, key=lambda e: difflib.SequenceMatcher(None, old_text, e).ratio())
+    ratio = difflib.SequenceMatcher(None, old_text, best).ratio()
+    if ratio < 0.4:
+        return None
+    return f"Nearest existing entry ({ratio:.0%} similar): {_entry_preview(best)}"
+
+
+def _retry_old_text(entries: list[str], old_text: str) -> Optional[str]:
+    """A short, word-aligned prefix of the entry nearest to a non-matching
+    *old_text*, verified to uniquely match that one entry -- copy-able verbatim
+    into a retry's ``old_text``. None when nothing is similar (ratio < 0.4)."""
+    if not entries:
+        return None
+    import difflib
+    best = max(entries, key=lambda e: difflib.SequenceMatcher(None, old_text, e).ratio())
+    if difflib.SequenceMatcher(None, old_text, best).ratio() < 0.4:
+        return None
+    words = best.split()
+    for n in range(min(4, len(words)), len(words) + 1):
+        cand = " ".join(words[:n])
+        idx, ambiguous = _find_unique_match(entries, cand)
+        if idx is not None and not ambiguous and entries[idx] is best:
+            return cand
+    return best  # whole entry: unique after load-time dedup
 
 
 def _drift_error(path: Path, bak_path: str) -> dict[str, Any]:
@@ -487,7 +550,16 @@ class MemoryStore:
                           matches=[entries[i][:80] + ("..." if len(entries[i]) > 80 else "")
                                    for i in _substring_matches(entries, old_text)])
         if idx is None:
-            return self._consolidation_failure(_no_match_error(entries, old_text, verb, current_entries=entries))
+            hint = _nearest_entry_hint(entries, old_text)
+            retry = _retry_old_text(entries, old_text)
+            res = _no_match_error(entries, old_text, verb, current_entries=entries)
+            if hint:
+                res["error"] += f" {hint}"
+            if retry:
+                res["error"] += " Use retry_old_text verbatim as your next old_text."
+                res["retry_old_text"] = retry
+            return self._consolidation_failure(res)
+
         return idx
 
     def resolve_entry(self, target: str, old_text: str, verb: str) -> dict[str, Any]:

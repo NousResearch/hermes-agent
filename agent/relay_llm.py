@@ -747,6 +747,11 @@ def _complete_logical(
                 "Left logical LLM scope %s under a concurrent scope; the drain closes it with its result",
                 request_id,
             )
+        elif hasattr(lease.host, "drain_deferred_scopes"):
+            lease.host.drain_deferred_scopes(
+                lease.session, stop_handle=turn.handle,
+                operation_already_held=operation_lease is not None,
+            )
         with turn.logical_llm_lock:
             if turn.logical_llm_calls.get(request_id) is handle:
                 del turn.logical_llm_calls[request_id]

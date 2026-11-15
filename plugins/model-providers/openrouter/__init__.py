@@ -78,6 +78,9 @@ class OpenRouterProfile(ProviderProfile):
         disabled = cfg.get("enabled") is False or effort == "none"
         if not effort and not disabled:
             return cfg
+        model_slug = (model or "").strip().lower()
+        if disabled and model_slug.startswith(("google/gemini-3", "google/gemini-4", "gemini-3", "gemini-4")):
+            return {"effort": "low", "exclude": True}
         try:
             from hermes_cli.models import clamp_reasoning_effort_to_supported
             from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
@@ -147,6 +150,23 @@ class OpenRouterProfile(ProviderProfile):
                 score_f = None
             if score_f is not None and 0.0 <= score_f <= 1.0:
                 body["plugins"] = [{"id": "pareto-router", "min_coding_score": score_f}]
+        model_slug = (context.get("model") or "").strip().lower()
+        if model_slug.startswith(("google/gemini-", "gemini-")):
+            from agent.gemini_native_adapter import GEMINI_SAFETY_SETTINGS_OFF
+            google_extra: dict[str, Any] = {
+                **(body.get("google") or {}),
+                "safety_settings": [dict(item) for item in GEMINI_SAFETY_SETTINGS_OFF],
+            }
+            rc = context.get("reasoning_config")
+            if isinstance(rc, dict) and (
+                rc.get("enabled") is False or str(rc.get("effort") or "").strip().lower() == "none"
+            ):
+                google_extra["thinking_config"] = (
+                    {"include_thoughts": False, "thinking_budget": 0}
+                    if model_slug.removeprefix("google/").startswith("gemini-2.5-")
+                    else {"include_thoughts": False, "thinking_level": "low"}
+                )
+            body["google"] = google_extra
         return body
 
     def build_api_kwargs_extras(

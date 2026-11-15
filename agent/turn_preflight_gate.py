@@ -12,6 +12,7 @@ from typing import Any
 
 from agent.message_metadata import append_message
 from agent.turn_context import _compression_warrants_another_preflight_pass
+from agent.turn_context_compaction import should_defer_preflight_to_real_usage
 from agent.turn_preflight import PreflightGateVerdict, run_preflight_compression
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -61,6 +62,12 @@ def run_preflight_gate(
     # them. Mirror the turn-prologue guard chain: defer on noisy estimate, skip in
     # failure cooldown, then should_compress().
     _compressor = agent.context_compressor
+    if (
+        int(getattr(_compressor, "_force_rotate_restore_threshold", 0) or 0) > 0
+        and not getattr(agent, "_rotated_to_child_session", False)
+    ):
+        v.compression_attempts = 0
+        v._preflight_compression_blocked = False
     _preflight_threshold = int(getattr(_compressor, "threshold_tokens", 0) or 0)
     _provider_overflow_preflight = _provider_overflow_recovery_pending and (
         _preflight_threshold <= 0 or request_pressure_tokens >= _preflight_threshold
@@ -87,16 +94,19 @@ def run_preflight_gate(
             f"{_last_preflight_pressure:,}",
             f"{request_pressure_tokens:,}",
         )
-    return run_preflight_compression(
+    _pre_gate_sid = getattr(agent, "session_id", None)
+    _res = run_preflight_compression(
         agent, v, compressor=_compressor, request_pressure_tokens=request_pressure_tokens,
         provider_overflow_preflight=_provider_overflow_preflight,
         # An anchored figure is real usage + delta: never deferred. Only a whole-context rough
-        # estimate waits for the provider's count.
-        defer_preflight=(
-            (lambda _t: False) if getattr(agent, "_request_pressure_anchored", False)
-            else getattr(_compressor, "should_defer_preflight_to_real_usage", lambda _t: False)
+        # estimate waits for the provider's count (capped at 180k on pricing-cliff configurations).
+        defer_preflight=lambda _t: should_defer_preflight_to_real_usage(
+            agent, _t, anchored=bool(getattr(agent, "_request_pressure_anchored", False))
         ),
         moa_prepared_request=_moa_prepared_request, system_message=system_message,
         user_message=user_message, max_compression_attempts=max_compression_attempts,
         effective_task_id=effective_task_id,
     )
+    if getattr(agent, "session_id", None) != _pre_gate_sid:
+        _res.compression_attempts = 0
+    return _res

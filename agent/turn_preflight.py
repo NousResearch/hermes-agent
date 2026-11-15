@@ -17,6 +17,7 @@ from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out, conversation_history_after_compression,
+    request_exceeds_model_window,
 )
 from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
 from agent.turn_context import _review_fork_first_request_pending
@@ -26,6 +27,27 @@ from agent.turn_context_compaction import (
 )
 
 logger = logging.getLogger("agent.conversation_loop")
+
+
+def _repair_alternation_after_compression(messages: list[dict[str, Any]], agent: Any = None):
+    """Repair message alternation after compression, resilient to in-memory module skew."""
+    try:
+        from agent.message_sanitization import repair_message_alternation
+        return repair_message_alternation(messages, agent=agent)
+    except ImportError:
+        import importlib
+        import sys
+        mod = sys.modules.get("agent.message_sanitization")
+        if mod is not None:
+            try:
+                mod = importlib.reload(mod)
+                fn = getattr(mod, "repair_message_alternation", None)
+                if callable(fn):
+                    return fn(messages, agent=agent)
+            except Exception:
+                pass
+        from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+        return messages, repair_message_sequence_with_cursor(agent, messages)
 
 
 @dataclass
@@ -68,9 +90,10 @@ def run_preflight_compression(
     closed (llama.cpp may silently truncate)."""
     from agent.conversation_loop import (
         _COMPRESSION_TIMEOUT_FINAL_RESPONSE, _HANDOFF_SKIP_FINAL_RESPONSE,
-        _compression_deferred_result, _maybe_grow_local_window, _provider_overflow_exhausted_result,
-        _should_skip_model_call_for_reference_handoff,
+        _compression_deferred_result, _maybe_grow_local_window, _midturn_request_pressure_tokens,
+        _provider_overflow_exhausted_result, _should_skip_model_call_for_reference_handoff,
     )
+    from agent.model_metadata import estimate_request_tokens_rough
 
     def _done(action: str, result: Optional[dict[str, Any]] = None) -> PreflightGateVerdict:
         v.action, v.result = action, result
@@ -111,6 +134,32 @@ def run_preflight_compression(
             _apply_grown_window(agent, compressor, _grown_window)
             v.api_call_count = _refund_api_call(agent, v.api_call_count)
             return _done("continue")
+        _proactive_cfg = getattr(compressor, "proactive_prune_tokens", 0)
+        if (
+            isinstance(_proactive_cfg, int)
+            and not isinstance(_proactive_cfg, bool)
+            and _proactive_cfg > 0
+            and request_pressure_tokens >= _proactive_cfg
+        ):
+            _pre_pruned = _proactive_tool_result_prune(
+                agent, compressor, v.messages, request_pressure_tokens, warn_on_noop=False
+            )
+            if _pre_pruned is not v.messages:
+                v.messages = _pre_pruned
+                v.conversation_history = conversation_history_after_compression(
+                    agent, v.messages, v.conversation_history
+                )
+                _reset_retry_state_after_compaction(agent)
+                _reset_read_dedup_caches(
+                    effective_task_id, session_id=agent.session_id or "", surviving_messages=v.messages
+                )
+                request_pressure_tokens = _midturn_request_pressure_tokens(
+                    agent, v.messages, v.active_system_prompt or "",
+                    estimate_request_tokens_rough(v.messages, tools=agent.tools or None),
+                )
+                if not compressor.should_compress(request_pressure_tokens):
+                    v.api_call_count = _refund_api_call(agent, v.api_call_count)
+                    return _done("continue")
         if moa_prepared_request is not None:
             v.pending_moa_prepared_request = moa_prepared_request
         v.compression_attempts += 1
@@ -158,17 +207,32 @@ def run_preflight_compression(
             v._compression_timeout_exhausted = True
             v._turn_exit_reason = "context_compression_timeout"
             return _done("break")
+        _lock_skipped = compression_skipped_due_to_lock(agent)
         if v.messages is _pre_api_input and (
-            compression_skipped_due_to_lock(agent) or compression_blocked_transiently(agent)
+            _lock_skipped or compression_blocked_transiently(agent)
         ):
-            # Temporary DEFER (lock held / cooldown), not evidence about compressibility:
-            # refund the attempt, leave the progress blocker unarmed and proceed.
+            # Temporary DEFER (lock held / cooldown / pool_saturated), not evidence about compressibility:
+            # refund the attempt, leave the progress blocker unarmed and proceed (unless already over window
+            # or recovering from a provider overflow, where sending as-is is guaranteed to fail).
             v.compression_attempts -= 1
             v._last_preflight_pressure = None
             if v.pending_moa_prepared_request is moa_prepared_request:
                 v.pending_moa_prepared_request = None
+            if provider_overflow_preflight or request_exceeds_model_window(agent, request_pressure_tokens) is True:
+                agent._persist_session(v.messages, v.conversation_history)
+                return _done(
+                    "return",
+                    _compression_deferred_result(
+                        agent,
+                        v.messages,
+                        v.api_call_count,
+                        reason="lock" if _lock_skipped else "transient_block",
+                    ),
+                )
         else:
             _reset_retry_state_after_compaction(agent)
+            # repair_message_alternation (with stale-module reload/fallback)
+            v.messages, _ = _repair_alternation_after_compression(v.messages, agent=agent)
             # Re-baseline the flush cursor: rotation returns None (child flushes
             # whole); in-place returns list(messages) — None would re-append
             # persisted rows. See conversation_history_after_compression().
@@ -297,6 +361,30 @@ def compress_after_tool_results(
 
     if agent.compression_enabled and compression_attempts < max_compression_attempts:
         ensure_compression_feasibility_checked(agent, _real_tokens)
+    _proactive_cfg = getattr(_compressor, "proactive_prune_tokens", 0)
+    if (
+        agent.compression_enabled
+        and compression_attempts < max_compression_attempts
+        and isinstance(_proactive_cfg, int)
+        and not isinstance(_proactive_cfg, bool)
+        and _proactive_cfg > 0
+        and _real_tokens >= _proactive_cfg
+        and not bool(getattr(_compressor, "awaiting_real_usage_after_compression", False))
+        and _compressor.should_compress(_real_tokens)
+    ):
+        _pre_pruned = _proactive_tool_result_prune(
+            agent, _compressor, messages, _real_tokens, warn_on_noop=False
+        )
+        if _pre_pruned is not messages:
+            messages = _pre_pruned
+            _reset_read_dedup_caches(
+                effective_task_id, session_id=agent.session_id or "", surviving_messages=messages
+            )
+            _anchored_after = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+            if _anchored_after is not None:
+                _real_tokens = _anchored_after
+            elif isinstance(getattr(_compressor, "last_prompt_tokens", 0), int) and _compressor.last_prompt_tokens > 0:
+                _real_tokens = _compressor.last_prompt_tokens
     if (
         agent.compression_enabled
         and compression_attempts < max_compression_attempts
@@ -316,7 +404,9 @@ def compress_after_tool_results(
         messages, active_system_prompt = agent._compress_context(
             messages, system_message, approx_tokens=_real_tokens, task_id=effective_task_id, trigger="post_tool",
         )
-        if messages is _post_tool_input and compression_skipped_due_to_lock(agent):
+        if messages is _post_tool_input and (
+            compression_skipped_due_to_lock(agent) or compression_blocked_transiently(agent)
+        ):
             # Lock-skip no-op is a temporary defer, not evidence about compressibility:
             # refund so a lock-loser loop doesn't burn the budget toward exhausted.
             # #69870 lock-skip / #97488 transient-block: this pass no-oped for a TEMPORARY reason (another
@@ -345,6 +435,8 @@ def compress_after_tool_results(
             # — a temporary defer, not evidence about compressibility.
             compression_attempts -= 1
         else:
+            # repair_message_alternation (with stale-module reload/fallback)
+            messages, _ = _repair_alternation_after_compression(messages, agent=agent)
             conversation_history = conversation_history_after_compression(
                 agent, messages, conversation_history
             )
@@ -377,14 +469,28 @@ def compress_after_tool_results(
             # A committed prune is a content-loss boundary like compaction: demoted skill_view /
             # read_file bodies survive only as one-line markers, so the repeat-read dedup must
             # stop answering "unchanged" for them or the reload the marker asks for is refused.
-            _reset_read_dedup_caches(effective_task_id, session_id=agent.session_id or "")
+            _reset_read_dedup_caches(
+                effective_task_id, session_id=agent.session_id or "", surviving_messages=messages
+            )
     return _verdict(False)
 
 
-def _proactive_tool_result_prune(agent: Any, compressor: Any, messages: list, current_tokens: int) -> list:
+def _proactive_tool_result_prune(
+    agent: Any,
+    compressor: Any,
+    messages: list,
+    current_tokens: int,
+    *,
+    warn_on_noop: bool = True,
+) -> list:
     """Proactive tool-result prune (deterministic, no LLM, keeps tail): the pruned list when one
     committed, else the same ``messages`` object. No-op unless proactive_prune_tokens is exceeded;
     commits only past proactive_prune_min_reclaim_tokens so cache breaks stay episodic.
+
+    When ``warn_on_noop=False`` (opportunistic pre-compaction prune when full LLM compaction is
+    eligible and will immediately run if this cheap prune declines), over-threshold reclamation
+    lockout warnings are suppressed so a normal compaction turn never emits a false
+    ``Context lockout: this conversation can't be compressed`` warning right before compressing.
 
     Withheld while compression.checkpoint_required is armed: the prune rewrites the durable
     transcript between compactions, so no checkpoint precedes it. Gating here, not in the
@@ -399,20 +505,48 @@ def _proactive_tool_result_prune(agent: Any, compressor: Any, messages: list, cu
         if _prune_would_have_run(compressor, current_tokens):
             _record_checkpoint_gate_suppression(agent, "the proactive tool-result prune")
         return messages
-    prune = getattr(compressor, "prune_tool_results_only", None)
+    prune: Any = getattr(compressor, "prune_tool_results_only", None)
     if not callable(prune):
         return messages
+    _had_own_warn = False
+    _orig_warn = None
+    _shadowed_warn = False
+    if not warn_on_noop:
+        try:
+            _had_own_warn = "_warn_reclamation_no_op" in getattr(compressor, "__dict__", {})
+            _orig_warn = getattr(compressor, "_warn_reclamation_no_op", None)
+            compressor._warn_reclamation_no_op = lambda *a, **kw: None
+            _shadowed_warn = True
+        except Exception:
+            _shadowed_warn = False
     try:
-        pruned_msgs, pruned_n = prune(messages, current_tokens=current_tokens)
+        try:
+            _prune_res: Any = prune(
+                messages, current_tokens=current_tokens, warn_on_noop=warn_on_noop
+            )
+        except TypeError:
+            _prune_res = prune(messages, current_tokens=current_tokens)
+        pruned_msgs, pruned_n = _prune_res
     except Exception:
         logger.debug("proactive tool-result prune failed; skipping", exc_info=True)
         return messages
+    finally:
+        if _shadowed_warn:
+            try:
+                if _had_own_warn:
+                    compressor._warn_reclamation_no_op = _orig_warn
+                else:
+                    delattr(compressor, "_warn_reclamation_no_op")
+            except Exception:
+                pass
     # Standard no-op caller contract: only commit when the engine returned a NEW list object
     # with a non-zero count. Do NOT rebuild conversation_history: rows already carry
     # _DB_PERSISTED_MARKER, and on a stale in-place flag the helper could seed unpersisted rows.
     if not pruned_n or pruned_msgs is messages:
         return messages
     from agent.compaction_events import publish_prune
+    from agent.usage_anchor import rebind_usage_anchor_after_prune
 
+    rebind_usage_anchor_after_prune(agent, messages, pruned_msgs)
     publish_prune(agent, messages, pruned_msgs, pruned_n)
     return pruned_msgs

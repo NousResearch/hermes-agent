@@ -894,6 +894,25 @@ def _owner_db_for(request: Request, profile: Optional[str]):
     return getattr(authority, "db", None)
 
 
+def _live_gateway_owns_profile(profile: Optional[str]) -> bool:
+    """Whether a live gateway daemon answers on the control socket for *profile*."""
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError, query_identify
+    from hermes_cli.gateway_runtime_multiplex import multiplexer_root_for
+    from hermes_state import _default_db_path
+    home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
+    for candidate in (home, multiplexer_root_for(home)):
+        if candidate is None:
+            continue
+        try:
+            payload = query_identify(candidate, timeout=1.5)
+            if isinstance(payload, dict) and payload.get("state") in {"starting", "ready", "draining"}:
+                return True
+        except (FileNotFoundError, ConnectionRefusedError, TimeoutError, DiscoveryError,
+                PermissionError, OSError, ValueError, TypeError):
+            continue
+    return False
+
+
 @manage_router.post("/api/sessions/owner-backfill")
 async def backfill_session_owner_profiles(body: SessionOwnerBackfill, request: Request):
     """Stamp legacy ``profile_name = NULL`` rows with the serving-profile identity.
@@ -918,6 +937,14 @@ async def backfill_session_owner_profiles(body: SessionOwnerBackfill, request: R
             # A live gateway owns this store: it is the only writer (the offline maintenance lock
             # would 409 every Desktop boot), so the idempotent stamp runs on its own connection.
             stamped = await asyncio.to_thread(owner_db.backfill_null_session_profiles, stamp)
+        elif await asyncio.to_thread(_live_gateway_owns_profile, body.profile) and not await asyncio.to_thread(
+            _with_db, body.profile,
+            lambda db: db._read_one(
+                "SELECT 1 AS pending FROM sessions WHERE profile_name IS NULL OR TRIM(profile_name) = '' LIMIT 1"
+            ) is not None,
+            read_only=True,
+        ):
+            stamped = 0
         else:
             stamped = await asyncio.to_thread(
                 _with_db, body.profile, lambda db: db.backfill_null_session_profiles(stamp),

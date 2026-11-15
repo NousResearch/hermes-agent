@@ -32,8 +32,53 @@ import { readKey, writeKey } from './storage'
 /** Minimal slice of HermesConnection this module keys on. */
 export interface ConnectionScopeDescriptor {
   baseUrl?: string
+  connectionId?: null | string
   mode?: 'local' | 'remote'
   profile?: null | string
+  remoteHost?: null | string
+  remoteKind?: 'cloud' | 'ssh' | 'url'
+}
+
+function resolveRemoteGatewayBase(connection: ConnectionScopeDescriptor): string {
+  if (connection.remoteKind === 'ssh' && connection.remoteHost) {
+    return `ssh://${connection.remoteHost}`
+  }
+
+  if (
+    connection.connectionId &&
+    connection.connectionId !== 'local' &&
+    connection.baseUrl &&
+    /^https?:\/\/127\.0\.0\.1:\d+/.test(connection.baseUrl)
+  ) {
+    return `ssh://${connection.connectionId}`
+  }
+
+  return connection.baseUrl || 'remote'
+}
+
+function legacyTunnelSuffix(
+  connection: ConnectionScopeDescriptor | null | undefined,
+  includeProfile = true
+): null | string {
+  if (connection?.mode !== 'remote' || !connection.baseUrl) {
+    return null
+  }
+
+  const resolved = resolveRemoteGatewayBase(connection)
+
+  if (resolved === connection.baseUrl) {
+    return null
+  }
+
+  const base = encodeURIComponent(connection.baseUrl)
+
+  if (!includeProfile) {
+    return `.remote.${base}`
+  }
+
+  const profile = encodeURIComponent(connection.profile || 'default')
+
+  return `.remote.${base}.${profile}`
 }
 
 export interface ConnectionScopeOptions {
@@ -56,7 +101,7 @@ export function connectionScopeSuffix(
     return ''
   }
 
-  const base = encodeURIComponent(connection.baseUrl || 'remote')
+  const base = encodeURIComponent(resolveRemoteGatewayBase(connection))
 
   if (!includeProfile) {
     return `.remote.${base}`
@@ -83,6 +128,11 @@ interface ScopedEntry<T> {
 let activeConnection: ConnectionScopeDescriptor | null | undefined
 let activeSuffix = ''
 let activeGatewaySuffix = ''
+let rescopingStores = false
+
+export function isRescopingConnectionScope(): boolean {
+  return rescopingStores
+}
 
 const registry: ScopedEntry<any>[] = []
 const scopeListeners = new Set<() => void>()
@@ -106,7 +156,20 @@ export function onConnectionScopeChange(listener: () => void): () => void {
 }
 
 function loadEntry<T>(entry: ScopedEntry<T>): T {
-  const raw = readKey(entry.key + suffixFor(entry))
+  const targetKey = entry.key + suffixFor(entry)
+  let raw = readKey(targetKey)
+
+  if (raw === null) {
+    const legacySuffix = legacyTunnelSuffix(activeConnection, entry.includeProfile)
+
+    if (legacySuffix) {
+      raw = readKey(entry.key + legacySuffix)
+
+      if (raw !== null) {
+        writeKey(targetKey, raw)
+      }
+    }
+  }
 
   if (raw === null) {
     return entry.fallback
@@ -210,10 +273,12 @@ export function rescopeConnectionScopedStores(connection: ConnectionScopeDescrip
 
     entry.suffix = entrySuffix
     entry.applying = true
+    rescopingStores = true
 
     try {
       entry.$value.set(loadEntry(entry))
     } finally {
+      rescopingStores = false
       entry.applying = false
     }
   }

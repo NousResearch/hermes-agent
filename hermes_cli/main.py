@@ -64,7 +64,8 @@ def _argv_is_gateway_run(argv: list) -> bool:
     return any(a == "gateway" and b == "run" for a, b in itertools.pairwise(argv))
 
 
-if _argv_is_gateway_run(sys.argv[1:]):
+if _argv_is_gateway_run(sys.argv[1:]) and not globals().get("_GATEWAY_WATCHDOG_BOOT_ARMED"):
+    _GATEWAY_WATCHDOG_BOOT_ARMED = True
     try:
         from hermes_startup_watchdog import arm_startup_watchdog as _arm_sw
 

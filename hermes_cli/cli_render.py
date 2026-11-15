@@ -17,7 +17,7 @@ import threading
 import time
 from contextlib import contextmanager, suppress
 from agent.i18n import t
-from agent.think_scrubber import THINK_TAG_NAMES
+from agent.think_scrubber import CODE_FENCE_OR_SPAN, THINK_TAG_NAMES
 from hermes_cli.banner import format_banner_version_label
 from rich.console import Console
 from rich.text import Text as _RichText
@@ -47,10 +47,23 @@ def _strip_reasoning_tags(text: str) -> str:
     """
     from cli import _REASONING_TAGS, _TOOL_CALL_TAGS
     cleaned = text
+    _nc_code = r"(?:```[\s\S]*?```|`[^`\n]+`)"
     for tag in _REASONING_TAGS:
-        cleaned = re.sub(rf"<{tag}>.*?</{tag}>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(rf"<{tag}>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(rf"</{tag}>\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(
+            rf"{CODE_FENCE_OR_SPAN}|(?<!`)<{tag}>(?!`)(?:{_nc_code}|[\s\S])*?(?<!`)</{tag}>(?!`)\s*",
+            lambda m: m.group(1) or "",
+            cleaned, flags=re.DOTALL | re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            rf"{CODE_FENCE_OR_SPAN}|(?<!`)<{tag}>(?!`).*$",
+             lambda m: m.group(1) or "",
+            cleaned, flags=re.DOTALL | re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            rf"{CODE_FENCE_OR_SPAN}|(?<!`)</{tag}>(?!`)\s*",
+            lambda m: m.group(1) or "",
+            cleaned, flags=re.IGNORECASE,
+        )
     for tc_tag in _TOOL_CALL_TAGS:
         cleaned = re.sub(
             rf"<(?:[\w.-]+:)?{tc_tag}\b[^>]*>.*?</(?:[\w.-]+:)?{tc_tag}>\s*",

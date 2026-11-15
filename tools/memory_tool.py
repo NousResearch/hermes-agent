@@ -119,6 +119,8 @@ _STORE_ACTIONS = {
 
 
 def _batch_op_line(op: dict[str, Any]) -> str:
+    if not isinstance(op, dict):
+        return f"  - ?: {str(op)[:120]}"
     op = op or {}
     act, content, old = op.get("action", "?"), op.get("content") or op.get("new_text") or "", op.get("old_text", "")
     if act == "remove":
@@ -256,7 +258,28 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     if target_error is not None:
         return "rejected", json.dumps(target_error)
     if operations:
-        if not isinstance(operations, list):
+        if isinstance(operations, list) and len(operations) == 1 and isinstance(operations[0], str) and operations[0].strip().startswith("["):
+            operations = operations[0]
+        if isinstance(operations, str):
+            # Local hardening (state.db, 48h): callers send a JSON-encoded list
+            # in the string slot. Unwrap instead of rejecting -- the model can't
+            # see the difference and just resubmits the same shape.
+            try:
+                operations = json.loads(operations)
+            except (ValueError, TypeError):
+                # Observed shape: '[{"replace", "content": ...' -- action VALUE
+                # present, action KEY missing. Repairable, so repair; a valid
+                # ops string can never contain this (it'd be invalid JSON).
+                import re
+                repaired = re.sub(r'\{\s*"(replace|remove|add|patch)"\s*,',
+                                  r'{"action": "\1",', operations)
+                try:
+                    operations = json.loads(repaired)
+                except (ValueError, TypeError):
+                    pass
+            # night 13/10 reconciliation: regex widened to cover upstream's new 'patch'
+            # action (carried fix pre-dated it; both fix the same malformed-string hazard).
+        if not isinstance(operations, list) or not all(isinstance(op, dict) for op in operations):
             return _invalid("operations must be a list of {action, content?, old_text?} objects.")
         if any(isinstance(op, dict) and op.get("action") == "replace" for op in operations):
             return _invalid(_REPLACE_REMOVED)
@@ -273,10 +296,20 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     # "Unknown action 'None'" error, which gives the model no signal about
     # *why* the call was malformed and can trigger repeated retries. (#64291)
     if not action and not operations:
-        return _invalid(
-            "Missing required parameter: 'operations', a list of {action: add/patch/remove, "
-            "content?, old_text?} changes; a single change is a one-item list."
-        )
+        if old_text and content:
+            # Unambiguous patch shape with the action key dropped: repair instead
+            # of rejecting. Fallback models omit `action` while keeping the rest
+            # of the arguments and never re-read the error (state.db 16/10: 3
+            # identical rejects in one session, zero retries). `patch` is the
+            # only action a {old_text, content} pair can mean — `add` takes no
+            # old_text, `remove` takes no content — so this cannot misfire, and
+            # every downstream gate (delete gate, write gate) still applies.
+            action = "patch"
+        else:
+            return _invalid(
+                "Missing required parameter: 'operations', a list of {action: add/patch/remove, "
+                "content?, old_text?} changes; a single change is a one-item list."
+            )
     if action == "replace":
         return _invalid(_REPLACE_REMOVED)
     if action not in _STORE_ACTIONS:
@@ -376,7 +409,8 @@ MEMORY_SCHEMA = {
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
         "HOW: make ALL your changes to one target in ONE call via an 'operations' array (each "
-        "item: {action, content?, old_text?}). The batch applies atomically and the char limit is "
+        "item: {action, content?, old_text?}). OPERATIONS FORMAT — every item MUST be an object "
+        "with an explicit 'action' field ('add'/'patch'/'remove'). The batch applies atomically and the char limit is "
         "checked only on the FINAL result — so a single call can remove/patch stale entries "
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "

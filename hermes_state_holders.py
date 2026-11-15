@@ -532,7 +532,8 @@ def foreign_state_db_holders(db_path: Path) -> list[tuple[int, str]]:
                         and db_dev is not None
                         and fd_stat.st_dev == db_dev
                     ):
-                        holders.append((pid, target))
+                        if (pid, target) not in holders:
+                            holders.append((pid, target))
         except Exception as exc:
             logger.warning(
                 "Could not prove state.db has no foreign holders; "
@@ -553,7 +554,8 @@ def foreign_state_db_holders(db_path: Path) -> list[tuple[int, str]]:
             for opened in info.get("open_files") or ():
                 path = getattr(opened, "path", "")
                 if path and canonical_sqlite_path(os.path.realpath(path)) in watched:
-                    holders.append((pid, path))
+                    if (pid, path) not in holders:
+                        holders.append((pid, path))
     except Exception as exc:
         logger.warning(
             "Could not prove state.db has no foreign holders; "

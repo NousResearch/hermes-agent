@@ -28,11 +28,11 @@ def client_ip(request: Request) -> str:
 
 
 def extract_bearer(request: Request) -> str:
-    """``Authorization: Bearer <token>`` value (scheme case-insensitive), or ``""``."""
+    """``Authorization: Bearer *** value (scheme case-insensitive), or ``X-Hermes-Session-Token``, or ``""``."""
     parts = request.headers.get("authorization", "").split(" ", 1)
     if len(parts) == 2 and parts[0].strip().lower() == "bearer":
         return parts[1].strip()
-    return ""
+    return request.headers.get("x-hermes-session-token", "").strip()
 
 
 def _http_origin(value: str) -> tuple[str, str, int] | None:

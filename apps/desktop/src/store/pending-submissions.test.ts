@@ -8,7 +8,7 @@ import { isSteerableEntry } from '@/store/composer-queue'
 import type { SessionInfo } from '@/types/hermes'
 
 import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts, migrateQueuedPrompts } from './composer-queue'
-import { readPendingSubmissions, reconcilePendingSubmissions, trackPendingSubmission } from './pending-submissions'
+import { dropPendingSubmission, readPendingSubmissions, reconcilePendingSubmissions, trackPendingSubmission } from './pending-submissions'
 import { $sessions } from './session'
 
 beforeEach(() => {
@@ -294,4 +294,122 @@ it('tracking a submission reads its own record without enumerating other session
     old: { text: 'legacy', displayText: '/old', status: 'unknown' }
   })
   expect(readPendingSubmissions('late-root').next).toMatchObject({ status: 'queued' })
+})
+
+// #ATLAS-125 — a pre-submit journal write filled the 50 MiB origin quota and aborted
+// submits before they reached the gateway. The journal is card storage, never a
+// replay source: its text is bounded, its statusless pre-tracks are droppable, and
+// no setItem of its own may fail a submit.
+it('caps journal text at 4096 chars: a slash-expanded submit cannot fill the origin (#ATLAS-125)', () => {
+  const expanded = 'x'.repeat(282_744)
+  trackPendingSubmission('chat', { id: 'big', text: expanded })
+  trackPendingSubmission('chat', { id: 'wide', text: 'short', displayText: 'y'.repeat(9_000) })
+
+  const journal = readPendingSubmissions('chat')
+  expect(journal.big?.text.length).toBe(4_096)
+  expect(journal.big?.text).toBe(expanded.slice(0, 4_096))
+  expect(journal.wide?.displayText?.length).toBe(4_096)
+})
+
+it('drops a statusless pre-track that never became an admission, but never a live card (#ATLAS-125)', () => {
+  trackPendingSubmission('chat', { id: 'legacy-ack', text: 'sent to a legacy owner' })
+  trackPendingSubmission('chat', { id: 'live', text: 'a real card', status: 'queued' })
+
+  dropPendingSubmission('chat', 'legacy-ack')
+  dropPendingSubmission('chat', 'live')
+  dropPendingSubmission('chat', 'never-tracked')
+
+  const journal = readPendingSubmissions('chat')
+  expect(journal['legacy-ack']).toBeUndefined()
+  expect(journal.live?.status).toBe('queued')
+})
+
+it('a fenced snapshot retires statusless pre-tracks it lists under neither id; an unfenced one says nothing (#ATLAS-125)', () => {
+  trackPendingSubmission('chat', { id: 'pre', text: 'in flight' })
+
+  reconcilePendingSubmissions('chat', [])
+  expect(readPendingSubmissions('chat').pre).toBeDefined()
+
+  reconcilePendingSubmissions('chat', [], { epoch: 'epoch-1', sequence: 5 })
+  expect(readPendingSubmissions('chat').pre).toBeUndefined()
+})
+
+it('folds an input-keyed pre-track into its admission key instead of leaking both keys (#ATLAS-125)', () => {
+  trackPendingSubmission('chat', { id: 'input-1', text: 'my prompt', displayText: 'shown text' })
+
+  reconcilePendingSubmissions(
+    'chat',
+    [{ admission_id: 'admission-9', input_id: 'input-1', status: 'queued', user: 'my prompt' }],
+    { epoch: 'epoch-1', sequence: 2 }
+  )
+
+  const journal = readPendingSubmissions('chat')
+  expect(journal['input-1']).toBeUndefined()
+  expect(journal['admission-9']).toMatchObject({ status: 'queued', displayText: 'shown text' })
+  expect(getQueuedPrompts('chat')).toMatchObject([{ id: 'admission-9', displayText: 'shown text' }])
+})
+
+it('a full origin evicts statusless pre-tracks first, never evicts live cards for a pre-track, and never throws (#ATLAS-125)', () => {
+  trackPendingSubmission('chat', { id: 'orphan', text: 'never admitted' })
+  trackPendingSubmission('chat', { id: 'card', text: 'a real card', status: 'queued' })
+
+  const realSet = window.localStorage.setItem.bind(window.localStorage)
+  const setItem = vi.spyOn(window.localStorage, 'setItem')
+
+  // The origin is full: the first write throws quota. The journal must evict
+  // the one entry that carries no information (the statusless pre-track) and
+  // land the new entry — a pending card is cosmetic, a failed submit is not.
+  let quotaThrown = false
+  setItem.mockImplementation((key: string, value: string) => {
+    if (!quotaThrown) {
+      quotaThrown = true
+      throw new DOMException('quota exceeded', 'QuotaExceededError')
+    }
+
+    realSet(key, value)
+  })
+
+  try {
+    expect(() => trackPendingSubmission('chat', { id: 'fresh', text: 'after the purge' })).not.toThrow()
+  } finally {
+    setItem.mockRestore()
+  }
+
+  const journal = readPendingSubmissions('chat')
+  expect(journal.orphan).toBeUndefined()
+  expect(journal.fresh?.text).toBe('after the purge')
+  expect(journal.card?.status).toBe('queued')
+
+  // Remove the statusless entry so only the live card remains, then hold the
+  // origin full: a pre-track must give up before touching a live queued card.
+  dropPendingSubmission('chat', 'fresh')
+
+  const alwaysFull = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
+    throw new DOMException('quota exceeded', 'QuotaExceededError')
+  })
+
+  try {
+    expect(() => trackPendingSubmission('chat', { id: 'skipped-pre', text: 'no room' })).not.toThrow()
+  } finally {
+    alwaysFull.mockRestore()
+  }
+
+  expect(readPendingSubmissions('chat').card?.status).toBe('queued')
+  expect(readPendingSubmissions('chat')['skipped-pre']).toBeUndefined()
+})
+
+it('a fresh module load sweeps leftover pre-tracks and rewrites oversized stored texts (#ATLAS-125)', async () => {
+  // Seed raw storage (not via trackPendingSubmission, which bounds on write) to
+  // reproduce what the pre-fix build left behind: statusless leak + fat card.
+  const seedKey = (session: string, id: string) => `hermes.desktop.pendingSubmissions.v2:${JSON.stringify([session, id])}`
+  window.localStorage.setItem(seedKey('chat', 'leftover'), JSON.stringify({ id: 'leftover', text: 'x'.repeat(90_000) }))
+  window.localStorage.setItem(seedKey('chat', 'fat'), JSON.stringify({ id: 'fat', text: 'z'.repeat(50_000), status: 'queued' }))
+
+  vi.resetModules()
+  await import('./pending-submissions')
+
+  const journal = readPendingSubmissions('chat')
+  expect(journal.leftover).toBeUndefined()
+  expect(journal.fat).toMatchObject({ status: 'queued' })
+  expect(journal.fat?.text.length).toBe(4_096)
 })

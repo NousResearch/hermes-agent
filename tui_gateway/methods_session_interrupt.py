@@ -83,6 +83,15 @@ def _(rid, params: dict) -> dict:
                     return _ok(rid, {"status": "not_interrupted", "interrupted": False})
         sid = str(params.get("session_id") or "")
         _note_user_input(session)
+        with session["history_lock"]:
+            was_running_locally = bool(session.get("running"))
+            has_sibling_relay = session.get("_sibling_serve_relay") is not None
+        if has_sibling_relay or not was_running_locally:
+            import contextlib as _contextlib
+            import types as _types
+            from tui_gateway.sibling_serve_forward import try_interrupt_sibling_serve_owner
+            with _contextlib.suppress(Exception):
+                try_interrupt_sibling_serve_owner(_types.SimpleNamespace(**globals()), session)
         if _session_uses_compute_host(session):
             with session["history_lock"]:
                 inflight_at_interrupt = session.get("inflight_turn")
@@ -141,6 +150,15 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         if err:
             return err
         _note_user_input(session)
+        with session["history_lock"]:
+            sibling_relay = session.get("_sibling_serve_relay")
+        if sibling_relay is not None and hasattr(sibling_relay, "request_correction"):
+            accepted = bool(sibling_relay.request_correction(name, text))
+            return _ok(rid, {"status": accepted_status if accepted else "rejected", "text": text})  # type: ignore[name-defined]
+        if not session.get("running") and not session.get("_compute_host_active"):
+            from tui_gateway.sibling_serve_forward import try_correct_sibling_serve_owner
+            if try_correct_sibling_serve_owner(_server_module(), session, name, text):
+                return _ok(rid, {"status": accepted_status, "text": text})  # type: ignore[name-defined]
         agent = session.get("agent")
         # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
         # a misleading 4010 the client swallows into a lost follow-up.

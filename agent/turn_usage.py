@@ -215,6 +215,8 @@ def record_response_usage(
     # because none of the three were on this line.
     if canonical_usage.cache_write_tokens:
         _cache_pct += f" write={canonical_usage.cache_write_tokens}"
+    if canonical_usage.reasoning_tokens:
+        _cache_pct += f" reasoning={canonical_usage.reasoning_tokens}"
     _rid = getattr(response, "id", None)
     _ident = f" id={_rid}" if isinstance(_rid, str) and _rid else ""
     _upstream = getattr(response, "provider", None)
@@ -226,6 +228,13 @@ def record_response_usage(
         prompt_tokens, completion_tokens, total_tokens,
         api_duration, _cache_pct, _ident,
     )
+    if _upstream and isinstance(api_duration, (int, float)):
+        with suppress(Exception):
+            from agent.provider_latency_circuit_breaker import record_provider_latency
+            # context_tokens: DQ #500 — threshold scales with input size so healthy
+            # long-context generation time does not demote the provider.
+            record_provider_latency(agent.model, _upstream, float(api_duration),
+                                    context_tokens=prompt_tokens or None)
     # nous.anthropic_wire=auto: the session's wire is decided once, from this first response.
     if agent.session_api_calls == 1 and (agent.provider or "") == "nous":
         with suppress(Exception):
@@ -296,6 +305,50 @@ def record_response_usage(
                 "Token persistence failed (session=%s, tokens=%d): %s",
                 agent.session_id, total_tokens, e,
             )
+
+    with suppress(Exception):
+        import os as _os_rt
+        from agent.realtime_spend_breaker import record_realtime_llm_call
+
+        _rt_source = (
+            "background_review"
+            if (
+                getattr(agent, "_write_origin", None) == "background_review"
+                or getattr(agent, "_memory_write_origin", None) == "background_review"
+                or getattr(agent, "_turn_origin", None) == "background_review"
+            )
+            else "subagent"
+            if (
+                getattr(agent, "platform", None) == "subagent"
+                or int(getattr(agent, "_delegate_depth", 0) or 0) > 0
+            )
+            else _agent_session_source(agent)
+        )
+        _rt_parent_sid = str(
+            getattr(agent, "_root_session_id", None)
+            or getattr(agent, "parent_session_id", None)
+            or ""
+        )
+        _rt_job = str(
+            getattr(agent, "cron_job_name", None)
+            or _os_rt.environ.get("HERMES_CRON_JOB_NAME", "")
+            or getattr(agent, "_turn_route_task", "")
+            or (f"parent:{_rt_parent_sid}" if _rt_source == "subagent" and _rt_parent_sid else "")
+            or ""
+        )
+        record_realtime_llm_call(
+            session_id=str(getattr(agent, "session_id", "") or "unknown"),
+            source=_rt_source,
+            provider=str(_agg_cost_provider or agent.provider or "unknown"),
+            model=str(_agg_cost_model or agent.model or "unknown"),
+            prompt_tokens=int(usage_dict.get("prompt_tokens") or prompt_tokens or 0),
+            uncached_input_tokens=int(canonical_usage.input_tokens or 0),
+            cache_read_tokens=int(canonical_usage.cache_read_tokens or 0),
+            output_tokens=int((canonical_usage.output_tokens or 0) + (canonical_usage.reasoning_tokens or 0)),
+            request_id=_rid if isinstance(_rid, str) else None,
+            job_name=_rt_job,
+            estimated_cost_usd=_cost_delta,
+        )
 
     if agent.verbose_logging:
         logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")

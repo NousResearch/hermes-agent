@@ -198,3 +198,70 @@ def test_draining_owner_still_answers_status_and_cancel_of_admitted_cron_work(tm
         asyncio.run(probe())
     finally:
         db.close()
+
+
+def test_cron_admitted_before_restart_drain_is_claimed_and_completed(tmp_path, monkeypatch):
+    """If ``run_canonical_job`` commits its admission right before SIGUSR1 sets ``_draining=True``
+    and ``_restart_wait_in_progress=True`` (RCA 2026-11-03, ``newintra-chat-responder`` 14:43:35),
+    ``_claim_next`` must still claim and execute that in-flight cron row during the restart wait
+    instead of pausing the session on ``runtime_draining`` and deadlocking ``Restart deferred``."""
+    from contextlib import nullcontext
+    import threading
+    from cron import jobs, scheduler
+    from cron.scheduler_authority import run_canonical_job
+    from gateway import run, session_cron
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(jobs, 'get_job', lambda jid: {'id': jid, 'prompt': 'p', 'model': 'm'})
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
+    monkeypatch.setattr(run, '_profile_runtime_scope', lambda home: nullcontext())
+    monkeypatch.setattr(
+        scheduler, 'run_job',
+        lambda job, *, extra_prompt=None, execution_id=None, cancel_event=None: (True, 'doc', 'ok', None),
+    )
+    db = SessionDB(tmp_path / 'state.db')
+    from gateway.drain_control import open_restart_wait
+    runner = SimpleNamespace(
+        _draining=False, _running=True, session_runtime_descriptor={},
+        session_store=SessionStore(tmp_path / 'sessions', GatewayConfig()), adapters={},
+        _adapter_for_source=lambda s: runner.adapters.get(s.platform),
+    )
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id='test'))
+    runner.session_authority = authority
+    scheduled_refs = []
+    admitted = threading.Event()
+    real_schedule = authority._schedule
+
+    def delayed_schedule(ref):
+        scheduled_refs.append(ref)
+        admitted.set()
+
+    monkeypatch.setattr(authority, '_schedule', delayed_schedule)
+
+    async def probe():
+        session_cron.bind_owner(authority)
+        try:
+            firer = asyncio.create_task(
+                asyncio.to_thread(run_canonical_job, {'id': 'job'}, execution_id='fire-race')
+            )
+            assert await asyncio.to_thread(admitted.wait, 10)
+            # SIGUSR1 arrives 100ms after submit, before _drain claims the queued cron row
+            runner._draining = True
+            open_restart_wait(runner)
+            for ref in scheduled_refs:
+                real_schedule(ref)
+            assert await asyncio.wait_for(firer, 10) == (True, 'doc', 'ok', None)
+        finally:
+            session_cron.unbind_owner(authority)
+
+    try:
+        asyncio.run(probe())
+    finally:
+        db.close()
+

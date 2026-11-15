@@ -516,13 +516,18 @@ def _connected_summary(names, *, lazy_tools: int = 0,
     servers. The reason is the recorded connect error; a candidate this pass never attempted (still
     inside its retry cooldown from an earlier failure) has none."""
     with _core._lock:
-        keys = {n: _server_key(n) for n in names}
+        keys = {n: _resolve_server_key(n) for n in names}
+        own_keys = {n: _server_key(n) for n in names}
         connected = [n for n in names
                      if keys[n] in _core._servers and keys[n] not in _core._server_connect_errors]
-        tool_count = sum(len(getattr(_core._servers[keys[n]], "_registered_tool_names", [])) for n in connected)
+        # Adopted shared servers already logged their tools under ``registered N already-connected``;
+        # only count tools newly registered under this scope's own key, while not misreporting
+        # adopted servers as ``failed: ... (not attempted (in retry cooldown))``.
+        own_connected = [n for n in connected if keys[n] == own_keys[n]]
+        tool_count = sum(len(getattr(_core._servers[own_keys[n]], "_registered_tool_names", [])) for n in own_connected)
         failed = [(n, _core._server_connect_errors.get(keys[n]) or "not attempted (in retry cooldown)")
                   for n in names if n not in connected]
-    return tool_count + lazy_tools, len(connected) + lazy_servers, failed
+    return tool_count + lazy_tools, len(own_connected) + lazy_servers, failed
 
 
 def _log_summary(prefix: str, names, **lazy) -> None:

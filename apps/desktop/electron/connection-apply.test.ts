@@ -146,6 +146,22 @@ describe('teardownSshState', () => {
 
     expect(close).toHaveBeenCalledOnce()
   })
+
+  it('skips remote cleanup when preserveRemoteBackend is true while closing forward and SSH transport', async () => {
+    const events: string[] = []
+
+    const ssh = {
+      cancelForward: async () => events.push('forward'),
+      close: async () => events.push('ssh')
+    }
+
+    await teardownSshState(
+      { ssh, ownershipId: 'owner', localPort: 1234, remotePort: 5678 },
+      { cleanupRemote: async () => events.push('remote'), preserveRemoteBackend: true }
+    )
+
+    expect(events).toEqual(['forward', 'ssh'])
+  })
 })
 
 describe('commitConnectionFailure', () => {

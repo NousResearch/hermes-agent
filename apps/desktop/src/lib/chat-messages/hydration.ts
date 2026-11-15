@@ -213,10 +213,22 @@ function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): nul
   return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
 }
 
+const COMPACTION_SUMMARY_PREFIX = '[CONTEXT COMPACTION — REFERENCE ONLY]'
+
 // A micro-compaction merge (`display_metadata.model_only`) is the model's copy of prompts whose originals
 // the history shows: the owner's resume snapshot keeps it as an undo target, and it is never painted.
+// Mid-turn context compaction summaries (`display_kind: 'hidden'`) are likewise model-only handoff rows
+// and must not split an active tool-calling assistant turn into two separate bubbles.
 function isPainted(message: SessionMessage): boolean {
-  return parseDisplayMetadata(message.display_metadata)?.model_only !== true
+  if (parseDisplayMetadata(message.display_metadata)?.model_only === true) {
+    return false
+  }
+
+  return !(
+    message.display_kind === 'hidden' &&
+    typeof message.content === 'string' &&
+    message.content.trimStart().startsWith(COMPACTION_SUMMARY_PREFIX)
+  )
 }
 
 // `agent/conversation_loop.py::_failed_turn_display_metadata`: the failed turn's error card,
@@ -561,6 +573,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     const parts: ChatMessagePart[] = []
     const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
+    const messageUid =
+      typeof message.message_uid === 'string' && message.message_uid.trim() ? message.message_uid.trim() : undefined
     const sourceHasTools = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
     const durableComplete = sourceHasTools ? false : rowId !== undefined ? true : undefined
 
@@ -660,6 +674,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
       if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
         foldIntoToolBubble(activeAssistant, message, parts, durableComplete)
+        if (activeAssistant.messageUid === undefined && messageUid !== undefined) {
+          activeAssistant.messageUid = messageUid
+        }
         activeAssistant.timestamp = earliestTimestamp(
           activeAssistant.timestamp,
           message.timestamp,
@@ -706,6 +723,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
+      ...(messageUid !== undefined ? { messageUid } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),

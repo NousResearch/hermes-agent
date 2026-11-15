@@ -322,5 +322,58 @@ class TestCodexAppServerAnchor:
         assert agent._usage_anchor is prior
 
 
+class TestPersistUserMessageOverridePreservesAnchor:
+    def test_persist_user_message_override_preserves_anchor_when_api_content_unchanged(self):
+        expanded = "Expanded wire prompt with <skill_content> and [DELEGATION COMPLETED]"
+        display_override = "Short clean user display prompt"
+        messages = [
+            _msg("user", "earlier question"),
+            _msg("assistant", "earlier answer"),
+            {"role": "user", "content": expanded, "api_content": expanded},
+        ]
+        anchor = capture_usage_anchor(145_000, 300, messages)
+        assert anchor is not None
+
+        # Turn finalizer rewrites msg["content"] to display_override while keeping api_content.
+        messages[-1]["content"] = display_override
+        messages.append(_msg("assistant", "turn reply"))
+        messages.append(_msg("user", "next turn prompt"))
+
+        anchored = anchored_context_tokens(messages, anchor)
+        assert anchored is not None
+        assert anchored == 145_000 + 300 + estimate_messages_tokens_rough([messages[-1]])
+
+
+class TestRebindUsageAnchorAfterPrune:
+    def test_rebind_usage_anchor_after_prune_keeps_anchor_valid_and_subtracts_reclaim(self):
+        from agent.usage_anchor import rebind_usage_anchor_after_prune
+
+        old_messages = [
+            _msg("system", "sys"),
+            _msg("user", "task"),
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "X" * 40_000},
+            _msg("assistant", "done step 1"),
+        ]
+        anchor = capture_usage_anchor(185_000, 200, old_messages)
+        assert anchor is not None
+
+        new_messages = [dict(m) for m in old_messages]
+        new_messages[3] = {"role": "tool", "tool_call_id": "c1", "content": "[read_file stub]"}
+
+        # Without rebinding, the prefix fingerprint mismatches and anchored_context_tokens returns None.
+        assert anchored_context_tokens(new_messages, anchor) is None
+
+        cc = SimpleNamespace(last_prompt_tokens=185_000, last_real_prompt_tokens=185_000)
+        agent = SimpleNamespace(_usage_anchor=anchor, context_compressor=cc, _persist_disabled=True)
+        reclaimed = rebind_usage_anchor_after_prune(agent, old_messages, new_messages)
+        assert reclaimed > 9_000
+        rebound = anchored_context_tokens(new_messages, agent._usage_anchor)
+        assert rebound is not None
+        assert rebound == 185_000 + 200 - reclaimed
+        assert cc.last_prompt_tokens == 185_000 - reclaimed
+        assert cc.last_real_prompt_tokens == 185_000 - reclaimed
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

@@ -30,7 +30,13 @@ COMMENTARY_WITHHELD = "commentary_withheld"
 
 def visible_commentary(text: str, *, strip_thinking=None) -> str:
     """Use the same think stripping, memory-context fence and secret redaction as live delivery."""
-    from agent.memory_context import fence_recalled_context
+    try:
+        from agent.memory_context import fence_recalled_context
+    except ImportError:
+        import importlib
+        import agent.memory_context as _mc_mod
+        importlib.reload(_mc_mod)
+        from agent.memory_context import fence_recalled_context
 
     if strip_thinking is None:
         from agent.agent_runtime_helpers import strip_think_blocks

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent import empty_response_guard as _empty_guard
+from agent.error_classifier import FailoverReason
 from agent.message_metadata import append_message
 from agent.message_sanitization import _sanitize_surrogates
 from agent.turn_context_compaction import _refund_api_call
@@ -384,9 +385,10 @@ def recover_empty_response(
             agent._empty_content_retries, agent.model, agent.provider,
         )
         agent._buffer_diagnostic_status("⚠️ Model returning empty responses — " "switching to fallback provider...")
-        if agent._try_activate_fallback():
+        if agent._try_activate_fallback(reason=FailoverReason.overloaded):
             active_system_prompt = _sync_failover_system_message(agent, api_messages, active_system_prompt)
             agent._empty_content_retries = 0
+            agent._empty_fallback_retry_pending = True
             agent._buffer_diagnostic_status(f"↻ Switched to fallback: {agent.model} " f"({agent.provider})")
             logger.info(
                 "Fallback activated after empty responses: now using %s on %s",

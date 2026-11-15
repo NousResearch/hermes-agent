@@ -144,6 +144,10 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     from hermes_state import SessionDB
     route = SessionDB.session_gateway_runtime(row)
     provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
+    cfg_model, cfg_provider = _config_model_target()
+    if not composer_profile and model and model == cfg_model and cfg_provider and provider and provider != cfg_provider:
+        provider = cfg_provider
+        base_url = api_mode = ""
     service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
     from hermes_cli.runtime_provider import is_foreign_provider_endpoint
@@ -681,7 +685,7 @@ def _make_agent(
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
+        **_resolve_checkpoint_kwargs(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
         # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway pass it.

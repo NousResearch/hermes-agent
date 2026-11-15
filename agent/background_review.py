@@ -639,7 +639,10 @@ _COMBINED_REVIEW_PROMPT = (
     "removing an EXISTING supporting file, call skill_view(name, file_path=...) for that exact "
     "file. Content quoted earlier in the transcript does NOT count — base the write on what "
     "skill_view just returned. New skills and NEW supporting files need no prior read. On a "
-    "read-before-write refusal: view the named target once, retry the write once, do not loop.\n\n"
+    "read-before-write refusal: view the named target once, retry the write once, do not loop. "
+    "On a curator-managed refusal ('the skill is not curator-managed'): DO NOT retry patching other "
+    "user-owned skills. User-owned skills are strictly off-limits to autonomous curation. Say "
+    "'Nothing to save.' or create a new class-level umbrella instead.\n\n"
     "User-preference embedding: when the user complains about how you handled a task, update the "
     "skill that governs that task rather than memory. Memory says 'who the user is and "
     "what the current situation and state of your operations are'; skills say 'how to do this "
@@ -987,6 +990,22 @@ def _detach_fork_compression(review_agent: Any) -> None:
     review_agent.compression_enabled = detached
     if detached:
         review_agent._review_defer_compaction_before_first_response = True
+        compressor = getattr(review_agent, "context_compressor", None)
+        if compressor is not None:
+            try:
+                if getattr(compressor, "threshold_percent", 0.0) < _REVIEW_INPUT_CONTEXT_FRACTION:
+                    compressor.threshold_percent = _REVIEW_INPUT_CONTEXT_FRACTION
+                    ctx_len = int(getattr(compressor, "context_length", 0) or 0)
+                    if ctx_len > 0:
+                        compressor.threshold_tokens = min(
+                            _REVIEW_MAX_INPUT_TOKENS_CAP,
+                            max(1, int(ctx_len * _REVIEW_INPUT_CONTEXT_FRACTION)),
+                        )
+                compressor._ineffective_compression_count = max(
+                    int(getattr(compressor, "_ineffective_compression_count", 0) or 0), 1
+                )
+            except Exception:
+                logger.debug("background_review fork threshold clamp failed", exc_info=True)
 
 
 def _routed_reasoning_config(task_cfg: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
@@ -1079,6 +1098,12 @@ def build_cache_parity_fork(
     # same-model path), so its turn-start/turn-exit log lines are otherwise
     # indistinguishable from live turns (#118693).
     review_agent._turn_origin = write_origin
+    if write_origin == "background_review":
+        # P1-2: Disable explicit prompt cache writes/controls in the short-lived review fork
+        # (avg 1.8 iterations; 0% intra-fork reuse across 4,146 turns; eliminates cache_write
+        # token surcharge while keeping inherited _cached_system_prompt for implicit prefix warmth).
+        review_agent._cache_disabled = True
+        review_agent._use_prompt_caching = False
     review_agent._memory_store = agent._memory_store
     review_agent._memory_enabled = agent._memory_enabled
     review_agent._user_profile_enabled = agent._user_profile_enabled
@@ -1334,6 +1359,27 @@ def _publish_review_summary(agent: Any, actions: list[str]) -> None:
             agent.background_review_callback(t("display.review.summary_callback", summary=summary))
 
 
+_BACKGROUND_REVIEW_IDLE_DEBOUNCE_SECONDS: float = 45.0
+
+
+def _resolve_idle_debounce_seconds(
+    *,
+    explicit: bool,
+    task_cfg: Optional[dict[str, Any]],
+    review_run: Optional[_BackgroundReviewRun],
+) -> float:
+    if explicit or review_run is None:
+        return 0.0
+    if isinstance(task_cfg, dict) and "idle_debounce_seconds" in task_cfg:
+        try:
+            return max(0.0, float(task_cfg["idle_debounce_seconds"]))
+        except (TypeError, ValueError):
+            return 0.0
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return 0.0
+    return max(0.0, float(_BACKGROUND_REVIEW_IDLE_DEBOUNCE_SECONDS))
+
+
 def _run_review_in_thread(
     agent: Any, messages_snapshot: list[dict], prompt: str,
     task_cfg: Optional[dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
@@ -1347,6 +1393,19 @@ def _run_review_in_thread(
     See #84423.
     """
     if review_run is not None and review_run.cancel_requested.is_set():
+        finish_background_review_run(agent, review_run)
+        return
+    debounce_s = _resolve_idle_debounce_seconds(
+        explicit=explicit,
+        task_cfg=task_cfg,
+        review_run=review_run,
+    )
+    if debounce_s > 0.0 and review_run is not None and review_run.cancel_requested.wait(timeout=debounce_s):
+        logger.info(
+            "Background review aborted during %.1fs idle-debounce before model call (session=%s)",
+            debounce_s,
+            getattr(agent, "session_id", None) or "unknown",
+        )
         finish_background_review_run(agent, review_run)
         return
     _set_thread_approval_callback(_bg_review_auto_deny)

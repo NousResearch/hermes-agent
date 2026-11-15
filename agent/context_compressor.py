@@ -58,6 +58,19 @@ from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
 
+# User-visible companion to the over-threshold reclamation no-op log warning
+# (#101889): a session stuck above ``threshold_tokens`` with every reclamation
+# path declining keeps slowing until the provider rejects the request, and the
+# operator only sees it in logs. Emitted at most once per dedup key (the same
+# ``_last_reclaim_block_warn`` key that gates the log) via
+# ``reclaim_lockout_warning_callback`` — the host agent's ``_emit_warning``
+# status rail (CLI print + gateway/desktop status_callback), so it is cache-safe:
+# no context or message-list mutation, status channel only.
+RECLAMATION_LOCKOUT_WARNING = (
+    "⚠ Context lockout: this conversation can't be compressed and will keep "
+    "slowing — /compact to compress history now or start a new chat."
+)
+
 
 # Summary-route pin lives in a ContextVar (not on the shared compressor) so the retry after a stalled
 # summary sees it while the detached stalled worker does not. A stall raises nothing, so the aux client's
@@ -77,7 +90,8 @@ logger = logging.getLogger(__name__)
 # deliberate main-model retry that must NOT re-issue the pin). The summary call is the ONLY auxiliary LLM
 # call a lean compaction attempt makes (#96603) — there are no sibling digest calls.
 _SUMMARY_ROUTE_PIN: contextvars.ContextVar[Optional[dict[str, Any]]] = (
-    contextvars.ContextVar("hermes_summary_route_pin", default=None)
+    globals().get("_SUMMARY_ROUTE_PIN")
+    or contextvars.ContextVar("hermes_summary_route_pin", default=None)
 )
 
 # ``timeout`` is included so a fallback entry keeps its own deadline.
@@ -91,7 +105,7 @@ def pin_summary_route(route: Optional[dict[str, Any]]):
     try:
         yield
     finally:
-        _SUMMARY_ROUTE_PIN.reset(token)
+        token.var.reset(token)
 
 
 def take_pinned_summary_route() -> Optional[dict[str, Any]]:
@@ -260,6 +274,10 @@ HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 
 
 SUMMARY_PREFIX = (
+    # Sep 2026 (truth-class era): untested "blocked/cannot" claims survived compaction
+    # cycles as if verified (incident: "Plane UI needed — MCP can only comment" lived
+    # through 5 cycles while the REST path was already receipt-proven in memory).
+    # New clause: blocked-claims carry a truth class; untagged = hypothesis to re-test.
     # Jul 2026 (#65848 class): identical to the pre-#69619 prefix except it lacked the explicit "tools
     # remain fully active" clause — the strong REFERENCE ONLY framing bled into general tool-use suppression
     # (observed: 7 consecutive narration-only turns immediately after a compression event on a production
@@ -294,6 +312,14 @@ SUMMARY_PREFIX = (
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
+    "TRUTH CLASSES: claims in this summary that something is blocked, "
+    "impossible, or unsupported ('cannot be done via X', 'requires Y') are "
+    "HYPOTHESES unless they carry a [KVITTO] tag citing a receipt that was "
+    "actually verified in the compacted turns. Untagged or [OTESTAD]-tagged "
+    "blocked-claims must be re-tested against live state (memory, tools, "
+    "the actual API surface — a missing MCP tool does NOT mean the task is "
+    "impossible; check REST/CLI paths) BEFORE repeating them or reporting "
+    "them as fact. "
     "None of the above restricts HOW you work: your tools remain fully "
     "active — keep calling them normally for the active task (edit files, "
     "run commands, search) instead of merely narrating what you would do. "
@@ -301,6 +327,50 @@ SUMMARY_PREFIX = (
     "described here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+
+
+# Truth-class tags (Sep 2026): [KVITTO] = observed with a receipt in the compacted turns,
+# [OTESTAD] = untested inference. The deterministic linter below is the enforceable layer —
+# even a summarizer that ignores the template instruction cannot ship an untagged
+# "## Blocked" bullet into the next context window.
+_TRUTH_CLASS_TAGS = ("[KVITTO]", "[OTESTAD]")
+
+
+def _lint_blocked_tags(text: str) -> str:
+    """Deterministically tag untagged ``## Blocked`` bullets as ``[OTESTAD]``.
+
+    Applied at summary insertion (``_with_summary_prefix``), so every summary the next
+    model turn sees carries a truth class on each blocked-claim bullet — untagged
+    bullets are treated as untested inferences, which the consumer must re-test before
+    repeating. Idempotent: bullets already carrying a truth-class tag are left alone.
+    """
+    import re as _re
+
+    if "## Blocked" not in text:
+        return text
+
+    def _tag_section_body(section_body: str) -> str:
+        lines = section_body.split("\n")
+        out = []
+        for line in lines:
+            stripped = line.lstrip()
+            bullet = stripped.startswith(("-", "*", "•")) or _re.match(r"^\d+[.)]\s", stripped)
+            if bullet and not any(tag in stripped for tag in _TRUTH_CLASS_TAGS):
+                indent = line[: len(line) - len(stripped)]
+                rest = _re.sub(r"^(\d+[.)]|[-*•])\s*", "", stripped)
+                out.append(f"{indent}- [OTESTAD] {rest}")
+            else:
+                out.append(line)
+        return "\n".join(out)
+
+    parts = text.split("## Blocked", 1)
+    if len(parts) != 2:
+        return text
+    head, rest = parts
+    # Section body runs until the next markdown heading or end of text.
+    m = _re.search(r"\n## ", rest)
+    body, tail = (rest[: m.start()], rest[m.start() :]) if m else (rest, "")
+    return head + "## Blocked" + _tag_section_body(body) + tail
 
 # Underscore prefix ON PURPOSE: wire sanitizers strip ``_``-keys; strict gateways
 # reject unknown keys, so a bare key would poison every request in the session.
@@ -390,9 +460,13 @@ def _strip_persistence_markers(messages: list[dict[str, Any]]) -> None:
     for msg in messages:
         if isinstance(msg, dict):
             msg.pop(_DB_PERSISTED_MARKER, None)
+            msg.pop("_anchor_urls", None)
 
 
-class StaleHeldHistory(RuntimeError):
+_prev_stale_held_history = globals().get("StaleHeldHistory")
+
+
+class _StaleHeldHistory(RuntimeError):
     """The history a lease-less rewrite holds is no longer the session's live generation.
 
     Its newest exact row is inactive: another compaction already committed (a ``/compress`` on this or
@@ -400,6 +474,13 @@ class StaleHeldHistory(RuntimeError):
     winner's rows under the lease-less watermark and clone them back as a "concurrent tail" — two summary
     generations live. Prune and micro-compaction hold no compression lease, so they abort on this instead.
     """
+
+
+StaleHeldHistory = (
+    _prev_stale_held_history
+    if isinstance(_prev_stale_held_history, type) and issubclass(_prev_stale_held_history, RuntimeError)
+    else _StaleHeldHistory
+)
 
 
 def _archive_watermark_for(session_db: Any, session_id: str, held: list[dict[str, Any]],
@@ -605,6 +686,40 @@ def salvage_grown_transcript(
 # Exact wire text of every shipped prefix, newest-first; stale directives must
 # still be strippable on resume. NEVER edit/reorder entries (byte-pinned); prepend.
 _HISTORICAL_SUMMARY_PREFIXES = (
+    # Truth-class era retiree (Sep 2026): live until the TRUTH CLASSES clause was added.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "If no user message appears AFTER this summary, do nothing: do not "
+    "resume, wrap up, or continue work from "
+    f"'{HISTORICAL_TASK_HEADING}' or any other section, do not call tools, "
+    "and wait for a new user message. This handoff must never become the "
+    "active turn by itself. (Exception: if tool results or your own "
+    "tool calls appear after this summary, you are mid-way through an "
+    "in-flight exchange — continue that exchange normally.) "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    f"'{HISTORICAL_TASK_HEADING}' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "None of the above restricts HOW you work: your tools remain fully "
+    "active — keep calling them normally for the active task (edit files, "
+    "run commands, search) instead of merely narrating what you would do. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
     # Pre-#80622: lacked the "no user message after summary => do nothing" clause.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
     "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
@@ -842,7 +957,8 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 def _is_summary_stub(content: str) -> bool:
     """True for a ``[tool] ... (N chars)`` summary (a prune-only one may carry the rule) or a lean-tail demotion stub."""
-    return (s := without_skill_safety_rule(content)).startswith("[") and " chars)" in s and len(s) < 400 or is_demoted_stub(s)
+    s = without_skill_safety_rule(content)
+    return (s.startswith("[") and (" chars)" in s or " chars result)" in s or " lines output)" in s) and len(s) < 400) or is_demoted_stub(s)
 
 
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
@@ -870,9 +986,9 @@ def _skill_pruned_marker(skill_name: str) -> str:
     )
 
 
-# Anchored on the shared prefix so marker wording changes stay in sync.
+# Anchored on the shared prefix; excludes doc/template placeholders ('…', '...', '{skill_name}').
 _SKILL_PRUNED_MARKER_RE = re.compile(
-    re.escape(SKILL_PRUNED_MARKER_PREFIX) + r"[^\]]*?reload with skill_view\(name='([^']+)'\)",
+    re.escape(SKILL_PRUNED_MARKER_PREFIX) + r"[^\]]*?reload with skill_view\(name='(?!(?:\.\.\.|\u2026))([^'{}\u2026]+)'\)",
 )
 
 
@@ -894,34 +1010,251 @@ def _collect_ghosted_skill_names(turns: list[dict[str, Any]]) -> list[str]:
     ``skill_view`` bodies, and skills a ``/skill``, bundle or auto-load turn carried inline."""
     from agent.skill_commands import skills_loaded_by_scaffold
     call_id_to_skill = skill_view_names_by_call_id(turns)
+    non_skill_call_ids: set[str] = set()
+    for msg in turns:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or ():
+            if not isinstance(tc, dict):
+                continue
+            cid = str(tc.get("id") or "")
+            fn_name = str((tc.get("function") or {}).get("name") or tc.get("name") or "")
+            if cid and fn_name and fn_name != "skill_view":
+                non_skill_call_ids.add(cid)
     names: list[str] = []
     for msg in turns:
+        role = msg.get("role")
         content = msg.get("content")
         text = _content_text_for_contains(content)
-        names += _extract_pruned_skill_names(text)
-        if msg.get("role") == "user":
+        call_id = str(msg.get("tool_call_id") or "")
+        is_summary = bool(msg.get(COMPRESSED_SUMMARY_METADATA_KEY)) or SUMMARY_PREFIX in text
+        is_non_skill_tool = role == "tool" and bool(call_id) and call_id in non_skill_call_ids
+        is_plain_assistant = role == "assistant" and not is_summary
+        if not is_non_skill_tool and not is_plain_assistant:
+            names += _extract_pruned_skill_names(text)
+        if role == "user":
             names += skills_loaded_by_scaffold(text)
-        elif msg.get("role") == "tool" and not _skill_view_failed(content) and not is_demoted_stub(text):
-            names.append(call_id_to_skill.get(str(msg.get("tool_call_id") or ""), ""))
+        elif role == "tool" and not _skill_view_failed(content) and not is_demoted_stub(text):
+            names.append(call_id_to_skill.get(call_id, ""))
     return [name for name in dict.fromkeys(names) if name]
 
 
 _PRUNED_SKILLS_SECTION_HEADING = "## Pruned Skills"
 
 
+def _relocate_stray_pruned_skill_markers(
+    summary: str, extra_skill_names: Optional[list[str]] = None
+) -> tuple[str, list[str]]:
+    """In structured ``## `` summaries, remove standalone ``[SKILL_PRUNED: ...]`` lines
+    that the LLM placed inside non-``## Pruned Skills`` sections (such as ``## Key Decisions``
+    or ``## Completed Actions``) and return their skill names so they are emitted under the
+    canonical ``## Pruned Skills`` heading."""
+    base_names = list(extra_skill_names or [])
+    if not summary or ("\n## " not in summary and not summary.lstrip().startswith("## ")):
+        return summary, base_names
+    parts = re.split(r"(?=\n## )", "\n" + summary)
+    cleaned_parts: list[str] = []
+    relocated_names: list[str] = []
+    changed = False
+    for part in parts:
+        sec = part.lstrip("\n")
+        if not sec:
+            continue
+        lines = sec.splitlines()
+        heading = lines[0].strip()
+        if heading == _PRUNED_SKILLS_SECTION_HEADING or not heading.startswith("## "):
+            cleaned_parts.append(sec)
+            continue
+        kept_lines = [lines[0]]
+        for line in lines[1:]:
+            s = line.strip()
+            if s.startswith(SKILL_PRUNED_MARKER_PREFIX) and _SKILL_PRUNED_MARKER_RE.search(s):
+                for name in _extract_pruned_skill_names(s):
+                    if name not in relocated_names:
+                        relocated_names.append(name)
+                changed = True
+                continue
+            kept_lines.append(line)
+        cleaned_parts.append("\n".join(kept_lines).rstrip())
+    merged_names = list(dict.fromkeys(relocated_names + base_names))
+    if not changed:
+        return summary, merged_names
+    return "\n\n".join(cleaned_parts), merged_names
+
+
 def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
     """Deterministically restore prune markers the summarizer dropped.
     Presence is checked against the canonical marker string; the appended block is plain body text (no
     handoff prefix/scaffolding) and is redacted like all others."""
-    missing = [_skill_pruned_marker(name) for name in skill_names if _skill_pruned_marker(name) not in summary]
+    summary, all_skill_names = _relocate_stray_pruned_skill_markers(summary, skill_names)
+    missing = [_skill_pruned_marker(name) for name in all_skill_names if _skill_pruned_marker(name) not in summary]
     if not missing:
         return summary
+    redacted_missing = _redact_compaction_text("\n".join(missing))
+    if _PRUNED_SKILLS_SECTION_HEADING in summary:
+        idx = summary.find(_PRUNED_SKILLS_SECTION_HEADING)
+        after_heading = idx + len(_PRUNED_SKILLS_SECTION_HEADING)
+        next_sec = re.search(r"\n##\s+", summary[after_heading:])
+        if next_sec:
+            insert_at = after_heading + next_sec.start()
+            return summary[:insert_at].rstrip("\n") + "\n" + redacted_missing + summary[insert_at:]
+        return summary.rstrip("\n") + "\n" + redacted_missing
     # How to react to the markers is the handoff's Skill Safety Rule (``with_skill_safety_rule``), not repeated here.
     return summary + _redact_compaction_text("\n\n" + _PRUNED_SKILLS_SECTION_HEADING + "\n" + "\n".join(missing))
 
 
-# Lean tail mode: small recency window; continuity via verbatim user messages in
-# the summary, tool-result stubs with recovery pointers, and a session_search footer.
+_MAX_ITERATIVE_COMPLETED_ACTIONS = 40
+_MAX_ITERATIVE_SESSION_LOG_BULLETS = 50
+
+
+def _strip_deterministic_lean_sections(text: str) -> str:
+    """Remove deterministic lean-mode tail sections and Skill Safety Rule scaffolding
+    so iterative prompts do not ask the LLM to regenerate them and _augment_summary_lean
+    always attaches fresh deterministic sections for the newly compacted turns."""
+    if not text:
+        return text
+    cleaned = without_skill_safety_rule(text)
+    deterministic_headings = {
+        _LEAN_ANCHOR_HEADING.strip(),
+        _LEAN_USER_MESSAGES_HEADING.strip(),
+        _LEAN_RECOVERY_HEADING.strip(),
+        "## Skill Safety Rule",
+    }
+    parts = re.split(r"(?=\n## )", "\n" + cleaned)
+    kept: list[str] = []
+    for part in parts:
+        stripped = part.lstrip("\n")
+        if not stripped:
+            continue
+        first_line = stripped.splitlines()[0].strip()
+        if first_line in deterministic_headings:
+            continue
+        kept.append(stripped)
+    return "\n\n".join(kept)
+
+
+_SUMMARY_DIGIT_TOKEN_RE = re.compile(r"\b\d{3,10}\b")
+_SUMMARY_PAREN_ID_SUFFIX_RE = re.compile(
+    r"(?i)(?:,\s*|\(\s*,\s*)id\s*(?:=|:|\s)\s*`?#?(\d{3,10})`?(?=\s*\))"
+)
+_SUMMARY_LABELED_ID_RE = re.compile(
+    r"(?i)\b(id|kf_id|repnr|repnrid|butik|butiknr|store_no|order_id|ticket_id)(\s*(?:=|:|\s)\s*`?#?)(\d{3,10})(`?)\b"
+)
+
+
+def _scrub_ungrounded_summary_id_labels(summary: str, *source_texts: Optional[str]) -> str:
+    """Strip or tag explicit entity ID numbers in LLM summary prose that never appeared in the source turns."""
+    if not summary:
+        return summary
+    grounded_digits: set[str] = set()
+    for src in source_texts:
+        if isinstance(src, str) and src:
+            grounded_digits.update(_SUMMARY_DIGIT_TOKEN_RE.findall(src))
+    if not grounded_digits:
+        return summary
+
+    def _sub_paren_suffix(m: re.Match) -> str:
+        num = m.group(1)
+        if num in grounded_digits:
+            return m.group(0)
+        return "(" if m.group(0).lstrip().startswith("(") else ""
+
+    cleaned = _SUMMARY_PAREN_ID_SUFFIX_RE.sub(_sub_paren_suffix, summary)
+    cleaned = re.sub(r"\s*\(\s*\)", "", cleaned)
+
+    def _sub_labeled_id(m: re.Match) -> str:
+        label, sep, num, tail_bt = m.group(1), m.group(2), m.group(3), m.group(4)
+        if num in grounded_digits:
+            return m.group(0)
+        return f"{label}{sep}[UNGROUNDED_ID]{tail_bt}"
+
+    return _SUMMARY_LABELED_ID_RE.sub(_sub_labeled_id, cleaned)
+
+
+def _compact_previous_summary_lists(
+    text: str,
+    max_actions: int = _MAX_ITERATIVE_COMPLETED_ACTIONS,
+    max_log_bullets: int = _MAX_ITERATIVE_SESSION_LOG_BULLETS,
+) -> str:
+    """Cap monotonically growing Completed Actions and Detailed Session Log lists in
+    a previous summary before feeding it into the next iterative compaction prompt,
+    strip deterministic lean-mode tail sections, and merge duplicate Pruned Skills sections."""
+    if not text:
+        return text
+    stripped_text = _strip_deterministic_lean_sections(text)
+    parts = re.split(r"(?=\n## )", "\n" + stripped_text)
+    out_parts: list[Optional[str]] = []
+    pruned_skill_lines: list[str] = []
+    pruned_skills_idx: Optional[int] = None
+
+    for part in parts:
+        sec = part.lstrip("\n")
+        if not sec:
+            continue
+        lines = sec.splitlines()
+        heading = lines[0].strip()
+        body_lines = lines[1:]
+
+        if heading == "## Completed Actions":
+            action_indices = [
+                i for i, line in enumerate(body_lines)
+                if re.match(r"^\d+\.\s+", line.strip())
+            ]
+            if len(action_indices) > max_actions:
+                keep_start_idx = action_indices[-max_actions]
+                dropped_count = len(action_indices) - max_actions
+                first_kept_match = re.match(r"^(\d+)\.\s+", body_lines[keep_start_idx].strip())
+                last_consolidated_num = (
+                    int(first_kept_match.group(1)) - 1 if first_kept_match else dropped_count
+                )
+                rollup_line = (
+                    f"1-{max(1, last_consolidated_num)}. [Consolidated {dropped_count} earlier completed "
+                    f"actions from prior compactions; durable outcomes are retained in Key Decisions / "
+                    f"Critical Context, and full step-by-step history remains searchable via session_search]"
+                )
+                new_body = [rollup_line] + body_lines[keep_start_idx:]
+                sec = heading + "\n" + "\n".join(new_body)
+
+        elif heading == _LEAN_SESSION_LOG_HEADING:
+            bullet_indices = [
+                i for i, line in enumerate(body_lines)
+                if line.lstrip().startswith("- ") and not line.lstrip().startswith("- [Consolidated ")
+            ]
+            if len(bullet_indices) > max_log_bullets:
+                head_keep = min(10, max_log_bullets // 5)
+                tail_keep = max_log_bullets - head_keep
+                head_end_idx = bullet_indices[head_keep]
+                tail_start_idx = bullet_indices[-tail_keep]
+                dropped_count = len(bullet_indices) - (head_keep + tail_keep)
+                rollup_bullet = (
+                    f"- [Consolidated {dropped_count} intermediate session-log entries from prior "
+                    f"compactions; exact identifiers preserved in Anchor Index and searchable via session_search]"
+                )
+                new_body = body_lines[:head_end_idx] + [rollup_bullet] + body_lines[tail_start_idx:]
+                sec = heading + "\n" + "\n".join(new_body)
+
+        elif heading == _PRUNED_SKILLS_SECTION_HEADING:
+            for bl in body_lines:
+                s = bl.strip()
+                if s and s not in pruned_skill_lines:
+                    pruned_skill_lines.append(s)
+            if pruned_skills_idx is None:
+                pruned_skills_idx = len(out_parts)
+                out_parts.append(None)
+            continue
+
+        out_parts.append(sec)
+
+    if pruned_skills_idx is not None:
+        out_parts[pruned_skills_idx] = (
+            _PRUNED_SKILLS_SECTION_HEADING + "\n" + "\n".join(pruned_skill_lines)
+            if pruned_skill_lines else None
+        )
+
+    joined = "\n\n".join(p for p in out_parts if p)
+    if _SKILL_PRUNED_MARKER_RE.search(joined):
+        joined = _reinject_pruned_skill_markers(joined, [])
+    return joined
 
 # 2.5% of the context window, clamped; floor keeps small models workable.
 LEAN_TAIL_FLOOR_TOKENS = 10_000
@@ -948,11 +1281,19 @@ def _synthetic_user_row(content: str) -> bool:
     return content.lstrip().startswith(_SYNTHETIC_USER_ROW_PREFIXES)
 
 
+_ATTACHED_CONTEXT_FOOTER_RE = re.compile(
+    r"\n*--- (?:Context Warnings|Attached Context) ---\n.*",
+    re.DOTALL,
+)
+
+
 def _typed_user_text(content: str) -> str:
     """A ``/skill``, bundle or auto-load turn as the user typed it (``/skill do X``); other text unchanged.
-    Its inline skill body is not the user's words — it is carried by a ``[SKILL_PRUNED: ...]`` marker instead."""
+    Its inline skill body and any expanded ``@file:``/``@folder:`` attachment blocks are not the user's words —
+    skills are carried by ``[SKILL_PRUNED: ...]`` markers and file paths remain in the ``@file:`` token."""
     from agent.skill_commands import describe_skill_invocation, skills_loaded_by_scaffold
-    return (describe_skill_invocation(content, separator=" ") or "") if skills_loaded_by_scaffold(content) else content
+    cleaned = _ATTACHED_CONTEXT_FOOTER_RE.sub("", content) if isinstance(content, str) else content
+    return (describe_skill_invocation(cleaned, separator=" ") or "") if skills_loaded_by_scaffold(cleaned) else cleaned
 
 
 def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
@@ -1035,9 +1376,9 @@ _ANCHOR_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
     ("commits", re.compile(r"\b[0-9a-f]{9,40}\b"), 40),
     ("branches", re.compile(r"\b(?:fix|feat|docs|refactor|chore|salvage|ent)/[A-Za-z0-9._/-]{3,60}"), 40),
     ("files", re.compile(r"\b[\w./-]+/[\w.-]+\.(?:py|ts|tsx|js|rs|md|yaml|yml|json|toml|sh)\b"), 80),
+    ("urls", re.compile(r"https?://[^\s)\"'\\]{10,110}"), 40),
     ("errors", re.compile(r"\b(?:[A-Z][a-zA-Z]*Error|Exception|ENOSPC|EACCES|SIGKILL|Traceback)\b[^\n]{0,90}"), 40),
     ("handles", re.compile(r"@[A-Za-z0-9-]{3,30}\b"), 40),
-    ("urls", re.compile(r"https?://[^\s)\"']{10,110}"), 30),
 ]
 _ANCHOR_NOISE = frozenset({
     "@teknium", "@teknium1",  # session owner, in every transcript
@@ -1046,7 +1387,11 @@ _ANCHOR_NOISE = frozenset({
 
 def _build_anchor_index(turns: list[dict[str, Any]]) -> str:
     """Regex-harvest exact identifiers from the compacted region (LLM-free); per-category caps, most-frequent first."""
-    contents = (_typed_user_text(m["content"]) if m.get("role") == "user" and isinstance(m.get("content"), str) else m.get("content") for m in turns)
+    contents = (
+        (_typed_user_text(m["content"]) if m.get("role") == "user" and isinstance(m.get("content"), str) else (m.get("content") if isinstance(m.get("content"), str) else ""))
+        + ("\n" + "\n".join(m["_anchor_urls"]) if m.get("_anchor_urls") else "")
+        for m in turns
+    )
     text = "\n".join(c for c in contents if isinstance(c, str) and c)
     if not text:
         return ""
@@ -1064,9 +1409,21 @@ def _build_anchor_index(turns: list[dict[str, Any]]) -> str:
         if not counts:
             continue
         ranked = sorted(counts, key=lambda v: (-counts[v], -last_seen[v]))[:cap]
-        line = f"{label}: " + ", ".join(f"{v}(x{counts[v]})" if counts[v] > 1 else v for v in ranked)
-        if used + len(line) > _LEAN_ANCHOR_BUDGET_CHARS:
+        rem = _LEAN_ANCHOR_BUDGET_CHARS - used - len(label) - 2
+        if rem <= 0:
             break
+        kept: list[str] = []
+        cur_len = 0
+        for v in ranked:
+            item = f"{v}(x{counts[v]})" if counts[v] > 1 else v
+            add_len = len(item) + (2 if kept else 0)
+            if cur_len + add_len > rem:
+                break
+            kept.append(item)
+            cur_len += add_len
+        if not kept:
+            continue
+        line = f"{label}: " + ", ".join(kept)
         sections.append(line)
         used += len(line)
     if not sections:
@@ -1103,22 +1460,83 @@ def _skill_view_call_sites(messages: list[dict[str, Any]]) -> list[tuple[int, st
     return sites
 
 
+_SYNTHETIC_MID_TURN_USER_PREFIXES: tuple[str, ...] = (
+    "[context compaction",
+    "[prior context",
+    "[your active task list",
+    "[skills pruned during compression",
+    "[still in progress",
+    "[important: context",
+    "[important: background",
+    "[async delegation",
+    "[planning state preserved",
+    "[system:",
+    "cronjob response:",
+)
+
+_PINNED_OUTBOUND_SKILL_NAMES: frozenset[str] = frozenset({
+    "outbound-comms",
+    "humanizer",
+    "google-chat-comms",
+    "svensk-avtalsgranskning",
+    "outbound-quality-guard",
+    "outbound-guard-wordlist",
+    "always-verify",
+    "dab",
+    "rca",
+    "deep-research",
+    "research-and-plan",
+    "verification-gate-construction",
+    "grounding-preflight",
+    "grounded-citations",
+    "plane-tickets",
+    "emir-work-conventions",
+})
+
+
+def _is_synthetic_mid_turn_user_row(msg: dict[str, Any]) -> bool:
+    """Return True if a role=='user' message is a runtime-injected mid-turn wrapper
+    (compaction handoff, preserved task list, context pressure nudge, async delegation
+    or cron wrapper) rather than a fresh human turn."""
+    if msg.get("role") != "user":
+        return False
+    if msg.get("_synthetic_origin"):
+        return True
+    content = msg.get("content")
+    if not isinstance(content, str):
+        return False
+    return content.lstrip().lower().startswith(_SYNTHETIC_MID_TURN_USER_PREFIXES)
+
+
 def _collect_protected_skill_names(messages: list[dict[str, Any]], prune_boundary: int) -> set[str]:
-    """Skill names (lower-cased) whose skill_view bodies must survive Phase-1 demotion.
-    Recently loaded, loaded inside the protected tail, or named by a tail user message. Applies to
-    Phase-1/2 only; the Pass-4 pressure demotion ignores it."""
+    """Skill names (lower-cased) whose skill_view bodies must survive Phase-1/2 demotion: loaded in
+    the recent window, active user turn, or protected tail, named by active/tail user messages,
+    or pinned outbound/safety skills."""
     total = len(messages)
     if not total:
         return set()
-    recent_start = max(0, total - _SKILL_PRUNE_RECENT_WINDOW)
-    tail_start = max(0, prune_boundary)
+    last_user = next(
+        (
+            i for i in range(total - 1, -1, -1)
+            if messages[i].get("role") == "user" and not _is_synthetic_mid_turn_user_row(messages[i])
+        ),
+        total,
+    )
+    protect_from = min(max(0, total - _SKILL_PRUNE_RECENT_WINDOW), max(0, prune_boundary), last_user)
     tail_user_texts = [
-        m["content"].lower() for m in messages[tail_start:]
-        if m.get("role") == "user" and isinstance(m.get("content"), str) and m["content"]
+        m["content"].lower() for m in messages[min(max(0, prune_boundary), last_user):]
+        if (
+            m.get("role") == "user"
+            and not _is_synthetic_mid_turn_user_row(m)
+            and isinstance(m.get("content"), str)
+            and m["content"]
+        )
     ]
     return {
         skill.lower() for idx, skill in _skill_view_call_sites(messages)
-        if idx >= min(recent_start, tail_start) or any(skill.lower() in text for text in tail_user_texts)
+        if idx >= protect_from
+        or skill.lower().rsplit("/", 1)[-1] in _PINNED_OUTBOUND_SKILL_NAMES
+        or any(skill.lower() in text or skill.lower().rsplit("/", 1)[-1] in text for text in tail_user_texts)
     }
 
 
@@ -1389,7 +1807,7 @@ def _restated_request_text(content: Any) -> str:
     text = _content_text_for_contains(content).strip()
     if _INFLIGHT_TASK_REPLAY_HEADER in text:
         text = text.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
-    return text
+    return _typed_user_text(text).strip()
 
 
 def _authored_request_text(content: Any) -> str:
@@ -1707,6 +2125,30 @@ def _sum_web_extract(name, args, content, content_len, line_count):
     return f"[web_extract] {first} ({content_len:,} chars)" + _result_failure_suffix(content)
 
 
+def _sum_web_search(name, args, content, content_len, line_count):
+    query = str(args.get("query", "?"))
+    q_disp = query if len(query) <= 60 else query[:57] + "..."
+    payload = _json_dict(content)
+    rows = []
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, dict) and isinstance(data.get("web"), list):
+            rows = data["web"]
+        elif isinstance(payload.get("results"), list):
+            rows = payload["results"]
+    urls = [r.get("url") for r in rows if isinstance(r, dict) and isinstance(r.get("url"), str) and r.get("url")]
+    url_part = ""
+    if urls:
+        shown = []
+        for u in urls[:5]:
+            if shown and sum(len(x) + 2 for x in shown) + len(u) > 265:
+                break
+            shown.append(u)
+        more = f" (+{len(urls) - len(shown)} more)" if len(urls) > len(shown) else ""
+        url_part = f" -> {', '.join(shown)}{more}"
+    return f"[web_search] query='{q_disp}'{url_part} ({content_len:,} chars result)" + _result_failure_suffix(content)
+
+
 def _sum_delegate_task(name, args, content, content_len, line_count):
     goal = _str_arg(args, "goal")
     goal = goal if len(goal) <= 60 else goal[:57] + "..."
@@ -1716,6 +2158,12 @@ def _sum_delegate_task(name, args, content, content_len, line_count):
 def _sum_execute_code(name, args, content, content_len, line_count):
     code_str = _str_arg(args, "code")
     code_preview = code_str[:60].replace("\n", " ") + ("..." if len(code_str) > 60 else "")
+    payload = _json_dict(content)
+    out_str = payload.get("output") if isinstance(payload, dict) else None
+    if isinstance(out_str, str) and out_str.strip():
+        out_flat = " ⏎ ".join(line.strip() for line in out_str.strip().splitlines() if line.strip())
+        out_snippet = out_flat if len(out_flat) <= 200 else out_flat[:197] + "..."
+        return f"[execute_code] `{code_preview}` -> {out_snippet} ({line_count} lines output)"
     return f"[execute_code] `{code_preview}` ({line_count} lines output)"
 
 
@@ -1956,7 +2404,7 @@ _TOOL_RESULT_SUMMARIZERS = {
         ("browser_navigate", "browser_click", "browser_snapshot", "browser_type", "browser_scroll", "browser_vision"),
         _sum_browser,
     ),
-    "web_search": _sum_template("[web_search] query='{query}' ({content_len:,} chars result)", query="?"),
+    "web_search": _sum_web_search,
     "web_extract": _sum_web_extract,
     "delegate_task": _sum_delegate_task,
     "execute_code": _sum_execute_code,
@@ -1978,11 +2426,25 @@ _TOOL_RESULT_SUMMARIZERS = {
 
 def _json_dict(text: Any) -> dict:
     """Parse ``text`` as a JSON object; ``{}`` for empty, invalid, or non-object input."""
+    if isinstance(text, str) and text.startswith("<untrusted_tool_result"):
+        _, sep, body = text.partition("\n\n")
+        if sep:
+            text = body.removesuffix("</untrusted_tool_result>").strip()
     try:
         parsed = json.loads(text) if text else {}
     # Just-loaded / actively-referenced skills survive verbatim (#32106). Pass-4 pressure demotion overrides
     # this.
     except (json.JSONDecodeError, TypeError):
+        if isinstance(text, str):
+            stripped = text.lstrip()
+            if stripped.startswith("{"):
+                try:
+                    parsed, end = json.JSONDecoder().raw_decode(stripped)
+                    tail = stripped[end:].strip()
+                    if isinstance(parsed, dict) and tail.startswith(("[", "---")):
+                        return parsed
+                except (json.JSONDecodeError, ValueError):
+                    pass
         return {}
     return parsed if isinstance(parsed, dict) else {}
 
@@ -2144,6 +2606,10 @@ class ContextCompressor(
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
 
+    _verify_compaction_cleared_threshold: bool = False
+    _last_post_compaction_prompt_tokens: int = 0
+    _last_compression_made_progress: bool = False
+
     @property
     def name(self) -> str:
         return "compressor"
@@ -2298,6 +2764,9 @@ class ContextCompressor(
         self._fallback_probe_at = 0.0
         # Armed at a completed boundary; consumed by the next real prompt count in update_from_response().
         self._verify_compaction_cleared_threshold = False
+        # P0-2: Real prompt tokens observed immediately after a completed compaction that cleared
+        # threshold_tokens; used to require a minimum growth step before re-triggering compaction.
+        self._last_post_compaction_prompt_tokens = 0
         # Lets the boundary wrapper tell a completed rewrite from a no-op without inferring from length.
         self._last_compression_made_progress = False
         # Transient summary errors must not block a fresh session.
@@ -2709,6 +3178,7 @@ class ContextCompressor(
             # The overload budget rode those cooldowns; a new runtime restarts it too.
             self._reset_consecutive_overload_aborts()
         self._verify_compaction_cleared_threshold = self._last_compression_made_progress = False
+        self._last_post_compaction_prompt_tokens = 0
         # Runway was computed against the previous model's trigger; clear the durable copy too.
         self._reset_proactive_prune_rearm()
         self._clear_durable_proactive_prune_rearm()
@@ -2808,6 +3278,7 @@ class ContextCompressor(
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
+        reclaim_lockout_warning_callback: "Callable[[str], None] | None" = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2839,6 +3310,11 @@ class ContextCompressor(
         # (#101889) so a tool loop riding above the threshold warns once per
         # distinct reason + rearm snapshot instead of every iteration.
         self._last_reclaim_block_warn: tuple[str, int] | None = None
+        # Optional status-rail emitter for the user-visible companion of the
+        # no-op log warning above (the host agent's ``_emit_warning``). None =
+        # log-only, the pre-callback behavior (standalone/eval constructions
+        # never pass one) — never a new global.
+        self.reclaim_lockout_warning_callback = reclaim_lockout_warning_callback
         self.min_tail_user_messages = min_tail_user_messages
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
@@ -2908,9 +3384,15 @@ class ContextCompressor(
         if self.last_prompt_tokens > 0:
             self.last_real_prompt_tokens = self.last_prompt_tokens
             self._provider_omits_usage = False
-            if self.last_prompt_tokens < self.threshold_tokens:
-                # Any real reading below the trigger proves the prompt fits: clear the latch. The fallback streak survives.
-                self._record_ineffective_compression_verdict(0)
+            if not self._verify_compaction_cleared_threshold:
+                clear_line = (
+                    self.threshold_tokens - int(self.threshold_tokens * 0.05)
+                    if (self.threshold_tokens >= 100_000 and self._last_post_compaction_prompt_tokens > 0)
+                    else self.threshold_tokens
+                )
+                if self.last_prompt_tokens < clear_line:
+                    # Any real reading below the trigger proves the prompt fits: clear the latch. The fallback streak survives.
+                    self._record_ineffective_compression_verdict(0)
             # Anti-thrash verdict lives HERE: effectiveness is "prompt under threshold" per the provider's real count,
             # not "messages shrank"; should_compress() runs twice per turn with mixed measures and would reset it.
             # Anti-thrashing verdict, judged HERE because this is the only place that sees the provider's
@@ -2935,7 +3417,16 @@ class ContextCompressor(
                             self._ineffective_compression_count,
                         )
                 else:
-                    self._record_ineffective_compression_verdict(0)
+                    shallow_repeat = (
+                        self.threshold_tokens >= 100_000
+                        and self._last_post_compaction_prompt_tokens > 0
+                        and self.last_prompt_tokens >= self.threshold_tokens - int(self.threshold_tokens * 0.05)
+                    )
+                    self._last_post_compaction_prompt_tokens = self.last_prompt_tokens
+                    if shallow_repeat:
+                        self._record_ineffective_compression_verdict(self._ineffective_compression_count + 1)
+                    else:
+                        self._record_ineffective_compression_verdict(0)
 
     def maybe_seed_preflight_display_tokens(self, preflight_tokens: int) -> None:
         """Display-only seed of ``last_prompt_tokens`` from the 0 state; the -1 sentinel and real readings are preserved."""
@@ -2982,6 +3473,18 @@ class ContextCompressor(
         the overflow handler compacts reactively in every case."""
         if rough_tokens < self.threshold_tokens:
             return False
+        # Hard safety cap against the 200k long-context pricing cliff (e.g. Vertex
+        # Gemini 2x input tier at >200k tokens): when threshold_tokens is pinned
+        # below 180k on a large-window model (>=500k), never defer an un-anchored
+        # estimate >= 180k unless a native Responses checkpoint (which zeros
+        # last_compression_rough_tokens) is awaiting its first real usage reading.
+        if (
+            rough_tokens >= 180_000
+            and 0 < self.threshold_tokens < 180_000
+            and self.context_length >= 500_000
+            and not self.awaiting_real_usage_after_compression
+        ):
+            return False
         if self.awaiting_real_usage_after_compression:
             return True
         # Estimate magnitude is not evidence of overflow, even past the full window.
@@ -2989,6 +3492,25 @@ class ContextCompressor(
         if self.last_real_prompt_tokens >= self.threshold_tokens:
             return False
         return not self._provider_omits_usage
+
+    def _post_compaction_hard_ceiling(self) -> int:
+        """Maximum prompt token ceiling allowed for the post-compaction step floor."""
+        if 0 < self.threshold_tokens < 180_000 and self.context_length >= 500_000:
+            return 180_000
+        if self.context_length > 0:
+            return max(self.threshold_tokens, int(self.context_length * 0.90))
+        return max(self.threshold_tokens, int(self.threshold_tokens * 1.15))
+
+    def _effective_compression_threshold(self) -> int:
+        """Effective trigger threshold accounting for the post-compaction minimum growth step."""
+        if self._last_post_compaction_prompt_tokens <= 0:
+            return self.threshold_tokens
+        min_step = max(2_000, int(self.threshold_tokens * 0.12))
+        step_floor = min(
+            self._last_post_compaction_prompt_tokens + min_step,
+            self._post_compaction_hard_ceiling(),
+        )
+        return max(self.threshold_tokens, step_floor)
 
     def should_compress(self, prompt_tokens: int | None = None) -> bool:
         """True when compression should run now (anti-thrash included; see :meth:`should_compress_info` for the reason)."""
@@ -2999,7 +3521,7 @@ class ContextCompressor(
         ``reason`` is None unless compression is needed but blocked: ``"cooldown:<seconds>"`` or
         ``"ineffective"``. Callers should surface a warning when it is non-None."""
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-        if tokens < self.threshold_tokens:
+        if tokens < self._effective_compression_threshold():
             return False, None
         if self._automatic_compression_blocked():
             return False, self._compression_block_reason() or "blocked"
@@ -3200,7 +3722,22 @@ class ContextCompressor(
             _skill = _json_dict(tool_args).get("name", "")
             if isinstance(_skill, str) and _skill.lower() in protected_skills:
                 return False
-        result[idx] = {**msg, "content": _summarize_tool_result(tool_name, tool_args, content)}
+        payload_urls: list[str] = []
+        if tool_name == "web_search":
+            _pl = _json_dict(content)
+            _web = (_pl.get("data") or {}).get("web") if isinstance(_pl, dict) else None
+            if isinstance(_web, list):
+                payload_urls = [r["url"] for r in _web if isinstance(r, dict) and isinstance(r.get("url"), str)]
+        raw_urls = list(dict.fromkeys(
+            payload_urls + [
+                m.group(0).strip().rstrip(".,;:")
+                for m in re.finditer(r"https?://[^\s)\"'\\]{10,110}", content[:65536])
+            ]
+        ))[:10]
+        updated = {**msg, "content": _summarize_tool_result(tool_name, tool_args, content)}
+        if raw_urls:
+            updated["_anchor_urls"] = raw_urls
+        result[idx] = updated
         return True
 
     def _tail_soft_ceiling(self, token_budget: int) -> int:
@@ -3216,38 +3753,71 @@ class ContextCompressor(
     def _pressure_demote_tail(
         self, result: list[dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
         call_id_to_tool: dict[str, tuple[str, str]], min_prune_chars: int, spared: range,
+        protected_skills: set[str] | None = None,
     ) -> int:
         """Pass 4: demote tool-result bodies inside the protected tail when it alone exceeds the soft
-        budget (#61932). Keeps a short recent floor and the ``spared`` pending tool round verbatim; overrides
-        the skill guard (else the dead-end recurs). Tool-call arguments stay byte-exact. Returns the number of
-        tool results demoted."""
+        budget (#61932). Keeps a short recent floor and the ``spared`` pending tool round verbatim; shrinks
+        non-protected tool outputs first and only overrides the skill guard when protected skills alone still
+        exceed the soft ceiling. Tool-call arguments stay byte-exact. Returns the number of
+        tool results demoted. Pressure counts only role=="tool" rows — the only rows demotion can shrink —
+        so a tail inflated by large user/assistant rows (a stacked skill bundle, a pasted report) does not
+        fire demotion that can never reach the ceiling."""
         soft_ceiling = self._tail_soft_ceiling(protect_tail_tokens)
         demote_end = len(result) - min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
         start = max(0, prune_boundary)
 
         def _protected_region_tokens() -> int:
-            return sum(_estimate_msg_budget_tokens(result[i]) for i in range(start, len(result)))
+            # Demotable tokens only: this pass's sole lever is tool-result demotion, so measuring
+            # the whole region (all roles) makes an undemotable user/assistant row look like
+            # pressure — the loop then demotes every tool body, still never reaches the ceiling,
+            # and the last resort nukes the newest body too, destroying working memory for zero
+            # reclaimed budget (stacked-skill-bundle sessions, 2026-10-22). Include parent
+            # assistant(tool_calls) rows paired with tool results so tool-group pressure is accurate.
+            return sum(
+                _estimate_msg_budget_tokens(result[i])
+                for i in range(start, len(result))
+                if result[i].get("role") == "tool"
+                or (result[i].get("role") == "assistant" and result[i].get("tool_calls"))
+            )
 
         demoted = 0
 
-        def _shrink_at(i: int) -> None:
+        def _shrink_at(i: int, skills_guard: set[str] | None = None) -> None:
             nonlocal demoted
             if i in spared:
                 return
-            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
+            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, skills_guard):
                 demoted += 1
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
             return 0
-        for i in range(start, demote_end):
-            _shrink_at(i)
-            if _protected_region_tokens() <= soft_ceiling:
-                break
+        # Sub-pass 4a: shrink non-protected tool bodies first so ordinary read/search/exec
+        # outputs absorb tail pressure before active/pinned skill_view instructions are touched.
+        if protected_skills:
+            for i in range(start, demote_end):
+                _shrink_at(i, protected_skills)
+                if _protected_region_tokens() <= soft_ceiling:
+                    break
+        # Sub-pass 4b: if protected skills alone still push the region over the soft ceiling
+        # (#61932 guard), fall back to unguarded demotion.
+        if _protected_region_tokens() > soft_ceiling:
+            for i in range(start, demote_end):
+                _shrink_at(i, None)
+                if _protected_region_tokens() <= soft_ceiling:
+                    break
         # If the recent floor is still dominated by huge tool bodies, demote all but the newest.
         if _protected_region_tokens() > soft_ceiling:
             last_tool_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "tool"), None)
-            for i in (i for i in range(start, len(result)) if i != last_tool_idx):
-                _shrink_at(i)
+            if protected_skills:
+                for i in (i for i in range(start, len(result)) if i != last_tool_idx):
+                    _shrink_at(i, protected_skills)
+                    if _protected_region_tokens() <= soft_ceiling:
+                        break
+            if _protected_region_tokens() > soft_ceiling:
+                for i in (i for i in range(start, len(result)) if i != last_tool_idx):
+                    _shrink_at(i, None)
+                    if _protected_region_tokens() <= soft_ceiling:
+                        break
             # Last resort, unless it is the spared pending round: the newest body may exceed the soft budget
             # alone (one 200KB read); summarize it.
             if (
@@ -3311,6 +3881,7 @@ class ContextCompressor(
         if protect_tail_tokens is not None and protect_tail_tokens > 0 and result:
             pruned += self._pressure_demote_tail(
                 result, prune_boundary, protect_tail_tokens, call_id_to_tool, min_prune_chars, spared,
+                protected_skills,
             )
         return result, pruned
 
@@ -3383,6 +3954,16 @@ class ContextCompressor(
             "n/a" if before is None else f"{int(before):,}",
             f"{int(self._proactive_prune_rearm_tokens):,}",
         )
+        # User-visible companion on the agent's status rail, gated by the SAME
+        # dedup key as the log above — never more often than the log fires.
+        # Best-effort: a broken status rail must not break the prune path, and
+        # a missing callback (standalone/eval construction) is log-only.
+        callback = self.reclaim_lockout_warning_callback
+        if callback is not None:
+            try:
+                callback(RECLAMATION_LOCKOUT_WARNING)
+            except Exception:
+                logger.debug("Reclamation lockout warning emission failed", exc_info=True)
 
     def _compute_summary_budget(self, turns_to_summarize: list[dict[str, Any]]) -> int:
         """Scale the summary token budget with content size and context window."""
@@ -3543,7 +4124,10 @@ Recovered from a deterministic fallback because the LLM context summarizer was u
 Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
 ## Blocked
-{_bullets(anchors["blockers"], limit=5)}
+{self._blocked_bullets_tagged(anchors['blockers'][:5])}
+Note: these blockers are tool-reported error text (observed failures — verified by the
+tool that returned them). Any "cannot/impossible/unsupported" claim NOT in this list is
+an untested narrative inference: re-test against live state before repeating it.
 
 ## Key Decisions
 None recoverable from deterministic fallback.
@@ -3687,6 +4271,38 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             raise AuxiliaryExplicitCancellation()
         self._note_aux_route_fallback(_aux_route)
         # Reasoning-field fallback (DeepSeek/Qwen/Kimi put the summary in reasoning_content); capped.
+        # Heal warm-process auxiliary_client.extract_content_or_reasoning if it predates 564579ae9c
+        # (auxiliary_client is in _STATEFUL_SKIP_MODS so hot-reload skips it unless grafted in-place).
+        if extract_content_or_reasoning({"content": "`_probe`"}) != "`_probe`":
+            import agent.auxiliary_client as _ac_mod
+            from agent.agent_runtime_helpers import _REASONING_BLOCK_PATTERNS as _rbp
+
+            _orig_ecor = _ac_mod.extract_content_or_reasoning
+
+            def _healed_extract_content_or_reasoning(resp, *, max_reasoning_chars: int | None = None) -> str:
+                msg = _ac_mod._coerce_llm_message(resp)
+                if msg is None:
+                    return ""
+                if isinstance(msg, str):
+                    return msg.strip()
+                raw = _ac_mod._message_field(msg, "content")
+                if not isinstance(raw, str):
+                    raw = str(raw) if raw else ""
+                c = raw.strip()
+                if c:
+                    cleaned = c
+                    for pat in _rbp:
+                        cleaned = pat.sub(lambda m: m.group(1) if m.lastindex and m.group(1) is not None else "", cleaned)
+                    cleaned = cleaned.strip()
+                    if cleaned:
+                        return cleaned
+                return _orig_ecor(
+                    {"choices": [{"message": {k: _ac_mod._message_field(msg, k) for k in ("reasoning", "reasoning_content", "reasoning_details")}}]},
+                    max_reasoning_chars=max_reasoning_chars,
+                )
+
+            _ac_mod.extract_content_or_reasoning = _healed_extract_content_or_reasoning
+            globals()["extract_content_or_reasoning"] = _healed_extract_content_or_reasoning
         content = extract_content_or_reasoning(response, max_reasoning_chars=8000)
         where = f"(provider={self.provider or 'auto'} model={self.summary_model or self.model})"
         # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels) return a well-formed HTTP 200
@@ -3778,8 +4394,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             summary = _redact_compaction_text(content.strip())
             # Restore any [SKILL_PRUNED] marker the summarizer paraphrased away.
             # See #32106.
+            summary = _strip_deterministic_lean_sections(summary)
+            summary = _compact_previous_summary_lists(summary)
             summary = _reinject_pruned_skill_markers(summary, _pruned_skill_names)
             summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
+            summary = _scrub_ungrounded_summary_id_labels(
+                summary, content_to_summarize, self._previous_summary, memory_context, focus_topic
+            )
             summary = self._augment_summary_lean(summary, turns_to_summarize)
             self._validate_summary_user_provenance(summary, has_user_turn)
             # A detached stale attempt must not publish its late summary onto shared compressor state:
@@ -3837,13 +4458,16 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _session_log_section = _LEAN_SESSION_LOG_SECTION if getattr(self, "tail_mode", "lean") == "lean" else ""
         _template_sections = self._summary_template_sections(_section, summary_budget, _session_log_section)
         if self._previous_summary:
-            # Iterative update. Bound the previous summary too: a rehydrated handoff can be huge.
-            _bounded_previous_summary = self._bound_summary_input(self._previous_summary)
+            # Iterative update. Compact monotonically growing action/session-log lists and strip
+            # deterministic lean tail sections before bounding total input length.
+            _bounded_previous_summary = self._bound_summary_input(
+                _compact_previous_summary_lists(self._previous_summary)
+            )
             instructions = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering; keep any '1-N. [Consolidated ...]' rollup line intact and cap detailed numbered items to the 40 most recent actions). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
 {_template_sections}"""
             source_material = f"""PREVIOUS SUMMARY:
@@ -3917,7 +4541,12 @@ Be specific with file paths, commands, line numbers, and results.]
 - Environment details that matter]
 
 ## Blocked
-[Any blockers, errors, or issues not yet resolved. Include exact error messages.]
+[Any blockers, errors, or issues not yet resolved. Include exact error messages.
+TRUTH CLASSES — tag EVERY item: prefix "[KVITTO]" + a one-line receipt (command output,
+log row, HTTP response) when the blocker was actually observed/verified in the turns above;
+prefix "[OTESTAD]" when it is a conclusion or assumption that was never tested (e.g. "X is
+impossible because tool Y lacks Z" — that is an untested inference, not an observation).
+Never invent a receipt. If unsure, tag [OTESTAD].]
 
 ## Key Decisions
 [Important technical decisions and WHY they were made]
@@ -4065,7 +4694,14 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _with_summary_prefix(cls, summary: str) -> str:
         """Normalize summary text to the current compaction handoff format."""
         text = cls._strip_summary_prefix(summary)
+        if text:
+            text = _lint_blocked_tags(text)
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
+
+    @staticmethod
+    def _blocked_bullets_tagged(blockers: list[str]) -> str:
+        """Fallback blockers are tool-observed error text — receipts, so tag [KVITTO]."""
+        return "\n".join(f"[KVITTO] tool error: {b}" for b in blockers)
 
     @staticmethod
     def _starts_with_summary_prefix(text: str) -> bool:
@@ -4318,6 +4954,8 @@ Write only the summary body. Do not include any preamble or prefix."""
                     prior = prior[len(_MERGED_PRIOR_CONTEXT_HEADER):].lstrip()
             elif _SUMMARY_END_MARKER in content:
                 prior = content.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
+                if prior.startswith(_INFLIGHT_TASK_REPLAY_HEADER):
+                    prior = ""
             else:
                 prior = ""
             return _unwrapped(prior) if prior else None
@@ -4339,6 +4977,8 @@ Write only the summary body. Do not include any preamble or prefix."""
                     text = _part_text(item)
                     if isinstance(text, str) and _SUMMARY_END_MARKER in text:
                         remainder = text.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
+                        if remainder.startswith(_INFLIGHT_TASK_REPLAY_HEADER):
+                            remainder = ""
                         legacy_blocks = [_with_part_text(item, remainder)] if remainder else []
                         legacy_blocks += [later.copy() if isinstance(later, dict) else later for later in content[index + 1:]]
                         return _unwrapped(legacy_blocks) if legacy_blocks else None
@@ -4805,6 +5445,32 @@ Write only the summary body. Do not include any preamble or prefix."""
         if token_budget is None:
             token_budget = self.tail_token_budget
         n = len(messages)
+        # Advance past leading standalone compaction handoffs: _scan_window_handoffs strips them
+        # from turns_to_summarize, so counting them in the tail walk or using them as the progress
+        # floor leaves an empty post-handoff window (#empty_post_handoff_window).
+        post_handoff_start = head_end
+        while (
+            post_handoff_start < n
+            and self._is_context_summary_message(messages[post_handoff_start])
+            and self._strip_context_summary_handoff_message(messages[post_handoff_start]) is None
+        ):
+            post_handoff_start += 1
+        if post_handoff_start < n - 1:
+            aligned_post_handoff = self._align_boundary_forward(messages, post_handoff_start)
+            # When _compress_window retained a single assistant role-collision bridge immediately
+            # after the standalone handoff and before the active user turn, anchoring at
+            # last_user_idx would make _compress_window pull compress_end back to post_handoff_start
+            # (leaving only the handoff in the middle window). Advance past that bridge just like
+            # _align_boundary_forward does for an assistant(tool_calls)+tool bridge.
+            if (
+                post_handoff_start > head_end
+                and aligned_post_handoff == post_handoff_start
+                and aligned_post_handoff + 1 < n
+                and messages[aligned_post_handoff].get("role") == "assistant"
+                and aligned_post_handoff + 1 == self._find_last_user_message_idx(messages, aligned_post_handoff)
+            ):
+                aligned_post_handoff += 1
+            head_end = aligned_post_handoff
         # Bounded recent-message floor: protect_last_n is a minimum up to a cap so bulky tool runs
         # aren't all kept.
         available_tail = max(0, n - head_end - 1)
@@ -4821,8 +5487,19 @@ Write only the summary body. Do not include any preamble or prefix."""
         walk_floor = 0 if soft_ceiling >= min_tail * _estimate_msg_budget_tokens({}) else min_tail
         price = tail_cut_pricer(self, messages, head_end)
         cut_idx, accumulated = self._walk_tail_budget(messages, head_end, soft_ceiling, walk_floor, cut_at_break=False, price=price)
-        # Whole transcript fits soft_ceiling: re-cut with the raw budget so a worthwhile middle exists (else #40803 loop).
-        if cut_idx <= head_end and 0 < accumulated <= soft_ceiling:
+        last_user_idx = self._find_last_user_message_idx(messages, head_end)
+        # Whole transcript (or the entire post-user tail behind an oversized skill-scaffolded user
+        # turn) fits soft_ceiling: re-cut with the raw budget so a worthwhile middle exists (else
+        # #40803 loop / #empty_post_handoff_window when raw user scaffold + tail > soft_ceiling).
+        if (
+            cut_idx <= head_end
+            or cut_idx == last_user_idx + 1
+            or (
+                cut_idx - max(head_end, last_user_idx + 1) <= _MAX_TAIL_MESSAGE_FLOOR // 2
+                and n - max(head_end, last_user_idx + 1) > self.protect_last_n
+                and accumulated > token_budget
+            )
+        ) and 0 < accumulated <= soft_ceiling:
             cut_idx, _ = self._walk_tail_budget(messages, head_end, token_budget, min_tail, cut_at_break=True, price=price)
 
         fallback_cut = n - min_tail
@@ -4834,14 +5511,25 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Small conversations: force a cut after the head so compression still removes something.
         if cut_idx <= head_end:
             cut_idx = max(fallback_cut, head_end + 1)
-        cut_idx = self._align_boundary_backward(messages, cut_idx)
+        aligned_back = self._align_boundary_backward(messages, cut_idx)
+        aligned_fwd = self._align_boundary_forward(messages, cut_idx) if aligned_back < cut_idx else cut_idx
+        if (
+            aligned_back < cut_idx
+            and (
+                0 <= last_user_idx < cut_idx
+                or aligned_fwd - aligned_back > 2
+            )
+            and sum(map(price, range(aligned_back, n))) > soft_ceiling
+        ):
+            cut_idx = aligned_fwd if cut_idx < aligned_fwd < n else aligned_back
+        else:
+            cut_idx = aligned_back
         # Anchors below keep the most recent user turn (active task, #10896) and the latest visible
         # assistant reply (#29824) in the tail; each only walks the cut backward, so chaining them is
         # normally monotonic. One bounded exception: when a single in-progress turn alone exceeds the
         # soft ceiling, anchoring its opening request retains the whole turn and blows the budget by
         # design — then the clean tool-group boundary above wins and that request rides the handoff
         # (#80449). The N-user promise (#70250) is never relaxed.
-        last_user_idx = self._find_last_user_message_idx(messages, head_end)
         user_anchored_cut = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
         split_oversized_turn = False
         # ``user_anchored_cut < cut_idx`` means the anchor found a real user turn strictly inside the
@@ -4855,13 +5543,22 @@ Write only the summary body. Do not include any preamble or prefix."""
             and _is_text_only_content(messages[last_user_idx].get("content"))
             # A single oversized user message is indivisible and must stay verbatim in the tail; this
             # exception is only for aggregate turn growth after a normally sized opening request.
-            and _estimate_msg_budget_tokens(messages[last_user_idx]) <= soft_ceiling
+            # Price the authored request (without /skill scaffolds or gateway reply pointers, which
+            # compaction prunes/strips on restatement) so stacked-skill turns are not pinned in tail.
+            and _estimate_msg_budget_tokens(
+                {"role": "user", "content": _authored_request_text(messages[last_user_idx].get("content"))}
+            ) <= soft_ceiling
             # The token ceiling is the only size guard: the request is restated verbatim after the
             # handoff, so a character cap only pinned long requests (e.g. /goal prompts) in place.
             # Only split when there is real turn body to summarize: if the oversized weight is the
             # active turn's own newest group, the pre-anchor cut retains it anyway, so taking the
             # active request out of the tail buys no reclaim and loses the #10896 anchor.
-            and any(messages[i].get("tool_calls") for i in range(last_user_idx, cut_idx))
+            and (
+                any(messages[i].get("tool_calls") for i in range(last_user_idx, cut_idx))
+                or price(last_user_idx) > _estimate_msg_budget_tokens(
+                    {"role": "user", "content": _authored_request_text(messages[last_user_idx].get("content"))}
+                )
+            )
             # ...and only when the anchored region really is over the ceiling: a short transcript
             # (whole session under the budget) anchors for free, so the exception must not fire.
             # Measured with the walk's own accounting (#84371), not a second thought-charge rule.
@@ -4893,7 +5590,14 @@ Write only the summary body. Do not include any preamble or prefix."""
                 and allow_split_turn
                 and any(messages[i].get("tool_calls") for i in range(asst_anchored_cut, cut_idx))
                 # Priced like the walk (#84371): stale thinking the wire never carries must not trip it.
-                and sum(map(self._tail_row_pricer(messages), range(asst_anchored_cut, cut_idx))) > soft_ceiling
+                and (
+                    sum(map(self._tail_row_pricer(messages), range(asst_anchored_cut, cut_idx))) > soft_ceiling
+                    or (
+                        cut_idx < n
+                        and self._align_boundary_backward(messages, asst_anchored_cut) <= head_end
+                        and sum(map(price, range(asst_anchored_cut, n))) > soft_ceiling
+                    )
+                )
             ):
                 if not self.quiet_mode:
                     logger.debug(
@@ -5069,17 +5773,15 @@ Write only the summary body. Do not include any preamble or prefix."""
     _COMPRESSION_NOTE = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Your persistent memory (MEMORY.md, USER.md) remains fully authoritative regardless of compaction.]"
 
     def _assemble_head(self, messages: list[dict[str, Any]], compress_start: int) -> list[dict[str, Any]]:
-        """Protected head with the compaction note on the system prompt and stale handoffs stripped."""
+        """Protected head with stale handoffs stripped while keeping messages[0] byte-identical for KV-cache hits."""
         compressed = []
         for i in range(compress_start):
             # Head handoff already lives in _previous_summary: strip it (standalone dropped, merged
             # keeps prior-tail text). Merged rows hold real user text — never blanket-skip.
+            # IMPORTANT: Never mutate messages[0]["content"] (the ~65k-token system prompt) with
+            # _COMPRESSION_NOTE — messages[1] already carries the full [CONTEXT COMPACTION] preamble,
+            # and mutating messages[0] invalidates the entire system-prompt prefix cache on Vertex AI.
             msg = _fresh_compaction_message_copy(messages[i])
-            if i == 0 and msg.get("role") == "system":
-                existing = msg.get("content")
-                if self._COMPRESSION_NOTE not in _content_text_for_contains(existing):
-                    sep = "\n\n" if isinstance(existing, str) and existing else ""
-                    msg["content"] = _append_text_to_content(existing, sep + self._COMPRESSION_NOTE)
             stripped = self._strip_context_summary_handoff_message(msg)
             if stripped is not None:
                 compressed.append(stripped)
@@ -5367,6 +6069,12 @@ Write only the summary body. Do not include any preamble or prefix."""
         compressed = self._assemble_head(messages, compress_start)
         tail_messages = self._assemble_tail(messages, compress_end, scan.tail_start, scan.summary_indices)
         summary, compressed, tail_messages = with_skill_safety_rule(summary, compressed, tail_messages)
+        if self._previous_summary:
+            from agent.context_compressor_tail import _unpruned_loaded_skill_names, strip_loaded_skill_prune_markers
+
+            loaded_skills = _unpruned_loaded_skill_names([*compressed, *tail_messages])
+            if loaded_skills:
+                self._previous_summary = strip_loaded_skill_prune_markers(self._previous_summary, loaded_skills)
         summary_role, merge_into_tail, force_user_leading, first_tail_visible_idx = (
             self._summary_placement(compressed, tail_messages, compress_start)
         )
@@ -5390,6 +6098,28 @@ Write only the summary body. Do not include any preamble or prefix."""
                 self._merge_summary_into_tail_row(msg, summary, summary_role, force_user_leading)
             compressed.append(msg)
         return compressed
+
+
+def _stamp_compressor_class_defaults() -> None:
+    """Stamp all scalar/None per-session attributes onto ``ContextCompressor`` at class definition time.
+
+    Warm sessions whose ``__class__`` is rebound across an ``importlib.reload(agent.context_compressor)``
+    (or tests constructing bare ``object.__new__(ContextCompressor)`` stubs) do not re-run ``__init__``
+    or ``_reset_session_compaction_state()``. Defining every per-session scalar default on the class itself
+    eliminates any ``AttributeError`` race window during hot-reload and ensures ``hasattr(ContextCompressor, attr)``
+    is true immediately on clean module import.
+    """
+    proto = object.__new__(ContextCompressor)
+    proto.prepared_compaction = None
+    ContextCompressor._reset_session_compaction_state(proto)
+    ContextCompressor._reset_micro_compact_cursor_state(proto)
+    ContextCompressor._clear_terminal_summary_failures(proto)
+    for attr, val in proto.__dict__.items():
+        if (isinstance(val, (int, float, bool, str)) or val is None) and not hasattr(ContextCompressor, attr):
+            setattr(ContextCompressor, attr, val)
+
+
+_stamp_compressor_class_defaults()
 
 
 def is_compaction_summary_message(message: Any) -> bool:
@@ -5491,6 +6221,33 @@ def split_user_originated_turn(message: Any) -> tuple[Optional[dict[str, Any]], 
 def user_originated_turn_view(message: Any) -> Optional[dict[str, Any]]:
     """Return the live human-authored projection of a user row, if any."""
     return split_user_originated_turn(message)[1]
+
+
+def split_inflight_replay_turn(message: Any) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+    """Like ``split_user_originated_turn``, but also unwraps a mid-turn split-compaction carrier
+    whose post-marker remainder starts with ``_INFLIGHT_TASK_REPLAY_HEADER`` (#CF-76)."""
+    handoff, live_view = split_user_originated_turn(message)
+    if live_view is not None or not isinstance(message, dict) or message.get("role") != "user":
+        return handoff, live_view
+    if not ContextCompressor._has_merged_inflight_replay(message):
+        return handoff, None
+    text = _content_text_for_contains(message.get("content"))
+    _, _, remainder = text.rpartition(_SUMMARY_END_MARKER)
+    rest = remainder.lstrip()
+    task_text = rest.removeprefix(_INFLIGHT_TASK_REPLAY_HEADER).lstrip()
+    if not task_text:
+        return handoff, None
+    candidate: dict[str, Any] = {"role": "user", "content": task_text}
+    carrier_metadata = message.get("display_metadata")
+    if isinstance(carrier_metadata, dict):
+        durable_metadata = {
+            key: copy.deepcopy(carrier_metadata[key])
+            for key in SUMMARY_CARRIER_DURABLE_DISPLAY_METADATA_KEYS
+            if key in carrier_metadata
+        }
+        if durable_metadata:
+            candidate["display_metadata"] = durable_metadata
+    return handoff, candidate
 
 
 def history_before_user_originated_turn(

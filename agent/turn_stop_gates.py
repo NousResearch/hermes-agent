@@ -117,10 +117,26 @@ def _late_lsp_verdicts(agent) -> Optional[str]:
             + body)
 
 
-def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
+def _append_interim_answer(
+    agent, final_msg, messages, conversation_history, flush_fail_msg: str, *, final_response: Any = None
+) -> None:
     """Real content: persist and emit as interim so the user sees the attempted answer;
     only the nudge is flagged synthetic (#65919). A held turn's answer (typed hidden) is not shown
     and flushes with the turn instead, so a budget fallback can still publish it as the rewrite."""
+    if (
+        isinstance(final_response, str)
+        and final_response
+        and final_msg.get("content")
+        and final_msg["content"] != final_response
+    ):
+        final_msg.setdefault("api_content", final_msg["content"])
+        final_msg["content"] = final_response
+    for frag in messages:
+        if isinstance(frag, dict) and (
+            frag.pop("_absorbed_continuation_fragment", None)
+            or frag.pop("_absorbed_continuation_nudge", None)
+        ):
+            frag["_verification_stop_synthetic"] = True
     agent._emit_interim_assistant_message(final_msg)
     append_message(messages, final_msg)
     if final_msg.get("display_kind") == "hidden":
@@ -143,7 +159,7 @@ def apply_stop_gates(
 
     def _continue(nudge: str, flag: str) -> StopGateVerdict:
         """Append the synthetic nudge row and hand the turn back to the loop."""
-        append_message(messages, {"role": "user", "content": nudge, flag: True})
+        append_message(messages, {"role": "user", "content": nudge, flag: True, "_synthetic_origin": "stop_gate"})
         agent._session_messages = messages
         # Keep the answer only as a budget-exhaustion fallback; clear ``final_response`` so
         # the finalizer can tell this gate from error exits. Mark previewed only if the
@@ -163,7 +179,8 @@ def apply_stop_gates(
         agent._lsp_turn_end_notes = getattr(agent, "_lsp_turn_end_notes", 0) + 1  # int: checked above
         final_msg["finish_reason"] = "verification_required"
         _append_interim_answer(
-            agent, final_msg, messages, conversation_history, "late-LSP interim flush failed"
+            agent, final_msg, messages, conversation_history, "late-LSP interim flush failed",
+            final_response=final_response,
         )
         # A durable row (no scaffolding flag): it is never stripped, so no sent byte changes later.
         append_message(messages, {"role": "user", "content": _lsp_note})
@@ -180,7 +197,8 @@ def apply_stop_gates(
         agent._verification_stop_nudges = getattr(agent, "_verification_stop_nudges", 0) + 1
         final_msg["finish_reason"] = "verification_required"
         _append_interim_answer(
-            agent, final_msg, messages, conversation_history, "verify-on-stop interim flush failed"
+            agent, final_msg, messages, conversation_history, "verify-on-stop interim flush failed",
+            final_response=final_response,
         )
         verdict = _continue(_verify_nudge, "_verification_stop_synthetic")
         # Internal nudge: stay silent on the terminal, debug-log only.
@@ -193,7 +211,8 @@ def apply_stop_gates(
         agent._pre_verify_nudges = _attempt + 1
         final_msg["finish_reason"] = "verify_hook_continue"
         _append_interim_answer(
-            agent, final_msg, messages, conversation_history, "pre_verify interim flush failed"
+            agent, final_msg, messages, conversation_history, "pre_verify interim flush failed",
+            final_response=final_response,
         )
         verdict = _continue(_verify_nudge2, "_pre_verify_synthetic")
         logger.debug("pre_verify nudge issued (attempt %d)", agent._pre_verify_nudges)

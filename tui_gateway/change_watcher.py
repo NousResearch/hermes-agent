@@ -245,11 +245,14 @@ def _session_rows_sig(conn, mtime):
         # A state.db without a readable sessions table (foreign schema, legacy or transient file): keep
         # the old mtime contract so any move still wakes the sidebar instead of silently never broadcasting.
         return (_MTIME_FALLBACK, mtime), True
-    order = " ORDER BY id" if "id" in available else ""
+    row_expr = " || '|' || ".join(f"quote({field})" for field in fields)
+    cur = conn.execute(f"SELECT {row_expr} FROM sessions")
     digest = hashlib.blake2b(digest_size=16)
-    for row in conn.execute(f"SELECT {', '.join(fields)} FROM sessions{order}"):
-        digest.update(repr(tuple(row)).encode("utf-8", "backslashreplace"))
-        digest.update(b"\0")
+    count = 0
+    while batch := cur.fetchmany(4096):
+        count += len(batch)
+        digest.update(("".join(f"{r[0]}\n" for r in batch)).encode("utf-8", "surrogatepass"))
+    digest.update(f":{count}".encode("ascii"))
     return (fields, digest.digest()), False
 
 
@@ -497,6 +500,9 @@ def _broadcast_watched_changes(now: float | None = None) -> None:
     for event, (interval, sig_fn, payload_fn, *diff_fn) in _CHANGE_WATCHES.items():
         if now - _change_checked_at.get(event, -interval) < interval:
             continue
+        floor = _CHANGE_BROADCAST_FLOOR_S.get(event, 0.0)
+        if event in _change_sigs and floor and now - _change_broadcast_at.get(event, -floor) < floor:
+            continue  # floored: skip expensive DB signature scan until the broadcast window opens
         _change_checked_at[event] = now
         try:
             sig = sig_fn()
@@ -505,11 +511,8 @@ def _broadcast_watched_changes(now: float | None = None) -> None:
         if event not in _change_sigs:
             _change_sigs[event] = sig
             continue
-        floor = _CHANGE_BROADCAST_FLOOR_S.get(event, 0.0)
         if sig == _change_sigs[event]:
             continue
-        if floor and now - _change_broadcast_at.get(event, -floor) < floor:
-            continue  # floored: old signature stays so it re-fires when the window opens
         before, _change_sigs[event] = _change_sigs[event], sig
         _change_broadcast_at[event] = now
         with contextlib.suppress(Exception):

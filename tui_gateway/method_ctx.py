@@ -6,11 +6,17 @@ stay byte-identical and ``global X`` keeps mutating server.py state. No import c
 modules never import server at module level — server passes itself in."""
 
 import contextlib
+import contextvars
+import importlib
+import sys
 import types
 
 # contextlib.contextmanager wraps the generator; rebind the generator (found via
 # __wrapped__) and re-wrap, otherwise only the wrapper would see server globals.
 _CM_HELPER_CODE = contextlib.contextmanager(lambda: (yield)).__code__
+
+# Split modules bound via bind_module(), in registration order, for atomic hot-reload.
+_REGISTERED_SPLIT_MODULES: list[str] = []
 
 
 def rebind(fn, g: dict, _seen=None):
@@ -31,6 +37,8 @@ def rebind(fn, g: dict, _seen=None):
                 return cell
             if isinstance(val, types.FunctionType) and val.__module__ == fn.__module__:
                 return types.CellType(rebind(val, g, _seen))
+            if isinstance(val, type) and val.__module__ == fn.__module__ and isinstance(g.get(val.__name__), type):
+                return types.CellType(g[val.__name__])
             return cell
         closure = tuple(_cell(c) for c in closure)
     real = types.FunctionType(fn.__code__, g, fn.__name__, fn.__defaults__, closure)
@@ -72,7 +80,7 @@ class HandlerRegistry:
             server.register_method(name, real)
 
 
-_PLUMBING = {"HandlerRegistry", "method", "_profile_scoped", "register", "rebind", "logger"}
+_PLUMBING = {"HandlerRegistry", "method", "_profile_scoped", "register", "rebind", "reload_split_modules", "logger"}
 
 
 def bind_module(module_globals: dict, server, *, skip=()) -> None:
@@ -84,6 +92,8 @@ def bind_module(module_globals: dict, server, *, skip=()) -> None:
     modules/functions, dunders and registry plumbing are skipped; finally ``_registry`` installs."""
     g = vars(server)
     mod_name = module_globals["__name__"]
+    if mod_name not in _REGISTERED_SPLIT_MODULES:
+        _REGISTERED_SPLIT_MODULES.append(mod_name)
     seen: dict = {}
 
     def _own_fn(v):
@@ -120,6 +130,8 @@ def bind_module(module_globals: dict, server, *, skip=()) -> None:
                 elif isinstance(val, (staticmethod, classmethod)):
                     setattr(obj, attr, type(val)(rebind(val.__func__, g)))
         prev = g.get(name)
+        if isinstance(obj, contextvars.ContextVar) and isinstance(prev, contextvars.ContextVar):
+            obj = module_globals[name] = prev
         if isinstance(prev, types.FunctionType) and isinstance(obj, types.FunctionType):
             owner = getattr(prev, "_hermes_split_module", None)
             if owner and owner != mod_name:
@@ -131,3 +143,48 @@ def bind_module(module_globals: dict, server, *, skip=()) -> None:
     registry = module_globals.get("_registry")
     if isinstance(registry, HandlerRegistry):
         registry.install(server)
+
+
+def reload_split_modules(server=None) -> dict:
+    """Atomically reload and re-register all ``tui_gateway`` split modules in registration order
+    without resetting ``server._sessions`` or live poller registries (W8)."""
+    if server is None:
+        server = sys.modules.get("tui_gateway.server")
+    if server is None:
+        raise RuntimeError("tui_gateway.server is not loaded")
+    saved_pollers = list(getattr(server, "_notification_pollers", None) or [])
+    saved_desktop_wired = bool(getattr(server, "_desktop_ui_wired", False))
+    split_set = set(_REGISTERED_SPLIT_MODULES)
+    for k, val in tuple(vars(server).items()):
+        if isinstance(val, types.FunctionType) and (
+            getattr(val, "_hermes_split_module", None) in split_set
+            or getattr(val, "__module__", None) in split_set
+        ):
+            delattr(server, k)
+    reloaded: list[str] = []
+    for mod_name in tuple(_REGISTERED_SPLIT_MODULES):
+        mod = sys.modules.get(mod_name)
+        if mod is None:
+            continue
+        mod = importlib.reload(mod)
+        if mod_name.endswith(".session_notifications"):
+            mod_pollers = getattr(mod, "_notification_pollers", None)
+            if saved_pollers and isinstance(mod_pollers, list) and not mod_pollers:
+                mod_pollers[:] = saved_pollers
+            if saved_desktop_wired:
+                vars(mod)["_desktop_ui_wired"] = True
+        reg = getattr(mod, "register", None)
+        if callable(reg):
+            reg(server)
+        reloaded.append(mod_name)
+    if saved_pollers and hasattr(server, "_notification_pollers"):
+        live_pairs = list(getattr(server, "_notification_pollers", None) or [])
+        seen_threads = {id(th) for _, th in live_pairs}
+        for s, th in saved_pollers:
+            if th.is_alive() and id(th) not in seen_threads:
+                live_pairs.append((s, th))
+                seen_threads.add(id(th))
+        server._notification_pollers[:] = live_pairs
+    ensure_fn = getattr(server, "_ensure_all_notification_pollers_alive", None)
+    respawned = ensure_fn() if callable(ensure_fn) else 0
+    return {"reloaded_modules": len(reloaded), "pollers_respawned": respawned}

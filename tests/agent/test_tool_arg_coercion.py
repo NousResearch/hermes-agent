@@ -394,3 +394,11 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+    def test_unparsed_array_string_not_wrapped_in_list_when_items_are_objects(self):
+        schema = self._array_of_objects_schema()
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            raw_str = '["patch": "patch", "old_text": "foo", "content": "bar"]'
+            args = {"items": raw_str}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == raw_str

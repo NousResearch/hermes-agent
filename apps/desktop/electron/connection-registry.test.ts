@@ -35,6 +35,7 @@ import {
   removeConnection,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
+  resolveSshRegistryTokenEnvelope,
   reuseMatchingPrimarySshBackend,
   setConnectionLaunchMode,
   setLastUsedConnection,
@@ -43,7 +44,8 @@ import {
   shouldRetrySshInventory,
   uniqueLabel,
   updateEligibility,
-  upsertConnection
+  upsertConnection,
+  withSshRegistryProfileToken
 } from './connection-registry'
 import { matchingConnectionId } from './connection-route-identity'
 
@@ -958,6 +960,11 @@ test('shouldRetrySshInventory: first try, cooldown, then retry; cache never retr
   assert.equal(shouldRetrySshInventory(false, 1_000, 30_000, 60_000), false)
   assert.equal(shouldRetrySshInventory(false, 1_000, 61_000, 60_000), true)
   assert.equal(shouldRetrySshInventory(true, 1_000, 120_000, 60_000), false)
+  // Exponential backoff on consecutive failures:
+  assert.equal(shouldRetrySshInventory(false, 1_000, 70_000, 60_000, 1), false) // 1 failure -> 120s backoff
+  assert.equal(shouldRetrySshInventory(false, 1_000, 130_000, 60_000, 1), true)
+  assert.equal(shouldRetrySshInventory(false, 1_000, 200_000, 60_000, 2), false) // 2 failures -> 240s backoff
+  assert.equal(shouldRetrySshInventory(false, 1_000, 250_000, 60_000, 2), true)
 })
 
 test('parseRemoteProfileListing: Mini/Spark dirs become roster names and drop rollbacks', () => {
@@ -2308,4 +2315,40 @@ test('normalizeRegistry quarantines non-object junk items that could still be us
   // null/false carry no data and are dropped; the string is preserved.
   assert.equal((registry.quarantined || []).length, 1)
   assert.equal(registry.quarantined![0].entry, '{ mangled json fragment }')
+})
+
+test('per-profile SSH tokens isolate default and secondary profiles across normalize and merge', () => {
+  const base = {
+    host: 'mini',
+    id: 'mini',
+    kind: 'ssh' as const,
+    label: 'Mini',
+    user: 'emirsaffar'
+  }
+
+  const withDefault = withSshRegistryProfileToken(base, 'conn:mini::default', { enc: 'tok-default' })
+  const withBoth = withSshRegistryProfileToken(withDefault, 'conn:mini::failover-e2e', { enc: 'tok-failover' })
+
+  // Default profile mirrors onto legacy .token for backward compatibility; secondary profile never clobbers it.
+  assert.deepEqual(withBoth.token, { enc: 'tok-default' })
+  assert.deepEqual(resolveSshRegistryTokenEnvelope(withBoth, 'default'), { enc: 'tok-default' })
+  assert.deepEqual(resolveSshRegistryTokenEnvelope(withBoth, 'conn:mini::failover-e2e'), { enc: 'tok-failover' })
+  assert.equal(resolveSshRegistryTokenEnvelope(withBoth, 'conn:mini::other-profile'), undefined)
+
+  // normalizeRegistry and mergeConnectionInput preserve profileTokens across disk reloads and label renames.
+  const normalized = normalizeRegistry({
+    version: 2,
+    primary: 'mini',
+    connections: [withBoth]
+  })
+  const loaded = normalized.connections.find(c => c.id === 'mini')!
+
+  assert.deepEqual(resolveSshRegistryTokenEnvelope(loaded, 'default'), { enc: 'tok-default' })
+  assert.deepEqual(resolveSshRegistryTokenEnvelope(loaded, 'failover-e2e'), { enc: 'tok-failover' })
+
+  const merged = mergeConnectionInput({ id: 'mini', kind: 'ssh', label: 'Mini Renamed', token: loaded.token }, loaded)
+  const saved = normalizeConnectionInput(merged, emptyRegistry())
+
+  assert.deepEqual(resolveSshRegistryTokenEnvelope(saved, 'default'), { enc: 'tok-default' })
+  assert.deepEqual(resolveSshRegistryTokenEnvelope(saved, 'failover-e2e'), { enc: 'tok-failover' })
 })

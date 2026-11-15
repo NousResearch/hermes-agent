@@ -13,7 +13,7 @@ import re
 from typing import Any, Dict, Optional
 
 from agent.provider_projection import splice_provider_projection
-from agent.think_scrubber import THINK_TAG_NAMES
+from agent.think_scrubber import CODE_FENCE_OR_SPAN, THINK_TAG_NAMES
 from agent.trajectory import has_incomplete_scratchpad
 from agent.turn_truncation import (
     CODEX_FALLBACK_ACTIVATED, continue_codex_incomplete, normalize_response_for_agent, partial_result,
@@ -24,9 +24,10 @@ logger = logging.getLogger("agent.conversation_loop")
 # One alternation over the shared tag list so this path tracks every tag the scrubber hides
 # (the old 3-of-9 list leaked <thinking>/<思考>/... previews), case-insensitive like the scrubber.
 _THINK_TAG_ALT = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
-_REASONING_TAG_RE = re.compile(rf'</?(?:{_THINK_TAG_ALT})>', re.IGNORECASE)
+_CODE_FENCE_OR_SPAN_NC = r"(?:```[\s\S]*?```|`[^`\n]+`)"
+_REASONING_TAG_RE = re.compile(rf'{CODE_FENCE_OR_SPAN}|(?<!`)</?(?:{_THINK_TAG_ALT})>(?!`)', re.IGNORECASE)
 _INLINE_REASONING_RE = re.compile(
-    rf'<(?:{_THINK_TAG_ALT})>(.*?)</(?:{_THINK_TAG_ALT})>',
+    rf'{CODE_FENCE_OR_SPAN}|(?<!`)<(?:{_THINK_TAG_ALT})>(?!`)((?:{_CODE_FENCE_OR_SPAN_NC}|[\s\S])*?)(?<!`)</(?:{_THINK_TAG_ALT})>(?!`)',
     re.DOTALL | re.IGNORECASE,
 )
 
@@ -132,7 +133,9 @@ def _reasoning_preview(agent: Any, content: str, assistant_message: Any = None) 
     if not content:
         return ""
     return "\n\n".join(
-        block.strip() for block in _INLINE_REASONING_RE.findall(content) if block and block.strip()
+        block.strip()
+        for code_span, block in _INLINE_REASONING_RE.findall(content)
+        if not code_span and block and block.strip()
     )
 
 
@@ -140,7 +143,7 @@ def _relay_thinking(agent: Any, content: str, assistant_message: Any = None) -> 
     """Relay the model's output to the progress callback: a subagent sends its first line to the
     parent display; a top-level agent with a structured callback gets ``reasoning.available``
     carrying extracted reasoning only — never the visible reply (#132477)."""
-    _think_text = _REASONING_TAG_RE.sub('', (content or "").strip()).strip()
+    _think_text = _REASONING_TAG_RE.sub(lambda m: m.group(1) or '', (content or "").strip()).strip()
     first_line = _think_text.split('\n')[0][:80] if _think_text else ""
 
     if getattr(agent, '_delegate_depth', 0) > 0:

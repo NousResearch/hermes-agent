@@ -48,3 +48,37 @@ async def test_exclusive_offline_maintenance_preserves_bulk_behavior(tmp_path, m
             assert result.json() == {'ok': True, 'deleted': 1, 'skipped_active': []}
             assert db.get_session('parent') is None
             assert db.get_session('child')['parent_session_id'] is None
+
+
+@pytest.mark.asyncio
+async def test_owner_backfill_skips_exclusive_maintenance_when_no_unowned_rows_exist(tmp_path, monkeypatch):
+    """When a live gateway control socket owns the home and all sessions already have
+    profile_name stamped, standalone serve must return 200 via read_only precheck instead
+    of failing 409 on every Desktop boot; if an unowned NULL row exists, it must still refuse 409."""
+    monkeypatch.setattr('hermes_state._default_db_path', lambda: tmp_path / 'state.db')
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(
+        'hermes_cli.gateway_runtime_discovery.query_identify',
+        lambda home, timeout=1.5: {'state': 'starting', 'runtime_protocol': 1},
+    )
+    app = FastAPI()
+    app.include_router(manage_router)
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        db.create_session('already-owned', source='cli')
+        owner = ProfileOwnership()
+        owner.reserve([tmp_path])
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
+                # Polarity 1 (0 NULL rows): read_only precheck short-circuits with 200
+                response = await client.post('/api/sessions/owner-backfill', json={})
+                assert response.status_code == 200, response.text
+                assert response.json() == {'ok': True, 'stamped': 0, 'profile': 'default'}
+
+                # Polarity 2 (legacy NULL row present): must not falsely report stamped=0; hits write lock -> 409
+                db._execute_write(
+                    lambda conn: conn.execute("UPDATE sessions SET profile_name = NULL WHERE id = 'already-owned'")
+                )
+                refused = await client.post('/api/sessions/owner-backfill', json={})
+                assert refused.status_code == 409, refused.text
+        finally:
+            owner.close()

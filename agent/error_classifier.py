@@ -32,7 +32,10 @@ PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE = "provider_stream_empty_frame"
 
 # ── Error taxonomy ──────────────────────────────────────────────────────
 
-class FailoverReason(enum.Enum):
+_prev_failover_reason = globals().get("FailoverReason")
+
+
+class _FailoverReason(enum.Enum):
     """Why an API call failed — determines recovery strategy."""
     auth = "auth"                        # Transient auth (401/403) — refresh/rotate
     auth_permanent = "auth_permanent"    # Auth failed after refresh — abort
@@ -43,6 +46,7 @@ class FailoverReason(enum.Enum):
     overloaded = "overloaded"            # 503/529 — provider overloaded, backoff
     server_error = "server_error"        # 500/502 — internal server error, retry
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
+    provider_latency = "provider_latency"  # Every provider of the model is breaker-demoted for latency — escalate the model, providers are the broken layer
     ssl_cert_verification = "ssl_cert_verification"  # Deterministic TLS chain failure — fail fast with guidance
     context_overflow = "context_overflow"  # Context too large — compress, not failover
     payload_too_large = "payload_too_large"  # 413 — compress payload
@@ -67,6 +71,16 @@ class FailoverReason(enum.Enum):
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth rejects 1M beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp grammar rejects regex `pattern`/`format` — strip from tools and retry
     unknown = "unknown"                  # Unclassifiable — retry with backoff
+
+
+if (
+    isinstance(_prev_failover_reason, type)
+    and issubclass(_prev_failover_reason, enum.Enum)
+    and set(_prev_failover_reason.__members__) == set(_FailoverReason.__members__)
+):
+    FailoverReason = _prev_failover_reason
+else:
+    FailoverReason = _FailoverReason
 
 
 # Transient transport verdicts: the provider is expected back (the aux same-provider retry, the turn ladder).
@@ -121,6 +135,12 @@ _BILLING_PATTERNS = (
     # OpenRouter org-level monthly cap arrives as 403 "Budget limit exceeded (monthly limit)" (#107166):
     # account exhaustion, not a credential problem.
     "budget limit exceeded",
+    # Carried (2026-10-27): the WORKSPACE-level cap words the same refusal differently — "Workspace monthly budget of
+    # $20000.00 exceeded … resets <ts>" — with no contiguous "budget limit exceeded", so it fell
+    # through to the auth branch and read as a credential fault (16 turns reported
+    # ``failure_reason=auth`` while the key was healthy and the cap was the whole story). Kept
+    # narrow on purpose: a bare "budget" would swallow unrelated 403 prose.
+    "workspace monthly budget",
     *_FREE_TIER_REFUSAL_PATTERNS,
     # LiteLLM proxies word a hard cap as "hard billing limit" (structured twin:
     # ``terminal_quota_exhausted`` in _BILLING_ERROR_CODES). "terminal billing
@@ -176,7 +196,7 @@ _BILLING_ERROR_CODES = frozenset({
 # contains an overflow phrase; rate limit is matched first so throttle wins.
 _RATE_LIMIT_PATTERNS = (
     "rate limit", "rate_limit", "too many requests", "throttled", "requests per minute",
-    "tokens per minute", "requests per day", "try again in", "please retry after",
+    "tokens per minute", "tpm quota", "rpm quota", "requests per day", "try again in", "please retry after",
     *_RESOURCE_EXHAUSTED_PATTERNS, "rate increased too quickly", "throttlingexception", "too many concurrent requests",
     "servicequotaexceededexception", "throttling",
 )
@@ -416,9 +436,16 @@ _THINKING_MUTATION_WORDS = ("signature", "cannot be modified", "must remain as t
 def _is_anthropic_thinking_rejection(msg: str) -> bool:
     """A thinking block the upstream will not verify: a signature broken by transcript mutation, or a
     ``redacted_thinking`` blob it cannot open (another model's sealed reasoning after a /model switch or
-    fallback: ``Invalid `data` in `redacted_thinking` block``). Both heal by stripping the replayed blocks."""
-    return "thinking" in msg and (
-        any(p in msg for p in _THINKING_MUTATION_WORDS) or ("redacted_thinking" in msg and "invalid" in msg))
+    fallback: ``Invalid `data` in `redacted_thinking` block``), or an OpenRouter/Gemini cross-upstream
+    ``thoughtSignature`` mismatch (``Corrupted thought signature`` / ``Gemini models require OpenRouter
+    reasoning details to be preserved``). All heal by stripping the replayed blocks."""
+    return (
+        ("thinking" in msg and (
+            any(p in msg for p in _THINKING_MUTATION_WORDS) or ("redacted_thinking" in msg and "invalid" in msg)
+        ))
+        or "corrupted thought signature" in msg
+        or "gemini models require openrouter reasoning details to be preserved" in msg
+    )
 
 
 # Local MoA streaming adapter-shape bugs (see _moa_special_cases).
@@ -443,12 +470,15 @@ _ACCOUNT_POLICY_BLOCK_PATTERNS = ("blocked for a previous policy violation",)
 # #32421, CommandCode gateway moderation #115218, Alibaba Model Studio
 # guardrail `data_inspection_failed`, input and output side) — never a generic
 # word like "policy" that collides with billing/auth.
-# "content_filter" deliberately excludes the space variant seen in echoed config.
+# "content_filter" deliberately excludes the space variant seen in echoed config;
+# the z-ai "Request blocked by content filter" 403 (2026-09-12, 61 misrouted
+# retries as auth-fallback) is caught by its full sentence instead.
 _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "flagged for possible cybersecurity risk", "trusted access for cyber",
     "violates our usage policies", "violates openai's usage policies", "your request was flagged by",
     "prompt was flagged by our safety", "responses cannot be generated due to safety",
     "content_filter", "responsibleaipolicyviolation", "new_sensitive",
+    "request blocked by content filter",
     "content exists risk", "data may contain inappropriate content", "data_inspection_failed",
 )
 
@@ -1008,9 +1038,9 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # strips Anthropic thinking blocks and resends the same encrypted item forever.
     if status == 400 and (c.code == "thinking_signature_invalid" or "thinking_signature_invalid" in msg):
         return _V_INVALID_ENCRYPTED
-    # Anthropic thinking-block 400s (signature mismatch after transcript mutation, or a sealed blob
-    # the upstream cannot open). Not gated on provider — OpenRouter proxies Anthropic errors.
-    if status == 400 and _is_anthropic_thinking_rejection(msg):
+    # Anthropic/Gemini thinking-block 400s or SSE stream errors (signature mismatch after transcript
+    # mutation, cross-upstream Gemini thoughtSignature rejection, or a sealed blob the upstream cannot open).
+    if status in (None, 400) and _is_anthropic_thinking_rejection(msg):
         return _v(_R.thinking_signature)
     # Anthropic long-context tier gate (429 "extra usage" + "long context").
     if status == 429 and "extra usage" in msg and "long context" in msg:
@@ -1572,9 +1602,13 @@ def _is_codex_masked_replay_rejection(c: _Ctx) -> bool:
 
 
 def _error_obj(body: Any) -> dict:
-    """``body["error"]`` when it is a dict, else ``{}``."""
-    err = body.get("error") if isinstance(body, dict) else None
-    return err if isinstance(err, dict) else {}
+    """``body["error"]`` when it is a dict, or ``body`` itself when the SDK already unwrapped ``error``."""
+    if not isinstance(body, dict):
+        return {}
+    err = body.get("error")
+    if isinstance(err, dict):
+        return err
+    return body if "error" not in body else {}
 
 
 def _json_dict(text: Any) -> Optional[dict]:

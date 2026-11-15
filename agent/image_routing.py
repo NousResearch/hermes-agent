@@ -370,6 +370,12 @@ def _lookup_supports_vision(
             continue
         if verdict is not None:
             return verdict
+    norm_prov = _clean_str(provider).lower()
+    norm_model = _clean_str(model).lower().removeprefix("google/").removeprefix("models/")
+    if norm_prov in {"google", "vertex", "gemini", "openrouter"} and norm_model.startswith(
+        ("gemini-2", "gemini-3", "gemini-4")
+    ):
+        return True
     return None
 
 
@@ -385,10 +391,14 @@ def decide_image_input_mode(
     mode_cfg = _coerce_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("image_input_mode"))
     if mode_cfg != "auto":
         return mode_cfg
-    if _explicit_aux_vision_override(cfg):  # auto: an explicit auxiliary.vision backend wins
-        return "text"
     # Keep the three-argument call contract for callers/tests that replace the lookup hook.
     extra = {"requested_provider": requested_provider} if requested_provider else {}
+    if _explicit_aux_vision_override(cfg):
+        aux_vision = _dict_or_empty(_dict_or_empty(_dict_or_empty(cfg).get("auxiliary")).get("vision"))
+        aux_prov = _clean_str(aux_vision.get("provider")).lower()
+        if aux_prov and aux_prov == _clean_str(provider).lower() and _lookup_supports_vision(provider, model, cfg, **extra) is True:
+            return "native"
+        return "text"
     return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"
 
 

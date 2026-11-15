@@ -128,6 +128,20 @@ def test_limit_hit_keeps_drained_matches_when_group_kill_is_refused(tree, ops_fa
     assert not result.error and len(result.matches) == 2, result.to_dict()
 
 
+def test_limit_hit_keeps_drained_matches_when_getpgid_raises_esrch(tree, ops_factory, monkeypatch):
+    """When rg exits between ``proc.poll() is None`` and ``os.getpgid(proc.pid)`` inside
+    ``_kill_process_group_posix``, ``getpgid`` raises ``ProcessLookupError(3, 'No such process')``.
+    That race must not surface ``{"error": "[Errno 3] No such process"}`` nor discard drained matches."""
+    import os
+
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "1")
+    ops = ops_factory(tree, [])
+    monkeypatch.setattr(os, "getpgid", lambda pid: (_ for _ in ()).throw(ProcessLookupError(3, "No such process")))
+    result = ops.search(pattern="needle", path=str(tree), limit=2)
+    assert not result.error and len(result.matches) == 2, result.to_dict()
+
+
+
 def test_local_search_runs_the_pinned_ripgrep_not_the_first_on_path(_local_env, tmp_path, monkeypatch):
     """The terminal PATH puts the user's tools first; Hermes's own search still runs PM's rg."""
     import pm

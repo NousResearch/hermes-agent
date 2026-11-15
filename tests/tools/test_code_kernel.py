@@ -687,6 +687,20 @@ class TestStaleStagingDirSweep(unittest.TestCase):
                 self.assertTrue(young.exists())
                 self.assertTrue(bystander.exists())
 
+    def test_child_subprocess_without_devnull_gets_eof_not_control_pipe(self):
+        with _kernel_config(timeout=5):
+            res = _run(
+                "import subprocess, sys\n"
+                "p = subprocess.run([sys.executable, '-c', 'import sys; print(len(sys.stdin.read()))'], "
+                "capture_output=True, text=True, timeout=2)\n"
+                "print('SUB_STDIN_LEN:', p.stdout.strip())"
+            )
+            follow = _run("print('STILL_ALIVE')")
+        self.assertEqual(res["status"], "success", res)
+        self.assertIn("SUB_STDIN_LEN: 0", res["output"])
+        self.assertEqual(follow["status"], "success", follow)
+        self.assertIn("STILL_ALIVE", follow["output"])
+
 
 class TestCellStdoutSpill(unittest.TestCase):
     """The runner-side full-stdout spill is a second emitter of cell output: it must

@@ -418,6 +418,93 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
     assert get_job(job["id"])["monitor_state"]["last_output_hash"] == stored_hash
 
 
+def test_return_to_idle_noop_updates_hash_without_waking_agent(hermes_env, monkeypatch):
+    """When a monitor source transitions from active output back to STATUS=NOOP_COMPLETE
+    (or wakeAgent=false), last_output_hash updates to the idle hash without waking the LLM,
+    and a subsequent transition to a new active state wakes the LLM immediately."""
+    from cron.jobs import get_job
+    from cron.monitor import hash_monitor_output
+    from cron.scheduler import SILENT_MARKER, run_job
+
+    # 1. Start idle: persists baseline hash without waking the agent
+    job = _make_monitor_job(hermes_env, "echo 'STATUS=NOOP_COMPLETE'\n")
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    success, _doc, final, error = run_job(job)
+    assert success is True and error is None
+    assert final == SILENT_MARKER
+    assert observed["agent_runs"] == 0
+    job = get_job(job["id"])
+    assert job["monitor_state"]["last_output_hash"] == hash_monitor_output("STATUS=NOOP_COMPLETE")
+
+    # 2. Transition idle -> active ("OPEN_ASKS=1"): wakes agent
+    _write_script(hermes_env, "mon.sh", "echo 'OPEN_ASKS=1'\n")
+    success, _doc, _final, error = run_job(job)
+    assert success is True and error is None
+    assert observed["agent_runs"] == 1
+    assert "+OPEN_ASKS=1" in observed["prompts"][0]
+    job = get_job(job["id"])
+    assert job["monitor_state"]["last_output_hash"] == hash_monitor_output("OPEN_ASKS=1")
+
+    # 3. Return to idle ("STATUS=NOOP_COMPLETE"): updates hash to idle WITHOUT waking agent
+    _write_script(hermes_env, "mon.sh", "echo 'STATUS=NOOP_COMPLETE'\n")
+    success, _doc, final, error = run_job(job)
+    assert success is True and error is None
+    assert final == SILENT_MARKER
+    assert observed["agent_runs"] == 1  # NOT incremented on return-to-idle!
+    job = get_job(job["id"])
+    assert job["monitor_state"]["last_output_hash"] == hash_monitor_output("STATUS=NOOP_COMPLETE")
+
+    # 4. Re-wake on same active payload ("OPEN_ASKS=1") after idle reset: wakes agent again
+    _write_script(hermes_env, "mon.sh", "echo 'OPEN_ASKS=1'\n")
+    success, _doc, _final, error = run_job(job)
+    assert success is True and error is None
+    assert observed["agent_runs"] == 2
+
+
+def test_monitor_lease_in_flight_preserves_hash(hermes_env, monkeypatch):
+    """When a builder lease is active in flight, the monitor emits
+    `STATUS=LEASE_IN_FLIGHT\\nSTATUS=NOOP_COMPLETE`. The scheduler must suppress
+    the wake WITHOUT overwriting `last_output_hash`, so that if the same open
+    ask is still unclosed when the lease expires, it does not immediately
+    re-trigger an identical agent run in an infinite loop."""
+    from cron.jobs import get_job
+    from cron.monitor import hash_monitor_output
+    from cron.scheduler import SILENT_MARKER, run_job
+
+    # 1. Active payload wakes agent and stores hash("OPEN_ASKS=1")
+    job = _make_monitor_job(hermes_env, "echo 'OPEN_ASKS=1'\n")
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    success, _doc, _final, error = run_job(job)
+    assert success is True and error is None
+    assert observed["agent_runs"] == 1
+    job = get_job(job["id"])
+    assert job is not None
+    active_hash = hash_monitor_output("OPEN_ASKS=1")
+    assert job["monitor_state"]["last_output_hash"] == active_hash
+
+    # 2. Next tick sees active lease -> emits STATUS=LEASE_IN_FLIGHT; suppresses wake AND preserves active_hash
+    _write_script(hermes_env, "mon.sh", "printf 'STATUS=LEASE_IN_FLIGHT\\nSTATUS=NOOP_COMPLETE\\n'\n")
+    success, _doc, final, error = run_job(job)
+    assert success is True and error is None
+    assert final == SILENT_MARKER
+    assert observed["agent_runs"] == 1
+    job = get_job(job["id"])
+    assert job is not None
+    assert job["monitor_state"]["last_output_hash"] == active_hash
+
+    # 3. Lease expires, same open ask ("OPEN_ASKS=1") remains -> hash matches active_hash, so NO duplicate wake!
+    _write_script(hermes_env, "mon.sh", "echo 'OPEN_ASKS=1'\n")
+    success, _doc, final, error = run_job(job)
+    assert success is True and error is None
+    assert final == SILENT_MARKER
+    assert observed["agent_runs"] == 1
+
+
+
 # ---------------------------------------------------------------------------
 # cronjob tool: API-layer wiring
 # ---------------------------------------------------------------------------
@@ -476,3 +563,16 @@ def test_cronjob_tool_update_clears_monitor_script(hermes_env):
     )
     assert result.get("success") is True
     assert get_job(created["job_id"]).get("monitor_script") is None
+
+
+def test_resolve_cron_max_iterations_hierarchy_and_negative_control():
+    from cron.scheduler import _resolve_cron_max_iterations
+
+    cfg = {"cron": {"max_iterations": 35}, "agent": {"max_turns": 120}}
+    assert _resolve_cron_max_iterations({"max_iterations": 25}, cfg) == 25
+    assert _resolve_cron_max_iterations({"max_turns": 20}, cfg) == 20
+    assert _resolve_cron_max_iterations({}, cfg) == 35
+    assert _resolve_cron_max_iterations({}, {"agent": {"max_turns": 120}}) == 120
+    # Negative control: non-positive (<= 0) or boolean values must fall through to the next positive ceiling, never sys.maxsize
+    assert _resolve_cron_max_iterations({"max_iterations": -5}, {"cron": {"max_iterations": 0}, "agent": {"max_turns": 120}}) == 120
+    assert _resolve_cron_max_iterations({"max_iterations": False}, cfg) == 35

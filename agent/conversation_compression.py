@@ -220,7 +220,7 @@ def _snapshot_compressor_attempt_state(compressor: Any) -> dict[str, Any]:
 # no-op when a newer attempt owns the compressor. The commit fence still owns COMMIT admission; the
 # generation owns compressor-ATTRIBUTE writes — two different boundaries.
 # ---------------------------------------------------------------------------
-_COMPRESSOR_ATTEMPT_LOCK = threading.Lock()
+_COMPRESSOR_ATTEMPT_LOCK = globals().get("_COMPRESSOR_ATTEMPT_LOCK") or threading.Lock()
 
 # The calling attempt's generation rides a ContextVar (not a compressor attribute) so compressor code
 # deep in the call stack can tell ITS OWN attempt apart from whichever attempt currently owns the
@@ -228,8 +228,9 @@ _COMPRESSOR_ATTEMPT_LOCK = threading.Lock()
 # _run_summary_dispatch around compress_fn, which always runs in the calling attempt's own thread, so
 # worker and fallback threads each see their own generation. Callers outside the dispatch machinery
 # (manual compress, legacy paths) read None and keep unguarded historical behavior.
-_COMPRESSOR_ATTEMPT_GENERATION: contextvars.ContextVar[Any] = contextvars.ContextVar(
-    "hermes_compressor_attempt_generation", default=None
+_COMPRESSOR_ATTEMPT_GENERATION: contextvars.ContextVar[Any] = (
+    globals().get("_COMPRESSOR_ATTEMPT_GENERATION")
+    or contextvars.ContextVar("hermes_compressor_attempt_generation", default=None)
 )
 
 
@@ -694,8 +695,8 @@ class CompressionCommitFence:
 STALL_INTERRUPTED_FAILURE_CLASS = "stall_interrupted"
 
 # Daemon pool so a fence-cancelled hung worker cannot block interpreter exit; never shut down per call.
-_compress_timeout_executor = None
-_compress_timeout_executor_lock = threading.Lock()
+_compress_timeout_executor = globals().get("_compress_timeout_executor")
+_compress_timeout_executor_lock = globals().get("_compress_timeout_executor_lock") or threading.Lock()
 
 # Overrun waits proceed in bounded slices so each window logs (escalating); clamped to ceiling for tiny values.
 _COMMIT_OVERRUN_WAIT_SLICE_SECONDS = 30.0
@@ -742,9 +743,11 @@ def _join_cancelled_worker(future: Any, grace_seconds: float) -> bool:
 # anything when they eventually return, and each recovery frees its admission slot via the future
 # done-callback, restoring normal service. If a worker NEVER returns, its slot is lost for the process
 # lifetime — bounded, observable degradation instead of an unbounded stale-job queue.
-_COMPRESS_EXECUTOR_MAX_WORKERS = 4
-_compress_admission_lock = threading.Lock()
-_compress_admitted_count = 0
+_COMPRESS_EXECUTOR_MAX_WORKERS = 8
+_COMPRESS_POOL_ADMISSION_GRACE_SECONDS = 15.0
+_COMPRESS_POOL_ADMISSION_POLL_SECONDS = 0.25
+_compress_admission_lock = globals().get("_compress_admission_lock") or threading.Lock()
+_compress_admitted_count = int(globals().get("_compress_admitted_count", 0) or 0)
 
 
 def _try_admit_compression_job() -> bool:
@@ -755,6 +758,26 @@ def _try_admit_compression_job() -> bool:
             return False
         _compress_admitted_count += 1
         return True
+
+
+def _admit_compression_job_with_grace(grace_seconds: float = 0.0) -> bool:
+    """Try ``_try_admit_compression_job()`` immediately; when ``grace_seconds > 0``,
+    poll briefly (bounded both by wall clock and iteration count so no-op sleep
+    doubles in tests never busy-spin) for a freeing slot before refusing."""
+    if _try_admit_compression_job():
+        return True
+    if grace_seconds <= 0:
+        return False
+    deadline = time.monotonic() + float(grace_seconds)
+    max_polls = max(1, int(float(grace_seconds) / _COMPRESS_POOL_ADMISSION_POLL_SECONDS) + 1)
+    for _ in range(max_polls):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(_COMPRESS_POOL_ADMISSION_POLL_SECONDS, remaining))
+        if _try_admit_compression_job():
+            return True
+    return False
 
 
 def _release_compression_admission(_future=None) -> None:
@@ -1178,6 +1201,8 @@ def run_compress_context_with_progress_timeout(
     fallback_worker: Optional[Callable[[CompressionCommitFence], tuple[list, str]]] = None,
     request_exceeds_window: bool = False,
     precommit_deadline_monotonic: Optional[float] = None,
+    admission_grace_seconds: float = 0.0,
+    trigger_source: Optional[str] = None,
 ) -> tuple[list, str]:
     """Run ``worker(fence)`` under a sync progress-aware (idle + ceiling) timeout.
     Budgets bound the PRE-commit phase only: an admitted commit always completes (overrun logged, surfaced
@@ -1234,7 +1259,7 @@ def run_compress_context_with_progress_timeout(
     # A queued job would silently wait out its whole budget without starting and stay eligible to run as a
     # stale cancelled job when a worker recovers. Fail fast: continue without compression this cycle. See
     # #76354.
-    if not _try_admit_compression_job():
+    if not _admit_compression_job_with_grace(admission_grace_seconds):
         logger.warning(
             "Context compression pool saturated (%d workers busy) — refusing new compression this cycle and continuing without "
             "compression. Wedged workers are fence-cancelled and free their "
@@ -1244,9 +1269,23 @@ def run_compress_context_with_progress_timeout(
         # Saturation refusals must hit the same telemetry stream as other failures, or
         # a wedged pool looks like compression simply stopped being attempted.
         if telemetry_agent is not None:
+            _mark_compression_blocked_transient(
+                telemetry_agent,
+                getattr(telemetry_agent, "context_compressor", None),
+                "pool_saturated",
+            )
             _emit_compression_attempt_telemetry(
                 telemetry_agent, started_at=time.monotonic(), commit_status="aborted", split_status="aborted",
                 failure_class="pool_saturated", include_last_telemetry=False,
+                attempt_seed=(
+                    {
+                        "attempt_id": uuid.uuid4().hex,
+                        "session_id": getattr(telemetry_agent, "session_id", "") or "",
+                        "trigger_source": trigger_source,
+                    }
+                    if trigger_source
+                    else None
+                ),
             )
         return messages, _resolve_fallback_prompt()
 
@@ -1541,9 +1580,13 @@ def compression_blocked_transiently(agent: Any) -> bool:
 
 def _mark_compression_blocked_transient(agent: Any, compressor: Any, reason: str) -> None:
     """Publish the transient-block signal when the active guard is transient.
-    ``reason`` comes from ``_compression_block_reason``: ``cooldown:*`` and ``structural_backoff:*`` are
-    transient; ``ineffective`` stays unmarked."""
-    if reason.startswith("cooldown") or reason.startswith("structural_backoff"):
+    ``reason`` comes from ``_compression_block_reason`` or pool admission: ``pool_saturated``,
+    ``cooldown:*`` and ``structural_backoff:*`` are transient; ``ineffective`` stays unmarked."""
+    if (
+        reason == "pool_saturated"
+        or reason.startswith("cooldown")
+        or reason.startswith("structural_backoff")
+    ):
         logger.info(
             "Skipping automatic compression re-entry: transient guard "
             "active (%s, session=%s, last failure: %s) — will retry after "
@@ -1601,6 +1644,31 @@ def _adopt_live_compression_child(
     if not confirmed or str(confirmed) != child_session_id:
         return None
     agent.session_id = child_session_id
+    agent._rotated_to_child_session = True
+    _rot_hist = getattr(agent, "_rotated_from_session_ids", None)
+    if not isinstance(_rot_hist, set):
+        _rot_hist = set()
+        agent._rotated_from_session_ids = _rot_hist
+    if parent_session_id:
+        _rot_hist.add(parent_session_id)
+    with contextlib.suppress(Exception):
+        from agent.vertex_adapter import (
+            EUROPE_WEST2_VERTEX_REGION,
+            _record_session_vertex_region_affinity,
+            reset_vertex_sticky_region,
+        )
+        reset_vertex_sticky_region(parent_session_id)
+        _record_session_vertex_region_affinity(child_session_id, EUROPE_WEST2_VERTEX_REGION)
+    with contextlib.suppress(Exception):
+        from tools.file_tools import migrate_file_ops_state
+        from tools.skills_tool_dedup import migrate_skill_view_state
+        migrate_file_ops_state(parent_session_id, child_session_id)
+        migrate_skill_view_state(parent_session_id, child_session_id)
+        _cur_tid = getattr(agent, "_current_task_id", None)
+        if isinstance(_cur_tid, str) and _cur_tid and _cur_tid not in (parent_session_id, child_session_id):
+            _rot_hist.add(_cur_tid)
+            migrate_file_ops_state(_cur_tid, child_session_id)
+            migrate_skill_view_state(_cur_tid, child_session_id)
     _rebind_session_context(child_session_id)
     _hand_off_metrics_segment(parent_session_id, child_session_id)
     agent._session_db_created = True
@@ -2126,19 +2194,28 @@ def replay_compression_warning(agent: Any) -> None:
 def conversation_history_after_compression(
     agent: Any, messages: list, previous_history: Optional[list] = None
 ) -> Optional[list]:
-    """Return the correct flush baseline after a compression boundary.
-    Session rotation returns ``None`` so the child gets the full compacted list. In-place compaction returns a
-    shallow copy of the already-persisted rows (else the identity flush re-appends them). Aborted/no-op
-    attempts keep the baseline: marking all persisted drops unflushed turns; clearing re-appends rows."""
+    """Return the post-compaction ``conversation_history`` baseline for flush diffing.
+
+    In-place compaction keeps the same session_id; rows stamped ``_db_persisted=True`` by
+    ``_commit_compaction`` are already in SQLite and must be skipped on the next flush, while
+    any row whose ``_db_persisted`` marker was popped after ``_commit_compaction`` (e.g. by
+    ``_repair_alternation_after_compression``) must remain outside ``conversation_history`` so
+    ``_db_flush_collect`` flushes its post-repair state instead of re-stamping ``_db_persisted``.
+    """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    def _persisted_only(msgs: list) -> list:
+        return [m for m in msgs if not isinstance(m, dict) or m.get(_DB_PERSISTED_MARKER)]
+
     if bool(getattr(agent, "_last_compression_attempt_recorded", False)):
         attempt_in_place = getattr(agent, "_last_compression_attempt_in_place", None)
         if attempt_in_place is True:
-            return list(messages)
+            return _persisted_only(messages)
         if attempt_in_place is False:
             return None
         return previous_history
     if bool(getattr(agent, "_last_compaction_in_place", False)):
-        return list(messages)
+        return _persisted_only(messages)
     return None
 
 
@@ -2261,26 +2338,70 @@ _PRUNED_SKILL_RELOAD_NOTICE_HEADER = "[Skills pruned during compression — relo
 def _pruned_skill_reload_notice(compressed: list) -> str:
     """Reload notice for skills whose bodies were pruned, or ``""``.
     Scans ``[SKILL_PRUNED: ...]`` markers in the post-compression transcript; first-seen order, deduplicated,
-    capped at ``_MAX_PRUNED_SKILL_MARKERS``."""
-    from agent.context_compressor import _MAX_PRUNED_SKILL_MARKERS, _extract_pruned_skill_names
+    capped at ``_MAX_PRUNED_SKILL_MARKERS``. Any skill whose full unpruned ``skill_view`` body appears later in
+    *compressed* (reloaded in the protected tail) is excluded from the reload notice."""
+    from agent.context_compressor import (
+        COMPRESSED_SUMMARY_METADATA_KEY,
+        SUMMARY_PREFIX,
+        _MAX_PRUNED_SKILL_MARKERS,
+        _extract_pruned_skill_names,
+    )
+    from agent.context_compressor_tail import _unpruned_loaded_skill_names
+    non_skill_call_ids: set[str] = set()
+    for message in compressed:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        for tc in message.get("tool_calls") or ():
+            if not isinstance(tc, dict):
+                continue
+            cid = str(tc.get("id") or "")
+            fn_name = str((tc.get("function") or {}).get("name") or tc.get("name") or "")
+            if cid and fn_name and fn_name != "skill_view":
+                non_skill_call_ids.add(cid)
     names: list = []
     for message in compressed:
         if not isinstance(message, dict):
             continue
-        for name in _extract_pruned_skill_names(_message_text(message)):
-            if name not in names:
-                names.append(name)
+        role = message.get("role")
+        text = _message_text(message)
+        call_id = str(message.get("tool_call_id") or "")
+        is_summary = bool(message.get(COMPRESSED_SUMMARY_METADATA_KEY)) or SUMMARY_PREFIX in text
+        is_non_skill_tool = role == "tool" and bool(call_id) and call_id in non_skill_call_ids
+        is_plain_assistant = role == "assistant" and not is_summary
+        if not is_non_skill_tool and not is_plain_assistant:
+            for name in _extract_pruned_skill_names(text):
+                if name not in names:
+                    names.append(name)
+        if message.get("role") == "tool" and text.startswith("{") and '"success": true' in text[:80]:
+            with contextlib.suppress(Exception):
+                payload = json.loads(text)
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("success") is True
+                    and not payload.get("dedup")
+                    and not payload.get("file")
+                    and isinstance(payload.get("content"), str)
+                    and payload.get("name") in names
+                ):
+                    names.remove(payload["name"])
+    loaded_in_tail = _unpruned_loaded_skill_names([m for m in compressed if isinstance(m, dict)])
+    if loaded_in_tail:
+        names = [n for n in names if n not in loaded_in_tail and n.rsplit("/", 1)[-1] not in loaded_in_tail]
     del names[_MAX_PRUNED_SKILL_MARKERS:]
     if not names:
         return ""
     calls = "; ".join(f"skill_view(name='{name}')" for name in names)
+    batch_note = (
+        " Reload lazily on demand for the current step only (at most 2-3 skills per turn; "
+        "do not batch-reload the full list at once or reload skills from completed earlier tasks, "
+        "or you will immediately re-trigger context compression)."
+    )
     return (
         f"{_PRUNED_SKILL_RELOAD_NOTICE_HEADER}\n"
-        "The task list above crossed the compression boundary verbatim, but "
-        "the skill instructions that governed it were pruned. Before "
-        f"executing any preserved task that depends on these skills, reload "
-        f"them first: {calls}. After reloading, re-check that each pending "
-        "task is still justified — findings recorded before the boundary may have invalidated it."
+        "The task list above crossed the compression boundary verbatim, while "
+        "full skill bodies from earlier turns were compacted. If the current in-progress task "
+        f"specifically requires one of these skills' detailed procedures, reload only that skill on demand: {calls}.{batch_note} "
+        "After reloading, re-check that each pending task is still justified — findings recorded before the boundary may have invalidated it."
     )
 
 
@@ -2374,7 +2495,14 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
         if steer_text:
             return _insert_real_user_anchor(compressed, {"role": "user", "content": steer_text})
     from agent.message_metadata import append_message
-    append_message(compressed, {"role": "user", "content": COMPRESSION_CONTINUATION_USER_CONTENT})
+    append_message(
+        compressed,
+        {
+            "role": "user",
+            "content": COMPRESSION_CONTINUATION_USER_CONTENT,
+            "_synthetic_origin": "compression_continuation",
+        },
+    )
     return "placeholder_appended"
 
 
@@ -2965,7 +3093,7 @@ def _run_summary_dispatch(
                 if hard_cancel_event is not None and hard_cancel_event.is_set():
                     raise AuxiliaryExplicitCancellation()
     finally:
-        _COMPRESSOR_ATTEMPT_GENERATION.reset(_attempt_ctx_token)
+        _attempt_ctx_token.var.reset(_attempt_ctx_token)
         if commit_fence is not None:
             _clear_compression_cancelled_check_if_owner(agent.context_compressor, attempt_generation)
     return compressed
@@ -3040,9 +3168,15 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
                 # refresh it in place instead of stacking a duplicate.
                 _replace_message_content(_tail, todo_snapshot)
                 _tail["_todo_snapshot_synthetic"] = True
+                _tail["_synthetic_origin"] = "todo_snapshot"
                 merged = True
         if not merged:
-            compressed.append({"role": "user", "content": todo_snapshot, "_todo_snapshot_synthetic": True})
+            compressed.append({
+                "role": "user",
+                "content": todo_snapshot,
+                "_todo_snapshot_synthetic": True,
+                "_synthetic_origin": "todo_snapshot",
+            })
 
 
 def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
@@ -3183,6 +3317,22 @@ def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: An
     # /goal, /heartbeat, /loop: carried locally, or atomically by the owner on a RuntimeSessionStore.
     from agent.compression_automation import carry_compression_automation
     carry_compression_automation(agent, old_session_id)
+    _rot_hist = getattr(agent, "_rotated_from_session_ids", None)
+    if not isinstance(_rot_hist, set):
+        _rot_hist = set()
+        agent._rotated_from_session_ids = _rot_hist
+    if old_session_id:
+        _rot_hist.add(old_session_id)
+    with _swallow('Could not carry file/skill state on compression rotation: %s'):
+        from tools.file_tools import migrate_file_ops_state
+        from tools.skills_tool_dedup import migrate_skill_view_state
+        migrate_file_ops_state(old_session_id, agent.session_id)
+        migrate_skill_view_state(old_session_id, agent.session_id)
+        _cur_tid = getattr(agent, "_current_task_id", None)
+        if isinstance(_cur_tid, str) and _cur_tid and _cur_tid not in (old_session_id, agent.session_id):
+            _rot_hist.add(_cur_tid)
+            migrate_file_ops_state(_cur_tid, agent.session_id)
+            migrate_skill_view_state(_cur_tid, agent.session_id)
     with _swallow('Could not carry rejected thinking on compression: %s'):
         from agent.anthropic_thinking_replay import carry_rejected_thinking_to_session
         carry_rejected_thinking_to_session(agent, old_session_id)
@@ -3279,6 +3429,19 @@ def _publish_rotated_compaction(
         if isinstance(_handoff_message, dict):
             _handoff_message[_DB_PERSISTED_MARKER] = True
     agent.session_id = new_session_id
+    agent._rotated_to_child_session = True
+    _cc_rot = getattr(agent, "context_compressor", None)
+    if _cc_rot is not None and int(getattr(_cc_rot, "_force_rotate_restore_threshold", 0) or 0) > 0:
+        _cc_rot.threshold_tokens = int(_cc_rot._force_rotate_restore_threshold)
+        _cc_rot._force_rotate_restore_threshold = 0
+    with contextlib.suppress(Exception):
+        from agent.vertex_adapter import (
+            EUROPE_WEST2_VERTEX_REGION,
+            _record_session_vertex_region_affinity,
+            reset_vertex_sticky_region,
+        )
+        reset_vertex_sticky_region(old_session_id)
+        _record_session_vertex_region_affinity(new_session_id, EUROPE_WEST2_VERTEX_REGION)
     agent._db_flush_scan_prefix = None
     _rebind_session_context(agent.session_id)
     agent._session_db_created = True
@@ -3311,22 +3474,34 @@ def _warn_summary_or_aux_fallback(agent: Any) -> None:
             )
 
 
-def _reset_read_dedup_caches(task_id: str, *, session_id: str = "") -> None:
+def _reset_read_dedup_caches(
+    task_id: str, *, session_id: str = "", surviving_messages: Optional[list] = None
+) -> None:
     """Advance the file-read and skill_view repeat-read dedup to a fresh generation after a boundary.
     The mtime map is kept: the first read of each unchanged key returns full content compaction may have
     omitted; later reads return stubs, and stub-hit counters restart at the same boundary (#84857).
     The computer_use screenshot dedup is session-keyed and forgets its last frame for the same reason.
     """
     with contextlib.suppress(Exception):
-        from tools.file_tools_read_tracking import reset_file_dedup
-        reset_file_dedup(task_id)
+        from tools.file_tools_read_tracking import migrate_file_read_state, reset_file_dedup
+        reset_file_dedup(task_id, surviving_messages=surviving_messages)
+        if session_id and session_id != task_id:
+            migrate_file_read_state(task_id, session_id)
+            reset_file_dedup(session_id, surviving_messages=surviving_messages)
     if session_id:
         with contextlib.suppress(Exception):
             from tools.computer_use.tool import reset_screenshot_dedup
             reset_screenshot_dedup(session_id)
+        with contextlib.suppress(Exception):
+            from agent.vertex_adapter import reset_vertex_sticky_region
+            reset_vertex_sticky_region(session_id, only_if_global=True)
     with contextlib.suppress(Exception):
         from tools.skills_tool import reset_skill_view_dedup
-        reset_skill_view_dedup(task_id)
+        from tools.skills_tool_dedup import migrate_skill_view_state
+        reset_skill_view_dedup(task_id, surviving_messages=surviving_messages)
+        if session_id and session_id != task_id:
+            migrate_skill_view_state(task_id, session_id)
+            reset_skill_view_dedup(session_id, surviving_messages=surviving_messages)
 
 
 def _finish_compaction_boundary(
@@ -3418,7 +3593,12 @@ def _finish_compaction_boundary(
             )
         else:
             compressor._verify_compaction_cleared_threshold = True
-    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
+    _reset_read_dedup_caches(
+        task_id, session_id=agent.session_id or "", surviving_messages=compressed
+    )
+    _guardrails = getattr(agent, "_tool_guardrails", None)
+    if callable(_reset_guardrails := getattr(_guardrails, "reset_after_compaction", None)):
+        _reset_guardrails()
     return _compressed_est
 
 
@@ -4148,7 +4328,12 @@ def compress_context(
         reinserted_reply = None if verbatim_tail else _ensure_compressed_keeps_last_assistant_reply(
             messages, compressed, session_id=agent.session_id,
         )
+        carried_reinserted: list = []
         if reinserted_reply is not None:
+            unmerged_user = reinserted_reply.pop("_unmerged_inflight_user", None)
+            carried_reinserted.append(reinserted_reply)
+            if isinstance(unmerged_user, dict):
+                carried_reinserted.append(unmerged_user)
             logger.info(
                 "Compression: engine folded away the just-delivered assistant reply; reinserted it into the "
                 "active set (session=%s).", agent.session_id or "none",
@@ -4162,10 +4347,10 @@ def compress_context(
             messages_before_compression=messages_before_compression, made_progress=_compression_made_progress,
             attempt=attempt, verbatim_tail=verbatim_tail,
             # The reinserted copy keeps the original's _row_id/timestamp (production flush stamps
-            # both); carry exactly that one row so the commit rewinds the durable original instead
-            # of archiving it compacted=1 next to a fresh twin (display would show it twice). The
+            # both); carry those rows so the commit rewinds the durable originals instead of
+            # archiving them compacted=1 next to fresh twins (display would show them twice). The
             # todo fold / user-anchor rows above keep their own class and are not carried.
-            carried_messages=[reinserted_reply] if reinserted_reply is not None else None,
+            carried_messages=carried_reinserted or None,
         )
         if commit.refused_prompt is not None:
             _restore_messages_snapshot(messages, messages_before_compression)

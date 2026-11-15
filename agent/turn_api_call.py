@@ -8,7 +8,7 @@ redirect ``_model_request_active`` bracket and the response-vs-redirect crossing
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 import logging
 import time
@@ -227,6 +227,58 @@ class NousRateGuardVerdict:
     retry_count: Any
     compression_attempts: Any
     result: Optional[dict[str, Any]] = None
+
+
+@dataclass
+class LatencyEscalationVerdict:
+    """``action``: ``"fallthrough"`` (make the call) or ``"break"`` (model fallback
+    activated on ``_retry`` — same semantics as ``NousRateGuardVerdict``'s break)."""
+
+    action: str
+    active_system_prompt: Any
+    retry_count: Any
+    compression_attempts: Any
+
+
+def provider_latency_escalation_guard(
+    agent: Any, *, _retry: Any, api_messages: Any, active_system_prompt: Any,
+    retry_count: Any, compression_attempts: Any,
+) -> LatencyEscalationVerdict:
+    """DQ #218: escalate to the next fallback MODEL when every provider of the current
+    model is latency-demoted by the breaker. The breaker alone only reorders providers —
+    an all-demoted model keeps stalling on degraded providers (15/10: 5 949 breaker
+    events fleet-wide, turns interrupted mid-flight). Never lets the guard itself break
+    the agent loop: every failure path falls through to the normal call."""
+    def _fallthrough() -> LatencyEscalationVerdict:
+        return LatencyEscalationVerdict(
+            "fallthrough", active_system_prompt, retry_count, compression_attempts)
+
+    try:
+        from agent.provider_latency_circuit_breaker import (
+            all_providers_demoted, latency_escalation_due, mark_latency_escalation)
+        order = None
+        with suppress(Exception):
+            from agent.chat_completion_helpers import _provider_preferences_for_agent
+            order = (_provider_preferences_for_agent(agent) or {}).get("order")
+        if not all_providers_demoted(agent.model, order):
+            return _fallthrough()
+        if not latency_escalation_due(agent.model):
+            return _fallthrough()
+        mark_latency_escalation(agent.model)
+    except Exception:
+        logger.debug("provider latency escalation guard failed", exc_info=True)
+        return _fallthrough()
+
+    stalled_model = agent.model
+    if not agent._try_activate_fallback(reason=FailoverReason.provider_latency):
+        return _fallthrough()
+    from agent.conversation_loop import _arm_fallback_restart  # cycle-free lazy import
+
+    agent._buffer_vprint(
+        f"⚠️ Every provider for {stalled_model} is latency-demoted (breaker); "
+        f"escalated to fallback model {agent.model}.")
+    active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
+    return LatencyEscalationVerdict("break", active_system_prompt, 0, 0)
 
 
 def nous_rate_limit_guard(

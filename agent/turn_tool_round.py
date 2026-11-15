@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import dataclass
+import json
 import logging
 from typing import Any, Dict, Optional, Tuple
 
@@ -43,6 +44,8 @@ class ToolRoundVerdict:
     _turn_exit_reason: Any
     truncated_tool_call_retries: Any
     current_turn_user_idx: Any
+    length_continue_retries: Any = 0
+    truncated_response_parts: Any = None
     result: Optional[dict[str, Any]] = None
 
 
@@ -52,6 +55,7 @@ def run_tool_round(
     system_message: Any, active_system_prompt: Any, compression_attempts: Any,
     max_compression_attempts: Any, final_response: Any, failed: Any, _turn_exit_reason: Any,
     truncated_tool_call_retries: Any, current_turn_user_idx: Any,
+    length_continue_retries: Any = 0, truncated_response_parts: Any = None,
 ) -> ToolRoundVerdict:
     """Execute one tool round in the exact original order. Persist-before-execute is a
     durability invariant: resume must see the executed block if a destructive tool restarts
@@ -59,13 +63,19 @@ def run_tool_round(
     process-only state."""
     from agent.conversation_loop import _invalid_tool_name_error_content
 
+    if truncated_response_parts is None:
+        truncated_response_parts = []
+
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ToolRoundVerdict:
         return ToolRoundVerdict(
             action=action, messages=messages, conversation_history=conversation_history,
             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
             final_response=final_response, failed=failed, _turn_exit_reason=_turn_exit_reason,
             truncated_tool_call_retries=truncated_tool_call_retries,
-            current_turn_user_idx=current_turn_user_idx, result=result,
+            current_turn_user_idx=current_turn_user_idx,
+            length_continue_retries=length_continue_retries,
+            truncated_response_parts=truncated_response_parts,
+            result=result,
         )
 
     if not agent.quiet_mode:
@@ -86,6 +96,14 @@ def run_tool_round(
         return _verdict("return", _tvv.result)
     if _tvv.action == "continue":
         return _verdict("continue")
+
+    # Surface any pending fallback switch notice on a successful tool-calling round (mirroring
+    # finish_text_response) so multi-step tool turns do not accumulate notices across CF-61
+    # mid-turn primary restores and dump stale duplicates at turn end.
+    if callable(getattr(agent, "_emit_pending_fallback_notice", None)):
+        agent._emit_pending_fallback_notice()
+    if callable(getattr(agent, "_clear_status_buffer", None)):
+        agent._clear_status_buffer()
 
     # Normalize only this unpersisted turn. Each local bridge entry must pass
     # through the same scope, approvals, state and scheduling as a singleton.
@@ -125,6 +143,33 @@ def run_tool_round(
             })
         assistant_message.tool_calls = [
             tc for tc in assistant_message.tool_calls if tc.function.name in agent.valid_tool_names
+        ]
+
+    # FAIL-CLOSED malformed arguments (RCA 2026-09-17): calls whose args carry the
+    # __hermes_malformed_tool_arguments__ sentinel (assembled in _assemble_tool_calls
+    # when repair failed) are NOT executed — the "{}" execution path ran tools as
+    # silent no-ops. Error-result them so the model re-issues the call.
+    def _is_malformed_args_call(tc) -> bool:
+        try:
+            parsed = json.loads(tc.function.arguments)
+            return isinstance(parsed, dict) and parsed.get("__hermes_malformed_tool_arguments__") is True
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return False
+
+    _malformed_args_calls = [tc for tc in assistant_message.tool_calls if _is_malformed_args_call(tc)]
+    if _malformed_args_calls:
+        for tc in _malformed_args_calls:
+            append_message(messages, {
+                "role": "tool",
+                "name": tc.function.name,
+                "tool_call_id": coalesce_tool_call_id(tc),
+                "content": (
+                    "Tool call rejected: the arguments were malformed (unrepairable JSON) and the "
+                    "call was NOT executed. Re-issue the tool call with complete, valid JSON arguments."
+                ),
+            })
+        assistant_message.tool_calls = [
+            tc for tc in assistant_message.tool_calls if not _is_malformed_args_call(tc)
         ]
 
     # Persist the tool-call turn before any tool side effects so resume sees the executed
@@ -169,6 +214,7 @@ def run_tool_round(
     maybe_prepare(agent, messages, origin="tool-batch")
 
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+    _rehydrate_scrubbed_assistant_msg(agent, assistant_msg, messages)
     from hermes_cli.observability.shared_metrics_harness import finish_tool_round
 
     finish_tool_round(agent)
@@ -199,6 +245,10 @@ def run_tool_round(
 
     # Reset per-turn retry counters so one truncation can't poison the turn.
     truncated_tool_call_retries = 0
+    length_continue_retries = 0
+    truncated_response_parts = []
+    agent._truncated_tool_call_retries = 0
+    agent._content_filter_retries = 0
     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real
     # text arrives, so tool iterations don't stack blank lines.
     agent._stream_needs_break = True
@@ -206,7 +256,24 @@ def run_tool_round(
     # calling) — cheap RPC-style calls shouldn't eat the budget.
     if {tc.function.name for tc in assistant_message.tool_calls} == {"execute_code"}:
         agent.iteration_budget.refund()
+    elif (
+        getattr(agent, "_tool_guardrails", None) is not None
+        and hasattr(agent._tool_guardrails, "is_making_productive_progress")
+        and hasattr(agent.iteration_budget, "extend_on_progress")
+    ):
+        try:
+            if agent._tool_guardrails.is_making_productive_progress():
+                agent.iteration_budget.extend_on_progress(1)
+        except Exception as _prog_exc:
+            logger.debug("iteration_budget extend_on_progress check failed: %s", _prog_exc)
 
+    _cc_tr = getattr(agent, "context_compressor", None)
+    if (
+        int(getattr(_cc_tr, "_force_rotate_restore_threshold", 0) or 0) > 0
+        and not getattr(agent, "_rotated_to_child_session", False)
+    ):
+        compression_attempts = 0
+    _pre_ptc_sid = getattr(agent, "session_id", None)
     _ptc = compress_after_tool_results(
         agent, messages=messages, system_message=system_message, user_message=user_message,
         active_system_prompt=active_system_prompt, conversation_history=conversation_history,
@@ -218,7 +285,7 @@ def run_tool_round(
     messages = _ptc.messages
     active_system_prompt = _ptc.active_system_prompt
     conversation_history = _ptc.conversation_history
-    compression_attempts = _ptc.compression_attempts
+    compression_attempts = 0 if getattr(agent, "session_id", None) != _pre_ptc_sid else _ptc.compression_attempts
     final_response = _ptc.final_response
     _turn_exit_reason = _ptc.turn_exit_reason
     current_turn_user_idx = _ptc.current_turn_user_idx
@@ -305,6 +372,13 @@ def stage_tool_call_message(
     # recovers any dropped-tool-call stall, so refresh that budget per stall.
     agent._post_tool_empty_retried = False
     agent._dropped_toolcall_retries = 0
+    for frag in messages:
+        if isinstance(frag, dict):
+            if frag.pop("_length_continuation_fragment", None):
+                frag.setdefault("display_kind", "hidden")
+                frag["_absorbed_continuation_fragment"] = True
+            if frag.pop("_length_continuation_nudge", None):
+                frag["_absorbed_continuation_nudge"] = True
 
     previous_msg = messages[-1] if messages else None
     current_interim_visible = agent._interim_assistant_visible_text(assistant_msg)
@@ -316,3 +390,72 @@ def stage_tool_call_message(
         and agent._interim_assistant_visible_text(previous_msg) == current_interim_visible
     )
     return assistant_msg, duplicate_previous_interim
+
+
+def _rehydrate_scrubbed_assistant_msg(
+    agent: Any, assistant_msg: dict[str, Any], messages: list[dict[str, Any]]
+) -> None:
+    """When a pre_tool_call hook (secret-value-guard) blocks a tool call and scrubs the
+    pre-flushed assistant row in state.db on disk, sync the scrubbed fields back into the
+    in-memory assistant_msg so the next mid-turn API call does not send the raw secret to
+    OpenRouter and trigger HTTP 403 content_policy_blocked failover (#CF70)."""
+    if not isinstance(assistant_msg, dict) or not isinstance(messages, list):
+        return
+    try:
+        idx = next((i for i in range(len(messages) - 1, -1, -1) if messages[i] is assistant_msg), -1)
+        if idx < 0:
+            return
+        if not any(
+            isinstance(m, dict)
+            and m.get("role") == "tool"
+            and "secret-value-guard" in str(m.get("content") or "")
+            for m in messages[idx + 1 :]
+        ):
+            return
+        db = getattr(agent, "_session_db", None)
+        sid = getattr(agent, "session_id", None)
+        read_all = getattr(db, "_read_all", None) if db is not None else None
+        if not sid or not callable(read_all):
+            return
+        rows = read_all(
+            "SELECT content, tool_calls, reasoning, reasoning_content, reasoning_details "
+            "FROM messages WHERE session_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1",
+            (sid,),
+        )
+        if not rows:
+            return
+        c_val, tc_val, r_val, rc_val, rd_val = rows[0]
+        if isinstance(c_val, str) and "content" in assistant_msg:
+            assistant_msg["content"] = c_val
+        if isinstance(tc_val, str) and tc_val.strip():
+            parsed_tc = json.loads(tc_val)
+            if isinstance(parsed_tc, list):
+                assistant_msg["tool_calls"] = parsed_tc
+        for col_key, raw_val in (("reasoning", r_val), ("reasoning_content", rc_val)):
+            if isinstance(raw_val, str) and col_key in assistant_msg:
+                assistant_msg[col_key] = raw_val
+        if isinstance(rd_val, str) and rd_val.strip() and "reasoning_details" in assistant_msg:
+            parsed_rd = json.loads(rd_val)
+            if isinstance(parsed_rd, list):
+                assistant_msg["reasoning_details"] = parsed_rd
+        from collections.abc import Mapping
+        from typing import cast
+        from agent.message_metadata import DB_ROW_SNAPSHOT
+        if DB_ROW_SNAPSHOT in assistant_msg:
+            read_one = getattr(db, "_read_one", None)
+            full_row = (
+                read_one(
+                    "SELECT * FROM messages WHERE session_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1",
+                    (sid,),
+                )
+                if callable(read_one)
+                else None
+            )
+            if full_row is not None:
+                from agent.transcript_repair import transcript_row_snapshot
+                assistant_msg[DB_ROW_SNAPSHOT] = transcript_row_snapshot(cast(Mapping[str, Any], full_row))
+            else:
+                assistant_msg.pop(DB_ROW_SNAPSHOT, None)
+    except Exception:
+        logger.debug("Mid-turn scrubbed assistant message rehydration failed open", exc_info=True)
+

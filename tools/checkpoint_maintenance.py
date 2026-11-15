@@ -301,10 +301,12 @@ def _prune_checkpoints(
                 parent_dev = None
             if not isinstance(parent_ino, int) or isinstance(parent_ino, bool):
                 parent_ino = None
+            from tools.checkpoint_manager import _too_broad
             if (
                 delete_orphans
                 and (
                     not workdir
+                    or _too_broad(str(Path(workdir).resolve()))
                     or _workdir_is_observably_gone(
                         workdir,
                         parent_dev=parent_dev,

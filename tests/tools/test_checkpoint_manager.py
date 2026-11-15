@@ -1505,3 +1505,40 @@ class TestSessionDiff:
         assert result["success"] is True
         assert "feature.py" in result["diff"]
         assert "+x = 1" in result["diff"]
+
+    def test_stale_index_lock_is_reaped_before_git_add(self, mgr, work_dir, checkpoint_base):
+        """An orphaned indexes/<hash>.lock left by a killed git add -A must be reaped
+        once past the stale window so subsequent checkpoints do not wedge with rc=128."""
+        mgr.ensure_checkpoint(str(work_dir), "baseline")
+        store = _store_path(checkpoint_base)
+        dir_hash = _project_hash(str(work_dir))
+        lock_file = store / "indexes" / f"{dir_hash}.lock"
+        lock_file.write_bytes(b"")
+        stale_ts = time.time() - 600
+        os.utime(lock_file, (stale_ts, stale_ts))
+
+        (work_dir / "after_lock.py").write_text("y = 2\n")
+        mgr.new_turn()
+        cp = mgr.ensure_checkpoint(str(work_dir), "after stale lock")
+        assert cp is True
+        assert not lock_file.exists()
+
+def test_too_broad_covers_carried_cf57_exclusions():
+    """CF-57: umbrella workspace parents and the scratch/cache trees are never project dirs.
+
+    Pins the carried exclusions ported into _too_broad so a future refactor cannot
+    silently drop them. HERMES_HOME itself is NOT broad: upstream's store-exclusion
+    pathspecs (_stage_all_args/_exclude_store_args) deliberately allow checkpointing it.
+    """
+    from hermes_constants import get_hermes_home
+    from tools import checkpoint_manager as cm
+
+    home = Path.home().resolve()
+    hermes = get_hermes_home().resolve()
+    broad = ["/", str(home), str(home / "workspace"), str(home / "workspace" / "research"),
+             str(hermes / "cache"), str(hermes / "cache" / "scratch"),
+             str(hermes / "cache" / "scratch" / "sub" / "deep")]
+    for path in broad:
+        assert cm._too_broad(str(Path(path).resolve())) is True, path
+    assert cm._too_broad(str(hermes)) is False
+

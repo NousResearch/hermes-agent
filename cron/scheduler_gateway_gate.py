@@ -24,6 +24,73 @@ GATEWAY_DOWN_HINT = (
 )
 # A crontab tick has a minute; a gateway still starting answers within a few seconds or not at all.
 _HEADLESS_PROBE_TIMEOUT_S = 5.0
+# Grace window after a supervised gateway exits with gateway_state="running" before launchd/systemd
+# spawns the replacement PID and it acquires gateway.lock.
+_SUPERVISOR_RESPAWN_GRACE_S = 120.0
+
+
+def _supervised_gateway_respawning(home) -> bool:
+    """True when ``gateway_state.json`` in *home* (or its parent multiplexer root when *home* is
+    ``<root>/profiles/<name>``) records an active/restarting gateway updated within
+    ``_SUPERVISOR_RESPAWN_GRACE_S`` while no live PID currently answers discovery (the
+    launchd/systemd respawn throttle gap after SIGTERM)."""
+    import datetime as dt
+    import json
+    from pathlib import Path
+
+    home_path = Path(home).resolve()
+    candidates = [home_path]
+    if home_path.parent.name == "profiles":
+        candidates.append(home_path.parent.parent)
+    now = dt.datetime.now(dt.timezone.utc)
+    for cand in candidates:
+        state_file = cand / "gateway_state.json"
+        try:
+            if not state_file.is_file():
+                continue
+            data = json.loads(state_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("gateway_state") != "running" and not data.get("restart_requested"):
+            continue
+        updated_raw = data.get("updated_at")
+        if not isinstance(updated_raw, str) or not updated_raw.strip():
+            continue
+        try:
+            updated_dt = dt.datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
+            if updated_dt.tzinfo is None:
+                updated_dt = updated_dt.astimezone(dt.timezone.utc)
+            age_s = (now - updated_dt).total_seconds()
+            if 0 <= age_s <= _SUPERVISOR_RESPAWN_GRACE_S:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _gateway_transitioning(home) -> str | None:
+    """Why a non-owner in-process ticker (e.g. Desktop/serve fallback) must hold its agent jobs
+    during a gateway restart/drain window, or None when it may proceed."""
+    from gateway.session_cron import owner_for_home
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+
+    if owner_for_home(home) is not None:
+        return None
+    if os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip():
+        return None
+    observed = discover_gateway_endpoint(home, timeout=_HEADLESS_PROBE_TIMEOUT_S)
+    if observed.state == "ready":
+        return None
+    if observed.state in ("starting", "draining"):
+        reason = observed.state + (f" ({observed.reason_code})" if observed.reason_code else "")
+        return (f"the gateway is {reason}, so agent jobs cannot fire; they run at the next tick once "
+                "it is ready. Check it with `hermes gateway status`.")
+    if observed.state == "absent" and _supervised_gateway_respawning(home):
+        return ("the supervised gateway is restarting (respawn window), so agent jobs are held until "
+                "it is ready. Check it with `hermes gateway status`.")
+    return None
 
 
 def _gateway_unavailable(home) -> str | None:
@@ -63,16 +130,17 @@ def _note_fire_refused(job_ids, detail: str) -> None:
         save_jobs(jobs)
 
 
-def refuse_agent_jobs_without_gateway(due_jobs: list) -> list:
-    """Return the due jobs a headless tick may dispatch; agent jobs are held back (skipped, not
-    failed) when no ready gateway serves this home. Logs once per tick, not once per job."""
+def refuse_agent_jobs_without_gateway(due_jobs: list, *, transitioning_only: bool = False) -> list:
+    """Return the due jobs a tick may dispatch; agent jobs are held back (skipped, not
+    failed) when no ready gateway serves this home (or, when ``transitioning_only=True``, when a
+    non-owner ticker sees the gateway mid-restart/starting/draining). Logs once per tick."""
     from hermes_constants import get_hermes_home
 
     agent_jobs = [job for job in due_jobs if not job.get("no_agent")]
     if not agent_jobs:
         return due_jobs
     home = get_hermes_home().resolve()
-    hint = _gateway_unavailable(home)
+    hint = _gateway_transitioning(home) if transitioning_only else _gateway_unavailable(home)
     if hint is None:
         return due_jobs
     ids = [str(job["id"]) for job in agent_jobs]

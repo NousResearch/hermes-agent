@@ -180,3 +180,21 @@ class TestSkillViewDedupRaces:
 
         again = _view("demo-dedup-skill")
         assert again.get("dedup") is True
+
+    def test_migrate_skill_view_state_preserves_cross_epoch_load_limit_across_rotations(self, skills_home):
+        from tools.skills_tool_dedup import clear_skill_view_state, migrate_skill_view_state
+
+        r1 = _view("demo-dedup-skill", task="rot-s1")
+        assert "Step one" in r1.get("content", "")
+        migrate_skill_view_state("rot-s1", "rot-s2")
+        reset_skill_view_dedup("rot-s2")
+
+        r2 = _view("demo-dedup-skill", task="rot-s2")
+        assert "Step one" in r2.get("content", "")
+        migrate_skill_view_state("rot-s2", "rot-s3")
+        reset_skill_view_dedup("rot-s3")
+
+        r3 = _view("demo-dedup-skill", task="rot-s3")
+        assert r3.get("dedup") is True
+        assert r3.get("status") == "cross_epoch_digest"
+        clear_skill_view_state("rot-s3")

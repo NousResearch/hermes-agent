@@ -143,3 +143,21 @@ class TestMakeAgentCheckpointsFallback:
             monkeypatch, {"checkpoints": {"enabled": True}}, env_val="0"
         )
         assert captured.get("checkpoints_enabled") is False
+
+    def test_desktop_config_size_and_snapshot_limits_reach_agent(self, monkeypatch):
+        """Desktop _make_agent forwards max_total_size_mb, max_snapshots, and max_file_size_mb."""
+        captured = self._make_agent_with_checkpoints(
+            monkeypatch,
+            {
+                "checkpoints": {
+                    "enabled": True,
+                    "max_snapshots": 25,
+                    "max_total_size_mb": 800,
+                    "max_file_size_mb": 2,
+                }
+            },
+        )
+        assert captured.get("checkpoints_enabled") is True
+        assert captured.get("checkpoint_max_snapshots") == 25
+        assert captured.get("checkpoint_max_total_size_mb") == 800
+        assert captured.get("checkpoint_max_file_size_mb") == 2

@@ -81,10 +81,53 @@ def parse_proc_locks(text: str, inodes: dict[tuple[int, int], str]) -> list[tupl
 def state_db_write_lock_holders(db_path) -> list[str]:
     """Operator-facing lines naming the processes that hold a write-class lock on ``db_path``.
 
-    Empty when nothing is held or the platform has no ``/proc/locks``.
+    Empty when nothing is held (Linux). Non-Linux always returns candidate lines — see below.
+
+    Non-Linux (macOS/Windows) has no /proc/locks equivalent — fcntl byte-range lock
+    owners are not enumerable there — but the 2026-09-28 RCA showed the empty fallback
+    lying by omission: 38 "no write-class lock held at the deadline" lines while the
+    holder existed and was later named by the in-process holder warning. On those
+    platforms we name every FOREIGN process with the db (or a WAL sidecar) open as an
+    open-file CANDIDATE — honestly labeled, never claimed lock-proof — and say plainly
+    that a remaining in-process holder is the likeliest culprit (foreign_state_db_holders
+    deliberately skips this process's own handles, so same-process holders can never
+    appear as candidates; the "held the lock via X" holder warning covers that half).
     """
     if not sys.platform.startswith("linux"):
-        return []
+        from hermes_state_holders import describe_holder_pid, foreign_state_db_holders
+
+        candidates = foreign_state_db_holders(db_path)
+        unproven: list[str] = []
+        by_pid: dict[int, list[str]] = {}
+        for pid, target in candidates:
+            if pid <= 0:
+                # pid=-1 rows are foreign_state_db_holders' *unproven* sentinels (scan
+                # failure / scan unavailable) — the target is a reason string, not a
+                # path. Never render those as "has X open": say unproven, say why.
+                entry = f"unproven: {target} (scan failure, not a named holder)"
+                if entry not in unproven:
+                    unproven.append(entry)
+                continue
+            name = Path(os.path.realpath(target)).name
+            names = by_pid.setdefault(pid, [])
+            if name not in names:
+                names.append(name)
+        candidate_lines = list(unproven)
+        for pid, names in by_pid.items():
+            who = describe_holder_pid(pid)
+            candidate_lines.append(
+                f"{who} has {', '.join(names)} open "
+                f"(open-file candidate, not lock-proof)"
+            )
+        lines = candidate_lines[:6]
+        if len(candidate_lines) > 6:
+            lines.append(f"... and {len(candidate_lines) - 6} more open-file candidates")
+        if not candidate_lines:
+            lines.append(
+                "no foreign process holds the db open; the holder is likely THIS "
+                "process (see the 'held the lock' holder warning for the operation)"
+            )
+        return lines
     base = os.path.realpath(os.fspath(db_path))
     inodes: dict[tuple[int, int], str] = {}
     for sidecar in ("", "-wal", "-shm"):
@@ -120,5 +163,8 @@ def log_write_lock_holders(db_path, patience_s: float) -> None:
     else:
         detail = "no write-class lock held at the deadline (the holder released just before it)"
     logger.warning(
-        "state.db write lock unavailable for %.0fs (%s): %s", patience_s, Path(db_path).name, detail
+        "state.db write lock unavailable for %ss (%s): %s",
+        f"{patience_s:g}",
+        Path(db_path).name,
+        detail,
     )

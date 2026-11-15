@@ -85,3 +85,35 @@ class TestExtractContentOrReasoning:
             {"content": "", "reasoning_content": "short"},
             max_reasoning_chars=8000,
         ) == "short"
+
+    def test_backticked_code_spans_and_fences_preserved_in_content(self):
+        """Regression for 5ec912892d: _REASONING_BLOCK_PATTERNS includes CODE_FENCE_OR_SPAN
+        as group(1) so backticked identifiers in compaction summaries must survive."""
+        summary = (
+            "<think>internal</think>"
+            "Reparation `512734` and `499376` in store `612` (`service_kf.accepted = 0`, price `890` kr) "
+            "and `<think>` in backticks."
+        )
+        assert extract_content_or_reasoning(_make_response(summary)) == (
+            "Reparation `512734` and `499376` in store `612` (`service_kf.accepted = 0`, price `890` kr) "
+            "and `<think>` in backticks."
+        )
+        fenced = "Summary:\n```sql\nSELECT * FROM service_reparationer WHERE butiknr = '612';\n```"
+        assert extract_content_or_reasoning(_make_response(fenced)) == fenced
+
+    def test_scrub_ungrounded_summary_id_labels(self):
+        """Regression for 7374213/7374620: auxiliary summarizer invented 'id 12345' in
+        parenthesized KF summary and 'butik 205' when source turns only had 512734, 499376, 612, 890."""
+        from agent.context_compressor import _scrub_ungrounded_summary_id_labels
+
+        source = "repnrid=512734 repnrid=499376 butiknr=612 pris_kund=890 accepted=0 status=10"
+        raw_summary = (
+            "Reparation `repnr 512734` i `butik 612` har ett kostnadsförslag på 890 kr "
+            "(`accepted=0`, id 12345) och `repnr 499376` i `butik 205` (, id 12345)."
+        )
+        scrubbed = _scrub_ungrounded_summary_id_labels(raw_summary, source)
+        assert "12345" not in scrubbed
+        assert "(`accepted=0`)" in scrubbed
+        assert "`repnr 512734`" in scrubbed
+        assert "`butik 612`" in scrubbed
+        assert "`butik [UNGROUNDED_ID]`" in scrubbed

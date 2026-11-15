@@ -91,7 +91,7 @@ _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
     r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b",
     r"\bdocker\s+compose\s+up\b",
     r"\bnext\s+dev\b",
-    r"\bvite(?:\s|$)",
+    r"\bvite(?:\s+(?!build\b|optimize\b)|$)",
     r"\bnodemon\b",
     r"\buvicorn\b",
     r"\bgunicorn\b",
@@ -619,7 +619,11 @@ def gateway_lifecycle_block(
     unsafe, refusal = scan_gateway_lifecycle(
         command,
         cwd=guard_cwd,
-        read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
+        read_remote_script=(
+            None
+            if env_type == "local"
+            else lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES)
+        ),
     )
     if unsafe and refusal:
         # Not a lifecycle command: a script the command EXECUTES could not be scanned (budget,

@@ -157,6 +157,13 @@ _PREFIX_PATTERNS = [
     r"bb_live_[A-Za-z0-9_-]{10,}",      # BrowserBase
     r"gAAAA[A-Za-z0-9_=-]{20,}",        # Codex encrypted tokens
     r"AKIA[A-Z0-9]{16}",                # AWS Access Key ID
+    r"GOCSPX-[A-Za-z0-9_-]{10,}",       # Google OAuth client secret (GOCSPX- prefix; leaked to
+                                        # disk-cleared dumps 2026-09-12: absent here meant the
+                                        # request-dump redaction pass never matched it)
+    r"1//[A-Za-z0-9_.\-]{35,}",          # Google OAuth refresh token — raw form starts "1//" (2026-09-13: a
+                                        # live refresh token reached state.db unredacted)
+    r"ya29\.[A-Za-z0-9_.\-]{20,}",       # Google OAuth access token — raw form starts "ya29." (2026-10-06 RCA:
+                                        # dynamic access token leaked in ps command stdout)
     r"sk_live_[A-Za-z0-9]{10,}",        # Stripe secret key (live)
     r"sk_test_[A-Za-z0-9]{10,}",        # Stripe secret key (test)
     r"rk_live_[A-Za-z0-9]{10,}",        # Stripe restricted key
@@ -288,11 +295,11 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 # bare secret-word key only at line start (optionally after ``export``), so conversational ``I have
 # password=foo`` mid-sentence is left alone.
 _SECRET_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential|auth)"
-# Rendered line-number prefix: ``5|line`` (read_file), ``6:line`` (grep -n), ``7-line`` (grep -A/-B/-C
-# context lines) and ``     8\tline`` (cat -n / nl: right-aligned number + TAB). Callers put the ONLY
-# leading ``[ \t]*`` in front of it — stacking a second whitespace run around an optional gutter made
-# the anchored passes quadratic on long indented lines (2s per 5k spaces).
-_LINE_NUMBER_GUTTER = r"(?:[0-9]+(?:[|:\-]|\t)[ \t]*)?"
+# Rendered line-number / diff / YAML-list prefix: ``5|line`` (read_file), ``6:line`` (grep -n),
+# ``7-line`` (grep -A/-B/-C), ``     8\tline`` (cat -n / nl), unified-diff ``-``/``+`` prefixes, and
+# YAML sequence ``- `` items (up to two prefix tokens, e.g. ``5|  - api_key: …`` or ``+  - api_key: …``).
+# Every whitespace run is possessive (``[ \t]*+``) so long indented lines never backtrack.
+_LINE_NUMBER_GUTTER = r"(?:(?:[0-9]+(?:[|:\-]|\t)|[+-])[ \t]*+){0,2}"
 _CFG_VALUE = r"(['\"]?)([^\s&]+?)\2(?=[\s&]|$)"
 # Linear pre-gate for the _CFG_*_RE subs: no secret keyword => neither can match.
 _CFG_SECRET_WORD_RE = re.compile(_SECRET_CFG_NAMES, re.IGNORECASE)
@@ -318,7 +325,7 @@ _CFG_DOTTED_RE = re.compile(
 # and ``cat -n`` emits ``     7\tADS_API_TOKEN: …``. Anchored at ``^`` without it, none of those
 # matched, so the rendered read of a secret-bearing file leaked what the raw text masked.
 _CFG_ANCHORED_RE = re.compile(
-    rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)={_CFG_VALUE}",
+    rf"(^[ \t]*+{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)={_CFG_VALUE}",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -674,6 +681,10 @@ def _is_b64_pem_key(blob: str) -> bool:
     text = decoded[:64]
     return text.startswith(b"-----BEGIN") and b"PRIVATE KEY" in text
 
+
+# Content filter secret markers (e.g. OpenRouter/z-ai "[SECRET:ethereum-private-key]")
+# Redacted so log lines and agent error summaries don't echo back into future LLM contexts
+_CONTENT_FILTER_SECRET_RE = re.compile(r"\[SECRET:[^\]\r\n]+\]")
 
 # Database connection strings: protocol://user:PASSWORD@host. The userinfo and
 # password groups forbid whitespace so a match can never span a line break (a
@@ -1641,6 +1652,12 @@ def redact_credential_shapes(text: str, *, force: bool = False, code_file: bool 
     if ":" in text:
         text = redact_header_credentials(text)
         text = _TELEGRAM_RE.sub(_redact_telegram_token, text)
+
+    # Carried: content-filter secret markers (OpenRouter/z-ai "[REDACTED...]" echo leaks).
+    # Upstream moved the private-key pass to _redact_private_key_blocks() above (line ~1525),
+    # so only this block remains here; order private-key -> content-filter is preserved.
+    if "[SECRET:" in text:
+        text = _CONTENT_FILTER_SECRET_RE.sub("[REDACTED_CONTENT_FILTER]", text)
 
     # Database connection string passwords. With code_file=True, a password group that is a pure ``{...}``
     # brace expression is an f-string template reference (e.g. f"postgresql://{user}:{pass}@{host}"), not a

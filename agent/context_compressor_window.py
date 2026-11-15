@@ -58,7 +58,18 @@ class CompactionWindowMixin:
 
     def _compress_window(self, messages: list[dict[str, Any]]) -> tuple[int, int]:
         """Return ``(compress_start, compress_end)`` for the summarizable middle."""
-        compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
+        raw_head = self._protect_head_size(messages)
+        compress_start = self._align_boundary_forward(messages, raw_head)
+        if compress_start > raw_head and messages:
+            from agent.context_compressor import _estimate_msg_budget_tokens
+
+            first_non_sys = 1 if messages[0].get("role") == "system" else 0
+            head_tool_budget = max(2_500, int(getattr(self, "tail_token_budget", 10_000) or 10_000) // 2)
+            if sum(_estimate_msg_budget_tokens(m) for m in messages[first_non_sys:compress_start]) > head_tool_budget:
+                # Don't let _align_boundary_forward drag an oversized Turn-1 multi-tool batch into
+                # protected_head; align back to the start of that tool group while keeping initial user row(s).
+                min_head = min(len(messages), first_non_sys + (1 if len(messages) > first_non_sys and messages[first_non_sys].get("role") == "user" else 0))
+                compress_start = max(min_head, self._align_boundary_backward(messages, raw_head))
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
         # A role collision can merge the summary into the first tail row; keep an actionable user
         # event out of that slot by retaining an older assistant/tool bridge. The bridge never moves

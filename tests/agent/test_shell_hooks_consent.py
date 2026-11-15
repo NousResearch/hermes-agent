@@ -232,6 +232,42 @@ class TestNeverPromptOutsideForegroundCLI:
         assert "not allowlisted" in caplog.text
         assert shell_hooks.allowlist_entry_for("on_session_start", str(script)) is None
 
+    def test_force_reload_reregistration_demotes_repeat_log_to_debug(self, tmp_path, caplog):
+        from hermes_cli import plugins
+        from hermes_cli.config import load_config
+
+        script = _write_config_with_hook(tmp_path)
+        shell_hooks._record_approval("on_session_start", str(script))
+        plugins._plugin_manager = plugins.PluginManager()
+
+        with caplog.at_level(logging.INFO, logger="agent.shell_hooks"):
+            shell_hooks.register_from_config(load_config())
+        assert "shell hook registered:" in caplog.text
+        assert len(plugins._plugin_manager._hooks.get("on_session_start", [])) == 1
+
+        caplog.clear()
+        plugins._plugin_manager._hooks.clear()
+        with caplog.at_level(logging.INFO, logger="agent.shell_hooks"):
+            shell_hooks.re_register_config_hooks()
+        assert "shell hook registered:" not in caplog.text
+        assert len(plugins._plugin_manager._hooks.get("on_session_start", [])) == 1
+
+        caplog.clear()
+        plugins._plugin_manager._hooks.clear()
+        with caplog.at_level(logging.DEBUG, logger="agent.shell_hooks"):
+            shell_hooks.re_register_config_hooks()
+        assert "shell hook registered:" in caplog.text
+        assert len(plugins._plugin_manager._hooks.get("on_session_start", [])) == 1
+
+        import importlib
+        importlib.reload(shell_hooks)
+        caplog.clear()
+        plugins._plugin_manager._hooks.clear()
+        with caplog.at_level(logging.INFO, logger="agent.shell_hooks"):
+            shell_hooks.re_register_config_hooks()
+        assert "shell hook registered:" not in caplog.text
+        assert len(plugins._plugin_manager._hooks.get("on_session_start", [])) == 1
+
 
 # ── Allowlist + revoke + mtime ────────────────────────────────────────────
 

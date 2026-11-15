@@ -29,7 +29,9 @@ def not_a_later_tool_copy_sql(alias: str) -> str:
             f"SELECT 1 FROM messages AS original WHERE original.session_id = {alias}.session_id "
             f"AND original.timestamp = {alias}.timestamp AND original.message_uid = {alias}.message_uid "
             "AND original.role = 'tool' AND original.active = 0 AND original.compacted = 1 "
-            f"AND +original.display_order < {alias}.display_order AND {_ORIGINAL_VISIBLE_SQL}))")
+            f"AND (+original.display_order < {alias}.display_order "
+            f"OR (+original.display_order = {alias}.display_order AND original.id < original.display_order "
+            f"AND original.id < {alias}.id)) AND {_ORIGINAL_VISIBLE_SQL}))")
 
 
 def later_tool_copy_ids(db: Any, rows: Iterable[Any]) -> set[int]:
@@ -45,10 +47,20 @@ def later_tool_copy_ids(db: Any, rows: Iterable[Any]) -> set[int]:
     def owner(row):
         return row["session_id"], row["message_uid"], row["timestamp"]
 
-    first_slot: dict[Any, int] = {}
+    first_orig: dict[Any, tuple[int, int]] = {}
     for row in candidates:
         slot = row["display_order"]
         if row["message_uid"] and slot is not None and not row["active"] and not db._is_model_only_row(row):
-            first_slot[owner(row)] = min(first_slot.get(owner(row), slot), slot)
-    return {row["id"] for row in candidates if row["message_uid"] and row["display_order"] is not None
-            and first_slot.get(owner(row), row["display_order"]) < row["display_order"]}
+            cur = first_orig.get(owner(row))
+            cand = (slot, row["id"])
+            if cur is None or cand < cur:
+                first_orig[owner(row)] = cand
+    skip: set[int] = set()
+    for row in candidates:
+        slot = row["display_order"]
+        if not row["message_uid"] or slot is None:
+            continue
+        orig = first_orig.get(owner(row))
+        if orig is not None and (orig[0] < slot or (orig[0] == slot and orig[1] < orig[0] and orig[1] < row["id"])):
+            skip.add(row["id"])
+    return skip

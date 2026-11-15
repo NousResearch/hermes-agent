@@ -1014,6 +1014,83 @@ class TestSecretFileReadRedaction:
         assert self.SYNTH not in raw
         assert "«redacted" in raw
 
+    def test_patch_and_write_redact_diff_error_and_lint(self, tmp_path, hermes_home):
+        from tools.file_tools import patch_tool, write_file_tool
+
+        gkey = "AI" + "za" + ("A" * 35)
+        php_file = tmp_path / "profile.php"
+        php_file.write_text(
+            f"<?php\nif ($ok) {{\n    $g = new Googl('{gkey}');\n    echo 1;\n}}\n",
+            encoding="utf-8",
+        )
+        # 1. Removing a hardcoded secret via block_anchor must redact the '-' diff line.
+        patched = json.loads(
+            patch_tool(
+                mode="replace",
+                path=str(php_file),
+                old_string="if ($ok) {\n    $g = new Googl('placeholder');\n    echo 1;\n}",
+                new_string="if ($ok) {\n    echo 1;\n}",
+                task_id="secret-patch",
+            )
+        )
+        assert patched["success"] is True
+        assert gkey not in patched["diff"]
+        assert "«redacted:AIza…»" in patched["diff"]
+
+        # 2. Failed fuzzy match ('Did you mean?') must redact the candidate snippet in error.
+        php_file.write_text(
+            f"<?php\nfunction connect_db() {{\n    $k = '{gkey}';\n    return $k;\n}}\n",
+            encoding="utf-8",
+        )
+        failed = json.loads(
+            patch_tool(
+                mode="replace",
+                path=str(php_file),
+                old_string="function connect_db($arg) {\n    $k = 'wrong_literal';\n    return $k;\n}",
+                new_string="function connect_db($arg) {\n    return null;\n}",
+                task_id="secret-patch-err",
+            )
+        )
+        assert failed.get("success") is not True
+        assert "Did you mean" in failed.get("error", "")
+        assert gkey not in failed.get("error", "")
+        assert "«redacted:AIza…»" in failed.get("error", "")
+
+        # 3. Secret-bearing file (hermes_home/config.yaml): unified diff '-'/'+' lines mask opaque tokens.
+        cfg = hermes_home / "config.yaml"
+        cfg.write_text(
+            f"mcp_servers:\n  ads:\n    ADS_API_TOKEN: {self.SYNTH}\n    MAX_TOKENS: 100\n",
+            encoding="utf-8",
+        )
+        cfg_patched = json.loads(
+            patch_tool(
+                mode="replace",
+                path=str(cfg),
+                old_string=f"  ads:\n    ADS_API_TOKEN: {self.SYNTH}\n    MAX_TOKENS: 100",
+                new_string="  ads:\n    MAX_TOKENS: 200",
+                task_id="secret-cfg-patch",
+            )
+        )
+        assert cfg_patched["success"] is True
+        assert self.SYNTH not in cfg_patched["diff"]
+        assert "«redacted-secret»" in cfg_patched["diff"]
+
+        # 4. write_file syntax-validation error and lint/warning/note output must redact secrets.
+        bad_yaml = tmp_path / "broken.yaml"
+        refused = json.loads(
+            write_file_tool(
+                path=str(bad_yaml),
+                content=f"key: '{gkey}\n  broken: [\n",
+                task_id="secret-write-err",
+            )
+        )
+        assert gkey not in json.dumps(refused)
+
+        from tools.file_tools import _redact_mutation_result_dict
+        aux = {"warning": f"warn {gkey}", "note": f"note {self.SYNTH}"}
+        _redact_mutation_result_dict(aux, secret_file=True)
+        assert gkey not in aux["warning"] and "«redacted:AIza…»" in aux["warning"]
+
 
 class TestConflictMarkerFlag:
     def test_read_flags_balanced_conflict_blocks_only(self, tmp_path):

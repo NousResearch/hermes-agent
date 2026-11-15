@@ -256,6 +256,10 @@ def _store_pathspecs(base: Path, working_dir) -> list[str]:
     return [rel.as_posix(), lock.as_posix()]
 
 
+# Carried invariant: every staging path must go through _stage_all_args /
+# _exclude_store_args — a bare ["add", "-A"] would re-stage the store itself
+# whenever the workdir is HERMES_HOME (the CF-57 blanket-exclusion pensionering
+# relies on these pathspecs being applied on all 4 staging paths).
 def _stage_all_args(base: Path, working_dir) -> list[str]:
     """``git add -A`` that never stages the checkpoint base itself.
 
@@ -462,6 +466,18 @@ def _run_git(
         msg = f"working directory is not a directory: {normalized_working_dir}"
         logger.error("Git command skipped: %s (%s)", " ".join(["git"] + list(args)), msg)
         return False, "", msg
+
+    if index_file is not None:
+        lock_file = Path(f"{index_file}.lock")
+        try:
+            st = lock_file.stat()
+            if (time.time() - st.st_mtime) > max(timeout * 2, 120):
+                lock_file.unlink()
+                logger.warning("Reaped stale checkpoint index lock: %s", lock_file)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
 
     env = _git_env(store, str(normalized_working_dir), index_file=index_file)
     if extra_env:
@@ -870,9 +886,33 @@ def _dir_file_count(path: str) -> int:
 
 
 def _too_broad(abs_dir: str) -> bool:
-    """``/``, the user's home and every ancestor of it: never a project, always huge."""
+    """``/``, the user's home and every ancestor of it: never a project, always huge.
+
+    Carried (CF-57): also the umbrella workspace parents and the scratch/cache
+    trees — snapshots there capture agent-adjacent bulk, not project state.
+    HERMES_HOME itself stays checkpointable: upstream's store-exclusion pathspecs
+    (_stage_all_args/_exclude_store_args) supersede the old blanket exclusion by
+    fixing the store-self-staging hazard it guarded against.
+    """
+    p = Path(abs_dir)
     home = Path.home().resolve()
-    return Path(abs_dir) in {Path("/"), home, *home.parents}
+    if p in {Path("/"), home, *home.parents}:
+        return True
+    hermes_p = get_hermes_home().resolve()
+    broad_dirs = {
+        home / "workspace", home / "workspace" / "research",
+        home / "Claude Code", home / ".ssh",
+        hermes_p / "cache", hermes_p / "cache" / "scratch",
+        hermes_p / "state", hermes_p / "logs", hermes_p / "outbox",
+        hermes_p / "checkpoints", hermes_p / "cron", hermes_p / "runtime",
+    }
+    broad_prefixes = (
+        str(hermes_p / "cache" / "scratch") + os.sep,
+        str(hermes_p / "checkpoints") + os.sep,
+        str(hermes_p / "state") + os.sep,
+        str(hermes_p / "logs") + os.sep,
+    )
+    return p in broad_dirs or str(p).startswith(broad_prefixes)
 
 
 def _dir_size_bytes(path: Path) -> int:
@@ -1062,7 +1102,8 @@ class CheckpointManager:
 
         abs_dir = str(_normalize_path(working_dir))
 
-        # Skip root, home, and other overly broad directories
+        # Skip root, home, and other overly broad directories (carried scratch/hermes
+        # exclusions live inside _too_broad, ported onto upstream's refactor)
         if _too_broad(abs_dir):
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
@@ -1539,7 +1580,11 @@ class CheckpointManager:
 
         # An explicitly checkpointed root owns its ledger even when an
         # ancestor carries a project marker. Prefer the nearest owner.
-        roots = [Path(meta["workdir"]) for meta in _list_projects(_store_path()) if meta.get("workdir")]
+        roots = [
+            Path(meta["workdir"])
+            for meta in _list_projects(_store_path())
+            if meta.get("workdir") and not _too_broad(str(Path(meta["workdir"]).resolve()))
+        ]
         owners = [root for root in roots if candidate.is_relative_to(root)]
         if owners:
             return str(max(owners, key=lambda root: len(root.parts)))
@@ -1568,12 +1613,12 @@ class CheckpointManager:
             logger.debug("Checkpoint store init failed: %s", err)
             return False
 
-        _touch_project(store, working_dir)
-
         # Quick size guard — don't try to snapshot enormous directories
         if _dir_file_count(working_dir) > _MAX_FILES:
             logger.debug("Checkpoint skipped: >%d files in %s", _MAX_FILES, working_dir)
             return False
+
+        _touch_project(store, working_dir)
 
         dir_hash = _project_hash(working_dir)
         index_file = _index_path(store, dir_hash)

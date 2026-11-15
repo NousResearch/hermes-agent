@@ -455,6 +455,20 @@ DEFAULT_CONFIG = {
         # agent the wrong identity. A pin naming a missing directory never falls back to another
         # profile: the session gets a fresh browser without the user's logins.
         "real_profile_pin": "",
+        # Override the BINARY launched for real-profile browsing (absolute path, ~ expanded, or a
+        # glob — the NEWEST match wins, e.g. the packaged Chrome-for-Testing whose revision number
+        # changes between installs). Empty = launch the detected real browser. Rationale (macOS):
+        # a headless instance of the REAL Google Chrome.app holds the Launch Services
+        # registration, so every dock click activates a windowless Chrome ("dock trap");
+        # Chrome-for-Testing is a separate bundle invisible to Launch Services. Cookie behavior is
+        # identical in headless background launches either way. An unresolvable value falls back
+        # to the real binary (logged) — never blocks browsing.
+        # CARRIED (kept across the v52 browser refactor): the consuming call site moved from
+        # tools/browser_tool_real_profile.py to tools/browser_session_real_profile._launch; the
+        # key survives because the dock trap it fixes is upstream's still. `allow_unsafe_evaluate`
+        # and `restrict_evaluate` were NOT kept: their surface (the built-in browser_console eval
+        # tool, removed upstream in 68500d9ff9) no longer exists, so the denylist guards nothing.
+        "real_profile_binary": "",
         # CDP supervisor: dialog + frame detection over a persistent WebSocket; active only with a
         # CDP-capable backend (Browserbase, or local Chrome via /browser connect). See
         # website/docs/developer-guide/browser-supervisor.md.
@@ -2294,6 +2308,11 @@ DEFAULT_CONFIG = {
     "updates": {
         # Passive version/banner checks only; explicit `hermes update --check` remains enabled.
         "check": True,
+        # What passive checks compare HEAD against: "branch" = the update branch's tip
+        # (default), "release" = the latest tagged release's commit. Fork installs on a
+        # fast-moving main are behind the tip almost permanently, so "release" makes the
+        # badge mean "a new release exists that you lack" instead.
+        "anchor": "branch",
         # Pre-update backup. quick = snapshot small critical state (pairing JSONs, cron jobs,
         # config.yaml, .env, auth.json, profile DBs) into <HERMES_HOME>/state-snapshots/, skipping
         # files >1 GiB; restore via ``/snapshot``. full = quick PLUS a ``hermes backup`` zip in

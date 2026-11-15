@@ -170,3 +170,60 @@ def test_no_agent_jobs_still_fire_without_a_gateway(cron_home, monkeypatch):
 
     assert S.tick(verbose=False, headless=True) == 1
     assert counter.read_text(encoding="utf-8").count("fired") == 1
+
+
+def test_non_owner_tick_holds_agent_jobs_during_supervisor_respawn_or_starting(cron_home, monkeypatch):
+    """A non-owner in-process ticker (e.g. Desktop/serve fallback with ``headless=False``)
+    must hold agent jobs without advancing ``next_run_at`` when a supervised gateway is
+    respawning or ``starting``, instead of consuming the slot into ``Gateway starting: deadline``."""
+    import datetime as dt
+    import json
+    from hermes_cli.gateway_runtime import GatewayDiscovery
+
+    monkeypatch.setattr("gateway.session_cron.owner_for_home", lambda home: None)
+    monkeypatch.setattr(
+        scheduler_authority, "reconcile_pending",
+        lambda *, allow_connect=True: None)
+    agent = J.create_job(prompt="night driver", schedule="every 1h", name="night-driver", deliver="local")
+    _make_due(agent["id"])
+    due_before = J.load_jobs()[0]["next_run_at"]
+
+    # Case 1: gateway_state.json records gateway_state="running" updated just now while PID is absent
+    (cron_home / "gateway_state.json").write_text(json.dumps({
+        "gateway_state": "running",
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        "hermes_cli.gateway_runtime.discover_gateway_endpoint",
+        lambda home, timeout=5.0: GatewayDiscovery("absent"))
+    assert S.tick(verbose=False, headless=False) == 0
+    stored = J.load_jobs()[0]
+    assert stored["next_run_at"] == due_before
+    assert stored["last_status"] is None
+    assert "restarting" in stored["last_fire_error"]["detail"]
+
+    # Case 2: gateway is actively starting
+    (cron_home / "gateway_state.json").unlink()
+    monkeypatch.setattr(
+        "hermes_cli.gateway_runtime.discover_gateway_endpoint",
+        lambda home, timeout=5.0: GatewayDiscovery("starting"))
+    assert S.tick(verbose=False, headless=False) == 0
+    stored = J.load_jobs()[0]
+    assert stored["next_run_at"] == due_before
+    assert stored["last_status"] is None
+    assert "starting" in stored["last_fire_error"]["detail"]
+
+
+def test_run_remote_coro_succeeds_inside_running_event_loop():
+    """``_run_remote_coro`` must execute an async coroutine even when called from a thread
+    with an already-running event loop (Desktop/serve inline manual-run fallback)."""
+    import asyncio
+
+    async def sample():
+        await asyncio.sleep(0.001)
+        return "ok-from-coro"
+
+    async def outer():
+        return scheduler_authority._run_remote_coro(sample)
+
+    assert asyncio.run(outer()) == "ok-from-coro"

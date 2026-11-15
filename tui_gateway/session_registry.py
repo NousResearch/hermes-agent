@@ -782,6 +782,9 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
 def _live_session_payload(
     sid: str, session: dict, *, cols: int | None = None, touch: bool = False,
     transport: Transport | None = None, omit_messages: bool = False, inline_images: bool = True) -> dict:
+    if not session.get("running") and session.get("history"):
+        with contextlib.suppress(Exception):
+            _adopt_out_of_band_turns(session)
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols

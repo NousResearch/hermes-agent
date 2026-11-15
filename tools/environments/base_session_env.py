@@ -114,7 +114,7 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
         "${!HERMES_RPC_*} HERMES_KERNEL_DIR "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; ) || true; } "
-        f"> {tmp_path}")
+        f">| {tmp_path}")
 
 
 def _snapshot_bootstrap_script(

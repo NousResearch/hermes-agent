@@ -1735,7 +1735,7 @@ async def _resolve_handoff_watch_scopes(runner: object) -> list:
     config = getattr(runner, "config", None)
     if config is not None and not getattr(config, "multiplex_profiles", False):
         return [(None, None)]
-    offload = getattr(runner, "_run_in_executor_with_context", None)
+    offload = getattr(runner, "_run_housekeeping_in_executor", None) or getattr(runner, "_run_in_executor_with_context", None)
     if callable(offload):
         return await offload(_handoff_watch_scopes, runner)
     return _handoff_watch_scopes(runner)

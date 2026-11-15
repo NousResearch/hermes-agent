@@ -141,7 +141,7 @@ def open_state_db(path: Path, db_label: str) -> sqlite3.Connection:
     _secure_state_db_files(path, create_main=True)
     identity = _db_identity(path)
     # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
-    conn = open_db(path, db_label=db_label, busy_timeout_ms=10_000,
+    conn = open_db(path, db_label=db_label, busy_timeout_ms=60_000,
                    wal=False, row_factory=None,
                    initialize=lambda conn: _initialize_schema(conn, identity=identity))
     try:
@@ -428,11 +428,17 @@ def restore_undelivered_completions(target_queue) -> int:
         return 0  # nothing to replay; a replay must not create (or migrate) the ledger (#123265)
     recover_abandoned_delegations()
     now = time.time()
+    alive = _owner_liveness()
     with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at
+        raw_rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at, owner_pid, owner_started_at
                FROM async_delegations
                WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
                ORDER BY completed_at, delegation_id""").fetchall()
+        rows = [
+            (did, payload, comp, disp)
+            for did, payload, comp, disp, pid, started in raw_rows
+            if pid is None or int(pid) == os.getpid() or alive is None or not alive(pid, started)
+        ]
         return _replay_pending(conn, rows, target_queue, now, startup=True)
 
 
@@ -1048,7 +1054,8 @@ def _dispatch_admitted(
                 # The stall clock starts when the runner starts; a unit queued behind a full pool is not stalled.
                 rec.update(_started=True, _progress_ts=time.time())
         try:
-            result = run_with_notify_lease(lease, runner) or {}
+            with retirement.worker_thread_scope():
+                result = run_with_notify_lease(lease, runner) or {}
             status = classify(result)
         except Exception as exc:
             logger.exception(f"Async delegation{label} %s crashed", delegation_id)
@@ -1060,7 +1067,7 @@ def _dispatch_admitted(
 
     # The outer dispatch reservation prevents a freeze during this handoff. Retain a worker
     # reservation too: the stall monitor may finalize its registry record before it really exits.
-    retirement.acquire()
+    retirement.acquire(bind_thread=False)
     try:
         future = executor.submit(propagate_context_to_thread(_worker))
         def worker_done(completed):
@@ -1069,11 +1076,11 @@ def _dispatch_admitted(
                 if completed.cancelled():
                     _finalize(delegation_id, crash_result("Worker cancelled before start", 0), "interrupted")
             finally:
-                retirement.release()
+                retirement.release(bind_thread=False)
 
         future.add_done_callback(worker_done)
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
-        retirement.release()
+        retirement.release(bind_thread=False)
         lease.release()
         with _records_lock:
             _records.pop(delegation_id, None)

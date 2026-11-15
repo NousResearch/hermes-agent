@@ -908,4 +908,88 @@ describe('JsonRpcGatewayClient cursor retirement', () => {
     expect((client as unknown as { replayEpochBySession: Map<string, string> }).replayEpochBySession.size).toBe(REPLAY_CURSOR_MAX)
     client.close()
   })
+
+  it('seeds a 0 watermark on session.resume and prompt.submit so reconnect catches up even before seq 1 arrives', async () => {
+    const client = makeClient()
+    const reconnect = async () => {
+      client.invalidate('drop')
+      const opening = client.connect('ws://x')
+      const nextSock = sockets[sockets.length - 1]
+      nextSock.open()
+      await opening
+
+      return nextSock
+    }
+
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+
+    const resumePromise = client.request('session.resume', { session_id: 's-early' })
+    expect(sock.sent).toHaveLength(1)
+    const req = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: { session_id: 's-early', replay_epoch: 'ep-1' }
+    })
+    await resumePromise
+    expect(client.getSeqWatermarks()).toEqual({ 's-early': 0 })
+
+    // Socket drops before any sequenced event arrives on the wire.
+    sock = await reconnect()
+    await vi.waitFor(() => expect(sock.sent.length).toBe(1))
+    expect(sock.lastRequest().method).toBe('session.events.since')
+    expect(sock.lastRequest().params).toMatchObject({ session_id: 's-early', last_seen: 0 })
+    client.close()
+  })
+
+  it('dispatches session.replay_gap when session.events.since returns truncated: true', async () => {
+    const client = makeClient()
+    const reconnect = async () => {
+      client.invalidate('drop')
+      const opening = client.connect('ws://x')
+      const nextSock = sockets[sockets.length - 1]
+      nextSock.open()
+      await opening
+
+      return nextSock
+    }
+
+    const gaps: Array<{ session_id?: string; payload?: unknown }> = []
+    client.on('session.replay_gap', event => gaps.push({ session_id: event.session_id, payload: event.payload }))
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'message.delta', session_id: 's-trunc', seq: 2, replay_epoch: 'ep-1' }
+    })
+
+    sock = await reconnect()
+    await vi.waitFor(() => expect(sock.sent.length).toBe(1))
+    const replayReq = sock.lastRequest()
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: replayReq.id,
+      result: {
+        events: [{ type: 'message.delta', session_id: 's-trunc', seq: 50 }],
+        truncated: true,
+        latest_seq: 55,
+        replay_epoch: 'ep-1'
+      }
+    })
+
+    await vi.waitFor(() => expect(gaps).toHaveLength(1))
+    expect(gaps[0]).toEqual({
+      session_id: 's-trunc',
+      payload: { replay_epoch: 'ep-1', latest_seq: 55 }
+    })
+    expect(client.getSeqWatermarks()['s-trunc']).toBe(55)
+    client.close()
+  })
 })

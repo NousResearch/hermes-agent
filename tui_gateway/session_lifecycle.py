@@ -26,14 +26,16 @@ def _start_session_work(target, *, name: str, session: dict | None = None):
     from agent.memory_provider import spawn_context_thread
     from hermes_cli.backend_retirement import retirement
 
-    if not retirement.acquire():
+    already_running = bool(isinstance(session, dict) and session.get("running"))
+    if not retirement.acquire(bind_thread=False, force=already_running):
         return None
 
     def run():
         try:
-            target()
+            with retirement.worker_thread_scope():
+                target()
         finally:
-            retirement.release()
+            retirement.release(bind_thread=False)
 
     try:
         thread = spawn_context_thread(run, name=name)
@@ -42,7 +44,7 @@ def _start_session_work(target, *, name: str, session: dict | None = None):
         thread.start()
         return thread
     except BaseException:
-        retirement.release()
+        retirement.release(bind_thread=False)
         raise
 
 
@@ -60,21 +62,48 @@ _SESSION_OWNERSHIP_UNAVAILABLE = "Hermes could not safely reserve this session. 
 _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "idle_timeout", "lru_evict", "tui_shutdown"})
 
 
-def _lease_metadata(live_session_id: str) -> dict:
+def _transport_is_okhttp(transport: Any) -> bool:
+    if transport is None:
+        return False
+    ws = getattr(transport, "_ws", None) or getattr(transport, "ws", None)
+    headers = getattr(ws, "headers", None) or {}
+    ua = str(headers.get("user-agent") or "").strip().lower()
+    return ua.startswith("okhttp/")
+
+
+def _is_mobile_session(session: dict | None) -> bool:
+    if isinstance(session, dict):
+        if str(session.get("client_surface") or "").strip().lower() == "mobile":
+            return True
+        if _session_source(session).strip().lower() == "mobile":
+            return True
+        if _transport_is_okhttp(session.get("transport")):
+            return True
+    with contextlib.suppress(Exception):
+        if _transport_is_okhttp(current_transport()):
+            return True
+    return False
+
+
+def _lease_metadata(live_session_id: str, *, turn_active: bool | None = None) -> dict:
     """Writer identity for a lease: ``live_session_id`` is half of ``_is_same_writer``. Bot Chat delivery is
     admitted by the session authority (gateway/session_bot), never gated on a lease flag."""
-    return {"live_session_id": live_session_id}
+    meta: dict = {"live_session_id": live_session_id}
+    if turn_active is not None:
+        meta["turn_active"] = bool(turn_active)
+    return meta
 
 
 def _claim_active_session_slot(
-    session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None
+    session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None,
+    turn_active: bool | None = None,
 ) -> tuple[Any, str | None]:
     try:
         from hermes_cli.active_sessions import try_acquire_active_session
         return try_acquire_active_session(
             session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
-            metadata=_lease_metadata(live_session_id),
-            track_liveness=str(surface or "").strip().lower() == "desktop")
+            metadata=_lease_metadata(live_session_id, turn_active=turn_active),
+            track_liveness=str(surface or "").strip().lower() in {"desktop", "mobile"})
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
         # Fail CLOSED: an errored claim has NOT proven the session unowned; lease-less = silent double-writer hole.
@@ -125,16 +154,28 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
     if (canonical := _canonical_ledger_refusal(session)) is not None:
         return canonical
-    if session.get("active_session_lease") is not None:
-        return None
+    existing_lease = session.get("active_session_lease")
+    if existing_lease is not None:
+        if (
+            not getattr(existing_lease, "turn_idle", False)
+            or getattr(existing_lease, "state_path", None) is None
+            or not getattr(existing_lease, "enabled", True)
+        ):
+            return None
+        session.pop("active_session_lease", None)
     key = str(session.get("session_key") or "")
+    surface = "mobile" if _is_mobile_session(session) else _session_source(session)
     lease, limit_message = _claim_active_session_slot(
-        key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
+        key, live_session_id=sid, surface=surface, profile_home=session.get("profile_home"),
+        turn_active=True)
     if limit_message is None:
         _attach_lease(session, lease)
         return None
     from hermes_cli.active_sessions import SESSION_NOT_OWNED
-    if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
+    if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and (
+        _take_over_detached_runtime_lease(sid, session, key)
+        or _take_over_idle_cross_surface_lease(sid, session, key, surface=surface)
+    ):
         return None
     return limit_message
 
@@ -342,6 +383,96 @@ def _take_over_detached_runtime_lease(sid: str, session: dict, key: str) -> bool
     return True
 
 
+def _session_has_live_turn_marker(session: dict, key: str) -> bool:
+    """True when ``interrupted_turns.json`` records a live writer mid-turn for ``key``."""
+    if not key:
+        return False
+    try:
+        from hermes_constants import get_hermes_home
+        from tui_gateway.turn_marker import marker_writer_state, read_turn_marker
+        home = Path(session.get("profile_home") or get_hermes_home()).resolve()
+        marker = read_turn_marker(home, key)
+        return marker is not None and marker_writer_state(marker) == "alive"
+    except Exception:
+        return True  # fail closed if unreadable
+
+
+def _take_over_idle_cross_surface_lease(sid: str, session: dict, key: str, *, surface: str) -> bool:
+    """Hand an idle cross-process/cross-surface lease for ``key`` to ``session`` when no turn is running.
+
+    Covers two cases that previously caused false ``SESSION_NOT_OWNED`` lockouts between Mobile (:9119)
+    and Desktop (serve --isolated):
+    1. The previous owner finished its turn and stamped ``metadata.turn_active = False`` on its lease.
+    2. Either the existing lease holder or the incoming caller is ``mobile``, ``turn_active`` is not ``True``,
+       no live turn marker exists in ``interrupted_turns.json``, and the lease is past the 2s admission grace.
+    """
+    if not key or _session_has_live_turn_marker(session, key):
+        return False
+    try:
+        import uuid
+        from hermes_cli.active_sessions import (
+            ActiveSessionLease, _FileLock, _lease_entry, _lease_paths, _read_live_entries, _write_entries,
+        )
+        profile_home = session.get("profile_home")
+        state_path, lock_path = _lease_paths(registry_home=profile_home)
+        track_liveness = str(surface or "").strip().lower() in {"desktop", "mobile"}
+        with _FileLock(lock_path):
+            loaded = _read_live_entries(
+                state_path, track_liveness=track_liveness,
+                warn="Active-session registry is unavailable; refusing idle cross-surface lease takeover",
+                target_session_id=key,
+            )
+            if loaded is None:
+                return False
+            entries = loaded[1]
+            idx = next((i for i, e in enumerate(entries) if str(e.get("session_id") or "") == key), None)
+            if idx is None:
+                return False
+            existing = entries[idx]
+            meta = existing.get("metadata") or {}
+            turn_active = meta.get("turn_active")
+            existing_surface = str(existing.get("surface") or "").strip().lower()
+            incoming_surface = str(surface or "").strip().lower()
+            is_mobile_handoff = "mobile" in {existing_surface, incoming_surface}
+            age_s = time.time() - float(existing.get("updated_at") or existing.get("started_at") or 0.0)
+            if turn_active is True:
+                # Line 330 already verified ``_session_has_live_turn_marker(session, key)`` is False.
+                # If a mobile/desktop handoff sees ``turn_active=True`` with NO live turn marker past
+                # the 10s admission window, the previous turn already retired its marker without
+                # clearing ``turn_active``; allow takeover instead of wedging the session (#CF68).
+                if not (is_mobile_handoff and age_s >= 10.0):
+                    return False
+            elif turn_active is not False and not (is_mobile_handoff and age_s >= 2.0):
+                return False
+            lease_id = uuid.uuid4().hex
+            new_meta = _lease_metadata(sid, turn_active=True)
+            entries[idx] = _lease_entry(
+                lease_id=lease_id, session_id=key, surface=surface, metadata=new_meta,
+                track_liveness=track_liveness,
+            )
+            _write_entries(state_path, entries)
+            lease = ActiveSessionLease(
+                lease_id=lease_id, session_id=key, surface=str(surface), state_path=state_path,
+                lock_path=lock_path, track_liveness=track_liveness,
+            )
+            with _sessions_lock:
+                for _other_sid, other in _sessions.items():
+                    if other is not session and str(other.get("session_key") or "") == key:
+                        other_lease = other.get("active_session_lease")
+                        if other_lease is not None and str(getattr(other_lease, "lease_id", "")) == str(existing.get("lease_id") or ""):
+                            other.pop("active_session_lease", None)
+                            other["_lease_taken_over"] = True
+            _attach_lease(session, lease)
+        logger.info(
+            "Session %s (%s) took over idle lease for %s from pid=%s surface=%s",
+            sid, incoming_surface, key, existing.get("pid"), existing_surface,
+        )
+        return True
+    except Exception:
+        logger.debug("idle cross-surface lease takeover failed for %s", key, exc_info=True)
+        return False
+
+
 def _lease_retry(attempts: int, fn) -> Exception | None:
     """Call ``fn`` up to ``attempts`` times (50ms*n backoff: registry writes contend across processes); last
     exception when every try failed, else None."""
@@ -371,20 +502,67 @@ def _release_active_session_slot(session: dict | None) -> bool:
     return True
 
 
+def _mark_active_session_lease_idle(session: dict | None) -> None:
+    """Mark a resident session's active-session lease idle between turns so another surface (e.g. mobile <-> desktop)
+    can take over the conversation when no turn is in flight, without releasing the lease while idle."""
+    lease = session.get("active_session_lease") if isinstance(session, dict) else None
+    if (
+        lease is None
+        or getattr(lease, "released", False)
+        or not getattr(lease, "enabled", False)
+        or getattr(lease, "state_path", None) is None
+        or getattr(lease, "lock_path", None) is None
+    ):
+        return
+
+    def _update() -> None:
+        from hermes_cli.active_sessions import _FileLock, _read_live_entries, _write_entries
+        with _FileLock(lease.lock_path):
+            loaded = _read_live_entries(
+                lease.state_path, track_liveness=getattr(lease, "track_liveness", False),
+                warn="Active-session registry is unavailable; skipping idle lease mark",
+                target_session_id=lease.session_id,
+            )
+            if loaded is None:
+                return
+            entries = loaded[1]
+            own = next((e for e in entries if str(e.get("lease_id") or "") == str(lease.lease_id)), None)
+            if own is None:
+                return
+            meta = dict(own.get("metadata") or {})
+            meta["turn_active"] = False
+            own["metadata"] = meta
+            own["updated_at"] = time.time()
+            _write_entries(lease.state_path, entries)
+
+    if _lease_retry(3 if getattr(lease, "track_liveness", False) else 1, _update) is None:
+        lease.turn_idle = True
+
+
 def _release_hosted_room_turn_slot(session: dict) -> None:
-    """End-of-turn release for hosted room member sessions (``source=bot_room``) only.
+    """End-of-turn release for hosted room member sessions (``source=bot_room``), mobile sessions, and
+    already-detached WS sessions; attached desktop/TUI sessions keep their slot but stamp ``turn_active=False``.
 
     A hosted room turn is serialized by the room driver's lease, not by this process, so the member
     profile's ``bot_room`` slot is needed only while a turn is in flight. Holding it for the life of
     the live session (which no reaper ever ends: room sessions have no client transport) locked every
     other room worker sharing the home — messaging gateway + Desktop ``serve`` — out of that member
     with ``Refused active session … already held by pid=…`` until this process exited (#106847).
+    Likewise, mobile sessions (``source=mobile`` / ``client_surface=mobile`` on :9119) and detached WS
+    sessions release their cross-process lease as soon as the turn finishes so switching to Desktop/CLI
+    never hits a stale ``SESSION_NOT_OWNED`` refusal.
     Call under ``history_lock`` next to ``running = False`` so the next admission never observes the
     stale lease and then runs lease-less; ``_admit_prompt_turn`` re-claims on the following turn.
     """
     from tui_gateway.hosted_room_driver import ROOM_SESSION_SOURCE
-    if _session_source(session) == ROOM_SESSION_SOURCE:
+    if (
+        _session_source(session) == ROOM_SESSION_SOURCE
+        or _is_mobile_session(session)
+        or _ws_session_is_detached(session)
+    ):
         _release_active_session_slot(session)
+        return
+    _mark_active_session_lease_idle(session)
 
 
 def _own_live_lease_ids(*, exclude=None) -> set[str]:
@@ -468,7 +646,7 @@ def _transfer_active_session_slot(sid: str, session: dict, *, new_session_id: st
 # Sources the TUI backend itself creates ("tui", plus whatever a client passes as its own ``source``) and
 # the CLI's own sessions are NOT gateway-owned. See #60609.
 _NON_GATEWAY_SOURCES = frozenset({
-    "", "tui", "cli", "webui", "desktop", "cron", "kanban", "subagent", "test",
+    "", "tui", "cli", "webui", "desktop", "mobile", "cron", "kanban", "subagent", "test",
     "local", "acp", "webhook", "api_server", "msgraph_webhook"})
 
 
@@ -517,7 +695,8 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         session["resume_history_error"] = "session resume cancelled"
         history_ready.set()
     _desktop_automatic_cleanup = (
-        end_reason in _AUTOMATIC_SESSION_END_REASONS and _session_source(session).strip().lower() == "desktop")
+        end_reason in _AUTOMATIC_SESSION_END_REASONS
+        and (_session_source(session).strip().lower() in {"desktop", "mobile"} or _is_mobile_session(session)))
     # Automatic Desktop cleanup releases its lease inside the lifecycle guard below; other paths keep force/end semantics.
     if not _desktop_automatic_cleanup:
         _release_active_session_slot(session)
@@ -1025,7 +1204,11 @@ def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:
         return False
     try:
         elapsed = summary_fn().get("seconds_since_activity")
-        return elapsed is not None and float(elapsed) < _WS_ORPHAN_ACTIVITY_STALE_S
+        if elapsed is None:
+            # If the turn is running, lack of an activity stamp yet means it is
+            # in startup or waiting on its first API response, NOT wedged.
+            return bool(session.get("running"))
+        return float(elapsed) < _WS_ORPHAN_ACTIVITY_STALE_S
     except Exception:
         return False
 
@@ -1203,6 +1386,9 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
                     current.pop("_client_gone_interrupt_requested", None)
                     current.pop("_client_gone_interrupt_polls", None)
                     should_schedule_reap = True
+                    if _WS_ORPHAN_REAP_GRACE_S <= 0 and not current.get("running") and not current.get("_compute_host_turn_id"):
+                        with contextlib.suppress(Exception):
+                            _release_active_session_slot(current)
                     # Register before releasing the detachment claim: an old disconnect
                     # must not arm its first timer over a reconnect's newer detachment.
                     with contextlib.suppress(Exception):

@@ -171,6 +171,8 @@ def check_api_response(
         active_system_prompt = _rv.active_system_prompt
         if _rv.action == "return":
             return _verdict("return", _rv.result)
+        if _rv.action == "continue":
+            return _verdict("continue")
         retry_count = 0
         compression_attempts = 0
         return _verdict("break")

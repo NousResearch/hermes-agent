@@ -203,6 +203,10 @@ def assemble_api_request(
 
     # No send-time pad loop here: ``repair_empty_non_final_messages`` (inside
     # ``_sanitize_api_messages``) is the single owner of empty-turn repair.
+    if getattr(agent, "_pending_content_filter_steer", False):
+        agent._pending_content_filter_steer = False
+        from agent.turn_truncation import _inject_content_filter_steer_note
+        _inject_content_filter_steer_note(api_messages)
 
     # Build the request-local cache sections LAST, after every transcript mutation;
     # the canonical tool registry stays undecorated. Marked ``content`` becomes text

@@ -677,10 +677,28 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
 
 
 def safe_json_loads(text: str, default: Any = None) -> Any:
-    """Parse JSON, returning *default* on any parse error (a too-deeply nested body included)."""
+    """Parse JSON, returning *default* on any parse error (a too-deeply nested body included).
+
+    When runtime middleware (tool-loop warnings, identical-call notices, directory hints)
+    or post-tool hooks append a trailing ``\\n\\n[...]`` or ``\\n\\n---`` note after a JSON
+    object payload, ``raw_decode`` recovers the leading JSON object so failure detection,
+    diff extraction, and compaction summarizers still see ``{"success": false, "error": ...}``.
+    """
     try:
         return json.loads(text)
-    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
+    except json.JSONDecodeError:
+        if isinstance(text, str):
+            stripped = text.lstrip()
+            if stripped.startswith("{"):
+                try:
+                    parsed, end = json.JSONDecoder().raw_decode(stripped)
+                    tail = stripped[end:].strip()
+                    if isinstance(parsed, dict) and tail.startswith(("[", "---")):
+                        return parsed
+                except (json.JSONDecodeError, ValueError, RecursionError):
+                    pass
+        return default
+    except (TypeError, ValueError, RecursionError):
         return default
 
 

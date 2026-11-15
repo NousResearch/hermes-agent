@@ -2776,16 +2776,18 @@ def test_real_binding_concurrent_task_close_skips_pop_under_sibling_scope(
             session_id="shared-session", task_id="task-A", platform="cli", result={"ok": True},
         )
 
-    assert not [r for r in caplog.records if "task close failed" in r.getMessage()], caplog.text
-    # Task B's live scope is still the top of its context's stack: the sibling was not popped through.
-    top = runtime._run_in_task(session.tasks["task-B"], relay_runtime._current_top, runtime.relay)
-    assert relay_runtime._same_handle(top, task_b_handle)
+        assert not [r for r in caplog.records if "task close failed" in r.getMessage()], caplog.text
+        assert session is not None
+        # Task B's live scope is still the top of its context's stack: the sibling was not popped through.
+        top = runtime._run_in_task(session.tasks["task-B"], relay_runtime._current_top, runtime.relay)
+        assert relay_runtime._same_handle(top, task_b_handle)
 
-    relay_shared_metrics.finish_task_run(
-        session_id="shared-session", task_id="task-B", platform="cli", result={"ok": True},
-    )
-    lifecycle.invoke_hook("on_session_end", **event)
+        relay_shared_metrics.finish_task_run(
+            session_id="shared-session", task_id="task-B", platform="cli", result={"ok": True},
+        )
+        lifecycle.invoke_hook("on_session_end", **event)
     assert "task close failed" not in caplog.text
+    assert "orphaned scope" not in caplog.text
 
 
 def _stored_counters(tmp_path) -> dict[str, list[dict[str, Any]]]:

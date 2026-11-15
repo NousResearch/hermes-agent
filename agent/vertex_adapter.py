@@ -6,12 +6,16 @@ VERTEX_REGION. project_id/region may also live in config.yaml ``vertex:``;
 env wins over config.
 """
 
+from datetime import UTC, datetime
 import hashlib
 import json
 import logging
 import os
+import re
+import sys
+import threading
 import time
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 from agent.credential_source import VERTEX_OAUTH, tag_credential_source
 from agent.secret_scope import get_secret as _get_secret, is_multiplex_active
@@ -51,9 +55,222 @@ def _ensure_google_auth() -> bool:
 logger = logging.getLogger(__name__)
 
 DEFAULT_REGION = "global"
+GLOBAL_VERTEX_REGION = "global"
+EUROPE_WEST2_VERTEX_REGION = "europe-west2"
+EUROPE_WEST2_ARGON_MAX_CONCURRENCY = 5
+EUROPE_WEST2_COOLDOWN_SECONDS = 15.0
+# carried-fix-anchor: EUROPE_WEST2_STICKY_WAIT_SECONDS = 3.0 (raised to 8.0s)
+EUROPE_WEST2_STICKY_WAIT_SECONDS = 8.0
+EUROPE_WEST2_DEEP_EPOCH_WAIT_SECONDS = 8.0
+GLOBAL_STICKY_EPOCH_MIN_TOKENS = 45_000
+
+_prev_vertex_mod = sys.modules.get(__name__)
+_EUROPE_WEST2_ARGON_SEMAPHORE = getattr(
+    _prev_vertex_mod, "_EUROPE_WEST2_ARGON_SEMAPHORE", None
+) or threading.BoundedSemaphore(EUROPE_WEST2_ARGON_MAX_CONCURRENCY)
+_EUROPE_WEST2_STATE_LOCK = getattr(
+    _prev_vertex_mod, "_EUROPE_WEST2_STATE_LOCK", None
+) or threading.Lock()
+_europe_west2_cooldown_until: float = float(
+    getattr(_prev_vertex_mod, "_europe_west2_cooldown_until", 0.0) or 0.0
+)
+_prev_affinity = getattr(_prev_vertex_mod, "_session_region_affinity", None)
+_session_region_affinity: dict[str, str] = (
+    _prev_affinity if isinstance(_prev_affinity, dict) else {}
+)
+_SESSION_AFFINITY_CAP = 512
+_VERTEX_BASE_URL_RE = re.compile(
+    r"^https://(?:[a-z0-9-]+-)?aiplatform\.googleapis\.com/v1(?:beta1)?/projects/([^/]+)/locations/([^/]+)/endpoints/openapi/?$"
+)
 _CLOUD_PLATFORM_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
 
 _creds_cache: dict = {}
+
+
+def parse_vertex_base_url(base_url: Optional[str]) -> Optional[tuple[str, str]]:
+    """Extract ``(project_id, region)`` from a Vertex OpenAI-compatible base URL, or None."""
+    m = _VERTEX_BASE_URL_RE.match(str(base_url or "").strip())
+    return (m.group(1), m.group(2)) if m else None
+
+
+def is_vertex_argon_model(model: Optional[str]) -> bool:
+    """Return True strictly for gemini-4-argon (never gemini-3.8-flash or gemini-3*)."""
+    cleaned = str(model or "").strip().lower()
+    if "/" in cleaned:
+        cleaned = cleaned.rsplit("/", 1)[-1]
+    if "@" in cleaned:
+        cleaned = cleaned.split("@", 1)[0]
+    return cleaned == "gemini-4-argon" or cleaned.startswith("gemini-4-argon-")
+
+
+def is_vertex_global_only_model(model: Optional[str]) -> bool:
+    """Models that return HTTP 404 on regional endpoints (e.g. europe-west2) and must use global."""
+    cleaned = str(model or "").strip().lower()
+    if "/" in cleaned:
+        cleaned = cleaned.rsplit("/", 1)[-1]
+    if "@" in cleaned:
+        cleaned = cleaned.split("@", 1)[0]
+    return (
+        cleaned.startswith("gemini-3.8-flash")
+        or cleaned.startswith("gemini-3-")
+        or cleaned.startswith("gemini-3.")
+    )
+
+
+def record_vertex_regional_429(
+    cooldown_seconds: float = EUROPE_WEST2_COOLDOWN_SECONDS,
+    *,
+    session_id: Optional[str] = None,
+) -> float:
+    """Trip the europe-west2 429 cooldown so subsequent calls route to locations/global."""
+    global _europe_west2_cooldown_until
+    now = time.monotonic()
+    with _EUROPE_WEST2_STATE_LOCK:
+        target = now + max(0.0, float(cooldown_seconds))
+        _europe_west2_cooldown_until = max(_europe_west2_cooldown_until, target)
+        until = _europe_west2_cooldown_until
+    raw_sid = str(session_id or "").strip()
+    if raw_sid and ":bg-review:" not in raw_sid and ":bg_review" not in raw_sid:
+        _record_session_vertex_region_affinity(raw_sid, GLOBAL_VERTEX_REGION)
+    return until
+
+
+def vertex_regional_cooldown_remaining() -> float:
+    """Seconds remaining on the europe-west2 429 cooldown (0.0 when ready)."""
+    with _EUROPE_WEST2_STATE_LOCK:
+        return max(0.0, _europe_west2_cooldown_until - time.monotonic())
+
+
+def reset_vertex_hybrid_router_state() -> None:
+    """Reset cooldown, session affinity, and semaphore state (used by unit tests)."""
+    global _europe_west2_cooldown_until, _EUROPE_WEST2_ARGON_SEMAPHORE
+    with _EUROPE_WEST2_STATE_LOCK:
+        _europe_west2_cooldown_until = 0.0
+        _EUROPE_WEST2_ARGON_SEMAPHORE = threading.BoundedSemaphore(EUROPE_WEST2_ARGON_MAX_CONCURRENCY)
+        _session_region_affinity.clear()
+
+
+def _canonical_affinity_session_id(session_id: Optional[str]) -> Optional[str]:
+    """Strip ``:bg-review:<seq>`` or ``:bg_review`` suffix so background_review inherits parent session affinity."""
+    if not session_id:
+        return None
+    raw = str(session_id).strip()
+    if not raw:
+        return None
+    base = re.split(r":bg[-_]review(?::|$)", raw, maxsplit=1)[0].strip()
+    return base or raw
+
+
+def reset_vertex_sticky_region(session_id: Optional[str], *, only_if_global: bool = False) -> None:
+    """Clear sticky Vertex region for *session_id* (or only if pinned to global on compaction)."""
+    sid = _canonical_affinity_session_id(session_id)
+    if not sid:
+        return
+    with _EUROPE_WEST2_STATE_LOCK:
+        if only_if_global and _session_region_affinity.get(sid) != GLOBAL_VERTEX_REGION:
+            return
+        _session_region_affinity.pop(sid, None)
+
+
+clear_session_vertex_region = reset_vertex_sticky_region
+clear_session_vertex_region_affinity = reset_vertex_sticky_region
+
+
+def get_session_vertex_region_affinity(session_id: Optional[str]) -> Optional[str]:
+    """Return the sticky Vertex region recorded for *session_id*, if any."""
+    sid = _canonical_affinity_session_id(session_id)
+    if not sid:
+        return None
+    with _EUROPE_WEST2_STATE_LOCK:
+        return _session_region_affinity.get(sid)
+
+
+def _record_session_vertex_region_affinity(session_id: Optional[str], region: str) -> None:
+    sid = _canonical_affinity_session_id(session_id)
+    if not sid:
+        return
+    with _EUROPE_WEST2_STATE_LOCK:
+        _session_region_affinity.pop(sid, None)
+        _session_region_affinity[sid] = region
+        while len(_session_region_affinity) > _SESSION_AFFINITY_CAP:
+            del _session_region_affinity[next(iter(_session_region_affinity))]
+
+
+def acquire_vertex_hybrid_region(
+    model: Optional[str],
+    *,
+    configured_region: Optional[str] = None,
+    interactive: bool = True,
+    session_id: Optional[str] = None,
+    sticky_wait_seconds: Optional[float] = None,
+    last_prompt_tokens: int = 0,
+) -> tuple[str, bool]:
+    """Select the Vertex region for a single request and optionally acquire a regional slot.
+
+    Returns ``(region, slot_acquired)``:
+    - ``gemini-3.8-flash`` / ``gemini-3*`` -> always ``("global", False)`` (HTTP 404 on europe-west2).
+    - ``gemini-4-argon`` when ``interactive=True`` (or ``:bg-review:`` for an ``europe-west2`` parent)
+      and configured region is ``global`` or ``europe-west2`` -> tries checkout of
+      ``_EUROPE_WEST2_ARGON_SEMAPHORE`` (max 5) when not in a 429 cooldown window. When *session_id*
+      is already pinned to ``europe-west2``, waits up to ``sticky_wait_seconds`` (default 8.0s) for a
+      regional slot before spilling to ``global``. Once a session runs on ``global``, it stays pinned
+      to ``global`` for the rest of the compaction epoch (until ``last_prompt_tokens == -1`` or
+      ``reset_vertex_sticky_region`` after compaction) so mid-epoch region jumps never wipe KV caches.
+    - All other models/regions -> ``(configured_region or "global", False)``.
+    """
+    reg = (configured_region or DEFAULT_REGION).strip() or DEFAULT_REGION
+    if is_vertex_global_only_model(model):
+        return (GLOBAL_VERTEX_REGION, False)
+    prompt_tok = int(last_prompt_tokens or 0)
+    raw_sid = str(session_id or "")
+    pinned_region = get_session_vertex_region_affinity(session_id)
+    if prompt_tok == -1:
+        if pinned_region == GLOBAL_VERTEX_REGION:
+            reset_vertex_sticky_region(session_id)
+            pinned_region = None
+        prompt_tok = 0
+    is_bg_review_for_ew2_parent = (
+        pinned_region == EUROPE_WEST2_VERTEX_REGION
+        and (bool(raw_sid) or ":bg-review:" in raw_sid)
+    )
+    if is_vertex_argon_model(model) and reg in (GLOBAL_VERTEX_REGION, EUROPE_WEST2_VERTEX_REGION):
+        if (interactive or is_bg_review_for_ew2_parent) and pinned_region != GLOBAL_VERTEX_REGION:
+            if vertex_regional_cooldown_remaining() <= 0.0:
+                if sticky_wait_seconds is not None:
+                    wait_s = max(0.0, float(sticky_wait_seconds))
+                elif pinned_region == EUROPE_WEST2_VERTEX_REGION and prompt_tok >= GLOBAL_STICKY_EPOCH_MIN_TOKENS:
+                    wait_s = EUROPE_WEST2_DEEP_EPOCH_WAIT_SECONDS
+                else:
+                    wait_s = EUROPE_WEST2_STICKY_WAIT_SECONDS
+                if pinned_region == EUROPE_WEST2_VERTEX_REGION and wait_s > 0.0:
+                    acquired = _EUROPE_WEST2_ARGON_SEMAPHORE.acquire(blocking=True, timeout=wait_s)
+                else:
+                    acquired = _EUROPE_WEST2_ARGON_SEMAPHORE.acquire(blocking=False)
+                if acquired:
+                    _record_session_vertex_region_affinity(session_id, EUROPE_WEST2_VERTEX_REGION)
+                    return (EUROPE_WEST2_VERTEX_REGION, True)
+            if session_id and (
+                pinned_region is None
+                or (interactive and prompt_tok < GLOBAL_STICKY_EPOCH_MIN_TOKENS)
+            ):
+                _record_session_vertex_region_affinity(session_id, GLOBAL_VERTEX_REGION)
+        return (GLOBAL_VERTEX_REGION, False)
+    return (reg, False)
+
+
+def release_vertex_hybrid_slot(client: Any) -> bool:
+    """Idempotently release a europe-west2 concurrency slot held on *client*."""
+    if client is None or getattr(client, "_vertex_regional_slot_held", False) is not True:
+        return False
+    try:
+        client._vertex_regional_slot_held = False
+    except Exception:
+        pass
+    try:
+        _EUROPE_WEST2_ARGON_SEMAPHORE.release()
+        return True
+    except ValueError:
+        return False
 
 
 def _vertex_config() -> dict:
@@ -91,6 +308,12 @@ def _resolve_credentials_path(explicit: Optional[str]) -> Optional[str]:
         path = _get_secret(env_var)
         if path and os.path.exists(path):
             return path
+    if not is_multiplex_active():
+        cfg_path = str(_vertex_config().get("credentials_path") or "").strip()
+        if cfg_path:
+            expanded = os.path.expanduser(cfg_path)
+            if os.path.exists(expanded):
+                return expanded
     return None
 
 
@@ -137,12 +360,28 @@ def _load_credentials(resolved_path: Optional[str], sa_raw: Optional[bytes]) -> 
     return google.auth.default(scopes=_CLOUD_PLATFORM_SCOPES)
 
 
+def _expiry_epoch(expiry: Any) -> Optional[float]:
+    """UTC epoch seconds for ``creds.expiry``.
+
+    ``google-auth`` stores ``creds.expiry`` as a naive UTC ``datetime`` (``tzinfo=None``); calling
+    ``.timestamp()`` directly on a naive ``datetime`` interprets it in the host's local timezone
+    (e.g. CET ``UTC+01:00`` shifts a freshly minted 3600 s token back by 3600 s to ``now - 1 s``,
+    making ``_needs_refresh`` True on every call).
+    """
+    if not isinstance(expiry, datetime):
+        return None
+    if expiry.tzinfo is None:
+        return expiry.replace(tzinfo=UTC).timestamp()
+    return expiry.timestamp()
+
+
 def _needs_refresh(creds) -> bool:
     """No token, expired, or within 5 minutes of expiry."""
+    expiry_ts = _expiry_epoch(getattr(creds, "expiry", None))
     return (
         not getattr(creds, "token", None)
         or getattr(creds, "expired", False)
-        or (getattr(creds, "expiry", None) is not None and (creds.expiry.timestamp() - time.time()) < 300)
+        or (expiry_ts is not None and (expiry_ts - time.time()) < 300)
     )
 
 
@@ -161,7 +400,9 @@ def _cached_credentials(resolved_path: Optional[str], sa_raw: Optional[bytes], c
     return cached
 
 
-def get_vertex_credentials(credentials_path: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+def get_vertex_credentials(
+    credentials_path: Optional[str] = None, *, force_refresh: bool = False
+) -> tuple[Optional[str], Optional[str]]:
     """Return (fresh access_token, project_id) or (None, None); Credentials cached per file content."""
     if not _ensure_google_auth():
         return None, None
@@ -175,7 +416,7 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> tuple[Opti
         if cached is None:
             return None, None
         creds, project_id = cached
-        if _needs_refresh(creds):
+        if force_refresh or _needs_refresh(creds):
             creds.refresh(google.auth.transport.requests.Request())
         return creds.token, _resolve_project_override() or project_id
     except Exception as e:
@@ -186,7 +427,7 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> tuple[Opti
         sa_path = None if resolved_path else _resolve_credentials_path(credentials_path)
         if sa_path:
             logger.info("ADC failed, retrying with service account: %s", sa_path)
-            return get_vertex_credentials(sa_path)
+            return get_vertex_credentials(sa_path, force_refresh=force_refresh)
         return None, None
 
 
@@ -197,10 +438,10 @@ def build_vertex_base_url(project_id: str, region: str = DEFAULT_REGION) -> str:
 
 
 def get_vertex_config(
-    credentials_path: Optional[str] = None, region: Optional[str] = None
+    credentials_path: Optional[str] = None, region: Optional[str] = None, *, force_refresh: bool = False
 ) -> tuple[Optional[str], Optional[str]]:
     """Resolve (access_token, base_url) for Vertex AI, or (None, None) on failure."""
-    token, project_id = get_vertex_credentials(credentials_path)
+    token, project_id = get_vertex_credentials(credentials_path, force_refresh=force_refresh)
     if not token or not project_id:
         return None, None
     return token, build_vertex_base_url(project_id, _resolve_region(region))

@@ -31,9 +31,25 @@ class StreamingWaitMonitor:
     # Inline call wedged past the limit: the stale-timer re-arm time after which activity touches
     # are withheld (None = claim liveness as usual). A real chunk after it lifts the hold.
     _liveness_withheld_at = None
+    _stream_stale_timeout = None
+    _stream_post_chunk_stale_timeout = None
     _lifetime = StreamLifetime(0.0)  # opt-in agent.stream_max_lifetime; real clock set when the monitor starts
     _lifetime_kill = None  # (attempt id, elapsed s) of the latest cap kill
     _released_attempt = 0  # the attempt the worker's except path last caught (it let go of it)
+
+    def _in_post_chunk_phase(self) -> bool:
+        diag = getattr(getattr(self, "clients", None), "diag", None)
+        return isinstance(diag, dict) and bool(diag.get("first_chunk_at"))
+
+    def _effective_stale_timeout(self) -> float:
+        stale = self._stream_stale_timeout
+        if stale is None or stale == float("inf"):
+            return float("inf")
+        if self._in_post_chunk_phase():
+            post_chunk = getattr(self, "_stream_post_chunk_stale_timeout", None)
+            if post_chunk is not None and post_chunk > 0:
+                return min(stale, post_chunk)
+        return stale
 
     def _claims_liveness(self) -> bool:
         since = self._liveness_withheld_at
@@ -191,10 +207,9 @@ class StreamingWaitMonitor:
         if waiting_secs >= 60.0:
             # No chunks for 60s+: say WHAT the wait is and WHEN recovery kicks in —
             # once per silence, not every heartbeat (#92550).
-            stale = self._stream_stale_timeout
+            stale = self._effective_stale_timeout()
             watchdog = ("stream stale", stale - waiting_secs) if stale is not None and stale != float("inf") else None
-            diag = getattr(getattr(self, "clients", None), "diag", None)
-            phase = "post_chunk" if isinstance(diag, dict) and diag.get("first_chunk_at") else "first_chunk"
+            phase = "post_chunk" if self._in_post_chunk_phase() else "first_chunk"
             if not self._mon.wait_notice.should_emit(phase, watchdog):
                 self.agent._touch_activity(f"waiting for stream response ({waiting_secs}s, {phase})")
                 return
@@ -291,7 +306,7 @@ class StreamingWaitMonitor:
                 self._mon.last_heartbeat = _hb_now
                 self._heartbeat(int(_hb_now - self.last_chunk_time["t"]))
             _stale_elapsed = time.time() - self.last_chunk_time["t"]
-            if _stale_elapsed > self._stream_stale_timeout:
+            if _stale_elapsed > self._effective_stale_timeout():
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
                 self._mon.wait_notice.reset()
                 self._kill_stale_stream(_stale_elapsed)

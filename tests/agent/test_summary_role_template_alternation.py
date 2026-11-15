@@ -239,3 +239,156 @@ class TestForcedUserGuardsStillWin:
             assert not (
                 prev.get("role") == "user" and cur.get("role") == "user"
             ), "compression introduced literal consecutive user-role messages"
+
+    def test_publish_compression_child_folds_assistant_summary_seam_before_sqlite_insert(self, tmp_path):
+        """#CF-96: When ContextCompressor places an assistant summary before a carried
+        assistant tool-call turn (because the protected head ends in role=user),
+        publish_compression_child must fold the seam before _insert_message_rows so
+        state.db persists ONE merged assistant row instead of two consecutive assistant rows."""
+        from contextlib import closing
+        from hermes_state import SessionDB
+        from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
+
+        with closing(SessionDB(db_path=tmp_path / "state.db")) as db:
+            parent_sid = "20261114_070000_parent"
+            child_sid = "20261114_071129_child"
+            db.create_session(parent_sid, "cli", model="test/model")
+            u_id = db.append_message(session_id=parent_sid, role="user", content="initial ask")
+            db.append_message(session_id=parent_sid, role="user", content="middle turn")
+            db.append_message(session_id=parent_sid, role="assistant", content="middle reply")
+            tail_tc = [
+                {"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"a.py"}'}},
+                {"id": "call_2", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"b.py"}'}},
+            ]
+            a_id = db.append_message(session_id=parent_sid, role="assistant", content="", tool_calls=tail_tc)
+            t1_id = db.append_message(session_id=parent_sid, role="tool", content="res1", tool_call_id="call_1", tool_name="read_file")
+            t2_id = db.append_message(session_id=parent_sid, role="tool", content="res2", tool_call_id="call_2", tool_name="read_file")
+
+            parent_rows = {
+                r["id"]: dict(r)
+                for r in db._conn.execute("SELECT * FROM messages WHERE session_id = ? ORDER BY id", (parent_sid,)).fetchall()
+            }
+            compressed_messages = [
+                {"role": "user", "content": "initial ask", "_row_id": u_id, "message_uid": parent_rows[u_id]["message_uid"]},
+                {
+                    "role": "assistant",
+                    "content": f"{SUMMARY_PREFIX}\ncompacted summary",
+                    COMPRESSED_SUMMARY_METADATA_KEY: True,
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": tail_tc,
+                    "_row_id": a_id,
+                    "message_uid": parent_rows[a_id]["message_uid"],
+                },
+                {"role": "tool", "content": "res1", "tool_call_id": "call_1", "tool_name": "read_file", "_row_id": t1_id, "message_uid": parent_rows[t1_id]["message_uid"]},
+                {"role": "tool", "content": "res2", "tool_call_id": "call_2", "tool_name": "read_file", "_row_id": t2_id, "message_uid": parent_rows[t2_id]["message_uid"]},
+            ]
+            assert db.publish_compression_child(
+                parent_session_id=parent_sid,
+                child_session_id=child_sid,
+                source="cli",
+                model="test/model",
+                messages=compressed_messages,
+                require_compression_lease=False,
+            ) is None
+            child_rows = [
+                dict(r)
+                for r in db._conn.execute(
+                    "SELECT id, role, content, tool_calls, message_uid, absorbed_message_uids FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                    (child_sid,),
+                ).fetchall()
+            ]
+            roles = [r["role"] for r in child_rows]
+            assert roles == ["user", "assistant", "tool", "tool"], f"Expected 1 folded assistant row in SQLite, got {roles}"
+            assert child_rows[1]["tool_calls"] is not None
+            assert parent_rows[a_id]["message_uid"] in (child_rows[1]["absorbed_message_uids"] or "")
+
+    def test_replace_session_messages_folds_assistant_summary_seam_before_sqlite_insert(self, tmp_path):
+        """#CF-96: In-place replace_session_messages also folds the assistant summary +
+        assistant tool-call seam before _insert_message_rows so the stored summary row
+        carries the merged tool_calls in SQLite."""
+        from contextlib import closing
+        from hermes_state import SessionDB
+        from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
+
+        with closing(SessionDB(db_path=tmp_path / "state.db")) as db:
+            sid = "20261114_070500_inplace"
+            db.create_session(sid, "cli", model="test/model")
+            u_id = db.append_message(session_id=sid, role="user", content="initial ask")
+            db.append_message(session_id=sid, role="user", content="middle turn")
+            db.append_message(session_id=sid, role="assistant", content="middle reply")
+            tail_tc = [{"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"a.py"}'}}]
+            a_id = db.append_message(session_id=sid, role="assistant", content="", tool_calls=tail_tc)
+            t1_id = db.append_message(session_id=sid, role="tool", content="res1", tool_call_id="call_1", tool_name="read_file")
+
+            rows = {
+                r["id"]: dict(r)
+                for r in db._conn.execute("SELECT * FROM messages WHERE session_id = ? ORDER BY id", (sid,)).fetchall()
+            }
+            compressed_messages = [
+                {"role": "user", "content": "initial ask", "_row_id": u_id, "message_uid": rows[u_id]["message_uid"]},
+                {
+                    "role": "assistant",
+                    "content": f"{SUMMARY_PREFIX}\ncompacted summary",
+                    COMPRESSED_SUMMARY_METADATA_KEY: True,
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": tail_tc,
+                    "_row_id": a_id,
+                    "message_uid": rows[a_id]["message_uid"],
+                },
+                {"role": "tool", "content": "res1", "tool_call_id": "call_1", "tool_name": "read_file", "_row_id": t1_id, "message_uid": rows[t1_id]["message_uid"]},
+            ]
+            assert db.archive_and_compact(sid, compressed_messages) == 3
+            active_rows = [
+                dict(r)
+                for r in db._conn.execute(
+                    "SELECT id, role, content, tool_calls, absorbed_message_uids FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                    (sid,),
+                ).fetchall()
+            ]
+            assert [r["role"] for r in active_rows] == ["user", "assistant", "tool"]
+            assert active_rows[1]["tool_calls"] is not None
+            assert rows[a_id]["message_uid"] in (active_rows[1]["absorbed_message_uids"] or "")
+
+    def test_merge_consecutive_assistants_idempotent_when_second_uid_already_absorbed(self):
+        """#CF-96: Historical child sessions where row 1 already absorbed row 2
+        (uid2 in row1._absorbed_message_uids and identical tool_calls) must fold
+        idempotently on reload without duplicating content or doubling tool_calls."""
+        from agent.agent_runtime_helpers import _merge_consecutive_assistants
+        from agent.message_metadata import ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS
+
+        tc = [
+            {"id": "call_a", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"x.py"}'}},
+            {"id": "call_b", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"y.py"}'}},
+        ]
+        row1 = {
+            "role": "assistant",
+            "content": f"{SUMMARY_PREFIX}\nsummary text\n\ntail text",
+            "reasoning": "thought 1",
+            "tool_calls": list(tc),
+            "message_uid": "11111111111111111111111111111111",
+            ABSORBED_MESSAGE_UIDS: ["22222222222222222222222222222222"],
+            TOOL_CALL_UIDS: {"call_a": "aaaa", "call_b": "bbbb"},
+        }
+        row2 = {
+            "role": "assistant",
+            "content": "tail text",
+            "reasoning": "thought 1",
+            "tool_calls": list(tc),
+            "message_uid": "22222222222222222222222222222222",
+            TOOL_CALL_UIDS: {"call_a": "aaaa", "call_b": "bbbb"},
+        }
+        repaired, count = _merge_consecutive_assistants([row1, row2])
+        assert count == 1
+        assert len(repaired) == 1
+        merged = repaired[0]
+        assert len(merged["tool_calls"]) == 2
+        assert merged["content"].count("tail text") == 1
+        assert merged["reasoning"].count("thought 1") == 1
+        assert merged[TOOL_CALL_UIDS] == {"call_a": "aaaa", "call_b": "bbbb"}
+

@@ -192,4 +192,87 @@ describe('local notices inside a steered turn', () => {
     expect(indexOf('SIDE ANSWER')).toBeGreaterThan(indexOf('steered prompt'))
     expect(indexOf('SIDE ANSWER')).toBeLessThan(indexOf('change course'))
   })
+
+  it('drops receipt-less pre-disconnect assistant-stream bubbles across split folds when refresh settles a completed turn', () => {
+    const userRow: ChatMessage = {
+      id: '100-0',
+      rowId: 100,
+      role: 'user',
+      parts: [{ type: 'text', text: 'Run full audit' }]
+    }
+
+    const preCompactionFold: ChatMessage = {
+      id: '101-1',
+      rowId: 101,
+      role: 'assistant',
+      durableComplete: false,
+      parts: [
+        { type: 'reasoning', text: 'Thinking...\n**Analyzing Audit Trigger**\n\nInspecting gate.' },
+        { type: 'text', text: 'Inspecting merge_approved in github-review-gate.sh', sourceRowId: 101 },
+        {
+          type: 'tool-call',
+          toolCallId: 'call-1',
+          toolName: 'read_file',
+          args: {},
+          argsText: '{}',
+          result: 'ok'
+        }
+      ]
+    }
+
+    const postCompactionFold: ChatMessage = {
+      id: '150-2',
+      rowId: 150,
+      role: 'assistant',
+      durableComplete: true,
+      parts: [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-2',
+          toolName: 'terminal',
+          args: {},
+          argsText: '{}',
+          result: 'done'
+        },
+        { type: 'text', text: 'All 4 items completed and verified.', sourceRowId: 160 }
+      ]
+    }
+
+    const staleStreamCommentary: ChatMessage = {
+      id: 'assistant-stream-1001',
+      role: 'assistant',
+      pending: false,
+      recovered: true,
+      parts: [{ type: 'text', text: '**Analyzing Audit Trigger**\n\nInspecting gate.' }]
+    }
+
+    const staleStreamToolRound: ChatMessage = {
+      id: 'assistant-stream-1002',
+      role: 'assistant',
+      pending: true,
+      parts: [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-1',
+          toolName: 'read_file',
+          args: {},
+          argsText: '{}',
+          result: 'ok'
+        },
+        { type: 'text', text: 'Inspecting merge_approved in github-review-gate.sh' }
+      ]
+    }
+
+    const page: ChatMessage[] = [userRow, preCompactionFold, postCompactionFold]
+
+    const window: ChatMessage[] = [
+      userRow,
+      preCompactionFold,
+      postCompactionFold,
+      staleStreamCommentary,
+      staleStreamToolRound
+    ]
+
+    expect(refresh(page, window).map(message => message.id)).toEqual(['100-0', '101-1', '150-2'])
+  })
 })

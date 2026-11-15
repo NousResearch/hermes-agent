@@ -242,15 +242,17 @@ async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[st
     # write filed one page's text under another URL's key for the whole TTL. ``metadata.sourceURL``
     # counts because Keenable/Firecrawl put the requested URL there when ``url`` is the redirect target.
     # An entry naming no requested URL is served but not cached (a miss re-fetches; a mis-key poisons).
+    from agent.redact import redact_sensitive_text
     for fetched in results:
         meta = fetched.get("metadata")
         source = meta.get("sourceURL") if isinstance(meta, dict) else None
         url = next((u for u in (fetched.get("url"), source) if u in requested), None)
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
         if url and _content and not fetched.get("error"):
-            stored = extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
+            _clean_cache_content = redact_sensitive_text(_content, code_file=True)
+            stored = extract_cache_put(url, _clean_cache_content, fetched.get("title", ""), format=format, provider=provider.name)
             if stored and fetched.get("url") and fetched["url"] != url:
-                extract_cache_record_final_url(url, fetched["url"], _content, format=format, provider=provider.name)
+                extract_cache_record_final_url(url, fetched["url"], _clean_cache_content, format=format, provider=provider.name)
     return results
 
 

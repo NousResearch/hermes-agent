@@ -424,8 +424,10 @@ def reset_local_session(store, old_entry, session_id, now, display_name):
 # on first touch, so the live registry no longer grows with every session ever opened (#143547 LC-36).
 _BOOT_RECEIPTS_SQL = (
     "SELECT m.key FROM state_meta m LEFT JOIN sessions s "
-    "ON s.id = CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END "
-    "WHERE m.key LIKE ? AND (s.ended_at IS NULL OR s.end_reason = 'compression' "
+    "ON s.id = CASE WHEN m.key NOT GLOB 'gateway.local_policy.v1:local-*' AND json_valid(m.value) "
+    "THEN json_extract(m.value, '$.entry.session_id') END "
+    "WHERE m.key GLOB ? AND m.key NOT GLOB 'gateway.local_policy.v1:local-*' "
+    "AND ((s.ended_at IS NULL AND COALESCE(s.source, '') != 'cron') OR s.end_reason = 'compression' "
     "OR EXISTS (SELECT 1 FROM session_admissions a WHERE a.target_session_id = substr(m.key, ?) "
     "AND a.status IN ('queued','started','unknown')) "
     "OR EXISTS (SELECT 1 FROM state_meta c WHERE c.key = ? || substr(m.key, ?)))")
@@ -455,6 +457,10 @@ def release_handed_off_receipts(db, *, epoch):
     from hermes_state_local import hand_off_conversations, moved_receipts
     from hermes_state_runtime import _epoch
 
+    with db._read_ctx() as conn:
+        if not any(_messaging_platform(source) is not None for _, source in moved_receipts(conn).values()):
+            return
+
     def write(conn):
         _epoch(conn, epoch)
         moved = {owner: (target, source) for owner, (target, source) in moved_receipts(conn).items()
@@ -470,7 +476,7 @@ def local_receipt_ids(authority):
     start = len(POLICY_PREFIX) + 1
     with authority.db._read_ctx() as conn:
         return [row[0][len(POLICY_PREFIX):] for row in conn.execute(
-            _BOOT_RECEIPTS_SQL, (POLICY_PREFIX + '%', start, CLOSE_PREFIX, start))]
+            _BOOT_RECEIPTS_SQL, (POLICY_PREFIX + '*', start, CLOSE_PREFIX, start))]
 
 
 def recover_local_sessions(authority, *, schedule=False):

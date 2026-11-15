@@ -538,6 +538,19 @@ def _profile_skill_command(session: dict, base: str) -> bool | None:
 _SKILL_WORKER_REFUSED = "skill command refused before process: /"
 
 
+def _is_mobile_slash_caller(session: dict | None) -> bool:
+    """True when slash.exec comes from adrianlaborda/hermes-mobile (CF-48)."""
+    if isinstance(session, dict):
+        if str(session.get("source") or "").strip().lower() == "mobile":
+            return True
+        if str(session.get("client_surface") or "").strip().lower() == "mobile":
+            return True
+    ws = getattr(current_transport(), "_ws", None) or getattr(current_transport(), "ws", None)
+    headers = getattr(ws, "headers", None) or {}
+    ua = (headers.get("user-agent") or "").strip().lower()
+    return ua.startswith("okhttp/")
+
+
 def _skill_dispatch_or_refuse(rid, sid, base, arg):
     """Return command.dispatch's directive, or a hard error. Never an ok banner."""
     dispatched = _methods["command.dispatch"](rid, {"name": base, "arg": arg, "session_id": sid})
@@ -585,9 +598,10 @@ def _dispatch_bundle(rid, params, session, name, arg):
     if bundle_key is None:
         return None
     bundles = _tools_mod("agent.skill_bundles")
+    eff_task_id = (session.get("session_key", "") if session else "") or _str_arg(params, "session_id") or ""
     try:
         bundle_result = bundles.build_bundle_invocation_message(
-            bundle_key, arg, task_id=session.get("session_key", "") if session else "",
+            bundle_key, arg, task_id=eff_task_id,
             platform=_resolve_session_platform())
     except Exception as exc:
         return _err(rid, 4018, f"bundle dispatch failed: {exc}")
@@ -606,6 +620,7 @@ def _dispatch_skill(rid, params, session, name, arg):
         sc = _tools_mod("agent.skill_commands")
         cmds, key = sc.get_interactive_skill_commands(), f"/{name}".lower()
         if key in cmds:
+            eff_task_id = (session.get("session_key", "") if session else "") or _str_arg(params, "session_id") or ""
             # Stacked leading /skill tokens (up to 5, cli.py + gateway parity, #74705): the
             # first token matched above; consume any further leading skill tokens from `arg`,
             # then build one invocation that loads every skill over the remaining instruction.
@@ -613,7 +628,7 @@ def _dispatch_skill(rid, params, session, name, arg):
             if extra_keys:
                 stacked = sc.build_stacked_skill_invocation_message(
                     [key, *extra_keys], user_instruction,
-                    task_id=session.get("session_key", "") if session else "")
+                    task_id=eff_task_id)
                 if stacked:
                     msg, loaded_names, missing = stacked
                     notice = f"⚡ Loading {len(loaded_names)} stacked skills: {', '.join(loaded_names)}"
@@ -624,7 +639,7 @@ def _dispatch_skill(rid, params, session, name, arg):
                         "notice": notice, "display": _skill_scaffold_projection(msg)})
             msg = sc.build_skill_invocation_message(
                 key, user_instruction,
-                task_id=session.get("session_key", "") if session else "")
+                task_id=eff_task_id)
             if msg:  # UIs render `display`, never `message`.
                 return _ok(rid, {
                     "type": "skill", "message": msg, "name": cmds[key].get("name", name),
@@ -1057,6 +1072,9 @@ def _(rid, params: dict) -> dict:
     # (or a hard error) here, or the loading banner swallows the prompt.
     skill_hit = _profile_skill_command(session, base)
     if skill_hit is True:
+        if _is_mobile_slash_caller(session):
+            normalized_cmd = cmd if cmd.startswith("/") else f"/{cmd}"
+            return _ok(rid, {"type": "send", "message": normalized_cmd, "notice": f"⚡ Skill: /{base}"})
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
     if skill_hit is None:
         dispatched = _skill_dispatch_or_refuse(rid, sid, base, arg)

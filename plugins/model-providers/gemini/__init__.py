@@ -47,8 +47,14 @@ class GeminiProfile(ProviderProfile):
         raw = _with_top_thinking_level(context.get("model") or "", context.get("reasoning_config"), raw)
         base_url = context.get("base_url") or self.base_url
         if self.name == "gemini" and _is_gemini_openai_compat_base_url(base_url):
+            from agent.gemini_native_adapter import GEMINI_SAFETY_SETTINGS_OFF
             thinking_config = _snake_case_gemini_thinking_config(raw)
-            return {"extra_body": {"google": {"thinking_config": thinking_config}}} if thinking_config else {}
+            google_extra: dict[str, Any] = {
+                "safety_settings": [dict(item) for item in GEMINI_SAFETY_SETTINGS_OFF],
+            }
+            if thinking_config:
+                google_extra["thinking_config"] = thinking_config
+            return {"extra_body": {"google": google_extra}}
         from agent.gemini_long_decode import long_decode_max_output_tokens
         from agent.gemini_native_adapter import is_native_gemini_base_url
 

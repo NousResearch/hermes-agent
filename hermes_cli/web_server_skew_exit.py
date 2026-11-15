@@ -23,6 +23,9 @@ from typing import Callable, Optional
 _log = logging.getLogger(__name__)
 
 DEFAULT_SKEW_POLL_S = 30.0
+# Once skew is confirmed across _CONFIRMATIONS polls, probe the retirement fence every second
+# instead of every 30s so inter-turn idle gaps on busy Desktop backends are caught immediately.
+DEFAULT_DRAIN_POLL_S = 1.0
 # Two consecutive observations: a checkout mid-rewrite (ref file replaced, packed-refs repacked) can
 # briefly read differently; a real update reads the new revision on every poll after it finishes.
 _CONFIRMATIONS = 2
@@ -57,16 +60,36 @@ def _run_retirement_watchdog(server, *, observe: Callable[[], Optional[str]], fe
 
     def _loop() -> None:
         seen = polls = 0
+        hot_reloaded_reason: Optional[str] = None
         while not getattr(server, "should_exit", False) and (max_polls is None or polls < max_polls):
             polls += 1
             reason = observe()
             seen = seen + 1 if reason else 0
             if seen >= _CONFIRMATIONS:
+                if reason and reason != hot_reloaded_reason:
+                    hot_reloaded_reason = reason
+                    try:
+                        import importlib
+                        import sys
+                        for mod_name in ("agent.message_sanitization", "agent.turn_preflight"):
+                            mod = sys.modules.get(mod_name)
+                            if mod is not None:
+                                importlib.reload(mod)
+                    except Exception:
+                        pass
+                active_fn = getattr(fence, "active_count", None)
+                if callable(active_fn):
+                    active_val = active_fn()
+                    if isinstance(active_val, int) and active_val > 0:
+                        time.sleep(min(poll_s, DEFAULT_DRAIN_POLL_S))
+                        continue
                 permit = fence.prepare()
                 if permit.get("ok") and fence.commit(permit.get("token")).get("ok"):
                     _log.warning("%s", reason)
                     server.should_exit = True
                     return
+                time.sleep(min(poll_s, DEFAULT_DRAIN_POLL_S))
+                continue
             time.sleep(poll_s)
 
     thread = threading.Thread(target=_loop, daemon=True, name=thread_name)

@@ -250,3 +250,39 @@ def test_unusable_mailbox_warns_once_per_dir_for_the_live_readers(tmp_path, monk
     levels = [r.levelno for r in caplog.records if 'not usable by this process' in r.getMessage()]
     assert levels == [logging.WARNING, logging.DEBUG, logging.DEBUG]
     assert root in mailbox._warned_unusable
+
+
+def test_recover_bot_deliveries_skips_already_settled_and_unchanged_receipts(tmp_path, monkeypatch):
+    """CF-66: thousands of already-settled receipts in runtime/bot_live_delivery must not
+    trigger serial fsync rewrites or table scans on every gateway restart."""
+    import asyncio
+    from tools.bot_live_delivery import _locked, _write
+    from gateway import session_bot
+    path = tmp_path / 'state.db'
+    db = SessionDB(path)
+    try:
+        db.create_session('bot', source='gui')
+        epoch = begin_runtime_epoch(db, instance_id='first')
+        adm = admit_session_input(db, epoch=epoch, principal_id='owner', session_id='bot',
+                                  request_id='bot:' + 's' * 32, payload={'text': 'done'})
+        row = claim_session_input(db, epoch=epoch, session_id='bot')
+        retain_result(db, epoch=epoch, row=row, result={'result': {'final_response': 'already settled'}, 'usage': {}})
+        with _locked(tmp_path) as root:
+            _write(root / ('s' * 32 + '.json'), dict(
+                status='settled', reply='already settled', admission_id=adm['admission_id'],
+                delivery_id='s' * 32, profile_home=str(tmp_path.resolve()),
+                session_id='bot', message='done', principal_id='owner',
+            ))
+        writes = []
+        orig_write = session_bot.write_receipt
+
+        async def spy_write(home, record):
+            writes.append(record['delivery_id'])
+            return await orig_write(home, record)
+
+        monkeypatch.setattr(session_bot, 'write_receipt', spy_write)
+        authority = SimpleNamespace(db=db, waiters={})
+        asyncio.run(session_bot.recover_bot_deliveries(authority))
+        assert writes == []
+    finally:
+        db.close()

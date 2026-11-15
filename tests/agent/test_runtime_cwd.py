@@ -80,3 +80,31 @@ class TestSessionCwdOverride:
         finally:
             rt._SESSION_CWD.reset(token)
 
+    def test_reload_preserves_unset_sentinel_and_never_warns_object_repr(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        import importlib
+        import logging
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        pre_unset = rt._UNSET
+        pre_cvar = rt._SESSION_CWD
+
+        # Simulate a hot-reload while the default sentinel is active
+        reloaded = importlib.reload(rt)
+        assert reloaded._UNSET is pre_unset
+        assert reloaded._SESSION_CWD is pre_cvar
+        assert reloaded.scoped_session_cwd() == ""
+
+        # Even if a foreign non-string sentinel object is injected into _SESSION_CWD,
+        # it must be ignored rather than coerced via str() into "<object object at ...>".
+        foreign_token = reloaded._SESSION_CWD.set(object())
+        try:
+            with caplog.at_level(logging.WARNING, logger="agent.runtime_cwd"):
+                assert reloaded.scoped_session_cwd() == ""
+                assert reloaded.resolve_context_cwd() == tmp_path
+            assert not any("does not exist" in rec.message for rec in caplog.records)
+        finally:
+            reloaded._SESSION_CWD.reset(foreign_token)
+
+

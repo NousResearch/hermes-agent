@@ -17,9 +17,13 @@ from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
-_UNSET: Any = object()
+_UNSET: Any = globals().get("_UNSET")
+if _UNSET is None:
+    _UNSET = object()
 
-_SESSION_CWD: ContextVar = ContextVar("HERMES_SESSION_CWD", default=_UNSET)
+_SESSION_CWD: ContextVar = globals().get("_SESSION_CWD") or ContextVar(
+    "HERMES_SESSION_CWD", default=_UNSET
+)
 
 # The package/source root (<root>/agent/runtime_cwd.py). A backend launched from or
 # self-spawned into this tree (desktop default) must never let an os.getcwd() fallback
@@ -53,7 +57,9 @@ def scoped_session_cwd() -> str:
     logical workspace identity should preserve the declared value instead of resolving it.
     """
     value = _SESSION_CWD.get()
-    return "" if value is _UNSET else str(value).strip()
+    if value is _UNSET or not isinstance(value, str):
+        return ""
+    return value.strip()
 
 
 def reset_session_cwd(token: Token) -> None:
@@ -94,8 +100,7 @@ def _resolve_configured_cwd(
     while still consulting the active profile's TERMINAL_CWD.
     """
     if include_session_override:
-        override = _SESSION_CWD.get()
-        override = "" if override is _UNSET else str(override).strip()
+        override = scoped_session_cwd()
         if override:
             p = _existing_dir(override, "configured working directory")
             if p is not None or override_is_final:

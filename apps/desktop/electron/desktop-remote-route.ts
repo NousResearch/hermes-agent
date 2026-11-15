@@ -6,7 +6,7 @@ import {
   profileRemoteOverride,
   profileSshOverride
 } from './connection-config'
-import type { ConnectionRegistry } from './connection-registry'
+import { type ConnectionRegistry, resolveSshRegistryTokenEnvelope } from './connection-registry'
 import { matchingConnectionId, type StoredRoute } from './connection-route-identity'
 
 type RouteSource = 'env' | 'profile' | 'registry' | 'settings'
@@ -156,7 +156,7 @@ export function resolveDesktopRemoteRoute({
     // uses (it dials the registry primary separately): duplicated MCP sets,
     // port squat, and a respawn on every poll. A 'local' registry primary
     // still resolves null, so genuinely-local desktops are untouched.
-    return resolveRegistryPrimaryRoute(registry)
+    return resolveRegistryPrimaryRoute(registry, profile)
   }
 
   const kind = config.mode === 'cloud' ? 'cloud' : 'remote'
@@ -182,7 +182,10 @@ export function resolveDesktopRemoteRoute({
  * null unless the primary names a remote/cloud/ssh entry — i.e. only when the
  * user explicitly made a non-local registered gateway their primary.
  */
-function resolveRegistryPrimaryRoute(registry: ConnectionRegistry): DesktopRemoteRoute | null {
+function resolveRegistryPrimaryRoute(
+  registry: ConnectionRegistry,
+  profile?: null | string
+): DesktopRemoteRoute | null {
   const primaryId = String(registry?.primary || '').trim()
 
   if (!primaryId) {
@@ -202,7 +205,13 @@ function resolveRegistryPrimaryRoute(registry: ConnectionRegistry): DesktopRemot
       return null
     }
 
-    return { connectionId: entry.id, kind: 'ssh', source: 'registry', ssh, token: entry.token }
+    return {
+      connectionId: entry.id,
+      kind: 'ssh',
+      source: 'registry',
+      ssh,
+      token: resolveSshRegistryTokenEnvelope(entry, profile)
+    }
   }
 
   if (entry.kind !== 'remote' && entry.kind !== 'cloud') {

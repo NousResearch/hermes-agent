@@ -21,7 +21,11 @@ from cron.scheduler import (
     _resolve_delivery_target,
     _summarize_cron_failure_for_delivery,
 )
-from cron.scheduler_delivery import _resolve_origin, _send_media_via_adapter
+from cron.scheduler_delivery import (
+    ORIGIN_NULL_DELIVERY_ERROR_PREFIX,
+    _resolve_origin,
+    _send_media_via_adapter,
+)
 from tools.env_passthrough import clear_env_passthrough
 
 
@@ -1530,6 +1534,14 @@ class TestParseWakeGate:
     def test_wake_gate_false_skips(self):
         from cron.scheduler import _parse_wake_gate
         assert _parse_wake_gate('{"wakeAgent": false}') is False
+        assert _parse_wake_gate("STATUS=OK\nwakeAgent=false\n") is False
+        assert _parse_wake_gate("STATUS=NOOP_COMPLETE\n") is False
+        assert _parse_wake_gate('{\n  "status": "NOOP_COMPLETE",\n  "open": []\n}') is False
+        assert _parse_wake_gate("HEALTHY\nlast_ping=2026-11-10T15:00:00Z\n") is False
+        assert _parse_wake_gate("DEGRADED-NEEDS-ALERT\n") is True
+        assert _parse_wake_gate("LOSS-ALERT-NEEDS-SEND\n") is True
+        assert _parse_wake_gate("RECOVERED-NEEDS-ACK\n") is True
+        assert _parse_wake_gate('{\n  "status": "CANDIDATES_FOUND"\n}') is True
 
 class TestRunJobWakeGate:
     """Integration tests for run_job wake-gate short-circuit."""
@@ -1980,6 +1992,110 @@ class TestDeliverOriginUnresolvableIsLocal:
     def test_origin_with_no_home_channels_returns_none(self, monkeypatch):
         job = {"id": "cli-job", "deliver": "origin", "origin": "cli-session-provenance"}
         assert self._deliver(job, monkeypatch) is None
+
+
+class TestDeliverOriginNullRecurringStampsError:
+    """25/9 blindspot hardening: a desktop/agent-created RECURRING job (origin null,
+    deliver=origin, no home channel) burned every run silently into last_output —
+    the support-portal draft-queue poller ran blind for days while looking healthy
+    in ``hermes cron list``. _deliver_result must return an error string so
+    mark_job_run stamps last_delivery_error and cron list shows the job as
+    delivery-broken with a fix hint. One-shots and exhausted finite repeats (the
+    invoker consumes last_output directly) and captured-but-unresolvable origins
+    keep the #43014 expected-silent path.
+
+    Review r1 (25/9): all job shapes here mirror the STORE — ``repeat`` is persisted
+    as ``{"times": N, "completed": M}`` (jobs.py:1855), never the bare int the
+    ``create_job`` API accepts. Synthetic int-shaped one-shots gave false confidence.
+    """
+
+    def _deliver(self, job, monkeypatch):
+        from cron import scheduler_delivery as sched_delivery
+        monkeypatch.setattr(sched_delivery, "_get_home_target_chat_id", lambda *_: "")
+        return _deliver_result(job, "poller output")
+
+    # ---- recurring (stored shapes) → error string ----
+
+    def test_recurring_origin_null_returns_error(self, monkeypatch):
+        job = {"id": "blind-poller", "name": "blind-poller", "deliver": "origin",
+               "origin": None, "repeat": {"times": None, "completed": 5}}
+        result = self._deliver(job, monkeypatch)
+        assert result is not None
+        assert "origin null" in result
+        assert "cron edit" in result
+
+    def test_recurring_origin_absent_returns_error(self, monkeypatch):
+        job = {"id": "no-origin-key", "deliver": "origin"}
+        assert self._deliver(job, monkeypatch) is not None
+
+    def test_finite_recurring_origin_null_returns_error(self, monkeypatch):
+        job = {"id": "daily-brief", "deliver": "origin", "origin": None,
+               "repeat": {"times": 30, "completed": 0}}
+        assert self._deliver(job, monkeypatch) is not None
+
+    # ---- no future fires (stored shapes) → silent ----
+
+    def test_one_shot_origin_null_stays_silent(self, monkeypatch):
+        job = {"id": "oneshot", "deliver": "origin", "origin": None,
+               "repeat": {"times": 1, "completed": 0}}
+        assert self._deliver(job, monkeypatch) is None
+
+    def test_exhausted_finite_origin_null_stays_silent(self, monkeypatch):
+        job = {"id": "spent-digest", "deliver": "origin", "origin": None,
+               "repeat": {"times": 3, "completed": 3}}
+        assert self._deliver(job, monkeypatch) is None
+
+    def test_legacy_int_one_shot_stays_silent(self, monkeypatch):
+        job = {"id": "legacy-int", "deliver": "origin", "origin": None, "repeat": 1}
+        assert self._deliver(job, monkeypatch) is None
+
+    # ---- #43014 regression guards ----
+
+    def test_captured_unresolvable_origin_stays_silent_43014(self, monkeypatch):
+        job = {"id": "cli-job", "deliver": "origin", "origin": "cli-session-provenance"}
+        assert self._deliver(job, monkeypatch) is None
+
+
+class TestOriginNullStampsRecordEndToEnd:
+    """End-to-end through the real store: a recurring origin-null job's burn must land
+    on the job record as last_status=delivery_failed with the fix hint visible via
+    get_job (the surface `hermes cron list` reads). Review r1 (25/9) asked for the
+    chain, not just the string."""
+
+    @pytest.fixture()
+    def tmp_cron_dir(self, tmp_path, monkeypatch):
+        """Redirect cron storage to a temp directory (same isolation as test_jobs.py)."""
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        return tmp_path
+
+    def test_recurring_origin_null_stamp_reaches_store(self, tmp_cron_dir, monkeypatch):
+        from cron import jobs as jobs_mod
+        from cron import scheduler_delivery as sched_delivery
+        monkeypatch.setattr(sched_delivery, "_get_home_target_chat_id", lambda *_: "")
+        job = jobs_mod.create_job(prompt="poll queue", schedule="every 1h", deliver="origin")
+        err = _deliver_result(job, "poller output")
+        assert err is not None and "origin null" in err
+        jobs_mod.mark_job_run(job["id"], success=True, delivery_error=err)
+        updated = jobs_mod.get_job(job["id"])
+        assert updated is not None
+        assert updated["last_status"] == "delivery_failed"
+        assert "origin null" in updated["last_delivery_error"]
+        assert "hermes cron edit" in updated["last_delivery_error"]
+
+    def test_one_shot_origin_null_record_stays_ok(self, tmp_cron_dir, monkeypatch):
+        from cron import jobs as jobs_mod
+        from cron import scheduler_delivery as sched_delivery
+        monkeypatch.setattr(sched_delivery, "_get_home_target_chat_id", lambda *_: "")
+        job = jobs_mod.create_job(prompt="once", schedule="in 30m", repeat=1, deliver="origin")
+        assert _deliver_result(job, "one-shot output") is None
+        jobs_mod.mark_job_run(job["id"], success=True)
+        updated = jobs_mod.get_job(job["id"])
+        assert updated is not None
+        assert updated["last_status"] == "ok"
+        assert updated["last_delivery_error"] is None
+
 
 class TestSendMediaTimeoutCancelsFuture:
     """Same orphan-coroutine guarantee for _send_media_via_adapter's
@@ -2616,3 +2732,117 @@ class TestBuildJobPromptExtraPrompt:
         job = {"prompt": "original"}
         _build_job_prompt(job, extra_prompt="transient context")
         assert job["prompt"] == "original"
+
+class TestSetCronSessionTitle:
+    """Robust cron session titling: #50535/#50536/#50537."""
+
+    def test_dedupes_on_duplicate_title(self):
+        # First write collides (ValueError); helper falls back to lineage #N.
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock()
+        db.set_session_title.side_effect = [ValueError("in use"), True]
+        db.get_next_title_in_lineage.return_value = "Nightly Synthesis #2"
+        out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
+        assert out == "Nightly Synthesis #2"
+        db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
+
+class TestFailureStreakNudge:
+    """Poke-inspired repeated-failure review nudge (_failure_streak_nudge)."""
+
+    def _job(self, streak, kind="cron", name="scout"):
+        return {
+            "id": "j1",
+            "name": name,
+            "failure_streak": streak,
+            "schedule": {"kind": kind},
+        }
+
+    def test_silent_below_threshold(self):
+        from cron.scheduler import _failure_streak_nudge
+        with patch("cron.scheduler.load_config", return_value={}):
+            assert _failure_streak_nudge(self._job(0)) == ""
+            assert _failure_streak_nudge(self._job(1)) == ""
+
+    def test_oneshot_never_nudges(self):
+        from cron.scheduler import _failure_streak_nudge
+        with patch("cron.scheduler.load_config", return_value={}):
+            assert _failure_streak_nudge(self._job(10, kind="once")) == ""
+
+    def test_config_threshold_and_disable(self):
+        from cron.scheduler import _failure_streak_nudge
+        cfg5 = {"cron": {"failure_nudge_threshold": 5}}
+        with patch("cron.scheduler.load_config", return_value=cfg5):
+            assert _failure_streak_nudge(self._job(3)) == ""
+            assert _failure_streak_nudge(self._job(4))
+        with patch("cron.scheduler.load_config", return_value={"cron": {"failure_nudge_threshold": 0}}):
+            assert _failure_streak_nudge(self._job(50)) == ""
+
+    def test_missing_streak_field_backcompat(self):
+        from cron.scheduler import _failure_streak_nudge
+        job = {"id": "old", "schedule": {"kind": "interval"}}  # pre-field job
+        with patch("cron.scheduler.load_config", return_value={}):
+            assert _failure_streak_nudge(job) == ""
+
+
+class TestOriginNullIncidentGatePolarity:
+    """25/9 review r2 LOW (closed same evening): the two incident gates that mark a
+    recurring origin-null incident ALERTED (no channel exists to alert on — the
+    incident must not sit open recomposing notices that can never leave the process).
+    Polarity BOTH directions per gate: a prefix-carrying delivery_error marks the
+    incident alerted; any other error leaves it open. Drives the REAL gate functions
+    (scheduler_bookkeeping.finish_completed_run / _deliver_crash_failure) with module
+    seams stubbed, so a
+    future reword of the gate logic (not the shared constant) fails red here."""
+
+    PREFIX = (ORIGIN_NULL_DELIVERY_ERROR_PREFIX +
+              ", no home channel) — recurring job delivers nowhere; output only in "
+              "last_output. Fix: hermes cron edit <job-id> --deliver bot-chat|<platform:chat_id>|local")
+
+    def _mk_d(self, **over):
+        from cron.scheduler import _RunDelivery
+        base = dict(job={"id": "gate-probe", "deliver": "origin", "origin": None,
+                         "repeat": {"times": None, "completed": 3}},
+                    success=False, error="RuntimeError: boom", delivery_error=None,
+                    should_deliver=True, incident_acked=False,
+                    failure_incident_id="inc-123")
+        base.update(over)
+        return _RunDelivery(**base)
+
+    def _run_failure_gate(self, monkeypatch, d):
+        from cron import scheduler as sched
+        from cron import scheduler_bookkeeping as book
+        marked = []
+        monkeypatch.setattr(sched, "_mark_incident_alerted", lambda iid: marked.append(iid))
+        monkeypatch.setattr(sched, "mark_job_run", lambda *a, **k: True)
+        monkeypatch.setattr(sched, "self_removal_delivery_allowed", lambda jid: False)
+        monkeypatch.setattr(sched, "finish_execution", lambda *a, **k: None)
+        book.finish_completed_run(d, None, "exec-gate-1")
+        return marked
+
+    # ---- normal failure gate: scheduler_bookkeeping.finish_completed_run ----
+
+    def test_failure_gate_origin_null_marks_alerted(self, monkeypatch):
+        assert self._run_failure_gate(monkeypatch, self._mk_d(delivery_error=self.PREFIX)) == ["inc-123"]
+
+    def test_failure_gate_plain_error_leaves_open(self, monkeypatch):
+        assert self._run_failure_gate(monkeypatch, self._mk_d(delivery_error="smtp timeout")) == []
+
+    # ---- crash gate: _deliver_crash_failure ----
+
+    def _run_crash_gate(self, monkeypatch, deliver_result_return):
+        from cron import scheduler as sched
+        marked = []
+        monkeypatch.setattr(sched, "_mark_incident_alerted", lambda iid: marked.append(iid))
+        monkeypatch.setattr(sched, "_upsert_incident_for_failure", lambda job, err: (False, "inc-crash"))
+        monkeypatch.setattr(sched, "_deliver_result", lambda job, content, **k: deliver_result_return)
+        job = {"id": "crash-probe", "deliver": "origin", "origin": None,
+               "repeat": {"times": None, "completed": 1}}
+        sched._deliver_crash_failure(job, "RuntimeError: boom", adapters=None, loop=None)
+        return marked
+
+    def test_crash_gate_origin_null_marks_alerted(self, monkeypatch):
+        assert self._run_crash_gate(monkeypatch, self.PREFIX) == ["inc-crash"]
+
+    def test_crash_gate_plain_error_leaves_open(self, monkeypatch):
+        assert self._run_crash_gate(monkeypatch, "smtp timeout") == []
+

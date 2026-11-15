@@ -406,20 +406,52 @@ def _extract_landed_file_mutation_paths(
 
 
 def _extract_error_preview(result: Any, max_len: int = 180) -> str:
-    """One-line error summary of a tool result for footer display."""
+    """One-line error summary of a tool result for footer display and errors.log."""
     text = _multimodal_text_summary(result) if result is not None else ""
-    # Handlers return {"success": false, "error": "..."}; the raw string wins if parse fails.
+    # Handlers return {"success": false, "error": "..."}; terminal returns {"output": "...", "exit_code": N}.
     stripped = text.strip()
     if stripped.startswith("{"):
         try:
             data = json.loads(stripped)
-            if isinstance(data, dict) and isinstance(data.get("error"), str):
-                text = data["error"]
+            if isinstance(data, dict):
+                if isinstance(data.get("error"), str) and data["error"].strip():
+                    err_lines = [
+                        ln.strip()
+                        for ln in data["error"].splitlines()
+                        if ln.strip() and not (set(ln.strip()) <= {"^", "~"})
+                    ]
+                    text = f"{err_lines[0]} ... {err_lines[-2]} | {err_lines[-1]}" if len(err_lines) > 3 else " | ".join(err_lines)
+                elif isinstance(data.get("output"), str):
+                    out_lines = [
+                        ln.strip()
+                        for ln in data["output"].splitlines()
+                        if ln.strip() and not (set(ln.strip()) <= {"^", "~"})
+                    ]
+                    exit_code = data.get("exit_code")
+                    ec_tag = f" [exit_code={exit_code}]" if exit_code is not None else ""
+                    if len(out_lines) > 3:
+                        fail_ln = next(
+                            (ln for ln in out_lines[1:-2] if any(t in ln for t in ("[FAIL]", "FAIL:", "ERROR:", "Error:", "AssertionError"))),
+                            None,
+                        )
+                        mid = f" ... {fail_ln} ... " if fail_ln else " ... "
+                        text = f"{out_lines[0]}{mid}{out_lines[-2]} | {out_lines[-1]}{ec_tag}"
+                    elif out_lines:
+                        text = " | ".join(out_lines) + ec_tag
+                    else:
+                        text = f"empty output{ec_tag}"
         except Exception:
             pass
     text = " ".join(text.split())
     if len(text) > max_len:
-        text = text[: max_len - 1] + "…"
+        if " [exit_code=" in text:
+            head_part, ec_part = text.rsplit(" [exit_code=", 1)
+            ec_suffix = " [exit_code=" + ec_part
+            budget = max(32, max_len - len(ec_suffix) - 1)
+            text = head_part[: budget // 2] + "…" + head_part[-(budget - budget // 2) :] + ec_suffix
+        else:
+            budget = max(32, max_len - 1)
+            text = text[: budget // 2] + "…" + text[-(budget - budget // 2) :]
     return text
 
 

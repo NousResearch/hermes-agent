@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
@@ -624,38 +624,137 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         row = self._read_one("SELECT role FROM messages WHERE id = ? AND session_id = ? AND active = 1", (int(row_id), session_id))
         return row[0] if row else None
 
-    def _carry_parent_timestamps(self, conn, parent_session_id: str, messages: list[dict[str, Any]]) -> None:
-        """Adopt the durable parent row's timestamp onto carried handoff rows so the re-inserted child row keeps
-        the original's display identity (see _display_dedupe_key). Idempotent; never overwrites a timestamp the
-        dict already carries; rows with no match keep their caller-supplied/now_ts value.
+    def _carry_parent_timestamps(self, conn, parent_session_id: str, messages: list[dict[str, Any]], *,
+                                 donor_row_ids: Optional[Iterable[int]] = None) -> None:
+        """Adopt the durable parent row's timestamp and message_uid onto carried handoff rows so the re-inserted
+        child row keeps the original's display identity (see _display_dedupe_key) and durable UID. Idempotent;
+        never overwrites a timestamp or message_uid the dict already carries; rows with no match keep their
+        caller-supplied/now_ts value.
 
         Content identity = _display_dedupe_key's content key minus the timestamp (role, encoded content,
-        tool_call_id, encoded tool_calls, tool_name). Donors are the parent's ACTIVE rows, consumed first-match-wins in id
-        order so two identical-content turns cannot both grab the same parent row. Best-effort: on any error
-        the insert falls back to today's behavior (publish-time stamp) and never breaks publish.
+        tool_call_id, encoded tool_calls, tool_name). Donors are the parent's ACTIVE rows plus any explicitly
+        rewound carried-tail originals (*donor_row_ids*), consumed first-match-wins in id order so two
+        identical-content turns cannot both grab the same parent row. Best-effort: on any error the insert
+        falls back to today's behavior (publish-time stamp) and never breaks publish.
         """
         try:
-            candidates = [i for i, msg in enumerate(messages)
-                if isinstance(msg, dict) and coerce_epoch(msg.get("timestamp"), field="message timestamp") is None]
+            candidates = [
+                i for i, msg in enumerate(messages)
+                if isinstance(msg, dict) and (
+                    coerce_epoch(msg.get("timestamp"), field="message timestamp") is None
+                    or (not msg.get("message_uid") and not msg.get("_compressed_summary"))
+                )
+            ]
             if not candidates:
                 return
-            donors: dict[tuple[Any, ...], list[Any]] = {}
+            donor_ids = {
+                int(r) for r in (donor_row_ids or ())
+                if isinstance(r, int) and not isinstance(r, bool)
+            }
+            donors: dict[tuple[Any, ...], list[tuple[Any, Any]]] = {}
+            uid_donors: dict[str, Any] = {}
+            row_id_donors: dict[int, tuple[Any, Any, tuple[Any, ...]]] = {}
             for row in conn.execute(
-                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name FROM messages "
-                    "WHERE session_id = ? AND active = 1 ORDER BY id", (parent_session_id,)).fetchall():
-                donors.setdefault((row["role"], row["content"], row["tool_call_id"], row["tool_calls"],
-                    row["tool_name"]), []).append(row["timestamp"])
+                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, message_uid "
+                    "FROM messages WHERE session_id = ? ORDER BY id", (parent_session_id,)).fetchall():
+                row_id = int(row["id"]) if row["id"] is not None else None
+                row_key = (row["role"], row["content"], row["tool_call_id"], row["tool_calls"], row["tool_name"])
+                if row_id is not None and (row["active"] or row_id in donor_ids):
+                    row_id_donors[row_id] = (row["timestamp"], row["message_uid"], row_key)
+                if row["message_uid"] and row["timestamp"] is not None:
+                    uid_donors.setdefault(row["message_uid"], row["timestamp"])
+                if row["active"]:
+                    donors.setdefault(row_key, []).append((row["timestamp"], row["message_uid"]))
             for i in candidates:
                 msg = messages[i]
+                need_ts = coerce_epoch(msg.get("timestamp"), field="message timestamp") is None
+                need_uid = not msg.get("message_uid") and not msg.get("_compressed_summary")
                 tool_calls = _parse_tool_calls(msg.get("tool_calls"))
                 key = (msg.get("role", "unknown"), self._encode_content(msg.get("content")),
                     msg.get("tool_call_id"), json.dumps(tool_calls) if tool_calls else None,
                     _scrub_surrogates(msg.get("tool_name")))
+                raw_row_id = msg.get("_row_id")
+                if isinstance(raw_row_id, int) and not isinstance(raw_row_id, bool) and raw_row_id in row_id_donors:
+                    d_ts, d_uid, d_key = row_id_donors[raw_row_id]
+                    if d_key == key:
+                        if need_ts and d_ts is not None:
+                            msg["timestamp"] = d_ts
+                            need_ts = False
+                        if need_uid and d_uid:
+                            msg["message_uid"] = d_uid
+                            need_uid = False
+                if not need_ts and not need_uid:
+                    continue
                 queue = donors.get(key)
-                if queue:
-                    msg["timestamp"] = queue.pop(0)
+                if need_ts:
+                    if queue:
+                        d_ts, d_uid = queue.pop(0)
+                        if d_ts is not None:
+                            msg["timestamp"] = d_ts
+                        if need_uid and d_uid:
+                            msg["message_uid"] = d_uid
+                    elif msg.get("message_uid") and msg["message_uid"] in uid_donors:
+                        msg["timestamp"] = uid_donors[msg["message_uid"]]
+                elif need_uid and queue:
+                    msg_ts = msg.get("timestamp")
+                    match_idx = next(
+                        (idx for idx, (d_ts, d_uid) in enumerate(queue) if d_ts == msg_ts and d_uid),
+                        None,
+                    )
+                    if match_idx is not None:
+                        _, d_uid = queue.pop(match_idx)
+                        msg["message_uid"] = d_uid
         except Exception:
             return  # Best-effort: a failed carry falls back to the publish-time stamp, never breaks publish.
+
+    @staticmethod
+    def _fold_compaction_summary_seam(messages: list[dict[str, Any]]) -> int:
+        """Fold consecutive assistant turns across a compaction summary seam in place before INSERT.
+
+        When ``ContextCompressor.compress()`` emits a ``role='assistant'`` summary immediately before
+        a carried ``role='assistant'`` tool-call turn, ``_repair_alternation_after_compression`` merges
+        them via ``_merge_consecutive_assistants`` right after ``_commit_compaction``. Folding that
+        seam here — after coverage/rewind accounting and ``_carry_parent_timestamps`` have resolved
+        the un-merged tail, and before ``_insert_message_rows`` writes SQLite — persists one clean
+        merged row instead of two consecutive assistant rows in ``state.db``.
+        """
+        if not messages or len(messages) < 2:
+            return 0
+        from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, SUMMARY_PREFIX
+
+        def _is_summary(m: Any) -> bool:
+            if not isinstance(m, dict):
+                return False
+            if m.get(COMPRESSED_SUMMARY_METADATA_KEY):
+                return True
+            content = m.get("content")
+            return isinstance(content, str) and content.startswith(SUMMARY_PREFIX)
+
+        if not any(
+            isinstance(messages[i], dict)
+            and isinstance(messages[i + 1], dict)
+            and messages[i].get("role") == "assistant"
+            and messages[i + 1].get("role") == "assistant"
+            and (_is_summary(messages[i]) or _is_summary(messages[i + 1]))
+            for i in range(len(messages) - 1)
+        ):
+            return 0
+        from agent.agent_runtime_helpers import _merge_consecutive_assistants
+        from agent.conversation_compression_archive import (
+            ABSORBED_ROW_IDS, MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS,
+        )
+
+        for m in messages:
+            if isinstance(m, dict):
+                stamp_message_uid(m)
+        repaired, count = _merge_consecutive_assistants(list(messages))
+        if count > 0:
+            for m in repaired:
+                if isinstance(m, dict) and not isinstance(m.get("_row_id"), int):
+                    for k in (ABSORBED_ROW_IDS, MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS):
+                        m.pop(k, None)
+            messages[:] = repaired
+        return count
 
     def _insert_message_rows(self, conn, session_id: str, messages: list[dict[str, Any]], *,
                              prune_checkpoints: bool = True) -> tuple[int, int]:
@@ -850,6 +949,106 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             f"WHERE id IN ({_placeholders(tail_ids)}) ORDER BY id",
             [session_id, *tail_ids] if retarget else tail_ids)
 
+    def _strip_superseded_compaction_rows(
+        self,
+        conn,
+        candidate_ids: list[int],
+        compacted_messages: list[dict[str, Any]],
+        covered_set: set[int],
+    ) -> tuple[list[int], set[int]]:
+        """Identify and strip superseded prior compaction generations from *candidate_ids*.
+
+        When a post-compaction hook fails after ``archive_and_compact`` committed to ``state.db``,
+        the caller retains pre-compaction ``_row_id``s while ``state.db`` holds the newly inserted
+        ``_compressed_summary = 1`` block as ``active = 1``. On the next compaction, those rows
+        appear above the old watermark or outside ``covered_set``. Stripping contiguous runs that
+        start at a prior compaction summary (up to the next row in ``covered_set``) archives them
+        as ``active = 0, compacted = 1`` instead of cloning them into ``clone_ids`` (#RC-02).
+        """
+        if not candidate_ids or not any(
+            isinstance(m, dict)
+            and (
+                m.get("_compressed_summary")
+                or str(m.get("content") or "").startswith(
+                    ("[CONTEXT COMPACTION — REFERENCE ONLY]", "[PRIOR CONTEXT — for reference only]")
+                )
+            )
+            for m in compacted_messages
+        ):
+            return candidate_ids, set()
+        meta = {
+            int(r["id"]): (
+                bool(r["_compressed_summary"]),
+                str(r["content"] or "")[:80],
+                self._row_identity(
+                    r["role"],
+                    self._decode_content(r["content"]),
+                    r["tool_call_id"],
+                    _parse_tool_calls(r["tool_calls"]),
+                ),
+            )
+            for r in conn.execute(
+                f"SELECT id, role, _compressed_summary, content, tool_call_id, tool_calls "
+                f"FROM messages WHERE id IN ({_placeholders(candidate_ids)})",
+                tuple(candidate_ids),
+            ).fetchall()
+        }
+        summary_ids = {
+            rid
+            for rid, (is_cs, head, _rc) in meta.items()
+            if is_cs
+            or head.startswith(
+                ("[CONTEXT COMPACTION — REFERENCE ONLY]", "[PRIOR CONTEXT — for reference only]")
+            )
+        }
+        if not summary_ids:
+            return candidate_ids, set()
+        compacted_tail_keys = {
+            self._row_identity(
+                m.get("role", "unknown"),
+                m.get("content"),
+                m.get("tool_call_id"),
+                _parse_tool_calls(m.get("tool_calls")),
+            )
+            for m in compacted_messages
+            if isinstance(m, dict)
+            and not m.get("_compressed_summary")
+            and not str(m.get("content") or "").startswith(
+                ("[CONTEXT COMPACTION — REFERENCE ONLY]", "[PRIOR CONTEXT — for reference only]")
+            )
+        }
+        superseded: set[int] = set()
+        n_cand = len(candidate_ids)
+        idx = 0
+        while idx < n_cand:
+            rid = candidate_ids[idx]
+            if rid not in summary_ids or rid in covered_set:
+                idx += 1
+                continue
+            superseded.add(rid)
+            # Scan contiguous segment after this summary up to the next covered_set or summary row.
+            seg_end = idx + 1
+            while seg_end < n_cand and candidate_ids[seg_end] not in covered_set and candidate_ids[seg_end] not in summary_ids:
+                seg_end += 1
+            segment = candidate_ids[idx + 1 : seg_end]
+            # Find the last row in segment that matches the new compacted tail; every row up to
+            # that last matching tail row (including earlier summarized-away or demoted tool rows)
+            # belongs to the superseded compaction generation. If no row in segment matches the
+            # new compacted tail (the entire prior tail was summarized away before a covered row),
+            # the entire segment before covered_set is superseded.
+            last_tail_pos = -1
+            for pos, s_rid in enumerate(segment):
+                if meta[s_rid][2] in compacted_tail_keys:
+                    last_tail_pos = pos
+            if last_tail_pos >= 0:
+                for s_rid in segment[: last_tail_pos + 1]:
+                    superseded.add(s_rid)
+            else:
+                for s_rid in segment:
+                    superseded.add(s_rid)
+            idx = seg_end
+        return [rid for rid in candidate_ids if rid not in superseded], superseded
+
     def _archive_named_rows(
         self, conn, session_id: str, compacted_messages: list[dict[str, Any]], covered: list[int], *,
         tail_count: int, carried_messages: Optional[list[dict[str, Any]]], patched_model_config: Any,
@@ -865,15 +1064,26 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         covered_set = set(covered)
         carried_ids = self._resolve_carried_row_ids(conn, session_id, carried_messages or [])
         covered_set.update(carried_ids)
+        raw_unseen = [row_id for row_id in active_ids if row_id not in covered_set]
+        # An unseen row the compacted set already carries is superseded by that copy, not cloned (#137197).
+        carried_unseen, weak_claims = self._carried_tail_ids(conn, raw_unseen, compacted_messages)
+        _, superseded = self._strip_superseded_compaction_rows(
+            conn, active_ids, compacted_messages, covered_set | set(carried_unseen)
+        )
+        if superseded:
+            covered_set.update(superseded)
         unseen = [row_id for row_id in active_ids if row_id not in covered_set]
         covered_active = [row_id for row_id in active_ids if row_id in covered_set]
-        # An unseen row the compacted set already carries is superseded by that copy, not cloned (#137197).
-        carried_unseen, weak_claims = self._carried_tail_ids(conn, unseen, compacted_messages)
         clone_ids = [row_id for row_id in unseen if row_id not in carried_unseen]
         tail_below = tail_count - self._carried_tail_slots(carried_unseen, len(compacted_messages), tail_count)
         rewind_ids = list(carried_ids)
         if tail_below > 0:
-            rewind_ids += self._tail_originals(covered_active, tail_below, merged_away)
+            tail_orig_ids = self._tail_originals(covered_active, tail_below, merged_away)
+            # ATLAS-129 / DQ #515 (carried 67741a5b2d): demoted tail tool rows' originals archive
+            # as compacted=1 (searchable), never rewound to compacted=0. Verbatim match complements
+            # upstream's weak_claims (rewritten carry) — the two criteria are disjoint.
+            rewind_ids += self._filter_verbatim_tail_originals(
+                conn, tail_orig_ids, compacted_messages)
         # A weak claim (a rewritten carry naming the row) is archived as compacted history, never rewound out of display.
         rewind_ids += [row_id for row_id in unseen if row_id not in weak_claims]
         rewind_ids = list(dict.fromkeys(rewind_ids))
@@ -885,9 +1095,10 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
                 [session_id, *rewind_ids])
         conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
         # Same identity carry as publish_compression_child (#59661): carried tail copies keep the
-        # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
-        # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
-        self._carry_parent_timestamps(conn, session_id, compacted_messages)
+        # durable row's timestamp and message_uid so display dedupe and client reconciliation
+        # preserve identity across compactions. Rewound tail originals donate to their carried copies.
+        self._carry_parent_timestamps(conn, session_id, compacted_messages, donor_row_ids=rewind_ids)
+        self._fold_compaction_summary_seam(compacted_messages)
         inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
         if clone_ids:
             _ids, unseen_tool_calls = self._tail_rows_after_watermark(
@@ -987,12 +1198,25 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
                 conn, session_id, compacted_messages, proved[0], tail_count=tail_count,
                 carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch,
                 merged_away=proved[1])
-        tail_ids: list[int] = [] if watermark is None else [int(row["id"]) for row in conn.execute(
-            "SELECT id FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
-            (session_id, int(watermark))).fetchall()]
+        raw_tail_ids: list[int] = []
+        if watermark is not None:
+            raw_tail_ids = [int(row["id"]) for row in conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
+                (session_id, int(watermark))).fetchall()]
+        elif covered_ids:
+            active_all = [int(row["id"]) for row in conn.execute(_ACTIVE_IDS_SQL, (session_id,)).fetchall()]
+            if any(int(c) in set(active_all) for c in covered_ids):
+                raw_tail_ids = active_all
         # A concurrent-tail row the compacted set already carries is superseded by that copy, not
         # cloned beside it (#137197); its carried dict then has no original below the watermark.
-        carried_tail, weak_claims = self._carried_tail_ids(conn, tail_ids, compacted_messages)
+        carried_tail, weak_claims = self._carried_tail_ids(conn, raw_tail_ids, compacted_messages)
+        fallback_covered = {int(c) for c in (covered_ids or ()) if isinstance(c, int)} | set(carried_tail)
+        tail_ids, superseded_tail = self._strip_superseded_compaction_rows(
+            conn, raw_tail_ids, compacted_messages, fallback_covered
+        )
+        if superseded_tail and watermark is None and covered_ids:
+            explicit_cov = {int(c) for c in covered_ids if isinstance(c, int)}
+            tail_ids = [rid for rid in tail_ids if rid not in explicit_cov]
         clone_ids = [row_id for row_id in tail_ids if row_id not in carried_tail]
         _ids, tail_tool_calls = ([], 0) if not clone_ids else self._tail_rows_after_watermark(
             conn, f"SELECT id, tool_calls FROM messages WHERE id IN ({_placeholders(clone_ids)}) ORDER BY id",
@@ -1004,11 +1228,12 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             conn, session_id, carried_messages or [])
         if tail_below > 0:
             bound = watermark is not None
-            rewind_ids += [int(row["id"]) for row in conn.execute(
+            tail_orig_ids = [int(row["id"]) for row in conn.execute(
                 f"SELECT id FROM messages WHERE session_id = ? AND active = 1{' AND id <= ?' if bound else ''} "
                 "ORDER BY id DESC LIMIT ?",
                 (session_id, *((int(watermark),) if bound else ()),
-                 int(tail_below) + self._uncounted_merged_rows(compacted_messages[-int(tail_count):]))).fetchall()]
+                 int(tail_below) + self._uncounted_merged_rows(compacted_messages))).fetchall()]
+            rewind_ids += self._filter_verbatim_tail_originals(conn, tail_orig_ids, compacted_messages)
         # A weak claim (a rewritten carry naming the row) is archived as compacted history, never rewound out of display.
         rewind_ids += [row_id for row_id in tail_ids if row_id not in weak_claims]
         rewind_ids = list(dict.fromkeys(rewind_ids))
@@ -1020,9 +1245,10 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         else:
             conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
         # Same identity carry as publish_compression_child (#59661): carried tail copies keep the
-        # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
-        # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
-        self._carry_parent_timestamps(conn, session_id, compacted_messages)
+        # durable row's timestamp and message_uid so display dedupe and client reconciliation
+        # preserve identity across compactions. Rewound tail originals donate to their carried copies.
+        self._carry_parent_timestamps(conn, session_id, compacted_messages, donor_row_ids=rewind_ids)
+        self._fold_compaction_summary_seam(compacted_messages)
         inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
         if clone_ids:
             self._clone_message_rows(conn, clone_ids)
@@ -1131,12 +1357,14 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         """The display identity both display reads give *row*, scanning rows in ``id`` order.
 
         A compaction carrier keeps its message's ``message_uid`` but not its content (the prior tail
-        wrapped around the summary), so it is a copy of the first row with that uid: shown once."""
+        wrapped around the summary), so it is a copy of the first row with that uid: shown once.
+        Likewise, a user prompt carried across compaction may have a skill-invocation prefix stripped
+        or an in-flight restate banner prepended while keeping the same ``message_uid``."""
         uid = row["message_uid"]
         if not uid:
             return key
-        if row["_compressed_summary"]:
-            return first_by_uid.get(uid, key)
+        if row["_compressed_summary"] or row["role"] == "user":
+            return first_by_uid.setdefault(uid, key)
         first_by_uid.setdefault(uid, key)
         return key
 
@@ -1155,12 +1383,14 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         Storage interface: port as ``display_generations`` (``first_ids`` is ``session.transcript``'s)."""
         seen: dict[tuple[Any, ...], Any] = {}
         first_id: dict[tuple[Any, ...], int] = {}
+        order_id: dict[tuple[Any, ...], int] = {}
         uid_key: dict[Any, tuple[Any, ...]] = {}  # message_uid -> the display key of its first copy
         removed: dict[Any, bool] = {}  # copy identity -> its newest copy is removed (rows come in id order)
         identities: dict[tuple[Any, ...], list[Any]] = {}
         removed_ts: set[Any] = set()
         removed_first: dict[Any, int] = {}  # copy identity -> its first removed row (rows come in id order)
         rows = rows if isinstance(rows, list) else list(rows)
+        has_display_order = bool(rows) and "display_order" in rows[0].keys()
         later_copies = later_tool_copy_ids(self, rows)  # a compacted tool result paints once, as its original
         if drop_removed:
             # Every display key carries the row's timestamp third, so a live row can share a removed row's identity
@@ -1195,9 +1425,13 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
                 seen[key] = row
                 identities[key] = copies
             first_id[key] = min(first_id.get(key, row["id"]), row["id"])
+            slot = row["display_order"] if has_display_order and row["display_order"] is not None else row["id"]
+            pos = int(slot)
+            order_id[key] = pos if key not in order_id else min(order_id[key], pos)
         # Order by the logical message's FIRST row, not the chosen representative's: a protected-tail
-        # copy in a newer generation has a higher id than messages emitted after the original.
-        keys = sorted(seen, key=first_id.__getitem__)
+        # copy in a newer generation has a higher id than messages emitted after the original. Demoted
+        # tail tool originals whose parent assistant was rewound forward carry display_order > id.
+        keys = sorted(seen, key=order_id.__getitem__)
         if drop_removed:
             keys = [key for key in keys if not any(removed[copy] for copy in identities[key])]
         if first_ids is not None:
@@ -1216,30 +1450,104 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         path's ``ORDER BY candidate.active DESC, candidate.id DESC``. Writes only on drift."""
         first_id: dict[bytes, int] = {}
         uid_identity: dict[str, bytes] = {}  # message_uid -> its first copy's identity (the carrier rule)
+        rewound_uid_order: dict[str, int] = {
+            str(r[0]): int(r[1])
+            for r in conn.execute(
+                "SELECT message_uid, MIN(COALESCE(display_order, id)) "
+                "FROM messages INDEXED BY idx_messages_session_id "
+                "WHERE session_id = ? AND active = 0 AND compacted = 0 "
+                "AND message_uid IS NOT NULL AND message_uid != '' "
+                "GROUP BY message_uid",
+                (session_id,),
+            ).fetchall()
+        }
+        staged: list[tuple[int, bytes, Optional[int], Optional[bytes]]] = []
+        orders: dict[int, int] = {}
+        asst_by_tcid: dict[str, list[tuple[int, int]]] = {}
+        tool_groups: dict[Any, list[tuple[int, Optional[str]]]] = {}
+        last_compacted_ua_id = 0
         last_id = 0
         while True:
             rows = conn.execute(
-                "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
+                "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, compacted, "
                 "display_kind, display_metadata, display_order, display_identity, message_uid, _compressed_summary "
                 "FROM messages INDEXED BY idx_messages_session_id "
                 "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
                 "ORDER BY id LIMIT 1000",
                 (session_id, last_id))
             batch_start = last_id
-            updates = []
             for row in rows:
                 last_id = row["id"]
                 identity = self._fold_summary_carrier(
                     row, self._display_identity(self._display_dedupe_key(row)), uid_identity)
                 # A row already holding this identity keeps its stored slot (an in-place prune changes a
-                # row's content, not its place); otherwise the slot is the identity's first row.
-                kept = row["display_order"] if row["display_identity"] == identity else None
+                # row's content, not its place); otherwise the slot is the identity's first row. When a
+                # non-contiguous prefix row was rewound (active=0, compacted=0) and carried across
+                # compacted user/assistant turns, restore its original pre-compaction slot so it does
+                # not jump past the compacted turns that followed it.
+                r_uid = row["message_uid"] or ""
+                orig_order = rewound_uid_order.get(r_uid) if r_uid else None
+                if orig_order is not None and orig_order < last_compacted_ua_id:
+                    kept = orig_order
+                else:
+                    kept = (row["display_order"]
+                            if row["display_identity"] == identity
+                            and (row["display_order"] is None or row["display_order"] <= last_id)
+                            else None)
                 order = first_id.setdefault(identity, last_id if kept is None else kept)
-                if order != row["display_order"] or identity != row["display_identity"]:
-                    updates.append((order, identity, last_id))
+                orders[last_id] = order
+                staged.append((last_id, identity, row["display_order"], row["display_identity"]))
+                if (
+                    row["compacted"]
+                    and not row["_compressed_summary"]
+                    and row["role"] in ("user", "assistant")
+                    and not str(self._decode_content(row["content"]) or "").startswith(
+                        ("[CONTEXT COMPACTION", "[PRIOR CONTEXT")
+                    )
+                ):
+                    last_compacted_ua_id = last_id
+                if row["role"] == "assistant" and row["tool_calls"]:
+                    tcs = _parse_tool_calls(row["tool_calls"])
+                    if isinstance(tcs, list):
+                        for tc in tcs:
+                            if isinstance(tc, dict):
+                                cid = tc.get("id") or (tc.get("function") or {}).get("id")
+                                if cid:
+                                    asst_by_tcid.setdefault(str(cid), []).append((last_id, order))
+                elif row["role"] == "tool":
+                    tkey = (("uid", row["message_uid"])
+                            if row["message_uid"]
+                            else ("tcid", row["timestamp"], row["tool_call_id"]))
+                    tool_groups.setdefault(tkey, []).append((last_id, row["tool_call_id"]))
             rows.close()
             if last_id == batch_start:
                 break
+        p_offsets: dict[int, int] = {}
+        for grp in tool_groups.values():
+            first_rid, tcid = grp[0]
+            last_rid, _ = grp[-1]
+            if not tcid or tcid not in asst_by_tcid:
+                continue
+            candidates = asst_by_tcid[tcid]
+            before_last = [o for aid, o in candidates if aid < last_rid]
+            p_order = (before_last[-1]
+                       if before_last
+                       else next((o for aid, o in candidates if aid > first_rid), None))
+            if p_order is not None and p_order > first_rid:
+                if len(grp) >= 2 and last_rid > p_order:
+                    target = last_rid
+                else:
+                    off = p_offsets.get(p_order, 0) + 1
+                    p_offsets[p_order] = off
+                    target = p_order + off
+                for rid, _ in grp:
+                    orders[rid] = target
+        updates = [
+            (orders[rid], identity, rid)
+            for rid, identity, old_order, old_identity in staged
+            if orders[rid] != old_order or identity != old_identity
+        ]
+        if updates:
             conn.executemany(
                 "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
 
@@ -1836,9 +2144,10 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
     def _split_rewind_target(self, target_row: dict[str, Any], expected_target_content: Any, preserve_compaction_handoff: bool):
         """Validate an active rewind target; return its handoff scaffold (or None). ``ValueError``: inactive /
         non-user-originated / missing composite carrier; ``RuntimeError``: live payload changed."""
+        from agent.context_compressor import split_inflight_replay_turn
         if not target_row.get("active"):
             raise ValueError("rewind target is not active")
-        handoff, live_view = split_user_originated_turn({
+        handoff, live_view = split_inflight_replay_turn({
             **target_row, "content": self._decode_content(target_row.get("content")),
             "display_metadata": self._decode_display_metadata(target_row.get("display_metadata"))})
         if live_view is None:

@@ -2110,11 +2110,16 @@ def _get_aws_sdk_auth_status(target: str) -> dict[str, Any]:
         return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
 
 
+def _get_vertex_auth_status(target: str) -> dict[str, Any]:
+    try:
+        from agent.vertex_adapter import has_vertex_credentials
+        return {"logged_in": has_vertex_credentials(), "provider": target}
+    except Exception:
+        return {"logged_in": False, "provider": target}
+
+
 def get_auth_status(provider_id: Optional[str] = None) -> dict[str, Any]:
-    """Generic auth status dispatcher: bespoke builders (``OAUTH_PROVIDER_FLOWS`` plus Azure
-    Foundry) first, then the registry ``auth_type`` so a whole provider class (e.g. every
-    external-process ACP backend) gets a real status. Builders are looked up by NAME at call time so
-    tests that patch ``hermes_cli.auth.get_*_auth_status`` still apply."""
+    """Generic auth status dispatcher: bespoke builders first, then registry ``auth_type``."""
     target = (provider_id or get_active_provider() or "").strip().lower()
     if not target:
         return {"logged_in": False}
@@ -2127,26 +2132,19 @@ def get_auth_status(provider_id: Optional[str] = None) -> dict[str, Any]:
     return {"logged_in": False}
 
 
-# Bespoke status builders (name -> looked up in this module at call time) win over the
-# auth_type-keyed fallbacks below.
 _BESPOKE_STATUS_FUNCTIONS: dict[str, str] = {
     **{pid: flow.status_fn for pid, flow in OAUTH_PROVIDER_FLOWS.items()},
     "azure-foundry": "_get_azure_foundry_auth_status"}
 _STATUS_BY_AUTH_TYPE: dict[str, str] = {
     "external_process": "get_external_process_provider_status",
     "api_key": "get_api_key_provider_status",
-    "aws_sdk": "_get_aws_sdk_auth_status",
-    # OAuth-shaped plugin providers (their login lives in the plugin's auth_handler, tokens in the pool).
+    "aws_sdk": "_get_aws_sdk_auth_status", "vertex": "_get_vertex_auth_status",
     "oauth_device_code": "get_plugin_oauth_auth_status",
     "oauth_external": "get_plugin_oauth_auth_status"}
 
 
 def _get_azure_foundry_auth_status() -> dict[str, Any]:
-    """Structural auth status for Azure Foundry.
-
-    ``entra_id``: ``azure-identity`` importable — never invokes the Entra credential chain (keeps
-    CLI startup flat; ``hermes doctor`` runs the live probe). ``api_key`` (default): usable
-    ``AZURE_FOUNDRY_API_KEY``."""
+    """Structural auth status for Azure Foundry (entra_id or api_key)."""
     info: dict[str, Any] = {"provider": "azure-foundry"}
     try:
         from hermes_cli.config import load_config, get_env_value_prefer_dotenv

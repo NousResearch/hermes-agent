@@ -50,6 +50,7 @@ from agent.message_metadata import stamp_data_use
 from agent.session_persistence import sync_rewritten_tool_rows
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
+    _extract_error_preview,
     _is_destructive_command,
     _is_multimodal_tool_result,
     _multimodal_text_summary,
@@ -130,8 +131,11 @@ def _budget_for_agent(agent) -> BudgetConfig:
     context length isn't resolvable.
     """
     try:
-        ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
-        return budget_for_context_window(int(ctx) if ctx else None)
+        cc = getattr(agent, "context_compressor", None)
+        ctx = getattr(cc, "context_length", None)
+        thresh = getattr(cc, "threshold_tokens", None)
+        eff_ctx = min(int(ctx), int(thresh)) if (ctx and thresh and int(thresh) > 0) else (int(ctx) if ctx else None)
+        return budget_for_context_window(eff_ctx)
     except Exception:
         return DEFAULT_BUDGET
 
@@ -1118,7 +1122,8 @@ def _commit_tool_result(
                 function_name, function_args, function_result, failed=is_error, tool_call_id=tool_call_id,
             )
         if is_error:
-            logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, error_preview(function_result))
+            _, _fail_suffix = _detect_tool_failure(function_name, function_result)
+            logger.warning("Tool %s returned error%s (%.2fs): %s", function_name, _fail_suffix or "", tool_duration, error_preview(function_result))
         elif success_log_chars is not None:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, success_log_chars)
         if not blocked:
@@ -1579,7 +1584,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             agent, messages, ref, function_result,
             budget=budget, tool_duration=tool_duration, is_error=is_error, blocked=blocked,
             effect_disposition=effect_disposition, observed=r is not None, data_use=r.data_use if r else frozenset(),
-            error_preview=lambda res: _multimodal_text_summary(res)[:200],
+            error_preview=lambda res: _extract_error_preview(res, max_len=240),
         )
         if committed is None:
             return False
@@ -1860,7 +1865,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
         agent, messages, ref, function_result,
         budget=budget, tool_duration=tool_duration, is_error=_is_error_result, blocked=managed.blocked,
         effect_disposition="unknown" if _execution_timed_out else None, observed=True, data_use=managed.data_use,
-        error_preview=lambda res: res[:200] if isinstance(res, str) and not agent.verbose_logging else res,
+        error_preview=lambda res: _extract_error_preview(res, max_len=240) if isinstance(res, str) and not agent.verbose_logging else res,
         success_log_chars=_result_len,
         verbose_text=_multimodal_text_summary,
     )

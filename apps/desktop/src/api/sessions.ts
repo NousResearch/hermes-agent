@@ -529,6 +529,44 @@ export function getSessionMessages(
  * store (see app/chat/transcript-backfill).
  */
 export const LATEST_SESSION_MESSAGES_LIMIT = 120
+export const MIN_INITIAL_CONVERSATIONAL_USER_TURNS = 2
+export const MAX_COLD_HYDRATION_EXTRA_PAGES = 4
+
+function isConversationalUserMessage(message: SessionMessage): boolean {
+  if (message.role !== 'user' || message.display_kind === 'hidden' || message.display_kind === 'compaction') {
+    return false
+  }
+  const meta =
+    message.display_metadata && typeof message.display_metadata === 'object' ? message.display_metadata : null
+  if (meta && ('compaction_divider' in meta || 'model_only' in meta)) {
+    if (
+      (meta as { compaction_divider?: boolean }).compaction_divider === true ||
+      (meta as { model_only?: boolean }).model_only === true
+    ) {
+      return false
+    }
+  }
+  const raw =
+    typeof message.content === 'string'
+      ? message.content.trim()
+      : typeof message.text === 'string'
+        ? message.text.trim()
+        : ''
+  if (raw.startsWith('[CONTEXT COMPACTION') || raw.startsWith('[Summary of earlier conversation')) {
+    return false
+  }
+  return true
+}
+
+function countConversationalUserTurns(messages: SessionMessage[]): number {
+  let count = 0
+  for (const message of messages) {
+    if (isConversationalUserMessage(message)) {
+      count += 1
+    }
+  }
+  return count
+}
 
 export function getLatestSessionMessages(
   id: string,
@@ -565,9 +603,70 @@ export function getLatestSessionMessages(
     // oldest end. Only a page that echoes `order: 'latest'` may be adopted as
     // the tail; anything else is read as the complete transcript instead, which
     // is the one paging contract both backend generations honour.
-    const authoritativePage = pageHonorsLatestOrder(page)
+    let authoritativePage = pageHonorsLatestOrder(page)
       ? page
       : await completeTranscriptForOrderlessBackend(id, profile, page, options)
+
+    const pageLimit = page.pagination?.limit ?? LATEST_SESSION_MESSAGES_LIMIT
+    if (
+      pageHonorsLatestOrder(page) &&
+      Array.isArray(page?.messages) &&
+      page.messages.length >= pageLimit &&
+      countConversationalUserTurns(page.messages) < MIN_INITIAL_CONVERSATIONAL_USER_TURNS
+    ) {
+      let combinedMessages = page.messages
+      let nextOffset = (page.pagination?.offset ?? 0) + page.messages.length
+      let stillTruncated = true
+
+      for (let extraPage = 0; extraPage < MAX_COLD_HYDRATION_EXTRA_PAGES; extraPage += 1) {
+        let olderPage: SessionMessagesResponse
+        try {
+          olderPage = await getSessionMessages(
+            id,
+            profile,
+            {
+              limit: pageLimit,
+              offset: nextOffset,
+              order: 'latest',
+              includeCompacted: true
+            },
+            options
+          )
+        } catch {
+          break
+        }
+        if (!pageHonorsLatestOrder(olderPage) || olderPage.messages.length === 0) {
+          stillTruncated = false
+          break
+        }
+        combinedMessages = [...olderPage.messages, ...combinedMessages]
+        nextOffset += olderPage.messages.length
+        if (olderPage.messages.length < pageLimit) {
+          stillTruncated = false
+          break
+        }
+        if (countConversationalUserTurns(combinedMessages) >= MIN_INITIAL_CONVERSATIONAL_USER_TURNS) {
+          break
+        }
+      }
+
+      if (combinedMessages !== page.messages || !stillTruncated) {
+        authoritativePage = {
+          ...page,
+          messages: combinedMessages,
+          ...(page.pagination
+            ? {
+                pagination: {
+                  ...page.pagination,
+                  offset: 0,
+                  limit: stillTruncated ? pageLimit : combinedMessages.length + 1,
+                  returned: combinedMessages.length
+                }
+              }
+            : {})
+        }
+      }
+    }
 
     // Record whether the tail was truncated (page came back full) and where
     // the next older page starts, so "Show earlier" can backfill over REST

@@ -137,10 +137,37 @@ def record_turn_start(home: Path | str, session_key: str, prompt: str, *, attemp
     _update(home, session_key, lambda entries: {**_prune(entries, now), session_key: entry}, "record")
 
 
+def mark_turn_interrupted(home: Path | str, session_key: str) -> None:
+    """Stamp ``interrupted_at`` when a graceful SIGTERM/SIGINT teardown interrupts an active turn."""
+    if not session_key:
+        return
+    now = time.time()
+    _update(
+        home,
+        session_key,
+        lambda e: {**e, session_key: {**e[session_key], "interrupted_at": now}} if session_key in e else None,
+        "mark_interrupted",
+    )
+
+
 def clear_turn_marker(home: Path | str, session_key: str) -> None:
     """Remove the marker once its turn concluded (any outcome the client saw)."""
     if session_key:
         _update(home, session_key, lambda e: {k: v for k, v in e.items() if k != session_key} if session_key in e else None, "clear")
+
+
+def rekey_turn_marker(home: Path | str, old_key: str, new_key: str) -> None:
+    """Move an active turn marker from ``old_key`` to ``new_key`` when mid-turn compression rotates ``session_id``."""
+    if not old_key or not new_key or old_key == new_key:
+        return
+    def _mutate(e: dict[str, dict]) -> dict[str, dict] | None:
+        if old_key not in e:
+            return None
+        moved = dict(e[old_key])
+        out = {k: v for k, v in e.items() if k != old_key}
+        out[new_key] = moved
+        return out
+    _update(home, new_key, _mutate, "rekey")
 
 
 def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | None:
@@ -155,9 +182,35 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
             return None
         return {"attempts": max(0, int(entry.get("attempts") or 0)), "prompt": prompt, "started_at": _started_at(entry),
                 "auto_continue": bool(entry.get("auto_continue", True)),
-                # Writer identity when present: extra keys only, so a marker written by an older build still reads.
-                **{k: entry[k] for k in ("writer_pid", "writer_start_time") if entry.get(k) is not None},
+                # Writer identity and graceful interrupt timestamp when present: extra keys only, so older markers still read.
+                **{k: entry[k] for k in ("writer_pid", "writer_start_time", "interrupted_at") if entry.get(k) is not None},
                 **({"notification_category": "diagnostic"}
                    if entry.get("notification_category") == "diagnostic" else {})}
     except Exception:
         return None
+
+
+def list_turn_markers(home: Path | str) -> dict[str, dict[str, Any]]:
+    """Return all normalized non-empty interrupted-turn markers for ``home``."""
+    try:
+        with _lock:
+            raw = _load(_marker_path(home))
+        out: dict[str, dict[str, Any]] = {}
+        for session_key, entry in raw.items():
+            if not session_key or not isinstance(entry, dict):
+                continue
+            prompt = str(entry.get("prompt") or "")
+            if not prompt.strip():
+                continue
+            out[str(session_key)] = {
+                "attempts": max(0, int(entry.get("attempts") or 0)),
+                "prompt": prompt,
+                "started_at": _started_at(entry),
+                "auto_continue": bool(entry.get("auto_continue", True)),
+                **{k: entry[k] for k in ("writer_pid", "writer_start_time", "interrupted_at") if entry.get(k) is not None},
+                **({"notification_category": "diagnostic"}
+                   if entry.get("notification_category") == "diagnostic" else {}),
+            }
+        return out
+    except Exception:
+        return {}

@@ -187,3 +187,40 @@ def test_admission_journal_survives_power_loss(tmp_path, monkeypatch):
             db.close()
     journal_dir = str(scheduler_authority.journal_path(job['id'], 'fire').parent)
     assert journal_dir in synced
+
+
+def test_canonical_cron_wake_gate_false_ends_session_and_skips_boot_recovery(tmp_path, monkeypatch):
+    """CF-66: when gateway/session_cron.py admits a cron job and run_job exits early on
+    wakeAgent=false, execute() must still mark the committed cron session ended so it does
+    not accumulate in _BOOT_RECEIPTS_SQL across gateway restarts."""
+    from unittest.mock import patch
+    from gateway.session_local_recovery import local_receipt_ids
+    with jobs.use_cron_store(tmp_path / 'cron'):
+        job = jobs.create_job(prompt='original', schedule='every 1h', deliver='local', script='gate.py')
+        authority, db = _owner(tmp_path, monkeypatch)
+
+        async def probe():
+            params = {'job_id': job['id'], 'request_id': 'fire-skip', 'extra_prompt': None}
+            receipt = await session_cron.operation(authority, 'submit', params)
+            sid = receipt['session_id']
+            row = claim_session_input(db, epoch=authority.epoch, session_id=sid)
+            from gateway.config import Platform
+            from gateway.session_authority import SessionRef
+            ref = SessionRef(authority.profile_id, sid)
+            policy = authority.runner.adapters[Platform.LOCAL].policies[sid]
+            with patch('cron.scheduler._run_job_script_with_claim_heartbeat', return_value=(True, '{"wakeAgent": false}')):
+                await session_cron.execute(authority, ref, row, policy)
+            settle_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'],
+                                 generation=row['generation'], outcome='completed',
+                                 result=authority.pending_results.pop(row['admission_id']))
+            return sid
+
+        try:
+            sid = asyncio.run(probe())
+            srow = db.get_session(sid)
+            assert srow is not None
+            assert srow['ended_at'] is not None
+            assert srow['end_reason'] == 'cron_complete'
+            assert sid not in local_receipt_ids(authority)
+        finally:
+            db.close()

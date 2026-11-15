@@ -320,3 +320,100 @@ def test_compaction_keeps_four_images_in_a_spared_pending_round(compressor_128k)
     results = {m["tool_call_id"]: m for m in out if m.get("role") == "tool"}
     assert [_tool_content_has_images(results[call_id]["content"]) for call_id in pending_ids] == [True] * 4
     assert not _tool_content_has_images(results["old"]["content"])
+
+
+def _small_tool_pair(i: int) -> list[dict]:
+    return [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": f"call_s{i}",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": f'{{"path":"g{i}.py"}}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": f"call_s{i}",
+            "content": f"RESULT_{i}_START\n" + (f"small unique payload {i} " * 60),
+        },
+    ]
+
+
+def test_pressure_pass_ignores_undemotable_user_row_bloat(compressor_128k):
+    """Pass 4's pressure check must count only role=="tool" rows (2026-10-22).
+
+    Demotion is the pass's sole lever, so a protected tail inflated by a large
+    USER row — a stacked skill bundle, a pasted report — is pressure it can
+    never relieve: the all-roles count demoted every tool body, still never
+    reached the soft ceiling, and the last resort then nuked the newest body
+    too, destroying working memory for zero reclaimed budget. Tool bodies
+    within the ceiling must survive verbatim in that shape.
+    """
+    from agent.context_compressor import _PRUNE_MIN_CHARS, _tool_calls_by_id
+
+    c = compressor_128k
+    result: list[dict] = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Investigate thoroughly."},
+        {"role": "assistant", "content": "OK"},
+        # The undemotable bloat: one ~120k-char user row inside the protected tail.
+        {"role": "user", "content": "SKILL BUNDLE\n" + ("stacked skill body text " * 5_000)},
+    ]
+    for i in range(4):
+        result.extend(_small_tool_pair(i))
+    call_id_to_tool = _tool_calls_by_id(result)
+    originals = {m["tool_call_id"]: m["content"] for m in result if m.get("role") == "tool"}
+
+    demoted = c._pressure_demote_tail(
+        result,
+        prune_boundary=1,
+        protect_tail_tokens=10_000,
+        call_id_to_tool=call_id_to_tool,
+        min_prune_chars=_PRUNE_MIN_CHARS,
+        spared=range(0),
+    )
+
+    assert demoted == 0, "user-row bloat must not fire tool demotion"
+    for m in result:
+        if m.get("role") == "tool":
+            assert m["content"] == originals[m["tool_call_id"]], (
+                f"tool body {m['tool_call_id']!r} was demoted despite tool tokens being within budget"
+            )
+
+
+def test_pressure_pass_still_fires_on_tool_body_bloat(compressor_128k):
+    """Control for the counting fix: tool bodies alone over the soft ceiling still demote (#61932)."""
+    from agent.context_compressor import _PRUNE_MIN_CHARS, _tool_calls_by_id
+
+    c = compressor_128k
+    result: list[dict] = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Investigate thoroughly."},
+        {"role": "assistant", "content": "OK"},
+    ]
+    for i in range(4):
+        result.extend(_unique_tool_pair(i, 100_000))
+    call_id_to_tool = _tool_calls_by_id(result)
+
+    demoted = c._pressure_demote_tail(
+        result,
+        prune_boundary=1,
+        protect_tail_tokens=10_000,
+        call_id_to_tool=call_id_to_tool,
+        min_prune_chars=_PRUNE_MIN_CHARS,
+        spared=range(0),
+    )
+
+    assert demoted > 0, "oversized tool bodies alone must still trigger demotion"
+    surviving_verbatim = [
+        m for m in result
+        if m.get("role") == "tool" and len(m.get("content") or "") > 50_000
+    ]
+    assert not surviving_verbatim, "expected oversized tool bodies to be demoted"

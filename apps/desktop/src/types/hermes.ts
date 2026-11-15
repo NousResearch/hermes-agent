@@ -740,6 +740,7 @@ export interface SessionMessage {
    */
   row_id?: number
   id?: number
+  message_uid?: string
   text?: unknown
   timestamp?: number
   tool_call_id?: null | string

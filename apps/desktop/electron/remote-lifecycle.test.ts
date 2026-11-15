@@ -1826,6 +1826,10 @@ test('cleanupStale never deletes a lock-supplied unexpected log path', async () 
 
   await cleanupStale(ssh, OWNERSHIP_ID, ownedLock({ logPath: '~/.hermes/unrelated.log' }))
   assert.ok(!ssh.calls.some(command => command.includes('unrelated.log')))
+  assert.ok(
+    ssh.calls.some(command => /rm -f .*0123456789abcdef\.token/.test(command)),
+    'cleanupStale must unlink the spawn token file for the reclaimed lock'
+  )
 })
 
 test('pidIsOurDashboard requires an exact nonce option value', async () => {

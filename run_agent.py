@@ -1279,7 +1279,16 @@ class AIAgent(
 
     def _append_guardrail_observation(self, tool_name: str, function_args: dict, function_result: str, *,
                                       failed: bool, tool_call_id: str = "") -> str:
-        decision = self._tool_guardrails.after_call(tool_name, function_args, function_result, failed=failed)
+        tg = getattr(self, "_tool_guardrails", None)
+        try:
+            decision = (
+                tg.after_call(tool_name, function_args, function_result, failed=failed)
+                if tg is not None
+                else ToolGuardrailDecision(tool_name=tool_name)
+            )
+        except Exception as exc:
+            logger.debug("tool-guardrail after_call observation failed: %s", exc)
+            decision = ToolGuardrailDecision(tool_name=tool_name)
         # Identical-call stall guards observe the RAW result (before the per-call loop suffix) and are applied
         # at result construction so tool results stay append-only / cache-safe.
         stall_notice = result_stub = stall_kind = None

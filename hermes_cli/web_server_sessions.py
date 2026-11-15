@@ -3,6 +3,7 @@
 
 import logging
 import asyncio
+import contextvars
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,6 +13,7 @@ from hermes_state_common import _RESET_CHILD_SQL, _sql_json_extract
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
+_SUPPRESS_CONFLICT_LOG = contextvars.ContextVar("_suppress_conflict_log", default=False)
 
 _DESCENDANTS_SQL = f"""
             WITH RECURSIVE descendants(id, parent_session_id, started_at) AS (
@@ -151,7 +153,7 @@ def _native_history_transport(request, authority, actor):
         unbind_native_transport(authority, actor)
 
 
-def _mutate_offline_store(profile, actor, params):
+def _mutate_offline_store(profile, actor, params, *, log_conflict: bool = True):
     """Standalone edit: the receipt transaction on this process's single shared writer.
 
     Runs under the exact owner lock (409 while any gateway owns the store, never a
@@ -182,7 +184,7 @@ def _mutate_offline_store(profile, actor, params):
                                                 'operation', 'payload')})
         finally:
             db.close()
-    return _with_session_maintenance(profile, run)
+    return _with_session_maintenance(profile, run, log_conflict=log_conflict)
 
 
 async def _mutate_via_gateway_owner(profile, actor, params):
@@ -224,6 +226,11 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     discovery = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=1.5)
     endpoint = discovery.endpoint
     if endpoint is None:
+        # CF-36 graduated to upstream #144141: the offline store's reservation decides even when
+        # discovery read a non-absent state (a stale socket, a parked secondary); an ownership
+        # loss behind such a verdict answers a retryable 503 naming discovery's reason, never the
+        # bare 409 that pinned sessions in maintenanceFenced.
+        token = _SUPPRESS_CONFLICT_LOG.set(discovery.state != 'absent')
         try:
             return await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
         except HTTPException as exc:
@@ -233,6 +240,8 @@ async def _mutate_via_gateway_owner(profile, actor, params):
             _log.warning('session write for %s: gateway owner not reachable (%s%s)', home, discovery.state, known)
             reason = discovery.reason_code or discovery.state
             raise HTTPException(status_code=503, detail=f'owner_unavailable: {reason}: {exc.detail}') from exc
+        finally:
+            _SUPPRESS_CONFLICT_LOG.reset(token)
     if not getattr(endpoint, 'control_home', True):
         # The selected home answered on its own socket (a multiplexer-served profile already
         # names the multiplexer root). Pin it, so the ticket is minted on the socket that just
@@ -268,6 +277,16 @@ _MUTATION_REFUSAL_STATUS = {'permission_denied': 403, 'profile_mismatch': 403, '
                             'invalid_params': 400, 'runtime_draining': 503, 'storage_unavailable': 503}
 
 
+def _is_mobile_unfenced_client(request) -> bool:
+    """True when an Android/OkHttp mobile client (adrianlaborda/hermes-mobile) calls a REST
+    session mutation route without the 0.22.3+ Desktop revision-fence fields (CF-46)."""
+    headers = getattr(request, 'headers', None) or {}
+    if (headers.get('x-hermes-session-token') or '').strip():
+        return True
+    ua = (headers.get('user-agent') or '').strip().lower()
+    return ua.startswith('okhttp/')
+
+
 async def _mutate_session_request(request, profile, session_id, *, request_id,
                                   expected_revision, operation, payload, expected_generation=None):
     """Resolve the authenticated principal and owner; never open a second writer."""
@@ -284,6 +303,22 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         _, errors = authority.db._validate_import_payload(payload['sessions'])
         if errors:
             raise HTTPException(status_code=400, detail={'errors': errors})
+    if (request_id is None and expected_revision is None and expected_generation is None
+            and operation in {'sidebar', 'delete'} and _is_mobile_unfenced_client(request)):
+        import uuid
+
+        def _read_row():
+            db = _open_session_db_for_profile(profile, read_only=True)
+            try:
+                return db.get_session(session_id)
+            finally:
+                db.close()
+
+        row = await asyncio.to_thread(_read_row) if authority is None else authority.db.get_session(session_id)
+        request_id = f'mobile-{uuid.uuid4().hex}'
+        expected_revision = row['runtime_revision'] if row and row['runtime_revision'] is not None else 0
+        if operation == 'delete':
+            expected_generation = row['runtime_generation'] if row and row['runtime_generation'] is not None else 0
     if request_id is None and expected_revision is None and expected_generation is None:
         # A pre-fence client (Desktop <= 0.22.2) sends none of the identity. The owner never
         # commits an unfenced write, so name the upgrade; the wording is what those builds'
@@ -318,7 +353,7 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         raise HTTPException(status_code=503, detail='storage_unavailable') from exc
 
 
-def _with_session_maintenance(profile, operation, *args):
+def _with_session_maintenance(profile, operation, *args, log_conflict: bool = True):
     """Offline bulk actions reserve the exact owner lock through final DB close."""
     from fastapi import HTTPException
     from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
@@ -332,7 +367,8 @@ def _with_session_maintenance(profile, operation, *args):
     except OwnershipConflict as exc:
         # uvicorn runs at log_level=warning, so a handled 4xx leaves no server-side trace and the
         # refusal reads as a UI bug (#138915). Bulk store maintenance has no owner verb: name it.
-        _log.warning('session write refused for %s: %s', home, exc)
+        if log_conflict and not _SUPPRESS_CONFLICT_LOG.get():
+            _log.warning('session write refused for %s: %s', home, exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 

@@ -12,27 +12,59 @@ import json
 import logging
 import re
 from hermes_time import now as _hermes_now
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
 
 
+_WAKE_KV_FALSE_RE = re.compile(r"^wake[_-]?agent\s*[:=]\s*(?:false|0|no)\s*$", re.IGNORECASE)
+_NOOP_FIRST_LINES = frozenset({
+    "STATUS=NOOP_COMPLETE",
+    "HEALTHY",
+    "DEGRADED-ALERTED",
+    "LOSS-ALERT-SENT",
+    "SOURCE-ERROR",
+})
+
+
 def _parse_wake_gate(script_output: str) -> bool:
-    """Wake gate: False only if the last non-empty stdout line is JSON ``{"wakeAgent": false}``
-    (agent skipped entirely — no LLM run, no delivery); anything else wakes normally.
+    """Wake gate: False if the script output signals a deterministic no-op so the agent
+    is skipped entirely (no LLM run, no delivery):
+      1. Last non-empty line is JSON ``{"wakeAgent": false}`` (or ``status: NOOP_COMPLETE`` / ``INFRA_ERROR_COMPLETE``).
+      2. Last non-empty line is ``wakeAgent=false`` / ``wake_agent: false`` or ``STATUS=NOOP_COMPLETE``.
+      3. Full output is a JSON object with ``wakeAgent: false`` or ``status in ("NOOP_COMPLETE", "INFRA_ERROR_COMPLETE")``.
+      4. First non-empty line is a canonical single-line monitor-gate no-op class (``STATUS=NOOP_COMPLETE``,
+         ``HEALTHY``, ``DEGRADED-ALERTED``, ``LOSS-ALERT-SENT``, ``SOURCE-ERROR``, or ``API-ERROR:...``).
 
     Any other output (non-JSON, missing flag, gate absent, or ``wakeAgent: true``) means wake the agent
     normally. See #1232.
     """
-    stripped_lines = [line for line in (script_output or "").splitlines() if line.strip()]
+    stripped_lines = [line.strip() for line in (script_output or "").splitlines() if line.strip()]
     if not stripped_lines:
         return True
-    try:
-        gate = json.loads(stripped_lines[-1].strip())
-    except (json.JSONDecodeError, ValueError):
-        return True
-    return not isinstance(gate, dict) or gate.get("wakeAgent", True) is not False
+    first_line = stripped_lines[0]
+    last_line = stripped_lines[-1]
+    if (
+        first_line in _NOOP_FIRST_LINES
+        or first_line.startswith("API-ERROR:")
+        or last_line == "STATUS=NOOP_COMPLETE"
+        or _WAKE_KV_FALSE_RE.match(last_line)
+    ):
+        return False
+    for candidate in (last_line, (script_output or "").strip()):
+        if not candidate.startswith("{"):
+            continue
+        try:
+            gate = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(gate, dict):
+            if gate.get("wakeAgent", True) is False:
+                return False
+            if str(gate.get("status") or "").upper() in ("NOOP_COMPLETE", "INFRA_ERROR_COMPLETE"):
+                return False
+    return True
 
 
 def _prepend_context_block(prompt: str, heading: str, intro: str, body: str) -> str:
@@ -470,8 +502,39 @@ def _block_and_pause_job(
     return False, doc, alert, reason
 
 
-# Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
-# populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched
-from cron import scheduler_delivery as _delivery
-from cron import scheduler_script as _script
+# Late-bound origin namespace (see module docstring). Resolved lazily via _LazyMod
+# to prevent Python 3.14 _ModuleLock cycles.
+if TYPE_CHECKING:
+    from cron import scheduler as _sched
+    from cron import scheduler_delivery as _delivery
+    from cron import scheduler_script as _script
+else:
+    class _LazyMod:
+        __slots__ = ("_n",)
+
+        def __init__(self, n: str) -> None:
+            object.__setattr__(self, "_n", n)
+
+        def __getattr__(self, a: str):
+            import importlib
+            import sys
+
+            n = object.__getattribute__(self, "_n")
+            m = sys.modules.get(n)
+            if m is None or getattr(getattr(m, "__spec__", None), "_initializing", False):
+                m = importlib.import_module(n)
+            return getattr(m, a)
+
+        def __setattr__(self, a: str, v) -> None:
+            import importlib
+            import sys
+
+            n = object.__getattribute__(self, "_n")
+            m = sys.modules.get(n)
+            if m is None or getattr(getattr(m, "__spec__", None), "_initializing", False):
+                m = importlib.import_module(n)
+            setattr(m, a, v)
+
+    _sched = _LazyMod("cron.scheduler")
+    _delivery = _LazyMod("cron.scheduler_delivery")
+    _script = _LazyMod("cron.scheduler_script")

@@ -311,11 +311,22 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         from tools.skills_tool import _skills_dir, skill_view
         from agent.skill_utils import normalize_skill_lookup_name
         normalized = normalize_skill_lookup_name(raw_identifier)
-        loaded_skill = json.loads(skill_view(normalized, task_id=task_id, preprocess=False))
+        raw_json = skill_view(normalized, task_id=task_id, preprocess=False)
+        loaded_skill = json.loads(raw_json)
     except Exception:
         return None
     if not loaded_skill.get("success"):
         return None
+    canonical_name = str(loaded_skill.get("name") or normalized)
+    if task_id and canonical_name not in _already_loaded_skill_names(task_id):
+        try:
+            from tools.skills_tool_dedup import dedup_skill_view
+            rendered_json = skill_view(normalized, task_id=task_id, preprocess=True)
+            rendered_payload = json.loads(rendered_json)
+            if isinstance(rendered_payload, dict) and rendered_payload.get("success"):
+                dedup_skill_view(task_id, canonical_name, None, rendered_payload, rendered_json)
+        except Exception:
+            pass
     skill_path = str(loaded_skill.get("path") or "")
     skill_dir = None
     # Prefer the absolute skill_dir from skill_view() (correct for external
@@ -327,7 +338,7 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
             skill_dir = _skills_dir() / Path(skill_path).parent
         except Exception:
             skill_dir = None
-    return loaded_skill, skill_dir, str(loaded_skill.get("name") or normalized)
+    return loaded_skill, skill_dir, canonical_name
 
 
 def ambiguous_skill_label(identifier: str, payload: dict) -> Optional[str]:
@@ -926,6 +937,25 @@ def split_stacked_skill_commands(rest: str, *, interactive: bool = False) -> tup
     return keys, remaining.strip()
 
 
+def _already_loaded_skill_names(task_id: str | None) -> set[str]:
+    """Canonical skill names already loaded in *task_id* via ``_skill_view_tracker``."""
+    if not task_id:
+        return set()
+    try:
+        from tools.skills_tool_dedup import _skill_view_tracker, _skill_view_tracker_lock
+        with _skill_view_tracker_lock:
+            keys = list((_skill_view_tracker.get(str(task_id)) or {}).keys())
+        out: set[str] = set()
+        for k in keys:
+            if isinstance(k, tuple) and len(k) == 2 and not k[1] and k[0]:
+                out.add(str(k[0]))
+            elif isinstance(k, str) and ":" in k and not k.split(":", 1)[1]:
+                out.add(k.split(":", 1)[0])
+        return out
+    except Exception:
+        return set()
+
+
 def build_stacked_skill_invocation_message(
     cmd_keys: list[str], user_instruction: str = "", task_id: str | None = None,
 ) -> Optional[tuple[str, list[str], list[str]]]:
@@ -934,13 +964,14 @@ def build_stacked_skill_invocation_message(
     Keys come from ``split_stacked_skill_commands``; native callers only ever pass filesystem keys."""
     commands = get_interactive_skill_commands()
     keys = [k for k in cmd_keys if k]
+    already = _already_loaded_skill_names(task_id)
     loaded_names, missing, _disabled, skill_blocks = _load_skill_blocks(
         keys,
         lambda cmd_key: _load_skill_payload(commands[cmd_key].get("skill_identifier") or commands[cmd_key]["skill_dir"], task_id=task_id) if cmd_key in commands else None,
         lambda name: f'[Loaded as part of the stacked skill invocation "{name}".]',  # bundle block marker
-        task_id, missing_label=lambda k: k.lstrip("/"),
+        task_id, missing_label=lambda k: k.lstrip("/"), already_loaded=already,
     )
-    if not skill_blocks:
+    if not loaded_names:
         return None
     typed = " ".join(keys)
     header = _scaffold_header(f'"{typed}" stacked skill bundle', loaded_names, missing=missing, user_instruction=user_instruction)

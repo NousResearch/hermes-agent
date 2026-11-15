@@ -116,6 +116,21 @@ def test_export_dump_drops_every_bridged_var_and_the_delegation_marker():
     assert 'declare -x MYVAR="keep"' in out
 
 
+@pytest.mark.platforms("posix")
+def test_export_dump_overwrites_mktemp_file_under_noclobber(tmp_path):
+    """``mktemp`` creates the snapshot temp file before ``_export_dump_excluding_session_vars``
+    redirects into it; ``>|`` is required so ``set -C`` (noclobber) does not reject the write."""
+    import shlex
+
+    snap_tmp = tmp_path / "snap.tmp"
+    snap_tmp.write_text("", encoding="utf-8")
+    subprocess.run(
+        ["bash", "-c", f'set -C; export NOCLOBBER_KEPT="yes"; {_export_dump_excluding_session_vars(shlex.quote(str(snap_tmp)))}'],
+        capture_output=True, text=True, check=True,
+    )
+    assert 'NOCLOBBER_KEPT="yes"' in snap_tmp.read_text(encoding="utf-8")
+
+
 @pytest.mark.platforms("posix")  # POSIX bash snapshot path
 def test_snapshot_does_not_turn_later_commands_into_delegated_children(tmp_path):
     """A snapshot re-dumped during a delegated child's command must not re-export

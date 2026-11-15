@@ -229,9 +229,30 @@ def _reply(payload):
     _real_stdout.buffer.flush()
 
 
+def _detach_stdin():
+    """Move the kernel control pipe off fd 0 and point fd 0 at os.devnull.
+
+    Without this, child processes spawned inside a cell (subprocess.run without
+    stdin=DEVNULL, shell scripts checking `[ ! -t 0 ]` and reading stdin like
+    hc-ping.sh, ssh, etc.) inherit fd 0 = the kernel control pipe and either
+    hang for the full 300s cell timeout waiting for EOF or steal bytes from the
+    next cell request.
+    """
+    ctrl_fd = os.dup(0)
+    os.set_inheritable(ctrl_fd, False)
+    devnull_fd = os.open(os.devnull, os.O_RDONLY)
+    try:
+        os.dup2(devnull_fd, 0)
+    finally:
+        os.close(devnull_fd)
+    sys.stdin = open(0, "r", encoding="utf-8", errors="replace", closefd=False)
+    return os.fdopen(ctrl_fd, "r", encoding="utf-8", errors="replace")
+
+
 def main():
+    ctrl_in = _detach_stdin()
     execution_count = 0
-    for line in sys.stdin:
+    for line in ctrl_in:
         line = line.strip()
         if not line:
             continue
@@ -431,7 +452,7 @@ _KERNELS: dict[tuple, SessionKernel] = _REGISTRY.kernels
 # stable owner id, owner-teardown disposal, idle reaping, max-live bound.
 # See #88637.
 DEFAULT_MAX_SESSION_KERNELS = 4
-DEFAULT_KERNEL_IDLE_TIMEOUT = 1800
+DEFAULT_KERNEL_IDLE_TIMEOUT = 600
 
 
 def _lifecycle_limits() -> tuple[int, int]:

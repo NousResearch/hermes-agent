@@ -245,7 +245,7 @@ class ApiErrorSummaryMixin:
                 return redact_sensitive_text(f"{prefix}{snippet[:300]}")
 
         # Fallback: truncate the raw string but give more room than 200 chars
-        return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
+        return redact_sensitive_text(ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}"))
 
     def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
         # Azure Foundry Entra ID bearer providers are callables — never invoke them in log

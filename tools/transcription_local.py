@@ -197,6 +197,257 @@ def _create_whisper_model(model_name: str, *, device: str, compute_type: str):
         ) from exc
 
 
+def _create_mlx_whisper_model(model_name: str):
+    """Persistent Apple Silicon GPU mlx-whisper worker adapter compatible with faster-whisper's .transcribe() API."""
+    import json
+    import threading
+    from types import SimpleNamespace
+
+    mlx_python = Path.home() / ".hermes" / "tools" / "asr-sv" / ".venv" / "bin" / "python"
+    if not mlx_python.is_file():
+        raise RuntimeError(f"mlx-whisper venv python not found at {mlx_python}")
+
+    repo_map = {
+        "mlx-large-v3": "mlx-community/whisper-large-v3-mlx",
+        "mlx-turbo": "mlx-community/whisper-large-v3-turbo",
+    }
+    repo = repo_map.get(model_name, model_name)
+
+    worker_code = r'''
+import json, os, sys
+real_stdout = sys.stdout
+sys.stdout = sys.stderr
+import numpy as np
+import mlx_whisper
+from mlx_whisper.transcribe import ModelHolder
+from mlx_whisper.audio import load_audio, log_mel_spectrogram, pad_or_trim, N_FRAMES, N_SAMPLES, SAMPLE_RATE
+import mlx.core as mx
+
+DROP_HALLUCINATIONS = {
+    "Thank you.", "Thank you for watching!", "Thank you for watching.",
+    "Tack för att du tittade!", "Textning.nu", "Undertextning.nu",
+    "Teksting av Nicolai Winther", "! Teksting av Nicolai Winther",
+    "Välkommen tillbaka!", "Tack.",
+}
+DROP_SUBSTRINGS = (
+    "teksting av nicolai winther",
+    "textning.nu",
+    "undertextning.nu",
+    "tack för att du tittade",
+    "thank you for watching",
+)
+
+def strip_long_silence(audio_arr, sr: int = SAMPLE_RATE):
+    audio = np.asarray(audio_arr, dtype=np.float32)
+    if audio.size < sr:
+        return audio, False
+    win = sr // 20  # 50ms frames
+    n_frames = audio.size // win
+    if n_frames < 4:
+        return audio, False
+    frames = audio[:n_frames * win].reshape(n_frames, win)
+    rms = np.sqrt(np.mean(frames * frames, axis=1) + 1e-12)
+    p95 = float(np.percentile(rms, 95))
+    noise_floor = float(np.percentile(rms, 20))
+    if p95 < 5e-4:
+        return audio[:sr], True
+    thresh = max(noise_floor * 2.5, min(0.008, p95 * 0.12))
+    active = rms >= thresh
+    if not np.any(active):
+        return audio[:sr], True
+    pad = 7  # 350ms context padding on each side of active speech
+    kernel = np.ones(2 * pad + 1, dtype=np.int32)
+    keep = np.convolve(active.astype(np.int32), kernel, mode="same") > 0
+    return frames[keep].reshape(-1), False
+
+def detect_sv_or_en(model, speech_audio):
+    mel = log_mel_spectrogram(speech_audio, n_mels=model.dims.n_mels, padding=N_SAMPLES)
+    seg = pad_or_trim(mel, N_FRAMES, axis=-2).astype(mx.float16)
+    _, probs = model.detect_language(seg)
+    sv_family = probs.get("sv", 0.0) + 0.5 * (
+        probs.get("no", 0.0) + probs.get("nn", 0.0) + probs.get("da", 0.0)
+    )
+    en_prob = probs.get("en", 0.0)
+    return "en" if en_prob > sv_family else "sv"
+
+def clean_hallucinations(tx):
+    s = str(tx or "").strip()
+    if not s or s in DROP_HALLUCINATIONS:
+        return ""
+    low = s.lower()
+    if low.startswith("! teksting av nicolai winther"):
+        s = s[len("! Teksting av Nicolai Winther"):].strip(" ,.-!")
+        low = s.lower()
+    elif low.startswith("teksting av nicolai winther"):
+        s = s[len("Teksting av Nicolai Winther"):].strip(" ,.-!")
+        low = s.lower()
+    if any(sub == low for sub in DROP_SUBSTRINGS):
+        return ""
+    return s
+
+def emit(payload):
+    real_stdout.write("__MLX_JSON__" + json.dumps(payload) + "\n")
+    real_stdout.flush()
+
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    req_id = None
+    try:
+        req = json.loads(raw)
+        req_id = req.get("id")
+        cmd = req.get("cmd")
+        repo = req.get("repo") or "mlx-community/whisper-large-v3-mlx"
+        model = ModelHolder.get_model(repo, mx.float16)
+        if cmd == "warmup":
+            emit({"id": req_id, "ok": True})
+            continue
+        raw_audio = load_audio(req["audio"])
+        speech_audio, is_silent = strip_long_silence(raw_audio)
+        if is_silent:
+            emit({"id": req_id, "ok": True, "language": "sv", "duration": 0.0, "segments": []})
+            continue
+        lang = req.get("language")
+        if not lang or lang not in ("sv", "en"):
+            lang = detect_sv_or_en(model, speech_audio)
+        kwargs = {
+            "path_or_hf_repo": repo,
+            "language": lang,
+            "verbose": None,
+            "condition_on_previous_text": False,
+            "word_timestamps": True,
+            "hallucination_silence_threshold": 2.0,
+            "no_speech_threshold": float(req.get("no_speech_threshold", 0.6)),
+            "logprob_threshold": float(req.get("logprob_threshold", -1.0)),
+        }
+        if req.get("initial_prompt"):
+            kwargs["initial_prompt"] = req["initial_prompt"].rstrip(".")
+        res = mlx_whisper.transcribe(speech_audio, **kwargs)
+        segs = []
+        last_norm = None
+        for s in (res.get("segments") or []):
+            tx = clean_hallucinations(s.get("text"))
+            if not tx:
+                continue
+            norm = tx.lower()
+            if norm == last_norm:
+                continue
+            last_norm = norm
+            segs.append({
+                "text": tx,
+                "no_speech_prob": float(s.get("no_speech_prob", 0.0)),
+                "avg_logprob": float(s.get("avg_logprob", -0.2)),
+                "end": float(s.get("end", 0.0)),
+            })
+        if not segs and (res.get("text") or "").strip():
+            tx = clean_hallucinations(res["text"])
+            if tx:
+                segs.append({"text": tx, "no_speech_prob": 0.0, "avg_logprob": -0.2, "end": 0.0})
+        duration = segs[-1]["end"] if segs else 0.0
+        emit({
+            "id": req_id,
+            "ok": True,
+            "language": res.get("language") or lang or "sv",
+            "duration": duration,
+            "segments": segs,
+        })
+    except Exception as exc:
+        emit({"id": req_id, "ok": False, "error": str(exc)})
+'''
+
+    class _MlxWhisperModel:
+        def __init__(self, target_repo: str):
+            self.repo = target_repo
+            self._lock = threading.Lock()
+            self._proc: Optional[subprocess.Popen] = None
+            self._seq = 0
+            self._ensure_worker()
+
+        def _rpc(self, proc: subprocess.Popen, payload: dict) -> dict:
+            self._seq += 1
+            req_id = self._seq
+            payload["id"] = req_id
+            assert proc.stdin is not None and proc.stdout is not None
+            proc.stdin.write(json.dumps(payload) + "\n")
+            proc.stdin.flush()
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    raise EOFError("mlx-whisper worker closed stdout")
+                line = line.strip()
+                if not line.startswith("__MLX_JSON__"):
+                    continue
+                resp = json.loads(line[len("__MLX_JSON__"):])
+                if resp.get("id") == req_id:
+                    return resp
+
+        def _ensure_worker(self) -> subprocess.Popen:
+            if self._proc is not None and self._proc.poll() is None:
+                return self._proc
+            env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
+            env["HF_HUB_OFFLINE"] = "1"
+            hermes_bin = str(Path.home() / ".hermes" / "bin")
+            env["PATH"] = f"{hermes_bin}:{env.get('PATH', '/usr/bin:/bin')}"
+            self._proc = subprocess.Popen(
+                [str(mlx_python), "-E", "-u", "-c", worker_code],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                env=env,
+            )
+            resp = self._rpc(self._proc, {"cmd": "warmup", "repo": self.repo})
+            if not resp.get("ok"):
+                raise RuntimeError(f"mlx-whisper warmup failed: {resp.get('error')}")
+            return self._proc
+
+        def transcribe(self, file_path: str, **kwargs):
+            with self._lock:
+                proc = self._ensure_worker()
+                req = {
+                    "cmd": "transcribe",
+                    "audio": str(file_path),
+                    "repo": self.repo,
+                    "language": kwargs.get("language"),
+                    "initial_prompt": kwargs.get("initial_prompt"),
+                    "no_speech_threshold": kwargs.get("no_speech_threshold", 0.6),
+                    "logprob_threshold": kwargs.get("log_prob_threshold", -1.0),
+                }
+                try:
+                    resp = self._rpc(proc, req)
+                except EOFError:
+                    self._proc = None
+                    proc = self._ensure_worker()
+                    resp = self._rpc(proc, req)
+                if not resp.get("ok"):
+                    raise RuntimeError(f"mlx-whisper transcription failed: {resp.get('error')}")
+                segments = [
+                    SimpleNamespace(
+                        text=s["text"],
+                        no_speech_prob=s.get("no_speech_prob", 0.0),
+                        avg_logprob=s.get("avg_logprob", -0.2),
+                    )
+                    for s in (resp.get("segments") or [])
+                ]
+                info = SimpleNamespace(
+                    language=resp.get("language") or "sv",
+                    duration=float(resp.get("duration") or 0.0),
+                )
+                return segments, info
+
+        def __del__(self):
+            proc = getattr(self, "_proc", None)
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+    return _MlxWhisperModel(repo)
+
+
 def _load_local_whisper_model(model_name: str, device: str = "auto", compute_type: str = "auto"):
     """Load faster-whisper with graceful CUDA → CPU fallback. ``device="auto"`` picks CUDA
     whenever the ctranslate2 wheel ships CUDA libs, even on hosts without the NVIDIA runtime (WSL2,
@@ -206,6 +457,9 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
     ``device`` / ``compute_type`` default to ``"auto"`` so the historical behaviour is unchanged; pass
     explicit values from ``stt.local.device`` / ``stt.local.compute_type`` to pin a configuration (#9088).
     """
+    if isinstance(model_name, str) and (model_name.startswith("mlx-community/") or model_name.startswith("mlx-")):
+        logger.info("Loading Apple Silicon GPU mlx-whisper model '%s'", model_name)
+        return _create_mlx_whisper_model(model_name)
     force_cpu = _should_force_faster_whisper_cpu()
     if force_cpu:
         # Importing ctranslate2 can itself abort on Apple Silicon/Rosetta when

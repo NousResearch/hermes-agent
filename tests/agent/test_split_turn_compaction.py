@@ -538,3 +538,146 @@ def test_assistant_anchor_still_binds(
     )
     # The anchor pulls the cut back to the older turn's closer, aligned before any tool group.
     assert cut == compressor._align_boundary_backward(messages, older_closer_idx)
+
+
+@pytest.mark.parametrize("groups", [6, 10], ids=["post-user-tail-inside-soft-ceiling", "post-user-tail-over-soft-ceiling"])
+def test_stacked_skill_bundle_request_splits_and_restates_typed_invocation(groups: int) -> None:
+    """A stacked /skill bundle whose inlined skill bodies exceed soft_ceiling must still split.
+
+    Compaction replaces inlined skill bodies with [SKILL_PRUNED] markers and restates only the
+    typed /skill invocation, so the split gate must price the authored request rather than the
+    expanded skill scaffold (otherwise stacked-skill turns pin the entire run in the tail and
+    wedge in empty_post_handoff_window / structural_backoff). Covers both when post-user tool
+    groups exceed soft_ceiling and when they sit between raw tail_token_budget and soft_ceiling.
+    """
+    compressor = _make_compressor()
+    soft_ceiling = compressor._tail_soft_ceiling(compressor.tail_token_budget)
+    scaffold_body = "S" * ((soft_ceiling + 2_000) * 4)
+    stacked_request = (
+        '[IMPORTANT: The user has invoked the "/deep-research /research-and-plan" stacked skill '
+        "bundle, loading 2 skills together. Treat every skill below as active guidance for this turn.]\n\n"
+        "Skills loaded: deep-research, research-and-plan\n"
+        "User instruction: Investigate structural_backoff:263.\n\n"
+        '[Loaded as part of the stacked skill invocation "deep-research".]\n\n'
+        f"{scaffold_body}"
+    )
+    assert _authored_request_text(stacked_request) == "/deep-research /research-and-plan Investigate structural_backoff:263."
+
+    messages = _oversized_active_turn(request=stacked_request, groups=groups)
+    with patch.object(compressor, "_generate_summary", return_value=None):
+        compressed = compressor.compress(messages, current_tokens=90_000)
+
+    assert len(compressed) < len(messages)
+    assert compressor.compression_count == 1
+    summaries = [m for m in compressed if compressor._is_context_summary_message(m)]
+    assert len(summaries) == 1
+    summary_text = str(summaries[0].get("content") or "")
+    assert "/deep-research /research-and-plan Investigate structural_backoff:263." in summary_text
+    assert scaffold_body[:200] not in summary_text
+    _assert_tool_pairs_are_complete(compressed)
+
+
+def test_post_prune_soft_ceiling_slack_recuts_to_token_budget_when_middle_is_tiny():
+    """When phase-1 pruning shrinks non-tail tool outputs to stubs so that almost the entire
+    transcript fits inside the 1.5x soft_ceiling (> token_budget), leaving <=4 messages in the
+    middle window, re-cut with the raw token_budget so compaction summarizes a real middle window.
+    """
+    compressor = ContextCompressor(
+        model="google/gemini-4-argon",
+        threshold_percent=0.18,
+        protect_first_n=3,
+        protect_last_n=20,
+        quiet_mode=True,
+    )
+
+    def _sized_group(idx: int, chars: int, tool_name: str, args: str) -> list[dict]:
+        cid = f"call_{idx}"
+        unit = f"R{idx:02d}-"
+        return [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": cid, "type": "function", "function": {"name": tool_name, "arguments": args}}],
+            },
+            {"role": "tool", "tool_call_id": cid, "name": tool_name, "content": unit * (chars // len(unit))},
+        ]
+
+    messages: list[dict] = [{"role": "user", "content": "Triagera fem cron-larm."}]
+    messages.extend(_sized_group(0, 24_000, "skill_view", '{"name": "cron-relay-triage"}'))
+    messages.extend(_sized_group(1, 60_000, "skill_view", '{"name": "outbound-comms"}'))
+    for idx in range(2, 16):
+        messages.extend(_sized_group(idx, 10_400, "read_file", f'{{"path": "/tmp/f{idx}.txt"}}'))
+
+    _working, _pruned, cs, ce = compressor._plan_compaction_window(messages)
+    assert ce - cs > 4, f"expected re-cut with token_budget to yield >4 middle messages, got {ce - cs}"
+
+
+def test_mid_tool_group_cut_beyond_first_group_aligns_forward_when_backward_exceeds_soft_ceiling():
+    """When the user turn is in the protected head (last_user_idx == -1) and a multi-call tool
+    batch has an early unpruned skill_view that breaks soft_ceiling while its sibling calls sit
+    past head_end + 4, backward alignment to the batch assistant would pull the 21k-token batch
+    into the tail (>50k tokens) and collapse the middle to <=4 messages; forward alignment excludes
+    the batch so the tail stays <= soft_ceiling.
+    """
+    compressor = ContextCompressor(
+        model="google/gemini-4-argon",
+        threshold_percent=0.18,
+        protect_first_n=3,
+        protect_last_n=20,
+        quiet_mode=True,
+    )
+    soft_ceiling = compressor._tail_soft_ceiling(compressor.tail_token_budget)
+
+    def _sized_group(idx: int, chars: int, tool_name: str, args: str) -> list[dict]:
+        cid = f"call_{idx}"
+        unit = f"R{idx:02d}-"
+        return [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": cid, "type": "function", "function": {"name": tool_name, "arguments": args}}],
+            },
+            {"role": "tool", "tool_call_id": cid, "name": tool_name, "content": unit * (chars // len(unit))},
+        ]
+
+    messages: list[dict] = [{"role": "user", "content": "Triagera fem cron-larm."}]
+    messages.extend(_sized_group(0, 24_000, "skill_view", '{"name": "cron-relay-triage"}'))
+    messages.extend(_sized_group(1, 12_000, "skill_view", '{"name": "google-oauth-ops"}'))
+    messages.extend(_sized_group(2, 12_000, "skill_view", '{"name": "saffar-hub-ops"}'))
+    # Fourth batch at index 7 (aligned_back - head_end == 7 - 3 == 4 <= 4, while cut_idx >= 9 > 3 + 4):
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_3a",
+                    "type": "function",
+                    "function": {"name": "skill_view", "arguments": '{"name": "cron-output-quality-guard"}'},
+                },
+                {
+                    "id": "call_3b",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": '{"command": "echo b"}'},
+                },
+                {
+                    "id": "call_3c",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": '{"command": "echo c"}'},
+                },
+            ],
+        }
+    )
+    messages.append({"role": "tool", "tool_call_id": "call_3a", "name": "skill_view", "content": "K" * 84_000})
+    messages.append({"role": "tool", "tool_call_id": "call_3b", "name": "terminal", "content": "ok-b"})
+    messages.append({"role": "tool", "tool_call_id": "call_3c", "name": "terminal", "content": "ok-c"})
+    for idx in range(4, 15):
+        messages.extend(_sized_group(idx, 9_600, "read_file", f'{{"path": "/tmp/f{idx}.txt"}}'))
+
+    working, _pruned, cs, ce = compressor._plan_compaction_window(messages)
+    tail_tokens = sum(_estimate_msg_budget_tokens(m) for m in working[ce:])
+    assert ce >= 11, f"expected forward alignment past fourth tool batch (idx 11), got compress_end={ce}"
+    assert tail_tokens <= soft_ceiling, f"expected tail <= {soft_ceiling}, got {tail_tokens}"
+    assert ce - cs >= 8
+
+

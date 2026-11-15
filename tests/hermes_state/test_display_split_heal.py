@@ -101,3 +101,84 @@ class TestSplitDisplayGenerationProjectsOnce:
             ("chat", db._encode_content("same reply")))
 
         assert len(orders) == 1
+
+    def test_rewritten_user_prompt_with_same_uid_projects_once(self, tmp_path):
+        """A user prompt whose skill expansion header is stripped (or in-flight restate banner
+        prepended) across compaction while keeping the same message_uid must fold into one
+        display_order group and project once."""
+        from pathlib import Path
+        db = SessionDB(Path(tmp_path) / "state.db")
+        sid = "chat_user_uid_rewrite"
+        db.create_session(sid, source="desktop")
+        uid_go = "b40a17b67a85480893b10f3c9ac1da5f"
+        uid_rca = "5f33d6f5130e4d919a5879510c36dec3"
+        db.append_messages_batch(sid, [
+            {"role": "user", "content": "go", "timestamp": 100.0, "message_uid": uid_go},
+            {"role": "assistant", "content": "working on it", "timestamp": 101.0},
+        ])
+        # Compaction 1: 'go' is restated with [STILL IN PROGRESS...] keeping uid_go
+        db.archive_and_compact(sid, [
+            {"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY]\nsummary 1", "_compressed_summary": True, "timestamp": 102.0},
+            {"role": "user", "content": "[STILL IN PROGRESS — restated]\n\ngo", "timestamp": 100.0, "message_uid": uid_go},
+            {"role": "assistant", "content": "done step 1", "timestamp": 103.0},
+        ], tail_count=0)
+        # User invokes /rca with expanded skill body, then compaction strips skill header to '/rca'
+        db.append_messages_batch(sid, [
+            {"role": "user", "content": "[IMPORTANT: The user has invoked the \"rca\" skill]\n\n/rca", "timestamp": 200.0, "message_uid": uid_rca},
+            {"role": "assistant", "content": "investigating", "timestamp": 201.0},
+        ])
+        db.archive_and_compact(sid, [
+            {"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY]\nsummary 2", "_compressed_summary": True, "timestamp": 202.0},
+            {"role": "user", "content": "/rca", "timestamp": 200.0, "message_uid": uid_rca},
+            {"role": "assistant", "content": "final rca report", "timestamp": 203.0},
+        ], tail_count=0)
+
+        displayed = db.get_messages(sid, include_compacted=True)
+        conv = db.get_messages_as_conversation(sid, include_compacted=True)
+        for proj in (displayed, conv):
+            uids = [m.get("message_uid") for m in proj if m.get("message_uid") in {uid_go, uid_rca}]
+            assert uids.count(uid_go) == 1
+            assert uids.count(uid_rca) == 1
+        rca_msg = next(m for m in displayed if m.get("message_uid") == uid_rca)
+        assert rca_msg["content"] == "/rca"
+        assert db.display_message_count(sid) == len(displayed)
+
+    def test_rewound_prefix_carried_across_compacted_turns_keeps_original_display_order(self, tmp_path):
+        """When a prior turn's final assistant reply is carried as a non-contiguous prefix
+        (rewound to active=0, compacted=0) across a mid-turn compaction that archives later
+        user/assistant turns as compacted=1, it must retain its original pre-compaction
+        display_order rather than jumping past the compacted turns that followed it."""
+        from pathlib import Path
+        db = SessionDB(Path(tmp_path) / "state.db")
+        sid = "chat_prefix_order"
+        db.create_session(sid, source="desktop")
+        uid_turn3_reply = "7052ee0718a24ed7bff0c5cd629ed7b6"
+        uid_rca = "5f33d6f5130e4d919a5879510c36dec3"
+        db.append_messages_batch(sid, [
+            {"role": "user", "content": "earlier task", "timestamp": 100.0},
+            {"role": "assistant", "content": "Turn 3 final reply", "timestamp": 101.0, "message_uid": uid_turn3_reply},
+            {"role": "user", "content": "[IMPORTANT: skill body]\n\n/rca", "timestamp": 200.0, "message_uid": uid_rca},
+            {"role": "assistant", "content": "Turn 5 round 1 thinking", "timestamp": 201.0},
+            {"role": "assistant", "content": "Turn 5 round 2 thinking", "timestamp": 202.0},
+        ])
+        live = db.get_messages_as_conversation(sid)
+        carried_prefix = [m for m in live if m.get("message_uid") == uid_turn3_reply]
+        db.archive_and_compact(
+            sid,
+            [
+                {"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] mid-turn summary", "_compressed_summary": True, "timestamp": 203.0},
+                {"role": "assistant", "content": "Turn 3 final reply", "timestamp": 101.0, "message_uid": uid_turn3_reply},
+                {"role": "user", "content": "/rca", "timestamp": 200.0, "message_uid": uid_rca},
+                {"role": "assistant", "content": "Turn 5 final answer", "timestamp": 204.0},
+            ],
+            carried_messages=carried_prefix,
+        )
+
+        displayed = db.get_messages(sid, include_compacted=True)
+        conv = db.get_messages_as_conversation(sid, include_compacted=True)
+        for proj in (displayed, conv):
+            contents = [m["content"] for m in proj]
+            assert contents.index("Turn 3 final reply") < contents.index("/rca")
+            assert contents.index("/rca") < contents.index("Turn 5 round 1 thinking")
+            assert contents.count("Turn 3 final reply") == 1
+            assert contents.count("/rca") == 1

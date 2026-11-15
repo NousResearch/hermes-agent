@@ -1634,6 +1634,27 @@ class TestOpenRouterUpstreamRateLimit:
         assert result.should_fallback is True
         assert result.error_context.get("upstream_provider") == "DeepSeek"
 
+    def test_openrouter_upstream_429_unwrapped_openai_sdk_body_classified_as_upstream_rate_limit(self):
+        """OpenAI SDK unwraps data['error'] into exc.body; classifier must still extract upstream_provider."""
+        e = MockAPIError(
+            "Error code: 429 - {'error': {'message': 'Provider returned error'}}",
+            status_code=429,
+            body={
+                "message": "Provider returned error",
+                "code": 429,
+                "metadata": {
+                    "provider_name": "Google AI Studio",
+                    "limit_source": "upstream_provider_shared_pool",
+                    "raw": "google/gemini-4-argon is temporarily rate-limited upstream.",
+                },
+            },
+        )
+        result = classify_api_error(e, provider="openrouter", model="google/gemini-4-argon")
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is True
+        assert result.error_context.get("upstream_provider") == "Google AI Studio"
+
 
     def test_account_level_429_still_rotates_credential(self):
         """A real account-level 429 (no upstream wrapper) → rate_limit, rotates."""

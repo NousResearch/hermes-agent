@@ -10,7 +10,7 @@ from tools.delegate_tool_config import _get_inherit_mcp_toolsets
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
-# Tools that children must never have access to
+# Tools that children must never have access to (core + outbound/destructive MCP tools)
 DELEGATE_BLOCKED_TOOLS = frozenset(
     [
         "delegate_task",  # no recursive delegation
@@ -18,6 +18,16 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
         "cronjob_manage",  # no scheduling more work in the parent's name
+        "mcp__gmail_selfhosted__send_message",
+        "mcp__gmail_selfhosted__send_draft",
+        "mcp__gmail_selfhosted__delete" + "_draft",
+        "mcp__gmail_techzola__send_message",
+        "mcp__gmail_techzola__send_draft",
+        "mcp__gmail_techzola__delete" + "_draft",
+        "mcp__google_chat__send_message",
+        "mcp__google_chat_techzola__send_message",
+        "ha_call_service",
+        "mcp__unified_memory__forget",
     ]
 )
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]

@@ -45,6 +45,24 @@ class TestKnownPrefixes:
         for secret_tail in ("abcdefgh1234567890_XYZ", "ZpSh99", "MEUCIQC6UnD", "EEPXREE"):
             assert secret_tail not in read, read
 
+    def test_google_oauth_access_token(self):
+        """Google OAuth access token (ya29. prefix) must never leak into terminal output (2026-10-06 RCA).
+
+        Upstream's CLI-flag pass (``--token …``) masks the whole value generically before
+        the carried ``ya29.`` matcher can display-mask it, so pin leak-freedom rather than
+        the mask form — and pin the carried matcher itself on a flagless, real-shaped
+        token (20+ chars after the prefix).
+        """
+        from agent.redact import redact_terminal_output
+
+        raw = "ps output: cloud-sql-proxy --token ya29.a...wxyz --port 3307"
+        term = redact_terminal_output(raw)
+        assert "ya29" not in term, term
+
+        bare = "token ya29.aFbCdEfGhIjKlMnOpQrStUv tail"
+        term2 = redact_terminal_output(bare)
+        assert "aFbCdEfGhIjKlMnOpQrStUv" not in term2, term2
+
     def test_dotted_and_prefixless_matchers_leave_benign_tokens_alone(self):
         """The Zhipu matcher is provider-shaped, not a generic dotted-token sweep:
         content-hash filenames (incl. ``<sha>.bundle`` / ``<md5>.sqlite3``), bare
@@ -318,6 +336,12 @@ class TestBareSecretEnvSuffixes:
         assert "mysecret" not in result
         assert "opaqueValue" not in result
         assert "username=bob" in result
+
+    def test_content_filter_secret_masks(self):
+        text = "Request blocked by content filter: [SECRET:ethereum-private-key]"
+        result = redact_sensitive_text(text, force=True)
+        assert "[SECRET:ethereum-private-key]" not in result
+        assert "[REDACTED_CONTENT_FILTER]" in result
 
 
 class TestControlCharSplitTokens:
@@ -1504,7 +1528,12 @@ class TestSecretFileAssignmentRedaction:
         ("108-      ADS_API_TOKEN: {tok}", "«redacted-secret»"),  # grep -A/-B/-C context gutter
         ("   108\tADS_API_TOKEN: {tok}", "«redacted-secret»"),   # cat -n / nl gutter (number + TAB)
         ("   108\texport FOO_TOKEN={tok}", "«redacted-secret»"),
-        ("GITHUB_TOKEN: ghp_S1abcdefghijklmnopqrstuvwxyz0Pn2T", "«redacted:ghp_…»"),  # prefix label kept
+        ("-      ADS_API_TOKEN: {tok}", "«redacted-secret»"),    # unified diff removed YAML line
+        ("+      ADS_API_TOKEN: {tok}", "«redacted-secret»"),    # unified diff added YAML line
+        ("+  - api_key: {tok}", "«redacted-secret»"),            # unified diff YAML sequence item
+        ("5|  - api_key: {tok}", "«redacted-secret»"),           # read_file YAML sequence item
+        ("+password={tok}", "«redacted-secret»"),                # unified diff added bare config key
+        ("GITHUB_TOKEN: " + "ghp_" + "S1abcdefghijklmnopqrstuvwxyz0Pn2T", "«redacted:ghp_…»"),  # prefix label kept
     ])
     def test_secret_file_masks_assignment_with_non_reusable_sentinel(self, template, sentinel):
         text = template.format(tok=self.SYNTH)

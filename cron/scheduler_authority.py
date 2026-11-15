@@ -144,12 +144,27 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 raise RuntimeError('cron synchronous execution must run off the owner event loop')
             return asyncio.run_coroutine_threadsafe(
                 observe(lambda op, data: operation(authority, op, data)), loop).result()
-        return asyncio.run(remote())
+        return _run_remote_coro(remote)
     except Exception as exc:
         if attempted:
             raise CronExecutionUnknown(f'Cron execution unverified; reconcile {journal}: {exc}') from exc
         error = f'{type(exc).__name__}: {exc}'
         return False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error
+
+
+def _run_remote_coro(coro_fn):
+    """Run an async client coroutine from synchronous code even when the calling thread
+    already hosts a running event loop (e.g. inline manual-run fallback inside a Desktop/serve
+    tool handler where ``owner_for_home()`` is None)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro_fn())
+    import concurrent.futures
+    import contextvars
+    ctx = contextvars.copy_context()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(ctx.run, lambda: asyncio.run(coro_fn())).result()
 
 def reconcile_pending(*, allow_connect=True):
     """Observe prepared fires; never submit missing or interrupted work.
@@ -199,7 +214,7 @@ def reconcile_pending(*, allow_connect=True):
                 if owner is not None:
                     state = asyncio.run_coroutine_threadsafe(observe(), owner[1]).result(timeout=20)
                 else:
-                    state = asyncio.run(observe())
+                    state = _run_remote_coro(observe)
             if state['status'] == 'missing':
                 # The owner holds no admission for this fire: a definite non-admission, booked as
                 # the same failed run the in-submit refusal books. Only ``unknown`` pauses.

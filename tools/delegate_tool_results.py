@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import json
+import os
+from pathlib import Path
 import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -170,6 +172,27 @@ _SUMMARY_HEADROOM_FRACTION = 0.5
 # already nearly full — below this we'd be truncating to noise.
 _MIN_SUMMARY_CHARS = 2000
 
+def _prune_stale_summary_spills(cache_dir: Path, max_age_days: int = 2, max_unlinks: int = 50) -> None:
+    """Best-effort cleanup of legacy subagent summaries older than max_age_days. Bounded to max_unlinks
+    per call so I/O stays negligible."""
+    try:
+        import time as _t
+        cutoff = _t.time() - (max_age_days * 86400)
+        unlinked = 0
+        for entry in os.scandir(cache_dir):
+            if unlinked >= max_unlinks:
+                break
+            if entry.is_file() and entry.name.startswith("subagent-summary-") and entry.name.endswith(".txt"):
+                try:
+                    if entry.stat().st_mtime < cutoff:
+                        os.unlink(entry.path)
+                        unlinked += 1
+                except (OSError, FileNotFoundError):
+                    pass
+    except Exception:
+        pass
+
+
 def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
     """Write the full summary under ``cache/delegation`` (mounted read-only into remote backends via
     ``credential_files._CACHE_DIRS``, so the parent's terminal/``read_file`` can page it on any backend). Absolute
@@ -186,6 +209,7 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
         # ``summary`` is already the forced, structure-preserving projection (_trim_summary_with_footer); a
         # second whole-text pass here would eat JSON delimiters and corrupt a valid structured answer.
         write_text_exclusive(path, getattr(summary, "forced", summary), private=False)
+        _prune_stale_summary_spills(cache_dir)
         return str(path)
     except Exception as exc:
         logger.debug("Failed to spill subagent summary to file: %s", exc)

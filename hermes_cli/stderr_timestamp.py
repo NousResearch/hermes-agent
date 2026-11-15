@@ -24,6 +24,7 @@ _TIMESTAMP_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?:\s
 # A grandchild that inherited stdout can hold the pipe open after the child exits; the
 # wrapper must still exit with the child's status so launchd KeepAlive sees it.
 _STDOUT_DRAIN_TIMEOUT_S = 5.0
+_MACOS_MSL_FORK_NOISE = "MallocStackLogging: can't turn off malloc stack logging because it was not enabled."
 
 
 def timestamp() -> str:
@@ -39,6 +40,8 @@ def stamp_line(line: str) -> str:
 
 
 def _write_timestamped_line(log_file: TextIO, line: str) -> None:
+    if _MACOS_MSL_FORK_NOISE in line:
+        return
     log_file.write(stamp_line(line))
     log_file.flush()
 

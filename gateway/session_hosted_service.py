@@ -141,7 +141,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def bindings(self):
         with self.authority.db._read_ctx() as conn:
             owned = {r[0][len(_OWNER):] for r in conn.execute(
-                'SELECT key FROM state_meta WHERE key LIKE ?', (_OWNER + '%',))}
+                'SELECT key FROM state_meta WHERE key GLOB ?', (_OWNER + '*',))}
         return tuple(b for b in super().bindings() if b.room_id in owned)
 
     def _turn_lock(self, profile):

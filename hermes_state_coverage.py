@@ -481,3 +481,55 @@ class SessionCoverageMixin:
             if need <= width or width >= len(covered_active):
                 return window
             width = need
+
+    @staticmethod
+    def _filter_verbatim_tail_originals(
+        conn, tail_orig_ids: list[int], tail_messages: list[dict[str, Any]]
+    ) -> list[int]:
+        """Exclude demoted tail ``role='tool'`` rows from ``rewind_ids`` so their pre-demotion
+        originals archive as ``active=0, compacted=1`` (searchable via ``session_search``) rather
+        than ``active=0, compacted=0`` (ATLAS-129 / DQ #515). Non-tool rows and verbatim carried
+        tool rows stay in ``rewind_ids``."""
+        if not tail_orig_ids:
+            return []
+        tool_dicts = [
+            m for m in (tail_messages or [])
+            if isinstance(m, dict) and m.get("role") == "tool"
+        ]
+        uid_present = {
+            str(m.get("message_uid") or "")
+            for m in tool_dicts
+            if m.get("message_uid")
+        }
+        uid_content = {
+            (str(m.get("message_uid") or ""), str(m.get("content") or ""))
+            for m in tool_dicts
+            if m.get("message_uid")
+        }
+        tc_content = {
+            (str(m.get("tool_call_uid") or m.get("tool_call_id") or ""), str(m.get("content") or ""))
+            for m in tool_dicts
+        }
+        placeholders = ",".join("?" for _ in tail_orig_ids)
+        rows = conn.execute(
+            f"SELECT id, role, content, message_uid, tool_call_uid, tool_call_id "
+            f"FROM messages WHERE id IN ({placeholders})",
+            list(tail_orig_ids),
+        ).fetchall()
+        by_id = {int(r["id"]): r for r in rows}
+        kept: list[int] = []
+        for rid in tail_orig_ids:
+            row = by_id.get(int(rid))
+            if row is None or row["role"] != "tool":
+                kept.append(int(rid))
+                continue
+            r_muid = str(row["message_uid"] or "")
+            r_tc = str(row["tool_call_uid"] or row["tool_call_id"] or "")
+            r_content = str(row["content"] or "")
+            if r_muid and r_muid in uid_present:
+                matched = (r_muid, r_content) in uid_content
+            else:
+                matched = (r_tc, r_content) in tc_content
+            if matched:
+                kept.append(int(rid))
+        return kept

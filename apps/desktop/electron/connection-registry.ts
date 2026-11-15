@@ -60,6 +60,10 @@ export interface RegistryConnection {
   authMode?: 'oauth' | 'token'
   /** remote: encrypted token envelope (opaque here; main.ts encrypts/decrypts). */
   token?: unknown
+  /** ssh: per-profile encrypted token envelopes keyed by normalized profile name
+   * ('default', 'failover-e2e', …) so multiple profiles on one SSH connection
+   * never overwrite each other's adopted session token (DQ #369). */
+  profileTokens?: Record<string, unknown>
   /** remote/cloud: extra gateway headers (Cloudflare Access etc.). Secret
    * envelopes, same shape as `token`; names pre-filtered through
    * normalizeRemoteHeaders. Optional and additive — v2 registries written
@@ -215,6 +219,68 @@ export function parseBackendScopeKey(key: string): { connectionId: null | string
 /** All pool keys owned by a connection share this prefix (used to stop them on remove). */
 export function backendScopePrefix(connectionId: string): string {
   return `conn:${String(connectionId).trim()}::`
+}
+
+/** Canonical profile key for per-profile SSH token envelopes on a registry entry. */
+export function sshRegistryTokenProfileKey(profile: null | string | undefined): string {
+  const parsed = parseBackendScopeKey(String(profile ?? '').trim()).profile
+
+  return String(parsed || '').trim() || 'default'
+}
+
+/**
+ * Resolve the stored SSH session-token envelope for a given profile on a
+ * registry SSH connection. Falls back to legacy `entry.token` only for the
+ * `default` profile so secondary profiles never send `default`'s token to a
+ * different isolated serve process (DQ #369).
+ */
+export function resolveSshRegistryTokenEnvelope(
+  entry: null | Pick<RegistryConnection, 'profileTokens' | 'token'> | undefined,
+  profile: null | string | undefined
+): unknown {
+  if (!entry) {
+    return undefined
+  }
+
+  const key = sshRegistryTokenProfileKey(profile)
+
+  const map =
+    entry.profileTokens && typeof entry.profileTokens === 'object' && !Array.isArray(entry.profileTokens)
+      ? entry.profileTokens
+      : null
+
+  if (map && Object.prototype.hasOwnProperty.call(map, key) && map[key] !== undefined) {
+    return map[key]
+  }
+
+  return key === 'default' ? entry.token : undefined
+}
+
+/**
+ * Return a copy of `entry` with the adopted SSH session-token envelope stored
+ * under `profileTokens[profileKey]`. Mirrors onto legacy `entry.token` only
+ * when `profileKey === 'default'` so secondary profiles cannot overwrite the
+ * primary profile's reuse token (DQ #369).
+ */
+export function withSshRegistryProfileToken(
+  entry: RegistryConnection,
+  profile: null | string | undefined,
+  encryptedToken: unknown
+): RegistryConnection {
+  const key = sshRegistryTokenProfileKey(profile)
+
+  const existingMap =
+    entry.profileTokens && typeof entry.profileTokens === 'object' && !Array.isArray(entry.profileTokens)
+      ? entry.profileTokens
+      : {}
+
+  const profileTokens: Record<string, unknown> = { ...existingMap, [key]: encryptedToken }
+
+  return {
+    ...entry,
+    ...(key === 'default' ? { token: encryptedToken } : {}),
+    profileTokens
+  }
 }
 
 export interface RegistryLocalRoute {
@@ -736,7 +802,8 @@ export function shouldRetrySshInventory(
   hasCache: boolean,
   lastAttemptMs: null | number | undefined,
   nowMs: number,
-  retryAfterMs = 60_000
+  retryAfterMs = 60_000,
+  consecutiveFailures = 0
 ): boolean {
   if (hasCache) {
     return false
@@ -746,7 +813,10 @@ export function shouldRetrySshInventory(
     return true
   }
 
-  return nowMs - lastAttemptMs >= retryAfterMs
+  const multiplier = consecutiveFailures > 0 ? Math.min(Math.pow(2, Math.min(consecutiveFailures, 4)), 10) : 1
+  const effectiveRetryMs = Math.min(retryAfterMs * multiplier, 300_000)
+
+  return nowMs - lastAttemptMs >= effectiveRetryMs
 }
 
 const PROFILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/
@@ -969,6 +1039,7 @@ export interface ConnectionInput {
   url?: string
   authMode?: string
   token?: unknown
+  profileTokens?: Record<string, unknown>
   headers?: Record<string, unknown>
   org?: string
   /** Cloud instance name, separate from the user-editable label. */
@@ -1077,6 +1148,16 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
       entry.token = input.token
     }
 
+    if (input.profileTokens && typeof input.profileTokens === 'object' && !Array.isArray(input.profileTokens)) {
+      const cleaned = Object.fromEntries(
+        Object.entries(input.profileTokens).filter(([k, v]) => Boolean(String(k || '').trim()) && v !== undefined)
+      )
+
+      if (Object.keys(cleaned).length > 0) {
+        entry.profileTokens = cleaned
+      }
+    }
+
     return entry
   }
 
@@ -1176,6 +1257,7 @@ export function mergeConnectionInput(input: ConnectionInput, existing?: null | R
   inherit('keyPath')
   inherit('remoteHermesPath')
   inherit('remoteProfile')
+  inherit('profileTokens')
   // Headers inherit like other dial fields: an edit payload that omits the
   // field keeps the stored set; an explicit payload (even {}) is
   // authoritative so the editor can clear them.
@@ -1390,6 +1472,18 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
         // remote-lifecycle reuse gate and reaps a healthy backend (#103795).
         if (entry.token !== undefined) {
           clean.token = entry.token
+        }
+
+        if (entry.profileTokens && typeof entry.profileTokens === 'object' && !Array.isArray(entry.profileTokens)) {
+          const cleaned = Object.fromEntries(
+            Object.entries(entry.profileTokens as Record<string, unknown>).filter(
+              ([k, v]) => Boolean(String(k || '').trim()) && v !== undefined
+            )
+          )
+
+          if (Object.keys(cleaned).length > 0) {
+            clean.profileTokens = cleaned
+          }
         }
       }
 

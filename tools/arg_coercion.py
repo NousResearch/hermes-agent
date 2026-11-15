@@ -55,11 +55,15 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
                 if coerced is not value:
                     args[key] = coerced
                     continue
+                items_type = (prop_schema.get("items") or {}).get("type") if isinstance(prop_schema, dict) else None
                 if value.strip().startswith("["):
                     logger.warning("coerce_tool_args: %s.%s looks like a JSON array string "
                                    "but could not be parsed — model may have emitted a "
-                                   "JSON-encoded string instead of a native array. "
-                                   "Falling back to single-element list.", tool_name, key)
+                                   "JSON-encoded string instead of a native array.", tool_name, key)
+                    if items_type == "object":
+                        # Do not wrap an unparsed JSON array string into [str] when items must be objects;
+                        # leave as str so the tool's own string-repair or schema validator handles it cleanly.
+                        continue
                 args[key] = [value]
                 logger.info("coerce_tool_args: wrapped bare string in list for %s.%s", tool_name, key)
                 continue

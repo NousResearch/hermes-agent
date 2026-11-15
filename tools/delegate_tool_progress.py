@@ -216,8 +216,12 @@ def _build_child_system_prompt(
         )
     return "\n".join(parts)
 
-def child_task_message(goal: str, context: Optional[str]) -> str:
-    """The child's first user turn: the parent's context, then the goal.
+def child_task_message(
+    goal: str,
+    context: Optional[str],
+    inherited_skills: Optional[list[str]] = None,
+) -> str:
+    """The child's first user turn: the parent's context, then the goal (plus inherited parent skills when present).
 
     Context first, so siblings given one brief send the same leading bytes, and registered as the
     message's stable prefix, which gives it a cache breakpoint of its own on marker routes. Every
@@ -225,13 +229,20 @@ def child_task_message(goal: str, context: Optional[str]) -> str:
     "shared" test cannot see. Scaffolds in use are refreshed on every request, so a wide fan-out
     evicts only idle ones (one re-write when that session resumes).
     """
+    skills_clean = [s.strip() for s in (inherited_skills or []) if isinstance(s, str) and s.strip()]
+    effective_goal = goal
+    if skills_clean and "Skills loaded:" not in goal and "Skills loaded:" not in str(context or ""):
+        effective_goal = (
+            f"{goal}\n\nSkills loaded: {', '.join(skills_clean)} "
+            "(inherited from parent session — call skill_view(name=...) when needed for domain procedures)."
+        )
     if not (context and context.strip()):
-        return goal
+        return effective_goal
     from agent.prompt_cache_boundary import register_stable_prefix
 
     prefix = f"CONTEXT:\n{context}\n\nTASK:\n"
     register_stable_prefix(prefix)
-    return prefix + goal
+    return prefix + effective_goal
 
 
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:

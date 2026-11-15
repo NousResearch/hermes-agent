@@ -48,7 +48,13 @@ def project_compaction_message_for_display(message: dict[str, Any]) -> Optional[
     if not is_compaction_summary_message(message):
         return message.copy()
 
+    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND
     projected = ContextCompressor._strip_context_summary_handoff_message(message)
+    if projected is None and message.get("display_kind") == CONTENT_REFUSED_DISPLAY_KIND:
+        from agent.context_compressor import split_inflight_replay_turn
+        _, live_view = split_inflight_replay_turn(message)
+        if live_view is not None:
+            projected = {**message, "content": live_view.get("content")}
     if projected is None:
         return None
 
@@ -59,7 +65,6 @@ def project_compaction_message_for_display(message: dict[str, Any]) -> Optional[
     # the unwrap, or a reopened chat would redraw it as an ordinary user bubble with no refused notice
     # (#149708 review): the model-facing handoff is gone, the user's live ask survives as a greyed
     # refused block. Every other carrier drops its internal ``display_kind`` as before.
-    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND
     if projected.get("display_kind") != CONTENT_REFUSED_DISPLAY_KIND:
         projected.pop("display_kind", None)
     return projected

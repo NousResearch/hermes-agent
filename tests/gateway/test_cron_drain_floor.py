@@ -200,3 +200,31 @@ class TestResolveSystemdTimeoutStopSec:
 
     def test_garbage_inputs_degrade_to_the_floor(self):
         assert resolve_systemd_timeout_stop_sec("soon", None) == 60
+
+
+class TestEffectiveWatchdogLeashCoversCronFloor:
+    """In-band restarts must size the shutdown watchdog from cron_drain_timeout, not 0s chat drain."""
+
+    def test_in_band_restart_extends_watchdog_leash_for_cron_drain(self):
+        from gateway.run_shutdown import _effective_watchdog_leash
+
+        runner = SimpleNamespace(
+            _restart_drain_timeout=0.0,
+            _cron_drain_timeout=300.0,
+            _stop_requested_by_signal=False,
+            _launchd_exit_timeout_s=60.0,
+        )
+        # 300s cron floor + 10s cleanup reserve + 60s watchdog grace = 370s
+        assert _effective_watchdog_leash(runner) == 370.0
+
+    def test_signal_driven_launchd_stop_still_clamps_to_exit_timeout_minus_margin(self):
+        from gateway.run_shutdown import _effective_watchdog_leash
+
+        runner = SimpleNamespace(
+            _restart_drain_timeout=0.0,
+            _cron_drain_timeout=300.0,
+            _stop_requested_by_signal=True,
+            _launchd_exit_timeout_s=60.0,
+        )
+        assert _effective_watchdog_leash(runner) == 58.0
+

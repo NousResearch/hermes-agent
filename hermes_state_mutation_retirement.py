@@ -206,11 +206,12 @@ _DERIVED_API_SQL = ("(source='bot_room' OR (source='api_server' AND id GLOB 'api
 def _local_conversations(conn):
     """``(members, derived)``: member id -> every id of its local conversation (the creation id
     (policy, FIFO, generation), each receipt lineage segment and the current target), and the ids
-    of every derived (Bot Chat, A2A) conversation. One prefix scan, not a lookup per swept id.
+    of every derived (Bot Chat, A2A) conversation. Queries only idx_state_meta_local_policy_special
+    (default 1-segment receipts already resolve to ``(sid,)`` via ``conversations.get(sid, (sid,))``).
     Malformed receipts name nothing."""
-    from hermes_state_local import POLICY_PREFIX
+    from hermes_state_common import NONDEFAULT_POLICY_WHERE
     members, derived = {}, set()
-    for (raw,) in conn.execute('SELECT value FROM state_meta WHERE key GLOB ?', (POLICY_PREFIX + '*',)):
+    for (raw,) in conn.execute(f'SELECT value FROM state_meta WHERE {NONDEFAULT_POLICY_WHERE}'):
         try:
             receipt = json.loads(raw)
         except (TypeError, ValueError):

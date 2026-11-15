@@ -373,7 +373,8 @@ class TestSetChannelCLI:
 
 
 @pytest.mark.parametrize('kind,expected', [('missing', 'missing'), ('replaced', 'replaced'),
-                                             ('unclaimed', 'unclaimed'), ('healthy', None)])
+                                             ('unclaimed', 'unclaimed'), ('healthy', None),
+                                             ('healthy_facts_json', None)])
 def test_doctor_channel_records_are_read_only(tmp_path, monkeypatch, kind, expected):
     from copy import deepcopy
     home, root = tmp_path / '.hermes', tmp_path / 'install'
@@ -386,6 +387,10 @@ def test_doctor_channel_records_are_read_only(tmp_path, monkeypatch, kind, expec
         state = home / 'installs' / key
         state.mkdir(parents=True)
         (state / 'install.json').write_text(json.dumps({'root': str(root)}), encoding='utf-8')
+    elif kind == 'healthy_facts_json':
+        state = home / 'installs' / key
+        state.mkdir(parents=True)
+        (state / 'facts.json').write_text(json.dumps({'root': str(root), 'format_version': 5}), encoding='utf-8')
     before = deepcopy(config)
     assert [(key, reason) for key, _, reason in stale_channel_records(config)] == (
         [(key, expected)] if expected else [])

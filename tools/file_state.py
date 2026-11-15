@@ -9,7 +9,9 @@ a per-path lock; every method is a no-op under ``HERMES_DISABLE_FILE_STATE_GUARD
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import stat
 import threading
 import time
 from collections import defaultdict
@@ -17,10 +19,22 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-# (mtime, read_ts, partial). partial=True when read_file returned a windowed
+# (mtime, read_ts, partial, sha256_hex). partial=True when read_file returned a windowed
 # view (offset > 1 or limit < total_lines) — a later write should still warn
 # so the model re-reads in full.
-ReadStamp = tuple[float, float, bool]
+ReadStamp = tuple[float, float, bool, Optional[str]]
+_MAX_HASH_BYTES = 10_000_000
+
+
+def _sha256_or_none(resolved: str) -> Optional[str]:
+    try:
+        st = os.stat(resolved)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > _MAX_HASH_BYTES:
+            return None
+        with open(resolved, "rb") as fh:
+            return hashlib.file_digest(fh, "sha256").hexdigest()
+    except OSError:
+        return None
 
 # Bounded so long sessions don't accumulate unbounded state.
 _MAX_PATHS_PER_AGENT = 4096
@@ -72,10 +86,11 @@ class FileStateRegistry:
     def __init__(self) -> None:
         self._reads: dict[str, dict[str, ReadStamp]] = defaultdict(dict)
         self._last_writer: dict[str, tuple[str, float]] = {}
+        self._lineage_peers: dict[str, set[str]] = {}
         self._path_locks: dict[str, threading.Lock] = {}
         self._path_lock_users: dict[str, int] = {}
         self._meta_lock = threading.Lock()  # guards _path_locks
-        self._state_lock = threading.Lock()  # guards _reads + _last_writer
+        self._state_lock = threading.Lock()  # guards _reads + _last_writer + _lineage_peers
 
     @contextmanager
     def lock_path(self, resolved: str):
@@ -97,10 +112,11 @@ class FileStateRegistry:
                     self._path_lock_users.pop(resolved, None)
                     self._path_locks.pop(resolved, None)
 
-    def _stamp(self, task_id: str, resolved: str, mtime: float, now: float, partial: bool) -> None:
+    def _stamp(self, task_id: str, resolved: str, mtime: float, now: float, partial: bool,
+               content_sha256: Optional[str] = None) -> None:
         """Caller holds ``_state_lock``."""
         agent_reads = self._reads[task_id]
-        agent_reads[resolved] = (float(mtime), now, bool(partial))
+        agent_reads[resolved] = (float(mtime), now, bool(partial), content_sha256)
         _evict_oldest(agent_reads, _MAX_PATHS_PER_AGENT)
 
     def record_read(self, task_id: str, resolved: str, *, partial: bool = False,
@@ -110,8 +126,9 @@ class FileStateRegistry:
         mtime = _mtime_or_none(resolved) if mtime is None else mtime
         if mtime is None:
             return
+        digest = None if partial else _sha256_or_none(resolved)
         with self._state_lock:
-            self._stamp(task_id, resolved, mtime, time.time(), partial)
+            self._stamp(task_id, resolved, mtime, time.time(), partial, digest)
 
     def note_write(self, task_id: str, resolved: str, *, mtime: Optional[float] = None) -> None:
         """Record a successful write: global last-writer AND this agent's own
@@ -121,11 +138,12 @@ class FileStateRegistry:
         mtime = _mtime_or_none(resolved) if mtime is None else mtime
         if mtime is None:
             return
+        digest = _sha256_or_none(resolved)
         now = time.time()
         with self._state_lock:
             self._last_writer[resolved] = (task_id, now)
             _evict_oldest(self._last_writer, _MAX_GLOBAL_WRITERS)
-            self._stamp(task_id, resolved, mtime, now, False)
+            self._stamp(task_id, resolved, mtime, now, False, digest)
 
     def check_stale(self, task_id: str, resolved: str) -> Optional[str]:
         """Model-facing warning if this write would be stale, else ``None``. Severity
@@ -144,7 +162,10 @@ class FileStateRegistry:
 
         if last_writer is not None:
             writer_tid, writer_ts = last_writer
-            if writer_tid != task_id:
+            same_lineage = (writer_tid == task_id) or (
+                writer_tid in getattr(self, "_lineage_peers", {}).get(task_id, ())
+            )
+            if not same_lineage:
                 if stamp is None:
                     return (
                         f"{resolved} was modified by sibling subagent "
@@ -160,12 +181,14 @@ class FileStateRegistry:
                         "Re-read the file before writing.")
 
         if stamp is not None:
-            read_mtime, _read_ts, partial = stamp
+            read_mtime, _read_ts, partial, read_sha256 = stamp
             if current_mtime != read_mtime:
-                return (
-                    f"{resolved} was modified since you last read it "
-                    "on disk (external edit or unrecorded writer). "
-                    "Re-read the file before writing.")
+                current_sha256 = None if partial else _sha256_or_none(resolved)
+                if partial or read_sha256 is None or current_sha256 != read_sha256:
+                    return (
+                        f"{resolved} was modified since you last read it "
+                        "on disk (external edit or unrecorded writer). "
+                        "Re-read the file before writing.")
             if partial:
                 return (
                     f"{resolved} was last read with offset/limit pagination "
@@ -187,8 +210,9 @@ class FileStateRegistry:
         paths_set = set(paths)
         out: dict[str, list[str]] = defaultdict(list)
         with self._state_lock:
+            peers = getattr(self, "_lineage_peers", {}).get(exclude_task_id, ())
             for p, (writer_tid, ts) in self._last_writer.items():
-                if writer_tid != exclude_task_id and ts >= since_ts and p in paths_set:
+                if writer_tid != exclude_task_id and writer_tid not in peers and ts >= since_ts and p in paths_set:
                     out[writer_tid].append(p)
         return dict(out)
 
@@ -207,20 +231,64 @@ class FileStateRegistry:
         same scratch path as "modified by sibling subagent" hours after the writer exited."""
         with self._state_lock:
             self._reads.pop(task_id, None)
+            peers_map = getattr(self, "_lineage_peers", None)
+            if isinstance(peers_map, dict):
+                peers = peers_map.pop(task_id, None)
+                if isinstance(peers, set):
+                    peers.discard(task_id)
             for p in [p for p, (writer_tid, _ts) in self._last_writer.items() if writer_tid == task_id]:
                 del self._last_writer[p]
+
+    def migrate_task(self, old_task_id: str, new_task_id: str) -> None:
+        """Carry read stamps and writer claims across session rotation (old_session_id -> new_session_id).
+        Shares the underlying read-stamp dict and links both IDs in ``_lineage_peers`` so mid-turn
+        tool calls still bound to ``effective_task_id`` (``old_task_id``) and subsequent turns bound
+        to ``new_task_id`` see identical read/write stamps and never flag each other as siblings."""
+        if not old_task_id or not new_task_id or old_task_id == new_task_id:
+            return
+        with self._state_lock:
+            peers_map = getattr(self, "_lineage_peers", None)
+            if not isinstance(peers_map, dict):
+                peers_map = {}
+                self._lineage_peers = peers_map
+            merged_peers = set(peers_map.get(old_task_id) or {old_task_id}) | set(
+                peers_map.get(new_task_id) or {new_task_id}
+            )
+            for pid in merged_peers:
+                peers_map[pid] = merged_peers
+            old_reads = self._reads.get(old_task_id)
+            dst = self._reads.setdefault(new_task_id, {})
+            if old_reads and old_reads is not dst:
+                for p, stamp in old_reads.items():
+                    existing = dst.get(p)
+                    if existing is None or stamp[1] >= existing[1]:
+                        dst[p] = stamp
+            for pid in merged_peers:
+                self._reads[pid] = dst
+            for p, (writer_tid, ts) in list(self._last_writer.items()):
+                if writer_tid in merged_peers:
+                    self._last_writer[p] = (new_task_id, ts)
 
     def clear(self) -> None:
         """Reset all state. Intended for tests only."""
         with self._state_lock:
             self._reads.clear()
             self._last_writer.clear()
+            if hasattr(self, "_lineage_peers"):
+                self._lineage_peers.clear()
         with self._meta_lock:
             self._path_locks.clear()
             self._path_lock_users.clear()
 
 
-_registry = FileStateRegistry()
+_existing_registry = globals().get("_registry")
+if isinstance(_existing_registry, object) and hasattr(_existing_registry, "_reads"):
+    _existing_registry.__class__ = FileStateRegistry
+    _registry: FileStateRegistry = _existing_registry  # type: ignore[assignment]
+    if not isinstance(getattr(_registry, "_lineage_peers", None), dict):
+        _registry._lineage_peers = {}
+else:
+    _registry = FileStateRegistry()
 
 
 def get_registry() -> FileStateRegistry:
@@ -252,12 +320,17 @@ def known_reads(task_id: str) -> list[str]:
     return _registry.known_reads(task_id)
 
 
+def migrate_task(old_task_id: str, new_task_id: str) -> None:
+    _registry.migrate_task(old_task_id, new_task_id)
+
+
 __all__ = [
     "FileStateRegistry",
     "check_stale",
     "get_registry",
     "known_reads",
     "lock_path",
+    "migrate_task",
     "note_write",
     "record_read",
     "writes_since",

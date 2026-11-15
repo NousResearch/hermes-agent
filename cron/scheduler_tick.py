@@ -131,9 +131,10 @@ def _tick_admitted(
 
         due_jobs = _sched.get_due_jobs()
         _sched._sweep_stale_inflight_for_tick(due_jobs)
-        if headless:
-            from cron.scheduler_gateway_gate import refuse_agent_jobs_without_gateway
-            due_jobs = refuse_agent_jobs_without_gateway(due_jobs)
+        from cron.scheduler_gateway_gate import refuse_agent_jobs_without_gateway
+        due_jobs = refuse_agent_jobs_without_gateway(
+            due_jobs, transitioning_only=not headless
+        )
 
         if not due_jobs:
             # Idle tick: skip config load + pool setup, but still reap crashed jobs' MCP orphans.

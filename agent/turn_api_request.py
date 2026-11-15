@@ -152,7 +152,11 @@ def build_request_payload(
         )
     # OpenRouter caching replays identical responses, even empty ones; an empty-response
     # retry must bypass the cache.
-    if agent._empty_content_retries > 0 and agent._is_openrouter_url():
+    if (
+        getattr(agent, "_empty_content_retries", 0) > 0
+        or getattr(agent, "_truncated_tool_call_retries", 0) > 0
+        or getattr(agent, "_content_filter_retries", 0) > 0
+    ) and agent._is_openrouter_url():
         _set_extra_header(api_kwargs, "X-OpenRouter-Cache", "false")
     _apply_user_turn_request_headers(agent, api_kwargs)
     try:

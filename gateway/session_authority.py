@@ -1168,13 +1168,20 @@ class SessionAuthority:
                 # a claim now would hand this row to its busy path and settle it unrun. The head
                 # waits queued, as main's pending slot did; /stop and /new still cancel it.
                 return 'classic_busy', first
-            self._require_admission_open()
+            from hermes_state_keys import CRON_PRINCIPAL_ID
+            # An in-flight canonical cron job that already committed its admission before SIGUSR1
+            # is already registered in ``_running_job_ids`` and holding ``Restart deferred`` open;
+            # refusing to claim it during ``restart_wait_open`` deadlocks ``run_canonical_job``
+            # against ``_await_active_work_before_restart`` for the full 1800s drain cap.
+            in_flight_cron = first is not None and first.get('principal_id') == CRON_PRINCIPAL_ID
+            self._require_admission_open(queue_only=in_flight_cron)
             from gateway.session_runtime_workers import tracked_write
             live.rescan = False  # a _schedule from here on may not be visible to this claim's read
             # The row these checks validated, never whichever is first when the write runs: a
             # cancellation commits from a worker thread and can advance the FIFO at any point.
             row = await tracked_write(self, partial(claim_session_input, self.db, epoch=self.epoch,
-                                                    session_id=ref.session_id, _guard=self._admission_gate(),
+                                                    session_id=ref.session_id,
+                                                    _guard=self._admission_gate(queue_only=in_flight_cron),
                                                     head=first['admission_id'] if first is not None else None),
                                       then=partial(self._stamp_claim, ref, live))
             # Input scheduled while this claim's transaction ran may postdate its read: re-read

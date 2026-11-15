@@ -86,6 +86,21 @@ def held_stream_transforms() -> tuple[Callable, ...]:
     return _delivery_manager().held_transforms()
 
 
+def _hook_fail_closed(hook_name: str, cb: Any) -> bool:
+    """Decide fail-closed per CALLBACK, not per event.
+
+    A hook that declares ``fail_closed`` owns that decision: a shell hook declared fail-open
+    (observability/format guards) must not deny a tool call merely because it was skipped,
+    while ledger/destructive/prod-db guards keep blocking. A hook that declares NOTHING
+    (``_hermes_fail_closed`` absent/None) inherits the event-level policy below, so configs
+    written before the field existed behave exactly as they did.
+    """
+    declared = getattr(cb, "_hermes_fail_closed", None)
+    if declared is None:
+        return hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+    return bool(declared)
+
+
 def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> dict[str, str]:
     """Block directive for a fail-closed hook whose callback raised: names the callback and the
     error (truncated — a hook that embeds tool args in its exception must not grow the tool
@@ -300,9 +315,16 @@ class PluginDispatchMixin:
         results: list[Any] = []
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
-        fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in callbacks:
+            # Per-callback: the hook's own fail_closed declaration wins over the event default.
+            fail_closed = _hook_fail_closed(hook_name, cb)
             try:
+                # Matcher gate BEFORE the single-flight window (upstream #105223): a shell-hook
+                # callback that doesn't match this tool must never acquire (nor be skipped for)
+                # the flight token of another session's in-flight run of the same callback.
+                matcher = getattr(cb, "_hermes_matches_tool", None)
+                if matcher is not None and not matcher(kwargs.get("tool_name")):
+                    continue
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
@@ -355,9 +377,14 @@ class PluginDispatchMixin:
         (worker abandoned, never joined), or the worker could not be started. Exceptions
         propagate."""
         callback_name = getattr(cb, "__name__", repr(cb))
-        # Suppression is a fact about the CALLBACK — a hung one must keep its back-off —
-        # so that key stays coarse. The gate must instead tell CONCURRENT CALLS apart.
-        suppression_key = (hook_name, id(cb))
+        # Combined fix: single-flight is scoped per (callback, session) — NOT per callback
+        # process-wide (upstream #105223): parallel sessions sharing this process each get
+        # their own flight token, so one session's in-flight hook can never skip (fail-close)
+        # another's. Suppression (back-off after timeout) stays a fact about the callback+session
+        # so a hung callback keeps its back-off, while the gate tells CONCURRENT CALLS apart via
+        # call identity (same composition as the shell-hook payload in agent/shell_hooks.py).
+        session_key = kwargs.get("session_id") or kwargs.get("parent_session_id") or ""
+        suppression_key = (hook_name, id(cb), session_key)
         gate_key = (*suppression_key, _hook_call_identity(kwargs, hook_name))
         token = object()
         with self._hook_timeout_lock:
@@ -627,8 +654,8 @@ class PluginDispatchMixin:
         results: list[Any] = []
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
-        fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
+            fail_closed = _hook_fail_closed(hook_name, cb)
             callback_name = getattr(cb, "__name__", repr(cb))
             try:
                 ret = cb(**self._hook_callback_kwargs(cb, kwargs))

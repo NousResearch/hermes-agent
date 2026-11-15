@@ -859,8 +859,8 @@ async def _run_analysis(
         from tools.interrupt import is_interrupted
         if is_interrupted():
             return tool_error("Interrupted", success=False)
-        logger.info("Analyzing %s: %s", kind, source[:60])
-        logger.info("User prompt: %s", user_prompt[:100])
+        logger.info("Analyzing %s: %s", kind, source[:240])
+        logger.info("User prompt: %s", user_prompt[:160])
         analysis, scale_note = await stage(user_prompt, debug_call_data, temp_paths)
         analysis_length = len(analysis) if analysis else 0
         logger.info("%s analysis completed (%s characters)", kind.capitalize(), analysis_length)

@@ -453,6 +453,7 @@ class SessionCompressionMixin:
         # `now`, breaking their _display_dedupe_key identity with the parent's durable originals
         # and duplicating them in the lineage display read (#59661).
         self._carry_parent_timestamps(conn, parent_session_id, messages)
+        self._fold_compaction_summary_seam(messages)
         total_messages, total_tool_calls = self._insert_message_rows(conn, child_session_id, messages)
         if watermark is not None:
             # Clone the parent's concurrent tail into the child after the handoff;
@@ -704,7 +705,13 @@ class SessionCompressionMixin:
             if not parent_id or parent_id in seen or self._is_explicit_fork_child_row(current, include_reset=True):
                 break
             parent = _row(parent_id)
-            if not parent or parent.get("end_reason") != "compression":
+            if not parent or (
+                parent.get("end_reason") != "compression"
+                and not (
+                    parent.get("end_reason") == "wrapped"
+                    and current.get("source") not in ("subagent", "delegate")
+                )
+            ):
                 break
             seen.add(parent_id)
             current = parent
@@ -736,6 +743,19 @@ class SessionCompressionMixin:
             # longest a suspended holder can go unrefreshed and still keep its lease.
             conn.execute("DELETE FROM session_turn_leases WHERE expires_at < ?",
                          (now - _TURN_LEASE_SWEEP_GRACE_S,))
+            dead_expired = [
+                r["conversation_id"]
+                for r in conn.execute(
+                    "SELECT conversation_id, holder FROM session_turn_leases WHERE expires_at <= ?",
+                    (now,),
+                ).fetchall()
+                if _compression_lock_holder_process_is_dead(r["holder"])
+            ]
+            if dead_expired:
+                conn.executemany(
+                    "DELETE FROM session_turn_leases WHERE conversation_id = ?",
+                    [(cid,) for cid in dead_expired],
+                )
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             return _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
@@ -826,11 +846,38 @@ class SessionCompressionMixin:
         expires_at = time.time() + max(0.1, float(ttl_seconds))
         def _do(conn):
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
-            return conn.execute(
+            rc = conn.execute(
                 "UPDATE session_turn_leases SET expires_at = ? "
                 "WHERE conversation_id = ? AND holder = ?", (expires_at, conversation_id, holder),
-            ).rowcount > 0
-        return bool(self._execute_write(_do, patience_s=patience_s))
+            ).rowcount
+            if rc == 0:
+                rc = conn.execute(
+                    "UPDATE session_turn_leases SET expires_at = ? WHERE holder = ?",
+                    (expires_at, holder),
+                ).rowcount
+            return rc > 0
+        patience = patience_s if patience_s is not None else getattr(self, "_TRANSCRIPT_WRITE_PATIENCE_S", 20.0)
+        return bool(self._execute_write(_do, patience_s=patience))
+
+    def get_session_turn_lease_owner(self, session_id: str) -> Optional[tuple[str, float]]:
+        """Read-only ``(holder, expires_at)`` of the conversation-root turn lease; None if absent.
+
+        Reads never take the write lock (WAL), so a contended lease refresh can verify
+        ownership without racing the very lock it failed to acquire (#turn-lease-fix). The
+        walk and the row read are deliberately NOT one transaction: a stale snapshot can only
+        over-report ownership, and over-reporting is safe — the write-side fence
+        (``_check_transcript_write_guards``) still refuses mutations once the holder changed.
+        """
+        if not session_id:
+            return None
+        with self._read_ctx() as conn:
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?",
+                (conversation_id,)).fetchone()
+            if row is None:
+                return None
+            return (str(row["holder"]), float(row["expires_at"]))
 
     def release_session_turn_lease(self, session_id: str, holder: str) -> None:
         """Release a turn lease iff ``holder`` still owns it; idempotent."""
@@ -839,8 +886,8 @@ class SessionCompressionMixin:
         def _do(conn):
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             conn.execute(
-                "DELETE FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
-                (conversation_id, holder))
+                "DELETE FROM session_turn_leases WHERE (conversation_id = ? AND holder = ?) OR holder = ?",
+                (conversation_id, holder, holder))
         self._execute_write(_do)
 
     def get_compression_lock_holder(self, session_id: str) -> Optional[str]:

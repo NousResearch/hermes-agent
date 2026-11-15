@@ -140,6 +140,24 @@ class TestPrunedSkillReloadNotice:
         )
         notice = _pruned_skill_reload_notice([{"role": "user", "content": text}])
         assert notice.count("skill_view(name=") == _MAX_PRUNED_SKILL_MARKERS
+        assert "Reload lazily on demand for the current step only (at most 2-3 skills per turn" in notice
+
+    def test_compaction_resets_skill_view_no_progress_guardrail(self):
+        from agent.tool_guardrails import ToolCallGuardrailController
+        from agent.turn_context_compaction import _reset_retry_state_after_compaction
+
+        guardrails = ToolCallGuardrailController()
+        args = {"name": "google-chat-comms"}
+        d = None
+        for _ in range(4):
+            d = guardrails.after_call("skill_view", args, "# Google Chat Comms\nBody", failed=False)
+        assert d is not None and d.code == "idempotent_no_progress_warning"
+        dummy_agent = MagicMock()
+        dummy_agent._tool_guardrails = guardrails
+        _reset_retry_state_after_compaction(dummy_agent)
+        # After compaction resets read-tool no-progress counters, reloading the pruned skill must NOT block
+        assert guardrails.before_call("skill_view", args).allows_execution
+        assert guardrails.after_call("skill_view", args, "# Google Chat Comms\nBody", failed=False).allows_execution
 
 
     def test_notice_does_not_feed_the_marker_extractor(self):

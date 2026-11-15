@@ -299,3 +299,34 @@ def test_periodic_flush_skips_running_sessions(registered_session, monkeypatch):
 
     assert server._flush_dirty_sessions(now=1_000.0) == 0
     assert agent.flush_calls == []
+
+
+def test_stop_turns_before_exit_preserves_interrupted_turn_marker(
+    registered_session, tmp_path, monkeypatch
+):
+    """When SIGTERM/shutdown interrupts a running turn via _stop_turns_before_exit,
+    _retire_turn_marker must NOT delete the crash-recovery marker from interrupted_turns.json,
+    so the restarted backend's boot_auto_continue_interrupted_sessions() can resume it."""
+    from tui_gateway.turn_marker import read_turn_marker, record_turn_start
+
+    sid = "sess-exit-marker"
+    record_turn_start(tmp_path, sid, "continue after sigterm restart", attempts=0)
+    assert read_turn_marker(tmp_path, sid) is not None
+
+    session = registered_session(
+        sid,
+        _FlushAgent(),
+        running=True,
+        profile_home=str(tmp_path),
+        history_lock=server.threading.RLock(),
+    )
+
+    server._stop_turns_before_exit(budget_s=0.1)
+    assert session.get("_stopped_for_process_exit") is True
+
+    # Simulate the unwinding turn thread's finally block calling _retire_turn_marker:
+    server._retire_turn_marker(session, sid)
+    marker = read_turn_marker(tmp_path, sid)
+    assert marker is not None, "SIGTERM exit unwind wiped interrupted_turns.json marker"
+    assert marker["prompt"] == "continue after sigterm restart"
+

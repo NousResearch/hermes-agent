@@ -171,6 +171,23 @@ def prepare_iteration(
     # instead of letting this iteration's request 401. With many agents sharing the hour that
     # 401 was a storm, and the pool benched the sole credential for all of them.
     agent._adopt_nous_key_before_expiry()
+    if hasattr(agent, "_adopt_vertex_token_before_expiry"):
+        agent._adopt_vertex_token_before_expiry()
+    # CF-61: a transient mid-turn failover (e.g. a 1-second OpenRouter 429 or stream drop)
+    # must not pin a multi-step tool turn onto the fallback provider for its remaining
+    # 20-100+ tool iterations once the primary cooldown has elapsed. Restore primary at
+    # the start of the next completed tool iteration (never on an in-flight retry restart
+    # or on the immediate retry iteration after an empty-response fallback #CF-83).
+    if getattr(agent, "_empty_fallback_retry_pending", False):
+        agent._empty_fallback_retry_pending = False
+    elif (
+        api_call_count > 0
+        and not getattr(agent, "_rebuilt_restarts_since_response", 0)
+        and not getattr(agent, "_content_filter_fallback_sticky", False)
+        and getattr(agent, "_fallback_activated", False)
+        and callable(getattr(agent, "_restore_primary_runtime", None))
+    ):
+        agent._restore_primary_runtime()
 
     # Drain a /steer sent during the last API call so it lands THIS iteration. Delivered as a
     # standalone user row after the newest tool result (never smeared onto the tool row: that
@@ -247,11 +264,12 @@ def prepare_iteration(
     # state.db still holds. A valid index always lands on this turn's user row; re-anchor otherwise.
     if user_message is not None and not _anchors_current_turn(messages, current_turn_user_idx, user_message):
         _reanchored_idx = _reanchor(agent, messages, user_message)
-        request_logger.info(
-            "Re-anchored stale current_turn_user_idx %s -> %s (session=%s)",
-            current_turn_user_idx, _reanchored_idx, agent.session_id or "-",
-        )
-        current_turn_user_idx = _reanchored_idx
+        if _reanchored_idx != current_turn_user_idx:
+            request_logger.info(
+                "Re-anchored stale current_turn_user_idx %s -> %s (session=%s)",
+                current_turn_user_idx, _reanchored_idx, agent.session_id or "-",
+            )
+            current_turn_user_idx = _reanchored_idx
     return IterationPrep(
         action="fallthrough", messages=messages, request_logger=request_logger,
         current_turn_user_idx=current_turn_user_idx,
@@ -399,6 +417,80 @@ def begin_iteration(
             )
         return _verdict("break")
 
+    with suppress(Exception):
+        from agent.realtime_spend_breaker import evaluate_realtime_spend_breaker
+        from agent.session_source import session_source_for
+
+        _rt_src = (
+            "background_review"
+            if (
+                getattr(agent, "_write_origin", None) == "background_review"
+                or getattr(agent, "_memory_write_origin", None) == "background_review"
+                or getattr(agent, "_turn_origin", None) == "background_review"
+            )
+            else "subagent"
+            if (
+                getattr(agent, "platform", None) == "subagent"
+                or int(getattr(agent, "_delegate_depth", 0) or 0) > 0
+            )
+            else session_source_for(getattr(agent, "platform", None))
+        )
+        _tg_ctrl = getattr(agent, "_tool_guardrails", None)
+        _productive = (
+            bool(_tg_ctrl.is_making_productive_progress())
+            if _tg_ctrl is not None and callable(getattr(_tg_ctrl, "is_making_productive_progress", None))
+            else True
+        )
+        _rt_job = str(
+            getattr(agent, "cron_job_name", None)
+            or getattr(agent, "_turn_route_task", "")
+            or ""
+        )
+        _tier0_extra_prefixes = (
+            "chat247-",
+            "nw-chat-",
+            "newintra-",
+            "medius-",
+            "lager-",
+            "2izii-",
+            "post-deploy-verify-",
+            "emir-morning-routine",
+            "alerts-digest",
+            "svea-",
+            "cart-",
+            "store-support-",
+        )
+        _rt_eval_job = (
+            f"chat-247:{_rt_job}"
+            if _rt_job.lower().startswith(_tier0_extra_prefixes)
+            else _rt_job
+        )
+        _rt_parent_sid = str(
+            getattr(agent, "_root_session_id", None)
+            or getattr(agent, "parent_session_id", None)
+            or ""
+        )
+        _rt_parent_src = str(getattr(agent, "_parent_session_source", None) or "")
+        _rt_verdict = evaluate_realtime_spend_breaker(
+            session_id=str(getattr(agent, "session_id", "") or "unknown"),
+            source=_rt_src,
+            model=str(getattr(agent, "model", "") or ""),
+            provider=str(getattr(agent, "provider", "") or ""),
+            job_name=_rt_eval_job,
+            making_productive_progress=_productive,
+            consecutive_calls_since_user=int(api_call_count or 0),
+            parent_session_id=_rt_parent_sid,
+            parent_source=_rt_parent_src,
+        )
+        if not _rt_verdict.get("allowed", True):
+            _turn_exit_reason = f"realtime_spend_breaker:{_rt_verdict.get('reason', 'cap_exceeded')}"
+            if not agent.quiet_mode:
+                agent._safe_print(
+                    f"\n🛑 Realtime AI spend breaker tripped ({_rt_verdict.get('reason')}) — stopping loop.",
+                    diagnostic=True,
+                )
+            return _verdict("break")
+
     api_call_count += 1
     agent._api_call_count = api_call_count
     agent._touch_activity(f"starting API call #{api_call_count}")
@@ -446,14 +538,18 @@ def apply_retry_restarts(
     assistant item; ``restart_with_rebuilt_messages`` is the single consumer that clears
     ``_preflight_compression_blocked`` so the fallback gets a fresh preflight (#84733).
 
-    The two refunding restart paths (redirect and rebuilt-for-fallback) are bounded by
-    ``max_retries`` via ``restart_count`` (restarts since the last response) so a runaway
-    interrupt/redirect that keeps re-arming a restart flag cannot refund the budget
-    forever and hold the turn lease indefinitely."""
+    ``restart_with_redirected_messages`` is bounded by ``max_retries`` (redirect restarts since the
+    last response) and ``restart_with_rebuilt_messages`` (fallback-chain hops and truncation rebuilds)
+    is bounded by ``max(max_retries, len(agent._fallback_chain))`` on its own counter so an
+    interleaved user steer neither starves the last fallback hop nor gets starved by a completed
+    fallback walk (#106108, CF-20)."""
 
     from agent.conversation_loop import (
         _HANDOFF_SKIP_FINAL_RESPONSE, _should_skip_model_call_for_reference_handoff
     )
+
+    if restart_count == 0:
+        agent._rebuilt_restarts_since_response = 0
 
     def _verdict(action: str) -> RetryRestartVerdict:
         return RetryRestartVerdict(
@@ -466,7 +562,8 @@ def apply_retry_restarts(
 
     if _retry.restart_with_redirected_messages:
         restart_count += 1
-        if restart_count > max_retries:
+        _redirect_count = restart_count - getattr(agent, "_rebuilt_restarts_since_response", 0)
+        if _redirect_count > max_retries:
             # A redirect/interrupt keeps re-arming this flag: stop refunding the iteration
             # budget and re-issuing the same logical iteration, or a runaway turn holds the
             # turn lease indefinitely (redirect restarts previously had no bound).
@@ -524,7 +621,12 @@ def apply_retry_restarts(
 
     if _retry.restart_with_rebuilt_messages:
         restart_count += 1
-        if restart_count > max_retries:
+        _rebuilt_count = getattr(agent, "_rebuilt_restarts_since_response", 0) + 1
+        agent._rebuilt_restarts_since_response = _rebuilt_count
+        _base_retries = int(max_retries) if max_retries is not None else 1
+        _chain_len = len(getattr(agent, "_fallback_chain", None) or ())
+        _rebuilt_limit = max(_base_retries, _chain_len) if _base_retries > 0 else 0
+        if _rebuilt_count > _rebuilt_limit:
             # A stall/failure keeps re-escalating to the fallback chain: stop refunding the
             # iteration budget and re-issuing, or a runaway turn holds the turn lease
             # indefinitely (rebuilt restarts previously had no bound).
@@ -532,7 +634,7 @@ def apply_retry_restarts(
             logger.warning(
                 "Rebuilt-message restart limit (%s) exceeded; ending turn instead of "
                 "refunding the iteration budget indefinitely.",
-                max_retries,
+                _rebuilt_limit,
             )
             return _verdict("break")
         # A stall/failure escalated to the fallback chain: re-issue against the
@@ -563,4 +665,5 @@ def apply_retry_restarts(
     # Counting every mid-turn correction for the whole turn ended healthy interactive
     # turns on the (max_retries + 1)th message (#128000).
     restart_count = 0
+    agent._rebuilt_restarts_since_response = 0
     return _verdict("fallthrough")

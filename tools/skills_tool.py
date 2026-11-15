@@ -25,7 +25,12 @@ from tools.skills_tool_plugin import (
     MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, _INJECTION_PATTERNS, _fail, _json,
     _mark_background_review_read, _preprocess_skill, _read_skill_text, _safe_frontmatter,
     _serve_plugin_skill, _serve_skill_file, _truncate_description)
-from tools.skills_tool_dedup import dedup_skill_view, reset_skill_view_dedup
+from tools.skills_tool_dedup import (
+    clear_skill_view_state,
+    dedup_skill_view,
+    migrate_skill_view_state,
+    reset_skill_view_dedup,
+)
 from tools.skill_provenance import is_background_review
 
 logger = logging.getLogger(__name__)
@@ -202,11 +207,13 @@ def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
     try:
         from hermes_cli.config import load_config
         skills_cfg = load_config().get("skills", {})
-        resolved_platform = platform or os.getenv("HERMES_PLATFORM")
+        resolved_platform = platform or os.getenv("HERMES_PLATFORM") or os.getenv("HERMES_SESSION_SOURCE")
         if not resolved_platform:
             with suppress(Exception):
                 from gateway.session_context import get_session_env
-                resolved_platform = get_session_env("HERMES_SESSION_PLATFORM") or ""
+                resolved_platform = (get_session_env("HERMES_SESSION_PLATFORM")
+                                     or get_session_env("HERMES_SESSION_SOURCE")
+                                     or "")
         platform_disabled = None
         if resolved_platform:
             platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
@@ -503,7 +510,10 @@ def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict
     setup_needed = bool(remaining)
     # Only vars actually set pass through to sandboxed execution (execute_code, terminal).
     refused: list[str] = []
-    if available_env_names := [e["name"] for e in required_env_vars if e["name"] not in remaining]:
+    if available_env_names := [
+        e["name"] for e in required_env_vars
+        if e["name"] not in remaining and _is_env_var_persisted(e["name"], env_snapshot)
+    ]:
         try:
             from tools.env_passthrough import register_env_passthrough
             refused = register_env_passthrough(available_env_names)
@@ -716,12 +726,19 @@ def skill_view(
                     + "` and reload."
                 )
 
+        _sk_chars = len(rendered_content)
+        _ceil_hint = (
+            f"SKILL.md is at {_sk_chars}/9975 chars ({max(0, 9974 - _sk_chars)} chars remaining before compaction prune ceiling). "
+            "Put new detailed rules in references/<topic>.md via skill_manage(action='write_file' or 'patch', file_path='references/...')."
+            if _sk_chars >= 8800 else None
+        )
         result = {
             "success": True, "name": skill_name, "description": frontmatter.get("description", ""),
             "tags": tags, "related_skills": related_skills, "content": rendered_content,
+            "skill_md_chars": _sk_chars, "skill_md_char_ceiling": 9975,
             "path": rel_path, "skill_dir": str(skill_dir) if skill_dir else None,
             "linked_files": linked_files if linked_files else None,
-            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None,
+            "usage_hint": _ceil_hint or ("To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None),
             **readiness,
             **readiness_extras}
         if deps_note:

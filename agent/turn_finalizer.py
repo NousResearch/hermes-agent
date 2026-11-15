@@ -128,15 +128,17 @@ def _resolve_budget_fallback(
 ) -> tuple[Any, Any, bool, Any]:
     """Iteration-budget exhaustion. Returns ``(final_response, _turn_exit_reason,
     preserved_verification_fallback, interrupted)``."""
+    _eff_used = min(api_call_count, getattr(agent.iteration_budget, "used", api_call_count))
+    _eff_max = max(agent.max_iterations, getattr(agent.iteration_budget, "max_total", 0) or 0)
     budget_exhausted = (
-        api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0
+        _eff_used >= _eff_max or agent.iteration_budget.remaining <= 0
     )
     preserved_verification_fallback = False
     if (
         final_response is None and budget_exhausted and not interrupted and not failed
         and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
     ):
-        _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
+        _turn_exit_reason = f"max_iterations_reached({api_call_count}/{_eff_max})"
         if _pending_verification_response:
             # A verification gate withheld a composed answer, then the budget ran out:
             # preserve it rather than make another fallible call. The explicit pending
@@ -338,7 +340,9 @@ def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) 
                     # again, not an "unchanged" stub pointing at a body that is gone (#32106).
                     from agent.conversation_compression import _reset_read_dedup_caches
 
-                    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
+                    _reset_read_dedup_caches(
+                        task_id, session_id=agent.session_id or "", surviving_messages=messages
+                    )
             if _before != len(messages):
                 logger.info("Micro-compaction: %d -> %d messages", _before, len(messages))
     except Exception as _mc_err:
@@ -438,6 +442,7 @@ def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_v
             not _is_empty_terminal
             and not preserved_verification_fallback
             and not str(_turn_exit_reason).startswith("text_response")
+            and not str(_turn_exit_reason).startswith("realtime_spend_breaker:")
             and _turn_exit_reason != "fallback_prior_turn_content"
             and len(_stripped) <= 24
             and _stripped[-1:] not in _SENTENCE_END
@@ -596,7 +601,13 @@ def fence_result_reply(result: Any) -> None:
     ``result["messages"]`` and the stored row keep the raw text (API Runs transcripts, ``get_messages``)."""
     if not isinstance(result, dict):
         return
-    from agent.memory_context import fence_recalled_context
+    try:
+        from agent.memory_context import fence_recalled_context
+    except ImportError:
+        import importlib
+        import agent.memory_context as _mc_mod
+        importlib.reload(_mc_mod)
+        from agent.memory_context import fence_recalled_context
     # ``pre_transform_response`` is display text too: replay-gap recovery and post-stream suffix
     # painting deliver it.
     for key in ("final_response", "pre_transform_response"):
@@ -633,6 +644,7 @@ def _mirror_turn_to_memory(
         final_response
         and not interrupted
         and not getattr(agent, "skip_background_review", False)
+        and not str(original_user_message or "").lstrip().startswith('[Cronjob "')
         and (review_memory or review_skills)
     ):
         with suppress(Exception):
@@ -706,6 +718,17 @@ def finalize_turn(
     _exit_failure = None if interrupted else exit_reason_failure(_turn_exit_reason)
     if _exit_failure is not None and _exit_failure.fails_turn:
         failed = True
+
+    if (
+        str(_turn_exit_reason or "").startswith("realtime_spend_breaker:")
+        and not final_response
+        and (
+            (getattr(agent, "platform", "") or "").lower() == "cron"
+            or getattr(agent, "_write_origin", None) == "background_review"
+            or str(getattr(agent, "session_id", "")).startswith("cron_")
+        )
+    ):
+        final_response = "[SILENT]"
 
     # Sibling producers (``turn_recovery``, ``codex_runtime``) return ``completed=False`` for an
     # interrupted turn; the gateway stream gate and the API run status rely on that contract.

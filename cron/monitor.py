@@ -152,11 +152,40 @@ def job_has_monitor(job: dict) -> bool:
     return bool(_field(job, "monitor_script") or _field(job, "monitor_url"))
 
 
+def _is_transient_defer_monitor_output(output: str) -> bool:
+    """Return True if *output* starts with `STATUS=LEASE_IN_FLIGHT`, indicating an active
+    sibling/builder lease is still running. Suppresses the LLM wake WITHOUT overwriting
+    `last_output_hash`, so unchanged open asks do not re-trigger an identical wake loop
+    as soon as the lease expires."""
+    stripped = (output or "").strip()
+    if not stripped:
+        return False
+    first_line = stripped.splitlines()[0].strip()
+    return first_line == "STATUS=LEASE_IN_FLIGHT"
+
+
+def _is_idle_monitor_output(output: str) -> bool:
+    """Return True if *output* is an explicit idle sentinel (`STATUS=NOOP_COMPLETE` or
+    `wakeAgent=false`) that should update the stored baseline hash without waking the LLM."""
+    stripped = (output or "").strip()
+    if not stripped:
+        return False
+    last_line = stripped.splitlines()[-1].strip()
+    if stripped == "STATUS=NOOP_COMPLETE" or last_line == "STATUS=NOOP_COMPLETE":
+        return True
+    from cron.scheduler_prompt import _parse_wake_gate
+
+    return not _parse_wake_gate(stripped)
+
+
 def check_monitor(job: dict) -> MonitorOutcome:
     """Run the monitor source and decide whether the agent should run.
 
     On change (or first run) the new hash + snapshot are persisted BEFORE the agent runs — detection
     time is the state boundary, so a failed agent run doesn't re-alert on the same content forever.
+    When the source emits an explicit idle sentinel (`STATUS=NOOP_COMPLETE` or `wakeAgent=false`),
+    the new hash + snapshot are persisted so subsequent active transitions trigger a diff, while
+    the return-to-idle tick itself suppresses the agent run.
     On failure nothing is persisted.
     """
     job_id = str(job.get("id") or "")
@@ -164,11 +193,18 @@ def check_monitor(job: dict) -> MonitorOutcome:
     if not ok:
         return MonitorOutcome(ok=False, error=output)
 
+    if _is_transient_defer_monitor_output(output):
+        return MonitorOutcome(ok=True, changed=False)
+
     new_hash = hash_monitor_output(output)
     raw_state = job.get("monitor_state")
     last_hash = raw_state.get("last_output_hash") if isinstance(raw_state, dict) else None
 
     if last_hash is not None and new_hash == last_hash:
+        return MonitorOutcome(ok=True, changed=False)
+
+    if _is_idle_monitor_output(output):
+        _persist_monitor_state(job_id, new_hash, output)
         return MonitorOutcome(ok=True, changed=False)
 
     first_run = last_hash is None

@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import subprocess
+import stat
 import time
 import uuid
 from collections import deque
@@ -70,6 +71,7 @@ _SIGNATURE_SCHEMES: dict[str, frozenset[str]] = {
     "github": frozenset({"github"}),
     "gitlab": frozenset({"gitlab", "standard"}),
     "linear": frozenset({"linear"}),
+    "plane": frozenset({"plane"}),
 }
 _UNPINNED_SIGNATURE_FAMILIES = frozenset().union(*_SIGNATURE_SCHEMES.values())
 _TEMPLATE_KEY_RE = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
@@ -135,6 +137,51 @@ def _is_usable_secret(secret: object) -> bool:
     lets it through. Non-strings are rejected for the same reason.
     """
     return isinstance(secret, str) and bool(secret.strip())
+
+
+def _normalized_secrets(secret: object) -> list:
+    """Merge resolution (2026-10-07, carried+upstream): rotation-aware usable-secret view.
+
+    carried (26/9): a secret may be a rotation LIST (str|list|tuple) — the request path
+    accepts a signature valid for ANY entry. upstream (2943ee6f19): blank/whitespace-only
+    and non-string secrets are unset-in-disguise and must fail closed (_is_usable_secret).
+    This helper applies upstream's guard PER ENTRY without regressing the rotation contract:
+    str → [str]; list/tuple → entries; anything else → []. Blank/non-string entries drop
+    out; an all-blank value normalizes to [] (= "no usable secret") so both guards hold.
+    """
+    if isinstance(secret, (list, tuple)):
+        raw = list(secret)
+    elif isinstance(secret, str):
+        raw = [secret]
+    else:
+        raw = []
+    return [s for s in raw if _is_usable_secret(s)]
+
+
+def _read_secret_file(path: str, where: str):
+    """Externalized HMAC secrets (2026-09-26, RCA-secret-watchdog-locksteal): config.yaml may
+    point at a secret file via ``secret_file:`` instead of carrying the raw value inline, so a
+    config dump can never leak the secret (night class: raw HMAC in a transcript broke an
+    OpenRouter key). One non-empty line → str; multiple lines → list (rotation support).
+    Fail closed: unreadable/empty file raises ValueError at startup — same crash-early
+    contract as ``_validate_route``."""
+    p = os.path.expanduser(str(path))
+    # Regular-file gate (reviewer-fynd 26/9 04:51): a FIFO/device in the config path would
+    # block startup reads indefinitely and a directory raises IsADirectoryError (an OSError,
+    # caught below) — but only after an open() attempt. Fail closed on anything non-regular.
+    try:
+        if not stat.S_ISREG(os.stat(p).st_mode):
+            raise ValueError(f"[webhook] {where} 'secret_file' {path!r} is not a regular file.")
+    except OSError as e:
+        raise ValueError(f"[webhook] {where} 'secret_file' {path!r} is unreadable: {e}") from e
+    try:
+        with open(p, encoding="utf-8") as fh:
+            lines = [ln.strip() for ln in fh.read().splitlines() if ln.strip()]
+    except OSError as e:
+        raise ValueError(f"[webhook] {where} 'secret_file' {path!r} is unreadable: {e}") from e
+    if not lines:
+        raise ValueError(f"[webhook] {where} 'secret_file' {path!r} is empty.")
+    return lines[0] if len(lines) == 1 else lines
 
 
 def _timestamp_fresh(raw: str, stale_msg: str, *args) -> bool:
@@ -214,8 +261,84 @@ class WebhookAdapter(BasePlatformAdapter):
         # Empty string / null host normalises to None ("bind all families").
         self._host: Optional[str] = extra.get("host", DEFAULT_HOST) or None
         self._port: int = int(extra.get("port", DEFAULT_PORT))
-        self._global_secret: str = extra.get("secret", "")
-        self._static_routes: dict[str, dict] = extra.get("routes", {})
+        self._global_secret: Any = extra.get("secret", "")
+        # Global externalized secret (see _read_secret_file): resolved ONCE at startup so no
+        # request path re-reads the file. 'secret' and 'secret_file' at the same level is an
+        # ambiguity operators will regret (stale inline value silently winning) — refuse it.
+        if extra.get("secret_file"):
+            if extra.get("secret"):
+                raise ValueError("[webhook] platforms.webhook.extra sets both 'secret' and "
+                                 "'secret_file' — pick one.")
+            self._global_secret = _read_secret_file(extra["secret_file"],
+                                                    "platforms.webhook.extra")
+        # Config-shape tolerance (2026-09-24 RCA): a LIST-form `routes:` crashed every
+        # gateway start for 5h with a cryptic ValueError('dictionary update sequence
+        # element #0 has length 4; 2 is required') at the dict() below — one bad config
+        # line took down every platform the gateway serves. Normalize the list form into
+        # the named mapping this adapter needs (name from path basename); keep an
+        # actionable error only for shapes we genuinely cannot recover.
+        routes_cfg = extra.get("routes", {})
+        # A bare `routes:` key (YAML null) is indistinguishable from an absent key —
+        # tolerate it as empty rather than crash startup (review follow-up 24/9).
+        if routes_cfg is None:
+            routes_cfg = {}
+        if isinstance(routes_cfg, list):
+            normalized: dict[str, dict] = {}
+            for entry in routes_cfg:
+                if not isinstance(entry, dict):
+                    raise ValueError(
+                        "[webhook] platforms.webhook.extra.routes: list entries must be "
+                        f"mappings, got {type(entry).__name__}: {entry!r}"
+                    )
+                name = (
+                    str(entry.get("path", "route")).strip("/").replace("/", "_") or "route"
+                )
+                base_name, suffix = name, 2
+                while name in normalized:
+                    name = f"{base_name}_{suffix}"
+                    suffix += 1
+                normalized[name] = dict(entry)
+            logger.warning(
+                "[webhook] platforms.webhook.extra.routes was a LIST; normalized to named "
+                "routes %s. Prefer the mapping form (routes: {name: {path: ...}}) or "
+                "'hermes webhook subscribe <name>'.",
+                sorted(normalized),
+            )
+            routes_cfg = normalized
+        elif not isinstance(routes_cfg, dict) or not all(
+            isinstance(v, dict) for v in routes_cfg.values()
+        ):
+            bad_keys = (
+                [k for k, v in routes_cfg.items() if not isinstance(v, dict)]
+                if isinstance(routes_cfg, dict)
+                else None
+            )
+            raise ValueError(
+                "[webhook] platforms.webhook.extra.routes must be a mapping of route name "
+                "to route config, or a list of route configs (auto-named); got "
+                f"{type(routes_cfg).__name__}"
+                + (f" with non-mapping value(s) {bad_keys!r}" if bad_keys else "")
+                + ". Fix config.yaml or use 'hermes webhook subscribe <name>'."
+            )
+        # Route-level externalized secrets (see _read_secret_file): resolve each route's
+        # `secret_file` once at startup into a shallow COPY of the route dict — the original
+        # config object is never mutated and no request path re-reads the file. Routes
+        # without `secret_file` keep their original dict object (zero behaviour change).
+        # Same-level 'secret' + 'secret_file' is refused (crash early, not stale-inline-wins).
+        resolved_routes: dict[str, dict] = {}
+        for _rname, _rcfg in routes_cfg.items():
+            if not _rcfg.get("secret_file"):
+                resolved_routes[_rname] = _rcfg
+                continue
+            if _rcfg.get("secret"):
+                raise ValueError(f"[webhook] Route '{_rname}' sets both 'secret' and "
+                                 "'secret_file' — pick one.")
+            _rcopy = dict(_rcfg)
+            _rcopy["secret"] = _read_secret_file(_rcfg["secret_file"], f"route '{_rname}'")
+            del _rcopy["secret_file"]
+            resolved_routes[_rname] = _rcopy
+        routes_cfg = resolved_routes
+        self._static_routes: dict[str, dict] = routes_cfg
         self._dynamic_routes: dict[str, dict] = {}
         self._dynamic_routes_stat: Optional[tuple] = None
         self._routes: dict[str, dict] = dict(self._static_routes)
@@ -253,11 +376,20 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_route(self, name: str, route: dict) -> None:
         """Startup validation: secret required; INSECURE_NO_AUTH only on loopback (crash early on a public footgun)."""
         secret = route.get("secret", self._global_secret)
-        if not _is_usable_secret(secret):
+        # Merge resolution (2026-10-07): upstream's blank/non-string guard (_is_usable_secret
+        # via _normalized_secrets) applied ROTATION-AWARE — a plain `not _is_usable_secret(secret)`
+        # would reject a legitimate rotation list ("not a string") and regress the carried fix.
+        if not _normalized_secrets(secret):
             raise ValueError(f"[webhook] Route '{name}' HMAC secret is missing, blank, or not a string. Set 'secret' "
                              f"on the route or globally. "
                              f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'.")
-        if secret == _INSECURE_NO_AUTH and not _is_loopback_host(self._host):
+        # Rotation-aware check (reviewer-fynd 26/9 04:51): the request path treats the secret
+        # as a LIST (`_INSECURE_NO_AUTH not in secrets` skips HMAC entirely), so a rotation
+        # list CONTAINING INSECURE_NO_AUTH must fail startup on non-loopback too — otherwise
+        # an inline/secret_file list smuggles an auth-bypass past this equality check.
+        # (list, tuple) mirrors the request path's normalization exactly (reviewer rond-2).
+        _secret_values = list(secret) if isinstance(secret, (list, tuple)) else [secret]
+        if _INSECURE_NO_AUTH in _secret_values and not _is_loopback_host(self._host):
             raise ValueError(f"[webhook] Route '{name}' uses INSECURE_NO_AUTH secret but is bound to non-loopback "
                              f"host '{self._host}'. INSECURE_NO_AUTH is for local testing only. "
                              f"Refusing to start to prevent accidental exposure.")
@@ -415,15 +547,17 @@ class WebhookAdapter(BasePlatformAdapter):
         return web.json_response({"status": "ok", "platform": "webhook"})
 
     def _dynamic_route_allowed(self, name: str, route: dict) -> bool:
-        """Reject dynamic routes whose effective secret is missing, blank, or not a string
-        (_is_usable_secret); INSECURE_NO_AUTH is loopback-only."""
+        """An empty effective secret would make _handle_webhook skip HMAC validation → reject such
+        dynamic routes; INSECURE_NO_AUTH is loopback-only."""
         effective_secret = route.get("secret", self._global_secret)
-        if not _is_usable_secret(effective_secret):
+        # Merge resolution (2026-10-07): rotation-aware + upstream blank/non-string guard.
+        secrets = _normalized_secrets(effective_secret)
+        if not secrets:
             logger.warning("[webhook] Dynamic route '%s' skipped: 'secret' is missing, blank, or not a string. "
                            "Set a valid HMAC secret, or use '%s' to explicitly disable auth (testing only).",
                            name, _INSECURE_NO_AUTH)
             return False
-        if effective_secret == _INSECURE_NO_AUTH and not _is_loopback_host(self._host):
+        if _INSECURE_NO_AUTH in secrets and not _is_loopback_host(self._host):
             logger.warning("[webhook] Dynamic route '%s' skipped: INSECURE_NO_AUTH is only allowed on loopback "
                            "hosts. Current host: '%s'.", name, self._host)
             return False
@@ -479,10 +613,23 @@ class WebhookAdapter(BasePlatformAdapter):
             self._dynamic_routes_stat = stat_key  # keep the last good snapshot; parse this version once
             return
         try:
-            self._dynamic_routes = {  # static routes take precedence
-                k: v for k, v in data.items()
-                if isinstance(v, dict) and k not in self._static_routes and self._dynamic_route_allowed(k, v)
-            }
+            self._dynamic_routes = {}  # static routes take precedence; bad blocks skip, never 500 the request
+            for _k, _v in data.items():
+                if _k in self._static_routes or not isinstance(_v, dict):
+                    continue
+                # Same secret_file externalization as static routes (see _read_secret_file);
+                # hot-reload contract: a bad block skips the route, never 500s the request.
+                if _v.get("secret_file"):
+                    try:
+                        if _v.get("secret"):
+                            raise ValueError("sets both 'secret' and 'secret_file' — pick one.")
+                        _v["secret"] = _read_secret_file(_v["secret_file"], f"dynamic route '{_k}'")
+                        del _v["secret_file"]
+                    except ValueError as e:
+                        logger.warning("[webhook] Dynamic route '%s' skipped: %s", _k, e)
+                        continue
+                if self._dynamic_route_allowed(_k, _v):
+                    self._dynamic_routes[_k] = _v
             self._routes = {**self._dynamic_routes, **self._static_routes}
             self._dynamic_routes_stat = stat_key
             logger.info("[webhook] Reloaded %d dynamic route(s): %s", len(self._dynamic_routes),
@@ -552,18 +699,22 @@ class WebhookAdapter(BasePlatformAdapter):
             return None, _json_error("Bad request", 400)
         if len(raw_body) > self._max_body_bytes:  # defense in depth if the server-level limit was bypassed
             return None, _json_error("Payload too large", 413)
-        # Missing, blank, or non-string secrets fail closed here too (not only in connect()), so direct
-        # handler reuse cannot become an unauthenticated dispatch surface.
-        secret = route_config.get("secret", self._global_secret)
-        if not _is_usable_secret(secret):
+        # Missing/empty secrets fail closed here too (not only in connect()), so direct handler reuse
+        # cannot become an unauthenticated dispatch surface.
+        secret_val = route_config.get("secret", self._global_secret)
+        # Merge resolution (2026-10-07): rotation-aware + upstream blank/non-string guard — a
+        # request signed with a whitespace-only secret fails closed here (upstream's test).
+        secrets = _normalized_secrets(secret_val)
+        if not secrets:
             logger.error("[webhook] Route %s HMAC secret is missing, blank, or not a string; refusing request",
                          route_name)
             return None, _json_error("Webhook route is missing an HMAC secret", 403)
         if pin_error := _signature_pin_error(route_name, route_config):
             logger.error("%s Refusing request.", pin_error)
             return None, _json_error("Webhook route has an invalid signature pin", 403)
-        if secret != _INSECURE_NO_AUTH and not self._validate_signature(
-                request, raw_body, secret, route_config.get("signature")):
+        if _INSECURE_NO_AUTH not in secrets and not any(
+                self._validate_signature(request, raw_body, s, route_config.get("signature"))
+                for s in secrets):
             logger.warning("[webhook] Invalid signature for route %s", route_name)
             # Same 404 as an unknown route, so a bad signature cannot enumerate configured route names.
             return None, _json_error(f"Unknown route: {route_name}", 404)
@@ -693,9 +844,6 @@ class WebhookAdapter(BasePlatformAdapter):
             lambda: self._admission_source(route_name, profile, delivery_id))
         if error_response is not None:
             return error_response
-        # Rate limiting (after auth)
-        if not self._record_rate_limit_hit(route_name, time.time()):
-            return _json_error("Rate limit exceeded", 429)
         payload = self._parse_body(raw_body)
         if payload is _UNPARSEABLE:
             return _json_error("Cannot parse body", 400)
@@ -727,6 +875,9 @@ class WebhookAdapter(BasePlatformAdapter):
                     logger.info("[webhook] script ignored event=%s route=%s", event_type, route_name)
                     return web.json_response({"status": "ignored", "reason": "script", "route": route_name})
                 payload = transformed_payload or payload
+            # Rate limiting (after filter/script ignore so sink-only routes don't trip agent dispatch cap)
+            if not self._record_rate_limit_hit(route_name, time.time()):
+                return _json_error("Rate limit exceeded", 429)
             prompt = (render_mcp_event_prompt(self, route_config, payload, event_type, route_name)
                       or self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name))
             # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
@@ -892,6 +1043,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # The first family present commits the request to that scheme. V2 ranks above V1 so a
         # captured mixed V1+V2 request with its timestamp stripped cannot downgrade to body-only V1.
         present = {"standard": any(svix), "linear": _header("linear-signature"),
+                   "plane": _header("x-plane-signature"),
                    "github": headers.get("X-Hub-Signature-256", ""), "gitlab": headers.get("X-Gitlab-Token", ""),
                    "v2": headers.get("X-Webhook-Signature-V2", ""), "v1": headers.get("X-Webhook-Signature", "")}
         family = next((name for name, value in present.items() if value), None)
@@ -919,6 +1071,8 @@ class WebhookAdapter(BasePlatformAdapter):
             return _validate_svix_signature(body, secret, *svix)
         if family == "linear":
             return secrets_match(present["linear"], _hex_hmac(secret, body))
+        if family == "plane":
+            return secrets_match(present["plane"], _hex_hmac(secret, body))
         if family == "github":
             return secrets_match(present["github"], "sha256=" + _hex_hmac(secret, body))
         if family == "gitlab":

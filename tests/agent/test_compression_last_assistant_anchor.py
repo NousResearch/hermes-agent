@@ -107,7 +107,7 @@ def _seed(tmp_path, tail_rows, fold, follower):
         ("user", "Go deeper, full report."),
     ]
     for i in range(6):
-        rows += [("user", f"bulk q {i} " + "q" * 80), ("assistant", f"bulk a {i} " + "a" * 80)]
+        rows += [("user", f"bulk q {i} " + "q" * 160), ("assistant", f"bulk a {i} " + "a" * 160)]
     for role, content in [*rows, *tail_rows, ("assistant", REPLY)]:
         db.append_message(session_id, role, content)
     # Production live dicts carry _row_id + timestamp (session flush stamps both).
@@ -238,6 +238,59 @@ class TestEngineDropsReplyEndToEnd:
         assert any(
             "not reinserting" in r.getMessage() and skip_reason in r.getMessage() for r in caplog.records
         )
+
+    def test_mid_turn_split_carrier_unmerges_user_and_keeps_reply(self, tmp_path):
+        """Built-in mid-turn split compaction merges the active user turn (U_new) into the
+        summary carrier after ``_SUMMARY_END_MARKER`` + ``_INFLIGHT_TASK_REPLAY_HEADER`` and
+        keeps only the tail of the current tool chain. Unmerging U_new from the carrier
+        restores ``[carrier(summary), R_prev, U_new, A_tc_1, T_1, ...]`` with strict role
+        alternation and keeps both R_prev and U_new active without display duplication."""
+        from agent.context_compressor import (
+            COMPRESSED_SUMMARY_METADATA_KEY,
+            _INFLIGHT_TASK_REPLAY_HEADER,
+            _SUMMARY_END_MARKER,
+        )
+
+        carrier_content = (
+            f"{SUMMARY_PREFIX}\nearlier turns.\n\n{_SUMMARY_END_MARKER}\n\n"
+            f"{_INFLIGHT_TASK_REPLAY_HEADER}\n{FOLLOWER}"
+        )
+        fold = [
+            {
+                "role": "user",
+                "content": carrier_content,
+                COMPRESSED_SUMMARY_METADATA_KEY: True,
+                "display_kind": "hidden",
+            },
+            *_tool_chain("call_1", "call_2"),
+        ]
+        db, session_id, messages, agent = _seed(tmp_path, [], fold, FOLLOWER)
+        # Persist the active user turn and tool chain before mid-turn compaction fires.
+        db.append_message(session_id, "user", FOLLOWER)
+        for row in fold[1:]:
+            db.append_message(
+                session_id,
+                row["role"],
+                row.get("content"),
+                tool_calls=row.get("tool_calls"),
+                tool_call_id=row.get("tool_call_id"),
+            )
+        messages = db.get_messages_as_conversation(session_id, include_row_ids=True)
+
+        live, _live_contents = self._compress_and_read(db, session_id, agent, messages, tail_role="tool")
+
+        assert _count_reply(live) == 1
+        assert [m.get("role") for m in live[:4]] == ["user", "assistant", "user", "assistant"]
+        assert _INFLIGHT_TASK_REPLAY_HEADER not in (live[0].get("content") or "")
+        assert (live[1].get("content") or "").strip() == REPLY.strip()
+        assert (live[2].get("content") or "").strip() == FOLLOWER.strip()
+        assert live[3].get("tool_calls")
+
+        display = db.get_messages_as_conversation(
+            session_id, include_ancestors=True, include_row_ids=True, include_compacted=True,
+        )
+        assert _count_reply(display) == 1
+        assert sum(1 for m in display if m.get("role") == "user" and (m.get("content") or "").strip() == FOLLOWER) == 1
 
     def test_older_assistant_at_slot_is_not_displaced(self, tmp_path):
         """The engine kept an older assistant row ("noted") right where the reply would go,

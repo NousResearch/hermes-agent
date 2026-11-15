@@ -8,7 +8,12 @@ from agent.error_classifier import FailoverReason
 
 logger = logging.getLogger(__name__)
 
-_RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit})
+_RATE_LIMIT_FAILOVER_REASONS = frozenset({
+    FailoverReason.rate_limit,
+    FailoverReason.billing,
+    FailoverReason.upstream_rate_limit,
+    FailoverReason.overloaded,
+})
 
 
 def _provider_reset_delay(reset_at) -> float | None:

@@ -34,3 +34,39 @@ class TestSessionPlatformGate:
     def test_gate_runs_even_without_tool_info(self):
         # The channel gate is independent of tool-filtering backward compat.
         assert _skill_should_show(_conds(["teams"]), None, None, "desktop") is False
+
+    def test_current_session_platform_hint_reads_session_source(self, monkeypatch):
+        from agent.prompt_builder import _current_session_platform_hint
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+        tokens = set_session_vars(source="desktop")
+        try:
+            assert _current_session_platform_hint() == "desktop"
+            assert _skill_should_show(_conds(["teams", "cron"]), {"terminal"}, set(), _current_session_platform_hint()) is False
+        finally:
+            clear_session_vars(tokens)
+
+    def test_skip_first_secret_skips_remaining_missing_entries(self, monkeypatch):
+        from tools import skills_tool
+        from tools.skills_tool_setup import _capture_required_environment_variables
+
+        asked = []
+        def _cancel_first(var_name, prompt, metadata=None):
+            asked.append(var_name)
+            return {"success": True, "stored_as": var_name, "validated": False, "skipped": True}
+
+        with skills_tool.bind_turn_secret_capture(_cancel_first):
+            res = _capture_required_environment_variables(
+                "teams-meeting-pipeline",
+                [
+                    {"name": "MSGRAPH_TENANT_ID", "prompt": "Enter value for MSGRAPH_TENANT_ID"},
+                    {"name": "MSGRAPH_CLIENT_ID", "prompt": "Enter value for MSGRAPH_CLIENT_ID"},
+                    {"name": "MSGRAPH_CLIENT_SECRET", "prompt": "Enter value for MSGRAPH_CLIENT_SECRET"},
+                ],
+            )
+        assert asked == ["MSGRAPH_TENANT_ID"]
+        assert res["missing_names"] == ["MSGRAPH_TENANT_ID", "MSGRAPH_CLIENT_ID", "MSGRAPH_CLIENT_SECRET"]
+        assert res["setup_skipped"] is True

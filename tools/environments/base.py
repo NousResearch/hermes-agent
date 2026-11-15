@@ -853,11 +853,23 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         from tools.environments.sudo_password_note import note_sudo_password_sent
         from tools.terminal_tool_macos_open import _transform_macos_open_command
         from tools.terminal_tool_sudo import _transform_sudo_command
-        prepared = _transform_sudo_command(
-            _transform_macos_open_command(command),
-            sudo_nopasswd_check=self._sudo_nopasswd_works,
-            askpass_supported=self._sudo_askpass_supported,
-        )
+        rewritten: str = _transform_macos_open_command(command) or command
+        try:
+            cmd_out, stdin_out = _transform_sudo_command(
+                rewritten,
+                sudo_nopasswd_check=self._sudo_nopasswd_works,
+                askpass_supported=self._sudo_askpass_supported,
+            )
+        except TypeError:
+            import importlib
+            import tools.terminal_tool_sudo as _tts_mod
+            importlib.reload(_tts_mod)
+            cmd_out, stdin_out = _tts_mod._transform_sudo_command(
+                rewritten,
+                sudo_nopasswd_check=self._sudo_nopasswd_works,
+                askpass_supported=self._sudo_askpass_supported,
+            )
+        prepared = (cmd_out or rewritten, stdin_out)
         note_sudo_password_sent(self, prepared[1])  # once per non-local backend class
         return prepared
 

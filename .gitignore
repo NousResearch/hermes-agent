@@ -339,3 +339,6 @@ infografico/
 /pm/.lock.json.lock
 
 apps/desktop/.dist-build*
+# bundler output (scripts/bundle-electron-main.mjs) lands in-tree and trips the
+# air-desktop-update dirt-check (2026-10-16: --force abort rc 10 on stray file)
+apps/desktop/electron-main.mjs

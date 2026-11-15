@@ -575,3 +575,26 @@ async def test_hot_added_profile_cannot_double_claim_a_live_secondary_token(tmp_
         await runner.reconcile_served_profiles()
     fp = GatewayRunner._adapter_credential_fingerprint(_Adapter("shared"))
     assert seen_claims["dupe"].get((Platform.DISCORD, fp)) == "alpha"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_served_profiles_offloads_diff_scan_to_housekeeping_executor(tmp_path, monkeypatch):
+    """reconcile_served_profiles must offload filesystem scans and stats through housekeeping executor."""
+    runner, home = _runner(tmp_path, monkeypatch)
+    offload_calls = []
+
+    async def _fake_offload(fn, *args):
+        offload_calls.append(fn)
+        return fn(*args)
+
+    runner._run_housekeeping_in_executor = _fake_offload
+    _mkprofile(home, "beta", "DISCORD_BOT_TOKEN=beta-token\n")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        res = await runner.reconcile_served_profiles()
+        assert len(offload_calls) >= 1
+        # carried 25/9: the scan helper is _scan_live_profile_serve_state — same offload
+        # contract, but the walk + serve signatures are ALL computed off the loop.
+        from gateway.run_profile_reconcile import _scan_live_profile_serve_state
+        assert _scan_live_profile_serve_state in offload_calls
+        assert "beta" in res["served_profiles"]

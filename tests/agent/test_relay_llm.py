@@ -856,6 +856,75 @@ def test_logical_close_skips_pop_under_concurrent_turn_scope(relay_turn):
     )
 
 
+def test_concurrent_auxiliary_logical_call_drains_before_task_scope_close(
+    relay_turn, caplog, monkeypatch
+):
+    """When background title_generation finishes while main API call #1 is on top of the
+    stack, its deferred logical scope must drain as soon as the main call closes (and via
+    finish_logical_calls) so finish_task_run finds hermes.task_run at the top of the stack
+    instead of leaving hermes.task_run to be drained as a cancelled orphan at end_turn."""
+    relay, turn = relay_turn
+    lease = turn.lease
+    popped_outputs = []
+    real_pop = relay.scope.pop
+
+    def record_pop(handle, *args, **kwargs):
+        popped_outputs.append((handle, kwargs.get("output")))
+        return real_pop(handle, *args, **kwargs)
+
+    monkeypatch.setattr(relay.scope, "pop", record_pop)
+    observe_top = lambda: lease.host.run_in_session(
+        lease.session, relay_runtime._current_top, relay
+    )
+
+    task_handle = lease.host.run_in_session(
+        lease.session, relay.scope.push, "hermes.task_run",
+        relay.ScopeType.Function, handle=turn.handle, input={},
+    )
+    for req_id in ("request-title", "request-main"):
+        relay_llm.execute(
+            {"model": "test-model", "messages": []},
+            lambda _request: {"content": "ok"},
+            session_id="session-1",
+            name="test-provider",
+            model_name="test-model",
+            metadata={"api_mode": "custom", "api_request_id": req_id},
+            defer_logical_completion=True,
+        )
+    title_handle = turn.logical_llm_calls["request-title"]
+    main_handle = turn.logical_llm_calls["request-main"]
+    assert relay_runtime._same_handle(observe_top(), main_handle)
+
+    # Background title_generation finishes first while main_handle is still on top.
+    relay_llm.complete_logical_call(
+        "request-title", outcome="success", model_name="flash", provider_name="vertex"
+    )
+    assert relay_runtime._same_handle(observe_top(), main_handle)
+
+    # Main call finishes next: popping main_handle must also drain the completed title_handle
+    # underneath it so task_handle is back at the top of the stack before finish_task_run.
+    with caplog.at_level("WARNING"):
+        relay_llm.complete_logical_call(
+            "request-main", outcome="success", model_name="argon", provider_name="vertex"
+        )
+        relay_runtime.SESSION_COORDINATOR.finish_logical_calls(turn, outcome="success")
+        assert relay_runtime._same_handle(observe_top(), task_handle)
+        task_popped = lease.host.run_in_session(
+            lease.session, relay_runtime.pop_relay_scope_if_top, relay, task_handle,
+            output={"outcome": "success"},
+            metadata=relay_runtime.runtime_metadata(lease.host.runtime_id),
+        )
+        assert task_popped is True
+        relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
+
+    assert "orphaned scope" not in caplog.text
+    by_uuid = {getattr(h, "uuid", id(h)): out for h, out in popped_outputs}
+    assert by_uuid[getattr(title_handle, "uuid", id(title_handle))] == {
+        "outcome": "success", "model": "flash", "provider": "vertex",
+    }
+    assert by_uuid[getattr(task_handle, "uuid", id(task_handle))] == {"outcome": "success"}
+
+
 def test_non_stream_result_survives_logical_scope_close_failure(
     relay_turn, monkeypatch
 ):

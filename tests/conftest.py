@@ -313,6 +313,24 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     monkeypatch.setattr(
         hermes_constants, "_get_platform_default_hermes_home", isolated_platform_default
     )
+    # On default install.sh layouts (INSTALL_DIR=$HERMES_HOME/hermes-agent),
+    # PROJECT_ROOT.parent IS the real ~/.hermes. owning_home_root(PROJECT_ROOT)
+    # probes PROJECT_ROOT.parent/installs/<key>/facts.json directly (bypassing
+    # _get_platform_default_hermes_home above) and trips HomeIOGuard whenever a
+    # test resolves store_root(). Synthetic checkouts under tmp_path still run
+    # the real owning_home_root logic.
+    import pm.environments as _pm_env
+
+    _real_owning_home_root = _pm_env.owning_home_root
+    _resolved_project_root = PROJECT_ROOT.resolve()
+
+    def _isolated_owning_home_root(project_root: Path) -> Path | None:
+        if Path(project_root).resolve() == _resolved_project_root:
+            return None
+        return _real_owning_home_root(project_root)
+
+    monkeypatch.setattr(_pm_env, "owning_home_root", _isolated_owning_home_root)
+
     fake_hermes_home = tmp_path / "hermes_test"
     fake_hermes_home.mkdir()
     (fake_hermes_home / "sessions").mkdir()

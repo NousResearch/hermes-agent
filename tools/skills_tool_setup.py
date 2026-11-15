@@ -105,7 +105,7 @@ def _capture_required_environment_variables(
     if callback is None and (callback := _st._secret_capture_callback) is None:
         return _capture_result(missing_names)
     remaining_names: list[str] = []
-    for entry in missing_entries:
+    for idx, entry in enumerate(missing_entries):
         metadata = {"skill_name": skill_name, **{k: entry[k] for k in ("help", "required_for") if entry.get(k)}}
         try:
             callback_result = callback(entry["name"], entry["prompt"], metadata)
@@ -113,8 +113,12 @@ def _capture_required_environment_variables(
             logger.warning(f"Secret capture callback failed for {entry['name']}", exc_info=True)
             callback_result = {"success": False, "stored_as": entry["name"], "validated": False, "skipped": True}
         ok = isinstance(callback_result, dict) and callback_result.get("success")
-        if not (ok and not callback_result.get("skipped")):
+        skipped = isinstance(callback_result, dict) and bool(callback_result.get("skipped"))
+        if not (ok and not skipped):
             remaining_names.append(entry["name"])
+            if ok and skipped:
+                remaining_names.extend(rest["name"] for rest in missing_entries[idx + 1:])
+                break
     return _capture_result(remaining_names, bool(remaining_names))
 
 

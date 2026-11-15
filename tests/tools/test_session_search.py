@@ -1235,6 +1235,32 @@ class TestDiscoverySessionExclusion:
             query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
         assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}
 
+    def test_session_id_with_query_searches_tool_and_subagent_and_relaxes_multiword(self, db):
+        """ATLAS-129 / DQ #515:
+        1) session_search(query=..., session_id=...) runs discovery (not _read_scoped),
+           defaulting role_filter to ['user','assistant','tool'], lifting exclude_sources
+           so subagent/kanban/tool sessions can be searched explicitly, and returning
+           multiple hits within the target session up to limit.
+        2) Multi-word tool-role LIKE fallback relaxes to OR when strict AND matches 0 rows."""
+        db.create_session("s_sub", source="subagent")
+        m1 = db.append_message("s_sub", role="tool", content="first tool output RefinedExecutionTracer alpha", tool_name="terminal")
+        m2 = db.append_message("s_sub", role="tool", content="second tool output RefinedExecutionTracer beta", tool_name="terminal")
+        db._conn.commit()
+
+        scoped = json.loads(session_search(
+            query="RefinedExecutionTracer", session_id="s_sub", limit=5,
+            current_session_id="s_sub", db=db))
+        assert scoped["success"] is True
+        assert scoped["mode"] == "discover"
+        matched_ids = {r["match_message_id"] for r in scoped["results"]}
+        assert matched_ids == {m1, m2}
+
+        # Multi-word tool search where only one token exists in the tool output
+        relaxed = json.loads(session_search(
+            query="RefinedExecutionTracer NonExistentTokenXYZ",
+            role_filter="tool", session_id="s_sub", limit=5, db=db))
+        assert relaxed["success"] is True
+        assert len(relaxed["results"]) >= 1
 
 class TestBrowseDefaultLimit:
     def test_no_limit_browse_returns_ten_on_every_entry_point(self, db):

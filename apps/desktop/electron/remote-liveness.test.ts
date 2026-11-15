@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   ensureHealthyPooledRemoteBackendForDispatch,
   POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS,
+  POOLED_REMOTE_DISPATCH_RETRY_DELAY_MS,
   POWER_RESUME_REVALIDATION_HOLDOFF_MS,
   REMOTE_LIVENESS_FAILURE_LIMIT,
   REMOTE_LIVENESS_FAILURE_WINDOW_MS,
@@ -359,6 +360,73 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     })
     expect(retire).not.toHaveBeenCalled()
     expect(reconnect).not.toHaveBeenCalled()
+  })
+
+  it('retries once after POOLED_REMOTE_DISPATCH_RETRY_DELAY_MS before retiring a transiently stalled backend', async () => {
+    const backend = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const connectionPromise = Promise.resolve(backend)
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+    const sleep = vi.fn(async () => undefined)
+    let attempts = 0
+
+    const probe = vi.fn(async () => {
+      attempts += 1
+      if (attempts === 1) {
+        throw new Error('Request timed out after 8000ms')
+      }
+      return { ok: true }
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise,
+        currentConnectionPromise: () => connectionPromise,
+        probe,
+        reconnect,
+        retire,
+        sleep
+      })
+    ).resolves.toBe(backend)
+
+    expect(POOLED_REMOTE_DISPATCH_RETRY_DELAY_MS).toBe(3_000)
+    expect(sleep).toHaveBeenCalledWith(3_000)
+    expect(probe).toHaveBeenCalledTimes(2)
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+  })
+
+  it('uses fast 400ms retry delay when the local SSH tunnel throws immediate ECONNRESET/ECONNREFUSED', async () => {
+    const stale = { baseUrl: 'http://127.0.0.1:49418', mode: 'remote' }
+    const replacement = { baseUrl: 'http://127.0.0.1:53852', mode: 'remote' }
+    const stalePromise = Promise.resolve(stale)
+    let currentPromise: Promise<typeof stale> | null = stalePromise
+    const sleep = vi.fn(async () => undefined)
+    const retire = vi.fn(async () => {
+      currentPromise = null
+    })
+    const reconnect = vi.fn(async () => {
+      currentPromise = Promise.resolve(replacement)
+      return replacement
+    })
+    const probe = vi.fn(async () => {
+      throw new Error('read ECONNRESET')
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: stalePromise,
+        currentConnectionPromise: () => currentPromise,
+        probe,
+        reconnect,
+        retire,
+        sleep
+      })
+    ).resolves.toBe(replacement)
+
+    expect(sleep).toHaveBeenCalledWith(400)
+    expect(retire).toHaveBeenCalledOnce()
+    expect(reconnect).toHaveBeenCalledOnce()
   })
 })
 

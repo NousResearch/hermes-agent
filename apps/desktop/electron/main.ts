@@ -199,6 +199,7 @@ import {
   type ResolvedConnectionDescriptor,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
+  resolveSshRegistryTokenEnvelope,
   reuseMatchingPrimaryRemoteBackend,
   reuseMatchingPrimarySshBackend,
   setConnectionLaunchMode,
@@ -208,7 +209,8 @@ import {
   shouldDeferLocalEnumeration,
   shouldRetrySshInventory,
   updateEligibility,
-  upsertConnection
+  upsertConnection,
+  withSshRegistryProfileToken
 } from './connection-registry'
 import type { RegistryConnection } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
@@ -7874,12 +7876,17 @@ function rewriteAllStoredSecrets(shouldRewrite: (secret: any) => boolean, reenco
       next.headers = Object.fromEntries(Object.entries(block.headers).map(([k, v]) => [k, reencode(v)]))
     }
 
+    if (block.profileTokens && typeof block.profileTokens === 'object') {
+      next.profileTokens = Object.fromEntries(Object.entries(block.profileTokens).map(([k, v]) => [k, reencode(v)]))
+    }
+
     return next
   }
 
   const blockNeedsRewrite = (o: any) =>
     shouldRewrite(o?.token) ||
-    Object.values(o?.headers && typeof o.headers === 'object' ? o.headers : {}).some(shouldRewrite)
+    Object.values(o?.headers && typeof o.headers === 'object' ? o.headers : {}).some(shouldRewrite) ||
+    Object.values(o?.profileTokens && typeof o.profileTokens === 'object' ? o.profileTokens : {}).some(shouldRewrite)
 
   // v1 connection.json.
   const config = readDesktopConnectionConfig()
@@ -9187,7 +9194,10 @@ async function sshProbeReuseProof(baseUrl, token, spawnNonce) {
   }
 }
 
-async function teardownSshConnection(profile) {
+async function teardownSshConnection(
+  profile,
+  { preserveRemoteBackend = true }: { preserveRemoteBackend?: boolean } = {}
+) {
   const scope = sshScopeKey(profile)
   sshIsolatedKeepalives.stop(scope)
   const state = sshConnections.get(scope)
@@ -9201,10 +9211,10 @@ async function teardownSshConnection(profile) {
   terminalIpc.disposeTerminalSessionsForSshScope(scope)
 
   // Kill the owned remote serve --isolated *before* closing the SSH
-  // transport. Spawn detaches with setsid/nohup, so closing the tunnel
-  // alone leaves the backend at pid 1 holding state.db (#91668).
-  // Windows remotes use a different lifecycle (connectWindowsRemote) and
-  // are left to a follow-up; POSIX is the leak that OOM'd gateways.
+  // transport ONLY when preserveRemoteBackend is false (explicit recycle,
+  // connection/profile delete, or SSH dial config change). On transient
+  // probe-retire, sleep/wake revalidation, or app quit, preserve the remote
+  // backend so the next connect re-adopts it via backend.lock.json (DQ #369).
   await sshTeardowns.track(state.ssh, (): Promise<void> =>
     teardownSshState(
       {
@@ -9220,7 +9230,8 @@ async function teardownSshConnection(profile) {
                 // mysterious no-op on Windows remotes.
                 sshRememberLog('[ssh] skip remote serve teardown on Windows remotes; POSIX disconnect does not apply')
               }
-            : remoteLifecycle.disconnect
+            : remoteLifecycle.disconnect,
+        preserveRemoteBackend
       }
     )
   )
@@ -9499,7 +9510,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   const existing = sshConnections.get(scope)
 
   if (existing && existing.fingerprint !== fingerprint) {
-    await teardownSshConnection(profile)
+    await teardownSshConnection(profile, { preserveRemoteBackend: false })
   }
 
   let ssh = sshConnections.get(scope)?.ssh
@@ -9686,7 +9697,9 @@ function persistSshConnectionToken(profile, source, token, registryConnectionId 
       const entry = registry.connections.find(c => c.id === id)
 
       if (entry && entry.kind === 'ssh') {
-        writeDesktopConnectionsRegistry(upsertConnection(registry, { ...entry, token: encrypted }))
+        writeDesktopConnectionsRegistry(
+          upsertConnection(registry, withSshRegistryProfileToken(entry, profile, encrypted))
+        )
       }
     }
 
@@ -9759,7 +9772,7 @@ async function resolveRemoteBackend(
     const connection = await bootstrapSshConnection(
       persistenceSource === 'profile' ? profileKey : null,
       sshConfig,
-      decryptDesktopSecret(source.token),
+      decryptDesktopSecret(resolveSshRegistryTokenEnvelope(source, profileKey)),
       persistenceSource,
       undefined,
       {
@@ -10550,7 +10563,7 @@ async function connectRegistryBackend(
     const connection = await bootstrapSshConnection(
       key,
       sshConfig,
-      decryptDesktopSecret(source.token),
+      decryptDesktopSecret(resolveSshRegistryTokenEnvelope(source, profileKey)),
       tokenPersistenceSource || `registry:${source.id}`,
       resolvedEffectiveFingerprint ? await resolvedEffectiveFingerprint : undefined,
       {
@@ -11111,7 +11124,11 @@ async function stopRegistryConnectionBackends(connectionId) {
   ])
 
   await Promise.all(
-    [...sshScopes].map(scope => sshBootstrapCoordinator.cancelAndWait(scope, () => teardownSshConnection(scope)))
+    [...sshScopes].map(scope =>
+      sshBootstrapCoordinator.cancelAndWait(scope, () =>
+        teardownSshConnection(scope, { preserveRemoteBackend: false })
+      )
+    )
   )
 }
 
@@ -11272,7 +11289,9 @@ async function teardownPoolBackendAndWait(profile) {
       await stopPoolBackend(key)
 
       try {
-        await sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key))
+        await sshBootstrapCoordinator.cancelAndWait(key, () =>
+          teardownSshConnection(key, { preserveRemoteBackend: false })
+        )
       } catch (err) {
         sshRememberLog(`[ssh-teardown] ${key}: ${String(err)}`)
       }
@@ -14099,7 +14118,7 @@ ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
     restartLocalGateway: restartAttachedLocalGateway,
     teardownPool: teardownPoolBackendAndWait,
     teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
-    teardownSsh: value => teardownSshConnection(value || null)
+    teardownSsh: value => teardownSshConnection(value || null, { preserveRemoteBackend: false })
   })
 
   return { ok: true }
@@ -15242,7 +15261,7 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
         sendApplied: notifyApplied,
         stopPool: stopPoolBackend,
         teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
-        teardownSsh: value => teardownSshConnection(value || null)
+        teardownSsh: value => teardownSshConnection(value || null, { preserveRemoteBackend: false })
       })
   })
 
@@ -15744,7 +15763,9 @@ async function teardownConnectionScopedProfileBackend(connectionId, profile) {
   const key = backendScopeKey(connectionId, profile)
   await Promise.all([
     stopPoolBackend(key),
-    sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key))
+    sshBootstrapCoordinator.cancelAndWait(key, () =>
+      teardownSshConnection(key, { preserveRemoteBackend: false })
+    )
   ])
 }
 

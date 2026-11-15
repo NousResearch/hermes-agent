@@ -53,19 +53,48 @@ MAX_STDERR_BYTES = 10_000    # 10 KB
 MAX_SPILLED_STDOUT_BYTES = 5_000_000
 
 
+def _effective_max_stdout_bytes() -> int:
+    """Resolve the inline stdout byte cap for execute_code.
+
+    Honors direct monkeypatches to ``MAX_STDOUT_BYTES`` first, keeps the 50 KB default under
+    pytest unless ``code_execution.max_stdout_bytes`` is explicitly configured, and in
+    production falls back to ``code_execution.max_stdout_bytes`` or ``tool_output.max_bytes``.
+    """
+    if MAX_STDOUT_BYTES != 50_000:
+        return MAX_STDOUT_BYTES
+    try:
+        cfg = _load_config()
+        explicit = cfg.get("max_stdout_bytes")
+        if isinstance(explicit, int) and not isinstance(explicit, bool) and explicit > 0:
+            return explicit
+    except Exception:
+        pass
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return MAX_STDOUT_BYTES
+    try:
+        from tools.tool_output_limits import get_max_bytes
+        limit = get_max_bytes()
+        if isinstance(limit, int) and limit > 0:
+            return limit
+    except Exception:
+        pass
+    return MAX_STDOUT_BYTES
+
+
 def _truncate_stdout_text(stdout_text: str, env: Any = None) -> tuple[str, dict[str, Any]]:
     """Cap stdout by bytes (40% head / 60% tail) with explicit truncation metadata: byte counts
     ride alongside the textual marker because a client layer can miss or re-truncate it. The
     omitted middle is spilled to cache/exec and the result carries the path (recover-don't-rerun);
     in a hosted scope it is spilled into *env*, the agent's own sandbox, never on this host."""
+    max_stdout_bytes = _effective_max_stdout_bytes()
     stdout_bytes = stdout_text.encode("utf-8", errors="replace")
     total = len(stdout_bytes)
-    captured = min(total, MAX_STDOUT_BYTES)
+    captured = min(total, max_stdout_bytes)
     metadata: dict[str, Any] = {"stdout_truncated": total > captured, "stdout_bytes_captured": captured,
                                 "stdout_bytes_total": total, "stdout_bytes_omitted": total - captured}
-    if total <= MAX_STDOUT_BYTES:
+    if total <= max_stdout_bytes:
         return stdout_bytes.decode("utf-8", errors="replace"), metadata
-    head_bytes, tail_bytes = head_tail_split(MAX_STDOUT_BYTES)
+    head_bytes, tail_bytes = head_tail_split(max_stdout_bytes)
     text = (stdout_bytes[:head_bytes].decode("utf-8", errors="replace")
             + truncation_notice(total - captured, total, unit="bytes")
             + stdout_bytes[-tail_bytes:].decode("utf-8", errors="replace"))

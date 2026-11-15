@@ -689,6 +689,7 @@ async function pidIsOurDashboard(
     `expected_token=os.path.expanduser(${shq(ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : '')})\n` +
     `expected_profile=${shq(profile)}\n` +
     `nonce=${shq(spawnNonce)}\n` +
+    'line=""\n' +
     'try:\n' +
     ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
     ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0") if x]\n' +
@@ -698,7 +699,10 @@ async function pidIsOurDashboard(
     ' except subprocess.CalledProcessError:\n' +
     '  # pid already gone — a dead process is FOREIGN, not a transport error\n' +
     '  print("FOREIGN");sys.exit(0)\n' +
-    ' args=shlex.split(line)\n' +
+    ' try:\n' +
+    '  args=shlex.split(line)\n' +
+    ' except ValueError:\n' +
+    '  args=line.split()\n' +
     'ok=False\n' +
     'try:\n' +
     // A profile literally named "serve" puts the value token before the
@@ -715,9 +719,9 @@ async function pidIsOurDashboard(
     ' token_count=args.count("--ssh-session-token-file")\n' +
     ' isolated_count=args.count("--isolated")\n' +
     ' profile_count=args.count("--profile")\n' +
-    ' direct=args[0] in expected_entries\n' +
+    ' direct=args[0] in expected_entries or (bool(line) and any(line.startswith(e+" ") for e in expected_entries))\n' +
     ' python_entry=len(args)>1 and args[1] in expected_entries and os.path.basename(args[0]).startswith("python")\n' +
-    ' token_ok=not expected_token or args[token+1]==expected_token\n' +
+    ' token_ok=not expected_token or args[token+1]==expected_token or (bool(line) and f"--ssh-session-token-file {expected_token} " in (line+" "))\n' +
     ' isolated_ok=isolated_count==1 and isolated>serve\n' +
     ' profile_ok=(profile_count==1 and profile_arg<serve and args[profile_arg+1]==expected_profile) if expected_profile else profile_count==0\n' +
     ' spawn_proof=bool(expected_token) and owner_count==1 and token_count==1 and token_ok and profile_ok\n' +
@@ -795,6 +799,17 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
   if (lock?.logPath === expectedLogPath) {
     try {
       await ssh.exec(`rm -f ${expandRemotePath(lock.logPath)}`)
+    } catch {
+      void 0
+    }
+  }
+
+  const expectedTokenPath =
+    ownershipId && lock?.spawnNonce ? spawnTokenPath(ownershipId, lock.spawnNonce) : ''
+
+  if (expectedTokenPath) {
+    try {
+      await ssh.exec(`rm -f ${expandRemotePath(expectedTokenPath)}`)
     } catch {
       void 0
     }

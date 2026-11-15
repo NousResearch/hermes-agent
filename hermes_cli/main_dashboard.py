@@ -915,6 +915,8 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
 
     Returns normally — leaving the caller to BIND — when no owner answers.
     """
+    if os.environ.get("XPC_SERVICE_NAME") == "ai.hermes.serve":
+        args.isolated = True
     if getattr(args, "isolated", False) or _is_desktop_owned_backend():
         return
     record = _host_backend_attachment()

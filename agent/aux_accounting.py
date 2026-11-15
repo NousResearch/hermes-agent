@@ -91,5 +91,23 @@ def record_aux_usage(
             cache_read_tokens=usage.cache_read_tokens, cache_write_tokens=usage.cache_write_tokens,
             reasoning_tokens=usage.reasoning_tokens, estimated_cost_usd=estimated_cost,
         )
+        try:
+            from agent.realtime_spend_breaker import record_realtime_llm_call
+            _aux_rid = getattr(response, "id", None)
+            record_realtime_llm_call(
+                session_id=str(session_id or f"aux:{task}"),
+                source=f"aux:{task}",
+                provider=str(provider or "unknown"),
+                model=model,
+                prompt_tokens=int((usage.input_tokens or 0) + (usage.cache_read_tokens or 0) + (usage.cache_write_tokens or 0)),
+                uncached_input_tokens=int(usage.input_tokens or 0),
+                cache_read_tokens=int(usage.cache_read_tokens or 0),
+                output_tokens=int((usage.output_tokens or 0) + (usage.reasoning_tokens or 0)),
+                request_id=_aux_rid if isinstance(_aux_rid, str) else None,
+                job_name=str(task or ""),
+                estimated_cost_usd=estimated_cost,
+            )
+        except Exception:
+            pass
     except Exception:
         logger.debug("Aux usage recording failed (non-fatal)", exc_info=True)

@@ -21,6 +21,7 @@ container is hard-capped (``_cap_read_tracker_data``) so long sessions stay smal
 import contextlib
 import contextvars
 import hashlib
+import json
 import logging
 import os
 import stat
@@ -63,13 +64,23 @@ class _PerAgentTracker(dict):
         return super().pop(self._key(task_id), *default)
 
 
-_read_tracker_lock = threading.Lock()
-_read_tracker: dict = _PerAgentTracker()
+_read_tracker_lock = globals().get("_read_tracker_lock") or threading.Lock()
+_existing_read_tracker = globals().get("_read_tracker")
+if isinstance(_existing_read_tracker, dict):
+    _existing_read_tracker.__class__ = _PerAgentTracker
+    _read_tracker: dict = _existing_read_tracker
+else:
+    _read_tracker = _PerAgentTracker()
 
 # Consecutive patch failures per (task_id, resolved_path); escalates the hint
 # when the model keeps failing the same file. Reset on a successful patch.
-_patch_failure_lock = threading.Lock()
-_patch_failure_tracker: dict = _PerAgentTracker()  # {task_id: {resolved_path: count}}
+_patch_failure_lock = globals().get("_patch_failure_lock") or threading.Lock()
+_existing_patch_failure_tracker = globals().get("_patch_failure_tracker")
+if isinstance(_existing_patch_failure_tracker, dict):
+    _existing_patch_failure_tracker.__class__ = _PerAgentTracker
+    _patch_failure_tracker: dict = _existing_patch_failure_tracker
+else:
+    _patch_failure_tracker = _PerAgentTracker()  # {task_id: {resolved_path: count}}
 _PATCH_FAILURE_PATHS_CAP = 64
 
 # Only the most recent reads matter for dedup, loop detection and external-edit
@@ -231,7 +242,131 @@ def _bump_consecutive(task_data: dict, key: tuple) -> int:
     return task_data["consecutive"]
 
 
-def reset_file_dedup(task_id: str | None = None):
+def seed_file_dedup_from_messages(task_id: str | None, messages: list | None) -> None:
+    """Re-seed ``dedup_generation_reads`` for unpruned ``read_file`` outputs that survived in *messages*."""
+    if not task_id or not isinstance(messages, list):
+        return
+    tid = str(task_id)
+    call_args: dict[str, tuple[str, int, int]] = {}
+    surviving_call_ids: set[str] = set()
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                if fn.get("name") != "read_file":
+                    continue
+                tc_id = tc.get("id")
+                if not tc_id:
+                    continue
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except Exception:
+                    continue
+                p = args.get("path")
+                if not p or not isinstance(p, str):
+                    continue
+                off = int(args.get("offset", 1) or 1)
+                lim = int(args.get("limit", 2000) or 2000)
+                resolved = _resolved_or_none(p, tid) or os.path.realpath(os.path.expanduser(p))
+                call_args[str(tc_id)] = (resolved, off, lim)
+        elif role == "tool":
+            tc_id = str(msg.get("tool_call_id") or "")
+            if tc_id not in call_args:
+                continue
+            content = str(msg.get("content") or "")
+            if not content or "[read_file output demoted at compaction" in content:
+                continue
+            stripped = content.lstrip()
+            if not stripped.startswith("{"):
+                continue
+            try:
+                payload, _ = json.JSONDecoder().raw_decode(stripped)
+            except Exception:
+                continue
+            if isinstance(payload, dict) and isinstance(payload.get("content"), str) and not payload.get("deduplicated"):
+                surviving_call_ids.add(tc_id)
+    if not surviving_call_ids:
+        return
+    candidate_keys = [call_args[cid] for cid in surviving_call_ids if cid in call_args]
+    with _read_tracker_lock:
+        td = _read_tracker.get(tid)
+        dedup_map = dict((td or {}).get("dedup") or {})
+    valid_keys: list[tuple[str, int, int]] = []
+    missing_meta: dict[tuple[str, int, int], tuple] = {}
+    for k in candidate_keys:
+        meta = _file_metadata(k[0])
+        if meta is None:
+            continue
+        if k in dedup_map:
+            if meta == dedup_map[k]:
+                valid_keys.append(k)
+        else:
+            valid_keys.append(k)
+            missing_meta[k] = meta
+    if valid_keys:
+        with _read_tracker_lock:
+            td = _read_tracker.setdefault(
+                tid, {"last_key": None, "consecutive": 0, "dedup": {}, "dedup_generation_reads": set()}
+            )
+            dedup_store = td.setdefault("dedup", {})
+            for k, meta in missing_meta.items():
+                dedup_store.setdefault(k, meta)
+            gen = td.setdefault("dedup_generation_reads", set())
+            gen.update(valid_keys)
+
+
+def migrate_file_read_state(old_task_id: str | None, new_task_id: str | None) -> None:
+    """Carry per-task read/write tracking across session rotation (old_session_id -> new_session_id).
+    Shares the underlying tracking dict across ``old_tid`` and ``new_tid`` so mid-turn tool calls
+    still bound to ``effective_task_id`` (``old_tid``) and subsequent turns bound to ``new_tid``
+    observe and mutate the same read/write baselines."""
+    if not old_task_id or not new_task_id:
+        return
+    old_tid = str(old_task_id)
+    new_tid = str(new_task_id)
+    if old_tid == new_tid:
+        return
+    with _read_tracker_lock:
+        old_data = _read_tracker.get(old_tid)
+        dst = _read_tracker.get(new_tid)
+        if old_data is None and dst is None:
+            dst = {"last_key": None, "consecutive": 0, "dedup": {}, "dedup_generation_reads": set()}
+            _read_tracker[old_tid] = dst
+            _read_tracker[new_tid] = dst
+        elif old_data is not None and dst is None:
+            dst = old_data
+            _read_tracker[new_tid] = dst
+        elif old_data is None and dst is not None:
+            _read_tracker[old_tid] = dst
+        elif old_data is not None and dst is not None and old_data is not dst:
+            for map_key in ("dedup", "dedup_hits", "full_write_baselines", "not_found_cache", "read_coverage"):
+                src_map = old_data.get(map_key)
+                if isinstance(src_map, dict) and src_map:
+                    dst_map = dst.setdefault(map_key, {})
+                    for k, v in src_map.items():
+                        dst_map.setdefault(k, v)
+            src_ts = old_data.get("read_timestamps")
+            if isinstance(src_ts, dict) and src_ts:
+                dst_ts = dst.setdefault("read_timestamps", {})
+                for k, v in src_ts.items():
+                    if k not in dst_ts or v > dst_ts[k]:
+                        dst_ts[k] = v
+            src_gen = old_data.get("dedup_generation_reads")
+            if isinstance(src_gen, set) and src_gen:
+                dst.setdefault("dedup_generation_reads", set()).update(src_gen)
+            for k, v in list(_read_tracker.items()):
+                if v is old_data:
+                    _read_tracker[k] = dst
+    from tools import file_state
+    file_state.get_registry().migrate_task(old_tid, new_tid)
+
+
+def reset_file_dedup(task_id: str | None = None, *, surviving_messages: list | None = None):
     """Advance the read-dedup generation after context compression (one task, or all
     when ``task_id`` is None). The per-key ``dedup`` metadata map is PRESERVED so unchanged
     files keep returning stubs instead of re-bloating the reclaimed context; the
@@ -260,6 +395,8 @@ def reset_file_dedup(task_id: str | None = None):
                 for p in changed:
                     if task_data["full_write_baselines"].get(p) == baselines[p]:
                         task_data["full_write_baselines"].pop(p, None)
+    if task_id is not None and surviving_messages:
+        seed_file_dedup_from_messages(task_id, surviving_messages)
 
 
 def notify_other_tool_call(task_id: str = "default"):

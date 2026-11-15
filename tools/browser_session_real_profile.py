@@ -91,10 +91,20 @@ def _consent_revoked() -> tuple[None, None]:
 
 
 def _launch(browser_name: str) -> tuple[Optional[str], Optional[str]]:
-    from hermes_cli.browser_connect import chromium_executable, real_profile_copy_dir, snapshot_real_profile
+    from hermes_cli.browser_connect import (
+        chromium_executable,
+        real_profile_binary_override,
+        real_profile_copy_dir,
+        snapshot_real_profile,
+    )
     from tools.browser_launcher import launch_chromium
     from tools.browser_session import ensure_screen_for_headed_chromium
-    real_binary = chromium_executable(browser_name)
+    # CARRIED fix, re-homed by the v52 refactor: `browser.real_profile_binary` pins the launch
+    # binary (packaged Chrome-for-Testing) so a headless instance never becomes the REAL Chrome.app
+    # that holds macOS's Launch Services registration (dock trap). The override takes precedence;
+    # an unset/unresolvable value falls back to the detected real binary and never blocks browsing.
+    # Pinned by tests/tools/test_browser_real_profile_binary.py::test_call_site_wiring_present.
+    real_binary = real_profile_binary_override() or chromium_executable(browser_name)
     if real_binary is None:
         return None, f"{_RP}the real browser binary for '{browser_name}' could not be found. Reinstall it or turn the toggle off."
     snapshot_failure: list[str] = []

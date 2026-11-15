@@ -69,26 +69,58 @@ def snapshot_recent_messages(messages: list[dict[str, Any]], limit: int = DEFAUL
 
 def collect_parent_loaded_skills(parent_agent, messages: list[dict[str, Any]], limit: int = 8) -> list[str]:
     """Skills the parent was operating under: launch-preloaded (marker in ``ephemeral_system_prompt``)
-    first, then ``skill_view`` loads from history, deduped, capped at ``limit`` (a reviewer told to load 30
+    first, then ``skill_view`` loads from history (including compacted ``[SKILL_PRUNED]`` markers and
+    in-memory ``_skill_view_tracker``), deduped, capped at ``limit`` (a reviewer told to load 30
     skills would burn its budget before working)."""
     names: list[str] = []
     prompt = str(getattr(parent_agent, "ephemeral_system_prompt", "") or "")
     candidates = [m.group(1) for m in re.finditer(r'with the "([^"]+)" skill\s+preloaded', prompt)]
+    try:
+        from tools.skills_tool_dedup import _skill_view_tracker, _skill_view_tracker_lock
+        for tkey in (
+            getattr(parent_agent, "_current_task_id", None),
+            getattr(parent_agent, "session_id", None),
+        ):
+            if isinstance(tkey, str) and tkey.strip():
+                with _skill_view_tracker_lock:
+                    seen_keys = list((_skill_view_tracker.get(tkey) or {}).keys())
+                for sk in seen_keys:
+                    if isinstance(sk, tuple) and len(sk) == 2 and not sk[1] and sk[0]:
+                        candidates.append(str(sk[0]))
+                    elif isinstance(sk, str) and ":" in sk:
+                        sname, spath = sk.split(":", 1)
+                        if not spath:
+                            candidates.append(sname)
+    except Exception:
+        pass
     for message in messages or []:
-        if not isinstance(message, dict) or message.get("role") != "assistant":
+        if not isinstance(message, dict):
             continue
-        for tool_call in message.get("tool_calls") or []:
-            fn = tool_call.get("function") or {} if isinstance(tool_call, dict) else {}
-            if fn.get("name") != "skill_view":
-                continue
-            try:
-                args = json.loads(fn.get("arguments") or "{}")
-            except Exception:
-                continue
-            # Only whole-skill loads seed the reviewer; a reference-file read is a detail
-            # of the parent's task covered by loading the SKILL.md.
-            if isinstance(args, dict) and not args.get("file_path"):
-                candidates.append(str(args.get("name") or ""))
+        role = message.get("role")
+        if role == "assistant":
+            for tool_call in message.get("tool_calls") or []:
+                fn = tool_call.get("function") or {} if isinstance(tool_call, dict) else {}
+                if fn.get("name") != "skill_view":
+                    continue
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except Exception:
+                    continue
+                # Only whole-skill loads seed the reviewer; a reference-file read is a detail
+                # of the parent's task covered by loading the SKILL.md.
+                if isinstance(args, dict) and not args.get("file_path"):
+                    candidates.append(str(args.get("name") or ""))
+        elif role in ("user", "tool"):
+            txt = _message_text(message)
+            for m_pruned in re.finditer(r"\[SKILL_PRUNED:[^\]]*skill_view\(name=['\"]([^'\"]+)['\"]\)", txt):
+                candidates.append(m_pruned.group(1))
+            for m_passive in re.finditer(r"\[SKILL_PRUNED:\s*([a-z0-9][a-z0-9_-]*)\s+\(", txt):
+                candidates.append(m_passive.group(1))
+            if role == "user":
+                for m_stack in re.finditer(r"^Skills loaded:\s*(.+)$", txt, re.MULTILINE):
+                    for s_item in m_stack.group(1).split(","):
+                        if s_item.strip():
+                            candidates.append(s_item.strip())
     for name in candidates:
         cleaned = name.strip()
         if cleaned and cleaned not in names:

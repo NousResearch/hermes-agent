@@ -23,6 +23,10 @@ class _Err(Exception):
 @pytest.mark.parametrize("body", [
     "Error code: 403 - {'error': {'message': 'Budget limit exceeded (monthly limit). Contact your org admin.', 'code': 403}}",
     "Error code: 403 - {'error': {'message': 'Key limit exceeded (total limit). Contact your org admin.', 'code': 403}}",
+    # The WORKSPACE cap words it differently from the org cap above: no contiguous "budget limit
+    # exceeded", so the 403 fell through to the auth branch and 16 turns were reported as
+    # credential failures (2026-10-27 incident, resets_at carried in metadata).
+    "Error code: 403 - {'error': {'message': 'Workspace monthly budget of $20000.00 exceeded. Contact your org admin. $20000.23 of $20000.00 used; resets 2026-11-01T00:00:00.000Z.', 'code': 403, 'metadata': {'limit_source': 'openrouter_workspace_budget'}}}",
 ])
 def test_openrouter_limit_403_is_billing_for_main_loop_and_aux_ladder(body):
     exc = _Err(body, 403)

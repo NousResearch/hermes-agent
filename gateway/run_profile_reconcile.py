@@ -65,6 +65,17 @@ def profile_serve_signature(home: Path) -> tuple:
     return tuple(sig)
 
 
+def _scan_live_profile_serve_state() -> tuple:
+    """Off-loop serve-set scan (25/9 carried hardening): ``profiles_to_serve`` walks profiles/
+    and every serve signature stats config.yaml/.env per home — filesystem I/O that stalled busy
+    multiplex hosts when run inline on the event loop. Returns ``(live, fresh_sigs)``."""
+    from hermes_cli.profiles import profiles_to_serve
+
+    live = {str(name): Path(home) for name, home in profiles_to_serve(multiplex=True)}
+    fresh_sigs = {name: profile_serve_signature(home) for name, home in live.items()}
+    return live, fresh_sigs
+
+
 def _added_profile_blocker(launch: Path) -> Optional[str]:
     """Why a single-profile boot must not start multiplexing now that a second profile exists: the
     ``gateway.auto_multiplex_migration: false`` opt-out on the default profile, else boot's preflight."""
@@ -174,24 +185,32 @@ class GatewayProfileReconcileMixin:
         whose store is unusable is parked (logged, not served) and left for an explicit rescan.
         Returns ``{"added", "removed", "rescanned", "parked", "served_profiles"}``."""
         from gateway.run import MultiplexConfigError
-        from hermes_cli.profiles import profiles_to_serve
         result: dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "parked": [], "reason": reason}
         if not self._multiplex_on() and not await self._multiplex_for_added_profile():
             return {**result, "multiplex": False, "served_profiles": self.served_profile_names()}
         if not self._running or self._served_profile_homes is None:
             # Startup enumerates profiles/ itself; a rescan before it finishes has nothing to diff against.
             return {**result, "pending": True, "served_profiles": self.served_profile_names()}
+        offload = getattr(self, "_run_housekeeping_in_executor", None)
+        # 25/9 carried hardening: the serve-set walk (profiles_to_serve) and every serve
+        # signature are filesystem I/O; run them off the event loop together with the
+        # probe below (inline fallback for runners without the housekeeping pool).
+        if callable(offload):
+            live, fresh_sigs = await offload(_scan_live_profile_serve_state)
+        else:
+            live, fresh_sigs = _scan_live_profile_serve_state()
         async with self._reconcile_lock():
             active = getattr(self, "_primary_profile_name", None) or "default"
-            live = {str(name): Path(home) for name, home in profiles_to_serve(multiplex=True)}
+            # live/fresh_sigs come from the off-loop scan above; do NOT re-walk on the loop here
+            # (upstream's inline walk) — that would stall busy hosts AND desync live from fresh_sigs.
             listed = set(live)  # a probe skip below is not a deletion: it never clears a parked verdict
             known = dict(self._served_profile_homes or {})
             from gateway.status import live_gateway_pid_for_home
 
             blocked = set()
             timed_out = set()
-            warned = self._profile_own_gateway_warned or set()
-            timeout_warned = self._profile_probe_timeout_warned or set()
+            warned = getattr(self, "_profile_own_gateway_warned", None) or set()
+            timeout_warned = getattr(self, "_profile_probe_timeout_warned", None) or set()
             for name in list(live):
                 if name == active or name in known:
                     continue
@@ -202,9 +221,12 @@ class GatewayProfileReconcileMixin:
                 # stalled probe only wedges one bounded housekeeping worker for this cycle
                 # (wait_for cancels the still-queued await), never the event loop.
                 try:
-                    pid = await asyncio.wait_for(
-                        self._run_housekeeping_in_executor(live_gateway_pid_for_home, live[name]),
-                        timeout=_OWN_GATEWAY_PROBE_TIMEOUT_SECS)
+                    if callable(offload):
+                        pid = await asyncio.wait_for(
+                            self._run_housekeeping_in_executor(live_gateway_pid_for_home, live[name]),
+                            timeout=_OWN_GATEWAY_PROBE_TIMEOUT_SECS)
+                    else:
+                        pid = live_gateway_pid_for_home(live[name])
                 except TimeoutError:
                     # Unprovable is not "own gateway running": skip it this cycle without
                     # warning about (or remembering) a gateway that may not exist. Warn once
@@ -232,8 +254,11 @@ class GatewayProfileReconcileMixin:
             retry_parked = reason == "control-socket"
             added = [n for n in live if n not in known and n != active and (retry_parked or n not in parked)]
             removed = [n for n in known if n not in live and n != active]
+            # 25/9 carried hardening: serve signatures came off the loop with the live walk
+            # (fresh_sigs) — equivalent to upstream's inline profile_serve_signature() read,
+            # minus the on-loop filesystem I/O.
             changed = [n for n in live if n in known and n != active and n not in added
-                       and profile_serve_signature(live[n]) != sigs.get(n)]
+                       and fresh_sigs.get(n) != sigs.get(n)]
             current = {n: h for n, h in live.items() if n in known or n == active}
             return await self._apply_profile_changes(
                 current, added, removed, changed, reason=reason, live=live, result=result)

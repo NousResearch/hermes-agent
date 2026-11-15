@@ -25,7 +25,7 @@ from agent.cache_bounds import publish_lru
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.route_verdicts import ROUTE_VERDICT_FIELDS, reset_route_verdicts, reset_route_verdicts_if_moved
-from agent.think_scrubber import THINK_TAG_NAMES
+from agent.think_scrubber import CODE_FENCE_OR_SPAN, THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
     STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
@@ -43,8 +43,13 @@ logger = logging.getLogger(__name__)
 _TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls", "toolcall")
 # Optional XML namespace prefix: some models serialize native tool calls as <ns:function_calls>.
 _NS_PREFIX = r"(?:[\w.-]+:)?"
+_CODE_FENCE_OR_SPAN_NC = r"(?:```[\s\S]*?```|`[^`\n]+`)"
 _REASONING_BLOCK_PATTERNS = tuple(
-    re.compile(rf"<{name}>.*?</{name}>", re.DOTALL | re.IGNORECASE) for name in THINK_TAG_NAMES
+    re.compile(
+        rf"{CODE_FENCE_OR_SPAN}|(?<!`)<{name}>(?!`)(?:{_CODE_FENCE_OR_SPAN_NC}|[\s\S])*?(?<!`)</{name}>(?!`)",
+        re.DOTALL | re.IGNORECASE,
+    )
+    for name in THINK_TAG_NAMES
 )
 _TOOL_CALL_BLOCK_PATTERNS = tuple(
     re.compile(rf"<{_NS_PREFIX}{name}\b[^>]*>.*?</{_NS_PREFIX}{name}>", re.DOTALL | re.IGNORECASE)
@@ -58,10 +63,10 @@ _NAMED_FUNCTION_BLOCK_PATTERN = re.compile(
     r'(?:(?:(?!</function>).)*)</function>', re.DOTALL | re.IGNORECASE,
 )
 _UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
-    rf'(?:^|\n)[ \t]*<(?:{"|".join(THINK_TAG_NAMES)})\b[^>]*>.*$', re.DOTALL | re.IGNORECASE
+    rf'{CODE_FENCE_OR_SPAN}|(?:^|\n)[ \t]*<(?:{"|".join(THINK_TAG_NAMES)})\b[^>]*>.*$', re.DOTALL | re.IGNORECASE
 )
 _ORPHAN_REASONING_TAG_PATTERN = re.compile(
-    rf'</?(?:{"|".join(THINK_TAG_NAMES)})>\s*', re.IGNORECASE
+    rf'{CODE_FENCE_OR_SPAN}|(?<!`)</?(?:{"|".join(THINK_TAG_NAMES)})>(?!`)\s*', re.IGNORECASE
 )
 _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
     rf'</(?:{_NS_PREFIX}(?:{"|".join(_TOOL_CALL_TAG_NAMES)}|function))>\s*', re.IGNORECASE
@@ -314,8 +319,8 @@ def sanitize_tool_call_arguments(
 # Session-scoped in-flight registry for note_turn_start: the gateway caches agents per routing key
 # while the transcript is keyed by session_id, so two agent objects can run concurrent turns on one
 # session unseen by per-agent state.
-_INFLIGHT_TURNS_BY_SESSION: dict[str, tuple[str, float]] = {}
-_INFLIGHT_TURNS_LOCK = threading.Lock()
+_INFLIGHT_TURNS_BY_SESSION: dict[str, tuple[str, float]] = globals().get("_INFLIGHT_TURNS_BY_SESSION") or {}
+_INFLIGHT_TURNS_LOCK = globals().get("_INFLIGHT_TURNS_LOCK") or threading.Lock()
 
 
 def note_turn_start(agent, turn_id: str):
@@ -388,19 +393,42 @@ def _merge_assistant_into(prev: dict, msg: dict) -> bool:
     """Fold consecutive assistant *msg* into *prev* (union tool_calls, concat text). Returns whether *msg*'s
     text survives: multimodal (list) content is never joined."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.message_metadata import ABSORBED_MESSAGE_UIDS, message_uid_or_none
+
+    msg_uid = message_uid_or_none(msg)
+    if msg_uid is not None and msg_uid in (prev.get(ABSORBED_MESSAGE_UIDS) or ()):
+        # ``prev`` was already rewritten to storage after absorbing ``msg`` (while ``msg``'s
+        # durable row remained active in SQLite for rewind accounting). Re-merging on reload
+        # must fold the duplicate dict away without re-appending its tool_calls or content.
+        return True
 
     prev_calls = list(prev.get("tool_calls") or [])
     new_calls = list(msg.get("tool_calls") or [])
     calls_changed = False
     if new_calls:
-        prev["tool_calls"] = prev_calls + new_calls
-        # The absorbed turn's calls keep the per-occurrence ids they were persisted with.
-        if isinstance(extra := msg.get(TOOL_CALL_UIDS), dict) and extra:
-            prev[TOOL_CALL_UIDS] = merge_tool_call_uids(
-                per_occurrence_tool_call_uids(
-                    own if isinstance(own := prev.get(TOOL_CALL_UIDS), dict) else {}, prev_calls),
-                per_occurrence_tool_call_uids(extra, new_calls))
-        calls_changed = True
+        extra = msg.get(TOOL_CALL_UIDS)
+        own = prev.get(TOOL_CALL_UIDS)
+        already_merged_calls = False
+        if isinstance(extra, dict) and extra and isinstance(own, dict) and own:
+            own_per_occ = per_occurrence_tool_call_uids(own, prev_calls)
+            extra_per_occ = per_occurrence_tool_call_uids(extra, new_calls)
+            def _as_uid_list(v: Any) -> list:
+                return list(v) if isinstance(v, list) else ([v] if isinstance(v, str) and v else [])
+            if extra_per_occ and all(
+                bool(_as_uid_list(uids))
+                and all(u in _as_uid_list(own_per_occ.get(cid)) for u in _as_uid_list(uids))
+                for cid, uids in extra_per_occ.items()
+            ):
+                already_merged_calls = True
+        if not already_merged_calls:
+            prev["tool_calls"] = prev_calls + new_calls
+            # The absorbed turn's calls keep the per-occurrence ids they were persisted with.
+            if isinstance(extra, dict) and extra:
+                prev[TOOL_CALL_UIDS] = merge_tool_call_uids(
+                    per_occurrence_tool_call_uids(
+                        own if isinstance(own, dict) else {}, prev_calls),
+                    per_occurrence_tool_call_uids(extra, new_calls))
+            calls_changed = True
     elif prev_calls:
         prev["tool_calls"] = prev_calls
     else:
@@ -434,12 +462,21 @@ def _merge_assistant_into(prev: dict, msg: dict) -> bool:
         prev["content"] = new_content
         content_rewritten = new_content != prev_content
         text_kept = True
-    # Carry reasoning_content from the later turn only if the earlier lacks it (strict thinking
-    # providers need one on the merged tool-call turn).
+    # Carry reasoning_content / reasoning_details from the later turn so merged tool-call turns
+    # preserve OpenRouter/Gemini encrypted thoughtSignatures for appended tool_calls.
     reasoning_carried = False
     if not prev.get("reasoning_content") and msg.get("reasoning_content"):
         prev["reasoning_content"] = msg["reasoning_content"]
         reasoning_carried = True
+    msg_rd = msg.get("reasoning_details")
+    if isinstance(msg_rd, list) and msg_rd:
+        prev_rd = prev.get("reasoning_details")
+        if not isinstance(prev_rd, list) or not prev_rd:
+            prev["reasoning_details"] = list(msg_rd)
+            reasoning_carried = True
+        elif new_calls:
+            prev["reasoning_details"] = prev_rd + [d for d in msg_rd if d not in prev_rd]
+            reasoning_carried = True
     # A stale ``api_content`` sidecar overrides ``content`` at API-build time and would replay
     # pre-merge bytes; drop it only when content actually changed.
     # ``prev`` may carry an ``api_content`` sidecar (the exact bytes previously sent to the API, e.g. a
@@ -664,6 +701,7 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
     from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
+    from agent.message_metadata import ABSORBED_MESSAGE_UIDS, message_uid_or_none
     from hermes_state import SessionDB
 
     def _plain_text(content: Any) -> bool:
@@ -688,10 +726,14 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             and bool(prev.get("observed")) == bool(msg.get("observed"))
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
+            msg_uid = message_uid_or_none(msg)
+            already_absorbed = bool(msg_uid and msg_uid in (prev.get(ABSORBED_MESSAGE_UIDS) or ()))
             merged_content = (
-                (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
+                prev_content
+                if already_absorbed
+                else ((prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content))
             )
-            had_api_sidecar = "api_content" in prev
+            had_api_sidecar = "api_content" in prev and not already_absorbed
             # Read before the marker is popped below. An unpersisted turn folded in ends the claim: the dict no longer stands for durable rows only.
             if (prev.get(_DB_PERSISTED_MARKER) or prev.get(MERGED_DURABLE_ROWS)) and msg.get(_DB_PERSISTED_MARKER):
                 prev[MERGED_DURABLE_ROWS] = int(prev.get(MERGED_DURABLE_ROWS) or 1) + 1
@@ -852,7 +894,7 @@ def strip_think_blocks(agent, content: str) -> str:
     open models emit; ``<function>`` is boundary- and ``name=``-gated so prose mentions survive."""
     content = _flatten_content_text(content) if content else ""
     for pattern in _THINK_STRIP_PATTERNS if content else ():
-        content = pattern.sub('', content)
+        content = pattern.sub(lambda m: m.group(1) if m.lastindex and m.group(1) is not None else '', content)
     return content
 
 
@@ -1441,6 +1483,7 @@ def restore_primary_runtime(agent) -> bool:
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
+        agent._pending_fallback_notice = None
         if provider_fallback_active:
             # Notification surfaces are best-effort and must never undo a successful restore.
             with contextlib.suppress(Exception):
@@ -1460,7 +1503,10 @@ _TRANSIENT_TRANSPORT_ERRORS = frozenset({
     "APIConnectionError", "APITimeoutError",
 })
 _INLINE_REASONING_PATTERNS = tuple(
-    re.compile(rf"<{tag}>(.*?)</{tag}>", re.DOTALL | re.IGNORECASE)
+    re.compile(
+        rf"{CODE_FENCE_OR_SPAN}|(?<!`)<{tag}>(?!`)((?:{_CODE_FENCE_OR_SPAN_NC}|[\s\S])*?)(?<!`)</{tag}>(?!`)",
+        re.DOTALL | re.IGNORECASE,
+    )
     for tag in THINK_TAG_NAMES
 )
 
@@ -1496,8 +1542,9 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
                 _add(flatten_message_text(block.get("thinking") or block.get("text") or "", sep="").strip())
     if not parts and isinstance(content, str) and content:
         for pattern in _INLINE_REASONING_PATTERNS:
-            for block in pattern.findall(content):
-                _add(block.strip())
+            for code_span, block in pattern.findall(content):
+                if not code_span and block and block.strip():
+                    _add(block.strip())
     return "\n\n".join(parts) if parts else None
 
 
@@ -2121,6 +2168,9 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
     if not base_url and new_norm == "openai":
         # An omitted URL means the provider's canonical direct endpoint.
         base_url = "https://api.openai.com/v1"
+    elif not base_url and new_norm in ("vertex", "google-vertex"):
+        from agent.vertex_adapter import get_vertex_config
+        _, base_url = get_vertex_config()
     # Same-provider switches may omit base_url (e.g. credential refresh); resolve capabilities from
     # the endpoint the normalization below retains.
     effective_base_url = base_url
@@ -2392,12 +2442,8 @@ def switch_model(
     snapshot and re-raises (callers catch)."""
     old_model = agent.model
     old_provider = agent.provider
-    # ── Reload credential pool for the new provider (issue #52727) ── Without this,
-    # ``recover_with_credential_pool`` sees a ``pool.provider != agent.provider`` mismatch and
-    # short-circuits, leaving the new provider with no rotation/recovery on 401/429 and burning the original
-    # pool's entries. Only reload when the provider actually changed (or the pool was missing) —
-    # re-selecting the same provider must not churn the pool reference. A reload failure is logged +
-    # swallowed: the switch itself must still complete.
+    # Reload credential pool for the new provider (#52727) when the provider changed or the pool
+    # was missing; reload failure is logged + swallowed so the switch itself still completes.
     old_norm = (old_provider or "").strip().lower()
     new_norm = (new_provider or "").strip().lower()
     api_mode, base_url, destination_capabilities = _resolve_switch_destination(
@@ -2411,6 +2457,9 @@ def switch_model(
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
         raise
+    if (old_model != new_model or old_norm != new_norm) and "vertex" in (old_norm, new_norm):
+        from agent.vertex_adapter import reset_vertex_sticky_region
+        reset_vertex_sticky_region(getattr(agent, "session_id", None))
     custom_providers, effective_context_length = _resolve_switch_context_length(agent, snapshot)
     # Refresh the custom-provider snapshot from the config just loaded so the prompt_caching lookup
     # sees flags added to config.yaml after session start.
@@ -2576,11 +2625,23 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     _norm = lambda s: s.lower().replace("-", "_").replace(" ", "_")
     _camel_snake = lambda s: re.sub(r"(?<!^)(?=[A-Z])", "_", s).lower()
 
+    _WELL_KNOWN_ALIASES = {
+        "google:python_interpreter": "execute_code",
+        "google_python_interpreter": "execute_code",
+        "python_interpreter": "execute_code",
+        "python": "execute_code",
+        "bash": "terminal",
+        "sh": "terminal",
+        "shell": "terminal",
+    }
+    lowered = tool_name.lower()
+    if lowered in _WELL_KNOWN_ALIASES and _WELL_KNOWN_ALIASES[lowered] in agent.valid_tool_names:
+        return _WELL_KNOWN_ALIASES[lowered]
+
     def _strip_tool_suffix(s: str) -> str | None:
         lc = s.lower()
         return next((s[: -len(sfx)].rstrip("_-") for sfx in ("_tool", "-tool", "tool") if lc.endswith(sfx)), None)
     # Cheap fast-paths first.
-    lowered = tool_name.lower()
     if lowered in agent.valid_tool_names:
         return lowered
     normalized = _norm(tool_name)

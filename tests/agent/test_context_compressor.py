@@ -286,6 +286,19 @@ class TestSummarizeToolResultOutcome:
     def test_successful_call_stub_is_not_marked(self, tool_name, args, payload, expected):
         assert self._stub(tool_name, args, payload) == expected
 
+    @pytest.mark.parametrize("suffix", [
+        "\n\n[Tool loop warning: same_tool_failure_warning; count=3; patch has failed 3 times this turn.]",
+        "\n\n---\n⚠️ Security guidance — 1 pattern matched (github_actions_workflow)",
+    ])
+    def test_failed_call_with_trailing_runtime_or_hook_note_preserves_failed_marker(self, suffix):
+        patch_payload = json.dumps({"success": False, "error": "Could not find a match for old_string in the file"}) + suffix
+        patch_stub = _summarize_tool_result("patch", json.dumps({"path": "bolaget.html"}), patch_payload)
+        assert "FAILED: Could not find a match for old_string in the file" in patch_stub
+
+        write_payload = json.dumps({"error": "Refusing to overwrite a.md: stale", "stale_write_blocked": True}) + suffix
+        write_stub = _summarize_tool_result("write_file", json.dumps({"path": "a.md", "content": "x"}), write_payload)
+        assert write_stub == "[write_file] a.md FAILED: Refusing to overwrite a.md: stale"
+
 
 class TestSummarizeToolResultClarify:
     def test_preserves_resolved_user_response_without_metadata(self):

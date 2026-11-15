@@ -250,7 +250,12 @@ def _quiet_noisy_loggers() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
-def set_session_context(session_id: str) -> None:
+def get_session_context() -> Optional[str]:
+    """Return the session ID for the current thread, if set."""
+    return getattr(_session_context, "session_id", None)
+
+
+def set_session_context(session_id: Optional[str]) -> None:
     """Set the session ID for the current thread."""
     _session_context.session_id = session_id
 

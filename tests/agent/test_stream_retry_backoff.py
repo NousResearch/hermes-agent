@@ -43,14 +43,35 @@ def test_transient_drops_retry_with_capped_exponential_backoff():
     waits = []
     call = _bare_call(_agent())
     req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-    errors = [anthropic.APIConnectionError(request=req), httpx.ConnectError("reset"),
+    openai = pytest.importorskip("openai")
+    errors = [anthropic.APIConnectionError(request=req), openai.APIConnectionError(request=req),
+              openai.APITimeoutError(request=req), httpx.ConnectError("reset"),
               httpx.ReadError("reset"), httpx.RemoteProtocolError("closed")]
     with patch.object(cch, "_wait_stream_retry_backoff", lambda agent, delay: waits.append(delay) or True):
         for attempt, err in enumerate(errors):
             assert call._handle_stream_error(err, attempt, max_retries=10) is True
-    assert waits == [1.0, 2.0, 4.0, 4.0]
+    assert waits == [1.0, 2.0, 4.0, 4.0, 4.0, 4.0]
     assert call.last_chunk_time["t"] > 0.0  # stale clock restarted after the backoff
     assert "error" not in call.result
+
+
+def test_openai_sdk_timeout_and_connection_errors_retry_with_backoff():
+    """OpenAI SDK APIConnectionError and APITimeoutError (raised before response headers
+    arrive) must classify as transient stream drops rather than unhandled fatal errors."""
+    import openai
+
+    waits = []
+    call = _bare_call(_agent())
+    req = httpx.Request("POST", "https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi/chat/completions")
+    errors = [openai.APIConnectionError(request=req), openai.APITimeoutError(request=req),
+              httpx.ConnectError("reset"), httpx.ReadError("reset")]
+    with patch.object(cch, "_wait_stream_retry_backoff", lambda agent, delay: waits.append(delay) or True):
+        for attempt, err in enumerate(errors):
+            assert call._handle_stream_error(err, attempt, max_retries=10) is True
+    assert len(waits) == 4
+    assert call.last_chunk_time["t"] > 0.0
+    assert "error" not in call.result
+
 
 
 @pytest.mark.real_retry_backoff

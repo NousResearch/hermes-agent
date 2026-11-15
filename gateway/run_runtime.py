@@ -663,9 +663,13 @@ async def recover_gateway_native_sessions(runner):
     from gateway.session_local_recovery import recover_local_sessions
     from gateway.platforms.webhook_ingress import recover_webhook_finalizations
     results = {}
+    import asyncio
     for authority in authorities:
+        def _recover_sync(auth=authority):
+            with owner_scope(auth):
+                recover_local_sessions(auth, schedule=True)
+        await asyncio.to_thread(_recover_sync)
         with owner_scope(authority):
-            recover_local_sessions(authority, schedule=True)
             await recover_webhook_finalizations(authority)
         results.update(await recover_profile_native_sessions(runner, authority))
     return results

@@ -22,7 +22,13 @@ from cron.jobs import (
     rearm_oneshot,
     JOBS_FILE,
 )
-from cron.scheduler import tick
+def __getattr__(name: str):
+    if name == "tick":
+        from cron.scheduler import tick
+
+        globals()["tick"] = tick
+        return tick
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "JOBS_FILE",

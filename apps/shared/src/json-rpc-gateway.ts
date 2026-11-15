@@ -443,13 +443,30 @@ export class JsonRpcGatewayClient {
       return Promise.reject(new Error(this.options.notConnectedErrorMessage))
     }
 
-    return this.channel.request<T>(
+    if (method === 'prompt.submit' && typeof params.session_id === 'string' && params.session_id.trim()) {
+      this.seedSessionCursor(params.session_id.trim())
+    }
+
+    const promise = this.channel.request<T>(
       method,
       params,
       timeoutMs,
       signal,
       () => new Error(this.options.notConnectedErrorMessage)
     )
+
+    if (method === 'session.create' || method === 'session.resume' || method === 'session.activate') {
+      void promise
+        .then(result => {
+          const payload = result as { latest_seq?: unknown; replay_epoch?: unknown; session_id?: unknown } | null
+          if (payload && typeof payload === 'object' && typeof payload.session_id === 'string' && payload.session_id.trim()) {
+            this.seedSessionCursor(payload.session_id.trim(), payload.latest_seq, payload.replay_epoch)
+          }
+        })
+        .catch(() => undefined)
+    }
+
+    return promise
   }
 
   private handleEvent(event: GatewayEvent): void {
@@ -497,6 +514,25 @@ export class JsonRpcGatewayClient {
     const prev = this.lastSeenSeq.get(sid) ?? 0
 
     if (seq > prev) {
+      this.advanceCursor(sid, seq)
+    }
+  }
+
+  /**
+   * Ensure an attached/submitted session has at least a 0 watermark so a WS drop
+   * before the first sequenced event frame still triggers `session.events.since`
+   * on reconnect (rebinding the live transport and catching up from seq 1).
+   */
+  private seedSessionCursor(sid: string, latestSeq?: unknown, replayEpoch?: unknown): void {
+    if (!this.options.replay || !sid) {
+      return
+    }
+
+    this.adoptSessionReplayEpoch(sid, replayEpoch)
+    const seq = typeof latestSeq === 'number' && Number.isFinite(latestSeq) && latestSeq >= 0 ? latestSeq : 0
+    const prev = this.lastSeenSeq.get(sid)
+
+    if (prev === undefined || seq > prev) {
       this.advanceCursor(sid, seq)
     }
   }
@@ -706,7 +742,10 @@ export class JsonRpcGatewayClient {
   }
 
   /** Advance the watermark past a truncated replay window without dispatching any of it. */
-  private skipTruncatedWindow(sid: string, result: { events?: GatewayEvent[]; latest_seq?: number }): void {
+  private skipTruncatedWindow(
+    sid: string,
+    result: { events?: GatewayEvent[]; latest_seq?: number; replay_epoch?: unknown }
+  ): void {
     const seqs = (Array.isArray(result.events) ? result.events : []).map(event => event?.seq)
 
     const head = Math.max(
@@ -715,6 +754,15 @@ export class JsonRpcGatewayClient {
     )
 
     this.advanceCursor(sid, head)
+    const epoch =
+      typeof result.replay_epoch === 'string' && result.replay_epoch
+        ? result.replay_epoch
+        : this.replayEpochBySession.get(sid)
+    this.dispatchEvent({
+      type: 'session.replay_gap',
+      session_id: sid,
+      payload: { ...(epoch ? { replay_epoch: epoch } : {}), latest_seq: head }
+    })
   }
 
   /**

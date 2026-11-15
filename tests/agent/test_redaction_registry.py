@@ -233,6 +233,23 @@ def test_registered_pattern_no_prose_false_positive(tmp_path):
     assert redact_sensitive_text(prose, force=True) == prose
 
 
+def test_builtin_prefixes_cover_oauth_client_secret():
+    """GOCSPX- (Google OAuth client secret) must be redacted by the built-in
+    vendor patterns: request-dump redaction ran with it absent and full
+    35-char client secrets landed in cleartext debug dumps (2026-09-12)."""
+    fake = "GOCSPX-" + "a" * 29  # real GOCSPX secrets are 35 chars total
+    out = redact_sensitive_text(f'"client_secret": "{fake}"', force=True)
+    assert fake not in out
+    out_prefix = redact_sensitive_text(f"oauth_val={fake}", force=True)
+    assert fake not in out_prefix
+    assert "GOCSPX" in out_prefix or "«" in out_prefix  # kind label stays debuggable
+    # escaped json-in-json shape (how tool output carries nested JSON)
+    out2 = redact_sensitive_text(
+        '{"output": "{\\"client_secret\\": \\"' + fake + '\\"}"}', force=True
+    )
+    assert fake not in out2
+
+
 def test_registered_narrow_body_pattern_masks_underscore_suffix():
     """A plugin pattern whose body class is narrower than the built-in shared one
     gets the same per-pattern trailing guard on rebuild (#142852): the token is

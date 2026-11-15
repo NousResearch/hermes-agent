@@ -63,6 +63,21 @@ class TestClassLikeEmissions:
         assert repair("BrowserClick") == "browser_click"
 
 
+class TestWellKnownAliases:
+    """Regression coverage for model native tool hallucinations (Gemini/Claude)."""
+
+    def test_google_python_interpreter(self, repair):
+        assert repair("google:python_interpreter") == "execute_code"
+        assert repair("google_python_interpreter") == "execute_code"
+        assert repair("python_interpreter") == "execute_code"
+        assert repair("python") == "execute_code"
+
+    def test_shell_aliases(self, repair):
+        assert repair("bash") == "terminal"
+        assert repair("sh") == "terminal"
+        assert repair("shell") == "terminal"
+
+
 
 
 

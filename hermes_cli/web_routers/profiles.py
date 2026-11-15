@@ -246,6 +246,7 @@ _SIDEBAR_CACHE_MAX_ENTRIES = 32
 _SIDEBAR_PROFILE_CACHE_MAX_ENTRIES = 256
 _SIDEBAR_PROFILE_CACHE = OrderedDict()
 _SIDEBAR_PROFILE_CACHE_LOCK = threading.Lock()
+_PROFILES_SESSIONS_SCAN_LOCK = threading.Lock()
 
 
 def _stat_fingerprint(path: Path):
@@ -407,10 +408,24 @@ def get_profiles_sessions(
 
     # Source scoping (see /api/sessions): recents pass exclude_sources=cron, the cron-jobs
     # section source=cron — two independent lists so cron sessions can't starve recents.
+    # Hermes Mobile passes exclude_sources=kanban,tool,oneshot[,subagent] for its main chat
+    # list and filters cron client-side (whilst querying cron separately with source=cron);
+    # include cron here so high-frequency cron runs cannot starve mobile recents or scan 50k rows.
+    exclude_list = _csv_list(exclude_sources)
+    if (not source and not sources and exclude_list
+            and {"kanban", "tool", "oneshot"} <= set(exclude_list)
+            and "cron" not in exclude_list):
+        exclude_list = [*exclude_list, "cron"]
+    source_val = source or None
+    sources_list = _csv_list(sources) or None
+    exclude_list_opt = exclude_list or None
+    min_msg_cnt = max(0, min_messages)
+    inc_archived = archived == "include"
+    arch_only = archived == "only"
     filters = dict(
-        source=source or None, sources=_csv_list(sources) or None,
-        exclude_sources=_csv_list(exclude_sources) or None, min_message_count=max(0, min_messages),
-        include_archived=archived == "include", archived_only=archived == "only")
+        source=source_val, sources=sources_list,
+        exclude_sources=exclude_list_opt, min_message_count=min_msg_cnt,
+        include_archived=inc_archived, archived_only=arch_only)
     # Over-fetch per profile so the merged+sorted window is correct for the requested page.
     # ``limit`` is already bounded to 500 by FastAPI; the offset is caller-controlled
     # pagination state, so include it instead of capping the source window at 500.
@@ -423,18 +438,49 @@ def get_profiles_sessions(
     errors: list[dict[str, str]] = []
     now = time.time()
     for name, home in targets:
-        def _read(db, name=name, home=home):
-            include_subagents, exclude = subagent_listing_scope(
-                home, source=filters["source"], sources=filters["sources"],
-                exclude_sources=filters["exclude_sources"])
-            scoped = {**filters, "exclude_sources": exclude, "include_subagents": include_subagents}
-            rows = db.list_sessions_rich(
-                limit=per_profile, offset=0, order_by_last_active=order == "recent",
-                # Same SQL-level blob skip as /api/sessions.
-                compact_rows=not full, include_pinned=True, **scoped)
-            totals[name] = db.session_count(exclude_children=True, **scoped)
-            merged.extend(_tag_rows(rows, name, now))
-        _read_profile_db(name, home, errors, _read)
+        db_path = _profile_state_db(home)
+        if not db_path.exists():
+            continue
+        include_subagents, exclude = subagent_listing_scope(
+            home, source=source_val, sources=sources_list,
+            exclude_sources=exclude_list_opt)
+        scoped = {**filters, "exclude_sources": exclude, "include_subagents": include_subagents}
+        use_cache = _SIDEBAR_CACHE_TTL_SECONDS > 0 and storage_state(db_path) != STORAGE_CORRUPT
+        def _cache_key(
+            db_path=db_path, per_profile=per_profile, order=order, full=full,
+            source_val=source_val, sources_list=sources_list, exclude=exclude,
+            include_subagents=include_subagents, min_msg_cnt=min_msg_cnt,
+            inc_archived=inc_archived, arch_only=arch_only,
+        ):
+            return (
+                str(db_path), _sidebar_db_fingerprint(db_path), "profiles_sessions",
+                per_profile, order, bool(full), source_val,
+                tuple(sources_list or ()), tuple(exclude or ()),
+                include_subagents, min_msg_cnt,
+                inc_archived, arch_only,
+            )
+        cached_pair = _sidebar_profile_cache_get(_cache_key()) if use_cache else None
+        if cached_pair is None:
+            with (_PROFILES_SESSIONS_SCAN_LOCK if use_cache else contextlib.nullcontext()):
+                if use_cache:
+                    cached_pair = _sidebar_profile_cache_get(_cache_key())
+                if cached_pair is None:
+                    def _read(db, scoped=scoped, _cache_key=_cache_key, use_cache=use_cache):
+                        rows = db.list_sessions_rich(
+                            limit=per_profile, offset=0, order_by_last_active=order == "recent",
+                            # Same SQL-level blob skip as /api/sessions.
+                            compact_rows=not full, include_pinned=True, **scoped)
+                        cnt = db.session_count(exclude_children=True, **scoped)
+                        pair = (rows, cnt)
+                        if use_cache:
+                            _sidebar_profile_cache_put(_cache_key(), pair)
+                        return pair
+                    cached_pair = _read_profile_db(name, home, errors, _read)
+            if cached_pair is None:
+                continue
+        rows, cnt = cached_pair
+        totals[name] = cnt
+        merged.extend(_tag_rows(rows, name, now))
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)

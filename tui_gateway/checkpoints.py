@@ -43,6 +43,21 @@ def resolve_checkpoints_enabled(cfg: dict | None = None) -> bool:
     return _load_checkpoints_enabled(cfg)
 
 
+def resolve_checkpoint_kwargs(cfg: dict | None = None) -> dict:
+    """Resolve all checkpoint AIAgent kwargs from *cfg* with DEFAULT_CONFIG fallbacks."""
+    from hermes_cli.config import DEFAULT_CONFIG
+    cp_cfg = (cfg or {}).get("checkpoints", {})
+    if not isinstance(cp_cfg, dict):
+        cp_cfg = {}
+    defaults = DEFAULT_CONFIG["checkpoints"]
+    return {
+        "checkpoints_enabled": resolve_checkpoints_enabled(cfg),
+        "checkpoint_max_snapshots": cp_cfg.get("max_snapshots", defaults["max_snapshots"]),
+        "checkpoint_max_total_size_mb": cp_cfg.get("max_total_size_mb", defaults["max_total_size_mb"]),
+        "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"]),
+    }
+
+
 def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
     """``/rollback`` number or hash → the checkpoint's hash (``tools/checkpoint_refs.py``, every surface's rule)."""
     from tools.checkpoint_refs import resolve_checkpoint_ref

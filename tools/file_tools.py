@@ -254,8 +254,9 @@ def _is_expected_write_exception(exc: Exception) -> bool:
 
 
 # ── ShellFileOperations per terminal environment ─────────────────────────
-_file_ops_lock = threading.Lock()
-_file_ops_cache: dict = {}
+_file_ops_lock = globals().get("_file_ops_lock") or threading.Lock()
+_existing_file_ops_cache = globals().get("_file_ops_cache")
+_file_ops_cache: dict = _existing_file_ops_cache if isinstance(_existing_file_ops_cache, dict) else {}
 
 
 def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
@@ -368,13 +369,45 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     return file_ops
 
 
-def clear_file_ops_cache(task_id: str | None = None):
-    """Clear file-operation state for a finished task, or all tasks."""
+def invalidate_file_ops_env_cache(task_id: str | None = None) -> None:
+    """Invalidate cached ShellFileOperations wrapper(s) when a sandbox env is torn down or idle-reaped.
+
+    Does NOT clear ``_read_tracker`` or ``file_state`` — those belong to the logical session/task
+    lifecycle and must survive 5-minute terminal idle reaping and turns where no persistent sandbox ran."""
     with _file_ops_lock:
         if task_id:
             _file_ops_cache.pop(task_id, None)
+            _file_ops_cache.pop(f"session:{task_id}", None)
+            if task_id.startswith("session:"):
+                _file_ops_cache.pop(task_id[len("session:"):], None)
         else:
             _file_ops_cache.clear()
+
+
+def migrate_file_ops_state(old_task_id: str | None, new_task_id: str | None) -> None:
+    """Carry cached file operations, patch failure counters, and read/write baselines across session rotation."""
+    if not old_task_id or not new_task_id or old_task_id == new_task_id:
+        return
+    old_tid = str(old_task_id)
+    new_tid = str(new_task_id)
+    with _file_ops_lock:
+        for src_k, dst_k in ((old_tid, new_tid), (f"session:{old_tid}", f"session:{new_tid}")):
+            ops = _file_ops_cache.pop(src_k, None)
+            if ops is not None and dst_k not in _file_ops_cache:
+                _file_ops_cache[dst_k] = ops
+    with _patch_failure_lock:
+        pf = _patch_failure_tracker.pop(old_tid, None)
+        if pf:
+            dst_pf = _patch_failure_tracker.setdefault(new_tid, {})
+            for p, cnt in pf.items():
+                dst_pf[p] = max(dst_pf.get(p, 0), cnt)
+    from tools.file_tools_read_tracking import migrate_file_read_state
+    migrate_file_read_state(old_tid, new_tid)
+
+
+def clear_file_ops_cache(task_id: str | None = None):
+    """Clear file-operation state for a finished task, or all tasks."""
+    invalidate_file_ops_env_cache(task_id)
 
     with _read_tracker_lock:
         if task_id:
@@ -864,6 +897,36 @@ def _whole_file_rewrite_hint(task_id: str, resolved: str | None, new_content: st
     )
 
 
+def _redact_mutation_result_dict(result_dict: dict, *, secret_file: bool) -> None:
+    """Redact diff, error, lsp_diagnostics, warning, note, and lint in write/patch results.
+
+    ``read_file_tool`` and ``search_tool`` redact returned file lines with
+    ``file_read=True`` (``«redacted:…»``), whereas ``patch_replace`` / ``patch_v4a``
+    diff against the raw on-disk bytes and ``write_file`` / ``patch`` syntax
+    linters and fuzzy-match ``Did you mean?`` hints can quote raw source lines.
+    Without this pass, removing or editing a line near a hardcoded secret echoes
+    the raw secret into ``state.db`` via the tool result JSON.
+    """
+    for _key in ("diff", "error", "lsp_diagnostics", "warning", "note"):
+        _val = result_dict.get(_key)
+        if isinstance(_val, str) and _val:
+            result_dict[_key] = redact_sensitive_text(
+                _val, file_read=True, secret_file=secret_file)
+    _lint = result_dict.get("lint")
+    if isinstance(_lint, dict):
+        for _lk, _lv in list(_lint.items()):
+            if isinstance(_lv, str) and _lv and _lk in ("output", "message"):
+                _lint[_lk] = redact_sensitive_text(
+                    _lv, file_read=True, secret_file=secret_file)
+            elif isinstance(_lv, dict):
+                _sub_sec = secret_file or _is_secret_file_arg(str(_lk))
+                for _sk in ("output", "message"):
+                    _sv = _lv.get(_sk)
+                    if isinstance(_sv, str) and _sv:
+                        _lv[_sk] = redact_sensitive_text(
+                            _sv, file_read=True, secret_file=_sub_sec)
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False,
                     session_id: str | None = None) -> str:
@@ -922,13 +985,15 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                     # same-task writes stay unblocked (patch_tool carries it).
                     _mark_full_write_baseline(_resolved, task_id, getattr(result, "_content_sha256", None))
                 _note_edited(task_id, [path], path_to_resolved, session_id)
+        _is_sec = any(_is_secret_file_arg(_p) for _p in (path, _resolved) if _p)
+        _redact_mutation_result_dict(result_dict, secret_file=_is_sec)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
             logger.debug("write_file expected denial: %s: %s", type(e).__name__, e)
         else:
             logger.error("write_file error: %s: %s", type(e).__name__, e, exc_info=True)
-        return tool_error(str(e))
+        return tool_error(redact_sensitive_text(str(e), file_read=True))
 
 
 def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[str]] | str:
@@ -1034,8 +1099,24 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
         # patch_replace already attached a richer "Did you mean?" snippet.
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
             failure_count = 0
+            _resolved_target = (_path_to_resolved.get(path) or path) if path else ""
             if mode == "replace" and path:
-                failure_count = _record_patch_failure(task_id, _path_to_resolved.get(path) or path)
+                failure_count = _record_patch_failure(task_id, _resolved_target)
+            if old_string and any(tok in old_string for tok in ("[CREDIT_CARD]", "[REDACTED", "«redacted:")):
+                result_dict["_redaction_warning"] = (
+                    "old_string contains a view-layer redaction placeholder ([CREDIT_CARD] / [REDACTED]) "
+                    "that read_file injected for display; the file on disk holds the unredacted text. "
+                    "Anchor old_string on surrounding unredacted lines or use terminal python3 to edit "
+                    "around the redacted span."
+                )
+            with _read_tracker_lock:
+                _cov = (_read_tracker.get(task_id) or {}).get("read_coverage", {}).get(_resolved_target)
+            if _cov and _cov.get("ranges") and _resolved_target not in _known:
+                _r_str = ", ".join(f"{s}-{e}" for s, e in _cov["ranges"][:4])
+                result_dict["_coverage_hint"] = (
+                    f"Partial read coverage on {path!r}: you only read line range(s) {_r_str}. "
+                    "Re-read the target region with read_file before retrying."
+                )
             if failure_count >= 3:
                 result_dict["_hint"] = (
                     f"This is failure #{failure_count} patching {path!r}. "
@@ -1045,13 +1126,27 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
                     "surrounding context lines, or (3) re-read the file in "
                     "full, then use write_file to replace it if the targeted "
                     "region is hard to anchor.")
+            elif failure_count == 2:
+                result_dict["_hint"] = (
+                    f"This is failure #2 patching {path!r}. Copy the exact target lines from "
+                    "the 'Did you mean' section above (without line-number prefixes) or call "
+                    "read_file on that line range before retrying.")
             elif "Did you mean one of these sections?" not in str(result_dict["error"]):
                 result_dict["_hint"] = (
                     "old_string not found. Use read_file to verify the current "
                     "content, or search_files to locate the text.")
+        # Redact diff, error, lint, and lsp_diagnostics with file_read=True so
+        # deleting or editing a hardcoded secret via patch does not echo the raw
+        # secret back into state.db via result_dict.
+        _is_sec = any(
+            _is_secret_file_arg(_p)
+            for _p in (*_paths_to_check, *_path_to_resolved.values(), *_path_to_entry.values())
+            if _p
+        )
+        _redact_mutation_result_dict(result_dict, secret_file=_is_sec)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
-        return tool_error(str(e))
+        return tool_error(redact_sensitive_text(str(e), file_read=True))
 
 
 def search_tool(pattern: str, target: str = "content", path: str = ".",

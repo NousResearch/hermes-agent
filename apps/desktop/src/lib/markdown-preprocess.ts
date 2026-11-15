@@ -11,14 +11,23 @@ import { DIRECTIVE_WITH_BODY_RE } from '@/lib/transcript-directives'
 // Same tag set as agent/think_scrubber.py THINK_TAG_NAMES, plus desktop-only
 // `scratchpad`/`analysis`.
 const REASONING_TAGS = 'think|thinking|reasoning|thought|reasoning_scratchpad|scratchpad|analysis'
+const CODE_FENCE_OR_SPAN_SOURCE = '(?:```[\\s\\S]*?```|`[^`\\n]+`)'
 // A run of adjacent closed blocks is one match, so the seam check below sees the
 // prose on either side of the whole run rather than the previous block's `>`.
-const REASONING_BLOCK_RE = new RegExp(`(?:<(${REASONING_TAGS})>[\\s\\S]*?<\\/\\1>\\s*)+`, 'gi')
+// Left-to-right alternation with CODE_FENCE_OR_SPAN_SOURCE preserves backticked
+// tag mentions in visible prose while still stripping code fences inside thoughts.
+const REASONING_BLOCK_RE = new RegExp(
+  `(${CODE_FENCE_OR_SPAN_SOURCE})|(?:(?<!\`)<(${REASONING_TAGS})>(?!\`)(?:${CODE_FENCE_OR_SPAN_SOURCE}|[\\s\\S])*?(?<!\`)<\\/\\2>(?!\`)\\s*)+`,
+  'gi'
+)
 // An open tag that starts its own block with no close tag yet. The block-boundary
 // requirement is what lets a real reasoning preamble (always its own block) vanish
 // while prose that merely mentions `<thinking>` mid-sentence survives — the same
 // line agent/think_scrubber.py draws.
-const OPEN_REASONING_BLOCK_RE = new RegExp(`(^|\\n)[ \\t]*<(${REASONING_TAGS})>[\\s\\S]*$`, 'i')
+const OPEN_REASONING_BLOCK_RE = new RegExp(
+  `(${CODE_FENCE_OR_SPAN_SOURCE})|(^|\\n)[ \\t]*<(${REASONING_TAGS})>[\\s\\S]*$`,
+  'gi'
+)
 
 // A half-arrived open tag (`<thin`) at a block boundary is not a tag yet, so the
 // pass above lets it paint as prose for one frame and then erase it — the same
@@ -335,14 +344,26 @@ function scrubBacktickNoise(text: string): string {
 // the match edges rather than slicing the accumulated text, which would copy
 // O(n) per closed block on every flush.
 function stripReasoningBlocks(text: string): string {
-  const closed = text.replace(REASONING_BLOCK_RE, (match: string, _tag: string, offset: number, whole: string) => {
-    const prev = whole[offset - 1]
-    const next = whole[offset + match.length]
+  const closed = text.replace(
+    REASONING_BLOCK_RE,
+    (match: string, codeBlock: string | undefined, _tag: string, offset: number, whole: string) => {
+      if (codeBlock !== undefined) {
+        return codeBlock
+      }
+      const prev = whole[offset - 1]
+      const next = whole[offset + match.length]
 
-    return prev && next && !/\s/.test(prev) && !/\s/.test(next) ? ' ' : ''
-  })
+      return prev && next && !/\s/.test(prev) && !/\s/.test(next) ? ' ' : ''
+    }
+  )
 
-  return closed.replace(OPEN_REASONING_BLOCK_RE, '$1').replace(PARTIAL_OPEN_REASONING_TAG_RE, '$1')
+  return closed
+    .replace(
+      OPEN_REASONING_BLOCK_RE,
+      (_match: string, codeBlock: string | undefined, prefix: string | undefined) =>
+        codeBlock !== undefined ? codeBlock : (prefix ?? '')
+    )
+    .replace(PARTIAL_OPEN_REASONING_TAG_RE, '$1')
 }
 
 interface MarkdownSegment {

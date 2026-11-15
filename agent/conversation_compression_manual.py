@@ -141,6 +141,12 @@ def compress_now(
         finalize_context_engine_compression_notification(agent, committed=False)
         return CompressResult("lock_skipped", before, before, before_tokens, before_tokens, request,
                               lock_holder=lock_signal if isinstance(lock_signal, str) else None)
+    transient_signal = getattr(agent, "_compression_blocked_transient", None)
+    if list(compressed) == list(head) and transient_signal == "pool_saturated":
+        agent._compression_blocked_transient = None
+        finalize_context_engine_compression_notification(agent, committed=False)
+        return CompressResult("lock_skipped", before, before, before_tokens, before_tokens, request,
+                              lock_holder="pool_saturated")
     # Stamped copies mean the commit (in place or rotated) stored the tail and already returned head + tail.
     # A no-op or a rolled-back commit leaves them unstamped, and the tail is then only in the caller's dicts.
     if tail and not all(row.get(_DB_PERSISTED_MARKER) is True for row in tail_rows):

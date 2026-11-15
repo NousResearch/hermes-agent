@@ -433,3 +433,25 @@ async def test_each_scope_resolves_its_own_store_and_profile(monkeypatch):
         ("row-from-bala", "bala"),
         ("row-from-medicina", "medicina"),
     ], "each scope must resolve its own store AND pass its profile name through"
+
+
+@pytest.mark.asyncio
+async def test_resolve_handoff_watch_scopes_prefers_housekeeping_executor():
+    """Watch scope resolution must prefer the housekeeping pool over turn executor."""
+    runner = types.SimpleNamespace(config=_FakeConfig(multiplex=True))
+    called = []
+
+    async def _hk(func, *args):
+        called.append("housekeeping")
+        return [(None, None)]
+
+    async def _turn(func, *args):
+        called.append("turn")
+        return [(None, None)]
+
+    runner._run_housekeeping_in_executor = _hk
+    runner._run_in_executor_with_context = _turn
+
+    res = await run._resolve_handoff_watch_scopes(runner)
+    assert called == ["housekeeping"], "must use housekeeping pool to avoid thread thrash on loop"
+    assert res == [(None, None)]

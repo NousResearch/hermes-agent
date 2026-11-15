@@ -5242,6 +5242,50 @@ def test_ws_orphan_reap_defers_running_turn_for_active_delegation(monkeypatch):
         server._sessions.pop("delegating-turn", None)
 
 
+def test_ws_orphan_reap_defers_running_turn_when_activity_summary_none(monkeypatch):
+    callbacks = []
+    interrupted = []
+
+    class _Timer:
+        def __init__(self, _delay, callback):
+            callbacks.append(callback)
+
+        def start(self):
+            return None
+
+    class _LiveThread:
+        def is_alive(self):
+            return True
+
+    def _interrupt():
+        interrupted.append("interrupted")
+        session["running"] = False
+
+    session = _session(
+        agent=types.SimpleNamespace(
+            interrupt=_interrupt,
+            get_activity_summary=lambda: {"seconds_since_activity": None},
+        ),
+        transport=server._detached_ws_transport,
+        running=True,
+        _run_thread=_LiveThread(),
+    )
+    server._sessions["fresh-startup-turn"] = session
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_load_cfg", dict)
+
+    try:
+        server._schedule_ws_orphan_reap("fresh-startup-turn")
+        callbacks.pop(0)()
+
+        # Should defer because running=True and elapsed is None (startup / waiting for first API response)
+        assert interrupted == []
+        assert len(callbacks) == 1
+    finally:
+        server._sessions.pop("fresh-startup-turn", None)
+
+
 def test_ws_orphan_reap_interrupts_in_process_turn(monkeypatch):
     callbacks = []
     interrupted = []
@@ -16177,6 +16221,53 @@ def test_session_history_ships_durable_row_ids(monkeypatch):
         server._sessions.pop("rowid-hist-sid", None)
 
 
+def test_session_history_includes_compacted_and_forwards_message_uid(monkeypatch):
+    """session.history must pass include_compacted=True, reconcile with live in-memory
+    turns, and forward message_uid so post-compaction history keeps pre-compaction turns."""
+    seen: dict = {}
+
+    class _Db:
+        def get_messages_as_conversation(
+            self, _key, include_ancestors=False, include_row_ids=False, include_compacted=False, **_kwargs
+        ):
+            seen["include_compacted"] = include_compacted
+            seen["include_row_ids"] = include_row_ids
+            return [
+                {"role": "user", "content": "compacted-turn", "_row_id": 10, "message_uid": "uid-10"},
+                {"role": "assistant", "content": "carried-reply", "_row_id": 20, "message_uid": "uid-20"},
+            ]
+
+    server._sessions["compacted-hist-sid"] = {
+        "session_key": "compacted-sess",
+        "history": [
+            {"role": "assistant", "content": "carried-reply", "_row_id": 20, "message_uid": "uid-20"},
+            {"role": "user", "content": "unflushed-live-turn", "message_uid": "uid-21"},
+        ],
+        "history_lock": __import__("threading").Lock(),
+        "running": False,
+        "agent": None,
+        "created_at": 1.0,
+        "last_active": 1.0,
+    }
+    monkeypatch.setattr(server, "_get_db", lambda: _Db())
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.history", "params": {"session_id": "compacted-hist-sid"}}
+        )
+        assert "result" in resp, resp
+        assert seen.get("include_compacted") is True
+        assert seen.get("include_row_ids") is True
+        msgs = resp["result"]["messages"]
+        assert [m.get("text") for m in msgs] == [
+            "compacted-turn",
+            "carried-reply",
+            "unflushed-live-turn",
+        ]
+        assert [m.get("message_uid") for m in msgs] == ["uid-10", "uid-20", "uid-21"]
+    finally:
+        server._sessions.pop("compacted-hist-sid", None)
+
+
 def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
     """session.status must load meta from the session profile state.db."""
     profile_home = tmp_path / "profiles" / "mlperf"
@@ -22352,3 +22443,33 @@ def test_named_profile_without_backend_stays_local_under_ssh_launch(monkeypatch,
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name == "plain" else None)
 
     assert server._completion_cwd({"profile": "plain", "cwd": launch, "cwd_explicit": False}) == launch
+
+
+def test_detached_ws_rebound_on_active_list_and_status_and_history(monkeypatch):
+    """Polling session.active_list(current_session_id=...), session.status, or session.history
+    over an active authenticated WS transport rescues a session parked on _detached_ws_transport."""
+    live_transport = object()
+    monkeypatch.setattr(server, "current_transport", lambda: live_transport)
+    sid = "sess-detached-rescue"
+    session = {
+        "session_id": sid,
+        "session_key": sid,
+        "transport": server._detached_ws_transport,
+        "close_on_disconnect": False,
+        "history": [],
+        "history_lock": server.threading.RLock(),
+        "agent": None,
+        "busy": True,
+    }
+    monkeypatch.setitem(server._sessions, sid, session)
+
+    res = server._methods["session.active_list"](1, {"current_session_id": sid})
+    assert "result" in res
+    assert session["transport"] is live_transport
+
+    # Park it on _detached_ws_transport again and verify session.history also rescues it.
+    session["transport"] = server._detached_ws_transport
+    res_hist = server._methods["session.history"](2, {"session_id": sid})
+    assert "result" in res_hist
+    assert session["transport"] is live_transport
+

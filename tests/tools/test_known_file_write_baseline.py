@@ -334,3 +334,29 @@ def test_third_patch_failure_hint_requires_a_full_reread_before_write_file(tmp_p
     assert "failure #3" in hint
     assert "re-read the file in full, then use write_file to replace it" in hint
     assert "use write_file to replace the entire file" not in hint
+
+
+def test_cf58_patch_recovery_hints_for_redaction_partial_read_and_second_miss(tmp_path, task):
+    path = tmp_path / "partial.txt"
+    path.write_text("".join(f"line_{i} = {i}\n" for i in range(1, 21)))
+    _read(path, task, offset=1, limit=5)
+
+    miss1 = _dispatch(
+        "patch",
+        task,
+        path=str(path),
+        old_string="token = [CREDIT_CARD]\n",
+        new_string="token = 1\n",
+    )
+    assert "view-layer redaction placeholder" in miss1.get("_redaction_warning", "")
+    assert "1-5" in miss1.get("_coverage_hint", "")
+
+    miss2 = _dispatch(
+        "patch",
+        task,
+        path=str(path),
+        old_string="line_15 = 999\n",
+        new_string="line_15 = 150\n",
+    )
+    assert "failure #2" in miss2.get("_hint", "")
+

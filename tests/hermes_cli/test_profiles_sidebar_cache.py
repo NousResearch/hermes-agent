@@ -172,6 +172,59 @@ class SidebarCacheTests(unittest.TestCase):
 
         self.assertEqual(inspect.signature(wrapped), inspect.signature(scan))
 
+    def test_profiles_sessions_excludes_cron_for_mobile_filter_and_invalidates_on_db_write(self):
+        from starlette.testclient import TestClient
+        import hermes_state
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as root:
+            home = Path(root)
+            db_path = home / "state.db"
+            with mock.patch("hermes_constants.get_hermes_home", return_value=home), \
+                 mock.patch.object(hermes_state, "DEFAULT_DB_PATH", db_path), \
+                 mock.patch.object(profiles, "_cron_profile_home", side_effect=lambda name: (name, home)):
+                db = SessionDB(db_path)
+                try:
+                    db.create_session(session_id="chat-1", source="telegram")
+                    db.append_message(session_id="chat-1", role="user", content="hello")
+                    db.create_session(session_id="cron-1", source="cron")
+                    db.append_message(session_id="cron-1", role="user", content="tick")
+                finally:
+                    db.close()
+
+                client = TestClient(app)
+                client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+                # Mobile passes exclude_sources=kanban,tool,oneshot for recents; cron must be excluded in SQL.
+                r1 = client.get(
+                    "/api/profiles/sessions?limit=50&offset=0&min_messages=1&archived=exclude"
+                    "&order=recent&profile=default&exclude_sources=kanban,tool,oneshot"
+                )
+                self.assertEqual(r1.status_code, 200)
+                self.assertEqual([s["id"] for s in r1.json()["sessions"]], ["chat-1"])
+
+                # Dedicated cron query (source=cron) must still return cron-1.
+                r_cron = client.get("/api/profiles/sessions?limit=50&offset=0&profile=default&source=cron")
+                self.assertEqual(r_cron.status_code, 200)
+                self.assertEqual([s["id"] for s in r_cron.json()["sessions"]], ["cron-1"])
+
+                # Mutating state.db immediately invalidates the fingerprint-backed cache (0s stale window).
+                db = SessionDB(db_path)
+                try:
+                    db.create_session(session_id="chat-2", source="telegram")
+                    db.append_message(session_id="chat-2", role="user", content="world")
+                finally:
+                    db.close()
+
+                r2 = client.get(
+                    "/api/profiles/sessions?limit=50&offset=0&min_messages=1&archived=exclude"
+                    "&order=recent&profile=default&exclude_sources=kanban,tool,oneshot"
+                )
+                self.assertEqual(r2.status_code, 200)
+                self.assertEqual({s["id"] for s in r2.json()["sessions"]}, {"chat-1", "chat-2"})
+
+
 
 
 if __name__ == "__main__":

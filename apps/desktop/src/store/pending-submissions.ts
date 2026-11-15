@@ -30,6 +30,71 @@ export interface PendingSnapshotFence {
 
 const entryKey = (session: string, id: string) => `${ENTRY_PREFIX}${JSON.stringify([session, id])}`
 
+// The journal stores cards, not payloads: its text is display-only (queue drains
+// never re-send server-owned rows), so a submit's full expanded text (slash-skill
+// expansions reach ~280k chars) is capped before it enters localStorage. Uncapped
+// pre-submit writes filled the 50 MiB-char origin quota and aborted submits (#ATLAS-125).
+const JOURNAL_TEXT_LIMIT = 4096
+
+const boundedEntry = (entry: PendingSubmission): PendingSubmission => {
+  const text = boundedText(entry.text)
+  const displayText = typeof entry.displayText === 'string' ? boundedText(entry.displayText) : entry.displayText
+
+  return text === entry.text && displayText === entry.displayText ? entry : { ...entry, text, displayText }
+}
+
+const boundedText = (text: string): string => (text.length > JOURNAL_TEXT_LIMIT ? text.slice(0, JOURNAL_TEXT_LIMIT) : text)
+
+const isQuotaError = (error: unknown): boolean =>
+  error instanceof DOMException && (error.name === 'QuotaExceededError' || error.code === 22)
+
+/** Drop the least informative journal entries first: a pre-track the owner never
+ *  gave a status (never replayed by design), then retired records, then settled
+ *  cards. localStorage enumerates in insertion order, so ties resolve oldest-first. */
+const EVICTION_RANK: Record<string, number> = { '': 0, retired: 1, queued: 2, started: 3, unknown: 4 }
+
+function evictJournalEntry(keepKey: string, maxRank: number): boolean {
+  let victim: { key: string; rank: number } | undefined
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index)
+
+    if (!key?.startsWith(ENTRY_PREFIX) || key === keepKey) { continue }
+    const entry = parse<null | PendingSubmission>(window.localStorage.getItem(key), null)
+    const rank = EVICTION_RANK[entry?.status ?? ''] ?? 5
+
+    if (rank <= maxRank && (!victim || rank < victim.rank)) { victim = { key, rank } }
+  }
+
+  if (!victim) { return false }
+  window.localStorage.removeItem(victim.key)
+
+  return true
+}
+
+/** setItem that cannot take a submit down with it: on a full origin it evicts
+ *  journal entries (see evictJournalEntry; a statusless pre-track may evict only
+ *  statusless or retired records, never live cards) and retries; an exhausted or
+ *  unavailable storage logs and returns false instead of throwing (#ATLAS-125). */
+function safeSetEntry(key: string, entry: PendingSubmission): boolean {
+  const value = JSON.stringify(boundedEntry(entry))
+  const maxRank = entry.status ? 5 : 1
+
+  for (;;) {
+    try {
+      window.localStorage.setItem(key, value)
+
+      return true
+    } catch (error) {
+      if (!isQuotaError(error) || !evictJournalEntry(key, maxRank)) {
+        console.warn('[pending-submissions] journal write skipped (storage full or unavailable)', { key: key.slice(ENTRY_PREFIX.length, ENTRY_PREFIX.length + 80) })
+
+        return false
+      }
+    }
+  }
+}
+
 const parse = <T>(raw: null | string, fallback: T): T => {
   try {
     return raw ? (JSON.parse(raw) as T) : fallback
@@ -83,25 +148,40 @@ function readPendingSubmission(session: string, id: string): PendingSubmission |
     parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, Record<string, PendingSubmission>>)[session]?.[id]
 }
 
-function writeEntries(session: string, before: Record<string, PendingSubmission>, after: Record<string, PendingSubmission>): void {
+function writeEntries(session: string, before: Record<string, PendingSubmission>, after: Record<string, PendingSubmission>): boolean {
   for (const id of Object.keys(before)) {
     if (!(id in after)) { window.localStorage.removeItem(entryKey(session, id)) }
   }
 
+  let allWritten = true
+
   for (const [id, entry] of Object.entries(after)) {
-    if (JSON.stringify(before[id]) !== JSON.stringify(entry)) { window.localStorage.setItem(entryKey(session, id), JSON.stringify(entry)) }
+    if (JSON.stringify(before[id]) !== JSON.stringify(boundedEntry(entry))) {
+      allWritten = safeSetEntry(entryKey(session, id), entry) && allWritten
+    }
   }
 
   // Upgrade: once this session's entries live in v2 keys, drop its slice of the legacy blob.
   const legacy = parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, unknown>)
 
   if (session in legacy) {
-    for (const [id, entry] of Object.entries(after)) { window.localStorage.setItem(entryKey(session, id), JSON.stringify(entry)) }
-    delete legacy[session]
+    for (const [id, entry] of Object.entries(after)) {
+      allWritten = safeSetEntry(entryKey(session, id), entry) && allWritten
+    }
 
-    if (Object.keys(legacy).length) { window.localStorage.setItem(LEGACY_KEY, JSON.stringify(legacy)) }
-    else { window.localStorage.removeItem(LEGACY_KEY) }
+    if (allWritten) {
+      delete legacy[session]
+
+      try {
+        if (Object.keys(legacy).length) { window.localStorage.setItem(LEGACY_KEY, JSON.stringify(legacy)) }
+        else { window.localStorage.removeItem(LEGACY_KEY) }
+      } catch {
+        // Keep the migrated v2 entries even if rewriting the legacy blob hits quota.
+      }
+    }
   }
+
+  return allWritten
 }
 
 // An admission only moves forward: queued -> started -> (unknown after an owner restart) ->
@@ -146,11 +226,11 @@ function mergeReceipt(held: PendingSubmission | undefined, next: PendingSubmissi
 
 /** Fold a journal kept under `from` into `to` once `from` resolves there (a tip journaled before
  *  its lineage row loaded), so its status, display text and fences keep guarding the card. */
-function adoptJournal(from: string, to: string): void {
+function adoptJournal(from: string, to: string): boolean {
   const stray = from === to ? {} : readPendingSubmissions(from)
 
   if (!Object.keys(stray).length) {
-    return
+    return true
   }
 
   const before = readPendingSubmissions(to)
@@ -160,8 +240,13 @@ function adoptJournal(from: string, to: string): void {
     merged[id] = mergeReceipt(merged[id], entry)
   }
 
-  writeEntries(to, before, merged)
+  if (!writeEntries(to, before, merged)) {
+    return false
+  }
+
   writeEntries(from, stray, {})
+
+  return true
 }
 
 // Tip->root lineages whose tip journal tracking already folded. Adoption enumerates the journal,
@@ -174,14 +259,51 @@ export function trackPendingSubmission(storedId: string, entry: PendingSubmissio
   const key = journalKey(storedId)
   const lineage = JSON.stringify([storedId, key])
 
-  if (storedId !== key && !adoptedLineages.has(lineage)) {
-    adoptJournal(storedId, key)
+  if (storedId !== key && !adoptedLineages.has(lineage) && adoptJournal(storedId, key)) {
     adoptedLineages.add(lineage)
   }
 
   const held = readPendingSubmission(key, entry.id)
-  window.localStorage.setItem(entryKey(key, entry.id), JSON.stringify(mergeReceipt(held, entry)))
+  safeSetEntry(entryKey(key, entry.id), mergeReceipt(held, entry))
 }
+
+/** Remove a pre-tracked entry that never became a pending admission: the owner's
+ *  ACK named no identity for it (a legacy `hermes serve` contract), or the submit
+ *  failed before admission. No card exists, so the pre-track is dropped rather
+ *  than leaked into the journal forever (#ATLAS-125). Never touches an entry the
+ *  owner has given a status — that one may still be a live pending card. */
+export function dropPendingSubmission(storedId: string, id: string): void {
+  const key = journalKey(storedId)
+  const entry = readPendingSubmission(key, id)
+
+  if (!entry || entry.status) { return }
+  window.localStorage.removeItem(entryKey(key, id))
+}
+
+/** One-time startup sweep (#ATLAS-125): at module load no submit is in flight, so
+ *  a statusless entry can only be a leftover pre-track from a previous run whose
+ *  ACK never named an admission identity — its card never existed, and it can
+ *  never be upgraded by this renderer's submit path. Drop it; a pending fanout
+ *  that still lists the send recreates the card under its admission id. Also
+ *  rewrite any oversized text a previous build stored, reclaiming the origin. */
+function sweepJournalOnLoad(): void {
+  for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+    const key = window.localStorage.key(index)
+
+    if (!key?.startsWith(ENTRY_PREFIX)) { continue }
+    const entry = parse<null | PendingSubmission>(window.localStorage.getItem(key), null)
+
+    if (!entry) { continue }
+
+    if (!entry.status) {
+      window.localStorage.removeItem(key)
+    } else if (entry.text.length > JOURNAL_TEXT_LIMIT || (typeof entry.displayText === 'string' && entry.displayText.length > JOURNAL_TEXT_LIMIT)) {
+      safeSetEntry(key, entry)
+    }
+  }
+}
+
+sweepJournalOnLoad()
 
 // Array.isArray narrows `unknown` to `any[]`; the helpers keep that wire shape.
 type RawReceipts = any[]
@@ -214,10 +336,13 @@ function collectReceipts(value: RawReceipts, known: Record<string, PendingSubmis
       admissionByInput.set(raw.input_id, id)
     }
 
+    const inputEntry = typeof raw.input_id === 'string' && raw.input_id !== id ? known[raw.input_id] : undefined
+    const previous = inputEntry ? mergeReceipt(inputEntry, known[id] ?? { id, text: '' }) : known[id]
+
     receipts.set(id, {
-      ...known[id],
+      ...previous,
       id,
-      text: typeof raw.user === 'string' ? raw.user : (known[id]?.text ?? ''),
+      text: typeof raw.user === 'string' ? boundedText(raw.user) : (previous?.text ?? ''),
       status: stale ? known[id].status : raw.status,
       ...(Array.isArray(raw.controls) ? { controls: raw.controls.filter((c: unknown) => typeof c === 'string') } : {})
     })
@@ -300,6 +425,19 @@ function updateKnownReceipts(known: Record<string, PendingSubmission>, value: Ra
     }
   }
 
+  // A fenced snapshot lists the owner's pending admissions and knows their input
+  // identities. A statusless pre-tracked submit it mentions under neither id was
+  // admitted elsewhere (its input key is folded below), refused, or lost — no
+  // card exists for it, so the pre-track is dropped instead of leaking per send
+  // (#ATLAS-125). Unfenced (legacy) snapshots say nothing and retire nothing.
+  if (fence) {
+    for (const [id, entry] of Object.entries(known)) {
+      if (!entry.status && !value.some(raw => raw?.admission_id === id || raw?.input_id === id)) {
+        delete known[id]
+      }
+    }
+  }
+
   const retired = Object.keys(known).filter(id => known[id].status === 'retired')
 
   for (const id of retired.slice(0, Math.max(0, retired.length - RETIRED_MEMORY))) {
@@ -308,17 +446,23 @@ function updateKnownReceipts(known: Record<string, PendingSubmission>, value: Ra
 
   for (const raw of value) {
     if (typeof raw?.admission_id === 'string' && !isStale(raw, known)) {
-      const previous = known[raw.admission_id]
+      // The pre-track was written under the client submission id; the owner may
+      // admit it under a different admission id. Fold the input-keyed record
+      // into the admission key so its journal entry is reused, not duplicated.
+      const inputEntry = typeof raw.input_id === 'string' && raw.input_id !== raw.admission_id ? known[raw.input_id] : undefined
+      const previous = inputEntry ? mergeReceipt(inputEntry, known[raw.admission_id] ?? { id: raw.admission_id, text: '' }) : known[raw.admission_id]
 
       known[raw.admission_id] = {
         ...previous,
         id: raw.admission_id,
-        text: raw.user ?? previous?.text ?? '',
+        text: typeof raw.user === 'string' ? boundedText(raw.user) : (previous?.text ?? ''),
         // A steer in transfer reads `started` but can still go back to its queue place: it never
         // raises the admission's rank, so the owner's later `queued` listing repaints its card.
         status: raw.steering === true ? (previous?.status ?? 'queued') : raw.status,
         ...(fence && !predates(fence, previous?.seen) ? { seen: fence } : {})
       }
+
+      if (inputEntry) { delete known[raw.input_id] }
     }
   }
 }

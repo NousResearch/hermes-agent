@@ -15,6 +15,11 @@ def describe_compression_lock_skip(lock_signal: Any) -> str:
     compression is running (``try_acquire_compression_lock`` swallows
     ``sqlite3.Error``), so the two cases are worded differently.
     """
+    if lock_signal == "pool_saturated":
+        return (
+            "⏳ Compression skipped: the context compression worker pool is busy "
+            "with other sessions — please try /compress again shortly."
+        )
     if isinstance(lock_signal, str) and lock_signal.strip():
         return (
             f"⏳ Compression already in progress for this session "

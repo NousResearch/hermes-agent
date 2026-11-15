@@ -92,6 +92,13 @@ class TestSearchErrorGuard:
         assert res.error is None
         assert res.total_count >= 4
 
+    def test_dash_prefixed_pattern_is_not_parsed_as_flag(self, method, match_tree):
+        (match_tree / "flags.txt").write_text("run --check now\n")
+        res = _search(_ops(match_tree), method, "--check|healthcheck|HEALTHCHECK", match_tree)
+        assert res.error is None, f"dash-prefixed pattern failed as flag: {res.error}"
+        assert len(res.matches) == 1
+
+
 
 class TestSearchContentNewlineWarning:
     def test_odd_backslash_n_is_detected_as_regex_newline(self):

@@ -151,7 +151,7 @@ def rearm_persisted_closes(authority):
     is mounted with no viewer goes back to ``pending_closes``. The caller schedules the drain, whose
     idle point (after any queued turn; never past an ``unknown`` one) completes it. Returns the ids."""
     with authority.db._read_ctx() as conn:
-        stored = conn.execute('SELECT key, value FROM state_meta WHERE key LIKE ?', (CLOSE_PREFIX + '%',)).fetchall()
+        stored = conn.execute('SELECT key, value FROM state_meta WHERE key GLOB ?', (CLOSE_PREFIX + '*',)).fetchall()
     armed = []
     for key, record in stored:
         session_id = key[len(CLOSE_PREFIX):]

@@ -201,15 +201,23 @@ def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True,
     return marker_key
 
 
-@dataclasses.dataclass(slots=True)
+@dataclasses.dataclass
 class _TurnScopes:
-    """Reset tokens for the thread/context scopes a turn binds (filled incrementally)."""
+    """Reset tokens for the thread/context scopes a turn binds (filled incrementally).
+
+    Unslotted with legacy default fields so partial/in-flight module reloads never raise
+    ``AttributeError`` on ``.profile`` / ``.secret`` / ``.terminal`` access (#W8).
+    """
 
     approval: Any = None
     session_tokens: list = dataclasses.field(default_factory=list)
     # The turn's profile state (home, secrets, terminal policy, runtime scope) as ONE bind; released
     # whole after post-turn housekeeping, which still runs under the session's own profile.
     profile: Any = None
+    home: Any = None
+    secret: Any = None
+    terminal: Any = None
+    runtime: Any = None
 
 
 def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
@@ -294,10 +302,16 @@ def _commit_turn_history(
         current_no_markers = [e for e in current_history if not _is_pivot_marker(e)]
         if current_no_markers == history_no_markers and any(
                 _is_pivot_marker(e) for e in current_history):
-            # Auto-compression can leave the result shorter than the turn-start history.
-            msgs = result["messages"]
-            new_messages = msgs[len(history):] if len(msgs) > len(history) else list(msgs)
-            session["history"] = current_history + new_messages
+            # Auto-compression can rewrite or shorten the prefix compared to turn-start history.
+            msgs = list(result["messages"])
+            if len(msgs) >= len(history) and msgs[:len(history)] == history:
+                session["history"] = current_history + msgs[len(history):]
+            else:
+                added_markers = [
+                    e for e in current_history
+                    if _is_pivot_marker(e) and e not in history
+                ]
+                session["history"] = msgs + added_markers
             session["history_version"] = current_version + 1
             return None
         print(
@@ -465,6 +479,8 @@ def _run_post_turn_followups(
     # not consume session A's event.  Unclaimable events are requeued for the poller.
     try:
         from tools.process_registry import process_registry
+        with contextlib.suppress(Exception):
+            _ensure_notification_poller_alive(sid, session)
         # _release_turn_scopes / _post_turn_housekeeping have released the worker's runtime scopes. Queue ownership,
         # notification policy and nested dispatch still belong to this session.
         from tools.process_registry_awaiting import drained_for
@@ -496,7 +512,7 @@ class _TurnRun:
     one_turn_restore: Any
     terminal_callback: Any
     receipt_committed: bool
-    scopes: _TurnScopes = dataclasses.field(default_factory=_TurnScopes)
+    scopes: _TurnScopes = dataclasses.field(default_factory=lambda: _TurnScopes())
     result: Any = None  # read after the finally for leftover /steer
     tts_queue: Any = None
     thinking_started: bool = False
@@ -509,6 +525,25 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+
+
+def _history_has_dangling_tool_splice(history: list) -> bool:
+    """True when an in-memory history contains a ``tool`` row not preceded by an ``assistant`` with ``tool_calls``
+    (e.g. a mid-turn resume stripped ``tool_calls`` from the trailing assistant row before the sibling surface
+    finished the tool and appended its ``tool`` result, #CF68)."""
+    in_tool_block = False
+    for m in history:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role == "assistant":
+            in_tool_block = bool(m.get("tool_calls"))
+        elif role == "tool":
+            if not in_tool_block:
+                return True
+        else:
+            in_tool_block = False
+    return False
 
 
 def _adopt_out_of_band_turns(session: dict) -> None:
@@ -540,17 +575,53 @@ def _adopt_out_of_band_turns(session: dict) -> None:
     # Keyset probe first: the common turn has nothing to adopt and must not pay a full transcript decode.
     # Address the live session, not session_key: a rotation moves the tip mid-session, so the parent
     # holds none of the foreign rows (Telegram reply, cron) this function exists to adopt and the model
-    # silently never sees them (#123545).
+    # silently never sees them (#123545). Also detect in-place SQLite secret scrubs (rowbak receipt or
+    # tool-row content length change on id <= seen) so poisoned in-memory history is re-hydrated (#CF67).
+    target_key = _submit_row_target_key(session)  # type: ignore[name-defined]
+    scrubbed = _history_has_dangling_tool_splice(history)
     with _session_db(session) as db:
         try:
-            newer = db.get_messages(_submit_row_target_key(session), after_id=seen) if db is not None else []
+            newer = db.get_messages(target_key, after_id=seen) if db is not None else []
+            if db is not None and target_key:
+                import glob as _glob
+                import os as _os
+                db_path = str(getattr(db, "db_path", "") or _os.path.expanduser("~/.hermes/state.db"))
+                last_scrub_mt = float(session.get("_scrub_reloaded_mtime") or 0.0)
+                rowbaks = _glob.glob(f"{db_path}.rowbak-secret-scrub-*-{target_key}-*.json")
+                max_mt = max((_os.path.getmtime(p) for p in rowbaks), default=0.0)
+                if max_mt > last_scrub_mt:
+                    session["_scrub_reloaded_mtime"] = max_mt
+                    scrubbed = True
+                elif callable(getattr(db, "_read_all", None)):
+                    mem_tool_lens = {
+                        rid: len(m.get("content") or "")
+                        for m in history
+                        if isinstance(m, dict)
+                        and m.get("role") == "tool"
+                        and isinstance(m.get("content"), str)
+                        and isinstance((rid := _message_row_id(m)), int)  # type: ignore[name-defined]
+                        and _below_ceiling(rid)
+                    }
+                    if mem_tool_lens:
+                        db_rows = db._read_all(
+                            "SELECT id, LENGTH(COALESCE(content, '')) FROM messages "
+                            "WHERE session_id = ? AND active = 1 AND role = 'tool' AND id <= ?",
+                            (target_key, seen),
+                        ) or ()
+                        if any(mem_tool_lens.get(int(r[0])) not in (None, int(r[1])) for r in db_rows):
+                            scrubbed = True
         except Exception:
             logger.debug("out-of-band history probe failed; turn runs on the in-memory history", exc_info=True)
             return
     newer = [row for row in newer if _foreign(row.get("id"))]
-    if not newer:
+    if not newer and not scrubbed:
         return
-    rewritten = any(row.get("_compressed_summary") for row in newer)
+    rewritten = (
+        scrubbed
+        or any(row.get("_compressed_summary") for row in newer)
+        or bool(newer and newer[0].get("role") != "user")
+        or bool(history and (history[-1].get("role") != "assistant" or history[-1].get("tool_calls")))
+    )
     rows = _load_durable_truncation_history(session, repair_alternation=rewritten) or []
     keep = _below_ceiling if rewritten else _foreign
     tail = canonicalize_replay_history([m for m in rows if keep(_message_row_id(m))])
@@ -1069,10 +1140,11 @@ def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
             logger.debug("TUI one-turn model restore failed", exc_info=True)
     scopes = st.scopes
     with contextlib.suppress(Exception):
-        if scopes.approval is not None:
+        if getattr(scopes, "approval", None) is not None:
             from tools.approval_context import reset_current_session_key
             reset_current_session_key(scopes.approval)
-    _clear_session_context(scopes.session_tokens)
+    with contextlib.suppress(Exception):
+        _clear_session_context(getattr(scopes, "session_tokens", ()))
 
 
 def _post_turn_housekeeping(sid: str, session: dict, st: _TurnRun) -> None:
@@ -1084,8 +1156,14 @@ def _post_turn_housekeeping(sid: str, session: dict, st: _TurnRun) -> None:
             trim_memory(reason="tui turn completion", collect=False)
     except Exception:
         logger.debug("post-turn memory trim failed", exc_info=True)
-    if st.scopes.profile is not None:
-        st.scopes.profile.reset()
+    try:
+        profile_scope = getattr(getattr(st, "scopes", None), "profile", None)
+        if profile_scope is not None:
+            profile_scope.reset()
+    except Exception:
+        logger.debug("post-turn profile scope reset failed", exc_info=True)
+    with contextlib.suppress(Exception):
+        _ensure_notification_poller_alive(sid, session)
 
 
 # Bounded so a contended state.db cannot hold ``_sessions_lock``; a skipped heal is retried on the next prompt.
@@ -1269,10 +1347,20 @@ def _run_prompt_submit(
                 _reopen_routed_session_row(routing_db, sid, session)
             can_start = _start_session_work(run, name=f"prompt-turn-{sid}", session=session) is not None
     if not can_start:
+        closing = False
         with session["history_lock"]:
+            closing = bool(session.get("_closing"))
             session["running"] = False
+            session.pop("_submit_user_row", None)
             if session.get(SESSION_KEY) is segments:
                 session.pop(SESSION_KEY)
+        if not closing and not muted:
+            _emit_terminal_turn_error(
+                sid, session, "backend is retiring; reconnect to continue",
+                error_surface={"layer": "runtime", "code": "backend_retiring", "retryable": True},
+                retire_marker=False)
+        else:
+            _clear_inflight_turn(session)
     return can_start
 
 

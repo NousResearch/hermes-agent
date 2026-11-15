@@ -68,5 +68,5 @@ def end_idle_acp_sessions(authority):
     """Gateway shutdown: every ACP session nobody is viewing, attached this run or not."""
     with authority.db._read_ctx() as conn:
         ids = [row[0][len(POLICY_PREFIX):] for row in conn.execute(
-            'SELECT key FROM state_meta WHERE key LIKE ?', (POLICY_PREFIX + '%',))]
+            'SELECT key FROM state_meta WHERE key GLOB ?', (POLICY_PREFIX + '*',))]
     return sum(end_idle_acp_session(authority, sid) for sid in ids)

@@ -109,6 +109,16 @@ class TestSkillPrunedMarkerEmit:
         assert _extract_pruned_skill_names(summary) == ["pdf"]
         assert _skill_pruned_marker("pdf") in summary
 
+    def test_marker_extractor_ignores_template_placeholders(self):
+        """Doc/code snippets carrying '…', '...', or '{skill_name}' must not be extracted."""
+        doc_snippet = (
+            "[SKILL_PRUNED: content lost in compression; reload with skill_view(name='…')]\n"
+            "[SKILL_PRUNED: content lost in compression; reload with skill_view(name='...')]\n"
+            "[SKILL_PRUNED: content lost in compression; reload with skill_view(name='{skill_name}')]\n"
+            + _skill_pruned_marker("productivity/diligence-pipeline")
+        )
+        assert _extract_pruned_skill_names(doc_snippet) == ["productivity/diligence-pipeline"]
+
 class TestReinjectPrunedSkillMarkers:
 
     def test_reinjects_when_marker_paraphrased_away(self):
@@ -129,6 +139,24 @@ class TestReinjectPrunedSkillMarkers:
         body = _reinject_pruned_skill_markers("## Goal\nwork\n", ["pdf"])
         full = SUMMARY_PREFIX + "\n\n" + body
         assert ContextCompressor.classify_summary_content(full) == "standalone"
+
+    def test_relocates_stray_markers_from_wrong_structured_section(self):
+        stray_summary = (
+            "## Goal\nInvestigate logs\n\n"
+            "## Key Decisions\n- Fixed parser\n"
+            + _skill_pruned_marker("rca")
+            + "\n"
+            + _skill_pruned_marker("always-verify")
+            + "\n\n## Errors & Fixes\n- None"
+        )
+        out = _reinject_pruned_skill_markers(stray_summary, ["rca", "always-verify", "hermes-log-debug"])
+        assert "## Pruned Skills" in out
+        key_decisions_sec = out.split("## Key Decisions")[1].split("## Errors & Fixes")[0]
+        assert SKILL_PRUNED_MARKER_PREFIX not in key_decisions_sec
+        pruned_sec = out.split("## Pruned Skills")[1]
+        assert _skill_pruned_marker("rca") in pruned_sec
+        assert _skill_pruned_marker("always-verify") in pruned_sec
+        assert _skill_pruned_marker("hermes-log-debug") in pruned_sec
 
 class TestProtectedSkillPrune:
     """Phase-1 prune must not demote a just-loaded skill (#32106)."""
@@ -170,6 +198,110 @@ class TestProtectedSkillPrune:
         skill_row = result[3]
         assert pruned >= 1
         assert _skill_pruned_marker("fresh-skill") in skill_row["content"]
+
+    def test_active_user_turn_skill_survives_multi_round_tool_batches_until_next_turn(self):
+        """Both polarities: a skill loaded in the active user turn survives >10 tool rows,
+        then is demoted once a subsequent user turn + >10 tool rows push it out of scope."""
+        c = _make_compressor()
+        tool_rounds_active = []
+        for i in range(7):
+            tool_rounds_active.extend([
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": f"c_{i}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}],
+                },
+                {"role": "tool", "tool_call_id": f"c_{i}", "content": f"round {i} " + "t" * 400},
+            ])
+        msgs_active = (
+            self._filler(2)
+            + [{"role": "user", "content": "Execute the readiness audit"}]
+            + _skill_view_pair("call_active", "agent-readiness-audit", size=5000)
+            + tool_rounds_active
+        )
+        # Positive polarity: 14 assistant/tool rows (> _SKILL_PRUNE_RECENT_WINDOW=10) after skill_view
+        # within the SAME active user turn -> skill body stays intact.
+        res_active, _ = c._prune_old_tool_results(msgs_active, protect_tail_count=4)
+        assert res_active[4]["content"].startswith("# agent-readiness-audit instructions")
+        assert SKILL_PRUNED_MARKER_PREFIX not in res_active[4]["content"]
+
+        # Negative polarity: a new user turn arrives and runs >10 messages without naming the skill ->
+        # the old skill from the prior turn is now demoted to [SKILL_PRUNED].
+        msgs_next_turn = (
+            msgs_active
+            + [{"role": "user", "content": "Unrelated follow-up question"}]
+            + tool_rounds_active
+        )
+        res_next, _ = c._prune_old_tool_results(msgs_next_turn, protect_tail_count=4)
+        assert _skill_pruned_marker("agent-readiness-audit") in res_next[4]["content"]
+
+    def test_synthetic_mid_turn_user_row_does_not_evict_active_turn_skill(self):
+        """Mid-turn runtime injections ([Your active task list...], [IMPORTANT: Context...]) have role=='user'
+        but must not advance last_user past the real human turn that loaded the skill."""
+        c = _make_compressor()
+        tool_rounds = []
+        for i in range(7):
+            tool_rounds.extend([
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": f"m_{i}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}],
+                },
+                {"role": "tool", "tool_call_id": f"m_{i}", "content": f"round {i} " + "t" * 400},
+            ])
+        msgs = (
+            self._filler(2)
+            + [{"role": "user", "content": "Fix everything after sceptic pass"}]
+            + _skill_view_pair("call_ahl", "adversarial-hardening-loop", size=5000)
+            + [{"role": "user", "content": "[Your active task list was preserved across context compression]\n- [>] t6"}]
+            + tool_rounds
+        )
+        res, _ = c._prune_old_tool_results(msgs, protect_tail_count=4)
+        assert res[4]["content"].startswith("# adversarial-hardening-loop instructions")
+        assert SKILL_PRUNED_MARKER_PREFIX not in res[4]["content"]
+
+    def test_pressure_demotion_shrinks_non_protected_tools_before_protected_skill(self):
+        """Pass-4 sub-pass 4a shrinks ordinary read/search tool outputs first so active skills survive
+        when non-protected tool outputs account for the tail pressure."""
+        c = _make_compressor()
+        msgs = (
+            [{"role": "user", "content": "Audit and fix the guards"}]
+            + _skill_view_pair("call_skill", "always-verify", size=4000)
+            + [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "call_read", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"big.py"}'}}],
+                },
+                {"role": "tool", "tool_call_id": "call_read", "content": "r" * 40000},
+                {"role": "assistant", "content": "done reading"},
+                {"role": "user", "content": "[IMPORTANT: Context is at 68%]"},
+                {"role": "assistant", "content": "continuing"},
+                {"role": "user", "content": "[Your active task list was preserved across context compression]"},
+                {"role": "assistant", "content": "wrapping up"},
+            ]
+        )
+        result, pruned = c._prune_old_tool_results(
+            msgs, protect_tail_count=10, protect_tail_tokens=3000
+        )
+        assert pruned >= 1
+        assert result[2]["content"].startswith("# always-verify instructions")
+        assert SKILL_PRUNED_MARKER_PREFIX not in result[2]["content"]
+        assert result[4]["content"].startswith("[read_file]")
+
+    def test_pinned_outbound_skill_survives_ordinary_prune_across_turns(self):
+        """Pinned outbound skills (outbound-comms, humanizer, google-chat-comms, svensk-avtalsgranskning)
+        stay protected across ordinary prune passes so outbound gates never lose their instructions."""
+        c = _make_compressor()
+        msgs = (
+            [{"role": "user", "content": "Draft reply to vendor"}]
+            + _skill_view_pair("call_out", "productivity/outbound-comms", size=5000)
+            + [{"role": "user", "content": "Now check the database rows first"}]
+            + self._filler(14, start=2)
+        )
+        res, _ = c._prune_old_tool_results(msgs, protect_tail_count=4)
+        assert res[2]["content"].startswith("# productivity/outbound-comms instructions")
+        assert SKILL_PRUNED_MARKER_PREFIX not in res[2]["content"]
 
 class TestMarkerSurvivesRealCompress:
     """P2 layer: markers survive a real compress() with a mocked aux LLM."""
@@ -320,3 +452,65 @@ class TestReinjectionBoundsAndRedaction:
         secret = "ghp_" + "a1B2" * 6
         out = _reinject_pruned_skill_markers("body", [f"x {secret}"])
         assert secret not in out
+
+    def test_reinjection_merges_into_existing_pruned_skills_section(self):
+        existing = (
+            "## Goal\nShip fix.\n\n"
+            "## Pruned Skills\n"
+            f"{_skill_pruned_marker('rca')}\n\n"
+            "## Anchor Index (mechanically extracted, exact)\n"
+            "files: foo.py"
+        )
+        out = _reinject_pruned_skill_markers(existing, ["rca", "always-verify", "hermes-log-debug"])
+        assert out.count("## Pruned Skills") == 1
+        assert _skill_pruned_marker("rca") in out
+        assert _skill_pruned_marker("always-verify") in out
+        assert _skill_pruned_marker("hermes-log-debug") in out
+        assert out.index(_skill_pruned_marker("hermes-log-debug")) < out.index("## Anchor Index")
+
+    def test_reloaded_skill_in_tail_strips_stale_pruned_marker_from_summary(self):
+        from agent.context_compressor_tail import with_skill_safety_rule
+
+        summary = (
+            "## Goal\nShip fix.\n\n"
+            "## Pruned Skills\n"
+            f"{_skill_pruned_marker('pdf')}\n"
+            f"{_skill_pruned_marker('docx')}\n\n"
+            "## Anchor Index (mechanically extracted, exact)\n"
+            "files: foo.py"
+        )
+        tail = _skill_view_pair("call_reloaded_pdf", "pdf", size=4000)
+        updated_summary, _, _ = with_skill_safety_rule(summary, [], tail)
+        assert _skill_pruned_marker("pdf") not in updated_summary
+        assert _skill_pruned_marker("docx") in updated_summary
+
+        # When all pruned skills are satisfied by the active tail, ## Pruned Skills is dropped cleanly.
+        tail_both = tail + _skill_view_pair("call_reloaded_docx", "docx", size=4000)
+        fully_cleared, _, _ = with_skill_safety_rule(summary, [], tail_both)
+        assert _skill_pruned_marker("pdf") not in fully_cleared
+        assert _skill_pruned_marker("docx") not in fully_cleared
+        assert "## Pruned Skills" not in fully_cleared
+
+    def test_collect_ghosted_skill_names_ignores_non_skill_tools_and_assistant_prose(self):
+        turns = [
+            {
+                "role": "assistant",
+                "content": f"Example marker in prose: {_skill_pruned_marker('fake-prose-skill')}",
+                "tool_calls": [
+                    {
+                        "id": "call_read_1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path": "test.py"}'},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_read_1",
+                "content": f"10| {_skill_pruned_marker('fake-file-skill')}",
+            },
+            *_skill_view_pair("call_real_skill", "real-loaded-skill", size=3000),
+        ]
+        assert _collect_ghosted_skill_names(turns) == ["real-loaded-skill"]
+
+

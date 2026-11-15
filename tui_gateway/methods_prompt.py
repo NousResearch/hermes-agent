@@ -829,6 +829,21 @@ def _claim_submit_turn(
     err, fields = _lock_in_submit_turn(
         rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
     if isinstance(err, str):  # the idle reaper released the lease after the precheck; nothing was written
+        if getattr(err, "reason", None) == "SESSION_NOT_OWNED" and not internal_hosted_submit:
+            import types as _types
+            from tui_gateway.sibling_serve_forward import (
+                SIBLING_LEASE_RECLAIMED, try_submit_to_sibling_serve_owner,
+            )
+            sibling_resp = try_submit_to_sibling_serve_owner(
+                _types.SimpleNamespace(**globals()), rid, sid, session, text, params, display_kind,
+            )
+            if sibling_resp is SIBLING_LEASE_RECLAIMED:
+                err, fields = _lock_in_submit_turn(
+                    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+                if not isinstance(err, str):
+                    return err, fields
+            elif sibling_resp is not None:
+                return sibling_resp, {}
         return _slot_refusal(rid, sid, session, text, params, err, internal_hosted_submit), {}
     return err, fields
 
@@ -879,31 +894,51 @@ def _(rid, params: dict) -> dict:
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
-    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
-        # Refused HERE — before the busy queue, db row and agent build — so a refusal
-        # leaves the session untouched.  The reason travels as machine-readable data.
-        return _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit)
-    # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
+    prev_client_surface = session.get("client_surface", "")
+    # Rewritten every submit: a session alternates app window / HUD / live voice / mobile; set before
+    # _ensure_active_session_slot so cross-surface handoff sees the submitting surface (CF-65).
     session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
-    # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
-    # user row stays the words the user said); anything else clears it.
-    voice_context = params.get("voice_context")
-    session["voice_live_context"] = (
-        voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
-    session["voice_turn"] = params.get("voice_turn") is True
+    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
+        if getattr(limit_message, "reason", None) == "SESSION_NOT_OWNED" and not internal_hosted_submit:
+            import types as _types
+            from tui_gateway.sibling_serve_forward import (
+                SIBLING_LEASE_RECLAIMED, try_submit_to_sibling_serve_owner,
+            )
+            sibling_resp = try_submit_to_sibling_serve_owner(
+                _types.SimpleNamespace(**globals()), rid, sid, session, text, params, display_kind,
+            )
+            if sibling_resp is not None and sibling_resp is not SIBLING_LEASE_RECLAIMED:
+                session["client_surface"] = prev_client_surface
+                return sibling_resp
+            if sibling_resp is SIBLING_LEASE_RECLAIMED:
+                limit_message = None
+        if limit_message is not None:
+            session["client_surface"] = prev_client_surface
+            # Refused HERE — before the busy queue, db row and agent build — so a refusal
+            # leaves the session untouched.  The reason travels as machine-readable data.
+            return _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit)
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
-    if has_truncation and isinstance(text, str):
+    is_mobile_turn = (
+        session.get("client_surface") == "mobile"
+        or str(session.get("source") or "").strip().lower() == "mobile"
+    )
+    if (has_truncation or is_mobile_turn) and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or
-        # `/work fix it` sends nine literal chars.
-        text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
+        # `/work fix it` sends nine literal chars. Mobile slash.exec also returns `{type:"send",
+        # message:"/<skill> ..."}` so the mobile bubble shows `/<skill>` while the model receives
+        # the expanded skill scaffold (CF-48).
+        with _session_home_scope(session):
+            text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
     turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
     if internal_hosted_submit and turn_isolation:
+        session["client_surface"] = prev_client_surface
         return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
     # Re-bind to the current transport: streaming must stay on the active websocket even
     # if a disconnect/fallback moved the session to stdio. Through _rebind_live_transport so a
     # socket that already closed cannot cancel the orphan reap without coming back (#116464).
     with _session_resume_lock:
         if (refusal := _reattach_refusal(rid, sid, session)) is not None:
+            session["client_surface"] = prev_client_surface
             return refusal
         if (t := current_transport()) is not None:
             _rebind_live_transport(sid, session, t)
@@ -917,6 +952,7 @@ def _(rid, params: dict) -> dict:
             if not session.get("running"):
                 break
             if internal_hosted_submit:
+                session["client_surface"] = prev_client_surface
                 return _err(rid, 4091, "hosted room member session is busy")
             busy_transport = t or session.get("transport")
         if has_truncation:
@@ -926,6 +962,7 @@ def _(rid, params: dict) -> dict:
             # Signal busy so the caller's own interrupt-then-retry loop (already
             # built for exactly this race — see desktop's `runRewindSubmit`) waits
             # for `running` to clear and resubmits with the truncation intact.
+            session["client_surface"] = prev_client_surface
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
@@ -940,7 +977,14 @@ def _(rid, params: dict) -> dict:
         rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
         internal_hosted_submit)
     if err is not None:
+        session["client_surface"] = prev_client_surface
         return err
+    # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
+    # user row stays the words the user said); anything else clears it.
+    voice_context = params.get("voice_context")
+    session["voice_live_context"] = (
+        voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
+    session["voice_turn"] = params.get("voice_turn") is True
     if turn_isolation:
         if turn_author:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",

@@ -451,6 +451,20 @@ def test_client_ip_uses_asgi_peer_not_forwarded_header(peer: tuple[str, int] | N
     })
     assert client_ip(request) == (peer[0] if peer else "")
 
+
+def test_extract_bearer_accepts_x_hermes_session_token_fallback() -> None:
+    from types import SimpleNamespace
+
+    from hermes_cli.dashboard_auth.request_utils import extract_bearer
+
+    assert extract_bearer(SimpleNamespace(headers={"x-hermes-session-token": "tok-mobile-123"})) == "tok-mobile-123"
+    assert extract_bearer(SimpleNamespace(headers={
+        "authorization": "Bearer tok-bearer-456",
+        "x-hermes-session-token": "tok-mobile-123",
+    })) == "tok-bearer-456"
+    assert extract_bearer(SimpleNamespace(headers={"x-hermes-session-token": "   "})) == ""
+    assert extract_bearer(SimpleNamespace(headers={})) == ""
+
 # ---------------------------------------------------------------------------
 # Login page rendering
 # ---------------------------------------------------------------------------

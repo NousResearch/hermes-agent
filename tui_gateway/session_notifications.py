@@ -815,8 +815,15 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
 
 
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
-    with _session_profile_runtime_scope(session):
-        _notification_poller_scoped_loop(stop_event, sid, session)
+    while not stop_event.is_set() and not session.get("_finalized") and not session.get("_closing"):
+        try:
+            with _session_profile_runtime_scope(session):
+                _notification_poller_scoped_loop(stop_event, sid, session)
+            break
+        except Exception as exc:
+            _notif_log_failure("notification poller outer loop failed", exc)
+            if stop_event.wait(1.0):
+                break
 
 
 def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
@@ -842,8 +849,15 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
+        from tools.process_registry import process_registry as _live_pr
+        if _live_pr is not None and _live_pr.completion_queue is not queue:
+            process_registry = _live_pr
+            queue = _live_pr.completion_queue
         # Completions whose owner process died after this one started (#97202); throttled per profile home.
-        async_delegation.maybe_sweep_orphaned_completions(queue)
+        try:
+            async_delegation.maybe_sweep_orphaned_completions(queue)
+        except Exception as sweep_exc:
+            _notif_log_failure("orphaned completion sweep failed", sweep_exc)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
@@ -855,12 +869,19 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
                     _notif_log_failure(f"{what} poll failed", tick_exc)
         if now - last_kanban_poll >= _KANBAN_POLL_SECONDS:
             last_kanban_poll = now
-            _notif_poll_kanban(sid, session)
+            try:
+                _notif_poll_kanban(sid, session)
+            except Exception as kb_exc:
+                _notif_log_failure("kanban poll failed", kb_exc)
         # Dequeue and in-flight hold are one step: until routing admits a turn, requeues or drops each event, its
         # owner session stays protected from the reapers (it is in neither the queue nor ``running`` meanwhile).
         # Addressed events parked while their owner was not live (notification_park): once this session proves it
         # owns one, it is this session's to deliver, ahead of the shared queue.
-        parked = notification_park.claim(lambda evt: _session_owns_notification_event(sid, session, evt))
+        try:
+            parked = notification_park.claim(lambda evt: _session_owns_notification_event(sid, session, evt))
+        except Exception as park_exc:
+            _notif_log_failure("notification park claim failed", park_exc)
+            parked = []
         ready = []
         try:
             ready = take_ready(queue, 0 if parked else 0.5)
@@ -942,8 +963,54 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     stop = threading.Event()
     t = threading.Thread(target=_notification_poller_loop, args=(stop, sid, session), daemon=True, name=f"tui-notif-poller-{sid}")
     _notification_pollers[:] = [(s, th) for (s, th) in _notification_pollers if th.is_alive()] + [(stop, t)]
+    session["_notif_stop"] = stop
+    session["_notif_thread"] = t
     t.start()
     return stop
+
+
+def _ensure_notification_poller_alive(sid: str, session: dict) -> bool:
+    """Respawn the session's notification poller if its thread died while the session is still live."""
+    if not sid or not isinstance(session, dict):
+        return False
+    if session.get("_finalized") or session.get("_closing"):
+        return False
+    with _sessions_lock:
+        if _sessions.get(sid) is not session:
+            return False
+        t = session.get("_notif_thread")
+        stop = session.get("_notif_stop")
+        if (t is not None and getattr(t, "is_alive", lambda: False)()
+                and stop is not None and not getattr(stop, "is_set", lambda: True)()):
+            return False
+        target_name = f"tui-notif-poller-{sid}"
+        for s, th in tuple(_notification_pollers):
+            if (getattr(th, "name", "") == target_name
+                    and getattr(th, "is_alive", lambda: False)()
+                    and not getattr(s, "is_set", lambda: True)()):
+                session["_notif_stop"] = s
+                session["_notif_thread"] = th
+                return False
+        for th in threading.enumerate():
+            if getattr(th, "name", "") == target_name and getattr(th, "is_alive", lambda: False)():
+                if stop is None or not getattr(stop, "is_set", lambda: False)():
+                    session["_notif_thread"] = th
+                    return False
+        if stop is not None and callable(getattr(stop, "set", None)):
+            stop.set()
+        session["_notif_stop"] = _start_notification_poller(sid, session)
+        return True
+
+
+def _ensure_all_notification_pollers_alive() -> int:
+    """Check every live session in ``_sessions`` and respawn any dead notification poller thread."""
+    with _sessions_lock:
+        pairs = list(_sessions.items())
+    respawned = 0
+    for sid, sess in pairs:
+        if _ensure_notification_poller_alive(sid, sess):
+            respawned += 1
+    return respawned
 
 
 def _hud_surface_note(session: dict) -> str:

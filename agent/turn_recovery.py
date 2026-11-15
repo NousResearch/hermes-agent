@@ -1461,6 +1461,8 @@ def interruptible_backoff_sleep(
     # A long wait can outlive a short-lived credential (the free tier's JWT lives 15 minutes), and
     # the per-iteration pre-expiry adoption does not run between retries.
     agent._adopt_nous_key_before_expiry()
+    if hasattr(agent, "_adopt_vertex_token_before_expiry"):
+        agent._adopt_vertex_token_before_expiry()
     return None
 
 
@@ -1944,19 +1946,88 @@ def route_classified_error(
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)
     ) and not (getattr(classified, "error_context", None) or {}).get("usage_window")  # never switch models on a plan limit
+    # P0-1 Hybrid Router: trip the europe-west2 15s cooldown and pin the interactive/subagent
+    # session to locations/global on any Vertex 429 or stream-stale timeout, even when
+    # _fallback_chain is empty (e.g. delegate_task subagents) or on retry #1 of a timeout.
+    _is_stale_kill = bool(getattr(api_error, "_stale_stream_killed", False))
+    if str(getattr(agent, "provider", "") or "").lower() == "vertex" and (
+        (is_rate_limited and _wrapped_output_cap_budget is None)
+        or classified.reason == FailoverReason.timeout
+        or _is_stale_kill
+    ):
+        try:
+            from agent.vertex_adapter import (
+                GLOBAL_STICKY_EPOCH_MIN_TOKENS,
+                record_vertex_regional_429,
+            )
+
+            _cc_tr = getattr(agent, "context_compressor", None)
+            _tr_prompt_tok = (
+                int(getattr(_cc_tr, "last_prompt_tokens", 0) or 0)
+                if _cc_tr is not None
+                else 0
+            )
+            _preserve_deep_ew2_cache = (
+                _tr_prompt_tok >= GLOBAL_STICKY_EPOCH_MIN_TOKENS
+                and retry_count < 2
+                and not _is_stale_kill
+            )
+            _v_sid = (
+                None
+                if (
+                    _preserve_deep_ew2_cache
+                    or getattr(agent, "_write_origin", None) == "background_review"
+                    or getattr(agent, "_memory_write_origin", None) == "background_review"
+                    or getattr(agent, "_turn_origin", None) == "background_review"
+                )
+                else str(getattr(agent, "session_id", "") or "") or None
+            )
+            record_vertex_regional_429(session_id=_v_sid)
+        except Exception:
+            pass
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.
         # Fixes #11314.
         _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
-        pool_may_recover = (
-            False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
+        _or_order_reordered = bool(
+            isinstance(error_context, dict)
+            and error_context.get("openrouter_order_reordered")
+            and retry_count < max_retries
         )
+        # CF-82: when primary/current provider is Vertex AI, Dynamic Shared Quota (DSQ) 429s
+        # are transient per-second capacity bursts; retry in-place with backoff before
+        # escalating to the emergency OpenRouter fallback on the final retry attempt.
+        _vertex_dsq_backoff_may_recover = (
+            str(getattr(agent, "provider", "") or "").lower() == "vertex"
+            and is_rate_limited
+            and retry_count < max(2, max_retries)
+        )
+        pool_may_recover = (
+            _or_order_reordered
+            if _is_upstream
+            else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
+        ) or _vertex_dsq_backoff_may_recover
         if not pool_may_recover:
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
             if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
                 return _fallback_break()
+    elif (
+        _should_fallback
+        and getattr(agent, "_fallback_activated", False)
+        and not getattr(agent, "_content_filter_fallback_sticky", False)
+        and not getattr(agent, "_rebuilt_restarts_since_response", 0)
+        and not getattr(_retry, "primary_fallback_wrap_attempted", False)
+        and getattr(agent, "_rate_limited_until", 0) <= time.monotonic()
+        and callable(getattr(agent, "_restore_primary_runtime", None))
+    ):
+        # CF-61: when already on the terminal fallback provider and the primary provider's
+        # cooldown has already expired, a rate-limit/transport error on the fallback itself
+        # should immediately restore the primary rather than stalling on the exhausted fallback.
+        _retry.primary_fallback_wrap_attempted = True
+        if agent._restore_primary_runtime():
+            return _fallback_break()
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:
     # escalate to the fallback chain once; False -> terminal handling. A verdict that opts out

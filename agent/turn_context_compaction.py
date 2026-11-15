@@ -39,6 +39,48 @@ class CompactionOutcome:
 
 # ── Helpers shared by every compression-attempt site ──
 
+_PRICING_CLIFF_PREFLIGHT_CAP_TOKENS = 180_000
+
+
+def should_defer_preflight_to_real_usage(
+    agent: Any, preflight_estimate: int, *, anchored: bool = False,
+) -> bool:
+    """Wait one request for real usage when an un-anchored rough estimate crosses threshold.
+
+    Anchored figures (real usage + delta) never defer. On pricing-cliff configurations
+    (threshold < 180k on a large window >= 500k, or an explicit threshold < 180k stub),
+    estimates >= 180k never defer across the 200k long-context pricing cliff unless a
+    native Responses checkpoint (which zeros ``last_compression_rough_tokens``) is
+    awaiting its first provider usage reading.
+    """
+    if anchored or getattr(agent, "_request_pressure_anchored", False):
+        return False
+    cc = getattr(agent, "context_compressor", None)
+    if cc is None:
+        return False
+    threshold = int(getattr(cc, "threshold_tokens", 0) or 0)
+    window = int(getattr(cc, "context_length", 0) or 0)
+    awaiting = bool(getattr(cc, "awaiting_real_usage_after_compression", False))
+    if (
+        preflight_estimate >= _PRICING_CLIFF_PREFLIGHT_CAP_TOKENS
+        and 0 < threshold < _PRICING_CLIFF_PREFLIGHT_CAP_TOKENS
+        and (window == 0 or window >= 500_000)
+        and not awaiting
+    ):
+        return False
+    defer_fn = getattr(cc, "should_defer_preflight_to_real_usage", None)
+    if callable(defer_fn):
+        return bool(defer_fn(preflight_estimate))
+    if preflight_estimate < threshold:
+        return False
+    if not hasattr(cc, "last_real_prompt_tokens") and not hasattr(cc, "awaiting_real_usage_after_compression"):
+        return False
+    if awaiting:
+        return True
+    if int(getattr(cc, "last_real_prompt_tokens", 0) or 0) >= threshold:
+        return False
+    return not bool(getattr(cc, "_provider_omits_usage", False))
+
 
 def _clear_overflow_warn(agent: Any) -> None:
     """Re-arm the context-overflow warning dedup (test doubles may lack the method)."""
@@ -62,6 +104,10 @@ def _reset_retry_state_after_compaction(agent: Any) -> None:
     agent._last_content_with_tools = None
     agent._last_content_tools_all_housekeeping = False
     agent._mute_post_response = False
+    guardrails = getattr(agent, "_tool_guardrails", None)
+    reset_compacted = getattr(guardrails, "reset_after_compaction", None)
+    if callable(reset_compacted):
+        reset_compacted()
 
 
 def _blocked_compress_reason(
@@ -265,9 +311,9 @@ def _preflight_compression(
         if isinstance(_snapshot_val, int) and not isinstance(_snapshot_val, bool):
             agent._turn_preflight_display_snapshot = _snapshot_val
     # An anchored figure is real usage + delta: never deferred.
-    _preflight_deferred = not getattr(agent, "_request_pressure_anchored", False) and getattr(
-        _compressor, "should_defer_preflight_to_real_usage", lambda _tokens: False
-    )(_preflight_tokens)
+    _preflight_deferred = should_defer_preflight_to_real_usage(
+        agent, _preflight_tokens, anchored=bool(getattr(agent, "_request_pressure_anchored", False))
+    )
     _codex_native_auto = _codex_native_auto_compaction(agent)
 
     if not _preflight_deferred:
@@ -322,6 +368,31 @@ def _preflight_compression(
             _grown = None
         if _grown:
             _apply_grown_window(agent, _compressor, _grown)
+            _should_compress_now = _compressor.should_compress(_preflight_tokens)
+    _proactive_cfg = getattr(_compressor, "proactive_prune_tokens", 0)
+    if (
+        _should_compress_now
+        and isinstance(_proactive_cfg, int)
+        and not isinstance(_proactive_cfg, bool)
+        and _proactive_cfg > 0
+        and _preflight_tokens >= _proactive_cfg
+        and not bool(getattr(_compressor, "awaiting_real_usage_after_compression", False))
+    ):
+        from agent.turn_preflight import _proactive_tool_result_prune
+
+        _pre_pruned = _proactive_tool_result_prune(
+            agent, _compressor, out.messages, _preflight_tokens, warn_on_noop=False
+        )
+        if _pre_pruned is not out.messages:
+            out.messages = _pre_pruned
+            out.compressed = True
+            out.conversation_history = conversation_history_after_compression(
+                agent, out.messages, out.conversation_history
+            )
+            _reset_retry_state_after_compaction(agent)
+            _preflight_tokens = _tc._preflight_request_tokens(
+                agent, out.messages, out.active_system_prompt or ""
+            )
             _should_compress_now = _compressor.should_compress(_preflight_tokens)
     if _should_compress_now:
         _run_preflight_passes(
@@ -388,16 +459,22 @@ def _run_preflight_passes(
             _preflight_input, system_message, approx_tokens=_preflight_tokens,
             task_id=effective_task_id, trigger="turn_start_threshold",
         )
-        if out.messages is _preflight_input and compression_skipped_due_to_lock(agent):
-            # Lock-skip: another path holds the lock, so this is a DEFER, not proof of
-            # incompressibility — don't arm the blocker; stop passes this turn.
+        if out.messages is _preflight_input and (
+            compression_skipped_due_to_lock(agent)
+            or getattr(agent, "_compression_blocked_transient", None) == "pool_saturated"
+        ):
+            # Lock-skip or pool-saturated no-op: another path holds the lock or all pool workers
+            # are temporarily busy, so this is a DEFER, not proof of incompressibility — don't arm
+            # the blocker; stop passes this turn.
             logger.info(
                 # That is a temporary DEFER, not proof the transcript cannot compress — do NOT arm the
                 # insufficient-progress blocker (the loop's error handlers must keep their provider-proven
                 # retry budget) and stop preflight passes for this turn; the lock winner is shrinking the
                 # same session concurrently. See #69870.
-                "Preflight compression deferred: compression lock "
-                "held by another path (session %s)",
+                "Preflight compression deferred: %s (session %s)",
+                "compression lock held by another path"
+                if compression_skipped_due_to_lock(agent)
+                else "compression worker pool saturated",
                 agent.session_id or "none",
             )
             break

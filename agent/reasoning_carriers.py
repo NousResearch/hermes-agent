@@ -40,8 +40,8 @@ def _message_keys() -> tuple[str, ...]:
 
 
 def field(obj: Any, name: str) -> Any:
-    """``obj.<name>``, else the same key from pydantic ``model_extra`` (unknown SDK fields park there)."""
-    value = getattr(obj, name, None)
+    """``obj.<name>`` (or ``obj[name]`` when ``obj`` is a dict), else the same key from pydantic ``model_extra``."""
+    value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
     for side in ("model_extra", "provider_data"):  # pydantic unknown fields / normalized responses
         if value is None and isinstance(getattr(obj, side, None), dict):
             value = getattr(obj, side).get(name)
@@ -56,6 +56,16 @@ def thought_signature(extra: Any) -> Optional[str]:
     google = extra.get("google")
     sig = google.get("thought_signature") if isinstance(google, dict) else extra.get("thought_signature")
     return sig if isinstance(sig, str) and sig.strip() else None
+
+
+def is_google_thought(delta: Any) -> bool:
+    """True when a Vertex/Gemini OpenAI-compatible delta marks ``content`` as internal thought
+    via ``extra_content.google.thought is True``."""
+    extra = field(delta, _GEMINI_KEY)
+    if not isinstance(extra, dict):
+        return False
+    google = extra.get("google")
+    return bool(isinstance(google, dict) and google.get("thought") is True)
 
 
 def carrier_record(assistant_message: Any) -> Optional[dict]:

@@ -1245,15 +1245,19 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     score = 100
                 elif os.path.splitext(f)[0].lower() == basename_no_ext:  # config.yml vs config.yaml
                     score = 90
-                elif lf.startswith(lower_name) or lower_name.startswith(lf):
+                elif lf.startswith(lower_name) or lower_name.startswith(lf) or (
+                    len(basename_no_ext) >= 4 and (os.path.splitext(f)[0].lower().startswith(basename_no_ext) or basename_no_ext.startswith(os.path.splitext(f)[0].lower()))
+                ):
                     score = 70
-                elif lower_name in lf:
+                elif lower_name in lf or (len(basename_no_ext) >= 4 and basename_no_ext in os.path.splitext(f)[0].lower()):
                     score = 60
                 elif lf in lower_name and len(lf) > 2:
                     score = 40
                 elif ext and os.path.splitext(f)[1].lower() == ext:
-                    common = set(lower_name) & set(lf)
-                    if len(common) >= max(len(lower_name), len(lf)) * 0.4:
+                    f_stem = os.path.splitext(f)[0].lower()
+                    common = set(basename_no_ext) & set(f_stem)
+                    denom = max(len(set(basename_no_ext)), len(set(f_stem)), 1)
+                    if len(common) >= denom * 0.6:
                         score = 30
                 # Near-miss spelling (AGENT.md -> AGENTS.md) the substring checks miss.
                 if score == 0 and difflib.SequenceMatcher(None, lower_name, lf).ratio() >= 0.8:

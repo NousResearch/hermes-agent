@@ -93,17 +93,21 @@ def _ensure_compressed_keeps_last_assistant_reply(
     neighbours = [compressed[i] for i in (index - 1, index) if 0 <= i < len(compressed)]
     if any(_is_reply_twin(message) for message in neighbours):
         return None
+    # Mid-turn split compaction merges the active user turn (U_new) into the summary
+    # carrier on the left of the kept tool chain ([carrier(summary + U_new), A_tc_k, T_k]),
+    # leaving `compressed[index]` as a tool-call assistant row. Unmerging U_new back into
+    # its own user row restores the chronological `[carrier(summary), R_prev, U_new, A_tc_k, T_k]`
+    # sequence with strict user -> assistant -> user -> assistant(tool_calls) alternation.
+    unmerged = _plan_inflight_carrier_unmerge(
+        original_messages[reply_pos + 1:], compressed, index,
+    )
     # A non-twin assistant neighbour (an older kept reply, the engine's own paraphrase of
-    # this one, or a tool-call row) means the slot cannot take the row without
-    # assistant;assistant adjacency, and sliding past it would only move the seam while
-    # putting the newest reply before an older one. Strict alternation is the invariant
-    # every provider path relies on; the reply stays readable on disk, so skip the recovery
-    # rather than break the shape. Tool-call rows are NOT exempt on either side: to the left
-    # the row would separate a call from its result; to the right the user-turn anchor is
-    # only best-effort (it yields to a merged in-flight replay, a surviving real user row or
-    # a busy steer), so the pair would reach the durable active set and the pre-call belt
-    # would then merge the reply INTO the tool-call row, diverging live from DB.
-    if any(isinstance(m, dict) and m.get("role") == "assistant" for m in neighbours):
+    # this one, or a tool-call row when not unmerging a composite mid-turn carrier) means
+    # the slot cannot take the row without assistant;assistant adjacency, and sliding past
+    # it would only move the seam while putting the newest reply before an older one. Strict
+    # alternation is the invariant every provider path relies on; the reply stays readable on
+    # disk, so skip the recovery rather than break the shape.
+    if unmerged is None and any(isinstance(m, dict) and m.get("role") == "assistant" for m in neighbours):
         logger.warning(
             "Compression: engine folded away the just-delivered assistant reply and left a non-matching "
             "assistant row at its slot; not reinserting it to keep strict role alternation (session=%s).",
@@ -133,8 +137,97 @@ def _ensure_compressed_keeps_last_assistant_reply(
     # archive_and_compact durably writes every dict in `compressed` as the new
     # active set, so stamp the copy or the next flush re-INSERTs it as a duplicate.
     anchor[_DB_PERSISTED_MARKER] = True
+    if unmerged is not None:
+        user_row, carry_user = _apply_inflight_carrier_unmerge(unmerged)
+        user_row[_DB_PERSISTED_MARKER] = True
+        if carry_user:
+            anchor["_unmerged_inflight_user"] = user_row
+        compressed[index:index] = [anchor, user_row]
+        return anchor
     compressed.insert(index, anchor)
     return anchor
+
+
+def _plan_inflight_carrier_unmerge(
+    followers: list, compressed: list, index: int,
+) -> Optional[tuple[dict, dict, dict, Optional[dict]]]:
+    """Check whether ``compressed[index - 1 : index + 1]`` is a ``[composite_carrier, tool_call_assistant]``
+    seam produced by mid-turn split compaction, and return ``(carrier, handoff, live_view, following_user)``
+    when unmerging ``U_new`` from the carrier restores strict role alternation around ``R_prev``."""
+    if not (0 < index < len(compressed)):
+        return None
+    left, right = compressed[index - 1], compressed[index]
+    if not (
+        isinstance(left, dict)
+        and left.get("role") == "user"
+        and isinstance(right, dict)
+        and right.get("role") == "assistant"
+        and bool(right.get("tool_calls"))
+    ):
+        return None
+    from agent.context_compressor import ContextCompressor, split_inflight_replay_turn
+    from agent.conversation_compression import _is_real_user_message
+
+    if not ContextCompressor._has_merged_inflight_replay(left):
+        return None
+    handoff, live_view = split_inflight_replay_turn(left)
+    if handoff is None or live_view is None:
+        return None
+    following_user = next(
+        (f for f in reversed(followers) if isinstance(f, dict) and _is_real_user_message(f)),
+        None,
+    )
+    return left, handoff, live_view, following_user
+
+
+def _apply_inflight_carrier_unmerge(
+    plan: tuple[dict, dict, dict, Optional[dict]],
+) -> tuple[dict, bool]:
+    """Mutate ``carrier`` in place to summary-only content and return ``(user_row, carry_user)``."""
+    from agent.context_compressor import (
+        _INFLIGHT_TASK_REPLAY_HEADER,
+        _fresh_compaction_message_copy,
+        drop_stale_api_content,
+    )
+    from agent.conversation_compression import _message_text
+    from agent.conversation_compression_archive import ABSORBED_ROW_IDS
+    from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID
+
+    carrier, handoff, live_view, following_user = plan
+    carrier["content"] = handoff["content"]
+    drop_stale_api_content(carrier)
+
+    carry_user = False
+    if following_user is not None:
+        user_row = _fresh_compaction_message_copy(following_user)
+        user_row.pop("_compaction_tail", None)
+        orig_text = _message_text(user_row).strip()
+        live_text = _message_text(live_view).strip()
+        if orig_text.startswith(_INFLIGHT_TASK_REPLAY_HEADER) or (live_text and orig_text != live_text):
+            user_row["content"] = live_view["content"]
+            drop_stale_api_content(user_row)
+        else:
+            carry_user = True
+    else:
+        user_row = dict(live_view)
+
+    user_uid = user_row.get(MESSAGE_UID)
+    if user_uid and isinstance(carrier.get(ABSORBED_MESSAGE_UIDS), list):
+        rem_uids = [u for u in carrier[ABSORBED_MESSAGE_UIDS] if u != user_uid]
+        if rem_uids:
+            carrier[ABSORBED_MESSAGE_UIDS] = rem_uids
+        else:
+            carrier.pop(ABSORBED_MESSAGE_UIDS, None)
+    user_rid = user_row.get("_row_id")
+    if user_rid is not None and isinstance(carrier.get(ABSORBED_ROW_IDS), list):
+        rem_rids = [r for r in carrier[ABSORBED_ROW_IDS] if r != user_rid]
+        if rem_rids:
+            carrier[ABSORBED_ROW_IDS] = rem_rids
+        else:
+            carrier.pop(ABSORBED_ROW_IDS, None)
+    if user_row.get("message_id") and carrier.get("message_id") == user_row.get("message_id"):
+        carrier.pop("message_id", None)
+    return user_row, carry_user
 
 
 def _same_visible_content(left: dict, right: dict, right_text: str) -> bool:

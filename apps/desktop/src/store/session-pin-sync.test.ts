@@ -565,4 +565,44 @@ describe('watchSessionPins remote pull', () => {
     expect($pinnedSessionIds.get()).toEqual([])
     $activeGatewayProfile.set('default')
   })
+
+  it('does not re-PATCH pinned sessions on every slice refresh when the backend refuses with 409 offline maintenance', async () => {
+    const maintenanceErr = new Error(
+      '409: {"detail":"Exclusive maintenance refused: Gateway runtime already owns profile /x"}'
+    )
+    patch.mockImplementationOnce(() => Promise.reject(maintenanceErr))
+
+    $sessions.set([row('maint-pin')])
+    $pinnedSessionIds.set(['maint-pin'])
+    await flush()
+    await flush()
+    patch.mockClear()
+
+    // Subsequent slice refreshes must not re-fire PATCH in a retry storm while on the same gateway scope;
+    // the local pin stays intact.
+    $sessions.set([row('maint-pin', { pinned: false })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('maint-pin')
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('does not fire redundant PATCH pinned=true when server row already has pinned=true (C1)', async () => {
+    $pinnedSessionIds.set(['already-pinned'])
+    $sessions.set([row('already-pinned', { pinned: true, profile: 'default' })])
+    await flush()
+
+    expect(patch).not.toHaveBeenCalled()
+    expect($pinnedSessionIds.get()).toEqual(['already-pinned'])
+  })
+
+  it('fences rescoped localStorage pins against server pinned=false across multiple session refreshes (C1/M6)', async () => {
+    $pinnedSessionIds.set(['stale-rescope-pin'])
+    resetSessionPinMirror()
+    $sessions.set([row('stale-rescope-pin', { pinned: false, profile: 'default' })])
+    await flush()
+
+    expect(patch).not.toHaveBeenCalled()
+    expect($pinnedSessionIds.get()).toEqual([])
+  })
 })

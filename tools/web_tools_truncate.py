@@ -153,13 +153,15 @@ def _binary_payload_kind(text: str) -> str:
 def _truncate_results(results: list[dict], char_limit: int, debug_call_data: dict) -> None:
     """In place: replace each successful entry's content with its base64-cleaned, budgeted text;
     per-page truncation metrics go into ``debug_call_data``."""
+    from agent.redact import redact_sensitive_text
     for result in results:
         url = result.get("url", "")
         raw_content = result.get("raw_content", "") or result.get("content", "")
         if result.get("error"):
             # An origin error page keeps its body (a 404 page can help) but stays in the budget.
             if body := result.get("content"):
-                result["content"], _ = _truncate_with_footer(convert_base64_images_to_links(body), url, char_limit)
+                cleaned_err = redact_sensitive_text(convert_base64_images_to_links(body), code_file=True)
+                result["content"], _ = _truncate_with_footer(cleaned_err, url, char_limit)
             continue
         if not raw_content:
             continue
@@ -173,7 +175,7 @@ def _truncate_results(results: list[dict], char_limit: int, debug_call_data: dic
                 "(curl -L -o) and use read_file (SQLite/Office/PDF auto-extract) or terminal utilities on the file.")
             logger.info("%s (binary payload: %s, %d chars dropped)", url, binary_kind, len(raw_content))
             continue
-        clean = convert_base64_images_to_links(raw_content)
+        clean = redact_sensitive_text(convert_base64_images_to_links(raw_content), code_file=True)
         model_text, truncated = _truncate_with_footer(clean, url, char_limit)
         result["content"] = model_text
         if truncated:

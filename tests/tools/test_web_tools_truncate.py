@@ -138,3 +138,20 @@ def test_origin_error_page_keeps_its_error_and_stays_inside_the_budget():
     assert results[0]["error"] == "HTTP 403 from origin: Forbidden"
     assert "error page line 0" in results[0]["content"]
     assert len(results[0]["content"]) < len(body) // 4
+
+
+def test_truncate_results_redacts_jwt_in_content_and_stored_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    fake_jwt = ("ey" + "JhbGciOiJIUzI1NiJ9.") + ("ey" + "Jub3RpZmljYXRpb25zIjpbXX0.") + ("Ab" + "CdEfGhIjKlMnOpQrStUvWxYz0123456789_-ab")
+    body = (
+        f"[Sign In](https://www.ecfr.gov/auth/sign_in?jwt={fake_jwt}&redirect_to=/)\n"
+        + "\n".join(f"section line {i}" for i in range(4000))
+    )
+    results = [{"url": "https://www.ecfr.gov/current/title-47/section-4.5", "content": body, "raw_content": body}]
+    web_tools_truncate._truncate_results(results, 3000, {"pages_truncated": 0, "truncation_metrics": []})
+    out = results[0]["content"]
+    assert fake_jwt not in out
+    path_line = next(ln for ln in out.splitlines() if "Full text saved to:" in ln)
+    stored_path = path_line.split("Full text saved to:", 1)[1].strip()
+    stored_text = Path(stored_path).read_text(encoding="utf-8")
+    assert fake_jwt not in stored_text

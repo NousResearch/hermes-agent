@@ -94,7 +94,10 @@ const tailTurnAssistantMatchIndex = (
     localAssistants.length !== storedAssistants.length ||
     !storedAssistants.every((stored, index) => {
       const local = localAssistants[index]
-      const sameRow = stored.rowId === undefined || local.rowId === undefined || stored.rowId === local.rowId
+      const sameUid =
+        stored.messageUid !== undefined && local.messageUid !== undefined && stored.messageUid === local.messageUid
+      const sameRow =
+        sameUid || stored.rowId === undefined || local.rowId === undefined || stored.rowId === local.rowId
 
       return sameRow && assistantTimelineMatch(stored, local)
     })
@@ -314,20 +317,32 @@ export function spliceOlderPreservedRows(merged: ChatMessage[], preserved: ChatM
 }
 
 // Renderer ids are positional, so a hydrated page can carry a local row under
-// a new id; its durable rowId still names the same row (#119326).
+// a new id; its durable rowId or messageUid still names the same row (#119326).
 function hydratedIdResolver(mergedNextMessages: ChatMessage[]): (message: ChatMessage) => string | undefined {
   const existingIds: Set<string> = new Set(mergedNextMessages.map(message => message.id))
+
+  const hydratedIdByUid: Map<string, string> = new Map(
+    mergedNextMessages.flatMap(message =>
+      message.messageUid === undefined ? [] : [[message.messageUid, message.id] as const]
+    )
+  )
 
   const hydratedIdByRowId: Map<number, string> = new Map(
     mergedNextMessages.flatMap(message => (message.rowId === undefined ? [] : [[message.rowId, message.id] as const]))
   )
 
-  return (message: ChatMessage): string | undefined =>
-    existingIds.has(message.id)
-      ? message.id
-      : message.rowId === undefined
-        ? undefined
-        : hydratedIdByRowId.get(message.rowId)
+  return (message: ChatMessage): string | undefined => {
+    if (existingIds.has(message.id)) {
+      return message.id
+    }
+    if (message.messageUid !== undefined) {
+      const byUid = hydratedIdByUid.get(message.messageUid)
+      if (byUid !== undefined) {
+        return byUid
+      }
+    }
+    return message.rowId === undefined ? undefined : hydratedIdByRowId.get(message.rowId)
+  }
 }
 
 // A failed turn whose only user row is hidden (a scripted onboarding beat) has
@@ -603,10 +618,13 @@ export function isLocalSystemNotice(message: ChatMessage): boolean {
   return message.role === 'system' && message.rowId === undefined
 }
 
-/** Index in `messages` of the row `held` is, by id or stored row. */
+/** Index in `messages` of the row `held` is, by id, messageUid, or stored row. */
 function heldRowIndex(messages: ChatMessage[], held: ChatMessage): number {
   return messages.findIndex(
-    message => message.id === held.id || (held.rowId !== undefined && message.rowId === held.rowId)
+    message =>
+      message.id === held.id ||
+      (held.messageUid !== undefined && message.messageUid === held.messageUid) ||
+      (held.rowId !== undefined && message.rowId === held.rowId)
   )
 }
 

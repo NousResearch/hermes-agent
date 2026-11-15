@@ -655,6 +655,12 @@ async def _record_reply(authority, home, key, future):
         record.update(_delivery_result(authority, record))
         await write_receipt(home, record)
         remember_receipt(authority, home, record)
+    if record.get('status') in _TERMINAL:
+        try:
+            from cron.delivery_outcome import settle_bot_chat_delivery_by_id
+            await asyncio.to_thread(settle_bot_chat_delivery_by_id, key)
+        except Exception:
+            logger.debug('Cron Bot Chat delivery settlement write-back skipped for %s', key, exc_info=True)
 
 
 async def refresh_receipt(authority, home, key):
@@ -733,6 +739,13 @@ async def recover_bot_deliveries(authority):
         for path, record in records:
             if not record or record.get('profile_home') != str(home) or not record.get('admission_id'):
                 continue
+            status = record.get('status')
+            if status in {'settled', 'cancelled'} and (
+                status != 'settled' or record.get('reply') or not (record.get('author') or {}).get('is_bot')
+            ):
+                remember_receipt(authority, home, record)
+                continue
+            before = dict(record)
             try:
                 record.update(_result(authority, record))
                 if record['status'] in {'queued', 'claimed'}:
@@ -747,7 +760,8 @@ async def recover_bot_deliveries(authority):
                 logging.getLogger(__name__).error('Bot delivery %s not recovered: %s (%s)',
                                                   record.get('delivery_id'), exc.reason, path, exc_info=True)
                 continue
-            await write_receipt(home, record)
+            if record != before:
+                await write_receipt(home, record)
             remember_receipt(authority, home, record)
         row = authority.db.get_session_by_title('Bot Chat')
         if row is None:

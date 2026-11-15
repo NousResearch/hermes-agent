@@ -725,3 +725,55 @@ def test_turn_lease_fence_walks_continuation_that_inherited_fork_markers(tmp_pat
     ]
     db.release_session_turn_lease("delegate-continuation", delegate_holder)
     db.release_session_turn_lease("branch-continuation", branch_holder)
+
+
+def test_turn_lease_survives_mid_turn_wrapped_parent_and_reaps_dead_pid_expired(tmp_path):
+    """Regression for mid-turn /wrap setting end_reason='wrapped' on compression parents
+    and dead-PID expired leases lingering for 24h."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("root-sess", source="desktop")
+    db.end_session("root-sess", "compression")
+    db.create_session("mid-sess", source="desktop", parent_session_id="root-sess")
+    db.end_session("mid-sess", "compression")
+    db.create_session("tip-sess", source="desktop", parent_session_id="mid-sess")
+
+    holder = f"pid={os.getpid()}:turn=tip-sess:1:Desktop"
+    assert db.try_acquire_session_turn_lease("tip-sess", holder, ttl_seconds=60)
+
+    # Simulate /wrap setting end_reason='wrapped' across the lineage mid-turn.
+    def _mutate(conn):
+        conn.execute(
+            "UPDATE sessions SET end_reason = 'wrapped', ended_at = ? WHERE id IN ('mid-sess', 'tip-sess')",
+            (time.time(),),
+        )
+        conn.execute(
+            "INSERT INTO session_turn_leases (conversation_id, holder, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
+            ("dead-conv", "pid=999999:turn=dead-conv:1:Desktop", time.time() - 600, time.time() - 60),
+        )
+
+    db._execute_write(_mutate)
+
+    assert db.refresh_session_turn_lease("tip-sess", holder, ttl_seconds=60)
+    assert db.append_messages_batch(
+        "tip-sess",
+        [{"role": "assistant", "content": "final wrap summary"}],
+        turn_lease_holder=holder,
+    ) == 1
+    db.release_session_turn_lease("tip-sess", holder)
+
+    with db._read_ctx() as conn:
+        remaining = conn.execute(
+            "SELECT conversation_id FROM session_turn_leases WHERE conversation_id = 'root-sess'"
+        ).fetchall()
+    assert remaining == []
+
+    # Acquiring any new turn lease immediately sweeps expired dead-PID rows without waiting 24h.
+    db.create_session("fresh-sess", source="desktop")
+    fresh_holder = f"pid={os.getpid()}:turn=fresh-sess:1:Desktop"
+    assert db.try_acquire_session_turn_lease("fresh-sess", fresh_holder, ttl_seconds=60)
+    with db._read_ctx() as conn:
+        dead_rows = conn.execute(
+            "SELECT conversation_id FROM session_turn_leases WHERE conversation_id = 'dead-conv'"
+        ).fetchall()
+    assert dead_rows == []
+    db.release_session_turn_lease("fresh-sess", fresh_holder)

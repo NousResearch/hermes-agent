@@ -956,11 +956,18 @@ def restore_interrupted_pull(project_root: Path | None = None, *, after_failure:
     """
     try:
         root = _project_root() if project_root is None else project_root
+        # Merge resolution (2026-10-07): the pytest seam MUST run before the fast-path marker
+        # probes. Upstream's new bootstrap-level _settle_interrupted_update() runs this during a
+        # request-time import (carried's _profile_scope imports gateway.run mid-request), and the
+        # probe reads the live checkout's gitdir — under the REAL hermes home when the suite runs
+        # in a worktree of it — which home_io_guard refuses. The seam already returns False in
+        # exactly this case, so hoisting it is behavior-identical (tmp_path installs stay eligible
+        # for real recovery tests; production never sets PYTEST_CURRENT_TEST).
+        if _pytest_owns_live_checkout(root):
+            return False
         marker = interrupted_pull_marker(root)
         if not marker.is_file() and not (Path(root) / ZIP_SWAP_JOURNAL).is_file():
             return False  # fast path: nothing to repair, no lock taken
-        if _pytest_owns_live_checkout(root):
-            return False
         # A live `hermes update` (or its build/completion/git, after its updater died) owns the
         # checkout: its own transaction settles the tree, and repairing under it races its git.
         busy_note = "⚠ Not repairing the checkout now: {}. Launch again once it finishes."

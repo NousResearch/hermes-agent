@@ -514,6 +514,120 @@ class TestConversationLoopPartialStreamContinuation:
         assert loop_agent.client.chat.completions.create.call_count == 2
         assert result["final_response"].count(repeated) == 2
 
+    def test_partial_stream_continuation_hides_fragment_and_stores_stitched_whole_on_closing_row(
+        self, loop_agent,
+    ):
+        from tests.agent.test_run_agent import _mock_assistant_msg, _mock_response
+
+        part1 = "| **Turn 1 (`2026-11-1"
+        part2 = "1 18:00` — `22:36`) | Full table row |\n\nCompleted."
+        stub = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=_mock_assistant_msg(content=part1),
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+        )
+        continuation = _mock_response(content=part2, finish_reason="stop")
+        loop_agent.client.chat.completions.create.side_effect = [stub, continuation]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("build table")
+
+        stitched = part1 + part2
+        assert result["final_response"] == stitched
+        assistants = [m for m in result["messages"] if m.get("role") == "assistant"]
+        assert len(assistants) == 2
+        assert assistants[0]["content"] == part1
+        assert assistants[0].get("display_kind") == "hidden"
+        assert assistants[1]["content"] == stitched
+        assert assistants[1].get("api_content") == part2
+
+    def test_partial_stream_continuation_then_pre_verify_persists_stitched_candidate_without_orphan_fragment(
+        self, loop_agent,
+    ):
+        from agent.agent_runtime_helpers import _merge_consecutive_assistants
+        from tests.agent.test_run_agent import _mock_assistant_msg, _mock_response
+
+        part1 = "| **Turn 1 (`2026-11-1"
+        part2 = "1 18:00` — `22:36`) | Full table row |\n\nVerified clean."
+        post_verify = "Slutverifiering klar: hook committed."
+        stub = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=_mock_assistant_msg(content=part1),
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+        )
+        continuation = _mock_response(content=part2, finish_reason="stop")
+        after_verify = _mock_response(content=post_verify, finish_reason="stop")
+        loop_agent.client.chat.completions.create.side_effect = [
+            stub,
+            continuation,
+            after_verify,
+        ]
+        loop_agent._turn_changed_paths = {"/tmp/build_dossier.py"}
+
+        flushed_snapshots = []
+
+        def _capture_flush(msgs, _hist):
+            flushed_snapshots.append([dict(m) for m in msgs if isinstance(m, dict)])
+
+        with (
+            patch(
+                "agent.turn_stop_gates._pre_verify_nudge",
+                side_effect=["Tier-1 hook-commit gate", None],
+            ),
+            patch.object(loop_agent, "_flush_messages_to_session_db", side_effect=_capture_flush),
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("deliver full report")
+
+        stitched = part1 + part2
+        assert result["final_response"] == post_verify
+        # Interim flush during pre_verify must carry the stitched whole on the
+        # verify_hook_continue candidate and flag the absorbed fragment/nudge as
+        # ephemeral scaffolding so state.db never stores an orphan half-table row.
+        assert flushed_snapshots, "Expected _append_interim_answer to flush to session DB"
+        interim_msgs = flushed_snapshots[0]
+        candidates = [
+            m for m in interim_msgs
+            if m.get("role") == "assistant" and m.get("finish_reason") == "verify_hook_continue"
+        ]
+        assert len(candidates) == 1
+        assert candidates[0]["content"] == stitched
+        assert candidates[0].get("api_content") == part2
+        orphan_raw_frags = [
+            m for m in interim_msgs
+            if m.get("role") == "assistant"
+            and m.get("content") == part1
+            and not m.get("_verification_stop_synthetic")
+        ]
+        assert orphan_raw_frags == []
+
+        # After finalize_turn strips scaffolding and next-turn sanitization runs,
+        # neither the cut-off part1 nor the mid-stream continuation nudge survives
+        # as an orphan in model_history.
+        sanitized, _ = _merge_consecutive_assistants(result["messages"])
+        assert [
+            (m.get("role"), m.get("content")) for m in sanitized
+        ] == [
+            ("user", "deliver full report"),
+            ("assistant", post_verify),
+        ]
+
 
 class TestContentFilterStallActivatesFallback:
     """Regression for #32421: a provider output-layer content safety filter

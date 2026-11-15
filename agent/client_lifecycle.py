@@ -17,6 +17,7 @@ logger = logging.getLogger("run_agent")  # origin module's logger name: log reco
 _QWEN_CODE_VERSION = "0.14.1"  # Qwen Portal mimics the QwenCode CLI
 # Per-request cache slot attribute names (OpenAI-style and Anthropic clients).
 _OPENAI_SLOT = "_request_client_cache"
+_OPENAI_GLOBAL_FALLBACK_SLOT = "_request_global_fallback_client_cache"
 _ANTHROPIC_SLOT = "_request_anthropic_client_cache"
 _NO_SOCKETS_SUFFIX = " — no sockets found; in-flight request may keep running until the provider finishes"
 
@@ -128,21 +129,35 @@ class ClientLifecycleMixin:
         def forget_file_state() -> None:
             # File tools key their read stamps / writer claims by the per-turn task_id (cron:
             # ``cron:<job>:<uuid>``, subagents: ``subagent-N-xxxx``), which differs from session_id;
-            # cleanup_vm(session_id) alone leaves a finished run looking like a live sibling (#114446).
+            # cleanup_vm(session_id) only invalidates ShellFileOperations env cache, so agent close
+            # must release read/write/skill trackers for task_id, rotated parent IDs, and all owned task IDs (#114446).
             from tools.file_tools import clear_file_ops_cache
-            for owner in getattr(self, "_process_owner_task_ids", ()):
-                if owner and owner != task_id:
+            from tools.skills_tool_dedup import clear_skill_view_state
+            owners = {
+                task_id,
+                *getattr(self, "_process_owner_task_ids", ()),
+                *(getattr(self, "_rotated_from_session_ids", None) or ()),
+            }
+            for owner in owners:
+                if owner:
                     clear_file_ops_cache(owner)
+                    clear_skill_view_state(owner)
 
         for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
                      release_computer_use, forget_file_state):
             _quietly(step)
 
-    def _client_log_context(self) -> str:
+    def _client_log_context(self, client: Any = None, *, base_url: Optional[str] = None) -> str:
         thread = threading.current_thread()
+        effective_base = (
+            base_url
+            or (getattr(client, "_vertex_routed_base_url", None) if client is not None else None)
+            or getattr(self, "_last_routed_base_url", None)
+            or getattr(self, "base_url", "unknown")
+        )
         return (
             f"thread={thread.name}:{thread.ident} provider={getattr(self, 'provider', 'unknown')} "
-            f"base_url={getattr(self, 'base_url', 'unknown')} model={getattr(self, 'model', 'unknown')}"
+            f"base_url={effective_base} model={getattr(self, 'model', 'unknown')}"
         )
 
     def _anthropic_log_context(self) -> str:
@@ -255,6 +270,7 @@ class ClientLifecycleMixin:
         # worker discards them instead of re-caching.
         for slot_attr, abort, label in (
             (_OPENAI_SLOT, self._abort_request_openai_client, "request"),
+            (_OPENAI_GLOBAL_FALLBACK_SLOT, self._abort_request_openai_client, "request_global_fallback"),
             (_ANTHROPIC_SLOT, self._abort_request_anthropic_client, "anthropic"),
         ):
             try:
@@ -288,6 +304,20 @@ class ClientLifecycleMixin:
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
+            if (
+                reason == "vertex_pre_expiry_refresh"
+                and old_client is not None
+                and not self._is_openai_client_closed(old_client)
+                and (getattr(self, "provider", "") or "").strip().lower() != "moa"
+            ):
+                ck = getattr(self, "_client_kwargs", None)
+                new_token = (ck.get("api_key") if isinstance(ck, dict) else None) or getattr(self, "api_key", None)
+                if new_token:
+                    try:
+                        old_client.api_key = new_token
+                        return True
+                    except Exception:
+                        pass
             try:
                 # MoA's ``client`` is an in-process facade, not an SDK client; generic rebuilds must preserve that.
                 if (getattr(self, "provider", "") or "").strip().lower() == "moa":
@@ -450,43 +480,141 @@ class ClientLifecycleMixin:
         # No SDK retry loop: the outer loop owns retries/rotation/fallback, and SDK retries stretch a hung
         # request ~3x past our stale detector.
         request_kwargs["max_retries"] = 0
-        if self._api_kwargs_have_image_parts(api_kwargs or {}):
-            # Image requests get the route's image client headers on a request-scoped client (cache-keyed apart).
-            from agent.provider_route_hooks import route_answer
-            image_headers = route_answer("client_headers", provider=self.provider or "", scope=self,
-                                         base_url=str(request_kwargs.get("base_url", "")),
-                                         api_key=str(request_kwargs.get("api_key", "") or ""), has_images=True)
-            if image_headers:
-                request_kwargs["default_headers"] = {**(request_kwargs.get("default_headers") or {}), **image_headers}
-        cached, stale = self._checkout_request_slot(_OPENAI_SLOT, request_kwargs)
-        if cached is not None:
-            return cached
-        if stale is not None:
-            self._close_openai_client(stale, reason=f"reuse_evict:{reason}", shared=False)
-        client = self._create_openai_client(request_kwargs, reason=reason, shared=False)
-        # Snapshot nested dicts (default_headers) so an aliased inner object can't mutate the cache key.
-        snapshot = {k: dict(v) if isinstance(v, dict) else v for k, v in request_kwargs.items()}
-        self._store_request_slot(_OPENAI_SLOT, client, snapshot)
-        return client
+        slot_held = False
+        routed_base_url = None
+        if getattr(self, "provider", None) == "vertex":
+            from agent.vertex_adapter import (
+                acquire_vertex_hybrid_region,
+                build_vertex_base_url,
+                is_vertex_global_only_model,
+                parse_vertex_base_url,
+            )
+            raw_base_url = str(request_kwargs.get("base_url") or getattr(self, "base_url", "") or "")
+            req_model = (api_kwargs or {}).get("model") or getattr(self, "model", None)
+            is_interactive = (
+                getattr(self, "_write_origin", None) != "background_review"
+                and getattr(self, "_memory_write_origin", None) != "background_review"
+                and getattr(self, "_turn_origin", None) != "background_review"
+                and ":bg-review:" not in str(getattr(self, "session_id", "") or "")
+                and getattr(self, "platform", None) != "cron"
+            )
+            parsed_vertex = parse_vertex_base_url(raw_base_url)
+            if parsed_vertex is not None:
+                project_id, configured_region = parsed_vertex
+                _cc = getattr(self, "context_compressor", None)
+                _last_prompt_tok = int(getattr(_cc, "last_prompt_tokens", 0) or 0) if _cc is not None else 0
+                target_region, slot_held = acquire_vertex_hybrid_region(
+                    req_model,
+                    configured_region=configured_region,
+                    interactive=is_interactive,
+                    session_id=getattr(self, "session_id", None),
+                    last_prompt_tokens=_last_prompt_tok,
+                )
+                routed_base_url = build_vertex_base_url(project_id, target_region)
+                request_kwargs["base_url"] = routed_base_url
+                self._last_routed_base_url = routed_base_url
+            elif is_vertex_global_only_model(req_model) and "europe-west2-aiplatform.googleapis.com" in raw_base_url:
+                routed_base_url = (
+                    raw_base_url.replace("europe-west2-aiplatform.googleapis.com", "aiplatform.googleapis.com")
+                    .replace("/locations/europe-west2/", "/locations/global/")
+                )
+                request_kwargs["base_url"] = routed_base_url
+                self._last_routed_base_url = routed_base_url
+        target_slot = _OPENAI_SLOT
+        if (
+            getattr(self, "provider", None) == "vertex"
+            and not slot_held
+            and isinstance(routed_base_url, str)
+            and "/locations/global/" in routed_base_url
+        ):
+            with self._openai_client_lock():
+                primary_key = self._request_slot(_OPENAI_SLOT).get("key")
+                primary_url = str(primary_key.get("base_url", "")) if isinstance(primary_key, dict) else ""
+                if "europe-west2-aiplatform.googleapis.com" in primary_url:
+                    target_slot = _OPENAI_GLOBAL_FALLBACK_SLOT
+        try:
+            if self._api_kwargs_have_image_parts(api_kwargs or {}):
+                # Image requests get the route's image client headers on a request-scoped client (cache-keyed apart).
+                from agent.provider_route_hooks import route_answer
+                image_headers = route_answer("client_headers", provider=getattr(self, "provider", "") or "", scope=self,
+                                             base_url=str(request_kwargs.get("base_url", "")),
+                                             api_key=str(request_kwargs.get("api_key", "") or ""), has_images=True)
+                if image_headers:
+                    request_kwargs["default_headers"] = {**(request_kwargs.get("default_headers") or {}), **image_headers}
+            cached, stale = self._checkout_request_slot(target_slot, request_kwargs)
+            if cached is not None:
+                if slot_held or routed_base_url is not None:
+                    with suppress(Exception):
+                        cached._vertex_regional_slot_held = bool(slot_held)
+                        cached._request_slot_name = target_slot
+                        if routed_base_url is not None:
+                            cached._vertex_routed_base_url = routed_base_url
+                return cached
+            if stale is not None:
+                self._close_openai_client(stale, reason=f"reuse_evict:{reason}", shared=False)
+            client = self._create_openai_client(request_kwargs, reason=reason, shared=False)
+            # Snapshot nested dicts (default_headers) so an aliased inner object can't mutate the cache key.
+            snapshot = {k: dict(v) if isinstance(v, dict) else v for k, v in request_kwargs.items()}
+            self._store_request_slot(target_slot, client, snapshot)
+            if slot_held or routed_base_url is not None:
+                with suppress(Exception):
+                    client._vertex_regional_slot_held = bool(slot_held)
+                    client._request_slot_name = target_slot
+                    if routed_base_url is not None:
+                        client._vertex_routed_base_url = routed_base_url
+            return client
+        except BaseException:
+            if slot_held:
+                from agent.vertex_adapter import _EUROPE_WEST2_ARGON_SEMAPHORE
+                with suppress(ValueError):
+                    _EUROPE_WEST2_ARGON_SEMAPHORE.release()
+            raise
 
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
-        if not self._release_request_slot(_OPENAI_SLOT, client, reason):
+        if client is not None and getattr(client, "_vertex_regional_slot_held", False) is True:
+            with suppress(Exception):
+                from agent.vertex_adapter import release_vertex_hybrid_slot
+                release_vertex_hybrid_slot(client)
+        raw_slot = getattr(client, "_request_slot_name", None)
+        slot_name = (
+            raw_slot
+            if isinstance(raw_slot, str) and raw_slot in (_OPENAI_SLOT, _OPENAI_GLOBAL_FALLBACK_SLOT)
+            else _OPENAI_SLOT
+        )
+        if not self._release_request_slot(slot_name, client, reason):
+            if slot_name != _OPENAI_SLOT and self._release_request_slot(_OPENAI_SLOT, client, reason):
+                return
             self._close_openai_client(client, reason=reason, shared=False)
 
     def _close_cached_request_openai_client(self, *, reason: str) -> None:
         """Teardown hook: really close the cached per-request wire client."""
-        client, in_use = self._take_request_slot(_OPENAI_SLOT)
-        if client is None:
-            return
-        if in_use:
-            # Checked out by a worker: close() here would release FDs from a stranger thread. Abort the
-            # sockets; the worker's own finally does the real close.
-            self._abort_request_openai_client(client, reason=f"{reason}_in_flight")
-        else:
-            self._close_openai_client(client, reason=reason, shared=False)
+        for slot_name in (_OPENAI_SLOT, _OPENAI_GLOBAL_FALLBACK_SLOT):
+            client, in_use = self._take_request_slot(slot_name)
+            if client is None:
+                continue
+            if getattr(client, "_vertex_regional_slot_held", False) is True:
+                with suppress(Exception):
+                    from agent.vertex_adapter import release_vertex_hybrid_slot
+                    release_vertex_hybrid_slot(client)
+            if in_use:
+                # Checked out by a worker: close() here would release FDs from a stranger thread. Abort the
+                # sockets; the worker's own finally does the real close.
+                self._abort_request_openai_client(client, reason=f"{reason}_in_flight")
+            else:
+                self._close_openai_client(client, reason=reason, shared=False)
 
     def _abort_request_openai_client(self, client: Any, *, reason: str) -> None:
-        self._abort_request_slot_client(_OPENAI_SLOT, client, reason=reason)
+        if client is not None and getattr(client, "_vertex_regional_slot_held", False) is True:
+            with suppress(Exception):
+                from agent.vertex_adapter import release_vertex_hybrid_slot
+                release_vertex_hybrid_slot(client)
+        raw_slot = getattr(client, "_request_slot_name", None)
+        slot_name = (
+            raw_slot
+            if isinstance(raw_slot, str) and raw_slot in (_OPENAI_SLOT, _OPENAI_GLOBAL_FALLBACK_SLOT)
+            else _OPENAI_SLOT
+        )
+        self._abort_request_slot_client(slot_name, client, reason=reason)
 
     def _request_anthropic_client_key(self) -> tuple:
         """Cache key over everything forcing a fresh client: credential, base URL/region, timeout, 1M-beta flag."""
@@ -571,10 +699,67 @@ class ClientLifecycleMixin:
         """Apply a fresh key/base_url to the OpenAI-style kwargs and rebuild the shared client."""
         from agent.route_verdicts import reset_route_verdicts_if_moved
         prior_base_url = self.base_url
+        # Carried (CF-53): remember the outgoing token so the runtime fanout below can
+        # sync the new key into compressor/runtime copies after a successful replace.
+        old_token = str(getattr(self, "api_key", "") or "")
         self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
         reset_route_verdicts_if_moved(self, prior_base_url)
         self._sync_client_kwargs_credentials()
-        return self._replace_primary_openai_client(reason=reason)
+        if not self._replace_primary_openai_client(reason=reason):
+            return False
+        if old_token and self.api_key and self.api_key != old_token:
+            self._refresh_cached_request_openai_client_token(
+                old_token=old_token,
+                new_token=self.api_key,
+                prior_base_url=prior_base_url,
+                new_base_url=self.base_url,
+            )
+            cc = getattr(self, "context_compressor", None)
+            if cc is not None and getattr(cc, "api_key", None) == old_token:
+                cc.api_key = self.api_key
+            rt = getattr(self, "_primary_runtime", None)
+            if isinstance(rt, dict):
+                for k in ("api_key", "compressor_api_key"):
+                    if rt.get(k) == old_token:
+                        rt[k] = self.api_key
+                rt_ck = rt.get("client_kwargs")
+                if isinstance(rt_ck, dict) and rt_ck.get("api_key") == old_token:
+                    rt_ck["api_key"] = self.api_key
+            from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
+            rotate_runtime_main_api_key(old_token, self.api_key)
+        return True
+
+    def _refresh_cached_request_openai_client_token(
+        self,
+        *,
+        old_token: Optional[str],
+        new_token: Optional[str],
+        prior_base_url: Optional[str],
+        new_base_url: Optional[str],
+    ) -> bool:
+        """Rotate the bearer token in-place on a warm ``_OPENAI_SLOT`` client so
+        hourly ``vertex_pre_expiry_refresh`` keeps the HTTP/2 connection pool alive."""
+        if not old_token or not new_token or old_token == new_token:
+            return False
+        if (prior_base_url or "").strip().rstrip("/") != (new_base_url or "").strip().rstrip("/"):
+            return False
+        with self._openai_client_lock():
+            rotated = False
+            for slot_name in (_OPENAI_SLOT, _OPENAI_GLOBAL_FALLBACK_SLOT):
+                cache = self._request_slot(slot_name)
+                cached = cache.get("client")
+                key = cache.get("key")
+                if cached is None or not isinstance(key, dict):
+                    continue
+                if key.get("api_key") != old_token:
+                    continue
+                try:
+                    cached.api_key = new_token
+                except Exception:
+                    continue
+                key["api_key"] = new_token
+                rotated = True
+            return rotated
 
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
@@ -804,13 +989,40 @@ class ClientLifecycleMixin:
         logger.info("Applied updated .env credentials for %s: endpoint %s", self.provider, self.base_url)
         return True
 
-    def _try_refresh_vertex_client_credentials(self) -> bool:
-        """Re-mint the Vertex OAuth2 token (~1h TTL; long sessions 401 on the expired bearer) and rebuild the client."""
-        if self.api_mode != "chat_completions" or self.provider != "vertex":
+    def _adopt_vertex_token_before_expiry(self) -> bool:
+        """Swap in a fresh Vertex AI OAuth2 token before the 1-hour bearer in hand expires, so
+        long-running turns/sessions never hit a mid-turn 401 ``ACCESS_TOKEN_EXPIRED`` storm."""
+        if getattr(self, "provider", "") != "vertex" or getattr(self, "api_mode", "") != "chat_completions":
+            return False
+        cur_key = getattr(self, "api_key", None)
+        if not cur_key or callable(cur_key):
             return False
         try:
             from agent.vertex_adapter import get_vertex_config
             token, base_url = get_vertex_config()
+        except Exception:
+            logger.debug("Vertex pre-expiry token adoption failed", exc_info=True)
+            return False
+        if not _valid_credential_pair(token, base_url) or str(token).strip() == str(cur_key).strip():
+            return False
+        ok = self._adopt_openai_credentials(token, base_url, reason="vertex_pre_expiry_refresh")
+        if ok:
+            logger.info("Vertex AI OAuth token refreshed before expiry")
+        return ok
+
+    def _try_refresh_vertex_client_credentials(self) -> bool:
+        """Re-mint the Vertex OAuth2 token (~1h TTL; long sessions 401 on the expired bearer) and rebuild the client."""
+        if self.api_mode != "chat_completions" or self.provider != "vertex":
+            return False
+        cur_key = str(getattr(self, "api_key", "") or "").strip()
+        try:
+            from agent.vertex_adapter import get_vertex_config
+            token, base_url = get_vertex_config()
+            if cur_key and isinstance(token, str) and token.strip() == cur_key:
+                try:
+                    token, base_url = get_vertex_config(force_refresh=True)
+                except TypeError:
+                    pass
         except Exception as exc:
             logger.debug("Vertex credential refresh failed: %s", exc)
             return False

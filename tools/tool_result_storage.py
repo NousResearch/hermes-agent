@@ -276,9 +276,25 @@ def _safe_result_filename(tool_use_id: str) -> str:
 
 
 def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
-    """Truncate at last newline within max_chars. Returns (preview, has_more)."""
+    """Truncate within max_chars while preserving middle Traceback/FAIL/ERROR lines and tail."""
     if len(content) <= max_chars:
         return content, False
+    err_re = re.compile(r"(Traceback \(most recent call last\):|\b(?:AssertionError|TypeError|ValueError|KeyError|RuntimeError|SyntaxError)\b|^\s*(?:FAIL|ERROR|FAILED)\b|\berror TS\d+:)", re.MULTILINE)
+    if err_re.search(content, max_chars // 2) and max_chars >= 1200:
+        head_b = max_chars // 3
+        tail_b = max_chars // 5
+        mid_b = max_chars - head_b - tail_b - 64
+        lines = content.splitlines()
+        eblocks = []
+        used = 0
+        for idx, ln in enumerate(lines):
+            if err_re.search(ln):
+                blk = "\n".join(f"L{j+1}: {lines[j]}" for j in range(max(0, idx-1), min(len(lines), idx+8)))
+                if used + len(blk) <= mid_b:
+                    eblocks.append(blk)
+                    used += len(blk) + 4
+        if eblocks:
+            return f"{content[:head_b].rstrip()}\n...[middle error anchors]...\n" + "\n---\n".join(eblocks) + f"\n...[tail]...\n{content[-tail_b:].lstrip()}", True
     last_nl = content.rfind("\n", 0, max_chars)
     return content[:last_nl + 1 if last_nl > max_chars // 2 else max_chars], True
 

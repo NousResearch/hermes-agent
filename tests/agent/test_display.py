@@ -301,6 +301,24 @@ class TestEditDiffPreview:
         assert "-old" in diff
         assert "+new" in diff
 
+    def test_extract_edit_diff_redacts_secrets_in_local_snapshot(self, tmp_path):
+        gkey = "AI" + "za" + ("B" * 35)
+        target = tmp_path / "config.php"
+        target.write_text(f"<?php\n$k = '{gkey}';\n", encoding="utf-8")
+
+        snapshot = capture_local_edit_snapshot("write_file", {"path": str(target)})
+        target.write_text("<?php\n$k = '';\n", encoding="utf-8")
+
+        diff = extract_edit_diff(
+            "write_file",
+            '{"bytes_written": 14}',
+            function_args={"path": str(target)},
+            snapshot=snapshot,
+        )
+        assert diff is not None
+        assert gkey not in diff
+        assert "«redacted:AIza…»" in diff
+
 
 
     def test_render_edit_diff_with_delta_handles_renderer_errors(self, monkeypatch):

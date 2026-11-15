@@ -50,19 +50,32 @@ _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id
 
 # (home, event, matcher, command) wired in this process: matcher in the key (one script may register
 # per-tool under one event), home so multiplexed-gateway profiles can register identical triples.
-_registered: set[tuple[str, str, Optional[str], str]] = set()
-_registered_lock = threading.Lock()
+_prev_registered = globals().get("_registered")
+_registered: set[tuple[str, str, Optional[str], str]] = (
+    _prev_registered if isinstance(_prev_registered, set) else set()
+)
+_prev_logged = globals().get("_logged_registrations")
+_logged_registrations: set[tuple[str, str, Optional[str], str]] = (
+    _prev_logged if isinstance(_prev_logged, set) else set(_registered)
+)
+_registered_lock: threading.Lock = globals().get("_registered_lock") or threading.Lock()
 # Non-POSIX fallback for allowlist read-modify-write; separate from _registered_lock so an allowlist
 # write never waits on (or nests inside) a registry update.
-_allowlist_write_lock = threading.Lock()
+_allowlist_write_lock: threading.Lock = globals().get("_allowlist_write_lock") or threading.Lock()
 # sync_from_config: read + apply as one step, so an older snapshot never lands after a newer one.
-_sync_lock = threading.Lock()
+_sync_lock: threading.Lock = globals().get("_sync_lock") or threading.Lock()
 # Consent that lives only in this process (guarded by _sync_lock): (home, event, command) a launch's
 # --accept-hooks approved but the allowlist does not hold yet, this process's own --accept-hooks, and
 # the skipped hooks already logged.
-_launch_consent: set[tuple[str, str, str]] = set()
-_process_accept = False
-_skip_logged: set[tuple[str, str, str]] = set()
+_prev_launch_consent = globals().get("_launch_consent")
+_launch_consent: set[tuple[str, str, str]] = (
+    _prev_launch_consent if isinstance(_prev_launch_consent, set) else set()
+)
+_process_accept: bool = bool(globals().get("_process_accept", False))
+_prev_skip_logged = globals().get("_skip_logged")
+_skip_logged: set[tuple[str, str, str]] = (
+    _prev_skip_logged if isinstance(_prev_skip_logged, set) else set()
+)
 
 
 def _home_key() -> str:
@@ -146,6 +159,10 @@ class ShellHookSpec(_ToolMatcherMixin):
     matcher: Optional[str] = None
     timeout: int = DEFAULT_TIMEOUT_SECONDS
     fail_closed: bool = False
+    # True only when the entry actually carried fail_closed/failClosed. The dispatcher needs
+    # the difference: an entry that declares nothing inherits the event default, one that
+    # declares false must never be turned into a policy gate by a skipped run.
+    fail_closed_declared: bool = False
     compiled_matcher: Optional[re.Pattern] = field(default=None, repr=False)
 
 
@@ -231,6 +248,7 @@ def sync_from_config(load_cfg: Callable[[], dict[str, Any]]) -> None:
             keep = {_key(home_key, spec) for spec in wanted}
             stale = {k for k in _registered if k[0] == home_key and k not in keep}
             _registered.difference_update(stale)
+            _logged_registrations.difference_update(stale)
             for event in {k[1] for k in stale}:
                 # Replaced, never edited in place: a concurrent invoke_hook keeps iterating the old list.
                 manager._hooks[event] = [cb for cb in manager._hooks.get(event, [])
@@ -302,8 +320,10 @@ def _wire(manager: Any, home_key: str, specs: list[ShellHookSpec]) -> list[Shell
         manager._hooks.setdefault(spec.event, []).append(callback)
         _registered.add(key)
         registered.append(spec)
-        logger.info("shell hook registered: %s -> %s (matcher=%s, timeout=%ds, fail_closed=%s)",
-                    spec.event, spec.command, spec.matcher, spec.timeout, spec.fail_closed)
+        log_fn = logger.debug if key in _logged_registrations else logger.info
+        _logged_registrations.add(key)
+        log_fn("shell hook registered: %s -> %s (matcher=%s, timeout=%ds, fail_closed=%s)",
+               spec.event, spec.command, spec.matcher, spec.timeout, spec.fail_closed)
     return registered
 
 
@@ -359,6 +379,7 @@ def reset_for_tests() -> None:
     global _process_accept
     with _registered_lock:
         _registered.clear()
+        _logged_registrations.clear()
     _launch_consent.clear()
     _skip_logged.clear()
     _process_accept = False
@@ -439,6 +460,7 @@ def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookS
         warn(".timeout=%ds exceeds max %ds; clamping", timeout, MAX_TIMEOUT_SECONDS)
         timeout = MAX_TIMEOUT_SECONDS
     # ``fail_closed`` (canonical) wins over ``failClosed`` (Cursor/Claude-Code compat).
+    fail_closed_declared = "fail_closed" in raw or "failClosed" in raw
     fail_closed = raw.get("fail_closed", raw.get("failClosed", False))
     if not isinstance(fail_closed, bool):
         warn(".fail_closed must be a boolean (got %r); using default false (fail open)", fail_closed)
@@ -447,7 +469,8 @@ def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookS
         warn(".fail_closed=true will be ignored at runtime — fail_closed only applies to blocking-capable "
              "events (%s).  The hook will fail open on %s like any other hook.", ", ".join(sorted(_BLOCKING_EVENTS)), event)
         fail_closed = False
-    return ShellHookSpec(event=event, command=command.strip(), matcher=matcher, timeout=timeout, fail_closed=fail_closed)
+    return ShellHookSpec(event=event, command=command.strip(), matcher=matcher, timeout=timeout,
+                         fail_closed=fail_closed, fail_closed_declared=fail_closed_declared)
 
 
 # --- Subprocess callback ---
@@ -555,6 +578,12 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
         return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs)))
 
     _callback.__name__ = _callback.__qualname__ = f"shell_hook[{spec.event}:{spec.command}]"
+    # Dispatcher contract: expose the tool matcher so invoke_hook can skip non-matching tools
+    # BEFORE the single-flight window — an unmatched callback must never contend for (nor be
+    # skipped because of) another session's in-flight run (upstream #105223).
+    _callback._hermes_matches_tool = spec.matches_tool
+    # Dispatcher contract: None means "declared nothing" so the event default still applies.
+    _callback._hermes_fail_closed = spec.fail_closed if spec.fail_closed_declared else None
     return _callback
 
 

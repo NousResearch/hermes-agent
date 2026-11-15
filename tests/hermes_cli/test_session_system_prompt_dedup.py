@@ -308,3 +308,27 @@ def test_compact_rows_omit_hash_and_never_read_prompt_blob(db):
     assert "system_prompt_hash" not in rows[0]
     assert "system_prompt" not in rich
     assert "system_prompt_hash" not in rich
+
+
+def test_update_system_prompt_scopes_gc_to_replaced_candidate_hash(db):
+    db.create_session("s1", "cli", system_prompt="p1")
+    # Insert an unrelated unreferenced row directly into system_prompts: single-session
+    # update_system_prompt must not full-scan system_prompts when old_hash is unchanged
+    # or when replacing p1 -> p2.
+    db._conn.execute(
+        "INSERT INTO system_prompts (hash, prompt) VALUES (?, ?)",
+        ("bystander_hash", "bystander_prompt"),
+    )
+    db._conn.commit()
+
+    # Same prompt: 0 candidate hashes to GC; bystander stays untouched.
+    db.update_system_prompt("s1", "p1")
+    hashes = {r[0] for r in db._conn.execute("SELECT hash FROM system_prompts").fetchall()}
+    assert "bystander_hash" in hashes
+
+    # Replace p1 -> p2: p1 is GC'd by candidate point-lookup, p2 is kept, bystander is untouched.
+    db.update_system_prompt("s1", "p2")
+    prompts = {r[0] for r in db._conn.execute("SELECT prompt FROM system_prompts").fetchall()}
+    assert "p1" not in prompts
+    assert "p2" in prompts
+    assert "bystander_prompt" in prompts

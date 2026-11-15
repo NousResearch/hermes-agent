@@ -28,7 +28,9 @@ logger = logging.getLogger("hermes_state")
 # "not authorized": some FUSE mounts block the WAL pragma outright.
 _WAL_INCOMPAT_MARKERS = ("locking protocol", "not authorized", "disk i/o error")
 # SQLite's default journal_size_limit is -1 (unlimited); see _apply_wal_size_limit.
-_WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
+# Keep below doctor_state._state_db_wal's 50 MiB warning threshold so a checkpointed
+# WAL truncated to journal_size_limit does not permanently trigger 'WAL file is large'.
+_WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024  # 32 MiB
 
 # Once-per-process-per-db_label dedup sets (kanban_db.connect() runs on every kanban operation, so an undeduped
 # line would repeat per connection). Tests clear these via ``hermes_state_wal.<name>``.

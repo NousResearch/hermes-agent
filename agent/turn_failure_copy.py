@@ -150,6 +150,7 @@ _EXIT_REASON_FAILURES: tuple[tuple[str, str, bool, bool], ...] = (
     # Advisory: the loop ends these as an incomplete (not failed) turn with an explainer.
     ("redirect_restart_limit_exceeded", "loop_error", True, False),
     ("rebuilt_restart_limit_exceeded", "loop_error", True, False),
+    ("realtime_spend_breaker:", "spend_cap_deferred", False, False),
 )
 
 

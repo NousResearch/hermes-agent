@@ -154,6 +154,15 @@ class TurnLivenessWatchdog:
             generation = getattr(self._agent, "_turn_liveness_activity_generation", 0)
             activity_ts = getattr(self._agent, "_last_activity_ts", None)
         idle_seconds = 0.0 if activity_ts is None else max(0.0, time.time() - activity_ts)
+        if idle_seconds >= self._timeout_s:
+            # A state.db write-lock retry landed in the last ~2s: this turn may be blocked
+            # in its own persistence flush, riding out a sibling's hold (RCA 2026-09-28:
+            # transcript patience is storm-class, 240s). Retrying-the-write-queue is
+            # forward progress, not a silent wedge — never abort mid-flush.
+            from hermes_state import write_retry_in_progress
+
+            if write_retry_in_progress():
+                idle_seconds = 0.0
         return ActivitySnapshot(generation, activity_ts, idle_seconds)
 
     def _dump_turn_thread_stack(self) -> None:

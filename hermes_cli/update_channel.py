@@ -373,10 +373,12 @@ def stale_channel_records(config: Optional[dict]) -> list[tuple[str, dict, str]]
                 continue
 
         # Cross-check against the live install-state records: a channel
-        # record whose sha16 has no installs/<sha16>/install.json was
-        # either hand-written or its install never booted post-record.
+        # record whose sha16 has neither installs/<sha16>/install.json nor
+        # PM-era installs/<sha16>/facts.json was either hand-written or its
+        # install never booted post-record.
         try:
-            if not (installs_root() / sha16 / "install.json").is_file():
+            state_dir = installs_root() / sha16
+            if not ((state_dir / "install.json").is_file() or (state_dir / "facts.json").is_file()):
                 stale.append((sha16, record, "unclaimed"))
         except Exception as exc:
             logger.debug("installs root unavailable: %s", exc)

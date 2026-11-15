@@ -92,6 +92,28 @@ def test_skipped_secret_stays_missing(monkeypatch):
     assert out['missing_names'] == ['HAB_KEY'] and out['setup_skipped'] is True
 
 
+def test_skipped_secret_breaks_multi_var_loop_after_first_cancel(monkeypatch):
+    from gateway.session_secret_prompt import secret_prompt_scope
+    from tools.skills_tool_setup import _capture_required_environment_variables
+    turn, peer = _turn(Platform.LOCAL)
+    out = {}
+    entries = [
+        {'name': 'MSGRAPH_TENANT_ID', 'prompt': 'Enter value for MSGRAPH_TENANT_ID'},
+        {'name': 'MSGRAPH_CLIENT_ID', 'prompt': 'Enter value for MSGRAPH_CLIENT_ID'},
+        {'name': 'MSGRAPH_CLIENT_SECRET', 'prompt': 'Enter value for MSGRAPH_CLIENT_SECRET'},
+    ]
+    with secret_prompt_scope(turn, SimpleNamespace()):
+        from tools.thread_context import propagate_context_to_thread
+        worker = threading.Thread(target=propagate_context_to_thread(lambda: out.update(
+            _capture_required_environment_variables('teams-meeting-pipeline', entries))))
+        worker.start()
+        _answer_when_asked(peer, '')
+        worker.join(5)
+    assert out['missing_names'] == ['MSGRAPH_TENANT_ID', 'MSGRAPH_CLIENT_ID', 'MSGRAPH_CLIENT_SECRET']
+    assert out['setup_skipped'] is True
+    assert len(peer.frames) == 1
+
+
 @pytest.mark.parametrize('platform', [Platform.TELEGRAM])
 def test_messaging_turn_keeps_the_unsupported_hint(monkeypatch, platform):
     from gateway.session_secret_prompt import secret_prompt_scope

@@ -7,9 +7,11 @@ characters that would crash ``json.dumps`` in the OpenAI SDK or be rejected upst
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
+import os
 import re
 from functools import partial
 from typing import Any, Callable, Iterable, NamedTuple
@@ -178,6 +180,15 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
 # content that can hold real user data (a truncated write_file), so bound it generously.
 _FULL_ARGS_LOG_BOUND = 100_000
 
+# A1 (RCA 2026-09-17): repaired-but-wrong args are the highest-risk class (valid JSON,
+# wrong content — executes silently, writes lost). Default OFF; enable via env while we
+# gather A3 attribution data for a week.
+_WRITE_CLASS_TOOLS = {"skill_manage", "memory", "write_file", "patch"}
+
+
+def _strict_repaired_writes_enabled() -> bool:
+    return os.environ.get("HERMES_STRICT_REPAIRED_ARGS", "").strip().lower() in ("1", "true", "yes")
+
 
 def _loads_ok(text: str) -> bool:
     try:
@@ -227,10 +238,20 @@ def _rebalance_json_closers(raw: str) -> str | None:
     return "".join(out) + "".join(_JSON_CLOSERS[ch] for ch in reversed(stack))
 
 
-def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
+def _repair_tool_call_arguments(
+    raw_args: str,
+    tool_name: str = "?",
+    *,
+    model: Any = None,
+    session: Any = None,
+) -> str:
     """Repair malformed tool_call argument JSON (truncation, trailing commas, Python ``None``,
-    control chars); ``"{}"`` if unrepairable so the request succeeds. Repairs log at WARNING."""
+    control chars); ``"{}"`` if unrepairable so the request succeeds. Repairs log at WARNING.
+    ``model``/``session`` (optional) add attribution to the log census lines (A3, RCA 2026-09-17)."""
     raw_stripped = raw_args.strip() if isinstance(raw_args, str) else ""
+    _attr = ""
+    if model is not None or session is not None:
+        _attr = " [model={} session={}]".format(model or "?", session or "?")
 
     if not raw_stripped:
         logger.warning("Sanitized empty tool_call arguments for %s", tool_name)
@@ -242,9 +263,18 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
 
     # Pass 0: strict=False accepts literal control chars inside strings (the most common
     # local-model case) and re-serialises to wire-valid JSON.
+    # (CodeRabbit PR #3, Major): strict mode must ALSO gate pass 0 — otherwise a
+    # write-class arg with literal control chars is repaired-and-returned before
+    # the strict guards below ever see it.
     try:
         reserialised = json.dumps(json.loads(raw_stripped, strict=False), separators=(",", ":"))
         if reserialised != raw_stripped:
+            if _strict_repaired_writes_enabled() and tool_name in _WRITE_CLASS_TOOLS:
+                logger.warning(
+                    "Refusing pass-0 repaired write-class tool_call args under strict mode for %s%s",
+                    tool_name, _attr,
+                )
+                return json.dumps({"__hermes_malformed_tool_arguments__": True})
             logger.warning("Repaired unescaped control chars in tool_call arguments for %s", tool_name)
         return reserialised
     except (json.JSONDecodeError, TypeError, ValueError):
@@ -266,21 +296,33 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         fixed = fixed[:-1]
 
     if _loads_ok(fixed):
-        logger.warning("Repaired malformed tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], fixed[:80])
+        if _strict_repaired_writes_enabled() and tool_name in _WRITE_CLASS_TOOLS:
+            logger.warning(
+                "Strict repaired-args mode: refusing repaired write-class args for %s%s (was: %s → %s)",
+                tool_name, _attr, raw_stripped[:80], fixed[:80],
+            )
+            return "{}"
+        logger.warning("Repaired malformed tool_call arguments for %s%s: %s → %s", tool_name, _attr, raw_stripped[:80], fixed[:80])
         return fixed
 
     # Pass 5: escape control chars inside strings (strict=False alone fails when other
     # malformations are present too), then retry.
     escaped = _escape_invalid_chars_in_json_strings(fixed)
     if escaped != fixed and _loads_ok(escaped):
+        if _strict_repaired_writes_enabled() and tool_name in _WRITE_CLASS_TOOLS:
+            logger.warning(
+                "Strict repaired-args mode: refusing repaired write-class args for %s%s (was: %s → %s)",
+                tool_name, _attr, raw_stripped[:80], escaped[:80],
+            )
+            return "{}"
         logger.warning(
-            "Repaired control-char-laced tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], escaped[:80],
+            "Repaired control-char-laced tool_call arguments for %s%s: %s → %s", tool_name, _attr, raw_stripped[:80], escaped[:80],
         )
         return escaped
 
     logger.warning(
-        "Unrepairable tool_call arguments for %s — replaced with empty object (was: %s)",
-        tool_name, raw_stripped[:_FULL_ARGS_LOG_BOUND],
+        "Unrepairable tool_call arguments for %s%s — replaced with empty object (was: %s)",
+        tool_name, _attr, raw_stripped[:_FULL_ARGS_LOG_BOUND],
     )
     return "{}"
 
@@ -535,6 +577,7 @@ __all__ = [
     "reasoning_replay_route",
     "record_reasoning_field_rejection",
     "rejected_reasoning_carriers",
+    "repair_message_alternation",
     "route_reasoning_carriers",
     "sanitize_outbound_kwargs",
     "stale_thinking_reaches_wire",
@@ -671,7 +714,7 @@ def normalize_provider_tool_call_ids(tool_calls: list) -> list:
     # falls back to id), not on raw fields.
     if not all(coalesce_tool_call_id(tc).startswith(_PROVIDER_TOOL_ID_PREFIXES) for tc in tool_calls):
         return tool_calls
-    logger.warning("Normalized provider-minted parallel tool-call ids for replay compatibility")
+    logger.debug("Normalized provider-minted parallel tool-call ids for replay compatibility")
     for tc in tool_calls:
         # Rewrite each field's call half separately: ``id`` may carry the response-item
         # half while ``call_id`` is bare, and that half must survive.
@@ -1026,6 +1069,64 @@ def _reasoning_shape(msg: dict) -> tuple:
     return tuple(msg.get(key) for key in REASONING_CARRIERS)
 
 
+def _gemini_encrypted_sig_family(data: Any) -> str | None:
+    if not isinstance(data, str) or len(data) < 4:
+        return None
+    try:
+        raw = base64.b64decode(data[:16] + "===")
+        if raw:
+            return "vertex" if raw[0] in (0x01, 0x0A) else ("aistudio" if raw[0] == 0x12 else f"0x{raw[0]:02x}")
+    except Exception:
+        return None
+    return None
+
+
+def harmonize_gemini_reasoning_details(api_messages: list) -> int:
+    """Strip older incompatible google-gemini-v1 encrypted signatures when a session
+    contains mixed Vertex (first_byte 0x01/0x0a) and AI Studio (first_byte 0x12) blocks."""
+    target_fam: str | None = None
+    for msg in reversed(api_messages):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for block in msg.get(RD) or ():
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "reasoning.encrypted"
+                and block.get("format") == "google-gemini-v1"
+            ):
+                target_fam = _gemini_encrypted_sig_family(block.get("data"))
+                if target_fam:
+                    break
+        if target_fam:
+            break
+    if not target_fam:
+        return 0
+    stripped_msgs = 0
+    for msg in api_messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant" or RD not in msg:
+            continue
+        details = msg.get(RD)
+        if not isinstance(details, list):
+            continue
+        kept = [
+            b
+            for b in details
+            if not (
+                isinstance(b, dict)
+                and b.get("type") == "reasoning.encrypted"
+                and b.get("format") == "google-gemini-v1"
+                and _gemini_encrypted_sig_family(b.get("data")) not in (None, target_fam)
+            )
+        ]
+        if len(kept) != len(details):
+            if kept:
+                msg[RD] = kept
+            else:
+                msg.pop(RD, None)
+            stripped_msgs += 1
+    return stripped_msgs
+
+
 def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carriers: frozenset | None = None) -> int:
     """Reconcile already-built assistant turns with the ACTIVE route.
 
@@ -1044,6 +1145,7 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carrier
             continue
         apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad, carriers)
         changed += _reasoning_shape(api_msg) != before
+    changed += harmonize_gemini_reasoning_details(api_messages)
     return changed
 
 
@@ -1159,3 +1261,29 @@ def record_reasoning_field_rejection(agent: Any, error_body: Any, sent_messages:
 
 # Image / multimodal parts are deliberately NOT consolidated here: per-adapter handling is
 # format-specific SYNTAX. The one shared image POLICY is ``_strip_images_from_messages``.
+
+
+def repair_message_alternation(
+    messages: list[dict[str, Any]], agent: Any = None
+) -> tuple[list[dict[str, Any]], int]:
+    """Repair malformed role alternation in ``messages`` in-place and return ``(messages, repairs)``.
+
+    Delegates to :func:`agent.agent_runtime_helpers.repair_message_sequence_with_cursor` when
+    ``agent`` is provided (keeping ``_last_flushed_db_idx`` and ``_db_flush_scan_prefix``
+    aligned after compaction) or :func:`agent.agent_runtime_helpers.repair_message_sequence`
+    otherwise.
+    """
+    if not messages:
+        return messages, 0
+    from agent.agent_runtime_helpers import (
+        repair_message_sequence,
+        repair_message_sequence_with_cursor,
+    )
+
+    repairs = (
+        repair_message_sequence_with_cursor(agent, messages)
+        if agent is not None
+        else repair_message_sequence(None, messages)
+    )
+    return messages, repairs
+

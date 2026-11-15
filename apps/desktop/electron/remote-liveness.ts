@@ -8,7 +8,25 @@ export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
 // reuse the background liveness budget so a quiet-box cold-start (~6-8s) can
 // finish instead of failing the probe and kicking off a reconnect storm.
 export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = REMOTE_LIVENESS_TIMEOUT_MS
+// Transient event-loop / SQLite / DERP-flap stalls on a remote `serve --isolated`
+// can fail a single dispatch health probe while a multi-minute turn is still
+// running. Retry once after 3s before retiring the cached descriptor and
+// re-bootstrapping the SSH tunnel (ATLAS-130 / DQ #369).
+export const POOLED_REMOTE_DISPATCH_RETRY_DELAY_MS = 3_000
+export const POOLED_REMOTE_DISPATCH_FAST_RETRY_DELAY_MS = 400
 export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
+
+const IMMEDIATE_SOCKET_RESET_RE = /\b(ECONNREFUSED|ECONNRESET|EPIPE)\b|socket hang up/i
+const LOOPBACK_TUNNEL_URL_RE = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/i
+
+export function isImmediateSocketResetError(error: unknown): boolean {
+  const text = error instanceof Error ? `${error.name} ${error.message}` : String(error ?? '')
+  return IMMEDIATE_SOCKET_RESET_RE.test(text)
+}
+
+export function isLoopbackTunnelUrl(baseUrl: string): boolean {
+  return LOOPBACK_TUNNEL_URL_RE.test(String(baseUrl || '').trim())
+}
 // Even at the capped retry path, consecutive liveness observations are at most
 // about 48s apart (ticket mint + socket open + backoff + the next status probe).
 // One minute keeps a continuous outage together without carrying old failures.
@@ -86,34 +104,33 @@ interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends
   probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
   reconnect: () => Promise<TConnection>
   retire: (error: unknown) => Promise<void> | void
+  retryDelayMs?: number
+  sleep?: (ms: number) => Promise<void>
 }
 
 /**
  * Gate dispatch through a cheap health probe of the exact cached descriptor.
  *
- * A failed descriptor is retired before reconnecting, while identity checks
- * prevent a late probe from tearing down a replacement installed by another
- * caller. The caller should single-flight this function per cached promise so
- * concurrent dispatches share one retire/reconnect sequence.
+ * A failed descriptor is re-probed once after POOLED_REMOTE_DISPATCH_RETRY_DELAY_MS
+ * before being retired, while identity checks prevent a late probe from tearing
+ * down a replacement installed by another caller. The caller should single-flight
+ * this function per cached promise so concurrent dispatches share one
+ * retire/reconnect sequence.
  */
 export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection extends RemoteConnectionDescriptor>({
   connectionPromise,
   currentConnectionPromise,
   probe,
   reconnect,
-  retire
+  retire,
+  retryDelayMs = POOLED_REMOTE_DISPATCH_RETRY_DELAY_MS,
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 }: EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection>): Promise<TConnection> {
   let connection: TConnection
 
-  try {
-    connection = await connectionPromise
-
-    if (currentConnectionPromise() !== connectionPromise) {
-      return reconnect()
-    }
-
+  const probeOnce = async (target: TConnection): Promise<void> => {
     try {
-      await probe(connection, '/api/health', {
+      await probe(target, '/api/health', {
         timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
       })
     } catch (healthError) {
@@ -124,9 +141,39 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
         throw healthError
       }
 
-      await probe(connection, '/api/status', {
+      await probe(target, '/api/status', {
         timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
       })
+    }
+  }
+
+  try {
+    connection = await connectionPromise
+
+    if (currentConnectionPromise() !== connectionPromise) {
+      return reconnect()
+    }
+
+    try {
+      await probeOnce(connection)
+    } catch (firstProbeError) {
+      if (currentConnectionPromise() !== connectionPromise) {
+        return reconnect()
+      }
+
+      const effectiveRetryDelayMs = isImmediateSocketResetError(firstProbeError)
+        ? Math.min(retryDelayMs, POOLED_REMOTE_DISPATCH_FAST_RETRY_DELAY_MS)
+        : retryDelayMs
+
+      if (effectiveRetryDelayMs > 0) {
+        await sleep(effectiveRetryDelayMs)
+      }
+
+      if (currentConnectionPromise() !== connectionPromise) {
+        return reconnect()
+      }
+
+      await probeOnce(connection)
     }
   } catch (error) {
     if (currentConnectionPromise() === connectionPromise) {
@@ -243,10 +290,12 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
         const connection = await entry.connectionPromise
         await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
         tracker.recordSuccess(baseUrl)
-      } catch {
+      } catch (probeError) {
         const failure = tracker.recordFailure(baseUrl)
+        const immediateLoopbackReset =
+          isLoopbackTunnelUrl(baseUrl) && isImmediateSocketResetError(probeError)
 
-        if (!failure.shouldReset) {
+        if (!failure.shouldReset && !immediateLoopbackReset) {
           log(
             `Pooled remote backend for profile "${profile}" failed liveness probe (${failure.failures}/${REMOTE_LIVENESS_FAILURE_LIMIT}); keeping descriptor for retry.`
           )
@@ -254,6 +303,9 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
           return
         }
 
+        if (immediateLoopbackReset) {
+          tracker.recordSuccess(baseUrl)
+        }
         log(`Pooled remote backend for profile "${profile}" failed liveness probe; dropping stale descriptor.`)
         stopBackend(profile)
         dropped.push(profile)

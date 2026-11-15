@@ -86,14 +86,27 @@ function sshQuitShouldBlock({
   return connectionCount > 0 || bootstrapPending > 0 || Boolean(inFlight)
 }
 
-async function teardownSshState(state, { cleanupRemote }) {
+async function teardownSshState(
+  state,
+  {
+    cleanupRemote,
+    preserveRemoteBackend = false
+  }: {
+    cleanupRemote: (ssh: any, ownershipId: any) => Promise<unknown>
+    preserveRemoteBackend?: boolean
+  }
+) {
   // Remote process first, while the SSH channel can still exec kill.
-  // Then drop the local forward and close the transport. Each step is
-  // best-effort so a failed remote cleanup cannot trap Cmd+Q (#91668).
-  try {
-    await cleanupRemote(state.ssh, state.ownershipId)
-  } catch {
-    // Remote teardown is best-effort; always release the local tunnel and SSH transport.
+  // When preserveRemoteBackend is true (transient probe-retire, sleep/wake
+  // revalidation, or app quit where the next launch should re-adopt the live
+  // remote serve --isolated via backend.lock.json), skip remote process kill
+  // and only release the local forward + SSH master.
+  if (!preserveRemoteBackend) {
+    try {
+      await cleanupRemote(state.ssh, state.ownershipId)
+    } catch {
+      // Remote teardown is best-effort; always release the local tunnel and SSH transport.
+    }
   }
 
   try {

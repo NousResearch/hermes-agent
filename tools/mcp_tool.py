@@ -542,13 +542,13 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
 # same server with their own credentials are two connections; a name-keyed ledger let the first
 # profile's connection shadow the second's (never connected, silently tool-less — #106005).
 
-_servers: dict[Any, MCPServerTask] = {}
+_servers: dict[Any, MCPServerTask] = globals().get("_servers") or {}
 # Profile registry scope per live connection (None outside multiplex) so a multiplexed
 # /reload-mcp tears down only its own profile's servers.
-_server_scope_keys: dict[Any, Optional[str]] = {}
+_server_scope_keys: dict[Any, Optional[str]] = globals().get("_server_scope_keys") or {}
 # Registry scopes that have adopted a live server connection. The owning scope above remains
 # authoritative for connection teardown; this set preserves visibility for shared connections.
-_server_tool_scopes: dict[Any, set] = {}
+_server_tool_scopes: dict[Any, set] = globals().get("_server_tool_scopes") or {}
 _server_connecting: set = set()
 _server_connect_errors: dict[Any, str] = {}
 # adopter scope -> server names whose shared connection an owner's scoped shutdown tore down;
@@ -648,9 +648,9 @@ _mcp_tool_server_names: dict[str, str] = {}
 
 # Dedicated event loop in a background daemon thread; _lock guards the loop handles, _servers,
 # the status maps and the PID ledgers.
-_mcp_loop: Optional[asyncio.AbstractEventLoop] = None
-_mcp_thread: Optional[threading.Thread] = None
-_lock = threading.Lock()
+_mcp_loop: Optional[asyncio.AbstractEventLoop] = globals().get("_mcp_loop")
+_mcp_thread: Optional[threading.Thread] = globals().get("_mcp_thread")
+_lock = globals().get("_lock") or threading.Lock()
 
 
 def _mcp_registry_scope() -> Optional[str]:

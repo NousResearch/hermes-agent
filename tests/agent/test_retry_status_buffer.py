@@ -225,3 +225,64 @@ def test_flush_swallows_callback_exceptions():
     assert seen == ["first", "second"]
     # Buffer drained regardless of failures.
     assert agent._retry_status_buffer == []
+
+
+def test_buffer_fallback_notice_deduplicates_consecutive_identical_notices():
+    from agent.chat_completion_helpers import _buffer_fallback_notice
+
+    agent = _make_bare_agent()
+    notice = (
+        "⚠️ Model fallback: google/gemini-4-argon via openrouter unavailable "
+        "(rate limit); using google/gemini-4-argon via vertex. "
+        "Primary retry eligible in ~60 s; recovery is not guaranteed."
+    )
+    _buffer_fallback_notice(agent, notice)
+    _buffer_fallback_notice(agent, notice)
+    _buffer_fallback_notice(agent, notice)
+    assert agent._pending_fallback_notice == [notice]
+    distinct = "⚠️ Model fallback: google/gemini-4-argon via vertex unavailable (overloaded); using glm-5 via zai."
+    _buffer_fallback_notice(agent, distinct)
+    assert agent._pending_fallback_notice == [notice, distinct]
+
+
+def test_restore_primary_runtime_clears_stale_pending_fallback_notice():
+    from unittest.mock import MagicMock, patch
+    from agent.agent_runtime_helpers import restore_primary_runtime
+
+    agent = _make_bare_agent()
+    agent.__dict__.update(model="google/gemini-4-argon", provider="openrouter")
+    agent._fallback_activated = True
+    agent._provider_fallback_active = True
+    agent._provider_fallback_route = ("google/gemini-4-argon", "vertex")
+    agent._rate_limited_until = 0
+    agent._pending_fallback_notice = [
+        "⚠️ Model fallback: google/gemini-4-argon via openrouter unavailable (rate limit); using google/gemini-4-argon via vertex."
+    ]
+    agent._primary_runtime = {
+        "model": "google/gemini-4-argon",
+        "provider": "openrouter",
+        "requested_provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_mode": "chat_completions",
+        "use_prompt_caching": True,
+        "use_native_cache_layout": False,
+        "compressor_model": "google/gemini-4-argon",
+        "compressor_context_length": 200000,
+        "compressor_base_url": "https://openrouter.ai/api/v1",
+        "compressor_api_key": "k",
+        "compressor_provider": "openrouter",
+        "compressor_api_mode": "chat_completions",
+        "reasoning_config": None,
+    }
+    agent.context_compressor = MagicMock()
+    emitted = []
+    agent._emit_status = emitted.append
+
+    with patch("agent.route_binding.reinstall_primary_runtime"):
+        assert restore_primary_runtime(agent) is True
+
+    assert agent._pending_fallback_notice is None
+    assert len(emitted) == 1
+    assert "Primary model restored" in str(emitted[0])
+
+

@@ -127,6 +127,16 @@ def _stop_turns_before_exit(budget_s: float | None = None) -> None:
         running = [(sid, s) for sid, s in _sessions.items() if s.get("running")]
     threads = []
     for sid, session in running:
+        # Preserve crash-recovery turn markers across process exit so the next
+        # backend's boot_auto_continue_interrupted_sessions() resumes turns
+        # interrupted by SIGTERM/SIGINT rather than treating them as user-cancelled.
+        session["_stopped_for_process_exit"] = True
+        with contextlib.suppress(Exception):
+            from pathlib import Path
+            from tui_gateway.turn_marker import mark_turn_interrupted
+            marker_home = Path(session.get("profile_home") or session.get("hermes_home") or (Path.home() / ".hermes"))
+            marker_key = str(session.get("_active_turn_marker_key") or session.get("session_key") or sid)
+            mark_turn_interrupted(marker_home, marker_key)
         with contextlib.suppress(Exception):
             _interrupt_session_turn(sid, session)
         if (t := session.get("_run_thread")) is not None and t is not threading.current_thread():

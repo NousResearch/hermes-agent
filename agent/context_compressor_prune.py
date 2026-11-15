@@ -35,7 +35,11 @@ class ProactivePruneMixin:
         )
 
     def prune_tool_results_only(
-        self, messages: list[dict[str, Any]], current_tokens: int | None = None,
+        self: Any,
+        messages: list[dict[str, Any]],
+        current_tokens: int | None = None,
+        *,
+        warn_on_noop: bool = True,
     ) -> tuple[list[dict[str, Any]], int]:
         """Deterministic, no-LLM tool-result prune gated on ``proactive_prune_tokens``.
 
@@ -44,7 +48,8 @@ class ProactivePruneMixin:
         object as ``(messages, 0)``. The rearm gate is measured on message bodies only, so it is
         bypassed (never the reclaim gate) when a provider-billed ``current_tokens`` reading already
         puts the request over ``threshold_tokens`` (#101889); every no-op taken while over threshold
-        is logged once per distinct reason.
+        is logged once per distinct reason (unless ``warn_on_noop=False`` when called as an
+        opportunistic fast path immediately before eligible full LLM compaction).
 
         ``_prune_old_tool_results`` runs all deterministic passes: (1) dedup byte-identical tool results —
         keeps the newest full copy and back-references older exact duplicates ANYWHERE in the list
@@ -58,10 +63,22 @@ class ProactivePruneMixin:
         """
         if not self.would_proactively_prune(current_tokens):
             return messages, 0
-        if len(messages) <= self.protect_last_n + self._protect_head_size(messages) + 1:
-            self._warn_reclamation_no_op("prune:tail_only", current_tokens)
+        _cc_ = _cc()
+        _over_threshold_pre_compaction = (
+            not warn_on_noop
+            and self._billed_basis_over_threshold(current_tokens)
+            and int(getattr(self, "tail_token_budget", 0) or 0) > 0
+        )
+        _min_tail_count = (
+            min(self.protect_last_n, _cc_._MAX_TAIL_MESSAGE_FLOOR)
+            if _over_threshold_pre_compaction
+            else self.protect_last_n
+        )
+        if len(messages) <= _min_tail_count + self._protect_head_size(messages) + 1:
+            if warn_on_noop:
+                self._warn_reclamation_no_op("prune:tail_only", current_tokens)
             return messages, 0
-        _estimate_msg_budget_tokens = _cc()._estimate_msg_budget_tokens
+        _estimate_msg_budget_tokens = _cc_._estimate_msg_budget_tokens
         before = sum(_estimate_msg_budget_tokens(m) for m in messages)
         # Under-threshold runway skip is ordinary hysteresis (silent); above it the lockout is the bug.
         if before < self._proactive_prune_rearm_tokens and not self._billed_basis_over_threshold(current_tokens):
@@ -70,22 +87,51 @@ class ProactivePruneMixin:
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
         if session_db and session_id and not callable(getattr(session_db, "archive_and_compact", None)):
-            self._warn_reclamation_no_op("prune:store_cannot_persist", current_tokens)
+            if warn_on_noop:
+                self._warn_reclamation_no_op("prune:store_cannot_persist", current_tokens)
             return messages, 0
         pruned_msgs, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=None, min_prune_chars=self.proactive_prune_min_result_chars,
         )
         from agent.context_compressor_tail import with_pruned_row_skill_safety_rule
-        pruned_msgs = with_pruned_row_skill_safety_rule(messages, pruned_msgs)
+        if pruned_count:
+            pruned_msgs = with_pruned_row_skill_safety_rule(messages, pruned_msgs)
+            after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
+            reclaimed = max(0, before - after)
+        else:
+            after = before
+            reclaimed = 0
+        _needs_deeper_pre_compaction_prune = (
+            not pruned_count
+            or reclaimed < self.proactive_prune_min_reclaim_tokens
+            or (
+                current_tokens is not None
+                and self.threshold_tokens > 0
+                and (current_tokens - reclaimed) >= self.threshold_tokens
+            )
+        )
+        if _over_threshold_pre_compaction and _needs_deeper_pre_compaction_prune:
+            pruned_msgs, pruned_count = self._prune_old_tool_results(
+                messages,
+                protect_tail_count=self.protect_last_n,
+                protect_tail_tokens=int(self.tail_token_budget),
+                min_prune_chars=min(
+                    self.proactive_prune_min_result_chars, _cc_._PRUNE_MIN_CHARS
+                ),
+            )
+            if pruned_count:
+                pruned_msgs = with_pruned_row_skill_safety_rule(messages, pruned_msgs)
+                after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
+                reclaimed = max(0, before - after)
         if not pruned_count:
             # No-op contract: return the INPUT object so callers can gate on `result is not input`.
-            self._warn_reclamation_no_op("prune:nothing_eligible", current_tokens)
+            if warn_on_noop:
+                self._warn_reclamation_no_op("prune:nothing_eligible", current_tokens)
             return messages, 0
         # Prompt-cache hysteresis: commit only when the reclaim is meaningful.
-        after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
-        reclaimed = max(0, before - after)
         if reclaimed < self.proactive_prune_min_reclaim_tokens:
-            self._warn_reclamation_no_op("prune:reclaim_below_minimum", current_tokens, before=before)
+            if warn_on_noop:
+                self._warn_reclamation_no_op("prune:reclaim_below_minimum", current_tokens, before=before)
             return messages, 0
         # Require a full trigger-sized regrowth before the next cache-breaking rewrite.
         runway = max(reclaimed, self.proactive_prune_tokens, self.proactive_prune_min_reclaim_tokens)
@@ -115,13 +161,15 @@ class ProactivePruneMixin:
                 # Another compaction already committed this session's history; a lease-less prune of the
                 # generation this process holds would publish beside the winner. Leave the input alone.
                 logger.info("Proactive tool-result prune skipped: another compaction already committed this session")
-                self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
+                if warn_on_noop:
+                    self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
                 return messages, 0
             except HeldRowRewrittenError:
                 # The full writer's in-transaction CAS fence tripped: a held row changed between the
                 # precheck and the commit. Same disposition as StaleHeldHistory — nothing was written.
                 logger.info("Proactive tool-result prune skipped: a held row was rewritten in place before the commit")
-                self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
+                if warn_on_noop:
+                    self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
                 return messages, 0
             except Exception as exc:  # health: allow BLE001 -- the commit boundary keeps the original transcript on any store failure (#124102)
                 logger.warning("Proactive tool-result prune DB commit failed; keeping the original transcript: %s", exc)

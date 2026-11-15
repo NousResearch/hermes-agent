@@ -243,7 +243,11 @@ def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
     _SSH_RUNTIME_MARKER = None
     if nonce:
         try:
-            purelib = sysconfig.get_paths()["purelib"]
+            env_purelibs = [
+                p for p in sys.path
+                if p and "site-packages" in p and (os.sep + "environments" + os.sep) in p and os.path.isdir(p)
+            ]
+            purelib = env_purelibs[0] if env_purelibs else sysconfig.get_paths()["purelib"]
         except (KeyError, OSError):
             return
         # Primary identity: a marker FILE in site-packages. A replaced venv
@@ -1143,7 +1147,7 @@ def _reclaim_host_from_orphaned_owner(role: str) -> bool:
     return True
 
 
-def _publish_host_rendezvous(host: str, port: int) -> None:
+def _publish_host_rendezvous(host: str, port: int, *, isolated: bool = False) -> None:
     """Publish this backend's host record: ``ROLE_SERVE`` for the machine-level owner,
     ``ROLE_DESKTOP_SERVE`` for a Desktop-owned child."""
     # Desktop-spawned backends (flag + per-spawn credential; the bare flag is inherited by every
@@ -1153,8 +1157,14 @@ def _publish_host_rendezvous(host: str, port: int) -> None:
     # only. They still publish under their own role so `hermes plugins install` from a terminal
     # can reach the backend hosting the open chats on a Desktop-only box (#119644).
     from gateway import host_rendezvous as hr
+    import contextlib as _contextlib
+    with _contextlib.suppress(Exception):
+        from tui_gateway.sibling_serve_forward import register_local_serve_peer
+        register_local_serve_peer(host=host, port=port, token=_SESSION_TOKEN)
 
     desktop_child = is_desktop_owned_backend()
+    if isolated and not desktop_child:
+        return
     role = hr.ROLE_DESKTOP_SERVE if desktop_child else hr.ROLE_SERVE
 
     outcome, error = hr.claim_host_lock(role)
@@ -1288,7 +1298,10 @@ def _on_server_started(
     # for any profile find this process and attach instead of binding a second port. Published
     # after the bind so the record carries the real port, and beside — not instead of — the
     # spawn-ledger entry above, which Desktop's attach ladder reads.
-    _best_effort("host rendezvous publish", lambda: _publish_host_rendezvous(host, actual_port))
+    _best_effort(
+        "host rendezvous publish",
+        lambda: _publish_host_rendezvous(host, actual_port, isolated=isolated),
+    )
 
     _write_dashboard_ready_file(actual_port)
     # Port-discovery sentinel parsed by the Desktop spawn. Written to fd 1:

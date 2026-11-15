@@ -231,8 +231,8 @@ confidence, send time, and the session's context generation when the last reques
 the provider's prompt cache. It rides the same queued token-count batch as the usage counters (no
 extra write on the turn loop). The context generation is the number of rows a compaction or prune
 archived (`active = 0, compacted = 1`): it only grows, so a saved clock recorded before an in-place
-compaction no longer validates after a restart; a managed worker reads the same count from the owner
-(`RuntimeSessionStore.prompt_cache_generation`). A resumed agent restores the clock before its first
+compaction no longer validates after a restart; for a managed worker the owner stamps that count
+onto the clock inside the usage receipt that carries it. A resumed agent restores the clock before its first
 response is recorded, and the agentless `session.context_breakdown` reads it too, checked against
 the row's persisted model and `model_config` provider/base URL so a `/model` switch reports
 `unknown`. Every clock read is advisory: a failed store read reports `unknown` and never fails the

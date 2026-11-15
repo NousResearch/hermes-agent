@@ -6,7 +6,7 @@ its first response onto the saved event, never onto nothing."""
 from types import SimpleNamespace
 
 from agent.prompt_cache_clock import (
-    CacheEvent, cache_window, event_to_json, record_attempt_sent, record_cache_response, stored_cache_window,
+    CacheEvent, cache_window, event_from_json, event_to_json, record_attempt_sent, record_cache_response, stored_cache_window,
 )
 from agent.usage_pricing import normalize_usage
 from hermes_state import SessionDB
@@ -145,8 +145,9 @@ def test_a_failed_store_read_never_loses_the_reply_and_reports_unknown(tmp_path,
 
 
 def test_a_managed_worker_clock_carries_the_owner_generation(tmp_path, monkeypatch):
-    """A worker agent's session_db is a RuntimeSessionStore: its event must carry the owner's durable
-    generation, so the owner's agentless read sees the fresh window as warm, not compacted."""
+    """A worker agent's session_db is a RuntimeSessionStore: the saved event must carry the owner's durable
+    generation (stamped in the usage receipt, no extra read through the write journal), so the owner's
+    agentless read sees the fresh window as warm, not compacted."""
     from agent.runtime_session_store import RuntimeSessionStore
     from hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
 
@@ -172,11 +173,12 @@ def test_a_managed_worker_clock_carries_the_owner_generation(tmp_path, monkeypat
                                     provider=_OR[0], api_mode="chat_completions")
             event = record_cache_response(agent, write, model=_OR[2], provider=_OR[0], base_url=_OR[1],
                                           api_mode="chat_completions")
-            assert event.generation == owner_generation
             store.queue_token_counts("s1", input_tokens=10, cache_write_tokens=4800, api_call_count=1,
                                      prompt_cache_clock=event_to_json(event))
+            assert store.failure is None
         finally:
             store.close()
+        assert event_from_json(db.get_session("s1")["prompt_cache_clock"]).generation == owner_generation
         stored = stored_cache_window(db.get_session("s1")["prompt_cache_clock"], session_id="s1",
                                      generation=db.prompt_cache_generation("s1"))
         assert (stored["confidence"], stored["tier"]) == ("declared", "1h")

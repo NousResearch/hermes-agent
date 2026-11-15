@@ -89,9 +89,17 @@ def worker_row_role(db, conn, session_id, payload):
     return {'value': row[0] if row else None}
 
 
-def worker_cache_generation(db, conn, session_id, payload):
-    """``SessionDB.prompt_cache_generation`` on the receipt connection (the prompt-cache clock)."""
+def stamp_cache_generation(conn, session_id, clock):
+    """A worker's prompt-cache event with the owner's durable context generation, stamped in the
+    usage receipt that carries it. The worker cannot read that count without an extra RPC through
+    its write journal (whose failure is sticky), and the worker holds the turn, so the count at
+    commit is the count its request saw. A column this build cannot parse is stored as sent."""
     from hermes_state_usage import _ARCHIVED_ROWS_SQL
-    if payload:
-        raise RuntimeStoreError('invalid_params')
-    return {'value': int(conn.execute(_ARCHIVED_ROWS_SQL, (session_id,)).fetchone()[0])}
+    try:
+        event = json.loads(clock)
+    except ValueError:
+        return clock
+    if not isinstance(event, dict):
+        return clock
+    event['generation'] = int(conn.execute(_ARCHIVED_ROWS_SQL, (session_id,)).fetchone()[0])
+    return json.dumps(event, separators=(',', ':'))

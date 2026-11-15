@@ -1545,11 +1545,22 @@ The one explicit knob is the cache TTL tier Hermes requests on Anthropic-style b
 ```yaml
 prompt_caching:
   cache_ttl: "5m"   # "5m", "1h" (Anthropic-supported tiers) or "auto"; other values are ignored
+  route_ttl_ceilings: {}   # per-provider cap, e.g. {nous: "5m"} or {nous: "1h"} to lift a shipped cap
 ```
 
 `cache_ttl` selects the breakpoint TTL Hermes attaches for Claude via the native Anthropic API, OpenRouter, and Nous Portal. The two Anthropic tiers (`"5m"`, `"1h"`) are sent as-is; any other value is ignored. Providers with their own caps (e.g. Qwen Cloud, which maxes at 5 minutes) still clamp to what the upstream allows.
 
 The 1h tier writes at 2x the base input price (5m writes at 1.25x) and only pays off when your turns are more than five minutes apart — otherwise every tool result is written at the dearer rate for retention nobody uses. `"auto"` picks the tier per session from who paces it: `1h` for sessions a person types into (CLI, TUI, Desktop, Telegram/Discord/Slack and the other messaging platforms), `5m` for machine-paced ones (subagents, cron, `hermes -q` one-shots, webhooks, Kanban workers, the API server, tool-invoked and batch runs). On an install where interactive sessions are parked and resumed through the day, `auto` cut the interactive cache-write bill by roughly 40% while leaving fan-out subagent spend untouched. Delegated subagents are always clamped to `5m`, whatever the setting.
+
+`prompt_caching.route_ttl_ceilings` caps the tier per provider, so a route that silently keeps less than it is asked for is neither asked for (nor billed for) the dearer tier. A provider's profile can ship a ceiling too; the config entry overrides it. Nous Portal ships `5m`: its upstream currently drops 1h entries after about seven minutes and bills them at the 5m rate. Once that is fixed, `route_ttl_ceilings: {nous: "1h"}` lifts it with no code change. A `custom` endpoint pointed at a known provider's host gets that provider's ceiling.
+
+`/context` shows where the session stands against the window, from one shared prompt-cache clock that records, per request, the tier actually sent and the tier the response proved:
+
+- `Prompt cache: warm until 14:32 (58m 10s left; 1h, proven).` The countdown runs from the last request that read or wrote the cache. `proven` means the response named the tier (Anthropic's `ephemeral_5m/1h_input_tokens`, OpenAI Responses' `ttl_30m/12h_tokens`). `declared` is the tier sent, on a route known to honour it (OpenRouter Claude, a route ceiling, OpenAI's documented 30-minute minimum on GPT-5.6+). `assumed` is a typical figure with no guarantee (other Anthropic-wire gateways, OpenAI before GPT-5.6, a resumed session with no stored clock).
+- `Prompt cache: expired 15m ago (5m, declared); the next message re-processes the full prompt.`
+- `Prompt cache: unknown (…)` when the provider publishes no retention (DeepSeek, Gemini implicit, xAI and similar), or the cache moved since the last cached request: `/model` switch, fallback, or compaction.
+
+The clock is saved with the session (`sessions.prompt_cache_clock`), so a resumed session shows the same window.
 
 ## Auxiliary Models
 

@@ -435,6 +435,14 @@ gateway:
       provider_usage_plus_estimate: "uso do fornecedor + estimativa das novas mensagens"
     source_line: "Fonte: {source}; as contagens por categoria são estimativas locais."
     hint_all: "Use /context all para ver os custos por skill e por conjunto de ferramentas."
+    cache_warm: "Cache do prompt: ativo até {until} (faltam {remaining}; {ttl}, {confidence})."
+    cache_expired: "Cache do prompt: expirou há {ago} ({ttl}, {confidence}); a próxima mensagem reprocessa o prompt inteiro."
+    cache_unknown_moved: "Cache do prompt: desconhecido (a rota, a sessão ou o contexto mudou desde a última requisição em cache)."
+    cache_unknown_route: "Cache do prompt: desconhecido (este provedor não publica a retenção do cache)."
+    cache_confidence:
+      proven: "comprovado"
+      declared: "declarado"
+      assumed: "presumido"
   status:
     header: "📊 **Estado do Hermes Gateway**"
     matrix_scope_header: "**Âmbito do Matrix:**"

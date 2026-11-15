@@ -435,6 +435,14 @@ gateway:
       provider_usage_plus_estimate: "استخدام المزوّد + تقدير الرسائل الجديدة"
     source_line: "المصدر: {source}؛ أعداد الفئات تقديرات محلية."
     hint_all: "استخدم /context all لتكاليف كل مهارة وكل مجموعة أدوات."
+    cache_warm: "ذاكرة التخزين المؤقت للموجه: نشطة حتى {until} (يتبقى {remaining}؛ {ttl}، {confidence})."
+    cache_expired: "ذاكرة التخزين المؤقت للموجه: انتهت منذ {ago} ({ttl}، {confidence})؛ الرسالة التالية ستعيد معالجة الموجه كاملاً."
+    cache_unknown_moved: "ذاكرة التخزين المؤقت للموجه: غير معروفة (تغيّر المسار أو الجلسة أو السياق منذ آخر طلب مخزّن)."
+    cache_unknown_route: "ذاكرة التخزين المؤقت للموجه: غير معروفة (هذا المزوّد لا ينشر مدة الاحتفاظ)."
+    cache_confidence:
+      proven: "مُثبَت"
+      declared: "مُعلَن"
+      assumed: "مُفترَض"
   status:
     header: "📊 **حالة بوابة Hermes**"
     matrix_scope_header: "**نطاق Matrix:**"

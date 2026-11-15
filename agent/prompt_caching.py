@@ -161,18 +161,66 @@ def auto_cache_ttl_for_source(source: str | None) -> str:
     return "5m" if (source or "").strip().lower() in MACHINE_PACED_SOURCES else "1h"
 
 
-def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "") -> str:
+def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "", base_url: str = "") -> str:
     """Clamp a requested cache TTL to what the destination route supports (``None`` → ``5m``).
 
     Qwen/Alibaba routes drop ``1h`` (→ ``5m``) except on ``MEASURED_1H_PROVIDERS`` minus
     ``NO_1H_TIER_MODELS``; that check runs BEFORE the generic Qwen clamp, which would swallow it.
+    Then the route's declared ceiling applies (:func:`route_ttl_ceiling`): the prompt-cache clock
+    reads the same helper, so what Hermes asks for and what it believes never disagree.
     """
     if ttl != "1h":
         return ttl or "5m"
     provider_lower = (provider or "").lower()
     if provider_lower in MEASURED_1H_PROVIDERS:
         return "5m" if _flat_model(model) in NO_1H_TIER_MODELS else "1h"
-    return "5m" if is_qwen_model(model) or provider_lower in ALIBABA_FAMILY_PROVIDERS else "1h"
+    if is_qwen_model(model) or provider_lower in ALIBABA_FAMILY_PROVIDERS:
+        return "5m"
+    return "5m" if route_ttl_ceiling(provider, base_url) == "5m" else "1h"
+
+
+# Seconds per tier name: Anthropic markers (5m/1h), OpenAI GPT-5.6+ ``prompt_cache_options.ttl`` (30m/12h).
+TTL_SECONDS = {"5m": 300, "30m": 1800, "1h": 3600, "12h": 43200}
+_CEILING_TIERS = ("5m", "1h")
+
+
+def _route_names(provider: str, base_url: str) -> list[str]:
+    """Canonical provider names a route answers to: the configured name, then the provider whose
+    host serves ``base_url`` (a ``custom`` endpoint at the Nous Portal is the Nous route)."""
+    from agent.model_metadata import _infer_provider_from_url
+    from providers import get_provider_profile
+
+    names: list[str] = []
+    for name in ((provider or "").strip().lower(), _infer_provider_from_url(base_url) if base_url else None):
+        profile = get_provider_profile(name) if name else None
+        for candidate in (name, getattr(profile, "name", None)):
+            if candidate and candidate not in names:
+                names.append(candidate)
+    return names
+
+
+def route_ttl_ceiling(provider: str, base_url: str = "") -> str | None:
+    """Longest cache tier the route keeps, or None when it keeps whatever is asked for.
+
+    Data, not code: config ``prompt_caching.route_ttl_ceilings: {<provider>: 5m|1h}`` wins, else the
+    provider profile's ``prompt_cache_max_ttl``. Nous Portal ships ``5m`` because its upstream
+    currently drops 1h entries after ~7 minutes and bills them at the 5m rate; once that is fixed,
+    lifting the ceiling is ``route_ttl_ceilings: {nous: 1h}`` or a one-field profile change.
+    """
+    from hermes_cli.config import load_config_readonly
+    from providers import get_provider_profile
+
+    names = _route_names(provider, base_url)
+    overrides = (load_config_readonly().get("prompt_caching") or {}).get("route_ttl_ceilings") or {}
+    for name in names:
+        if isinstance(overrides, dict) and name in overrides:
+            value = overrides[name]
+            return value if value in _CEILING_TIERS else None
+    for name in names:
+        ceiling = getattr(get_provider_profile(name), "prompt_cache_max_ttl", None)
+        if ceiling in _CEILING_TIERS:
+            return ceiling
+    return None
 
 
 def _apply_system_cache_markers(

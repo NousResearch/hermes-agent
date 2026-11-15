@@ -33576,6 +33576,74 @@
         "title": "ProjectsUpdateParams",
         "type": "object"
       },
+      "PromptCacheWindow": {
+        "additionalProperties": false,
+        "description": "``agent.prompt_cache_clock.cache_window``: when the session's cached prompt prefix expires.\n``confidence`` is ``proven`` | ``declared`` | ``assumed`` | ``unknown``; times are epoch seconds.",
+        "properties": {
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "floor_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Floor At"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          },
+          "confidence": {
+            "title": "Confidence",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Refreshed At"
+          }
+        },
+        "required": [
+          "expires_at",
+          "floor_at",
+          "tier",
+          "confidence",
+          "reason"
+        ],
+        "title": "PromptCacheWindow",
+        "type": "object"
+      },
       "PromptCancelParams": {
         "additionalProperties": false,
         "properties": {
@@ -37878,6 +37946,17 @@
             },
             "title": "Context Files",
             "type": "array"
+          },
+          "prompt_cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromptCacheWindow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     title TEXT,
     api_call_count INTEGER DEFAULT 0,
     -- ... additional gateway/workspace/handoff/compression columns ...
+    prompt_cache_clock TEXT,  -- JSON of the latest prompt-cache event (agent/prompt_cache_clock.py)
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -223,6 +224,12 @@ CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique
     ON sessions(title) WHERE title IS NOT NULL;
 ```
+
+`prompt_cache_clock` is nullable JSON: the route, requested and granted cache tier, confidence and
+send time of the last request that read or wrote the provider's prompt cache. It rides the same
+queued token-count batch as the usage counters (no extra write on the turn loop), and
+`restore_cache_clock` reads it back on resume so `/context` keeps the window across restarts.
+Sessions stored before it existed fall back to the newest assistant row's timestamp (`assumed`).
 
 `user_id` is the principal on the other end of the session: messaging adapters
 store the platform sender id, and `desktop` / dashboard sessions opened through

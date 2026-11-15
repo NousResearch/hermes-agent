@@ -5,6 +5,7 @@ per process). Bodies are rebound onto server.py's globals (method_ctx.bind_modul
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import threading
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -216,23 +217,69 @@ def _tts_stream_stop(user_barge: bool = True) -> None:
 
 # ── Full-duplex agent-turn listener: arms at utterance-submit, spans generation AND playback
 # (per-playback monitors were deaf during generation and mis-calibrated against speaker bleed),
-# disarms when no session runs, no TTS is pending, and no audio flows. _fd_speak_pipelines holds
-# (stop, done) pairs of fallback whole-reply speak paths: the listener cuts their private stop
+# disarms when the owner's turn is done, no TTS is pending, and no audio flows. _fd_speak_pipelines
+# holds (stop, done) pairs of fallback whole-reply speak paths: the listener cuts their private stop
 # events too, and keeps listening while any is still speaking.
+#
+# One physical mic, one OWNER: the voice turn (sid, session record, transport, context) it listens
+# for. A turn start claims the mic; a different owner bumps _fd_gen, the live listener stops at its
+# next block and its exit starts the next one in the new owner's context (one input stream at a
+# time). Capture settings, STT config/credentials, stop phrases, the interrupt target and event
+# delivery all come from the owner a listener was started for, so a take already tripped finishes
+# under the owner it began with. The owner (and its context) is dropped when its listener ends.
 
 _fd_listener_lock = threading.Lock()
 _fd_listener_active = False
+_fd_owner: Optional[dict] = None
+_fd_gen = 0
 _fd_speak_pipelines: set[tuple[threading.Event, threading.Event]] = set()
 
 
+def _fd_owner_from_context() -> dict:
+    """The calling voice turn as a mic owner: its session record (bound on the turn thread), that
+    record's sid, the bound transport, and a copy of the caller's context (profile scope)."""
+    session = _current_runtime_session_record.get()
+    sid = ""
+    if session is not None:
+        with _sessions_lock:  # taken before (never under) _fd_listener_lock
+            sid = next((k for k, v in _sessions.items() if v is session), "")
+    return {"sid": sid, "session": session, "transport": current_transport(),
+            "ctx": contextvars.copy_context()}
+
+
+def _fd_spawn_listener(owner: dict, gen: int) -> None:
+    # health: allow HX012 -- runs in the OWNER's captured context; a hand-off spawns from the old listener
+    threading.Thread(target=owner["ctx"].run, args=(_full_duplex_listener, gen, owner),
+                     daemon=True, name="voice-full-duplex").start()
+
+
 def _arm_full_duplex_listener() -> None:
-    """Arm the process-global full-duplex listener (idempotent — one mic)."""
-    global _fd_listener_active
+    """Arm the process-global full-duplex listener for the calling turn (one mic). A voice turn
+    (a session record bound) takes a live listener another owner holds; a sessionless caller (the
+    ``voice.tts`` RPC) only takes the mic when it is idle."""
+    global _fd_listener_active, _fd_owner, _fd_gen
+    owner = _fd_owner_from_context()
     with _fd_listener_lock:
         if _fd_listener_active:
+            if (owner["session"] is not None and _fd_owner is not None
+                    and _fd_owner["session"] is not owner["session"]):
+                _fd_gen += 1  # the live listener hands the mic over when it next checks
+                _fd_owner = owner
             return
-        _fd_listener_active = True
-    threading.Thread(target=_full_duplex_listener, daemon=True, name="voice-full-duplex").start()
+        _fd_gen += 1
+        _fd_owner, _fd_listener_active, gen = owner, True, _fd_gen
+    _fd_spawn_listener(owner, gen)
+
+
+def _fd_listener_exit(gen: int) -> None:
+    """A listener ended: start the pending owner's listener after a hand-off, else release the mic."""
+    global _fd_listener_active, _fd_owner
+    with _fd_listener_lock:
+        if _fd_gen == gen or _fd_owner is None or not _voice_mode_enabled():
+            _fd_listener_active, _fd_owner = False, None
+            return
+        owner, gen = _fd_owner, _fd_gen
+    _fd_spawn_listener(owner, gen)
 
 
 def _arm_barge_listener_if_enabled() -> None:
@@ -250,21 +297,41 @@ def _fd_tts_pending() -> bool:
     return any(not done.is_set() for done in pending)
 
 
-def _full_duplex_listener() -> None:
-    """Mic live from utterance-submit to turn-complete; a trip transcribes -> ``voice.transcript``."""
-    global _fd_listener_active
+def _fd_scope_missing() -> bool:
+    """Multiplexing with no profile secret scope bound: the take would borrow the launch env."""
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    return is_multiplex_active() and current_secret_scope() is None
+
+
+def _full_duplex_listener(gen: int, owner: dict) -> None:
+    """Mic live from utterance-submit to turn-complete; a trip transcribes -> ``voice.transcript``.
+    Runs in *owner*'s context; stops without a take once a newer owner holds the mic."""
     try:
+        if _fd_scope_missing():
+            logger.warning("full-duplex listener: no profile scope for the owning turn; mic not opened")
+            return
         from tools.voice_mode import (full_duplex_listen, is_audio_output_active,
                                       transcribe_recording)
+        session = owner["session"]
+
+        def _superseded() -> bool:
+            with _fd_listener_lock:
+                return _fd_gen != gen
 
         def _should_stop() -> bool:
+            if _superseded():
+                return True
+            owner_running = bool(session is not None and session.get("running"))
             return not _voice_mode_enabled() or not (
-                _any_session_running() or _fd_tts_pending() or is_audio_output_active())
+                owner_running or _fd_tts_pending() or is_audio_output_active())
         tripped = threading.Event()
 
         def _on_trigger(phase: str) -> None:
+            if _superseded():  # tripped in the block after a hand-off: not this owner's speech
+                logger.debug("full-duplex listener: trip after the mic moved; dropped")
+                return
             tripped.set()
-            _fd_trip(phase)
+            _fd_trip(phase, owner)
         mult, grace_ms = _fd_barge_params(_voice_cfg_dict())
         wav_path = full_duplex_listen(_should_stop, is_playing=is_audio_output_active,
                                       on_trigger=_on_trigger, multiplier=mult or None,
@@ -274,15 +341,14 @@ def _full_duplex_listener() -> None:
         try:
             result = transcribe_recording(wav_path)
             if result.get("success") and (result.get("transcript") or "").strip():
-                _deliver_fd_transcript(result["transcript"].strip())
+                _deliver_fd_transcript(result["transcript"].strip(), owner)
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(wav_path)
     except Exception as e:
         logger.debug("full-duplex listener failed: %s", e)
     finally:
-        with _fd_listener_lock:
-            _fd_listener_active = False
+        _fd_listener_exit(gen)
 
 
 def _fd_barge_params(cfg: dict) -> tuple[float, int]:
@@ -296,10 +362,10 @@ def _fd_barge_params(cfg: dict) -> tuple[float, int]:
     return mult, max(0, num(lambda v: int(float(v) * 1000), "barge_in_grace_seconds", 0.5))
 
 
-def _fd_trip(phase: str) -> None:
+def _fd_trip(phase: str, owner: dict) -> None:
     """Listener tripped: latch the interruption, cut TTS FIRST (so a stale reply can never
-    speak), and during generation also interrupt every running turn (the ``agent.interrupt()``
-    seam ``session.interrupt`` uses)."""
+    speak), and during generation also interrupt the owner's running turn (the
+    ``agent.interrupt()`` seam ``session.interrupt`` uses); other sessions' turns run on."""
     from tools.tts_streaming import mark_speech_interrupted
     from tools.voice_mode import stop_playback
     mark_speech_interrupted()
@@ -314,31 +380,51 @@ def _fd_trip(phase: str) -> None:
         for _stop, _done in _fd_speak_pipelines:
             _stop.set()
     stop_playback()
-    if phase != "playback":
-        try:
-            for s in _running_sessions():
-                agent = s.get("agent")
-                if agent is not None and hasattr(agent, "interrupt"):
-                    with contextlib.suppress(Exception):
-                        agent.interrupt()
-        except Exception as e:
-            logger.debug("voice interjection interrupt failed: %s", e)
-    _voice_emit("voice.interrupted")
+    session = owner["session"]
+    if phase != "playback" and session is not None and session.get("running"):
+        agent = session.get("agent")
+        if agent is not None and hasattr(agent, "interrupt"):
+            with contextlib.suppress(Exception):
+                agent.interrupt()
+    _fd_emit(owner, "voice.interrupted")
 
 
-def _deliver_fd_transcript(text: str) -> None:
-    """Emit the captured interjection; a bare stop phrase also ends the voice chat. The stop
-    check must never break delivery (stubbed voice_mode in tests, partial installs)."""
+def _fd_emit(owner: dict, event: str, payload: dict | None = None) -> None:
+    """Emit toward the mic owner's session and transport; a sessionless owner (the ``voice.tts``
+    RPC with no voice turn running) keeps the push-to-talk target."""
+    if not owner["sid"]:
+        _voice_emit(event, payload)
+        return
+    token = bind_transport(owner["transport"]) if owner["transport"] is not None else None
+    try:
+        _emit(event, owner["sid"], payload)
+    finally:
+        if token is not None:
+            reset_transport(token)
+
+
+def _deliver_fd_transcript(text: str, owner: dict | None = None) -> None:
+    """Emit the captured interjection to its *owner* (default: the push-to-talk session); a bare
+    stop phrase (the owner's ``voice.stop_phrases``: this runs in its context) also ends that
+    session's voice chat. The stop check must never break delivery (stubbed voice_mode in tests,
+    partial installs)."""
     try:
         from tools.voice_mode_transcript import is_voice_stop_phrase
         is_stop = is_voice_stop_phrase(text)
     except Exception:
         is_stop = False
     if is_stop:  # turn already interrupted / TTS cut at trip time; now end the chat
-        with _voice_sid_lock:
-            sid = _voice_event_sid
+        if owner is not None:
+            sid = owner["sid"]
+        else:
+            with _voice_sid_lock:
+                sid = _voice_event_sid
         _end_session_voice_chat(sid, stop_loop=True, stop_tts=False)
-    _voice_emit("voice.transcript", {"stop_phrase": True, "text": text} if is_stop else {"text": text})
+    payload = {"stop_phrase": True, "text": text} if is_stop else {"text": text}
+    if owner is None:
+        _voice_emit("voice.transcript", payload)
+    else:
+        _fd_emit(owner, "voice.transcript", payload)
 
 
 def _speak_text_with_barge(text: str) -> None:

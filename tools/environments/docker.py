@@ -1100,7 +1100,10 @@ class DockerEnvironment(BaseEnvironment):
         values are re-injected on every command because one container can be shared by
         multiple routed profiles in a gateway process."""
         assert self._container_id, "Container not started"
-        cmd = [self._docker_exe, "exec"]
+        # Docker exec inherits the container's configured -w. If that directory
+        # was removed, OCI refuses to launch bash before the session wrapper can
+        # recover its logical cwd. Start at /; the wrapper cd's to the right place.
+        cmd = [self._docker_exe, "exec", "-w", "/"]
         if stdin_data is not None:
             cmd.append("-i")
 

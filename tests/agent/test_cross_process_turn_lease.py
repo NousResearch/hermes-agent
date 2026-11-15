@@ -816,3 +816,52 @@ def test_flush_messages_to_session_db_fences_stale_holder_on_live_db(tmp_path):
     second.release_session_turn_lease("shared", next_holder)
     first.close()
     second.close()
+
+
+@pytest.mark.parametrize("row_state", ["missing", "taken_over"])
+def test_exhausted_turn_stops_only_after_real_row_loss(tmp_path, row_state):
+    """The exhausted-authority recheck stops for a missing row or a real successor lease."""
+    from agent.turn_facade_lease import DurableTurnLease
+    from tests.waiting import wait_until
+
+    path = tmp_path / "state.db"
+    owner_db = SessionDB(path)
+    owner_db.create_session("shared", source="test")
+    assert owner_db.try_acquire_session_turn_lease(
+        "shared", "owner", ttl_seconds=0.1
+    )
+    expires_at = owner_db.session_turn_lease_expires_at("shared", "owner")
+    assert expires_at is not None
+
+    interrupted = []
+    agent = SimpleNamespace(
+        session_id="shared",
+        interrupt=lambda message, **kwargs: interrupted.append(message),
+    )
+    lease = DurableTurnLease(agent, owner_db, "shared", "owner", expires_at=expires_at)
+    lease.turn_active = True
+    wait_until(lambda: time.time() > expires_at, timeout=3, what="lease to expire")
+
+    successor_db = None
+    if row_state == "missing":
+        owner_db.release_session_turn_lease("shared", "owner")
+    else:
+        successor_db = SessionDB(path)
+        assert successor_db.try_acquire_session_turn_lease(
+            "shared", "successor", ttl_seconds=30
+        )
+        assert owner_db.session_turn_lease_expires_at("shared", "successor") is not None
+
+    assert lease.refresh_tick() is False
+    assert interrupted == [
+        "Session turn lease could not be refreshed; stopping to protect the transcript."
+    ]
+    assert owner_db.session_turn_lease_expires_at("shared", "owner") is None
+    if successor_db is not None:
+        assert owner_db.session_turn_lease_expires_at("shared", "successor") is not None
+    lease.stop_refresher()
+    assert lease.refresh_tick() is False
+    assert len(interrupted) == 1, "a late tick after deactivation must not interrupt again"
+    owner_db.close()
+    if successor_db is not None:
+        successor_db.close()

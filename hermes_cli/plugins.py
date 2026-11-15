@@ -468,9 +468,14 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             except BaseException as exc:
                 logger.exception("Plugin discovery snapshot failed; notifying listeners before re-raising")
                 snapshot_error = exc
-            from hermes_cli.plugins_activation import activation_summaries
-            summaries = ([s for s in activation_summaries(self) if s["key"] not in loaded_before]
-                         if self._plugin_loaded_listeners else [])
+            try:
+                from hermes_cli.plugins_activation import activation_summaries
+                summaries = ([s for s in activation_summaries(self) if s["key"] not in loaded_before]
+                             if self._plugin_loaded_listeners else [])
+            except BaseException:
+                if snapshot_error is not None:
+                    raise snapshot_error
+                raise
         # Outside the lock: a listener (the gateway's re-wire) may read the registry from another thread.
         try:
             self._notify_plugin_loaded(summaries)

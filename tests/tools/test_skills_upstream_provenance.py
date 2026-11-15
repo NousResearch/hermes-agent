@@ -65,6 +65,8 @@ def test_unprompted_install_still_discloses_upstream_repo(monkeypatch, tmp_path,
                               invalidate_cache=False) is True
     text = out.getvalue()
     assert "https://github.com/example-owner/brag" in text and "not maintained by Nous Research" in text
+    # Last, after the file list: the dashboard's action log shows only the tail of a long install.
+    assert text.index("Third-party content") > text.index("Files:")
 
 
 def test_catalog_lists_upstream_stub_with_its_upstream_repo(monkeypatch, tmp_path):

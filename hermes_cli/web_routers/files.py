@@ -1157,7 +1157,7 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
         listing["entries"] = [e for e in listing["entries"] if not _is_sensitive_path(PurePosixPath(e["path"]))]
         return listing
     target = _agent_fs_path(path, profile_home=_fs_profile_home(profile))
-    _hosted_fs_read_guard(target, request)
+    await asyncio.to_thread(_hosted_fs_read_guard, target, request)
     try:
         # The scan stats every entry (a network share answers in seconds): off the event loop.
         return {"entries": await asyncio.to_thread(_fs_list_entries, target)}
@@ -1201,7 +1201,7 @@ async def fs_read_text(
     target = await _fs_download_path(path, profile, session_id, session=session)
     # The same staged-file exception read-data-url makes under a locked files root.
     if not await asyncio.to_thread(_is_host_file, str(target), profile):
-        _hosted_fs_read_guard(target, request)
+        await asyncio.to_thread(_hosted_fs_read_guard, target, request)
     # Off the loop: the credential-store check resolves every guard home's stores.
     target, st = await asyncio.to_thread(_fs_regular_file, target, profile_home)
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
@@ -1282,7 +1282,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     if denied:
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     if not await asyncio.to_thread(_is_host_file, str(target), profile):
-        _hosted_fs_read_guard(target)
+        await asyncio.to_thread(_hosted_fs_read_guard, target)
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 
@@ -1379,7 +1379,7 @@ async def fs_read_data_url(
     # A browser paste or pick reads back to be sent wherever a locked files root sits: the server
     # wrote it into the profile's own image cache or staged uploads, outside the managed tree.
     if not await asyncio.to_thread(_is_host_file, str(target), profile):
-        _hosted_fs_read_guard(target, request)
+        await asyncio.to_thread(_hosted_fs_read_guard, target, request)
     target, st = await asyncio.to_thread(_fs_regular_file, target, _fs_profile_home(profile))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
@@ -1546,7 +1546,7 @@ async def fs_download(
         target, size = await asyncio.to_thread(_remote_download_target, backend, path)
         return _remote_download_response(request, backend, target, size)
     target = await _fs_download_path(path, profile, session_id, session=session)
-    _hosted_fs_read_guard(target, request)
+    await asyncio.to_thread(_hosted_fs_read_guard, target, request)
     target, _st = await asyncio.to_thread(_fs_regular_file, target, _fs_profile_home(profile))
     await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(

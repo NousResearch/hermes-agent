@@ -90,10 +90,11 @@ def test_case_variant_of_symlinked_store_is_refused(home_client):
 
 
 @pytest.mark.parametrize("route", [
-    "/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download",
+    "/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download", "/api/fs/list",
     "/api/files/download", "/api/files/stream", "/api/files/upload-stream",
 ])
-def test_file_credential_check_runs_off_the_event_loop(home_client, monkeypatch, route):
+@pytest.mark.parametrize("locked_root", [False, True], ids=["home", "locked-root"])
+def test_file_credential_check_runs_off_the_event_loop(home_client, monkeypatch, route, locked_root):
     """Resolving every guard home's stores may stat a slow mount; it must not park the loop."""
     import threading
     import time
@@ -102,6 +103,8 @@ def test_file_credential_check_runs_off_the_event_loop(home_client, monkeypatch,
     from hermes_cli.web_routers import files
 
     client, home = home_client
+    if locked_root:  # _hosted_fs_read_guard runs the same store check on a locked files root
+        monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(home))
     (home / "clip.mp3").write_bytes(b"ID3")  # /api/files/stream serves media only
     entered, release = threading.Event(), threading.Event()
     real_stores = files.resolved_home_credential_stores
@@ -117,7 +120,7 @@ def test_file_credential_check_runs_off_the_event_loop(home_client, monkeypatch,
         if route == "/api/files/upload-stream":
             blocked = pool.submit(loop_client.post, route, data={"path": str(home / "up.txt")}, files={"file": ("up.txt", b"hi")})
         else:
-            blocked = pool.submit(loop_client.get, route, params={"path": str(home / "clip.mp3")})
+            blocked = pool.submit(loop_client.get, route, params={"path": str(home if route == "/api/fs/list" else home / "clip.mp3")})
         try:
             assert entered.wait(timeout=5)
             start = time.monotonic()

@@ -1,0 +1,22 @@
+name: chime-scheduler
+title: Chime Scheduler
+repo: https://github.com/wednesday-solutions/chime-scheduler
+sha: b99567ec8a77afbef1f550bd41b9763a77cde058
+subdir: hermes
+version: "1.0.0"
+description: "Schedule and publish LinkedIn posts on the user's own profile through Chime Scheduler's hosted MCP server (Streamable HTTP at https://schedule.getchime.co/mcp, OAuth sign-in with LinkedIn through Hermes' own MCP OAuth, no keys in config). The user says when a post should go out in their own words and the exact local time is echoed back; posts can be drafts, scheduled, published now, edited, rescheduled or cancelled, with a first comment and up to 9 images or one video through a private upload link. Free. Bundles the chime-scheduler workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration and Markdown only. Disclosure: hosted-only connector with no local code; every tool call goes to schedule.getchime.co (Wednesday Solutions, Inc.) with the post text, times, first comments and uploaded files, and acts on the user's own Chime Scheduler account. Sign-in opens a browser to Sign in with LinkedIn; Hermes stores and refreshes the token and the package never reads it. Posts go only to the user's own LinkedIn profile and only when asked; the server never reads the LinkedIn feed, messages or connections. get_status, list_posts and list_uploads are annotated read-only; schedule_post, post_now, edit_post, cancel_post and get_upload_link are not. The package marks the server untrusted, so Hermes asks before each of those and refuses them in unattended runs; the sign-in step adds a same-name config.yaml entry, which replaces the package entry, so the README's entry also sets trust: untrusted. Chime Scheduler sends email only about the user's own posts and uses product analytics that never record post text or chat. Data deletion via support@getchime.co; privacy https://schedule.getchime.co/privacy, terms https://schedule.getchime.co/terms. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Wednesday Solutions
+tier: community
+category: tools
+docs_url: https://github.com/wednesday-solutions/chime-scheduler/tree/main/hermes
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/wednesday-solutions/chime-scheduler/b99567ec8a77afbef1f550bd41b9763a77cde058/hermes/assets/catalog.png
+readme: true
+platforms: []
+known_issues:
+  - "Sign in once after installing: add the chime-scheduler entry from the plugin README (url, auth: oauth, trust: untrusted) to config.yaml, then run hermes mcp login chime-scheduler and Sign in with LinkedIn in the browser."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

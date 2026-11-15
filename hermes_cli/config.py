@@ -1642,6 +1642,10 @@ def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
         except ValueError:
             try:
                 n = int(float(s))
+            except OverflowError:
+                # float(s) parsed to ±inf ("1e999", "+infinity", …) — same
+                # no-limit meaning as the "inf" spelling checked above.
+                return TURN_LIMIT_UNLIMITED
             except ValueError:
                 logger.debug("resolve_turn_limit: unparseable value %r → default %d", raw, default)
                 return default

@@ -52,6 +52,19 @@ class TestNonFiniteFloats:
         # Behavior guard: the string spelling never crashed.
         assert resolve_turn_limit("inf") == TURN_LIMIT_UNLIMITED
 
+    @pytest.mark.parametrize("spelling", ["+inf", "+infinity", "1e999", "-1e999", "-inf"])
+    def test_overflow_string_spellings_are_unlimited(self, spelling):
+        # These fall past _UNLIMITED_SPELLINGS into int(float(s)) with
+        # float(s) = ±inf, so the inner conversion raised OverflowError
+        # (not ValueError) instead of resolving like "inf" above.
+        assert resolve_turn_limit(spelling) == TURN_LIMIT_UNLIMITED
+
+    def test_nan_string_returns_default(self):
+        # int(float("nan")) raises ValueError (not OverflowError) — keeps the
+        # existing unparseable → default path, mirroring the NaN float case.
+        assert resolve_turn_limit("nan", default=500) == 500
+        assert resolve_turn_limit("nan") == TURN_LIMIT_UNLIMITED
+
 
 
 class TestUnlimitedSpellings:

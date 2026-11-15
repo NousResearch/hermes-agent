@@ -44,6 +44,7 @@ In-session slash commands:
 | `/rollback <N> --all` | Full restore — overwrites your hand-edits too |
 | `/rollback diff <N>` | Preview diff between checkpoint N and current state |
 | `/rollback <N> <file>` | Restore a single file from checkpoint N |
+| `/diff turn [N]` | Diff one turn's own changes (N counts back from the current turn) |
 
 CLI for inspecting and managing the store outside a session:
 
@@ -185,6 +186,20 @@ Before committing to a restore, preview what has changed since a checkpoint:
 ```
 
 This shows a git diff stat summary followed by the actual diff.
+
+## Diffing a Single Turn with `/diff turn`
+
+`/diff session` is cumulative: everything Hermes changed here since the earliest retained checkpoint. When a directory has been edited across many turns, that answers "what has Hermes done", not "what did *this* turn do":
+
+```
+/diff turn        # the current turn's own changes so far
+/diff turn 1      # the turn before that; N counts back from the current turn
+/diff turn --stat # summary only
+```
+
+Because a checkpoint is the snapshot taken *before* the turn's first mutating tool call, consecutive checkpoints bound exactly one turn's writes. `turn 0` diffs the newest checkpoint against the live working tree; `turn N` diffs one checkpoint against the next one in. Files brought in by a `git pull` you ran through the terminal tool appear in the turn that ran it.
+
+Like `/diff session`, this needs `checkpoints.enabled: true`, and it is refused for container backends where file paths belong to the sandbox.
 
 ## Restoring with `/rollback`
 

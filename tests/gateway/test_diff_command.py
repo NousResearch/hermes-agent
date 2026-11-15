@@ -101,3 +101,44 @@ async def test_diff_session_reports_cumulative_changes(tmp_path, monkeypatch):
 
     assert "-print('hello')" in result
     assert "+print('changed')" in result
+
+@pytest.mark.asyncio
+async def test_diff_turn_reports_only_this_turns_changes(tmp_path, monkeypatch):
+    _enable_checkpoints(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('hello')\n", encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_CWD", str(project))
+
+    mgr = cpm.CheckpointManager(enabled=True, max_snapshots=50)
+    assert mgr.ensure_checkpoint(str(project), "turn-1") is True
+    (project / "main.py").write_text("print('changed')\n", encoding="utf-8")
+    mgr.new_turn()
+    assert mgr.ensure_checkpoint(str(project), "turn-2") is True
+    (project / "later.py").write_text("print('later')\n", encoding="utf-8")
+
+    # The current turn (index 0) shows only its own file, not the previous turn's edit.
+    result = await _runner()._handle_diff_command(_event("/diff turn"))
+    assert "+print('later')" in result
+    assert "print('changed')" not in result
+
+    # A completed turn is sliced between consecutive checkpoints.
+    result = await _runner()._handle_diff_command(_event("/diff turn 1"))
+    assert "-print('hello')" in result
+    assert "+print('changed')" in result
+    assert "later.py" not in result
+
+
+@pytest.mark.asyncio
+async def test_diff_turn_rejects_index_past_retained_history(tmp_path, monkeypatch):
+    _enable_checkpoints(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('hello')\n", encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_CWD", str(project))
+    assert cpm.CheckpointManager(enabled=True, max_snapshots=50).ensure_checkpoint(
+        str(project), "turn-1") is True
+
+    result = await _runner()._handle_diff_command(_event("/diff turn 7"))
+
+    assert "no retained checkpoint" in result

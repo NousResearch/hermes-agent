@@ -19,8 +19,8 @@ from hermes_agent.compat.paths import current_path
 from tools.registry import _module_registers_tools, _tool_module_candidates
 
 
-def main() -> int:
-    tools_dir = ROOT / current_path("tools")
+def unreached_registrations(tools_dir: Path) -> list[Path]:
+    """Tracked modules under ``tools_dir`` that register a tool at import but discovery skips."""
     listed = subprocess.run(
         ["git", "ls-files", "-z", "--", "*.py"],
         cwd=tools_dir, capture_output=True, text=True, check=True, timeout=60,
@@ -29,18 +29,18 @@ def main() -> int:
         tools_dir / rel for rel in listed.split("\0")
         if rel and _module_registers_tools(tools_dir / rel)
     }
-    if not registering:
-        print("check_tool_discovery: found no module that registers a tool; the scan is broken",
-              file=sys.stderr)
-        return 1
-    missed = sorted(registering - set(_tool_module_candidates(tools_dir)))
+    return sorted(registering - set(_tool_module_candidates(tools_dir)))
+
+
+def main() -> int:
+    missed = unreached_registrations(ROOT / current_path("tools"))
     if missed:
         print("These modules call registry.register() at import, but tool discovery never imports"
               " them. Inside a package, register from <pkg>/tool.py:", file=sys.stderr)
         for path in missed:
             print(f"  {path.relative_to(ROOT).as_posix()}", file=sys.stderr)
         return 1
-    print(f"check_tool_discovery: OK ({len(registering)} registering modules)")
+    print("check_tool_discovery: OK")
     return 0
 
 

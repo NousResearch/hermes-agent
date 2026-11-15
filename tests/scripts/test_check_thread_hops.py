@@ -1,5 +1,7 @@
 """Behavior contracts for the syntactic thread-handoff ratchet."""
 import json
+import os
+import shutil
 import subprocess
 import pytest
 
@@ -145,6 +147,23 @@ def test_revision_sources_use_one_batch_process(tmp_path, monkeypatch):
     assert len(guard.scan(root=tmp_path, tree=head)) == 4
     assert sum('cat-file' in command for command in calls) == 1
     assert not any('show' in command for command in calls)
+
+
+@pytest.mark.platforms('posix')
+def test_revision_sources_work_without_cat_file_z(tmp_path, monkeypatch):
+    """Git before 2.38 (Ubuntu 22.04 ships 2.34) rejects `cat-file --batch -z` with exit 129."""
+    shim = tmp_path / 'bin' / 'git'
+    shim.parent.mkdir()
+    shim.write_text(f'#!/bin/sh\n[ "$1" = cat-file ] && for a; do [ "$a" = -z ] && exit 129; done\n'
+                    f'exec {shutil.which("git")} "$@"\n', encoding='utf-8')
+    shim.chmod(0o755)
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    git(repo, 'init', '-q')
+    put(repo, 'tools/a.py', 'x.submit(f)\n')
+    head = commit(repo, 'initial')
+    monkeypatch.setenv('PATH', f'{shim.parent}{os.pathsep}{os.environ["PATH"]}')
+    assert len(guard.scan(root=repo, tree=head)) == 1
 
 
 def test_shared_comment_predicate_and_detached_legacy_parity(monkeypatch):

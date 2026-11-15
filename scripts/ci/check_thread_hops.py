@@ -137,17 +137,21 @@ def sites(path, text):
 
 
 def source_texts(root, tree, paths):
-    """Read one exact tree with one Git process and a disk-backed bounded spool."""
+    """Read one exact tree with one ls-tree, one cat-file and a disk-backed bounded spool."""
     if tree is None:
         for rel in paths:
             yield rel, (root / rel).read_text(encoding='utf-8-sig')
         return
     if not paths:
         return
-    requests = b''.join(f'{tree}:{rel}'.encode() + b'\0' for rel in paths)
-    # cat-file -z NUL-delimits input only; blob output is size-framed, not line-delimited.
+    # Ask for blobs by object id: path requests need `cat-file -z` (Git 2.38+) to carry any file name.
+    listing = gitio.git(root, 'ls-tree', '-r', '-z', '--full-tree', tree).split('\0')
+    oids = {rel: meta.split()[2] for meta, _, rel in (entry.partition('\t') for entry in listing if entry)}
+    if missing := [rel for rel in paths if rel not in oids]:
+        raise ValueError(f'cannot read {missing[0]} from judged tree')
+    requests = ''.join(oids[rel] + '\n' for rel in paths).encode()
     with tempfile.TemporaryFile() as spool:
-        subprocess.run(['git', 'cat-file', '--batch', '-z'], cwd=root, input=requests,
+        subprocess.run(['git', 'cat-file', '--batch'], cwd=root, input=requests,
                        stdout=spool, stderr=subprocess.PIPE, timeout=60, check=True)
         spool.seek(0)
         for rel in paths:

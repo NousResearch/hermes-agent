@@ -115,25 +115,44 @@ def test_any_backend_other_than_local_keeps_the_result_whole(home, monkeypatch, 
     assert not (home / "cache" / "pruned").exists() or not any((home / "cache" / "pruned").iterdir())
 
 
-def test_a_resumed_history_without_timestamps_reads_the_store_clock(home):
-    """Gateway/TUI replays drop assistant timestamps: the live run's resumed turn never read the cache as
-    cold until the clock fell back to the store's newest assistant row."""
+def test_a_resumed_session_reads_the_stored_cache_clock(home):
+    """A resumed agent (gateway/TUI replays carry no assistant timestamps) reads the shared clock the store
+    saved: cold only past its estimated end; a committed prune bumps the context generation, so the next
+    reading is unknown and the prune stands down until a fresh response re-anchors the clock."""
+    import time
     from types import SimpleNamespace
 
-    from agent.prompt_caching import provider_cache_expired
+    from agent.prompt_cache_clock import CacheEvent, _route_key, event_to_json
+    from agent.turn_proactive_prune import prompt_cache_is_cold
     from hermes_state import SessionDB
 
+    route = ("openrouter", "https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4.6")
     db = SessionDB(db_path=home / "state.db")
+
+    def resumed():
+        return SimpleNamespace(provider=route[0], base_url=route[1], model=route[2], api_mode="chat_completions",
+                               session_id="s1", _session_db=db, context_compressor=SimpleNamespace(compression_count=0))
+
+    def save(estimated_until):
+        key = _route_key(*route)
+        event = CacheEvent(route=key, destination=key, route_class="openrouter_claude", requested_ttl="5m",
+                           sent_at=0.0, read_tokens=0, write_tokens=100, tier="5m", confidence="declared",
+                           reason="test", coverage={"5m": estimated_until}, guaranteed_until=estimated_until,
+                           estimated_until=estimated_until, session_id="s1",
+                           generation=db.prompt_cache_generation("s1"))
+        db.queue_token_counts("s1", input_tokens=1, cache_write_tokens=100, api_call_count=1,
+                              prompt_cache_clock=event_to_json(event))
+        assert db.flush_token_counts()
+
     try:
         db.create_session("s1", "cli")
         db.append_message("s1", role="user", content="q")
         db.append_message("s1", role="assistant", content="a")
-        saved = db.latest_assistant_timestamp("s1")
-        replay = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]  # no timestamps
-        agent = SimpleNamespace(_use_prompt_caching=True, _cache_disabled=False, _cache_ttl="5m", model="m",
-                                provider="p", _last_api_response_at=None, _session_db=db, session_id="s1")
-
-        assert provider_cache_expired(agent, replay, now=saved + 331) is True
-        assert provider_cache_expired(agent, replay, now=saved + 60) is False
+        save(time.time() + 300)
+        assert prompt_cache_is_cold(resumed()) is False
+        save(time.time() - 1)
+        assert prompt_cache_is_cold(resumed()) is True
+        db.archive_and_compact("s1", [{"role": "user", "content": "q"}, {"role": "assistant", "content": "[pruned]"}])
+        assert prompt_cache_is_cold(resumed()) is False  # the rewrite moved the generation: unknown, not cold
     finally:
         db.close()

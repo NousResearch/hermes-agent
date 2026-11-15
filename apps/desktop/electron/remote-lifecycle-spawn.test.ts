@@ -401,3 +401,97 @@ time.sleep(30)`,
   },
   20_000
 )
+
+// The reservation must be decided by an atomic create, never by the exit status
+// of `mkdir`. Ubuntu 26.04 ships uutils coreutils 0.10.0, whose `mkdir` can
+// report success twice for the same path under concurrency; with mkdir as the
+// mutex the loser never took the "already reserved" path, two backends spawned
+// for one ownership id, and a reaper could delete a reservation whose owner
+// record was not written yet. A `mkdir` that claims a create it lost must not
+// be able to make two holders exist.
+test.skipIf(process.platform === 'win32')(
+  'the ownership reservation admits one holder when a mkdir reports a create it lost',
+  async (): Promise<void> => {
+    const root: string = await mkdtemp(path.join(os.tmpdir(), 'hermes-reservation-race-'))
+
+    try {
+      const home: string = path.join(root, 'home')
+      const argvShim: string = path.join(root, 'argv-shim')
+      const argvFile: string = path.join(root, 'argv.bin')
+      const round: string = path.join(root, 'round')
+      const raceShim: string = path.join(root, 'race-shim')
+      const race: string = path.join(root, 'race.sh')
+
+      await mkdir(home)
+      await mkdir(argvShim)
+      await mkdir(raceShim)
+
+      // Capture the argv the remote shell hands to python3 and take the payload
+      // from it, so the race below runs the command the app really composes.
+      await writeFile(path.join(argvShim, 'python3'), `#!/bin/sh\nprintf '%s\\0' "$@" > '${argvFile}'\n`, {
+        mode: 0o755
+      })
+      await writeFile(
+        path.join(raceShim, 'mkdir'),
+        '#!/bin/sh\n' +
+          // `-p` is idempotent container creation, not an ownership claim; every
+          // bare `mkdir <path>` reports success whether or not it created it.
+          'for a in "$@"; do case "$a" in -p|--parents) command -p mkdir "$@" ;; esac; done\n' +
+          'command -p mkdir "$@" 2>/dev/null\n' +
+          'exit 0\n',
+        { mode: 0o755 }
+      )
+
+      const command: string = buildSpawnCommand('/x/hermes', 'work', {
+        hermesHome: '~/.hermes',
+        lockMetadata: { ownershipId, spawnNonce },
+        logPath: spawnLogPath(ownershipId, spawnNonce),
+        ownershipId,
+        reservationNonce: spawnNonce,
+        spawnNonce,
+        tokenFilePath: spawnTokenPath(ownershipId, spawnNonce)
+      })
+
+      await exec(command, {
+        env: { ...process.env, HOME: home, PATH: `${argvShim}:${process.env.PATH}` },
+        shell: 'sh'
+      })
+
+      const payload: string = (await readFile(argvFile, 'utf8')).split('\0')[3]
+      const reserve: number = payload.indexOf('i=0;')
+      const spawned: number = payload.indexOf('mkdir -p "$(dirname', reserve)
+
+      assert.ok(reserve > 0 && spawned > reserve, 'the reservation block moved; teach this test its new shape')
+
+      // Racer protocol: whoever holds the reservation sleeps; a second holder
+      // inside that window is the double-win the mkdir mutex allowed, and the
+      // one the reaper's reservation delete raced against.
+      await writeFile(
+        race,
+        `${payload.slice(0, spawned)}` +
+          `if [ -e "$MARK_DIR/held" ]; then : > "$MARK_DIR/double"; fi; ` +
+          `: > "$MARK_DIR/held"; sleep 0.3; rm -f "$MARK_DIR/held"; `
+      )
+
+      const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, PATH: `${raceShim}:${process.env.PATH}` }
+
+      for (let index = 0; index < 8; index++) {
+        await rm(round, { force: true, recursive: true })
+        await mkdir(round)
+
+        await Promise.all(
+          [1, 2].map((): Promise<{ stdout: string }> => exec(race, { env: { ...env, MARK_DIR: round }, shell: 'sh' }))
+        )
+
+        await assert.rejects(
+          readFile(path.join(round, 'double')),
+          { code: 'ENOENT' },
+          `round ${index + 1}: two spawns held the ownership reservation at once`
+        )
+      }
+    } finally {
+      await rm(root, { force: true, recursive: true })
+    }
+  },
+  60_000
+)

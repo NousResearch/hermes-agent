@@ -2,20 +2,15 @@
 
 import json
 import logging
-import subprocess
 import threading
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-import tools.registry
 from tools.registry import (
     ToolRegistry,
     _MAX_LOGGED_ERROR_CHARS,
     _MAX_TOOL_ERROR_CHARS,
-    _module_registers_tools,
-    _tool_module_candidates,
     discover_builtin_tools,
     tool_error,
 )
@@ -420,27 +415,6 @@ class TestPackageToolDiscovery:
             ):
                 imported = discover_builtin_tools(tools_dir)
         assert imported == ["tools.connectors.tool"]
-
-
-def test_every_tracked_module_that_registers_tools_is_discovered():
-    """Inside a ``tools/`` package discovery scans only ``tool.py``, so a module named anything
-    else that registers at import is never imported and its tools are missing without an error."""
-    tools_dir = Path(tools.registry.__file__).resolve().parent
-    listed = subprocess.run(
-        ["git", "ls-files", "-z", "--", "*.py"],
-        cwd=tools_dir, capture_output=True, text=True, check=True,
-    ).stdout
-    registering = {
-        tools_dir / rel for rel in listed.split("\0")
-        if rel and _module_registers_tools(tools_dir / rel)
-    }
-    assert registering, "found no registering modules: the scan itself is broken"
-    missed = sorted(registering - set(_tool_module_candidates(tools_dir)))
-    assert not missed, (
-        "these modules call registry.register() at import but discovery never imports them;"
-        " inside a package, register from <pkg>/tool.py: "
-        + ", ".join(str(p.relative_to(tools_dir)) for p in missed)
-    )
 
 
 

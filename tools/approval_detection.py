@@ -22,6 +22,8 @@ from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_res
 from tools.approval_env_split import _split_env_string
 from tools.approval_shell_tokens import _shell_tokens_with_spans
 from tools.approval_windows_hardline import whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns
+from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_RISKY_DESCRIPTION, classify_osascript
+from tools.approval_pipe_launchers import _PIPE_LAUNCHER_VALUE_FLAGS, _pipe_launcher_re
 
 logger = logging.getLogger("tools.approval")
 
@@ -231,36 +233,6 @@ _SHELL_NAMES_RE = "|".join(_SHELL_NAMES)
 # as the user, not the shell.
 _PIPE_SHELL_NAMES_RE = "|".join((*_SHELL_NAMES, "fish", "csh", "tcsh", "ash"))
 _PIPE_PATH_PREFIX_RE = r"(?>(?:[a-zA-Z]:)?(?:[.\w~-]*+[/\\])*+)"
-# Launchers that run their trailing words as a command, with the short/long options that take a
-# SEPARATE value word. One shared table made a bare flag (`time -p`, `exec -a x`) swallow the shell
-# name as its value; per-launcher rows let `-p` be bare for time/command and valued for sudo.
-_PIPE_LAUNCHER_VALUE_FLAGS = {
-    "sudo": ("ugUCDhpRrtT", ("user", "group", "other-user", "close-from", "chdir", "host", "prompt",
-                             "role", "type", "command-timeout", "chroot")),
-    "doas": ("uC", ()),
-    # `-S STRING` is the command itself (split into words), never a swallowed value.
-    "env": ("uCa", ("unset", "chdir", "argv0")),
-    "exec": ("a", ()),
-    "command": ("", ()),
-    "nohup": ("", ()),
-    "nice": ("n", ("adjustment",)),
-    "time": ("fo", ("format", "output")),
-    "timeout": ("sk", ("signal", "kill-after")),
-    "stdbuf": ("ioe", ("input", "output", "error")),
-    "busybox": ("", ()),
-    "setsid": ("", ()),
-    "ionice": ("cnpPu", ("class", "classdata", "pid", "pgid", "uid")),
-}
-
-
-def _pipe_launcher_re(name: str, short: str, long_opts: tuple) -> str:
-    valued = [rf"(?-i:-[^\W{short}\d-]*+[{short}])\s++[^\s|;&<>]++"] if short else []
-    valued += [rf"--(?:{'|'.join(long_opts)})\s++[^\s|;&<>]++"] if long_opts else []
-    duration = r"(?:infinity|\d++(?:\.\d++)?(?:e\d++)?|\.\d++)[smhd]?(?=\s)"
-    args = "|".join([*valued, r"-[^\s|;&<>]++", r"\w++=[^\s|;&<>]*+", duration])
-    return rf"{name}(?:\s++(?>{args}))*+"
-
-
 _PIPE_WRAPPERS_RE = (
     rf"(?>{_PIPE_PATH_PREFIX_RE}(?:"
     + "|".join(_pipe_launcher_re(n, *f) for n, f in _PIPE_LAUNCHER_VALUE_FLAGS.items())
@@ -923,6 +895,12 @@ _CONTENT_RULE_DESCRIPTIONS = frozenset({
     "pipe a credential file into a curl/wget upload (possible exfiltration)",
     "invisible or bidirectional Unicode control character (possible obfuscation)",
 })
+
+# Descriptions whose blast radius is the OPERATOR's own work rather than anything the session
+# owns, so an auxiliary-LLM APPROVE is not consent for them: smart mode asks the human instead of
+# consulting the guardian, and the answer covers that one command (no session/always grant).
+# Keep this list to actions that destroy state the agent did not create and cannot recreate.
+SMART_MANUAL_ONLY_DESCRIPTIONS = frozenset({OSASCRIPT_RISKY_DESCRIPTION, OSASCRIPT_OPAQUE_DESCRIPTION})
 
 # Preserve approvals stored under the removed interpreter regex rules.
 _REMOVED_PATTERN_KEY_ALIASES = {
@@ -1628,9 +1606,14 @@ def _iter_shell_command_word_spans(command: str):
 
 
 def _shell_command_segment(command: str, start: int) -> str:
-    """Bound a candidate to its command, preserving quoted argument bytes."""
+    """Bound a candidate to its command, preserving quoted argument bytes. The ``&``/``|`` of a ``2>&1``,
+    ``<&3``, ``>|`` or ``&>`` redirection is part of the command, not a separator."""
     end = len(command)
-    for kind, i, _, quote in _scan_shell(command, start, subst="uq", brace=True, comments=True):
+    redirect_end = -1  # end of an unquoted, unescaped `<`/`>` (a quoted or escaped one is a literal)
+    for kind, i, j, quote in _scan_shell(command, start, subst="uq", brace=True, comments=True):
+        if kind == "char" and quote is None and ((command[i] == "&" and (redirect_end == i or command.startswith(">", j))) or (command[i] == "|" and redirect_end == i and command[i - 1] == ">")):
+            continue
+        redirect_end = j if kind == "char" and quote is None and command[i] in "<>" else -1
         if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n)`"):
             end = i
             break
@@ -1954,6 +1937,10 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
         return
     if _is_verification_artifact_cleanup(command):
         return
+    if only is None:
+        # First, on the raw command: the osascript keys are manual-only, so they must lead the findings
+        # (`do shell script "rm ..."` would otherwise surface as a guardian-reviewable rm rule).
+        yield from sorted(classify_osascript(unicodedata.normalize("NFKC", command.replace("\x00", ""))))
     patterns = DANGEROUS_PATTERNS_COMPILED if only is None else [
         (pattern_re, description) for pattern_re, description in DANGEROUS_PATTERNS_COMPILED if description in only
     ]

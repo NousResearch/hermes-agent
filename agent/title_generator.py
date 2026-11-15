@@ -908,11 +908,13 @@ def maybe_auto_title(
     title_preview: str | None = None,
     *,
     persistence=None,
+    model_upgrade: bool = True,
 ) -> Optional[threading.Thread]:
     """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model.
 
     Returns the upgrade thread: already started, or — when ``title_upgrade_must_wait_for_turn`` — left
-    UNSTARTED for the caller to hand to ``start_title_upgrade`` once the turn's model request settled."""
+    UNSTARTED for the caller to hand to ``start_title_upgrade`` once the turn's model request settled.
+    ``model_upgrade=False`` keeps only the instant title (no model call, returns None)."""
     if not session_db or not session_id or not user_message:
         return None
     # History may be pre- or post-message. Past the opening turn, skip once the session holds an
@@ -943,6 +945,8 @@ def maybe_auto_title(
         return None
     apply_instant_title(session_db, session_id, user_message, title_callback, title_preview=title_preview,
                         persistence=persistence)
+    if not model_upgrade:
+        return None
     if not _model_title_upgrade_enabled():
         logger.debug("Instant title persisted; model upgrade disabled by auxiliary.title_generation.model_upgrade_enabled=false")
         return None

@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from tools.tool_backend_helpers import selection_error, selection_exists
 from tools.url_safety import normalize_url_for_request
-from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
+from tools.web_tools_rescue import _rescue_eligible, _rescue_extract, annotate_local_rescue_refusal
 
 logger = logging.getLogger("tools.web_tools")
 
@@ -178,6 +178,7 @@ async def _fetch_with_rescue(provider, fetch_urls: list[str], format: Optional[s
         failed = [_result_entry(u, f"Extract timed out after {timeout:.0f}s via {provider.name}")
                   for u in fetch_urls]
         if not _rescue_eligible(provider):
+            annotate_local_rescue_refusal(provider, failed)
             return failed, False
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed), True
     except Exception as exc:
@@ -185,8 +186,10 @@ async def _fetch_with_rescue(provider, fetch_urls: list[str], format: Optional[s
             raise
         failed = [_result_entry(u, str(exc)) for u in fetch_urls]
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed), True
-    if _backend_failed_whole_batch(results) and _rescue_eligible(provider):
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results), True
+    if _backend_failed_whole_batch(results):
+        if _rescue_eligible(provider):
+            return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results), True
+        annotate_local_rescue_refusal(provider, results)
     return results, False
 
 

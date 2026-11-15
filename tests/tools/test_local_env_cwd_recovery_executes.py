@@ -26,17 +26,17 @@ def test_dead_cwd_runs_in_fallback_and_reports_it_once(tmp_path):
     try:
         shutil.rmtree(doomed)
 
-        first = env.execute("pwd", timeout=30)
+        first = env.execute("pwd", timeout=30, allow_cwd_fallback=True)
         assert first["returncode"] == 0, first["output"]
         assert first["output"].strip() == str(tmp_path)
         assert first["cwd_fallback"] == {"requested": str(doomed), "used": str(tmp_path)}
 
-        explicit = env.execute("pwd", cwd=str(doomed), timeout=30)
+        explicit = env.execute("pwd", cwd=str(doomed), timeout=30, allow_cwd_fallback=True)
         assert explicit["returncode"] == 0, explicit["output"]
         assert explicit["cwd_fallback"]["requested"] == str(doomed)
 
         env.cwd = str(doomed)  # a stale env cwd must not taint a command given a live one
-        healthy = env.execute("pwd", cwd=str(tmp_path), timeout=30)
+        healthy = env.execute("pwd", cwd=str(tmp_path), timeout=30, allow_cwd_fallback=True)
         assert healthy["returncode"] == 0 and "cwd_fallback" not in healthy
     finally:
         env.cleanup()

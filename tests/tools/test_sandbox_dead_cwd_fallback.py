@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from tools.environments.base import BaseEnvironment, explicit_workdir_scope
+from tools.environments.base import BaseEnvironment
 
 pytestmark = pytest.mark.platforms("linux", "macos")
 
@@ -31,12 +31,12 @@ def test_dead_sandbox_cwd_falls_back_to_nearest_ancestor_but_explicit_workdir_is
     env = _BashSandbox(cwd=str(doomed), timeout=30)
     shutil.rmtree(tmp_path / "proj")
 
-    result = env.execute("pwd", timeout=30)
+    result = env.execute("pwd", timeout=30, allow_cwd_fallback=True)
     assert result["returncode"] == 0, result["output"]
     assert result["output"].strip() == str(tmp_path.resolve())
     assert result["cwd_fallback"] == {"requested": str(doomed), "used": str(tmp_path.resolve())}
-    assert env.execute("pwd", timeout=30).get("cwd_fallback") is None  # healed: the marker moved the cwd
+    healed = env.execute("pwd", timeout=30, allow_cwd_fallback=True)
+    assert healed.get("cwd_fallback") is None  # the marker moved the cwd
 
-    with explicit_workdir_scope(True):
-        refused = env.execute("echo ran", cwd=str(doomed), timeout=30)
+    refused = env.execute("echo ran", cwd=str(doomed), timeout=30)  # explicit workdir: no opt-in
     assert refused["returncode"] == 126 and "ran" not in refused["output"]

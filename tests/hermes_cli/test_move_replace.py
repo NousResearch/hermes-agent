@@ -68,7 +68,8 @@ def _cloud(tmp_path):
 
 def _received(tmp_path, cloud):
     out = tmp_path / "move.zip"
-    build_bundle(_laptop(tmp_path), "default", out, include_history=True)
+    if not out.exists():
+        build_bundle(_laptop(tmp_path), "default", out, include_history=True)
     data = out.read_bytes()
     import base64, hashlib
     state = move_receive.begin(cloud, size=len(data), sha256=hashlib.sha256(data).hexdigest())
@@ -109,6 +110,13 @@ def test_replace_overwrites_the_agent_but_keeps_what_the_cloud_set_up_and_undo_r
             assert (cloud / rel).read_bytes() == data, rel
     assert "cloud copy" in (cloud / "skills" / "custom" / "shared" / "SKILL.md").read_text()
     assert visible_session_ids(cloud) == ["cl1"]
+
+    # Changing your mind after an undo: the same bundle again still brings its conversation, though
+    # the undo deleted that id here and the store never restores a deleted id.
+    again = _received(tmp_path, cloud)
+    again = move_receive.apply(cloud, again["id"], sessions=OfflineSessions(cloud), replace={"sessions"})
+    assert again["steps"]["sessions"]["imported"] == 1, again["steps"]["sessions"]
+    assert [sid.startswith("lap1-m") for sid in visible_session_ids(cloud)] == [True]
 
 
 def test_merge_by_default_and_replace_needs_the_part_named(tmp_path):

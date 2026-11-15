@@ -97,7 +97,8 @@ class OfflineSessions:
     def import_session(self, session: dict[str, Any]) -> dict[str, Any]:
         result = self._locked(lambda db: db.import_sessions([session]))
         if not result.get("ok"):
-            raise ValueError("; ".join(str(e.get("error")) for e in result.get("errors") or []))
+            raise ValueError("; ".join(e if isinstance(e, str) else str(e.get("error"))
+                                       for e in result.get("errors") or []))
         return result
 
     def set_archived(self, session_id: str, archived: bool) -> None:

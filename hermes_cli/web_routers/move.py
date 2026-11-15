@@ -240,3 +240,15 @@ async def discard_move_upload(move_id: str, profile: Optional[str] = None):
     profile = destructive_profile(profile, "DELETE /api/move/uploads/{id}")
     _name, home = _home(profile)
     return await _run(move_receive.discard, home, move_id)
+
+
+@router.get("/api/move/cloud-agents")
+async def list_cloud_agents(org: Optional[str] = None, profile: Optional[str] = None):
+    """The signed-in Nous account's Hermes Cloud agents, for a client with no portal session of its
+    own (the Webapp's browser tab)."""
+    from hermes_cli.move_cloud_agents import CloudAgentsError, discover
+    from hermes_cli.web_routers._common import config_scoped_to_thread
+    try:
+        return await config_scoped_to_thread(profile, lambda: discover(org))
+    except CloudAgentsError as exc:
+        raise HTTPException(status_code=exc.status, detail={"code": exc.code, "message": str(exc)}) from None

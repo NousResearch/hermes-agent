@@ -556,6 +556,18 @@ def _free_title(title: Any, taken: set[str]) -> Any:
     return f"{title} #{n}"
 
 
+def _import_one(sessions, session: dict[str, Any], move_id: str) -> dict[str, Any]:
+    """Import one conversation. The store fences a deleted id for good (a row restored beside the
+    fence lists fine and refuses every turn), and undoing an earlier move deleted exactly these ids,
+    so a fenced one arrives under an id of its own, fixed per move so a retry stays idempotent."""
+    try:
+        return sessions.import_session(session)
+    except Exception as exc:
+        if "was deleted here" not in str(exc):
+            raise
+    return sessions.import_session({**session, "id": f"{session['id']}-m{move_id[:8]}"})
+
+
 def _apply_sessions(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dict[str, Any]:
     """Merge: incoming conversations are added beside the target's. Replace: the target's visible
     conversations are archived first (kept, never deleted; undo brings them back)."""
@@ -581,7 +593,7 @@ def _apply_sessions(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dic
         if isinstance(session.get("title"), str):
             taken.add(session["title"])
         try:
-            result = sessions.import_session(session)
+            result = _import_one(sessions, session, ctx["move_dir"].name)
         except Exception as exc:  # health: allow BLE001 -- one bad session must not abort the rest
             failed += 1
             if len(errors) < 5:

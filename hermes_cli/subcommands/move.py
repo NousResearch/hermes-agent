@@ -1,7 +1,7 @@
 """``hermes move``: carry one profile to another Hermes (a Hermes Cloud agent, a new machine).
 
 ``hermes move export``      write a move bundle of the active profile
-``hermes move receive FILE`` preview, then merge a bundle into the active profile
+``hermes move receive FILE`` preview, then merge (or ``--replace``) a bundle into the active profile
 ``hermes move undo ID``     restore what a received move changed
 ``hermes move list``        moves received by this profile
 
@@ -22,9 +22,10 @@ STEP_NAMES = ("config", "soul", "memory", "skills", "cron", "sessions")
 def build_move_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "move", help="Move this profile to another Hermes (Hermes Cloud, a new computer)",
-        description="Export the active profile as a move bundle, or merge one into it. A move never "
-                    "carries API keys or bot tokens, never overwrites what the receiving agent already "
-                    "has, and can be undone.")
+        description="Export the active profile as a move bundle, or receive one into it. A move never "
+                    "carries API keys or bot tokens. By default it merges, keeping what the receiving "
+                    "agent already has; --replace lets the bundle win for the parts you name, and undo "
+                    "restores either.")
     sub = parser.add_subparsers(dest="move_command")
 
     export = sub.add_parser("export", help="Write a move bundle of the active profile")

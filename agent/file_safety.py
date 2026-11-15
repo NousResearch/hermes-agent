@@ -296,8 +296,9 @@ def build_write_denied_paths(home: str) -> set[str]:
     return {os.path.realpath(p) for p in paths}
 
 
-# Home-root single-file credential stores. Also hidden by the dashboard Files API (hermes_cli.web_routers.files).
-HOME_CREDENTIAL_FILES = (".netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials")
+# Home-root single-file credential stores. Also hidden by the dashboard Files API (hermes_cli.web_routers.files);
+# agent/redact.py treats a read of one as secret-bearing output. ``_netrc`` is the name curl and git use on Windows.
+HOME_CREDENTIAL_FILES = (".netrc", "_netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials")
 
 # Home-relative credential directories (POSIX paths). Also dropped from profile exports (hermes_cli.profiles)
 # and hidden by the dashboard Files API.

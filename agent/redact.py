@@ -22,12 +22,17 @@ from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_stri
 from agent.redact_control_split import mask_control_split_tokens
 from agent.redact_db_url import _DSN_PW_PLACEHOLDER_RE, _is_userinfo_placeholder, redact_db_url_query_passwords
 from agent.redact_discord import _redact_discord_tokens
+from agent.redact_credential_stores import (
+    _LINE_NUMBER_GUTTER, _SECRET_CFG_NAMES, aws_credential_process_keys, outside_spans,
+    redact_credential_store_lines,
+)
 from agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
     redact_header_credentials,
 )
 from agent.redact_partial_keys import _redact_partial_private_keys
+from agent.redact_hermes_home import _is_under_hermes_home
 from agent.redact_pattern_shape import _pattern_structure
 from agent.redact_secret_sources import redact_secret_source_values
 from agent.redact_spaced_cfg import redact_spaced_cfg_assignments
@@ -37,6 +42,7 @@ from agent.redact_vault_values import (  # re-exported: callers import these fro
     redact_registered_vault_values,
     register_vault_redaction_value,
 )
+from agent.file_safety import HOME_CREDENTIAL_FILES
 
 logger = logging.getLogger(__name__)
 
@@ -287,12 +293,6 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 # (contains a dot), which is unambiguously a config key — never a prose word. 3. _CFG_ANCHORED_RE matches a
 # bare secret-word key only at line start (optionally after ``export``), so conversational ``I have
 # password=foo`` mid-sentence is left alone.
-_SECRET_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential|auth)"
-# Rendered line-number prefix: ``5|line`` (read_file), ``6:line`` (grep -n), ``7-line`` (grep -A/-B/-C
-# context lines) and ``     8\tline`` (cat -n / nl: right-aligned number + TAB). Callers put the ONLY
-# leading ``[ \t]*`` in front of it — stacking a second whitespace run around an optional gutter made
-# the anchored passes quadratic on long indented lines (2s per 5k spaces).
-_LINE_NUMBER_GUTTER = r"(?:[0-9]+(?:[|:\-]|\t)[ \t]*)?"
 _CFG_VALUE = r"(['\"]?)([^\s&]+?)\2(?=[\s&]|$)"
 # Linear pre-gate for the _CFG_*_RE subs: no secret keyword => neither can match.
 _CFG_SECRET_WORD_RE = re.compile(_SECRET_CFG_NAMES, re.IGNORECASE)
@@ -1483,6 +1483,12 @@ def _redact_userinfo_passwords(text: str) -> str:
     return _URL_USERINFO_PAIR_RE.sub(_sub, text)
 
 
+def _redact_credential_store_lines(text: str, *, mask_nonreusable: bool) -> str:
+    """``secret_file``-only credential-store pass (agent/redact_credential_stores.py)."""
+    mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
+    return redact_credential_store_lines(text, mask, lambda k, v: _should_redact_assignment(k, v, check_keyword=True))
+
+
 def _redact_url_credentials(text: str, code_file: bool, *, file_read: bool = False) -> str:
     """DB connection-string passwords, incoming-webhook secrets, bare-token and ``user:pass`` URL
     userinfo (``://`` text only)."""
@@ -1608,8 +1614,13 @@ def redact_credential_shapes(text: str, *, force: bool = False, code_file: bool 
         text = _ZHIPU_API_KEY_RE.sub(lambda m: _mask(m.group(1)), text)
         text = _redact_discord_tokens(text, _mask)
 
+    # Store lines first: the assignment passes would mask only the first word of ``password=a b``.
+    aws_command_lines = []
+    if secret_file:
+        text = _redact_credential_store_lines(text, mask_nonreusable=file_read)
+        aws_command_lines = aws_credential_process_keys(text)
     if not code_file:
-        text = _redact_assignments(text, mask_nonreusable=file_read)
+        text = outside_spans(text, aws_command_lines, lambda t: _redact_assignments(t, mask_nonreusable=file_read))
 
     # Flags and connection-string keys carry a credential in command text, so they are not
     # gated on code_file: the shape (``--password=`` / ``;AccountKey=``) is unambiguous, and
@@ -1716,8 +1727,11 @@ _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 # ``config.yaml`` / source files stay on the code_file path (``MAX_TOKENS: 100``).
 _FILE_READ_COMMANDS = frozenset({
     "cat", "head", "tail", "type", "bat", "less", "more", "nl",
-    "zcat", "tac", "view", "batcat", "grep", "awk", "sed",
+    "zcat", "tac", "view", "batcat", "grep", "awk", "sed", "get-content", "gc",
 })
+# PowerShell binds a parameter value with a colon: ``Get-Content -Path:~\_netrc`` (also via the
+# ``cat``/``type``/``gc`` aliases). Not applied to the pattern-first filters, whose positional count matters.
+_PS_COLON_PARAM_RE = re.compile(r"-[A-Za-z]+:(.+)")
 _SHELL_RC_BASENAMES = frozenset({
     ".bashrc", ".bash_profile", ".bash_login", ".profile",
     ".zshrc", ".zprofile", ".zlogin", ".zshenv",
@@ -1731,37 +1745,12 @@ _HERMES_HOME_PREFIXES = ("$HERMES_HOME/", "${HERMES_HOME}/")
 _HOME_PREFIXES = ("$HOME/", "${HOME}/")
 
 
-def _is_under_hermes_home(path: str) -> bool:
-    """True when an absolute ``config.yaml`` path sits under the active Hermes home or root.
-
-    The default home's basename is an installation detail — ``.hermes`` on POSIX, ``hermes``
-    under ``AppData/Local`` on Windows — and a resolved path never spells ``$HERMES_HOME``,
-    so the literal-segment test in ``_is_secret_file_arg`` cannot see a native Windows path.
-    Compare against the resolved homes instead. Only reached for a ``config.yaml`` basename,
-    so the resolve cost stays off the per-token command scan.
-    """
-    from agent.file_safety import _hermes_dirs
-    from tools.environments.sandbox_scope import sandbox_lexical_path
-    # A hosted path names a file in the sandbox: judged as written (never empty), not resolved on this host.
-    try:
-        target = os.path.normcase(sandbox_lexical_path(path) or os.path.realpath(os.path.expanduser(path)))
-    except (OSError, ValueError):
-        return False
-    for home in _hermes_dirs():
-        try:
-            base = os.path.normcase(os.path.realpath(str(home)))
-        except (OSError, ValueError):
-            continue
-        if target == base or target.startswith(base + os.sep):
-            return True
-    return False
-
-
 def _is_secret_file_arg(arg: str) -> bool:
-    """``.env``-style or shell rc basename anywhere; ``config.yaml`` only under a
-    ``.hermes`` directory, ``$HERMES_HOME``, or the resolved Hermes home (never arbitrary
-    YAML). The resolved-home arm is what covers native Windows, where the home directory
-    is ``%LOCALAPPDATA%\\hermes`` and carries no ``.hermes`` segment."""
+    """``.env``-style, shell rc or credential-store basename (``.netrc``, ``.pgpass``, ...)
+    anywhere; ``credentials`` / ``config`` only under ``.aws`` (the bare names are too generic), and
+    ``config.yaml`` only under a ``.hermes`` directory, ``$HERMES_HOME``, or the resolved
+    Hermes home (never arbitrary YAML). The resolved-home arm is what covers native Windows,
+    where the home directory is ``%LOCALAPPDATA%\\hermes`` and carries no ``.hermes`` segment."""
     path = arg.strip("\"'").replace("\\", "/")
     hermes_home = False
     for prefix in _HERMES_HOME_PREFIXES:
@@ -1779,6 +1768,8 @@ def _is_secret_file_arg(arg: str) -> bool:
     if not parts:
         return False
     if parts[-1] in _ENV_FILE_BASENAMES or parts[-1] in _SHELL_RC_BASENAMES:
+        return True
+    if parts[-1] in HOME_CREDENTIAL_FILES or parts[-2:] in ([".aws", "credentials"], [".aws", "config"]):
         return True
     # ``config.yaml`` plus the ``config.yaml.good.<stamp>`` / ``.corrupt.<stamp>`` copies Hermes
     # writes under ``backups/config/`` — same contents, same secrets.
@@ -1800,7 +1791,12 @@ def _command_reads_secret_file(command: str | None) -> bool:
         reader = tokens[0].rsplit("/", 1)[-1].lower()
         if reader not in _FILE_READ_COMMANDS:
             continue
-        positional = [arg for arg in tokens[1:] if not arg.startswith("-")]
+        positional = [
+            arg if not arg.startswith("-") else m.group(1)
+            for arg in tokens[1:]
+            if not arg.startswith("-")
+            or (reader not in _PATTERN_FIRST_COMMANDS and (m := _PS_COLON_PARAM_RE.fullmatch(arg)))
+        ]
         if reader in _PATTERN_FIRST_COMMANDS:
             positional = positional[1:]
         if any(_is_secret_file_arg(arg) for arg in positional):
@@ -1859,12 +1855,13 @@ def redact_for_egress(text: str, *, urls: bool = False, keep_phone_numbers: bool
 def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:
     """Single redaction policy for ALL terminal-output surfaces: the ENV/YAML-assignment
     pass runs only when ``command`` is an env dump or reads a secret-bearing file (``.env``,
-    shell rc, Hermes ``config.yaml``); otherwise code_file=True avoids false positives on
-    source/config dumps."""
+    shell rc, a credential store like ``.netrc``, Hermes ``config.yaml``); otherwise
+    code_file=True avoids false positives on source/config dumps."""
     if not output:
         return output
-    code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command))
-    redacted = redact_sensitive_text(output, force=force, code_file=code_file)
+    secret_file = _command_reads_secret_file(command)
+    code_file = not (secret_file or is_env_dump_command(command))
+    redacted = redact_sensitive_text(output, force=force, code_file=code_file, secret_file=secret_file)
     # Source-preserving output still gets the Python-repr pass on high-confidence
     # diagnostic lines (pytest ``E   `` introspection, final exception lines): that is
     # where {'BRAVE_API_KEY': '…'} leaks, not in source dumps.

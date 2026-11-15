@@ -32,10 +32,13 @@ def test_resume_restores_the_stored_window(tmp_path, monkeypatch):
         window = cache_window(_resumed_agent(db, "s1"))  # a fresh process: its compressor starts at 0
         assert (window.expires_at, window.tier, window.confidence) == (4_600.0, "1h", "declared")
 
-        # No stored clock (a pre-column session): the newest assistant row anchors an assumed window.
+        # No stored clock (a pre-column session): the newest assistant row anchors an assumed window,
+        # but only when the session ever touched the cache (a failed turn's error row is no evidence).
         db.create_session("old", "cli")
         db.append_message("old", "user", "hi")
         db.append_message("old", "assistant", "hello", timestamp=2_000.0)
+        assert cache_window(_resumed_agent(db, "old")) is None
+        db.update_token_counts("old", cache_read_tokens=4000, api_call_count=1)
         window = cache_window(_resumed_agent(db, "old"))
         assert (window.expires_at, window.tier, window.confidence) == (5_600.0, "1h", "assumed")
     finally:

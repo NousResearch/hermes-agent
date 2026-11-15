@@ -53,6 +53,11 @@ export type ChatMessage = {
    *  action footer so only the turn's final reply carries copy/refresh, and
    *  the live view matches rehydration (which merges the turn into one bubble). */
   interim?: boolean
+  /** A sent mid-turn steer the model has not read yet (its submitted text, the
+   *  key `steer.delivered` names it by). The row waits under the live reply,
+   *  which keeps streaming above it, until the agent appends the steer at the
+   *  turn's next tool boundary. */
+  steerPending?: string
   /** The user stopped this reply before it finished; its text is partial. */
   interrupted?: boolean
   /** A projected queued prompt (`user-queued-…`) whose own turn has started:

@@ -511,7 +511,14 @@ interface LiveStreamState {
  * A steer interrupts nothing (`keepRunningTools`): the tool it waits on keeps
  * its live row in the sealed bubble, where its result still lands by call id.
  */
-export function sealLiveStream<State extends LiveStreamState>(state: State, { keepRunningTools = false } = {}): State {
+export function sealLiveStream<State extends LiveStreamState>(state: State, options: { keepRunningTools?: boolean } = {}): State {
+  // A seal is the boundary every held steer was waiting for: nothing can land
+  // above them any more.
+  return dropHeldSteers(sealLive(state, options))
+}
+
+/** The seal itself, leaving held steers alone (`releaseHeldSteers` keeps the newer ones). */
+function sealLive<State extends LiveStreamState>(state: State, { keepRunningTools = false } = {}): State {
   const liveId = state.streamId
 
   const sealed = keepRunningTools
@@ -560,6 +567,122 @@ export function sealAcceptedCorrection<State extends LiveStreamState>(
   )
 
   return { ...sealed, messages: [...sealed.messages, state.messages[index]] }
+}
+
+/**
+ * A steer joins the turn at its next tool boundary: the agent appends it after
+ * the running batch's results, and the next API call is the first to read it.
+ * Until then the model keeps thinking and writing the reply it was already on,
+ * so sealing at arrival split that reply around the steer bubble. Hold the
+ * steer's row (its bubble, or a /steer notice) under the live reply from the
+ * moment it is sent, since `steer.delivered` can beat the RPC's ACK.
+ * `releaseHeldSteers` seals once the model read it; any other seal (an
+ * interrupting redirect, a stop) or the turn's end retires every hold.
+ */
+/** Edge whitespace by both Python's `str.isspace` (what `agent.steer()`
+ *  strips: adds U+001C–U+001F and U+0085) and JS `\s` (adds U+FEFF). */
+const STEER_EDGE_SPACE = /^[\s\u001c-\u001f\u0085]+|[\s\u001c-\u001f\u0085]+$/g
+
+/** The key a held steer and a delivered submission text are compared by.
+ *  Applied to both sides, so it holds whatever the backend trimmed. */
+export const steerKey = (text: string): string => text.replace(STEER_EDGE_SPACE, '')
+
+export function holdSteer<State extends LiveStreamState>(state: State, rowId: string | undefined, text: string): State {
+  const key = steerKey(text)
+
+  return !rowId || !key
+    ? state
+    : {
+        ...state,
+        messages: state.messages.map(message => (message.id === rowId ? { ...message, steerPending: key } : message))
+      }
+}
+
+export function holdsSteer(state: { messages: ChatMessage[] }): boolean {
+  return state.messages.some(message => message.steerPending)
+}
+
+/** What `steer.delivered` says the agent just appended: each drained
+ *  submission's text, oldest first (older gateways send only `count`). */
+export interface SteerDelivery {
+  count?: number
+  texts?: string[]
+}
+
+/** Seal the live reply above the held steers this delivery drained, so what
+ *  the model writes next streams below them. Rows are matched by submitted
+ *  text, oldest first; a steer this window did not send (another client, a
+ *  queued prompt's transfer) matches nothing and seals nothing here, and a
+ *  steer sent after the drain stays held. */
+export function releaseHeldSteers<State extends LiveStreamState>(state: State, delivery: SteerDelivery = {}): State {
+  const held = state.messages.filter(message => message.steerPending)
+  const released = new Set<string>()
+
+  if (delivery.texts) {
+    const unmatched = delivery.texts.map(steerKey)
+
+    for (const row of held) {
+      const at = unmatched.indexOf(row.steerPending ?? '')
+
+      if (at >= 0) {
+        released.add(row.id)
+        unmatched.splice(at, 1)
+      }
+    }
+  } else {
+    held.slice(0, delivery.count ?? held.length).forEach(row => released.add(row.id))
+  }
+
+  if (!released.size) {
+    return state
+  }
+
+  const sealed = sealLive(state, { keepRunningTools: true })
+
+  return {
+    ...sealed,
+    messages: sealed.messages.map(message => (released.has(message.id) ? withoutSteerPending(message) : message))
+  }
+}
+
+/** Forget held steers without sealing: the turn ended before a tool boundary,
+ *  so an undelivered steer is the next turn's prompt and already sits below
+ *  the settled reply. */
+export function dropHeldSteers<State extends LiveStreamState>(state: State): State {
+  return holdsSteer(state) ? { ...state, messages: state.messages.map(withoutSteerPending) } : state
+}
+
+/** A refused steer never reached the agent: drop its row. */
+export function discardSteer<State extends LiveStreamState>(state: State, rowId?: string): State {
+  return !rowId
+    ? state
+    : { ...state, messages: state.messages.filter(message => message.id !== rowId) }
+}
+
+/** An older gateway accepted the steer without announcing its delivery: mark
+ *  its arrival, as before, rather than hold it for an event that never comes. */
+export function sealSteerAtArrival<State extends LiveStreamState>(state: State, rowId?: string): State {
+  return rowId
+    ? dropHeldSteers(sealAcceptedCorrection(state, rowId, { keepRunningTools: true }))
+    : sealLiveStream(state, { keepRunningTools: true })
+}
+
+function withoutSteerPending(message: ChatMessage): ChatMessage {
+  if (!message.steerPending) {
+    return message
+  }
+
+  const { steerPending: _held, ...rest } = message
+
+  return rest
+}
+
+/** A reply row created while a steer is held belongs above it: the model wrote
+ *  it before reading the steer. */
+export function insertBeforeHeldSteers(messages: ChatMessage[], message: ChatMessage): ChatMessage[] {
+  const at = messages.findIndex(candidate => candidate.steerPending)
+
+  return at < 0 ? [...messages, message] : [...messages.slice(0, at), message, ...messages.slice(at)]
 }
 
 // ---------------------------------------------------------------------------

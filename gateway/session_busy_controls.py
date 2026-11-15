@@ -213,6 +213,10 @@ async def correct(connection, ref, params, *, verb):
         if not callable(method):
             raise RuntimeStoreError('execution_not_ready')
         accepted = method(params['text'])
-        return {'status': ({'steer': 'queued', 'redirect': 'redirected'}[verb] if accepted else 'rejected'),
-                'text': params['text'], 'execution_generation': generation,
-                'authority_epoch': authority.epoch}
+        reply = {'status': ({'steer': 'queued', 'redirect': 'redirected'}[verb] if accepted else 'rejected'),
+                 'text': params['text'], 'execution_generation': generation,
+                 'authority_epoch': authority.epoch}
+        # This turn's viewer sink reports when the steer joins the conversation (steer.delivered).
+        if accepted and verb == 'steer' and getattr(agent, 'steer_delivered_callback', None):
+            reply['delivery_event'] = True
+        return reply

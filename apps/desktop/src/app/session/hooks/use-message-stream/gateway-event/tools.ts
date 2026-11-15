@@ -1,5 +1,6 @@
 import type { ToolCallMessagePart } from '@assistant-ui/react'
 
+import { dropHeldSteers, releaseHeldSteers, type SteerDelivery } from '@/app/session/hooks/use-prompt-actions/rewind'
 import { isPreviewableTarget, toolPreviewOutcome } from '@/components/assistant-ui/tool/fallback-model'
 import { leaveIntroOnLayout } from '@/components/onboarding/first-run/intro'
 import { toolCallOwnerMessageId } from '@/lib/chat-messages'
@@ -96,6 +97,45 @@ export function handleToolProgressEvent({ deps, event, payload, sessionId }: Gat
   }
 
   return true
+}
+
+/** steer.delivered: the agent appended these steers after this tool batch.
+ *  Everything the model streamed so far stays above the ones this window sent;
+ *  its next output streams below them (and above any steer sent since). */
+export function handleSteerDeliveredEvent(ctx: GatewayEventContext): boolean {
+  const { deps, event, payload, sessionId } = ctx
+
+  if (event.type !== 'steer.delivered') {
+    return false
+  }
+
+  if (sessionId && !deps.sessionInterrupted(sessionId)) {
+    deps.flushQueuedDeltas(sessionId)
+    deps.updateSessionState(sessionId, state => releaseHeldSteers(state, steerDeliveryOf(payload)))
+  }
+
+  return true
+}
+
+function steerDeliveryOf(payload: unknown): SteerDelivery {
+  const { count, texts } = (payload ?? {}) as { count?: unknown; texts?: unknown }
+
+  return {
+    ...(typeof count === 'number' ? { count } : {}),
+    ...(Array.isArray(texts) ? { texts: texts.filter((text): text is string => typeof text === 'string') } : {})
+  }
+}
+
+/** A steer still held when the turn ends never reached a tool boundary: it is
+ *  the next turn's prompt, already below the settled reply. */
+export function dropTurnHeldSteers(
+  eventType: string,
+  sessionId: string,
+  updateSessionState: GatewayEventContext['deps']['updateSessionState']
+): void {
+  if (eventType === 'message.complete' || eventType === 'error') {
+    updateSessionState(sessionId, dropHeldSteers)
+  }
 }
 
 /** A finished turn retires its live tool progress even if a tool.complete went missing. Runs for every

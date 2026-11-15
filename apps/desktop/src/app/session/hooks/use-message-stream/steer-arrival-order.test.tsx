@@ -151,6 +151,36 @@ const steer = async (text: string) => {
 const transcript = () =>
   (states.get(SID)?.messages ?? []).map(message => `${message.role}:${chatMessageText(message).slice(0, 30)}`)
 
+/** Rows as painted: thinking, tool calls and text per bubble, in order. */
+const layout = () =>
+  (states.get(SID)?.messages ?? []).map(message => {
+    const body = message.parts
+      .map(part =>
+        part.type === 'reasoning'
+          ? `think(${part.text})`
+          : part.type === 'tool-call'
+            ? `tool(${part.toolCallId})`
+            : part.type === 'text'
+              ? part.text
+              : ''
+      )
+      .filter(Boolean)
+      .join(' + ')
+
+    return `${message.role}:${body}`
+  })
+
+/** The `steer.delivered` payload for the submissions one drain joined. */
+const delivery = (texts: string[]) => ({ count: texts.length, texts })
+
+/** A steer the gateway accepts into the live turn and will announce with `steer.delivered`. */
+const acceptSteer = async (text: string) => {
+  requestGatewayMock.mockImplementationOnce(async () => ({ status: 'queued', delivery_event: true }))
+  await act(async () => {
+    await expect(redirect!(text, 'steer')).resolves.toBe(true)
+  })
+}
+
 describe('steer mid-turn keeps arrival order (user bubble never above prior output)', () => {
   beforeEach(() => {
     handleEvent = null
@@ -492,5 +522,298 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
 
     emit({ payload: { text: 'short answer' }, session_id: SID, type: 'message.complete' })
     expect(onScreen()).toEqual(expected)
+  })
+})
+
+// A steer joins the turn at its next tool boundary, where the agent appends it
+// after the batch's results. The model keeps thinking and writing the reply it
+// is on until then, so that reply stays one bubble ABOVE the steer, and only
+// output after `steer.delivered` streams below it. Gateways that announce the
+// event say so in the steer's ACK (`delivery_event`); older ones keep the
+// seal-at-arrival behaviour above.
+describe('a steer waits under the live reply until the model reads it', () => {
+  beforeEach(() => {
+    handleEvent = null
+    redirect = null
+    states = new Map()
+    requestGatewayMock.mockClear()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  /** Start a reasoning turn whose first thinking chunk is on screen. */
+  const thinkingTurn = async (tile = false) => {
+    await mountHarness(tile)
+    emit({ payload: {}, session_id: SID, type: 'message.start' })
+    emit({ payload: { text: 'weighing option A' }, session_id: SID, type: 'reasoning.delta' })
+    await flushDeltas()
+  }
+
+  /** The rest of the thinking, the tool it leads to, and its result. */
+  const finishThinkingWithTool = async () => {
+    emit({ payload: { text: ', then B' }, session_id: SID, type: 'reasoning.delta' })
+    await flushDeltas()
+    emit({ payload: { args: { command: 'ls' }, name: 'terminal', tool_id: 't1' }, session_id: SID, type: 'tool.start' })
+    emit({ payload: { name: 'terminal', result: 'ok', tool_id: 't1' }, session_id: SID, type: 'tool.complete' })
+  }
+
+  const answer = async (text: string) => {
+    emit({ payload: { text }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    emit({ payload: { text }, session_id: SID, type: 'message.complete' })
+  }
+
+  const settledCleanly = () => {
+    const state = states.get(SID)!
+
+    expect(state.messages.every(message => !message.pending && !message.steerPending)).toBe(true)
+  }
+
+  it.each([false, true])('thinking that continues after the steer stays one block above it (tile=%s)', async tile => {
+    await thinkingTurn(tile)
+    await acceptSteer('prefer option B')
+    await finishThinkingWithTool()
+
+    expect(layout()).toEqual(['assistant:think(weighing option A, then B) + tool(t1)', 'user:prefer option B'])
+
+    emit({ payload: delivery(['prefer option B']), session_id: SID, type: 'steer.delivered' })
+    await answer('going with B')
+
+    expect(layout()).toEqual([
+      'assistant:think(weighing option A, then B) + tool(t1)',
+      'user:prefer option B',
+      'assistant:going with B'
+    ])
+    settledCleanly()
+  })
+
+  it.each([false, true])('delivery that beats the ACK still seals above the steer (tile=%s)', async tile => {
+    await thinkingTurn(tile)
+    let ack!: () => void
+    requestGatewayMock.mockImplementationOnce(
+      () => new Promise(resolve => (ack = () => resolve({ status: 'queued', delivery_event: true })))
+    )
+    let pending!: Promise<boolean>
+    act(() => {
+      pending = redirect!('prefer option B', 'steer')
+    })
+
+    await finishThinkingWithTool()
+    emit({ payload: delivery(['prefer option B']), session_id: SID, type: 'steer.delivered' })
+    await act(async () => {
+      ack()
+      await expect(pending).resolves.toBe(true)
+    })
+    await answer('going with B')
+
+    expect(layout()).toEqual([
+      'assistant:think(weighing option A, then B) + tool(t1)',
+      'user:prefer option B',
+      'assistant:going with B'
+    ])
+    settledCleanly()
+  })
+
+  it('a delivery releases only the steers it drained; a steer sent after it stays held', async () => {
+    await thinkingTurn()
+    await acceptSteer('prefer option B')
+    // The second steer is sent while the first is being delivered; its ACK comes later.
+    let ack!: () => void
+    requestGatewayMock.mockImplementationOnce(
+      () => new Promise(resolve => (ack = () => resolve({ status: 'queued', delivery_event: true })))
+    )
+    let pending!: Promise<boolean>
+    act(() => {
+      pending = redirect!('and keep it short', 'steer')
+    })
+    await finishThinkingWithTool()
+    emit({ payload: delivery(['prefer option B']), session_id: SID, type: 'steer.delivered' })
+    await act(async () => {
+      ack()
+      await expect(pending).resolves.toBe(true)
+    })
+    // Answers only the first steer; the second is still unread.
+    emit({ payload: { text: 'B it is' }, session_id: SID, type: 'reasoning.delta' })
+    await flushDeltas()
+    emit({ payload: { args: { command: 'ls' }, name: 'terminal', tool_id: 't2' }, session_id: SID, type: 'tool.start' })
+    emit({ payload: { name: 'terminal', result: 'ok', tool_id: 't2' }, session_id: SID, type: 'tool.complete' })
+
+    expect(layout()).toEqual([
+      'assistant:think(weighing option A, then B) + tool(t1)',
+      'user:prefer option B',
+      'assistant:think(B it is) + tool(t2)',
+      'user:and keep it short'
+    ])
+
+    emit({ payload: delivery(['and keep it short']), session_id: SID, type: 'steer.delivered' })
+    await answer('B, briefly')
+
+    expect(layout().slice(-2)).toEqual(['user:and keep it short', 'assistant:B, briefly'])
+    settledCleanly()
+  })
+
+  it('a steer sent before its turn starts stays held through message.start', async () => {
+    await mountHarness()
+    let ack!: () => void
+    requestGatewayMock.mockImplementationOnce(
+      () => new Promise(resolve => (ack = () => resolve({ status: 'queued', delivery_event: true })))
+    )
+    let pending!: Promise<boolean>
+    act(() => {
+      pending = redirect!('prefer option B', 'steer')
+    })
+    emit({ payload: {}, session_id: SID, type: 'message.start' })
+    emit({ payload: { text: 'weighing option A' }, session_id: SID, type: 'reasoning.delta' })
+    await flushDeltas()
+    await act(async () => {
+      ack()
+      await expect(pending).resolves.toBe(true)
+    })
+    await finishThinkingWithTool()
+    emit({ payload: delivery(['prefer option B']), session_id: SID, type: 'steer.delivered' })
+    await answer('going with B')
+
+    expect(layout()).toEqual([
+      'assistant:think(weighing option A, then B) + tool(t1)',
+      'user:prefer option B',
+      'assistant:going with B'
+    ])
+    settledCleanly()
+  })
+
+  it('a drain that also carried a steer this window did not send releases only its own', async () => {
+    await thinkingTurn()
+    await acceptSteer('one')
+    await acceptSteer('two')
+    await finishThinkingWithTool()
+    // A queued prompt's transfer (or another client) was drained with "one"; "two" is still buffered.
+    emit({ payload: delivery(['one', 'queued card text']), session_id: SID, type: 'steer.delivered' })
+    emit({ payload: { text: 'answering one' }, session_id: SID, type: 'reasoning.delta' })
+    await flushDeltas()
+
+    expect(layout()).toEqual([
+      'assistant:think(weighing option A, then B) + tool(t1)',
+      'user:one',
+      'assistant:think(answering one)',
+      'user:two'
+    ])
+    expect(states.get(SID)!.messages.at(-1)?.steerPending).toBe('two')
+  })
+
+  it('a delivery of only steers this window did not send seals nothing here', async () => {
+    await thinkingTurn()
+    await acceptSteer('mine')
+    await finishThinkingWithTool()
+    emit({ payload: delivery(['from another window']), session_id: SID, type: 'steer.delivered' })
+    emit({ payload: { text: ', still going' }, session_id: SID, type: 'reasoning.delta' })
+    await flushDeltas()
+
+    // Same bubble, still above the steer: nothing was sealed.
+    expect(layout()).toEqual(['assistant:think(weighing option A, then B) + tool(t1) + think(, still going)', 'user:mine'])
+  })
+
+  it.each([
+    ['NEL', '\u0085prefer B\u0085', 'prefer B'],
+    ['BOM', '\ufeffprefer B', '\ufeffprefer B']
+  ])('a steer is matched whatever edge whitespace the agent strips (%s)', async (_label, sent, stored) => {
+    await thinkingTurn()
+    await acceptSteer(sent)
+    await finishThinkingWithTool()
+    // agent.steer() stores Python's str.strip() of the text, which differs from JS trim().
+    emit({ payload: delivery([stored]), session_id: SID, type: 'steer.delivered' })
+    await answer('going with B')
+
+    expect(layout().at(-1)).toBe('assistant:going with B')
+    settledCleanly()
+  })
+
+  it('an older payload without texts releases the oldest count', async () => {
+    await thinkingTurn()
+    await acceptSteer('one')
+    await acceptSteer('two')
+    await finishThinkingWithTool()
+    emit({ payload: { count: 1 }, session_id: SID, type: 'steer.delivered' })
+    emit({ payload: { text: 'answering one' }, session_id: SID, type: 'reasoning.delta' })
+    await flushDeltas()
+
+    expect(layout().slice(1)).toEqual(['user:one', 'assistant:think(answering one)', 'user:two'])
+  })
+
+  it('an older gateway (no delivery_event) keeps sealing at arrival', async () => {
+    await thinkingTurn()
+    requestGatewayMock.mockImplementationOnce(async () => ({ status: 'queued' }))
+    await act(async () => {
+      await expect(redirect!('prefer option B', 'steer')).resolves.toBe(true)
+    })
+    await finishThinkingWithTool()
+    await answer('going with B')
+
+    expect(layout()).toEqual([
+      'assistant:think(weighing option A)',
+      'user:prefer option B',
+      'assistant:think(, then B) + tool(t1) + going with B'
+    ])
+    settledCleanly()
+  })
+
+  it('an interrupting redirect after a held steer answers below both corrections', async () => {
+    await thinkingTurn()
+    await acceptSteer('prefer option B')
+    // Interrupt mode: the gateway cancels the request and redirects the turn.
+    await act(async () => {
+      await expect(redirect!('stop, use C', 'interrupt')).resolves.toBe(true)
+    })
+    await answer('using C')
+
+    expect(layout()).toEqual([
+      'assistant:think(weighing option A)',
+      'user:prefer option B',
+      'user:stop, use C',
+      'assistant:using C'
+    ])
+    settledCleanly()
+  })
+
+  it('a refused steer leaves no hold behind', async () => {
+    await thinkingTurn()
+    requestGatewayMock.mockImplementationOnce(async () => ({ status: 'rejected' }))
+    await act(async () => {
+      await expect(redirect!('too late', 'steer')).resolves.toBe(false)
+    })
+
+    expect(states.get(SID)!.messages.some(message => message.steerPending)).toBe(false)
+    await answer('done')
+    expect(layout()).toEqual(['assistant:think(weighing option A) + done'])
+  })
+
+  it('a steer that never meets a tool boundary stays below the finished reply as the next prompt', async () => {
+    await mountHarness()
+    emit({ payload: {}, session_id: SID, type: 'message.start' })
+    emit({ payload: { text: 'short answer' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    await acceptSteer('also add a summary')
+    emit({ payload: { text: ' with details' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    emit({ payload: { text: 'short answer with details' }, session_id: SID, type: 'message.complete' })
+
+    expect(layout()).toEqual(['assistant:short answer with details', 'user:also add a summary'])
+    settledCleanly()
+  })
+
+  it('a reply row created while the steer is held lands above it', async () => {
+    await mountHarness()
+    emit({ payload: {}, session_id: SID, type: 'message.start' })
+    emit({ payload: { text: 'interim note' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    emit({ payload: { text: 'interim note', already_streamed: true }, session_id: SID, type: 'message.interim' })
+    await acceptSteer('be brief')
+    emit({ payload: { text: 'still the old plan' }, session_id: SID, type: 'reasoning.delta' })
+    await flushDeltas()
+
+    expect(layout()).toEqual(['assistant:interim note', 'assistant:think(still the old plan)', 'user:be brief'])
   })
 })

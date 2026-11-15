@@ -521,6 +521,72 @@ class TestSteerInjection:
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
         assert messages[-1]["content"] == "output"  # unchanged
 
+    def test_delivery_tells_the_live_viewer_once(self):
+        """Desktop holds the steer bubble under the live reply until the model reads it;
+        the callback marks that boundary (the steer is now in what the next API call sends)."""
+        agent = _bare_agent()
+        delivered = []
+        agent.steer_delivered_callback = delivered.append
+        tool_batch = [
+            {"role": "assistant", "tool_calls": [{"id": "a"}]},
+            {"role": "tool", "content": "output", "tool_call_id": "a"},
+        ]
+        agent._apply_pending_steer_to_tool_results(list(tool_batch), num_tool_msgs=1)
+        assert delivered == []  # nothing pending, nothing delivered
+
+        agent.steer("use the other file")
+        agent._apply_pending_steer_to_tool_results(tool_batch, num_tool_msgs=1)
+        assert delivered == [["use the other file"]]
+        assert tool_batch[-1]["role"] == "user"
+
+    def test_delivery_names_every_submission_the_drain_joined(self):
+        """Two steers sent before the batch ends are drained together: the viewer releases both by text."""
+        agent = _bare_agent()
+        delivered = []
+        agent.steer_delivered_callback = delivered.append
+        agent.steer("prefer B")
+        agent.steer("and keep it short")
+        messages = [{"role": "tool", "content": "output", "tool_call_id": "a"}]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        assert delivered == [["prefer B", "and keep it short"]]
+        assert "prefer B" in messages[-1]["content"] and "keep it short" in messages[-1]["content"]
+
+    def test_requeued_steer_is_not_reported_delivered(self):
+        agent = _bare_agent()
+        delivered = []
+        agent.steer_delivered_callback = delivered.append
+        agent.steer("later")
+        agent._apply_pending_steer_to_tool_results([{"role": "assistant", "content": "x"}], num_tool_msgs=1)
+        assert delivered == []
+        assert agent._pending_steer == "later"
+
+    def test_a_failing_viewer_callback_never_blocks_delivery(self):
+        agent = _bare_agent()
+
+        def boom(texts):
+            raise RuntimeError("viewer gone")
+
+        agent.steer_delivered_callback = boom
+        agent.steer("keep going")
+        messages = [{"role": "tool", "content": "output", "tool_call_id": "a"}]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        assert messages[-1]["role"] == "user"
+
+    def test_pre_api_drain_reports_delivery_only_when_the_steer_lands(self):
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+
+        agent = _bare_agent()
+        delivered = []
+        agent.steer_delivered_callback = delivered.append
+        messages = [{"role": "tool", "content": "output", "tool_call_id": "a"}]
+        agent.steer("check auth.log")
+        _inject_steer_after_newest_tool_result(agent, messages, agent._drain_pending_steer())
+        assert delivered == [["check auth.log"]]
+        assert messages[-1]["role"] == "user"
+
+        _inject_steer_after_newest_tool_result(agent, [{"role": "user", "content": "hi"}], "no tool row yet")
+        assert delivered == [["check auth.log"]]  # requeued for the post-tool drain, not delivered
+
 
 
     def test_persisted_steer_row_is_never_merged_with_the_next_prompt(self):

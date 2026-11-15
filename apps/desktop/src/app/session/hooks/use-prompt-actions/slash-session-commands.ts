@@ -9,7 +9,7 @@ import { $sessions, resolveComposerSessionKey } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 import { flushStreamDeltas } from '@/store/stream-delta-flush'
 
-import { sealLiveStream } from './rewind'
+import { discardSteer, holdSteer, sealSteerAtArrival } from './rewind'
 import type { SubmissionDestination } from './submission-destination'
 import {
   type GatewayRequest,
@@ -371,26 +371,44 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
         return out.render((await enqueue(out, text)) ? copy().steerNoActiveTurn(previewOf(text)) : copy().queueFailed)
       }
 
-      let accepted = false
+      let result: null | SessionRedirectResponse = null
+      // The model reads the steer at its next tool boundary; the reply it is still
+      // writing stays one bubble above the notice until then. The notice is drawn
+      // and held from the send, since delivery can beat the ACK.
+      // The notice render appends is the steer's anchor: find it by diffing the rows.
+      const before = new Set<string>()
+      let noticeId: string | undefined
+
+      updateSessionState(out.sessionId, state => {
+        state.messages.forEach(message => before.add(message.id))
+
+        return state
+      })
+      out.render(copy().steerQueued(previewOf(text)))
+      updateSessionState(out.sessionId, state => {
+        noticeId = state.messages.find(message => !before.has(message.id))?.id
+
+        return holdSteer(state, noticeId, text)
+      })
 
       try {
-        const result = await requestGateway<SessionRedirectResponse>('session.steer', {
-          session_id: out.sessionId,
-          text
-        })
-
-        accepted = result?.status === 'queued'
+        result = await requestGateway<SessionRedirectResponse>('session.steer', { session_id: out.sessionId, text })
       } catch {
-        accepted = false
+        result = null
       }
 
-      if (accepted) {
-        // The notice marks where the steer arrived: seal the live reply above it so the
-        // output the model writes after reading the steer streams below, not above it.
-        flushStreamDeltas(out.sessionId)
-        updateSessionState(out.sessionId, state => sealLiveStream(state, { keepRunningTools: true }))
+      if (result?.status === 'queued') {
+        // An older gateway never announces delivery: mark the arrival instead.
+        if (!result.delivery_event && noticeId) {
+          flushStreamDeltas(out.sessionId)
+          updateSessionState(out.sessionId, state => sealSteerAtArrival(state, noticeId))
+        }
 
-        return out.render(copy().steerQueued(previewOf(text)))
+        return
+      }
+
+      if (noticeId) {
+        updateSessionState(out.sessionId, state => discardSteer(state, noticeId))
       }
 
       // The turn ended before the steer landed (#64578): keep the words as the next turn.

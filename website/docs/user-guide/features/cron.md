@@ -953,7 +953,7 @@ Check if nginx is running. If everything is healthy, respond with only [SILENT].
 Otherwise, report the issue.
 ```
 
-Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
+The `[SILENT]` marker only silences successful runs, not failures. Script/monitor-source failures are identified separately from model failures. For recurring monitor jobs scheduled at most five minutes apart, the first two DNS-resolution or HTTP 500/502/503/504 source failures remain recorded without a chat ping; the third consecutive failure alerts through the existing incident mechanism. Authentication, integrity, unknown errors, rare jobs, and one-shots still alert immediately. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
 
 ### Declaring a failed run
 

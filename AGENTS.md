@@ -94,8 +94,8 @@ all profile-aware via `get_hermes_home()`.
 ### Packages and Python shape
 
 A topic that outgrows its file becomes a folder: `<stem>/__init__.py` is the **facade** (its
-docstring names each module's job, `__all__` is the surface, PEP 562 `__getattr__` when eager
-imports would cycle; no behaviour; `tools/connectors/` is the model), `<stem>/<topic>.py` holds the
+docstring names each module's job, `__all__` is the surface, PEP 562 `__getattr__` only for a
+measured startup cost; no behaviour; `tools/connectors/` is the model), `<stem>/<topic>.py` holds the
 code. Flat `<stem>_<topic>.py` siblings (`gateway/run.py`, `tools/mcp_tool.py`) stay until
 touched; add none except where an area AGENTS.md still prescribes one (`tui_gateway` RPC methods,
 `tools/` backends). A family folder keeps its ABC/Protocol, one module per variant and a name →
@@ -103,8 +103,8 @@ variant table (`tools/environments/`, whose table still sits in `terminal_tool_b
 folders register from `tool.py`; tests mirror folders.
 
 - **Find code by topic:** `grep -rn "def name" <dir>/<stem>/ <dir>/<stem>_*.py`, not the facade.
-- **Topic modules late-import the facade** inside functions, never a module-level cycle; patch
-  where production reads (the facade is the seam, a patch on the defining module passes silently).
+- **Imports go at module top:** topic modules import one another, never the facade; a cycle means
+  a shared name belongs in a lower module. Patch the module whose code looks the name up.
 - **Size and complexity are ratcheted per unit:** new functions CC ≤ 20, ≤ 300 lines, nesting ≤ 6;
   files ≤ 2,000 lines; units already over may only go down (move code into the `<stem>/` folder).
 - **Shape:** code imports on 3.11 (no PEP 695 syntax); importing has no side effects (no I/O,

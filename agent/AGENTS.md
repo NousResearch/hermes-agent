@@ -142,8 +142,7 @@ providers intentionally do not run during cron.
 
 ## Tests
 
-Loop/phase tests go in `tests/agent/`; patch the binding the phase actually reads (siblings often
-`from run_agent import X` inside the function — root "patch where production reads"). Assert
+Loop/phase tests go in `tests/agent/`; patch the binding the phase actually reads. Assert
 message-shape invariants (alternation, byte-stable system prompt) rather than snapshotting prompt
 text.
 

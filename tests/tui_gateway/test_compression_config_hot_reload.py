@@ -8,6 +8,9 @@ the already-open session kept the computed threshold from agent creation.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
 
 from agent.context_compressor import ContextCompressor
 from tui_gateway import server
@@ -263,6 +266,41 @@ def test_boolean_prune_trigger_matches_fresh_build(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"compression": {"protect_last_n": False}})
     server._sync_agent_compression_with_config("sid-bool", session)
     assert compressor.protect_last_n == 0
+
+
+@pytest.mark.parametrize("raw", [50, 0])
+def test_live_prune_result_floor_matches_fresh_build(monkeypatch, raw):
+    session, compressor = _neutral_session(proactive_prune_min_result_chars=30_000)
+    _, fresh = _neutral_session(proactive_prune_min_result_chars=raw)
+    _sync_with_cfg(monkeypatch, session, {"compression": {"proactive_prune_min_result_chars": raw}})
+    assert compressor.proactive_prune_min_result_chars == fresh.proactive_prune_min_result_chars
+
+
+@pytest.mark.parametrize("write_fails", [True, False])
+def test_post_archive_noop_names_the_actual_reason(tmp_path, monkeypatch, write_fails):
+    from agent.context_compressor import _estimate_msg_budget_tokens
+    from tests.agent.test_proactive_prune_archive import _compressor, _round
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "read"}]
+    for i in range(8):
+        messages += _round(i, "original output\n" + "x" * 12_000 if i == 0 else "ok")
+    messages.append({"role": "user", "content": "continue"})
+    compressor = _compressor()
+    candidate, count = compressor._prune_old_tool_results(
+        messages, protect_tail_count=compressor.protect_last_n,
+        protect_tail_tokens=None, min_prune_chars=compressor.proactive_prune_min_result_chars)
+    assert count == 1
+    before = sum(map(_estimate_msg_budget_tokens, messages))
+    # The bare stub exactly meets the gate; a successful archive's pointer pushes it below.
+    compressor.proactive_prune_min_reclaim_tokens = before - sum(map(_estimate_msg_budget_tokens, candidate))
+    if write_fails:
+        monkeypatch.setattr("tools.tool_result_storage.write_pruned_original", lambda *args: None)
+    with patch.object(compressor, "_warn_reclamation_no_op") as warn:
+        result, count = compressor.prune_tool_results_only(messages, current_tokens=600_000)
+    assert result is messages and count == 0
+    reason = "prune:archive_write_failed" if write_fails else "prune:reclaim_below_minimum"
+    warn.assert_called_once_with(reason, 600_000, before=before)
 
 
 def test_removing_threshold_restores_derived_default(monkeypatch):

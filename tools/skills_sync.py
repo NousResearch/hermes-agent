@@ -254,9 +254,11 @@ def _loader_visible_name(skill_md: Path) -> Optional[str]:
     """The loader's YAML frontmatter ``name`` for a SKILL.md — the identity the agent actually
     invokes. Differs from ``read_skill_name``'s line-based read on commented (``name: demo # x``),
     escape-encoded and block-scalar names (#143470): those load as ``demo`` but read as garbage
-    line-wise. Diagnostic-only; discovery/manifest identities keep ``read_skill_name``."""
+    line-wise. Parses the complete file like the loader — no truncation, or a frontmatter fence
+    past the cut would again hide a name the loader recognizes. Diagnostic/recovery lookup only;
+    discovery/manifest identities keep ``read_skill_name``."""
     try:
-        frontmatter, _ = parse_frontmatter(skill_md.read_text(encoding="utf-8-sig", errors="replace")[:4000])
+        frontmatter, _ = parse_frontmatter(skill_md.read_text(encoding="utf-8-sig", errors="replace"))
     except OSError:
         return None
     name = frontmatter.get("name")
@@ -293,15 +295,19 @@ def _warn_invisible_renamed_copy(st: "_SyncState", skill_name: str, dest: Path) 
             rel = _rel_skills_posix(md.parent)
         except ValueError:
             continue
-        if rel in st.hub_paths:  # the hub owns its install paths, even dangling ones
-            return
+        if rel in st.hub_paths:
+            # The hub owns THIS install path, not every copy of the identity — skip it and
+            # keep searching: a later non-hub copy still deserves its warning.
+            continue
         message = (
             f"{skill_name}: upstream moved this skill to {_rel_skills_posix(dest)}, but the copy "
             f"at {rel} is only reachable through a category symlink, so it was not automatically "
-            f"relocated. It is left untouched and will not receive updates. To let sync manage "
-            f"it again, replace the category symlink with a real directory that contains the "
-            f"copy — removing the symlink alone would strand it: the retained manifest entry "
-            f"makes sync read the missing destination as a user deletion.")
+            f"relocated. It is left untouched and will not receive updates. Replace the category "
+            f"symlink with a real directory containing the copy to make it visible again: a "
+            f"pristine copy then relocates on the next sync, and a modified one is kept at the "
+            f"old path and listed under `hermes skills list-modified`. Removing the symlink "
+            f"alone would strand it — the retained manifest entry makes sync read the missing "
+            f"destination as a user deletion.")
         st.relocation_warnings.append(message)
         st.say(f"  ⚠ {message}")
         return
@@ -318,11 +324,18 @@ def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Opt
     byte-identical to the origin hash — proof *we* placed it — moves. Returns rel source path."""
     origin_hash = st.manifest.get(skill_name, "")
     if not origin_hash:
+        # v1 plain-name entry (empty hash): no hash can authorize a move, but the read-only
+        # #143470 diagnostic still applies — stranding is identity-based, not hash-based.
+        _warn_invisible_renamed_copy(st, skill_name, dest)
         return None
     if st.active_index is None:  # by frontmatter name
         st.active_index = {}
         for md in _iter_active_skill_mds():
-            st.active_index.setdefault(read_skill_name(md, md.parent.name), []).append(md.parent)
+            line_name = read_skill_name(md, md.parent.name)
+            st.active_index.setdefault(line_name, []).append(md.parent)
+            loader_name = _loader_visible_name(md)  # loader parity, see _warn_invisible_renamed_copy
+            if loader_name and loader_name != line_name:
+                st.active_index.setdefault(loader_name, []).append(md.parent)
         st.hub_paths = _read_hub_install_paths()
     for candidate in st.active_index.get(skill_name, []):
         if candidate == dest or not candidate.is_dir():

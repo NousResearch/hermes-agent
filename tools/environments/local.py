@@ -1189,11 +1189,17 @@ class LocalEnvironment(BaseEnvironment):
         came too late — the script was already built and exited 126 at ``cd`` on every call —
         and missed the explicit cwd the terminal tool passes from the session record. A real
         fallback (not a benign MSYS→Windows normalization) is returned for ``execute`` to report,
-        because relative paths now resolve somewhere the model did not ask for."""
-        safe_cwd = _resolve_safe_cwd(cwd)
-        if safe_cwd != cwd and safe_cwd != _msys_to_windows_path(cwd):
-            return safe_cwd, {"requested": cwd, "used": safe_cwd}
-        return safe_cwd, None
+        because relative paths now resolve somewhere the model did not ask for.
+
+        A relative or ``~`` cwd is checked where bash's ``cd`` resolves it (``self.cwd``, the
+        Popen cwd; ``$HOME``), not against this process's cwd, and kept as written when usable."""
+        resolved = os.path.expanduser(cwd)
+        if resolved and not os.path.isabs(_msys_to_windows_path(resolved)):
+            resolved = os.path.join(self.cwd, resolved)
+        safe_cwd = _resolve_safe_cwd(resolved)
+        if safe_cwd == resolved or safe_cwd == _msys_to_windows_path(resolved):
+            return (cwd if resolved != cwd else safe_cwd), None
+        return safe_cwd, {"requested": cwd, "used": safe_cwd}
 
     def _recover_cwd(self) -> None:
         """Swap ``self.cwd`` for a usable directory if it vanished or is inaccessible

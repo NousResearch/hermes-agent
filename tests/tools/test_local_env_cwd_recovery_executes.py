@@ -55,6 +55,13 @@ def test_terminal_tool_recovers_a_dead_session_cwd_with_a_model_notice(tmp_path,
     task = "dead-cwd-notice"
     try:
         assert json.loads(terminal_tool(command="pwd", task_id=task))["output"].strip() == str(sub)
+        # A relative workdir resolves against the session cwd, as bash's ``cd`` does — not this
+        # process's cwd: a real one runs there unflagged, a typo is refused.
+        (sub / "inner").mkdir()
+        relative = json.loads(terminal_tool(command="pwd", workdir="inner", task_id=task))
+        assert relative["output"].strip() == str(sub / "inner") and "cwd_fallback" not in relative
+        typo = json.loads(terminal_tool(command="touch marker", workdir="typo", task_id=task))
+        assert typo["exit_code"] == 126 and "did not run" in typo["error"], typo
         shutil.rmtree(sub)
 
         recovered = json.loads(terminal_tool(command="pwd", task_id=task))

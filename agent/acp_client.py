@@ -354,6 +354,16 @@ class ACPClient:
         except Exception:
             with contextlib.suppress(Exception):
                 proc.kill()
+        # Close stdin here, not at GC. A CLI that exits before or during a write (VS Code's
+        # `copilot` shim without the real CLI, a crashed agent) leaves the rejected frame in the
+        # text wrapper's buffer; finalized at interpreter shutdown, that buffer is flushed again
+        # against the dead pipe and CPython prints "Exception ignored while finalizing file
+        # <_io.TextIOWrapper ...>: BrokenPipeError" outside any try/except. `close()` releases the
+        # fd even when the final flush fails. stdout/stderr stay with their pump threads: closing
+        # a reader mid-read can block while a grandchild still holds the pipe.
+        if (stdin := proc.stdin) is not None:
+            with contextlib.suppress(Exception):
+                stdin.close()
 
     def _release_process(self, proc: subprocess.Popen[str]) -> None:
         """Reap one session's own child. ``is_closed`` flips only when the last live
@@ -557,6 +567,15 @@ class ACPClient:
                     response = _jsonrpc_error(message_id, -32602, str(exc))
         else:
             response = _jsonrpc_error(message_id, -32601, f"ACP client method '{method}' is not supported by Hermes yet.")
-        process.stdin.write(json.dumps(response) + "\n")
-        process.stdin.flush()
+        try:
+            process.stdin.write(json.dumps(response) + "\n")
+            process.stdin.flush()
+        except OSError as exc:  # the CLI died mid-session: EPIPE, or EINVAL on a Windows pipe
+            if not isinstance(exc, BrokenPipeError) and exc.errno != errno.EINVAL:
+                raise
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+            exit_code = process.poll()
+            detail = f"exit code {exit_code}" if exit_code is not None else str(exc)
+            raise RuntimeError(f"{self.label} process stopped accepting input ({detail})") from exc
         return True

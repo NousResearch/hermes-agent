@@ -829,7 +829,7 @@ export default function SessionsPage() {
     [allSourceOptions],
   );
 
-  const sessionQueryOptions = useMemo(() => {
+  const sessionFilterOptions = useMemo(() => {
     if (selectedSources !== null) {
       if (selectedSources.length === 0) {
         return allSourceNames.length > 0
@@ -858,6 +858,14 @@ export default function SessionsPage() {
     }
     return {};
   }, [selectedSources, sessionCategory, allSourceNames]);
+
+  // Order by last activity, like the sidebar's Recent Sessions list. The API
+  // default is creation time, which buries a long-lived conversation under
+  // every session created since (cron runs especially).
+  const sessionQueryOptions = useMemo(
+    () => ({ ...sessionFilterOptions, order: "recent" as const }),
+    [sessionFilterOptions],
+  );
 
   const categoryDefaultSources = useMemo(() => {
     return allSourceNames.filter((source) =>
@@ -1069,11 +1077,12 @@ export default function SessionsPage() {
           setOverviewSessions(r.sessions);
           // The dashboard server and a terminal CLI are separate
           // processes sharing one session DB — there is no push channel,
-          // so we detect sessions created in another process here. The
-          // overview poll already fetches the 50 newest sessions, so we
-          // reuse its head id as a cheap change signal: when it changes,
-          // silently refresh the paginated list so the new session shows
-          // up in real time without a visible loading flicker.
+          // so we detect sessions created or continued in another process
+          // here. The overview poll already fetches the 50 most recently
+          // active sessions, so we reuse its head id as a cheap change
+          // signal: when it changes, silently refresh the paginated list so
+          // the new activity shows up in real time without a visible
+          // loading flicker.
           const newest = r.sessions[0]?.id ?? null;
           if (shouldRefreshSessions(newestSeenRef.current, newest)) {
             loadSessions(pageRef.current, true);

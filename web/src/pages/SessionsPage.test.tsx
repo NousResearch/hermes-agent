@@ -190,6 +190,25 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
   });
 });
 
+describe("SessionsPage list ordering (#155919)", () => {
+  it("asks for most-recently-active order on both the history list and the overview poll", async () => {
+    await renderSessionsPage([
+      { id: "sid-old-chat", profile: "default", source: "cli", model: null, title: "Old chat", started_at: 1,
+        ended_at: null, last_active: 100, is_active: false, message_count: 2, tool_call_count: 0,
+        input_tokens: 1, output_tokens: 1, preview: "hi" },
+    ]);
+    await waitFor(() => apiMocks.getSessions.mock.calls.some(([limit]) => limit >= 50));
+
+    const calls = apiMocks.getSessions.mock.calls as unknown as [number, number, { order?: string }, string?][];
+    expect(calls.length).toBeGreaterThan(0);
+    for (const [, , options, order] of calls) {
+      // Either the options object or the explicit fourth argument must say
+      // "recent"; the default ("created") hides long-lived chats under cron runs.
+      expect(order ?? options?.order).toBe("recent");
+    }
+  });
+});
+
 describe("structured reasoning rendering (#59957)", () => {
   const reasoningSession = () => {
     apiMocks.getSessionMessages.mockResolvedValue({

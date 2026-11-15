@@ -205,7 +205,7 @@ def test_retained_release_survives_temp_cleanup_and_update(installation, tmp_pat
 
 
 def test_process_exit_removes_only_its_own_snapshot(installation, tmp_path, record_property):
-    home, plugin, os_temp = installation
+    home, _plugin, os_temp = installation
     with _provider_process(home, os_temp, tmp_path / "second.stderr") as (second, read_second):
         with _provider_process(home, os_temp, tmp_path / "first.stderr") as (first, read_first):
             assert first["root"] != second["root"]

@@ -238,3 +238,36 @@ def test_same_sha_retry_adds_newly_stopped_unmapped_debt_to_an_existing_inventor
     assert fleet._fleet_restart_obligation_armed()
     fleet_rows.append({"profile": "work", "state": "current", "code_sha": "head", "pid": 9})
     assert fleet._marker_only_restart_obsolete() is True
+
+
+def test_stopped_manual_gateway_the_plan_names_is_settled_by_its_profiles_successor(monkeypatch, tmp_path):
+    # #155920: the stopped manual gateway is already owed by profile, so owing its PID again as an
+    # unmapped gateway demanded a second successor that never existed and the warning never cleared.
+    from hermes_cli import update_cmd, update_cmd_fleet as fleet, update_cmd_fleet_verify as fleet_verify
+    from hermes_cli import update_host_obligation as host, update_receipt
+    from hermes_cli.update_inventory import UpdatePlan
+
+    monkeypatch.setattr(host, "host_obligation_path", lambda: tmp_path / "host-update-restart.json")
+    monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "head")
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "head")
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **kw: None)
+    monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
+    monkeypatch.setattr(fleet_verify, "_FLEET_PROBE_SETTLE_TIMEOUT_SECONDS", 0)
+    fleet_rows: list = []
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **kw: list(fleet_rows))
+    fleet._write_fleet_restart_pending_marker(expected_sha="head")  # armed by the pull, inventory-less
+    out = fleet._GatewayRestartOutcome(
+        incomplete=False, phase_errors=[], pre_restart_gateway_pids=[101], restarted_services=[],
+        failed_or_stale_units=[], relaunched_profiles=[], externally_supervised_profiles=[],
+        killed_pids={101}, stopped_unmapped_pids={101},
+    )
+    update_receipt.begin_update_receipt()
+    fleet_verify._verify_fleet_after_update(
+        out, _pre_update_plan=UpdatePlan(runtimes=[RuntimeRecord(kind="gateway", profile="default", pid=101)]),
+        _windows_gateway_resume=None, update_complete=True)
+
+    assert fleet._update_owes_fleet_restart(receipt={}, pending_manual=[]) is True  # nothing came back yet
+    fleet_rows.append({"profile": "default", "state": "current", "code_sha": "head", "pid": 202})
+    assert fleet._update_owes_fleet_restart(receipt={}, pending_manual=[]) is False
+    assert not fleet._fleet_restart_obligation_armed()

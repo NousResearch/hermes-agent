@@ -215,8 +215,12 @@ def _record_owed_gateway_inventory(plan, stopped_unmapped_pids=()) -> None:
         if getattr(runtime, "kind", None) == "gateway"
         and isinstance(getattr(runtime, "profile", None), str)
         and runtime.profile.strip() and runtime.profile != "unknown"
-    ] + [{"kind": "gateway", "profile": None, "pid": pid, "stopped_unmapped": True}
-         for pid in sorted(stopped_unmapped_pids)]
+    ]
+    # A stopped gateway already owed by profile is settled by that profile's successor; owing its
+    # PID again as unmapped would demand a second gateway that never existed (#155920).
+    named_pids = {row.get("pid") for row in recorded + rows if isinstance(row, dict) and row.get("profile")}
+    rows += [{"kind": "gateway", "profile": None, "pid": pid, "stopped_unmapped": True}
+             for pid in sorted(stopped_unmapped_pids) if pid not in named_pids]
     rows = [row for row in rows if row not in recorded]
     if rows:
         # Not armed any more (a pre-restart probe settled an inventory-less record): re-arm, the

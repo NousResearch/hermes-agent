@@ -20,7 +20,8 @@ KEPT_ON_LOOP = {
     # The pending/handle snapshot published under ``event_stream.lock`` with the stream's own state.
     ('gateway/session_authority.py', '_handle'), ('gateway/session_authority.py', '_pending_rows'),
     # Restores mutate ``authority.sessions`` and the SessionStore's entries, which only the loop mutates.
-    ('gateway/session_local_recovery.py', 'owned_receipt'), ('gateway/session_local_recovery.py', '_checked_entry'),
+    ('gateway/session_local_recovery.py', 'owned_receipt'), ('gateway/session_local_recovery.py', '_stored_receipt'),
+    ('gateway/session_local_recovery.py', '_checked_entry'),
     ('gateway/session_local_recovery.py', '_with_untracked_compression'),
     ('gateway/session_local_recovery.py', 'restore_local_session'),
     # Compression-lineage lookups used by the synchronous route helpers.

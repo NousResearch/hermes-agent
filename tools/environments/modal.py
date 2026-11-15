@@ -10,6 +10,7 @@ import logging
 import shlex
 import tarfile
 import threading
+import weakref
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -156,7 +157,10 @@ class _ClientFlight:
 
 _client_flights: dict[tuple[str, tuple[str, str]], _ClientFlight] = {}
 _client_flight_seq = itertools.count(1)
-# Guards _profile_clients and _client_flights; never held across an await.
+# Loops whose startup was abandoned: no client is admitted on them once their startup failed. Weak,
+# so a stopped loop is not kept alive; code can only run on a loop while it is alive.
+_revoked_loops: weakref.WeakSet[asyncio.AbstractEventLoop] = weakref.WeakSet()
+# Guards _profile_clients, _client_flights and _revoked_loops; never held across an await.
 _profile_clients_lock = threading.Lock()
 
 
@@ -184,6 +188,8 @@ async def _profile_client(modal: Any, home: str, pair: tuple[str, str]) -> Any:
     others wait on."""
     loop = asyncio.get_running_loop()
     with _profile_clients_lock:
+        if loop in _revoked_loops:
+            raise RuntimeError("Modal client not started: the sandbox startup running it was abandoned")
         cached = _profile_clients.get(home)
         if cached is not None and cached[0] == pair:
             return cached[1]
@@ -233,8 +239,12 @@ def _settle_client_flight(home: str, pair: tuple[str, str], flight: _ClientFligh
 def _abandon_client_flights(loop: Optional[asyncio.AbstractEventLoop]) -> None:
     """A failed or timed-out startup is about to stop ``loop``: fail and drop the client builds it
     was running, so their waiters fail now and later sandboxes start a fresh build instead of
-    waiting on a stopped loop."""
+    waiting on a stopped loop. The loop is revoked in the same critical section: a startup
+    coroutine that reaches ``_profile_client`` only afterwards (the worker may run late, even past
+    ``_AsyncWorker.stop``'s bounded join) is refused instead of registering a build nobody settles."""
     with _profile_clients_lock:
+        if loop is not None:
+            _revoked_loops.add(loop)
         abandoned = [(key, flight) for key, flight in _client_flights.items()
                      if flight.loop is loop and not flight.settled]
         for key, flight in abandoned:

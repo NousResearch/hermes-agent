@@ -14,6 +14,8 @@ from concurrent.futures import Future
 
 import pytest
 
+from tests.waiting import wait_until
+
 
 async def _noop(*_args, **_kwargs):
     return None
@@ -217,15 +219,6 @@ class _JoinRecorder(dict):
         return flight
 
 
-def _wait_until(predicate, timeout=10.0):
-    pause = threading.Event()
-    for _ in range(int(timeout / 0.02)):
-        if predicate():
-            return True
-        pause.wait(0.02)
-    return predicate()
-
-
 def _start(target, *args):
     errors: list[BaseException] = []
 
@@ -293,8 +286,8 @@ def test_client_build_runs_inside_the_one_startup_window(modal_sdk, profiles, mo
     run_coroutine = modal_env._AsyncWorker.run_coroutine
 
     def shortened(self, coro, timeout=600):
-        requested.append(timeout)
-        return run_coroutine(self, coro, timeout=min(timeout, 0.5))
+        requested.append(timeout)  # the retry below runs on its own, unshortened window
+        return run_coroutine(self, coro, timeout=min(timeout, 2 if len(requested) == 1 else 15))
 
     monkeypatch.setattr(modal_env._AsyncWorker, "run_coroutine", shortened)
     home = profiles("B")
@@ -329,13 +322,13 @@ def test_timed_out_startup_releases_the_sandboxes_waiting_on_its_build(modal_sdk
         # Its own wait expires while the build is held open, as 300 s would.
         startup = asyncio.run_coroutine_threadsafe(coro, self._loop)
         assert flights.joined.wait(10), "the second sandbox did not join the build in progress"
-        return startup.result(timeout=0.2)
+        return startup.result(timeout=2)
 
     monkeypatch.setattr(modal_env._AsyncWorker, "run_coroutine", expiring)
     home = profiles("B")
     gate = _fake_from_credentials().gates["ak-B"] = Future()
     first, first_errors = _start(_routed_sandbox, modal_env, home)
-    assert _wait_until(lambda: calls["clients"] == ["ak-B"]), "the first sandbox never started its build"
+    wait_until(lambda: calls["clients"] == ["ak-B"], timeout=15, what="the first sandbox started its build")
     second, second_errors = _start(_routed_sandbox, modal_env, home)
     first.join(10)
     second.join(10)
@@ -359,7 +352,7 @@ def test_timed_out_startup_leaves_another_profiles_build_running(modal_sdk, prof
     expiring = threading.local()
 
     def maybe_expiring(self, coro, timeout=600):
-        return run_coroutine(self, coro, timeout=0.2 if getattr(expiring, "on", False) else min(timeout, 15))
+        return run_coroutine(self, coro, timeout=2 if getattr(expiring, "on", False) else min(timeout, 15))
 
     def expiring_sandbox(home):
         expiring.on = True
@@ -369,7 +362,7 @@ def test_timed_out_startup_leaves_another_profiles_build_running(modal_sdk, prof
     gates = _fake_from_credentials().gates
     gate_b, gate_a = gates["ak-B"], gates["ak-A"] = Future(), Future()
     other, other_errors = _start(_routed_sandbox, modal_env, profiles("B"))
-    assert _wait_until(lambda: calls["clients"] == ["ak-B"]), "B's build never started"
+    wait_until(lambda: calls["clients"] == ["ak-B"], timeout=15, what="B's build started")
     timed_out, timed_out_errors = _start(expiring_sandbox, profiles("A"))
     timed_out.join(10)
     assert not timed_out.is_alive()
@@ -392,7 +385,7 @@ def test_cancelled_waiter_leaves_the_shared_build_running(modal_sdk, profiles, m
     home = profiles("B")
     gate = _fake_from_credentials().gates["ak-B"] = Future()
     creator, creator_errors = _start(_routed_sandbox, modal_env, home)
-    assert _wait_until(lambda: calls["clients"] == ["ak-B"]), "the first sandbox never started its build"
+    wait_until(lambda: calls["clients"] == ["ak-B"], timeout=15, what="the first sandbox started its build")
     with bind_profile_scope(home, hydrate_secrets=False):
         home_key = modal_env.hermes_home_key()
 
@@ -421,7 +414,7 @@ def test_an_older_pair_finishing_late_never_replaces_the_newer_one(modal_sdk, pr
     modal_env, calls = modal_sdk
     gate = _fake_from_credentials().gates["ak-B"] = Future()
     old, old_errors = _start(_routed_sandbox, modal_env, profiles("B"))
-    assert _wait_until(lambda: calls["clients"] == ["ak-B"]), "the old pair's build never started"
+    wait_until(lambda: calls["clients"] == ["ak-B"], timeout=15, what="the old pair's build started")
     _routed_sandbox(modal_env, profiles("B-rotated"))
     gate.set_result(None)
     old.join(10)
@@ -452,7 +445,7 @@ def test_interrupted_startup_abandons_its_client_build(modal_sdk, profiles, monk
         if interrupt_once:
             interrupt_once.clear()
             asyncio.run_coroutine_threadsafe(coro, self._loop)
-            assert _wait_until(lambda: calls["clients"] == ["ak-B"])
+            wait_until(lambda: calls["clients"] == ["ak-B"], timeout=15, what="the client build started")
             raise interruption()
         return run_coroutine(self, coro, timeout=min(timeout, 15))
 
@@ -469,6 +462,93 @@ def test_interrupted_startup_abandons_its_client_build(modal_sdk, profiles, monk
         _routed_sandbox(modal_env, home)
         assert calls["clients"] == ["ak-B", "ak-B"]
         assert calls["creates"] == ["ak-B"]
+    finally:
+        if not gate.done():
+            gate.set_result(None)
+        for worker in workers:
+            worker.stop()
+
+
+class _AdmissionOrder:
+    """``_profile_clients_lock`` stand-in pinning one interleaving: the startup's worker reaches its
+    client admission, the startup is interrupted, and only once its abandonment has run does the
+    worker take the lock, before the worker is stopped. ``refusal`` is what the worker's admission
+    raised (None: it was admitted)."""
+
+    def __init__(self, caller):
+        self._lock = threading.Lock()
+        self.caller = caller
+        self.worker: threading.Thread | None = None
+        self.at_admission = threading.Event()
+        self.abandoned = threading.Event()
+        self.admission_ran = threading.Event()
+        self.refusal: BaseException | None = None
+
+    def __enter__(self):
+        me = threading.current_thread()
+        if me is not self.caller and self.worker is None:
+            self.worker = me
+            self.at_admission.set()
+            assert self.abandoned.wait(15), "the interrupted startup never abandoned its builds"
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, _type, error, _tb):
+        self._lock.release()
+        me = threading.current_thread()
+        if me is self.worker and not self.admission_ran.is_set():
+            self.refusal = error
+            self.admission_ran.set()
+        elif me is self.caller and not self.abandoned.is_set():
+            self.abandoned.set()  # the abandonment's critical section is over: let the worker in
+            assert self.admission_ran.wait(15), "the worker never attempted its admission"
+        return False
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
+def test_startup_interrupted_before_its_build_registers_admits_no_late_build(
+        modal_sdk, profiles, monkeypatch, interruption):
+    """Interrupted after the startup was scheduled but before its client build registered: the
+    worker reaching the client cache only after the abandonment (and before it is stopped) must not
+    register a build nobody will settle, which every later start would join and time out on."""
+    modal_env, calls = modal_sdk
+    monkeypatch.setattr(modal_env, "_client_flights", {})
+    order = _AdmissionOrder(threading.current_thread())
+    monkeypatch.setattr(modal_env, "_profile_clients_lock", order)
+    run_coroutine = modal_env._AsyncWorker.run_coroutine
+    start = modal_env._AsyncWorker.start
+    workers = []
+    interrupt_once = [True]
+
+    def tracking_start(self):
+        workers.append(self)
+        return start(self)
+
+    def interrupted(self, coro, timeout=600):
+        if interrupt_once:
+            interrupt_once.clear()
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
+            assert order.at_admission.wait(15), "the startup never reached its client admission"
+            raise interruption()
+        return run_coroutine(self, coro, timeout=min(timeout, 15))
+
+    monkeypatch.setattr(modal_env._AsyncWorker, "start", tracking_start)
+    monkeypatch.setattr(modal_env._AsyncWorker, "run_coroutine", interrupted)
+    # Held open: a build admitted late must still be pending when the worker stops.
+    gate = _fake_from_credentials().gates["ak-B"] = Future()
+    home = profiles("B")
+    try:
+        with pytest.raises(interruption):
+            _routed_sandbox(modal_env, home)
+        assert order.admission_ran.is_set()
+        assert modal_env._client_flights == {}, "a build registered after its startup was abandoned"
+        assert isinstance(order.refusal, RuntimeError) and "abandoned" in str(order.refusal)
+        assert not workers[0]._thread.is_alive(), "interrupted startup left its worker running"
+        gate.set_result(None)
+        _routed_sandbox(modal_env, home)  # a fresh startup, on a fresh loop, is admitted
+        assert calls["clients"] == ["ak-B"]
+        assert calls["creates"] == ["ak-B"]
+        assert modal_env._client_flights == {}
     finally:
         if not gate.done():
             gate.set_result(None)

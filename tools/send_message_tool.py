@@ -1,5 +1,5 @@
-"""Send Message Tool -- cross-channel messaging via platform APIs (send, list targets,
-react); works in both CLI and gateway contexts."""
+"""Send Message Tool -- cross-channel messaging via platform APIs; works in both CLI and
+gateway contexts."""
 
 import asyncio
 import json
@@ -39,10 +39,9 @@ def prepare_send_message_platforms() -> None:
 def send_message_tool(args, **kw):
     """Handle cross-channel send_message tool calls."""
     action = args.get("action", "send")
-    if action == "list":
-        return _handle_list()
-    if action in ("react", "unreact"):
-        return _handle_react(args, remove=action == "unreact")
+    if action != "send":
+        return tool_error(f"Unknown action '{action}': send_message only sends. "
+                          "List targets with `hermes send --list`.")
     return _handle_send(args)
 
 
@@ -56,14 +55,6 @@ def _resolve_tool_target(target: str, *, pass_unresolved_references: bool = Fals
         return platform_name, None, None, None
     return platform_name, *resolve_send_target(platform_name, target_ref,
                                                pass_unresolved_references=pass_unresolved_references)
-
-
-def _handle_list():
-    try:
-        from gateway.channel_directory import format_directory_for_display
-        return json.dumps({"targets": format_directory_for_display()})
-    except Exception as e:
-        return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
 _TOKEN_UNSET = object()
@@ -154,61 +145,10 @@ def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
         )
 
 
-def _handle_react(args, remove=False):
-    """Attach (``remove=True``: retract) an emoji reaction via the live gateway adapter; no
-    standalone fallback because reacting needs the adapter's live message-id state."""
-    target, emoji = args.get("target", ""), (args.get("emoji") or "").strip()
-    message_id = (args.get("message_id") or "").strip() or None
-    if not target or (not remove and not emoji):
-        return tool_error("'target' is required when action='unreact'" if remove
-                          else "Both 'target' and 'emoji' are required when action='react'")
-
-    # Platform-native ids (e.g. photon GUIDs) match no parser/directory entry; the adapter validates.
-    platform_name, chat_id, _thread_id, resolution_error = _resolve_tool_target(target, pass_unresolved_references=True)
-    if resolution_error:
-        return tool_error(resolution_error)
-    platform, err = _platform_enum(platform_name)
-    if err:
-        return tool_error(err)
-    if not chat_id:
-        try:
-            from gateway.config import load_gateway_config
-            chat_id = load_gateway_config().get_home_channel(platform).chat_id
-        except Exception:
-            return tool_error(f"No chat specified and no home channel set for {platform_name}. "
-                              f"Use '{platform_name}:chat_id'.")
-    # P5(a): same egress-authorization floor as the send path — a reaction is
-    # an outbound act against a named destination, so an unattested relay
-    # target must be refused here too, not just on `send`.
-    # The react path has no pconfig snapshot of its own; it dispatches through
-    # the LIVE adapter below, never through a native token, so the guard does
-    # its own credential probe here.
-    _relay_denial = _authorize_relay_target(platform_name, chat_id, _thread_id)
-    if _relay_denial:
-        return tool_error(_relay_denial)
-
-    try:
-        _, adapter = _live_adapter(platform, chat_id, _thread_id)
-    except SharedBotTargetRefused as e:
-        return tool_error(str(e))
-    if adapter is None:
-        return tool_error(f"Reactions require a live {platform_name} adapter in the running "
-                          "gateway (not available from cron/standalone contexts).")
-    react_fn = getattr(adapter, "remove_reaction" if remove else "add_reaction", None)
-    if not callable(react_fn):
-        return tool_error(f"Platform '{platform_name}' does not support message reactions.")
-    try:
-        from model_tools import _run_async
-        result = _run_async(react_fn(chat_id=chat_id, message_id=message_id, **({} if remove else {"emoji": emoji})))
-    except Exception as e:
-        return json.dumps(_error(f"Reaction failed: {e}"))
-    return json.dumps(result if isinstance(result, dict) else {"success": bool(result)})
-
-
 def _handle_send(args):
     target, message = args.get("target", ""), args.get("message", "")
     if not target or not message:
-        return tool_error("Both 'target' and 'message' are required when action='send'")
+        return tool_error("Both 'target' and 'message' are required")
     # Lone surrogates reach the outbound body via surrogateescape-decoded argv
     # (`hermes send` MESSAGE) and crash the UTF-8 marshal inside platform SDK
     # request bodies (feishu/lark, #113799). Every send_message caller (model tool

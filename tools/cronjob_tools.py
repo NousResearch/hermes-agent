@@ -1088,7 +1088,6 @@ def cronjob(
     failure_deliver: Optional[str | list[str]] = None,
     catch_up: Optional[bool] = None,
     wrap_response: Optional[bool | str] = None,  # bool, or the tool's on / off / inherit
-    task_id: str | None = None,
     session_id: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
@@ -1098,7 +1097,6 @@ def cronjob(
     grace_minutes: Optional[int | str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
-    del a["task_id"]  # unused but kept for handler signature compatibility
     try:
         normalized = (action or "").strip().lower()
         handler = _JOBLESS_ACTIONS.get(normalized)
@@ -1274,7 +1272,6 @@ def _cronjob_handler(args, **kw):
         include_disabled=args.get("include_disabled", True),
         monitor_script=_mon_script,
         monitor_url=_mon_url,
-        task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
         paused=args.get("paused", False),
         **{key: args.get(key) for key in _HANDLER_FORWARDED_ARGS},

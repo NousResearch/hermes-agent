@@ -18,7 +18,7 @@ from gateway.session import SessionSource
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from persistence_assembly import profile_scope
 from tests.fixtures.storage_holder import raw_holder
-from tests.gateway.fixtures.storage_handles import storage_handle
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 pytest.importorskip("telegram")
 

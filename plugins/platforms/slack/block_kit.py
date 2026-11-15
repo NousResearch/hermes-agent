@@ -28,6 +28,7 @@ adapter state — so it is trivially unit-testable.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -657,4 +658,77 @@ def sanitize_blocks(blocks: Optional[list[Block]]) -> Optional[list[Block]]:
         return out[:MAX_BLOCKS]
     except Exception:
         # A sanitizer bug must never take down the send path.
+        return None
+
+
+# ----------------------------------------------------------------------------
+# Agent-authored blocks (opt-in: ``slack.extra.agent_blocks: true``)
+# ----------------------------------------------------------------------------
+#
+# The markdown renderer above can't express what newer Block Kit offers (a ``layout`` row of
+# numbers, ``data_visualization`` charts, ``table`` column settings, buttons). With this opt-in an
+# agent writes the blocks itself: one fenced code block tagged ``slack-blocks`` in its reply,
+# holding a JSON list of blocks or ``{"blocks": [...], "text": "..."}``. The adapter sends those
+# blocks; the reply without the fence (else the payload's ``text``) is the ``text`` fallback, so a
+# rejected payload (``invalid_blocks``) still delivers the words.
+
+AGENT_BLOCKS_LANG = "slack-blocks"
+_AGENT_FENCE_RE = re.compile(
+    r"^[ \t]*(`{3,}|~{3,})[ \t]*" + re.escape(AGENT_BLOCKS_LANG) + r"[ \t]*\n(.*?)\n[ \t]*\1[ \t]*$",
+    re.DOTALL | re.MULTILINE)
+_BROADCAST_RE = re.compile(r"<!(?:everyone|channel|here)(?:\|[^>\n]*)?>", re.IGNORECASE)
+
+
+def _defuse_broadcasts(node: Any) -> Any:
+    """``node`` with every @channel / @here / @everyone made inert: in mrkdwn strings the ``<`` is
+    escaped, and a rich_text ``broadcast`` element becomes plain text. An agent's reply can carry
+    text it read elsewhere; the plain ``text`` path escapes these too (``format_message``)."""
+    if isinstance(node, str):
+        return _BROADCAST_RE.sub(lambda m: "&lt;" + m.group(0)[1:], node)
+    if isinstance(node, list):
+        return [_defuse_broadcasts(x) for x in node]
+    if isinstance(node, dict):
+        if node.get("type") == "broadcast":
+            return {"type": "text", "text": "@" + str(node.get("range") or "channel")}
+        return {k: _defuse_broadcasts(v) for k, v in node.items()}
+    return node
+
+
+def _blocks_summary(blocks: List[Block]) -> str:
+    """A one-line ``text`` for blocks that came without one: the header, else the first section."""
+    for block in blocks:
+        text_obj = block.get("text")
+        if block.get("type") in ("header", "section") and isinstance(text_obj, dict):
+            text = (text_obj.get("text") or "").strip()
+            if text:
+                return text.splitlines()[0][:MAX_HEADER_TEXT]
+    return "(Block Kit message)"
+
+
+def extract_agent_blocks(content: str) -> Optional[Tuple[str, List[Block]]]:
+    """``(text, blocks)`` when ``content`` holds exactly one ```slack-blocks fenced JSON payload, else
+    ``None``. ``text`` is ``content`` without the fence, else the payload's ``text``, else a summary
+    of the blocks. The blocks are sanitized (:func:`sanitize_blocks`) with broadcast mentions made
+    inert. Never raises: a payload that won't parse, or two of them, returns ``None`` and the reply
+    is sent as plain text, fence and all, so nothing is lost."""
+    if not content or AGENT_BLOCKS_LANG not in content:
+        return None
+    try:
+        fences = list(_AGENT_FENCE_RE.finditer(content))
+        if len(fences) != 1:
+            return None
+        match = fences[0]
+        payload = json.loads(match.group(2))
+        text = ""
+        if isinstance(payload, dict):
+            text = str(payload.get("text") or "").strip()
+            payload = payload.get("blocks")
+        if not isinstance(payload, list):
+            return None
+        blocks = sanitize_blocks(_defuse_broadcasts(payload))
+        if not blocks:
+            return None
+        rest = (content[: match.start()] + content[match.end():]).strip()
+        return rest or _defuse_broadcasts(text) or _blocks_summary(blocks), blocks
+    except Exception:
         return None

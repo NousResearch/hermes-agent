@@ -1,0 +1,22 @@
+name: bazitools
+title: BaziTools
+repo: https://github.com/AbigailDavised/bazitools-mcp
+sha: 7d128c44c2b31da934107ba52361a4cbae45b09e
+version: "1.0.2"
+description: "True Solar Time Four Pillars of Destiny (BaZi) astronomical stem-branch calculator, Five-Element (Wu Xing) balance analyzer, Ten Heavenly Stems reference, and classical Shijing/Tang poetry Chinese name generator through BaziTools's official MCP server (Streamable HTTP at https://bazitools.com/api/mcp, no sign-in, no keys in config). Bundles the bazitools workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to bazitools.com/api/mcp with only the calendar date, longitude or naming query arguments. All 4 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: BaziTools
+tier: community
+category: tools
+docs_url: https://bazitools.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/bazitools-mcp/7d128c44c2b31da934107ba52361a4cbae45b09e/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/bazitools-mcp/7d128c44c2b31da934107ba52361a4cbae45b09e/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/bazitools-mcp/7d128c44c2b31da934107ba52361a4cbae45b09e/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

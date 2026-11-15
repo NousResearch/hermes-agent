@@ -217,5 +217,5 @@ class TestSecretFileHttpRoundTrip:
                 headers={"X-Webhook-Signature-V2": _generic_v2_signature(body, "wrong-secret", ts),
                          "X-Webhook-Timestamp": ts,
                          "Content-Type": "application/json"})
-            assert resp.status == 401, "invalid signature must fail closed"
+            assert resp.status == 404, "invalid signature must fail closed (404 anti-enumeration)"
             adapter.handle_message.assert_not_called()

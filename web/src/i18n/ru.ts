@@ -217,7 +217,7 @@ export const ru: Translations = {
 
   models: {
     modelsUsed: "Использовано моделей",
-    estimatedCost: "Оценка стоимости",
+    cost: "Стоимость",
     tokens: "токены",
     sessions: "сессии",
     avgPerSession: "ср./сессию",

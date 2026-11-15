@@ -217,7 +217,7 @@ export const zhHant: Translations = {
 
   models: {
     modelsUsed: "使用模型數",
-    estimatedCost: "預估費用",
+    cost: "費用",
     tokens: "Token",
     sessions: "工作階段",
     avgPerSession: "平均/工作階段",

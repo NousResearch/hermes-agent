@@ -193,7 +193,7 @@ export const ar = defineLocale({
 
   models: {
     modelsUsed: "النماذج المستخدمة",
-    estimatedCost: "التكلفة التقريبية",
+    cost: "التكلفة",
     tokens: "رموز",
     sessions: "جلسات",
     avgPerSession: "متوسط/جلسة",

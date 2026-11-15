@@ -217,7 +217,7 @@ export const ko: Translations = {
 
   models: {
     modelsUsed: "사용된 모델",
-    estimatedCost: "예상 비용",
+    cost: "비용",
     tokens: "토큰",
     sessions: "세션",
     avgPerSession: "세션당 평균",

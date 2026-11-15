@@ -16,6 +16,7 @@ import unicodedata
 from tools import approval_parser_budget as _parser_budget
 from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_end, _scan_shell
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
+from tools.approval_git_options import _GIT, _GIT_PUSH, _GIT_PUSH_ARGS, _join_escaped_word_chars
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
 from tools.approval_env_split import _split_env_string
 
@@ -562,34 +563,6 @@ _PS_EXE_AT_COMMAND_POSITION = (
     r"\s*+(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
 )
 
-# `git` plus the global options that may sit before the subcommand (`git -C <dir> reset --hard`).
-# Value-taking options consume their separate value word; any other option is a single dash token.
-# A word may contain quoted runs (`-C "/a b"`, `--git-dir='/a b/.git'`) or a command substitution
-# (`-C $(git rev-parse --show-toplevel)`), which the shell passes as one argument. Each option is an
-# atomic group with the value-taking form tried first: the two alternatives overlap (`-c x` is also
-# two dash-or-word tokens), so a non-atomic run of option-like tokens (`git -c -c -c ... x`) is
-# re-split exponentially on a failed match; words are possessive for the same reason.
-# An option missing from that list still takes a separate value when another option follows it
-# (`--opt val --flag`), unless that value is a gated verb or the option is a known value-less one.
-# Every word ending in a `git` word (`-c git`, `alias.x=git`) starts its own search over the same rest
-# of the command, so no option word may end in one: the run stops there instead of rescanning what
-# that search covers, which keeps an uncapped run linear (`git -c git -c ... x`).
-_GIT_WORD = r'''(?:"[^"]*"|'[^']*'|\$\([^()\n]*\)|`[^`\n]*`|[^\s;|&"'])++(?<!\bgit)'''
-_GIT_NO_VALUE = (r'(?:--no-pager|--paginate|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks'
-                 r'|--no-advice|--(?:literal|glob|noglob|icase)-pathspecs|--(?:html|man|info)-path|--version|--help|-[pPvh])')
-_GIT = (r'\bgit(?>\s+(?:(?:-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env'
-        rf'|--attr-source)\s+{_GIT_WORD}|(?!{_GIT_NO_VALUE}\s)(?:--[^\s=;|&"\'`$]++|-[^\s;|&"\'`$-])\s+'
-        rf'(?!-|(?:push|reset|clean|branch)\s){_GIT_WORD}(?=\s+-)|-(?:{_GIT_WORD}|(?=\s))))*\s+')
-_GIT_PUSH = rf'{_GIT}push\b'
-# The push's own arguments, bounded to ONE command segment: a later command's flag is never the
-# push's (`git push -q origin main && grep -f patterns.txt log` is not a force push). A quoted
-# string is one atom, so a quoted `;`/`&`/`|` (`-o 'ci;skip'`) does not end the segment, and a
-# flag inside quotes is not seen; a redirection's `&`/`|` (`2>&1`, `&>`, `>|`) stays inside too.
-# Every alternative starts on a different character (or lookaround), so a failed match scans a
-# run once instead of re-splitting it exponentially (`>&>&>&...`, `'a' 'a' 'a' ...`). The scan
-# stops at a nested push, whose own search covers the rest, so `git push git push ...` is linear.
-_GIT_PUSH_ARGS = (r'''(?:(?>'[^']*'|"(?:[^"\\]|\\[\s\S])*")|'(?![^']*')|"(?![^"]*")'''
-                  r'''|\\[\s\S]|(?!''' + _GIT_PUSH + r''')[^;&|\n'"\\]|(?<=[<>])&|(?<![<>])&(?=>)|(?<=>)\|)*''')
 # An argument may open with a quote the shell strips (`"-f"`, `'+main'`, `"--force"`).
 _GIT_PUSH_ARG_START = r'''\s["']?'''
 _DEV_TCP_REDIRECT_DESCRIPTION = "reverse shell via /dev/tcp or /dev/udp redirect"
@@ -1763,16 +1736,6 @@ def _deny_command_variants(command: str):
         for _, payload in _execution_flag_findings(source):
             if payload:
                 pending.append(payload)
-
-
-def _join_escaped_word_chars(command: str) -> str:
-    """Turn each escaped `;`/`&`/`|`, space, tab or quote into `_`, so it stays literal text inside its
-    word after normalization strips the backslash. Inside single quotes a backslash is literal, so only
-    the separators are joined there, as before."""
-    def join(span: re.Match) -> str:
-        chars = ';&|' if span.group(0)[0] == "'" else ';&| \t"\'`'
-        return re.sub(r'\\(.)', lambda m: '_' if m.group(1) in chars else m.group(0), span.group(0))
-    return re.sub(r''''[^']*'|"(?:[^"\\]|\\[\s\S])*"|\\[\s\S]''', join, command)
 
 
 def _command_detection_variants(command: str):

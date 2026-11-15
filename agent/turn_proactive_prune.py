@@ -10,7 +10,7 @@ from typing import Any
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.conversation_compression import _reset_read_dedup_caches
-from agent.prompt_cache_clock import cache_certainly_cold, cache_window
+from agent.prompt_cache_clock import DECLARED, PROVEN, cache_certainly_cold, cache_window
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -21,8 +21,13 @@ def prompt_cache_is_cold(agent: Any) -> bool:
     The prune's ONLY cold-cache reading (both call sites), from the shared cache clock: past the
     window's estimated end only. An unknown window (no cache touched yet, an unreadable store, a
     route switch, or a compaction or prune since the last response) or one that may still be warm
-    answers False. The clock restores a resumed session's window from the store itself."""
-    return cache_certainly_cold(cache_window(agent))
+    answers False. The clock restores a resumed session's window from the store itself.
+
+    Only a proven or declared window prunes. An assumed one includes the window the clock rebuilds for a
+    pre-clock session from TODAY's TTL and route: a session cached for 1h (or on another route) then
+    reads cold while still warm. The /context line keeps showing that estimate."""
+    window = cache_window(agent)
+    return window is not None and window.confidence in (PROVEN, DECLARED) and cache_certainly_cold(window)
 
 
 def run_proactive_prune(

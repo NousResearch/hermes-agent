@@ -334,3 +334,25 @@ def test_attempt_restore_keeps_the_cold_credit():
     c = _shipped()
     _restore_prune_rearm_tokens(c, {"_proactive_prune_rearm_tokens": 90_000, "_proactive_prune_cold_credit": 20_000})
     assert (c._proactive_prune_rearm_tokens, c._proactive_prune_cold_credit) == (90_000, 20_000)
+
+
+def test_legacy_session_resumed_while_warm_is_not_pruned(tmp_path, monkeypatch):
+    """Invariant: a pre-clock session's window is rebuilt from TODAY's TTL, not the one it was cached at,
+    so it never licenses a cold prune. Cached for 1h, resumed 10 min later under a 5m setting: still warm."""
+    import time
+    from hermes_state import SessionDB
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "hi")
+        db.append_message("s1", "assistant", "hello", timestamp=time.time() - 600)
+        db.update_token_counts("s1", cache_write_tokens=4000, api_call_count=1)  # no stored clock
+        prune, calls = _recording_prune(lambda m, cold: (m, 0))
+        agent = _site_agent(prune, cold=True)
+        agent.api_mode, agent._use_prompt_caching, agent._cache_ttl = "anthropic_messages", True, "5m"
+        agent._session_db, agent._prompt_cache_clock, agent._prompt_cache_clock_restored = db, None, False
+        run_proactive_prune(agent, _history(3, big=set()), 100_000, "t")
+        assert calls == [False]
+    finally:
+        db.close()

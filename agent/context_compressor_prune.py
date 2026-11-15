@@ -70,9 +70,9 @@ class ProactivePruneMixin:
         on by default), else gated on ``proactive_prune_tokens`` (off by default).
 
         ``turn_start`` indexes the user row of the turn in progress: nothing from it on is shortened, and an
-        index that names no user row skips the round. One assistant step's parallel results are shortened
-        all-or-none. Every result that is
-        shortened has its full original written to ``cache/pruned/`` first and its stub names the file; a
+        index that names no user row skips the round. The protected tail never starts inside one assistant
+        step's parallel results (its boundary moves back to the step); each older result is selected on its
+        own. Every result that is shortened has its full original written to ``cache/pruned/`` first and its stub names the file; a
         result whose write fails is left whole, so no committed prune loses an original (unflushed rows
         included: the store never needs to have seen the body).
 
@@ -113,7 +113,7 @@ class ProactivePruneMixin:
         if session_db and not (session_id and callable(getattr(session_db, "archive_and_compact", None))):
             self._warn_reclamation_no_op("prune:store_cannot_persist", current_tokens)
             return messages, 0
-        # One assistant step's parallel results are shortened all-or-none: a count-only tail split the step.
+        # The tail never starts inside one step's parallel results (a count-only tail split the step).
         # Only a boundary ON a tool row splits one; a group that ends right before it is already whole.
         boundary = len(messages) - self.protect_last_n
         if 0 < boundary < len(messages) and messages[boundary].get("role") == "tool":

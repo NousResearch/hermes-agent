@@ -548,26 +548,32 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
 
 
 def _profile_group_selection_context(profile_dir, target_model):
-    """The largest measured context among this profile's affected group members."""
-    from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, persisted_anchor_tokens
+    """The largest measured context among this profile's affected group members. The store is read through a
+    reader's handle, which ``persisted_anchor_tokens`` does not read through, so the anchor read here is applied
+    the way that helper applies it."""
+    from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, _serialize, anchored_context_tokens
     from hermes_cli.model_selection_guards import SelectionContext
-    from hermes_state import SessionDB
+    from persistence.conversation.sessions import SessionQuery, SessionWindow
+    from persistence_assembly import open_persistence_reader, profile_scope, store_exists
 
-    path = profile_dir / "state.db"
-    if not path.is_file():
+    scope = profile_scope(home=Path(profile_dir))
+    if not store_exists(scope):
         return None
 
     largest = None
-    with SessionDB(path, read_only=True) as db:
-        sessions = db.list_sessions_rich(source="bot_room", limit=-1, include_hidden=True, compact_rows=True)
-        for session in sessions:
-            current_model = session["model"]
+    with open_persistence_reader(scope.profile_dir) as store:
+        sessions = store.sessions.list_sessions(
+            SessionQuery(sources=("bot_room",), include_hidden=True), SessionWindow(limit=None), compact_rows=True)
+        for entry in sessions:
+            current_model = entry.session.model
             if current_model == target_model:
                 continue
-            sid = session["id"]
-            if not db.get_session_model_config_value(sid, USAGE_ANCHOR_MODEL_CONFIG_KEY):
+            sid = entry.session.session_id
+            anchor = store.sessions.get_model_config_value(sid, USAGE_ANCHOR_MODEL_CONFIG_KEY)
+            if not anchor:
                 continue
-            tokens = persisted_anchor_tokens(db, sid, db.get_messages_as_conversation(sid))
+            history = [m.as_openai_message() for m in store.messages.read_conversation(sid)]
+            tokens = anchored_context_tokens(history, _serialize(anchor))
             if tokens and (largest is None or tokens > (largest.context_tokens or 0)):
                 largest = SelectionContext(context_tokens=tokens, current_model=current_model)
     return largest

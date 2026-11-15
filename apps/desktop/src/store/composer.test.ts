@@ -19,7 +19,9 @@ import {
   requestVoiceConversationStart,
   revokeAttachmentPreviewUrls,
   SESSION_DRAFTS_STORAGE_KEY,
+  rotateFreshDraftKey,
   setComposerTerminalSelection,
+  stashedDraftScopes,
   stashSessionDraft,
   takeSessionDraft,
   takeVoiceConversationStart,
@@ -450,5 +452,22 @@ describe('freezeComposerTransportPayload', () => {
     expect(frozen.transportText).toContain('selected terminal lines')
     expect(frozen.displayText).toBe('look at @terminal:`zsh:23-58`')
     expect(freezeComposerTransportPayload(frozen.transportText).transportText).toBe(frozen.transportText)
+  })
+})
+
+describe('stashedDraftScopes', () => {
+  it('never lists a fresh-chat draft key, rotated per-chat keys included', () => {
+    // The dead-session prune probes every scope returned here as a stored session id and CLEARS the
+    // draft of any that 404s. A fresh-chat key (`__new__:<uuid>` after a rotation) is not a session id:
+    // listing it made every abandoned unsent new-chat message get pruned as a "dead session".
+    const rotated = rotateFreshDraftKey()
+    stashSessionDraft(rotated, 'unsent message in a new chat', [])
+    stashSessionDraft('stored-session-1', 'real session draft', [])
+
+    expect(stashedDraftScopes()).toContain('stored-session-1')
+    expect(stashedDraftScopes()).not.toContain(rotated)
+
+    clearSessionDraft(rotated)
+    clearSessionDraft('stored-session-1')
   })
 })

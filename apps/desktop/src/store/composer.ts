@@ -577,7 +577,9 @@ export const clearSessionDraft = (scope: string | null | undefined) => stashSess
  * exist on the backend; the new-chat draft is never a session reference.
  */
 export function stashedDraftScopes(): string[] {
-  return [...draftsBySession.keys()].filter(key => key !== NEW_SESSION_DRAFT_KEY)
+  // isFreshDraftScope, not `=== NEW_SESSION_DRAFT_KEY`: a rotated per-chat key (`__new__:<uuid>`, #66662) is
+  // just as much a new-chat key, and the prune would otherwise probe it as a session id and clear its draft.
+  return [...draftsBySession.keys()].filter(key => !isFreshDraftScope(key))
 }
 
 /**

@@ -1,0 +1,28 @@
+name: hermes-pilot
+title: Hermes Pilot
+repo: https://github.com/hajimemanila/hermes-pilot
+sha: "8c7d8d817f120a07258dc02ffe585ab8d6c149d9"
+description: >-
+  Drive an autonomous Hermes Agent from a phone or tablet. Hermes Pilot turns the decisions an agent needs into
+  one-tap review sheets and annotated screenshots, carries a one-line idea through a Quick Review interview into a
+  spec the batch runner can execute, then files and monitors the kanban batches — with kanban, chat, terminal and
+  usage in one installable PWA. Ships three bundled skills (quick-review, annotation, spec-architect), a Hermes
+  dashboard tab (pairing QR, bridge status, scan directories, service control) and the PWA bridge it talks to.
+  Disclosure — the plugin runs a local HTTP bridge bound to 127.0.0.1 (default port 4097), authenticated with a
+  256-bit token generated on first run and stored 0600 under the profile's plugin data; it reads the kanban SQLite
+  database read-only and runs the local `hermes` CLI for chat/session/terminal actions; remote access is opt-in and
+  left to the user (documented Tailscale `serve`, never started by the plugin); `hermes-pilot service install`
+  writes a launchd (macOS) or systemd --user (Linux) unit only on explicit command; the bundled Interactive Demo is
+  a static mock that talks to no backend; no telemetry and no third-party upload.
+maintainer: hajimemanila
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/hajimemanila/hermes-pilot#readme
+version: "0.1.0"
+platforms: [macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

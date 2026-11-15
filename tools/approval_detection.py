@@ -17,6 +17,7 @@ from tools import approval_parser_budget as _parser_budget
 from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_end, _scan_shell
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 from tools.approval_git_options import _GIT, _GIT_PUSH, _GIT_PUSH_ARGS, _join_escaped_word_chars
+from tools.approval_config_set import _HERMES_CONFIG_SET_APPROVAL_POLICY
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
 from tools.approval_env_split import _split_env_string
 from tools.approval_shell_tokens import _shell_tokens_with_spans
@@ -121,39 +122,6 @@ _CMDPOS = (
     r'(?:sudo\s++(?:-[^\s]++\s++)*+)?' r'(?:env\s++(?:\w+=\S*+\s++)*+)?'  # optional sudo with flags, env VAR=VAL pairs
     r'(?:(?:exec|nohup|setsid|time)\s++)*+' r'\s*+'  # optional wrapper commands
 )
-
-# Top-level `hermes` flags that consume a SEPARATE word (`--profile work`): the value-taking subset
-# of `hermes_cli._parser.top_level_value_flag_sets`, so `hermes --profile work config set ...` does
-# not read "work" as the subcommand. Any other flag is a bare token (`--json`, `--flag=value`).
-_HERMES_TOP_LEVEL_VALUE_FLAGS = (
-    r'(?:--profile|-p|--config|--model|-m|--provider|--reasoning|--toolsets|-t'
-    r'|--resume|-r|--skills|-s|--oneshot|-z|--usage-file|--in|--cpu-profile)'
-)
-
-# `-p`/`--profile` is stripped from ANYWHERE before `--` (`_parser.scan_profile_flag`), so it can sit
-# between `config` and `set` or before the key too. A `VAR=value` word may be quoted (`NOTE='a b'`).
-_HERMES_PROFILE_OPTION = r'(?:(?:-p|--profile)[ \t]+[^\s]++|--profile=[^\s]++)'
-_SHELL_WORD = r'''(?:[^\s'"]++|'[^']*+'|"[^"]*+")*+'''
-
-# `hermes config set|unset <key>` — the invocations that rewrite the agent's own approval
-# policy. Anchored to the INVOCATION (program word, `config set|unset`, policy key), so a read of
-# the text (`grep -r 'hermes config set' docs`) stays ungated. Option runs are ATOMIC/possessive:
-# nested `(?:\s+...)*` backtracked exponentially on long flag runs (0.34s at 30 flags).
-_HERMES_CONFIG_SET_APPROVAL_POLICY = (
-    # The program: the `hermes` binary (or the macOS `ai.hermes`), or the module form
-    # `python -m hermes_cli.main` that the updater and the cron lifecycle guard invoke.
-    # Optional leading `VAR=value` assignments (`HERMES_HOME=... hermes config set ...`).
-    r'(?>(?:\w++=' + _SHELL_WORD + r'[ \t]+)*)'
-    r'(?:(?:(?:[a-z]:)?[^\s:]*?/)?(?:ai\.)?hermes(?:\.exe)?\b'
-    r'|(?:(?:[a-z]:)?[^\s:]*?/)?python[0-9.]*(?:\.exe)?\b[ \t]+(?:-[^\s]+[ \t]+)*?-m[ \t]*hermes_cli\.main\b)'
-    r'(?>(?:[ \t]+(?:' + _HERMES_TOP_LEVEL_VALUE_FLAGS + r'[ \t]+[^\s]++'
-    r'|--?[\w-]++(?:=[^\s]++)?))*)'  # global options before the subcommand
-    r'[ \t]+config(?>(?:[ \t]+' + _HERMES_PROFILE_OPTION + r')*)'  # `-p` also parses after a subcommand
-    r'[ \t]+(?:set|unset)\b[ \t]*'  # the `config set` / `config unset` subcommand
-    r'(?>(?:(?:' + _HERMES_PROFILE_OPTION + r'|--?[\w-]++)[ \t]+)*)'  # `--force`, `-p work`
-    r'["\']?(?:approvals(?:\.[\w.-]++)*|command_allowlist)\b'  # the approval-policy key, maybe quoted
-)
-
 
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
@@ -581,6 +549,8 @@ _PS_EXE_AT_COMMAND_POSITION = (
 # An argument may open with a quote the shell strips (`"-f"`, `'+main'`, `"--force"`).
 _GIT_PUSH_ARG_START = r'''\s["']?'''
 _DEV_TCP_REDIRECT_DESCRIPTION = "reverse shell via /dev/tcp or /dev/udp redirect"
+# PowerShell verbs/aliases that write a registry key when given a provider path.
+_REG_WRITE_VERB = r'(?:sp|si|ni|set-item|new-item|md|mkdir)'
 
 DANGEROUS_PATTERNS = [
     # A drive letter is a root too (`rm X:/f`; `X:\f` arrives as `X:/f` via the Windows-path variant).
@@ -656,6 +626,17 @@ DANGEROUS_PATTERNS = [
     # Registry deletion with force flag.
     (r'\breg(?:\.exe)?\s+delete\b', "registry delete (reg delete)"),
     (r'\bremove-itemproperty\b[^\n]*\s' + _PS_FORCE, "registry value delete (Remove-ItemProperty -Force)"),
+    # Registry writes persist past the session (Run keys, HKCU\Environment, policies), so they prompt
+    # like the deletes above; the read verbs (`reg query`/`export`, Get-ItemProperty) stay quiet.
+    # `\s+` after setx keeps a shell assignment (`setx=1`) out.
+    (r'\breg(?:\.exe)?\s+(?:add|import|copy|restore|load|unload)\b', "registry write (reg add/import/copy/restore/load/unload)"),
+    (r'\bregedit(?:\.exe)?\s+[/-]s\b', "registry write (regedit /s silent .reg import)"),
+    # The short aliases are common words, so they only count when aimed at a registry provider path,
+    # which may sit after any other parameter (`-Force`, `-Name`, `-LiteralPath`, `-Path:`) within the
+    # same segment. The scan stops at the next verb token so a run of `si si si ...` stays linear.
+    (r'(?<![\w.])' + _REG_WRITE_VERB + r'\s(?:(?!(?<![\w.])' + _REG_WRITE_VERB + r'\s)[^\n;|&])*?(?:hk(?:cu|lm|cr|u|cc):|registry::)', "registry write (sp/ni/Set-Item/New-Item on a registry path)"),
+    (r'\bsetx(?:\.exe)?\s+[^\s;&|]', "registry write (setx persistent environment variable)"),
+    (r'\b(?:set|new)-itemproperty\b', "registry value write (Set-ItemProperty / New-ItemProperty)"),
     # Windows service/system stop — analogue of systemctl stop.
     (r'\bstop-service\b[^\n]*\s' + _PS_FORCE_ONLY_F, "force stop service (Stop-Service -Force)"),
     (r'\bsc(?:\.exe)?\s+(?:stop|delete)\b', "stop/delete service (sc)"),

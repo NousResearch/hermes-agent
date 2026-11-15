@@ -51,6 +51,48 @@ def session_cwd() -> str:
     return scoped_session_cwd() or (policy.cwd if policy is not None else "") or scope_terminal_cwd().strip()
 
 
+_LOCAL_SURFACES = frozenset({"cli", "tui", "desktop", "acp"})
+
+
+def _gateway_live_sessions(runner, home) -> list[dict]:
+    from gateway.session_authorities import authority_for_home
+    from gateway.session_policy import policy_for_source
+    authority = authority_for_home(runner, home)
+    if authority is None:
+        return []
+    rows = []
+    for session_id, live in authority.sessions.copy().items():
+        try:
+            policy = policy_for_source(runner, live.source)  # None for a messaging chat or history mount
+            if policy is None or policy.platform not in _LOCAL_SURFACES:
+                continue
+            row = authority.persistence.sessions.list_row(session_id)
+            if row is not None and row.ended_at is not None:
+                continue
+            rows.append({"session_key": live.route, "session_id": session_id, "title": (row.title if row else "") or "",
+                         "cwd": policy.cwd or "", "surface": policy.platform,
+                         "busy": live.task is not None and not live.task.done()})
+        except Exception:  # a session ending under us is simply not live
+            continue
+    return rows
+
+
+def live_sessions(manager) -> list[dict]:
+    """Live interactive local sessions this process hosts for *manager*'s profile: the gateway's,
+    then a TUI/desktop host's, deduplicated by ``session_key`` (first wins). Reads only; ``[]`` when
+    this process hosts none."""
+    rows = []
+    if (gateway := manager._gateway_message_injector) is not None:
+        rows += _gateway_live_sessions(gateway[0], manager.home_path)
+    if manager.has_tui_message_injector:
+        from tui_gateway import server
+        rows += server.live_tui_sessions(manager.home_path)
+    unique = {}
+    for row in rows:
+        unique.setdefault(row["session_key"], row)
+    return list(unique.values())
+
+
 def context_surface(manager) -> str:
     """``session_surface()`` for a plugin context: the classic CLI process itself is ``cli``."""
     return "cli" if manager._cli_ref is not None else session_surface()

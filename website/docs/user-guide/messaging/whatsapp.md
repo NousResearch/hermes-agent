@@ -262,6 +262,14 @@ whatsapp:
   require_mention: true
 ```
 
+### Owner detection
+
+The sender listed by explicit number or LID in `WHATSAPP_ALLOWED_USERS` is the owner (`*` never makes anyone the
+owner), also in a group that shows them only by LID. The bot is told whether the sender is the owner: a session's
+context carries an `**Owner:** yes` or `**Owner:** no` line, and when group members share one session
+(`group_sessions_per_user: false`) the owner's messages carry a `[SYSTEM: sender NAME is the owner]` marker
+instead. Your persona (for example `SOUL.md`) can key owner-only behavior off either.
+
 Then start the gateway:
 
 ```bash

@@ -39,8 +39,7 @@ async def test_refetched_email_after_restart_is_its_committed_admission(tmp_path
     from gateway.session_authority import SessionAuthority, initialize_session_authority
     from gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import (RuntimeStoreError, claim_session_input, list_session_admissions,
-                                      settle_session_input)
+    from persistence.core.errors import AuthorityRefusal
     from plugins.platforms.email.adapter import EmailAdapter
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
     with patch.dict(os.environ, ENV, clear=False):
@@ -56,13 +55,14 @@ async def test_refetched_email_after_restart_is_its_committed_admission(tmp_path
         try:
             first = await admit(await _fetch(adapter, _mail()))
             sid = first.ref.session_id
-            claim = claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
-            settle_session_input(authority.db, epoch=authority.epoch, admission_id=first.admission_id,
-                                 generation=claim['generation'], outcome='interrupted')
+            store = authority.persistence
+            claim = store.admissions.claim(epoch=authority.epoch, session_id=sid)
+            store.admissions.settle(epoch=authority.epoch, admission_id=first.admission_id,
+                                    generation=claim.generation, outcome='interrupted')
             again = await admit(await _fetch(adapter, _mail()))
             assert again.admission_id == first.admission_id and again.status == 'terminal'
-            with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+            with pytest.raises(AuthorityRefusal, match='admission_conflict'):
                 await admit(await _fetch(adapter, _mail(body='wire the money instead')))
-            assert len(list_session_admissions(authority.db, session_id=sid, pending_only=False)) == 1
+            assert len(store.admissions.list(session_id=sid, pending_only=False)) == 1
         finally:
-            await asyncio.to_thread(authority.db.close)
+            await asyncio.to_thread(authority.persistence.close)

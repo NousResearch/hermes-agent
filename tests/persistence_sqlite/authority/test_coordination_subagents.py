@@ -3,10 +3,8 @@ open, and the records of a profile whose store was removed, which no write or re
 
 from __future__ import annotations
 
-import re
 import sqlite3
 
-import hermes_state_common
 from hermes_constants import get_hermes_home, profile_tombstone_path
 from persistence.authority.subagents import SubagentState, SubagentWrite
 from persistence.sqlite import SQLiteBackend
@@ -18,12 +16,26 @@ def _columns(conn: sqlite3.Connection) -> list[tuple]:
     return [tuple(row) for row in conn.execute("PRAGMA table_info('resumable_subagents')")]
 
 
+#: The ``resumable_subagents`` statement of main's schema.
+MAIN_RESUMABLE_SUBAGENTS = """
+CREATE TABLE IF NOT EXISTS resumable_subagents (
+    subagent_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    stop_cause TEXT,
+    owner_pid INTEGER,
+    owner_started_at INTEGER,
+    record_json TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    expires_at REAL
+);
+"""
+
+
 def _main_columns() -> list[tuple]:
-    statement = re.search(r"CREATE TABLE IF NOT EXISTS resumable_subagents \(.*?\);", hermes_state_common.SCHEMA_SQL,
-                          re.DOTALL)
-    assert statement is not None
     with sqlite3.connect(":memory:") as conn:
-        conn.execute(statement.group(0))
+        conn.execute(MAIN_RESUMABLE_SUBAGENTS)
         return _columns(conn)
 
 

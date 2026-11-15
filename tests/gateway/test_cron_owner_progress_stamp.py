@@ -86,12 +86,10 @@ def test_owner_cron_run_binds_its_claim_fence(tmp_path, monkeypatch):
     from gateway import run, session_cron
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
+    from gateway.session_authority import SessionAuthority, admission_row
     from gateway.session_contract import SessionRef
     from gateway.session_local_recovery import local_adapter_map
     from hermes_scope import Fence, TurnScope, current_scope
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, claim_session_input, settle_session_input
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(executions_mod, 'EXECUTIONS_FILE', tmp_path / 'cron' / 'executions.db')
@@ -99,12 +97,12 @@ def test_owner_cron_run_binds_its_claim_fence(tmp_path, monkeypatch):
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
     execution = create_execution('job', source='cron')
     mark_execution_running(execution['id'])
-    db = SessionDB(tmp_path / 'state.db')
+    store = storage_handle(tmp_path)
     runner = SimpleNamespace(_draining=False, session_store=SessionStore(tmp_path / 'sessions', GatewayConfig()),
                              adapters={})
-    begin_runtime_epoch(db, instance_id='test')
-    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='test'))  # epoch 2
+    store.runtime.begin_epoch(instance_id='test')
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', persistence=store,
+                                 epoch=store.runtime.begin_epoch(instance_id='test'))  # epoch 2
     runner.session_authority = authority
     admitted = threading.Event()
     monkeypatch.setattr(authority, '_schedule', lambda ref: admitted.set())
@@ -122,21 +120,18 @@ def test_owner_cron_run_binds_its_claim_fence(tmp_path, monkeypatch):
                                                           execution_id=execution['id']))
             assert await asyncio.to_thread(admitted.wait, 10), firer
             sid = next(iter(authority.sessions))
-            row = claim_session_input(db, epoch=authority.epoch, session_id=sid)
+            row = admission_row(store.admissions.claim(epoch=authority.epoch, session_id=sid))
             policy = local_adapter_map(authority)[Platform.LOCAL].policies[sid]
             await session_cron.execute(authority, SessionRef(authority.profile_id, sid), row, policy)
-            settle_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'],
-                                 generation=row['generation'], outcome='completed',
-                                 result={'result': {'cron_result': [True, 'doc', 'answer', None]}, 'usage': {}})
+            store.admissions.settle(epoch=authority.epoch, admission_id=row['admission_id'],
+                                    generation=row['generation'], outcome='completed',
+                                    result={'result': {'cron_result': [True, 'doc', 'answer', None]}, 'usage': {}})
             await asyncio.wait_for(firer, 10)
             return sid, row
         finally:
             session_cron.unbind_owner(authority)
 
-    try:
-        sid, row = asyncio.run(probe())
-    finally:
-        db.close()
+    sid, row = asyncio.run(probe())
     [scope] = seen
     assert isinstance(scope, TurnScope), scope
     assert (scope.session, scope.turn) == (sid, row['admission_id'])

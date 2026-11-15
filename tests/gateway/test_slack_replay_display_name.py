@@ -56,16 +56,17 @@ async def _deliver(adapter, event):
 
 
 def _rows(authority):
-    from hermes_state_runtime import list_session_admissions
-    return [row for sid in authority.sessions
-            for row in list_session_admissions(authority.db, session_id=sid, pending_only=False)]
+    from gateway.session_authority import admission_row
+    return [admission_row(row) for sid in authority.sessions
+            for row in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['identical', 'display-name', 'content'])
 async def test_slack_answered_root_restart_replay_preserves_identity(tmp_path, monkeypatch, change):
     from gateway.session_ingress import ALREADY_ADMITTED_REPLY
-    from hermes_state_runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError
+    from persistence.authority.vocabulary import ADMITTED_REQUEST_CONFLICT
+    from persistence.core.errors import AuthorityRefusal
 
     original = {'type': 'message', 'channel': DM, 'channel_type': 'im', 'team': TEAM,
                 'user': USER, 'text': TEXT, 'ts': TS, 'event_ts': TS, 'client_msg_id': 'fixture'}
@@ -78,7 +79,7 @@ async def test_slack_answered_root_restart_replay_preserves_identity(tmp_path, m
         assert len(before) == 1 and before[0]['status'] == 'terminal'
     finally:
         runner.session_store.close_all_db_handles()
-        authority.db.close()
+        authority.persistence.close()
 
     # Fresh runner, adapter guards, name cache and owner epoch; the same durable home.
     runner, adapter, authority, sent, calls = await _slack_gateway(
@@ -89,7 +90,7 @@ async def test_slack_answered_root_restart_replay_preserves_identity(tmp_path, m
     async def record_admission(event):
         try:
             receipt = await admit(event)
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             outcomes.append((exc.reason, exc.field))
             raise
         outcomes.append(receipt.admission_id)
@@ -115,7 +116,7 @@ async def test_slack_answered_root_restart_replay_preserves_identity(tmp_path, m
             assert sent == [ALREADY_ADMITTED_REPLY], 'meaningful conflicts remain visible'
     finally:
         runner.session_store.close_all_db_handles()
-        authority.db.close()
+        authority.persistence.close()
 
 
 @pytest.mark.asyncio
@@ -127,7 +128,8 @@ async def test_slack_name_reconcile_does_not_erase_sender_ids(tmp_path, monkeypa
     retry). Pin the existing principal here to exercise the payload digest guard.
     """
     from copy import deepcopy
-    from hermes_state_runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError
+    from persistence.authority.vocabulary import ADMITTED_REQUEST_CONFLICT
+    from persistence.core.errors import AuthorityRefusal
 
     runner, adapter, authority, _sent, calls = await _slack_gateway(tmp_path, monkeypatch, 'Before', 'first')
     try:
@@ -139,13 +141,13 @@ async def test_slack_name_reconcile_does_not_erase_sender_ids(tmp_path, monkeypa
         payload = deepcopy(row['payload'])
         payload['native_text_v1']['source']['user_name'] = 'After'
         payload['native_text_v1'][sender_location]['user_id'] = OTHER
-        with pytest.raises(RuntimeStoreError) as error:
+        with pytest.raises(AuthorityRefusal) as error:
             await asyncio.to_thread(authority._admit_native_write,
                                     principal_id=row['principal_id'], session_id=row['target_session_id'],
-                                    request_id=TS, payload=payload, authorize=None)
+                                    request_id=TS, payload=payload)
         assert (error.value.reason, error.value.field) == ('admission_conflict', ADMITTED_REQUEST_CONFLICT['field'])
         assert _rows(authority) == before
         assert calls == [TEXT]
     finally:
         runner.session_store.close_all_db_handles()
-        authority.db.close()
+        authority.persistence.close()

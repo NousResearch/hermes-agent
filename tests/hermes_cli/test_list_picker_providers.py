@@ -270,11 +270,7 @@ def test_non_blocking_listing_opens_no_socket(monkeypatch, tmp_path):
         max_models=50, include_moa=True, current_provider="openrouter", user_providers={},
         custom_providers=[], excluded_providers=[], non_blocking_catalogs=True)
 
-    # The one carve-out is _LIVE_ON_COLD_READ_PROVIDERS (Anthropic). Its curated list is not the
-    # account's catalog, so a cold row costs one bounded /v1/models fetch rather than a placeholder.
-    # Every other provider must stay cache-only.
-    probed = [args for args, _kwargs in live]
-    assert probed == [("anthropic",)], f"cache-only listing ran live probes in the request path: {live}"
+    assert live == [], f"cache-only listing ran live probes in the request path: {live}"
     assert any(r.get("slug") == "openrouter" and r.get("models") for r in rows), "OpenRouter row lost its curated snapshot"
 
 

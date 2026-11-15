@@ -1758,21 +1758,6 @@ _PROVIDER_MODELS_STALE_SERVE_MAX = 7 * 24 * 3600  # 7d
 # serve it through the stale window.
 _PROVIDER_MODELS_FALLBACK_TTL = 60
 
-# Providers whose curated list is a poor stand-in for the account's catalog. On these providers, a
-# non-blocking read of a cold or credential-mismatched row fetches live, bounded by the fetcher's own
-# timeout, instead of returning the curated placeholder. Anthropic entitlements are per account:
-# subscription-only and research-preview models are absent from the curated list. The row's
-# fingerprint also changes on every OAuth refresh, so the placeholder had become the usual /model view.
-_LIVE_ON_COLD_READ_PROVIDERS = frozenset({"anthropic"})
-
-
-def _fetch_live_on_cold_read(normalized: str, entry: Any, fp: str) -> bool:
-    """Whether a non-blocking read of *entry* should block on one live fetch (see above). A curated
-    fallback row is cold too once past its short TTL (``_disk_serve_tier`` serves it before that)."""
-    if normalized not in _LIVE_ON_COLD_READ_PROVIDERS:
-        return False
-    return not _cache_entry_valid(entry, fp) or bool(entry.get("fallback"))
-
 # Cache keys with a background SWR refresh in flight — dedupes concurrent refreshes.
 _swr_refresh_inflight: set = set()
 _swr_refresh_lock = threading.Lock()
@@ -1995,9 +1980,7 @@ def cached_provider_model_ids(
     ``non_blocking`` marks the GUI read path (``model.options``): it NEVER waits on a provider probe.
     A same-credentials row of any age is served as-is and a daemon thread warms the next open; a
     cold/mismatched row returns ``[]`` so the caller keeps its curated list. One degraded provider
-    (hanging or timing-out ``/v1/models``) therefore delays nothing but itself (#114215). The one
-    exception is ``_LIVE_ON_COLD_READ_PROVIDERS``: there a cold row fetches live, because the curated
-    list is not the account's catalog."""
+    (hanging or timing-out ``/v1/models``) therefore delays nothing but itself (#114215)."""
     normalized = _normalized_cache_slug(provider)
     if not normalized:
         return []
@@ -2015,7 +1998,7 @@ def cached_provider_model_ids(
                 _spawn_swr_refresh(normalized)
             return _chat_catalog_rows(list(entry["models"]))
 
-    if non_blocking and not force_refresh and not _fetch_live_on_cold_read(normalized, entry, fp):
+    if non_blocking and not force_refresh:
         # Read path: never touch the network in the caller's thread. A same-credentials row past the
         # SWR window is still served (hour-old catalog beats an empty picker) while a daemon thread
         # warms the next open; a cold row returns [] and the caller falls back to its curated list.

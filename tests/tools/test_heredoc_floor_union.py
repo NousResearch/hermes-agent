@@ -95,6 +95,17 @@ def test_quote_in_inert_body_does_not_hide_the_next_command(gate_mode):
     assert approval.check_all_command_guards(command, "local")["approved"] is False
 
 
+@pytest.mark.parametrize("command", [
+    f"cat > notes.txt <<'EOF' # don't expand\nit's data\nEOF\n{RM_ROOT}",
+    f"# don't\ncat > notes.txt <<'EOF'\nit's data\nEOF\n{RM_ROOT}",
+    f"echo hi # don't\n{RM_ROOT}",
+])
+def test_quote_in_a_comment_does_not_hide_the_next_command(gate_mode, command):
+    # A comment's apostrophe opens no quote; once the body is dropped nothing else closes it.
+    assert detect_hardline_command(command)[0] is True
+    assert approval.check_all_command_guards(command, "local")["approved"] is False
+
+
 @pytest.mark.parametrize("opener", ["python3 - <<'EOF'\n# it's code", "osascript <<'EOF'\n-- it's code"])
 def test_quote_in_code_heredoc_body_does_not_hide_the_next_command(opener):
     # Code bodies stay raw too; only their dropped copy keeps the quote from hiding the next line.

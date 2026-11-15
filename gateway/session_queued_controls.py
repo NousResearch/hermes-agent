@@ -42,10 +42,11 @@ def _interactive(authority, session_id):
     sources = authority.launch_sources
     if session_id not in sources:
         with authority.db._read_ctx() as conn:
-            found = conn.execute('SELECT source FROM sessions WHERE id=?', (session_id,)).fetchone()
+            found = conn.execute('SELECT source, created_source FROM sessions WHERE id=?', (session_id,)).fetchone()
         if found is None:
             return False
-        sources[session_id] = found[0]
+        # Peer refresh rewrites an interactive surface's row to source='local'; created_source keeps the surface.
+        sources[session_id] = found[1] if found[0] == 'local' else found[0]
     return sources[session_id] in _INTERACTIVE_SOURCES
 
 

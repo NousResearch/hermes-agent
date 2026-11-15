@@ -63,6 +63,14 @@ MagicMock/
 # symlink node_modules to the main checkout; the dir-only pattern let one
 # slip into a commit and break `npm ci` on CI with ENOTDIR).
 node_modules
+# pnpm-lock.yaml is the workspaces' only lock: an npm run anywhere in the tree must not add
+# another (npm 11's `npm shrinkwrap` is not refused). The standalone npm projects keep theirs;
+# a new standalone npm project must add its own `!` line here, or git silently skips its lock.
+**/package-lock.json
+**/npm-shrinkwrap.json
+!/website/package-lock.json
+!/scripts/whatsapp-bridge/package-lock.json
+!/plugins/platforms/photon/sidecar/package-lock.json
 browser-use/
 agent-browser/
 # Private keys
@@ -94,6 +102,8 @@ hermes_cli/web_dist/
 .web_ui_build.lock
 apps/desktop/build/
 apps/desktop/dist/
+apps/desktop/dist-webapp/
+.dist-webapp-build-*
 
 # tsc-emitted artifacts (a stray `tsc -b` compiles into src/, and vite then
 # resolves the stale .js OVER the .tsx — never track these)
@@ -126,7 +136,7 @@ apps/desktop/.staging-*/
 *.tsbuildinfo
 
 # Web UI assets — synced from @nous-research/ui at build time via
-# `npm run sync-assets` (see web/package.json).
+# `pnpm run sync-assets` (see web/package.json).
 web/public/fonts/
 web/public/ds-assets/
 
@@ -241,6 +251,10 @@ docs/superpowers/*
 /google_token.json
 /google_oauth_pending.json
 /webhook_subscriptions.json
+/bws_cache.json
+/bws_cache.enc.json
+/op_cache.json
+/photon-sidecar.json
 /channel_directory.json
 /channel_aliases.json
 /feishu_comment_pairing.json
@@ -248,6 +262,7 @@ docs/superpowers/*
 /profiles/
 /credentials/
 /mcp-tokens/
+/webapp/
 /pairing/
 /platforms/
 /backups/
@@ -302,12 +317,11 @@ apps/desktop/demo/
 # Spelling variants are listed because a single `infographic/` pattern was
 # sidestepped by an `infograficos/` directory (#70552). .gitignore is only
 # the first line of defence and cannot stop `git add -f` at all — the
-# infographic-check CI job is what actually enforces this.
+# infographic step of the repo-guards CI job is what actually enforces this.
 infographic/
 infographics/
 infograficos/
 infografico/
-native/fts5_cjk/*.so
 # Runtime marker written by hermes update when a lazy dependency refresh is
 # interrupted; consumed by launch-time recovery. Never commit it (was tracked
 # by accident via 3a69e34702, removed in the #72002 salvage).

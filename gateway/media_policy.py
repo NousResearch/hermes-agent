@@ -18,10 +18,48 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-_FLAG_ENVS = (("strict", "HERMES_MEDIA_DELIVERY_STRICT"), ("trust_recent_files", "HERMES_MEDIA_TRUST_RECENT_FILES"))
+_FLAG_ENVS = (
+    ("strict", "HERMES_MEDIA_DELIVERY_STRICT"),
+    ("trust_recent_files", "HERMES_MEDIA_TRUST_RECENT_FILES"),
+)
 _ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
 _TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"0", "false", "no", "off", ""})
+# strict is opt-in (off unless a known truthy value turns it on); trust_recent_files is
+# opt-out (on unless a known falsy value turns it off). Both defaults match the env readers.
+_FLAG_DEFAULTS = {"strict": False, "trust_recent_files": True}
+# An unreadable config.yaml value takes the restrictive reading: before the shared parser,
+# ``bool()`` read every non-empty string as True, so ``strict: "enabled"`` was on; falling back
+# to the opt-in default would switch strict OFF on upgrade without a word.
+_FLAG_FAIL_SAFE = {"strict": True, "trust_recent_files": False}
+
+
+def _flag_value(value: Any, *, default: bool) -> bool:
+    """One reading per flag, shared by the config path, the env readers and the bridge: a known
+    truthy value is on, a known falsy one is off, anything else returns ``default``. A
+    hand-edited config.yaml spells flags as strings (``strict: "false"``), where ``bool()``
+    would read the quoted "false" as True. Leading and trailing quotes are dropped: before the CLI
+    coerced them, ``hermes config set gateway.strict '"true"'`` stored ``'"true"'``."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().strip("\"'").strip().lower()
+    if text in _TRUTHY:
+        return True
+    if text in _FALSY:
+        return False
+    return default
+
+
+def _config_flag(cfg: dict[str, Any], key: str) -> bool:
+    """``key`` as read from a config.yaml ``gateway`` section: unset keeps the knob default, an
+    unknown value takes the fail-safe reading (strict on, recency trust off)."""
+    value = cfg.get(key)
+    if value is None:
+        return _FLAG_DEFAULTS[key]
+    return _flag_value(value, default=_FLAG_FAIL_SAFE[key])
 
 
 def _routed_gateway_cfg() -> Optional[dict[str, Any]]:
@@ -29,10 +67,12 @@ def _routed_gateway_cfg() -> Optional[dict[str, Any]]:
     (multiplexed turn), else None. The env bridge is one process-wide copy of the launch profile's
     policy, so a secondary's deliveries must read their own config instead of ``os.environ``."""
     from hermes_constants import get_hermes_home_override
+
     if not get_hermes_home_override():
         return None
     try:
         from hermes_cli.config import load_config_readonly
+
         gateway_cfg = load_config_readonly().get("gateway")
     except Exception:
         return {}
@@ -42,8 +82,10 @@ def _routed_gateway_cfg() -> Optional[dict[str, Any]]:
 def media_delivery_strict() -> bool:
     cfg = _routed_gateway_cfg()
     if cfg is not None:
-        return bool(cfg.get("strict", False))
-    return os.environ.get(_FLAG_ENVS[0][1], "0").strip().lower() in _TRUTHY
+        return _config_flag(cfg, "strict")
+    return _flag_value(
+        os.environ.get(_FLAG_ENVS[0][1]), default=_FLAG_DEFAULTS["strict"]
+    )
 
 
 def media_delivery_allow_dirs() -> str:
@@ -57,8 +99,10 @@ def media_delivery_allow_dirs() -> str:
 def media_delivery_trust_recent() -> bool:
     cfg = _routed_gateway_cfg()
     if cfg is not None:
-        return bool(cfg.get("trust_recent_files", True))
-    return os.environ.get(_FLAG_ENVS[1][1], "1").strip().lower() not in ("0", "false", "no", "off", "")
+        return _config_flag(cfg, "trust_recent_files")
+    return _flag_value(
+        os.environ.get(_FLAG_ENVS[1][1]), default=_FLAG_DEFAULTS["trust_recent_files"]
+    )
 
 
 def media_delivery_trust_recent_seconds() -> str:
@@ -68,7 +112,6 @@ def media_delivery_trust_recent_seconds() -> str:
         raw = cfg.get("trust_recent_files_seconds")
         return "" if raw is None else str(raw)
     return os.environ.get(_TRUST_RECENT_SECONDS_ENV, "")
-
 
 
 def _load_gateway_cfg(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -104,15 +147,15 @@ def apply_media_policy_env(config: Optional[dict[str, Any]] = None) -> None:
     fire would hand its allowlist and strictness to the launch profile and its children."""
     try:
         from hermes_constants import get_hermes_home_override
+
         if get_hermes_home_override():
             return
         gateway_cfg = _load_gateway_cfg(config)
         if not gateway_cfg:
             return
         for key, env in _FLAG_ENVS:
-            flag = gateway_cfg.get(key)
-            if flag is not None:
-                _set_env_default(env, "1" if flag else "0")
+            if gateway_cfg.get(key) is not None:
+                _set_env_default(env, "1" if _config_flag(gateway_cfg, key) else "0")
         allow_dirs = gateway_cfg.get("media_delivery_allow_dirs")
         if allow_dirs:
             _set_env_default(_ALLOW_DIRS_ENV, _allow_dirs_str(allow_dirs))

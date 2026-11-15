@@ -371,9 +371,7 @@ def test_child_system_prompt_embeds_workspace_context(tmp_path):
     (workspace / "AGENTS.md").write_text(
         "# Project Rules\nAll fixes must cover sibling call sites.\n"
     )
-    prompt = _build_child_system_prompt(
-        "do the thing", None, workspace_path=str(workspace)
-    )
+    prompt = _build_child_system_prompt(workspace_path=str(workspace))
     assert "sibling call sites" in prompt
 
 # ---------------------------------------------------------------------------

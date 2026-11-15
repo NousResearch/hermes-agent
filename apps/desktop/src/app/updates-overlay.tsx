@@ -7,7 +7,7 @@ import { settingsSearchTargetQuery } from '@/app/settings/settings-search'
 import { BrandMark } from '@/components/brand-mark'
 import { SyncStatusCard } from '@/components/sync-status-card'
 import { Button } from '@/components/ui/button'
-import { CopyButton, writeClipboardText } from '@/components/ui/copy-button'
+import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -28,6 +28,7 @@ import type {
   UpdaterMechanismClient
 } from '@/global'
 import { useI18n } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
 import { buildCommitChangelog, type CommitGroup, formatFullChangelogText } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, ExternalLink, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, rollbackRelease, type UpdateTarget } from '@/lib/update-copy'
@@ -55,6 +56,7 @@ import {
 } from '@/store/updates'
 
 import { DiscontinuedNotice } from './retirement-view'
+import { UpdateErrorReport } from './update-error-report'
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
@@ -166,6 +168,18 @@ function UpdateChangeList({
   )
 }
 
+function overlayPhase(apply: UpdateApplyState): 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' {
+  if (apply.stage === 'manual' || apply.stage === 'guiSkew') {
+    return apply.stage
+  }
+
+  if (apply.applying || apply.stage === 'restart') {
+    return 'applying'
+  }
+
+  return apply.stage === 'error' ? 'error' : 'idle'
+}
+
 export function UpdatesOverlay() {
   const open = useStore($updateOverlayOpen)
   const target = useStore($updateOverlayTarget)
@@ -194,16 +208,7 @@ export function UpdatesOverlay() {
   const behind = status?.behind ?? 0
   const updateAvailable = status?.updateAvailable || behind > 0
 
-  const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
-    apply.stage === 'manual'
-      ? 'manual'
-      : apply.stage === 'guiSkew'
-        ? 'guiSkew'
-        : apply.applying || apply.stage === 'restart'
-          ? 'applying'
-          : apply.stage === 'error'
-            ? 'error'
-            : 'idle'
+  const phase = overlayPhase(apply)
 
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
@@ -229,7 +234,9 @@ export function UpdatesOverlay() {
       {/* This dialog has no inputs, so Radix's default autofocus would land on
           the close button and trigger its tooltip immediately on open. */}
       <DialogContent
-        bodyClassName="overflow-hidden p-0 gap-0"
+        // The error box grows (output, inline report notice): let the body
+        // scroll there so short windows still reach Upload.
+        bodyClassName={cn('p-0 gap-0', phase !== 'error' && 'overflow-hidden')}
         className="max-w-sm"
         onOpenAutoFocus={preventCloseButtonAutoFocus}
         showCloseButton={phase !== 'applying'}
@@ -250,7 +257,14 @@ export function UpdatesOverlay() {
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
 
         {phase === 'error' ? (
-          <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
+          <ErrorView
+            // One report per failure: switching target remounts the box.
+            key={target}
+            log={apply.log.map(entry => entry.message)}
+            message={apply.message}
+            onDismiss={() => handleClose(false)}
+            onRetry={handleInstall}
+          />
         ) : null}
 
         {phase === 'idle' && !isBackend && status?.retirement?.state === 'discontinued' && (
@@ -389,7 +403,7 @@ function IdleView({
           )}
           version={version}
         />
-        <UpdateStatusCard target={target} />
+        <UpdateStatusCard target={target} version={version} />
         <SyncStatusCard />
         {details}
       </div>
@@ -645,7 +659,17 @@ function ApplyingView({
   )
 }
 
-function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss: () => void; onRetry: () => void }) {
+function ErrorView({
+  log,
+  message,
+  onDismiss,
+  onRetry
+}: {
+  log: readonly string[]
+  message: string
+  onDismiss: () => void
+  onRetry: () => void
+}) {
   const { t } = useI18n()
   const u = t.updates
 
@@ -665,6 +689,7 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
       <Button onClick={onDismiss} variant="text">
         {u.notNow}
       </Button>
+      <UpdateErrorReport log={log} message={message || u.errorBody} />
     </ErrorState>
   )
 }

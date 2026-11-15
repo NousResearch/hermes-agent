@@ -1,0 +1,24 @@
+name: yuanbao
+repo: https://github.com/NousResearch/hermes-labs-plugins
+sha: 51ede1f023906114ec06c216c4a7b98e8a45d672
+subdir: yuanbao
+description: "Tencent Yuanbao messaging platform (DMs and group chats over Yuanbao's bot WebSocket, native media and stickers, DM/group access policies, cron home-channel delivery) plus the yuanbao toolset (yb_query_group_info, yb_query_group_members, yb_send_dm, yb_search_sticker, yb_send_sticker). Formerly built into Hermes core; existing users are migrated automatically. A Hermes Labs plugin: built by Nous Research, not supported, and likely not maintained going forward. Fixes from the community are welcome. Disclosure — messages, media and group member lists travel between Tencent's Yuanbao servers and your Hermes gateway using your own Yuanbao bot App ID and App Secret. The plugin also downloads image URLs that appear in replies or inbound messages, and its sign-token requests carry the Hermes version and an instance id."
+maintainer: NousResearch
+tier: community
+version: "2.0.0"
+category: platform
+docs_url: https://github.com/NousResearch/hermes-labs-plugins/tree/main/yuanbao
+image: https://raw.githubusercontent.com/NousResearch/hermes-labs-plugins/67fd906bad3a5efafdbaf8910b5510338044109f/assets/yuanbao.jpg
+platforms: []
+capabilities:
+  provides_tools:
+    - yb_query_group_info
+    - yb_query_group_members
+    - yb_send_dm
+    - yb_search_sticker
+    - yb_send_sticker
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - YUANBAO_APP_ID
+    - YUANBAO_APP_SECRET

@@ -13,6 +13,7 @@ import {
   migrateQueuedPrompts,
   parkQueuedPrompts,
   promoteQueuedPrompt,
+  queuedSubmissionId,
   removeQueuedPrompt,
   resetFrozenQueuedTransportsForTests,
   resolveQueuedPromptTransport,
@@ -496,6 +497,24 @@ describe('composer queue terminal payload persistence', () => {
       ok: true,
       transportText: 'plain follow-up'
     })
+  })
+
+  it('drains an entry whose terminal selection was replaced under a new submission id', () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, {
+      attachments: [],
+      text: TERMINAL_CHIP_DRAFT,
+      displayText: TERMINAL_CHIP_DRAFT,
+      frozenTransport: SELECTION_A_TRANSPORT
+    })
+
+    // Same chip text, a different selection behind it: the payload sent changed.
+    updateQueuedPrompt(SESSION_KEY, entry!.id, {
+      text: TERMINAL_CHIP_DRAFT,
+      displayText: TERMINAL_CHIP_DRAFT,
+      frozenTransport: '```terminal\nselection B\n```\n\nlook at'
+    })
+
+    expect(queuedSubmissionId(getQueuedPrompts(SESSION_KEY)[0]!)).not.toBe(entry!.id)
   })
 
   it('cleans the ephemeral payload on remove and clear', () => {

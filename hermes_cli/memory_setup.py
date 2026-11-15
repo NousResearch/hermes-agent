@@ -403,7 +403,11 @@ def cmd_status(args) -> None:
             for key, val in display_config.items():
                 print(f"    {key}: {val}")
 
-        if provider:
+        from plugins.memory import parked_provider_notice
+        parked = parked_provider_notice(provider_name)
+        if parked:
+            print(f"\n  Plugin:    turned off ✗\n  {parked}")
+        elif provider:
             print("\n  Plugin:    installed ✓")
             if provider.is_available():
                 print("  Status:    available ✓")

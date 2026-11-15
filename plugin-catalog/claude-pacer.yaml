@@ -1,0 +1,18 @@
+name: claude-pacer
+repo: https://github.com/Rubenkivilang/claude-pacer
+sha: ce1cd27b1a777f1331278d5995b9402ce26ad121
+description: "For power users running heavy automation in Hermes on a Claude Pro/Max subscription: claude-pacer paces agents and cron jobs so the weekly limit lasts to the reset, keeps a reserve (20% by default), and spends the leftovers on spare jobs before it. Modes skip / light / normal / heavy via the claude_pace tool, /pace, `hermes pace` and a `hermes pace gate --priority vital|normal|optional|spare` cron gate: an over-budget run is skipped before the model is called; a vital job always runs (lightly in skip mode). Disclosure — each check (cached 60 s in memory) runs Hermes' own Anthropic usage fetch, one GET to Anthropic's OAuth usage endpoint made by Hermes; if the sign-in is a borrowed Claude Code login whose access token has expired, Hermes refreshes it first (a POST to Anthropic's OAuth token endpoint and a rewrite of the Claude Code credentials file), as /usage would. The plugin's own code never reads, holds or writes a credential, writes no files, runs no subprocesses and sends no telemetry."
+maintainer: Rubenkivilang
+tier: community
+category: automation
+requires_hermes: ">=0.22.7"
+version: "0.4.1"
+docs_url: https://github.com/Rubenkivilang/claude-pacer/tree/main/docs
+known_issues:
+  - "Until NousResearch/hermes-agent#139916 lands, Hermes reads an Anthropic usage window at 1% as 100%, so right after a 5-hour or weekly reset claude-pacer can report skip until the window passes 1%."
+capabilities:
+  provides_tools:
+    - claude_pace
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

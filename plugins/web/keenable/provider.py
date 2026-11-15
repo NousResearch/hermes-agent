@@ -9,8 +9,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
+from agent.ssl_verify import requests_verify
+
 from plugins.web._common import (
-    SEARCH_LIMIT_CAP, BaseWebSearchProvider, document, http_status_detail, keyless_extract, keyless_search,
+    SEARCH_LIMIT_CAP, BaseWebSearchProvider, document, http_status_detail, keenable_origin_error, keyless_extract, keyless_search,
     keyless_variant_schema, page_error, provider_env, run_extract, run_search, search_fail, search_ok, use_keyless, web_hit,
 )
 
@@ -42,11 +44,14 @@ class KeenableWebSearchProvider(BaseWebSearchProvider):
             if use_keyless("keenable", api_key):
                 return keyless_search("Keenable", "keenable", query, limit, logger)
             import requests
+
             logger.info("Keenable search: '%s' (limit=%d)", query, limit)
+            # requests freezes its default CA bundle path at its own import; a replaced
+            # install environment leaves it dangling, so hand over a live bundle.
             response = requests.post(
                 f"{_KEENABLE_API_URL}/v1/search",
                 json={"query": query, "max_results": min(max(1, int(limit)), SEARCH_LIMIT_CAP)},
-                headers=_keenable_headers(api_key), timeout=30,
+                headers=_keenable_headers(api_key), timeout=30, verify=requests_verify(),
             )
             if response.status_code >= 400:
                 return search_fail(f"Keenable search failed: {http_status_detail(response)}")
@@ -67,8 +72,11 @@ class KeenableWebSearchProvider(BaseWebSearchProvider):
             results: list[dict[str, Any]] = []
             for url in urls:
                 try:
-                    response = requests.get(f"{_KEENABLE_API_URL}/v1/fetch", params={"url": url}, headers=_keenable_headers(api_key), timeout=30)
+                    response = requests.get(f"{_KEENABLE_API_URL}/v1/fetch", params={"url": url}, headers=_keenable_headers(api_key), timeout=30, verify=requests_verify())
                     if response.status_code >= 400:
+                        if origin := keenable_origin_error(response.status_code, response.text):
+                            results.append(page_error(url, origin))
+                            continue
                         raise ValueError(http_status_detail(response))
                     data = response.json()
                     results.append(document(data.get("url") or url, data.get("title") or "", data.get("content") or "", source_url=url))

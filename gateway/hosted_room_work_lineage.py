@@ -1,5 +1,5 @@
 """Validate passive evidence against committed authority spans, never elect an owner."""
-from gateway.hosted_room_authority_history import at_sequence, read_history_locked, validate_history
+from gateway.hosted_room_authority_history import TRANSFER_KINDS, at_sequence, read_history_locked, validate_history
 
 
 def source_prefix_locked(conn, room_id, authority, seq):
@@ -17,7 +17,7 @@ def source_prefix_locked(conn, room_id, authority, seq):
         boundary = span.epoch > 1 and count == span.from_seq
         if (event["seq"] != count or event["authority_epoch"] != span.epoch
                 or (actor.get("kind") == "gateway" and actor.get("id") != span.gateway_id)
-                or (event["kind"] == "authority.claimed") != boundary):
+                or (event["kind"] in TRANSFER_KINDS) != boundary):
             raise WorkRecordPrefixError("work record history prefix is not verified")
     if count != seq:
         raise WorkRecordPrefixError("work record history prefix is unavailable")

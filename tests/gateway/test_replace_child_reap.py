@@ -225,7 +225,7 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
         "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
     monkeypatch.setattr(
-        "gateway.status.release_all_scoped_locks", lambda **kwargs: 0
+        "gateway.status_scoped_locks.release_all_scoped_locks", lambda **kwargs: 0
     )
     monkeypatch.setattr(
         "gateway.status._snapshot_gateway_children",

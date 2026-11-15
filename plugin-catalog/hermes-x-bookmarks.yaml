@@ -1,0 +1,27 @@
+name: hermes-x-bookmarks
+title: X Bookmarks
+repo: https://github.com/winchxyz/hermes-x-bookmarks
+sha: c4c64dc98161c42e49bca56c16e23845481427d6
+version: "0.3.0"
+description: "Reads your own X bookmarks (long posts and X Articles in full) through the official X API with your own X app, sorts them with your Hermes model (category, tags, kind, priority, summary) and exports them to a board on your Desktop, Obsidian notes, a Notion database or a Google Doc. A weekly digest (best bookmarks numbered, 3 post ideas) arrives in your chat; reply \"task 3\" or \"skill 2\" to turn an item into a task or a Hermes skill. Disclosure — calls api.x.com (read-only, keys of your own X app from the Hermes .env via secret scope, or Hermes' X OAuth 2.0 sign-in, or `xurl token` when you pick the xurl sign-in, which runs that CLI); sends post text to your configured Hermes model; only when you export there: Notion through Hermes' Notion connector (ctx.call_mcp to the notion MCP server, only if you add it to this plugin's mcp_allowlist; creates the database, two boards and pages, updates those pages) or api.notion.com with an optional XBM_NOTION_TOKEN, and docs.googleapis.com through Hermes' Google sign-in (your own Desktop client, scope drive.file only); writes an 'X Bookmarks' folder on your Desktop (or export_dir) and notes into your Obsidian vault's 'X Bookmarks' folder, and reads Obsidian's obsidian.json to find the open vault; bookmarks, labels, export ids, digests, tasks and skill drafts are stored in plugin data; only on your command it creates one Hermes cron job (/xbm schedule, through cronjob_manage; it stays until /xbm unschedule) and Hermes skills (/xbm skill N save, through skill_manage, subject to Hermes' approval); a pre_llm_call hook adds a one-line note only to a message that is just \"task N\", \"skill N\" or \"done N\" after a recent digest; no credentials stored, no telemetry, no background process of its own."
+maintainer: winchxyz
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/winchxyz/hermes-x-bookmarks#readme
+image: https://raw.githubusercontent.com/winchxyz/hermes-x-bookmarks/c4c64dc98161c42e49bca56c16e23845481427d6/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/winchxyz/hermes-x-bookmarks/c4c64dc98161c42e49bca56c16e23845481427d6/docs/media/board.png
+  - https://raw.githubusercontent.com/winchxyz/hermes-x-bookmarks/c4c64dc98161c42e49bca56c16e23845481427d6/docs/media/sort.png
+  - https://raw.githubusercontent.com/winchxyz/hermes-x-bookmarks/c4c64dc98161c42e49bca56c16e23845481427d6/docs/media/exports.png
+  - https://raw.githubusercontent.com/winchxyz/hermes-x-bookmarks/c4c64dc98161c42e49bca56c16e23845481427d6/docs/media/digest.png
+readme: true
+platforms: []
+known_issues:
+  - "You need your own X developer app on the pay-per-use plan; X bills your app for reads (about $0.001 per bookmark for owned reads; a first sync of ~1,900 bookmarks was about $1.89, and from 2026-11-22 X also bills expanded objects)."
+  - "Notion export needs `hermes mcp install notion` and mcp_allowlist: [\"notion\"] for this plugin (or an XBM_NOTION_TOKEN); one chat export writes all pages and shows progress."
+capabilities:
+  provides_tools: [xbm_digest, xbm_task, xbm_skill]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

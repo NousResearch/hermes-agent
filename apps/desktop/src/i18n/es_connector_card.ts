@@ -38,7 +38,7 @@ export const esConnectorCard: TranslationOverrides['connectors'] = {
     allApps: 'Todas las apps',
     receiptConnected: apps => `Conectadas: ${apps}`,
     receiptNone: 'Ninguna app nueva conectada',
-    receiptTimedOut: 'Cerrado tras 5 minutos',
+    receiptTimedOut: 'Cerrado tras 10 minutos',
     finishInBrowser: 'Termina en tu navegador',
     signInFailed: 'No se pudo conectar. Haz clic para reintentar'
   }

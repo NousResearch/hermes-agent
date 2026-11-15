@@ -11,10 +11,23 @@ from contextlib import suppress
 import json
 import logging
 import threading
-import time
 import urllib.request
 
+from agent.deadline import poll_until
+
 LLAMACPP_ALIASES = frozenset({"llamacpp", "llama.cpp", "llama-cpp"})
+
+
+def child_query(model_id: str) -> str:
+    """Query string for a status read of one router child (``/props``, ``/slots``, ``/metrics``).
+
+    The router loads an unloaded model for any request that names it (``--models-autoload``), so a
+    status read right after an Eject or an idle unload would load the model straight back.
+    ``autoload=false`` makes the router answer 400 "model is not loaded" instead.
+    """
+    from urllib.parse import quote
+
+    return f"model={quote(model_id)}&autoload=false"
 
 logger = logging.getLogger(__name__)
 
@@ -95,12 +108,7 @@ def resolve_llamacpp_endpoint(config: dict | None = None,
 
     if wait_for_boot_s > 0 and _boot_in_flight(config):
         _kick_managed_boot(config)
-        deadline = time.monotonic() + wait_for_boot_s
-        while time.monotonic() < deadline:
-            time.sleep(0.25)
-            managed = _state_endpoint()
-            if managed:
-                return managed
+        return poll_until(_state_endpoint, wait_for_boot_s, 0.25) or None
     return None
 
 

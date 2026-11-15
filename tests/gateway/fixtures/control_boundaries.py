@@ -10,7 +10,7 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from gateway.run_turn_runner import TurnRunner
     from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Principal, SessionRef
+    from gateway.session_contract import SessionActor, SessionRef
     from hermes_state import SessionDB
     from hermes_state_runtime import (RuntimeStoreError, admit_session_input, begin_runtime_epoch,
                                      claim_session_input, settle_session_input)
@@ -25,7 +25,7 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
     authority = SessionAuthority(SimpleNamespace(), profile_id='p', instance_id='controls', db=db, epoch=epoch)
     live = authority.sessions['s'] = LiveSession(None, 'boundary-route')
     ref = SessionRef('p', 's')
-    actor = Principal('operator', 'p', frozenset({'session:read', 'session:approve'}), 'a')
+    actor = SessionActor('operator', 'p', frozenset({'session:read', 'session:approve'}), 'a')
     snap = await authority.attach(actor, ref)
 
     class NativeCard:

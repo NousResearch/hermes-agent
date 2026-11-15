@@ -379,9 +379,9 @@ def test_stalled_marker_write_coalesces_later_touches(hermes_home, monkeypatch):
     assert calls["n"] == 2
 
 
-def test_marker_write_lands_in_the_callers_profile_home(hermes_home, monkeypatch):
-    """The write runs on a worker thread, which does not inherit the caller's context-local
-    HERMES_HOME override; the marker must still land in the caller's home, not the launch home."""
+def test_marker_write_lands_in_the_launch_home_under_a_profile_override(hermes_home, monkeypatch):
+    """The gateway's idle watcher reads the launch home's marker, so a socket running in another
+    profile's HERMES_HOME override must still stamp the launch home."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tui_gateway import ws as ws_mod
 
@@ -393,5 +393,30 @@ def test_marker_write_lands_in_the_callers_profile_home(hermes_home, monkeypatch
     finally:
         reset_hermes_home_override(token)
     _drain_marker_writes(ws_mod)
-    assert s2z.dashboard_client_last_seen(s2z.dashboard_client_heartbeat_path(served)) is not None
-    assert s2z.dashboard_client_last_seen() is None
+    assert s2z.dashboard_client_last_seen() is not None
+    assert not s2z.dashboard_client_heartbeat_path(served).exists()
+
+
+def test_secondary_profile_socket_keeps_a_multiplexed_gateway_awake(hermes_home, monkeypatch):
+    """A Webapp tab bound to a secondary profile runs handle_ws inside ``owner_scope`` of that
+    profile (``chat_ws.gateway_ws``). Its pings must keep the multiplexed gateway awake."""
+    from types import SimpleNamespace
+
+    from gateway.session_authorities import owner_scope
+    from tui_gateway import ws as ws_mod
+
+    _stub_ws_server(monkeypatch, ws_mod)
+    secondary = hermes_home / "profiles" / "b"
+    secondary.mkdir(parents=True)
+    runner = _runner(monkeypatch, last_inbound_at=time.time() - 600)
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    served = SimpleNamespace(runner=runner, profile_id=str(secondary))
+    frames = ['{"jsonrpc":"2.0","method":"gateway.ping","id":1}']
+
+    async def _tab():
+        with owner_scope(served):
+            await ws_mod.handle_ws(_FakeWS(frames))
+
+    asyncio.run(_tab())
+    _drain_marker_writes(ws_mod)
+    assert runner._scale_to_zero_is_idle() is False

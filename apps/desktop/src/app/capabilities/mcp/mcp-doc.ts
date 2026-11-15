@@ -30,6 +30,9 @@ export function parseServersDoc(raw: string): McpServers {
 export function withEnabled(server: McpServerEntry, enabled: boolean): McpServerEntry {
   const next = { ...server }
 
+  // A legacy `disabled` wins over `enabled` in every reader, so it goes in the same write.
+  delete next.disabled
+
   if (enabled) {
     delete next.enabled
   } else {

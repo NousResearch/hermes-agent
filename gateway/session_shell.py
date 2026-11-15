@@ -44,9 +44,13 @@ async def shell_exec(connection, ref, params):
         raise RuntimeStoreError('permission_denied')
     # The frozen terminal policy chose a sandbox (docker, ssh, ...): the owner's host shell is not
     # that backend, so refuse rather than run on the host behind the session's back.
-    if str(json.loads(policy.terminal_json).get('TERMINAL_ENV') or '').strip().lower() not in _LOCAL_BACKENDS:
-        raise RuntimeStoreError('unsupported_terminal_backend')
+    # The refusal names the backend so the client can say where the command would have run.
+    backend = str(json.loads(policy.terminal_json).get('TERMINAL_ENV') or '').strip().lower()
+    if backend not in _LOCAL_BACKENDS:
+        raise RuntimeStoreError('unsupported_terminal_backend', field='terminal.backend', detail=backend)
     from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+    # No prompt here, so anything the agent's gate would ask about is refused, including a command
+    # the scanners could not read to the end (detect_dangerous_command reports that too).
     if detect_hardline_command(command)[0] or detect_dangerous_command(command)[0]:
         raise RuntimeStoreError('dangerous_command')
     return await asyncio.to_thread(_run, command, policy.cwd)

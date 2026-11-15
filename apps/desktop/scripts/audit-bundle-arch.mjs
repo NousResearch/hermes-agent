@@ -221,10 +221,10 @@ function* walkFiles(dir) {
  * relative paths depending on the build host.
  *
  * PortableGit carries .NET AnyCPU/MSIL assemblies (Git Credential Manager:
- * Avalonia.*, Atlassian.*, Microsoft.*, System.*, etc.) across mingw64/bin,
- * mingw64/lib, and mingw64/libexec/git-core. Their PE machine field is 0x14c
- * (ia32) because .NET assemblies are format-neutral — the CLR JITs them to
- * the native arch at load time. It also ships usr/libexec/getprocaddr32.exe,
+ * Avalonia.*, Atlassian.*, Microsoft.*, System.*, etc.) across <prefix>/bin,
+ * <prefix>/lib, and <prefix>/libexec/git-core (ucrt64 from 2.56, mingw64
+ * before). Their PE machine field is 0x14c (ia32) because .NET assemblies
+ * are format-neutral — the CLR JITs them to the native arch at load time. It also ships usr/libexec/getprocaddr32.exe,
  * a 32-bit MSYS2 helper. The staging script already PE-probes cmd/git.exe
  * itself; the bundle audit does not need to re-audit PortableGit's internal
  * MSYS2/.NET layout.
@@ -235,18 +235,17 @@ const EXEMPT_PATTERNS = [
   // Live under the payload python store entry AND the relocatable venv.
   /agent-payload[/\\](tools[/\\]python-[^/\\]+[/\\](Lib|lib[/\\]python[\d.]+)|venv[/\\](Lib|lib[/\\]python[\d.]+))[/\\]site-packages[/\\](setuptools|pip[/\\]_vendor[/\\]distlib)[/\\]/i,
   // PortableGit internals under the payload tool store.
-  /agent-payload[/\\]tools[/\\]git(-[^/\\]+)?[/\\](mingw64|clangarm64|usr|cmd)[/\\]/i,
+  /agent-payload[/\\]tools[/\\]git(-[^/\\]+)?[/\\](ucrt64|mingw64|clangarm64|usr|cmd)[/\\]/i,
   // discord.py ships x64 and x86 opus; opus.py loads by bitness.
   /agent-payload[/\\]venv[/\\](Lib|lib[/\\]python[\d.]+)[/\\]site-packages[/\\]discord[/\\]bin[/\\]libopus-0\.(x64|x86)\.dll$/i,
+  // sounddevice 0.5.6's per-arch Windows wheels carry all three PortAudio
+  // builds; _sounddevice.py loads the one matching the interpreter's machine.
+  /agent-payload[/\\]venv[/\\](Lib|lib[/\\]python[\d.]+)[/\\]site-packages[/\\]_sounddevice_data[/\\]portaudio-binaries[/\\]libportaudio(32bit|64bit|arm64)(-asio)?\.dll$/i,
   // pvporcupine ships one native lib per OS/arch in the same wheel.
   // Only the matching sibling is loaded.
   /agent-payload[/\\]venv[/\\](Lib|lib[/\\]python[\d.]+)[/\\]site-packages[/\\]pvporcupine[/\\]lib[/\\]/i,
   // debugpy ships attach helpers for every OS/arch in one wheel.
   /agent-payload[/\\]venv[/\\](Lib|lib[/\\]python[\d.]+)[/\\]site-packages[/\\]debugpy[/\\]_vendored[/\\]pydevd[/\\]/i,
-  // agent-browser ships no native win-arm64 build; on win32-arm64 the
-  // payload stages the x64 exe, which Windows runs under built-in
-  // emulation (its own postinstall falls back to x64 on arm64).
-  /agent-payload[/\\]tools[/\\]agent-browser-[^/\\]+[/\\]bin[/\\]agent-browser-win32-x64\.exe$/i,
   // CfT publishes no native win-arm64 Chromium, so PM stages the win64
   // (x64) build and Windows runs it under emulation. The zip extracts
   // into chrome-win64 inside the chromium-<rev> store entry. Scoping to

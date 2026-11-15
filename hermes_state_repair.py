@@ -16,12 +16,14 @@ import re
 import shutil
 import sqlite3
 import stat
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from hermes_startup_watchdog import report_startup_progress
+from hermes_state_errors import is_disk_full_error
 from hermes_state_holders import read_only_db_uri
 from hermes_state_common import (
     _acquire_db_flock, _clear_lock_holder_record, _describe_lock_holder, _read_lock_holder_record,
@@ -64,7 +66,7 @@ _FINGERPRINT_VOLATILE_HEADER_RANGES = ((24, 28), (92, 96))
 # the volume, clamped to a modest floor. See #69603.
 _REPAIR_BACKUP_MIN_FREE_BYTES = 256 * 1024 * 1024  # 256 MiB absolute floor
 _REPAIR_BACKUP_FREE_FRACTION = 0.02  # plus 2% of the volume
-_FTS_TABLES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
+_FTS_TABLES = ("messages_fts", "messages_fts_trigram")
 _MANUAL_RECOVER_HINT = ("Free disk space, then retry (or recover manually with "
                         "`hermes sessions recover --source {db_path} --inspect-only` first).")
 
@@ -534,7 +536,19 @@ def _backup_db_file(db_path: Path) -> tuple[Optional[Path], Optional[str]]:
         return None, f"backup copy failed: {exc}"
 
 
-def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> None:
+def _rw_or_vanished(p: Path) -> bool:
+    """True when *p* is read-write for this user OR no longer exists.
+
+    The preflight lists the files first and checks them after, and a live sibling connection's last ``close()``
+    unlinks ``-wal``/``-shm`` in between (a concurrent quarantine can rename ``state.db`` aside the same way).
+    ``os.access`` on the vanished path returns False, which is "gone", not "read-only". The final re-check covers
+    a sidecar that vanished and was recreated by the next opener before ``exists()`` ran.
+    """
+    mode = os.R_OK | os.W_OK
+    return os.access(p, mode) or not p.exists() or os.access(p, mode)
+
+
+def preflight_db_writability(db_path: Path, *, db_label: str = "state.db", directory_only: bool = False) -> None:
     """Refuse-or-repair read-only DB files BEFORE the first connection opens.
 
     A stray read-only ``state.db`` / ``-wal`` / ``-shm`` (sudo run, restored backup, copied dotfiles) otherwise
@@ -553,8 +567,9 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> No
         home = Path(get_hermes_home()).resolve()
     # SQLite needs a writable directory in every journal mode (WAL/SHM sidecars, or the DELETE-mode journal).
     sidecars = (db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm"))
-    for p, is_dir in [(db_path.parent, True), *((p, False) for p in (db_path, *sidecars) if p.is_file())]:
-        if (is_dir and not p.is_dir()) or os.access(p, os.R_OK | os.W_OK):
+    files = () if directory_only else tuple((p, False) for p in (db_path, *sidecars) if p.is_file())
+    for p, is_dir in [(db_path.parent, True), *files]:
+        if (is_dir and not p.is_dir()) or _rw_or_vanished(p):
             continue
         x = "x" if is_dir else ""
         in_scope = False
@@ -736,7 +751,8 @@ def state_db_has_structural_damage(db_path: Path) -> bool:
     while ``messages``/``sessions`` read cleanly, and the FTS rebuild ladder cannot help.
     Cannot-open / locked stays False so the caller keeps the FTS path."""
     try:
-        conn = sqlite3.connect(read_only_db_uri(db_path), uri=True, timeout=1.0)
+        from hermes_cli.sqlite_safe_read import connect_tracked
+        conn = connect_tracked(read_only_db_uri(db_path), uri=True, timeout=1.0, tracking_path=db_path)
     except sqlite3.Error:
         return False
     try:
@@ -753,6 +769,70 @@ def state_db_has_structural_damage(db_path: Path) -> bool:
         itertools.chain.from_iterable(line.splitlines() for line in lines), master_rows)
 
 
+# SQLite primary result codes for a file that cannot be written or read back (SQLITE_PERM, SQLITE_READONLY,
+# SQLITE_IOERR, SQLITE_FULL, SQLITE_CANTOPEN): on the probe's own copy these are the temporary volume's failure.
+_TEMPORARY_FILE_FAILURE_CODES = frozenset({3, 8, 10, 13, 14})
+
+
+class _ProbeFailure(str):
+    """A ``_db_opens_cleanly`` reason raised by SQLite, keeping its result code so a caller probing a disposable
+    copy can tell the copy's file failures from the store's state."""
+
+    def __new__(cls, text: str, exc: BaseException):
+        reason = super().__new__(cls, text)
+        reason.sqlite_errorcode = getattr(exc, "sqlite_errorcode", 0)
+        return reason
+
+
+def _is_temporary_file_failure(failure) -> bool:
+    return (getattr(failure, "sqlite_errorcode", 0) & 0xFF) in _TEMPORARY_FILE_FAILURE_CODES or is_disk_full_error(failure)
+
+
+class HealthCheckUnavailable(str):
+    """A ``_db_opens_cleanly`` reason meaning the probe could not run, not that the store is damaged: callers
+    must neither report the store healthy nor route it to repair."""
+
+
+def _retired_cjk_snapshot_health(db_path: Path, conn: sqlite3.Connection) -> Optional[str]:
+    """``_db_opens_cleanly`` for a store that still holds the retired CJK index, judged on a disposable copy
+    with the index retired. A copy that cannot be made or does not fit the temporary volume yields
+    ``HealthCheckUnavailable``; a source SQLite cannot read is still reported as damage."""
+    from hermes_state_fts import drop_retired_cjk_index
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-cjk-probe-") as tmp:
+            snapshot = Path(tmp) / "state.db"
+            try:
+                _copy_database_snapshot(db_path, snapshot, source_connection=conn)
+                probe = _connect_repair_durable(snapshot)
+            except sqlite3.Error as exc:
+                # The copy touches the source only to read it: corruption there is the store's, every other
+                # failure (cannot open, read-only, I/O, full) is the temporary copy's.
+                if getattr(exc, "sqlite_errorname", None) in ("SQLITE_CORRUPT", "SQLITE_NOTADB"):
+                    raise
+                return HealthCheckUnavailable(f"could not make the probe copy ({exc})")
+            with contextlib.closing(probe):
+                try:
+                    drop_retired_cjk_index(probe.cursor())
+                except sqlite3.Error as exc:
+                    # Retiring is what the next open runs, so a failure is the store's state (a damaged base
+                    # FTS index trips the rename's trigger validation) unless the temporary file itself failed.
+                    if _is_temporary_file_failure(exc):
+                        return HealthCheckUnavailable(f"the probe copy failed ({exc})")
+                    return str(exc)
+            try:
+                reason = _db_opens_cleanly(snapshot)
+            except sqlite3.Error as exc:  # it opens its connection before its own handler
+                if _is_temporary_file_failure(exc):
+                    return HealthCheckUnavailable(f"the probe copy failed ({exc})")
+                raise
+    except OSError as exc:  # the temporary directory or the copy, not the store (includes the copy timeout)
+        return HealthCheckUnavailable(f"could not make the probe copy ({exc})")
+    if reason is not None and _is_temporary_file_failure(reason):
+        return HealthCheckUnavailable(f"the probe copy failed ({reason})")
+    return reason
+
+
 def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
 
@@ -763,7 +843,8 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
 
     See #50502.
     """
-    from hermes_state import SessionDB, load_fts5_cjk_extension
+    from hermes_state import SessionDB
+    from hermes_state_fts import drop_retired_cjk_index, retired_cjk_index_present
     # ── Strategy 0.5: rebuild stale B-tree indexes (#63386) ── PRAGMA integrity_check can report "wrong #
     # of entries in index" when a B-tree index (e.g. idx_sessions_handoff_state) falls out of sync with its
     # base table. REINDEX rewrites the index b-tree from the canonical table rows using the existing index
@@ -771,10 +852,10 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     conn = _connect_repair_durable(db_path)
     try:
         with contextlib.closing(conn):
-            # Best-effort tokenizer load: messages_fts_cjk needs cjk_unicode61 before any statement can touch it;
-            # tokenizer absence must never classify as corruption.
-            load_fts5_cjk_extension(conn)
             conn.execute("PRAGMA journal_mode").fetchone()
+            # Retirement must not hold the live write lock across a full integrity scan.
+            if retired_cjk_index_present(conn.cursor()):
+                return _retired_cjk_snapshot_health(db_path, conn)
             rows = conn.execute("PRAGMA integrity_check").fetchall()
             problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
             if problems:
@@ -795,7 +876,7 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                         # This is the corruption class #66724 actually wants caught: partial shadow-table
                         # damage where MATCH / snippet / rank queries raise DatabaseError("database disk
                         # image is malformed") while reads of the FTS5 table itself parse fine.
-                        return f"fts5 read probe failed on {fts_table}: {exc}"
+                        return _ProbeFailure(f"fts5 read probe failed on {fts_table}: {exc}", exc)
             # FTS write probe: drive a row through the messages_fts* triggers in a transaction that is always
             # rolled back. The trigger INSERT alone only buffers the row in FTS5's in-memory segment; the
             # ``flush`` command writes that segment to ``<fts>_idx``/``_data`` exactly as a committed append
@@ -804,7 +885,8 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             # by the user's next message.
             probe_session_id = f"_hermes_fts_health_probe_{time.time_ns()}"
             try:
-                conn.execute("BEGIN IMMEDIATE")
+                if not conn.in_transaction:
+                    conn.execute("BEGIN IMMEDIATE")
                 conn.execute("INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
                              (probe_session_id, "_health_probe", time.time()))
                 conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
@@ -818,18 +900,16 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             except sqlite3.DatabaseError as exc:
                 # IntegrityError is a DatabaseError sibling of OperationalError, not a child: catching only the
                 # latter let the trigram-segment collision report "healthy".
-                # Missing messages/sessions tables = brand new file mid-init, not corruption. "no such tokenizer":
-                # this process lacks the cjk extension the DB's index needs — capability gap; a tokenizer-less
-                # SessionDB drops the triggers itself.
-                if _schema_not_built(exc) or "no such tokenizer: cjk_unicode61" in str(exc).lower():
+                # Missing messages/sessions tables = brand new file mid-init, not corruption.
+                if _schema_not_built(exc):
                     return None
-                return f"fts5 write probe failed: {exc}"
+                return _ProbeFailure(f"fts5 write probe failed: {exc}", exc)
             finally:
                 with contextlib.suppress(sqlite3.Error):
                     conn.execute("ROLLBACK")
             return None
-    except sqlite3.DatabaseError as exc:
-        return str(exc)
+    except (sqlite3.DatabaseError, OSError) as exc:
+        return _ProbeFailure(str(exc), exc)
 
 
 def _live_writer_holds_db(db_path: Path) -> bool:
@@ -992,9 +1072,12 @@ def _repair_state_db_schema_locked(
         return _repair_skip(report, "aborted", f"could not remove a stale repair snapshot before probing state.db: {cleanup_error}")
     # Re-probe under the lock: a process we queued behind may have just repaired the file; redoing surgery
     # would undo it (the repair/re-corrupt cascade).
-    if _db_opens_cleanly(db_path) is None:
+    reason = _db_opens_cleanly(db_path)
+    if reason is None:
         report["repaired"], report["strategy"] = True, "already_healthy"
         return report
+    if isinstance(reason, HealthCheckUnavailable):
+        return _repair_skip(report, "aborted", f"could not check state.db before repair: {reason}")
     if backup:
         bpath, backup_error = _backup_db_file(db_path)
         report["backup_path"] = str(bpath) if bpath else None
@@ -1082,11 +1165,8 @@ def _edit_sqlite_master(conn: sqlite3.Connection, edit) -> None:
 def _strategy_rebuild_fts(conn: sqlite3.Connection) -> None:
     """FTS5 'rebuild' rewrites each index from the content table: the least-
     destructive fix for an index that rejects writes while reads work."""
-    from hermes_state import load_fts5_cjk_extension
-    # The cjk index can only be rebuilt with its tokenizer loaded (best-effort).
-    load_fts5_cjk_extension(conn)
     for table_name in _FTS_TABLES:
-        with contextlib.suppress(sqlite3.OperationalError):  # table absent (FTS disabled / trigram off / cjk absent)
+        with contextlib.suppress(sqlite3.OperationalError):  # table absent (FTS disabled / trigram off)
             conn.execute(f"INSERT INTO {table_name}({table_name}) VALUES('rebuild')")
 
 
@@ -1151,6 +1231,9 @@ def _run_repair_strategies(db_path: Path, report: dict[str, Any]) -> dict[str, A
             reason = str(exc)
             if failure_msg is not None:
                 logger.warning(failure_msg, exc)
+        if isinstance(reason, HealthCheckUnavailable):
+            report["_repair_attempted"] = False
+            return _repair_skip(report, "aborted", f"could not check repaired snapshot: {reason}")
         if reason is None:
             report["repaired"], report["strategy"] = True, name
             logger.warning(success_msg, db_path)

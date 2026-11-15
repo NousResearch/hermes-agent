@@ -1,0 +1,25 @@
+name: track-record
+title: Track Record
+repo: https://github.com/salch-cred/track-record
+sha: 4b39ea3a24931f069b107535b9d988d6aa75e2d7
+description: >-
+  How often is your agent right when it says it fixed something? Each reply that
+  claims success ("this fixes it", "this should work") is logged with how sure it
+  sounded, then checked against your next message and any test or build run in
+  the next turn. /trackrecord shows hit rate per confidence level and model, the
+  calibration gap and a Brier score. When certain claims hold up under 80% of the
+  time, the agent is told its record. Pattern matching only, no model calls.
+
+maintainer: salch-cred
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/salch-cred/track-record
+version: "0.1.0"
+image: https://raw.githubusercontent.com/salch-cred/track-record/d56184755627a9bd61cc0b741dee7f233ea5f2b1/docs/assets/catalog.jpg
+
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, post_tool_call, post_llm_call]
+  provides_middleware: []
+  requires_env: []

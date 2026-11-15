@@ -358,7 +358,11 @@ test.skipIf(process.platform === 'win32')(
 
       // The live pid at another incarnation (creation time 60 s off) is a dead claim.
       await writeFile(fixture.marker, `${delegate.pid}\n${now}\nct:${Number(ct) - 60}\n`)
-      assert.match((await fixture.run(fixture.command)).stdout, /^[1-9][0-9]*\n$/)
+      const spawned: string = (await fixture.run(fixture.command)).stdout
+      assert.match(spawned, /^[1-9][0-9]*\n$/)
+      // Kill the child it detached now: left running, it writes its report into the fixture
+      // while dispose's rm removes the directory (ENOTEMPTY), then sleeps on for 30 s.
+      process.kill(Number(spawned), 'SIGKILL')
       await assert.rejects(readFile(fixture.marker), { code: 'ENOENT' })
     } finally {
       delegate.kill('SIGKILL')

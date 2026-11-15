@@ -326,7 +326,7 @@ class TestPortalBodyFields:
 
         kwargs = {"model": "claude-opus-4-8", "messages": []}
         agent = SimpleNamespace(provider="anthropic", session_id="s")
-        assert _merge_nous_portal_messages_extra_body(agent, kwargs) is kwargs
+        assert _merge_nous_portal_messages_extra_body(agent, kwargs, []) is kwargs
         assert "extra_body" not in kwargs
 
 

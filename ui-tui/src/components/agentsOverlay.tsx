@@ -1,4 +1,5 @@
 import { Box, NoSelect, ScrollBox, type ScrollBoxHandle, Text, useInput, useStdout } from '@hermes/ink'
+import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '@hermes/shared/gateway-types'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -14,7 +15,6 @@ import { type ProcessRow, useProcessRows } from '../app/processRoster.js'
 import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '../app/spawnHistoryStore.js'
 import { $uiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
 import { messages } from '../i18n/runtime.js'
 import type { Translations } from '../i18n/types.js'
 import { useT } from '../i18n/useT.js'
@@ -768,11 +768,6 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const killOne = (id: string) =>
     guardLive(() => {
-      // The shared owner serves no subagent.interrupt: the sidecar would answer "session not found".
-      if (gw.isCanonical) {
-        return setFlash(messages().canonical.controls.notAvailable('agents kill'))
-      }
-
       interrupt(id)
         .then(raw => {
           const r = asRpcResult<SubagentInterruptResponse>(raw)
@@ -783,10 +778,6 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const killSubtree = (node: SubagentNode) =>
     guardLive(() => {
-      if (gw.isCanonical) {
-        return setFlash(messages().canonical.controls.notAvailable('agents kill'))
-      }
-
       const ids = [node.item.id, ...descendantIds(node)]
       ids.forEach(id => interrupt(id).catch(() => {}))
       setFlash((ids.length === 1 ? T.flash.killingSubtreeOne : T.flash.killingSubtreeOther)(ids.length))

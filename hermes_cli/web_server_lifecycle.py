@@ -148,8 +148,8 @@ def _warm_gateway_module() -> None:
     """
     for mod in (
         "hermes_cli.gateway",
-        "hermes_cli.auth",  # provider auth state → copilot_auth → subprocess
-        "hermes_cli.copilot_auth",
+        "hermes_cli.auth",  # provider auth state
+        "providers",  # provider plugin discovery (below) imports every profile's module chain
         "hermes_cli.runtime_provider",
         "hermes_cli.skin_engine",  # resolve_skin() config + skin engine init
         "hermes_cli.inventory",  # provider catalogs + models.dev cache
@@ -157,8 +157,14 @@ def _warm_gateway_module() -> None:
     ):
         try:
             __import__(mod)
-        except Exception:
-            pass
+        except Exception:  # health: allow BLE001 -- best-effort warm-up; the real import reports
+            _log.debug("warm-up import of %s failed", mod, exc_info=True)
+    try:
+        # Provider plugins carry their own auth chains (token exchange, CLI probes): warm them too.
+        import providers
+        providers.list_providers()
+    except Exception:  # health: allow BLE001 -- best-effort warm-up; discovery reports on real use
+        _log.debug("warm-up provider discovery failed", exc_info=True)
 
 
 def _resolve_restart_drain_timeout() -> float:
@@ -177,8 +183,8 @@ def _eager_reconcile_own_session_db() -> None:
     must never see a second writable ``SessionDB`` from this process (its
     close-time checkpoint and a possible FTS rebuild in ``_init_fts`` are the
     two-writer corruption vector, #107688 / #100896). Access-mode semantics
-    (bootstrap of a missing store, ONE writable heal of a stale schema, so the
-    #79531 contract holds) live in the routers' own-store opener,
+    (no bootstrap of a missing store; one additive catch-up of a store that lags
+    SCHEMA_SQL, only while no gateway owns it, #79531 / #140315) live in the routers' own-store opener,
     :func:`hermes_cli.web_server_sessions._open_session_db_at_path`. Never
     raises: an unfixable store still gets the per-poll read-probe heal.
     """
@@ -519,6 +525,33 @@ def _dashboard_forwarded_allow_ips(dashboard_config: dict[str, Any]) -> list[str
     return trusted
 
 
+def _uvicorn_console_logging() -> None:
+    """uvicorn's default console logging, without its ``dictConfig``.
+
+    ``uvicorn.Config``'s default ``log_config`` runs ``dictConfig``, which calls
+    ``logging.shutdown()`` on every live handler: a multiplexed gateway's profile log routers are
+    already installed when its listener is built, and a closed router stays closed. The listeners
+    pass ``log_config=None`` and get uvicorn's handlers here instead: ``uvicorn`` to stderr,
+    ``uvicorn.access`` to stdout, neither propagating into the Hermes log files.
+    """
+    from uvicorn.config import LOGGING_CONFIG
+    from uvicorn.logging import AccessFormatter, DefaultFormatter
+
+    formats = LOGGING_CONFIG["formatters"]
+    for name, stream, formatter in (
+        ("uvicorn", sys.stderr, DefaultFormatter(formats["default"]["fmt"])),
+        ("uvicorn.access", sys.stdout, AccessFormatter(formats["access"]["fmt"])),
+    ):
+        logger = logging.getLogger(name)
+        logger.propagate = False
+        if not logger.handlers:  # a second listener in this process keeps the first one's
+            handler = logging.StreamHandler(stream)
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+    # LOGGING_CONFIG's level for the parent; uvicorn.Config sets only the child loggers' levels.
+    logging.getLogger("uvicorn").setLevel(logging.INFO)
+
+
 def build_listener_server(served_app, host: str, port: int, *, auth_required: bool,
                           ws_ping: Optional[tuple[float, float]] = None,
                           timeout_graceful_shutdown: Optional[float] = 3, lifespan: str = "auto"):
@@ -548,11 +581,17 @@ def build_listener_server(served_app, host: str, port: int, *, auth_required: bo
         except (TypeError, ValueError):
             return default
 
+    # permessage-deflate runs zlib on the event loop for every outbound frame, and the gateway sends
+    # one frame per streamed token of every running session: under load it was the largest single
+    # cost on the loop. Loopback bytes are free, so only a listener remote peers reach (a non-loopback
+    # bind, or a loopback bind behind a public URL / tunnel, which engages the auth gate) compresses.
+    per_message_deflate = auth_required or host not in _LOOPBACK_HOST_VALUES
     if ws_ping is None:
         ws_ping = (None, None) if host in _LOOPBACK_HOST_VALUES else (
             _ws_ping_setting("ws_ping_interval"), _ws_ping_setting("ws_ping_timeout"))
+    _uvicorn_console_logging()
     config = uvicorn.Config(
-        served_app, host=host, port=port, log_level="warning",
+        served_app, host=host, port=port, log_level="warning", log_config=None,
         # Off by default so _ws_client_is_allowed sees the real peer, not
         # X-Forwarded-For. Gated mode runs behind a TLS terminator and needs
         # X-Forwarded-Proto for cookie Secure flags.
@@ -562,6 +601,7 @@ def build_listener_server(served_app, host: str, port: int, *, auth_required: bo
         forwarded_allow_ips=_dashboard_forwarded_allow_ips(dash_cfg),
         ws_ping_interval=ws_ping[0],
         ws_ping_timeout=ws_ping[1],
+        ws_per_message_deflate=per_message_deflate,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
         # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
         # uvicorn's default (None) waits on lingering ASGI tasks forever, so a

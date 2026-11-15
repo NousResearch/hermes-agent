@@ -186,3 +186,41 @@ def test_adopt_says_to_close_the_holder_of_a_locked_store(tmp_path, monkeypatch,
     assert status == 1 and out == '', out
     assert len(err.splitlines()) == 1 and 'locked' in err and 'close' in err.lower(), err
     assert _store_files(home) == before
+
+
+@pytest.mark.parametrize('argv', [(), ('--dry-run',)])
+def test_adopt_reports_a_routed_local_chat_with_no_receipt(tmp_path, monkeypatch, capsys, argv):
+    """A copied chat's route must not be mistaken for a receipt or a legacy chat."""
+    from hermes_state import SessionDB
+
+    home = tmp_path / 'home'
+    home.mkdir()
+    db = SessionDB(db_path=home / 'state.db')
+    try:
+        db.create_session('local-moved', source='desktop', model='old-model', cwd=str(home))
+        db.append_message('local-moved', role='user', content='copied history')
+    finally:
+        db.close()
+    with closing(sqlite3.connect(home / 'state.db')) as conn:
+        conn.execute(
+            'UPDATE sessions SET session_key=?, chat_id=?, origin_json=? WHERE id=?',
+            ('agent:main:local:dm:local-moved', 'local-moved',
+             json.dumps({'platform': 'local', 'chat_id': 'local-moved', 'chat_type': 'dm'}),
+             'local-moved'))
+        conn.commit()
+    with closing(sqlite3.connect(home / 'state.db')) as conn:
+        before = (conn.execute('SELECT session_key, chat_id, origin_json FROM sessions WHERE id=?',
+                               ('local-moved',)).fetchone(),
+                  conn.execute('SELECT key, value FROM state_meta ORDER BY key').fetchall())
+
+    status, out, err = _refused_adopt(capsys, monkeypatch, home, *argv)
+
+    assert status == 0
+    assert '1 routed local chat(s) have no gateway receipt' in err
+    assert 'Copying sessions between profiles is unsupported' in err
+    assert 'Nothing safely adoptable' in out
+    with closing(sqlite3.connect(home / 'state.db')) as conn:
+        after = (conn.execute('SELECT session_key, chat_id, origin_json FROM sessions WHERE id=?',
+                              ('local-moved',)).fetchone(),
+                 conn.execute('SELECT key, value FROM state_meta ORDER BY key').fetchall())
+    assert after == before

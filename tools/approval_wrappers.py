@@ -323,7 +323,7 @@ def dequote_rm_operands(variant: str) -> str:
     A word that would contain whitespace or a shell operator is left alone: it is one operand, not
     several, and its quoted `;` is not a separator."""
     from tools.approval_detection import (
-        _RE_FLAGS, _RM_FLAG_PREFIX, _read_shell_word, _splice, _strip_shell_word_syntax,
+        _RE_FLAGS, _RM_FLAG_PREFIX, _read_shell_word, _scan_shell, _splice, _strip_shell_word_syntax,
     )
 
     edits, cursor = [], 0
@@ -335,7 +335,9 @@ def dequote_rm_operands(variant: str) -> str:
             word_start, word_end, word = _read_shell_word(variant, pos)
             if word_start == word_end:
                 break
-            if "'" in word or '"' in word:
+            # A quoted glob char is a literal name (`"$HOME"/"*"`): removing its quotes would make it a glob.
+            if ("'" in word or '"' in word) and not any(
+                    kind == "char" and quote and word[i] in "*?[" for kind, i, _, quote in _scan_shell(word)):
                 plain = _strip_shell_word_syntax(word)
                 if plain and not any(char.isspace() or char in _RM_OPERAND_SYNTAX for char in plain):
                     edits.append((word_start, word_end, plain))

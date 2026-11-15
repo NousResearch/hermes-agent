@@ -2137,7 +2137,7 @@ from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
 from gateway.session import (
     AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key,
-    profile_from_session_key_namespace, resolve_runner_session_isolation)
+    profile_from_session_key_namespace, resolve_runner_session_isolation, build_runner_session_key)
 # Telegram topic routing (#22773, regression fixed #52060): a
 # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is ambiguous — a forum-style topic in a
 # private chat and a genuine Bot API channel Direct-Messages topic share the same shape and need OPPOSITE
@@ -3582,11 +3582,7 @@ class GatewayRunner(
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
-        from gateway.session_dm_threads import dm_thread_key_source, telegram_extra_for
-        group_per_user, thread_per_user = self._resolve_session_isolation_for_source(source)
-        return build_session_key(
-            dm_thread_key_source(source, telegram_extra_for(source, config), self._sync_session_db),
-            group_sessions_per_user=group_per_user, thread_sessions_per_user=thread_per_user, profile=_profile)
+        return build_runner_session_key(self, source, config, _profile)
 
     # Telegram General topic in forum-enabled private chats: clients omit message_thread_id or send "1"; both = root.
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})

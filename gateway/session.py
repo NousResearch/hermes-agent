@@ -709,6 +709,15 @@ def resolve_runner_session_isolation(
     return resolve_session_isolation(getattr(runner, "config", None), source)
 
 
+def build_runner_session_key(runner: Any, source: SessionSource, config: Any, profile: Optional[str]) -> str:
+    """Compose effective isolation with native Telegram DM-thread normalization."""
+    from gateway.session_dm_threads import dm_thread_key_source, telegram_extra_for
+    group_per_user, thread_per_user = runner._resolve_session_isolation_for_source(source)
+    return build_session_key(
+        dm_thread_key_source(source, telegram_extra_for(source, config), runner._sync_session_db),
+        group_sessions_per_user=group_per_user, thread_sessions_per_user=thread_per_user, profile=profile)
+
+
 def is_shared_multi_user_session(
     source: SessionSource, *, group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,

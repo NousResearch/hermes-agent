@@ -27,7 +27,7 @@ from tools.environments.base_output import (
     ProcessHandle, _finalize_wait_result, _new_output_collector, _start_drain_thread,
 )
 from tools.environments.base_session_env import (
-    _SHELL_ENV_NAME_RE, _SNAP_TMP_SUFFIX, _cwd_marker, _pipe_marker, _snapshot_bootstrap_script, _split_cwd_marker,
+    _SHELL_ENV_NAME_RE, _SNAP_TMP_SUFFIX, _cwd_fallback_marker, _cwd_marker, _pipe_marker, _snapshot_bootstrap_script, _split_cwd_marker,
     _wrap_command_script,
 )
 from tools.environments.base_processes import LongLivedProcessMixin
@@ -84,6 +84,20 @@ def shell_state_scope(chain: tuple[str, ...]):
         yield
     finally:
         _shell_state_chain.reset(token)
+
+
+# Set while a command runs in a ``workdir`` the model named: the wrapper then refuses a missing
+# one instead of falling back to an ancestor, where a typo would run ``rm -f ./*`` a level up.
+_explicit_workdir: contextvars.ContextVar[bool] = contextvars.ContextVar("terminal_explicit_workdir", default=False)
+
+
+@contextmanager
+def explicit_workdir_scope(active: bool):
+    token = _explicit_workdir.set(active)
+    try:
+        yield
+    finally:
+        _explicit_workdir.reset(token)
 
 
 def _enter_foreground_spawn() -> bool:
@@ -321,6 +335,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
 
     # Per-session PIPESTATUS marker set in __init__; empty means the wrapper emits none.
     _pipe_marker: str = ""
+    # Per-session marker the wrapper prints after falling back from a dead cwd; empty = refuse.
+    _cwd_fallback_marker: str = ""
 
     def get_temp_dir(self) -> str:
         """Return the backend temp directory used for session artifacts.
@@ -345,6 +361,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
         self._pipe_marker = _pipe_marker(self._session_id)
+        self._cwd_fallback_marker = _cwd_fallback_marker(self._session_id)
         self._snapshot_ready = False
         self._snapshot_passthrough_names: set[str] = set()
         # True when login bash is unusable (e.g. broken Git-for-Windows startup)
@@ -510,6 +527,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             persist_env=self._persist_env,
             pipe_marker=self._pipe_marker,
             seed_snaps=seeds,
+            cwd_fallback_marker="" if _explicit_workdir.get() else self._cwd_fallback_marker,
             **self._snapshot_script_kwargs(cwd, chain[0] if chain else None))
 
     @staticmethod
@@ -699,9 +717,10 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
 
     def _usable_cwd(self, cwd: str) -> tuple[str, dict | None]:
         """Directory the command may actually start in, plus ``{"requested", "used"}`` when it
-        differs. Local swaps a deleted/unenterable one (it would make the wrapper's ``cd`` exit
-        126 on every call); sandboxes resolve their own. Returned, never stored on ``self``:
-        concurrent commands share one environment."""
+        differs. Local swaps a deleted/unenterable one host-side; a sandbox's filesystem is only
+        visible to its own shell, so its wrapper walks up instead (``_cd_with_fallback``) and
+        ``execute`` reports that. Returned, never stored on ``self``: concurrent commands share
+        one environment."""
         return cwd, None
 
     # --- Unified execute() ---
@@ -819,6 +838,9 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         else:
             result = bounded.value
         self._update_cwd(result)
+        if self._cwd_fallback_marker and (split := _split_cwd_marker(result.get("output", ""), self._cwd_fallback_marker)):
+            used, result["output"] = split
+            cwd_fallback = cwd_fallback or ({"requested": effective_cwd, "used": used} if used else None)
         if getattr(self, "_recreated_notice_pending", False):
             self._recreated_notice_pending = False
             result["environment_recreated"] = True

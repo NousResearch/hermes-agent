@@ -106,6 +106,17 @@ def test_cwd_persists_and_workdir_does_not(docker_task):
     assert _run("pwd", docker_task)["output"].strip() == "/workspace/proj"
 
 
+def test_cwd_removed_inside_the_container_falls_back_with_a_notice(docker_task):
+    """#62169: once the session cwd was rm -rf'd every later command exited 126 at the wrapper's cd."""
+    _run("mkdir -p /tmp/gone/sub && cd /tmp/gone/sub", docker_task)
+    _run("rm -rf /tmp/gone", docker_task)
+    recovered = _run("pwd", docker_task)
+    assert recovered["exit_code"] == 0 and recovered["output"].strip() == "/tmp", recovered
+    assert "/tmp/gone/sub no longer exists" in recovered["cwd_fallback"]
+    refused = _run("echo ran", docker_task, workdir="/tmp/typo-dir")  # a named workdir never falls back
+    assert refused["exit_code"] == 126 and "ran" not in refused["output"], refused
+
+
 def test_exported_env_persists_between_commands(docker_task):
     _run("export HERMES_RB_EXPORTED='kept value'", docker_task)
     assert _run('echo "$HERMES_RB_EXPORTED"', docker_task)["output"].strip() == "kept value"

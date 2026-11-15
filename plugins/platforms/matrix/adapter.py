@@ -77,7 +77,8 @@ from gateway.platforms.base import (
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, safe_proxy_url_for_log, ssrf_redirect_guard, describe_proxy_error,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import ThreadParticipationTracker
+from gateway.platforms.helpers import ThreadParticipationTracker, hash_for_log
+from plugins.platforms.matrix.media_download import MatrixMediaTooLarge, download_mxc_capped, read_body_capped
 from plugins.platforms.matrix.adapter_html import _latex_to_tokens, _pre_sanitize_matrix_markdown, _sanitize_matrix_html
 from plugins.platforms.matrix.session_proxy import matrix_redaction_proxy
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
@@ -1384,23 +1385,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
         async def _read_capped(resp, chunks, content_type) -> tuple[bytes, str]:
             """Enforce Content-Length + streamed size caps, then require an image/* type."""
-            try:
-                size = int(resp.headers.get("Content-Length") or resp.headers.get("content-length"))
-            except Exception:
-                size = None
-            if size is not None and size > self._max_media_bytes:
-                raise ValueError(f"media exceeds Matrix limit ({size} > {self._max_media_bytes} bytes)")
-            parts: list[bytes] = []
-            total = 0
-            async for chunk in chunks:
-                total += len(chunk)
-                if total > self._max_media_bytes:
-                    raise ValueError(f"media exceeds Matrix limit (> {self._max_media_bytes} bytes)")
-                parts.append(bytes(chunk))
+            data = await read_body_capped(resp.headers, chunks, self._max_media_bytes)
             content_type = str(content_type or "").split(";", 1)[0].strip().lower()
             if not content_type.startswith("image/"):
                 raise ValueError("external media is not an image")
-            return b"".join(parts), content_type
+            return data, content_type
         fname = url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
         try:
             import aiohttp as _aiohttp
@@ -1990,10 +1979,15 @@ class MatrixAdapter(BasePlatformAdapter):
         if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
             self._parked_voices.release(room_id, sender, voice_gate)
         display_name = await self._get_display_name(room_id, sender)
+        # m.notice is the bot msgtype convention: flag it for the loop guard and no-pairing rule.
+        # Any sender can pick the msgtype, so it must never widen access: Matrix declares no
+        # allow_bots_env and a notice sender still needs a human rung (#143370).
+        is_bot = source_content.get("msgtype") == "m.notice"
         source = self.build_source(
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
-            guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
+            guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id,
+            is_bot=is_bot)
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
@@ -2122,6 +2116,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 cached_path = await self._download_and_cache_media(
                     url, event_id, file_content if is_encrypted_media else None, msg_type, media_type,
                     is_voice_message, body)
+            except MatrixMediaTooLarge as e:
+                logger.warning("[Matrix] Rejecting oversized inbound media %s: %s", event_id, e)
+                return
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
         # Unencrypted media may fall back to the HTTP download URL when caching failed.
@@ -2150,9 +2147,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self, url: str, event_id: str, encrypted_file: Optional[dict], msg_type: MessageType, media_type: str,
         is_voice_message: bool, body: str) -> Optional[str]:
         """Download (and decrypt, when *encrypted_file* is given) media into the local cache."""
-        file_bytes = await self._client.download_media(ContentURI(url))
-        if file_bytes is None:
-            return None
+        file_bytes = await download_mxc_capped(self._client, url, self._max_media_bytes)
         if encrypted_file is not None:
             from mautrix.crypto.attachments import decrypt_attachment
             hashes_value, key_value = encrypted_file.get("hashes"), encrypted_file.get("key")
@@ -2374,7 +2369,7 @@ class MatrixAdapter(BasePlatformAdapter):
         elif hasattr(relates_to, "event_id"):
             reacts_to = str(getattr(relates_to, "event_id", ""))
             key = str(getattr(relates_to, "key", ""))
-        logger.info("Matrix: reaction %s from %s on %s in %s", key, sender, reacts_to, room_id)
+        logger.info("Matrix: reaction %s from %s on %s in %s", key, sender, reacts_to, hash_for_log(room_id))
         for handler in (self._handle_approval_reaction, self._handle_model_picker_reaction,
                         self._handle_choice_picker_reaction):
             if await handler(room_id, reacts_to, key, sender):

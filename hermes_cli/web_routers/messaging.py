@@ -472,7 +472,9 @@ def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess
             raise HTTPException(status_code=500, detail=f"Node.js preparation failed: {exc}") from exc
     store_umask = ensure_private_store(session_path)  # pairing writes creds.json + signal keys (#80090)
 
-    env = with_hermes_node_path()
+    from tools.environments.local import hermes_subprocess_env
+    # bridge.js and its npm deps never see Hermes' credentials; it needs only the mode and policy below.
+    env = with_hermes_node_path(hermes_subprocess_env())
     env["WHATSAPP_MODE"] = mode
     env["WHATSAPP_DM_POLICY"] = "pairing"
     # Owned: a SIGKILLed dashboard must not leave a pairing bridge holding the session dir.

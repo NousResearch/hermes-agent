@@ -225,8 +225,11 @@ class StreamTransportMixin:
     async def _abandon_native_stream(self) -> None:
         """Seal an orphaned draft stream on turn death (stale exit / cancel): else the live
         indicator stays forever and armed interception state leaks into the next turn.
-        Never sets delivery flags."""
+        Never sets delivery flags. The edit transport has no draft to seal, but its preview still
+        ends in the live cursor: re-edit the text already on screen without it."""
         if not self._use_draft_streaming:
+            if self.cfg.cursor and self.cfg.cursor in (self._last_sent_text or ""):
+                await self._try_strip_cursor()
             return
         if getattr(type(self.adapter), "abandon_open_draft", None) is None:
             return
@@ -265,6 +268,7 @@ class StreamTransportMixin:
         for mid in (getattr(result, "message_id", None),
                     *(getattr(result, "continuation_message_ids", None) or ()), *(raw_ids or ())):
             self._track_preview_id(mid)
+        self._ceiling_observe(result)
 
     def _adapter_prefers_fresh_final(self, text: str) -> bool:
         """Adapter's prefers_fresh_final_streaming hook (Telegram's richer send path);
@@ -321,6 +325,7 @@ class StreamTransportMixin:
             self._delivery_ambiguous = is_turn_final
             stale_ids, result = (), None
         new_message_id = getattr(result, "message_id", None)
+        self._ceiling_observe(result)
         if stale_ids:  # best-effort preview cleanup; never delete the message just sent
             await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
             self._preview_message_ids = set()
@@ -342,12 +347,13 @@ class StreamTransportMixin:
             self._message_created_ts = None
 
     @stops_reply_clock
-    async def _send_or_edit(
-        self, text: str, *, finalize: bool = False, is_turn_final: bool = True) -> bool:
+    async def _send_or_edit(self, text: str, *, finalize: bool = False, is_turn_final: bool = True,
+                            redacted: bool = False) -> bool:
         """Send or edit the streaming message; True if delivered.  ``finalize`` marks the
         last edit.  Transport order: native frame → draft frame → edit existing → first
-        send; a transport returns None to fall through to the next."""
-        text = self._clean_for_display(text)
+        send; a transport returns None to fall through to the next.  ``redacted``: an interim
+        frame already redacted up to its settled boundary; a finalize is redacted whole regardless."""
+        text = self._display_text(text) if redacted and not finalize else self._clean_for_display(text)
         # Stream-is-the-message draft frames must stay prefix-stable: a closing ```
         # on a mid-code-block frame makes frame N not a prefix of N+1 and the
         # connector re-appends the whole snapshot.  The final is still fence-closed.
@@ -520,6 +526,7 @@ class StreamTransportMixin:
             self._track_preview_ids_from_result(result)
         else:
             # No editable id: fallback mode + sentinel so we don't re-enter first-send.
+            self._ceiling_note_unknown()
             self._enter_fallback_mode(self._visible_prefix())
             self._message_id = "__no_edit__"
         self._notify_new_message()
@@ -580,6 +587,7 @@ class StreamTransportMixin:
         final send from repeating it."""
         logger.warning("Stream send may have landed (timed out after the request left); "
                        "treating it as shown instead of sending it again")
+        self._ceiling_note_unknown()
         self._last_sent_text = text
         if finalize:
             self._delivery_ambiguous = True

@@ -178,7 +178,7 @@ async def test_failed_manual_compression_reply_identifies_session_and_noop(rig, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["session.transcript"])
+@pytest.mark.parametrize("method", ["session.transcript", "session.account_usage"])
 async def test_a_slow_stored_read_never_holds_an_interrupt(rig, method):
     """A picker paging a long stored transcript must not queue the socket's interrupt behind it (#150091)."""
     sock, gates, log = rig

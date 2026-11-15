@@ -24,7 +24,6 @@ import sys
 import tempfile
 import threading
 from contextlib import contextmanager, suppress
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Dict, Any, Literal, Optional, List, Tuple, Set
 
@@ -43,9 +42,12 @@ from hermes_constants import (
     _chown_to_hermes_uid, _container_or_chmod_skipped, _resolve_hermes_uid_gid,
     apply_secure_dir_policy, get_managed_system)
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home, get_process_hermes_home
+from hermes_constants import LAUNCH_ONLY_ENV_KEYS, get_hermes_home, is_launch_only_env_key, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
+from hermes_cli.config_set_scalars import _SCALAR_WORDS, _coerce_float, _coerce_int, _quoted_bool
 from hermes_cli.config_issues import ConfigIssue, _issue
+from hermes_cli.config_credential_values import (
+    _check_non_ascii_credential, refuse_redacted_config_credentials, refuse_redacted_env_value)
 from hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
     get_config_backend, probe_config_readable, read_config_doc, supports_file_tooling,
@@ -131,7 +133,7 @@ _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
     "HERMES_YOLO_MODE", "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS",
     "HERMES_INTERACTIVE", "HERMES_EXEC_ASK", "HERMES_GATEWAY_SESSION",
     "HERMES_CRON_SESSION", "HERMES_SINGLE_QUERY_SESSION",
-    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"})
+    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"}) | LAUNCH_ONLY_ENV_KEYS
 
 
 def _env_var_policy_name(key: str, *, is_windows: Optional[bool] = None) -> str:
@@ -613,6 +615,7 @@ from hermes_cli.personality import (
 
 from hermes_cli.config_version_stamp import (
     check_config_version, newer_stamp_message, note_first_stamp, read_config_version_stamp, stamp_missing_config)
+from hermes_cli.config_secret_display import _maskable_secret_text, redact_config_value
 
 
 # ---- Config Migration System ----
@@ -1826,10 +1829,11 @@ def _write_config_state(
 ) -> None:
     """Shared comment-preserving config writer; omission policy is selected by the public wrapper."""
     _refuse_failed_read(config_path, data)
+    from hermes_cli.config_backend import keeping_read_base
+    refuse_redacted_config_credentials(data, lambda: keeping_read_base(lambda: read_user_config_raw(config_path)))
     if not allow_omissions:
         # A guard read, not the caller's read: *data* came from the caller's own earlier read, so a
         # Remote Config save must still be diffed against THAT read, not a poll that landed since.
-        from hermes_cli.config_backend import keeping_read_base
         existing = keeping_read_base(lambda: require_readable_config_before_write(config_path))
         omitted = _omitted_config_paths(existing, data)
         if omitted:
@@ -1916,7 +1920,7 @@ TERMINAL_CONFIG_ENV_MAP = {
             "docker_volumes", "docker_env", "docker_mount_cwd_to_workspace", "docker_network",
             "docker_extra_args", "docker_shm_size", "docker_run_as_host_user", "docker_snap_compat",
             "docker_persist_across_processes", "docker_shared_container_key",
-            "docker_orphan_reaper", "sandbox_dir", "persistent_shell")}}
+            "docker_orphan_reaper", "sandbox_dir", "persistent_shell", "home_mode")}}
 
 
 def _terminal_env_value(value: Any) -> str:
@@ -2459,27 +2463,6 @@ def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool) -> Non
         _secure_file(env_path)
 
 
-def _check_non_ascii_credential(key: str, value: str) -> str:
-    """Strip non-ASCII characters from a credential (HTTP header values must be ASCII) and warn.
-    Lookalike glyphs typically come from copy-pasting out of a PDF or rich-text editor."""
-    if value.isascii():
-        return value
-
-    bad_chars = [f"  position {i}: {ch!r} (U+{ord(ch):04X})" for i, ch in enumerate(value) if ord(ch) > 127]
-    sanitized = value.encode("ascii", errors="ignore").decode("ascii")
-
-    print(
-        f"\n  Warning: {key} contains non-ASCII characters that will break API requests.\n"
-        f"  This usually happens when copy-pasting from a PDF, rich-text editor,\n"
-        f"  or web page that substitutes lookalike Unicode glyphs for ASCII letters.\n\n"
-        + "\n".join(f"  {line}" for line in bad_chars[:5])
-        + ("\n  ... and more" if len(bad_chars) > 5 else "")
-        + "\n\n  The non-ASCII characters have been stripped automatically.\n"
-        "  If authentication fails, re-copy the key from the provider's dashboard.\n",
-        file=sys.stderr)
-    return sanitized
-
-
 def _quote_env_value(value: str) -> str:
     """Quote .env values containing characters with special dotenv meaning. Any whitespace
     (including internal runs) is quoted so ``set -a; . file`` word-splitting keeps paths intact."""
@@ -2533,7 +2516,7 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
     # dashboard launch scope), so a same-request read after the write must see it there too; a
     # routed profile's value never reaches the shared process env.
     targets = [scope] if isinstance(scope, dict) else []
-    if not routed and (scope is None or isinstance(scope, dict)):
+    if not routed and not is_launch_only_env_key(key) and (scope is None or isinstance(scope, dict)):
         targets.append(os.environ)
     for target in targets:
         if value is None:
@@ -2585,6 +2568,7 @@ def save_env_value(key: str, value: str):
         return
     validate_env_var_name_for_write(key)
     value = value.replace("\n", "").replace("\r", "")
+    refuse_redacted_env_value(key, value)
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
     env_path = get_env_path()
@@ -2679,7 +2663,7 @@ def reload_env() -> int:
     env_vars = load_env()
     count = 0
     for key, value in env_vars.items():
-        if os.environ.get(key) != value:
+        if not is_launch_only_env_key(key) and os.environ.get(key) != value:  # launch-only: never from .env (#135200)
             os.environ[key] = value
             count += 1
     known = set() if dotenv_unreadable(get_env_path()) else set(OPTIONAL_ENV_VARS) | _EXTRA_ENV_KEYS
@@ -2763,25 +2747,6 @@ def _is_secret_config_key(key: str) -> bool:
     if _is_env_config_key(key):
         return not leaf.endswith(_NON_SECRET_KEY_SUFFIXES)
     return leaf in _SECRET_CONFIG_KEYS or leaf.endswith(_SECRET_CONFIG_KEY_SUFFIXES)
-
-
-def redact_config_value(value: Any, _depth: int = 0) -> Any:
-    """Copy of ``value`` with credential-shaped keys masked. ``print`` bypasses the logging
-    redactor and opaque tokens miss the vendor-prefix regexes, so structural masking is required."""
-    from agent.redact import mask_secret
-
-    if _depth > 20:  # bound recursion for pathological/cyclic configs
-        return value
-    if isinstance(value, dict):
-        return {
-            k: mask_secret(v)
-            if isinstance(k, str) and _is_secret_config_key(k) and isinstance(v, str) and v
-            and not _ENV_PLACEHOLDER_RE.match(v)
-            else redact_config_value(v, _depth + 1)
-            for k, v in value.items()}
-    if isinstance(value, list):
-        return [redact_config_value(v, _depth + 1) for v in value]
-    return value
 
 
 def edit_config():
@@ -2976,34 +2941,6 @@ def _looks_structured_value(value: str) -> bool:
     return False
 
 
-def _coerce_int(value: str):
-    """int(value) for a clean integer literal (signs/whitespace/underscores OK), else None."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _coerce_float(value: str):
-    """``float(value)`` only when the conversion preserves its decimal value; NaN/inf rejected.
-    Decimal-looking identifiers more precise than a binary float must stay strings."""
-    try:
-        f = float(value)
-        if f != f or f in (float("inf"), float("-inf")) or Decimal(value) != Decimal(str(f)):
-            return None
-    except (TypeError, ValueError, InvalidOperation):
-        return None
-    return f
-
-
-_SCALAR_WORDS = {
-    'true': True, 'yes': True, 'on': True,
-    'false': False, 'no': False, 'off': False,
-    # YAML null. Many DEFAULT_CONFIG leaves are "null/absent = off"; without this,
-    # ``config set X null`` stored the truthy string "null" and the feature could never be cleared.
-    'null': None, 'none': None, '~': None}
-
-
 def _coerce_config_set_value(key: str, value: str) -> Any:
     """Auto-coerce a ``hermes config set`` string to bool/None/int/float/list/dict.
     String-typed settings (per ``DEFAULT_CONFIG``) are preserved verbatim so enum members such as
@@ -3019,6 +2956,9 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
     lower = stripped.lower()
     if lower in _SCALAR_WORDS:
         return _SCALAR_WORDS[lower]
+    quoted = _quoted_bool(stripped) if isinstance(_default_value_for_key(key), bool) else None
+    if quoted is not None:
+        return quoted
     for coerce in (_coerce_int, _coerce_float):
         coerced = coerce(stripped)
         if coerced is not None:
@@ -3286,7 +3226,14 @@ def set_config_value(key: str, value: str, force: bool = False):
     from hermes_cli.config_section_guard import _guard_section_overwrite
     key = _guard_section_overwrite(key, value, user_config, force)
     value = _refuse_container_type_mismatch(key, value, user_config, force)
-    _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
+    from hermes_cli.config_secret_refs import config_set_secret_value, masked_display_value
+    value = config_set_secret_value(key, value, user_config)
+    # A provider switch re-points its block at a new route; the old provider's base_url/api_mode
+    # must not survive it (#113719, #40862 for ``model``; #141832 for ``auxiliary.<task>``, where
+    # base_url even overrides the provider). Before _set_nested, so the outgoing provider is
+    # still readable.
+    from hermes_cli.config_route_guard import stale_route_notice
+    _route_notice = stale_route_notice(user_config, key, value)
     try:
         _set_nested(user_config, key, value)
     except ValueError as e:
@@ -3294,26 +3241,6 @@ def set_config_value(key: str, value: str, force: bool = False):
     from tools.mcp_tool_common import drop_legacy_disabled_for_key
     for _note in _dropped_shadow_notes(user_config, key, legacy_key, drop_legacy_disabled_for_key):
         print(_note)
-    # A provider switch re-points ``model:`` at a new route; ``base_url``/``api_mode`` are route
-    # state of the OLD provider, and the runtime honours them for whatever provider the block now
-    # names — the new provider's key would be posted to the old endpoint (#113719, #40862). Sync
-    # them the way a persisted ``/model`` switch does: the previous route goes unless it is the
-    # new provider's own endpoint.
-    _route_notice = ""
-    _old_provider = str(_old_provider or "").strip() or "the previous provider"
-    if key == "model.provider" and _old_provider.lower() != str(value).strip().lower():
-        from hermes_cli.route_identity import drop_stale_model_route
-        _popped, _unverified = drop_stale_model_route(user_config.get("model"), value, user_config)
-        if _popped:
-            _route_notice = (
-                "  Cleared " + ", ".join(f"model.{k} ({v})" for k, v in _popped.items())
-                + f" — that route belonged to {_old_provider}, not {value}. {value}'s endpoint resolves "
-                "automatically; set model.base_url again if you meant a custom endpoint.")
-        elif _unverified:
-            _route_notice = color(
-                f"⚠ model.base_url ({user_config['model'].get('base_url')}) was set under {_old_provider} and "
-                f"still applies to {value} — requests go there. If it is not {value}'s endpoint: "
-                "`hermes config unset model.base_url` (and model.api_mode).", Colors.YELLOW)
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
     if key.strip().lower() in ("model.api_base", "api_base"):
         # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config
@@ -3336,13 +3263,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         from agent.i18n import reset_language_cache
         reset_language_cache()
 
-    # Mask the echoed value when the (possibly nested) key is credential-shaped, e.g.
-    # ``model.api_key`` (lowercase, so it misses the .env routing above).
-    _display_value = value
-    if _is_secret_config_key(key) and isinstance(value, str) and value:
-        from agent.redact import mask_secret
-        _display_value = mask_secret(value)
-    print(f"✓ Set {key} = {_display_value} in {config_destination(config_path)}")
+    print(f"✓ Set {key} = {masked_display_value(key, value)} in {config_destination(config_path)}")
     if _route_notice:
         print(_route_notice)
 
@@ -3379,9 +3300,9 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
 
     from agent.redact import _redact_enabled, mask_secret
     if not raw and _redact_enabled():
-        if isinstance(value, str):
-            if _is_secret_config_key(key) and not _ENV_PLACEHOLDER_RE.match(value):
-                value = mask_secret(value)
+        if text := _maskable_secret_text(value):
+            if _is_secret_config_key(key) and not _ENV_PLACEHOLDER_RE.match(text):
+                value = mask_secret(text)
         else:
             value = redact_config_value(value)
 

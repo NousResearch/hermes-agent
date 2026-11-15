@@ -414,7 +414,8 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
     # everything otherwise); barge-aware.
     if st.tts_queue is None and isinstance(raw, str) and raw.strip() and _voice_tts_enabled():
         try:
-            threading.Thread(target=_speak_text_with_barge, args=(raw,), daemon=True).start()
+            from agent.memory_provider import spawn_context_thread
+            spawn_context_thread(_speak_text_with_barge, name="voice-tts-fallback", args=(raw,)).start()
         except ImportError:
             logger.warning("voice TTS skipped: hermes_cli.voice unavailable")
         except Exception as e:
@@ -424,7 +425,8 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
 def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str, *,
                             on_done=None, on_error=None) -> None:
     """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
-    release ``running``."""
+    release ``running`` while it is still the caller's claim (``_notif_release_claim``)."""
+    claim = session.get("_notif_turn_claim")
     try:
         _emit("message.start", sid)
         _run_prompt_submit(rid, sid, session, prompt)
@@ -434,8 +436,7 @@ def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str
         if on_error is not None:
             on_error()
         _hook_failure(what, exc)
-        with session["history_lock"]:
-            session["running"] = False
+        _notif_release_claim(session, claim)
 
 
 def _run_post_turn_followups(
@@ -457,6 +458,7 @@ def _run_post_turn_followups(
             if session.get("_turn_cancel_requested"):
                 return  # the user pressed Stop; the goal resumes after their next prompt
             session["running"] = True
+            session["_notif_turn_claim"] = object()  # _dispatch_followup_turn's failure release frees only this claim
         _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
     # and compression-chain aware (same fail-closed gate as the poller): session B must

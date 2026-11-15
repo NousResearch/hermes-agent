@@ -99,6 +99,9 @@ def test_fs_routes_workspace_reads_to_ssh_backend(client, monkeypatch):
             calls.append(("read", path, max_bytes, read_limit))
             return b"hello", 5, path
 
+        def normalize(self, path):
+            return path
+
         def write_text(self, path, content, *, max_bytes):
             calls.append(("write", path, content, max_bytes))
             return path, len(content.encode("utf-8"))
@@ -276,6 +279,36 @@ def test_fs_ssh_readers_read_the_resolved_path_they_vetted(client, monkeypatch, 
 
     assert response.status_code == 200
     assert reads == ["/srv/repos/notes.txt"]
+
+
+@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url"])
+def test_fs_ssh_preview_keeps_html_alias_mime_after_resolving_link(client, monkeypatch, endpoint):
+    """An HTML symlink to an extensionless file still previews as HTML after its realpath is vetted."""
+    alias = "/srv/repos/report.html"
+    resolved = "/srv/repos/cache/7f24ab"
+    html = b"<h1>Report</h1>"
+    reads = []
+
+    class FakeSshFs:
+        def inspect_file(self, path):
+            assert path == alias
+            return resolved, len(html)
+
+        def read_bytes(self, path, *, max_bytes, read_limit=None):
+            reads.append(path)
+            return html, len(html), path
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+
+    response = client.get(endpoint, params={"path": alias, "profile": "remote-dev"})
+
+    assert response.status_code == 200
+    assert reads == [resolved]  # Never re-read the unchecked symlink.
+    if endpoint.endswith("read-text"):
+        assert response.json()["language"] == "html"
+        assert response.json()["mimeType"] == "text/html"
+    else:
+        assert response.json()["dataUrl"] == "data:text/html;base64," + base64.b64encode(html).decode("ascii")
 
 
 @pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download"])
@@ -729,6 +762,29 @@ def test_fs_write_text_refuses_sensitive_files_through_symlinks(client, tmp_path
     assert store.read_text() == "model: safe\n"
 
 
+@pytest.mark.require_symlinks
+def test_fs_write_text_refuses_a_credential_name_mid_link_chain(client, tmp_path, monkeypatch):
+    store = tmp_path / "settings-store"
+    store.write_text("model: safe\n")
+    (tmp_path / "config.yaml").symlink_to(store)
+    alias = tmp_path / "notes.md"
+    alias.symlink_to(tmp_path / "config.yaml")
+    monkeypatch.chdir(tmp_path)  # a relative path resolves against the process cwd
+
+    for target in (str(alias), alias.as_uri(), "notes.md"):
+        response = client.post("/api/fs/write-text", json={"path": target, "content": "EVIL=1"})
+        assert response.status_code == 403, repr(target)
+
+    async def detail(session_id, profile=None):  # ... or, with a session, against its cwd
+        return {"id": session_id, "cwd": str(tmp_path)}
+
+    monkeypatch.setattr("hermes_cli.web_routers.sessions.get_session_detail", detail)
+    monkeypatch.chdir(tmp_path.parent)
+    response = client.post("/api/fs/write-text", json={"path": "notes.md", "content": "EVIL=1", "session_id": "s"})
+    assert response.status_code == 403
+    assert store.read_text() == "model: safe\n"
+
+
 def test_fs_read_data_url_reads_a_browser_paste_from_the_host_for_an_ssh_profile(client, monkeypatch):
     """A browser paste is saved in the profile's host image cache even when its workspace is an
     SSH machine. Sending it reads it back through this route, so that one host-owned path must not
@@ -862,6 +918,9 @@ class _NotOnTheSshMachine:
     def __init__(self):
         self.asked = []
         self.written = []
+
+    def normalize(self, path):
+        return path
 
     def write_text(self, path, content, *, max_bytes):
         self.written.append((path, content))

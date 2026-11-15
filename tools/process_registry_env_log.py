@@ -86,11 +86,11 @@ def fallback_exit_code(env: Any, quoted_pid_path: str, quoted_exit_path: str) ->
     could not deliver, so a backend that mangles it still sees the exit.
     ``None`` while the process looks alive, else the recorded code (-1 if none)."""
     check = env.execute(
-        f"kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
+        f"kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?", cwd="/", timeout=5)
     check_output = check.get("output", "").strip()
     if not check_output or check_output.splitlines()[-1].strip() == "0":
         return None
-    exit_str = env.execute(f"cat {quoted_exit_path} 2>/dev/null", timeout=5).get("output", "").strip()
+    exit_str = env.execute(f"cat {quoted_exit_path} 2>/dev/null", cwd="/", timeout=5).get("output", "").strip()
     try:
         return int(exit_str.splitlines()[-1].strip())
     except (ValueError, IndexError):

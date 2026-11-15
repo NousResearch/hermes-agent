@@ -1446,8 +1446,11 @@ def _run_foreground(
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
+            # Only the session's inherited cwd may fall back (the result tells the model); a
+            # ``workdir`` the model named is refused, or a typo would run ``rm -f ./*`` a level up.
             result = env.execute(
                 command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
+                allow_cwd_fallback=not workdir,
                 **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
                                 task_id=task_id, session_key=session_key),
             )
@@ -1493,7 +1496,7 @@ _PRE_EXEC_GUARD_MIN_TIMEOUT_S = 30
 def _refuse_missing_local_workdir(workdir: str, env: Any) -> None:
     """An explicit ``workdir`` the model named is never swapped for a parent: a typo would run
     ``rm -f ./*`` one level up. Only a cwd the session inherited falls back (``_usable_cwd``);
-    sandbox wrappers refuse it themselves under ``explicit_workdir_scope``."""
+    sandbox wrappers refuse it themselves (``execute(allow_cwd_fallback=False)``)."""
     from tools.environments.local import LocalEnvironment
     if not isinstance(env, LocalEnvironment):
         return
@@ -1613,9 +1616,8 @@ def terminal_tool(
             command, background = auto_bg, True
         env = _acquire_env(plan, task_id)
         # _lookup_active_env stamps whichever of the two keys holds the env.
-        from tools.environments.base import explicit_workdir_scope, shell_state_scope
-        with (_call_in_flight(plan.effective_task_id, task_id), shell_state_scope(_shell_state_chain(task_id)),
-              explicit_workdir_scope(bool(workdir))):
+        from tools.environments.base import shell_state_scope
+        with _call_in_flight(plan.effective_task_id, task_id), shell_state_scope(_shell_state_chain(task_id)):
             env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
 
             # Session key for cwd records: the contextvar doesn't cross tool-worker

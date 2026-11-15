@@ -86,20 +86,6 @@ def shell_state_scope(chain: tuple[str, ...]):
         _shell_state_chain.reset(token)
 
 
-# Set while a command runs in a ``workdir`` the model named: the wrapper then refuses a missing
-# one instead of falling back to an ancestor, where a typo would run ``rm -f ./*`` a level up.
-_explicit_workdir: contextvars.ContextVar[bool] = contextvars.ContextVar("terminal_explicit_workdir", default=False)
-
-
-@contextmanager
-def explicit_workdir_scope(active: bool):
-    token = _explicit_workdir.set(active)
-    try:
-        yield
-    finally:
-        _explicit_workdir.reset(token)
-
-
 def _enter_foreground_spawn() -> bool:
     global _spawns_in_flight
     with _live_foreground_cond:
@@ -516,8 +502,9 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         rewrite native/mixed Windows paths to ``/c/...``; remote backends are POSIX."""
         return shlex.quote(path)
 
-    def _wrap_command(self, command: str, cwd: str) -> str:
-        """Full bash script: source snapshot, cd, run, re-dump env, emit CWD markers."""
+    def _wrap_command(self, command: str, cwd: str, *, cwd_fallback: bool = False) -> str:
+        """Full bash script: source snapshot, cd, run, re-dump env, emit CWD markers.
+        ``cwd_fallback`` lets the ``cd`` walk up from a missing *cwd* (see ``execute``)."""
         chain = [self._task_snapshot_path(t) for t in _shell_state_chain.get()]
         seeds = [self._quote_shell_path(p) for p in (*chain[1:], self._snapshot_path)] if chain else []
         return _wrap_command_script(
@@ -527,7 +514,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             persist_env=self._persist_env,
             pipe_marker=self._pipe_marker,
             seed_snaps=seeds,
-            cwd_fallback_marker="" if _explicit_workdir.get() else self._cwd_fallback_marker,
+            cwd_fallback_marker=self._cwd_fallback_marker if cwd_fallback else "",
             **self._snapshot_script_kwargs(cwd, chain[0] if chain else None))
 
     @staticmethod
@@ -733,7 +720,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
-        yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
+        yield_handler: Callable[[ProcessHandle, str], dict] | None = None,
+        allow_cwd_fallback: bool = False) -> dict:
         """Execute a command, return {"output": str, "returncode": int}. ``bounded_capture=True``
         caps retention at ``tool_output.max_bytes`` WHILE draining; only the foreground terminal
         tool may set it — internal full-fidelity consumers (file-op ``cat`` reads feeding the
@@ -744,6 +732,12 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         ``bounded_capture=True`` caps stdout/stderr retention at ``tool_output.max_bytes`` WHILE the stream
         is drained (head/tail window) instead of holding the full output in memory (#64435).
         See #94285.
+
+        ``allow_cwd_fallback=True`` runs in the nearest usable ancestor when the cwd is gone and
+        reports it as ``cwd_fallback``. Only the terminal tool's own commands (session cwd, no
+        ``workdir``) may set it, since it tells the model; every other caller fails at ``cd``
+        instead (exit 126), because a file op's relative path would silently resolve against the
+        ancestor and read or write a different file.
         """
         self._before_execute()
 
@@ -757,7 +751,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         exec_command = fill_timeout_token(exec_command, effective_timeout)
         # An explicit ``cwd`` (the session's recorded cd state) can be just as dead as
         # ``self.cwd``; resolving only the latter left every call exiting 126 at ``cd``.
-        effective_cwd, cwd_fallback = self._usable_cwd(cwd or self.cwd)
+        effective_cwd, cwd_fallback = (
+            self._usable_cwd(cwd or self.cwd) if allow_cwd_fallback else (cwd or self.cwd, None))
 
         # Merge sudo stdin with caller stdin.
         effective_stdin = sudo_stdin + (stdin_data or "") if sudo_stdin is not None else stdin_data
@@ -765,7 +760,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
             effective_stdin = None
 
-        wrapped = self._wrap_command(exec_command, effective_cwd)
+        wrapped = self._wrap_command(exec_command, effective_cwd, cwd_fallback=allow_cwd_fallback)
 
         # Login shell if the snapshot failed (so the user's profile still
         # loads), unless login itself is broken — then non-login is the only path.

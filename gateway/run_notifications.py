@@ -1764,7 +1764,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         if len(_raw) > _LIMIT:
             _tail = _raw[-_LIMIT:]
             _nl = _tail.find("\n")
-            _tail = _tail[_nl + 1:] if _nl != -1 else _tail
+            # One long line has no later line to snap to; keep its tail rather than emptying it (#156158).
+            _tail = _tail[_nl + 1:] if _nl != -1 and _tail[_nl + 1:].strip() else _tail
             _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
         else:
             _out = _raw

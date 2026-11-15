@@ -879,3 +879,14 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
         assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
         assert "\x1b[" not in text
         assert "make -j8 all" in text
+
+
+def test_completion_event_keeps_the_tail_of_a_single_long_line():
+    """A one-line result over the limit (a settled Bot Chat reply payload) must not be cut to nothing (#156158)."""
+    reply = "word " * 600
+    session = SimpleNamespace(output_buffer=f'{{"reply": "{reply}"}}\n', exit_code=0, command="deliver", started_at=None)
+
+    output = GatewayRunner._build_process_completion_event({}, session, "proc_1")["output"]
+
+    assert "showing last 0 chars" not in output
+    assert output.rstrip().endswith('word "}')

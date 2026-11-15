@@ -361,6 +361,12 @@ class GatewaySecondaryReconnectMixin:
                             except Exception:
                                 logger.debug("resume-pending reschedule after %s reconnect failed (profile: %s)",
                                              platform.value, profile_name, exc_info=True)
+                            # Local patch: retry boot intents released while this adapter was down.
+                            try:
+                                self._schedule_boot_intents(platform=platform)
+                            except Exception:
+                                logger.debug("boot-intent reschedule after %s reconnect failed (profile: %s)",
+                                             platform.value, profile_name, exc_info=True)
                             return
                     if adapter is not None:
                         # Not installed (newer reconnect won the slot, shutdown began, or connect failed):

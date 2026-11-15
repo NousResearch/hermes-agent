@@ -434,13 +434,13 @@ class TestThreadSafety:
             check_fn=lambda: False,
         )
 
-        entries, toolset_checks = reg._snapshot_state()
+        entries = reg._snapshot_entries()
 
         def snapshot_then_mutate():
             reg.deregister("alpha")
-            return entries, toolset_checks
+            return entries
 
-        monkeypatch.setattr(reg, "_snapshot_state", snapshot_then_mutate)
+        monkeypatch.setattr(reg, "_snapshot_entries", snapshot_then_mutate)
 
         toolsets = reg.get_available_toolsets()
         assert toolsets["gated"]["available"] is False

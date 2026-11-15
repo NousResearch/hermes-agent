@@ -309,9 +309,9 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
 
 def _check_circuit_breaker(server_name: str) -> Optional[str]:
     """Open-breaker error, or None when calls may proceed. After the cooldown the breaker is
-    half-open: the next call probes; success resets, failure re-bumps and re-arms the cooldown."""
-    from tools.mcp_tool_scope import _resolve_server_key
-    key = _resolve_server_key(server_name)
+    half-open: the next call probes; success resets, failure re-bumps and re-arms the cooldown.
+    Keyed like the strikes: the caller's project clone's breaker, never the baseline's."""
+    key = _core._breaker_key(server_name)
     failures = _core._server_error_counts.get(key, 0)
     age = time.monotonic() - _core._server_breaker_opened_at.get(key, 0.0)
     if failures < _core._CIRCUIT_BREAKER_THRESHOLD or age >= _core._CIRCUIT_BREAKER_COOLDOWN_SEC:

@@ -519,6 +519,94 @@ def test_a_peer_queued_on_the_same_lock_reuses_the_installed_clone(root, monkeyp
         shutdown_mcp_servers(scope=None, names={name})
 
 
+def _clear_project_ledgers(keys) -> None:
+    """Clear the per-project breaker and connect-cooldown ledgers these failing-clone tests arm,
+    so neither test's leftovers reach the next one (inert today — unique server names, per-file
+    subprocesses — but the ledgers stay honest)."""
+    from tools import mcp_tool, mcp_tool_project_scope as scope
+    for key in keys:
+        mcp_tool._server_error_counts.pop(key, None)
+        mcp_tool._server_breaker_opened_at.pop(key, None)
+        mcp_tool._server_errors_all_application.pop(key, None)
+        scope._scoped_connect_failures.pop(key, None)
+        scope._scoped_connect_retry_after.pop(key, None)
+
+
+def test_a_failing_projects_clones_never_trip_the_baseline_breaker(root, probe, monkeypatch):
+    """Three failed clone connects in one project open THAT project's breaker only - the breaker
+    bookkeeping is keyed on the clone (design PR63759-PORT-DESIGN.md section 4.0). On the un-keyed
+    port every strike resolved the baseline connection, so one broken project paused the server in
+    every project (review finding 5)."""
+    import os as _os
+    from tools import mcp_tool, mcp_tool_project_scope as scope
+
+    name = "cwdprobe_breaker"
+    _register(root, name)
+    monkeypatch.setattr(scope, "_connect_clone", lambda *a, **k: None)  # every clone spawn fails
+
+    def _failing_call(cwd: str) -> dict:
+        from tools.mcp_tool_handlers import _make_tool_handler
+        set_session_cwd(cwd)
+        try:
+            return json.loads(_make_tool_handler(name, "whereami", 30)({}))
+        finally:
+            clear_session_cwd()
+
+    for _ in range(3):
+        assert "error" in _failing_call(probe.a)
+    baseline_key = name
+    a_key = (name, _os.path.realpath(probe.a))
+    b_key = (name, _os.path.realpath(probe.b))
+    try:
+        assert mcp_tool._server_error_counts.get(a_key) == 3, \
+            f"the failing project's strikes did not land on its clone: {mcp_tool._server_error_counts}"
+        assert mcp_tool._server_breaker_opened_at.get(a_key) is not None, "the project breaker never opened"
+        assert not mcp_tool._server_error_counts.get(baseline_key), \
+            "one project's failing clones opened the baseline's breaker for every project"
+
+        # b's call still fails (every spawn is stubbed off); the contract is that its strike lands
+        # on b's own clone and its breaker check stays closed, not that b is served.
+        assert "error" in _failing_call(probe.b)
+        from tools.mcp_tool_handlers import _check_circuit_breaker
+        set_session_cwd(probe.b)
+        try:
+            assert _check_circuit_breaker(name) is None, "project b was paused by project a's breaker"
+        finally:
+            clear_session_cwd()
+        assert not mcp_tool._server_error_counts.get(baseline_key)
+    finally:
+        _clear_project_ledgers((baseline_key, a_key, b_key))
+
+
+def test_a_failed_clone_connect_arms_a_retry_cooldown(root, probe, monkeypatch):
+    """A failed clone connect arms a geometric cooldown on the clone key: a broken project must
+    not pay a full child spawn (up to connect_timeout+5) on every call while its waiters queue
+    behind it (review finding 5)."""
+    from tools import mcp_tool_project_scope as scope
+
+    name = "cwdprobe_cooldown"
+    _register(root, name)
+    spawns = []
+    monkeypatch.setattr(scope, "_connect_clone", lambda *a, **k: spawns.append(1))  # a failed clone connect
+
+    def _failing_call(cwd: str) -> dict:
+        from tools.mcp_tool_handlers import _make_tool_handler
+        set_session_cwd(cwd)
+        try:
+            return json.loads(_make_tool_handler(name, "whereami", 30)({}))
+        finally:
+            clear_session_cwd()
+
+    try:
+        for _ in range(3):
+            assert "error" in _failing_call(probe.a)
+        assert len(spawns) == 1, \
+            f"the connect cooldown did not gate the spawn retries: {len(spawns)} spawns for 3 calls"
+    finally:
+        import os as _os
+        _clear_project_ledgers(((name, _os.path.realpath(probe.a)),))
+
+
 def _reap_bare_keyed_clones() -> None:
     """Reap clones stranded under a bare baseline key (the rekey bug's signature), so a run of
     these tests never leaks its children into the next one."""

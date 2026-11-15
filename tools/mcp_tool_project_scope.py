@@ -26,6 +26,7 @@ import contextvars
 import logging
 import os
 import threading
+import time
 from functools import wraps
 from typing import Any, Optional
 
@@ -52,6 +53,29 @@ _scoped_connect_waiters: dict[tuple[Any, str], int] = {}
 # so a rekey or a reload that moves the key mid-call cannot strand the count (review finding 3).
 # None outside a leased handler.
 _call_leases: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar("mcp_scoped_call_leases", default=None)
+
+
+# Per-clone connect cooldown (geometric, capped), mirroring the baseline's retry backoff in
+# ``tools.mcp_tool_discovery._record_connect_failure``: without it a broken project pays a full
+# spawn (up to connect_timeout+5) on every call while its waiters queue behind the connect lock
+# (port review finding 5). Every mutation under ``_core._lock``.
+_scoped_connect_failures: dict[tuple, int] = {}
+_scoped_connect_retry_after: dict[tuple, float] = {}
+
+
+def _record_clone_connect_failure(clone_key: tuple) -> None:
+    """Stamp a geometric, capped retry cooldown on the clone key after a failed connect.
+    Caller holds ``_core._lock``."""
+    n = _scoped_connect_failures.get(clone_key, 0) + 1
+    _scoped_connect_failures[clone_key] = n
+    backoff = min(_core._CONNECT_RETRY_BASE_BACKOFF_SEC * (2 ** (n - 1)), _core._CONNECT_RETRY_MAX_BACKOFF_SEC)
+    _scoped_connect_retry_after[clone_key] = time.monotonic() + backoff
+
+
+def _clear_clone_connect_failure(clone_key: tuple) -> None:
+    """Clear the clone's connect-cooldown state after a successful connect. Caller holds ``_core._lock``."""
+    _scoped_connect_failures.pop(clone_key, None)
+    _scoped_connect_retry_after.pop(clone_key, None)
 
 
 def _caller_cwd() -> str:
@@ -150,9 +174,16 @@ def _server_for_call(server_name: str, key: Any, baseline: Any, *, connect: bool
                 _release_connect_lock(clone_key, keep=False)
                 return None
         if clone is None:
+            with _core._lock:
+                if time.monotonic() < _scoped_connect_retry_after.get(clone_key, 0.0):
+                    # The clone's connect cooldown: a broken project must not pay a full spawn on
+                    # every call while its waiters queue behind the connect lock (review finding 5).
+                    _release_connect_lock(clone_key, keep=False)
+                    return None
             clone = _connect_clone(server_name, baseline, cwd)
             if clone is None:
-                with _core._lock:  # transient failure: peers keep single-flighting; the lock is reaped when the last leaves
+                with _core._lock:  # transient failure: arm the backoff; peers keep single-flighting
+                    _record_clone_connect_failure(clone_key)
                     _release_connect_lock(clone_key, keep=False)
                 return None
         with _core._lock:
@@ -167,6 +198,7 @@ def _server_for_call(server_name: str, key: Any, baseline: Any, *, connect: bool
             # finding 4).
             if _core._servers.get(key) is baseline and (occupied is None or occupied is clone):
                 _scoped_servers[clone_key] = clone
+                _clear_clone_connect_failure(clone_key)
                 _lease(clone)
                 _release_connect_lock(clone_key, keep=True)
             else:
@@ -258,6 +290,14 @@ def pop_clones(keys: Optional[set]) -> list:
     popped = [k for k in _scoped_servers if keys is None or k[0] in keys]
     for clone_key in popped:
         _scoped_connect_locks.pop(clone_key, None)
+        # The clone's per-project bookkeeping goes with it (design section "Lock cleanup": pop the
+        # clone from every keyed ledger) — a stale cooldown or breaker would pause the project
+        # after a reload that dropped it, and a re-registered one must start clean.
+        _scoped_connect_failures.pop(clone_key, None)
+        _scoped_connect_retry_after.pop(clone_key, None)
+        _core._server_error_counts.pop(clone_key, None)
+        _core._server_breaker_opened_at.pop(clone_key, None)
+        _core._server_errors_all_application.pop(clone_key, None)
     return [_scoped_servers.pop(k) for k in popped]
 
 
@@ -288,4 +328,8 @@ def rekey_unscoped(scope: str) -> list:
         lock = _scoped_connect_locks[lock_key]
         if not lock.locked() and lock_key not in _scoped_connect_waiters:
             del _scoped_connect_locks[lock_key]
+    for sidecar in (_scoped_connect_failures, _scoped_connect_retry_after):
+        for clone_key in [k for k in sidecar if isinstance(k[0], str)]:
+            moved: Any = sidecar.pop(clone_key)
+            sidecar[((scope, clone_key[0]), clone_key[1])] = moved
     return orphans

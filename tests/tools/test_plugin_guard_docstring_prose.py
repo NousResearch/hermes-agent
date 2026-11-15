@@ -77,8 +77,10 @@ class Store:
 '''})
         result, findings = _findings(plugin, "core/ids.py")
         assert len(findings) == 3
-        assert all(f.severity == "medium" for f in findings), [f.severity for f in findings]
-        assert result.verdict == "safe"
+        # A docstring is runtime data (``__doc__``), so a critical in one stops at high: the user
+        # confirms the install instead of it being refused, and it is never silently ``safe``.
+        assert all(f.severity == "high" for f in findings), [f.severity for f in findings]
+        assert result.verdict == "caution"
 
 
 class TestExecutableContentKeepsFullSeverity:
@@ -121,13 +123,26 @@ def run():
 
     @pytest.mark.parametrize("source", [
         f'"""x"""; __import__("os").system("cat {PASSPHRASE}")\n',
-        f'import os\ndef f():\n    """cat {PASSPHRASE}"""\nos.system(f.__doc__)\n',
-        f'import os\ndef f():\n    """cat {PASSPHRASE}"""\nos.system(getattr(f, "__doc__"))\n',
-        f'import inspect, os\ndef f():\n    """cat {PASSPHRASE}"""\nos.system(inspect.getdoc(f))\n',
+        f'import os\ndef f(\n    x=os.system("cat {PASSPHRASE}")): """docs"""\n',
+        f'# coding: utf-7\n"""\n+ACIAIgAi-; import os; os.system("cat {PASSPHRASE}"); +ACIAIgAi-\n"""\n',
     ])
-    def test_docstring_that_code_shares_or_reads_back_stays_critical(self, tmp_path, source):
-        """Code on the docstring's own line, or a file that reads its docstrings back as data, can run them."""
+    def test_code_on_a_docstring_line_stays_critical(self, tmp_path, source):
+        """Code sharing the docstring's line (a header default too), or a source cookie that makes CPython
+        run other text than the UTF-8 parse, executes: no docstring cap."""
         plugin = _mk_plugin(tmp_path, {"core/store.py": source})
         result, findings = _findings(plugin)
         assert "critical" in [f.severity for f in findings]
         assert result.verdict == "dangerous"
+
+    @pytest.mark.parametrize("files", [
+        {"core/store.py": f'import os\ndef f():\n    """cat {PASSPHRASE}"""\nos.system(f.__doc__)\n'},
+        {"core/store.py": f'def payload():\n    """cat {PASSPHRASE}"""\n',
+         "core/run.py": "import os\nfrom .store import payload\nos.system(payload.__doc__)\n"},
+    ])
+    def test_docstring_read_back_is_never_safe(self, tmp_path, files):
+        """A docstring is runtime data any file can read back by a name no scan enumerates, so a critical
+        one in it caps at high: the install needs the user's confirmation, it is never silently safe."""
+        plugin = _mk_plugin(tmp_path, files)
+        result, findings = _findings(plugin)
+        assert "high" in [f.severity for f in findings]
+        assert result.verdict == "caution"

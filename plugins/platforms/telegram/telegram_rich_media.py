@@ -164,3 +164,27 @@ async def observe_skipped(adapter: Any, msg: Any, update: Any) -> None:
     event = adapter._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
     await adapter._cache_observed_media(msg, event)
     adapter._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id, event=event)
+
+
+async def handle_rich_media_message(adapter: Any, msg: Any, update: Any) -> bool:
+    """``_handle_text_message`` for a rich message carrying attachments (True = handled; False = no
+    attachments, the text path goes on): gate it like any message; unaddressed, observe it with its
+    cached attachment; addressed, dispatch it as media."""
+    from gateway.platforms.event import MessageType
+    if not rich_media_items(msg):
+        return False
+    if not adapter._should_process_message(msg):
+        await observe_skipped(adapter, msg, update)
+        return True
+    await adapter._ensure_forum_commands(update.message)
+    await dispatch_rich_media(adapter, msg, await adapter._build_triggered_event(msg, update, MessageType.TEXT))
+    return True
+
+
+def rich_observed_source(adapter: Any, msg: Any) -> tuple[Any, str, str, str | None]:
+    """``_observed_media_source`` for the first rich-block attachment (replied-to or observed), else Nones."""
+    bot = getattr(adapter, "_bot", None)
+    if bot is None or not (rich := rich_media_items(msg)):
+        return None, "", "", None
+    _block, file_id, media, mime, kind = rich[0]
+    return rich_media_source(bot, file_id, media), str(media.get("file_name") or ""), mime, kind

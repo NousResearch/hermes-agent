@@ -208,3 +208,54 @@ class TestFill:
             out = json.loads(browser_vault_tool.browser_vault_save_login(task_id="t"))
         assert [m.origin for m in store.list_items()] == ["https://bank.example"]
         _refused_before_resolution(out["fill"], backend, page)
+
+
+# The sign-in page sits on a sibling origin the item was not saved for; the supervisor's own tab is blank.
+_SSO_URL = "https://sso.example.com/login?next=%2Faccount&state=abc123"
+_TARGETS = [
+    {"targetId": "T1", "type": "page", "url": "about:blank"},
+    {"targetId": "T2", "type": "page", "url": _SSO_URL},
+    {"targetId": "T3", "type": "page", "url": "https://sso.example.com/help"},
+    {"targetId": "T4", "type": "service_worker", "url": "https://www.example.com/sw.js"},
+]
+
+
+@pytest.fixture()
+def tabs():
+    """A real supervisor whose browser lists ``_TARGETS``."""
+    from tests.tools.test_browser_supervisor_capture import _FakeCDP
+    from tools.browser_supervisor import _SupervisorRegistry
+
+    registry = _SupervisorRegistry()
+    sup = registry.get_or_start("t", _FakeCDP().url, start_timeout=5)
+    real_cdp = sup._cdp
+
+    async def cdp(method, *args, **kwargs):
+        if method == "Target.getTargets":
+            return {"result": {"targetInfos": _TARGETS}}
+        return await real_cdp(method, *args, **kwargs)
+
+    try:
+        with patch.object(sup, "_cdp", cdp):
+            yield sup
+    finally:
+        registry.stop_all()
+
+
+class TestNoBoundTab:
+    def test_page_origins_lists_page_tab_origins_only(self, tabs):
+        assert tabs.page_origins() == ["https://sso.example.com"]
+
+    def test_refusal_names_saved_and_open_tab_origins_without_urls(self, vault, tabs):
+        from tools import browser_vault_tool
+
+        store, backend, _ = vault
+        meta = _login(store, origin="https://www.example.com", otp=False)
+        with patch.object(browser_vault_tool, "_ensure_supervisor", return_value=tabs), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value=None):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+        assert out["success"] is False and out["error_type"] == "no_bound_tab"
+        assert "https://www.example.com" in out["error"] and "https://sso.example.com" in out["error"]
+        dumped = json.dumps(out)
+        assert "/login" not in dumped and "abc123" not in dumped and "/help" not in dumped
+        assert backend.resolved == []

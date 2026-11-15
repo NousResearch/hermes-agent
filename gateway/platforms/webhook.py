@@ -40,7 +40,8 @@ from gateway.platforms._shared import secrets_match, timestamp_fresh
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.tcp_site import start_tcp_site
-from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
+from gateway.platforms.webhook_coalesce import validate_coalesce_config
+from gateway.platforms.webhook_coalesce_recovery import DurableWebhookCoalescer
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
 from gateway.platforms.webhook_mcp_events import (
     handle_mcp_event_control, mcp_event_delivery_id, render_mcp_event_prompt)
@@ -238,7 +239,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._script_timeout_seconds: int = int(extra.get("script_timeout_seconds", DEFAULT_SCRIPT_TIMEOUT_SECONDS))
         self._route_processor = WebhookRouteProcessor(script_timeout_seconds=self._script_timeout_seconds)
         # Opt-in per-route debounce of rapid same-entity events (route ``coalesce`` block). #92066
-        self._coalescer = WebhookCoalescer(dispatch=self._spawn_agent_run, render=self._render_prompt)
+        self._coalescer = DurableWebhookCoalescer(self)
 
     @property
     def token(self):
@@ -303,15 +304,20 @@ class WebhookAdapter(BasePlatformAdapter):
         logger.info("[webhook] Listening on %s:%d — routes: %s", self._host or "* (all interfaces, IPv4+IPv6)",
                     self._port, ", ".join(self._routes.keys()) or "(none configured)")
         self._wire_plugin_handlers(None)
+        if self._coalescer.store.path.exists() or any(isinstance(route.get("coalesce"), dict)
+                                                    for route in self._routes.values()):
+            await self._coalescer.start()
         return True
 
     async def disconnect(self) -> None:
-        await self._coalescer.flush()  # buffered events are dispatched, not dropped, on shutdown/reconnect
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        self._mark_disconnected()
-        logger.info("[webhook] Disconnected")
+        try:
+            await self._coalescer.flush()  # refused/unknown work remains durable
+        finally:
+            if self._runner:
+                await self._runner.cleanup()
+                self._runner = None
+            self._mark_disconnected()
+            logger.info("[webhook] Disconnected")
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -679,6 +685,11 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         route_name, route_config, profile, error_response = self._resolve_route(request)
+        from copy import deepcopy
+        from gateway.platforms.webhook_coalesce_recovery import ingress_revision
+        route_config = deepcopy(route_config)
+        revision = (ingress_revision(self, route_name, route_config, profile, _header_delivery_id(request.headers))
+                    if route_config and isinstance(route_config.get('coalesce'), dict) else None)
         if error_response is None:
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
         if error_response is not None:
@@ -735,11 +746,16 @@ class WebhookAdapter(BasePlatformAdapter):
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         delivery_identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
         coalesce = route_config.get("coalesce")
-        # deliver_only, cron_job and coalesced events act before (or without) a durable admission, so
-        # the ledger cannot dedupe a provider retry or a replayed signed delivery; the route-scoped
-        # in-memory guard is their only replay defence (main dedupes every route here).
-        non_durable = bool(route_config.get("deliver_only") or route_config.get("cron_job")
-                           or isinstance(coalesce, dict))
+        from gateway.platforms.webhook_coalesce_recovery import prior_coalesced
+        try:
+            if await prior_coalesced(self._coalescer, profile, route_name, delivery_id):
+                return web.json_response({'status': 'duplicate', 'delivery_id': delivery_id}, status=200)
+        except Exception:
+            logger.exception('[webhook] Coalesced receipt lookup unavailable')
+            return _json_error('Receipt lookup unavailable; retry this delivery', 503)
+        # Direct-send and cron routes retain their existing replay policy. Coalesced agent work
+        # has its own durable pending records; ordinary agent work uses the admission ledger.
+        non_durable = bool(route_config.get("deliver_only") or route_config.get("cron_job"))
         if non_durable and not self._record_delivery_id(delivery_identity, now):
             logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
@@ -748,11 +764,13 @@ class WebhookAdapter(BasePlatformAdapter):
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id,
                                                    profile)
-        if isinstance(coalesce, dict) and self._coalescer.enqueue(
-                route_name=route_name, coalesce=coalesce, payload=payload, event_type=event_type, prompt=prompt,
-                delivery_id=delivery_id, now=now, route_config=route_config, profile=profile):
-            return web.json_response({"status": "coalesced", "route": route_name, "event": event_type,
-                                      "delivery_id": delivery_id}, status=202)
+        if isinstance(coalesce, dict):
+            from gateway.platforms.webhook_coalesce_recovery import accept_coalesced
+            response = await accept_coalesced(self._coalescer, route_name=route_name, coalesce=coalesce,
+                payload=payload, event_type=event_type, prompt=prompt, delivery_id=delivery_id, profile=profile,
+                revision=revision)
+            if response is not None:
+                return response
         return await self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
                                         delivery_id, now)
 
@@ -769,24 +787,6 @@ class WebhookAdapter(BasePlatformAdapter):
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
         return web.json_response({"status": "accepted", "route": route_name, "event": event_type,
                                   "delivery_id": delivery_id}, status=202)
-
-    def _spawn_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
-                         route_name: str, profile, event_type: str, superseded=()) -> asyncio.Task:
-        """Coalesced-path dispatch (settled timer / disconnect flush): admit the merged event as a task
-        so ``WebhookCoalescer.flush`` can await the hand-off. The HTTP ack for these deliveries was
-        already ``coalesced``: an admission failure is logged and gives back the batch's delivery ids
-        (*superseded* too), so a resend of any of them is processed, not answered as a duplicate."""
-        async def _admit_or_log():
-            outcome = await self._admit_agent_run(payload, prompt, delivery_id, now, route_config=route_config,
-                                                  route_name=route_name, profile=profile, event_type=event_type)
-            if outcome is None:
-                logger.error("[webhook] Coalesced delivery %s on route %s was not admitted", delivery_id, route_name)
-                for released in (*superseded, delivery_id):
-                    self._seen_deliveries.pop(_WebhookDeliveryIdentity.from_parts(profile, route_name, released), None)
-        task = asyncio.create_task(_admit_or_log())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-        return task
 
     def _admission_source(self, route_name: str, profile, delivery_id: str):
         """The ``SessionSource`` admission builds for one delivery, ``profile_routes`` resolved on it.
@@ -812,11 +812,8 @@ class WebhookAdapter(BasePlatformAdapter):
         session_chat_id = identity.session_chat_id
         # ``profile`` rides along so the reply leg (``send`` → ``_deliver_cross_platform``) egresses through
         # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
-        self._delivery_info[session_chat_id] = {
-            "deliver": route_config.get("deliver", "log"), "profile": profile,
-            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
-            "route": route_name,
-            "mirror": route_config.get("mirror_to_session") is True}
+        from gateway.platforms.webhook_delivery import delivery_info
+        self._delivery_info[session_chat_id] = delivery_info(self, route_config, profile, payload, route_name)
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)

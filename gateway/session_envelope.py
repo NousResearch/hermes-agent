@@ -246,6 +246,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
         delivery = snapshot_destination(adapter, adapter._delivery_info.get(event.source.chat_id))
         envelope['webhook_delivery'] = delivery
         envelope['webhook_route'] = route_digest(adapter, event.source.chat_id)
+        from gateway.platforms.webhook_coalesce_binding import validate_snapshot
+        validate_snapshot(adapter, envelope)
     if event.source.role_authorized:
         envelope['reauthorize'] = 'roles'
     if provenance is not None:

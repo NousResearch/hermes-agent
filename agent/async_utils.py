@@ -48,3 +48,24 @@ def consume_detached_task_result(task: asyncio.Future[Any]) -> None:
         task.exception()
     except (asyncio.CancelledError, Exception):
         pass
+
+
+async def drain_thread(operation, *args):
+    """Keep the caller's I/O ownership until its physical operation ends, even after cancellation."""
+    pending = asyncio.create_task(asyncio.to_thread(operation, *args))
+    cancelled = None
+    while True:
+        try:
+            result = await asyncio.shield(pending)
+        except asyncio.CancelledError as exc:
+            if pending.cancelled():
+                raise
+            cancelled = exc
+        except Exception:
+            if cancelled is not None:
+                raise cancelled
+            raise
+        else:
+            if cancelled is not None:
+                raise cancelled
+            return result

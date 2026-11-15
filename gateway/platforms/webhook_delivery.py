@@ -16,7 +16,17 @@ def route_digest(adapter, chat_id):
     route = adapter._routes.get(route_name)
     if route is None:
         raise AuthorityRefusal('not_found')
+    return route_config_digest(route)
+
+
+def route_config_digest(route):
     return hashlib.sha256(json.dumps(route, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def delivery_info(adapter, route, profile, payload, route_name):
+    return {'deliver': route.get('deliver', 'log'), 'profile': profile,
+            'deliver_extra': adapter._render_delivery_extra(route.get('deliver_extra', {}), payload),
+            'route': route_name, 'mirror': route.get('mirror_to_session') is True}
 
 
 def validate_destination(delivery):

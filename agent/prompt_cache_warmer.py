@@ -1,16 +1,15 @@
 """Anthropic prompt-cache warming (port of earendil-works/pi#9668).
 
 An Anthropic cache entry lives ``cache_ttl`` (5m or 1h) past its last *use*. A tool round that
-runs longer than that, or a pause between turns, drops the entire prefix back to a full-price
-cache WRITE on the next request. The warmer re-sends the last request with ``max_tokens=1``
-shortly before the entry expires: one cache READ of the prompt (about 1/12 of the miss price)
-keeps the whole prefix warm for another TTL.
+runs longer than that drops the entire prefix back to a full-price cache WRITE on the next
+request. While the turn is still running (the next request is certain), the warmer re-sends the
+last request with ``max_tokens=1`` shortly before the entry expires: one cache READ of the prompt
+(about 1/12 of the miss price) keeps the whole prefix warm for another TTL. It always stops when
+the turn ends: warming between turns would bet money on the user replying in time.
 
-Phases: ``streaming`` while the turn is still running (a long tool call; the next request is
-near-certain), ``idle`` after the turn settled (opt-in mode ``"idle"``; the next request is a
-guess, priced at :data:`IDLE_CONTINUATION_PROBABILITY`). Every refresh is gated on expected
-savings ``p * miss_cost - warm_cost >= $0.05`` so a cheap or unpriced model never pays for it,
-and hard age limits (60 min streaming, 30 min idle) bound the spend of an abandoned session.
+Every refresh is gated on expected savings ``miss_cost - warm_cost >= $0.05`` so a cheap,
+unpriced or subscription-included route never pays for one, the refreshes of one run never cost
+more in total than the single miss they prevent, and a one-hour age limit bounds the rest.
 
 Requests that carry ``cache_control`` markers are warmed on the Anthropic Messages wire and on
 the Chat Completions wire (Nous Portal, OpenRouter and other gateways in front of Claude). A
@@ -35,49 +34,16 @@ from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-CACHE_WARMING_MODES = ("off", "streaming", "idle")
-DEFAULT_CACHE_WARMING_MODE = "off"
-
-#: Streaming warming never continues past this long after the real request that started it.
+#: Warming never continues past this long after the real request that started it.
 MAX_WARMING_AGE_S = 60 * 60
-#: Idle warming uses a shorter horizon: continuation estimates degrade with age.
-MAX_IDLE_WARMING_AGE_S = 30 * 60
 #: A refresh is sent only when it is expected to save at least this many dollars.
 MINIMUM_EXPECTED_SAVINGS_USD = 0.05
-#: Chance a real request arrives before the entry expires while the agent sits idle (pi's
-#: measured constant; per-session estimates were not better).
-IDLE_CONTINUATION_PROBABILITY = 0.15
 #: Anthropic cache tiers, as ``agent._cache_ttl`` spells them.
 TTL_SECONDS = {"5m": 300, "1h": 3600}
 #: Wires the warmer can replay a request on.
 WARMABLE_API_MODES = frozenset({"anthropic_messages", "chat_completions"})
 #: Replays are one HTTP round trip; never let a hung socket pin the timer thread.
 WARM_REQUEST_TIMEOUT_S = 60.0
-
-
-def normalize_cache_warming_mode(value: Any) -> str:
-    """Config value -> one of :data:`CACHE_WARMING_MODES`; unknown/falsy values mean ``off``."""
-    if isinstance(value, str) and value.strip().lower() in CACHE_WARMING_MODES:
-        return value.strip().lower()
-    return DEFAULT_CACHE_WARMING_MODE
-
-
-def cache_warming_mode(agent: Any) -> str:
-    """``prompt_caching.cache_warming`` for this agent, read from config once and kept on it."""
-    mode = getattr(agent, "_cache_warming_mode", None)
-    if mode is None:
-        try:
-            from hermes_cli.config import load_config_readonly
-
-            mode = (load_config_readonly().get("prompt_caching") or {}).get("cache_warming")
-        except Exception:  # health: allow BLE001 -- an unreadable config keeps warming off, logged
-            logger.debug("cache_warming config unreadable; warming stays off", exc_info=True)
-        mode = normalize_cache_warming_mode(mode)
-        try:
-            agent._cache_warming_mode = mode
-        except AttributeError:
-            pass
-    return normalize_cache_warming_mode(mode)
 
 
 def cache_warming_delay_s(ttl_s: float) -> Optional[float]:
@@ -138,10 +104,8 @@ def is_replayable(api_kwargs: dict[str, Any]) -> bool:
 class CacheWarmingDecision:
     """Inputs and outcome of one warm-or-stop decision."""
 
-    phase: str
     warm_cost: float
     miss_cost: float
-    continuation_probability: float
     expected_savings: float
     economics_available: bool
     action: str  # "warm" | "stop"
@@ -151,9 +115,11 @@ def _per_token(rate: Optional[Decimal]) -> float:
     return float(rate) / 1_000_000 if rate is not None else 0.0
 
 
-def evaluate_economics(pricing: Any, prompt_tokens: int, phase: str) -> CacheWarmingDecision:
+def evaluate_economics(pricing: Any, prompt_tokens: int, warms_sent: int = 0) -> CacheWarmingDecision:
     """Price one refresh against the miss it prevents using a ``PricingEntry``-shaped object
-    (``input/output/cache_read/cache_write_cost_per_million``)."""
+    (``input/output/cache_read/cache_write_cost_per_million``). ``warms_sent`` refreshes already
+    paid for count against that miss: a tool call that outlasts ``miss / warm`` TTLs would make
+    warming dearer than letting the entry expire once, so the run stops there."""
     read = _per_token(getattr(pricing, "cache_read_cost_per_million", None))
     write = _per_token(getattr(pricing, "cache_write_cost_per_million", None))
     inp = _per_token(getattr(pricing, "input_cost_per_million", None))
@@ -162,13 +128,13 @@ def evaluate_economics(pricing: Any, prompt_tokens: int, phase: str) -> CacheWar
     miss_full = prompt_tokens * (write if write > 0 else inp)
     warm_cost = hit_cost + out
     miss_cost = max(0.0, miss_full - hit_cost)
-    probability = IDLE_CONTINUATION_PROBABILITY if phase == "idle" else 1.0
     economics_available = prompt_tokens > 0 and (hit_cost > 0 or miss_full > 0)
-    expected = probability * miss_cost - warm_cost
-    action = "warm" if economics_available and expected >= MINIMUM_EXPECTED_SAVINGS_USD else "stop"
+    expected = miss_cost - warm_cost
+    within_miss = (warms_sent + 1) * warm_cost <= miss_cost
+    action = "warm" if economics_available and within_miss and expected >= MINIMUM_EXPECTED_SAVINGS_USD else "stop"
     return CacheWarmingDecision(
-        phase=phase, warm_cost=warm_cost, miss_cost=miss_cost, continuation_probability=probability,
-        expected_savings=expected, economics_available=economics_available, action=action,
+        warm_cost=warm_cost, miss_cost=miss_cost, expected_savings=expected,
+        economics_available=economics_available, action=action,
     )
 
 
@@ -184,7 +150,6 @@ class _Run:
     started_at: float
     api_mode: str = "anthropic_messages"
     anchor_at: float = 0.0
-    phase: str = "streaming"
     next_warm_at: float = 0.0
     refresh_deadline_at: float = 0.0
     timer: Optional[threading.Timer] = None
@@ -208,21 +173,15 @@ class PromptCacheWarmer:
 
     # -- read side ------------------------------------------------------------------------------
     @property
-    def mode(self) -> str:
-        return cache_warming_mode(self.agent)
-
-    @property
     def status(self) -> dict[str, Any]:
         """``{"state": inactive|scheduled|refreshing, "reason"?, "next_warm_at"?, "decision"?}``."""
-        if self.mode == "off":
-            return {"state": "inactive", "reason": "cache warming disabled"}
         run = self._run
         if run is None:
             return {"state": "inactive", "reason": self._inactive_reason, "decision": self._last_decision}
         if not run.is_current():
             return {"state": "inactive", "reason": "conversation context changed"}
         return {
-            "state": "refreshing" if run.refreshing else "scheduled", "phase": run.phase,
+            "state": "refreshing" if run.refreshing else "scheduled",
             "next_warm_at": run.next_warm_at, "warm_count": run.warm_count,
             "decision": self._evaluate(run),
         }
@@ -233,8 +192,8 @@ class PromptCacheWarmer:
         nothing was armed, ``None`` when a timer is scheduled."""
         self._clear_run()
         agent = self.agent
-        if self.mode == "off":
-            return self._stop("cache warming disabled")
+        if getattr(agent, "_skip_prompt_cache_warming", False):
+            return self._stop("the parent agent keeps this prefix warm")
         api_mode = getattr(agent, "api_mode", None)
         if api_mode not in WARMABLE_API_MODES:
             return self._stop("only Anthropic Messages and Chat Completions requests are warmed")
@@ -263,7 +222,7 @@ class PromptCacheWarmer:
         if client is None:
             return self._stop("no provider client")
         # Economics before the deep copy: an unpriced/cheap model never pays for the copy either.
-        decision = evaluate_economics(self._pricing(), prompt_tokens, "streaming")
+        decision = evaluate_economics(self._pricing(), prompt_tokens)
         self._last_decision = decision
         if decision.action != "warm":
             return self._stop(
@@ -294,20 +253,6 @@ class PromptCacheWarmer:
             self._run = run
             self._schedule(run)
             return None if self._run is run else self._inactive_reason
-
-    def on_turn_settled(self) -> None:
-        """The turn finished: ``streaming`` mode stops; ``idle`` mode keeps warming for up to
-        :data:`MAX_IDLE_WARMING_AGE_S` after the request."""
-        run = self._run
-        if run is None:
-            return
-        if self.mode != "idle":
-            self._stop("agent run settled")
-            return
-        run.phase = "idle"
-        deadline = run.started_at + MAX_IDLE_WARMING_AGE_S
-        if run.next_warm_at > deadline or time.time() >= deadline:
-            self._stop("30-minute idle safety limit reached")
 
     def cancel(self, reason: str = "inactive") -> None:
         self._stop(reason)
@@ -345,11 +290,9 @@ class PromptCacheWarmer:
         # A timer can fire late after sleep or a blocked interpreter. Keep half of the planned
         # pre-expiry margin for that: a late refresh is a full-price write, not a warm.
         run.refresh_deadline_at = run.next_warm_at + (run.ttl_s - run.delay_s) / 2
-        limit = MAX_IDLE_WARMING_AGE_S if run.phase == "idle" else MAX_WARMING_AGE_S
-        deadline = run.started_at + limit
+        deadline = run.started_at + MAX_WARMING_AGE_S
         if run.next_warm_at > deadline or now >= deadline:
-            self._stop("30-minute idle safety limit reached" if run.phase == "idle"
-                       else "one-hour safety limit reached")
+            self._stop("one-hour safety limit reached")
             return
         # Secret scope and other ContextVars live on the loop thread; the timer thread must
         # run inside a copy or every scoped read in the SDK client raises.
@@ -366,11 +309,7 @@ class PromptCacheWarmer:
             if self._run is not run:
                 return False
             reason = None
-            if self.mode == "off":
-                reason = "cache warming disabled"
-            elif self.mode == "streaming" and run.phase == "idle":
-                reason = "agent run settled"
-            elif not run.is_current():
+            if not run.is_current():
                 reason = "conversation context changed"
             elif time.time() > run.refresh_deadline_at:
                 reason = "cache refresh deadline missed"
@@ -471,8 +410,8 @@ class PromptCacheWarmer:
                     model=agent.model, api_call_count=1, task="cache_warm",
                 )
             logger.info(
-                "%sprompt cache warmed (%s #%d): cache_read=%d write=%d cost=%s "
-                "expected_savings=$%.3f next=%s", self._prefix(), run.phase, run.warm_count,
+                "%sprompt cache warmed (#%d): cache_read=%d write=%d cost=%s "
+                "expected_savings=$%.3f next=%s", self._prefix(), run.warm_count,
                 canonical.cache_read_tokens, canonical.cache_write_tokens,
                 f"${amount:.4f}" if amount is not None else "?", decision.expected_savings,
                 time.strftime("%H:%M:%S", time.localtime(time.time() + run.delay_s)),
@@ -481,7 +420,7 @@ class PromptCacheWarmer:
             logger.debug("prompt cache warm accounting failed", exc_info=True)
 
     def _evaluate(self, run: _Run) -> CacheWarmingDecision:
-        return evaluate_economics(self._pricing(), run.prompt_tokens, run.phase)
+        return evaluate_economics(self._pricing(), run.prompt_tokens, run.warm_count)
 
     def _pricing(self) -> Any:
         agent = self.agent
@@ -536,8 +475,6 @@ def start_prompt_cache_warming(
 ) -> None:
     """Called once per successful provider response with the request that produced it;
     ``sent_at`` is when that request went out (the cache entry's lifetime starts there)."""
-    if cache_warming_mode(agent) == "off":
-        return
     if not isinstance(api_kwargs, dict):
         return
     try:
@@ -551,8 +488,3 @@ def cancel_prompt_cache_warming(agent: Any, reason: str = "inactive") -> None:
     if warmer is not None:
         warmer.cancel(reason)
 
-
-def settle_prompt_cache_warming(agent: Any) -> None:
-    warmer = getattr(agent, "_prompt_cache_warmer", None)
-    if warmer is not None:
-        warmer.on_turn_settled()

@@ -2,14 +2,16 @@
 """Ratchet unbound thread handoffs by lexical call site, not by file counts.
 
 A real comment ``thread-hop: ok — <why>`` on the call line or a standalone preceding comment line
-exempts a site; wrappers do not exempt calls automatically. Matches Thread and
-Timer with an explicit target/function through syntactically imported names
-(even if later rebound), any .submit
+exempts the first handoff visited there; wrappers do not exempt calls automatically. Matches
+Thread and Timer with an explicit target/function, or any */** argument, through syntactically
+imported names (even if later rebound), any .submit
 and .run_in_executor, and .map on a directly constructed ThreadPoolExecutor or
 name assigned one anywhere in the file. These file-wide name heuristics can yield
 false positives; use a reasoned comment. Dynamic aliases, subclasses, unknown
 executor receivers and indirect dispatch are unsupported and can escape detection.
 For example, `from concurrent import futures` is not a recognized pool import.
+Sites are keyed by their pre-move path (hermes_agent/compat/moves.py), so a pure module
+move keeps its baseline entries; renaming the enclosing function or class does not.
 The baseline captures existing hits, not a claim that every hit is unsafe.
 """
 from __future__ import annotations
@@ -22,37 +24,35 @@ import json
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 if __package__ in (None, ""):
     sys.path.insert(0, str(ROOT))
-from scripts.ci.production_scan import SCAN_ROOT_FILES, SCAN_TREES, in_scope, comment_lines, marked
+from scripts.ci.production_scan import comment_lines, in_scope, is_production, original_paths, production_files
 from scripts.code_health import gitio
+from scripts.code_health.py_ast import _dotted as dotted
 
 BASELINE = ROOT / 'scripts/ci/thread_hops_baseline.json'
 MARKER = 'thread-hop: ok'
 DUMP_OPTIONS = {"show_empty": True} if "show_empty" in inspect.signature(ast.dump).parameters else {}
-def arg(call, pos, keyword):
-    return next((k.value for k in call.keywords if k.arg == keyword), call.args[pos] if len(call.args) > pos else None)
+HANDOFF_WORDS = ('Thread', 'Timer', 'submit', 'run_in_executor')
 
 
-def dotted(node):
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        prefix = dotted(node.value)
-        return f"{prefix}.{node.attr}" if prefix else None
-    return None
+def passes_callable(call, pos, keyword):
+    if any(isinstance(a, ast.Starred) for a in call.args) or any(k.arg is None for k in call.keywords):
+        return True
+    return any(k.arg == keyword for k in call.keywords) or len(call.args) > pos
 
 
 class Visitor(ast.NodeVisitor):
-    def __init__(self, path, text, tree):
-        self.path, self.lines = path, text.splitlines()
+    def __init__(self, path, text, tree, identity_path=None):
+        self.path, self.identity_path, self.lines = path, identity_path or path, text.splitlines()
         self.comments = comment_lines(text, MARKER)
         self.scope = []
         self.counts = Counter()
-        self.marker_uses = Counter()
+        self.marker_lines = set()
         self.hits = {}
         self.threads, self.timers, self.pools = set(), set(), set()
         for node in ast.walk(tree):
@@ -81,6 +81,12 @@ class Visitor(ast.NodeVisitor):
             elif isinstance(node, (ast.With, ast.AsyncWith)):
                 self.instances.update(item.optional_vars.id for item in node.items
                                       if isinstance(item.optional_vars, ast.Name) and self.pool_call(item.context_expr))
+
+    def first_marked_handoff(self, lineno):
+        if lineno in self.marker_lines:
+            return False
+        above = lineno - 1 in self.comments and self.lines[lineno - 2].lstrip().startswith('#')
+        return lineno in self.comments or above
 
     def pool_call(self, node):
         return isinstance(node, ast.Call) and dotted(node.func) in self.pools
@@ -112,32 +118,33 @@ class Visitor(ast.NodeVisitor):
     def visit_Call(self, node):
         fn = node.func
         name = dotted(fn)
-        hit = ((name in self.threads and arg(node, 1, 'target') is not None) or
-               (name in self.timers and arg(node, 1, 'function') is not None))
+        hit = ((name in self.threads and passes_callable(node, 1, 'target')) or
+               (name in self.timers and passes_callable(node, 1, 'function')))
         if isinstance(fn, ast.Attribute):
             hit |= fn.attr in ('submit', 'run_in_executor')
             hit |= fn.attr == 'map' and (self.pool_call(fn.value) or
                                            isinstance(fn.value, ast.Name) and fn.value.id in self.instances)
-        if hit and marked(self.lines, node.lineno, MARKER, comments=self.comments):
-            self.marker_uses[node.lineno] += 1
-            hit = self.marker_uses[node.lineno] > 1
         if hit:
-            identity = json.dumps([self.path, '.'.join(self.scope), ast.dump(node, include_attributes=False, **DUMP_OPTIONS)], ensure_ascii=True, separators=(',', ':'))
+            identity = json.dumps([self.identity_path, '.'.join(self.scope), ast.dump(node, include_attributes=False, **DUMP_OPTIONS)], ensure_ascii=True, separators=(',', ':'))
             self.counts[identity] += 1
-            fingerprint = hashlib.sha256((identity + '#' + str(self.counts[identity])).encode()).hexdigest()
-            self.hits[fingerprint] = f'{self.path}:{node.lineno}: {self.lines[node.lineno-1].strip()[:160]}'
+            if self.first_marked_handoff(node.lineno):
+                self.marker_lines.add(node.lineno)
+            else:
+                fingerprint = hashlib.sha256((identity + '#' + str(self.counts[identity])).encode()).hexdigest()
+                self.hits[fingerprint] = f'{self.path}:{node.lineno}: {self.lines[node.lineno-1].strip()[:160]}'
         self.generic_visit(node)
 
 
-def sites(path, text):
+def sites(path, text, identity_path=None):
+    if not any(word in unicodedata.normalize('NFKC', text) for word in HANDOFF_WORDS):
+        return {}
     tree = ast.parse(text, filename=path)
-    visitor = Visitor(path, text, tree)
+    visitor = Visitor(path, text, tree, identity_path)
     visitor.visit(tree)
     return visitor.hits
 
 
 def source_texts(root, tree, paths):
-    """Read one exact tree with one ls-tree, one cat-file and a disk-backed bounded spool."""
     if tree is None:
         for rel in paths:
             yield rel, (root / rel).read_text(encoding='utf-8-sig')
@@ -168,29 +175,23 @@ def source_texts(root, tree, paths):
 
 
 def scan(paths=None, root=ROOT, tree=None):
-    hits = {}
-    if paths is not None:
-        files = paths
-    elif tree is not None:
-        files = gitio.tracked_files(root, tree)
+    if paths is None:
+        files = production_files(root, tree, untracked=True)
     else:
-        # Include new nonignored files, but do not mistake an unstaged removal for unreadable source.
-        files = set(gitio.git(root, 'ls-files', '--cached', '--others', '--exclude-standard', '-z').split('\0'))
-        files -= set(gitio.git(root, 'ls-files', '--deleted', '-z').split('\0'))
-    selected = []
-    for path in files:
-        path = Path(path)
-        if path.is_absolute():
-            try:
-                rel = path.relative_to(root).as_posix()
-            except ValueError:
-                rel = str(path)
-        else:
-            rel = path.as_posix()
-        if path.suffix == '.py' and in_scope(rel) and (paths is not None or rel.split('/')[0] in (*SCAN_TREES, *SCAN_ROOT_FILES)):
-            selected.append(rel)
-    for rel, text in source_texts(root, tree, sorted(set(selected))):
-        hits.update(sites(rel, text))
+        original = original_paths(root, tree)
+        files = {}
+        for path in map(Path, paths):
+            resolved = (path if path.is_absolute() else root / path).resolve()
+            if not resolved.is_relative_to(root.resolve()):
+                raise ValueError(f'{path} is outside {root}')
+            rel = resolved.relative_to(root.resolve()).as_posix()
+            if path.suffix == '.py' and in_scope(rel):
+                files[rel] = original(rel)
+    shared = Counter(files.values())
+    files = {rel: rel if shared[old] > 1 else old for rel, old in files.items()}
+    hits = {}
+    for rel, text in source_texts(root, tree, sorted(files)):
+        hits.update(sites(rel, text, files[rel]))
     return hits
 
 
@@ -206,7 +207,7 @@ def terminal_safe(text):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or '').splitlines()[0])
     ap.add_argument('paths', nargs='*')
     ap.add_argument('--all', action='store_true')
     ap.add_argument('--update', action='store_true')
@@ -229,20 +230,20 @@ def main(argv=None):
             if old_text is not None:
                 old = parse_baseline(old_text)
             else:
+                original = original_paths(ROOT, tree)
                 changed = gitio.changed_files(ROOT, base, tree)
-                if any((c.old and (c.old.split('/')[0] in (*SCAN_TREES, *SCAN_ROOT_FILES))) or
-                       (c.new and (c.new.split('/')[0] in (*SCAN_TREES, *SCAN_ROOT_FILES))) for c in changed):
+                if any(is_production(original(path)) for c in changed for path in (c.old, c.new) if path):
                     raise ValueError('initial baseline requires unchanged production sources')
                 if baseline != hits.keys():
                     raise ValueError('initial baseline must exactly match current production sites')
                 old = baseline
+            if args.update:
+                baseline &= old & hits.keys()
+                BASELINE.write_text(json.dumps(sorted(baseline), indent=2) + '\n', encoding='utf-8')
             if baseline - old:
                 raise ValueError(f'baseline adds {len(baseline - old)} site(s) relative to {base}')
         else:
             baseline = set()
-        if args.update:
-            baseline &= old & hits.keys()
-            BASELINE.write_text(json.dumps(sorted(baseline), indent=2) + '\n', encoding='utf-8')
         stale = baseline - hits.keys()
         if stale:
             raise ValueError(f'baseline contains {len(stale)} stale site(s); run --update to prune')

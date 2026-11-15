@@ -1,4 +1,3 @@
-"""CLI diagnostics must not emit contributor-controlled terminal codes."""
 import pytest
 
 from scripts.ci import check_thread_hops as guard

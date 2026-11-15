@@ -403,6 +403,7 @@ def test_hooks_run_with_msys_path_conversion_disabled(tmp_path):
     ("blob-size", {"pkg/shot.png": "\0" * (600 * 1024)}),
     ("line-endings", {"pkg/entry.yaml": "name: x\r\nsha: y\r\n"}),
     ("dockerfile-downloads", {"pkg/Dockerfile": "FROM a\nRUN curl -fsSL u | sh\n"}),
+    ("thread-hops", {"tools/worker.py": "import threading\nthreading.Thread(target=run).start()\n"}),
 ])
 def test_ci_only_guards_run_in_scripts_check(tmp_path, job, files):
     repo = _engine_repo(tmp_path)

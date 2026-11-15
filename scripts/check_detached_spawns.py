@@ -44,13 +44,10 @@ import ast
 import sys
 from pathlib import Path
 
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.ci.production_scan import comment_lines, in_scope, marked, tracked_files as _tracked_files
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT))
-from hermes_agent.compat.paths import current_path, original_path
+from hermes_agent.compat.paths import original_path
+from scripts.ci.production_scan import comment_lines, in_scope, production_files
 MARKER = "detached-spawn: ok"
 # The helper itself: the one place a detached spawn is the point.
 HELPER_FILES = {"hermes_cli/process_identity.py"}
@@ -109,10 +106,6 @@ def detach_lines(text: str) -> list[int]:
     return sorted(lines)
 
 
-def _marked(src_lines: list[str], lineno: int) -> bool:
-    return marked(src_lines, lineno, MARKER, standalone_previous=False)
-
-
 def _in_scope(rel: str) -> bool:
     return in_scope(rel) and original_path(rel) not in HELPER_FILES
 
@@ -121,7 +114,7 @@ def scan(paths=None, root: Path | None = None) -> dict[str, list[tuple[int, str]
     """Repo-relative path -> [(lineno, line)] of unmarked detached spawns."""
     root = (root or ROOT).resolve()
     hits: dict[str, list[tuple[int, str]]] = {}
-    for path in (list(paths) if paths else _tracked_files(root)):
+    for path in (list(paths) if paths else [root / rel for rel in production_files(root)]):
         path = Path(path).resolve()
         try:
             rel = path.relative_to(root).as_posix()
@@ -135,7 +128,7 @@ def scan(paths=None, root: Path | None = None) -> dict[str, list[tuple[int, str]
             continue
         src = text.splitlines()
         comments = comment_lines(text, MARKER)
-        found = [(n, src[n - 1]) for n in detach_lines(text) if not marked(src, n, MARKER, comments=comments, standalone_previous=False)]
+        found = [(n, src[n - 1]) for n in detach_lines(text) if not {n, n - 1} & comments]
         if found:
             hits[rel] = found
     return hits

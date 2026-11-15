@@ -161,6 +161,23 @@ def test_read_file_pages_a_json_archive_by_the_text_it_wraps(home):
     assert "IMPORTANT: the fact" in page["content"]
 
 
+def test_read_file_pages_a_json_array_archive_through_its_last_item(home):
+    """A compact JSON array is one line; read_file must not lose entries past its line cap."""
+    from tools.file_tools import read_file_tool
+    from tools.tool_result_storage import write_pruned_original
+
+    rows = [{"rank": i, "detail": "x" * 120} for i in range(70)]
+    rows[-1]["detail"] = "IMPORTANT: final search hit"
+    raw = json.dumps(rows, separators=(",", ":"))
+    saved = write_pruned_original(raw, "s1", "web_search", "array-response")
+
+    assert saved is not None
+    host_path, _ = saved
+    assert Path(host_path).read_text() == raw
+    page = json.loads(read_file_tool(host_path, offset=1, limit=500))
+    assert "IMPORTANT: final search hit" in page["content"]
+
+
 def test_a_repeated_tool_call_id_never_overwrites_an_earlier_original(home):
     """Resumed histories can repeat a tool_call_id: each original gets its own file."""
     from tools.tool_result_storage import write_pruned_original

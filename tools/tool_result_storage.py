@@ -447,13 +447,25 @@ def is_pruned_archive(path: str) -> bool:
     return isinstance(path, str) and _PRUNED_ARCHIVE_RE.search(path) is not None
 
 
+def _json_archive_text(raw: str) -> str:
+    """A JSON archive pages by the text it wraps; a top-level array is printed one item per line."""
+    if raw.lstrip().startswith("["):
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, list):
+            return json.dumps(payload, ensure_ascii=False, indent=2)
+    return _pageable_text(raw)
+
+
 def pageable_archive_text(raw: str, path: str, max_line_length: int) -> tuple[str, bool]:
     """The pageable rendering of a prune archive, nothing dropped, and whether long lines were wrapped.
 
     A JSON archive pages by the text it wraps (the spill files' own rendering). Any line still longer than
     *max_line_length* is split into consecutive lines of that width, so ``offset``/``limit`` reach every
     character: the per-line cap otherwise cut a one-line 300K-char archive at its first 2,000."""
-    text = _pageable_text(raw) if path.endswith(".json") else raw
+    text = _json_archive_text(raw) if path.endswith(".json") else raw
     width = max(1, max_line_length)
     lines = text.split("\n")
     if all(len(line) <= width for line in lines):

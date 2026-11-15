@@ -191,7 +191,7 @@ def _is_host_side_env(env) -> bool:
     return env_uses_host_filesystem(env)
 
 
-def _write_to_spillover(content: str, filename: str, subdir: str = SPILLOVER_SUBDIR):
+def _write_to_spillover(content: str, filename: str, subdir: str = SPILLOVER_SUBDIR, exclusive: bool = False):
     """Write host-side to $HERMES_HOME/<subdir> (default cache/spillover); returns path str or None.
 
     The write is size-verified before the caller tells the model "Full output saved":
@@ -204,7 +204,8 @@ def _write_to_spillover(content: str, filename: str, subdir: str = SPILLOVER_SUB
         spill_dir = get_hermes_home() / subdir
         spill_dir.mkdir(parents=True, exist_ok=True)
         path = spill_dir / filename
-        path.write_bytes(data)
+        with open(path, "xb" if exclusive else "wb") as fh:  # exclusive: never overwrite another original
+            fh.write(data)
         persisted_size = os.stat(path).st_size
     except OSError as exc:
         logger.warning("Archive write to %s failed for %s: %s", subdir, filename, exc)
@@ -287,18 +288,25 @@ def write_pruned_original(content: str, session_id: str, tool_name: str, tool_ca
         ext = "json"
     except ValueError:
         ext = "txt"
-    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    short_id = hashlib.sha256(str(tool_call_id or "").encode("utf-8")).hexdigest()[:8]
-    filename = _safe_result_filename(f"{session_id}_{stamp}_{tool_name}_{short_id}", ext)
-    if (host_path := _write_to_spillover(content, filename, PRUNED_SUBDIR)) is None:
-        return None
     from pathlib import PurePath
 
-    from hermes_constants import display_hermes_home
+    from hermes_constants import display_hermes_home, get_hermes_home
     from tools.credential_files import to_agent_visible_cache_path
-    visible = to_agent_visible_cache_path(host_path)
-    if visible != host_path:
-        return host_path, visible
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    short_id = hashlib.sha256(str(tool_call_id or "").encode("utf-8")).hexdigest()[:8]
+    archive_dir = get_hermes_home() / PRUNED_SUBDIR
+    # Resumed histories can repeat a tool_call_id: suffix until the name is free, then create exclusively.
+    filename = next(
+        name for n in range(1_000)
+        if not (archive_dir / (name := _safe_result_filename(
+            f"{session_id}_{stamp}_{tool_name}_{short_id}" + (f"_{n}" if n else ""), ext))).exists())
+    host_path = str(archive_dir / filename)
+    # A sandboxed backend reads its own copy, and the prune holds no environment to sync and probe it with
+    # (spillover's path): naming a file the model cannot open yet would lose the result. Keep it whole.
+    if to_agent_visible_cache_path(host_path) != host_path:
+        return None
+    if _write_to_spillover(content, filename, PRUNED_SUBDIR, exclusive=True) is None:
+        return None
     return host_path, f"{PurePath(display_hermes_home()).as_posix()}/{PRUNED_SUBDIR}/{filename}"
 
 

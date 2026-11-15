@@ -73,11 +73,11 @@ def test_a_failed_archive_write_leaves_that_result_unpruned(home):
     real = __import__("tools.tool_result_storage", fromlist=["x"])._write_to_spillover
     failed = {"n": 0}
 
-    def flaky(content, filename, subdir="cache/spillover"):
+    def flaky(content, filename, subdir="cache/spillover", exclusive=False):
         if subdir == "cache/pruned" and failed["n"] == 0 and filename.endswith(".txt"):
             failed["n"] += 1
             return None
-        return real(content, filename, subdir)
+        return real(content, filename, subdir, exclusive)
 
     with patch("tools.tool_result_storage._write_to_spillover", side_effect=flaky):
         pruned, count = _compressor().prune_tool_results_only(msgs, current_tokens=100_000)
@@ -159,3 +159,41 @@ def test_read_file_pages_a_json_archive_by_the_text_it_wraps(home):
 
     page = json.loads(read_file_tool(str(_archive_path(stub)), offset=1, limit=500))
     assert "IMPORTANT: the fact" in page["content"]
+
+
+def test_a_repeated_tool_call_id_never_overwrites_an_earlier_original(home):
+    """Resumed histories can repeat a tool_call_id: each original gets its own file."""
+    from tools.tool_result_storage import write_pruned_original
+
+    first = write_pruned_original("first body", "s1", "terminal", "dup")
+    second = write_pruned_original("second body", "s1", "terminal", "dup")
+
+    assert first and second and first[0] != second[0]
+    assert Path(first[0]).read_text() == "first body" and Path(second[0]).read_text() == "second body"
+
+
+def test_a_sandboxed_backend_keeps_the_result_whole(home):
+    """The model on a remote backend reads its own copy; with no environment to sync it the stub could
+    name a file the model cannot open, so the result is not shortened."""
+    msgs = _transcript()
+    with patch("tools.credential_files.to_agent_visible_cache_path", side_effect=lambda p: "/root/.hermes/x"):
+        pruned, count = _compressor().prune_tool_results_only(msgs, current_tokens=100_000)
+
+    assert (pruned, count) == (msgs, 0)
+    assert not (home / "cache" / "pruned").exists() or not any((home / "cache" / "pruned").iterdir())
+
+
+def test_a_plugin_engine_without_the_builtins_fields_still_prunes():
+    """The store-row gate is the built-in's own; a plugin engine is called without those fields."""
+    from types import SimpleNamespace
+
+    from agent.turn_preflight import _proactive_tool_result_prune
+
+    class Engine:
+        def prune_tool_results_only(self, messages, current_tokens=None):
+            return messages[:1], 1
+
+    agent = SimpleNamespace(compression_checkpoint_required=False, session_id="s1")
+    msgs = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
+    with patch("agent.compaction_events.publish_prune"):
+        assert _proactive_tool_result_prune(agent, Engine(), msgs, 100_000) == msgs[:1]

@@ -129,4 +129,22 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
         paths = _home_spellings([str(home), str(home.resolve(strict=False))], command)
     except Exception:
         return command
-    return _fold_home_prefixes(command, paths, "~/.hermes")
+    command = _fold_home_prefixes(command, paths, "~/.hermes")
+    # The prefix fold needs a child tail; fold the bare home word too (`mv /opt/data /tmp/x`) so the
+    # Hermes-home rules see it.
+    for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
+        pattern = _bare_home_fold_regex(path)
+        if pattern is not None:
+            command = pattern.sub("~/.hermes", command)
+    return command
+
+
+@functools.lru_cache(maxsize=64)
+def _bare_home_fold_regex(path: str):
+    """*path* as a whole shell word (optional trailing separator); ``None`` when degenerate."""
+    components = [c for c in re.split(r"[/\\]+", path) if c] if path else []
+    if len(components) < 2:
+        return None
+    return re.compile(
+        r"(?<![^\s'\"`=;|&<>(])[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components)
+        + r"[/\\]?(?=[" + _PATH_TOKEN_STOP + r"*]|$)")

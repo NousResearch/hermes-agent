@@ -22,12 +22,14 @@ from tools.approval_git_options import _GIT, _GIT_PUSH, _GIT_PUSH_ARGS, _join_es
 from tools.approval_config_set import _HERMES_CONFIG_SET_APPROVAL_POLICY
 from tools.approval_env_split import _env_split_payload
 from tools.approval_grep_spans import _grep_safe_detection_variant, _quoted_grep_pattern_spans  # re-exported
+from tools.approval_hermes_store import _HERMES_HOME_BARE, _HERMES_STORE_FILE, _HERMES_STORE_PATH, _HERMES_STORE_ROOT
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
 from tools.approval_shell_tokens import _shell_tokens_with_spans
 from tools.approval_windows_hardline import whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns
 from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_RISKY_DESCRIPTION, classify_osascript
-from tools.approval_pipe_launchers import _PIPE_LAUNCHER_VALUE_FLAGS, _pipe_launcher_re
 from tools.approval_quoted_newlines import _mask_quoted_newlines
+from tools.approval_pipe_launchers import _PIPE_PATH_PREFIX_RE, _PIPE_WRAPPERS_RE
+from tools.approval_variation_selectors import _EMOJI_RANGE, _HIDDEN_VARIATION_SELECTOR_RE
 
 logger = logging.getLogger("tools.approval")
 
@@ -62,20 +64,6 @@ _SECRET_VAR = r'\$\{?\w*(?:key|token|secret|passwd|password|credential)\w*\}?'
 # Flags whose argument becomes a request body / uploaded file. Case-sensitive: curl -D dumps headers, -f fails.
 _UPLOAD_FLAG = (r'(?<!\S)(?:(?-i:-[a-zA-Z]*[dFT])|--data(?:-binary|-raw|-urlencode|-ascii)?|--form(?:-string)?'
                 r'|--upload-file|--json|--post-(?:data|file)|--body-(?:data|file))')
-_EMOJI_RANGE = r'\U0001F000-\U0001FAFF\u2600-\u27BF'
-# Code points that take VS15/VS16 for text/emoji presentation: the two emoji blocks above plus the BMP
-# singletons with the Unicode Emoji property (© ™ ℹ, arrows, ⌚ ▶ ⬅ ⭐ 〰 ㊗ …), as in #114843. Digits,
-# ``#`` and ``*`` are deliberately absent: a selector after a letter or digit is the hiding signal.
-_EMOJI_PRESENTATION_BASES = (
-    r'\u00a9\u00ae\u203c\u2049\u2122\u2139\u2194-\u2199\u21a9\u21aa\u231a\u231b\u2328\u23cf'
-    r'\u23e9-\u23f3\u23f8-\u23fa\u24c2\u25aa\u25ab\u25b6\u25c0\u25fb-\u25fe\u2934\u2935'
-    r'\u2b05-\u2b07\u2b1b\u2b1c\u2b50\u2b55\u3030\u303d\u3297\u3299' + _EMOJI_RANGE
-)
-# Matched on the RAW command: detection variants are NFKC-folded, which turns ℹ + VS16 into ``i`` + VS16.
-# A keycap emoji (digit, ``#`` or ``*`` + VS16 + U+20E3) is exempt only as that exact sequence, so a
-# selector after a digit with no keycap mark is still flagged.
-_HIDDEN_VARIATION_SELECTOR_RE = re.compile(
-    rf'(?<![{_EMOJI_PRESENTATION_BASES}])(?!(?<=[0-9#*])\ufe0f\u20e3)[\ufe00-\ufe0f\U000e0100-\U000e01ef]')
 _INVISIBLE_UNICODE_DESCRIPTION = "invisible or bidirectional Unicode control character (possible obfuscation)"
 _CREDENTIAL_UPLOAD_DESCRIPTION = "upload a secret or credential file via curl/wget (possible exfiltration)"
 # Global flags before a subcommand, each with an optional value. Every flag has one parse ('-' plus
@@ -263,12 +251,6 @@ _SHELL_NAMES_RE = "|".join(_SHELL_NAMES)
 # groups, so each token has one parse and the scan stays linear; `sudo -u bash cat` reads `bash`
 # as the user, not the shell.
 _PIPE_SHELL_NAMES_RE = "|".join((*_SHELL_NAMES, "fish", "csh", "tcsh", "ash"))
-_PIPE_PATH_PREFIX_RE = r"(?>(?:[a-zA-Z]:)?(?:[.\w~-]*+[/\\])*+)"
-_PIPE_WRAPPERS_RE = (
-    rf"(?>{_PIPE_PATH_PREFIX_RE}(?:"
-    + "|".join(_pipe_launcher_re(n, *f) for n, f in _PIPE_LAUNCHER_VALUE_FLAGS.items())
-    + r")\s++)*+"
-)
 _PIPE_SHELL_TOKEN_RE = (
     rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"\s;&|<>)]|$)"
 )
@@ -818,6 +800,23 @@ DANGEROUS_PATTERNS = [
     # `touch -r REF` / `--reference REF` only reads REF (its timestamps), so that operand is not a create target.
     (rf'{_CMDPOS}(?:touch|mkdir)\s(?:[^\n;&|]*\s)?(?:(?<!\s-r\s)(?<!\s--reference\s)|(?<=\s--\s-r\s)|(?<=\s--\s--reference\s))["\']?{_HOME_SENSITIVE_CREATE_TARGET}', "create a file in a sensitive credential/SSH/shell-rc path"),
     (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?{_HOME_SENSITIVE_CREATE_TARGET}[^\s"\'<>;&|)`]*+["\']?(?:\s*+\d*+[<>]++&?\s*+[^\s<>;&|)`]*+)*+\s*+(?:[\n;&|)`]|$)', "link a file into a sensitive credential/SSH/shell-rc path"),
+    # Hermes home / session-store floor (#109367): delete, wipe, move, or overwrite of the home or a
+    # protected store. cp/install/rsync only as the destination, so `cp ~/.hermes/state.db /tmp/bak` stays clean.
+    (_CMDPOS + rf'(?:rm|unlink|shred|truncate)\b[^;|&\n]*\s["\']?{_HERMES_STORE_PATH}', "delete/move/wipe Hermes home or session store"),
+    # mv: a store at any operand (moved away or overwritten), the bare home only as a SOURCE, so
+    # moving something INTO the home (`mv /tmp/skill ~/.hermes/`) stays clean.
+    (_CMDPOS + rf'mv\b[^;|&\n]*\s["\']?(?:{_HERMES_STORE_FILE}|{_HERMES_HOME_BARE}(?=\s+[^\s;|&<>]))',
+     "delete/move/wipe Hermes home or session store"),
+    (_CMDPOS + rf'(?:cp|install|rsync)\b[^;|&\n]*\s["\']?{_HERMES_STORE_ROOT}(?=\s*(?:$|[;&|#<>\n]|\d+[<>]))', "overwrite Hermes session/credential store"),
+    (_CMDPOS + rf'dd\b[^;|&\n]*\bof=["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
+    (_CMDPOS + rf'tee\b[^;|&\n]*\s["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
+    (rf'>[>|]?\s*["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
+    # sqlite3 writing a Hermes store is keyed on the write verb, not on a missing WHERE (`where 1=1`
+    # deletes the same rows), and any heredoc into a store prompts (its SQL sits past the newline).
+    (_CMDPOS + rf'sqlite3\b(?=[^\n]*{_HERMES_STORE_FILE})(?=[^\n]*(?:\b(?:delete\s+from|drop\s+\w+'
+     r'|update\s+(?:or\s+\w+\s+)?\S+\s+(?:as\s+\S+\s+)?set|insert\s+(?:or\s+\w+\s+)?into|replace\s+into'
+     r'|alter\s+table|vacuum(?!\s+(?:\w+\s+)?into))\b|\.restore\b|(?<!<)<<(?!<)))',
+     "modify Hermes session store via sqlite3"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
     (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),

@@ -29,3 +29,11 @@ def _pipe_launcher_re(name: str, short: str, long_opts: tuple) -> str:
     duration = r"(?:infinity|\d++(?:\.\d++)?(?:e\d++)?|\.\d++)[smhd]?(?=\s)"
     args = "|".join([*valued, r"-[^\s|;&<>]++", r"\w++=[^\s|;&<>]*+", duration])
     return rf"{name}(?:\s++(?>{args}))*+"
+
+
+_PIPE_PATH_PREFIX_RE = r"(?>(?:[a-zA-Z]:)?(?:[.\w~-]*+[/\\])*+)"
+_PIPE_WRAPPERS_RE = (
+    rf"(?>{_PIPE_PATH_PREFIX_RE}(?:"
+    + "|".join(_pipe_launcher_re(n, *f) for n, f in _PIPE_LAUNCHER_VALUE_FLAGS.items())
+    + r")\s++)*+"
+)

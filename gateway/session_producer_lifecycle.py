@@ -1,4 +1,4 @@
-"""The adapter processing lifecycle of a producer-admitted turn (relay, webhook: ``admit_producer``).
+"""The adapter processing lifecycle of producer-admitted turns and process notices.
 
 A chat message an adapter hands to ``handle_message`` is bracketed by
 ``BasePlatformAdapter._process_message_background``: the typing refresh, ``on_processing_start``,
@@ -10,7 +10,8 @@ admission's own adapter task already brackets it):
 
 - opened when the admission starts executing, not when it commits: a delivery queued behind a
   running turn is acknowledged when it runs, as the in-band queue's are (``run_turn_followup_ack``);
-- typing lives as long as execution, so it stops before the reply is sent (#117300 pauses it there);
+- the foreground typing refresh ends with execution, before the reply is sent (#117300 pauses it
+  there); worker-aware adapters may retain typing until the session's background work finishes;
 - the outcome is reported once: an interrupted turn as CANCELLED and a failed one as FAILURE when
   execution ends; a completed one after its settlement, by the reply's send (``deliver_settled``),
   or as FAILURE when settlement dropped the reply (``drop_producer_turn``). A busy follow-up's reply
@@ -61,17 +62,21 @@ class _Bracket:
         self.typing = None
         self.closed = False
 
-    async def stop_typing(self):
+    async def stop_typing(self, *, interrupted=False):
         task, self.typing = self.typing, None
-        if task is not None:
+        if interrupted:
             self.stop.set()
+        # Cancelling the foreground refresh is not an interruption: Discord may
+        # still have completion-producing workers owned by this session. A later
+        # failed delivery must also retire that owner, after the refresh is gone.
+        if task is not None or interrupted:
             await self.adapter._stop_typing_refresh(self.event.source.chat_id, task, metadata=self.metadata)
 
     async def close(self, outcome):
         if self.closed:
             return
         self.closed = True
-        await self.stop_typing()
+        await self.stop_typing(interrupted=outcome is not ProcessingOutcome.SUCCESS)
         if self.hooks:
             await self.adapter._run_processing_hook('on_processing_complete', self.event, outcome)
 

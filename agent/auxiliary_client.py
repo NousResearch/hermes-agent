@@ -4152,8 +4152,6 @@ def _try_main_agent_model_fallback(
                 if named_entry is not None:
                     main_provider = cand_provider
                     main_model = rest_model
-                else:
-                    main_model = rest_model
     if task == "vision" and (
             main_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(main_provider, main_model)):
         # Same capability gate as the auto-route (_vision_main_provider_client): handing an image to a

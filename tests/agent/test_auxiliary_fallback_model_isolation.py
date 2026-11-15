@@ -173,6 +173,26 @@ def test_try_main_agent_model_fallback_strips_vendor_prefix_custom_provider():
         mock_resolve.assert_called_once_with(provider="radiance-local", model="qwen35")
 
 
+
+def test_main_agent_fallback_preserves_unknown_custom_model_prefix():
+    """An unregistered model namespace is part of a custom endpoint's wire model ID."""
+    model_id = "org/private-vision-v1"
+    with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+         patch("agent.auxiliary_client._read_main_model", return_value=model_id), \
+         patch("hermes_cli.runtime_provider._get_named_custom_provider", return_value=None), \
+         patch("agent.auxiliary_client._custom_health_base_url", return_value="http://127.0.0.1:8100/v1"), \
+         patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+         patch("agent.auxiliary_client.resolve_provider_client", return_value=(MagicMock(), model_id)) as resolve:
+        client, resolved_model, label = _try_main_agent_model_fallback(
+            "other-provider", task="compression",
+        )
+
+    assert client is not None
+    assert resolved_model == model_id
+    assert label == "main-agent(custom)"
+    resolve.assert_called_once_with(provider="custom", model=model_id)
+
+
 def test_scoped_main_model_for_aux():
     """_scoped_main_model_for_aux only returns main model when provider matches main provider."""
     with patch("agent.auxiliary_client._read_main_provider", return_value="radiance-local"), \

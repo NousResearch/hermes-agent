@@ -1122,11 +1122,13 @@ class TestRpcSessionIdForwarding(unittest.TestCase):
         captured = {}
 
         def fake_execute_code(code, task_id=None, enabled_tools=None,
-                              reset=False, session_id=None):
+                              reset=False, session_id=None, turn_id=None, conversation_id=None):
             captured["code"] = code
             captured["task_id"] = task_id
             captured["enabled_tools"] = enabled_tools
             captured["session_id"] = session_id
+            captured["turn_id"] = turn_id
+            captured["conversation_id"] = conversation_id
             return json.dumps({"status": "ok"})
 
         with patch("tools.code_execution_tool.execute_code",
@@ -1137,6 +1139,8 @@ class TestRpcSessionIdForwarding(unittest.TestCase):
                 task_id="test-task",
                 enabled_tools=["read_file"],
                 session_id="session-contract",
+                turn_id="turn-contract",
+                conversation_id="conversation-contract",
             )
 
         assert isinstance(raw, str), raw
@@ -1146,6 +1150,8 @@ class TestRpcSessionIdForwarding(unittest.TestCase):
             "task_id": "test-task",
             "enabled_tools": ["read_file"],
             "session_id": "session-contract",
+            "turn_id": "turn-contract",
+            "conversation_id": "conversation-contract",
         })
 
     def test_rpc_server_loop_forwards_session_id(self):

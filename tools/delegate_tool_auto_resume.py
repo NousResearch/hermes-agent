@@ -274,8 +274,8 @@ def _unit_row(unit_id: Any) -> Optional[dict[str, Any]]:
 
 
 # ── verdicts ───────────────────────────────────────────────────────────────
-def _lineage(conn, parent_sid: str) -> tuple[set[str], Optional[dict[str, Any]]]:
-    """``(ids of the parent's compression lineage, the live tip's session row or None)``, read on *conn*."""
+def _lineage(conn, parent_sid: str) -> Optional[dict[str, Any]]:
+    """The live tip of the parent's compression lineage as its session row, or None, read on *conn*."""
     from hermes_state_compression import _CHAIN_STEP_SQL, _walk_compression_chain
 
     def step(current):
@@ -283,7 +283,7 @@ def _lineage(conn, parent_sid: str) -> tuple[set[str], Optional[dict[str, Any]]]
         return {"id": row[0]} if row else None
     chain = _walk_compression_chain(parent_sid, step) or [parent_sid]
     tip = conn.execute("SELECT ended_at, end_reason FROM sessions WHERE id=?", (chain[-1],)).fetchone()
-    return set(chain), ({"ended_at": tip[0], "end_reason": tip[1]} if tip else None)
+    return {"ended_at": tip[0], "end_reason": tip[1]} if tip else None
 
 
 def _parent_ended(row: Optional[dict[str, Any]]) -> Optional[str]:
@@ -296,11 +296,10 @@ def _parent_ended(row: Optional[dict[str, Any]]) -> Optional[str]:
     return None if is_automatic_end_reason(reason) else f"its parent session ended ({reason})"
 
 
-def superseded_reason(conn, record: dict[str, Any], parent_sid: str) -> Optional[str]:
-    """Why the parent no longer wants *record* resumed, or None while it still does (read on *conn*, so inside a
+def superseded_reason(conn, parent_sid: str) -> Optional[str]:
+    """Why the parent no longer wants its child resumed, or None while it still does (read on *conn*, so inside a
     write transaction nothing the parent does can land between this answer and the write that acts on it)."""
-    _lineage_ids, tip_row = _lineage(conn, parent_sid)
-    return _parent_ended(tip_row)
+    return _parent_ended(_lineage(conn, parent_sid))
 
 
 def _due(record: dict[str, Any], now: float) -> bool:
@@ -358,7 +357,7 @@ def _claim(record: dict[str, Any], parent_sid: str) -> tuple[Optional[dict[str, 
         if (not row or row.get("state") != "resumable" or row.get("auto_off") or not row.get("auto_promised")
                 or int(row.get("auto_attempts") or 0) != attempts or attempts >= MAX_AUTO_ATTEMPTS):
             return None, None
-        if reason := superseded_reason(conn, row, parent_sid):
+        if reason := superseded_reason(conn, parent_sid):
             _note(conn, sid, state=SUPERSEDED, note=reason)
             return None, reason
         now = time.time()
@@ -393,7 +392,7 @@ def confirm_start(path: Any, sid: str) -> Optional[str]:
         row = _row(conn, sid)
         if not row or row.get("state") != "claimed" or not row.get("auto_claim"):
             return CANCELLED
-        if reason := superseded_reason(conn, row, str(row["auto_claim"])):
+        if reason := superseded_reason(conn, str(row["auto_claim"])):
             _note(conn, sid, state=SUPERSEDED, note=reason, from_states=(), unstarted_claim=True)
             return f"{CANCELLED}: {reason}"
         return None
@@ -408,7 +407,7 @@ def admit_start(conn, sid: str) -> Optional[str]:
     _begin_immediate(conn)
     row = _row(conn, sid) or {}
     if row.get("state") == "claimed" and row.get("auto_claim") and row.get("owner_pid") == os.getpid():
-        reason = superseded_reason(conn, row, str(row["auto_claim"]))
+        reason = superseded_reason(conn, str(row["auto_claim"]))
         if not reason:
             return None
         _note(conn, sid, state=SUPERSEDED, note=reason, from_states=(), unstarted_claim=True)
@@ -477,7 +476,7 @@ def _verdict(record: dict[str, Any], now: float) -> tuple[str, Any]:
     unit = _unit_row(record.get("unit_id"))
     if unit is None or not unit.get("parent_session_id"):
         return "never", "no background completion route (a nested or joined child)"
-    if reason := _write(lambda conn: superseded_reason(conn, record, str(unit["parent_session_id"]))):
+    if reason := _write(lambda conn: superseded_reason(conn, str(unit["parent_session_id"]))):
         return "supersede", reason
     return "run", unit
 

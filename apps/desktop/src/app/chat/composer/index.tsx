@@ -367,6 +367,7 @@ export function ChatBar({
     queueEdit,
     queueParked,
     queuedPrompts,
+    redirectQueuedText,
     sendQueuedNow,
     steerQueuedNow,
     stepQueuedEdit
@@ -1334,6 +1335,7 @@ export function ChatBar({
                 queueEdit,
                 queueParked,
                 queuedPrompts,
+                redirectQueuedText,
                 sendQueuedNow,
                 sessionId,
                 steerQueuedNow,

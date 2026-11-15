@@ -1,0 +1,38 @@
+name: threadpacket
+title: Threadpacket
+repo: https://github.com/evgolsh/threadpacket
+sha: 59f1767bbf7a0a0b72173acf0ee26ff1249ed5a0
+subdir: plugin
+description: >-
+  Send a packet (structured Markdown brief plus verbatim original files of any type up to 25 MiB)
+  from one AI assistant to another person's assistant or across your own machines, through
+  Threadpacket's hosted MCP server at threadpacket.com/mcp (or a self-hosted Cloudflare Worker)
+  using OAuth 2.1 with dynamic client registration and PKCE. Portable Agent Plugins v1 package
+  (plugin.json + mcp.json + skills/threadpacket), configuration only; declares trust: untrusted
+  for threadpacket so write-capable calls prompt before running.
+  Disclosure: hosted connector with no local code; tool calls send user-selected briefs and files to
+  threadpacket.com (or the user's configured server), stored verbatim (not end-to-end encrypted) up
+  to 256 MiB of live files per hosted team and auto-deleted after 7 days by default (30 days max),
+  with no server AI calls, no email or phone required, and operational event counts that record no
+  packet titles, briefs or filenames. Attaching a local file uses threadpacket_upload_url (which
+  returns only the upload URL, method, and headers), verifies the URL host matches the configured
+  Threadpacket server, and runs a fixed single-file curl/Invoke-WebRequest HTTP PUT to /v1/uploads.
+  Sign in once via `mcp_servers.threadpacket` in config.yaml (`url`, `auth: oauth`,
+  `trust: untrusted`) and `hermes mcp login threadpacket`; bundled mcp.json alone returns 401
+  until OAuth is configured, and a config.yaml entry replaces the package's entry so it must keep
+  `trust: untrusted`. The tool set is served by the remote server at runtime and is not covered by
+  the pinned sha.
+maintainer: evgolsh
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/evgolsh/threadpacket/blob/59f1767bbf7a0a0b72173acf0ee26ff1249ed5a0/plugin/README.md
+version: "0.4.3"
+platforms: []
+known_issues:
+  - "Sign in once after installing: add mcp_servers.threadpacket (url: https://threadpacket.com/mcp, auth: oauth, trust: untrusted) to config.yaml and run `hermes mcp login threadpacket` (keep trust: untrusted because config.yaml replaces the package entry)"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

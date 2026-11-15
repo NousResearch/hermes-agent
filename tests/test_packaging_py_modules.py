@@ -16,6 +16,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import setuptools
+
 from hermes_agent.compat.paths import current_path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -77,3 +79,45 @@ def test_every_root_module_imported_by_packaged_code_is_shipped():
     assert not missing, f"packaged code imports root modules the wheel would not ship: {missing}"
     on_disk = {p.stem for p in REPO_ROOT.glob("*.py") if not p.stem.startswith("_test_")} - {"setup"}
     assert on_disk and on_disk <= shipped and "setup" not in shipped
+
+
+def _imported_dotted_names(path: Path) -> set[str]:
+    """Absolute module names *path* imports, relative imports resolved against its package."""
+    package = path.relative_to(REPO_ROOT).parent.parts
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+    except (SyntaxError, OSError):
+        return set()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = package[: len(package) - node.level + 1] if node.level else ()
+            names.add(".".join((*base, *(node.module or "").split("."))).strip("."))
+    return names
+
+
+def test_every_package_packaged_code_imports_is_found():
+    """A module turned into a folder (``toolsets.py`` -> ``toolsets/``, ``acp_adapter/server.py``
+    -> ``acp_adapter/server/``) drops out of ``_root_py_modules`` and ships only if
+    ``packages.find`` matches it; the wheel would raise ``ModuleNotFoundError`` otherwise."""
+    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    include = cfg["tool"]["setuptools"]["packages"]["find"]["include"]
+    found = set(setuptools.find_packages(where=str(REPO_ROOT), include=include))
+    paths = [REPO_ROOT / f"{n}.py" for n in _root_py_modules()]
+    paths += [p for pkg in found for p in (REPO_ROOT / pkg.replace(".", "/")).glob("*.py")]
+    missing = set()
+    for path in paths:
+        for name in _imported_dotted_names(path):
+            parts = name.split(".")
+            for i in range(1, len(parts) + 1):
+                pkg, parent = ".".join(parts[:i]), ".".join(parts[: i - 1])
+                # A regular package at the root or inside a shipped one; namespace dirs ship otherwise.
+                if (parent == "" or parent in found) and pkg not in found \
+                        and (REPO_ROOT.joinpath(*parts[:i]) / "__init__.py").is_file():
+                    missing.add(pkg)
+    assert not missing, (
+        f"packaged code imports packages the wheel would not ship: {sorted(missing)}; add each to"
+        " [tool.setuptools.packages.find] include in pyproject.toml"
+    )

@@ -377,6 +377,7 @@ class SessionPortabilityMixin:
         :meth:`export_session`; that display read dedupes per session, so it skips the batched read).
         Backups that go back through :meth:`import_sessions` pass ``include_inactive`` so
         compaction-archived turns survive the round trip as archived rows."""
+        self.flush_token_counts()
         sessions = self.search_sessions(source=source, limit=100000)
         if include_compacted:
             return [self._with_messages(session, True, include_inactive) for session in sessions]

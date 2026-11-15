@@ -18,7 +18,6 @@ import contextlib
 import json
 import os
 import re
-import secrets
 import sqlite3
 import subprocess
 import sys
@@ -985,10 +984,33 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 
 # --- ID generation ---
 
-def _new_task_id() -> str:
-    """``t_`` + 4 hex bytes (collision ~1e-3 at 100k tasks; 2 bytes would hit 50%
-    by 10k). Idempotency belongs to ``idempotency_key``, not id uniqueness."""
-    return "t_" + secrets.token_hex(4)
+# A card id is the local minute the card was created in, ``t_MMddHHmm``: the id
+# reads as a date and sorts by creation time. Two cards made in that minute step
+# to the next free one; a day of stepping always finds a gap.
+ID_MINUTES = 1440
+
+
+def _new_task_id(when=None) -> str:
+    """``t_`` + local ``MMddHHmm`` — a card id that reads as its creation minute."""
+    return "t_" + time.strftime("%m%d%H%M", time.localtime(when))
+
+
+def _free_task_id(conn: sqlite3.Connection, when) -> str:
+    """The first minute at or after ``when`` whose card id is unused.
+
+    Called inside the write transaction, so the check and the insert see one
+    state: a minute is taken by the row that lands, not by the id that was
+    computed.
+    """
+    minute = int(when)
+    for _ in range(ID_MINUTES):
+        candidate = _new_task_id(minute)
+        if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (candidate,)).fetchone() is None:
+            return candidate
+        minute += 60
+    raise RuntimeError(
+        f"no free task id within {ID_MINUTES} minutes of {_new_task_id(when)}"
+    )
 
 
 def _claimer_id() -> str:
@@ -1242,13 +1264,14 @@ def create_task(
         if board_default:
             workspace_path = str(board_default)
 
-    # Retry once on the extremely unlikely id collision.
+    # Retry once if the transaction loses a race the free-minute check cannot
+    # see; the id itself is chosen inside the transaction.
     for attempt in range(2):
-        task_id = _new_task_id()
         try:
             # allow_nested: graph builders compose create_task under one outer
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
+                task_id = _free_task_id(conn, now)
                 task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.

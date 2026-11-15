@@ -405,7 +405,8 @@ class GatewayGoalsMixin:
         hooks = [("loop completion", self._post_turn_loop_completion)]
         if final_text.strip() and not failed:
             goal_hook = self._post_turn_goal_continuation
-            if is_internal and executing_admission.get() and not getattr(event, "_adapter_drains_after", False):
+            # Recovered human turns also lack an adapter waiter to drain their FIFO.
+            if executing_admission.get() and not getattr(event, "_adapter_drains_after", False):
                 goal_hook = partial(goal_hook, authority_owned_wake=True)
             hooks.insert(0, ("goal continuation", goal_hook))
         for label, hook in hooks:

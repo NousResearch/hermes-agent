@@ -104,6 +104,8 @@ def test_include_filtered_recursive_delete_stays_approvable(cmd):
     # A bare CR ends the delete's statement too, even with the -Include glued to it.
     "Remove-Item -Recurse C:" + B + "\rGet-ChildItem -Include *.tmp",
     "Remove-Item -Recurse C:" + B + "*\r-Include *.tmp",
+    "rm -r C:/..\r-inc x",
+    "rm -rf C:/./\r-include *.tmp",
     # Not a PowerShell -Include of this delete: cmd `/s` and GNU `--` take it as a name, `#` comments it
     # out, a quote makes it another argument's data, and a spaced list still ends in `*`.
     "del /s /q C:" + B + "* -Include *.tmp",

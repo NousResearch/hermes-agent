@@ -57,13 +57,13 @@ async def test_a_gated_fire_leaves_no_visible_empty_session(owner, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_fire_that_raises_before_the_agent_leaves_no_visible_empty_session(owner, monkeypatch):
-    class MonitorFailed(Exception):
+    class PreparationFailed(Exception):
         pass
 
-    def broken_monitor(job, **kwargs):
-        raise MonitorFailed('monitor script crashed')
+    def broken_preparation(job, **kwargs):
+        raise PreparationFailed('prompt preparation crashed')
 
-    job, sid = await _fire(owner, monkeypatch, broken_monitor, raises=MonitorFailed)
+    job, sid = await _fire(owner, monkeypatch, broken_preparation, raises=PreparationFailed)
 
     assert sid not in {s['id'] for s in owner.db.list_sessions_rich()}
     session = owner.db.get_session(sid)

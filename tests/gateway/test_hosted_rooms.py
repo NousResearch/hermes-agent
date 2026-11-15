@@ -9,6 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 import pytest
 
+from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms as rooms
 import hermes_state_wal
@@ -131,6 +132,49 @@ def _assert_retired_identity_stays_reserved(db, room_id, *, fresh_id):
     }
 
     assert _create(db, fresh_id)["room_id"] == fresh_id
+
+
+def test_legacy_label_roster_stays_drivable_and_idempotent(tmp_path):
+    db = tmp_path / "state.db"
+    legacy_members = [
+        {"member_id": "member-ops", "profile": "ops", "handle": "ops", "label": "Ops"},
+        {"member_id": "member-qa", "profile": "qa", "handle": "qa", "label": "QA"},
+    ]
+    canonical_members = [
+        {"member_id": "member-ops", "profile": "ops", "handle": "ops", "display_name": "Ops"},
+        {"member_id": "member-qa", "profile": "qa", "handle": "qa", "display_name": "QA"},
+    ]
+
+    rooms.create_room(
+        db,
+        room_id="legacy-label",
+        name="Legacy label",
+        members=legacy_members,
+        authority_gateway_id="gateway-a",
+        now=10,
+    )
+
+    state = rooms.room_state(db, room_id="legacy-label")
+    validated = discussion.validate_room(state, local_profiles={"ops", "qa"})
+    assert [member.display_name for member in validated.members] == ["Ops", "QA"]
+
+    retried = rooms.create_room(
+        db,
+        room_id="legacy-label",
+        name="Legacy label",
+        members=canonical_members,
+        authority_gateway_id="gateway-a",
+        now=11,
+    )
+    assert retried["idempotent"] is True
+
+    with sqlite3.connect(db) as conn:
+        stored = json.loads(
+            conn.execute(
+                "SELECT members_json FROM hosted_rooms WHERE room_id='legacy-label'"
+            ).fetchone()[0]
+        )
+    assert stored == legacy_members
 
 
 def test_create_room_is_idempotent_but_conflicts_fail_closed(tmp_path):

@@ -1236,3 +1236,6 @@ slashCmd.topup.error.roleRequired: "För att lägga till pengar krävs någon me
 slashCmd.topup.error.sessionRevoked: "Din session loggades ut. Kör /portal för att logga in igen."
 slashCmd.topup.error.stripeUnavailable: "🟡 Stripe har problem just nu — försök igen snart{0}."
 slashCmd.topup.error.upgradeCapExceeded: "🔴 Det dagliga taket för planbyten har nåtts (5 per organisation) — försök igen i morgon eller hantera det i portalen."
+
+slashCmd.topup.notLoggedIn: "💳 Du är inte inloggad i Nous-portalen — kör /portal för att logga in och sedan /topup."
+slashCmd.topup.openingPortal: "Öppnar portalen: {0}"

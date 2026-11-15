@@ -241,3 +241,39 @@ def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch)
     assert session["history"][0]["content"] == "[summary]"
     assert session["running"] is False
     assert infos[0] == {"running": True} and infos[-1] == {"running": False}  # Desktop sees the busy edge close
+
+
+# ── pending model pick: never answer on the old model ─────────────────────
+
+def test_busy_redirect_skipped_while_model_pick_pending(monkeypatch):
+    """A pick made mid-turn applies at the NEXT turn start. A live redirect would be answered by the old
+    model while session.info already shows the pick, so the message must queue (and interrupt) instead."""
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    monkeypatch.setattr(server, "_session_compression_in_flight", lambda session: False)
+    interrupted = []
+    monkeypatch.setattr(server, "_interrupt_busy_session", lambda sid, session, agent: interrupted.append(sid))
+    seen = []
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True, redirect=lambda text: seen.append(text) or True)
+    session = _session(agent=agent, pending_model_switch={"raw": "haiku --provider anthropic"})
+
+    resp = server._handle_busy_submit("r1", "sid", session, "next message", "ws-1")
+
+    assert resp["result"]["status"] == "queued"
+    assert seen == []  # not redirected into the live (old-model) turn
+    assert interrupted == ["sid"]  # interrupt mode still stops the live turn
+    assert session["queued_prompt"]["text"] == "next message"
+
+
+def test_busy_steer_skipped_while_model_pick_pending(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
+    monkeypatch.setattr(server, "_session_compression_in_flight", lambda session: False)
+    seen = []
+    agent = types.SimpleNamespace(steer=lambda text: seen.append(text) or True)
+    session = _session(agent=agent, pending_model_switch={"raw": "haiku --provider anthropic"})
+
+    resp = server._handle_busy_submit("r1", "sid", session, "next message", "ws-1")
+
+    assert resp["result"]["status"] == "queued"
+    assert seen == []
+    assert session["queued_prompt"]["text"] == "next message"

@@ -185,10 +185,19 @@ def _prune_spillover_once() -> None:
 
 
 def _is_host_side_env(env) -> bool:
-    """True when this process should write the spill file directly: ``env=None`` (no sandbox
-    yet) or a backend whose files are the host's. Others resolve ``read_file`` inside the sandbox."""
+    """True when the agent's file tools read a host spillover path as written: a backend whose
+    files are the host's. ``env=None`` (no sandbox registered: never started, failed to start, or
+    reaped while idle) defers to the ACTIVE backend, since a host path dangles inside a docker/ssh
+    sandbox (#121024). Fails closed when the terminal policy can't be read."""
     if env is None:
-        return True
+        from tools.credential_files import to_agent_visible_cache_path
+        from tools.terminal_scope import TerminalPolicyUnavailable
+        probe = str(get_spillover_dir() / "probe.txt")
+        try:
+            # Local, unknown and plugin backends with no cache_path_base keep host paths unchanged.
+            return to_agent_visible_cache_path(probe) == probe
+        except TerminalPolicyUnavailable:
+            return False
     from tools.environments.base import env_uses_host_filesystem
 
     return env_uses_host_filesystem(env)
@@ -226,28 +235,37 @@ def _write_to_spillover(content: str, filename: str):
     return str(path)
 
 
-def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
-    """Path where a remote backend can read *host_path*, or None. Translates via the image
-    tools' helper, forces a sync for synced backends, then PROBES readability — a persistent
-    container created before spillover joined the mount list lacks the bind mount and must
-    fall back to the in-sandbox write."""
+def _sandbox_shell_path(path: str) -> str:
+    """Shell word for *path* in the sandbox. ssh/daytona/vercel paths are ``~/.hermes/...`` (#154749):
+    a quoted ``~`` never expands, so the readability probe always failed and every spill fell back to
+    the sandbox temp dir. Keep ``~/`` expandable as ``"$HOME"/`` and quote the rest."""
+    if path.startswith("~/"):
+        return '"$HOME"/' + shlex.quote(path[2:])
+    return shlex.quote(path)
+
+
+def _sandbox_spillover_path(content: str, host_path: str, env) -> str | None:
+    """The ONE spill path a remote backend reads (``~/.hermes/cache/spillover/<id>.txt`` on
+    ssh/daytona/vercel, ``/root/.hermes/...`` on docker/modal), or None.
+    Translated once: force a sync and PROBE readability (a persistent container created before
+    spillover joined the mount list lacks the bind mount); if the file isn't there, write the
+    sandbox copy at that same path. None sends the caller to the temp-dir copy."""
+    from tools.credential_files import to_agent_visible_cache_path
+    from tools.terminal_scope import TerminalPolicyUnavailable
     try:
-        from tools.credential_files import to_agent_visible_cache_path
         visible = to_agent_visible_cache_path(host_path)
-    except Exception as exc:
-        logger.debug("Spillover path translation failed: %s", exc)
+    except TerminalPolicyUnavailable:
         return None
     try:
         if (sync_manager := getattr(env, "_sync_manager", None)) is not None:
             sync_manager.sync(force=True)
-    except Exception as exc:
-        logger.debug("Spillover sync failed: %s", exc)
-    try:
-        if env.execute(f"test -r {shlex.quote(visible)}", timeout=15).get("returncode", 1) == 0:
+        if env.execute(f"test -r {_sandbox_shell_path(visible)}", timeout=15).get("returncode", 1) == 0:
             return visible
-    except Exception as exc:
-        logger.debug("Spillover readability probe failed: %s", exc)
-    return None
+        # An untranslated (host) path is no sandbox location to write to.
+        return visible if visible != host_path and _write_to_sandbox(content, visible, env) else None
+    except Exception:  # health: allow BLE001 -- any backend sync/exec failure falls back to the temp-dir copy, logged with its traceback
+        logger.warning("Sandbox spillover path unavailable: %s", visible, exc_info=True)
+        return None
 
 
 def _resolve_storage_dir(env) -> str:
@@ -361,15 +379,18 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     storage_dir = os.path.dirname(remote_path)
     # Private dir: archived results carry tool output (can hold secrets) under a
     # shared temp root on remote backends. The umask also covers the cat redirect.
-    from tools.code_execution_rpc import _private_dirs_cmd
-    cmd = (f"{_private_dirs_cmd(storage_dir)} "
-           f"&& cat > {shlex.quote(remote_path)}")
+    if remote_path.startswith("~/"):
+        qdir, qpath = _sandbox_shell_path(storage_dir), _sandbox_shell_path(remote_path)
+        cmd = f"umask 077 && mkdir -p {qdir} && cat > {qpath}"
+    else:
+        from tools.code_execution_rpc import _private_dirs_cmd
+        cmd = f"{_private_dirs_cmd(storage_dir)} && cat > {shlex.quote(remote_path)}"
     if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
         return False
 
     expected = len(content.encode("utf-8", errors="replace"))
     try:
-        probe = env.execute(f"wc -c < {shlex.quote(remote_path)}", timeout=15)
+        probe = env.execute(f"wc -c < {_sandbox_shell_path(remote_path)}", timeout=15)
     except Exception as exc:
         logger.debug("Sandbox size probe failed for %s: %s", remote_path, exc)
         return True
@@ -384,7 +405,7 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     logger.warning("Sandbox spill for %s is not lossless (%d bytes in sandbox, expected %d) — discarding archive",
                    remote_path, persisted_size, expected)
     try:
-        env.execute(f"rm -f {shlex.quote(remote_path)}", timeout=15)
+        env.execute(f"rm -f {_sandbox_shell_path(remote_path)}", timeout=15)
     except Exception:
         pass
     return False
@@ -449,10 +470,10 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     host_side = _is_host_side_env(env)
     if host_side and host_path is not None:
         return _persisted(host_path)
-    if not host_side:
+    if not host_side and env is not None:
         # Remote backend: reference the mounted/synced path when the sandbox can actually read
         # it, else write into the sandbox temp dir (containers without the spillover mount).
-        visible = _sandbox_visible_spillover_path(host_path, env) if host_path else None
+        visible = _sandbox_spillover_path(persisted_content, host_path, env) if host_path else None
         if visible is not None:
             return _persisted(visible, f" [host: {host_path}]")
         remote_path = f"{_resolve_storage_dir(env)}/{filename}"
@@ -468,7 +489,9 @@ def _inline_truncated(preview: str, tool_name: str, content: str) -> str:
     logger.info("Inline-truncating large tool result: %s (%d chars, no sandbox write)",
                 tool_name, len(content))
     return (f"{preview}\n\n[Truncated: tool response was {len(content):,} chars. "
-            "Full output could not be saved to sandbox.]")
+            "The full output could not be saved anywhere you can read; do not look for it in "
+            "other files. If you need more, call the tool again with a narrower request (check "
+            "the current state first if the tool changes data).]")
 
 
 def _persist_hosted(content: str, tool_use_id: str, env) -> str | None:

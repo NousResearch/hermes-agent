@@ -69,3 +69,52 @@ class TestTruncationSpill:
             task_id="t-spill-5"))
         assert r["exit_code"] == 3
         assert Path(r["full_output_path"]).exists()
+
+
+def test_ssh_spill_path_resolves_to_synced_remote_file(tmp_path, monkeypatch):
+    """Regression for #154749: SSH read_file needs a synced, SSH-visible path."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+
+    from types import SimpleNamespace
+
+    from tools.environments.base_output import _finalize_wait_result, _new_output_collector
+    from tools.environments.file_sync import FileSyncManager, iter_sync_files
+    from tools.terminal_tool_result import _redact_spill_file
+    from tools.tool_output_limits import get_max_bytes
+
+    # Exercise the real default capture limit, not a lowered test limit.
+    row = "safe terminal output row\n"
+    output = "start\n" + row * (get_max_bytes() // len(row) + 2) + "end\n"
+    # The SSH backend already synced at startup; a fresh spill must bypass
+    # the five-second normal sync throttle before the next read_file call.
+    uploaded = {}
+
+    def upload(staged, remote):
+        uploaded[remote] = Path(staged).read_text(encoding="utf-8")
+
+    sync_manager = FileSyncManager(
+        get_files_fn=lambda: iter_sync_files("/home/remote/.hermes"),
+        upload_fn=upload,
+        delete_fn=lambda _: None,
+    )
+    sync_manager.sync(force=True)
+
+    collector = _new_output_collector(object(), bounded_capture=True)
+    collector.append(output)
+    result = _finalize_wait_result(collector, collector.render(), 0)
+    host_path = Path(result["full_output_path"])
+    env = SimpleNamespace(_sync_manager=sync_manager)
+    fields = dict(
+        _redact_spill_file(str(host_path), result["output_total_chars"], "echo safe", env=env)
+    )
+
+    remote_rel = f"cache/terminal-output/{host_path.name}"
+    visible = f"~/.hermes/{remote_rel}"
+    assert fields["full_output_path"] == visible
+    assert visible in fields["truncation_note"]
+    assert host_path.read_text(encoding="utf-8") == output
+    assert uploaded[f"/home/remote/.hermes/{remote_rel}"] == output
+    assert (str(host_path), f"/home/remote/.hermes/{remote_rel}") in iter_sync_files(
+        "/home/remote/.hermes"
+    )

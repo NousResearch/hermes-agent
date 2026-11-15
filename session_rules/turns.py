@@ -1324,8 +1324,10 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             # A /steer row that ended the previous run is already persisted; merging the next
             # prompt into it would rewrite it in place and re-break replay parity.
             and prev.get("display_kind") != STEER_DISPLAY_KIND
-            # Only merge plain-text content; leave multimodal (list or undecodable sentinel) content alone.
+            # Plain-text only, and never a passive (``observed``) row into an addressed turn: the merged
+            # row keeps observed=True, so replay would fold the addressed text into the group context (#154180).
             and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
+            and bool(prev.get("observed")) == bool(msg.get("observed"))
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
             merged_content = (

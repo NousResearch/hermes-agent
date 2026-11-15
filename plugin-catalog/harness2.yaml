@@ -1,6 +1,6 @@
 name: harness2
 repo: https://github.com/shrinedogg/harness2-hermes
-sha: 941fee06d1e6c70c97061cd2e079e38e96bed206
+sha: 0000b1b9a769ec6707201f07700157f8d38b453b
 version: "1.0.0"
 description: >-
   The Harness^2 self-improvement loop for Hermes profiles. The plugin edits
@@ -38,10 +38,10 @@ tier: community
 category: automation
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/shrinedogg/harness2-hermes#readme
-image: https://raw.githubusercontent.com/shrinedogg/harness2-hermes/941fee06d1e6c70c97061cd2e079e38e96bed206/docs/shots/loop.png
+image: https://raw.githubusercontent.com/shrinedogg/harness2-hermes/0000b1b9a769ec6707201f07700157f8d38b453b/docs/shots/loop.png
 screenshots:
-- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/941fee06d1e6c70c97061cd2e079e38e96bed206/docs/shots/loop.png
-- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/941fee06d1e6c70c97061cd2e079e38e96bed206/docs/shots/library.png
+- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/0000b1b9a769ec6707201f07700157f8d38b453b/docs/shots/loop.png
+- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/0000b1b9a769ec6707201f07700157f8d38b453b/docs/shots/library.png
 capabilities:
   provides_tools:
   - harness2_init

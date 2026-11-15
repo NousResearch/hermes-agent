@@ -1184,6 +1184,10 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
       // the record O_CREAT|O_EXCL, which the kernel arbitrates: exactly one
       // caller creates it, and every other lands in this retry body.
       `while ! (set -C; printf '%s:%s' "$$" "$reservation_nonce" > "$owner_file") 2>/dev/null; do ` +
+      // The holder removes the reservation when it exits, so a missing
+      // directory is not a stale record: recreate the container and retry,
+      // never counting it as an unpublished owner.
+      `[ -d "$reservation" ] || { mkdir -p "$reservation"; i=$((i+1)); [ "$i" -ge 600 ] && exit 75; sleep 0.05; continue; }; ` +
       `owner_data=$(cat "$owner_file" 2>/dev/null || true); ` +
       // A record lacking its pid:nonce separator is not published yet (the
       // winner is between create() and write(), a microsecond window) or its

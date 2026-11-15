@@ -285,7 +285,8 @@ def hardline_detection_variants(command: str, capped: list[str] | None = None):
     verb lands on the _CMDPOS anchor, and literal command strings carried by env -S / su -c /
     runuser -c / sh -c scanned as commands of their own. Kept out of the dangerous layer, whose
     unanchored rules (pipe-to-shell sinks) would read a peeled `|| sudo bash` as `| bash`."""
-    from tools.approval_detection import _command_detection_variants, _mask_quoted_newlines
+    from tools.approval_detection import _command_detection_variants
+    from tools.approval_quoted_newlines import _mask_quoted_newlines
 
     seen = set()
     # The peel and carrier scans read a literal heredoc body (`cat <<'EOF'`) as the text it is.

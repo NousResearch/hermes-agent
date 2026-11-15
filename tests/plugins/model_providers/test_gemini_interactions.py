@@ -53,6 +53,14 @@ HISTORY = [
 ]
 
 
+def test_xhigh_thinking_level_reaches_the_request(gemini):
+    _, wire = gemini
+    request = wire.build_interactions_request(
+        model="gemini-4-hydrogen", messages=[{"role": "user", "content": "hi"}],
+        thinking_config={"thinkingLevel": "xhigh", "includeThoughts": True})
+    assert request["generation_config"]["thinking_level"] == "xhigh"
+
+
 def test_request_is_stateless_typed_steps_with_signatures_replayed_as_thought_steps(gemini):
     _, wire = gemini
     request = wire.build_interactions_request(
@@ -91,10 +99,32 @@ def test_tool_results_schema_text_images_and_foreign_turns(gemini):
         {"role": "tool", "tool_call_id": "a", "content": '{"$ref": "#/$defs/x", "$defs": {"x": {}}}'},
         {"role": "tool", "tool_call_id": "b", "content": [{"type": "text", "text": "here"}, {"type": "image_url", "image_url": {"url": PNG}}]},
     ])
-    assert [s["type"] for s in steps] == ["function_call", "function_call", "function_result", "function_result"]
-    assert isinstance(steps[2]["result"], str)  # a JSON Schema result goes as text
-    assert steps[3]["result"] == [{"type": "text", "text": "here"}, {"type": "image", "mime_type": "image/png", "data": "iVBORw0KGgo="}]
-    assert steps[3]["name"] == "shot"
+    # An unsigned tool-calling turn opens with one placeholder thought: Google rejects it otherwise.
+    assert [s["type"] for s in steps] == ["thought", "function_call", "function_call", "function_result", "function_result"]
+    assert steps[0]["signature"] == "skip_thought_signature_validator"
+    assert isinstance(steps[3]["result"], str)  # a JSON Schema result goes as text
+    assert steps[4]["result"] == [{"type": "text", "text": "here"}, {"type": "image", "mime_type": "image/png", "data": "iVBORw0KGgo="}]
+    assert steps[4]["name"] == "shot"
+
+
+def test_tool_calling_turn_always_opens_with_a_thought_step(gemini):
+    _, wire = gemini
+    call = {"id": "c", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+    signed = {**call, "extra_content": {"google": {"thought_signature": SIG_B}}}
+
+    def shape(message):
+        steps, _ = wire.build_input_steps([message])
+        return [(s["type"], s.get("signature")) for s in steps]
+
+    placeholder = ("thought", "skip_thought_signature_validator")
+    # Unsigned text ahead of the call: the placeholder leads the turn, not the call.
+    assert shape({"role": "assistant", "content": "checking", "tool_calls": [call]}) == [placeholder, ("model_output", None), ("function_call", None)]
+    # Unsigned text ahead of a signed call: the real signature stays with its call.
+    assert shape({"role": "assistant", "content": "checking", "tool_calls": [signed]}) == [
+        placeholder, ("model_output", None), ("thought", SIG_B), ("function_call", None)]
+    # A turn that already opens with its own signature, and a text-only turn, get no placeholder.
+    assert shape({"role": "assistant", "content": None, "tool_calls": [signed]}) == [("thought", SIG_B), ("function_call", None)]
+    assert shape({"role": "assistant", "content": "hello"}) == [("model_output", None)]
 
 
 def test_named_tool_choice_json_schema_and_long_decode_store(gemini):
@@ -157,6 +187,44 @@ def test_status_maps_to_finish_reason(gemini, status, finish):
     _, wire = gemini
     out = wire.translate_interaction([{"id": "i", "status": status, "steps": [{"type": "model_output", "content": [{"type": "text", "text": "x"}]}]}], "m")
     assert out.choices[0].finish_reason == finish
+
+
+CALL_STEP = {"type": "function_call", "id": "fc_1", "name": "write_file", "arguments": {"content": "half"}}
+
+
+@pytest.mark.parametrize(("status", "finish"), [
+    ("incomplete", "length"), ("budget_exceeded", "length"), ("requires_continuation", "length"),
+    ("completed", "tool_calls"), ("requires_action", "tool_calls"),
+])
+def test_a_call_claims_tool_calls_only_on_a_clean_stop(gemini, status, finish):
+    """#144949: a truncated interaction carrying a call must report length, so truncation recovery runs
+    instead of executing the cut-off call."""
+    _, wire = gemini
+    out = wire.translate_interaction([{"id": "i", "status": status, "steps": [CALL_STEP]}], "m")
+    assert out.choices[0].finish_reason == finish
+    assert out.choices[0].message.tool_calls[0].function.name == "write_file"
+
+
+@pytest.mark.parametrize(("status", "finish"), [("incomplete", "length"), ("budget_exceeded", "length"), ("requires_action", "tool_calls")])
+def test_streamed_call_keeps_a_truncated_status(gemini, config, status, finish):
+    config["providers"] = {"gemini": {"gemini_api": "interactions"}}
+    events = [{"event_type": "interaction.created", "interaction": {"id": "i"}},
+              {"event_type": "step.start", "index": 0, "step": CALL_STEP}, {"event_type": "step.stop", "index": 0},
+              {"event_type": "interaction.completed", "interaction": {"id": "i", "status": status, "usage": {"total_tokens": 3}}}]
+    client = _client(gemini, lambda request: httpx.Response(200, content=_sse(*events)))
+    _, _, calls, got, _ = _collect(client.chat.completions.create(model="gemini-3.8-flash", messages=[{"role": "user", "content": "x"}], stream=True))
+    assert calls[0]["name"] == "write_file" and got == finish
+
+
+def test_hop_ceiling_cuts_a_streamed_call_short_as_length(gemini, config):
+    """A long decode that still wants continuation with nothing to continue from ends as length, even with a call."""
+    config["providers"] = {"gemini": {"gemini_api": "interactions"}}
+    events = [{"event_type": "interaction.created", "interaction": {"id": "h1"}},
+              {"event_type": "step.start", "index": 0, "step": CALL_STEP}, {"event_type": "step.stop", "index": 0},
+              {"event_type": "interaction.completed", "interaction": {"id": "h1", "status": "requires_continuation", "usage": {"total_tokens": 3}}}]
+    client = _client(gemini, lambda request: httpx.Response(200, content=_sse(*events)))
+    _, _, calls, finish, _ = _collect(client.chat.completions.create(**LONG))
+    assert calls[0]["name"] == "write_file" and finish == "length"
 
 
 def test_failed_interaction_raises_a_classified_error(gemini):

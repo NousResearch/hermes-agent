@@ -31,7 +31,11 @@ import autopilot
 import contextlib as _ctx
 import io as _io
 import json as _json
+import smtplib as _smtplib
+import socket as _socket
+import ssl as _ssl
 import time as _time
+from unittest import mock as _mock
 
 import badbool
 import brokers
@@ -416,7 +420,7 @@ class _FakeSMTP:
     def ehlo(self):
         pass
 
-    def starttls(self):
+    def starttls(self, context=None):
         pass
 
     def login(self, user, password):
@@ -630,6 +634,203 @@ def test_storage_lock_mutual_exclusion_and_stale_break():
             pass
 
 
+
+
+class _StripSMTP:
+    """Plaintext server whose EHLO does not offer STARTTLS (downgrade or bad relay)."""
+    constructed = 0
+    logins: list = []
+
+    def __init__(self, host, port, timeout=None):
+        _StripSMTP.constructed += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def ehlo(self):
+        pass
+
+    def starttls(self, context=None):
+        raise _smtplib.SMTPNotSupportedError("STARTTLS extension not supported by server.")
+
+    def login(self, u, p):
+        _StripSMTP.logins.append((u, p))
+
+    def send_message(self, m):
+        raise AssertionError("must never hand the message to a cleartext connection")
+
+
+class _ImplicitTLSSMTP:
+    """Already-TLS connection (an injected implicit-TLS factory): no STARTTLS needed."""
+    sent: list = []
+
+    def __init__(self, host, port, timeout=None):
+        self.sock = _ssl.create_default_context().wrap_socket(
+            _socket.socket(), do_handshake_on_connect=False,
+            server_hostname="mail.example")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.sock.close()
+        return False
+
+    def ehlo(self):
+        pass
+
+    def starttls(self, context=None):
+        raise _smtplib.SMTPNotSupportedError("already using TLS")
+
+    def login(self, u, p):
+        pass
+
+    def send_message(self, m):
+        _ImplicitTLSSMTP.sent.append(m)
+
+
+def test_email_send_refuses_login_when_starttls_is_stripped():
+    _StripSMTP.constructed, _StripSMTP.logins = 0, []
+    env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "hunter2"}
+    broker = {"id": "x", "optout": {"email": "privacy@x.example"}}
+    try:
+        emailer.send(broker, "Subject: s\n\nb", env=env, _smtp_factory=_StripSMTP,
+                     _sleep=lambda *_: None)
+    except _smtplib.SMTPNotSupportedError:
+        pass
+    else:
+        raise AssertionError("send must raise when the server will not STARTTLS")
+    assert _StripSMTP.logins == []       # the password never touched the socket
+    assert _StripSMTP.constructed == 1   # a downgrade is permanent, never retried
+
+
+def test_email_send_accepts_already_tls_connection():
+    _ImplicitTLSSMTP.sent = []
+    env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "p"}
+    broker = {"id": "x", "optout": {"email": "privacy@x.example"}}
+    out = emailer.send(broker, "Subject: s\n\nb", env=env,
+                       _smtp_factory=_ImplicitTLSSMTP, _sleep=lambda *_: None)
+    assert out["attempts"] == 1 and _ImplicitTLSSMTP.sent
+
+
+class _BadCertSMTP(_StripSMTP):
+    """STARTTLS is offered but the server's certificate fails verification."""
+
+    def starttls(self, context=None):
+        raise _ssl.SSLCertVerificationError(1, "certificate verify failed: self-signed certificate")
+
+
+def test_email_send_does_not_retry_certificate_failure():
+    _StripSMTP.constructed, _StripSMTP.logins = 0, []
+    sleeps = []
+    env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "hunter2"}
+    broker = {"id": "x", "optout": {"email": "privacy@x.example"}}
+    try:
+        emailer.send(broker, "Subject: s\n\nb", env=env, _smtp_factory=_BadCertSMTP,
+                     _sleep=sleeps.append)
+    except RuntimeError as exc:
+        assert "certificate verify failed" in str(exc)
+    else:
+        raise AssertionError("send must fail when the certificate does not verify")
+    assert _StripSMTP.logins == []
+    assert _StripSMTP.constructed == 1 and sleeps == []  # permanent: no reconnect, no backoff
+
+
+class _FakeSMTPSSL:
+    """Stand-in for smtplib.SMTP_SSL: implicit TLS from construction, no STARTTLS."""
+    sent: list = []
+    context = None
+
+    def __init__(self, host, port, timeout=None, context=None):
+        _FakeSMTPSSL.context = context
+        self.sock = _ssl.create_default_context().wrap_socket(
+            _socket.socket(), do_handshake_on_connect=False,
+            server_hostname="mail.example")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.sock.close()
+        return False
+
+    def ehlo(self):
+        pass
+
+    def starttls(self, context=None):
+        raise AssertionError("port 465 is already TLS, STARTTLS must not run")
+
+    def login(self, u, p):
+        pass
+
+    def send_message(self, m):
+        _FakeSMTPSSL.sent.append(m)
+
+
+def _assert_verifying(ctx):
+    assert isinstance(ctx, _ssl.SSLContext)
+    assert ctx.verify_mode == _ssl.CERT_REQUIRED and ctx.check_hostname
+
+
+def test_email_send_uses_implicit_tls_on_port_465():
+    _FakeSMTPSSL.sent, _FakeSMTPSSL.context = [], None
+
+    def _forbidden_plaintext(*a, **k):
+        raise AssertionError("port 465 must connect with SMTP_SSL, not plaintext SMTP")
+
+    env = {"EMAIL_ADDRESS": "agent@corp.example", "EMAIL_PASSWORD": "p",
+           "EMAIL_SMTP_HOST": "mail.corp.example", "EMAIL_SMTP_PORT": "465"}
+    broker = {"id": "x", "optout": {"email": "privacy@x.example"}}
+    with _mock.patch.object(emailer.smtplib, "SMTP_SSL", _FakeSMTPSSL), \
+            _mock.patch.object(emailer.smtplib, "SMTP", _forbidden_plaintext):
+        out = emailer.send(broker, "Subject: s\n\nb", env=env, _sleep=lambda *_: None)
+    assert out["attempts"] == 1 and _FakeSMTPSSL.sent
+    # The implicit-TLS connection is verified, matching the gateway adapter.
+    _assert_verifying(_FakeSMTPSSL.context)
+
+
+class _RecordingStartTLS(_FakeSMTP):
+    context = None
+
+    def starttls(self, context=None):
+        _RecordingStartTLS.context = context
+
+
+def test_email_send_starttls_verifies_certificate():
+    _RecordingStartTLS.context, _FakeSMTP.sent = None, []
+    env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "p"}
+    broker = {"id": "x", "optout": {"email": "privacy@x.example"}}
+    emailer.send(broker, "Subject: s\n\nb", env=env, _smtp_factory=_RecordingStartTLS,
+                 _sleep=lambda *_: None)
+    _assert_verifying(_RecordingStartTLS.context)
+
+
+def test_imap_fetch_verifies_certificate():
+    seen = {}
+
+    class _IMAP:
+        def __init__(self, host, port, *, ssl_context=None, timeout=None):
+            seen["ctx"] = ssl_context
+
+        def login(self, u, p):
+            pass
+
+        def select(self, *a, **k):
+            pass
+
+        def search(self, *a):
+            return "OK", [b""]
+
+        def logout(self):
+            pass
+
+    env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "p"}
+    with _mock.patch.object(emailer.imaplib, "IMAP4_SSL", _IMAP):
+        assert emailer.fetch_recent(env) == []
+    _assert_verifying(seen["ctx"])
 
 
 def _run(argv) -> dict:

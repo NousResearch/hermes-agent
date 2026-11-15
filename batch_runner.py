@@ -30,6 +30,7 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
 from agent.conversation_compression_checkpoint import checkpoint_required_from_config
+from agent.trajectory import redact_trajectory_value
 from model_tools import TOOL_TO_TOOLSET_MAP
 from run_agent import AIAgent
 from toolset_distributions import (
@@ -361,7 +362,9 @@ def _process_batch_worker(args: tuple) -> dict[str, Any]:
             }
             _append_jsonl(batch_output_file, {
                 "prompt_index": prompt_index,
-                "conversations": result["trajectory"],
+                # Same persistence boundary as agent.trajectory.save_trajectory: tool args and
+                # outputs land in the exported dataset, so redact leaf-wise before serializing.
+                "conversations": redact_trajectory_value(result["trajectory"]),
                 "metadata": result["metadata"],
                 "completed": result["completed"],
                 "partial": result.get("partial", False),  # True if stopped due to invalid tool calls
@@ -594,7 +597,8 @@ class BatchRunner:
                         prompt_text = (msg.get("content") or msg.get("value", "")).strip()
                         break
 
-            if prompt_text in completed_prompts:
+            # Saved rows carry the redacted human turn, so match that form too.
+            if prompt_text in completed_prompts or redact_trajectory_value(prompt_text) in completed_prompts:
                 skipped_indices.append(idx)
             else:
                 filtered_dataset.append((idx, entry))

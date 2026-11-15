@@ -33,8 +33,9 @@ logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.
 # Bound on the off-loop agent cleanup during /new; past it the reset proceeds and the teardown
 # finishes (or leaks) in its worker thread rather than blocking the event loop.
 _RESET_CLEANUP_TIMEOUT_S = 30.0
-# chat_type values whose session key is per-user (DM-like), incl. the unknown/blank case.
-_DM_CHAT_TYPES = {"dm", "direct", "private", ""}
+# chat_type values whose session key is per-user (DM-like). A blank chat_type is NOT here: it could
+# be either scope, so ownership proofs require both the DM and the non-DM reading to hold.
+_DM_CHAT_TYPES = {"dm", "direct", "private"}
 
 _BRANCH_COPIED_FIELDS = ("content", "tool_calls", "tool_call_id", "finish_reason", "reasoning",
                          "reasoning_content", "reasoning_details", "codex_reasoning_items",
@@ -64,6 +65,17 @@ def _private_topic_lanes_of_one_chat(current, origin) -> bool:
     theirs = _telegram_private_chat_owner(origin.platform, _sattr(origin, "chat_type"),
                                           _sattr(origin, "chat_id"), _sattr(origin, "user_id"))
     return bool(mine) and mine == theirs
+
+
+def _same_dm_origin(current, origin) -> bool:
+    """DM-key match: an equal non-empty chat_id IS the DM key. build_session_key falls back to the
+    participant (``user_id_alt or user_id`` — Signal/Feishu key on alt) only without a chat_id;
+    mirror that and fail closed on a missing/different participant."""
+    if _sattr(current, "chat_id"):
+        return True
+    cur_pid = str(current.user_id_alt or current.user_id or "")
+    org_pid = str(origin.user_id_alt or origin.user_id or "")
+    return bool(cur_pid) and cur_pid == org_pid
 
 
 def _manual_compression_reply_lines(summary: dict, compressor, focus_topic) -> list[str]:
@@ -265,6 +277,7 @@ class GatewaySessionCommandsMixin:
 
     async def _handle_reset_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /new or /reset command."""
+        event.accept_interrupt()  # past admission and slash access: the adapter may cancel the turn
         source = event.source
         session_key = self._session_key_for_source(source)
         await self._hm_stop_owner_turn(session_key)  # idle and confirmed resets too (N53)
@@ -394,15 +407,15 @@ class GatewaySessionCommandsMixin:
         # thread_id is part of every session key: threads of one chat are DIFFERENT sessions.
         if _sattr(current, "thread_id") != _sattr(origin, "thread_id"):
             return False
-        if _sattr(current, "chat_type").lower() in _DM_CHAT_TYPES:
-            # An equal non-empty chat_id IS the DM key. build_session_key falls back to the
-            # participant (``user_id_alt or user_id`` — Signal/Feishu key on alt) only without a
-            # chat_id; mirror that and fail closed on a missing/different participant.
-            if _sattr(current, "chat_id"):
-                return True
-            cur_pid = str(current.user_id_alt or current.user_id or "")
-            org_pid = str(origin.user_id_alt or origin.user_id or "")
-            return bool(cur_pid) and cur_pid == org_pid
+        chat_type = _sattr(current, "chat_type").lower()
+        if chat_type in _DM_CHAT_TYPES:
+            return _same_dm_origin(current, origin)
+        # A blank chat_type could be either scope: both readings must match.
+        return self._same_non_dm_origin(current, origin) and (
+            bool(chat_type.strip()) or _same_dm_origin(current, origin))
+
+    def _same_non_dm_origin(self, current: SessionSource, origin: SessionSource) -> bool:
+        """Same-chat, same-thread *origin* check for a group/channel/thread caller."""
         # Non-DM: a shared key is one session for everyone; a per-user key compares the participant
         # it is built from, failing closed when either side lacks one. The TARGET's key decides: a
         # caller on a shared key (Telegram observe-mode commands) may still not take over another
@@ -475,11 +488,15 @@ class GatewaySessionCommandsMixin:
         row_chat = str(row.get("chat_id") or "")
         caller_chat = _sattr(source, "chat_id")
         caller_keys_on_alt = bool(_sattr(source, "user_id_alt"))
-        if _sattr(source, "chat_type").lower() in _DM_CHAT_TYPES:
-            # A no-chat_id DM is keyed PURELY on the participant (alt-keyed caller fails closed).
-            if caller_keys_on_alt and not (row_chat and caller_chat):
-                return False
-            return bool(row_uid) and row_uid == caller_uid and row_chat == caller_chat
+        # A no-chat_id DM is keyed PURELY on the participant (alt-keyed caller fails closed).
+        dm_proven = (not (caller_keys_on_alt and not (row_chat and caller_chat))
+                     and bool(row_uid) and row_uid == caller_uid and row_chat == caller_chat)
+        chat_type = _sattr(source, "chat_type").lower()
+        if chat_type in _DM_CHAT_TYPES:
+            return dm_proven
+        # A blank chat_type could be either scope: the DM reading must hold too.
+        if not (chat_type.strip() or dm_proven):
+            return False
         # Non-DM: both sides must carry chat_id and match (legacy NULL-chat rows fail closed).
         if not (row_chat and caller_chat and row_chat == caller_chat):
             return False

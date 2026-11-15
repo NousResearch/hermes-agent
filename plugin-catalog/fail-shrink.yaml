@@ -1,0 +1,21 @@
+name: fail-shrink
+repo: https://github.com/TakeshiTGAL/hermes-plugin-fail-shrink
+sha: 58ccb473a250dcb1fa86fa4581f494e54a8a9bd2
+description: "When a pytest, jest, vitest, cargo test, go test, tsc, ruff, or eslint summary line shows, the result is a short block with that place and the same exit code. No summary line, or a poll with only output_preview, stays as Hermes returned it. Disclosure — rewrites long failing pytest/jest/vitest/cargo/go test/tsc/ruff/eslint terminal output into a short block and saves the full (ANSI-stripped, redacted) log under plugin-data/fail-shrink, keeping the newest 40 logs (32 MB) until the plugin data is deleted; the fail_full tool reads those saved logs only, makes no network calls and runs nothing, and is enabled on every platform, so anyone who can message the agent can ask it to read them."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: '>=0.21.4'
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-fail-shrink#readme
+version: '0.1.0'
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+  - fail_full
+  provides_hooks:
+  - transform_tool_result
+  - pre_llm_call
+  provides_middleware: []
+  requires_env: []
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-fail-shrink/58ccb473a250dcb1fa86fa4581f494e54a8a9bd2/assets/catalog-banner.png
+title: Fail Shrink

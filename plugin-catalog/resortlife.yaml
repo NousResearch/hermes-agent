@@ -1,0 +1,18 @@
+name: resortlife
+title: Resortlife Travel
+repo: https://github.com/raidwaleed/resortlife-mcp
+sha: 9fe108e812816319458ac6a125a8202e2e20c78e
+version: "1.0.0"
+description: "Maldives travel research through Resortlife Travel's hosted MCP server (Streamable HTTP at https://resortlife.travel/api/mcp, no sign-in, no keys in config): resorts and guesthouses, villas, dining, spas, dive sites, surf breaks, wildlife seasons by month, 360-degree tours, photo galleries, nearby places and the Velana airport board. Bundles one trip-planning skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to resortlife.travel, which keeps daily counts of calls by tool name and assistant family (no address, arguments or question text) and rate-limits by a hash of the caller's address. No credentials are needed or stored. Every tool is annotated read-only; the package still marks the server untrusted. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Resortlife Travel
+tier: community
+category: tools
+docs_url: https://resortlife.travel/docs
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

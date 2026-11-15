@@ -22,6 +22,7 @@ from typing import Any, List, Optional, Tuple
 
 from hermes_state_holders import read_only_db_uri
 from hermes_cli.backup_sqlite import _safe_copy_db
+from hermes_cli.config_backend import drop_other_access
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
     mkstemp_beside,
@@ -368,6 +369,39 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
         except (OSError, ValueError) as exc2:  # ValueError: a path the OS cannot represent
             logger.error("Fallback restore also failed for %s -> %s: %s", src, dst, exc2)
             return False
+
+
+def _restore_snapshot_entry(rel: str, src: Path, dst: Path) -> bool:
+    """Publish one quick-snapshot file over ``dst``; False (logged) when refused or failed."""
+    try:
+        if dst.suffix == ".db":
+            # Restore through SQLite backup API so live connections
+            # (gateway, dashboard, another CLI session) see the
+            # restored data instead of continuing to serve stale
+            # cached pages from a replaced inode (issue #65942).
+            if not _safe_restore_db(src, dst):
+                # Refused, failed, or source failed its integrity check:
+                # dst left as it was. Count as a failure, not a restore.
+                logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
+                return False
+        elif rel == "auth.json":
+            # Refresh tokens for these OAuth providers rotate on use. A historical
+            # snapshot can therefore contain a spent pair even though the current
+            # auth.json has the live successor. Restore the historical auth state
+            # while retaining that live single-use grant under the auth-store lock.
+            if not _restore_auth_json(src, dst):
+                logger.error("Failed to restore %s safely", rel)
+                return False
+        else:
+            shutil.copy2(src, dst)
+            if dst.name == "config.yaml":  # the snapshot copy carries the mode it was taken with
+                drop_other_access(dst)
+            elif dst.name == ".env":  # secrets file: owner-only, as `hermes import` leaves it
+                os.chmod(dst, 0o600)
+        return True
+    except (OSError, PermissionError) as exc:
+        logger.error("Failed to restore %s: %s", rel, exc)
+        return False
 
 
 def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:

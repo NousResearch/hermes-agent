@@ -7,8 +7,6 @@ import shutil
 import sqlite3
 import stat
 import sys
-import tempfile
-import threading
 import time
 import zipfile
 import zlib
@@ -27,9 +25,11 @@ from hermes_cli.sqlite_safe_read import connect_tracked, has_live_connection, re
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
+from hermes_cli.backup_atomic import _atomic_output_path
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
-from hermes_cli.config_backend import require_file_tooling, supports_file_tooling
-from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
+from hermes_cli.backup_staging import prune_backup_staging, reclaim_backup_staging, staged_backup_file, warn_legacy_backup_file
+from hermes_cli.config_backend import drop_other_access, require_file_tooling, supports_file_tooling
+from hermes_cli.home_data_layout import BRIDGE_LOG_PARTS, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
 from hermes_cli.backup_restore import (
@@ -42,6 +42,7 @@ from hermes_cli.backup_restore import (
     _import_db_member,
     _restore_auth_json,
     _restore_destination_epoch,
+    _restore_snapshot_entry,
     _safe_restore_db,
     _set_config_path_value,
     _validate_backup_zip,
@@ -113,14 +114,14 @@ _KEPT_CACHE_SUBDIRS = {
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
-    """True when *rel_path* is inside a regenerable tree at a profile-home root."""
+    """True when *rel_path* is inside a regenerable tree at a profile-home root, or is the bridge log."""
     root_entry = profile_root_entry(rel_path.parts)
     if root_entry in _EXCLUDED_ROOT_DIRS or root_entry in _EXCLUDED_BACKUP_ROOT_DIRS:
         return True
     parts = rel_path.parts
     if len(parts) >= 3 and parts[0] == "profiles":
         parts = parts[2:]
-    return len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS
+    return parts in BRIDGE_LOG_PARTS or (len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS)
 
 
 # SQLite sidecars are excluded because ``*.db`` is snapshotted via ``sqlite3.backup()``:
@@ -222,28 +223,6 @@ def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
         handle.close()
 
 
-@contextmanager
-def _atomic_output_path(final_path: Path, publish_path: Optional[Callable[[], Optional[Path]]] = None):
-    """Yield a hidden sibling path and publish it only after a clean close.
-
-    ``publish_path`` picks the destination at publish time (default ``final_path``) so a caller
-    can divert an incomplete archive elsewhere without ever touching ``final_path``; returning
-    ``None`` discards the partial instead of publishing it.
-    """
-    partial_path = final_path.with_name(f".{final_path.name}.{os.getpid()}-{threading.get_ident()}.partial")
-    partial_path.unlink(missing_ok=True)
-    try:
-        yield partial_path
-        destination = publish_path() if publish_path else final_path
-        if destination is None:
-            partial_path.unlink(missing_ok=True)
-        else:
-            os.replace(partial_path, destination)
-    except BaseException:
-        partial_path.unlink(missing_ok=True)
-        raise
-
-
 def _collect_memory_provider_external_paths() -> list[Path]:
     """Existing paths the active memory provider declares via ``backup_paths()``; ``[]`` on any
     provider failure (backup must never fail because of a flaky plugin)."""
@@ -284,7 +263,8 @@ def _iter_external_files(base: Path) -> list[Path]:
         return []
     files: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
-        dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+        dirnames[:] = prune_backup_staging(
+            Path(dirpath), [d for d in dirnames if d not in _EXCLUDED_DIRS])
         files.extend(fp for fp in (Path(dirpath) / f for f in filenames)
                      if not (_is_non_regular_path(fp) or fp.name in _EXCLUDED_NAMES
                              or fp.name.endswith(_EXCLUDED_SUFFIXES)))
@@ -335,6 +315,7 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
     excluded tree, the root-only ``hermes-agent`` carve-out, root runtime trees, per-file rules),
     shared by ``hermes backup`` and the pre-update path so they can never drift.
     """
+    reclaim_backup_staging(hermes_root / _PRE_UPDATE_BACKUPS_DIR)
     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         rel_dir = Path(dirpath).relative_to(hermes_root)
         is_root = rel_dir == Path(".")
@@ -345,7 +326,8 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
         if skipped_dirs is not None:
             skipped_dirs.update(str(rel_dir / d) for d in set(dirnames) - set(kept))
         # No walk may follow a junction.
-        dirnames[:] = [name for name in kept if not _is_link_path(Path(dirpath) / name)]
+        dirnames[:] = prune_backup_staging(
+            Path(dirpath), [name for name in kept if not _is_link_path(Path(dirpath) / name)])
         for fname in filenames:
             rel = rel_dir / fname
             fpath = hermes_root / rel
@@ -495,15 +477,12 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
 
     Staged beside the output zip: /tmp may be a small tmpfs that cannot hold large databases.
     """
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=str(out_path.parent)) as tmp:
-        tmp_db = Path(tmp.name)
-    try:
+    with staged_backup_file(out_path.parent, "snapshot.db") as tmp_db:
         if not _safe_copy_db(abs_path, tmp_db):
+            warn_legacy_backup_file(abs_path)
             return None
         _write_zip_file(zf, tmp_db, str(rel_path))
         return tmp_db.stat().st_size
-    finally:
-        tmp_db.unlink(missing_ok=True)
 
 
 def _write_zip_entries(
@@ -525,6 +504,7 @@ def _write_zip_entries(
                     continue
                 total_bytes += size
             else:
+                warn_legacy_backup_file(abs_path)
                 _write_zip_file(zf, abs_path, str(rel_path))
                 if track_bytes:
                     total_bytes += abs_path.stat().st_size
@@ -1056,6 +1036,8 @@ def _import_members_exclusive(
                     db_shrunk.append((rel, before, after))
             else:
                 _extract_member_atomically(zf, member, target, new_file_mode)
+            if target.name == "config.yaml":  # extraction keeps the live file's mode
+                drop_other_access(target)
             if target.name in _SECRET_FILE_NAMES:
                 os.chmod(target, 0o600)
             restored += 1
@@ -1194,7 +1176,9 @@ def _create_prefixed_full_backup(
         return None
     backup_dir = hermes_root / _PRE_UPDATE_BACKUPS_DIR
     try:
-        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with suppress(OSError):
+            os.chmod(backup_dir, 0o700)
     except OSError as exc:
         logger.warning("Could not create %s backup dir %s: %s", what, backup_dir, exc)
         return None
@@ -1563,35 +1547,6 @@ def _snapshot_epochs_restorable(files, entry_paths) -> bool:
                 logger.error("%s", exc)
                 return False
     return True
-
-
-def _restore_snapshot_entry(rel: str, src: Path, dst: Path) -> bool:
-    """Publish one quick-snapshot file over ``dst``; False (logged) when refused or failed."""
-    try:
-        if dst.suffix == ".db":
-            # Restore through SQLite backup API so live connections
-            # (gateway, dashboard, another CLI session) see the
-            # restored data instead of continuing to serve stale
-            # cached pages from a replaced inode (issue #65942).
-            if not _safe_restore_db(src, dst):
-                # Refused, failed, or source failed its integrity check:
-                # dst left as it was. Count as a failure, not a restore.
-                logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
-                return False
-        elif rel == "auth.json":
-            # Refresh tokens for these OAuth providers rotate on use. A historical
-            # snapshot can therefore contain a spent pair even though the current
-            # auth.json has the live successor. Restore the historical auth state
-            # while retaining that live single-use grant under the auth-store lock.
-            if not _restore_auth_json(src, dst):
-                logger.error("Failed to restore %s safely", rel)
-                return False
-        else:
-            shutil.copy2(src, dst)
-        return True
-    except (OSError, PermissionError) as exc:
-        logger.error("Failed to restore %s: %s", rel, exc)
-        return False
 
 
 def quick_snapshot_dir(snapshot_id: str, hermes_home: Optional[Path] = None) -> Optional[Path]:

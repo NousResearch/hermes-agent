@@ -1,0 +1,22 @@
+name: locatepic
+title: LocatePic
+repo: https://github.com/AbigailDavised/locatepic-mcp
+sha: 8e56b3cca06af0866edfbd95bc956278e4747e3a
+version: "1.0.2"
+description: "Solar shadow azimuth and latitude geometry calculator, regional driving side and road marking encyclopedia, country calling code and ccTLD lookup, electrical plug/grid frequency reference, and EXIF GPS metadata tag inspector through LocatePic's official MCP server (Streamable HTTP at https://locatepic.com/api/mcp, no sign-in, no keys in config). Bundles the locatepic workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to locatepic.com/api/mcp with only the geometric angle, UTC timestamp or infrastructure clue query arguments. All 8 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: LocatePic
+tier: community
+category: tools
+docs_url: https://locatepic.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/locatepic-mcp/8e56b3cca06af0866edfbd95bc956278e4747e3a/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/locatepic-mcp/8e56b3cca06af0866edfbd95bc956278e4747e3a/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/locatepic-mcp/8e56b3cca06af0866edfbd95bc956278e4747e3a/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

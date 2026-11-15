@@ -40,18 +40,20 @@ FORGET_RULES_RAW_RE = (rf"(?:(?<![^\W_])(?<![’'])(?!{_NEGATOR}[ \t])(?:[^\W_]|
                        r"forget\s+(?:about\s+)?(your|all|any|previous|prior|above|earlier)"
                        r"\s+(?:\w+\s+){0,3}(instructions|rules|guidelines)(?![^\W_])")
 # FORGET_RULES_RE is the same rule bounded for the chunked scan_for_threats (width under _CHUNK_OVERLAP). The
-# `{64}` alternative anchors on the tail of a word longer than 64 chars, which the lookbehind branch cannot start in.
-FORGET_RULES_RE = (rf"(?:(?:(?<![^\W_])(?<![’'])(?!{_NEGATOR}[ \t])(?:[^\W_]|[’']){{1,64}}|(?:[^\W_]|[’']){{64}})"
+# `{64}` lookbehind anchors on the tail of a word longer than 64 chars, which the first branch cannot start in; it
+# only runs at a space or tab, so a long word costs O(1) per char instead of 64.
+FORGET_RULES_RE = (rf"(?:(?:(?<![^\W_])(?<![’'])(?!{_NEGATOR}[ \t])(?:[^\W_]|[’']){{1,64}}|(?=[ \t])(?<=(?:[^\W_]|[’']){{64}}))"
                    r"[ \t]{1,64}"
                    r"|(?:^|[^\w’' \t]|_|(?<!\w)[’'])[ \t]{0,64})"
                    r"forget\s{1,64}(?:about\s{1,64})?(your|all|any|previous|prior|above|earlier)"
                    r"\s{1,64}(?:\w{1,64}\s{1,64}){0,3}(instructions|rules|guidelines)(?![^\W_])")
 # A negator hard-wrapped onto the line above (`Do not⏎forget …`), emphasised (`**Don't** forget`) or followed by
 # `ever` still negates: callers blank that `forget` before matching FORGET_RULES_RE. One line break at most, so a
-# heading separated from the payload by a blank line cannot suppress it. Same length and newlines, so offsets hold.
+# heading separated from the payload by a blank line cannot suppress it; the break may be CRLF (tool results,
+# memory entries and cron prompts are not newline-normalised). Same length and newlines, so offsets hold.
 # The run after the negator is possessive (`*+`): two plain `[*_]*` with only optional tokens between them backtrack
 # quadratically.
-_NEGATED_FORGET = re.compile(rf"(?<![\w*’'])([*_]*{_NEGATOR}[*_]*+[ \t]*(?:\n[ \t]*)?(?:ever[ \t]+)?[*_]*)"
+_NEGATED_FORGET = re.compile(rf"(?<![\w*’'])([*_]*{_NEGATOR}[*_]*+[ \t]*(?:\r?\n[ \t]*)?(?:ever[ \t]+)?[*_]*)"
                              r"forget(?![^\W_])", re.IGNORECASE)
 
 

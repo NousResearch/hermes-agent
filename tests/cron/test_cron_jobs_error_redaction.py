@@ -75,6 +75,28 @@ def test_any_outcome_scrubs_preupgrade_sticky_stamps(tmp_cron_dir, outcome):
     assert "Key limit exceeded" in stored["last_fire_error"]["detail"]
 
 
+def test_run_scrubs_preupgrade_stamps_on_other_job(tmp_cron_dir):
+    """A run of job A also rewrites job B, even when B is paused and never runs."""
+    from cron.jobs import save_jobs
+
+    active = create_job(prompt="active", schedule="every 1h")
+    paused = create_job(prompt="paused", schedule="every 1h")
+    paused["state"] = "paused"
+    paused["enabled"] = False
+    paused["last_failure"] = {"at": "2026-01-01T00:00:00+00:00", "detail": _PROVIDER_ERROR}
+    paused["last_fire_error"] = {"at": "2026-01-01T00:00:00+00:00", "detail": _PROVIDER_ERROR}
+    save_jobs([active, paused])  # Pre-upgrade persisted data, not a fresh provider failure.
+    assert _KEY in _jobs_json(tmp_cron_dir)
+
+    assert mark_job_run(active["id"], success=True) is True
+    stored = get_job(paused["id"])
+    assert stored["state"] == "paused"
+    assert stored["enabled"] is False
+    assert "Key limit exceeded" in stored["last_failure"]["detail"]
+    assert "Key limit exceeded" in stored["last_fire_error"]["detail"]
+    assert _KEY not in _jobs_json(tmp_cron_dir)
+
+
 def test_delivery_error_is_redacted_in_jobs_json(tmp_cron_dir):
     job = create_job(prompt="watch prices", schedule="every 1h")
     mark_job_run(job["id"], success=True, delivery_error=_PROVIDER_ERROR)

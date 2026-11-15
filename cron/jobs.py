@@ -2519,6 +2519,9 @@ def mark_job_run(
             quota_hold.plan_hold(job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire)
         else:
             quota_hold.clear_state(job)
+        # A run rewrites all jobs, including legacy failure stamps on idle siblings.
+        for stored_job in jobs:
+            jobs_error_text.scrub_retained_stamps(stored_job)
         save_jobs(jobs)
         return True
 

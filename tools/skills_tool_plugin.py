@@ -2,6 +2,8 @@
 file-serving helpers shared with the local-skill path. Helpers tests patch on the origin module
 (``_is_skill_disabled``, ``_parse_frontmatter``, ``skill_matches_platform``) resolve lazily."""
 
+import hashlib
+import io
 import json
 import logging
 from contextlib import suppress
@@ -33,7 +35,15 @@ def _fail(error: str, **extra) -> str:
 def _read_skill_text(path: Path) -> str:
     """utf-8-sig + errors="replace": user-authored SKILL.md may carry a Notepad BOM or stray
     bytes; pinning UTF-8 keeps skill_view deterministic across host locales."""
-    return path.read_text(encoding="utf-8-sig", errors="replace")
+    return _read_skill_text_and_digest(path)[0]
+
+
+def _read_skill_text_and_digest(path: Path) -> tuple[str, str]:
+    """``_read_skill_text`` plus the SHA-256 hex of the exact bytes it decoded: one read, so a
+    background-review read mark describes what the fork was served, not a later re-read."""
+    data = path.read_bytes()
+    with io.TextIOWrapper(io.BytesIO(data), encoding="utf-8-sig", errors="replace") as text:
+        return text.read(), hashlib.sha256(data).hexdigest()
 
 
 def _truncate_description(description: str) -> str:
@@ -86,7 +96,7 @@ def _serve_skill_file(
             "hint": "Use one of the available file paths listed above"}
         return _fail(f"File '{file_path}' not found in skill '{label}'.", **listing)
     try:
-        content = _read_skill_text(target)
+        content, digest = _read_skill_text_and_digest(target)
     except UnicodeDecodeError:
         return _json({
             "success": True, "name": label, "file": file_path, "is_binary": True,
@@ -96,16 +106,16 @@ def _serve_skill_file(
             raise
         return _fail(f"Failed to read '{file_path}': {exc}")
     if mark_read:
-        _mark_background_review_read(target)
+        _mark_background_review_read(target, digest)
     return _json({
         "success": True, "name": label, "file": file_path, "content": content,
         "file_type": target.suffix})
 
 
-def _mark_background_review_read(path: Path) -> None:
+def _mark_background_review_read(path: Path, digest: str | None = None) -> None:
     try:
         from tools.skill_manager_guards import mark_background_review_skill_read
-        mark_background_review_skill_read(path)
+        mark_background_review_skill_read(path, digest)
     except Exception:
         logger.debug("Could not record background-review skill read for %s", path, exc_info=True)
 

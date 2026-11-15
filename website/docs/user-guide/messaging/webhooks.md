@@ -594,6 +594,14 @@ Behavior and safety properties:
 - `hermes webhook subscribe` deliberately does **not** accept a toolsets flag. Granting elevated tools is a manual config-file edit, so an agent creating its own subscription at runtime cannot self-grant `terminal`.
 - Only grant elevated toolsets to routes whose senders you fully control, with a real HMAC secret. Anyone who can POST a validly-signed payload to that route is effectively running an agent with those tools.
 
+### Skills on webhook routes
+
+The system prompt lists the installed skills only when the run has a skill tool (`skills_list`, `skill_view` or `skill_manage`). The default webhook toolset has none, so a webhook run does not see the skills index, and a skill you install is not offered to webhook runs the way it is in the CLI. `hermes prompt-size --platform webhook` shows the index size.
+
+- To load a fixed skill on a route, name it in the route's `skills` property. That does not need the index or any skill tool.
+- To let a route discover skills, add the `skills` toolset, for every webhook route with `platform_toolsets.webhook: [hermes-webhook, skills]` or for one route with `toolsets: ["hermes-webhook", "skills"]`. Keep `hermes-webhook` in the route list, because the list replaces the platform default.
+- The `skills` toolset includes `skill_manage`, which creates and edits skills that persist and are offered on every platform. On a route that renders untrusted payloads, prefer the `skills` property.
+
 ---
 
 ## Security {#security}

@@ -32,6 +32,51 @@ logger = logging.getLogger(__name__)
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
 
+# Divide-and-conquer Phase 1: a dispatcher-spawned worker's kanban_create fan-out is
+# depth-capped by kanban.max_spawn_depth. Depth 0 is a root card; a worker on a depth-N
+# card may spawn children up to depth N+1 while N+1 <= cap. Default 1 = flat fan-out
+# (the orchestrator keeps dividing at its own level); each extra level multiplies
+# dispatched-worker cost, so the floor is 1 and there is no ceiling.
+_KANBAN_DEFAULT_SPAWN_DEPTH = 1
+_KANBAN_MIN_SPAWN_DEPTH = 1
+
+
+def _get_max_spawn_depth() -> int:
+    """``kanban.max_spawn_depth`` > ``HERMES_KANBAN_MAX_SPAWN_DEPTH`` > 1, floored at 1.
+
+    Same contract as ``delegation.max_spawn_depth``: a config value that fails to parse
+    logs and yields the default; an env value that fails to parse is silently ignored.
+    """
+    val = cfg_get(load_config(), "kanban", "max_spawn_depth")
+    if val is not None:
+        try:
+            ival = int(val)
+        except (TypeError, ValueError):
+            logger.warning(
+                "kanban.max_spawn_depth=%r is not a valid integer; using default %d",
+                val, _KANBAN_DEFAULT_SPAWN_DEPTH,
+            )
+        else:
+            if ival < _KANBAN_MIN_SPAWN_DEPTH:
+                logger.warning(
+                    "kanban.max_spawn_depth=%d below floor %d; using %d",
+                    ival, _KANBAN_MIN_SPAWN_DEPTH, _KANBAN_MIN_SPAWN_DEPTH,
+                )
+            return max(_KANBAN_MIN_SPAWN_DEPTH, ival)
+    env_val = os.getenv("HERMES_KANBAN_MAX_SPAWN_DEPTH")
+    if env_val:
+        try:
+            ival = int(env_val)
+            if ival < _KANBAN_MIN_SPAWN_DEPTH:
+                logger.warning(
+                    "HERMES_KANBAN_MAX_SPAWN_DEPTH=%d below floor %d; using %d",
+                    ival, _KANBAN_MIN_SPAWN_DEPTH, _KANBAN_MIN_SPAWN_DEPTH,
+                )
+            return max(_KANBAN_MIN_SPAWN_DEPTH, ival)
+        except (TypeError, ValueError):
+            pass  # an env value that fails to parse is silently ignored
+    return _KANBAN_DEFAULT_SPAWN_DEPTH
+
 
 # --- Gating ---
 
@@ -1137,6 +1182,27 @@ def _handle_create(args: dict, **kw) -> str:
         self_tid = (os.environ.get("HERMES_KANBAN_TASK")
                     if _is_dispatcher_owned_worker() else None)
         self_task = kb.get_task(conn, self_tid) if self_tid else None
+        # Divide-and-conquer Phase 1: a dispatcher-spawned worker may fan out, but the
+        # new card's parent-chain depth (1 + max parent depth, task_links edges) is
+        # capped by kanban.max_spawn_depth. Non-worker callers (orchestrators, CLI,
+        # humans) route the tree at their own level and are not capped. Unknown
+        # parents contribute no depth here; ``create_task`` refuses them outright.
+        if self_tid is not None and parents:
+            cap = _get_max_spawn_depth()
+            known = [kb.task_depth(conn, p) for p in parents]
+            child_depth = max(d for d in known if d is not None) + 1 \
+                if any(d is not None for d in known) else 0
+            if child_depth > cap:
+                raise _Reject(
+                    f"kanban_create refused: the new card would sit at depth {child_depth}, "
+                    f"above the cap kanban.max_spawn_depth={cap} (a root card is depth 0; a "
+                    f"worker on a depth-N card may spawn children up to depth N+1 within the "
+                    f"cap). Raise kanban.max_spawn_depth in config.yaml, or set "
+                    f"HERMES_KANBAN_MAX_SPAWN_DEPTH, if deeper nesting is required — each "
+                    f"extra level multiplies dispatched-worker cost. Flatten instead: create "
+                    f"the card with shallower parents, complete your card, and let the "
+                    f"orchestrator divide the next level."
+                )
         # The worker/API runtime may be transient; the owning task's origin is durable.
         # The ambient id is the request-scoped ContextVar binding, not the process-global
         # os.environ: in a multi-session gateway the env holds the LAST agent built, and an

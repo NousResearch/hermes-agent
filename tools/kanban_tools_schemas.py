@@ -413,7 +413,11 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "until every parent reaches 'done'; then it "
                 "auto-promotes to 'ready'. Typical fan-in: list "
                 "all the researcher task ids when creating a "
-                "synthesizer task."
+                "synthesizer task. A dispatcher-spawned worker's "
+                "fan-out is depth-capped: the new card sits at 1 + "
+                "max(parent depth), and cards deeper than "
+                "kanban.max_spawn_depth (default 1, flat fan-out) "
+                "are refused."
             ),
         },
         "tenant": _prop("string", (

@@ -1641,6 +1641,36 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
     return _linked_ids(conn, "child_id", "parent_id", task_id)
 
 
+# Ceiling for the depth walk: graph builders (``link_tasks``, decompose) reject cycles,
+# so a cyclic edge can only come from a corrupt board. The walk fails closed at the
+# ceiling — a depth-capped caller rejects — instead of recursing forever.
+_DEPTH_CEILING = 64
+
+
+def task_depth(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
+    """Longest parent chain above ``task_id``: a root card (no parents) is depth 0,
+    a card's depth is 1 + max(parent depth) — fan-in measures the deepest parent.
+    Returns ``None`` for a missing task. Cycle-safe via a visiting set: a raw cyclic
+    edge (corrupt board) stops at ``_DEPTH_CEILING``, never hangs.
+    """
+    if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is None:
+        return None
+    memo: dict[str, int] = {}
+
+    def depth(node: str, visiting: frozenset[str]) -> int:
+        if node in memo:
+            return memo[node]
+        if node in visiting:
+            return _DEPTH_CEILING
+        d = 0
+        for parent in _linked_ids(conn, "parent_id", "child_id", node):
+            d = max(d, 1 + depth(parent, visiting | {node}))
+        memo[node] = min(d, _DEPTH_CEILING)
+        return memo[node]
+
+    return depth(task_id, frozenset())
+
+
 def task_graph_contexts(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, dict]:
     """Bulk-load compact direct graph state for graph-aware diagnostics."""
     ordered_ids = list(dict.fromkeys(str(task_id) for task_id in task_ids if task_id))

@@ -36,9 +36,6 @@ from tools.tool_output_truncate import head_tail_split, truncation_notice
 
 logger = logging.getLogger(__name__)
 
-# Loopback TCP replaces AF_UNIX on Windows, so execute_code runs on every platform Hermes does.
-SANDBOX_AVAILABLE = True
-
 # Tools allowed inside the sandbox; ∩ the session's enabled tools decides which stubs are generated.
 SANDBOX_ALLOWED_TOOLS = frozenset([
     "web_search", "web_extract", "read_file", "write_file", "search_files", "patch", "terminal",
@@ -113,8 +110,6 @@ def _spill_full_stdout(stdout_text: str, env: Any = None) -> Optional[str]:
 
 def check_sandbox_requirements() -> bool:
     """check_fn: available unless the vercel_sandbox backend fails its own checks."""
-    if not SANDBOX_AVAILABLE:
-        return False
     try:
         from tools.terminal_tool import _get_env_config
         from tools.terminal_tool_backends import _check_vercel_sandbox_requirements
@@ -744,9 +739,6 @@ def execute_code(
     the security envelope (env scrubbing, tool whitelist + call budget, output redaction), not an
     isolation jail: default `project` mode runs in the session's cwd with the project venv.
     ``enabled_tools`` ∩ SANDBOX_ALLOWED_TOOLS; ``reset`` kills the existing kernel first."""
-    if not SANDBOX_AVAILABLE:
-        return tool_error("execute_code sandbox is unavailable in this environment. "
-                          "Use normal tool calls (terminal, read_file, write_file, ...) instead.")
     # Fail closed under a terminal-policy refusal scope: the routed profile's terminal
     # policy is unresolved, so refuse rather than inherit the launch process's ambient policy.
     try:
@@ -759,8 +751,6 @@ def execute_code(
     if not code or not code.strip():
         return tool_error("No code provided. execute_code requires a non-empty 'code' "
                           "parameter containing Python source. To run shell commands, use terminal(command=...) instead.")
-    # Hard-block gateway-lifecycle commands (mirrors the terminal_tool guard — otherwise
-    # `os.system("launchctl bootout ...")` here bypasses it and SIGTERMs the gateway mid-task).
     # Gated on PID-file ownership, not the inherited env marker.
     # Hard-block gateway-lifecycle commands, mirroring the terminal_tool guard (#68289): without this,
     # execute_code is a straight bypass — the terminal() path refuses `launchctl bootout ai.hermes.gateway`,

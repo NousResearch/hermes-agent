@@ -1625,12 +1625,12 @@ def _iter_shell_command_word_spans(command: str):
 
 
 def _shell_command_segment(command: str, start: int) -> str:
-    """Bound a candidate to its command, preserving quoted argument bytes. The ``&`` of a ``2>&1``,
-    ``<&3`` or ``&>`` redirection is part of the command, not a separator."""
+    """Bound a candidate to its command, preserving quoted argument bytes. The ``&``/``|`` of a ``2>&1``,
+    ``<&3``, ``>|`` or ``&>`` redirection is part of the command, not a separator."""
     end = len(command)
     redirect_end = -1  # end of an unquoted, unescaped `<`/`>` (a quoted or escaped one is a literal)
     for kind, i, j, quote in _scan_shell(command, start, subst="uq", brace=True, comments=True):
-        if kind == "char" and quote is None and command[i] == "&" and (redirect_end == i or command.startswith(">", j)):
+        if kind == "char" and quote is None and ((command[i] == "&" and (redirect_end == i or command.startswith(">", j))) or (command[i] == "|" and redirect_end == i and command[i - 1] == ">")):
             continue
         redirect_end = j if kind == "char" and quote is None and command[i] in "<>" else -1
         if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n)`"):

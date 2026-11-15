@@ -217,14 +217,18 @@ def _osascript_program(args: str, value_options: tuple[str, ...]) -> tuple[str, 
     redirect, ``-i`` (interactive), a heredoc whose delimiter cannot be read, or unparseable quoting.
     ``jxa`` is True for any ``-l`` language other than AppleScript. ``heredoc`` is
     ``(delimiter, quoted, strip_tabs)``."""
-    from tools.approval_detection import _shell_segment_tokens
+    from tools.approval_detection import _scan_shell, _shell_segment_tokens
 
     tokens = _shell_segment_tokens(args, 0)
     if tokens is None:
         return "", True, False, None
     pieces: list[str] = []
     heredoc = None
-    jxa = opaque = False
+    jxa = False
+    # shlex loses quoting and splits an fd prefix into an operand; inspect real input operators.
+    opaque = any(kind == "char" and quote is None and args[i] == "<"
+                 and not args.startswith("<<", i) and args[i - 1:i] != "<"
+                 for kind, i, _, quote in _scan_shell(args))
     i = 0
     while i < len(tokens):
         token = tokens[i]
@@ -235,7 +239,7 @@ def _osascript_program(args: str, value_options: tuple[str, ...]) -> tuple[str, 
             i += 1
             continue
         if token in (">", ">>", ">|", ">&") or ((token.isdigit() or token == "&") and nxt.startswith(">")):
-            i += 2 if token.startswith(">") else 1  # `2>x` / `&>x` reach here as `2` / `&`, then `>`
+            i += (3 if nxt in ("&", "|") else 2) if token.startswith(">") else 1  # split operator + target
             continue
         if token == "<<<":
             pieces.append(nxt)

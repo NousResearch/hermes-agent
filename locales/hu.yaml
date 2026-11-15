@@ -440,8 +440,10 @@ gateway:
     hint_all: "A /context all parancs skillenkénti és eszközkészletenkénti költségeket is mutat."
     cache_warm: "Prompt-gyorsítótár: aktív {until}-ig (még {remaining}; {ttl}, {confidence})."
     cache_expired: "Prompt-gyorsítótár: {ago} óta lejárt ({ttl}, {confidence}); a következő üzenet újra feldolgozza a teljes promptot."
+    cache_maybe_warm: "Prompt-gyorsítótár: {until}-ig még meleg lehet (legfeljebb még {remaining}; {ttl}, {confidence})."
     cache_unknown_moved: "Prompt-gyorsítótár: ismeretlen (az útvonal, a munkamenet vagy a kontextus megváltozott az utolsó gyorsítótárazott kérés óta)."
     cache_unknown_route: "Prompt-gyorsítótár: ismeretlen (ez a szolgáltató nem teszi közzé a gyorsítótár megőrzési idejét)."
+    cache_unknown_runtime: "Prompt-gyorsítótár: ismeretlen (ez a futtatókörnyezet saját gyorsítótár-beállításokat használ, amelyeket a Hermes nem lát)."
     cache_confidence:
       proven: "igazolt"
       declared: "kért"

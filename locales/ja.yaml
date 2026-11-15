@@ -437,8 +437,10 @@ gateway:
     hint_all: "スキル別・ツールセット別のコストを見るには /context all を使ってください。"
     cache_warm: "プロンプトキャッシュ: {until} まで有効 (残り {remaining}、{ttl}、{confidence})。"
     cache_expired: "プロンプトキャッシュ: {ago} 前に失効 ({ttl}、{confidence})。次のメッセージでプロンプト全体が再処理されます。"
+    cache_maybe_warm: "プロンプトキャッシュ: {until} まで有効な可能性あり (最大で残り {remaining}、{ttl}、{confidence})。"
     cache_unknown_moved: "プロンプトキャッシュ: 不明 (最後のキャッシュ済みリクエスト以降にルート、セッション、またはコンテキストが変わりました)。"
     cache_unknown_route: "プロンプトキャッシュ: 不明 (このプロバイダーはキャッシュ保持期間を公開していません)。"
+    cache_unknown_runtime: "プロンプトキャッシュ: 不明 (このランタイムは独自のキャッシュ設定を使い、Hermes からは観測できません)。"
     cache_confidence:
       proven: "実証済み"
       declared: "申告"

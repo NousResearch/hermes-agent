@@ -23,6 +23,7 @@ class _Response:
     def __init__(self, outcome):
         self.outcome = outcome
         self.closed = False
+        self.status = outcome.status if isinstance(outcome, aiohttp.ClientResponseError) else 200
         self.headers = {}
         self.content = _Content(outcome)
 
@@ -47,7 +48,7 @@ class _Session:
         self.responses = [_Response(outcome) for outcome in outcomes]
         self.calls = 0
 
-    def get(self, _url):
+    def get(self, _url, **_kwargs):
         if self.calls:
             assert self.responses[self.calls - 1].closed
         result = self.responses[self.calls]

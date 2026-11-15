@@ -362,7 +362,14 @@ def _rich_send_result(rich, chat_id, outcome) -> dict:
         warnings = ["Message was longer than the Telegram split cap; sent it as a file"] if as_file else None
         return _success(chat_id, warnings, message_id=rich.message_id)
     raw = rich.raw_response if isinstance(rich.raw_response, dict) else {}
-    return outcome.failure(_error(f"Telegram send failed: {rich.error}"),
+    # Earlier rich parts can already be visible when the final part fails before connecting.
+    # Preserve their receipts; retrying the entire cron payload would duplicate that prefix.
+    if raw.get("partial_overflow"):
+        outcome.landed(raw.get("last_message_id") or rich.message_id)
+    error = _error(f"Telegram send failed: {rich.error}")
+    if raw.get("delivered_message_ids"):
+        error["delivered_message_ids"] = raw["delivered_message_ids"]
+    return outcome.failure(error,
                            never_sent=raw.get("never_sent") is True, never_left=raw.get("never_left") is True)
 
 

@@ -127,3 +127,23 @@ def test_a_refusal_through_the_real_telegram_sender_is_not_parked(monkeypatch):
     sd._deliver_standalone(_target(), "morning brief", [], [], errors)
     assert errors and not any("queued" in e for e in errors)
     assert dl.sweep_failed_for_runtime("telegram") == []
+
+
+def test_rich_parts_connect_failure_after_landed_prefix_must_not_queue_full_replay(monkeypatch):
+    """A later unsent rich part cannot erase a previously delivered part's receipt."""
+    from gateway.platforms.base import SendResult
+    from plugins.platforms.telegram.rich_parts import _partial_failure
+    from plugins.platforms.telegram.standalone import _rich_send_result
+
+    landed = SendResult(success=True, message_id="41")
+    unsent = SendResult(success=False, error="httpx.ConnectError", retryable=True,
+                        raw_response={"never_sent": True, "never_left": True})
+    rich = _partial_failure(unsent, [landed], total=2, rest=["tail"])
+    assert rich.raw_response["partial_overflow"] and rich.raw_response["never_left"]
+    result = _rich_send_result(rich, "12345", DeliveryOutcome())
+    assert delivery_state(result) == PARTIAL
+    assert result["delivered_message_ids"] == ["41"]
+    assert not standalone_never_left(result)
+    errors = _standalone_only(monkeypatch, result)
+    assert not any("queued text" in error for error in errors)
+    assert dl.sweep_failed_for_runtime("telegram") == []

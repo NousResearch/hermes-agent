@@ -12,6 +12,7 @@ from unittest.mock import patch
 from tests.tools.test_delegate_auto_resume import _AlwaysLimited, _enable, _repo, _scheduler
 from tests.tools.test_delegate_continue import _parent, _ScriptedModel
 from tests.tools.test_delegate_resumable import _db_rows
+from tests.tools.test_delegate_resumable_pins import _store_path
 from tests.waiting import wait_until
 from tools.process_registry import process_registry
 
@@ -28,7 +29,7 @@ def _events(delegation_id):
 
 def _ledger(parent, delegation_id):
     import sqlite3
-    conn = sqlite3.connect(parent._session_db.db_path)  # health: allow HX015 -- test reads a temp-home store
+    conn = sqlite3.connect(_store_path(parent))  # health: allow HX015 -- test reads a temp-home store
     try:
         return conn.execute("SELECT state, delivery_state FROM async_delegations WHERE delegation_id=?",
                             (delegation_id,)).fetchone()
@@ -107,7 +108,7 @@ def test_a_crash_during_the_last_attempt_reports_the_give_up_once_not_outcome_un
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
     dead = 2 ** 22 + 7  # the last automatic run died with its process: both rows still read as running
-    conn = sqlite3.connect(parent._session_db.db_path)  # health: allow HX015 -- test seeds a temp-home store
+    conn = sqlite3.connect(_store_path(parent))  # health: allow HX015 -- test seeds a temp-home store
     with conn:
         conn.execute("UPDATE resumable_subagents SET state='running', owner_pid=?, record_json=json_set(record_json, "
                      "'$.auto_attempts', ?, '$.auto_promised', json('false'), '$.owner_pid', ?) WHERE subagent_id=?",
@@ -243,7 +244,7 @@ def test_a_give_up_interrupted_before_its_commit_reports_once_on_a_later_tick(tm
 # ── a promised child is owed its one report whatever config, TTL or retention caps do ────────────────────────────
 def _sql(parent, sql, params=()):
     import sqlite3
-    conn = sqlite3.connect(parent._session_db.db_path)  # health: allow HX015 -- test seeds a temp-home store
+    conn = sqlite3.connect(_store_path(parent))  # health: allow HX015 -- test seeds a temp-home store
     try:
         with conn:
             return conn.execute(sql, params).fetchall()
@@ -300,7 +301,7 @@ def test_retention_limits_never_eat_a_waiting_childs_report(tmp_path):
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
     now = time.time()
-    conn = sqlite3.connect(parent._session_db.db_path)  # health: allow HX015 -- test seeds a temp-home store
+    conn = sqlite3.connect(_store_path(parent))  # health: allow HX015 -- test seeds a temp-home store
     with conn:  # rows the count cap may not delete must not count against it either
         for i in range(_MAX_RETAINED_COMPLETED):
             conn.execute("INSERT INTO async_delegations (delegation_id, origin_session, state, dispatched_at, "
@@ -315,7 +316,7 @@ def test_retention_limits_never_eat_a_waiting_childs_report(tmp_path):
     _prune_durable_records()
     assert _ledger(parent, "fresh-pending") is not None and _ledger(parent, unit) is not None
     _sql(parent, "UPDATE resumable_subagents SET expires_at=? WHERE subagent_id=?", (time.time() - 1, sid))
-    _write(Path(parent._session_db.db_path), _apply_limits)  # TTL passed: the record moves to expired
+    _write(Path(_store_path(parent)), _apply_limits)  # TTL passed: the record moves to expired
     assert _db_rows(parent)[sid][0] == "expired"
     for _ in range(3):
         tick(lambda *args: None, capacity=3, now=time.time() + 60)
@@ -327,7 +328,7 @@ def _expire(parent, sid):
     from pathlib import Path
     from tools.delegate_tool_resumable import _apply_limits, _write
     _sql(parent, "UPDATE resumable_subagents SET expires_at=? WHERE subagent_id=?", (time.time() - 1, sid))
-    _write(Path(parent._session_db.db_path), _apply_limits)
+    _write(Path(_store_path(parent)), _apply_limits)
 
 
 def _cancelled_then_expired(tmp_path, cancel, *, expire_first):
@@ -399,7 +400,7 @@ def test_a_disabled_tick_with_nothing_owed_never_writes_the_store(tmp_path):
     sid, unit = _silent_stop(tmp_path, parent)
     _stop(parent, sid)  # its debt is cleared: nothing owed
     _turn_off()
-    with _no_commits(parent._session_db.db_path):
+    with _no_commits(_store_path(parent)):
         for _ in range(5):
             assert tick(_scheduler(parent, []), capacity=3) == []
     assert _events(unit) == []
@@ -534,7 +535,7 @@ def test_an_expired_record_without_auto_resume_fields_is_still_deleted():
     parent = _parent()
     _sql(parent, "INSERT INTO resumable_subagents (subagent_id,state,pinned,record_json,created_at,updated_at,"
                  "expires_at) VALUES ('legacy','expired',0,'{}',1,1,1)")
-    _write(Path(parent._session_db.db_path), _apply_limits)
+    _write(Path(_store_path(parent)), _apply_limits)
     assert _sql(parent, "SELECT subagent_id FROM resumable_subagents WHERE subagent_id='legacy'") == []
 
 

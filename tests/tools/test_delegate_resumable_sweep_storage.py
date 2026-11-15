@@ -15,7 +15,7 @@ import pytest
 
 from tests.tools.test_delegate_continue import _completion, _parent
 from tests.tools.test_delegate_resumable import _db_rows, _FailingModel, _forget_process_state, _git
-from tests.tools.test_delegate_resumable_pins import _backdate, _repo, _run
+from tests.tools.test_delegate_resumable_pins import _backdate, _repo, _run, _store_path
 
 
 def _tree(repo, name, *, dirty):
@@ -108,7 +108,7 @@ def test_the_record_keeps_no_endpoint_credential_and_still_refuses_a_changed_end
         _completion(out["delegation_id"])
         sid = out["subagent_ids"][0]
         assert model.builds[0]["base_url"] == secret_url
-        with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
+        with sqlite3.connect(_store_path(parent)) as conn:  # health: allow HX015 -- temp-home store
             raw = conn.execute("SELECT record_json FROM resumable_subagents WHERE subagent_id=?", (sid,)).fetchone()[0]
         assert "FIXTURE" not in raw and "llm.invalid" not in raw, raw
 

@@ -32,6 +32,14 @@ def _repo(path):
     return path
 
 
+def _store_path(parent):
+    """The ``state.db`` of the profile the parent's storage handle opened."""
+    from persistence_assembly import store_location
+    path = store_location(parent.persistence.scope)
+    assert path is not None
+    return path
+
+
 def _run(parent, sid):
     child = SimpleNamespace(session_id="child", model="m", _parent_session_id=parent.session_id,
                             _delegate_resume={"goal": "g", "route": SimpleNamespace(request={})})
@@ -139,7 +147,7 @@ def test_boot_recovery_names_the_continuable_children_on_the_row_that_reports_th
         units = [u["delegation_id"] for u in out["units"]] if independent else [out["delegation_id"]]
         assert len(units) == (2 if independent else 1), out
         _completions(units)
-    with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
+    with sqlite3.connect(_store_path(parent)) as conn:  # health: allow HX015 -- temp-home store
         # The owner died before either ledger row turned terminal.
         conn.execute("UPDATE async_delegations SET state='running', owner_pid=?, owner_started_at=NULL, "
                      "result_json=NULL", (_DEAD_PID,))
@@ -151,7 +159,7 @@ def test_boot_recovery_names_the_continuable_children_on_the_row_that_reports_th
 
     assert ad.recover_abandoned_delegations() == len(units)
 
-    with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
+    with sqlite3.connect(_store_path(parent)) as conn:  # health: allow HX015 -- temp-home store
         events = {d: json.loads(raw) for d, raw in conn.execute("SELECT delegation_id, event_json FROM async_delegations")}
     named = sorted(sid for evt in events.values() for sid in evt.get("resumable_subagent_ids") or ())
     assert all(events[u].get("resumable_subagent_ids") for u in units), events

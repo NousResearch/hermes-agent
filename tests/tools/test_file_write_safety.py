@@ -1161,3 +1161,54 @@ def test_config_hard_block_follows_file_identity_not_spelling(tmp_path):
         reset_hermes_home_override(tok)
     assert err is not None and "Refusing to write to Hermes config file" in err
     assert other is None
+
+class TestPseudoFilesystemWriteGuard:
+    """Regression for #156063: refuse mutating device and kernel paths before I/O."""
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize(
+        "path",
+        (
+            "/dev/null",
+            "/dev/zero",
+            "/proc/sysrq-trigger",
+            "/proc/sys/vm/drop_caches",
+            "/sys/kernel/debug",
+        ),
+    )
+    def test_both_file_write_guards_deny_pseudo_files(self, path):
+        from agent.file_safety import get_write_denied_error
+        from tools.file_tools_write_guards import _check_sensitive_path
+
+        assert _check_sensitive_path(path) is not None
+        assert _is_write_denied(path)
+        assert "device or kernel pseudo-filesystem" in (get_write_denied_error(path) or "")
+
+    @pytest.mark.platforms("posix")
+    def test_all_mutators_reject_device_symlink_before_backend_io(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+
+        alias = tmp_path / "device-alias"
+        alias.symlink_to("/dev/null")
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+        def no_io(*args, **kwargs):
+            pytest.fail("a rejected path reached backend I/O")
+
+        for name in ("_atomic_write", "_read_exact_bytes", "_exec_python_snippet", "_exec"):
+            monkeypatch.setattr(ops, name, no_io)
+
+        safe = str(tmp_path / "regular.txt")
+        actions = (
+            lambda: ops.write_file(str(alias), "test"),
+            lambda: ops.patch_replace(str(alias), "old", "new"),
+            lambda: ops.delete_file(str(alias)),
+            lambda: ops.move_file(str(alias), safe),
+            lambda: ops.move_file(safe, str(alias)),
+        )
+        for action in actions:
+            result = action()
+            assert "device or kernel pseudo-filesystem" in (result.error or "")

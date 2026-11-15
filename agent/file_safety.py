@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import posixpath
 import re
 import socket
 from contextlib import suppress
@@ -93,6 +94,21 @@ def deny_path_under(resolved: str | Path, base: str | Path) -> bool:
     """``_is_under`` for deny lists: ``resolved`` equals ``base`` or lies below it, compared by ``deny_key``."""
     target, root = deny_key(resolved), deny_key(base)
     return target == root or target.startswith(root.rstrip(os.sep) + os.sep)
+
+
+_PSEUDO_FILESYSTEM_WRITE_ROOTS = ("/dev", "/proc", "/sys")
+
+
+def is_pseudo_filesystem_write_path(path: str) -> bool:
+    """True for a /dev, /proc or /sys mutation target (no filesystem I/O)."""
+    raw = str(path)
+    if not raw.startswith("/"):
+        return False
+    normalized = deny_key("/" + posixpath.normpath(raw).lstrip("/"))
+    return any(
+        normalized == deny_key(root) or normalized.startswith(deny_key(root) + "/")
+        for root in _PSEUDO_FILESYSTEM_WRITE_ROOTS
+    )
 
 
 def _is_under(resolved: str | Path, base: str | Path) -> bool:
@@ -361,7 +377,7 @@ def _approval_paths_by_key(home: str) -> dict[str, str]:
 
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
-    """Return ``'credential'``, ``'safe_root'``, ``'nt_namespace'``, or ``None`` if writes are allowed.
+    """Return a credential, safe-root, device, or NT-namespace denial, else None.
 
     ``entry=True`` is for ops that unlink/rename the directory entry itself (a
     symlink, not its target): the entry — parent realpath'd, final component
@@ -372,6 +388,8 @@ def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
     if is_nt_namespace_path(path):
         return "nt_namespace"
     path = local_drive_spelling(path)
+    if is_pseudo_filesystem_write_path(os.path.expanduser(path)):
+        return "device"
     homes, resolved = _homes_and_resolved(path)
 
     # The runtime's own interpreter/venv is never agent-writable (an overwrite
@@ -393,6 +411,8 @@ def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
 
 def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[str]:
     """Credential / protected-subpath / safe-root verdict for an already-resolved path."""
+    if is_pseudo_filesystem_write_path(resolved):
+        return "device"
     # Only ``~/.ssh/config`` skips the credential deny (so the ``.ssh/`` prefix doesn't swallow it)
     # and reaches the approval prompt. Shell rc files need no exemption, and granting one would let
     # ``~/.bashrc`` -> ``~/.ssh/authorized_keys`` turn the credential deny into a shell_rc_write
@@ -436,6 +456,8 @@ def get_write_denied_error(path: str, *, verb: str = "Write", entry: bool = Fals
         )
     if denial == "nt_namespace":
         return get_nt_namespace_error(path, verb=verb)
+    if denial == "device":
+        return f"{verb} denied: '{path}' is a device or kernel pseudo-filesystem path."
     return f"{verb} denied: '{path}' is a protected system/credential file." if denial else None
 
 

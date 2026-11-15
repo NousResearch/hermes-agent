@@ -47,6 +47,16 @@ class TestCredentialStoreReads:
         assert "machine api.example.com login bob password" in output
         assert self.WEAK not in output
 
+    @pytest.mark.parametrize("command", [
+        r"gc ~\_netrc",
+        r"GC -Raw ~\_netrc",
+        r"Get-Content -Path:~\_netrc",
+        r"Get-Content -LiteralPath:'C:\Users\bob\_netrc'",
+    ])
+    def test_powershell_alias_and_colon_bound_path_mask_netrc_password(self, command):
+        text = f"machine api.example.com login bob password {self.WEAK}\n"
+        assert self.WEAK not in redact_terminal_output(text, command, force=True)
+
     @pytest.mark.parametrize("path, body", [
         ("~/.netrc", 'machine h login bob password "a b {pw}"\n'),
         ("~/_netrc", "machine h login bob password {pw}\n"),

@@ -1727,8 +1727,11 @@ _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 # ``config.yaml`` / source files stay on the code_file path (``MAX_TOKENS: 100``).
 _FILE_READ_COMMANDS = frozenset({
     "cat", "head", "tail", "type", "bat", "less", "more", "nl",
-    "zcat", "tac", "view", "batcat", "grep", "awk", "sed", "get-content",
+    "zcat", "tac", "view", "batcat", "grep", "awk", "sed", "get-content", "gc",
 })
+# PowerShell binds a parameter value with a colon: ``Get-Content -Path:~\_netrc`` (also via the
+# ``cat``/``type``/``gc`` aliases). Not applied to the pattern-first filters, whose positional count matters.
+_PS_COLON_PARAM_RE = re.compile(r"-[A-Za-z]+:(.+)")
 _SHELL_RC_BASENAMES = frozenset({
     ".bashrc", ".bash_profile", ".bash_login", ".profile",
     ".zshrc", ".zprofile", ".zlogin", ".zshenv",
@@ -1788,7 +1791,12 @@ def _command_reads_secret_file(command: str | None) -> bool:
         reader = tokens[0].rsplit("/", 1)[-1].lower()
         if reader not in _FILE_READ_COMMANDS:
             continue
-        positional = [arg for arg in tokens[1:] if not arg.startswith("-")]
+        positional = [
+            arg if not arg.startswith("-") else m.group(1)
+            for arg in tokens[1:]
+            if not arg.startswith("-")
+            or (reader not in _PATTERN_FIRST_COMMANDS and (m := _PS_COLON_PARAM_RE.fullmatch(arg)))
+        ]
         if reader in _PATTERN_FIRST_COMMANDS:
             positional = positional[1:]
         if any(_is_secret_file_arg(arg) for arg in positional):

@@ -155,12 +155,19 @@ class TestProtectedSkillPrune:
         assert SKILL_PRUNED_MARKER_PREFIX not in skill_row["content"]
 
     def test_pressure_demotion_overrides_skill_protection(self):
-        """Pass-4 must still demote protected skill bodies (#61932 guard)."""
+        """Pass-4 must still demote protected skill bodies (#61932 guard).
+
+        The round is settled by an assistant answer: an *unread* skill_view round is spared instead
+        (the #137105 protection), which is a different path from the skill guard this test pins.
+        """
         c = _make_compressor()
         msgs = (
             self._filler(2)
             + _skill_view_pair("call_s", "fresh-skill", size=60000)
-            + [{"role": "user", "content": "active ask"}]
+            + [
+                {"role": "assistant", "content": "Read the skill."},
+                {"role": "user", "content": "active ask"},
+            ]
         )
         # Tiny token budget → protected region exceeds the soft ceiling and
         # the pressure pass must reclaim the skill body despite protection.

@@ -3117,6 +3117,27 @@ class ContextCompressor(
         result[idx] = {**msg, "content": _summarize_tool_result(tool_name, tool_args, content)}
         return True
 
+    @staticmethod
+    def _demote_unread_at(
+        result: list[dict[str, Any]], idx: int, call_id_to_tool: dict[str, tuple[str, str]],
+        min_prune_chars: int,
+    ) -> bool:
+        """Like ``_demote_tool_result_at`` but keeps a head/tail excerpt: the row is output the model has
+        not read yet, so a one-line stub makes it answer blind or re-run the call (#137105)."""
+        msg = result[idx]
+        if msg.get("role") != "tool":
+            return False
+        content = msg.get("content", "")
+        if (
+            not isinstance(content, str) or not content or content == _PRUNED_TOOL_PLACEHOLDER
+            or content.startswith(("[Duplicate tool output", "[screenshot removed"))
+            or _is_summary_stub(content) or len(content) <= min_prune_chars
+        ):
+            return False
+        tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
+        result[idx] = {**msg, "content": _pending_round_demoted_stub(tool_name, tool_args, content)}
+        return True
+
     def _tail_soft_ceiling(self, token_budget: int) -> int:
         """Optional tail rows may overrun the budget by 1.5x so whole rows are kept, but never past
         ``TAIL_MAX_CONTEXT_FRACTION`` of the window — on a small window the overrun alone was a third
@@ -3138,6 +3159,9 @@ class ContextCompressor(
         soft_ceiling = self._tail_soft_ceiling(protect_tail_tokens)
         demote_end = len(result) - min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
         start = max(0, prune_boundary)
+        # Every row of the round the model has not read yet, hard-share or not: when the round is too big to
+        # spare, each of its results still gets an excerpt rather than a one-line stub (kvnloo on #156097).
+        pending_round = _pending_tool_round(result)
 
         def _protected_region_tokens() -> int:
             return sum(_estimate_msg_budget_tokens(result[i]) for i in range(start, len(result)))
@@ -3148,28 +3172,21 @@ class ContextCompressor(
             nonlocal demoted
             if i in spared:
                 return
-            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
-                demoted += 1
+            # An unread row keeps a head/tail excerpt: a one-line stub for output the model never saw
+            # invites the same blind answer or re-run this PR exists to stop (#137105, kvnloo on #156097).
+            if i in pending_round:
+                demoted += self._demote_unread_at(result, i, call_id_to_tool, min_prune_chars)
+            else:
+                demoted += self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars)
 
         def _shrink_unread(round_indices: range) -> None:
-            """Demote an unread round that cannot be spared: keep a head/tail excerpt so the model can see what
-            it lost and page the rest, instead of a 1-line stub that makes it re-run the call (#137105)."""
+            """Demote unread rows that cannot be spared, each keeping a head/tail excerpt (#137105)."""
             nonlocal demoted
             for i in round_indices:
-                if i in spared:
+                if i in spared or i not in pending_round:
                     continue
-                msg = result[i]
-                content = msg.get("content", "")
-                if msg.get("role") != "tool" or not isinstance(content, str) or not content:
-                    continue
-                if (
-                    content == _PRUNED_TOOL_PLACEHOLDER or _is_summary_stub(content)
-                    or len(content) <= min_prune_chars
-                ):
-                    continue
-                tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
-                result[i] = {**msg, "content": _pending_round_demoted_stub(tool_name, tool_args, content)}
-                demoted += 1
+                if self._demote_unread_at(result, i, call_id_to_tool, min_prune_chars):
+                    demoted += 1
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
             return 0
@@ -3183,12 +3200,21 @@ class ContextCompressor(
             for i in (i for i in range(start, len(result)) if i != last_tool_idx):
                 _shrink_at(i)
             # Last resort, unless it is the spared pending round: the newest body may exceed the soft budget
-            # alone (one 200KB read); keep a head/tail excerpt of it so the model can page it (#137105).
+            # alone (one 200KB read) and must still give way. An unread row keeps a head/tail excerpt so the
+            # model can page it; any other row takes the plain one-line stub (#137105).
             if (
                 last_tool_idx is not None and last_tool_idx not in spared and last_tool_idx >= prune_boundary
                 and _protected_region_tokens() > soft_ceiling
             ):
-                _shrink_unread(range(last_tool_idx, last_tool_idx + 1))
+                if not self._demote_unread_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
+                    if self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
+                        demoted += 1
+                else:
+                    demoted += 1
+                # A parallel round's earlier rows keep their excerpts through _shrink_at above; anything
+                # still over budget has not been read either (kvnloo on #156097).
+                if _protected_region_tokens() > soft_ceiling:
+                    _shrink_unread(pending_round)
         if demoted and not self.quiet_mode:
             logger.info(
                 "Pre-compression pressure demotion: reclaimed protected-tail tool output (%d change(s); "

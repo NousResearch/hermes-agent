@@ -431,9 +431,11 @@ def _moa_destination(agent: Any) -> tuple[Optional[dict], Optional[dict]]:
 
 
 def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, base_url: str,
-                          api_mode: str) -> Optional[CacheEvent]:
+                          api_mode: str, attempt: Optional[dict[str, Any]] = None) -> Optional[CacheEvent]:
     """Fold one response into the clock. ``model``/``provider``/``base_url``/``api_mode`` are the
     request's destination; a MoA client's resolved aggregator route and payload win over them.
+    ``attempt`` (:func:`attempt_facts`) is for a request sent outside the loop (a keep-alive),
+    which must not overwrite the loop's own stamped attempt.
     Returns the new event, or None when the response touched no cache (the previous window stands)."""
     read, write = int(getattr(usage, "cache_read_tokens", 0) or 0), int(getattr(usage, "cache_write_tokens", 0) or 0)
     if read + write <= 0:
@@ -444,7 +446,7 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
         base_url, api_mode = moa_route.get("base_url") or "", moa_route.get("api_mode") or ""
     generation = _agent_generation(agent)
     previous = _valid_previous(agent, generation)
-    attempt = moa_attempt or getattr(agent, "_prompt_cache_attempt", None) or {}
+    attempt = moa_attempt or attempt or getattr(agent, "_prompt_cache_attempt", None) or {}
     ctx = _Ctx(
         route_class=classify_route(provider=provider, base_url=base_url, api_mode=api_mode or "", model=model or "",
                                    has_markers=attempt.get("marker_ttl") is not None,

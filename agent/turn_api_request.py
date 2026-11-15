@@ -124,9 +124,6 @@ def build_request_payload(
 
     # The real request about to go out refreshes the cache entry itself.
     cancel_prompt_cache_warming(agent, "new request in flight")
-    # This attempt's send time: a retried request's cache entry dates from here, not from the
-    # start of the retry loop (the warmer schedules its first refresh from it).
-    agent._last_api_attempt_sent_at = time.time()
     agent._reset_stream_delivery_tracking()
     # Per-attempt first-chunk timestamp so a stale value never leaks into post_api_request.
     agent._last_api_first_chunk_at = None

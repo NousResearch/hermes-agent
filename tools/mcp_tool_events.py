@@ -471,7 +471,8 @@ def _make_events_handler(op: str, label: str, rpc, *, needs_name: bool = True, n
                 server_name, server, op, _call, tool_timeout,
                 (_handlers._handle_auth_error_and_retry, _handlers._handle_session_expired_and_retry),
                 lambda exc: logger.error("MCP %s/%s failed: %s", server_name, label, exc))
-        return _handler
+        from tools.mcp_tool_project_scope import leased_handler
+        return leased_handler(_handler)
     return _factory
 
 

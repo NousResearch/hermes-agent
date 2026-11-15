@@ -392,11 +392,15 @@ def _mcp_loop_running() -> bool:
 
 
 def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
-    """The registered server object when it can be signalled to reconnect, else None.
-    With *require_loop*, also None unless the MCP loop is running (nothing to wait on)."""
+    """The server object this call used (the caller's project clone, else the baseline) when it can
+    be signalled to reconnect, else None. With *require_loop*, also None unless the MCP loop is
+    running (nothing to wait on). Same thread as the failed call, so it resolves the same project."""
+    from tools import mcp_tool_project_scope as _project_scope
     from tools.mcp_tool_scope import _resolve_server_key
     with _core._lock:
-        srv = _core._servers.get(_resolve_server_key(server_name))
+        key = _resolve_server_key(server_name)
+        srv = _core._servers.get(key)
+    srv = _project_scope._server_for_call(server_name, key, srv, connect=False)
     ok = srv is not None and hasattr(srv, "_reconnect_event") and (_mcp_loop_running() or not require_loop)
     return srv if ok else None
 
@@ -928,7 +932,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
                 charge.refund()
         # Off the MCP loop on purpose: image prep is CPU work (bounded vision pool) that must not stall other servers' I/O.
         return _mcp_result_with_native_images(text, image_paths) if native_images and not _result_is_error(text) else text
-    return _handler
+    from tools.mcp_tool_project_scope import leased_handler
+    return leased_handler(_handler)
 
 
 def _make_utility_handler(op: str, log_label: str, rpc, render, required: Optional[str] = None):
@@ -952,7 +957,8 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
                 server_name, server, op, _call, tool_timeout,
                 (_handle_auth_error_and_retry, _handle_session_expired_and_retry),
                 lambda exc: logger.error("MCP %s/%s failed: %s", server_name, log_label, exc))
-        return _handler
+        from tools.mcp_tool_project_scope import leased_handler
+        return leased_handler(_handler)
     return _factory
 
 

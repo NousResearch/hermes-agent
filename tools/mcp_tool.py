@@ -398,6 +398,11 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
 
     def __init__(self, name: str):
         self.name = name
+        # Non-empty on a per-project clone (``tools.mcp_tool_project_scope``): the project dir it
+        # serves. A clone never registers tools; the baseline in ``_servers`` owns them.
+        self._scoped_cwd: str = ""
+        # Dir the current stdio child was spawned in ("" until the first stdio spawn).
+        self._spawn_cwd: str = ""
         self.session: Optional[Any] = None
         self.tool_timeout: float = _DEFAULT_TOOL_TIMEOUT
         self._task: Optional[asyncio.Task] = None

@@ -177,6 +177,10 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         if names is not None:
             selected = [key for key in selected if _key_name(key) in names]
         servers_snapshot = [_core._servers[key] for key in selected]
+        # A baseline's per-project clones own real children: they go down with it, or every
+        # /reload-mcp and config prune would leak one process per project the user visited.
+        from tools.mcp_tool_project_scope import pop_clones
+        servers_snapshot += pop_clones(None if wildcard else set(selected))
         if names is not None:
             selected_status = set(selected)
         elif wildcard:

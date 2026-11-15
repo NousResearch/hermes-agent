@@ -69,7 +69,7 @@ def estimate_request_tokens(agent: Any, messages: Sequence[dict[str, Any]]) -> i
 def compress_now(
     agent: Any, history: Sequence[dict[str, Any]], request: CompressRequest, *,
     system_message: Any = None, task_id: str = "default", skip_without_window: bool = False,
-    snapshot_is_current: Optional[Callable[[], bool]] = None,
+    snapshot_is_current: Optional[Callable[[], bool]] = None, trigger: Optional[str] = None,
 ) -> CompressResult:
     """Run one manual compression of ``history`` on ``agent`` and return the outcome; the caller installs
     ``after_messages`` (and re-anchors session ids) — history is never mutated here.
@@ -78,7 +78,9 @@ def compress_now(
     summarizer runs; the normal timeout/fallback pipeline remains in charge of the attempt.
     ``preview=True`` performs no compression and leaves ``agent`` untouched. A held compression lock
     yields ``lock_skipped`` with the agent's signal cleared and the deferred context-engine notification
-    discarded; otherwise the caller must call ``finalize_context_engine_compression_notification(agent,
+    discarded; ``trigger`` (an automatic owner, e.g. cache-expiry compaction) runs the same sequence
+    WITHOUT ``force``, so the failure cooldown and breakers apply and telemetry names that trigger;
+    otherwise the caller must call ``finalize_context_engine_compression_notification(agent,
     committed=True)`` once its own history transaction commits (``committed=False`` on failure).
     ``system_message=None`` makes ``_compress_context`` rebuild the prompt; passing the cached prompt
     duplicated the identity block (#15281). ``skip_without_window`` (gateway) answers ``nothing_to_do``
@@ -127,8 +129,8 @@ def compress_now(
         tail_rows.append(row)
     try:
         compressed, _ = agent._compress_context(
-            head, system_message, approx_tokens=before_tokens, focus_topic=request.focus_topic, force=True,
-            defer_context_engine_notification=True, **({"task_id": task_id} if task_id != "default" else {}),
+            head, system_message, approx_tokens=before_tokens, focus_topic=request.focus_topic, force=trigger is None,
+            defer_context_engine_notification=True, **({"trigger": trigger} if trigger else {}), **({"task_id": task_id} if task_id != "default" else {}),
             **({"snapshot_is_current": snapshot_is_current} if snapshot_is_current is not None else {}),
             **({"verbatim_tail": tail_rows} if tail_rows else {}))
     except Exception:

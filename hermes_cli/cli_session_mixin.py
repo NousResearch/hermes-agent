@@ -8,9 +8,11 @@ inside each method (``from cli import ...``) — never at module load time (impo
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import shutil
 import sys
+import time
 
 from agent.i18n import t
 from hermes_constants import get_hermes_home
@@ -1003,20 +1005,7 @@ class CLISessionMixin:
                     for line in render_compress_result(result):
                         print(f"  {line}")
                     return
-                self.conversation_history = result.after_messages
-                # _compress_context ends the old session and creates a child session on the
-                # agent. Sync the CLI's session_id so /status, /resume, exit summary and title
-                # generation point at the live continuation, not the ended parent.
-                agent_sid = getattr(self.agent, "session_id", None)
-                if agent_sid and agent_sid != self.session_id:
-                    from tools.approval_yolo import transfer_session_yolo
-                    transfer_session_yolo(self.session_id, agent_sid)
-                    self.session_id = self.agent.session_id
-                    self._write_terminal_breadcrumb()
-                    self._pending_title = None
-                    # Persist the new handoff from offset 0 so resume can recover it after exit.
-                    self.agent._flush_messages_to_session_db(self.conversation_history, None)
-                finalize_context_engine_compression_notification(self.agent, committed=True)
+                self._adopt_compress_result(result)
                 summary = result.summary
                 if summary.get("aborted") or summary.get("fallback_used") or summary.get("refused_would_grow"):
                     icon = "⚠️"
@@ -1026,10 +1015,56 @@ class CLISessionMixin:
                 print(f"     {summary['token_line']}")
                 if summary["note"]:
                     print(f"     {summary['note']}")
-            except Exception as e:
+            except Exception as e:  # health: allow BLE001 -- main's /compress user boundary: any failure is finalized and printed
                 finalize_context_engine_compression_notification(self.agent, committed=False)
                 from hermes_cli.cli_chat_error_copy import refusal_text
                 print(f"  {t('cli.session.compress_failed', error=refusal_text(e))}")
+
+    def _adopt_compress_result(self, result) -> None:
+        """Install a committed compression (manual or cache-expiry) as the live history."""
+        from agent.conversation_compression import finalize_context_engine_compression_notification
+        self.conversation_history = result.after_messages
+        # _compress_context ends the old session and creates a child session on the
+        # agent. Sync the CLI's session_id so /status, /resume, exit summary and title
+        # generation point at the live continuation, not the ended parent.
+        agent_sid = getattr(self.agent, "session_id", None)
+        if agent_sid and agent_sid != self.session_id:
+            from tools.approval_yolo import transfer_session_yolo
+            transfer_session_yolo(self.session_id, agent_sid)
+            self.session_id = self.agent.session_id
+            self._write_terminal_breadcrumb()
+            self._pending_title = None
+            # Persist the new handoff from offset 0 so resume can recover it after exit.
+            self.agent._flush_messages_to_session_db(self.conversation_history, None)
+        finalize_context_engine_compression_notification(self.agent, committed=True)
+
+    def _maybe_compact_before_cache_expiry(self) -> None:
+        """Idle hook: compact while the prompt cache is still warm, just before its window closes
+        (``agent.cache_expiry_compaction``). Runs on the input loop between turns, so no turn is
+        in flight; queued input waits for it like it waits for ``/compress``."""
+        from agent.cache_expiry_compaction import CHECK_INTERVAL_SECONDS, TRIGGER, cache_expiry_compaction_due
+        from agent.conversation_compression import finalize_context_engine_compression_notification
+        from agent.conversation_compression_manual import MIN_MESSAGES, CompressRequest, compress_now
+
+        now = time.time()
+        if now - getattr(self, "_last_cache_expiry_check", 0.0) < CHECK_INTERVAL_SECONDS:
+            return
+        self._last_cache_expiry_check = now
+        if (self.agent is None or self._agent_running or not self._pending_input.empty()
+                or len(self.conversation_history or ()) < MIN_MESSAGES):
+            return
+        if not cache_expiry_compaction_due(self.agent, now=now)[0]:
+            return
+        with self._busy_command(t("cli.session.compress_busy"), blocks_input=False):
+            try:
+                result = compress_now(self.agent, self.conversation_history, CompressRequest(),
+                                      task_id=self.session_id or "default", trigger=TRIGGER)
+            except Exception as exc:
+                finalize_context_engine_compression_notification(self.agent, committed=False)
+                logging.getLogger(__name__).warning("cache-expiry compaction failed: %s", exc, exc_info=True)
+                return
+            if result.status == "compressed":
+                self._adopt_compress_result(result)
 
     def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:
         """Print a one-line scrollback summary of a resolved modal prompt (approval/clarify

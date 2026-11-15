@@ -56,6 +56,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
                 logger.info("Agent cache idle sweep: evicted %d agent(s)", evicted)
         except Exception as e:
             logger.debug("Idle agent sweep failed: %s", e)
+        await self._compact_idle_sessions_before_cache_expiry()
         # Neither LRU cap nor idle TTL knows what a cached transcript costs in memory.
         try:
             # Neither the LRU cap nor the idle TTL is aware of how much memory a cached transcript costs, so
@@ -75,6 +76,51 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
             except Exception as e:
                 logger.debug("SessionStore prune failed: %s", e)
             self._last_session_store_prune_ts = time.time()
+
+    def _cache_expiry_due_keys(self) -> list[str]:
+        """Cached, idle, human-paced sessions whose warm cache window is about to close."""
+        from agent.cache_expiry_compaction import cache_expiry_compaction_due
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run_agent_cache import _tuple_agent
+        cache, lock = getattr(self, "_agent_cache", None), getattr(self, "_agent_cache_lock", None)
+        if cache is None or lock is None:
+            return []
+        with lock:
+            entries = [(key, _tuple_agent(entry)) for key, entry in cache.items()]
+        due = []
+        for key, agent in entries:
+            if agent is None or agent is _AGENT_PENDING_SENTINEL or self._is_session_running(key):
+                continue
+            if cache_expiry_compaction_due(agent)[0]:
+                due.append(key)
+        return due
+
+    async def _compact_idle_sessions_before_cache_expiry(self) -> None:
+        """Compact each idle chat whose prompt cache is about to expire, through the manual
+        ``/compress`` pipeline (temporary agent, compression lease, persist, evict) with an
+        automatic trigger. Skipped for a session a turn has claimed meanwhile."""
+        from agent.cache_expiry_compaction import TRIGGER
+        from agent.conversation_compression_manual import MIN_MESSAGES, CompressRequest
+        for key in self._cache_expiry_due_keys():
+            entry = await self.async_session_store.lookup_by_session_key(key)
+            if entry is None or entry.origin is None or self._is_session_running(key):
+                continue
+            try:
+                history = await self.async_session_store.load_transcript(entry.session_id)
+                if len(history or ()) < MIN_MESSAGES or self._is_session_running(key):
+                    continue
+                await self._compact_with_profile_scope(entry, history, TRIGGER, CompressRequest())
+                logger.info("Cache-expiry compaction: session=%s", key)
+            except Exception as e:
+                logger.warning("Cache-expiry compaction failed for %s: %s", key, e, exc_info=True)
+
+    async def _compact_with_profile_scope(self, entry, history, trigger, request) -> None:
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            await self._run_manual_compression(entry.origin, entry, history, request, trigger=trigger)
+            return
+        from gateway.run import _profile_runtime_scope
+        with _profile_runtime_scope(self._resolve_profile_home_for_source(entry.origin)):
+            await self._run_manual_compression(entry.origin, entry, history, request, trigger=trigger)
 
     def _session_stall_timeout_seconds(self) -> float:
         """Return configured stall timeout (seconds); 0 disables the watchdog."""

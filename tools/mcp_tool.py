@@ -490,8 +490,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # reconnect/shutdown teardown can fail them fast instead of orphaning them on a dying transport.
         self._inflight_tasks: set = set()
         self._reconnecting: bool = False
-        # Latched by races (teardown-vs-keepalive, auth-lock corruption); ensure_healthy()
-        # verifies before the next call.
+        # Latched by races (teardown-vs-keepalive, auth-lock corruption).
         # See #77765, #81051, #84132.
         self._suspect_reason: Optional[str] = None
         # Teardown that failed in-flight calls => next reconnect is RACE RECOVERY, not a

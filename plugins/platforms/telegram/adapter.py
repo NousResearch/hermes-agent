@@ -4834,15 +4834,22 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         pcm = bytes(handle.pcm)
         handle.pcm.clear()
         ogg = await asyncio.to_thread(encode_pcm_ogg_opus, pcm, handle.audio_format)
+        if handle.aborted:
+            return
         import io
         audio_file = io.BytesIO(ogg)
         audio_file.name = "voice.ogg"
-        await self._send_voice_bubble(
-            audio_file, handle.chat_id, None, handle.metadata, None,
-            pcm_duration_seconds(pcm, handle.audio_format),
-        )
-        # Only a successful Telegram send counts as audible. Before this point a
-        # failure must remain eligible for the native whole-file fallback.
+        try:
+            await self._send_voice_bubble(
+                audio_file, handle.chat_id, None, handle.metadata, None,
+                pcm_duration_seconds(pcm, handle.audio_format),
+            )
+        except Exception as exc:
+            # A lost acknowledgment may already have delivered this clause.
+            # Preserve the native no-replay rule while reporting partial failure.
+            if _unconfirmed(exc, "streaming voice") is not None:
+                handle.audible = True
+            raise
         handle.audible = True
 
     async def finish_streaming_tts(self, handle: StreamingTTSHandle, *, interrupted: bool = False) -> None:

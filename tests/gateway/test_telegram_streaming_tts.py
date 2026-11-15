@@ -129,3 +129,60 @@ async def test_consumer_flushes_clause_and_enables_whole_file_suppression(monkey
     adapter._send_voice_bubble.assert_awaited_once()
     assert handle.audible is True
     assert consumer.suppress_whole_file is True
+
+
+@pytest.mark.asyncio
+async def test_abort_during_encoding_never_uploads_late_speech(monkeypatch):
+    import asyncio
+    import threading
+    loop = asyncio.get_running_loop()
+    started, release = asyncio.Event(), threading.Event()
+    def encode(*args):
+        loop.call_soon_threadsafe(started.set)
+        if not release.wait(5):
+            raise TimeoutError("test encoder was not released")
+        return b"OggS-audio"
+    monkeypatch.setattr(stream_mod.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(stream_mod, "encode_pcm_ogg_opus", encode)
+    adapter = _adapter()
+    handle = await adapter.begin_streaming_tts("123", AudioFormat())
+    await adapter.write_streaming_tts(handle, b"pcm")
+    task = asyncio.create_task(adapter.flush_streaming_tts(handle))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        await adapter.abort_streaming_tts(handle)
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 2)
+    adapter._send_voice_bubble.assert_not_awaited()
+    assert handle.aborted and not handle.audible
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ambiguous", [True, False])
+async def test_upload_acknowledgment_controls_whole_file_fallback(monkeypatch, ambiguous):
+    import asyncio
+    import httpx
+    from telegram.error import BadRequest, NetworkError
+    from plugins.platforms.telegram.telegram_media_retry import send_media_retrying
+    error = NetworkError("upload acknowledgment lost") if ambiguous else BadRequest("invalid voice file")
+    if ambiguous:
+        error.__cause__ = httpx.ReadTimeout("response lost")
+    async def send_once():
+        raise error
+    async def upload(*args):
+        return await send_media_retrying(send_once, None, "test voice")
+    monkeypatch.setattr(stream_mod.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(stream_mod, "encode_pcm_ogg_opus", lambda *args: b"OggS-audio")
+    monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: SimpleNamespace(stream=lambda text: iter([b"pcm"])))
+    adapter = _adapter()
+    adapter._send_voice_bubble = AsyncMock(side_effect=upload)
+    consumer = StreamingTTSConsumer(adapter, "123", {}, asyncio.get_running_loop())
+    consumer._queue.put_nowait("One spoken clause.")
+    consumer.finish()
+    consumer.start()
+    assert await consumer.wait_complete(timeout=3) is False
+    assert consumer.done
+    assert consumer.suppress_whole_file is ambiguous
+    assert consumer.partial is ambiguous
+    adapter._send_voice_bubble.assert_awaited_once()

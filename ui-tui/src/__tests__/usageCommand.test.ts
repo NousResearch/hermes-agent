@@ -1,7 +1,7 @@
+import type { SessionUsageResponse } from '@hermes/shared/gateway-types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { sessionCommands } from '../app/slash/commands/session.js'
-import type { SessionUsageResponse } from '../gatewayTypes.js'
 import { applyLocale, resetLocale, t } from '../i18n/runtime.js'
 
 const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your balance'
@@ -98,6 +98,7 @@ describe('/usage slash command', () => {
         ]
       })
     })
+
     await run('')
     expect(panel).not.toHaveBeenCalled()
     expect(sys.mock.calls.map(c => c[0])).toEqual([

@@ -56,18 +56,25 @@ export const canonicalOwnerProfile = (value: object): string | undefined => cano
 export const recordCanonicalOwner = (value: object, profile: string): void => { canonicalOwners.set(value, profile) }
 
 // Mirrors hermes_cli/gateway_mutations.slash_mutation: the typed directives
-// that are canonical mutations, not gateway-executed slash commands. Model
-// flags (--global/--once/--refresh) have no canonical mutation and stay on the
-// exec path so the authority refuses them explicitly.
+// that are canonical mutations, not gateway-executed slash commands. `--provider`
+// (and `--session`) map onto the model mutation like the picker's value; other
+// model flags (--global/--once/--refresh) have no canonical mutation and stay on
+// the exec path so the authority refuses them explicitly.
 export function slashMutation(command: string): { operation: string; payload: Record<string, unknown> } | null {
   const [name, ...rest] = command.trim().replace(/^\/+/, '').split(/\s+/)
   const arg = rest.join(' ').trim()
 
   if (name === 'model') {
-    if (!arg || arg.startsWith('-') || /(^|\s)--/.test(arg)) { return null }
-    const [model, ...flags] = arg.split(/\s+/)
+    // The server parses flags in any order, and `--session` is a no-op on the always
+    // session-scoped mutation; one that is `--provider`'s value stays for the parser to refuse.
+    const [model, ...flags] = rest.filter((token, i) => token !== '--session' || rest[i - 1] === '--provider')
 
-    return flags.length ? null : { operation: 'model', payload: { model } }
+    if (!model || model.startsWith('-')) { return null }
+
+    if (!flags.length) { return { operation: 'model', payload: { model } } }
+    const pick = pickerModelMutation([model, ...flags].join(' '))
+
+    return pick ? { operation: 'model', payload: pick } : null
   }
 
   const field = ({ branch: 'title', compress: 'focus' } as Record<string, string>)[name]
@@ -172,12 +179,6 @@ export function splitRewindSubmit(params: Record<string, unknown>): { rewind: Re
   return { rewind: null, submit }
 }
 
-// Session verbs only the legacy sidecar implements: it looks the session up in its own table,
-// which never holds an owner session, and answers `session not found` (read by the renderer as a
-// reaped runtime). Refused by name until the owner serves them.
-// `preview.restart` is served by the owner (gateway/session_tui_side.py).
-const SIDECAR_SESSION_VERBS = new Set(['handoff.request', 'handoff.state', 'handoff.fail'])
-
 // The manage_connections card's calls the owner serves for a session-owned operation (gateway/session_connections.py); any other session-owned connector call stays refused.
 const OWNER_CONNECTION_VERBS = new Set([
   'connection.respond',
@@ -210,7 +211,7 @@ function canonicalProducerFrame(method: string, params: Record<string, unknown>)
     (params.owner as { type?: unknown } | undefined)?.type === 'session' &&
     !OWNER_CONNECTION_VERBS.has(method)
 
-  if (SIDECAR_SESSION_VERBS.has(method) || sessionConnector) {
+  if (sessionConnector) {
     throw new Error(`${method} is not available on the shared gateway yet`)
   }
 

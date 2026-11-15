@@ -6,7 +6,14 @@ export const zhGatewayHost: GatewayHostTranslations = {
   unavailableDesc: '桌面 IPC 桥未暴露网关设置。',
   webappHostTitle: 'Hermes 主机',
   webappHostDesc:
-    'Webapp 始终使用提供它的 Hermes 主机。如需切换网关、登录 Hermes Cloud 或管理已保存的连接，请使用 Hermes Desktop 应用。',
+    'Webapp 始终运行在提供它的 Hermes 主机上。下方已保存的连接是这台机器的列表，与 Hermes Desktop 应用共享；其他网关通过此主机访问。',
+  webappOauthPaste: {
+    title: '完成登录',
+    description: '如果登录标签页停在无法打开的地址（此浏览器不在网关所在的机器上），请将该地址粘贴到这里。',
+    placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
+    finish: '完成',
+    failed: '无法完成登录'
+  },
   webAccess: {
     title: '网页访问',
     intro: '用手机或其他电脑，以你的 Nous 账户登录并打开这台电脑上的 Hermes。登录的人可以在这台电脑上运行命令。',

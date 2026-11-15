@@ -1,0 +1,34 @@
+name: hermes-time-machine
+repo: https://github.com/ddaikodaiko/hermes-time-machine
+sha: 78ce6f538892217cbe6f51f258897da63d3a882c
+version: "0.3.0"
+title: Hermes Time Machine
+description: "The rollback that knows what it can't undo. Incremental, time-bounded checkpoints that the agent itself can preview, restore or fork (atm_* tools, /timemachine); an approval at the point of no return (git push, npm/cargo/PyPI/gem publish, terraform apply, and MCP or plugin tools that open PRs, merge, release, send messages or deploy) that shows what becomes permanent and the exact compensation command; an effect ledger; effect memory that reminds the model of pushes it can no longer see after /rollback, /undo, /retry or compaction; and a read-only Time machine dashboard tab that shows checkpoints next to the effects no restore can undo, with per-file diffs and undo commands. Every restore takes a safety checkpoint first, so it can be undone. Disclosure — no shell commands, subprocesses, network calls, background processes or credentials; reads workspace files plus .git refs/config, package.json, Cargo.toml and pyproject.toml to capture pre-state; writes only under HERMES_HOME/plugin-data/hermes-time-machine, on a rewind the workspace (replaced files go to a trash directory), and on atm_fork a new sibling folder next to the workspace; adds a restore-point note to tool results and effect reminders to the model's context; asks for approval through Hermes before every model-requested restore and before irreversible commands and tool calls, and never approves or blocks a tool call by itself; the dashboard tab adds three read-only GET routes (no restore, write or process); refuses filesystem roots, home and system directories."
+maintainer: ddaikodaiko
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/ddaikodaiko/hermes-time-machine#readme
+image: https://raw.githubusercontent.com/ddaikodaiko/hermes-time-machine/78ce6f538892217cbe6f51f258897da63d3a882c/docs/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ddaikodaiko/hermes-time-machine/78ce6f538892217cbe6f51f258897da63d3a882c/docs/assets/dashboard.png
+  - https://raw.githubusercontent.com/ddaikodaiko/hermes-time-machine/78ce6f538892217cbe6f51f258897da63d3a882c/docs/assets/approval.png
+  - https://raw.githubusercontent.com/ddaikodaiko/hermes-time-machine/78ce6f538892217cbe6f51f258897da63d3a882c/docs/assets/rollback.png
+  - https://raw.githubusercontent.com/ddaikodaiko/hermes-time-machine/78ce6f538892217cbe6f51f258897da63d3a882c/docs/assets/remembers.png
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - atm_checkpoint
+    - atm_rewind
+    - atm_fork
+    - atm_list
+    - atm_effects
+    - atm_diff
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+    - pre_llm_call
+    - post_compaction
+  provides_middleware: []
+  requires_env: []

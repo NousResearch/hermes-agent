@@ -278,9 +278,9 @@ def _check_scratch_dir(hermes_home: Path, _DHH: str) -> None:
 
 
 def _session_count(state_db_path: Path):
-    import sqlite3
+    from hermes_cli.sqlite_safe_read import connect_tracked
     # mode=ro: doctor is a reader; a writable open of a gateway-held WAL DB is the second-writer class (#103339).
-    conn = sqlite3.connect(read_only_db_uri(state_db_path), uri=True)
+    conn = connect_tracked(read_only_db_uri(state_db_path), uri=True, tracking_path=state_db_path)
     try:
         return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     finally:
@@ -306,9 +306,10 @@ def _write_health_reason(state_db_path: Path, *, should_fix: bool):
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         snapshot = Path(tmp) / "state.db"
-        src = sqlite3.connect(read_only_db_uri(state_db_path), uri=True, timeout=1.0)
+        from hermes_cli.sqlite_safe_read import connect_tracked
+        src = connect_tracked(read_only_db_uri(state_db_path), uri=True, timeout=1.0, tracking_path=state_db_path)
         try:
-            dest = sqlite3.connect(str(snapshot))
+            dest = sqlite3.connect(str(snapshot))  # health: allow HX015 -- temp snapshot this function owns
             try:
                 src.backup(dest)
             finally:
@@ -396,6 +397,9 @@ def _state_db_health(f: Finding, should_fix: bool, state_db_path: Path, _DHH: st
         _write_reason = _write_health_reason(state_db_path, should_fix=should_fix)
     except Exception as e:
         return _classify_unreadable_state_db(f, should_fix, state_db_path, _DHH, e)
+    from hermes_state_repair import HealthCheckUnavailable
+    if isinstance(_write_reason, HealthCheckUnavailable):
+        return check_warn(f"{_DHH}/state.db write-health probe could not run", f"({_write_reason})")
     if _write_reason is not None:
         if _report_structural_damage(f, should_fix, state_db_path, _DHH, _write_reason):
             return

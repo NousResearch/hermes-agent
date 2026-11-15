@@ -75,6 +75,21 @@ OPEN_TURN_TAIL_ROLES = frozenset({"user", "tool"})
 FAILED_TURN_DISPLAY_KIND = "failed_turn"
 
 
+# ---- safety-refused turn, retained for display only -------------------------------------------
+# A content-policy refusal is deterministic for the unchanged conversation (the filter judges the
+# whole thread), so the whole refused turn leaves the MODEL's context — otherwise every later
+# message re-trips the filter and the chat locks (the "stuck session" report). But the user keeps
+# SEEING their message: the user row is retained in the DISPLAY projection (never the model read)
+# and tagged with this display_kind, while the raw tool rounds + refusal detail collapse into
+# CONTENT_REFUSED_NOTICE. Rendered cross-surface (Desktop, CLI/TUI, ACP) as a greyed block.
+CONTENT_REFUSED_DISPLAY_KIND = "content_refused"
+CONTENT_REFUSED_NOTICE = (
+    "This message was refused by the model's safety filter — try a different query."
+)
+# messages.display_metadata key carrying the stored notice, so every surface renders one copy.
+CONTENT_REFUSED_METADATA_KEY = "content_refused"
+
+
 def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
     """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
     (exact notice text, so a real reply quoting it stays a reply); read-side only."""
@@ -247,6 +262,13 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
         "the proxy/WAF rules, or switch providers with /model."
     ),
+    FailoverReason.guardrail_blocked.value: (
+        "{label}'s prompt-injection guardrail rejected this request before it reached any model, so "
+        "the key is fine — a scanner judged the request payload (tool output is scanned too, not "
+        "just what you type), and retrying won't help. On OpenRouter: Workspaces → Guardrails → set "
+        "Prompt injection detection to Redact or Flag, or allowlist the phrase under Settings → "
+        "Privacy; the matched pattern names are in the error details."
+    ),
 }
 _NONRETRYABLE_DEFAULT_COPY = (
     "{label} rejected the request and retrying won't help. Pick another model with /model, "
@@ -261,8 +283,10 @@ _AUTH_COPY: dict[str, str] = {
 }
 
 CONTENT_POLICY_NEXT_STEPS = (
-    "Try rewording your message or removing sensitive attachments, or switch to another "
-    "model with /model."
+    "That message has been left out of this conversation, so you're not stuck — just ask "
+    "something else and you can keep going. Rewording it, removing any sensitive attachments, "
+    "or switching models with /model can also help. If a later message is refused too, start a "
+    "new chat with /new (in a Bot Chat, Archive it from its tab menu)."
 )
 
 # ---- one reason → "what happened" gloss, shared by cron, subagent and chat notices ------------
@@ -282,6 +306,7 @@ FAILURE_CAUSE_GLOSS: dict[str, str] = {
     FailoverReason.auth.value: "the AI model service rejected the sign-in",
     FailoverReason.auth_permanent.value: "the AI model service rejected the sign-in",
     FailoverReason.upstream_blocked.value: "a firewall/CDN in front of the AI model service blocked the request",
+    FailoverReason.guardrail_blocked.value: "the AI model service's prompt-injection guardrail rejected the request",
     FailoverReason.model_not_found.value: "the model {subject} uses was not found at the AI model service",
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
     FailoverReason.provider_policy_blocked.value: (
@@ -445,7 +470,16 @@ def oauth_relogin_command(provider: Any) -> str:
     slug = str(provider or "").strip().lower()
     if slug == "nous":
         return f"hermes {profile_cli_selector()}portal"
+    if _login_owned_by_external_cli(slug):
+        # `auth add` refuses a plugin with no auth_handler; the model flow runs the vendor CLI's login.
+        return f"hermes {profile_cli_selector()}model"
     return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
+
+
+def _login_owned_by_external_cli(slug: str) -> bool:
+    from hermes_cli.auth_plugin_providers import plugin_auth_handler, plugin_profile
+
+    return getattr(plugin_profile(slug), "auth_type", "") == "external_process" and plugin_auth_handler(slug) is None
 
 
 def relogin_command_hint(provider: Any) -> str:
@@ -460,7 +494,7 @@ def relogin_command_hint(provider: Any) -> str:
         return f"hermes {profile_cli_selector()}auth add <provider>"
     from agent.error_surface import auth_kind
 
-    if auth_kind(slug) == "oauth":
+    if _login_owned_by_external_cli(slug) or auth_kind(slug) == "oauth":
         return oauth_relogin_command(slug)
     return f"hermes {profile_cli_selector()}auth add {slug}"
 

@@ -167,7 +167,7 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `pl.desktop.yaml`); missing keys fall back to the bundled catalog then
   English; a string where English has a function takes positional `{0}`/`{1}`
   placeholders. Dropped on unload. Key set: `locales/_keys.desktop.json`
-  (`npm run i18n:keys`). Registering never changes `display.language`.
+  (`pnpm run i18n:keys`). Registering never changes `display.language`.
   `host.i18n.registerAppLocale` is the ctx-less twin (returns the disposer);
   `host.i18n.languageOptions()` lists bundled ∪ registered ∪ backend languages.
 - Data: `useQuery`/`useMutation`/`useQueryClient`/`queryClient` (the app's ONE

@@ -25,6 +25,15 @@ from gateway.relay.ws_transport import PassthroughForward, _passthrough_from_wir
 from tests.gateway.relay.stub_connector import StubConnector
 
 
+@pytest.fixture(autouse=True)
+def _interaction_senders_admitted(monkeypatch):
+    """These tests cover how a Discord interaction is decoded and routed, so its sender counts as
+    admitted; admission itself: test_relay_discord_command_answer_authority.py."""
+    from gateway.relay import admitted_authors
+
+    monkeypatch.setattr(admitted_authors, "interaction_admitted", lambda *_args, **_kwargs: True)
+
+
 def _desc() -> CapabilityDescriptor:
     return CapabilityDescriptor(
         contract_version=CONTRACT_VERSION,

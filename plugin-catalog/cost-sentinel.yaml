@@ -1,0 +1,19 @@
+# Catalog entry draft — Cost Sentinel
+# PR target: NousResearch/hermes-agent → plugin-catalog/cost-sentinel.yaml
+# Fill `sha` + `repo` after the plugin repo is pushed to GitHub.
+name: cost-sentinel
+repo: https://github.com/SongotenU/hermes-cost-sentinel
+sha: "969c7ea8d95617614cad31b912fe59419293f54b"           # commit 1.0.0
+description: "Live cost ledger and daily budget guarddog for Hermes Agent, per profile or fleet-wide — every LLM call is priced with Hermes' own pricing engine into a per-profile SQLite ledger plus a shared fleet ledger (all profiles of the install roll into one daily number); /cost rules the budget (set, block, warn, off, scope fleet or profile, resume, reset), the cost_report tool lets the agent read it, and the hard pre_llm_call gate stops an over-budget turn with an escape-hatch message. Desktop pane shows the gate number (fleet or profile) with a spend ring, per-model and per-day breakdowns and a status-bar budget chip. Disclosure — writes a per-profile SQLite ledger and a ledger shared by every profile of the install at <default hermes root>/plugin-data/cost-sentinel/fleet.db, which also holds the daily budget settings, so /cost set, block, resume or reset in any profile changes the budget for all profiles; rows store tokens, cost, model/provider, session/turn/request ids, platform and error type plus the first 400 characters of provider error messages, never prompt, response or tool-argument text; the hard gate is off by default, is checked once before each turn (a turn already running can overshoot), and counts calls Hermes cannot price as $0; no network of its own (pricing goes through the host pricing engine), no MCP, shell, credentials or telemetry."
+maintainer: SongotenU
+tier: community
+category: tools
+version: "1.0.0"
+requires_hermes: ">=0.22.6"
+platforms: [linux, macos, windows]
+docs_url: https://github.com/SongotenU/hermes-cost-sentinel
+capabilities:
+  provides_tools: [cost_report]
+  provides_hooks: [post_api_request, api_request_error, post_auxiliary_call, pre_llm_call]
+  provides_middleware: []
+  requires_env: []

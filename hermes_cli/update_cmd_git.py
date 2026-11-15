@@ -526,6 +526,20 @@ def _checkout_rejected_by_git(stderr: str, git_cmd, root: Path) -> bool:
         os.path.realpath(root))
 
 
+def _enclosing_repo_of_checkout(git_cmd, root: Path) -> Optional[str]:
+    """The other repository git resolves *root* to, or None when git sees *root* itself (or cannot run).
+
+    With a damaged ``.git`` git walks up to the nearest enclosing repository (a git-managed home
+    directory), and every stash, reset and clean would then run on the user's files there (#146032).
+    """
+    top = _git_run(git_cmd, ["rev-parse", "--show-toplevel"], cwd=root)
+    found = top.stdout.strip()
+    if top.returncode != 0 or not found:
+        return None
+    same = os.path.normcase(os.path.realpath(found)) == os.path.normcase(os.path.realpath(root))
+    return None if same else found
+
+
 # Ordered (predicate, diagnosis): curl reports HTTP errors as ``unable to access '<url>': ... error: 429``,
 # so rate-limit/outage checks must run BEFORE the generic "unable to access" check. An anonymous fetch
 # answered with HTTP 401 ("could not read Username") is GitHub during an outage (or a renamed/private
@@ -645,42 +659,17 @@ def _ensure_non_trampoline_git(git_cmd: list) -> list:
     return [str(real_git)] + list(git_cmd[1:])
 
 
-def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
-    """Manifest directories whose specs the single root ``package-lock.json`` records: the root plus every
-    workspace from the root ``workspaces`` globs (same model as ``update_cmd_deps._npm_manifest_paths``).
-    A manifest outside that graph (``website/``, ``scripts/whatsapp-bridge/``) has its own lockfile."""
-    owners = {Path(".")}
-    try:
-        import json
-        package = json.loads((repo_root / "package.json").read_text(encoding="utf-8-sig"))
-        workspaces = package.get("workspaces", [])
-        if isinstance(workspaces, dict):
-            workspaces = workspaces.get("packages", [])
-        if not isinstance(workspaces, list):
-            return owners
-        for pattern in workspaces:
-            # One bad glob (absolute pattern -> NotImplementedError) degrades to "not an owner"
-            # instead of aborting the whole churn cleanup through the caller's suppress(Exception).
-            with suppress(Exception):
-                for directory in repo_root.glob(str(pattern)):
-                    if (directory / "package.json").is_file():
-                        owners.add(directory.relative_to(repo_root))
-    except (OSError, ValueError, TypeError):
-        pass
-    return owners
-
-
 def _no_move(*_targets, **_bound):
     """The ``checkout_move`` of a run with no paused gateways: the step runs unbound."""
     return nullcontext({})
 
 
 def _discard_lockfile_churn(git_cmd, repo_root, *, checkout_move=None):
-    """Restore ``package-lock.json`` files npm rewrote non-deterministically, so the update sees a clean tree
-    instead of autostashing every run. A lockfile is kept when a manifest it records is dirty: for the root
-    lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty ``apps/desktop``
-    manifest desyncs spec and lock and every later ``npm ci`` fails, #112378); a nested lock is kept only
-    with its sibling manifest. Best-effort."""
+    """Restore ``package-lock.json`` files npm rewrote non-deterministically (the npm projects: WhatsApp
+    bridge, Photon sidecar), so the update sees a clean tree instead of autostashing every run. A lock is
+    kept when its sibling ``package.json`` is dirty: reverting it alone desyncs spec and lock and every
+    later ``npm ci`` fails (#112378). ``pnpm-lock.yaml`` is never touched: pnpm's frozen installs do not
+    rewrite it, so a change there is the user's own. Best-effort."""
     from hermes_cli.update_cmd_git import _git_run
     with suppress(Exception):
         diff = _git_run(git_cmd, ["diff", "--name-only"], repo_root)
@@ -688,17 +677,8 @@ def _discard_lockfile_churn(git_cmd, repo_root, *, checkout_move=None):
             return
         changed = [line.strip() for line in diff.stdout.splitlines()]
         dirty_manifests = {Path(p).parent for p in changed if p.endswith("package.json")}
-        root_owners = _npm_lockfile_owners(Path(repo_root))
-        dirty = []
-        for path in changed:
-            if not path.endswith("package-lock.json"):
-                continue
-            lock_dir = Path(path).parent
-            protected = (lock_dir == Path(".") and bool(dirty_manifests & root_owners)) or (
-                lock_dir != Path(".") and lock_dir in dirty_manifests
-            )
-            if not protected:
-                dirty.append(path)
+        dirty = [path for path in changed
+                 if path.endswith("package-lock.json") and Path(path).parent not in dirty_manifests]
         if not dirty:
             return
         with (checkout_move or _no_move)(paths=dirty):

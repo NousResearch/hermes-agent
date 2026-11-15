@@ -87,7 +87,8 @@ def test_bot_chat_unarchive_escalates_to_writer(monkeypatch, tmp_path):
     db.create_session(session_id="bot", source="cli", model="m")
     db.set_session_title("bot", BOT_CHAT_TITLE)
     db.end_session("bot", "ws_orphan_reap")
-    db.set_session_archived("bot", True)
+    # The legacy accidental archive, as old code stored it: archived=1, title and recoverable stamp kept.
+    db._write_sql("UPDATE sessions SET archived = 1, auto_archived = 0 WHERE id = ?", ("bot",))
     db.close()
     monkeypatch.setattr(server, "_profile_home", lambda name: foreign if (name or "").strip() == "code" else None)
 

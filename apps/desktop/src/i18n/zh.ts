@@ -28,6 +28,11 @@ import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
+  gatewayGroupOpen: {
+    opening: "正在打开群聊…",
+    lookupFailed: "无法在网关上查找此群组，请重试。",
+    missing: "此群聊已不存在。"
+  },
   catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',
@@ -1256,6 +1261,9 @@ export const zhOverrides = {
       voiceShortcutHintTitle: '语音录制快捷键',
       voiceShortcutHintDesc:
         '请在“设置 → 键盘快捷键”中设置语音录制快捷键（“开始 / 停止语音对话”）。voice.record_key 配置项仅适用于 CLI 和 TUI。',
+      desktopReadAloudTitle: '在此应用中朗读回复',
+      desktopReadAloudDesc:
+        '在 Desktop 中朗读每条完成的回复。与输入框按钮是同一个开关；对所有打开的窗口生效，关闭后会立即停止正在朗读的回复。下方的“朗读回复”用于消息平台和 CLI。',
       showOptions: '显示选项'
     },
     hudModifier: {
@@ -1987,15 +1995,20 @@ export const zhOverrides = {
       browserRealProfile: {
         label: '使用我的真实浏览器配置文件',
         description:
-          '将默认浏览器的登录信息和 Cookie 复制到托管快照中，代理使用该快照进行浏览。绝不会直接打开你的真实配置文件。将应用于新会话。',
+          '将默认浏览器的登录信息和 Cookie 复制到托管快照中，代理使用该快照进行浏览，应用内浏览器也会用它们登录。绝不会直接打开你的真实配置文件。将应用于新会话。',
         enabledTitle: '真实配置文件浏览：已开启',
         enabledMessage: '新会话将使用默认浏览器配置文件的快照进行浏览。',
         disabledTitle: '真实配置文件浏览：已关闭',
-        disabledMessage: '配置文件快照将被删除；新会话使用干净的浏览器。',
+        disabledMessage: '配置文件快照将被删除，应用内浏览器也会退出这些登录；新会话使用干净的浏览器。',
         failedSave: '无法保存真实配置文件设置',
+        reimportSignins: '重新导入登录信息',
+        signinsImportedTitle: '应用内浏览器登录',
+        signinsImported: count => `已使用浏览器配置文件中的 ${count} 个 Cookie 登录应用内浏览器。`,
+        signinsRemote: '此后端运行在另一台机器上，因此不会将其浏览器配置文件导入应用内浏览器。',
+        signinsFailed: '无法将登录信息导入应用内浏览器',
         prompt: {
           title: '让网站保持登录状态',
-          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，网站打开时即已登录。',
+          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，无论是代理还是应用内浏览器，网站打开时即已登录。',
           bulletSnapshot: 'Cookie 和登录信息会复制到托管快照中。',
           bulletLiveProfile: '绝不会直接打开你的真实浏览器配置文件。',
           bulletLocal: '所有数据都不会离开这台电脑。',
@@ -2396,7 +2409,10 @@ export const zhOverrides = {
       backup: '创建备份',
       backupDesc: '打包配置、记忆、技能与会话',
       debugShare: '调试分享',
-      debugShareDesc: '上传脱敏报告与日志，获取可分享链接（6 小时后自动删除）',
+      debugShareDesc: '上传摘要（版本、配置键名、错误计数；不含日志文本），获取可分享链接（6 小时后自动删除）',
+      debugShareConfirm: '将调试报告上传到公开粘贴服务？',
+      debugShareConfirmDesc:
+        '将摘要上传到公开粘贴服务：Hermes、Python 和操作系统版本，已连接平台与工具集名称，配置键名（不含值），以及警告/错误计数。不包含任何日志行或消息文本。粘贴内容 6 小时后自动删除；若 paste.rs 不可用，备用的 dpaste.com 会将其公开保留 1 天，且无法提前删除。',
       debugShareRunning: '正在上传调试报告…',
       debugShareLinks: '分享链接',
       debugShareFailed: '调试分享失败',
@@ -2697,6 +2713,14 @@ export const zhOverrides = {
     fieldSkillsPlaceholder: '以逗号分隔的技能名称（可选）',
     fieldDeliver: '投递到',
     fieldDeliverOnly: '仅投递载荷',
+    fieldSignature: '签名',
+    fieldSignatureHint: '此路由唯一接受的签名方案。GitHub、GitLab 和 Linear 的投递需要固定为各自的方案。',
+    signatureOptions: {
+      generic: '通用（带时间戳）',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: '提示词',
     fieldPromptPlaceholder: '此 Webhook 触发时给智能体的说明（可选）',
     nameRequired: '需要名称',
@@ -3339,7 +3363,7 @@ export const zhOverrides = {
       '/topup': '显示你的 Nous 余额，并在 Portal 管理账务',
       '/platform': '暂停、恢复或列出故障的网关平台',
       '/version': '显示 Hermes Agent 版本',
-      '/debug': '上传调试报告（系统信息与日志），并获取可分享链接',
+      '/debug': '调试报告（版本、配置键名、错误计数；不含日志文本）：先显示隐私声明；/debug upload 分享链接',
       '/model': '切换此会话的模型'
     },
     hotkeyDescs: {
@@ -4413,6 +4437,7 @@ export const zhOverrides = {
       readAloud: '朗读',
       copyFullResponse: '复制完整回复',
       readAloudFullResponseHint: '按住 Shift 点击：朗读完整回复',
+      contentRefusedNotice: '该消息被模型的安全过滤器拒绝 — 请换一个问题重试。',
       editMessage: '编辑消息',
       expandMessage: '展开消息',
       scrollToBottom: '滚动到底部',

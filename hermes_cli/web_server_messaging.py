@@ -57,7 +57,7 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
 _PLATFORM_ORDER: tuple[str, ...] = (
     "telegram", "discord", "slack", "mattermost", "matrix", "whatsapp", "signal", "bluebubbles",
     "email", "sms", "dingtalk", "feishu", "google_chat", "wecom", "wecom_callback",
-    "weixin", "qqbot", "yuanbao", "api_server", "webhook",
+    "weixin", "qqbot", "api_server", "webhook",
 )
 
 

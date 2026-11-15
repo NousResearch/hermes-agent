@@ -1005,6 +1005,8 @@ export interface Translations extends NoticeTranslations {
       attachmentSizeLabel: string
       voiceShortcutHintTitle: string
       voiceShortcutHintDesc: string
+      desktopReadAloudTitle: string
+      desktopReadAloudDesc: string
       showOptions: string
     }
     hudModifier: {
@@ -1381,6 +1383,7 @@ export interface Translations extends NoticeTranslations {
       activePill: string
       updateTitle: string
       updateDetail: (next: string, current: string) => string
+      updateSameBuildDetail: (tag: string) => string
       updateAction: string
       updating: string
       upToDateTitle: string
@@ -1832,6 +1835,11 @@ export interface Translations extends NoticeTranslations {
         disabledTitle: string
         disabledMessage: string
         failedSave: string
+        reimportSignins: string
+        signinsImportedTitle: string
+        signinsImported: (count: number) => string
+        signinsRemote: string
+        signinsFailed: string
         prompt: {
           title: string
           body: string
@@ -2240,6 +2248,8 @@ export interface Translations extends NoticeTranslations {
       backupDesc: string
       debugShare: string
       debugShareDesc: string
+      debugShareConfirm: string
+      debugShareConfirmDesc: string
       debugShareRunning: string
       debugShareLinks: string
       debugShareFailed: string
@@ -2447,6 +2457,9 @@ export interface Translations extends NoticeTranslations {
     fieldSkillsPlaceholder: string
     fieldDeliver: string
     fieldDeliverOnly: string
+    fieldSignature: string
+    fieldSignatureHint: string
+    signatureOptions: Record<string, string>
     fieldPrompt: string
     fieldPromptPlaceholder: string
     nameRequired: string
@@ -3816,6 +3829,16 @@ export interface Translations extends NoticeTranslations {
       commentTitle: (n: number) => string
       saveComment: string
       cancelComment: string
+      vaultFill: string
+      vaultTitle: (site: string) => string
+      vaultLoading: string
+      vaultEmpty: string
+      vaultUnlock: (name: string) => string
+      vaultOpenSettings: string
+      vaultFilled: (label: string) => string
+      vaultFillFailed: string
+      vaultLoadFailed: string
+      vaultPageNotReady: string
     }
   }
 
@@ -3924,6 +3947,9 @@ export interface Translations extends NoticeTranslations {
       react: string
       dismissError: string
       responseStopped: string
+      /** Greyed notice on a safety-refused turn kept for display, used when the
+       *  backend sent none in display_metadata.content_refused.notice. */
+      contentRefusedNotice: string
       /** Layer titles for the structured error card (agent/error_surface.py).
        *  `generic` is the fallback when the backend sent no descriptor. */
       errorLayers: {

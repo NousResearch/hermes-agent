@@ -10,13 +10,24 @@
  * - A 422 `digest_mismatch` (the bytes arrived damaged) restarts the upload once from zero.
  */
 
-export const LOCAL = 'local'
 const CHUNK = 2 * 1024 * 1024
 const READ = 4 * 1024 * 1024
 const RETRIES = 5
 
+/** Which gateway and profile a call acts on. Captured once per flow, so a profile switch
+ *  mid-transfer cannot move the tail of it onto another profile's data. */
+export interface MoveEndpoint {
+  /** A registry connection id; null is the window's own backend. */
+  connectionId: null | string
+  profile: string
+}
+
+/** A Hermes Cloud agent hosts one profile. */
+export const cloudEndpoint = (connectionId: string): MoveEndpoint => ({ connectionId, profile: 'default' })
+
 export type MoveRequestFn = <T>(req: {
-  connectionId: string
+  connectionId: null | string
+  profile: string
   path: string
   method?: 'DELETE' | 'GET' | 'POST'
   body?: unknown
@@ -60,7 +71,50 @@ export interface MoveState {
   bytes: number
   received: number
   preview?: MovePreview
-  steps?: Record<string, { status: 'done' | 'failed'; error?: string; [k: string]: unknown }>
+  steps?: Record<string, MoveStep>
+  result?: { failed_steps?: string[]; undo_problems?: string[] }
+  /** Non-empty after an undo that could not put everything back (retryable). */
+  undo_problems?: string[]
+}
+
+export interface MoveStep {
+  status: 'done' | 'failed'
+  error?: string
+  /** Items in a finished step that did not make it (e.g. one unreadable conversation). */
+  failed?: number
+  errors?: string[]
+  [k: string]: unknown
+}
+
+export interface StepProblem {
+  step: string
+  failed: number
+  errors: string[]
+}
+
+export interface MoveOutcome {
+  complete: boolean
+  steps: StepProblem[]
+  undoProblems: string[]
+}
+
+/** What an apply or undo answer means for the user: done, or what is left to retry. */
+export function moveOutcome(state: MoveState): MoveOutcome {
+  const steps = Object.entries(state.steps ?? {}).flatMap(([step, s]): StepProblem[] =>
+    s.status === 'failed'
+      ? [{ step, failed: s.failed ?? 0, errors: s.error ? [s.error] : [] }]
+      : s.failed
+        ? [{ step, failed: s.failed, errors: s.errors ?? [] }]
+        : []
+  )
+
+  if (state.status === 'undone') {
+    const undoProblems = state.undo_problems ?? state.result?.undo_problems ?? []
+
+    return { complete: undoProblems.length === 0, steps: [], undoProblems }
+  }
+
+  return { complete: state.status === 'applied' && steps.length === 0, steps, undoProblems: [] }
 }
 
 export interface Progress {
@@ -110,9 +164,13 @@ async function retry<T>(work: () => Promise<T>, isFinal: (error: unknown) => boo
 const FINAL = new Set(['too_large', 'bad_zip', 'bad_manifest', 'not_found', 'applied', 'not_ready'])
 const final = (error: unknown) => FINAL.has(refusalCode(error))
 
-export async function inventory(request: MoveRequestFn, includeHistory: boolean): Promise<BundleInventory> {
+export async function inventory(
+  request: MoveRequestFn,
+  source: MoveEndpoint,
+  includeHistory: boolean
+): Promise<BundleInventory> {
   return request<BundleInventory>({
-    connectionId: LOCAL,
+    ...source,
     path: '/api/move/bundle',
     method: 'POST',
     body: { include_history: includeHistory, dry_run: true },
@@ -122,6 +180,7 @@ export async function inventory(request: MoveRequestFn, includeHistory: boolean)
 
 export async function buildAndRead(
   request: MoveRequestFn,
+  source: MoveEndpoint,
   includeHistory: boolean,
   onProgress: (p: Progress) => void,
   signal?: AbortSignal
@@ -129,7 +188,7 @@ export async function buildAndRead(
   onProgress({ phase: 'build', done: 0, total: 1 })
 
   const built = await request<BundleInventory>({
-    connectionId: LOCAL,
+    ...source,
     path: '/api/move/bundle',
     method: 'POST',
     body: { include_history: includeHistory },
@@ -149,7 +208,7 @@ export async function buildAndRead(
     const part = await retry(
       () =>
         request<{ data: string; done: boolean }>({
-          connectionId: LOCAL,
+          ...source,
           path: `/api/move/bundle/${built.name}?offset=${offset}&length=${READ}`
         }),
       final
@@ -184,7 +243,7 @@ function toBase64(bytes: Uint8Array): string {
 
 export async function upload(
   request: MoveRequestFn,
-  connectionId: string,
+  target: MoveEndpoint,
   bytes: Uint8Array,
   sha256: string,
   onProgress: (p: Progress) => void,
@@ -194,7 +253,7 @@ export async function upload(
     let state = await retry(
       () =>
         request<MoveState>({
-          connectionId,
+          ...target,
           path: '/api/move/uploads',
           method: 'POST',
           body: { size: bytes.length, sha256 }
@@ -216,14 +275,14 @@ export async function upload(
       state = await retry(async () => {
         try {
           return await request<MoveState>({
-            connectionId,
+            ...target,
             path: `/api/move/uploads/${state.id}/chunk`,
             method: 'POST',
             body: { offset: at, data: toBase64(bytes.subarray(at, at + CHUNK)) }
           })
         } catch (error) {
           if (refusalCode(error) === 'offset_gap' || refusalCode(error) === 'not_uploading') {
-            return request<MoveState>({ connectionId, path: `/api/move/uploads/${state.id}` })
+            return request<MoveState>({ ...target, path: `/api/move/uploads/${state.id}` })
           }
 
           throw error
@@ -241,7 +300,7 @@ export async function upload(
 
     try {
       return await retry(
-        () => request<MoveState>({ connectionId, path: `/api/move/uploads/${state.id}/finish`, method: 'POST' }),
+        () => request<MoveState>({ ...target, path: `/api/move/uploads/${state.id}/finish`, method: 'POST' }),
         error => final(error) || refusalCode(error) === 'digest_mismatch'
       )
     } catch (error) {
@@ -259,7 +318,7 @@ export async function upload(
  *  a replace without `confirm_replace`, which only the confirmation step sets. */
 export async function apply(
   request: MoveRequestFn,
-  connectionId: string,
+  target: MoveEndpoint,
   moveId: string,
   replace: readonly Part[] = []
 ): Promise<MoveState> {
@@ -268,7 +327,7 @@ export async function apply(
   return retry(
     () =>
       request<MoveState>({
-        connectionId,
+        ...target,
         path: `/api/move/uploads/${moveId}/apply`,
         method: 'POST',
         body,
@@ -278,12 +337,12 @@ export async function apply(
   )
 }
 
-export async function undo(request: MoveRequestFn, connectionId: string, moveId: string): Promise<MoveState> {
-  return request<MoveState>({ connectionId, path: `/api/move/uploads/${moveId}/undo`, method: 'POST', body: {} })
+export async function undo(request: MoveRequestFn, target: MoveEndpoint, moveId: string): Promise<MoveState> {
+  return request<MoveState>({ ...target, path: `/api/move/uploads/${moveId}/undo`, method: 'POST', body: {} })
 }
 
-export async function cleanupLocal(request: MoveRequestFn, name: null | string): Promise<void> {
+export async function cleanupLocal(request: MoveRequestFn, source: MoveEndpoint, name: null | string): Promise<void> {
   if (name) {
-    await request({ connectionId: LOCAL, path: `/api/move/bundle/${name}`, method: 'DELETE' }).catch(() => undefined)
+    await request({ ...source, path: `/api/move/bundle/${name}`, method: 'DELETE' }).catch(() => undefined)
   }
 }

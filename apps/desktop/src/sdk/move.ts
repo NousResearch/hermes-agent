@@ -5,8 +5,9 @@
  * generic plugin REST door stays namespace-scoped, and this one reaches exactly one route family.
  */
 
+import { hermesApiAs } from '@/api/client'
 import type { DesktopCloudAgent, DesktopCloudDiscoverResult, DesktopCloudStatus } from '@/global'
-import { hermesApi } from '@/hermes'
+import { resolveOwnerNow } from '@/hermes'
 import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
 
 const MOVE_PATH = /^\/api\/move\/(bundle|uploads)(\/[A-Za-z0-9._-]+(\/(chunk|finish|apply|undo))?)?(\?.*)?$/
@@ -20,14 +21,22 @@ export interface BackupResult {
 }
 
 export interface MoveRequest {
-  /** `'local'` for this computer's backend, else a registry connection id. */
-  connectionId: string
+  /** A registry connection id (`'local'` is this computer's); null is the window's own backend. */
+  connectionId: null | string
   path: string
   method?: 'DELETE' | 'GET' | 'POST'
   body?: unknown
-  /** Remote profile on that connection (default: its default profile). */
-  profile?: string
+  /** The profile on that connection. Required: one gateway may serve several profiles, and the
+   *  move routes refuse to guess. */
+  profile: string
   timeoutMs?: number
+}
+
+/** The gateway connection and profile a backup or move acts on. A null connection is the
+ *  window's own (legacy primary) backend. */
+export interface MoveOwner {
+  connectionId: null | string
+  profile: string
 }
 
 function bridge() {
@@ -45,11 +54,20 @@ export const move = {
    *  Cloud itself serves (the same rule that hides the updater there): that tab IS a cloud agent. */
   transferAvailable: (): boolean => !servedByHermesCloud(),
 
+  /** The active connection and profile, resolved NOW: a flow captures it once at its start so a
+   *  profile or gateway switch mid-flow cannot move its tail onto another backend. One gateway may
+   *  serve several profiles, and its destructive move routes refuse an unnamed one. */
+  owner: (): MoveOwner => {
+    const owner = resolveOwnerNow()
+
+    return { connectionId: owner.connectionId, profile: owner.profile || 'default' }
+  },
+
   /** `hermes backup` of the whole Hermes home (every profile; credentials included, so the user
    *  keeps the file private), then a save of the archive to this computer. `onLine` gets the
    *  command's output as it runs. */
-  backup: async (onLine?: (lines: string[]) => void): Promise<BackupResult> => {
-    const started = await hermesApi<{ archive?: string; name: string }>({
+  backup: async (owner: MoveOwner, onLine?: (lines: string[]) => void): Promise<BackupResult> => {
+    const started = await hermesApiAs<{ archive?: string; name: string }>(owner, {
       body: {},
       method: 'POST',
       path: '/api/ops/backup'
@@ -62,7 +80,7 @@ export const move = {
     for (;;) {
       await new Promise(resolve => setTimeout(resolve, BACKUP_POLL_MS))
 
-      const status = await hermesApi<{ exit_code: null | number; lines: string[]; running: boolean }>({
+      const status = await hermesApiAs<{ exit_code: null | number; lines: string[]; running: boolean }>(owner, {
         path: `/api/actions/${encodeURIComponent(started.name)}/status?lines=40`
       })
 
@@ -83,7 +101,7 @@ export const move = {
       return { archive: started.archive, saved: false }
     }
 
-    const result = await save({ path: started.archive, suggestedName: started.archive.split(/[\\/]/).pop() })
+    const result = await save({ ...owner, path: started.archive, suggestedName: started.archive.split(/[\\/]/).pop() })
 
     return { archive: started.archive, saved: result.saved }
   },
@@ -95,15 +113,8 @@ export const move = {
 
     bridge()
 
-    return hermesApi<T>({
-      body,
-      connectionId,
-      method,
-      path,
-      priority: 'foreground',
-      timeoutMs: timeoutMs ?? 120_000,
-      ...(profile ? { profile } : {})
-    })
+    // `hermesApiAs`: the captured owner is sent verbatim, never the ambient connection.
+    return hermesApiAs<T>({ connectionId, profile }, { body, method, path, timeoutMs: timeoutMs ?? 120_000 })
   },
 
   cloudStatus: async (): Promise<DesktopCloudStatus> => {

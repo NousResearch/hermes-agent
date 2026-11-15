@@ -20,7 +20,10 @@ import {
   buildAndRead,
   type BundleInventory,
   cleanupLocal,
+  cloudEndpoint,
   inventory,
+  type MoveEndpoint,
+  moveOutcome,
   type MovePreview,
   type MoveRequestFn,
   type MoveState,
@@ -48,10 +51,23 @@ type Phase =
   | { kind: 'signin' }
   | { kind: 'agents' }
   | { kind: 'working'; progress: Progress }
-  | { kind: 'confirm'; state: MoveState; connectionId: string; agent: CloudAgent }
-  | { kind: 'done'; state: MoveState; connectionId: string; agent: CloudAgent }
+  | { kind: 'confirm'; state: MoveState; target: MoveEndpoint }
+  | { kind: 'done'; state: MoveState; target: MoveEndpoint }
   | { kind: 'undone' }
-  | { kind: 'error'; message: string }
+  | { kind: 'undoFailed'; problems: string[]; target: MoveEndpoint; moveId: string }
+  | { kind: 'error'; message: string; retry: () => void }
+
+/** A bundle built this session, kept until it lands so a retry resumes its digest-keyed upload
+ *  instead of packing a new one (a fresh ZIP has a new digest, so the receiver starts over). */
+interface BuiltBundle {
+  source: MoveEndpoint
+  includeHistory: boolean
+  inventory: BundleInventory
+  bytes: Uint8Array
+  sha256: string
+}
+
+const sameEndpoint = (a: MoveEndpoint, b: MoveEndpoint) => a.connectionId === b.connectionId && a.profile === b.profile
 
 const request: MoveRequestFn = req => move.request(req)
 
@@ -389,7 +405,7 @@ function BackupCard({ copy }: { copy: MoveCopy }) {
     setResult('')
 
     try {
-      const done = await move.backup(lines => setLastLine(lines.at(-1) ?? ''))
+      const done = await move.backup(move.owner(), lines => setLastLine(lines.at(-1) ?? ''))
       setArchive(done.archive)
       setResult(done.saved ? 'saved' : 'unsaved')
     } catch (error) {
@@ -446,18 +462,23 @@ interface DoneProps {
 }
 
 function DoneView({ copy, state, keys, onUndo, onRetry, onOpen }: DoneProps) {
-  const applied = state.status === 'applied'
-  const failed = Object.entries(state.steps ?? {}).filter(([, step]) => step.status === 'failed')
+  const { complete: applied, steps: failed } = moveOutcome(state)
 
   return (
     <section className="flex flex-col gap-5">
       <div>
         <h2 className="text-lg font-medium">{applied ? copy.doneTitle : copy.partialTitle}</h2>
         <p className="mt-1 text-sm text-(--ui-text-secondary)">{applied ? copy.doneHelp : copy.partialHelp}</p>
-        {failed.map(([name, step]) => (
-          <p className="mt-2 text-sm text-destructive" key={name}>
-            {copy.failedStep(name, step.error ?? '')}
-          </p>
+        {failed.map(({ step, failed: items, errors }) => (
+          <div className="mt-2 text-sm text-destructive" key={step}>
+            <p>{items ? copy.failedItems(step, items) : copy.failedStep(step, errors[0] ?? '')}</p>
+            {items > 0 &&
+              errors.map(error => (
+                <p className="text-xs" key={error}>
+                  {error}
+                </p>
+              ))}
+          </div>
         ))}
       </div>
       <KeysChecklist copy={copy} keys={keys} />
@@ -471,6 +492,25 @@ function DoneView({ copy, state, keys, onUndo, onRetry, onOpen }: DoneProps) {
           </Button>
         )}
         <Button onClick={onOpen}>{copy.openAgent}</Button>
+      </div>
+    </section>
+  )
+}
+
+function UndoFailedView({ copy, problems, onRetry }: { copy: MoveCopy; problems: string[]; onRetry: () => void }) {
+  return (
+    <section className="flex flex-col gap-3">
+      <h2 className="text-lg font-medium">{copy.undoProblemsTitle}</h2>
+      <p className="text-sm text-(--ui-text-secondary)">{copy.undoProblemsHelp}</p>
+      <ul className="text-sm text-destructive">
+        {problems.map(problem => (
+          <li key={problem}>{problem}</li>
+        ))}
+      </ul>
+      <div className="flex justify-end">
+        <Button onClick={onRetry} variant="secondary">
+          {copy.retryUndo}
+        </Button>
       </div>
     </section>
   )
@@ -502,7 +542,12 @@ export function agentHint(hash: string): string {
 }
 
 /** Cloud sign-in and agent discovery, including the team picker a multi-team account needs. */
-function useCloudAgents(enabled: boolean, onSignedOut: () => void, onError: (message: string) => void) {
+function useCloudAgents(
+  enabled: boolean,
+  onSignedOut: () => void,
+  onSignedIn: () => void,
+  onError: (message: string, retry: () => void) => void
+) {
   const [agents, setAgents] = useState<CloudAgent[] | null>(null)
   const [org, setOrg] = useState<string | undefined>()
   const [orgs, setOrgs] = useState<Org[] | null>(null)
@@ -520,20 +565,18 @@ function useCloudAgents(enabled: boolean, onSignedOut: () => void, onError: (mes
 
         if ('needsOrgSelection' in result && result.needsOrgSelection) {
           setOrgs(result.orgs)
-
-          return
-        }
-
-        if ('agents' in result) {
+        } else if ('agents' in result) {
           setOrgs(null)
           setAgents(result.agents)
           setOrg(result.org?.slug ?? result.org?.id ?? orgId)
         }
+
+        onSignedIn()
       } catch (error) {
-        onError(refusalMessage(error))
+        onError(refusalMessage(error), () => void discover(orgId))
       }
     },
-    [onError, onSignedOut]
+    [onError, onSignedIn, onSignedOut]
   )
 
   useEffect(() => {
@@ -558,7 +601,7 @@ function useInventory(enabled: boolean, includeHistory: boolean) {
     let live = true
     setInv(null)
     setInvError('')
-    inventory(request, includeHistory).then(
+    inventory(request, move.owner(), includeHistory).then(
       value => live && setInv(value),
       error => live && setInvError(refusalMessage(error))
     )
@@ -571,6 +614,40 @@ function useInventory(enabled: boolean, includeHistory: boolean) {
   return { inv, invError, setInv }
 }
 
+/** The source bundle for a move: the one this session already built when it still matches (same
+ *  owner, same history choice), else a fresh build. The local ZIP is deleted once read: the bytes
+ *  live in memory for the session. Cross-restart resume would need the bundle persisted: not done. */
+function useSourceBundle() {
+  const kept = useRef<BuiltBundle | null>(null)
+
+  const get = async (
+    source: MoveEndpoint,
+    includeHistory: boolean,
+    onProgress: (p: Progress) => void,
+    signal: AbortSignal
+  ): Promise<BuiltBundle> => {
+    const prior = kept.current
+
+    if (prior && sameEndpoint(prior.source, source) && prior.includeHistory === includeHistory) {
+      return prior
+    }
+
+    let name: null | string = null
+
+    try {
+      const built = await buildAndRead(request, source, includeHistory, onProgress, signal)
+      name = built.inventory.name
+      kept.current = { ...built, includeHistory, sha256: await sha256Hex(built.bytes), source }
+
+      return kept.current
+    } finally {
+      void cleanupLocal(request, source, name)
+    }
+  }
+
+  return { get, landed: () => (kept.current = null) }
+}
+
 export function MoveToCloudPage({ openExternal }: { openExternal: (url: string) => Promise<boolean> }) {
   const copy = useCopy()
   const transfer = move.transferAvailable()
@@ -579,9 +656,18 @@ export function MoveToCloudPage({ openExternal }: { openExternal: (url: string) 
   const [includeHistory, setIncludeHistory] = useState(true)
   const abort = useRef<AbortController | null>(null)
   const signedOut = useCallback(() => setPhase({ kind: 'signin' }), [])
-  const failed = useCallback((message: string) => setPhase({ kind: 'error', message }), [])
-  const cloud = useCloudAgents(transfer, signedOut, failed)
+
+  // Discovery answered: leave the sign-in screen, or the error screen whose Retry re-ran it.
+  const signedIn = useCallback(
+    () => setPhase(current => (current.kind === 'signin' || current.kind === 'error' ? { kind: 'agents' } : current)),
+    []
+  )
+
+  const failed = useCallback((message: string, retry: () => void) => setPhase({ kind: 'error', message, retry }), [])
+
+  const cloud = useCloudAgents(transfer, signedOut, signedIn, failed)
   const { inv, invError, setInv } = useInventory(transfer, includeHistory)
+  const bundle = useSourceBundle()
 
   useEffect(() => () => abort.current?.abort(), [])
 
@@ -595,50 +681,46 @@ export function MoveToCloudPage({ openExternal }: { openExternal: (url: string) 
     }
   }, [cloud.agents, hint])
 
-  const run = async (agent: CloudAgent) => {
+  // The owner is read once, at the first start: a profile switch mid-move (or before its retry)
+  // must not split one move across two profiles.
+  const run = async (agent: CloudAgent, source: MoveEndpoint = move.owner()) => {
     const controller = new AbortController()
     abort.current = controller
     const onProgress = (progress: Progress) => setPhase({ kind: 'working', progress })
-    let bundle: null | string = null
 
     try {
       onProgress({ phase: 'build', done: 0, total: 1 })
-      const connectionId = await move.connectCloudAgent(agent, cloud.org)
-      const built = await buildAndRead(request, includeHistory, onProgress, controller.signal)
-      bundle = built.inventory.name
+      const target = cloudEndpoint(await move.connectCloudAgent(agent, cloud.org))
+      const built = await bundle.get(source, includeHistory, onProgress, controller.signal)
       setInv(built.inventory)
-
-      const state = await upload(
-        request,
-        connectionId,
-        built.bytes,
-        await sha256Hex(built.bytes),
-        onProgress,
-        controller.signal
-      )
-
-      setPhase({ kind: state.status === 'applied' ? 'done' : 'confirm', state, connectionId, agent })
+      const state = await upload(request, target, built.bytes, built.sha256, onProgress, controller.signal)
+      bundle.landed()
+      setPhase({ kind: state.status === 'applied' ? 'done' : 'confirm', state, target })
     } catch (error) {
-      setPhase(controller.signal.aborted ? { kind: 'agents' } : { kind: 'error', message: refusalMessage(error) })
-    } finally {
-      void cleanupLocal(request, bundle)
+      setPhase(
+        controller.signal.aborted
+          ? { kind: 'agents' }
+          : { kind: 'error', message: refusalMessage(error), retry: () => void run(agent, source) }
+      )
     }
   }
 
-  const merge = async (connectionId: string, agent: CloudAgent, moveId: string, replace: Part[] = []) => {
+  const merge = async (target: MoveEndpoint, moveId: string, replace: Part[] = []) => {
     setPhase({ kind: 'working', progress: { phase: 'apply', done: 0, total: 1 } })
 
     try {
-      setPhase({ kind: 'done', state: await apply(request, connectionId, moveId, replace), connectionId, agent })
+      setPhase({ kind: 'done', state: await apply(request, target, moveId, replace), target })
     } catch (error) {
-      setPhase({ kind: 'error', message: refusalMessage(error) })
+      setPhase({ kind: 'error', message: refusalMessage(error), retry: () => void merge(target, moveId, replace) })
     }
   }
 
-  const revert = async (connectionId: string, moveId: string) => {
+  const revert = async (target: MoveEndpoint, moveId: string) => {
     try {
-      await undo(request, connectionId, moveId)
-      setPhase({ kind: 'undone' })
+      const { undoProblems } = moveOutcome(await undo(request, target, moveId))
+      setPhase(
+        undoProblems.length ? { kind: 'undoFailed', problems: undoProblems, target, moveId } : { kind: 'undone' }
+      )
     } catch (error) {
       host.notifyError(error, copy.errorTitle)
     }
@@ -655,12 +737,16 @@ export function MoveToCloudPage({ openExternal }: { openExternal: (url: string) 
     ),
     error: () => (
       <ErrorState description={phase.kind === 'error' ? phase.message : ''} title={copy.errorTitle}>
-        <Button onClick={() => setPhase({ kind: 'agents' })} variant="secondary">
+        <Button onClick={() => phase.kind === 'error' && phase.retry()} variant="secondary">
           {copy.tryAgain}
         </Button>
       </ErrorState>
     ),
     undone: () => <PanelEmpty description={copy.undone} icon="discard" title={copy.title} />,
+    undoFailed: () =>
+      phase.kind === 'undoFailed' && (
+        <UndoFailedView copy={copy} onRetry={() => void revert(phase.target, phase.moveId)} problems={phase.problems} />
+      ),
     agents: () =>
       cloud.orgs ? (
         <OrgPicker copy={copy} onPick={org => void cloud.discover(org)} orgs={cloud.orgs} />
@@ -687,7 +773,7 @@ export function MoveToCloudPage({ openExternal }: { openExternal: (url: string) 
       phase.state.preview && (
         <ConfirmView
           copy={copy}
-          onApply={replace => void merge(phase.connectionId, phase.agent, phase.state.id, replace)}
+          onApply={replace => void merge(phase.target, phase.state.id, replace)}
           onCancel={() => setPhase({ kind: 'agents' })}
           preview={phase.state.preview}
         />
@@ -697,9 +783,11 @@ export function MoveToCloudPage({ openExternal }: { openExternal: (url: string) 
         <DoneView
           copy={copy}
           keys={inv?.keys_to_reenter ?? []}
-          onOpen={() => void host.ensureAgent(phase.connectionId, 'default').then(() => host.navigate('/'))}
-          onRetry={() => void merge(phase.connectionId, phase.agent, phase.state.id)}
-          onUndo={() => void revert(phase.connectionId, phase.state.id)}
+          onOpen={() =>
+            void host.ensureAgent(phase.target.connectionId, phase.target.profile).then(() => host.navigate('/'))
+          }
+          onRetry={() => void merge(phase.target, phase.state.id)}
+          onUndo={() => void revert(phase.target, phase.state.id)}
           state={phase.state}
         />
       )

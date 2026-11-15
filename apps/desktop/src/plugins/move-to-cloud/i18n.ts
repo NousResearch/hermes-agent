@@ -84,6 +84,7 @@ const en = {
   partialTitle: 'Moved, with problems',
   partialHelp: 'Some parts did not merge. Try again to finish them; the parts that worked are not repeated.',
   failedStep: (step: string, error: string) => `${step}: ${error}`,
+  failedItems: (step: string, n: number) => `${step}: ${n} item${n === 1 ? '' : 's'} did not move`,
   retry: 'Try again',
   keysTitle: 'Enter these keys on the cloud agent',
   keysHelp: 'Keys never leave this computer. Add each one in the cloud agent’s settings.',
@@ -92,6 +93,9 @@ const en = {
   openAgent: 'Open the cloud agent',
   undo: 'Undo this move',
   undone: 'The move was undone. The cloud agent is as it was.',
+  undoProblemsTitle: 'Undo did not finish',
+  undoProblemsHelp: 'These could not be put back. Try again to finish the undo.',
+  retryUndo: 'Try undo again',
   errorTitle: 'The move stopped',
   tryAgain: 'Try again'
 }

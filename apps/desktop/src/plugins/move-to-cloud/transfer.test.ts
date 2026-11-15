@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
 import { agentHint } from './page'
-import { apply, buildAndRead, LOCAL, type MoveRequestFn, refusalCode, refusalMessage, upload } from './transfer'
+import {
+  apply,
+  buildAndRead,
+  cloudEndpoint,
+  moveOutcome,
+  type MoveRequestFn,
+  refusalCode,
+  refusalMessage,
+  upload
+} from './transfer'
+
+const CLOUD = cloudEndpoint('cloud-1')
 
 // The bridge rejects with `Error("<status>: <json detail>")`; mirror that shape exactly.
 const refuse = (status: number, code: string, message = code) =>
@@ -93,7 +104,7 @@ describe('upload', () => {
   it('sends every byte and finishes', async () => {
     const r = fakeReceiver()
     const bytes = payload(5 * 1024 * 1024 + 17)
-    const state = await upload(r.request, 'cloud-1', bytes, 'a'.repeat(64), () => {})
+    const state = await upload(r.request, CLOUD, bytes, 'a'.repeat(64), () => {})
     expect(state.status).toBe('ready')
     expect([...r.moves.values()][0].data).toEqual(bytes)
   }, 30_000)
@@ -101,12 +112,12 @@ describe('upload', () => {
   it('retries a dropped chunk and resumes an interrupted upload at the receiver offset', async () => {
     const r = fakeReceiver({ failChunks: 2 })
     const bytes = payload(3 * 1024 * 1024)
-    await upload(r.request, 'cloud-1', bytes, 'b'.repeat(64), () => {})
+    await upload(r.request, CLOUD, bytes, 'b'.repeat(64), () => {})
     const chunkCalls = r.calls.filter(c => c.endsWith('/chunk'))
     expect(chunkCalls.length).toBe(4)
 
     // A second run with the same digest re-attaches to the finished upload instead of resending.
-    const again = await upload(r.request, 'cloud-1', bytes, 'b'.repeat(64), () => {})
+    const again = await upload(r.request, CLOUD, bytes, 'b'.repeat(64), () => {})
     expect(again.id).toBe('m0')
     expect(r.calls.filter(c => c.endsWith('/chunk')).length).toBe(4)
   }, 30_000)
@@ -114,7 +125,7 @@ describe('upload', () => {
   it('restarts once from zero when the bytes arrive damaged', async () => {
     const r = fakeReceiver({ corruptOnce: true })
     const bytes = payload(1024)
-    const state = await upload(r.request, 'cloud-1', bytes, 'c'.repeat(64), () => {})
+    const state = await upload(r.request, CLOUD, bytes, 'c'.repeat(64), () => {})
     expect(state.status).toBe('ready')
     expect(r.calls.filter(c => c.endsWith('/finish')).length).toBe(2)
   })
@@ -124,7 +135,7 @@ describe('upload', () => {
       throw refuse(413, 'too_large', 'The bundle is 600 MB; the limit is 512 MB.')
     }
 
-    await expect(upload(request, 'cloud-1', payload(10), 'd'.repeat(64), () => {})).rejects.toThrow('600 MB')
+    await expect(upload(request, CLOUD, payload(10), 'd'.repeat(64), () => {})).rejects.toThrow('600 MB')
   })
 })
 
@@ -143,22 +154,22 @@ describe('apply', () => {
 
   it('merges with no replace choice, and replaces only the named parts with the confirmation', async () => {
     const merge = recorder()
-    await apply(merge.request, 'cloud', 'm0')
+    await apply(merge.request, CLOUD, 'm0')
     expect(merge.bodies).toEqual([{}])
 
     const replace = recorder()
-    await apply(replace.request, 'cloud', 'm0', ['memory', 'sessions'])
+    await apply(replace.request, CLOUD, 'm0', ['memory', 'sessions'])
     expect(replace.bodies).toEqual([{ confirm_replace: true, replace: ['memory', 'sessions'] }])
   })
 })
 
 describe('buildAndRead', () => {
-  it('reads the built bundle back in chunks', async () => {
+  it('reads the built bundle back in chunks, every call on the captured source profile', async () => {
     const bytes = payload(9000)
     const seen: string[] = []
 
-    const request: MoveRequestFn = async <T>(req: { connectionId: string; path: string }) => {
-      seen.push(req.connectionId)
+    const request: MoveRequestFn = async <T>(req: { connectionId: null | string; path: string; profile: string }) => {
+      seen.push(`${req.connectionId}/${req.profile}`)
 
       if (req.path === '/api/move/bundle') {
         return { name: 'move-0123456789abcdef.zip', bytes: bytes.length } as T
@@ -170,9 +181,45 @@ describe('buildAndRead', () => {
       return { data: b64(part), done: offset + part.length >= bytes.length } as T
     }
 
-    const out = await buildAndRead(request, true, () => {})
+    const out = await buildAndRead(request, { connectionId: 'local', profile: 'work' }, true, () => {})
     expect(out.bytes).toEqual(bytes)
-    expect(new Set(seen)).toEqual(new Set([LOCAL]))
+    expect(new Set(seen)).toEqual(new Set(['local/work']))
+  })
+})
+
+describe('moveOutcome', () => {
+  it('reports a step with failed items and a status-failed step as left to retry', () => {
+    const out = moveOutcome({
+      id: 'm0',
+      status: 'partial',
+      bytes: 1,
+      received: 1,
+      steps: {
+        memory: { status: 'done' },
+        sessions: { status: 'done', failed: 2, errors: ['a: boom', 'b: boom'] },
+        skills: { status: 'failed', error: 'disk full' }
+      }
+    })
+
+    expect(out.complete).toBe(false)
+    expect(out.steps).toEqual([
+      { step: 'sessions', failed: 2, errors: ['a: boom', 'b: boom'] },
+      { step: 'skills', failed: 0, errors: ['disk full'] }
+    ])
+    expect(
+      moveOutcome({ id: 'm0', status: 'applied', bytes: 1, received: 1, steps: { memory: { status: 'done' } } })
+        .complete
+    ).toBe(true)
+  })
+
+  it('treats an undo with problems as incomplete, wherever the receiver reports them', () => {
+    const base = { id: 'm0', status: 'undone' as const, bytes: 1, received: 1 }
+    expect(moveOutcome({ ...base, undo_problems: ['SOUL.md: busy'] })).toMatchObject({
+      complete: false,
+      undoProblems: ['SOUL.md: busy']
+    })
+    expect(moveOutcome({ ...base, result: { undo_problems: ['x'] } }).undoProblems).toEqual(['x'])
+    expect(moveOutcome({ ...base, undo_problems: [] }).complete).toBe(true)
   })
 })
 

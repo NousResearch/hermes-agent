@@ -1078,3 +1078,7 @@ libText.messages.backgroundProcessFinished: "bakgrundsprocessen är klar"
 libText.messages.backgroundAgentWorkFinished: "underagentens bakgrundsarbete är klart"
 libText.messages.backgroundAgentsFinishedOne: "{0} underagent i bakgrunden är klar"
 libText.messages.backgroundAgentsFinishedOther: "{0} underagenter i bakgrunden är klara"
+
+libText.attachments.imageToken: "[[ Bild {0} ]]"
+libText.completion.unavailable: "komplettering är inte tillgänglig"
+libText.completion.unavailableMeta: "inte tillgänglig"

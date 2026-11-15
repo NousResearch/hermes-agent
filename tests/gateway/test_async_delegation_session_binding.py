@@ -96,6 +96,110 @@ class TestGatewayPinningFailsClosed:
         runner.session_store.switch_session.assert_not_called()
         runner.session_store.advance_compression_session.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_child_created_as_subagent_never_takes_the_chat_route(self):
+        """A completion pinned to a row CREATED as a subagent must not hand the chat's routing key
+        to it, whatever its current ``source`` says.
+
+        A subagent's background process runs under the PARENT chat's routing key while recording the
+        CHILD's session id, so the child id arrives as the pin. The gateway's own peer stamp then
+        rewrites that row's ``source`` to the chat's surface, which is why ``created_source`` — the
+        immutable provenance column (#56439) — is what identifies it here.
+        """
+        current = self._entry("sess_current")
+        runner = self._make_runner(
+            {
+                "sub_agent": {
+                    "id": "sub_agent",
+                    "ended_at": None,
+                    "source": "telegram",
+                    "created_source": "subagent",
+                }
+            },
+            switched_entry=self._entry("sub_agent"),
+        )
+
+        resolved = await runner._resolve_async_delegation_session(current, "sub_agent")
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_child_still_identified_by_source_never_takes_the_chat_route(self):
+        """Rows written before ``created_source`` existed are still refused on ``source`` alone."""
+        current = self._entry("sess_current")
+        runner = self._make_runner(
+            {"sub_agent": {"id": "sub_agent", "ended_at": None, "source": "subagent"}},
+            switched_entry=self._entry("sub_agent"),
+        )
+
+        resolved = await runner._resolve_async_delegation_session(current, "sub_agent")
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_delegate_child_with_provenance_still_reaches_its_parent(self):
+        """The guard stays limited to UNRESOLVABLE provenance: a child that still carries
+        ``model_config._delegate_from`` is canonicalized to the human-facing parent and delivered,
+        never dropped — dropping it would lose the user-visible wake-up (#136225)."""
+        current = self._entry("sess_main")
+        runner = self._make_runner(
+            {
+                "sub_agent": {
+                    "id": "sub_agent",
+                    "ended_at": None,
+                    "source": "subagent",
+                    "created_source": "subagent",
+                    "model_config": {"_delegate_from": "sess_main"},
+                },
+                "sess_main": {"id": "sess_main", "ended_at": None},
+            },
+            switched_entry=current,
+        )
+
+        resolved = await runner._resolve_async_delegation_session(current, "sub_agent")
+
+        assert resolved is current
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_peer_stamped_child_is_refused_on_a_real_sessiondb(self, tmp_path):
+        """The crosstalk shape end to end: a real child row, the real gateway peer stamp that
+        rewrites its ``source`` onto the chat's surface, and a resolver that must still refuse it.
+
+        This is the sequence the incident left behind — ``source`` now reads as the chat's own, so
+        only ``created_source`` distinguishes the child from a legitimate chat session.
+        """
+        from gateway.run import GatewayRunner
+        from gateway.session import AsyncSessionStore
+        from hermes_state import AsyncSessionDB, SessionDB
+
+        current = self._entry("sess_chat")
+        session_db = SessionDB(db_path=tmp_path / "state.db")
+        session_db.create_session("sess_chat", source="telegram")
+        session_db.create_session("sess_child", source="subagent", parent_session_id="sess_chat")
+        # What the hijack performs on the child row: the CHAT's routing identity lands on it.
+        session_db.record_gateway_session_peer(
+            "sess_child", source="telegram", session_key=current.session_key,
+        )
+        stamped = session_db.get_session("sess_child")
+        assert stamped is not None
+        assert stamped["source"] == "telegram", "fixture must model the restamped surface"
+        assert stamped["created_source"] == "subagent"
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_db = AsyncSessionDB(session_db)
+        runner.session_store = MagicMock()
+        runner.session_store.switch_session = MagicMock(return_value=self._entry("sess_child"))
+        runner.session_store.advance_compression_session = MagicMock()
+        runner._async_session_store = AsyncSessionStore(runner.session_store)
+
+        resolved = await runner._resolve_async_delegation_session(current, "sess_child")
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
 
     @pytest.mark.asyncio
     async def test_live_spawning_session_rebinds_from_different_route(self):
@@ -389,6 +493,8 @@ def _build_delegate_chain(db, parent, case):
         "malformed": "{broken", "nonobject": [], "invalid_marker": {"_delegate_from": 7},
         "empty_marker": {"_delegate_from": ""}, "null_marker": {"_delegate_from": None},
         "markerless": {}, "null_config": "null", "absent_config": None,
+        # ``generic_parent``: the marker is stripped AND ``_apply_route_case`` restamps ``source``
+        # with the chat's own surface — a child that only ``created_source`` still identifies.
         "generic_parent": {}, "current_malformed": "{broken",
     }
     if case in configs:
@@ -480,6 +586,10 @@ async def test_delegate_completion_preserves_real_route_ownership(
         rejected = case in {
             "over_limit", "missing", "cycle", "malformed", "nonobject", "invalid_marker",
             "empty_marker", "null_marker", "markerless", "null_config", "absent_config",
+            # ``generic_parent`` is the same child with its ``_delegate_from`` marker removed AND
+            # its ``source`` restamped to the chat's surface; ``created_source`` still says
+            # ``subagent``, so its provenance is not walked and the route stays put.
+            "generic_parent",
             "current_boundary", "parent_boundary", "child_boundary", "intermediate_boundary", "compression_foreign",
         }
         resolved = []
@@ -512,7 +622,7 @@ async def test_delegate_completion_preserves_real_route_ownership(
             row = ad.get_durable_delegation(event["delegation_id"])
             assert row is not None
             assert row["delivery_state"] == ("dropped" if rejected else "delivered")
-        expected = "continuation" if case == "compression" else pinned if case == "generic_parent" else route_before
+        expected = "continuation" if case == "compression" else route_before
         assert resolved == ([] if rejected else [expected])
         current = store.lookup_by_session_key(entry.session_key)
         assert current is not None

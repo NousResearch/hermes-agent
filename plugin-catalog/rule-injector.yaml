@@ -1,6 +1,6 @@
 name: rule-injector
 repo: https://github.com/klautimus/hermes-rule-injector
-sha: dc6edbb5dc5e54eb176e4f06a8d40d69054cf1e1
+sha: 7da7aa39de85aec0c0a387800d279e7ebf036da6
 description: >-
   Moves agent behavioural rules out of the system prompt and injects each one at
   the point of need, through three hooks: pre_llm_call for behavioural guards,
@@ -11,23 +11,26 @@ description: >-
   optional adjudicator adds a semantic second pass over ambiguous turns, and
   propose.py drafts a rule from a user correction. Ships a local web dashboard
   (`python3 dashboard.py`, FastAPI, read-only) that lists the rule set and the
-  recent activation trace, and six starter rules; rules.json is a template the
+  recent activation trace, and seven starter rules; rules.json is a template the
   user replaces. Disclosure — writes one activation trace line per fired rule to
-  ~/.hermes/logs/rule-injector-trace.jsonl, and writes rules.json when a rule is
-  created through its own CLI; no network calls, no shell, no telemetry; the
-  dashboard reads that rules file and trace log from disk and adds fastapi +
-  uvicorn only if the user installs and runs it; the optional adjudicator, only
-  when enabled, sends the current turn to the auxiliary provider the user has
-  configured, using Hermes' own auxiliary client and credentials (the plugin
-  stores and reads no keys).
+  the active HERMES_HOME's logs/ directory and writes rules.json when a rule is
+  created through its own CLI (paths resolve through
+  hermes_constants.get_hermes_home, so a profile is honoured); no shell and no
+  telemetry; the dashboard reads that rules file and trace log from disk and adds
+  fastapi + uvicorn only if the user installs and runs it; semantic triggers
+  download a sentence-transformers embedding model from Hugging Face once and
+  then infer locally; the optional adjudicator, only when enabled, sends the
+  current turn to the host's active model through ctx.llm.complete (Hermes' plugin
+  LLM facade) — the plugin holds no key, reads no credential store and sends no
+  provider override.
 maintainer: klautimus
 tier: community
 category: automation
 docs_url: https://github.com/klautimus/hermes-rule-injector#readme
-version: "1.0.0"
+version: "1.1.0"
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/klautimus/hermes-rule-injector/dc6edbb5dc5e54eb176e4f06a8d40d69054cf1e1/docs/dashboard.png
+  - https://raw.githubusercontent.com/klautimus/hermes-rule-injector/7da7aa39de85aec0c0a387800d279e7ebf036da6/docs/dashboard.png
 capabilities:
   provides_tools: []
   provides_hooks:

@@ -29,7 +29,7 @@ from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v14"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v15"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
@@ -175,6 +175,7 @@ def _main_guard_body_lines(file_path: Path) -> set[int]:
 
 # Nodes that can own a docstring: only the first statement of a module, class or function is one.
 _DOCSTRING_OWNERS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+_DOCSTRING_READERS = frozenset({"__doc__", "getdoc"})
 
 
 def _docstring_lines(file_path: Path) -> set[int]:
@@ -190,13 +191,26 @@ def _docstring_lines(file_path: Path) -> set[int]:
     if tree is None:
         return set()
     lines: set[int] = set()
+    docstrings: set[int] = set()
     for node in ast.walk(tree):
+        # A file that reads docstrings back (``f.__doc__``, ``getattr(f, "__doc__")``, ``inspect.getdoc``)
+        # can hand one to a shell, so none of its docstrings counts as prose.
+        if (isinstance(node, ast.Attribute) and node.attr in _DOCSTRING_READERS
+                or isinstance(node, ast.Name) and node.id in _DOCSTRING_READERS
+                or isinstance(node, ast.Constant) and node.value in _DOCSTRING_READERS):
+            return set()
         if not isinstance(node, _DOCSTRING_OWNERS) or not node.body:
             continue
         first = node.body[0]
         if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
                 and isinstance(first.value.value, str)):
+            docstrings.add(id(first))
             lines.update(range(first.lineno, getattr(first, "end_lineno", first.lineno) + 1))
+    # A line a docstring shares with code (``"""x"""; os.system(...)``, ``def f(): """…"""``) is code.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.stmt) and id(node) not in docstrings:
+            last = node.lineno if hasattr(node, "body") else getattr(node, "end_lineno", node.lineno)
+            lines.difference_update(range(node.lineno, last + 1))
     return lines
 
 

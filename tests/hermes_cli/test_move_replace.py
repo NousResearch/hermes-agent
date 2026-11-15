@@ -132,3 +132,36 @@ def test_merge_by_default_and_replace_needs_the_part_named(tmp_path):
     assert sorted(visible_session_ids(cloud)) == ["cl1", "lap1"]
     with zipfile.ZipFile(tmp_path / "move.zip") as zf:
         assert ".env" not in zf.namelist()
+
+
+def test_a_chat_an_earlier_move_left_deleted_comes_back_through_the_live_owner(tmp_path):
+    """The owner's ``session.mutate`` refuses a fenced id with the bare ``admission_conflict`` code
+    (all a live adapter passes on), and its receipts replay by request id: a second move of the same
+    bundle must still bring the chat back, under its own id."""
+    import hermes_state_runtime as rt
+    from hermes_cli.move_sessions import OwnerSessions
+    from hermes_state import SessionDB
+    cloud = _cloud(tmp_path)
+    db = SessionDB(db_path=cloud / "state.db")
+    epoch = rt.begin_runtime_epoch(db, instance_id="owner")
+
+    def owner(session_id, request_id, operation, payload, revision, generation):
+        try:
+            return rt.mutate_runtime_session(db, epoch=epoch, principal_id="desktop", session_id=session_id,
+                                             request_id=request_id, expected_revision=revision,
+                                             operation=operation, payload=payload, expected_generation=generation)
+        except rt.RuntimeStoreError as exc:
+            raise RuntimeError(exc.reason) from None
+
+    try:
+        for _ in range(2):
+            state = _received(tmp_path, cloud)
+            state = move_receive.apply(cloud, state["id"], sessions=OwnerSessions(cloud, owner, move_id=state["id"]),
+                                       include={"sessions"})
+            assert state["steps"]["sessions"]["imported"] == 1, state["steps"]["sessions"]
+            assert len([s for s in visible_session_ids(cloud) if s.startswith("lap1")]) == 1
+            state = move_receive.undo(cloud, state["id"], sessions=OwnerSessions(cloud, owner, move_id=state["id"]))
+            assert state["status"] == "undone", state
+            assert visible_session_ids(cloud) == ["cl1"]
+    finally:
+        db.close()

@@ -27,6 +27,16 @@ def visible_session_ids(home: Path) -> list[str]:
                                           "AND source NOT IN ('tool', 'subagent', 'cron')", ())]
 
 
+def stored_status(home: Path, session_id: str) -> Optional[str]:
+    """``"retired"`` when the store fenced this id for good (deleted here; it never comes back),
+    ``"present"`` when a row has it, else None. Read from the store so every writer agrees: a live
+    owner's refusal of a fenced import carries only the shared ``admission_conflict`` code."""
+    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    if _read(home, "SELECT 1 FROM state_meta WHERE key = ?", (RETIRED_PREFIX + session_id,)):
+        return "retired"
+    return "present" if _read(home, "SELECT 1 FROM sessions WHERE id = ?", (session_id,)) else None
+
+
 def _read(home: Path, sql: str, args: tuple) -> list[tuple]:
     from hermes_cli.sqlite_safe_read import connect_tracked
     db_path = home / "state.db"

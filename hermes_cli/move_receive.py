@@ -22,12 +22,15 @@ config sections in :data:`_PLATFORM_CONFIG_KEYS` keep the target's values in eve
 restores all of it.
 
 Every state change lands in ``<home>/moves/<id>/state.json`` so a crash mid-apply is visible and
-resumable rather than silent: ``apply`` skips steps already recorded as done.
+resumable rather than silent: ``apply`` skips steps already recorded as done, and each destructive
+change is journaled there BEFORE it happens, so a resumed step knows what it already took away.
+One apply or undo runs at a time per move, across processes (``<move>/.lock``).
 """
 
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -46,6 +49,9 @@ from hermes_cli.move_sessions import visible_session_ids
 # Hard ceilings. A profile bundle without media is a few MB; history pushes it to tens.
 MAX_BUNDLE_BYTES = 512 * 1024 * 1024
 MAX_CHUNK_BYTES = 4 * 1024 * 1024
+# What a bundle may expand to: a small zip can declare gigabytes, and finish() reads every member.
+MAX_MEMBERS = 200_000
+MAX_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024
 _MOVES_DIR = "moves"
 _STATE = "state.json"
 _BUNDLE = "bundle.zip"
@@ -96,6 +102,21 @@ def _read_state(move_dir: Path) -> dict[str, Any]:
         raise MoveError("This move's record is unreadable.", 409, "state_unreadable") from None
 
 
+@contextlib.contextmanager
+def _held(move_dir: Path):
+    """The move's exclusive lock for a whole apply or undo, shared by the CLI and ``hermes serve``
+    (a process-local lock cannot see the other). The OS drops it when its holder dies, so an
+    ``applying`` state with no holder is an interrupted apply, free to resume."""
+    from pm.filesystem import lock_fd
+    fd = os.open(move_dir / ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if not lock_fd(fd, wait=False):
+            raise MoveError("This move is already being applied.", 409, "busy")
+        yield
+    finally:
+        os.close(fd)
+
+
 def _write_state(move_dir: Path, state: dict[str, Any]) -> None:
     from utils import atomic_json_write
     state["updated_at"] = time.time()
@@ -140,7 +161,9 @@ def begin(home: Path, *, size: int, sha256: str) -> dict[str, Any]:
         raise MoveError("The bundle digest is malformed.")
     with _lock:
         for existing in list_moves(home):
-            if existing.get("sha256") == sha256 and existing.get("status") in {"uploading", "ready"}:
+            # A partial or interrupted apply of the same bundle resumes rather than starting over.
+            if existing.get("sha256") == sha256 and existing.get("status") in {"uploading", "ready", "applying",
+                                                                               "partial"}:
                 return existing
         from hermes_constants import mkdir_under_hermes_home
         move_id = uuid.uuid4().hex
@@ -190,35 +213,42 @@ def finish(home: Path, move_id: str) -> dict[str, Any]:
     move_dir = _move_dir(home, move_id)
     with _lock:
         state = _read_state(move_dir)
-        if state["status"] == "ready":
+        if state["status"] in {"ready", "applying", "partial"}:
             return _public(state)
         if state["status"] != "uploading" or state["received"] != state["bytes"]:
             raise MoveError(f"Received {state['received']} of {state['bytes']} bytes.", 409, "incomplete")
-        bundle = move_dir / _BUNDLE
-        digest = hashlib.sha256()
-        with bundle.open("rb") as fh:
-            for block in iter(lambda: fh.read(1024 * 1024), b""):
-                digest.update(block)
-        if digest.hexdigest() != state["sha256"]:
+    # Hashing and reading every member take a while; the shared lock also serves other uploads.
+    bundle = move_dir / _BUNDLE
+    digest = hashlib.sha256()
+    with bundle.open("rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(block)
+    if digest.hexdigest() != state["sha256"]:
+        with _lock:
             state.update(status="uploading", received=0)
             bundle.write_bytes(b"")
             _write_state(move_dir, state)
-            raise MoveError("The bundle arrived damaged. Sending it again.", 422, "digest_mismatch")
-        try:
-            with zipfile.ZipFile(bundle) as zf:
-                if zf.testzip() is not None:
-                    raise MoveError("The bundle is a damaged zip.", 422, "bad_zip")
-                manifest = read_manifest(zf)
-                state["preview"] = preview(home, zf, manifest)
-        except zipfile.BadZipFile:
-            raise MoveError("The upload is not a zip file.", 422, "bad_zip") from None
-        except MoveError:
-            raise
-        except ValueError as exc:
-            raise MoveError(str(exc), 422, "bad_manifest") from None
+        raise MoveError("The bundle arrived damaged. Sending it again.", 422, "digest_mismatch")
+    try:
+        with zipfile.ZipFile(bundle) as zf:
+            infos = zf.infolist()
+            if len(infos) > MAX_MEMBERS or sum(i.file_size for i in infos) > MAX_EXPANDED_BYTES \
+                    or any(i.file_size > MAX_BUNDLE_BYTES for i in infos):
+                raise MoveError("The bundle unpacks to far more than a move bundle holds.", 413, "too_large")
+            if zf.testzip() is not None:
+                raise MoveError("The bundle is a damaged zip.", 422, "bad_zip")
+            manifest = read_manifest(zf)
+            state["preview"] = preview(home, zf, manifest)
+    except zipfile.BadZipFile:
+        raise MoveError("The upload is not a zip file.", 422, "bad_zip") from None
+    except MoveError:
+        raise
+    except ValueError as exc:
+        raise MoveError(str(exc), 422, "bad_manifest") from None
+    with _lock:
         state["status"] = "ready"
         _write_state(move_dir, state)
-        return _public(state)
+    return _public(state)
 
 
 # --------------------------------------------------------------------------- preview
@@ -276,61 +306,128 @@ def preview(home: Path, zf: zipfile.ZipFile, manifest: dict[str, Any]) -> dict[s
 # --------------------------------------------------------------------------- snapshot / undo
 
 
-_SNAPSHOT_PATHS = ("config.yaml", "SOUL.md", "memories/MEMORY.md", "memories/USER.md", "cron/jobs.json")
+# The files each step can rewrite. Merged cron is undone by removing the added jobs, not by putting
+# the file back: the ticker keeps rewriting it for the target's own running jobs.
+_STEP_FILES = {"config": ("config.yaml",), "soul": ("SOUL.md",),
+               "memory": ("memories/MEMORY.md", "memories/USER.md"), "cron": ("cron/jobs.json",)}
 
 
-def _snapshot(home: Path, move_dir: Path) -> dict[str, Any]:
-    """Copy every file apply can rewrite; record which ones did not exist yet."""
-    snap = move_dir / _SNAPSHOT
-    snap.mkdir(exist_ok=True)
-    record: dict[str, Any] = {"files": {}, "added_skills": [], "replaced_skills": [], "added_sessions": [],
-                              "archived_sessions": [], "added_jobs": []}
-    for rel in _SNAPSHOT_PATHS:
+def _sha(path: Path) -> Optional[str]:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+
+def _step_files(step: str, replace: set[str]) -> tuple[str, ...]:
+    return () if step == "cron" and "cron" not in replace else _STEP_FILES.get(step, ())
+
+
+def _snapshot(home: Path, move_dir: Path, record: dict[str, Any], rels: tuple[str, ...]) -> None:
+    """Copy the files a step is about to rewrite, or note that they do not exist yet. A resumed
+    step keeps the first copy: by then the file may already hold the incoming version."""
+    for rel in rels:
+        if rel in record["files"]:
+            continue
         src = home / rel
         if src.is_file():
-            dst = snap / rel
+            dst = move_dir / _SNAPSHOT / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
-            record["files"][rel] = "existed"
+        record["files"][rel] = "existed" if src.is_file() else "absent"
+
+
+def _record_written(home: Path, move_dir: Path, record: dict[str, Any], rels: tuple[str, ...]) -> None:
+    """Remember what the move wrote, so undo can tell a file changed since from one it may put
+    back. A file the step left as it was has nothing to undo."""
+    for rel in rels:
+        after = _sha(home / rel)
+        if after == (_sha(move_dir / _SNAPSHOT / rel) if record["files"].get(rel) == "existed" else None):
+            record["files"].pop(rel, None)
+            record["written"].pop(rel, None)
         else:
-            record["files"][rel] = "absent"
-    return record
+            record["written"][rel] = after
 
 
 def undo(home: Path, move_id: str, *, sessions) -> dict[str, Any]:
     """Put back every file the move rewrote, every skill it swapped and every conversation it
     archived, and remove what it added. ``sessions`` writes through the store's owner
-    (:mod:`hermes_cli.move_sessions`)."""
+    (:mod:`hermes_cli.move_sessions`). Each finished piece leaves the record, so an undo that hit
+    problems (status ``undo_partial``) can be run again and only redoes the rest. A file changed
+    since the move is left as it is and reported, never overwritten."""
     move_dir = _move_dir(home, move_id)
-    with _lock:
+    with _held(move_dir):
         state = _read_state(move_dir)
-        if state.get("status") not in {"applied", "partial"}:
+        if state.get("status") not in {"applied", "partial", "undo_partial"}:
             raise MoveError("Only an applied move can be undone.", 409, "not_applied")
         record = state.get("undo") or {}
         problems: list[str] = []
-        for rel, how in (record.get("files") or {}).items():
-            try:
-                _restore_file(home, move_dir, rel, how)
-            except OSError as exc:
-                problems.append(f"{rel}: {exc}")
-        skills_root = (home / "skills").resolve()
-        for rel in [*(record.get("added_skills") or []), *(record.get("replaced_skills") or [])]:
-            path = home / "skills" / rel
-            if path.is_dir() and path.resolve().is_relative_to(skills_root):
-                shutil.rmtree(path, ignore_errors=True)
-        for rel in record.get("replaced_skills") or []:
-            kept = move_dir / _SNAPSHOT / "skills" / rel
-            if kept.is_dir():
-                (home / "skills" / rel).parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(kept), home / "skills" / rel)
-        removed = _each(record.get("added_sessions") or [], sessions.delete, "remove", problems)
-        restored = _each(record.get("archived_sessions") or [], lambda sid: sessions.set_archived(sid, False),
+
+        def save() -> None:
+            _write_state(move_dir, state)
+
+        _undo_files(home, move_dir, record, problems, save)
+        _undo_skills(home, move_dir, record, problems, save)
+        _undo_jobs(home, record, problems)
+        removed = _each(record, "added_sessions", sessions.delete, "remove", problems)
+        restored = _each(record, "archived_sessions", lambda sid: sessions.set_archived(sid, False),
                          "unarchive", problems)
-        state.update(status="undone", undone_at=time.time(),
+        state.update(status="undo_partial" if problems else "undone",
                      result={**(state.get("result") or {}), "undo_problems": problems,
                              "sessions_removed": removed, "sessions_unarchived": restored})
-        _write_state(move_dir, state)
+        if not problems:
+            state["undone_at"] = time.time()
+        save()
         return _public(state)
+
+
+def _undo_files(home: Path, move_dir: Path, record: dict[str, Any], problems: list[str], save) -> None:
+    written = record.get("written") or {}
+    for rel, how in list((record.get("files") or {}).items()):
+        if _sha(home / rel) != written.get(rel):
+            problems.append(f"changed since the move: {rel}")
+            continue
+        try:
+            _restore_file(home, move_dir, rel, how)
+        except (OSError, ValueError) as exc:
+            problems.append(f"{rel}: {exc}")
+            continue
+        del record["files"][rel]
+        save()
+
+
+def _undo_skills(home: Path, move_dir: Path, record: dict[str, Any], problems: list[str], save) -> None:
+    root = (home / "skills").resolve()
+    for rel in list(record.get("added_skills") or []):
+        path = home / "skills" / rel
+        if path.resolve().is_relative_to(root):
+            shutil.rmtree(path, ignore_errors=True)
+        record["added_skills"].remove(rel)
+        save()
+    for rel in list(record.get("replaced_skills") or []):
+        kept, path = move_dir / _SNAPSHOT / "skills" / rel, home / "skills" / rel
+        if not kept.is_dir():
+            problems.append(f"skills/{rel}: the copy kept for undo is missing")
+            continue
+        if path.resolve().is_relative_to(root):
+            shutil.rmtree(path, ignore_errors=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(kept), path)
+        record["replaced_skills"].remove(rel)
+        save()
+
+
+def _undo_jobs(home: Path, record: dict[str, Any], problems: list[str]) -> None:
+    added = set(record.get("added_jobs") or [])
+    if not added:
+        return
+    from agent.runtime_scope import bind_profile_scope
+    from cron import jobs as cron_jobs
+    try:
+        with bind_profile_scope(home, hydrate_secrets=False), cron_jobs.use_cron_store(home), cron_jobs._jobs_lock():
+            kept = [j for j in cron_jobs.load_jobs() if str(j.get("id")) not in added]
+            cron_jobs._save_jobs_unlocked(kept, removed_ids=added)
+    except OSError as exc:
+        problems.append(f"cron/jobs.json: {exc}")
+        return
+    record["added_jobs"] = []
 
 
 def _restore_file(home: Path, move_dir: Path, rel: str, how: str) -> None:
@@ -351,15 +448,17 @@ def _restore_file(home: Path, move_dir: Path, rel: str, how: str) -> None:
         target.unlink()
 
 
-def _each(ids: list[str], write: Callable[[str], None], verb: str, problems: list[str]) -> int:
-    done = 0
+def _each(record: dict[str, Any], key: str, write: Callable[[str], None], verb: str, problems: list[str]) -> int:
+    """Write each id in ``record[key]``; the ones that failed stay there for the next undo."""
+    ids, left = record.get(key) or [], []
     for sid in ids:
         try:
             write(sid)
-            done += 1
         except Exception as exc:  # health: allow BLE001 -- one row must not stop the rest of an undo
             problems.append(f"could not {verb} conversation {sid}: {exc}")
-    return done
+            left.append(sid)
+    record[key] = left
+    return len(ids) - len(left)
 
 
 # --------------------------------------------------------------------------- apply
@@ -444,33 +543,39 @@ def _apply_memory(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dict[
 
 def _apply_skills(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dict[str, Any]:
     """New skills land as new directories. Replace also swaps each same-named skill for the
-    incoming copy (the target's is kept in the move's snapshot for undo); other skills stay."""
+    incoming copy (the target's is kept in the move's snapshot for undo); other skills stay.
+
+    Journaled before each move on disk, so a resumed step tells its own work from the target's:
+    a journaled skill with a kept copy was already swapped, one without is still the original."""
     root = (home / "skills").resolve()
-    skills = ctx["preview"]["skills"]
+    skills, undo_rec = ctx["preview"]["skills"], ctx["undo"]
     swapping = set(skills["keep_existing"]) if "skills" in ctx["replace"] else set()
     written, swapped = [], []
     for skill in sorted(set(skills["add"]) | swapping):
-        dest = root / skill
+        dest, kept = root / skill, ctx["move_dir"] / _SNAPSHOT / "skills" / skill
         if not dest.resolve().is_relative_to(root):
             continue
-        if dest.exists() and skill not in swapping:
+        ours = skill in undo_rec["added_skills"] or skill in undo_rec["replaced_skills"]
+        if skill in swapping and dest.exists() and not kept.exists():
+            if skill not in undo_rec["replaced_skills"]:
+                undo_rec["replaced_skills"].append(skill)
+            ctx["journal"]()
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(dest), kept)
+        elif dest.exists() and not ours:
             continue
-        staging = _stage_skill(root, zf, skill)
-        try:
-            if dest.exists():
-                kept = ctx["move_dir"] / _SNAPSHOT / "skills" / skill
-                kept.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(dest), kept)
-                ctx["undo"]["replaced_skills"].append(skill)
-                swapped.append(skill)
-            else:
-                ctx["undo"]["added_skills"].append(skill)
-                written.append(skill)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(staging, dest)
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
+        elif not ours:
+            undo_rec["added_skills"].append(skill)
+            ctx["journal"]()
+        if not dest.exists():
+            staging = _stage_skill(root, zf, skill)
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staging, dest)
+            finally:
+                if staging.exists():
+                    shutil.rmtree(staging, ignore_errors=True)
+        (swapped if skill in undo_rec["replaced_skills"] else written).append(skill)
     return {"added": written, "replaced": swapped}
 
 
@@ -478,12 +583,16 @@ def _stage_skill(root: Path, zf: zipfile.ZipFile, skill: str) -> Path:
     from hermes_cli.archive_safe import normalize_archive_parts
     staging = root / f".move-{uuid.uuid4().hex[:8]}"
     prefix = f"skills/{skill}/"
-    for member in zf.namelist():
+    for info in zf.infolist():
+        member = info.filename
         if not member.startswith(prefix) or member.endswith("/"):
             continue
         out = staging.joinpath(*normalize_archive_parts(member[len(prefix):]))
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(zf.read(member))
+        out.write_bytes(zf.read(info))
+        # A skill's scripts must still run; only the execute bit travels, never setuid or setgid.
+        if (info.external_attr >> 16) & 0o111:
+            out.chmod(0o755)
     return staging
 
 
@@ -517,15 +626,18 @@ def _apply_cron(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dict[st
             incoming = [_paused(j, now) for j in jobs if isinstance(j, dict)
                         and (replace or str(j.get("id")) in add_ids)]
             if replace:
+                # Undone by putting the snapshot of jobs.json back.
                 removed = [str(j.get("id")) for j in current]
                 cron_jobs._save_jobs_unlocked(incoming, removed_ids=removed)
             else:
                 have = {str(j.get("id")) for j in current}
                 incoming = [j for j in incoming if str(j.get("id")) not in have]
                 removed = []
+                # Journaled first: a resumed step finds these jobs already here and adds nothing.
+                ctx["undo"]["added_jobs"] = sorted(set(ctx["undo"]["added_jobs"]) | {str(j["id"]) for j in incoming})
+                ctx["journal"]()
                 cron_jobs._save_jobs_unlocked(current + incoming)
     added = [str(j["id"]) for j in incoming]
-    ctx["undo"]["added_jobs"] = added
     return {"added": added, "removed": removed, "paused": True}
 
 
@@ -556,16 +668,27 @@ def _free_title(title: Any, taken: set[str]) -> Any:
     return f"{title} #{n}"
 
 
-def _import_one(sessions, session: dict[str, Any], move_id: str) -> dict[str, Any]:
+def _import_one(home: Path, ctx: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:
     """Import one conversation. The store fences a deleted id for good (a row restored beside the
     fence lists fine and refuses every turn), and undoing an earlier move deleted exactly these ids,
-    so a fenced one arrives under an id of its own, fixed per move so a retry stays idempotent."""
-    try:
-        return sessions.import_session(session)
-    except Exception as exc:
-        if "was deleted here" not in str(exc):
-            raise
-    return sessions.import_session({**session, "id": f"{session['id']}-m{move_id[:8]}"})
+    so a fenced one arrives under an id of its own, fixed per move so a retry stays idempotent.
+
+    The fence is read from the store itself, not from the refusal: a live owner answers only
+    ``admission_conflict``, which other refusals share. The id is journaled before the import, and
+    one already here that the move did not import is the target's own, never undone."""
+    from hermes_cli.move_sessions import stored_status
+    added = ctx["undo"]["added_sessions"]
+    status = stored_status(home, session["id"])
+    if status == "retired":
+        session = {**session, "id": f"{session['id']}-m{ctx['move_dir'].name[:8]}"}
+        status = stored_status(home, session["id"])
+    if status == "present":
+        ours = session["id"] in added
+        return {"imported": int(ours), "skipped": int(not ours)}
+    if session["id"] not in added:
+        added.append(session["id"])
+        ctx["journal"]()
+    return ctx["sessions"].import_session(session)
 
 
 def _apply_sessions(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dict[str, Any]:
@@ -573,14 +696,16 @@ def _apply_sessions(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dic
     conversations are archived first (kept, never deleted; undo brings them back)."""
     sessions = ctx["sessions"]
     archived = 0
+    imported = skipped = failed = 0
     if "sessions" in ctx["replace"]:
-        done = set(ctx["undo"]["archived_sessions"])
+        # A resumed step must not archive what it imported itself.
+        done = set(ctx["undo"]["archived_sessions"]) | set(ctx["undo"]["added_sessions"])
         for sid in visible_session_ids(home):
             if sid not in done:
-                sessions.set_archived(sid, True)
                 ctx["undo"]["archived_sessions"].append(sid)
+                ctx["journal"]()
+                sessions.set_archived(sid, True)
                 archived += 1
-    imported = skipped = failed = 0
     errors: list[str] = []
     taken = _taken_titles(home)
     for member in sorted(n for n in zf.namelist() if n.startswith("sessions/") and n.endswith(".json")):
@@ -588,21 +713,20 @@ def _apply_sessions(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dic
             session = json.loads(zf.read(member))
         except ValueError:
             failed += 1
+            errors.append(f"{member}: not a readable conversation")
             continue
         session["title"] = _free_title(session.get("title"), taken)
         if isinstance(session.get("title"), str):
             taken.add(session["title"])
         try:
-            result = _import_one(sessions, session, ctx["move_dir"].name)
+            result = _import_one(home, ctx, session)
         except Exception as exc:  # health: allow BLE001 -- one bad session must not abort the rest
             failed += 1
-            if len(errors) < 5:
-                errors.append(f"{session.get('title') or session.get('id')}: {exc}")
+            errors.append(f"{session.get('title') or session.get('id')}: {exc}")
             continue
         imported += int(result.get("imported") or 0)
         skipped += int(result.get("skipped") or 0)
-        ctx["undo"]["added_sessions"].extend(result.get("imported_ids") or [])
-    return {"imported": imported, "already_here": skipped, "failed": failed, "errors": errors,
+    return {"imported": imported, "already_here": skipped, "failed": failed, "errors": errors[:5],
             "archived": archived}
 
 
@@ -610,6 +734,21 @@ _APPLIERS: dict[str, Callable[[Path, zipfile.ZipFile, dict[str, Any]], dict[str,
     "config": _apply_config, "soul": _apply_soul, "memory": _apply_memory,
     "skills": _apply_skills, "cron": _apply_cron, "sessions": _apply_sessions,
 }
+
+
+def _run_step(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any], step: str) -> dict[str, Any]:
+    """One step: snapshot its files (journaled before anything changes), run it, record what it
+    wrote. A step with items that failed is ``partial``; a retry re-runs it, skipping done items."""
+    record, rels = ctx["undo"], _step_files(step, ctx["replace"])
+    _snapshot(home, ctx["move_dir"], record, rels)
+    ctx["journal"]()
+    try:
+        detail = _APPLIERS[step](home, zf, ctx)
+        out = {"status": "partial" if detail.get("failed") else "done", **detail}
+    except Exception as exc:  # health: allow BLE001 -- recorded per step, the rest still run
+        out = {"status": "failed", "error": str(exc)[:500]}
+    _record_written(home, ctx["move_dir"], record, rels)
+    return out
 
 
 def apply(home: Path, move_id: str, *, sessions, include: Optional[set[str]] = None,
@@ -622,44 +761,41 @@ def apply(home: Path, move_id: str, *, sessions, include: Optional[set[str]] = N
     if unknown:
         raise MoveError(f"Unknown part(s): {', '.join(sorted(unknown))}.", 400, "bad_parts")
     move_dir = _move_dir(home, move_id)
-    with _lock:
+    with _held(move_dir):
         state = _read_state(move_dir)
-        if state.get("status") in {"applied", "undone"}:
+        if state.get("status") in {"applied", "undone", "undo_partial"}:
             return _public(state)
         if state.get("status") not in {"ready", "applying", "partial"}:
             raise MoveError("Finish the upload before applying it.", 409, "not_ready")
         if "undo" not in state:
-            state["undo"] = _snapshot(home, move_dir)
+            state["undo"] = {"files": {}, "written": {}, "added_skills": [], "replaced_skills": [],
+                             "added_sessions": [], "archived_sessions": [], "added_jobs": []}
             state["include"] = sorted(include) if include is not None else list(STEPS)
             state["replace"] = sorted(set(replace or ()) & set(state["include"]))
+            # Before any step: an earlier step can seed a later one's file (saving config writes a
+            # default SOUL.md), and undo must put back the file as it was before the move.
+            for step in state["include"]:
+                _snapshot(home, move_dir, state["undo"], _step_files(step, set(state["replace"])))
         state["status"] = "applying"
         state.setdefault("steps", {})
         _write_state(move_dir, state)
-    ctx = {"preview": state["preview"], "undo": state["undo"], "sessions": sessions, "move_dir": move_dir,
-           "replace": set(state.get("replace") or ())}
-    chosen = [s for s in STEPS if s in set(state.get("include") or STEPS)]
-    with zipfile.ZipFile(move_dir / _BUNDLE) as zf:
-        for step in chosen:
-            if (state["steps"].get(step) or {}).get("status") == "done":
-                continue
-            try:
-                detail = _APPLIERS[step](home, zf, ctx)
-                state["steps"][step] = {"status": "done", **detail}
-            except Exception as exc:  # health: allow BLE001 -- recorded per step, the rest still run
-                state["steps"][step] = {"status": "failed", "error": str(exc)[:500]}
-            with _lock:
-                _write_state(move_dir, state)
-    failed = [s for s in chosen if state["steps"].get(s, {}).get("status") == "failed"]
-    state.update(status="partial" if failed else "applied", applied_at=time.time(),
-                 result={"failed_steps": failed})
-    with _lock:
+        ctx = {"preview": state["preview"], "undo": state["undo"], "sessions": sessions, "move_dir": move_dir,
+               "replace": set(state.get("replace") or ()), "journal": lambda: _write_state(move_dir, state)}
+        chosen = [s for s in STEPS if s in set(state.get("include") or STEPS)]
+        with zipfile.ZipFile(move_dir / _BUNDLE) as zf:
+            for step in chosen:
+                if (state["steps"].get(step) or {}).get("status") != "done":
+                    state["steps"][step] = _run_step(home, zf, ctx, step)
+                    _write_state(move_dir, state)
+        unfinished = [s for s in chosen if state["steps"][s]["status"] != "done"]
+        failed = [s for s in unfinished if state["steps"][s]["status"] == "failed"]
+        state.update(status="partial" if unfinished else "applied", applied_at=time.time(),
+                     result={"failed_steps": failed, "partial_steps": [s for s in unfinished if s not in failed]})
         _write_state(move_dir, state)
-    # A partial move keeps its bundle so a retry resumes the failed steps.
-    if not failed:
-        try:
-            (move_dir / _BUNDLE).unlink()
-        except OSError:
-            pass
+        # A partial move keeps its bundle so a retry resumes what did not finish.
+        if not unfinished:
+            with contextlib.suppress(OSError):
+                (move_dir / _BUNDLE).unlink()
     return _public(state)
 
 
@@ -667,7 +803,7 @@ def discard(home: Path, move_id: str) -> dict[str, Any]:
     """Drop an upload that was never applied."""
     move_dir = _move_dir(home, move_id)
     state = _read_state(move_dir)
-    if state.get("status") in {"applying", "applied", "partial"}:
+    if state.get("status") in {"applying", "applied", "partial", "undo_partial"}:
         raise MoveError("An applied move is kept so it can be undone.", 409, "applied")
     shutil.rmtree(move_dir, ignore_errors=True)
     return {"id": move_id, "status": "discarded"}

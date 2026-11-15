@@ -84,24 +84,27 @@ def _truncate_stdout_text(stdout_text: str, env: Any = None) -> tuple[str, dict[
 def _spill_full_stdout(stdout_text: str, env: Any = None) -> Optional[str]:
     """Write full stdout to cache/exec; return its path (None on failure — best-effort,
     the truncated inline output is still returned). Keyed by content digest so identical
-    reruns coalesce; the dir rides the cache/web remote bind-mount list (credential_files).
+    reruns coalesce. The spill is a second emitter of the output the warning tells the
+    model to page with read_file, so it gets the same ANSI strip + secret redaction as
+    the inline text, and is owner-only (cache/exec is never bind-mounted into a backend):
+    files 0600, a new dir 0700; an existing dir loses only its world bits.
     In a hosted scope the file goes into the agent's own sandbox (*env*) or nowhere: the
     output is the tenant's and this host keeps none of it."""
     try:
         import hashlib
         from hermes_constants import get_hermes_dir
-        from tools.spill_safety import write_text_exclusive
+        from tools.spill_safety import ensure_spill_dir, write_text_exclusive
         from tools.tool_result_storage import _persist_hosted
         if len(stdout_text) > MAX_SPILLED_STDOUT_BYTES:
             stdout_text = (stdout_text[:MAX_SPILLED_STDOUT_BYTES]
                            + f"\n\n[... spill capped at {MAX_SPILLED_STDOUT_BYTES:,} bytes ...]")
+        stdout_text = _sanitize_output_text(stdout_text)
         digest = hashlib.sha256(stdout_text.encode("utf-8", errors="replace")).hexdigest()[:12]
         if (hosted_path := _persist_hosted(stdout_text, f"exec-stdout-{digest}", env)) is not None:
             return hosted_path or None
-        cache_dir = get_hermes_dir("cache/exec", "exec_spill")
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir = ensure_spill_dir(get_hermes_dir("cache/exec", "exec_spill"), keep_group=True)
         path = cache_dir / f"stdout-{digest}.txt"
-        write_text_exclusive(path, stdout_text, private=False, overwrite=True)
+        write_text_exclusive(path, stdout_text, overwrite=True)
         return str(path)
     except Exception as exc:
         logger.debug("Failed to spill execute_code stdout: %s", exc)
@@ -157,9 +160,10 @@ def _missing_hermes_tools_import_hint(m, enabled_tools) -> str:
                 "If that import failed, the generated module may be stale or another "
                 "hermes_tools may be first on sys.path. Check hermes_tools.__file__ "
                 "and retry with reset=true.")
-    available = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or SANDBOX_ALLOWED_TOOLS))
+    available = sorted(_sandbox_tools_for(enabled_tools))
+    available_text = ", ".join(available) or "none"
     return (f"'{missing}' is not available inside the execute_code sandbox. "
-            f"Importable tools here: {', '.join(available)}. For anything "
+            f"Importable tools here: {available_text}. For anything "
             "else, use the normal tool call instead of execute_code.")
 
 
@@ -519,13 +523,18 @@ def _format_interrupted_output(stdout_text: str) -> str:
     return f"{stdout_text}\n{marker}" if stdout_text else marker
 
 
-def _clean_output(stdout_text: str, env: Any = None) -> tuple[str, dict[str, Any]]:
-    """Shared output pipeline: byte-cap (with spill), ANSI strip, secret redaction. code_file=True:
-    output often echoes source/config — skip ENV/JSON/f-string false positives, still mask credentials."""
+def _sanitize_output_text(text: str) -> str:
+    """ANSI strip + secret redaction for tool-bound output text. Output often echoes source/config,
+    so redact_code_output keeps code_file=True except on env-dump-shaped lines."""
     from tools.ansi_strip import strip_ansi
-    from agent.redact import redact_sensitive_text
-    stdout_text, metadata = _truncate_stdout_text(stdout_text, env)
-    return redact_sensitive_text(strip_ansi(stdout_text), code_file=True), metadata
+    from agent.redact import redact_code_output
+    return redact_code_output(strip_ansi(text))
+
+
+def _clean_output(stdout_text: str, env: Any = None) -> tuple[str, dict[str, Any]]:
+    """Shared output pipeline: ANSI strip, secret redaction, then byte-cap (with spill).
+    Redact before the cap, as the local kernel does: a cut can separate ``DB_PASSWORD=`` from its value."""
+    return _truncate_stdout_text(_sanitize_output_text(stdout_text), env)
 
 
 def _with_timeout_notice(stdout_text: str, timeout_msg: str) -> str:
@@ -590,18 +599,25 @@ def _finish_remote_kernel_result(kernel_result: dict[str, Any], *,
         _apply_timeout(result, f"Cell timed out after {timeout}s; the remote session kernel was "
                                "killed and its state was lost. The next call starts fresh.")
     elif result["status"] == "error" and kernel_result.get("error"):
-        result["error"] = kernel_result["error"]
+        from agent.redact import redact_code_output
+        result["error"] = redact_code_output(kernel_result["error"])  # raw last line of the remote traceback
     return json.dumps(result, ensure_ascii=False)
 
 
 def _sandbox_tools_for(enabled_tools: Optional[list[str]]) -> frozenset:
-    """Enabled ∩ SANDBOX_ALLOWED_TOOLS, or every sandbox tool when the intersection is empty."""
-    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or ())) or SANDBOX_ALLOWED_TOOLS
+    """Tri-state sandbox tool resolution. None → legacy default (every sandbox tool); an
+    explicit list (possibly empty) → exact intersection with SANDBOX_ALLOWED_TOOLS, so an
+    empty grant denies all rather than broadening to the default
+    (SECURITY-CLASS-faf9d60580300e16 / #84271)."""
+    if enabled_tools is None:
+        return SANDBOX_ALLOWED_TOOLS
+    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
 
 
 def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
                          sandbox_tools: frozenset, *, timeout: int, max_tool_calls: int,
-                         exec_start: float) -> str:
+                         exec_start: float, session_id: Optional[str] = None,
+                         turn_id: Optional[str] = None, conversation_id: Optional[str] = None) -> str:
     """Per-call script ship: stage hermes_tools.py + script.py in a fresh remote sandbox dir,
     serve file-RPC from a polling thread, run, clean up."""
     sandbox_dir = f"{_env_temp_dir(env)}/hermes_exec_{uuid.uuid4().hex[:12]}"
@@ -623,7 +639,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
             args=(env, f"{sandbox_dir}/rpc", effective_task_id, tool_call_log, tool_call_counter,
-                  max_tool_calls, sandbox_tools, stop_event, rpc_token))
+                  max_tool_calls, sandbox_tools, stop_event, rpc_token, session_id, turn_id, conversation_id))
         rpc_thread.start()
         # The token travels in a sourced env file, never in argv. No umask on
         # the launch command: the 700 dirs + explicit 0600 writes cover Hermes'
@@ -665,7 +681,8 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
 
 
 def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[list[str]],
-                    reset: bool = False) -> str:
+                    reset: bool = False, session_id: Optional[str] = None,
+                    turn_id: Optional[str] = None, conversation_id: Optional[str] = None) -> str:
     """Run code on the remote terminal backend: the owner's persistent remote session kernel
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
@@ -695,6 +712,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
                     sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
                     max_tool_calls=max_tool_calls, reset=bool(reset),
                     idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
+                    session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
                 )
             except Exception:
                 logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
@@ -705,7 +723,8 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
         except Exception as exc:
             return _remote_failure(exc, exec_start, 0)
         return _run_remote_per_call(env, env_type, code, effective_task_id, sandbox_tools,
-                                    timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start)
+                                    timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start,
+                                    session_id=session_id, turn_id=turn_id, conversation_id=conversation_id)
 
 
 # ---- Main entry point ----
@@ -716,6 +735,9 @@ def execute_code(
     task_id: Optional[str] = None,
     enabled_tools: Optional[list[str]] = None,
     reset: bool = False,
+    session_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
 ) -> str:
     """Run Python in the session's persistent kernel (local) or on the remote terminal backend,
     with RPC access to a subset of Hermes tools; returns the JSON result string. "Sandbox" means
@@ -759,20 +781,9 @@ def execute_code(
             "(process-identity probe wedged); the code was not run. Retry the call."
         )
     if _probe.value:
-        from cron.lifecycle_guard import (
-            HOST_INTERPRETER_KILL_REJECTION,
-            contains_gateway_lifecycle_command,
-            contains_host_interpreter_kill,
-        )
-        if contains_gateway_lifecycle_command(code):
-            if contains_host_interpreter_kill(code):
-                return tool_error(HOST_INTERPRETER_KILL_REJECTION)
-            return tool_error(
-                "Blocked: cannot restart or stop the gateway from inside the "
-                "gateway process. The gateway would kill this script before "
-                "it could complete (SIGTERM propagates to child processes). "
-                "Run the lifecycle command from a shell outside the gateway."
-            )
+        from tools.code_execution_lifecycle import lifecycle_guard_rejection
+        if (_rejection := lifecycle_guard_rejection(code)) is not None:
+            return tool_error(_rejection)
     from tools.terminal_tool import _get_env_config, _docker_has_host_access
     _env_config = _get_env_config()
     env_type = _env_config["env_type"]
@@ -794,7 +805,9 @@ def execute_code(
     from tools.environments.sandbox_scope import hosted_scope
     # A hosted agent's code runs only in its sandbox, never in a kernel on this host.
     if env_type != "local" or hosted_scope() is not None:
-        return record_execution_backend("code", "remote", _execute_remote(code, task_id, enabled_tools, reset=bool(reset)))
+        return record_execution_backend("code", "remote", _execute_remote(
+            code, task_id, enabled_tools, reset=bool(reset), session_id=session_id, turn_id=turn_id,
+            conversation_id=conversation_id))
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above
     # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
@@ -808,6 +821,7 @@ def execute_code(
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         reset=bool(reset), is_interrupted=_is_interrupted,
+        session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
     ))
 
 
@@ -965,7 +979,9 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
         return tool_error(f"execute_code received a {type(code).__name__} in 'code', but it "
                           "requires Python source as a string. Retry as execute_code(code=\"...\").")
     return execute_code(code=code or "", task_id=kwargs.get("task_id"),
-                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)))
+                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)),
+                        session_id=kwargs.get("session_id"), turn_id=kwargs.get("turn_id"),
+                        conversation_id=kwargs.get("conversation_id"))
 
 
 registry.register(

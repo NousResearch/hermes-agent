@@ -54,12 +54,14 @@ def test_install_is_visible_to_can_prompt_here():
     assert vault_unlock.can_prompt_here() is True
 
 
-def test_any_single_callback_is_enough_to_answer():
-    """A surface offering only one vault prompt still counts as a place a human can
-    answer — the tools call this next to their own callback check, so coupling it to
-    the unlock callback alone would refuse a surface that never offers an unlock."""
-    vault_unlock.set_code_prompt_callback(lambda site, hint: "123456")
-    assert vault_unlock.can_prompt_here() is True
+def test_a_surface_offering_only_one_prompt_can_still_answer_it():
+    """A surface that installs only the one-time-code prompt is still a place a human can
+    answer that prompt — the tool passes the callback it is about to use, so `can_prompt_here`
+    must key off *that* callback rather than the unlock one."""
+    code_prompt = lambda site, hint: "123456"
+    vault_unlock.set_code_prompt_callback(code_prompt)
+    assert vault_unlock.can_prompt_here() is False, "no unlock prompt is installed here"
+    assert vault_unlock.can_prompt_here(code_prompt) is True
 
 
 def test_clear_removes_every_callback():

@@ -21,7 +21,7 @@ _RUNTIME_SCHEMA_MARKER = "CREATE TABLE IF NOT EXISTS session_admissions"
 # Where a tree keeps its state-store modules: the root today, the package once they move into it.
 # Literal per-location patterns serve as git pathspecs, fnmatch patterns and Path.glob patterns alike;
 # a ``:(glob)**`` pathspec would also match tests/ and is not honoured by ``rev-list --objects``.
-STATE_MODULES = ("hermes_state*.py", "src/hermes_agent/hermes_state*.py", "src/hermes_agent/hermes_state/*.py")
+STATE_MODULES = ("hermes_state*.py", "hermes_agent/hermes_state*.py", "hermes_agent/hermes_state/*.py")
 _LEDGER_PROBE = ("SELECT EXISTS(SELECT 1 FROM session_admissions) "
                  "OR EXISTS(SELECT 1 FROM worker_executions)")
 _DOCS = "https://hermes-agent.nousresearch.com/docs/getting-started/updating#rolling-back-to-an-older-release"

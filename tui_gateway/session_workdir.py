@@ -876,6 +876,7 @@ def _rewind_active_session_history(
     only after the commit); a session without a key rewinds the warm history alone."""
     from agent.context_compressor import history_before_user_originated_turn, retryable_user_text, user_originated_turn_view
 
+    _require_transcript_owner(session)  # another surface may own the chat now: its transcript is not ours to cut
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
     user_indices = [i for i, m in enumerate(history) if user_originated_turn_view(m) is not None]
     if user_ordinal < 0 or user_ordinal >= len(user_indices):

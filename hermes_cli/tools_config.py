@@ -39,9 +39,9 @@ def _pip_install(
     args: list[str], *, timeout: int = 300, capture_output: bool = True
 ) -> NoReturn:
     # Shim to suppress old updater work until relaunch, not install or report success.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.tools_config._pip_install", ImportError)
 
 
 logger = logging.getLogger(__name__)
@@ -50,9 +50,9 @@ logger = logging.getLogger(__name__)
 def install_cua_driver(*args, **kwargs) -> NoReturn:
     # A running pre-PM updater can still import the vendor installer here.
     # Stop it before any old retry or completion branch can run.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.tools_config.install_cua_driver", ImportError)
 
 # Platforms already warned about an all-invalid platform_toolsets list (warn once, not per resolution).
 _warned_invalid_platform_toolsets: set[str] = set()
@@ -627,7 +627,10 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
 
     # Explicit non-configurable entries (custom toolsets, MCP server names) pass through.
     explicit_passthrough = {ts for ts in toolset_names if ts not in explicit_known_keys and ts not in platform_default_keys}
-    enabled_toolsets |= _merge_mcp_servers(config, toolset_names, explicit_passthrough, include_default_mcp_servers)
+    # An explicitly saved empty list means zero toolsets with no MCP merge
+    # (#82010); falling through to every enabled server would be fail-open.
+    if not (explicitly_configured and not toolset_names):
+        enabled_toolsets |= _merge_mcp_servers(config, toolset_names, explicit_passthrough, include_default_mcp_servers)
 
     # Legacy profile opt-in is a fallback only. A saved platform list (even
     # empty) is authoritative, so a later disable cannot silently re-enable it.

@@ -79,6 +79,7 @@ class TestIsSafeUrl:
         ("127.0.0.1", "http://localhost:8080/secret"),
         ("10.0.0.1", "http://internal-service.local/api"),
         ("::1", "http://[::1]:8080/"),
+        ("fec0::1", "http://site-local.example/"),  # IPv6 special-use the stdlib calls global
     ])
     def test_private_and_loopback_targets_blocked(self, ip, url):
         with _resolves_to(ip):
@@ -256,6 +257,10 @@ class TestIsBlockedIp:
         "100.64.0.1",               # CGNAT boundary (not is_private)
         "198.18.0.23",              # benchmark range
         "fd12::1",                  # IPv6 unique local
+        "100::1",                   # discard-only
+        "2001:2::1",                # IPv6 benchmarking
+        "2001:20::1",               # ORCHIDv2
+        "fec0::1",                  # deprecated site-local
         "::ffff:169.254.169.254",   # IPv4-mapped IPv6 metadata
     ])
     def test_blocked_ips(self, ip_str):
@@ -265,6 +270,8 @@ class TestIsBlockedIp:
     @pytest.mark.parametrize("ip_str", [
         "100.0.0.1",       # just below the CGNAT range
         "2606:4700::1",    # public IPv6
+        "2001:30::1",      # just past ORCHIDv2 (2001:20::/28)
+        "2001:4860:4860::8888",  # public IPv6 resolver
     ])
     def test_allowed_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)

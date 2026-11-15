@@ -1,6 +1,6 @@
 import { PassThrough } from 'stream'
 
-import { Box, renderSync } from '@hermes/ink'
+import { Box, Link, renderSync, Text } from '@hermes/ink'
 import { stripAnsi } from '@hermes/shared/ansi'
 import chalk from 'chalk'
 import React from 'react'
@@ -288,6 +288,45 @@ describe('Md link labels', () => {
     const rendered = renderPlain(md(`see <${url}>`)).join('\n')
 
     expect(rendered).toContain(url)
+  })
+
+  it('strips control bytes from a link target so it cannot end OSC 8 early (#131565)', () => {
+    const ansi = renderAnsi(md(`[x](https://example.com/x${BEL}${ESC}]2;TITLE${BEL})`))
+
+    expect(ansi).not.toContain(`${ESC}]2;`)
+    expect(ansi).toContain(`;https://example.com/x]2;TITLE${BEL}`)
+  })
+
+  it('strips control bytes from an authored link label', () => {
+    const C1_CSI = String.fromCharCode(0x9b)
+    const text = renderAnsi(md(`[Trip${BEL}${C1_CSI}2J details](https://example.com/x)`)).replace(OSC_RE, '')
+
+    expect(text).not.toContain(BEL)
+    expect(text).not.toContain(C1_CSI)
+    expect(text).toContain('Trip2J details')
+  })
+
+  it('strips control bytes from a <Link> target at the ink sink, not only in Md', () => {
+    const url = `https://example.com/x${BEL}${ESC}]2;TITLE${BEL}`
+    const ansi = renderAnsi(React.createElement(Link, { url }, React.createElement(Text, null, 'x')))
+
+    expect(ansi).not.toContain(`${ESC}]2;`)
+    expect(ansi).toContain(';https://example.com/x]2;TITLE')
+  })
+
+  it('keeps the SGR styling of a link label intact', () => {
+    // chalk defaults to level 0 under vitest, which would emit no SGR to lose.
+    const savedLevel = chalk.level
+    chalk.level = 3
+
+    try {
+      const plain = renderPlain(md('[Trip details](https://docs.example.com/guide/auth)')).join('\n')
+
+      expect(plain).toContain('Trip details')
+      expect(plain).not.toMatch(/\[[0-9;]*m/)
+    } finally {
+      chalk.level = savedLevel
+    }
   })
 
   it('keeps an authored markdown label and carries the target in OSC 8', () => {

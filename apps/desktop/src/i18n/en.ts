@@ -1206,6 +1206,9 @@ export const en: Translations = {
       voiceShortcutHintTitle: 'Voice recording shortcut',
       voiceShortcutHintDesc:
         'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop voice conversation"). The voice.record_key config value only applies to the CLI and TUI.',
+      desktopReadAloudTitle: 'Read replies aloud in this app',
+      desktopReadAloudDesc:
+        'Speak each finished reply in Desktop. Same switch as the composer button; it applies to every open window, and turning it off stops a reply mid-sentence. "Read Responses Aloud" below is for messaging and the CLI.',
       showOptions: 'Show options'
     },
     hudModifier: {
@@ -2477,7 +2480,10 @@ export const en: Translations = {
       backup: 'Create backup',
       backupDesc: 'Zip config, memories, skills, and sessions',
       debugShare: 'Debug share',
-      debugShareDesc: 'Upload a redacted report + logs, get shareable links (auto-deletes in 6h)',
+      debugShareDesc: 'Upload a summary (versions, config keys, error counts; no log text), get a shareable link (auto-deletes in 6h)',
+      debugShareConfirm: 'Upload debug report to a public paste?',
+      debugShareConfirmDesc:
+        'Uploads a summary to a public paste service: Hermes, Python and OS versions, connected platform and toolset names, config key names (no values) and warning/error counts. It contains no log lines or message text. Pastes auto-delete after 6 hours; if paste.rs is unreachable, the dpaste.com fallback keeps them public for 1 day and they cannot be deleted early.',
       debugShareRunning: 'Uploading debug report...',
       debugShareLinks: 'Share links',
       debugShareFailed: 'Debug share failed',
@@ -2785,6 +2791,14 @@ export const en: Translations = {
     fieldSkillsPlaceholder: 'comma-separated skill names (optional)',
     fieldDeliver: 'Deliver to',
     fieldDeliverOnly: 'Deliver payload only',
+    fieldSignature: 'Signature',
+    fieldSignatureHint: 'The only signature scheme this route accepts. GitHub, GitLab and Linear deliveries need their own pin.',
+    signatureOptions: {
+      generic: 'Generic (timestamped)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Prompt',
     fieldPromptPlaceholder: 'Instructions for the agent when this webhook fires (optional)',
     nameRequired: 'Name required',
@@ -3451,7 +3465,7 @@ export const en: Translations = {
       '/topup': 'Show your Nous balance and manage billing on the portal',
       '/platform': 'Pause, resume, or list a failing gateway platform',
       '/version': 'Show Hermes Agent version',
-      '/debug': 'Upload debug report (system info + logs) and get shareable links',
+      '/debug': 'Debug report (versions, config keys, error counts; no log text): shows the privacy notice; /debug upload shares links',
       '/model': 'Switch the model for this session'
     },
     hotkeyDescs: {

@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fnmatch import fnmatch
 
+from hermes_agent.compat.paths import original_path
+
 # Master switch, honoured everywhere the ratchet runs (CI, `scripts/check`, the git hooks). It is
 # read from main, never from the branch under test, so a PR cannot relax its own check: CI reads
 # the merge commit's first parent; local runs read `origin/main` (falling back to the merge-base).
@@ -166,6 +168,12 @@ RULES: tuple[Rule, ...] = (
     Rule("HX014", "private API-error predicate", "use `classify_api_error` (`agent.auxiliary_error_policy`"
          " on the aux path); add the phrasing to its pattern tables", "ast",
          include=("agent/auxiliary*.py", "agent/context_compressor*.py", "agent/turn_*.py")),
+    # Logs reach `hermes debug share` and bug reports: user content and identities stay out of INFO+.
+    Rule("HX017", "user content or identity logged at INFO+", "log the metadata, not the value:"
+         " `len(text)`, an id or a short hash (`gateway.platforms.helpers.hash_for_log`), or a"
+         " redacted form (`redact_phone`); the verbatim value goes to `logger.debug`. A content-named"
+         " value that holds no user data (a config string) takes `# health: allow HX017 -- <why>`",
+         "ast", include=("gateway/*", "plugins/platforms/*")),
 )
 
 RULES_BY_ID = {rule.id: rule for rule in RULES}
@@ -174,6 +182,7 @@ ALLOW_SYNTAX = "# health: allow <RULE> -- <why>"
 
 
 def _matches(path: str, globs: tuple[str, ...]) -> bool:
+    path = original_path(path)
     return any(fnmatch(path, glob) for glob in globs)
 
 

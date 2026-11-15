@@ -251,16 +251,11 @@ def any_prompt_callback_registered() -> bool:
         get_unlock_prompt_callback(), get_save_login_prompt_callback(), get_code_prompt_callback(),
     ))
 
-
-def can_prompt_here() -> bool:
-    """False in contexts where no human can answer (cron, webhook, api_server, -q).
-
-    Asks whether the surface installed ANY vault prompt, not just the unlock one:
-    the save-login and one-time-code tools call this alongside their own callback
-    check, and a surface that offers those without offering an unlock would
-    otherwise be told nobody is there to answer.
-    """
+def can_prompt_here(prompt: Optional[Callable] = None) -> bool:
+    """False in contexts where no human can answer (cron, webhook, api_server, -q). ``prompt`` is the
+    callback the caller is about to use (default: the unlock prompt): a chat surface installs only the
+    one-time-code prompt, and keying off the unlock prompt would report that nobody can answer."""
     from tools.approval_context import _no_user_can_answer
     if _no_user_can_answer():
         return False
-    return any_prompt_callback_registered()
+    return (prompt if prompt is not None else get_unlock_prompt_callback()) is not None

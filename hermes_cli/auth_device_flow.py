@@ -17,6 +17,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from socketserver import ThreadingMixIn
 from typing import Any, Callable, Dict, FrozenSet, Optional
 from urllib.parse import parse_qs, urlparse
 from hermes_cli.auth_constants import (
@@ -119,8 +120,13 @@ def _make_loopback_callback_handler(
     servers that do not echo an explicit ``state`` parameter.
     """
     result: dict[str, Any] = {"code": None, "state": None, "error": None, "error_description": None}
+    result_lock = threading.Lock()  # connections are served concurrently; keep code and state from one request
 
     class _LoopbackCallbackHandler(BaseHTTPRequestHandler):
+        # Each connection has its own thread (_bind_loopback_callback_server), so an idle browser preconnect
+        # never blocks the redirect; this only bounds how long a silent socket keeps its thread.
+        timeout = 60
+
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path != expected_path:
@@ -130,8 +136,8 @@ def _make_loopback_callback_handler(
                 return
 
             params = parse_qs(parsed.query)
-            for key in result:
-                result[key] = params.get(key, [None])[0]
+            with result_lock:
+                result.update({key: params.get(key, [None])[0] for key in result})
 
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -154,8 +160,12 @@ def _bind_loopback_callback_server(
     """Bind the loopback listener up front (``port=0`` = OS-assigned) so the redirect URI sent to
     the authorization server names a port we already own — no probe-close-rebind race."""
 
-    class _ReuseHTTPServer(HTTPServer):
+    class _ReuseHTTPServer(ThreadingMixIn, HTTPServer):
         allow_reuse_address = True
+        # One thread per connection: a single-threaded server parked on an idle browser preconnect (Chrome
+        # holds one ~60 s) delayed the redirect, and a short read timeout instead dropped slow but real
+        # clients (SSH tunnels). Daemon threads: server_close() never joins an idle one.
+        daemon_threads = True
 
     try:
         return _ReuseHTTPServer((host, port), handler_cls)

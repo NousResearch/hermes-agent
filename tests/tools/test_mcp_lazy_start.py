@@ -162,7 +162,8 @@ class TestLazyFirstUseConnect:
             return True
 
         with patch.object(_mcp_discovery, "_ensure_lazy_server_connected", side_effect=_connect) as mock_connect, \
-             patch.object(_mcp_loop, "_run_on_mcp_loop", side_effect=self._run_on_loop):
+             patch.object(_mcp_loop, "_run_on_mcp_loop", side_effect=self._run_on_loop), \
+             patch.dict(mcp._server_trust_levels, {"playwright": "full"}):  # lazy registration records it
             handler = _mcp_handlers._make_tool_handler("playwright", "browser_navigate", 5)
             out = handler({}, task_id="t1")
 

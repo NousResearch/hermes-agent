@@ -1,0 +1,18 @@
+name: local-business-leads
+title: Local Business Leads
+repo: https://github.com/afzalbuilds/local-business-leads
+sha: 160b2d08991f197d7c4f5e2bcd2341ab0ddf62b7
+version: "1.1.0"
+description: "Build local business lead lists from chat: any niche and city from Google Maps (12 countries), plus Yellow Pages US and Canada, BBB profiles, and dentist, contractor and restaurant lists with phone, website, address, hours, rating and business email. Four workflow skills (find leads, list cleanup with email validation and CSV export, BBB trust check, cost estimate) drive eight Actors on Apify's hosted MCP server (Streamable HTTP at https://mcp.apify.com). Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only, no local code. Disclosure — every tool call goes to Apify's hosted MCP server at mcp.apify.com and starts a pay-per-result run of an Actor published by the plugin's author (Apify user muhammadafzal), who is paid for each run; runs are billed to the user's own Apify account (about USD 0.0015 to 0.05 per row plus up to USD 0.019 per run). Search terms and places, and any email addresses the user asks to validate, are sent to Apify; the Actors read public business listings and the businesses' own websites, and the results are kept in the user's Apify datasets. Results are business contact data, and outreach with them must follow the marketing laws that apply to the user. Apify sign-in is OAuth, which Hermes runs only for a server in the user's own config, so the README has the user add the same-name server with `hermes mcp add business-leads --auth oauth`; that entry replaces the package's own, so the user adds `trust: untrusted` to it to keep Hermes asking before each paid run. The tool set is served by the remote server at runtime and is not covered by the pinned sha. No telemetry. Independent tool, not affiliated with Google, Yellow Pages or BBB."
+maintainer: Imzlab Technologies
+tier: community
+category: tools
+docs_url: https://github.com/afzalbuilds/local-business-leads#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -238,9 +238,9 @@ def _is_unavailable_log_stream(exc: BaseException | None) -> bool:
 
 # Third-party loggers that are noisy at DEBUG/INFO level.
 _NOISY_LOGGERS = (
-    "openai", "openai._base_client", "httpx", "httpcore", "asyncio", "hpack", "hpack.hpack",
-    "grpc", "modal", "urllib3", "urllib3.connectionpool", "websockets", "charset_normalizer",
-    "markdown_it",
+    "openai", "openai._base_client", "httpx", "httpx2", "httpcore", "asyncio", "hpack",
+    "hpack.hpack", "grpc", "modal", "urllib3", "urllib3.connectionpool", "websockets",
+    "charset_normalizer", "markdown_it",
 )
 
 
@@ -295,6 +295,24 @@ def canonical_logger_name(name: str) -> str:
     """*name* without the ``hermes_agent.`` package prefix, so a module's logger keeps its component
     and diagnostics scope whether it runs under its top-level name or inside the package."""
     return name.removeprefix("hermes_agent.")
+
+
+def display_record(record: logging.LogRecord) -> logging.LogRecord:
+    """*record* as Hermes log formats print it: with its canonical logger name. ``record.name`` itself,
+    which filters and third-party handlers read, is left unchanged."""
+    shown = canonical_logger_name(record.name)
+    if shown == record.name:
+        return record
+    record = copy.copy(record)
+    record.name = shown
+    return record
+
+
+class DisplayNameFormatter(logging.Formatter):
+    """``logging.Formatter`` whose ``%(name)s`` is the canonical logger name."""
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        return super().formatMessage(display_record(record))
 
 
 class _ComponentFilter(logging.Filter):

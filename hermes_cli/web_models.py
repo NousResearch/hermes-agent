@@ -5,7 +5,9 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, SecretStr, StrictBool, StrictInt, field_validator
+from pydantic import BaseModel, Field, SecretStr, StrictBool, StrictInt, ValidationInfo, field_validator
+
+from tools.voice_live import MAX_SESSION_INSTRUCTIONS_LENGTH, MAX_SESSION_VOICE_LENGTH, validate_session_overrides
 
 
 class ConfigUpdate(BaseModel):
@@ -249,24 +251,19 @@ class TTSSpeakRequest(BaseModel):
 
 class VoiceLiveSessionRequest(BaseModel):
     """POST /api/audio/voice-live/session: the renderer's WebRTC SDP offer plus optional prior
-    text turns (``{"type":"message","role":..,"content":[..]}``) to seed the live voice model."""
+    text turns (``{"type":"message","role":..,"content":[..]}``) to seed the live voice model.
+    Instructions add call-local context; voice selects a call-local speaking voice.
+    Omitted or null settings retain the profile defaults without writing configuration.
+    """
     sdp: str
     history: Optional[list[dict[str, Any]]] = None
-    instructions: Optional[str] = Field(default=None, max_length=32768)
-    voice: Optional[str] = Field(default=None, max_length=128)
+    instructions: Optional[str] = Field(default=None, max_length=MAX_SESSION_INSTRUCTIONS_LENGTH)
+    voice: Optional[str] = Field(default=None, max_length=MAX_SESSION_VOICE_LENGTH)
 
     @field_validator("instructions", "voice")
     @classmethod
-    def _nonblank_live_override(cls, value: Optional[str]) -> Optional[str]:
-        if value is not None and not value.strip():
-            raise ValueError("GPT-Live session override must not be blank")
-        return value
-
-    @field_validator("voice")
-    @classmethod
-    def _single_line_live_voice(cls, value: Optional[str]) -> Optional[str]:
-        if value is not None and (value != value.strip() or any(ord(ch) < 32 for ch in value)):
-            raise ValueError("GPT-Live voice must be a single-line name without surrounding spaces")
+    def _validate_live_override(cls, value: Optional[str], info: ValidationInfo) -> Optional[str]:
+        validate_session_overrides(**{info.field_name: value})
         return value
 
 

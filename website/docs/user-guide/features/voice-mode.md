@@ -241,6 +241,28 @@ How it works: pressing the voice button opens a WebRTC session from the desktop 
 
 Not supported in this mode: the Nous-managed audio proxy (direct key only), the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
 
+#### Per-call settings for API clients
+
+`POST /api/audio/voice-live/session?profile=<name>` accepts optional `instructions` and
+`voice` fields alongside `sdp` and `history`. Omit either field, or send `null`, to use
+the selected profile's settings. These fields never write to the profile configuration.
+
+- `instructions` adds context after the built-in voice guidance and the profile's
+  instructions. It must be a nonblank string of at most 32,768 characters.
+- `voice` selects the speaking voice for this call only. It must be a nonblank,
+  printable name of at most 128 characters, with no surrounding whitespace.
+  Custom voice names are allowed; the provider decides which voices it supports.
+
+For example, a request with `"voice": "cedar"` and no `instructions` uses Cedar with
+the profile's usual instructions. Other calls keep their own settings, including
+simultaneous calls on the same profile. Invalid overrides return HTTP 422 before
+the provider is contacted.
+
+Python callers can pass the same keyword arguments to
+`tools.voice_live.create_webrtc_session(sdp_offer, history=None, *, instructions=None, voice=None)`.
+Hermes resolves the credentials, endpoint and model and performs the exchange;
+callers receive the session response without needing the API key.
+
 ### Voice chat model
 
 Spoken turns can run on a different (usually faster) model than the one you type to. Set the `voice_chat` auxiliary slot, in Settings → Models → Auxiliary models on Desktop, in `hermes model` → Auxiliary models, or in config.yaml:

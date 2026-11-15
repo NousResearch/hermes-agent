@@ -1,6 +1,6 @@
 """GNU ``env -S`` / ``--split-string`` projection for the approval detectors.
 
-Moved out of :mod:`tools.approval_detection` (size cap); that module re-exports both names.
+Moved out of :mod:`tools.approval_detection` (size cap); import from here.
 """
 
 import shlex

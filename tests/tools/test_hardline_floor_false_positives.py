@@ -82,6 +82,8 @@ _ALLOWED = [
     "cat <<'EOF'\nnice reboot\nEOF",
     "cat <<'EOF'\nsu -c reboot\nEOF",
     "cat <<'EOF' \\\n> notes.md\nnice reboot\nEOF",
+    # A glued redirect target is a file, not a program path.
+    "cat</etc/reboot",
     # An escaped backslash ends the header: the next line is body text.
     "cat <<'EOF' \\\\\nnice reboot\nEOF",
     # ...also inside a carried payload.

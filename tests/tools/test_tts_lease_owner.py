@@ -17,35 +17,16 @@ from hermes_constants import (
 from tools import tts_command_provider, tts_tool, tts_tool_lifecycle
 
 
-@pytest.fixture(autouse=True)
-def _clean_lifecycle():
-    tts_tool_lifecycle._reset_tts_leases_for_tests()
-    yield
-    tts_tool_lifecycle._reset_tts_leases_for_tests()
+pytestmark = pytest.mark.usefixtures("tts_lifecycle_reset")
 
 
 @pytest.fixture
-def timers(monkeypatch):
-    made: list = []
-
-    class Timer:
-        def __init__(self, interval, function, args=None, kwargs=None):
-            self.interval, self.function, self.args = interval, function, tuple(args or ())
-            self.started = self.cancelled = False
-            made.append(self)
-
-        def start(self):
-            self.started = True
-
-        def cancel(self):
-            self.cancelled = True
-
-    monkeypatch.setattr(tts_tool_lifecycle, "_make_keep_warm_timer", Timer)
-
+def timers(tts_keep_warm_timers):
+    """Fire every pending keep-warm timer; returns their intervals."""
     def fire():
-        pending = [t for t in made if t.started and not t.cancelled]
+        pending = [t for t in tts_keep_warm_timers if t.started and not t.cancelled]
         for t in pending:
-            t.function(*t.args)
+            t.fire()
         return [t.interval for t in pending]
     return fire
 
@@ -199,17 +180,38 @@ def test_release_hook_runs_outside_the_lease_lock(plugin, timers):
     assert plugin.calls == ["warm", "release-start", "release-end"]
 
 
-def test_reacquire_during_a_running_release_warms_after_it(plugin, timers):
+class _BarrierProbe:
+    """The teardown lock, signalling when the reacquiring thread reaches it (then blocks on it)."""
+
+    def __init__(self, lock):
+        self.lock, self.reached = lock, threading.Event()
+
+    def __enter__(self):
+        if threading.current_thread().name == "reacquire":
+            self.reached.set()
+        return self.lock.__enter__()
+
+    def __exit__(self, *exc):
+        return self.lock.__exit__(*exc)
+
+
+def test_reacquire_during_a_running_release_warms_after_it(plugin, timers, monkeypatch):
+    barrier = _BarrierProbe(tts_tool_lifecycle._tts_teardown_lock)
+    monkeypatch.setattr(tts_tool_lifecycle, "_tts_teardown_lock", barrier)
     tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
     tts_tool_lifecycle.release_tts_lease("tui:voice-tts")
     plugin.gate.clear()
     teardown = threading.Thread(target=timers)
     teardown.start()
-    reacquire = threading.Thread(target=tts_tool_lifecycle.acquire_tts_lease, args=("tui:voice-tts",))
+    reacquire = threading.Thread(target=tts_tool_lifecycle.acquire_tts_lease, args=("tui:voice-tts",),
+                                 name="reacquire")
     try:
         assert plugin.in_release.wait(5)
         reacquire.start()
-        reacquire.join(0.3)  # bounded: it must be parked on the running release, not warming
+        # The reacquire is at the barrier while the running release still holds it (a non-blocking
+        # try from here fails), so it cannot have warmed: no timing assumption.
+        assert barrier.reached.wait(5), "the reacquire never waited for the running release"
+        assert not barrier.lock.acquire(blocking=False)
         assert plugin.calls == ["warm", "release-start"]
     finally:
         plugin.gate.set()

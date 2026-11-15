@@ -326,7 +326,9 @@ class CellAuthority:
 
                     with programmatic_read_context():
                         return handle_function_call(
-                            tool_name, tool_args, task_id=self.task_id, **identity
+                            tool_name, tool_args, task_id=self.task_id,
+                            session_id=self.session_id, turn_id=self.turn_id,
+                            conversation_id=self.conversation_id,
                         )
                 return handle_function_call(tool_name, tool_args, task_id=self.task_id, **identity)
         finally:

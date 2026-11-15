@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sys
 import time
 
 import pytest
@@ -10,7 +9,31 @@ from tools import code_execution_rpc, code_execution_tool
 from tools import file_tools
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="UDS not available on Windows")
+def test_session_cell_raw_read_preserves_dispatch_identity(tmp_path, monkeypatch):
+    import model_tools
+    from tools.code_kernel import CellAuthority
+
+    target = tmp_path / "cell-identity.txt"
+    target.write_text("1|literal\n", encoding="utf-8")
+    original = model_tools.handle_function_call
+    identities = []
+
+    def dispatch(name, args, **identity):
+        identities.append(identity)
+        return original(name, args, **identity)
+
+    monkeypatch.setattr(model_tools, "handle_function_call", dispatch)
+    authority = CellAuthority("read-task", session_id="read-session", turn_id="read-turn",
+                              conversation_id="read-conversation")
+    result = json.loads(authority.dispatch("read_file", {"path": str(target)}))
+    assert result["success"] is True
+    assert result["content"] == "1|literal\n"
+    assert identities == [{"task_id": "read-task", "session_id": "read-session",
+                           "turn_id": "read-turn", "conversation_id": "read-conversation"}]
+    assert file_tools._programmatic_read.get() is False
+
+
+@pytest.mark.platforms("posix")
 def test_execute_code_read_file_returns_stable_raw_shape(tmp_path):
     target = tmp_path / "sandbox.txt"
     target.write_text("alpha\n1|literal\nomega\n", encoding="utf-8")

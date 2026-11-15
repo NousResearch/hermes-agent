@@ -462,14 +462,13 @@ def wake_route_envelope(authority, entry, requester_user_id=None):
     its session key. There a predecessor's envelope is borrowed only for the producer's authenticated
     user, or a result could be addressed to the predecessor's last speaker.
     """
-    from gateway.session import is_shared_multi_user_session
-    config = getattr(getattr(authority.runner, 'session_store', None), 'config', None)
+    from gateway.session import is_shared_multi_user_session, resolve_runner_session_isolation
     origin = getattr(entry, 'origin', None)
-    shared = bool(origin is not None and is_shared_multi_user_session(
-        origin,
-        group_sessions_per_user=getattr(config, 'group_sessions_per_user', True),
-        thread_sessions_per_user=getattr(config, 'thread_sessions_per_user', False),
-    ))
+    shared = False
+    if origin is not None:
+        group_per_user, thread_per_user = resolve_runner_session_isolation(authority.runner, origin)
+        shared = is_shared_multi_user_session(
+            origin, group_sessions_per_user=group_per_user, thread_sessions_per_user=thread_per_user)
     requester = str(requester_user_id) if requester_user_id else None
     prefer_human = requester is not None
     envelope = committed_route_envelope(authority, entry, human_only=prefer_human, user_id=requester)

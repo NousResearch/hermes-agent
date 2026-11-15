@@ -1607,14 +1607,13 @@ def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[
     """
     seen: set[str] = set()
     for source in heredoc_scan_sources(command, _SHELL_NAMES_RE):
-        for variant in _single_command_detection_variants(source, eval_depth, capped, source != command):
+        for variant in _single_command_detection_variants(source, eval_depth, capped):
             if variant not in seen:
                 seen.add(variant)
                 yield variant
 
 
-def _single_command_detection_variants(command: str, eval_depth: int = 0, capped: list[str] | None = None,
-                                      bodies_dropped: bool = False):
+def _single_command_detection_variants(command: str, eval_depth: int = 0, capped: list[str] | None = None):
     from tools.approval_wrappers import literal_heredoc_bodies
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
@@ -1717,13 +1716,8 @@ def _single_command_detection_variants(command: str, eval_depth: int = 0, capped
                 cursor = span[1]
         variant = _splice(normalized, applied)
         # A dequoted verb after a separator (`ls; "reboot"`) reaches _CMDPOS only once its start is marked; not inside
-        # a quoted-delimiter heredoc fed to a non-shell (that body is literal data). In a body-dropped copy an opener
-        # whose body and terminator were removed reads as unterminated (skip to the end); only a proven-terminated
-        # heredoc reaches that copy, so such a span is an orphan and the text after it is still commands.
-        skip = literal_heredoc_bodies(variant)
-        if bodies_dropped:
-            skip = [span for span in skip if span[1] < len(variant)]
-        yield from filter(fresh, (variant, _mark_command_starts(variant, skip=skip)))
+        # a quoted-delimiter heredoc fed to a non-shell (that body is literal data).
+        yield from filter(fresh, (variant, _mark_command_starts(variant, skip=literal_heredoc_bodies(variant))))
         pending = carry
 
 

@@ -111,6 +111,22 @@ def test_quote_in_a_comment_does_not_hide_the_next_command(gate_mode, command):
     assert approval.check_all_command_guards(command, "local")["approved"] is False
 
 
+@pytest.mark.parametrize("command", [
+    "cat <<'EOF'\nx\nEOF\ntrue; \"reboot\"",
+    "cat <<'EOF'\nx\nEOF\ntrue; \"reboot\"\nsed -n p <<'EOF'\nx\nEOF",
+    "cat > a.md <<'EOF'\nx\nEOF\ntrue; \"reboot\"\ngrep x <<'EOF'\ny\nEOF",
+])
+def test_command_after_a_dropped_body_is_still_a_command(gate_mode, command):
+    # The dropped body's opener keeps its terminator, so it never pairs with a later heredoc's.
+    assert detect_hardline_command(command)[0] is True
+    assert approval.check_all_command_guards(command, "local")["approved"] is False
+
+
+def test_dropped_multiline_body_keeps_only_its_terminator():
+    command = f"cat > notes.md <<'EOF'\nintro\n{RM_ROOT}\nEOF\ngit add notes.md"
+    assert detect_hardline_command(command)[0] is False
+
+
 @pytest.mark.parametrize("opener", ["python3 - <<'EOF'\n# it's code", "osascript <<'EOF'\n-- it's code"])
 def test_quote_in_code_heredoc_body_does_not_hide_the_next_command(opener):
     # Code bodies stay raw too; only their dropped copy keeps the quote from hiding the next line.

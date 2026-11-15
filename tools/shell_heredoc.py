@@ -300,4 +300,8 @@ def mask_heredoc_bodies_for_shell_scan(command: str, *, code_consumers: bool) ->
     backtrack quadratically.
     """
     consumer_re = _INERT_HEREDOC_CONSUMER_RE if code_consumers else _DATA_HEREDOC_CONSUMER_RE
-    return _replace_ranges(command, _inert_heredoc_body_ranges(command, consumer_re), keep_newlines=False)
+    # The terminator line stays: an opener left without it pairs with a later heredoc's terminator
+    # and hides the commands in between from the command-start scan.
+    bodies = [(start, max(start, command.rfind("\n", start, end - 1) + 1))
+              for start, end in _inert_heredoc_body_ranges(command, consumer_re)]
+    return _replace_ranges(command, bodies, keep_newlines=False)

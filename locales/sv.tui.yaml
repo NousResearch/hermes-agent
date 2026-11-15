@@ -943,3 +943,12 @@ pickers.model.disconnect.hint: "y/Enter bekräfta · n/Esc avbryt"
 pickers.model.effort.title: "Resoneringsnivå (steg 3/3)"
 pickers.model.effort.subtitle: "{0} · tillämpas vid bytet (samma omfattning) · Esc tillbaka"
 pickers.model.effort.hint: "↑/↓ välj · Enter byt · Esc tillbaka · q stäng"
+
+pickers.model.reasoning.none: "ingen (inaktivera resonemang)"
+pickers.model.reasoning.keepCurrent: "Behåll nuvarande resoneringsnivå"
+
+pickers.model.key.title: "Konfigurera {0}"
+pickers.model.key.pasteBelow: "Klistra in din API-nyckel nedan (sparas i ~/.hermes/.env)"
+pickers.model.key.empty: "(tom)"
+pickers.model.key.saving: "sparar…"
+pickers.model.key.hint: "Enter spara · Ctrl+U rensa · Esc tillbaka"

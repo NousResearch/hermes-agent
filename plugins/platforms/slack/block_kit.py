@@ -673,9 +673,7 @@ def sanitize_blocks(blocks: Optional[list[Block]]) -> Optional[list[Block]]:
 # rejected payload (``invalid_blocks``) still delivers the words.
 
 AGENT_BLOCKS_LANG = "slack-blocks"
-_AGENT_FENCE_RE = re.compile(
-    r"^[ \t]*(`{3,}|~{3,})[ \t]*" + re.escape(AGENT_BLOCKS_LANG) + r"[ \t]*\n(.*?)\n[ \t]*\1[ \t]*$",
-    re.DOTALL | re.MULTILINE)
+_AGENT_FENCE_OPEN_RE = re.compile(r"(`{3,}|~{3,})[ \t]*" + re.escape(AGENT_BLOCKS_LANG))
 _BROADCAST_RE = re.compile(r"<!(?:everyone|channel|here)(?:\|[^>\n]*)?>", re.IGNORECASE)
 
 
@@ -692,6 +690,25 @@ def _defuse_broadcasts(node: Any) -> Any:
             return {"type": "text", "text": "@" + str(node.get("range") or "channel")}
         return {k: _defuse_broadcasts(v) for k, v in node.items()}
     return node
+
+
+def _agent_fences(content: str) -> List[Tuple[int, int, str]]:
+    """``(start, end, body)`` of each closed ```slack-blocks fence, in one pass over the lines: an
+    opener with no matching closer (same fence string, on its own line) is not a fence."""
+    spans: List[Tuple[int, int, str]] = []
+    opened: Optional[Tuple[int, str, int]] = None   # (start, fence string, body start)
+    pos = 0
+    for line in content.splitlines(keepends=True):
+        stripped = line.strip()
+        if opened is None:
+            m = _AGENT_FENCE_OPEN_RE.fullmatch(stripped)
+            if m:
+                opened = (pos, m.group(1), pos + len(line))
+        elif stripped == opened[1]:
+            spans.append((opened[0], pos + len(line), content[opened[2]:pos]))
+            opened = None
+        pos += len(line)
+    return spans
 
 
 def _blocks_summary(blocks: List[Block]) -> str:
@@ -714,11 +731,11 @@ def extract_agent_blocks(content: str) -> Optional[Tuple[str, List[Block]]]:
     if not content or AGENT_BLOCKS_LANG not in content:
         return None
     try:
-        fences = list(_AGENT_FENCE_RE.finditer(content))
+        fences = _agent_fences(content)
         if len(fences) != 1:
             return None
-        match = fences[0]
-        payload = json.loads(match.group(2))
+        start, end, body = fences[0]
+        payload = json.loads(body)
         text = ""
         if isinstance(payload, dict):
             text = str(payload.get("text") or "").strip()
@@ -728,7 +745,7 @@ def extract_agent_blocks(content: str) -> Optional[Tuple[str, List[Block]]]:
         blocks = sanitize_blocks(_defuse_broadcasts(payload))
         if not blocks:
             return None
-        rest = (content[: match.start()] + content[match.end():]).strip()
+        rest = (content[:start] + content[end:]).strip()
         return rest or _defuse_broadcasts(text) or _blocks_summary(blocks), blocks
     except Exception:
         return None

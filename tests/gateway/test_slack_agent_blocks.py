@@ -46,6 +46,18 @@ class TestExtractAgentBlocks:
     def test_unclosed_fence_is_not_claimed(self):
         assert extract_agent_blocks("```slack-blocks\n" + json.dumps([HEADER])) is None
 
+    def test_many_unclosed_openers_stay_linear(self):
+        import time
+        content = "```slack-blocks\nx\n" * 20000          # ~400 KB of openers, none closed
+        started = time.monotonic()
+        assert extract_agent_blocks(content) is None
+        assert time.monotonic() - started < 1.0
+
+    def test_fence_inside_text_lines(self):
+        text, blocks = extract_agent_blocks("Intro\n" + fenced([HEADER]) + "\nOutro")
+        assert text == "Intro\nOutro"
+        assert blocks == [HEADER]
+
     def test_broadcasts_are_made_inert(self):
         section = {"type": "section", "text": {"type": "mrkdwn", "text": "ping <!channel> and <!here|here>"}}
         rich = {"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [

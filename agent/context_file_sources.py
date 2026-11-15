@@ -68,12 +68,12 @@ def list_context_file_sources(
     unless *allow_install_tree_fallback*). Keys: ``label``, ``path``, ``chars``, ``est_tokens``, ``loaded``
     and ``status`` ∈ loaded / truncated / flagged / shadowed / blocked / empty / unreadable / skipped / suppressed.
     """
-    cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
+    cwd_path = _pb._context_cwd_path(cwd)
     max_chars = _pb._get_context_file_max_chars(context_length)
-    suppressed = _pb._project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback)
+    suppressed = cwd_path is not None and _pb._project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback)
     sources: list[dict[str, Any]] = []
     winner: Optional[str] = None
-    for kind, label, path, content in _pb.discover_context_files(cwd_path):
+    for kind, label, path, content in _pb.discover_context_files(cwd_path) if cwd_path is not None else ():
         if content is None:  # refused by containment; stat would follow the link to the refused target
             content, status = "", "skipped"
         elif not content:

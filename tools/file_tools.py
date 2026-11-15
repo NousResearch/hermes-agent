@@ -51,6 +51,7 @@ _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 # Read-size guard. Model-agnostic, so characters proxy tokens: 100K chars is
 # ~25-35K tokens across typical tokenisers. Configurable: file_read_max_chars.
 _DEFAULT_MAX_READ_CHARS = 100_000
+_ARCHIVE_GUTTER_CHARS = 16  # '<n>|' line-number gutter plus newline, generously
 def _get_max_read_chars() -> int:
     """Return ``file_read_max_chars`` from config.yaml (default on missing/invalid). No module
     cache: ``load_config_readonly`` is already mtime+path cached, and a process-lifetime slot
@@ -437,7 +438,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     # A pruned tool result is archived byte-exact, so JSON output (or any one-line output) is a line the
     # per-line cap would cut with no way to continue: page its text, long lines wrapped at the cap.
     archived = is_pruned_archive(str(_resolved))
-    wrapped = False
+    wrapped, wrap_width = False, 0
     if not (archived or is_extractable_document(str(_resolved))):
         return None
     file_ops = _get_file_ops(task_id)
@@ -447,8 +448,11 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
             raise ExtractionError(binary.error or "Document bytes unavailable")
         document_bytes = base64.b64decode(binary.base64_content, validate=True)
         if archived:
+            # Each wrapped line, gutter included, must also fit the read budget: a line the budget cuts
+            # mid-way advances next_offset past its remainder.
+            wrap_width = max(1, min(get_max_line_length(), _get_max_read_chars() - _ARCHIVE_GUTTER_CHARS))
             extracted_text, wrapped = pageable_archive_text(
-                document_bytes.decode("utf-8", errors="replace"), str(_resolved), get_max_line_length())
+                document_bytes.decode("utf-8", errors="replace"), str(_resolved), wrap_width)
         else:
             extracted_text = extract_document_bytes(document_bytes, str(_resolved))
     except (ExtractionError, ValueError, base64.binascii.Error) as exc:
@@ -479,7 +483,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         "truncated": total_lines > end_line,
         "extracted_document": True}
     if wrapped:  # the archive file itself is byte-exact; only this view splits its long lines
-        result_dict["long_lines_wrapped_at"] = max_line_length
+        result_dict["long_lines_wrapped_at"] = wrap_width
     if result_dict["truncated"]:
         result_dict["hint"] = (
             f"Use offset={end_line + 1} to continue reading "

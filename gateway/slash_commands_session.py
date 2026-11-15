@@ -37,9 +37,6 @@ _RESET_CLEANUP_TIMEOUT_S = 30.0
 # be either scope, so ownership proofs require both the DM and the non-DM reading to hold.
 _DM_CHAT_TYPES = {"dm", "direct", "private"}
 
-# The persisted session columns ``_persisted_row_proves_owner`` compares.
-_OWNER_FIELDS = ("source", "user_id", "chat_id", "thread_id")
-
 _BRANCH_COPIED_FIELDS = ("content", "tool_calls", "tool_call_id", "finish_reason", "reasoning",
                          "reasoning_content", "reasoning_details", "codex_reasoning_items",
                          "codex_message_items", "timestamp", "data_use")
@@ -544,7 +541,7 @@ class GatewaySessionCommandsMixin:
             record = await store.aio.sessions.get(target_id)
         except Exception:
             return False
-        row = {field: getattr(record, field) for field in _OWNER_FIELDS} if record is not None else {}
+        row = record.as_session_row() if record is not None else {}
         return self._persisted_row_proves_owner(source, row)
 
     async def _resume_row_visible(self, source: SessionSource, row: dict, allow_all: bool) -> bool:

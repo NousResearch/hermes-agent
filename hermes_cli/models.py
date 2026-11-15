@@ -2116,16 +2116,16 @@ def _fetch_anthropic_models(
     timeout: float = 5.0, *, base_url: Optional[str] = None, api_key: Optional[str] = None
 ) -> Optional[list[str]]:
     """Sorted model ids from the Anthropic /v1/models endpoint, or None. Credentials: explicit
-    ``api_key``, else ``resolve_anthropic_token()`` (env / OAuth / Claude Code), else a read-only
-    API-key credential_pool entry."""
+    ``api_key``, else ``anthropic_discovery_token`` (the Foundry key at azure.com, else env / OAuth /
+    Claude Code), else (off Foundry) a read-only API-key credential_pool entry."""
     try:
-        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
+        from agent.anthropic_credentials import _is_oauth_token
     except ImportError:
         return None
 
-    resolved_base_url = base_url
-    token = (api_key or "").strip() or resolve_anthropic_token()
-    if not token:
+    from hermes_cli.runtime_provider import anthropic_discovery_token  # Foundry: never the OAuth token (#154242)
+    resolved_base_url, token = base_url, anthropic_discovery_token(api_key, base_url)
+    if token == "":
         # A pool credential and its endpoint are one security boundary — never pair the pool key
         # with a caller-provided endpoint.
         token, resolved_base_url = _resolve_anthropic_pool_catalog_credentials()

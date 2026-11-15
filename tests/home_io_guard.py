@@ -119,7 +119,11 @@ class HomeIOGuard:
             #       .git/worktrees/... admin-kataloger för länkade worktrees.
             # Strängidom (upstream 02f57212 "strings, not pathlib"): samma
             # tillstånd, normcase-jämförelser istället för pathlib.
-            if not destructive and any(absolute == _normcase(os.path.join(root, "manifest.json")) for root in roots):
+            _manifest_probes = tuple(
+                _normcase(os.path.join(d, "manifest.json"))
+                for d in (*roots, *(os.path.dirname(p) for p in _INTERPRETER_PREFIX_STRS))
+            )
+            if not destructive and absolute in _manifest_probes:
                 # Reviewer-tätning 7/10 (HIGH: symlink-bypass): allow bara om
                 # sista komponenten INTE är en symlink (lstat på exakt denna
                 # sökväg, följer inte länken). Vanlig fil / saknad fil → allow
@@ -158,7 +162,7 @@ class HomeIOGuard:
                     self.refuse(value)
             if resolved is None:
                 resolved = _normcase(os.path.realpath(absolute))
-            if not destructive and any(resolved == _normcase(os.path.join(root, "manifest.json")) for root in roots):
+            if not destructive and resolved in _manifest_probes:
                 return
             if any(_within(resolved, os.path.join(prefix, ".git")) for prefix in _INTERPRETER_PREFIX_STRS):
                 return

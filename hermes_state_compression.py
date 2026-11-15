@@ -705,7 +705,13 @@ class SessionCompressionMixin:
             if not parent_id or parent_id in seen or self._is_explicit_fork_child_row(current, include_reset=True):
                 break
             parent = _row(parent_id)
-            if not parent or parent.get("end_reason") != "compression":
+            if not parent or (
+                parent.get("end_reason") != "compression"
+                and not (
+                    parent.get("end_reason") == "wrapped"
+                    and current.get("source") not in ("subagent", "delegate")
+                )
+            ):
                 break
             seen.add(parent_id)
             current = parent
@@ -737,6 +743,19 @@ class SessionCompressionMixin:
             # longest a suspended holder can go unrefreshed and still keep its lease.
             conn.execute("DELETE FROM session_turn_leases WHERE expires_at < ?",
                          (now - _TURN_LEASE_SWEEP_GRACE_S,))
+            dead_expired = [
+                r["conversation_id"]
+                for r in conn.execute(
+                    "SELECT conversation_id, holder FROM session_turn_leases WHERE expires_at <= ?",
+                    (now,),
+                ).fetchall()
+                if _compression_lock_holder_process_is_dead(r["holder"])
+            ]
+            if dead_expired:
+                conn.executemany(
+                    "DELETE FROM session_turn_leases WHERE conversation_id = ?",
+                    [(cid,) for cid in dead_expired],
+                )
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             return _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
@@ -827,10 +846,16 @@ class SessionCompressionMixin:
         expires_at = time.time() + max(0.1, float(ttl_seconds))
         def _do(conn):
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
-            return conn.execute(
+            rc = conn.execute(
                 "UPDATE session_turn_leases SET expires_at = ? "
                 "WHERE conversation_id = ? AND holder = ?", (expires_at, conversation_id, holder),
-            ).rowcount > 0
+            ).rowcount
+            if rc == 0:
+                rc = conn.execute(
+                    "UPDATE session_turn_leases SET expires_at = ? WHERE holder = ?",
+                    (expires_at, holder),
+                ).rowcount
+            return rc > 0
         patience = patience_s if patience_s is not None else getattr(self, "_TRANSCRIPT_WRITE_PATIENCE_S", 20.0)
         return bool(self._execute_write(_do, patience_s=patience))
 
@@ -861,8 +886,8 @@ class SessionCompressionMixin:
         def _do(conn):
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             conn.execute(
-                "DELETE FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
-                (conversation_id, holder))
+                "DELETE FROM session_turn_leases WHERE (conversation_id = ? AND holder = ?) OR holder = ?",
+                (conversation_id, holder, holder))
         self._execute_write(_do)
 
     def get_compression_lock_holder(self, session_id: str) -> Optional[str]:

@@ -985,6 +985,16 @@ platform:
     denied: "❌ 已拒绝。"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
   shared:
+    vault_code:
+      title: "🔐 {site} 的验证码"
+      body: "{site} 要求输入一次性验证码（短信或邮件）。点击按钮，在弹出的表单里输入：验证码会直接填进网页，不会发到这里。"
+      button: "输入验证码"
+      modal_title: "{site} 的验证码"
+      input_label: "一次性验证码"
+      submitted: "验证码已提交，正在填入网页。"
+      ended: "这个验证码请求已结束，没有填入任何内容。"
+      not_author: "只有发起这次请求的人可以输入验证码。"
+      submitted_footer: "✓ 验证码已提交"
     response_as_file: "📎 回复较长：完整内容已作为文件附上。"
     truncated_suffix: "\n...（已截断）"
     unknown: "未知"
@@ -1197,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ 无法附加 `{filename}` — {size_mb} MB 超出了 Discord 对此频道 {limit_mb} MB 的上传上限。请压缩文件或改为分享链接。"
       image_skipped_too_large: "⚠️ 已跳过 `{filename}` — {size_mb} MB 超出了 Discord {limit_mb} MB 的上传上限。"
   telegram:
+    vault_code:
+      body: "请用验证码回复此消息。Hermes 会立即删除你的回复并把验证码填入页面；模型不会看到它。"
+      delete_failed: "无法在此删除你的回复，请手动删除。"
     approval:
       action_once: "✅ 允许一次"
       action_session: "✅ 本会话"
@@ -3315,6 +3328,10 @@ cli:
     total: "📚 {count} 个技能可用"
     added_header: "➕ 新增技能："
     removed_header: "➖ 移除技能："
+  gateway_restart:
+    waiting: "Hermes 正在重启以完成更新或重启；正在等待它恢复…"
+    timed_out: "Hermes 未能在规定时间内完成重启。请检查 `hermes gateway status`，然后重新启动 `hermes`。"
+    stopped: "已停止等待 Hermes 重启；未启动任何内容。"
   session_store:
     unavailable_rich: "[bold yellow]⚠ 会话存储不可用[/bold yellow] — 本次对话将[bold]不会被保存[/bold]，之后也无法恢复。搜索历史会话的功能也已禁用。\n  原因：{reason}。\n  {action}\n  [dim]详情：{details}[/dim]"
     unavailable_plain: "警告：会话存储不可用 — 本次对话将不会被保存，之后也无法恢复。原因：{reason}。{action}"

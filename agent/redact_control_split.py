@@ -25,8 +25,9 @@ _CSI_SEQ_RE = re.compile(
 )
 
 # Union of every _PREFIX_PATTERNS body class: a shadow match may only span token-body chars or
-# stripped noise. ``=`` is excluded so a KEY=value separator never lets a match span unrelated text.
-_TOKEN_BODY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.")
+# stripped noise. ``=`` is excluded so a KEY=value separator never lets a match span unrelated text;
+# only trailing base64 padding (``glc_…==``) may hold it.
+_TOKEN_BODY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.+/")
 
 
 def _strip_shadow(text: str) -> tuple:
@@ -81,7 +82,7 @@ def mask_control_split_tokens(text: str, mask_fn, prefix_re: re.Pattern) -> str:
             glued_left = start > 0 and noise[start - 1]
             if not (glued_left or any(noise[start:end])) or not prefix_re.fullmatch(body):
                 continue
-        if (all(noise[start + k] or c in _TOKEN_BODY_CHARS for k, c in enumerate(span))
+        if (all(noise[start + k] or c in _TOKEN_BODY_CHARS for k, c in enumerate(span.rstrip("=")))
                 and (end >= len(text) or text[end] != "=")):
             matches.append((start, end, mask_fn(body)))
     out = list(text)

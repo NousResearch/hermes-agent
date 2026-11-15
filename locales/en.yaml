@@ -1029,6 +1029,17 @@ platform:
     denied: "❌ Denied."
     approval_expired: "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
   shared:
+    # browser_vault one-time-code card (Discord, Slack): modal title / input label ≤ 45 chars (Slack modal title ≤ 24), button ≤ 75.
+    vault_code:
+      title: "🔐 Verification code for {site}"
+      body: "{site} is asking for a one-time code (text message or email). Press the button and type it in the form that opens: it goes straight into the page and is never posted here."
+      button: "Enter code"
+      modal_title: "Code for {site}"
+      input_label: "One-time code"
+      submitted: "Code submitted; entering it into the page."
+      ended: "This code request has ended; nothing was entered."
+      not_author: "Only the person who started this request can enter the code."
+      submitted_footer: "✓ Code submitted"
     response_as_file: "📎 Long reply: the full text is attached."
     truncated_suffix: "\n...(truncated)"
     unknown: "unknown"
@@ -1248,6 +1259,9 @@ platform:
       image_skipped_too_large: "⚠️ Skipped `{filename}` — {size_mb} MB exceeds Discord's {limit_mb} MB upload limit."
 
   telegram:
+    vault_code:
+      body: "Reply to this message with the code. Hermes deletes your reply right away and enters the code into the page; the model never sees it."
+      delete_failed: "Couldn't delete your reply here. Please delete it yourself."
     # Inline-keyboard labels: keep short (2-per-row layout truncates around ~20 chars on mobile).
     # Every toast (answerCallbackQuery) is cut at 200 chars by the adapter.
     approval:
@@ -3416,6 +3430,10 @@ cli:
     total: "📚 {count} skill(s) available"
     added_header: "➕ Added Skills:"
     removed_header: "➖ Removed Skills:"
+  gateway_restart:
+    waiting: "Hermes is restarting to finish an update or restart; waiting for it to come back…"
+    timed_out: "Hermes did not come back from its restart in time. Check `hermes gateway status`, then start `hermes` again."
+    stopped: "Stopped waiting for Hermes to restart; nothing was started."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Session store unavailable[/bold yellow] — this conversation will [bold]NOT be saved[/bold] and cannot be resumed later. Searching past sessions is also disabled.\n  Reason: {reason}.\n  {action}\n  [dim]Details: {details}[/dim]"
     unavailable_plain: "WARNING: Session store unavailable — this conversation will NOT be saved and cannot be resumed later. Reason: {reason}. {action}"

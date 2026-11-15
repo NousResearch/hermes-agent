@@ -460,6 +460,10 @@ def _complete_selected(request: dict) -> bool:
         record_stage("restart", "skipped")
         print(f"  ✓ Gateway restart skipped: {skip}.")
         return complete
+    # This is a fresh interpreter: the gateways the pause left running with their restart pending ride
+    # the request's token, so the fleet restart does not wait the full drain on them a second time.
+    from hermes_cli.update_cmd_posix_pause import adopt_left_pending
+    adopt_left_pending(request["windows_resume"])
     restart = update_cmd._restart_gateway_fleet_after_update(plan, request["gateway_mode"])
     record_stage("restart", "failed" if getattr(restart, "incomplete", False) else "success")
     update_cmd._resume_windows_gateways_and_merge_outcome(restart, request["windows_resume"], request["gateway_mode"])

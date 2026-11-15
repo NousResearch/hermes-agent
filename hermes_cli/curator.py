@@ -204,7 +204,8 @@ _PIN_MESSAGES = {
     True: (
         "cannot pin (only agent-created skills participate in curation)",
         "could not pin '{skill}' — the skill is not curation-eligible (protected built-in or "
-        "external). `hermes curator list-unmanaged` shows which skills the curator tracks.",
+        "external), or skills/.usage.json is damaged or not writable. `hermes curator list-unmanaged` "
+        "shows which skills the curator tracks.",
         # Unmanaged skills are never auto-transitioned, so the pin is recorded but only
         # becomes protective once the skill is adopted — say so and point at `adopt`.
         "pinned '{skill}' (recorded; this skill is unmanaged — auto-transitions never consider "
@@ -213,7 +214,7 @@ _PIN_MESSAGES = {
     False: (
         "there's nothing to unpin (curator only tracks agent-created skills)",
         "could not unpin '{skill}' — the skill is not curation-eligible (protected built-in or "
-        "external).",
+        "external), or skills/.usage.json is damaged or not writable.",
         "unpinned '{skill}' (recorded; this skill is unmanaged — it was never under "
         "auto-transitions to begin with)",
         "unpinned '{skill}'")}
@@ -254,7 +255,8 @@ def _set_lock(args, locked: bool) -> int:
         return 1
     key = existing["path"].name  # directory name: the key the skill_manage guard resolves to
     if not skill_usage.set_locked(key, locked):
-        print(f"curator: could not record the {verb} for '{key}' (skills/.usage.json not writable).")
+        print(f"curator: could not record the {verb} for '{key}': skills/.usage.json is damaged or not "
+              f"writable. Repair it or move it aside.")
         return 1
     if locked:
         print(f"curator: locked '{key}'. The agent can no longer change it: skill_manage, write_file, "

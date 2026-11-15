@@ -182,7 +182,7 @@ def test_resume_handoff_after_default_protected_head_decays_initial_turns():
     with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")) as mock_call:
         result = compressor.compress(_messages_with_default_handoff(old_summary))
 
-    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    prompt = "\n".join(m["content"] for m in mock_call.call_args.kwargs["messages"])
     assert "PREVIOUS SUMMARY:" in prompt
     assert prompt.count(old_summary) == 1
     assert "original task before first compaction" in prompt
@@ -490,7 +490,7 @@ def test_fallback_handoff_anchors_reach_the_next_summarizer():
     with patch("agent.context_compressor.call_llm", return_value=_response("THIRD summary")) as mock_call:
         compressor.compress(messages)
 
-    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    prompt = "\n".join(m["content"] for m in mock_call.call_args.kwargs["messages"])
     assert "FALLBACK-ANCHOR-ASK" in prompt
 
 
@@ -628,7 +628,7 @@ def test_iterative_prompt_caps_snowballing_lists_and_strips_deterministic_sectio
         out = compressor._generate_summary(turns)
 
     assert out is not None
-    prompt_sent = mock_llm.call_args.kwargs["messages"][0]["content"]
+    prompt_sent = "\n".join(m.get("content", "") for m in mock_llm.call_args.kwargs["messages"])
     assert "1-20. [Consolidated 20 earlier completed actions" in prompt_sent
     assert "stale_anchor.py" not in prompt_sent
     assert out.count(_LEAN_ANCHOR_HEADING) == 1

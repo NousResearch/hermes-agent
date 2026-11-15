@@ -985,6 +985,16 @@ platform:
     denied: "❌ Negato."
     approval_expired: "⌛ Approvazione scaduta — il comando non è stato eseguito (timeout già scattato o risolto altrove)."
   shared:
+    vault_code:
+      title: "🔐 Codice di verifica per {site}"
+      body: "{site} chiede un codice monouso (SMS o email). Premi il pulsante e inseriscilo nel modulo che si apre: va direttamente nella pagina e non viene mai pubblicato qui."
+      button: "Inserisci codice"
+      modal_title: "Codice per {site}"
+      input_label: "Codice monouso"
+      submitted: "Codice inviato; lo sto inserendo nella pagina."
+      ended: "Questa richiesta di codice è terminata; non è stato inserito nulla."
+      not_author: "Solo chi ha avviato questa richiesta può inserire il codice."
+      submitted_footer: "✓ Codice inviato"
     response_as_file: "📎 Risposta lunga: il testo completo è in allegato."
     truncated_suffix: "\n...(troncato)"
     unknown: "sconosciuto"
@@ -1197,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ Impossibile allegare `{filename}` — {size_mb} MB supera il limite di caricamento di Discord di {limit_mb} MB per questo canale. Comprimi il file o condividi un link."
       image_skipped_too_large: "⚠️ `{filename}` ignorato — {size_mb} MB supera il limite di caricamento di Discord di {limit_mb} MB."
   telegram:
+    vault_code:
+      body: "Rispondi a questo messaggio con il codice. Hermes elimina subito la tua risposta e inserisce il codice nella pagina; il modello non lo vede mai."
+      delete_failed: "Impossibile eliminare la tua risposta qui. Eliminala tu."
     approval:
       action_once: "✅ Consenti una volta"
       action_session: "✅ Sessione"
@@ -3315,6 +3328,10 @@ cli:
     total: "📚 {count} skill disponibili"
     added_header: "➕ Skill aggiunte:"
     removed_header: "➖ Skill rimosse:"
+  gateway_restart:
+    waiting: "Hermes si sta riavviando per completare un aggiornamento o un riavvio; in attesa che torni…"
+    timed_out: "Hermes non è tornato dal riavvio in tempo. Controlla `hermes gateway status`, poi riavvia `hermes`."
+    stopped: "Attesa del riavvio di Hermes interrotta; non è stato avviato nulla."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Archivio sessioni non disponibile[/bold yellow] — questa conversazione [bold]NON verrà salvata[/bold] e non potrà essere ripresa in seguito. Anche la ricerca nelle sessioni passate è disattivata.\n  Motivo: {reason}.\n  {action}\n  [dim]Dettagli: {details}[/dim]"
     unavailable_plain: "AVVISO: archivio sessioni non disponibile — questa conversazione NON verrà salvata e non potrà essere ripresa in seguito. Motivo: {reason}. {action}"

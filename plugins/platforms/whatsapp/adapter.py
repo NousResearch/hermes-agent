@@ -276,8 +276,15 @@ def _tighten_bridge_log(path: Path, *, private: bool) -> None:
             os.chmod(path, 0o600)
 
 
+_BRIDGE_LOG_ROTATE_BYTES = 5 * 1024 * 1024
+
+
 def _open_bridge_log(path: Path, *, private: bool):
-    """Long-lived append handle handed to the bridge as stdout/stderr; it carries the QR pairing payloads."""
+    """Long-lived append handle handed to the bridge as stdout/stderr; it carries the QR pairing payloads.
+    Rotated here, at spawn, to one ``.1`` generation: the bridge holds the handle for its whole life (#149860)."""
+    with suppress(OSError):  # missing log, or (Windows) still held by a dying bridge: keep appending
+        if path.stat().st_size > _BRIDGE_LOG_ROTATE_BYTES:
+            os.replace(path, path.with_name(path.name + ".1"))
     return open(path, "a", encoding="utf-8", opener=_owner_only_opener if private else None)
 
 

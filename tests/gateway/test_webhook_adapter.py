@@ -553,14 +553,14 @@ class TestHTTPHandling:
         with patch("gateway.platforms.webhook.time.time", return_value=1_700_000_000) as clock:
             async with TestClient(TestServer(_create_app(adapter))) as cli:
                 first = await cli.post("/webhooks/legacy", data=body, headers=headers)
-                assert first.status == 401
+                assert first.status == 404
                 clock.return_value += adapter._idempotency_ttl + 1
                 replay = await cli.post("/webhooks/legacy", data=body, headers=headers)
-                assert replay.status == 401
+                assert replay.status == 404
                 concurrent = await asyncio.gather(*(
                     cli.post("/webhooks/legacy", data=body, headers=headers) for _ in range(2)
                 ))
-                assert [response.status for response in concurrent] == [401, 401]
+                assert [response.status for response in concurrent] == [404, 404]
         adapter.handle_message.assert_not_called()
         adapter._direct_deliver.assert_not_called()
         adapter._handle_cron_trigger.assert_not_called()
@@ -1390,9 +1390,9 @@ async def test_plane_signature_and_multi_secret_support():
         resp2 = await cli.post("/webhooks/events", data=body, headers={"X-Hub-Signature-256": sig_gh})
         assert resp2.status in (200, 202)
 
-        # Test 3: Bad signature fails 401
+        # Test 3: Bad signature fails 404 (same as unknown route to prevent route enumeration)
         resp3 = await cli.post("/webhooks/events", data=body, headers={"X-Plane-Signature": "bad"})
-        assert resp3.status == 401
+        assert resp3.status == 404
 
 
 class TestBlankRouteSecretFailsClosed:

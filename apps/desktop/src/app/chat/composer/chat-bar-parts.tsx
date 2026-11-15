@@ -1,6 +1,9 @@
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 
+import { CompactingNotice } from './compacting-notice'
+import { RestoredDraftNotice } from './restored-draft-notice'
+
 /**
  * Radial dock-target glow shown while a popped-out composer is dragged.
  * Intensity tracks how close the composer is to the dock (1 = peak).
@@ -49,5 +52,25 @@ export function QueuedEditBanner({ onExit }: { onExit: (action: 'cancel' | 'save
         </Button>
       </div>
     </div>
+  )
+}
+
+/** The context notices above the input: a standalone compression's queue strip
+ * (sends still queue while it runs) and the restored-draft banner. One mount
+ * keeps ChatBar under the health ratchet. */
+export function ComposerContextNotices({
+  freshDraft,
+  onUndone,
+  readLiveText
+}: {
+  freshDraft: boolean
+  onUndone: () => void
+  readLiveText: () => string
+}) {
+  return (
+    <>
+      <CompactingNotice />
+      <RestoredDraftNotice freshDraft={freshDraft} onUndone={onUndone} readLiveText={readLiveText} />
+    </>
   )
 }

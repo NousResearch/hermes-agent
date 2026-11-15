@@ -54,6 +54,8 @@ interface UseComposerSubmitArgs {
   busy: boolean
   busyInputMode?: BusyInputMode | null
   clearDraft: () => void
+  /** A standalone `/compress` holds the session without a live turn. */
+  compacting?: boolean
   disabled: boolean
   draftScopeRef: RefObject<string | null>
   draftRef: RefObject<string>
@@ -68,7 +70,8 @@ interface UseComposerSubmitArgs {
   onSteerHidden: ChatBarProps['onSteerHidden']
   onSubmit: ChatBarProps['onSubmit']
   /** `submissionId`: the restored send this draft retries, so the owner deduplicates it. */
-  queueCurrentDraft: (submissionId?: string) => boolean | Promise<boolean>
+  /** `localOnly`: keep the words in the local queue instead of admitting them to a gateway that is (still) holding the session. */
+  queueCurrentDraft: (submissionId?: string, options?: { localOnly?: boolean }) => boolean | Promise<boolean>
   queueEdit: QueueEditState | null
   queuedPrompts: QueuedPromptEntry[]
   sessionId: string | null | undefined
@@ -95,6 +98,7 @@ export function useComposerSubmit({
   busy,
   busyInputMode = 'interrupt',
   clearDraft,
+  compacting = false,
   disabled,
   draftScopeRef,
   draftRef,
@@ -392,6 +396,36 @@ export function useComposerSubmit({
     return true
   }
 
+  // A standalone compression holds no turn, so `busy` is false for its whole
+  // length — but the gateway admits nothing until it lands. The composer tells
+  // the user their words will queue, so this is the branch that makes that
+  // true: the draft joins the local queue and the `ready` frame's settle edge
+  // drains it. Slash commands keep running inline, the same contract the busy
+  // path honours (they are client-side or self-contained RPCs).
+  const submitWhileCompacting = (text: string, payloadPresent: boolean) => {
+    if (isSlashCommandText(text) && !attachments.length) {
+      const retry = takeDraftRetry?.(text, [])
+      triggerHaptic('submit')
+      clearDraft()
+      dispatchSubmit(text, undefined, undefined, retry && { submission_id: retry.id })
+
+      return true
+    }
+
+    if (!payloadPresent) {
+      return true
+    }
+
+    // Local queue on purpose: the canonical admission stays pending for the
+    // whole compression, which would leave the words invisible (no row, draft
+    // still in the box) until it lands — and a second Enter holds a second
+    // admission, so the words would go out once per press. Held locally, the
+    // queue panel shows them and the `ready` edge drains them, once.
+    queueCurrentDraft(undefined, { localOnly: true })
+
+    return true
+  }
+
   // 'answered': the draft was a parked card's answer. 'yielded': a card closed for it, so it runs as
   // the next turn.
   const answerParkedCardWithDraft = (text: string, payloadPresent: boolean): 'answered' | 'yielded' | null => {
@@ -532,6 +566,8 @@ export function useComposerSubmit({
       if (!submitWhileBusy(text, payloadPresent, blockingPrompt)) {
         return
       }
+    } else if (compacting) {
+      submitWhileCompacting(text, payloadPresent)
     } else if (!payloadPresent && queuedPrompts.length > 0) {
       void drainNextQueued()
     } else if (payloadPresent) {

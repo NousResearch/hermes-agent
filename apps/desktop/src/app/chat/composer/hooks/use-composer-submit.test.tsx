@@ -36,6 +36,7 @@ interface SubmitHarnessOptions {
   attachments?: ComposerAttachment[]
   busy?: boolean
   busyInputMode?: 'interrupt' | 'queue' | 'steer' | null
+  compacting?: boolean
   inputDisabled?: boolean
   scopeTarget?: ComposerTarget
   sessionKey?: string | null
@@ -51,6 +52,7 @@ function renderSubmitHook({
   attachments = [],
   busy = false,
   busyInputMode = 'interrupt',
+  compacting = false,
   inputDisabled = false,
   scopeTarget = 'main',
   sessionKey = 'stored-session',
@@ -117,6 +119,7 @@ function renderSubmitHook({
         busy,
         busyInputMode,
         clearDraft,
+        compacting,
         disabled: false,
         draftScopeRef,
         draftRef,
@@ -162,6 +165,54 @@ function renderSubmitHook({
     }
   }
 }
+
+describe('useComposerSubmit while a standalone compression runs', () => {
+  afterEach(() => {
+    cleanup()
+    clearQueuedPrompts('stored-session')
+    vi.restoreAllMocks()
+  })
+
+  // A standalone /compress has no live turn: `busy` stays false, so the idle
+  // branch used to send the draft straight at the gateway while the composer
+  // promised the words would queue. The draft must land in the local queue.
+  it('queues the draft instead of sending it', async () => {
+    const h = renderSubmitHook({ compacting: true, text: 'hold this until it lands' })
+
+    await act(async () => {
+      h.hook.result.current.submitDraft()
+    })
+
+    expect(h.queueCurrentDraft).toHaveBeenCalledTimes(1)
+    // The gateway holds a canonical admission for the whole compression, so the
+    // words stay in the local queue instead of vanishing into a pending RPC.
+    expect(h.queueCurrentDraft).toHaveBeenCalledWith(undefined, { localOnly: true })
+    expect(h.onSubmit).not.toHaveBeenCalled()
+    expect(h.clearDraft).not.toHaveBeenCalled()
+  })
+
+  it('still runs a slash command, which owns its own idle contract', async () => {
+    const h = renderSubmitHook({ compacting: true, text: '/status' })
+
+    await act(async () => {
+      h.hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(h.onSubmit).toHaveBeenCalled())
+    expect(h.queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
+  it('ignores an empty submit while compacting', async () => {
+    const h = renderSubmitHook({ compacting: true, text: '   ' })
+
+    await act(async () => {
+      h.hook.result.current.submitDraft()
+    })
+
+    expect(h.queueCurrentDraft).not.toHaveBeenCalled()
+    expect(h.onSubmit).not.toHaveBeenCalled()
+  })
+})
 
 describe('useComposerSubmit external request routing', () => {
   afterEach(() => {

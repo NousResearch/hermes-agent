@@ -140,6 +140,25 @@ describe('narrow tiles', () => {
   })
 })
 
+// A standalone /compress runs without `busy`, but the gateway still holds sends
+// until it lands — the button must name that, or the queued message reads as
+// lost. The idle composer otherwise labels this exact state "Send".
+describe('standalone compression', () => {
+  it('labels Send as Queue while a compression runs without a busy turn', () => {
+    renderControls({ busyAction: 'queue', compacting: true })
+
+    expect(screen.getByLabelText('Queue message')).toBeTruthy()
+    expect(screen.queryByLabelText('Send')).toBeNull()
+  })
+
+  it('keeps the idle Send label when the same queue routing is not compacting', () => {
+    renderControls({ busyAction: 'queue' })
+
+    expect(screen.getByLabelText('Send')).toBeTruthy()
+    expect(screen.queryByLabelText('Queue message')).toBeNull()
+  })
+})
+
 describe('ComposerControls shortcut tooltips', () => {
   it('labels busy Send with the effective configured action', async () => {
     renderControls({ busy: true, busyAction: 'steer' })

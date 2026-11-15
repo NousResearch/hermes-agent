@@ -48,6 +48,7 @@ function deferred() {
 function renderQueueHook(
   overrides: {
     busy?: boolean
+    compacting?: boolean
     draft?: string
     onCancel?: () => void
     onSteer?: ChatBarProps['onSteer']
@@ -61,7 +62,7 @@ function renderQueueHook(
   const draftRef = { current: overrides.draft ?? '' }
 
   const hook = renderHook(
-    ({ busy }: { busy: boolean }) =>
+    ({ busy, compacting }: { busy: boolean; compacting?: boolean }) =>
       useComposerQueue({
         activeQueueSessionKey: SESSION_KEY,
         attachments: [],
@@ -69,6 +70,7 @@ function renderQueueHook(
         clearDraft: () => {
           draftRef.current = ''
         },
+        compacting,
         draftRef,
         focusInput: () => undefined,
         loadIntoComposer: (text: string) => {
@@ -82,7 +84,12 @@ function renderQueueHook(
         replaceServerQueued: overrides.replaceServerQueued,
         sessionId: 'rt-session-queue-hook'
       }),
-    { initialProps: { busy: overrides.busy ?? false } }
+    {
+      initialProps: { busy: overrides.busy ?? false, compacting: overrides.compacting ?? false } as {
+        busy: boolean
+        compacting?: boolean
+      }
+    }
   )
 
   return { draftRef, hook, onCancel, onSubmit }
@@ -138,6 +145,43 @@ describe('useComposerQueue park integration', () => {
       await act(async () => { await Promise.resolve() })
       expect(onSubmit).toHaveBeenCalledTimes(2)
     } finally { $connection.set(null) }
+  })
+
+  it('holds a queued draft while a standalone compression runs, then drains when it ends', async () => {
+    const h = renderQueueHook({ busy: false, compacting: true })
+
+    act(() => {
+      enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the compress' })
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(h.onSubmit).not.toHaveBeenCalled()
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+
+    h.hook.rerender({ busy: false, compacting: false })
+
+    await waitFor(() => expect(h.onSubmit).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps a compression hold local instead of admitting it to the gateway', async () => {
+    // A standalone compress holds the gateway's admission: admitting now leaves
+    // the words invisible (no row, draft still in the box) until it lands.
+    $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as HermesConnection)
+    const h = renderQueueHook({ busy: false, compacting: true, draft: 'held through the compress' })
+
+    try {
+      await act(async () => {
+        expect(await h.hook.result.current.queueCurrentDraft(undefined, { localOnly: true })).toBe(true)
+      })
+
+      expect(h.onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['held through the compress'])
+      expect(h.draftRef.current).toBe('')
+    } finally {
+      $connection.set(null)
+    }
   })
 
   it('does not clear the next session draft when a queue ACK arrives after navigation', async () => {

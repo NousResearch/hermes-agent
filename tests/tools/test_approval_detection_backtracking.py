@@ -157,12 +157,15 @@ def test_blank_line_heredoc_finishes_end_to_end():
     # re-split every _CMDPOS whitespace run (400 lines ~1.4 s, cubic beyond that), and every other
     # rule that may start at any newline rescans the rest of the run from each one (quadratic:
     # 24000 lines ~20 s, indented ~107 s). The sizes stay under the parser limit on purpose.
+    # The indented run is 6000 lines: the fixed scan is linear but still ~2 s at 24000 indented
+    # lines on a fast host, too close to the 3 s bound on a shared CI runner, while the quadratic
+    # scan already runs past the subprocess timeout at 6000.
     _run_bounded('''
 import time
 from tools.approval_detection import detect_dangerous_command
 detect_dangerous_command("ls")
 # Harmless on purpose: a dangerous match short-circuits before every rule has scanned the run.
-for run in ("\\n" * 24000, "\\n    " * 24000):
+for run in ("\\n" * 24000, "\\n    " * 6000):
     command = "cat <<EOF > notes.txt" + run + "\\nEOF"
     started = time.perf_counter()
     assert detect_dangerous_command(command) == (False, None, None)

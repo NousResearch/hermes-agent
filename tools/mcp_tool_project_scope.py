@@ -156,15 +156,24 @@ def _server_for_call(server_name: str, key: Any, baseline: Any, *, connect: bool
                     _release_connect_lock(clone_key, keep=False)
                 return None
         with _core._lock:
+            occupied = _scoped_servers.get(clone_key)
             # A teardown (reload, config prune, shutdown) can remove the baseline while a clone
             # connect is in flight; inserting afterwards would strand a live child no owner will
-            # ever reap or re-register. The clone goes down with its baseline or not at all.
-            if _core._servers.get(key) is baseline:
+            # ever reap or re-register. And two generations can hold different single-flight
+            # locks for one key once a teardown pops the lock entry under a still-outstanding
+            # seat — so the insert is first-wins, EXCEPT when the seat already holds this very
+            # clone (a peer that queued on the same lock object and read it at the top of this
+            # block): it leases and returns it, it must never discard it (#151827 port, review
+            # finding 4).
+            if _core._servers.get(key) is baseline and (occupied is None or occupied is clone):
                 _scoped_servers[clone_key] = clone
                 _lease(clone)
                 _release_connect_lock(clone_key, keep=True)
             else:
                 orphan = clone
+                # keep=False may delete the lock entry of an already-installed clone when this
+                # seat is the last: harmless — the fast path never consults the lock, and
+                # _acquire_connect_lock recreates the entry on demand.
                 _release_connect_lock(clone_key, keep=False)
     if orphan is not None:
         _discard_orphan_clone(orphan, server_name, cwd)

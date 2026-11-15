@@ -390,6 +390,135 @@ def test_event_utility_handlers_serve_the_baseline_not_the_callers_clone(probe):
         "the events handler talked to the caller's project clone"
 
 
+def test_two_connect_generations_never_overwrite_each_others_clone(root, monkeypatch):
+    """Two concurrent connects can hold different single-flight locks for one clone key when a
+    teardown pops the lock entry under a still-outstanding seat. The insert must be first-wins
+    under the registry lock and the duplicate child discarded off-lock: a plain overwrite would
+    strand a live child no ledger will ever reap (#151827 port, review finding 4)."""
+    import os as _os
+    from tests.waiting import wait_until
+    from tools import mcp_tool, mcp_tool_project_scope as scope
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+
+    name = "cwdprobe_insert_race"
+    project = root / "insertproj"
+    project.mkdir(exist_ok=True)
+    _register(root, name)
+    baseline = mcp_tool._servers[name]
+    cwd = _os.path.realpath(str(project))
+    clone_key = (name, cwd)
+
+    winner, loser = mcp_tool.MCPServerTask(name), mcp_tool.MCPServerTask(name)
+    arrived, go = [], [threading.Event(), threading.Event()]
+
+    def _gated_connect(server_name, baseline_, cwd_):
+        with mcp_tool._lock:
+            slot = len(arrived)
+            arrived.append(slot)
+        go[slot].wait(timeout=30)
+        return (loser, winner)[slot]  # the first generation loses; the second wins the insert
+
+    monkeypatch.setattr(scope, "_connect_clone", _gated_connect)
+    results: dict = {}
+
+    def _call_thread(tag):
+        set_session_cwd(str(project))
+        try:
+            results[tag] = scope._server_for_call(name, name, baseline)
+        finally:
+            clear_session_cwd()
+
+    first = threading.Thread(target=_call_thread, args=("first",))
+    first.start()
+    wait_until(lambda: len(arrived) == 1, timeout=10, what="the first connect to take flight")
+    with mcp_tool._lock:  # the teardown race: the lock entry goes while the seat is outstanding
+        scope._scoped_connect_locks.pop(clone_key, None)
+
+    second = threading.Thread(target=_call_thread, args=("second",))
+    second.start()
+    wait_until(lambda: len(arrived) == 2, timeout=10, what="the second generation to connect")
+    try:
+        go[1].set()  # the second generation wins the insert
+        wait_until(lambda: scope._scoped_servers.get(clone_key) is winner,
+                   timeout=10, what="the winning clone to be installed")
+        go[0].set()  # the first generation lands on an occupied key
+        first.join(timeout=30)
+        second.join(timeout=30)
+
+        assert results["second"] is winner
+        assert results["first"] is None, "the duplicate connect handed its clone out anyway"
+        assert scope._scoped_servers.get(clone_key) is winner, "the winner lost its seat to the loser"
+        assert loser._shutdown_event.is_set(), "the losing connect's child was never discarded"
+        assert not winner._shutdown_event.is_set(), "the winning clone was discarded instead"
+    finally:
+        go[0].set()
+        go[1].set()
+        first.join(timeout=30)
+        second.join(timeout=30)
+        shutdown_mcp_servers(scope=None, names={name})
+
+
+def test_a_peer_queued_on_the_same_lock_reuses_the_installed_clone(root, monkeypatch):
+    """Two concurrent calls for one project queue on the SAME single-flight lock. When the first
+    installs its clone and releases, the peer must lease and return that installed clone - never
+    discard it (a regression here gives the peer a spurious 'not connected', shuts down a clone
+    later callers are handed from the fast path, and can kill one a handler still holds a lease
+    on) and never overwrite it (#151827 port, review finding 4, same-lock peer path)."""
+    import os as _os
+    from tests.waiting import wait_until
+    from tools import mcp_tool, mcp_tool_project_scope as scope
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+
+    name = "cwdprobe_same_lock_peer"
+    project = root / "peerproj"
+    project.mkdir(exist_ok=True)
+    _register(root, name)
+    baseline = mcp_tool._servers[name]
+    cwd = _os.path.realpath(str(project))
+    clone_key = (name, cwd)
+
+    clone_shell = mcp_tool.MCPServerTask(name)
+    connect_go = threading.Event()
+
+    def _gated_connect(server_name, baseline_, cwd_):
+        connect_go.wait(timeout=30)
+        return clone_shell
+
+    monkeypatch.setattr(scope, "_connect_clone", _gated_connect)
+    results: dict = {}
+
+    def _call_thread(tag):
+        set_session_cwd(str(project))
+        try:
+            results[tag] = scope._server_for_call(name, name, baseline)
+        finally:
+            clear_session_cwd()
+
+    first = threading.Thread(target=_call_thread, args=("first",))
+    first.start()
+    wait_until(lambda: scope._scoped_connect_waiters.get(clone_key) == 1,
+               timeout=10, what="the first connect to take its seat")
+    second = threading.Thread(target=_call_thread, args=("second",))
+    second.start()
+    wait_until(lambda: scope._scoped_connect_waiters.get(clone_key) == 2,
+               timeout=10, what="the peer to queue on the same lock")
+    try:
+        connect_go.set()  # the first connect installs its clone; the peer follows on the same lock
+        first.join(timeout=30)
+        second.join(timeout=30)
+
+        assert results["first"] is clone_shell and results["second"] is clone_shell, \
+            f"the same-lock peer did not reuse the installed clone: {results}"
+        assert scope._scoped_servers.get(clone_key) is clone_shell, "the installed clone was dropped"
+        assert not clone_shell._shutdown_event.is_set(), "the installed clone was discarded"
+        assert clone_shell._scoped_leases == 0, "the peer's lease was never released"
+    finally:
+        connect_go.set()
+        first.join(timeout=30)
+        second.join(timeout=30)
+        shutdown_mcp_servers(scope=None, names={name})
+
+
 def _reap_bare_keyed_clones() -> None:
     """Reap clones stranded under a bare baseline key (the rekey bug's signature), so a run of
     these tests never leaks its children into the next one."""

@@ -24,10 +24,14 @@ class StreamingTTSHandle:
     platform state. The base fields are consumer bookkeeping / cancellation."""
     chat_id: str = ""
     audio_format: AudioFormat = field(default_factory=AudioFormat)
-    # True once the first PCM chunk is written: a later failure then ends cleanly instead of
+    # True once audio became audible: a later failure then ends cleanly instead of
     # falling back to whole-file TTS (don't replay already-audible output).
     audible: bool = False
     aborted: bool = False  # set by abort_streaming_tts; late chunks are dropped
+    # Keep this after the original positional fields for third-party compatibility.
+    # Buffered sinks (Telegram voice messages) set this: write() only buffers PCM;
+    # the clause-flush hook marks audio audible after successful delivery.
+    defer_audible_until_flush: bool = False
 
 
 def streaming_tts_turn_key(session_key: str | None, turn_marker: Any = None, *, event: Any = None) -> str | None:

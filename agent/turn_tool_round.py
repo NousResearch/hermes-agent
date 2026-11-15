@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import dataclass
+import json
 import logging
 from typing import Any, Dict, Optional, Tuple
 
@@ -24,6 +25,40 @@ _HOUSEKEEPING_TOOLS = frozenset({"memory", "todo_list", "skill_manage", "session
 # Rounds whose visible line is the turn's reply if the follow-up is empty (no empty-response nudge):
 # housekeeping, and setup_beat, whose card already blocked for the user's answer.
 _LINE_IS_REPLY_TOOLS = _HOUSEKEEPING_TOOLS | {"setup_beat"}
+_TTS_TOOL_NAMES = frozenset({"text_to_speech", "text_to_speech_tool"})
+
+
+def _single_tts_media_response(agent: Any, assistant_message: Any, messages: list) -> Optional[str]:
+    """Return the completed media payload for one successful Telegram TTS call.
+
+    The audio is already a complete user-facing result; another model round would only
+    invent a caption and add latency. Mixed tool batches, errors, and other surfaces
+    keep the normal follow-up model round.
+    """
+    platform = getattr(agent, "platform", "")
+    platform = getattr(platform, "value", platform)
+    if str(platform or "").lower() != "telegram":
+        return None
+    tool_calls = list(getattr(assistant_message, "tool_calls", None) or [])
+    if len(tool_calls) != 1 or tool_calls[0].function.name not in _TTS_TOOL_NAMES:
+        return None
+    call_id = coalesce_tool_call_id(tool_calls[0])
+    for message in reversed(messages):
+        if message.get("role") not in ("tool", "function"):
+            continue
+        if str(message.get("tool_call_id") or message.get("call_id") or "") != str(call_id):
+            continue
+        try:
+            payload = json.loads(str(message.get("content") or ""))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            return None
+        media_tag = payload.get("media_tag")
+        if isinstance(media_tag, str) and "MEDIA:" in media_tag:
+            return media_tag
+        return None
+    return None
 
 
 @dataclass
@@ -199,6 +234,16 @@ def run_tool_round(
 
     # Reset per-turn retry counters so one truncation can't poison the turn.
     truncated_tool_call_retries = 0
+    # A single successful Telegram TTS call already produced the complete response.
+    # Deliver its native media payload directly instead of paying for a caption-only
+    # second model round. The normal finalizer persists this closing assistant row.
+    tts_media_response = _single_tts_media_response(agent, assistant_message, messages)
+    if tts_media_response is not None:
+        final_response = tts_media_response
+        _turn_exit_reason = "tts_media_ready"
+        agent._session_messages = messages
+        agent._touch_activity("TTS audio ready; skipping redundant closing model round")
+        return _verdict("break")
     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real
     # text arrives, so tool iterations don't stack blank lines.
     agent._stream_needs_break = True

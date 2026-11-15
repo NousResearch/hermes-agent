@@ -7,8 +7,17 @@
 
 import type { DesktopCloudAgent, DesktopCloudDiscoverResult, DesktopCloudStatus } from '@/global'
 import { hermesApi } from '@/hermes'
+import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
 
 const MOVE_PATH = /^\/api\/move\/(bundle|uploads)(\/[A-Za-z0-9._-]+(\/(chunk|finish|apply|undo))?)?(\?.*)?$/
+const BACKUP_POLL_MS = 1_000
+
+export interface BackupResult {
+  /** Where the archive sits on the backend that wrote it. */
+  archive: string
+  /** True once the user saved a copy (a canceled save dialog leaves it on the backend only). */
+  saved: boolean
+}
 
 export interface MoveRequest {
   /** `'local'` for this computer's backend, else a registry connection id. */
@@ -32,6 +41,53 @@ function bridge() {
 }
 
 export const move = {
+  /** Moving this agent into a Hermes Cloud agent is offered everywhere except a Webapp Hermes
+   *  Cloud itself serves (the same rule that hides the updater there): that tab IS a cloud agent. */
+  transferAvailable: (): boolean => !servedByHermesCloud(),
+
+  /** `hermes backup` of the whole Hermes home (every profile; credentials included, so the user
+   *  keeps the file private), then a save of the archive to this computer. `onLine` gets the
+   *  command's output as it runs. */
+  backup: async (onLine?: (lines: string[]) => void): Promise<BackupResult> => {
+    const started = await hermesApi<{ archive?: string; name: string }>({
+      body: {},
+      method: 'POST',
+      path: '/api/ops/backup'
+    })
+
+    if (!started.archive) {
+      throw new Error('The backup did not say where it was written.')
+    }
+
+    for (;;) {
+      await new Promise(resolve => setTimeout(resolve, BACKUP_POLL_MS))
+
+      const status = await hermesApi<{ exit_code: null | number; lines: string[]; running: boolean }>({
+        path: `/api/actions/${encodeURIComponent(started.name)}/status?lines=40`
+      })
+
+      onLine?.(status.lines)
+
+      if (!status.running) {
+        if (status.exit_code !== 0) {
+          throw new Error(status.lines.slice(-3).join('\n') || 'The backup failed.')
+        }
+
+        break
+      }
+    }
+
+    const save = bridge().saveGatewayFile
+
+    if (!save) {
+      return { archive: started.archive, saved: false }
+    }
+
+    const result = await save({ path: started.archive, suggestedName: started.archive.split(/[\\/]/).pop() })
+
+    return { archive: started.archive, saved: result.saved }
+  },
+
   request: async <T>({ connectionId, path, method = 'GET', body, profile, timeoutMs }: MoveRequest): Promise<T> => {
     if (!MOVE_PATH.test(path)) {
       throw new Error(`move.request: ${path} is not a move route`)

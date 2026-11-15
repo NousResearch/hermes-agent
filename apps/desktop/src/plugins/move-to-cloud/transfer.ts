@@ -43,9 +43,16 @@ export interface MovePreview {
   skills: { add: string[]; keep_existing: string[] }
   cron: { add: { id: string; name: string }[]; keep_existing: { id: string }[] }
   sessions: number
-  soul: { action: 'keep_existing' | 'none' | 'replace' }
+  soul: { action: 'keep_existing' | 'none' | 'replace'; incoming?: boolean }
   memory: Record<string, number>
+  config_keys?: string[]
+  /** What the receiving agent has now: what a replace would take away. */
+  target?: { skills: number; cron_jobs: number; conversations: number; soul_customized: boolean }
 }
+
+/** The parts a move carries, in the order the receiver applies them (`move_receive.STEPS`). */
+export const PARTS = ['memory', 'soul', 'skills', 'cron', 'sessions', 'config'] as const
+export type Part = (typeof PARTS)[number]
 
 export interface MoveState {
   id: string
@@ -247,14 +254,24 @@ export async function upload(
   throw new Error('The bundle kept arriving damaged. Check your connection and try again.')
 }
 
-export async function apply(request: MoveRequestFn, connectionId: string, moveId: string): Promise<MoveState> {
+/** Apply a received bundle. `replace` names the parts where this computer's copy wins over the
+ *  cloud agent's; empty merges everything (the cloud agent's own copies win). The receiver refuses
+ *  a replace without `confirm_replace`, which only the confirmation step sets. */
+export async function apply(
+  request: MoveRequestFn,
+  connectionId: string,
+  moveId: string,
+  replace: readonly Part[] = []
+): Promise<MoveState> {
+  const body = replace.length ? { replace, confirm_replace: true } : {}
+
   return retry(
     () =>
       request<MoveState>({
         connectionId,
         path: `/api/move/uploads/${moveId}/apply`,
         method: 'POST',
-        body: {},
+        body,
         timeoutMs: 900_000
       }),
     final

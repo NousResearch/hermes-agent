@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { agentHint } from './page'
-import { buildAndRead, LOCAL, type MoveRequestFn, refusalCode, refusalMessage, upload } from './transfer'
+import { apply, buildAndRead, LOCAL, type MoveRequestFn, refusalCode, refusalMessage, upload } from './transfer'
 
 // The bridge rejects with `Error("<status>: <json detail>")`; mirror that shape exactly.
 const refuse = (status: number, code: string, message = code) =>
@@ -125,6 +125,30 @@ describe('upload', () => {
     }
 
     await expect(upload(request, 'cloud-1', payload(10), 'd'.repeat(64), () => {})).rejects.toThrow('600 MB')
+  })
+})
+
+describe('apply', () => {
+  const recorder = () => {
+    const bodies: unknown[] = []
+
+    const request: MoveRequestFn = async <T>(req: { body?: unknown }) => {
+      bodies.push(req.body)
+
+      return { id: 'm0', status: 'applied' } as T
+    }
+
+    return { bodies, request }
+  }
+
+  it('merges with no replace choice, and replaces only the named parts with the confirmation', async () => {
+    const merge = recorder()
+    await apply(merge.request, 'cloud', 'm0')
+    expect(merge.bodies).toEqual([{}])
+
+    const replace = recorder()
+    await apply(replace.request, 'cloud', 'm0', ['memory', 'sessions'])
+    expect(replace.bodies).toEqual([{ confirm_replace: true, replace: ['memory', 'sessions'] }])
   })
 })
 

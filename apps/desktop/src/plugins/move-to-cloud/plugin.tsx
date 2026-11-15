@@ -1,5 +1,6 @@
 /**
- * Move to Hermes Cloud: one page that carries this computer's agent into a Hermes Cloud agent.
+ * Backup & Move: back up this agent to a file, or carry it into a Hermes Cloud agent (merging, or
+ * replacing the parts the user ticks).
  *
  * Reached from ⌘K, from `hermes://open/move-to-cloud` (the Nous Portal's empty agent page links
  * there), and from its own route. All network work goes through `move` in the SDK, which can only
@@ -10,10 +11,13 @@
 import {
   type HermesPlugin,
   host,
+  move,
   PALETTE_AREA,
   type PaletteContribution,
   type RouteContribution,
-  ROUTES_AREA
+  ROUTES_AREA,
+  SIDEBAR_NAV_AREA,
+  type SidebarNavContribution
 } from '@hermes/plugin-sdk'
 
 import { bindCopy, MOVE_LOCALES } from './i18n'
@@ -34,17 +38,48 @@ const plugin: HermesPlugin = {
       render: () => <MoveToCloudPage openExternal={url => ctx.os.openExternal(url)} />
     })
 
-    const registerLabels = () =>
-      ctx.register({
-        id: 'open',
-        area: PALETTE_AREA,
-        data: {
-          id: 'move-to-cloud.open',
-          label: bindCopy(ctx.i18n.t).command,
-          keywords: ['move', 'migrate', 'cloud', 'hermes cloud', 'upload', 'transfer', 'export'],
-          run: () => host.navigate(MOVE_ROUTE)
-        } satisfies PaletteContribution
-      })
+    // On a Webapp Hermes Cloud serves, this page is backup only (`move.transferAvailable`).
+    const registerLabels = () => {
+      const copy = bindCopy(ctx.i18n.t)
+      const transfer = move.transferAvailable()
+
+      return ctx.registerMany([
+        {
+          id: 'nav',
+          area: SIDEBAR_NAV_AREA,
+          order: 90,
+          data: {
+            codicon: transfer ? 'cloud-upload' : 'archive',
+            label: transfer ? copy.nav : copy.backupOnlyTitle,
+            path: MOVE_ROUTE
+          } satisfies SidebarNavContribution
+        },
+        {
+          id: 'backup',
+          area: PALETTE_AREA,
+          data: {
+            id: 'move-to-cloud.backup',
+            label: copy.backupCommand,
+            keywords: ['backup', 'export', 'archive', 'save', 'download'],
+            run: () => host.navigate(MOVE_ROUTE)
+          } satisfies PaletteContribution
+        },
+        ...(transfer
+          ? [
+              {
+                id: 'open',
+                area: PALETTE_AREA,
+                data: {
+                  id: 'move-to-cloud.open',
+                  label: copy.command,
+                  keywords: ['move', 'migrate', 'cloud', 'hermes cloud', 'upload', 'transfer', 'replace'],
+                  run: () => host.navigate(MOVE_ROUTE)
+                } satisfies PaletteContribution
+              }
+            ]
+          : [])
+      ])
+    }
 
     let disposeLabels = registerLabels()
     ctx.i18n.onLocaleChange(() => {

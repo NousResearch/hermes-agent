@@ -3,7 +3,10 @@ import type { PluginLocaleBundles, PluginTranslate } from '@hermes/plugin-sdk'
 /** English is the only bundle: other locales fall back to it until translators add theirs. */
 const en = {
   command: 'Move to Hermes Cloud',
-  title: 'Move to Hermes Cloud',
+  backupCommand: 'Back up this agent',
+  nav: 'Backup & Move',
+  title: 'Backup & Move',
+  backupOnlyTitle: 'Backup',
   subtitle:
     'Copy this agent’s skills, memory, persona, schedules and recent conversations to a Hermes Cloud agent. Nothing on this computer changes.',
   from: 'From',
@@ -41,8 +44,36 @@ const en = {
   applying: 'Merging into the cloud agent…',
   cancel: 'Cancel',
   resumeHint: 'You can close this. Starting again picks up where it stopped.',
-  confirmTitle: 'Ready to merge',
+  confirmTitle: 'Ready to move',
   confirmHelp: 'The cloud agent keeps everything it already has. Where both have something, its own version wins.',
+  modeMerge: 'Add to the cloud agent',
+  modeReplace: 'Replace the cloud agent',
+  replaceHelp: 'Your local copy replaces the cloud agent’s for each part you tick:',
+  replaceMemory: 'Memory: the cloud agent’s notes about you and its work are overwritten',
+  replaceSoul: 'Persona: the cloud agent’s persona is overwritten',
+  replaceSkills: (n: number) =>
+    n ? `Skills: ${n} skill${n === 1 ? '' : 's'} with the same name are swapped for yours` : 'Skills: yours are added',
+  replaceCron: (n: number) =>
+    `Scheduled jobs: ${n ? `its ${n} job${n === 1 ? ' is' : 's are'} removed and ` : ''}yours arrive paused`,
+  replaceSessions: (n: number) =>
+    n
+      ? `Chat history: its ${n} conversation${n === 1 ? ' is' : 's are'} archived (kept, out of the list) and yours take their place`
+      : 'Chat history: yours are added',
+  replaceConfig: 'Settings: yours replace the cloud agent’s',
+  replaceKeeps:
+    'Always kept as Hermes Cloud set them: the Nous Portal sign-in, model and provider, tool and scheduler setup, and every key. Undo puts everything back.',
+  replaceAcknowledge: 'I understand this overwrites the ticked parts on the cloud agent',
+  replace: 'Replace',
+  newAgentTitle: 'New cloud agent',
+  newAgentHelp: 'Create one in the Nous Portal, then come back here to move into it.',
+  backupTitle: 'Back up this agent',
+  backupHelp:
+    'One file with everything: every profile, settings, memory, skills, schedules, chat history and keys. Keep it private.',
+  backup: 'Back up',
+  backupRunning: 'Backing up…',
+  backupSaved: 'Backup saved.',
+  backupKept: (path: string) => `The backup is on this agent at ${path}.`,
+  backupFailed: 'The backup did not finish',
   newSkills: (n: number) => `${n} new skill${n === 1 ? '' : 's'}`,
   keptSkills: (n: number) => `${n} skill${n === 1 ? '' : 's'} the cloud agent already has (kept as they are)`,
   personaReplace: 'Persona: copied from this computer',

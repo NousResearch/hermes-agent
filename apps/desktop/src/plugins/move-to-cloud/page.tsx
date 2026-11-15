@@ -9,6 +9,7 @@ import {
   move,
   PanelEmpty,
   PanelPill,
+  SegmentedControl,
   usePluginI18n
 } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -23,6 +24,8 @@ import {
   type MovePreview,
   type MoveRequestFn,
   type MoveState,
+  type Part,
+  PARTS,
   type Progress,
   refusalMessage,
   undo,
@@ -255,6 +258,7 @@ function PickView(props: PickProps) {
               selected={selected?.id === agent.id}
             />
           ))}
+          {agents && agents.length > 0 && <NewAgentCard copy={copy} openExternal={props.openExternal} />}
         </div>
       </section>
       <section className="flex flex-col gap-4">
@@ -280,35 +284,155 @@ function ConfirmView({
   copy,
   preview,
   onCancel,
-  onMerge
+  onApply
 }: {
   copy: MoveCopy
   preview: MovePreview
   onCancel: () => void
-  onMerge: () => void
+  onApply: (replace: Part[]) => void
 }) {
+  const [mode, setMode] = useState<'merge' | 'replace'>('merge')
+  const [parts, setParts] = useState<Set<Part>>(() => new Set(PARTS))
+  const [acknowledged, setAcknowledged] = useState(false)
+  const target = preview.target
+  const chosen = PARTS.filter(part => parts.has(part))
+
+  const loses: Record<Part, string> = {
+    memory: copy.replaceMemory,
+    soul: copy.replaceSoul,
+    skills: copy.replaceSkills(preview.skills.keep_existing.length),
+    cron: copy.replaceCron(target?.cron_jobs ?? 0),
+    sessions: copy.replaceSessions(target?.conversations ?? 0),
+    config: copy.replaceConfig
+  }
+
+  const toggle = (part: Part, on: boolean) => {
+    setParts(current => {
+      const next = new Set(current)
+      on ? next.add(part) : next.delete(part)
+
+      return next
+    })
+    setAcknowledged(false)
+  }
+
   return (
     <section className="flex flex-col gap-4">
       <h2 className="text-lg font-medium">{copy.confirmTitle}</h2>
-      <p className="text-sm text-(--ui-text-secondary)">{copy.confirmHelp}</p>
       <ul>
         <Row icon="tools">{copy.newSkills(preview.skills.add.length)}</Row>
-        {preview.skills.keep_existing.length > 0 && (
-          <Row icon="check" muted>
-            {copy.keptSkills(preview.skills.keep_existing.length)}
-          </Row>
-        )}
-        <Row icon="person">{preview.soul.action === 'replace' ? copy.personaReplace : copy.personaKeep}</Row>
         {preview.cron.add.length > 0 && <Row icon="watch">{copy.jobs(preview.cron.add.length)}</Row>}
         {preview.sessions > 0 && <Row icon="comment-discussion">{copy.conversations(preview.sessions)}</Row>}
       </ul>
+      <SegmentedControl
+        onChange={value => {
+          setMode(value)
+          setAcknowledged(false)
+        }}
+        options={[
+          { id: 'merge', label: copy.modeMerge },
+          { id: 'replace', label: copy.modeReplace }
+        ]}
+        value={mode}
+      />
+      {mode === 'merge' ? (
+        <p className="text-sm text-(--ui-text-secondary)">{copy.confirmHelp}</p>
+      ) : (
+        <div className="flex flex-col gap-3 rounded-lg border border-(--ui-stroke-tertiary) p-4">
+          <p className="text-sm">{copy.replaceHelp}</p>
+          <ul className="grid gap-2">
+            {PARTS.map(part => (
+              <li key={part}>
+                <label className="flex items-start gap-2 text-sm">
+                  <Checkbox checked={parts.has(part)} onCheckedChange={value => toggle(part, value === true)} />
+                  <span>{loses[part]}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-(--ui-text-secondary)">{copy.replaceKeeps}</p>
+          <label className="flex items-start gap-2 text-sm font-medium">
+            <Checkbox
+              checked={acknowledged}
+              disabled={chosen.length === 0}
+              onCheckedChange={value => setAcknowledged(value === true)}
+            />
+            <span>{copy.replaceAcknowledge}</span>
+          </label>
+        </div>
+      )}
       <div className="flex justify-end gap-2">
         <Button onClick={onCancel} variant="text">
           {copy.cancel}
         </Button>
-        <Button onClick={onMerge}>{copy.merge}</Button>
+        {mode === 'merge' ? (
+          <Button onClick={() => onApply([])}>{copy.merge}</Button>
+        ) : (
+          <Button disabled={!acknowledged || chosen.length === 0} onClick={() => onApply(chosen)} variant="destructive">
+            {copy.replace}
+          </Button>
+        )}
       </div>
     </section>
+  )
+}
+
+/** `hermes backup` of the whole Hermes home, saved to a file the user picks. */
+function BackupCard({ copy }: { copy: MoveCopy }) {
+  const [busy, setBusy] = useState(false)
+  const [lastLine, setLastLine] = useState('')
+  const [result, setResult] = useState<'' | 'saved' | 'unsaved'>('')
+  const [archive, setArchive] = useState('')
+
+  const run = async () => {
+    setBusy(true)
+    setResult('')
+
+    try {
+      const done = await move.backup(lines => setLastLine(lines.at(-1) ?? ''))
+      setArchive(done.archive)
+      setResult(done.saved ? 'saved' : 'unsaved')
+    } catch (error) {
+      host.notifyError(error, copy.backupFailed)
+    } finally {
+      setBusy(false)
+      setLastLine('')
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-3 rounded-lg border border-(--ui-stroke-tertiary) p-5">
+      <div className="flex items-start gap-3">
+        <Codicon className="mt-0.5" name="archive" />
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-medium">{copy.backupTitle}</h2>
+          <p className="mt-1 text-xs text-(--ui-text-secondary)">{copy.backupHelp}</p>
+        </div>
+        <Button disabled={busy} onClick={() => void run()} variant="secondary">
+          {busy ? copy.backupRunning : copy.backup}
+        </Button>
+      </div>
+      {busy && lastLine && <p className="truncate font-mono text-xs text-(--ui-text-tertiary)">{lastLine}</p>}
+      {result === 'saved' && <p className="text-xs text-(--ui-text-secondary)">{copy.backupSaved}</p>}
+      {result === 'unsaved' && <p className="text-xs text-(--ui-text-secondary)">{copy.backupKept(archive)}</p>}
+    </section>
+  )
+}
+
+/** Creating a cloud agent from here needs a Nous Portal change still under review; until it ships
+ *  this says so and links to the portal, where one click creates it. */
+function NewAgentCard({ copy, openExternal }: { copy: MoveCopy; openExternal: (url: string) => Promise<boolean> }) {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-dashed border-(--ui-stroke-tertiary) px-4 py-3">
+      <Codicon name="add" />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium">{copy.newAgentTitle}</div>
+        <p className="text-xs text-(--ui-text-secondary)">{copy.newAgentHelp}</p>
+      </div>
+      <Button onClick={() => void openExternal(PORTAL_AGENTS)} variant="text">
+        {copy.openPortal}
+      </Button>
+    </div>
   )
 }
 
@@ -378,7 +502,7 @@ export function agentHint(hash: string): string {
 }
 
 /** Cloud sign-in and agent discovery, including the team picker a multi-team account needs. */
-function useCloudAgents(onSignedOut: () => void, onError: (message: string) => void) {
+function useCloudAgents(enabled: boolean, onSignedOut: () => void, onError: (message: string) => void) {
   const [agents, setAgents] = useState<CloudAgent[] | null>(null)
   const [org, setOrg] = useState<string | undefined>()
   const [orgs, setOrgs] = useState<Org[] | null>(null)
@@ -413,18 +537,24 @@ function useCloudAgents(onSignedOut: () => void, onError: (message: string) => v
   )
 
   useEffect(() => {
-    void discover()
-  }, [discover])
+    if (enabled) {
+      void discover()
+    }
+  }, [discover, enabled])
 
   return { agents, org, orgs, discover }
 }
 
 /** The dry-run inventory, refreshed when the history switch changes. */
-function useInventory(includeHistory: boolean) {
+function useInventory(enabled: boolean, includeHistory: boolean) {
   const [inv, setInv] = useState<BundleInventory | null>(null)
   const [invError, setInvError] = useState('')
 
   useEffect(() => {
+    if (!enabled) {
+      return
+    }
+
     let live = true
     setInv(null)
     setInvError('')
@@ -436,21 +566,22 @@ function useInventory(includeHistory: boolean) {
     return () => {
       live = false
     }
-  }, [includeHistory])
+  }, [enabled, includeHistory])
 
   return { inv, invError, setInv }
 }
 
 export function MoveToCloudPage({ openExternal }: { openExternal: (url: string) => Promise<boolean> }) {
   const copy = useCopy()
+  const transfer = move.transferAvailable()
   const [phase, setPhase] = useState<Phase>({ kind: 'agents' })
   const [selected, setSelected] = useState<CloudAgent | null>(null)
   const [includeHistory, setIncludeHistory] = useState(true)
   const abort = useRef<AbortController | null>(null)
   const signedOut = useCallback(() => setPhase({ kind: 'signin' }), [])
   const failed = useCallback((message: string) => setPhase({ kind: 'error', message }), [])
-  const cloud = useCloudAgents(signedOut, failed)
-  const { inv, invError, setInv } = useInventory(includeHistory)
+  const cloud = useCloudAgents(transfer, signedOut, failed)
+  const { inv, invError, setInv } = useInventory(transfer, includeHistory)
 
   useEffect(() => () => abort.current?.abort(), [])
 
@@ -494,11 +625,11 @@ export function MoveToCloudPage({ openExternal }: { openExternal: (url: string) 
     }
   }
 
-  const merge = async (connectionId: string, agent: CloudAgent, moveId: string) => {
+  const merge = async (connectionId: string, agent: CloudAgent, moveId: string, replace: Part[] = []) => {
     setPhase({ kind: 'working', progress: { phase: 'apply', done: 0, total: 1 } })
 
     try {
-      setPhase({ kind: 'done', state: await apply(request, connectionId, moveId), connectionId, agent })
+      setPhase({ kind: 'done', state: await apply(request, connectionId, moveId, replace), connectionId, agent })
     } catch (error) {
       setPhase({ kind: 'error', message: refusalMessage(error) })
     }
@@ -556,8 +687,8 @@ export function MoveToCloudPage({ openExternal }: { openExternal: (url: string) 
       phase.state.preview && (
         <ConfirmView
           copy={copy}
+          onApply={replace => void merge(phase.connectionId, phase.agent, phase.state.id, replace)}
           onCancel={() => setPhase({ kind: 'agents' })}
-          onMerge={() => void merge(phase.connectionId, phase.agent, phase.state.id)}
           preview={phase.state.preview}
         />
       ),
@@ -580,10 +711,11 @@ export function MoveToCloudPage({ openExternal }: { openExternal: (url: string) 
       className="mx-auto flex h-full w-full max-w-3xl flex-col gap-8 overflow-y-auto px-8 pb-12 pt-12"
     >
       <header>
-        <h1 className="text-3xl font-semibold tracking-tight">{copy.title}</h1>
-        <p className="mt-2 max-w-prose text-sm text-(--ui-text-secondary)">{copy.subtitle}</p>
+        <h1 className="text-3xl font-semibold tracking-tight">{transfer ? copy.title : copy.backupOnlyTitle}</h1>
+        {transfer && <p className="mt-2 max-w-prose text-sm text-(--ui-text-secondary)">{copy.subtitle}</p>}
       </header>
-      {views[phase.kind]()}
+      {transfer && views[phase.kind]()}
+      <BackupCard copy={copy} />
     </section>
   )
 }

@@ -1,4 +1,4 @@
-"""The admission media rules the store applies when it releases settled admissions: the native references a payload holds and the retained documents a hosted prompt names; and the spillover archive names a transcript row points at, which a delete records as retirement candidates.
+"""The admission media rules the store applies when it releases settled admissions: the native references a payload holds and the retained documents a hosted prompt names; and the archive (spillover and prune-original) references a transcript row points at, which a delete records as retirement candidates.
 
 ``hosted_document_references`` takes the profile's retained media root as ``media_root``. Standard library only.
 """
@@ -46,14 +46,39 @@ def admission_media_references(payload):
 
 # Every pointer form of a spill archive (host path, ``~``-relative, in-container mount) carries the
 # ``spillover/<name>`` segment, with either separator (Windows paths are backslashed, JSON-escaped inside
-# structured content); sandbox-fallback ``hermes-results/<name>`` pointers do not.
-_SPILLOVER_NAME_RE = re.compile(r"spillover(?:/|\\+)([A-Za-z0-9_.-]+)")
+# structured content); sandbox-fallback ``hermes-results/<name>`` pointers do not. Prune stubs always
+# render ``cache/pruned/<name>`` (posix display path), so that segment is required.
+SPILLOVER_SUBDIR = 'cache/spillover'
+PRUNED_SUBDIR = 'cache/pruned'  # originals of tool results the proactive prune shortened
+_ARCHIVE_NAME_RES = {
+    SPILLOVER_SUBDIR: re.compile(r"spillover(?:/|\\+)([A-Za-z0-9_.-]+)"),
+    PRUNED_SUBDIR: re.compile(r"cache/pruned/([A-Za-z0-9_.-]+)"),
+}
+# The substrings every row holding an archive pointer contains: the store's prefilter.
+ARCHIVE_POINTER_MARKERS = ('spillover', 'cache/pruned/')
+
+
+def archive_refs_in_text(*texts) -> set:
+    """``"<subdir>/<name>"`` keys (``cache/spillover/x.txt``, ``cache/pruned/y.json``) of every archive
+    the transcript text points at (empty set on none)."""
+    refs: set = set()
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        for subdir, pattern in _ARCHIVE_NAME_RES.items():
+            refs.update(f"{subdir}/{name}" for name in pattern.findall(text))
+    return refs
+
+
+def retirement_candidates_in_text(*texts) -> set:
+    """The retirement-candidate values of the archives *texts* point at: a spillover archive by its
+    basename (the form every store recorded before prune originals), a prune original by its
+    ``cache/pruned/<name>`` reference."""
+    spill = SPILLOVER_SUBDIR + "/"
+    return {ref[len(spill):] if ref.startswith(spill) else ref for ref in archive_refs_in_text(*texts)}
 
 
 def spillover_names_in_text(*texts) -> set:
     """Spillover archive basenames referenced by transcript message text (empty set on none)."""
-    names: set = set()
-    for text in texts:
-        if isinstance(text, str) and "spillover" in text:
-            names.update(_SPILLOVER_NAME_RE.findall(text))
-    return names
+    prefix = SPILLOVER_SUBDIR + "/"
+    return {ref[len(prefix):] for ref in archive_refs_in_text(*texts) if ref.startswith(prefix)}

@@ -39,8 +39,10 @@ def lean_tail_budget(context_length: int, threshold_tokens: int) -> int:
 
 
 def is_demoted_stub(content: str) -> bool:
-    """True for a tail tool result already replaced by ``_lean_recovery_stub`` (plus an optional reload marker)."""
-    return len(content) < 1_000 and _DEMOTED_STUB_RE.match(content) is not None
+    """True for a tail tool result already replaced by ``_lean_recovery_stub`` (plus an optional reload marker),
+    or for a prune stub naming its archived original (re-summarizing it would drop the only pointer back)."""
+    from agent.context_compressor_prune_archive import has_archive_pointer
+    return len(content) < 1_000 and _DEMOTED_STUB_RE.match(content) is not None or has_archive_pointer(content)
 
 
 def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:

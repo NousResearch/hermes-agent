@@ -24,6 +24,22 @@ def _cc():
     return context_compressor
 
 
+def _changed_rows(messages: list[dict[str, Any]], pruned: list[dict[str, Any]]) -> int:
+    return sum(original is not replacement and original != replacement for original, replacement in zip(messages, pruned))
+
+
+def _keep_running_turn(
+    messages: list[dict[str, Any]], pruned: list[dict[str, Any]], turn_start: int | None,
+) -> tuple[list[dict[str, Any]], int]:
+    """*pruned* with the turn in progress (from its user row at *turn_start*) put back whole, and how many
+    shortened rows that restored.
+
+    The post-tool site runs between tool rounds of a live turn; a count-only tail let a long tool loop
+    stub its own earlier calls, so the model re-ran them or answered blind."""
+    if not (isinstance(turn_start, int) and 0 < turn_start < len(messages)
+            and isinstance(messages[turn_start], dict) and messages[turn_start].get("role") == "user"):
+        return pruned, 0
+    return [*pruned[:turn_start], *messages[turn_start:]], _changed_rows(messages[turn_start:], pruned[turn_start:])
 class ProactivePruneMixin:
     """``ContextCompressor`` mixin: the deterministic, no-LLM tool-result prune and its commit."""
 
@@ -38,8 +54,14 @@ class ProactivePruneMixin:
 
     def prune_tool_results_only(
         self, messages: list[dict[str, Any]], current_tokens: int | None = None, *, cold_cache: bool = False,
+        turn_start: int | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Deterministic, no-LLM tool-result prune gated on ``proactive_prune_tokens``.
+
+        ``turn_start`` indexes the user row of the turn in progress: nothing from it on is shortened. Every result that is
+        shortened has its full original written to ``cache/pruned/`` first and its stub names the file; a
+        result whose write fails is left whole, so no committed prune loses an original (unflushed rows
+        included: the store never needs to have seen the body).
 
         Protects the tail by message COUNT only. A warm commit breaks the prompt cache, so it requires
         ``proactive_prune_min_reclaim_tokens`` (less what cold prunes freed since the last warm one) and a
@@ -80,37 +102,37 @@ class ProactivePruneMixin:
         pruned_msgs, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=None, min_prune_chars=self.proactive_prune_min_result_chars,
         )
-        from agent.context_compressor_tail import with_pruned_row_skill_safety_rule
-        pruned_msgs = with_pruned_row_skill_safety_rule(messages, pruned_msgs)
+        pruned_msgs, restored = _keep_running_turn(messages, pruned_msgs, turn_start)
+        pruned_count -= restored
         if not pruned_count:
             # No-op contract: return the INPUT object so callers can gate on `result is not input`.
             self._warn_reclamation_no_op("prune:nothing_eligible", current_tokens)
             return messages, 0
         # Prompt-cache hysteresis: commit only when the reclaim is meaningful.
-        after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
-        reclaimed = max(0, before - after)
         gate = self.proactive_prune_min_reclaim_tokens
         cold_gate = min(gate, _COLD_CACHE_MIN_RECLAIM_TOKENS)
-        if reclaimed < (cold_gate if cold_cache else max(cold_gate, gate - self._proactive_prune_cold_credit)):
+        min_reclaim = cold_gate if cold_cache else max(cold_gate, gate - self._proactive_prune_cold_credit)
+        if before - sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs) < min_reclaim:
             self._warn_reclamation_no_op("prune:reclaim_below_minimum", current_tokens, before=before)
+            return messages, 0
+        # No information loss: every shortened result's original goes to disk first and its stub names the
+        # file; a result whose write fails stays whole, so the gate is re-checked on what is left.
+        from agent.context_compressor_prune_archive import archive_pruned_originals, discard_archives
+        from agent.context_compressor_tail import with_pruned_row_skill_safety_rule
+        pruned_msgs, archives, unarchived = archive_pruned_originals(messages, pruned_msgs, session_id)
+        pruned_msgs = with_pruned_row_skill_safety_rule(messages, pruned_msgs)
+        pruned_count -= unarchived
+        after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
+        reclaimed = max(0, before - after)
+        if not pruned_count or reclaimed < min_reclaim:
+            discard_archives(archives)
+            self._warn_reclamation_no_op("prune:archive_write_failed", current_tokens, before=before)
             return messages, 0
         if cold_cache:  # Nothing to protect: keep the warm runway and credit the reclaim to the next warm gate.
             next_rearm_tokens, cold_credit = self._proactive_prune_rearm_tokens, self._proactive_prune_cold_credit + reclaimed
         else:  # Require a full trigger-sized regrowth before the next cache-breaking rewrite.
             next_rearm_tokens, cold_credit = after + max(reclaimed, self.proactive_prune_tokens, gate), 0
         if session_db and session_id:
-            # A result produced in this turn may not have reached the session store yet.
-            # Neither the in-place writer nor archive_and_compact can archive a body
-            # that was never persisted. Defer until the original can be recovered.
-            marker = _cc()._DB_PERSISTED_MARKER
-            if any(
-                original != replacement and (
-                    not isinstance(original, dict) or not original.get(marker)
-                )
-                for original, replacement in zip(messages, pruned_msgs)
-            ):
-                self._warn_reclamation_no_op("prune:unpersisted_original", current_tokens, before=before)
-                return messages, 0
             _cc_ = _cc()
             from persistence.core.errors import HeldRowRewritten
             model_config_patch = {_cc_.PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens,
@@ -138,16 +160,19 @@ class ProactivePruneMixin:
                 # Another compaction already committed this session's history; a lease-less prune of the
                 # generation this process holds would publish beside the winner. Leave the input alone.
                 logger.info("Proactive tool-result prune skipped: another compaction already committed this session")
+                discard_archives(archives)
                 self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
                 return messages, 0
             except HeldRowRewritten:
                 # The full writer's in-transaction CAS fence tripped: a held row changed between the
                 # precheck and the commit. Same disposition as StaleHeldHistory — nothing was written.
                 logger.info("Proactive tool-result prune skipped: a held row was rewritten in place before the commit")
+                discard_archives(archives)
                 self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
                 return messages, 0
             except Exception as exc:  # health: allow BLE001 -- the commit boundary keeps the original transcript on any store failure (#124102)
                 logger.warning("Proactive tool-result prune DB commit failed; keeping the original transcript: %s", exc)
+                discard_archives(archives)
                 return messages, 0
             # Shared post-commit stamp site with the in-place commit and micro-compaction sync.
             # See #98450. The in-place rewrite wrote no new rows, so only already-durable messages

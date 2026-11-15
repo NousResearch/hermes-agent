@@ -1,0 +1,134 @@
+"""The proactive prune loses no information and never shortens the turn in progress.
+
+Every result it shortens is first written byte-exact to ``$HERMES_HOME/cache/pruned/`` and the stub
+names that file; a result whose write fails stays whole. The archive shares the spillover sweeper:
+kept while state.db points at it, retired with its session.
+"""
+
+import json
+import os
+import time
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from agent.context_compressor import ContextCompressor
+from hermes_state import SessionDB
+from tools.tool_result_storage import cleanup_spillover_cache
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    return tmp_path
+
+
+def _compressor(db=None):
+    with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+        c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=4,
+                              proactive_prune_tokens=1_000, proactive_prune_min_result_chars=1_000,
+                              proactive_prune_min_reclaim_tokens=1_000)
+    if db is not None:
+        c.bind_session_state(session_db=db, session_id="s1")
+    return c
+
+
+def _round(i, content, name="read_file"):
+    cid = f"call_{i}"
+    return [{"role": "assistant", "content": "", "tool_calls": [
+        {"id": cid, "type": "function", "function": {"name": name, "arguments": json.dumps({"path": f"f{i}.py"})}}]},
+        {"role": "tool", "tool_call_id": cid, "content": content}]
+
+
+def _transcript(n=8, chars=12_000):
+    msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "read them"}]
+    for i in range(n):
+        body = json.dumps({"content": f"{i}|" + chr(65 + i) * chars}) if i % 2 else f"line {i}\n" + "x" * chars
+        msgs += _round(i, body)
+    return msgs
+
+
+def _archive_path(stub: str) -> Path:
+    return Path(os.path.expanduser(stub.rsplit("full result: ", 1)[1]))
+
+
+def test_every_shortened_result_is_archived_byte_exact_and_named_by_its_stub(home):
+    msgs = _transcript()
+    pruned, count = _compressor().prune_tool_results_only(msgs, current_tokens=100_000)
+
+    assert count
+    changed = [(o, n) for o, n in zip(msgs, pruned) if o["content"] != n["content"]]
+    assert len(changed) == count
+    for original, stub in changed:
+        path = _archive_path(stub["content"])
+        assert path.parent == home / "cache" / "pruned"
+        assert path.read_bytes() == original["content"].encode("utf-8")
+        assert path.suffix == (".json" if original["content"].startswith("{") else ".txt")
+        assert "_read_file_" in path.name
+
+
+def test_a_failed_archive_write_leaves_that_result_unpruned(home):
+    msgs = _transcript()
+    real = __import__("tools.tool_result_storage", fromlist=["x"])._write_to_spillover
+    failed = {"n": 0}
+
+    def flaky(content, filename, subdir="cache/spillover"):
+        if subdir == "cache/pruned" and failed["n"] == 0 and filename.endswith(".txt"):
+            failed["n"] += 1
+            return None
+        return real(content, filename, subdir)
+
+    with patch("tools.tool_result_storage._write_to_spillover", side_effect=flaky):
+        pruned, count = _compressor().prune_tool_results_only(msgs, current_tokens=100_000)
+
+    assert failed["n"] == 1 and count
+    kept = [o for o, n in zip(msgs, pruned) if o["role"] == "tool" and o["content"] == n["content"]
+            and len(o["content"]) > 1_000 and not o["content"].startswith("{")]
+    assert kept, "the result whose archive failed must keep its full body"
+    for original, stub in zip(msgs, pruned):
+        if original["content"] != stub["content"]:
+            assert _archive_path(stub["content"]).read_bytes() == original["content"].encode("utf-8")
+
+
+def test_the_running_turn_is_never_shortened(home):
+    """Post-tool site in a long tool loop: everything from this turn's user row stays whole."""
+    history = _transcript(6) + [{"role": "assistant", "content": "done"}]
+    turn_start = len(history)
+    msgs = history + [{"role": "user", "content": "now read more"}]
+    for i in range(6, 30):
+        msgs += _round(i, f"line {i}\n" + "y" * 12_000)
+
+    pruned, count = _compressor().prune_tool_results_only(msgs, current_tokens=200_000, turn_start=turn_start)
+
+    assert count
+    assert pruned[turn_start:] == msgs[turn_start:]
+    assert any(o["content"] != n["content"] for o, n in zip(msgs[:turn_start], pruned[:turn_start]))
+
+
+def test_pruned_archive_follows_its_session(home):
+    """Referenced archives survive the age sweep; deleting the session retires them."""
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        db.create_session("s1", "cli")
+        msgs = _transcript()
+        db.append_messages_batch("s1", msgs[1:])
+        stored = [{"role": "system", "content": "sys"},
+                  *db.get_messages_as_conversation("s1", include_row_ids=True)]
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+        for m in stored[1:]:
+            m[_DB_PERSISTED_MARKER] = True
+        _, count = _compressor(db).prune_tool_results_only(stored, current_tokens=100_000)
+        assert count
+        files = sorted((home / "cache" / "pruned").iterdir())
+        assert len(files) == count
+        stale = time.time() - 400 * 86_400
+        for f in files:
+            os.utime(f, (stale, stale))
+
+        assert cleanup_spillover_cache(max_age_hours=24) == 0  # state.db still points at each
+        assert all(f.exists() for f in files)
+        db.delete_session("s1")
+        assert not any(f.exists() for f in files)
+    finally:
+        db.close()

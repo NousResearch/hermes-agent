@@ -39,6 +39,7 @@ def test_prune_only_then_full_compaction_keeps_one_skill_safety_rule():
         comp = ContextCompressor(
             model="test/model", quiet_mode=True, threshold_percent=0.5, protect_first_n=2, protect_last_n=4,
             proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000,
+            proactive_prune_min_reclaim_tokens=4096,  # ~7K-token fixture; the shipped gate is 64K
         )
     pruned, count = comp.prune_tool_results_only(_transcript(), current_tokens=120_000)
     assert count and _texts(pruned).count(SKILL_SAFETY_RULE) == 1

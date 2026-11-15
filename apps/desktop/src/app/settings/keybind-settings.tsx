@@ -107,7 +107,7 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
         return false
       }
 
-      const label = k.actions[action.id] ?? action.id
+      const label = k.actions[action.id] ?? action.label ?? action.id
 
       return label.toLowerCase().includes(lower) || action.id.includes(lower)
     })

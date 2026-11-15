@@ -231,7 +231,7 @@ type KanbanMessages = {
 
 export const en: KanbanMessages = {
   nav: 'Kanban',
-  openBoard: 'Kanban: Open board',
+  openBoard: 'Show Kanban',
   newTaskCommand: 'Kanban: New task',
   countTip: (running, ready) => `Kanban — ${running} running, ${ready} ready`,
   col: {
@@ -463,7 +463,7 @@ export const en: KanbanMessages = {
 
 const ja: KanbanMessages = {
   nav: 'カンバン',
-  openBoard: 'カンバン: ボードを開く',
+  openBoard: 'カンバンを表示',
   newTaskCommand: 'カンバン: 新しいタスク',
   countTip: (running, ready) => `カンバン — 実行中 ${running}、待機 ${ready}`,
   col: {
@@ -694,7 +694,7 @@ const ja: KanbanMessages = {
 
 const zh: KanbanMessages = {
   nav: '看板',
-  openBoard: '看板：打开面板',
+  openBoard: '显示看板',
   newTaskCommand: '看板：新建任务',
   countTip: (running, ready) => `看板 — 运行中 ${running}、就绪 ${ready}`,
   col: {
@@ -922,7 +922,7 @@ const zh: KanbanMessages = {
 
 const zhHant: KanbanMessages = {
   nav: '看板',
-  openBoard: '看板：開啟面板',
+  openBoard: '顯示看板',
   newTaskCommand: '看板：新增任務',
   countTip: (running, ready) => `看板 — 執行中 ${running}、就緒 ${ready}`,
   col: {

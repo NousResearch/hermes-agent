@@ -6,7 +6,7 @@
  * it reaches back into neither.
  */
 
-import { Button, Codicon, host, Input, useI18n } from '@hermes/plugin-sdk'
+import { Button, Codicon, host, Input, isImeComposing, useI18n } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
@@ -262,7 +262,7 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
           onChange={event => setQuery(event.target.value)}
           onKeyDown={event => {
             // IME guard: Enter confirming a composed word must not search.
-            if (event.nativeEvent?.isComposing || event.keyCode === 229) {
+            if (isImeComposing(event)) {
               return
             }
 

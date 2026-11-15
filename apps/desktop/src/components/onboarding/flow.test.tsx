@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
+import type { OAuthProvider } from '@/types/hermes'
 
 import { FlowPanel } from './flow'
 
@@ -179,5 +180,81 @@ describe('external CLI sign-in step', () => {
     expect(selectable?.textContent).toBe(longCommand)
     expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy()
     expect(screen.getByRole('button', { name: "I've signed in" })).toBeTruthy()
+  })
+})
+
+describe('awaiting_user device-code input', () => {
+  const provider: OAuthProvider = {
+    cli_command: '',
+    docs_url: '',
+    flow: 'pkce',
+    id: 'openai',
+    name: 'OpenAI OAuth (ChatGPT)',
+    status: { logged_in: false }
+  }
+  const start = { auth_url: 'https://example.com/auth', expires_in: 600, flow: 'pkce' as const, session_id: 's1' }
+
+  function awaitingUserState(): DesktopOnboardingState {
+    return { ...confirmingModelState(), flow: { code: '', provider, start, status: 'awaiting_user' } }
+  }
+
+  // submitOnboardingCode flips the flow to 'submitting' before its (here
+  // rejected) API call; the calls array is the observable for "submitted".
+  function trackSubmissions(): { calls: unknown[] } {
+    const calls: unknown[] = []
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        api: async (request: unknown) => {
+          calls.push(request)
+
+          throw new Error('not expected to resolve in this test')
+        }
+      }
+    })
+
+    return { calls }
+  }
+
+  it('submits the code on a bare Enter', async () => {
+    const { calls } = trackSubmissions()
+    $desktopOnboarding.set(awaitingUserState())
+
+    render(<Harness />)
+
+    const input = screen.getByPlaceholderText('Paste authorization code')
+    fireEvent.change(input, { target: { value: 'auth-code-123' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0))
+  })
+
+  it('does not submit on an in-flight IME composition Enter', () => {
+    const { calls } = trackSubmissions()
+    $desktopOnboarding.set(awaitingUserState())
+
+    render(<Harness />)
+
+    const input = screen.getByPlaceholderText('Paste authorization code')
+    fireEvent.change(input, { target: { value: '中文' } })
+    fireEvent.keyDown(input, { isComposing: true, key: 'Enter' })
+
+    expect(calls).toHaveLength(0)
+    expect($desktopOnboarding.get().flow.status).toBe('awaiting_user')
+  })
+
+  it('does not submit on the legacy IME commit Enter (keyCode 229)', () => {
+    const { calls } = trackSubmissions()
+    $desktopOnboarding.set(awaitingUserState())
+
+    render(<Harness />)
+
+    const input = screen.getByPlaceholderText('Paste authorization code')
+    fireEvent.change(input, { target: { value: '中文' } })
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })
+
+    expect(calls).toHaveLength(0)
+    expect($desktopOnboarding.get().flow.status).toBe('awaiting_user')
   })
 })

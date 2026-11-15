@@ -459,6 +459,7 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
   const { cn } = await import('@/lib/utils')
   const { randomUuid } = await import('@hermes/shared')
   const { LruCache } = await import('@/lib/lru-cache')
+  const { isImeComposing, isSubmitEnter } = await import('@/lib/ime')
 
   // The gateway Group Chat row's right-click menu (#143571) renders the real one.
   const { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } =
@@ -482,6 +483,10 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     blobatarSvg: undefined,
     computed: nanostores.computed,
     createBudgetedLoop: undefined,
+    // Real IME predicates: the composition-Enter contracts (#93528, #154450)
+    // exercise real key events, so the mock must not fake the policy.
+    isImeComposing,
+    isSubmitEnter,
     gatewayActivationEpoch: () => 0,
     GlyphSpinner: () => null,
     // The room views' shared parts (group-room-ui.tsx) wear the main composer's classes.

@@ -1841,7 +1841,7 @@ export * as icons from '@/lib/icons'
 /** IME-aware Enter: true only for a real submit Enter, never a CJK composition
  *  commit (`isComposing` or the legacy keyCode 229). Use it on every plugin
  *  text field whose bare Enter performs an action. */
-export { isSubmitEnter } from '@/lib/ime'
+export { isImeComposing, isSubmitEnter } from '@/lib/ime'
 export { type KeybindContribution, KEYBINDS_AREA, PLUGIN_APP_ACTIONS } from '@/lib/keybinds/actions'
 export { formatModifierToken } from '@/lib/keybinds/combo'
 /** A `Map` with a ceiling, for the module-level caches a plugin keeps across

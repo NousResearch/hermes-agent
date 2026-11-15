@@ -34,6 +34,10 @@ EVENT_STALL_TIMEOUT = 30
 # queue's only consumer). Bounded: past either cap the reader waits for the consumer again.
 EVENT_OVERFLOW_FRAMES = 16384
 EVENT_OVERFLOW_BYTES = 8 * 1024 * 1024
+# The largest frame a client socket accepts. A ``session.resume`` answer carries the whole history,
+# so this bounds long Bot Chats: any dial that can receive a resume must pass it (``connect_gateway``
+# and ``tui_gateway.owner_forward.connect_owner`` both read it, so the two paths cannot drift).
+DEFAULT_MAX_FRAME_BYTES = 8 * 1024 * 1024
 
 
 def gateway_ws_target(endpoint, ticket):
@@ -327,7 +331,7 @@ def outside_restart_wait():
 
 
 @asynccontextmanager
-async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 1024):
+async def connect_gateway(endpoint=None, subject=None, *, max_size=DEFAULT_MAX_FRAME_BYTES):
     """Attach to this home's owner. ``endpoint``: an already-discovered ready owner to dial as-is
     (maintenance that must never start a gateway); default ensures one, starting it if needed.
     ``subject``: mint the ticket for this principal (the caller's authenticated dashboard user)

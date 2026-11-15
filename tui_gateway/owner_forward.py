@@ -76,13 +76,17 @@ def discover_owner(home: Path):
 
 
 @contextlib.asynccontextmanager
-async def connect_owner(home: Path, endpoint, *, scope=None, max_size: int = 2 ** 20):
+async def connect_owner(home: Path, endpoint, *, scope=None, max_size: int = None):
     """A ``GatewayClient`` on ``endpoint``, the ready gateway serving ``home``; ``scope``: the
     ticket's profile scope (``"host"``: the one native Desktop holds); ``max_size``: the largest
-    answer frame accepted (websockets' 1 MiB default)."""
+    answer frame accepted (the client path's bound: a forwarded prompt's answer carries the
+    session's whole resume snapshot, which passes websockets' 1 MiB default on a long chat)."""
+    from hermes_cli import gateway_client
     from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GatewayClient, _session_ticket, gateway_ws_target
     from websockets.asyncio.client import connect
 
+    if max_size is None:
+        max_size = gateway_client.DEFAULT_MAX_FRAME_BYTES
     ticket = await asyncio.to_thread(_session_ticket, home, endpoint, scope=scope)
     url, protocols = gateway_ws_target(endpoint, ticket)
     # Loopback owner dial: never through HTTP(S)_PROXY (websockets>=14 honours it by default).

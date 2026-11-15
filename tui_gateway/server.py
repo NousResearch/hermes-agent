@@ -1986,7 +1986,8 @@ from . import (
     agent_callbacks as _agent_callbacks, session_history as _session_history,
     prompt_attachments as _prompt_attachments, session_notifications as _session_notifications,
     tool_progress as _tool_progress, change_watcher as _change_watcher,
-    session_compression as _session_compression, model_switch as _model_switch,
+    session_compression as _session_compression, session_cache_expiry as _session_cache_expiry,
+    model_switch as _model_switch,
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
     session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
     session_transports as _session_transports, prompt_turn as _prompt_turn, billing_view as _billing_view,
@@ -2006,7 +2007,7 @@ from . import (
 for _m in (
     _session_registry, _agent_factory, _slash_worker_client, _store_handles,
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
-    _session_compression, _change_watcher, _tool_progress, _session_notifications,
+    _session_compression, _session_cache_expiry, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_session, _methods_prompt, _methods_config,

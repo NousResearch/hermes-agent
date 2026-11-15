@@ -602,6 +602,48 @@ def reference_refusal_keeps_the_value_in_frame_locals(monkeypatch):
     monkeypatch.setattr(MemorySecretStore, "set_auth", set_auth)
 
 
+def view_writes_a_bootstrap_name(monkeypatch):
+    """The view store sends a bootstrap name to the store instead of refusing it."""
+    from tests.conformance.secrets import reference_view
+    monkeypatch.setattr(reference_view, "BOOTSTRAP", frozenset())
+    monkeypatch.setattr(reference_view.MemoryViewProvider, "bootstrap_env_names",
+                        lambda self: frozenset({"VIEW_STORE_URL", "VIEW_STORE_TOKEN"}))
+
+
+def view_failed_write_names_the_value(monkeypatch):
+    """A failed view write puts the value in the error it raises."""
+    from hermes_secret_port import SecretWriteFailed
+    from tests.conformance.secrets import reference_view
+    original = reference_view.MemoryViewProvider.write_view
+
+    def write_view(self, home, *, env_set=None, env_unset=(), auth=None):
+        if self.failing:
+            raise SecretWriteFailed(f"write failed for {env_set!r}")
+        return original(self, home, env_set=env_set, env_unset=env_unset, auth=auth)
+    monkeypatch.setattr(reference_view.MemoryViewProvider, "write_view", write_view)
+
+
+def view_refresh_keeps_a_stale_snapshot(monkeypatch):
+    """A refresh never re-reads the store once a home is loaded (its own writes still install the
+    view they return): a change made elsewhere never reaches the view."""
+    import copy
+
+    from tests.conformance.secrets import reference_view
+    original_refresh = reference_view.MemoryViewProvider.refresh
+    original_write = reference_view.MemoryViewProvider.write_view
+
+    def refresh(self, home=None):
+        if home is not None and self._key(home) in self.seen:
+            return
+        original_refresh(self, home)
+
+    def write_view(self, home, **changes):
+        original_write(self, home, **changes)
+        self.seen[self._key(home)] = copy.deepcopy(self._remote(home))
+    monkeypatch.setattr(reference_view.MemoryViewProvider, "refresh", refresh)
+    monkeypatch.setattr(reference_view.MemoryViewProvider, "write_view", write_view)
+
+
 def _local(node: str) -> str:
     """The node id of a local-suite test (``TestLocalSecrets``)."""
     return f"tests/conformance/secrets/test_local.py::TestLocalSecrets::{node}"
@@ -610,6 +652,11 @@ def _local(node: str) -> str:
 def _reference(node: str) -> str:
     """The node id of a reference-suite test (``TestReferencePinning``/``TestReferenceLeveled``)."""
     return f"tests/conformance/secrets/test_reference.py::{node}"
+
+
+def _view(node: str) -> str:
+    """The node id of a view-suite test (``TestReferenceView``)."""
+    return f"tests/conformance/secrets/test_reference_view.py::TestReferenceView::{node}"
 
 
 #: Each entry: how to apply the broken backend, and the suite test that must kill it (its node
@@ -698,6 +745,15 @@ MUTANTS = {
     "reference_refusal_keeps_the_value_in_frame_locals": (
         reference_refusal_keeps_the_value_in_frame_locals,
         _reference("TestReferencePinning::test_no_refusal_traceback_frame_holds_the_value_or_record")),
+    "view_writes_a_bootstrap_name": (
+        view_writes_a_bootstrap_name,
+        _view("test_a_bootstrap_name_is_never_written")),
+    "view_failed_write_names_the_value": (
+        view_failed_write_names_the_value,
+        _view("test_a_failed_write_is_the_ports_error_and_holds_no_value")),
+    "view_refresh_keeps_a_stale_snapshot": (
+        view_refresh_keeps_a_stale_snapshot,
+        _view("test_a_change_made_elsewhere_reaches_the_view_after_a_refresh")),
 }
 
 

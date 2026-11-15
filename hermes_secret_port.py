@@ -69,11 +69,13 @@ anything else. A backend refuses a pin it cannot serve with :class:`SecretPinRef
 backend with no scope bound refuses; the local backend's pin is the ambient profile
 (``get_hermes_home()``) when no scope is bound, as every local caller has it today.
 
-This is the interface and its local backend only: today's readers still call
-``agent.secret_scope.get_secret``, ``hermes_cli.config.save_env_value`` and the ``hermes_cli.auth``
-store directly; moving them behind this port, call site by call site, is a follow-up. The
-turn-time secret scope keeps its current shape and semantics, and ``get_secret()`` keeps failing
-closed with no scope bound. :func:`resolve_secret_store` takes the backend's name explicitly:
+The process selects its store with ``HERMES_SECRET_STORE`` (:data:`SECRET_STORE_ENV`), read from
+the environment before any config; ``hermes_secret_routing`` routes the process-wide credential
+paths (the profile ``.env`` read and its load into ``os.environ``, ``save_env_value`` /
+``remove_env_value``, the ``hermes_cli.auth`` store) to it through the provider's view hooks, and
+with the local store every one of them is today's file code. The turn-time secret scope keeps its
+current shape and semantics, and ``get_secret()`` keeps failing closed with no scope bound.
+:func:`resolve_secret_store` takes the backend's name explicitly:
 ``"local"`` (or empty) is ``hermes_secret_port_local`` (today's profile ``.env`` and ``auth.json``);
 any other name is a provider from ``plugins/secret_store/<name>/`` or
 ``$HERMES_HOME/plugins/<name>/``. A named provider that is missing or unavailable is an error,
@@ -84,6 +86,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any, Optional
+
+#: The environment variable that selects the secret store for the whole process: read from the
+#: environment (and the launch and managed ``.env`` bootstrap) before any config, like the config
+#: backend's selector. Unset or ``local``: today's profile files.
+SECRET_STORE_ENV = "HERMES_SECRET_STORE"
 
 # The ownership levels a secret store can hold (``Scope`` docs). Secrets have no
 # participant-on-agent level; a backend declares which of these it stores and refuses
@@ -231,7 +238,20 @@ class SecretStore(ABC):
 class SecretStoreProvider(ABC):
     """The plugin kind: supplies :class:`SecretStore`. ``name``, ``open`` and
     ``assert_isolating`` are required; every other method has a safe default, and growth stays
-    additive."""
+    additive.
+
+    The process-wide credential paths (the ``.env`` load into ``os.environ``, the profile secret
+    scope, ``save_env_value`` / ``remove_env_value`` and the ``auth.json`` store) reach the
+    selected provider through :mod:`hermes_secret_routing`, per profile home rather than per bound
+    scope: they serve the process's own profiles. A provider whose storage IS today's profile files
+    says so with :attr:`files_backed`, and those paths keep running today's file code unchanged. Any
+    other provider implements the view hooks below (:meth:`env_view`, :meth:`auth_view`,
+    :meth:`write_view`); their defaults refuse, so a provider that has not implemented them fails
+    closed instead of falling back to the files."""
+
+    #: Whether this backend's storage is today's profile ``.env`` and ``auth.json`` files. True
+    #: only for the local backend: every routed path then runs today's file code as it is.
+    files_backed: bool = False
 
     @property
     @abstractmethod
@@ -260,6 +280,66 @@ class SecretStoreProvider(ABC):
         backend that has not checked must not pass. Nothing calls it yet: the first caller that
         serves a scope from a resolved provider must call it, and refuse the provider when it
         raises, before :meth:`open`."""
+
+    # --- process-wide view hooks (``hermes_secret_routing``); defaults keep a files-backed store
+    # --- on today's files and refuse for any other.
+
+    def bootstrap_env_names(self) -> frozenset[str]:
+        """Env names that stay in the profile's local ``.env`` and are never sent to this store:
+        what the store needs to select, address and authenticate itself before any secret
+        exists. A files-backed store keeps everything local and needs none."""
+        return frozenset()
+
+    def bootstrap_auth_records(self) -> frozenset[str]:
+        """``auth.json`` record ids (:func:`hermes_secret_routing.auth_records`) that stay in the
+        local file and are never sent: the record this store's own credential comes from."""
+        return frozenset()
+
+    def deployment_env_names(self) -> frozenset[str]:
+        """Non-secret env names that select and address this store; a child acting for another
+        profile keeps them (they are the instance's, not the launch profile's)."""
+        return frozenset()
+
+    def supports_file_tooling(self) -> bool:
+        """Whether tools that copy, back up or restore the profile's ``.env`` / ``auth.json``
+        FILES (backup, import, profile clone and export) may run: they would copy only the
+        bootstrap entries of a store that keeps secrets elsewhere."""
+        return self.files_backed
+
+    def boot(self, home: Any) -> None:
+        """Called once per ``load_hermes_dotenv`` for the process's profile *home*, after the
+        ``.env`` loads and the config backend boots, before the first secret read: a store that
+        fetches its secrets does it here, failing closed. A files-backed store does nothing."""
+
+    def env_view(self, home: Any) -> dict[str, str]:
+        """*home*'s environment-style secrets as this store resolves them, bootstrap names
+        excluded (they stay in the local ``.env``). Raises rather than return a partial view."""
+        raise NotImplementedError(f"secret store {self.name!r} does not serve process-wide env reads")
+
+    def auth_view(self, home: Any) -> dict[str, dict[str, Any]]:
+        """*home*'s ``auth.json`` records as this store resolves them, keyed by record id
+        (:func:`hermes_secret_routing.auth_records`), bootstrap records excluded."""
+        raise NotImplementedError(f"secret store {self.name!r} does not serve process-wide auth reads")
+
+    def write_view(self, home: Any, *, env_set: Optional[dict[str, str]] = None,
+                   env_unset: tuple[str, ...] = (), auth: Optional[dict[str, Any]] = None) -> None:
+        """One write of *home*'s secrets: env names to set and unset, and auth records to replace
+        (a ``None`` record removes it). Never called with a bootstrap name or record. Atomic: on
+        any failure nothing changed, and the error is :class:`SecretWriteFailed` or a refusal,
+        never one that carries a value."""
+        raise NotImplementedError(f"secret store {self.name!r} does not serve process-wide writes")
+
+    def view_version(self, home: Any) -> str:
+        """An opaque token that changes whenever *home*'s view does (caches key on it)."""
+        return ""
+
+    def doctor_warnings(self, home: Any) -> tuple:
+        """``(warning, hint, issue)`` triples ``hermes doctor`` reports for *home*'s secrets."""
+        return ()
+
+    def describe(self, home: Any) -> str:
+        """One line naming where *home*'s secrets live (status, doctor)."""
+        return f"secret store {self.name!r}"
 
 
 def resolve_secret_store(name: str) -> SecretStoreProvider:

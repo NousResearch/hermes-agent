@@ -897,10 +897,9 @@ def _termux_should_prefetch_update_check() -> bool:
 
 def _dotenv_has_provider_key(env_file: Path, provider_env_vars: set) -> bool:
     """True if ~/.hermes/.env assigns a non-empty value to any provider key."""
-    if not env_file.exists():
-        return False
+    from hermes_secret_routing import read_env_text  # the selected secret store's view; a missing file raises
     try:
-        for line in env_file.read_text(encoding="utf-8-sig").splitlines():
+        for line in read_env_text(env_file).splitlines():
             line = line.strip()
             if line.startswith("#") or "=" not in line:
                 continue
@@ -916,11 +915,9 @@ def _dotenv_has_provider_key(env_file: Path, provider_env_vars: set) -> bool:
 def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool) -> bool:
     """True if auth.json's active provider is logged in (api_key providers ignored under strict scope)."""
     from hermes_cli.auth import get_auth_status
-
-    if not auth_file.exists():
-        return False
+    from hermes_secret_routing import read_auth_json  # the selected secret store's view; a missing file raises
     try:
-        auth = json.loads(auth_file.read_text(encoding="utf-8-sig"))
+        auth = read_auth_json(auth_file)
         active = auth.get("active_provider")
         active_config = registry.get(str(active or "").strip().lower())
         if active and not (

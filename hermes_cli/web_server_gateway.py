@@ -389,8 +389,9 @@ def _profile_action_environment(
         action_env = dict(os.environ)
     else:
         from hermes_cli.env_loader import (
-            _PROFILE_MANAGED_ENV_KEYS, _env_keys_defined_in_dotenv, get_secret_source_values,
+            _PROFILE_MANAGED_ENV_KEYS, get_secret_source_values,
         )
+        from hermes_secret_routing import read_profile_env
         from hermes_cli.web_server_profiles import _resolve_profile_dir
         from hermes_constants import apply_subprocess_home_env, get_default_hermes_root, is_launch_only_env_key
         from tools.environments.local import build_subprocess_env, strip_launch_profile_env
@@ -404,7 +405,7 @@ def _profile_action_environment(
         except Exception:
             source_homes = set()
         for source_home in source_homes:
-            profile_keys.update(_env_keys_defined_in_dotenv(Path(source_home) / ".env"))
+            profile_keys.update(read_profile_env(Path(source_home) / ".env"))  # the selected secret store's view
             # Secret managers contribute locally named credentials that never appear in .env;
             # the dashboard already hydrated its own sources, so their key names are a boundary too.
             profile_keys.update(get_secret_source_values(source_home).keys())

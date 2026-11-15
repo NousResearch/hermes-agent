@@ -1930,11 +1930,10 @@ def _read_nous_auth() -> Optional[dict]:
             "source": "pool",
         }
     try:
+        from hermes_secret_routing import auth_json_exists, read_auth_json  # the selected secret store's view
         auth_path = _auth_json_path()
-        if not auth_path.is_file():
-            return None
-        data = json.loads(auth_path.read_text(encoding="utf-8-sig"))
-        if data.get("active_provider") != "nous":
+        data = read_auth_json(auth_path) if auth_json_exists(auth_path) else None
+        if data is None or data.get("active_provider") != "nous":
             return None
         provider = data.get("providers", {}).get("nous", {})
         # Must have at least an access_token or agent_key.

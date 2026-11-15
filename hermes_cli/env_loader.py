@@ -255,7 +255,9 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         from agent.secret_sources.registry import apply_all
 
         local_env = {name: value for name, value in os.environ.items() if _is_global_env(name)}
-        local_env.update(load_env_file(home / ".env"))
+        from hermes_secret_routing import read_profile_env
+
+        local_env.update(read_profile_env(home / ".env"))
         # Mirror load_hermes_dotenv()'s .op.env bootstrap (1Password token lives in gitignored .op.env)
         # or cold profiles fail 1Password hydration. .env wins.
         # Without seeding it here a cold profile configured for the supported .op.env flow fails 1Password
@@ -639,6 +641,11 @@ def apply_config_bootstrap_env(backend_names, home: Path | None = None, project_
     env = _bootstrap_env(home, project_env)
     # The selector itself always, so a file deployment is not read as another kind meanwhile.
     names = {BACKEND_ENV} | set(backend_names((env.get(BACKEND_ENV) or "").strip().lower() or "file"))
+    # The secret store is selected the same way, before the first secret read.
+    from hermes_secret_port import SECRET_STORE_ENV
+    from hermes_secret_routing import bootstrap_env_names_for
+
+    names |= bootstrap_env_names_for(env.get(SECRET_STORE_ENV))
     for name in names:
         value = env.get(name)
         if value is not None and os.environ.get(name) != value:
@@ -726,13 +733,29 @@ def dotenv_unreadable(path: Path) -> bool:
         return False
 
 
+def publish_routed_env(values: dict[str, str]) -> None:
+    """Publish a secret store's env view (or the bootstrap names of a store-backed ``.env``) into
+    ``os.environ`` the way a ``.env`` load does: override, recorded as launch-profile keys (so a
+    child acting for another profile drops them), credentials ASCII-sanitized."""
+    for name, value in values.items():
+        if os.environ.get(name) != value:
+            os.environ[name] = value
+    _LOADED_DOTENV_KEYS.update(values)
+    _sanitize_loaded_credentials()
+
+
 def _load_user_dotenv(path: Path, *, load_pass: int) -> bool:
     """Load the profile ``.env``; False when it exists but cannot be read and managed scope pins
     ``terminal.backend``. A sandbox launcher withholds the file, passes the keys it allows in as
     environment and pins the backend. Without that pin the ``PermissionError`` propagates: the file may
     be the only place the backend is set, and skipping it would run terminal commands on the host."""
     try:
-        _load_dotenv_with_fallback(path, override=True, load_pass=load_pass)
+        from hermes_secret_routing import routed_bootstrap_env
+        bootstrap = routed_bootstrap_env(path)  # None: the local store, the file loads as it always did
+        if bootstrap is None:
+            _load_dotenv_with_fallback(path, override=True, load_pass=load_pass)
+        else:
+            publish_routed_env(bootstrap)
     except PermissionError:
         from hermes_cli import managed_scope
 
@@ -846,6 +869,13 @@ def load_hermes_dotenv(
     # still applies once, last below, where it keeps its precedence over secret-source results.
     bootstrap_deployment(home_path, project_env_path)
     get_config_backend().boot(home_path)
+    # The secret store boots next, before the first secret read: a store that keeps secrets off
+    # disk fetches this home's view here (failing closed) and it is published like the .env was.
+    from hermes_secret_routing import boot_secret_store
+
+    routed_view = boot_secret_store(home_path)
+    if routed_view is not None:
+        publish_routed_env(routed_view)
 
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
     # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing
@@ -931,9 +961,9 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
     if not writes and not claims:
         return
     try:
-        from agent.secret_scope import load_env_file
+        from hermes_secret_routing import read_profile_env
 
-        owned_by_dotenv = set(load_env_file(Path(home_path) / ".env")) | _MANAGED_DOTENV_KEYS
+        owned_by_dotenv = set(read_profile_env(Path(home_path) / ".env")) | _MANAGED_DOTENV_KEYS
     except Exception:
         owned_by_dotenv = set(_MANAGED_DOTENV_KEYS)
     _revoke_value_writes(home_key, writes or {}, keep, owned_by_dotenv)

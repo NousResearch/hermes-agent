@@ -42,6 +42,33 @@ def test_local_names_the_local_backend(tmp_path, monkeypatch):
         provider.assert_isolating()
 
 
+def test_the_local_backend_is_files_backed_and_keeps_every_name_local(tmp_path, monkeypatch):
+    """The routed paths run today's file code for a files-backed store; the view hooks' defaults
+    refuse, so a provider that keeps secrets elsewhere and forgot them fails closed."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    local = resolve_secret_store("local")
+    assert local.files_backed and local.supports_file_tooling()
+    assert local.bootstrap_env_names() == frozenset() and local.bootstrap_auth_records() == frozenset()
+
+    class Elsewhere(SecretStoreProvider):
+        @property
+        def name(self):
+            return "elsewhere"
+
+        def open(self, home=None):
+            raise NotImplementedError
+
+        def assert_isolating(self):
+            return
+
+    other = Elsewhere()
+    assert not other.files_backed and not other.supports_file_tooling()
+    for hook in (lambda: other.env_view(tmp_path), lambda: other.auth_view(tmp_path),
+                 lambda: other.write_view(tmp_path, env_set={"K": "v"})):
+        with pytest.raises(NotImplementedError):
+            hook()
+
+
 def test_a_provider_that_does_not_check_isolation_cannot_be_built():
     class Unchecked(SecretStoreProvider):
         @property

@@ -112,6 +112,7 @@ _GUARDS = {
     "profile-create-entry": ["scripts/check_profile_create_entry.py"],
     "tool-discovery": ["scripts/check_tool_discovery.py"],
     "packaged-imports": ["scripts/check_packaged_imports.py"],
+    "secret-files": ["scripts/check_secret_file_access.py"],
     "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],
     "agents-md": ["scripts/ci/check_agents_md_size.py"],
     "shims": ["scripts/move/generate_shims.py", "--check"],

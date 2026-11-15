@@ -18,7 +18,8 @@ import pytest
 from tests.conformance.secrets.mutants import MUTANTS
 
 ROOT = Path(__file__).resolve().parents[3]
-SUITE = ["tests/conformance/secrets/test_local.py", "tests/conformance/secrets/test_reference.py"]
+SUITE = ["tests/conformance/secrets/test_local.py", "tests/conformance/secrets/test_reference.py",
+         "tests/conformance/secrets/test_reference_view.py"]
 #: The mutant's own-agent control: every operation the agent itself may make, and the resolution
 #: the fixture's owners are entitled to.
 CONTROL = [*SUITE, "-k", "succeeds or resolves"]

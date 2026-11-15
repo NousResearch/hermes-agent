@@ -46,12 +46,13 @@ def _yaml_block_names(yaml_cfg: Any) -> set[str]:
 def _env_names(home: Optional[Path]) -> set[str]:
     names = {k for k, v in os.environ.items() if str(v).strip()}
     try:
-        from agent.secret_scope import current_secret_scope, load_env_file
+        from agent.secret_scope import current_secret_scope
         scope = current_secret_scope()
         if scope is not None:
             names.update(k for k, v in scope.items() if str(v).strip())
         if home is not None:
-            names.update(k for k, v in load_env_file(home / ".env").items() if str(v).strip())
+            from hermes_secret_routing import read_profile_env  # the selected secret store's view
+            names.update(k for k, v in read_profile_env(home / ".env").items() if str(v).strip())
             # Values an external secret source (Bitwarden, 1Password) resolved for this home, and
             # the administrator-managed .env: both feed the profile scope the adapters read.
             from hermes_cli.env_loader import get_secret_source_values
@@ -67,8 +68,8 @@ def _credential_pool_names(home: Optional[Path]) -> set[str]:
     if home is None:
         return set()
     try:
-        with open(home / "auth.json", encoding="utf-8-sig") as handle:
-            pool = (json.load(handle) or {}).get("credential_pool") or {}
+        from hermes_secret_routing import read_auth_json  # the selected secret store's view
+        pool = (read_auth_json(home / "auth.json") or {}).get("credential_pool") or {}
         return {str(k) for k in pool} if isinstance(pool, dict) else set()
     except FileNotFoundError:
         return set()

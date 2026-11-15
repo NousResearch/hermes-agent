@@ -221,6 +221,8 @@ class LocalSecretStoreProvider(SecretStoreProvider):
     credentials only."""
 
     levels = frozenset({"agent"})
+    #: The store IS the profile files: every process-wide path keeps today's file code.
+    files_backed = True
 
     @property
     def name(self) -> str:

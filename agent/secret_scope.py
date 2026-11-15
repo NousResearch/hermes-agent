@@ -427,7 +427,8 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     """Build a profile's secret mapping from ``<home>/.env`` plus its external
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
     from ``os.environ`` — so the scope holds only profile secrets."""
-    secrets = load_env_file(Path(hermes_home) / ".env")
+    from hermes_secret_routing import read_profile_env  # the selected secret store's view of the profile
+    secrets = read_profile_env(Path(hermes_home) / ".env")
     # Launch-only keys are never profile secrets (#135200): get_secret consults
     # _is_global_env first, but direct scope.get readers (e.g. platform_gate_env
     # under multiplexing) do not — a planted .env entry would otherwise survive

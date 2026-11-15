@@ -173,6 +173,17 @@ def _check_env_file(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT, _DHH
     managed_scope_check()
     env_path = HERMES_HOME / '.env'
+    from hermes_secret_routing import read_env_text, routed_provider
+    store = routed_provider()
+    if store is not None:  # the selected secret store holds this profile's secrets, not the .env file
+        check_ok(f"Secret store: {store.describe(HERMES_HOME)}")
+        for warning, hint, issue in store.doctor_warnings(HERMES_HOME):
+            check_warn(warning, hint)
+            f.issues.append(issue)
+        if not check_bool(_has_provider_env_config(read_env_text(env_path)), "API key or custom endpoint configured",
+                          "No API key found in the secret store"):
+            f.issues.append("Run 'hermes setup' to configure API keys")
+        return
     if env_path.exists():
         check_ok(f"{_DHH}/.env file exists")
         # UTF-8 first; latin-1 fallback for Windows Notepad/cp1252 files (matches env_loader._load_dotenv_with_fallback).

@@ -62,7 +62,9 @@ def profile_serve_signature(home: Path) -> tuple:
             sig.append(file_cache_version(Path(home) / name, always_digest=True))
         except OSError:
             sig.append(None)
-    return tuple(sig)
+    from hermes_secret_routing import routed_provider  # a store-held view changes with no local file change
+    store = routed_provider()
+    return tuple(sig) if store is None else (*sig, store.view_version(Path(home)))
 
 
 def _added_profile_blocker(launch: Path) -> Optional[str]:

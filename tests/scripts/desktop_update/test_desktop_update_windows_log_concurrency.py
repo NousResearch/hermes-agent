@@ -23,11 +23,18 @@ same way an overlapping process joins the named mutex) from a runspace pool,
 then holds the file to the exact line count, per-writer count, and intact
 line shape. It is ``platforms("windows")`` because Linux CI cannot execute
 the PowerShell hand-off.
+
+It runs under both interpreters the hand-off can be started by: Windows
+PowerShell 5.1 and PowerShell 7 (the desktop shim launches ``pwsh``). The log
+writer once used a ``FileStream`` constructor that exists only on .NET
+Framework; under pwsh it threw, the writer's ``catch`` swallowed it, and
+``desktop-update-handoff.log`` was never created (#156217).
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -38,8 +45,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 WINDOWS_PS1 = REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1"
 
 
-@pytest.mark.platforms("windows")
-def test_concurrent_writers_lose_no_handoff_log_lines(tmp_path: Path) -> None:
+def _run_log_concurrency_self_test(powershell: str, tmp_path: Path) -> None:
     """Drive 8 concurrent runspaces through the real Write-HandoffLog.
 
     A pass means all 800 lines landed: the total matches, each writer's 100
@@ -47,13 +53,6 @@ def test_concurrent_writers_lose_no_handoff_log_lines(tmp_path: Path) -> None:
     signature of a torn interleave). Under the pre-fix ``Add-Content`` the
     same run drops lines on PowerShell 7 and errors on 5.1.
     """
-    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-    powershell = (
-        system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-    )
-    if not powershell.is_file():
-        pytest.skip(f"Windows PowerShell not found at {powershell}")
-
     env = dict(os.environ)
     # The fixture writes its target log under TEMP; point that at tmp_path
     # so the test leaves nothing behind.
@@ -65,7 +64,7 @@ def test_concurrent_writers_lose_no_handoff_log_lines(tmp_path: Path) -> None:
     env["HERMES_HOME"] = os.fspath(home)
 
     argv = [
-        os.fspath(powershell),
+        powershell,
         "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
@@ -96,3 +95,23 @@ def test_concurrent_writers_lose_no_handoff_log_lines(tmp_path: Path) -> None:
         pytest.fail(diagnosis, pytrace=False)
     left = sorted(p.name for p in home.iterdir() if p.name != "logs")
     assert not left, f"the self-test left update state in HERMES_HOME: {left}"
+
+
+@pytest.mark.platforms("windows")
+def test_concurrent_writers_lose_no_handoff_log_lines(tmp_path: Path) -> None:
+    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    powershell = (
+        system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    )
+    if not powershell.is_file():
+        pytest.skip(f"Windows PowerShell not found at {powershell}")
+    _run_log_concurrency_self_test(os.fspath(powershell), tmp_path)
+
+
+@pytest.mark.platforms("windows")
+def test_handoff_log_is_written_under_powershell_7(tmp_path: Path) -> None:
+    """The same self-test under pwsh, which the desktop shim launches the hand-off with."""
+    pwsh = shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("PowerShell 7 (pwsh) not installed")
+    _run_log_concurrency_self_test(pwsh, tmp_path)

@@ -17,7 +17,7 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from tools.code_execution_env import is_secret_env_name
+from tools.code_execution_env import _GIT_IDENTITY_ENV_VARS, is_secret_env_name
 
 # What main's CLI read per process and the gateway otherwise reads daemon-wide.
 BEHAVIOUR_ENV = ('HERMES_EPHEMERAL_SYSTEM_PROMPT', 'HERMES_PREFILL_MESSAGES_FILE', 'HERMES_INFERENCE_PROVIDER',
@@ -50,7 +50,12 @@ def _travels(name: str, secret=None) -> bool:
     listed: ``NODE_AUTH_TOKEN`` matches ``NODE_``; secrets reach tools through ``terminal.env_passthrough``)
     or a Hermes control name (a delegated child's markers, Kanban pins). ``secret``: a session's frozen
     copy of that policy's substrings."""
-    hidden = is_secret_env_name(name) if secret is None else any(s in name.upper() for s in secret)
+    if secret is None:
+        hidden = is_secret_env_name(name)
+    else:
+        # The frozen substring policy needs the scrub's exact-name Git identity exception too.
+        upper = name.upper()
+        hidden = upper not in _GIT_IDENTITY_ENV_VARS and any(s in upper for s in secret)
     return not hidden and not name.startswith('HERMES_')
 
 

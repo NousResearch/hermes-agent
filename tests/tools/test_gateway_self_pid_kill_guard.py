@@ -49,6 +49,7 @@ def run(tmp_path, monkeypatch):
     # The here-string / read-write operand is redirect data, not an option: bash runs `kill N`.
     "kill <<< -0 {pid}", "kill <> -0 {pid}", "kill <<< -l {pid}", "kill <<- -0 {pid}", "<<< x kill {pid}",
     "powershell -c 'Stop-Process -ErrorAction Stop -Id {pid}'", "Stop-Process -ea SilentlyContinue {pid}",
+    "spps -Id {pid}", "spps {pid} -Force", "pwsh -c 'spps {pid}'",
 ])
 def test_literal_gateway_pid_kill_is_blocked(run, command):
     assert run(command.format(pid=PID, other=OTHER)) is not None
@@ -127,6 +128,7 @@ def test_pid_check_is_scoped_to_local_supervised_gateway(run, monkeypatch):
     "Stop-Process -Id {pid} -Force -WhatIf",
     "Stop-Process -WhatIf -Id {pid}",
     "Stop-Process -Name hermes -WhatIf",
+    "spps -Id {pid} -WhatIf",
 ])
 def test_stop_process_whatif_preview_is_safe_but_disabled_switch_is_blocked(run, command):
     # A preview must be allowed without weakening the literal-PID guard for real kills.

@@ -1021,6 +1021,7 @@ def _targets_gateway_pid(
         if index is None:
             continue
         name = _executable_name(segment[index]).lower().removesuffix(".exe")
+        name = "stop-process" if name == "spps" else name  # PowerShell's built-in Stop-Process alias
         args = segment[index + 1:]
         if name == "kill" and _kill_targets_pid(args, gateway_pid):
             return True

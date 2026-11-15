@@ -350,4 +350,16 @@ describe('runSigninExport', () => {
     expect(verdict).toEqual({ status: 'error', error: 'boom' })
     expect(parseExportVerdict('garbage')).toBeNull()
   })
+
+  it('names the error intact when a multi-byte character is split across stderr reads', async () => {
+    // Write up to the first byte of é (c3 a9), let the read land, then the rest.
+    const script =
+      "const b = Buffer.from('José\\n'); process.stderr.write(b.subarray(0, 4)); setTimeout(() => process.stderr.write(b.subarray(4)), 200)"
+
+    const verdict = await runSigninExport({ command: process.execPath, args: ['-e', script] }, process.cwd(), '/h', {
+      PATH: process.env.PATH ?? ''
+    })
+
+    expect(verdict).toEqual({ status: 'error', error: 'José' })
+  })
 })

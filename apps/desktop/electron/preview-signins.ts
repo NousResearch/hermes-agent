@@ -116,8 +116,10 @@ export function runSigninExport(
 
       chunks.push(data)
     })
-    child.stderr?.on('data', data => {
-      stderr = (stderr + data.toString()).slice(-2048)
+    // Decode across reads: the last stderr line is the user-facing error, and a multi-byte
+    // character split between two pipe reads would otherwise surface as U+FFFD.
+    child.stderr?.setEncoding('utf8').on('data', (data: string) => {
+      stderr = (stderr + data).slice(-2048)
     })
     child.on('error', () => {
       clearTimeout(timer)

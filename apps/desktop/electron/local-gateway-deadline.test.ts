@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 
 import { afterEach, expect, test, vi } from 'vitest'
 
@@ -8,7 +9,7 @@ test('an ensure client that ignores termination is killed and its promise reject
   vi.useFakeTimers()
 
   const child = Object.assign(new EventEmitter(), {
-    stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(() => true)
+    stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(() => true)
   })
 
   vi.doMock('node:child_process', () => ({ spawn: () => child }))
@@ -29,7 +30,7 @@ test('a stale-owner restart client that times out but obeys SIGTERM is logged an
   vi.useFakeTimers()
 
   const child = Object.assign(new EventEmitter(), {
-    stdout: new EventEmitter(), stderr: new EventEmitter(),
+    stdout: new PassThrough(), stderr: new PassThrough(),
     kill: vi.fn((signal?: string) => {
       if (!signal) { queueMicrotask(() => child.emit('close', null)) }
 
@@ -71,7 +72,7 @@ test('the default ensure client outlives the protocol deadline and reads a late 
   vi.useFakeTimers()
 
   const child = Object.assign(new EventEmitter(), {
-    stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(() => true)
+    stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(() => true)
   })
 
   vi.doMock('node:child_process', () => ({ spawn: () => child }))

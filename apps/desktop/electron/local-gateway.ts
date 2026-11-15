@@ -37,12 +37,14 @@ export function runGatewayEnsure(
 
     // Only the bounded CLI client is ours. Never retain/kill its detached owner.
     const timer = setTimeout(() => expire(`${label} timed out`), timeoutMs)
-    child.stdout.on('data', data => { stdout += data.toString();
+    // setEncoding decodes across reads: a multi-byte character split between two pipe reads would
+    // otherwise reach the user as U+FFFD (a non-ASCII path; `gateway restart` prints ✓ on stdout).
+    child.stdout.setEncoding('utf8').on('data', (data: string) => { stdout += data;
 
  if (stdout.length > 65536) { stdout = stdout.slice(0, 65536); expire(`${label} output exceeded limit`) } })
     // Diagnostics only (never protocol): an older `hermes` without the subcommand, a missing
     // profile or an import crash explain themselves here while stdout stays empty.
-    child.stderr.on('data', data => { stderr = (stderr + data.toString()).slice(-4096) })
+    child.stderr.setEncoding('utf8').on('data', (data: string) => { stderr = (stderr + data).slice(-4096) })
     child.on('error', () => { clearTimeout(timer); clearTimeout(forceTimer); reject(new Error(`Could not run ${label}`)) })
     // A client that exits on SIGTERM still resolves (callers such as restartLocalGatewayOwner log a
     // non-zero exit and re-ensure); only one that outlives the force-kill deadline rejects. An

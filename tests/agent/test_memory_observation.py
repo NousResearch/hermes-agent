@@ -1488,54 +1488,29 @@ def test_invalid_provider_return_keeps_existing_provider_isolation(monkeypatch):
     assert manager.prefetch_all("question") == ""
 
 
-class _NodeCountingList(list):
-    """List that trips if payload freezing visits more than a caller-set cap.
-
-    Each iteration bumps a shared counter, so a global cap can catch a
-    pathological width/depth tree the moment freezing crosses the budget —
-    without depending on wall clock or memory-allocation heuristics.
-    """
-
-    def __init__(self, values, *, counter, cap):
-        super().__init__(values)
-        self._counter = counter
-        self._cap = cap
-
-    def __iter__(self):
-        for item in list.__iter__(self):
-            self._counter[0] += 1
-            if self._counter[0] > self._cap:
-                raise AssertionError(
-                    f"payload freezing visited more than {self._cap} nodes"
-                )
-            yield item
-
-
-def _pathological_tree(depth, width, counter, cap):
+def _pathological_tree(depth, width):
     """Build a max-width tree that would explode without the node budget."""
     if depth == 0:
         return 0
-    return _NodeCountingList(
-        [_pathological_tree(depth - 1, width, counter, cap) for _ in range(width)],
-        counter=counter,
-        cap=cap,
-    )
+    return [_pathological_tree(depth - 1, width) for _ in range(width)]
 
 
-def test_payload_node_budget_stops_pathological_traversal_early():
-    """Regression: width and depth alone don't bound the traversal — nodes do.
+def test_payload_node_budget_stops_pathological_traversal_early(monkeypatch):
+    """The node budget stops recursive work before walking the entire tree."""
+    import agent.memory_provider_freeze as freeze
 
-    Before the fix, freezing a width-8 depth-6 payload processed 262,144
-    leaves before ``json.dumps`` rejected the encoded byte size. The node
-    budget must terminate the recursion inside the small lookahead window
-    around ``MAX_MEMORY_OBSERVATION_NODES``.
-    """
-    counter = [0]
-    cap = MAX_MEMORY_OBSERVATION_NODES + 8
-    payload = _pathological_tree(depth=6, width=8, counter=counter, cap=cap)
+    calls = []
+    original = freeze._freeze_json_value
+
+    def counting_freeze(*args, **kwargs):
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(freeze, "_freeze_json_value", counting_freeze)
+    payload = _pathological_tree(depth=6, width=8)
     with pytest.raises(ValueError, match="too many nodes"):
         _freeze_memory_observation_payload(payload)
-    assert counter[0] <= cap
+    assert len(calls) == MAX_MEMORY_OBSERVATION_NODES + 1
 
 
 def test_payload_node_budget_boundary_exact_and_over():

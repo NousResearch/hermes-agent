@@ -20,7 +20,7 @@ import re
 import sys
 import threading
 import types
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -419,14 +419,16 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             # deadline worker that cannot re-acquire the sweep's RLock; the flag is already set for the
             # whole sweep, so return where the locked re-entry used to. Every other caller still waits.
             return
-        with self._discovery_lock, _plugin_home_scope(self.home_path):
+        retired_observers = []
+        with ExitStack() as cleanup, self._discovery_lock, _plugin_home_scope(self.home_path):
+            cleanup.callback(self._stop_retired_observers, retired_observers)
             if self._retired or (self._discovered and not force):
                 return snapshot() if snapshot is not None else None
             # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before
             # (boot: everything; a mid-run install/enable: just the newcomer), keyed on the pre-sweep set.
             loaded_before = frozenset(k for k, p in self._plugins.items() if not p.error and not p.deferred)
             if force:
-                self.unload()  # the ledger owns teardown of process-global registries
+                self.unload(_retired_observers=retired_observers)
             if env_var_enabled("HERMES_SAFE_MODE"):
                 logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
                 self._discovered = True
@@ -466,9 +468,12 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             except BaseException as exc:
                 logger.exception("Plugin discovery snapshot failed; notifying listeners before re-raising")
                 snapshot_error = exc
+            from hermes_cli.plugins_activation import activation_summaries
+            summaries = ([s for s in activation_summaries(self) if s["key"] not in loaded_before]
+                         if self._plugin_loaded_listeners else [])
         # Outside the lock: a listener (the gateway's re-wire) may read the registry from another thread.
         try:
-            self._notify_plugin_loaded(loaded_before)
+            self._notify_plugin_loaded(summaries)
         finally:
             if snapshot_error is not None:
                 raise snapshot_error

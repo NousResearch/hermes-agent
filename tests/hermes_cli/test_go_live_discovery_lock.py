@@ -114,6 +114,6 @@ def test_snapshot_failure_still_notifies_outside_lock(monkeypatch):
         manager.discover_and_load(snapshot=snapshot)
     assert caught.value is error
     assert manager._discovered
-    assert notified == [frozenset()]
+    assert notified == [[]]
     manager.discover_and_load()
-    assert notified == [frozenset()]
+    assert notified == [[]]

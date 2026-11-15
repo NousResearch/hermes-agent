@@ -1197,3 +1197,8 @@ slashCmd.subscription.openBrowserFailedManage: "Webbläsaren kunde inte öppnas 
 slashCmd.subscription.openBrowserFailedPortal: "Webbläsaren kunde inte öppnas — besök {0} för att slutföra."
 slashCmd.subscription.openingManage: "Öppnar abonnemangssidan i webbläsaren — slutför där och kör sedan /subscription igen."
 slashCmd.subscription.openingPortal: "Öppnar portalen i webbläsaren — slutför där och kör sedan /subscription igen."
+
+slashCmd.topup.validate.invalid: "Ange ett dollarbelopp, till exempel 100 (högst två decimaler)."
+slashCmd.topup.validate.maximum: "Högsta belopp är ${0}."
+slashCmd.topup.validate.minimum: "Lägsta belopp är ${0}."
+slashCmd.topup.validate.notPositive: "Beloppet måste vara större än 0 $."

@@ -168,6 +168,7 @@ def test_url_transport_is_never_cloned(probe):
 
 
 def test_idle_clones_past_the_cap_are_reaped_and_reconnect(probe, monkeypatch):
+    from tests.waiting import wait_until
     from tools import mcp_tool_project_scope as scope
     monkeypatch.setattr(scope, "_MAX_SCOPED_TRANSPORTS_PER_SERVER", 1)
     _call(cwd=probe.c)
@@ -177,7 +178,10 @@ def test_idle_clones_past_the_cap_are_reaped_and_reconnect(probe, monkeypatch):
 
     assert list(_clones()) == [probe.d], "idle project children survived past the cap"
     assert not [k for k in scope._scoped_connect_locks if k[1] == probe.c]
-    assert old._task.done() and old.session is None
+    # The victim's shutdown is fire-and-forget on the MCP loop (review finding 6): it is no
+    # longer complete when the evicting call returns — only scheduled.
+    wait_until(lambda: old.session is None, timeout=15,
+               what="the evicted clone's scheduled shutdown to finish")
     assert _call(cwd=probe.c)[0] == probe.c, "an evicted project did not reconnect"
 
 
@@ -605,6 +609,45 @@ def test_a_failed_clone_connect_arms_a_retry_cooldown(root, probe, monkeypatch):
     finally:
         import os as _os
         _clear_project_ledgers(((name, _os.path.realpath(probe.a)),))
+
+
+def test_eviction_never_shuts_a_victim_down_on_the_callers_thread(root, probe, monkeypatch):
+    """A call that tips a server over the clone cap evicts the LRU victim. The eviction must not
+    run the victim's shutdown on the CALLER's thread: the first call from a 9th project would
+    block up to 15s on another project's teardown, and an interrupt landing before the shutdown
+    starts would leave the victim popped with its child alive (review finding 6). The shutdown is
+    scheduled fire-and-forget on the MCP loop instead."""
+    from tests.waiting import wait_until
+    from tools import mcp_tool_project_scope as scope
+
+    monkeypatch.setattr(scope, "_MAX_SCOPED_TRANSPORTS_PER_SERVER", 1)
+    _call(cwd=probe.a)
+    old = _clones()[probe.a]
+    shutdown_go = threading.Event()
+    real_run_on_loop = scope._loop._run_on_mcp_loop
+
+    def _gated_run_on_loop(fn, *args, **kwargs):
+        if getattr(fn, "__name__", "") != "shutdown":  # clone connects run for real
+            return real_run_on_loop(fn, *args, **kwargs)
+        return shutdown_go.wait(timeout=30)  # the victim's shutdown never starts while gated
+
+    monkeypatch.setattr(scope._loop, "_run_on_mcp_loop", _gated_run_on_loop)
+    result: dict = {}
+
+    def _evicting_call():
+        result["b"] = _call(cwd=probe.b)
+
+    worker = threading.Thread(target=_evicting_call)
+    worker.start()
+    try:
+        wait_until(lambda: result.get("b") is not None, timeout=5,
+                   what="the evicting call to return without waiting on the victim's shutdown")
+        assert list(_clones()) == [probe.b], "the eviction did not drop the victim from the ledger"
+        wait_until(lambda: old.session is None, timeout=15,
+                   what="the scheduled fire-and-forget shutdown to tear the victim down")
+    finally:
+        shutdown_go.set()  # release a base-tree worker parked inside the victim's shutdown
+        worker.join(timeout=30)
 
 
 def _reap_bare_keyed_clones() -> None:

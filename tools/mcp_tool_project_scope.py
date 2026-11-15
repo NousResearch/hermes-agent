@@ -124,6 +124,20 @@ def _release_connect_lock(clone_key: tuple[Any, str], *, keep: bool) -> None:
         _scoped_connect_locks.pop(clone_key, None)
 
 
+def _hand_clone_pids_to_reaper(clone: Any) -> None:
+    """Hand a dead transport's stdio child PIDs to the orphan reaper because its shutdown will
+    never run (a failed or unschedulable close)."""
+    pids = set(getattr(clone, "_stdio_child_pids", ()) or ())
+    if not pids:
+        return
+    try:
+        clone._release_spawned_children(pids)
+    # health: allow BLE001 -- best-effort ledger handover; the final sweep still owns these PIDs
+    except Exception:
+        logger.warning("MCP server '%s': could not hand a discarded transport's PIDs to the reaper",
+                       clone.name, exc_info=True)
+
+
 def _discard_orphan_clone(orphan: Any, server_name: str, cwd: str) -> None:
     """Shut down a clone that lost its baseline mid-connect off the registry lock, like every
     other shutdown. When the shutdown cannot run (the prune's drain stopped the MCP loop), hand
@@ -136,15 +150,7 @@ def _discard_orphan_clone(orphan: Any, server_name: str, cwd: str) -> None:
     except Exception:
         logger.warning("MCP server '%s': discarding an orphaned project transport for %s failed",
                        server_name, cwd, exc_info=True)
-    pids = set(getattr(orphan, "_stdio_child_pids", ()) or ())
-    if not pids:
-        return
-    try:
-        orphan._release_spawned_children(pids)
-    # health: allow BLE001 -- best-effort ledger handover; the final sweep still owns these PIDs
-    except Exception:
-        logger.warning("MCP server '%s': could not hand a discarded transport's PIDs to the reaper",
-                       server_name, exc_info=True)
+    _hand_clone_pids_to_reaper(orphan)
 
 
 def _server_for_call(server_name: str, key: Any, baseline: Any, *, connect: bool = True) -> Any:
@@ -276,12 +282,37 @@ def _evict_idle_overflow(key: Any, *, keep: tuple) -> None:
             victims.append(clone)
             _scoped_servers.pop(clone_key)
             _scoped_connect_locks.pop(clone_key, None)
+    from agent.async_utils import safe_schedule_threadsafe
     for clone in victims:  # never await under _core._lock: shutdown closes the anyio transport
-        try:
-            _loop._run_on_mcp_loop(clone.shutdown, timeout=15)
-        # health: allow BLE001 -- one failed close must not stop the others; the orphan reaper still owns its PIDs
-        except Exception:
-            logger.warning("MCP server '%s': idle project transport shutdown failed", clone.name, exc_info=True)
+        # Fire-and-forget ON THE MCP LOOP, never the caller's thread: the first call from a 9th
+        # project must not block 15s on another project's teardown, and an interrupt landing
+        # before the shutdown starts would leave the victim popped with its child alive
+        # (#151827 port, review finding 6). Scheduled unwrapped, like shutdown_mcp_servers
+        # schedules baseline shutdowns: nothing in MCPServerRun.shutdown reads the caller's
+        # home-override or dashboard-OAuth context.
+        with _core._lock:
+            loop = _core._mcp_loop
+        future = safe_schedule_threadsafe(clone.shutdown(), loop, logger=logger,
+                                          log_message=f"MCP server '{clone.name}': failed to schedule the evicted transport's shutdown")
+        if future is None:
+            _hand_clone_pids_to_reaper(clone)  # nothing will ever run this shutdown
+            continue
+
+        def _reap_if_failed(fut, _clone=clone):
+            try:
+                exc = fut.exception()
+            except asyncio.CancelledError:  # the shutdown will not run; the reaper owns the child
+                logger.warning("MCP server '%s': the evicted transport's shutdown was cancelled",
+                               _clone.name)
+                _hand_clone_pids_to_reaper(_clone)
+                return
+            if exc is not None:
+                # health: allow BLE001 -- one failed close must not stop the others
+                logger.warning("MCP server '%s': idle project transport shutdown failed",
+                               _clone.name, exc_info=exc)
+                _hand_clone_pids_to_reaper(_clone)
+
+        future.add_done_callback(_reap_if_failed)
 
 
 def pop_clones(keys: Optional[set]) -> list:

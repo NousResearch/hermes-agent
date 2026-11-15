@@ -232,6 +232,7 @@ import {
 } from './desktop-profile'
 import { registryPrimaryBootRoute, resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import { type DesktopSharedMetrics, registerDesktopSharedMetrics } from './desktop-shared-metrics'
+import { type DesktopSshBudgets, readDesktopSshBudgets } from './desktop-ssh-budgets'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -578,16 +579,10 @@ import { removeStaleSingletonLock } from './singleton-lock'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
 import { resolveSourcePython } from './source-python'
 import { registerSpellcheckDictionaryIpc } from './spellcheck-dictionary-ipc'
-import { resolveSshBinary } from './ssh-binary'
+import { resolveSshBinary, windowsSshEnv } from './ssh-binary'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
-import {
-  createSshProbeConnection,
-  pickLocalPort,
-  redactSecrets,
-  resolveSshBudgetMs,
-  SshConnection
-} from './ssh-connection'
+import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { managedSshConfig, resolveSharedSshProfileBackend, sharedSshProfiles } from './ssh-shared-profile-backend'
 import { createSshTeardownTracker } from './ssh-teardown'
@@ -1276,10 +1271,7 @@ const HERMES_HOME: string = resolveMainHermesHome(app.getPath('home'))
 // `desktop.ssh_path` (#103288) rides the same pre-window read: an explicit
 // Windows ssh client for when the in-box OpenSSH is missing or broken.
 let desktopSshPathOverride = ''
-// `desktop.ssh_connect_timeout` / `desktop.ssh_forward_timeout` (#132508):
-// whole seconds, read once here like ssh_path. Undefined keeps the 15s default.
-let desktopSshConnectTimeoutMs: number | undefined
-let desktopSshForwardTimeoutMs: number | undefined
+let desktopSshBudgets: DesktopSshBudgets = {} // desktop.ssh_*_timeout (#132508)
 
 {
   let desktopLaunchYaml: string = ''
@@ -1292,21 +1284,7 @@ let desktopSshForwardTimeoutMs: number | undefined
 
   const desktopLaunchConfig = readDesktopLaunchConfig(desktopLaunchYaml)
   desktopSshPathOverride = desktopLaunchConfig.sshPath || ''
-  desktopSshConnectTimeoutMs = resolveSshBudgetMs(desktopLaunchConfig.sshConnectTimeout)
-  desktopSshForwardTimeoutMs = resolveSshBudgetMs(desktopLaunchConfig.sshForwardTimeout)
-
-  for (const [key, raw, resolved] of [
-    ['ssh_connect_timeout', desktopLaunchConfig.sshConnectTimeout, desktopSshConnectTimeoutMs],
-    ['ssh_forward_timeout', desktopLaunchConfig.sshForwardTimeout, desktopSshForwardTimeoutMs]
-  ] as const) {
-    if (raw !== undefined && resolved === undefined) {
-      console.warn(
-        `[hermes] config.yaml: desktop.${key} was ignored. It takes a whole number of seconds (up to 120); keeping 15.`
-      )
-    } else if (resolved !== undefined) {
-      console.log(`[hermes] desktop.${key} from config.yaml: ${resolved / 1000}s`)
-    }
-  }
+  desktopSshBudgets = readDesktopSshBudgets(desktopLaunchYaml)
 
   // `desktop.renderer_accessibility: false` must reach packaged launches too,
   // not only the `hermes desktop` launcher's env bridge (#118271).
@@ -9389,27 +9367,11 @@ async function reachablePreviewUrl(webContentsId: number, rawUrl: string): Promi
 // The ssh client every desktop spawn uses (#103288): `desktop.ssh_path`, then
 // the in-box System32 OpenSSH, then Git for Windows' ssh.exe, then PATH.
 // Bare `ssh` on every other platform.
-// Options every desktop SshConnection shares: the log sink, the ssh client and
-// the configured connect/forward budgets (#132508).
-function desktopSshOptions() {
-  return {
-    rememberLog: sshRememberLog,
-    sshBinary: desktopSshBinary(),
-    connectTimeoutMs: desktopSshConnectTimeoutMs,
-    forwardTimeoutMs: desktopSshForwardTimeoutMs
-  }
-}
-
 function desktopSshBinary(): string {
   return resolveSshBinary({
     platform: process.platform,
     override: desktopSshPathOverride,
-    env: {
-      systemRoot: process.env.SystemRoot || process.env.windir || 'C:\\Windows',
-      localAppData: process.env.LOCALAPPDATA || '',
-      programFiles: process.env['ProgramFiles'] || 'C:\\Program Files',
-      programFilesX86: process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
-    },
+    env: windowsSshEnv(process.env),
     fs: { existsSync: fileExists, readdirSync: dir => fs.readdirSync(dir) }
   })
 }
@@ -9560,7 +9522,9 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     ssh = new SshConnection(
       { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
       {
-        ...desktopSshOptions(),
+        rememberLog: sshRememberLog,
+        sshBinary: desktopSshBinary(),
+        ...desktopSshBudgets,
         ownershipId: sshOwnershipKey(profile),
         scope,
         effectiveConfigFingerprint: sshConfig.effectiveConfigFingerprint
@@ -9967,7 +9931,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
 
     const ssh = createSshProbeConnection(
       { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
-      desktopSshOptions()
+      { rememberLog: sshRememberLog, sshBinary: desktopSshBinary(), ...desktopSshBudgets }
     )
 
     try {
@@ -10858,7 +10822,7 @@ async function openManagedSshUpdateTransport(
 
   const ssh = createSshProbeConnection(
     { host: config.host, user: config.user, port: config.port, keyPath: config.keyPath },
-    desktopSshOptions()
+    { rememberLog: sshRememberLog, sshBinary: desktopSshBinary(), ...desktopSshBudgets }
   )
 
   await ssh.open()
@@ -14569,7 +14533,7 @@ async function probeSshProfileInventory(connection) {
 
   const ssh = createSshProbeConnection(
     { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
-    desktopSshOptions()
+    { rememberLog: sshRememberLog, sshBinary: desktopSshBinary(), ...desktopSshBudgets }
   )
 
   try {

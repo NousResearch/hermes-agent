@@ -517,11 +517,7 @@ function normalizeSshConfig(entry) {
   // name used by the remote Hermes installation. Preserve an explicit mapping
   // when it is a valid Hermes profile identifier; otherwise fall back to the
   // historical same-name behavior in the caller.
-  const remoteProfile = String(entry.remoteProfile || '').trim()
-
-  if (PROFILE_ID_ARG_RE.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
-    out.remoteProfile = remoteProfile
-  }
+  Object.assign(out, normalizeRemoteProfileName(entry.remoteProfile))
 
   return out
 }

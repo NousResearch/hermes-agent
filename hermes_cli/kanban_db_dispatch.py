@@ -1556,6 +1556,7 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
+    board: Optional[str] = None,
 ) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -1620,6 +1621,21 @@ def check_respawn_guard(
     # benign commands such as ``claude auth status`` (#117097).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
+    if err and latest_outcome == "spawn_failed" and err.startswith("workspace:"):
+        # Stamped by _dispatch_one's workspace-resolution failure — a config
+        # fault the operator can fix out-of-band (move the dir, fix ownership
+        # or permissions). Its "Permission denied" text is in the auth family,
+        # which would park the card forever with no way to observe the fix.
+        # Re-probe resolution: if it now succeeds the stale diagnosis is
+        # obsolete and the task dispatches; the next run's outcome supersedes
+        # the stamp. If the probe still fails, keep deferring.
+        probe = _kb.get_task(conn, task_id)
+        if probe is not None:
+            try:
+                _kbw.resolve_workspace(probe, board=board)
+                return None
+            except Exception:
+                return "workspace_unresolvable"
     if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
@@ -2097,7 +2113,7 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
-    guard_reason = check_respawn_guard(conn, task_id, lane=lane)
+    guard_reason = check_respawn_guard(conn, task_id, lane=lane, board=board)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
         # Event so ``hermes kanban tail`` shows why the task looks stuck.
@@ -2277,6 +2293,7 @@ def _any_spawnable_review(
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    board: Optional[str] = None,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
@@ -2298,7 +2315,7 @@ def _any_spawnable_review(
             continue
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
             continue
-        if check_respawn_guard(conn, row["id"], lane="review") is None:
+        if check_respawn_guard(conn, row["id"], lane="review", board=board) is None:
             return True
     return False
 
@@ -2384,6 +2401,7 @@ def _dispatch_once_locked(
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        board=board,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(

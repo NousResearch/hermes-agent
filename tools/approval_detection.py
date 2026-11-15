@@ -537,7 +537,7 @@ _PS_EXE_AT_COMMAND_POSITION = (
 _GIT_PUSH_ARG_START = r'''\s["']?'''
 _DEV_TCP_REDIRECT_DESCRIPTION = "reverse shell via /dev/tcp or /dev/udp redirect"
 # PowerShell verbs/aliases that write a registry key when given a provider path.
-_REG_WRITE_VERB = r'(?:sp|si|ni|set-item|new-item)'
+_REG_WRITE_VERB = r'(?:sp|si|ni|set-item|new-item|md|mkdir)'
 
 DANGEROUS_PATTERNS = [
     # A drive letter is a root too (`rm X:/f`; `X:\f` arrives as `X:/f` via the Windows-path variant).

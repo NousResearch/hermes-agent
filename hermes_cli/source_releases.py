@@ -22,21 +22,27 @@ _GITHUB_ORIGIN = re.compile(
 _SHA = re.compile(r"[0-9a-f]{40}")
 
 
-def source_repository(git_cmd=None, cwd=None) -> str:
-    """GitHub forks own their releases; other origins must mirror official tags."""
-    if git_cmd is not None:
-        from hermes_cli.source_check import source_git_env
+def _origin_repository(git_cmd=None, cwd=None) -> str | None:
+    """Return a parseable GitHub origin, or None for mirrors and unknown remotes."""
+    if git_cmd is None:
+        return None
+    from hermes_cli.source_check import source_git_env
 
+    try:
         result = subprocess.run(
             [*git_cmd, "config", "--get", "remote.origin.url"], cwd=cwd,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            stdin=subprocess.DEVNULL, env=source_git_env(),
-            check=False,
+            stdin=subprocess.DEVNULL, env=source_git_env(), check=False,
         )
-        match = _GITHUB_ORIGIN.fullmatch(result.stdout.strip())
-        if result.returncode == 0 and match:
-            return match[1]
-    return OFFICIAL_REPOSITORY
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = _GITHUB_ORIGIN.fullmatch(result.stdout.strip())
+    return match[1] if result.returncode == 0 and match else None
+
+
+def source_repository(git_cmd=None, cwd=None) -> str:
+    """GitHub forks own their releases; other origins must mirror official tags."""
+    return _origin_repository(git_cmd, cwd) or OFFICIAL_REPOSITORY
 
 
 @dataclass(frozen=True)
@@ -189,9 +195,11 @@ def _describe_release_failure(failure: BaseException) -> str:
 
 
 def _resolve_stable(repository: str, git_cmd=None, cwd=None) -> SourceTarget:
-    """Stable IS the repository's latest published GitHub release: the tag a release
-    publishes (non-draft, non-prerelease, strict vX.Y.Z), verified against origin.
-    No R2 record or pointer is consulted; publishing the release is the only promotion.
+    """Stable is the latest published GitHub release, verified by its release and commit APIs.
+
+    When Git transport is reachable its tag advertisement is cross-checked too; a transport
+    failure on a recognized GitHub origin falls back to the already-verified API commit.
+    Non-GitHub mirrors remain fail-closed when their tag cannot be checked.
     """
     try:
         tag, commit = _resolve_release("stable", git_cmd, cwd, repository=repository, pointer=False)
@@ -343,6 +351,9 @@ def _resolve_release(channel: str, git_cmd=None, cwd=None, *, repository=None,
     if channel not in ("stable", "canary"):
         raise ValueError(f"Not a release channel: {channel}")
     repository = repository or source_repository(git_cmd, cwd)
+    origin_repository = _origin_repository(git_cmd, cwd)
+    if origin_repository is not None and origin_repository.lower() != repository.lower():
+        raise ValueError("Release repository does not match this GitHub origin")
     base = f"https://api.github.com/repos/{repository}"
     tag, pinned_sha = (_release_pointer(channel)
                        if pointer and repository.lower() == OFFICIAL_REPOSITORY.lower() else (None, None))
@@ -358,19 +369,31 @@ def _resolve_release(channel: str, git_cmd=None, cwd=None, *, repository=None,
     if not isinstance(sha, str) or not _SHA.fullmatch(sha):
         raise ValueError(f"No published commit for release {tag}")
     if git_cmd is not None:
+        # GitHub's release and commits APIs already identify the published source SHA.
+        # Confirm it over Git transport when reachable, but don't strand an update on
+        # a redundant ls-remote timeout when the same GitHub API lookup just succeeded.
         from hermes_cli.source_check import source_git_env
 
         ref = f"refs/tags/{tag}"
-        result = subprocess.run(
-            [*git_cmd, "ls-remote", "--tags", "origin", ref, ref + "^{}"],
-            cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            check=True, timeout=60, stdin=subprocess.DEVNULL,
-            env=source_git_env(),
-        )
-        refs = dict((parts[1], parts[0]) for line in result.stdout.splitlines()
-                    if len(parts := line.split()) == 2)
-        if refs.get(ref + "^{}", refs.get(ref)) != sha:
-            raise ValueError(f"Origin tag {tag} does not match the published release commit")
+        try:
+            result = subprocess.run(
+                [*git_cmd, "ls-remote", "--tags", "origin", ref, ref + "^{}"],
+                cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                check=True, timeout=15 if origin_repository is not None else 60,
+                stdin=subprocess.DEVNULL, env=source_git_env(),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            if origin_repository is None:
+                raise
+            logger.warning(
+                "Git transport could not confirm published tag %s; using the verified GitHub API commit (%s)",
+                tag, type(exc).__name__,
+            )
+        else:
+            refs = dict((parts[1], parts[0]) for line in result.stdout.splitlines()
+                        if len(parts := line.split()) == 2)
+            if refs.get(ref + "^{}", refs.get(ref)) != sha:
+                raise ValueError(f"Origin tag {tag} does not match the published release commit")
     if pinned_sha is not None and sha != pinned_sha:
         raise ValueError(f"Release {tag} no longer matches its published commit")
     return tag, sha
@@ -380,12 +403,13 @@ def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=N
                            pointer: bool = True) -> tuple[str | None, str | None]:
     """Read published stable/canary release metadata (not channel discovery).
 
-    The source updater's ``stable`` reads it with ``pointer=False``: GitHub's latest
-    published release only. With ``pointer`` the R2 channel pointers outrank GitHub's
-    release listing. A malformed pointer,
-    draft, or tag/commit mismatch is not permission to select a different build.
-    ``git_cmd`` resolves the selected tag on origin; ZIP callers omit it and
-    resolve the same tag through GitHub's commit endpoint.
+    The source updater's ``stable`` reads it with ``pointer=False``: GitHub's latest published
+    release only. With ``pointer``, the R2 channel pointers outrank GitHub's release listing.
+    A malformed pointer, draft, or tag/commit mismatch is not permission to select a different
+    build. GitHub origin tags are checked against the API commit when the Git transport answers;
+    a transport failure may use the same-repository API result. A non-GitHub mirror must answer
+    its tag check. ZIP callers omit ``git_cmd`` and resolve the selected tag through GitHub's
+    commit endpoint.
     """
     try:
         return _resolve_release(channel, git_cmd, cwd, repository=repository, pointer=pointer)

@@ -684,8 +684,7 @@ DEFAULT_CONFIG = {
     },
     # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "auto" (default) | "5m" | "1h"
     # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,
-    # oneshot, webhook, kanban, api_server, tool, batch, curator); other non-falsy values are ignored; falsy (false,
-    # null, "off", "disabled", "no", "none") disables caching. v54 drops the old seeded "5m" so it follows auto.
+    # oneshot, webhook, kanban, api_server, tool, batch, curator); falsy ("off", null, ...) disables caching.
     # route_ttl_ceilings {<provider>: "5m"|"1h"} overrides a profile's prompt_cache_max_ttl (Nous ships "5m").
     "prompt_caching": {"cache_ttl": "auto", "route_ttl_ceilings": {}},
     # OpenRouter settings. response_cache: X-OpenRouter-Cache header — identical requests return

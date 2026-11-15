@@ -268,7 +268,7 @@ def _manual_compress_turn(sid: str, session: dict):
 
 def _compress_session_history(
     session: dict, focus_topic: str | None = None, approx_tokens: int | None = None,
-    before_messages: list | None = None, history_version: int | None = None,
+    before_messages: list | None = None, history_version: int | None = None, trigger: str | None = None,
 ) -> tuple[int, dict]:
     """Single choke point for all manual-compress routes. ``focus_topic`` is the RAW argument string after
     ``/compress``; the shared core (``agent.conversation_compression_manual``) parses boundary forms
@@ -297,7 +297,7 @@ def _compress_session_history(
 
     try:
         result = compress_now(agent, before_messages, request, task_id=session.get("session_key") or "default",
-                              snapshot_is_current=snapshot_is_current)
+                              snapshot_is_current=snapshot_is_current, trigger=trigger)
     finally:
         _clear_session_context(tokens)
     if result.status == "preview":

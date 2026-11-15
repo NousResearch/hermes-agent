@@ -846,7 +846,8 @@ class GatewaySessionCommandsMixin:
             logger.warning("Manual compress failed: %s", e)
             return t("gateway.compress.failed", error=e)
 
-    async def _run_manual_compression(self, source, session_entry, history: list, request) -> str:
+    async def _run_manual_compression(self, source, session_entry, history: list, request, *,
+                                      trigger: Optional[str] = None) -> str:
         """Build a temporary agent, run the shared compress core, persist, and describe the outcome."""
         from agent.conversation_compression import finalize_context_engine_compression_notification
         from agent.conversation_compression_manual import compress_now, render_compress_result
@@ -881,7 +882,7 @@ class GatewaySessionCommandsMixin:
             # executor hop would drop, failing aux-client credential resolution closed.
             result = await self._run_in_executor_with_context(
                 lambda: compress_now(tmp_agent, msgs, request, system_message="", skip_without_window=True,
-                                     task_id=session_entry.session_id or "default"))
+                                     task_id=session_entry.session_id or "default", trigger=trigger))
             if result.status == "nothing_to_do":
                 return t("gateway.compress.nothing_to_do")
             if result.status != "compressed":

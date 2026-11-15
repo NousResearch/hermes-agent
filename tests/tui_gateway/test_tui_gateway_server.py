@@ -20133,9 +20133,6 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
         stop.wait(5)
         done.set()
 
-    def default_listen(should_stop, capture=False, on_trigger=None, **_kw):
-        return None if capture else False
-
     def default_fd_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
         return None
 
@@ -20159,7 +20156,6 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
         "tools.voice_mode",
         types.SimpleNamespace(
             stop_playback=lambda: (playback_stops.append(True) if playback_stops is not None else None),
-            listen_for_speech=listen or default_listen,
             full_duplex_listen=listen or default_fd_listen,
             is_audio_output_active=lambda: False,
             transcribe_recording=transcribe or (lambda path, model=None: {"success": True, "transcript": ""}),

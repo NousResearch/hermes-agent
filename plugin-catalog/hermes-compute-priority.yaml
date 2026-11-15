@@ -1,0 +1,31 @@
+name: hermes-compute-priority
+repo: https://github.com/atostivint/hermes-compute-priority
+sha: 2a1cc9acf552dbb7ba9cf54fb8d05b461883ca39
+version: "0.3.2"
+description: >-
+  Keeps the Hermes process that serves a connection ahead of the isolated turn workers it
+  spawns: every `tui_gateway.compute_host` worker owned by the same user is deprioritised
+  within two seconds of appearing - niceness +10 by default on Linux and macOS, the
+  BELOW_NORMAL or IDLE priority class on Windows - and nothing else is touched unless extra
+  rules are opted into. Disclosure - it reads process metadata only: /proc/<pid>/cmdline and
+  /proc/<pid>/ ownership on Linux, psutil on macOS and Windows; it only ever LOWERS the
+  priority of processes belonging to the same user, never raises one, never signals, stops or
+  kills anything, opens no socket, writes no file, reads no credential and uses no privilege,
+  and it is a no-op where turn isolation is off or where psutil is missing on macOS or Windows
+  (a read-only /status route says why). Backend only: no tool, no hook, no middleware, no
+  dashboard tab.
+maintainer: atostivint
+tier: community
+category: tools
+requires_hermes: ">=0.22"
+image: https://raw.githubusercontent.com/atostivint/hermes-compute-priority/2a1cc9acf552dbb7ba9cf54fb8d05b461883ca39/docs/images/banner.png
+readme: true
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1495,10 +1495,9 @@ def _refuse_missing_local_workdir(workdir: str, env: Any) -> None:
     ``rm -f ./*`` one level up. Only a cwd the session inherited falls back (``_usable_cwd``),
     and only ``LocalEnvironment`` falls back at all."""
     from tools.environments.local import LocalEnvironment
-    requested = os.path.expanduser(workdir)
-    if not isinstance(env, LocalEnvironment) or not os.path.isabs(requested):
+    if not isinstance(env, LocalEnvironment):
         return
-    _, fallback = env._usable_cwd(requested)
+    _, fallback = env._usable_cwd(workdir)
     if fallback:
         raise _Rejected(_error_json(
             f"workdir {workdir} does not exist or is not accessible; the command did not run. "

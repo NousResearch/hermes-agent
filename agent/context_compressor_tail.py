@@ -52,9 +52,14 @@ def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> st
     )
 
 
+def _tc_get(obj: Any, key: str, default: Any = "") -> Any:
+    """Field of a dict- or object-shaped tool call (or its ``function`` sub-object)."""
+    return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+
+
 def skill_view_names_by_call_id(messages: list[dict[str, Any]]) -> dict[str, str]:
     """Map each ``skill_view`` tool-call id to the skill name it loaded."""
-    from agent.context_compressor import _json_dict, _tc_get
+    from agent.context_compressor import _json_dict
 
     names: dict[str, str] = {}
     for msg in messages:

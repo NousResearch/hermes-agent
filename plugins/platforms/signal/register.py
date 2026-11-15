@@ -1,6 +1,7 @@
 """Signal plugin registration: configured/validate checks and ``register``."""
 
 import logging
+import re
 
 from gateway.config import PlatformConfig
 from gateway.platforms._shared import env_is_connected
@@ -41,12 +42,14 @@ _PLATFORM_HINT = (
     "Images (.png, .jpg, .webp) send as photos, other files as documents; ![alt](url) sends as photos."
 )
 def _parse_send_target(ref):
-    # "group:<id>" is a native group target; an empty id is not explicit.
+    # Explicit group: accepts future formats; bare GV2 IDs have a fixed base64 shape.
     stripped = ref.strip()
-    if not stripped.startswith("group:"):
-        return None
-    group_id = stripped[len("group:"):].strip()
-    return (f"group:{group_id}", None) if group_id else NOT_EXPLICIT
+    if stripped.startswith("group:"):
+        group_id = stripped[len("group:"):].strip()
+        return (f"group:{group_id}", None) if group_id else NOT_EXPLICIT
+    if re.fullmatch(r"[A-Za-z0-9+/]{43}=", stripped):
+        return f"group:{stripped}", None
+    return None
 
 
 def register(ctx) -> None:

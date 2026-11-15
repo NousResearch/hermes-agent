@@ -14,6 +14,8 @@ import json
 import time
 from dataclasses import replace
 
+import pytest
+
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
@@ -113,3 +115,47 @@ def test_retired_key_map_stores_digests_only(tmp_path, monkeypatch):
     stored = json.dumps(pool._retired_runtime_keys)
     assert "sk-ant-oat01-a-gen1" not in stored
     assert list(pool._retired_runtime_keys.values()) == ["cred-a"]
+
+
+
+@pytest.mark.parametrize(
+    "auth_type, key_prefix, expect_benched",
+    [
+        pytest.param("oauth", "sk-ant-oat01", True, id="oauth-refresh"),
+        pytest.param("api_key", "sk-ant-api", False, id="manual-api-key-replacement"),
+    ],
+)
+def test_retired_hint_attribution_requires_oauth(
+    tmp_path, monkeypatch, auth_type, key_prefix, expect_benched,
+):
+    """Retired OAuth tokens share a login; a replaced manual API key may not."""
+    from agent.credential_pool import STATUS_EXHAUSTED, load_pool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+    rows = [
+        {
+            "id": f"cred-{ident}",
+            "label": f"{ident}@example.com",
+            "auth_type": auth_type,
+            "priority": priority,
+            "source": "manual:hermes_pkce" if auth_type == "oauth" else "manual",
+            "access_token": f"{key_prefix}-{ident}-gen1",
+            **({"refresh_token": f"refresh-{ident}",
+                "expires_at_ms": int((time.time() + 6 * 3600) * 1000)}
+               if auth_type == "oauth" else {}),
+        }
+        for priority, ident in enumerate(("a", "b"))
+    ]
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {"anthropic": rows}})
+    pool = load_pool("anthropic")
+
+    old_a = next(e for e in pool.entries() if e.id == "cred-a")
+    pool._replace_entry(old_a, replace(old_a, access_token=f"{key_prefix}-a-gen2"))
+    pool.mark_exhausted_and_rotate(
+        status_code=429, credential_id="cred-a", api_key_hint=f"{key_prefix}-a-gen1",
+    )
+
+    statuses = _statuses(pool)
+    assert (statuses["cred-a"] == STATUS_EXHAUSTED) is expect_benched
+    assert statuses["cred-b"] != STATUS_EXHAUSTED

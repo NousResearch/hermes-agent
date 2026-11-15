@@ -1095,7 +1095,11 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                     return
 
     def _remember_retired_key(self, old: PooledCredential, new: PooledCredential) -> None:
-        """Map the digest of a superseded runtime key to its entry (bounded, digest-only)."""
+        """Map the digest of a superseded OAuth token to its entry (bounded, digest-only)."""
+        # An API-key edit can switch accounts under the same entry id. A late 429
+        # from the old account must not exhaust its newly configured replacement.
+        if old.auth_type != AUTH_TYPE_OAUTH or new.auth_type != AUTH_TYPE_OAUTH:
+            return
         try:
             old_key, new_key = old.runtime_api_key, new.runtime_api_key
         except Exception:

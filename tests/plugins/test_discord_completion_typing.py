@@ -2,7 +2,7 @@
 
 import asyncio
 import threading
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -53,6 +53,36 @@ async def _completion_owner(tmp_path, monkeypatch):
         await adapter.cancel_background_tasks()
         await server.cleanup()
         authority.db.close()
+
+
+@asynccontextmanager
+async def _recovered_owner(adapter, authority, ref):
+    """Reopen the committed database with a fresh runner, adapter, authority and runtime epoch."""
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import initialize_session_authority
+    from hermes_state import SessionDB
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    await adapter.cancel_background_tasks()
+    runner = GatewayRunner(GatewayConfig())
+    recovered_adapter = DiscordAdapter(adapter.config)
+    recovered_adapter._client = adapter._client
+    runner.adapters = {Platform.DISCORD: recovered_adapter}
+    db = SessionDB(authority.db.db_path)
+    recovered = await initialize_session_authority(
+        runner, profile_id=authority.profile_id, instance_id="recovered-owner", db=db)
+    runner._wire_adapter_handlers(recovered_adapter)
+    source = recovered_adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
+    try:
+        assert recovered.epoch != authority.epoch and recovered.db is not authority.db
+        assert await recovered.recover_native_sessions([(ref.session_id, source, recovered_adapter)]) == {
+            ref.session_id: "ready"}
+        yield runner, recovered_adapter, recovered, source
+    finally:
+        await recovered_adapter.cancel_background_tasks()
+        db.close()
+        await runner._session_db.close()
 
 
 @asynccontextmanager
@@ -114,21 +144,29 @@ async def _workers(monkeypatch, ref, key):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["spawn", "continue"])
-async def test_completion_keeps_native_typing_until_worker_finishes(tmp_path, monkeypatch, action):
+@pytest.mark.parametrize("restart", [False, True], ids=["live", "recovered"])
+async def test_completion_keeps_native_typing_until_worker_finishes(tmp_path, monkeypatch, action, restart):
     from unittest.mock import AsyncMock
     from gateway.platforms.base import SendResult
     from gateway.session_ingress import deliver_settled, execute_admission
     from hermes_state_runtime import claim_session_input, list_session_admissions, settle_session_input
     from tests.gateway.test_completion_admission import pending
 
-    async with _completion_owner(tmp_path, monkeypatch) as (runner, adapter, authority, source, ref, posts):
+    async with (_completion_owner(tmp_path, monkeypatch) as (runner, adapter, authority, source, ref, posts),
+                AsyncExitStack() as recovery):
         key = adapter._source_session_key(source)
         async with _workers(monkeypatch, ref, key) as (completion, start, release):
             group = [completion]
             if action == "spawn":
                 group.append(dict(pending(key, "batch-sibling"), parent_session_id=ref.session_id))
             assert await runner._deliver_async_delegation_group(group) is True
+            committed = list_session_admissions(authority.db, session_id=ref.session_id)[-1]
+            assert committed["status"] == "queued" and "automation" in committed["payload"]["native_text_v1"]
+            if restart:
+                runner, adapter, authority, source = await recovery.enter_async_context(
+                    _recovered_owner(adapter, authority, ref))
             row = claim_session_input(authority.db, epoch=authority.epoch, session_id=ref.session_id)
+            assert row["admission_id"] == committed["admission_id"] and row["payload"] == committed["payload"]
             adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="reply"))
 
             async def handler(event):

@@ -85,11 +85,16 @@ async def _open(authority, row, event):
     """The bracket of a producer-admitted row starting to execute, else None: an adapter that
     renders neither typing nor the processing hooks (a webhook) is left alone."""
     turns = _turns(authority)
-    if row['admission_id'] not in turns:
+    recovering = row['admission_id'] not in turns
+    # Recovery validates the persisted route, but cannot retain admission-time markers.
+    if recovering and 'automation' not in row['payload'].get('native_text_v1', {}):
         return None
+    from gateway.config import Platform
     from gateway.platforms.base import BasePlatformAdapter
     from gateway.run_turn_followup_ack import _followup_processing_hooks_apply
     adapter = authority.runner._adapter_for_source(event.source)
+    if recovering and (adapter is None or adapter.platform != Platform.DISCORD):
+        return None
     typing = adapter is not None and type(adapter).send_typing is not BasePlatformAdapter.send_typing
     hooks = _followup_processing_hooks_apply(adapter, event)
     if not (typing or hooks):

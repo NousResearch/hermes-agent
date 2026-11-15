@@ -217,3 +217,18 @@ async def test_collection_is_profile_local_and_read_only(profiles, monkeypatch):
         assert [v["voice_id"] for v in result["voices"]] == [expected]
     assert len(calls) == 5
     assert {home: (home / "config.yaml").read_bytes() for home in homes} == before
+
+
+@pytest.mark.asyncio
+async def test_unavailable_config_is_http_503_without_voice_fallback(profiles, monkeypatch):
+    from fastapi import HTTPException
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+    profiles("curated", "collection")
+    calls = install_http(monkeypatch, lambda request, count: {"voices": []})
+    def unavailable():
+        raise ConfigBackendUnavailable("test backend unavailable")
+    monkeypatch.setattr("hermes_cli.config.load_config", unavailable)
+    with pytest.raises(HTTPException) as raised:
+        await get_elevenlabs_voices("curated")
+    assert raised.value.status_code == 503
+    assert calls == []

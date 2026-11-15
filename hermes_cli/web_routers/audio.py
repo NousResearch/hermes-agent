@@ -264,10 +264,14 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     # Config-only scope (await-safe): the key lookup reads the requested
     # profile's .env, matching the profile the settings UI writes to.
     from hermes_cli.config import load_config
+    from hermes_cli.config_backend import ConfigBackendUnavailable
 
     with _config_profile_scope(profile):
         api_key = (load_env().get("ELEVENLABS_API_KEY") or "").strip()
-        config = await asyncio.to_thread(load_config)
+        try:
+            config = await asyncio.to_thread(load_config)
+        except ConfigBackendUnavailable as exc:
+            raise HTTPException(status_code=503, detail="Profile configuration is unavailable") from exc
         collection_id = str(
             config.get("tts", {}).get("elevenlabs", {}).get("collection_id") or ""
         ).strip()

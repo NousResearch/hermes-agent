@@ -6,11 +6,11 @@ process-wide ``Client.from_env()``: one client built from ``os.environ`` (the la
 sandbox was then created, billed and run on the launch profile's Modal account.
 """
 
+import asyncio
 import sys
 import threading
 import types
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from concurrent.futures import Future
 
 import pytest
 
@@ -52,19 +52,30 @@ def modal_sdk(monkeypatch):
 
 class _FromCredentials:
     """``modal.Client.from_credentials``: the sync call and its ``.aio`` form both build a client.
-    ``on_build`` lets a test hold a build open or make it fail."""
+    A token's next build waits for its ``gates`` future (held open until the test resolves it) and
+    then raises the next of its ``failures``."""
 
     def __init__(self, built: list):
         self.built = built
-        self.on_build: Callable[[str], None] = lambda _token_id: None
+        self.gates: dict[str, Future] = {}
+        self.failures: dict[str, list[Exception]] = {}
+
+    def _finish(self, token_id, token_secret):
+        if self.failures.get(token_id):
+            raise self.failures[token_id].pop(0)
+        return types.SimpleNamespace(token_id=token_id, token_secret=token_secret)
 
     def __call__(self, token_id, token_secret):
         self.built.append(token_id)
-        self.on_build(token_id)
-        return types.SimpleNamespace(token_id=token_id, token_secret=token_secret)
+        if (gate := self.gates.pop(token_id, None)) is not None:
+            gate.result(timeout=30)
+        return self._finish(token_id, token_secret)
 
     async def aio(self, token_id, token_secret):
-        return self(token_id, token_secret)
+        self.built.append(token_id)
+        if (gate := self.gates.pop(token_id, None)) is not None:
+            await asyncio.wrap_future(gate)
+        return self._finish(token_id, token_secret)
 
 
 def _fake_from_credentials() -> _FromCredentials:
@@ -122,7 +133,11 @@ def test_routed_sandboxes_run_on_their_own_profiles_account(modal_sdk, profiles)
         _sandbox(modal_env)
     assert calls["creates"][-1] == "ak-B-rotated"
     assert calls["clients"] == ["ak-B", "ak-A", "ak-B-rotated"]
-    assert len(modal_env._profile_clients) == 2
+    homes = []
+    for label in ("B", "A"):
+        with bind_profile_scope(profiles(label), hydrate_secrets=False):
+            homes.append(modal_env.hermes_home_key())
+    assert sorted(modal_env._profile_clients) == sorted(homes)  # keyed by the serving profile's home
 
 
 @pytest.mark.parametrize("dotenv", ["OTHER=1\n", "MODAL_TOKEN_ID=ak-B\n", "MODAL_TOKEN_ID=ak-B\nMODAL_TOKEN_SECRET=\n"],
@@ -188,100 +203,232 @@ def test_single_profile_host_login_still_selects_direct(tmp_path, monkeypatch):
     assert has_direct_modal_credentials() is True
 
 
-@dataclass
-class _RaceState:
-    acquirers: set[int | None] = field(default_factory=set)
-    b_building: bool = False
-    release: bool = False
+class _JoinRecorder(dict):
+    """``_client_flights`` stand-in: notes when a sandbox found a client build already in progress."""
+
+    def __init__(self):
+        super().__init__()
+        self.joined = threading.Event()
+
+    def get(self, key, default=None):
+        flight = super().get(key, default)
+        if flight is not None:
+            self.joined.set()
+        return flight
 
 
-class _RecordingLock:
-    """Stand-in for ``_profile_clients_lock`` that records which threads took it."""
+def _wait_until(predicate, timeout=10.0):
+    pause = threading.Event()
+    for _ in range(int(timeout / 0.02)):
+        if predicate():
+            return True
+        pause.wait(0.02)
+    return predicate()
 
-    def __init__(self, on_acquire):
-        self._lock, self._on_acquire = threading.Lock(), on_acquire
 
-    def __enter__(self):
-        self._lock.acquire()
-        self._on_acquire(threading.get_ident())
-        return self
+def _start(target, *args):
+    errors: list[BaseException] = []
 
-    def __exit__(self, *exc):
-        self._lock.release()
+    def run():
+        try:
+            target(*args)
+        except BaseException as exc:  # surfaced through ``errors``
+            errors.append(exc)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, errors
+
+
+def _routed_sandbox(modal_env, home):
+    from agent.runtime_scope import bind_profile_scope
+
+    with bind_profile_scope(home, hydrate_secrets=False):
+        _sandbox(modal_env)
 
 
 def test_concurrent_first_sandboxes_of_one_profile_build_one_client(modal_sdk, profiles, monkeypatch):
-    """Two first sandboxes of the same profile at once: the SDK opens a client that lives until
-    process exit, so only one may be built. Another profile is not held up meanwhile."""
-    from agent.runtime_scope import bind_profile_scope
-
+    """Two first sandboxes of the same profile at once, each on its own environment's loop: the SDK
+    keeps every opened client until process exit, so only one may be built. Another profile is not
+    held up meanwhile."""
     modal_env, calls = modal_sdk
+    flights = _JoinRecorder()
+    monkeypatch.setattr(modal_env, "_client_flights", flights)
     home_b, home_a = profiles("B"), profiles("A")
-    state = threading.Condition()
-    seen = _RaceState()
+    gate = _fake_from_credentials().gates["ak-B"] = Future()
 
-    def on_acquire(ident):
-        with state:
-            seen.acquirers.add(ident)
-            state.notify_all()
-
-    def hold_first_b_build(token_id):
-        if token_id != "ak-B":
-            return
-        with state:
-            seen.b_building = True
-            state.notify_all()
-            assert state.wait_for(lambda: seen.release, timeout=10)
-
-    monkeypatch.setattr(modal_env, "_profile_clients_lock", _RecordingLock(on_acquire))
-    monkeypatch.setattr(_fake_from_credentials(), "on_build", hold_first_b_build)
-    errors = []
-
-    def run(home):
-        try:
-            with bind_profile_scope(home, hydrate_secrets=False):
-                _sandbox(modal_env)
-        except BaseException as exc:  # surfaced through ``errors`` below
-            errors.append(exc)
-
-    first, second, other = (threading.Thread(target=run, args=(h,)) for h in (home_b, home_b, home_a))
-    first.start()
-    with state:
-        assert state.wait_for(lambda: seen.b_building, timeout=10)
-    second.start()
-    with state:
-        # The second B sandbox reached the client cache (or, without the per-home build lock,
-        # started a second build of its own).
-        assert state.wait_for(
-            lambda: second.ident in seen.acquirers or calls["clients"].count("ak-B") > 1, timeout=10)
-    other.start()
-    other.join(timeout=10)
+    first, first_errors = _start(_routed_sandbox, modal_env, home_b)
+    second, second_errors = _start(_routed_sandbox, modal_env, home_b)
+    assert flights.joined.wait(10), "the second sandbox did not join the build in progress"
+    other, other_errors = _start(_routed_sandbox, modal_env, home_a)
+    other.join(10)
     assert not other.is_alive(), "another profile's sandbox waited on B's client build"
-    with state:
-        seen.release = True
-        state.notify_all()
+    gate.set_result(None)
     for thread in (first, second):
-        thread.join(timeout=10)
+        thread.join(10)
         assert not thread.is_alive()
-    assert errors == []
+    assert first_errors == second_errors == other_errors == []
     assert sorted(calls["clients"]) == ["ak-A", "ak-B"]
     assert sorted(calls["creates"]) == ["ak-A", "ak-B", "ak-B"]
+    assert flights == {}
 
 
-def test_failed_client_build_is_not_cached(modal_sdk, profiles, monkeypatch):
+def test_failed_client_build_is_not_cached(modal_sdk, profiles):
+    modal_env, calls = modal_sdk
+    _fake_from_credentials().failures["ak-B"] = [RuntimeError("boom")]
+    home = profiles("B")
+    with pytest.raises(RuntimeError, match="boom"):
+        _routed_sandbox(modal_env, home)
+    _routed_sandbox(modal_env, home)
+    assert calls["clients"] == ["ak-B", "ak-B"]
+    assert calls["creates"] == ["ak-B"]
+
+
+def test_client_build_runs_inside_the_one_startup_window(modal_sdk, profiles, monkeypatch):
+    """The client build counts against the startup's single 300 s window (the window is shortened
+    here; nothing waits 300 s): a build that never finishes times the startup out instead of
+    hanging it, and the next sandbox builds afresh."""
+    modal_env, calls = modal_sdk
+    requested: list[int] = []
+    run_coroutine = modal_env._AsyncWorker.run_coroutine
+
+    def shortened(self, coro, timeout=600):
+        requested.append(timeout)
+        return run_coroutine(self, coro, timeout=min(timeout, 0.5))
+
+    monkeypatch.setattr(modal_env._AsyncWorker, "run_coroutine", shortened)
+    home = profiles("B")
+    gate = _fake_from_credentials().gates["ak-B"] = Future()
+    starting, errors = _start(_routed_sandbox, modal_env, home)
+    starting.join(10)
+    hung = starting.is_alive()
+    gate.set_result(None)
+    starting.join(10)
+    assert not hung, "the client build ran outside the startup deadline"
+    assert requested == [300]
+    assert len(errors) == 1 and isinstance(errors[0], TimeoutError)
+    assert modal_env._client_flights == {}
+    _routed_sandbox(modal_env, home)
+    assert calls["clients"] == ["ak-B", "ak-B"]
+    assert calls["creates"] == ["ak-B"]
+
+
+def test_timed_out_startup_releases_the_sandboxes_waiting_on_its_build(modal_sdk, profiles, monkeypatch):
+    """The startup running a build times out and stops its loop: a sandbox waiting on that build
+    fails at once instead of waiting on a stopped loop, and a later sandbox builds afresh."""
+    modal_env, calls = modal_sdk
+    flights = _JoinRecorder()
+    monkeypatch.setattr(modal_env, "_client_flights", flights)
+    run_coroutine = modal_env._AsyncWorker.run_coroutine
+    creator_waits: list[bool] = [True]
+
+    def expiring(self, coro, timeout=600):
+        if not creator_waits:
+            return run_coroutine(self, coro, timeout=min(timeout, 15))
+        creator_waits.clear()  # the first wait is the creating sandbox's startup
+        # Its own wait expires while the build is held open, as 300 s would.
+        startup = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        assert flights.joined.wait(10), "the second sandbox did not join the build in progress"
+        return startup.result(timeout=0.2)
+
+    monkeypatch.setattr(modal_env._AsyncWorker, "run_coroutine", expiring)
+    home = profiles("B")
+    gate = _fake_from_credentials().gates["ak-B"] = Future()
+    first, first_errors = _start(_routed_sandbox, modal_env, home)
+    assert _wait_until(lambda: calls["clients"] == ["ak-B"]), "the first sandbox never started its build"
+    second, second_errors = _start(_routed_sandbox, modal_env, home)
+    first.join(10)
+    second.join(10)
+    released = not second.is_alive()
+    gate.set_result(None)
+    second.join(20)
+    assert released, "a sandbox kept waiting on a build whose startup had stopped"
+    assert len(first_errors) == 1 and isinstance(first_errors[0], TimeoutError)
+    assert len(second_errors) == 1 and "abandoned" in str(second_errors[0])
+    assert flights == {}
+    _routed_sandbox(modal_env, home)
+    assert calls["clients"] == ["ak-B", "ak-B"]
+    assert calls["creates"] == ["ak-B"]
+
+
+def test_timed_out_startup_leaves_another_profiles_build_running(modal_sdk, profiles, monkeypatch):
+    """Only the builds a timed-out startup ran itself are abandoned: another profile's build in
+    progress on its own sandbox's loop still completes for that sandbox."""
+    modal_env, calls = modal_sdk
+    run_coroutine = modal_env._AsyncWorker.run_coroutine
+    expiring = threading.local()
+
+    def maybe_expiring(self, coro, timeout=600):
+        return run_coroutine(self, coro, timeout=0.2 if getattr(expiring, "on", False) else min(timeout, 15))
+
+    def expiring_sandbox(home):
+        expiring.on = True
+        _routed_sandbox(modal_env, home)
+
+    monkeypatch.setattr(modal_env._AsyncWorker, "run_coroutine", maybe_expiring)
+    gates = _fake_from_credentials().gates
+    gate_b, gate_a = gates["ak-B"], gates["ak-A"] = Future(), Future()
+    other, other_errors = _start(_routed_sandbox, modal_env, profiles("B"))
+    assert _wait_until(lambda: calls["clients"] == ["ak-B"]), "B's build never started"
+    timed_out, timed_out_errors = _start(expiring_sandbox, profiles("A"))
+    timed_out.join(10)
+    assert not timed_out.is_alive()
+    gate_b.set_result(None)
+    other.join(10)
+    gate_a.set_result(None)
+    assert not other.is_alive()
+    assert len(timed_out_errors) == 1 and isinstance(timed_out_errors[0], TimeoutError)
+    assert other_errors == []
+    assert calls["creates"] == ["ak-B"]
+
+
+def test_cancelled_waiter_leaves_the_shared_build_running(modal_sdk, profiles, monkeypatch):
+    """A waiting sandbox cancelled on its own loop: the build the others wait on keeps running."""
     from agent.runtime_scope import bind_profile_scope
 
     modal_env, calls = modal_sdk
-    failures = ["boom"]
+    flights = _JoinRecorder()
+    monkeypatch.setattr(modal_env, "_client_flights", flights)
+    home = profiles("B")
+    gate = _fake_from_credentials().gates["ak-B"] = Future()
+    creator, creator_errors = _start(_routed_sandbox, modal_env, home)
+    assert _wait_until(lambda: calls["clients"] == ["ak-B"]), "the first sandbox never started its build"
+    with bind_profile_scope(home, hydrate_secrets=False):
+        home_key = modal_env.hermes_home_key()
 
-    def fail_once(_token_id):
-        if failures:
-            raise RuntimeError(failures.pop())
+    async def cancelled_waiter():
+        waiter = asyncio.ensure_future(
+            modal_env._profile_client(sys.modules["modal"], home_key, ("ak-B", "as-B")))
+        await asyncio.sleep(0)  # the waiter runs up to its wait on the build in progress
+        assert flights.joined.is_set()
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
 
-    monkeypatch.setattr(_fake_from_credentials(), "on_build", fail_once)
-    with bind_profile_scope(profiles("B"), hydrate_secrets=False):
-        with pytest.raises(RuntimeError, match="boom"):
-            _sandbox(modal_env)
-        _sandbox(modal_env)
-    assert calls["clients"] == ["ak-B", "ak-B"]
+    asyncio.run(cancelled_waiter())
+    gate.set_result(None)
+    creator.join(10)
+    assert not creator.is_alive()
+    assert creator_errors == []
+    assert calls["clients"] == ["ak-B"]
     assert calls["creates"] == ["ak-B"]
+    assert flights == {}
+
+
+def test_an_older_pair_finishing_late_never_replaces_the_newer_one(modal_sdk, profiles):
+    """Rotation while the old pair's build is in progress: each sandbox runs on its own pair's
+    client, and the old build finishing last leaves the newer client cached."""
+    modal_env, calls = modal_sdk
+    gate = _fake_from_credentials().gates["ak-B"] = Future()
+    old, old_errors = _start(_routed_sandbox, modal_env, profiles("B"))
+    assert _wait_until(lambda: calls["clients"] == ["ak-B"]), "the old pair's build never started"
+    _routed_sandbox(modal_env, profiles("B-rotated"))
+    gate.set_result(None)
+    old.join(10)
+    assert not old.is_alive()
+    assert old_errors == []
+    assert sorted(calls["creates"]) == ["ak-B", "ak-B-rotated"]
+    (cached,) = modal_env._profile_clients.values()
+    assert cached[0] == ("ak-B-rotated", "as-B-rotated")
+    _routed_sandbox(modal_env, profiles("B-rotated"))
+    assert calls["clients"] == ["ak-B", "ak-B-rotated"]

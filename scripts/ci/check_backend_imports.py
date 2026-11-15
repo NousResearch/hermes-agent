@@ -33,6 +33,7 @@ _ALLOWED = {
     "hermes_state.py": "the legacy SessionDB is served by the backend's store holder until it is removed",
     "hermes_state_holders.py": "the legacy store's generation check reads the backend's holder registry",
     "hermes_state_registry.py": "the legacy store's registry is the backend's holder registry",
+    "hermes_state_loop_guard.py": "the legacy store's debug loop guard wraps the backend holder's two choke points until it is removed",
 }
 
 

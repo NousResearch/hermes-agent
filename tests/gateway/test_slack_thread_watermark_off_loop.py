@@ -6,7 +6,7 @@ restart can rehydrate the replies it missed). That write is a full routing-index
 on the event loop inside the adapter's message handler, holding ``SessionStore._lock`` across the
 storage I/O, so every loop-side reader of that lock waited for it too.
 
-Real SlackAdapter ``_handle_slack_message`` + real SessionStore/SessionDB; only the store's write
+Real SlackAdapter ``_handle_slack_message`` + real SessionStore and store; only the store's write
 choke point is slowed, and the stall is measured as loop-tick lag.
 """
 import asyncio
@@ -28,8 +28,7 @@ __all__ = ['_redirect_cache', 'adapter']  # imported pytest fixtures (``_redirec
 async def test_slack_thread_watermark_write_keeps_the_loop_ticking(adapter, tmp_path, monkeypatch):  # health: allow F811 -- pytest injects the imported adapter fixture by parameter name
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
-    from hermes_state import SessionDB
-    monkeypatch.setattr('hermes_state.DEFAULT_DB_PATH', tmp_path / 'state.db')
+    from tests.fixtures.storage_holder import holder_type
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     adapter.set_session_store(store)
     source = adapter._thread_session_source(CHANNEL_ID, THREAD, 'U_HUMAN', '', 'group')
@@ -37,14 +36,15 @@ async def test_slack_thread_watermark_write_keeps_the_loop_ticking(adapter, tmp_
     await asyncio.to_thread(store.get_or_create_session, source)  # the thread already has a session
     adapter._thread_rehydration_checked.add(adapter._thread_rehydration_key(CHANNEL_ID, THREAD, 'U_HUMAN', ''))
     adapter._mentioned_threads.add(THREAD)  # the bot is part of this thread
-    write, slow, writes = SessionDB._execute_write, threading.Event(), []
+    holder = holder_type()
+    write, slow, writes = holder._execute_write, threading.Event(), []
 
     def slow_write(self, *args, **kwargs):
         if slow.is_set():
             writes.append(threading.get_ident())
             time.sleep(SLOW_S)  # health: allow HX013 -- the slow storage write IS the stall under test
         return write(self, *args, **kwargs)
-    monkeypatch.setattr(SessionDB, '_execute_write', slow_write)
+    monkeypatch.setattr(holder, '_execute_write', slow_write)
     gaps = []
 
     async def tick():
@@ -82,7 +82,6 @@ async def test_slack_assistant_lifecycle_seed_writes_off_the_loop_thread(adapter
     """``assistant_thread_started`` / ``app_home_opened`` seed a DM route (a routing-index write)."""
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
-    monkeypatch.setattr('hermes_state.DEFAULT_DB_PATH', tmp_path / 'state.db')
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     adapter.set_session_store(store)
     adapter._app.client.assistant_threads_setSuggestedPrompts = AsyncMock()

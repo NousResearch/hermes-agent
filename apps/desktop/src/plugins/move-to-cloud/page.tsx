@@ -15,6 +15,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { bindCopy, type MoveCopy } from './i18n'
+import { agentHint, MOVE_PLUGIN_ID } from './location'
 import {
   apply,
   buildAndRead,
@@ -35,7 +36,6 @@ import {
   upload
 } from './transfer'
 
-const PLUGIN_ID = 'move-to-cloud'
 const PORTAL_AGENTS = 'https://portal.nousresearch.com/agents'
 
 type CloudAgent =
@@ -78,7 +78,7 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 }
 
 function useCopy(): MoveCopy {
-  const t = usePluginI18n(PLUGIN_ID)
+  const t = usePluginI18n(MOVE_PLUGIN_ID)
 
   return useMemo(() => bindCopy(t), [t])
 }
@@ -533,14 +533,6 @@ function OrgPicker({ copy, orgs, onPick }: { copy: MoveCopy; orgs: Org[]; onPick
 
 type Org = { id: string; slug: null | string; name: string }
 
-/** `hermes://open/move-to-cloud?agent=<name>` (the portal's agent page) names the agent to
- *  preselect. A hint only: an unknown or missing name leaves the choice to the user. */
-export function agentHint(hash: string): string {
-  const query = hash.split('?')[1] ?? ''
-
-  return (new URLSearchParams(query).get('agent') ?? '').trim()
-}
-
 /** Cloud sign-in and agent discovery, including the team picker a multi-team account needs. */
 function useCloudAgents(
   enabled: boolean,
@@ -794,14 +786,13 @@ export function MoveToCloudPage({ openExternal }: { openExternal: (url: string) 
   }
 
   return (
-    <section
-      aria-label={copy.title}
-      className="mx-auto flex h-full w-full max-w-3xl flex-col gap-8 overflow-y-auto px-8 pb-12 pt-12"
-    >
-      <header>
-        <h1 className="text-3xl font-semibold tracking-tight">{transfer ? copy.title : copy.backupOnlyTitle}</h1>
-        {transfer && <p className="mt-2 max-w-prose text-sm text-(--ui-text-secondary)">{copy.subtitle}</p>}
-      </header>
+    // A Settings pane: the Settings breadcrumb carries the title, so the page opens on its lead copy.
+    <section aria-label={transfer ? copy.title : copy.backupOnlyTitle} className="flex w-full max-w-3xl flex-col gap-6">
+      {transfer && (
+        <p className="max-w-prose text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {copy.subtitle}
+        </p>
+      )}
       {transfer && views[phase.kind]()}
       <BackupCard copy={copy} />
     </section>

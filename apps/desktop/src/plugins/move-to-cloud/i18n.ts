@@ -4,7 +4,6 @@ import type { PluginLocaleBundles, PluginTranslate } from '@hermes/plugin-sdk'
 const en = {
   command: 'Move to Hermes Cloud',
   backupCommand: 'Back up this agent',
-  nav: 'Backup & Move',
   title: 'Backup & Move',
   backupOnlyTitle: 'Backup',
   subtitle:

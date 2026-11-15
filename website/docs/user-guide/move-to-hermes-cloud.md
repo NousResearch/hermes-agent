@@ -6,12 +6,12 @@ description: Back up your whole Hermes agent to a file, or carry it into a Herme
 
 # Backup & Move
 
-**Backup & Move** in Hermes Desktop (sidebar, or **⌘K → Back up this agent / Move to Hermes Cloud**) does two things:
+**Settings → Plugins → Backup & Move** in Hermes Desktop (or **⌘K → Back up this agent / Move to Hermes Cloud**) does two things:
 
 - **Back up** writes one file with your whole Hermes: every profile, settings, memory, skills, schedules, chat history and keys. It is `hermes backup`, saved where you choose. The file holds your keys, so keep it private; `hermes import <file>` restores it.
 - **Move to Hermes Cloud** copies this agent into one of your Hermes Cloud agents, so it knows what your desktop agent knows from its first message. You need to be signed in to the Nous Portal. It also opens from the empty state of a new agent in the Nous Portal.
 
-On the Hermes Webapp that Hermes Cloud serves, the page offers Backup only: that tab already is a cloud agent. A Webapp you host yourself gets the whole page; it lists your cloud agents through that install's own Nous Portal sign-in (**Settings → Providers → Nous Portal**).
+On the Hermes Webapp that Hermes Cloud serves, the page is **Settings → Plugins → Backup** and offers Backup only: that tab already is a cloud agent. A Webapp you host yourself gets the whole page; it lists your cloud agents through that install's own Nous Portal sign-in (**Settings → Providers → Nous Portal**).
 
 ## What moves
 

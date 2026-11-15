@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 
-import { agentHint } from './page'
 import {
   apply,
   buildAndRead,
@@ -229,13 +228,5 @@ describe('refusal parsing', () => {
     expect(refusalCode(error)).toBe('offset_gap')
     expect(refusalMessage(error)).toBe('Chunk offset 5 skips ahead of 0 received bytes.')
     expect(refusalMessage(new Error('500: boom'))).toBe('boom')
-  })
-})
-
-describe('agentHint', () => {
-  it('reads the agent the portal link names', () => {
-    expect(agentHint('#/move-to-cloud?agent=Sam%27s%20agent')).toBe("Sam's agent")
-    expect(agentHint('#/move-to-cloud')).toBe('')
-    expect(agentHint('')).toBe('')
   })
 })

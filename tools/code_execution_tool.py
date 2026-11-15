@@ -836,7 +836,7 @@ def execute_code(
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         reset=bool(reset), is_interrupted=_is_interrupted,
-        session_id=_rpc_session_id, turn_id=turn_id, conversation_id=conversation_id,
+        session_id=_resolve_rpc_session_id(session_id), turn_id=turn_id, conversation_id=conversation_id,
     ))
 
 

@@ -73,6 +73,22 @@ def priced(monkeypatch):
     monkeypatch.setattr(pcw.PromptCacheWarmer, "_pricing", lambda self: _OPUS)
 
 
+def _arm(agent, request=None, response=_RESPONSE, *, sent_at=None):
+    """What the loop does per response: fold it into the shared prompt-cache clock (stamped with
+    the request's send time), then arm the warmer, which reads its deadline from that clock."""
+    from agent.prompt_cache_clock import attempt_facts, record_cache_response
+    from agent.usage_pricing import normalize_usage
+
+    request = _request() if request is None else request
+    attempt = attempt_facts(request)
+    if sent_at is not None:
+        attempt["sent_at"] = sent_at
+    agent._prompt_cache_attempt = attempt
+    record_cache_response(agent, normalize_usage(response.usage, provider=agent.provider, api_mode=agent.api_mode),
+                          model=agent.model, provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode)
+    return pcw.get_prompt_cache_warmer(agent).start(request, response)
+
+
 def _fire(warmer):
     """Simulate the armed timer expiring: cancel the real one, run its callback inline."""
     run = warmer._run
@@ -85,7 +101,7 @@ def test_replay_is_the_original_request_capped_at_one_token(priced):
     agent = _agent()
     warmer = pcw.get_prompt_cache_warmer(agent)
     request = _request()
-    assert warmer.start(request, _RESPONSE) is None
+    assert _arm(agent, request, _RESPONSE) is None
     assert warmer.status["state"] == "scheduled"
     # The loop redecorates message dicts in place before the next request; the replay must
     # still send what wrote the cache entry.
@@ -112,11 +128,11 @@ def test_turn_end_stops_warming_and_a_run_never_outspends_the_miss_it_prevents(p
     outlasts ``miss / warm`` refreshes stops warming rather than pay more than one cache write."""
     agent = _agent()
     warmer = pcw.get_prompt_cache_warmer(agent)
-    warmer.start(_request(), _RESPONSE)
+    _arm(agent, _request(), _RESPONSE)
     pcw.cancel_prompt_cache_warming(agent, "agent run settled")
     assert warmer._run is None and warmer.status["reason"] == "agent run settled"
 
-    warmer.start(_request(), _RESPONSE)
+    _arm(agent, _request(), _RESPONSE)
     d = pcw.evaluate_economics(_OPUS, 120_000)  # _RESPONSE's prompt size
     affordable = int(d.miss_cost // d.warm_cost)
     for _ in range(affordable + 3):
@@ -131,7 +147,6 @@ def test_turn_end_stops_warming_and_a_run_never_outspends_the_miss_it_prevents(p
 @pytest.mark.parametrize("mutate, reason", [
     (lambda a, r: setattr(a, "_skip_prompt_cache_warming", True), "the parent agent keeps this prefix warm"),
     (lambda a, r: setattr(a, "api_mode", "codex_responses"), "only Anthropic Messages and Chat Completions requests are warmed"),
-    (lambda a, r: setattr(a, "_cache_ttl", None), "cache lifetime unavailable"),
     (lambda a, r: r.update(thinking={"type": "enabled", "budget_tokens": 2048}), "request cannot be replayed safely (budget thinking)"),
     (lambda a, r: (r.pop("system"), r["messages"][0].update(content="hi")), "request carries no cache markers"),
     (lambda a, r: r.update(_moa_prepared_request={}), "MoA requests are not replayable"),
@@ -140,17 +155,15 @@ def test_requests_that_cannot_be_warmed_arm_nothing(priced, mutate, reason):
     agent, request = _agent(), _request()
     mutate(agent, request)
     warmer = pcw.get_prompt_cache_warmer(agent)
-    assert warmer.start(request, _RESPONSE) == reason
+    assert _arm(agent, request, _RESPONSE) == reason
     assert warmer._run is None and agent._anthropic_client.calls == []
 
 
 def test_unpriced_or_cheap_prompts_never_pay_for_a_refresh(monkeypatch):
     monkeypatch.setattr(pcw.PromptCacheWarmer, "_pricing", lambda self: None)
-    warmer = pcw.get_prompt_cache_warmer(_agent())
-    assert warmer.start(_request(), _RESPONSE) == "cache economics unavailable"
+    assert _arm(_agent(), _request(), _RESPONSE) == "cache economics unavailable"
     monkeypatch.setattr(pcw.PromptCacheWarmer, "_pricing", lambda self: _OPUS)
-    warmer = pcw.get_prompt_cache_warmer(_agent())
-    assert warmer.start(_request(), SimpleNamespace(usage=_Usage(30, 30, 0, 3_000))) == "expected savings below threshold"
+    assert _arm(_agent(), _request(), SimpleNamespace(usage=_Usage(30, 30, 0, 3_000))) == "expected savings below threshold"
     # The pure economics: pi's decision rule (p * miss - warm >= $0.05).
     d = pcw.evaluate_economics(_OPUS, 100_000)
     assert (round(d.warm_cost, 4), round(d.miss_cost, 4), d.action) == (0.05, 0.575, "warm")
@@ -159,14 +172,14 @@ def test_unpriced_or_cheap_prompts_never_pay_for_a_refresh(monkeypatch):
 def test_a_new_real_request_or_a_changed_conversation_stops_the_run(priced):
     agent = _agent()
     warmer = pcw.get_prompt_cache_warmer(agent)
-    warmer.start(_request(), _RESPONSE)
+    _arm(agent, _request(), _RESPONSE)
     assert warmer._run is not None and warmer._run.timer is not None
     armed = warmer._run.timer
     pcw.cancel_prompt_cache_warming(agent, "new request in flight")
     armed.join(2)
     assert not armed.is_alive() and warmer.status["reason"] == "new request in flight"
 
-    warmer.start(_request(), _RESPONSE)
+    _arm(agent, _request(), _RESPONSE)
     agent.session_api_calls += 1  # another response landed: this entry is no longer the live prefix
     _fire(warmer)
     assert agent._anthropic_client.calls == [] and warmer.status["reason"] == "conversation context changed"
@@ -187,14 +200,13 @@ def test_chat_completions_gateway_is_warmed_on_the_five_minute_schedule(priced):
         "messages": [{"role": "system", "content": [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral", "ttl": "1h"}}]}],
     }
     warmer = pcw.get_prompt_cache_warmer(agent)
-    assert warmer.start(request, _RESPONSE) is None
-    assert warmer._run.delay_s == pcw.cache_warming_delay_s(300)
+    assert _arm(agent, request, _RESPONSE) is None
+    assert warmer._run.ttl_s == 300  # the clock's route ceiling (Nous ships 5m), not the 1h asked for
     _fire(warmer)
     (sent,) = agent.client.calls
     assert sent["max_tokens"] == 1 and "stream" not in sent and "stream_options" not in sent
     assert sent["messages"] == request["messages"] and sent["extra_body"] == request["extra_body"]
     assert sent["extra_headers"]["X-OpenRouter-Cache"] == "false"  # a response-cache hit refreshes nothing
-    assert pcw.warm_ttl_seconds(_agent(_cache_ttl="1h")) == 3600  # native Anthropic keeps its tier
 
 
 def test_warming_needs_no_config_and_slow_responses_refresh_sooner(priced, tmp_path, monkeypatch):
@@ -204,12 +216,13 @@ def test_warming_needs_no_config_and_slow_responses_refresh_sooner(priced, tmp_p
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("{}\n")
-    warmer = pcw.get_prompt_cache_warmer(_agent())
+    agent = _agent()
+    warmer = pcw.get_prompt_cache_warmer(agent)
     sent = _time.time() - 200
-    assert warmer.start(_request(), _RESPONSE, sent_at=sent) is None
+    assert _arm(agent, _request(), _RESPONSE, sent_at=sent) is None
     assert warmer._run.next_warm_at == pytest.approx(sent + pcw.cache_warming_delay_s(300))
     warmer.cancel("done")
-    assert warmer.start(_request(), _RESPONSE, sent_at=_time.time() - 400) == "cache entry already expired"
+    assert _arm(agent, _request(), _RESPONSE, sent_at=_time.time() - 400) == "cache window not guaranteed warm"
 
 
 @contextmanager
@@ -274,7 +287,7 @@ def test_a_refresh_that_misses_the_cache_stops_warming_and_says_why(priced, capl
     with _chat_completions_stub(_cc_usage(read=0, write=120_000, uncached=0)) as (client, requests):
         agent = _cc_agent(client)
         warmer = pcw.get_prompt_cache_warmer(agent)
-        assert warmer.start(_cc_request(), _RESPONSE) is None
+        assert _arm(agent, _cc_request(), _RESPONSE) is None
         with caplog.at_level(logging.INFO, logger=pcw.__name__):
             _fire(warmer)
         assert warmer._run is None and len(requests) == 1
@@ -291,7 +304,7 @@ def test_the_spend_cap_counts_what_refreshes_were_billed_not_an_assumed_read(pri
     with _chat_completions_stub(_cc_usage(read=60_000, write=0, uncached=60_000)) as (client, requests):
         agent = _cc_agent(client)
         warmer = pcw.get_prompt_cache_warmer(agent)
-        assert warmer.start(_cc_request(), _RESPONSE) is None
+        assert _arm(agent, _cc_request(), _RESPONSE) is None
         for _ in range(12):
             if warmer._run is None:
                 break
@@ -304,14 +317,13 @@ def test_the_spend_cap_counts_what_refreshes_were_billed_not_an_assumed_read(pri
 
 
 def test_every_stop_reason_is_logged_once_at_info(priced, caplog):
-    agent = _agent(_cache_ttl=None)
-    warmer = pcw.get_prompt_cache_warmer(agent)
+    agent = _agent(api_mode="codex_responses")
     with caplog.at_level(logging.INFO, logger=pcw.__name__):
         for _ in range(3):
-            warmer.start(_request(), _RESPONSE)
+            _arm(agent, _request(), _RESPONSE)
     stops = [r for r in caplog.records if "prompt cache warming stopped" in r.getMessage()]
     assert len(stops) == 1 and stops[0].levelno == logging.INFO
-    assert "cache lifetime unavailable" in stops[0].getMessage()
+    assert "only Anthropic Messages and Chat Completions" in stops[0].getMessage()
 
 
 def test_an_uncached_tail_is_priced_at_the_input_rate(priced):
@@ -319,8 +331,7 @@ def test_an_uncached_tail_is_priced_at_the_input_rate(priced):
     with a small cached prefix and a large tail costs more to refresh than the miss it prevents."""
     d = pcw.evaluate_economics(_OPUS, 10_000, 110_000)
     assert d.warm_cost == pytest.approx(10_000 * 0.5e-6 + 110_000 * 5e-6 + 25e-6) and d.action == "stop"
-    warmer = pcw.get_prompt_cache_warmer(_agent())
-    assert (warmer.start(_request(), SimpleNamespace(usage=_Usage(110_000, 30, 10_000, 0)))
+    assert (_arm(_agent(), _request(), SimpleNamespace(usage=_Usage(110_000, 30, 10_000, 0)))
             == "refreshes would cost more than the cache write they prevent")
 
 
@@ -353,8 +364,55 @@ def test_a_refresh_in_flight_when_the_session_rotates_is_booked_where_it_was_sen
     count the refresh; a reset (new session) zeroed them, so they do not."""
     agent, booked = _rotating_agent(rotate)
     warmer = pcw.get_prompt_cache_warmer(agent)
-    assert warmer.start(_request(), _RESPONSE) is None
+    assert _arm(agent, _request(), _RESPONSE) is None
     _fire(warmer)
     ((sid, kw),) = booked
     assert sid == "s" and kw["task"] == "cache_warm" and kw["cache_read_tokens"] == 119_997
     assert (agent.session_cache_read_tokens == 119_997) is totals_include_refresh
+
+
+def _one_hour_request():
+    request = _request()
+    for block in (request["system"][0], request["messages"][0]["content"][0]):
+        block["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+    return request
+
+
+def test_warming_follows_the_shared_clock_and_never_warms_without_a_guarantee(priced):
+    """The clock is the only lifetime source: no window (nothing folded, or the cache moved) and
+    a gateway asked for an untrusted 1h (no guarantee) arm nothing, whatever ``_cache_ttl`` says;
+    native Anthropic's 1h tier is refreshed shortly before ITS guaranteed end."""
+    from agent.prompt_cache_clock import cache_window
+
+    agent = _agent()
+    assert pcw.get_prompt_cache_warmer(agent).start(_request(), _RESPONSE) == "cache window not guaranteed warm"
+    gateway = _agent(api_mode="chat_completions", provider="custom", base_url="https://gw.example/v1",
+                     _cache_ttl="1h", client=_Client())
+    assert _arm(gateway, _one_hour_request()) == "cache window not guaranteed warm"
+    assert gateway.client.calls == []
+
+    native = _agent(_cache_ttl="1h")
+    assert _arm(native, _one_hour_request()) is None
+    window = cache_window(native)
+    assert window.tier == "1h"
+    assert native._prompt_cache_warmer._run.next_warm_at == pytest.approx(window.guaranteed_until - 10)
+
+
+def test_a_refresh_moves_the_clock_and_the_next_one_is_due_from_its_new_deadline(priced):
+    """A keep-alive read restarts the entry: it is folded into the shared clock (so /context and
+    every other consumer see the refreshed window) and its token row carries the clock column."""
+    import time as _time
+
+    from agent.prompt_cache_clock import cache_window
+
+    booked = []
+    agent = _agent(_session_db=SimpleNamespace(queue_token_counts=lambda sid, **kw: booked.append(kw)))
+    warmer = pcw.get_prompt_cache_warmer(agent)
+    assert _arm(agent, sent_at=_time.time() - 250) is None
+    before = cache_window(agent).guaranteed_until
+    _fire(warmer)
+    after = cache_window(agent)
+    assert after.guaranteed_until > before + 200 and after.confidence != "unknown"
+    assert warmer._run.next_warm_at == pytest.approx(after.guaranteed_until - 30)
+    (row,) = booked
+    assert row["task"] == "cache_warm" and json.loads(row["prompt_cache_clock"])["read_tokens"] == 119_997

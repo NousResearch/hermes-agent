@@ -521,7 +521,8 @@ def _detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(expand_ansi_c_quotes(command)))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
-    for command_variant in _command_detection_variants(command):
+    capped: list[str] = []
+    for command_variant in _command_detection_variants(command, capped=capped):
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
         for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
@@ -535,7 +536,8 @@ def _detect_hardline_command(command: str) -> tuple:
                 )
             if pattern_re.search(masked_lower if quote_masked else variant_lower):
                 return (True, description)
-    return (False, None)
+    # eval code nested past _MAX_EVAL_NESTING was not inspected: fail closed like the other parser limits.
+    return (True, _PARSER_LIMIT_DESCRIPTION) if capped else (False, None)
 
 
 # ---- Dangerous command patterns -----------------------------------------------------------
@@ -1092,6 +1094,8 @@ _MAX_SUBSTITUTION_DEPTH = 32
 # A backslash-newline that an even run of backslashes precedes (so the backslash is not itself escaped).
 _LINE_CONTINUATION_RE = re.compile(r"(?<!\\)((?:\\\\)*+)\\\r?\n")
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
+# Each nested eval re-parses the rest of the command, so every level is a full rescan.
+_MAX_EVAL_NESTING = 8
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
 # A scan that ran out of its step budget: approval, never remembered (a session or always grant
 # would wave every later unscanned command through), and not a hardline refusal.
@@ -1435,6 +1439,44 @@ def _execution_flag_findings(command: str):
                         yield (f"arbitrary program execution via {executable_name} {finding[0]}", finding[1])
 
 
+def _eval_payload(args: list[str]) -> str | None:
+    """Return the shell code eval would run: its arguments joined by spaces."""
+    # eval takes no options: only an explicit ``--`` is consumed. A first word such
+    # as ``-x`` is code (zsh reports it missing and runs the rest of the list).
+    if args and args[0] == "--":
+        args = args[1:]
+    return " ".join(args) or None
+
+
+def _eval_payloads(command: str):
+    """Yield the code each ``eval`` in *command* hands back to the shell, like a ``-c`` payload.
+    Kept out of _execution_flag_findings: eval is not itself a dangerous mechanism, only its code is."""
+    for segment in _iter_top_level_shell_segments(command):
+        for start, _, word in _iter_shell_command_word_spans(segment):
+            if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() != "eval":
+                continue
+            # Bound to eval's own command: a `$(eval …)` / backtick nested in an outer command ends at
+            # its closing `)`/`` ` ``, so the outer command's arguments are not eval code.
+            tokens = _shell_segment_tokens(_shell_command_segment(segment, start), 0)
+            payload = _eval_payload(tokens[1:]) if tokens else None
+            if payload:
+                yield payload
+
+
+def _nested_payloads(source: str, eval_depth: int, capped: list[str] | None):
+    """Yield ``(payload, eval_depth)`` for each program-bearing option and eval in *source*. eval code is
+    one level deeper; past _MAX_EVAL_NESTING it is not surfaced (`eval eval … ls` made detection
+    quadratic) and *source* is recorded in *capped* so the caller can fail closed."""
+    for _, payload in _execution_flag_findings(source):
+        if payload:
+            yield payload, eval_depth
+    if eval_depth < _MAX_EVAL_NESTING:
+        for payload in _eval_payloads(source):
+            yield payload, eval_depth + 1
+    elif capped is not None and next(_eval_payloads(source), None):
+        capped.append(source)
+
+
 def _skip_shell_whitespace(command: str, pos: int) -> int:
     while pos < len(command) and command[pos].isspace():
         pos += 1
@@ -1738,7 +1780,7 @@ def _deny_command_variants(command: str):
                 pending.append(payload)
 
 
-def _command_detection_variants(command: str):
+def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[str] | None = None):
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
     # afterwards could swallow a REAL unquoted newline separator. The raw command carries faithful quote state
@@ -1775,9 +1817,10 @@ def _command_detection_variants(command: str):
             yield marked_win
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
-    pending = [normalized]
+    pending = [(normalized, eval_depth)]
     while pending:
-        for _, payload in _execution_flag_findings(pending.pop()):
+        source, depth = pending.pop()
+        for payload, payload_depth in _nested_payloads(source, depth, capped):
             if fresh(payload):
                 yield payload
                 # A payload may start with an option-looking program and then invoke a hardline command
@@ -1785,13 +1828,15 @@ def _command_detection_variants(command: str):
                 marked_payload = _mark_command_starts(payload)
                 if marked_payload != payload and fresh(marked_payload):
                     yield marked_payload
-                pending.append(payload)
+                pending.append((payload, payload_depth))
+    if capped:  # the caller fails closed; the passes below would only rescan the chain
+        return
     # Payloads parsed from NORMALIZED text lost their escapes before their own quote expansion ran
     # (`bash -c "$'\\x72\\x6d' -rf /"` reached the patterns as `$'x72x6d'`). Parse the raw argument
-    # too and treat it as new shell input; each payload is a strict substring, so recursion ends.
-    for _, payload in _execution_flag_findings(_mask_quoted_newlines(command)):
-        if payload and payload != command:
-            for variant in _command_detection_variants(payload):
+    # too and treat it as new shell input; each payload is shorter than its source, so recursion ends.
+    for payload, payload_depth in _nested_payloads(_mask_quoted_newlines(command), eval_depth, capped):
+        if payload != command:
+            for variant in _command_detection_variants(payload, payload_depth, capped):
                 if fresh(variant):
                     yield variant
     # Subshell `(cmd)` / brace-group `{ cmd; }` openers put `cmd` at a real command position the flat `_CMDPOS`
@@ -1976,7 +2021,8 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
     patterns = DANGEROUS_PATTERNS_COMPILED if only is None else [
         (pattern_re, description) for pattern_re, description in DANGEROUS_PATTERNS_COMPILED if description in only
     ]
-    for command_variant in _command_detection_variants(command):
+    capped: list[str] = []
+    for command_variant in _command_detection_variants(command, capped=capped):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
         for pattern_re, description in patterns:
@@ -1997,6 +2043,8 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
                     yield description
             elif pattern_re.search(command_lower):
                 yield description
+    if capped and only is None:
+        yield _PARSER_LIMIT_DESCRIPTION
     if only is not None:
         # The variation-selector check is a content rule too, so the content-only scan keeps it.
         if _INVISIBLE_UNICODE_DESCRIPTION in only and _HIDDEN_VARIATION_SELECTOR_RE.search(command):

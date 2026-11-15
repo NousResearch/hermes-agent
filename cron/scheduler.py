@@ -10,6 +10,7 @@ import contextvars
 import errno
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -1913,8 +1914,19 @@ def _open_cron_session_db(job: dict):
 
 def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
     """Log the agent's last activity, hard-interrupt it and raise TimeoutError."""
+    # Sample the agent's activity clock directly. Diagnostics are not a liveness
+    # dependency: a blocked/raising get_activity_summary must not hold cleanup here.
+    _last_stamp = getattr(agent, "_last_activity_ts", None)
     _activity = {}
-    if hasattr(agent, "get_activity_summary"):
+    if isinstance(_last_stamp, (int, float)) and math.isfinite(_last_stamp):
+        _activity = {
+            "seconds_since_activity": max(0.0, time.time() - _last_stamp),
+            "last_activity_desc": getattr(agent, "_last_activity_desc", None) or "unknown",
+            "api_call_count": getattr(agent, "_api_call_count", 0),
+            "max_iterations": getattr(agent, "max_iterations", 0),
+            "current_tool": getattr(agent, "_current_tool", None),
+        }
+    elif hasattr(agent, "get_activity_summary"):
         with contextlib.suppress(Exception):
             _activity = agent.get_activity_summary()
     _last_desc = _activity.get("last_activity_desc", "unknown")
@@ -1988,6 +2000,11 @@ def _run_agent_with_watchdog(
     _watch_stop = threading.Event()
 
     def _idle_seconds() -> float:
+        # AIAgent._touch_activity stamps this same clock; a diagnostic serializer
+        # that raises or blocks must never reset the watchdog's idle sample to zero.
+        _last_stamp = getattr(agent, "_last_activity_ts", None)
+        if isinstance(_last_stamp, (int, float)) and math.isfinite(_last_stamp):
+            return max(0.0, time.time() - _last_stamp)
         if not hasattr(agent, "get_activity_summary"):
             return 0.0
         try:

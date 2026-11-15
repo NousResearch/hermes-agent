@@ -392,7 +392,7 @@ def _restore_epoch_source(src: Path, dst: Path):
         prepared = Path(work) / 'state.db'
         if not _safe_copy_db(src, prepared):
             raise OSError('Unable to stage a restore with a safe runtime epoch')
-        with closing(sqlite3.connect(prepared)) as conn:
+        with closing(sqlite3.connect(prepared)) as conn:  # health: allow HX015 -- private staging copy in a temp dir
             conn.execute("""CREATE TABLE IF NOT EXISTS runtime_epoch (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 epoch INTEGER NOT NULL CHECK (epoch > 0), instance_id TEXT NOT NULL)""")
@@ -545,7 +545,7 @@ class BackupAdmin(AdminFile):
         try:
             if not _safe_copy_db(source, staged):
                 raise RuntimeError("SQLite safe copy failed; previous emergency snapshots were retained")
-            connection = sqlite3.connect(str(staged))
+            connection = sqlite3.connect(str(staged))  # health: allow HX015 -- staged copy written by this function
             try:
                 result = connection.execute("PRAGMA quick_check").fetchall()
                 if result != [("ok",)]:
@@ -614,7 +614,9 @@ class BackupAdmin(AdminFile):
         if not path.is_file():
             return None
         try:
-            conn = sqlite3.connect(read_only_db_uri(path), uri=True)
+            from hermes_cli.sqlite_safe_read import connect_tracked
+
+            conn = connect_tracked(read_only_db_uri(path), uri=True, tracking_path=path, connect_fn=sqlite3.connect)
         except sqlite3.Error:
             return None
         try:
@@ -633,7 +635,10 @@ class BackupAdmin(AdminFile):
         if not db_path.is_file():
             return False
         try:
-            with closing(sqlite3.connect(read_only_db_uri(db_path), uri=True, timeout=5.0)) as conn:
+            from hermes_cli.sqlite_safe_read import connect_tracked
+
+            with closing(connect_tracked(read_only_db_uri(db_path), uri=True, timeout=5.0, tracking_path=db_path,
+                                         connect_fn=sqlite3.connect)) as conn:
                 return bool(conn.execute(_LEDGER_PROBE).fetchone()[0])
         except sqlite3.Error:
             return False  # no ledger tables yet, or unreadable: nothing an older release would trip on
@@ -642,7 +647,7 @@ class BackupAdmin(AdminFile):
     def has_runtime_ledger_table(path: Path) -> bool:
         """Whether the file at ``path`` holds a ``session_admissions`` table, read on one ``mode=ro`` connection; an
         unreadable file raises the store error."""
-        with translated(), closing(sqlite3.connect(read_only_db_uri(path), uri=True)) as conn:
+        with translated(), closing(sqlite3.connect(read_only_db_uri(path), uri=True)) as conn:  # health: allow HX015 -- quick-snapshot copy, never the live store
             return conn.execute("SELECT 1 FROM sqlite_master WHERE name='session_admissions'").fetchone() is not None
 
     @staticmethod

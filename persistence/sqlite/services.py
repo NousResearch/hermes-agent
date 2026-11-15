@@ -6,7 +6,6 @@ connection only when the file already exists.
 
 from __future__ import annotations
 
-import sqlite3
 from contextlib import closing
 from pathlib import Path
 
@@ -30,7 +29,10 @@ def probe_state_db(path: Path) -> StorageProbe:
         return StorageProbe(status="degraded", detail=STORAGE_CORRUPT)
     try:
         # ``closing`` is required: sqlite3's context manager only commits or rolls back, never closes.
-        with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=1.0)) as conn:
+        from hermes_cli.sqlite_safe_read import connect_tracked  # tracked: raw byte probes must see this reader
+        from hermes_state_holders import read_only_db_uri
+
+        with closing(connect_tracked(read_only_db_uri(path), uri=True, timeout=1.0, tracking_path=path)) as conn:
             # A readiness probe must never compete with normal state writers.
             conn.execute("PRAGMA query_only = ON")
             conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()

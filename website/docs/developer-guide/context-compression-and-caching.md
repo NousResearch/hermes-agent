@@ -338,6 +338,8 @@ auxiliary:
 | `in_place` | `true` | bool | Compact on the same session id instead of rotating to a new one (see below) |
 | `prepare_ahead` | `false` | bool | Opt-in: near the trigger, write the next summary in the background and splice it at the next automatic compaction when it still covers the same messages (see below) |
 
+Cache-expiry compaction (`agent/cache_expiry_compaction.py`) has no key: an idle human-paced session on a guaranteed 1h window with ≥100k context tokens compacts at 0.9 of the window, through `compress_now(..., trigger="cache_expiry")`. Owners: `tui_gateway/session_cache_expiry.py` (ticker), `GatewaySessionWatchersMixin._compact_idle_sessions_before_cache_expiry` (housekeeping), `CLISessionMixin._maybe_compact_before_cache_expiry` (idle tick).
+
 ### In-place compaction (single stable session id)
 
 With `compression.in_place: true` (the default), a compaction **rewrites the live message list on the same session id**: the system prompt is rebuilt, the summarized middle is swapped in, and the pre-compaction turns are soft-archived under the same id (`active=0, compacted=1` in the session store) — still searchable via `session_search` and recoverable, never deleted. There is no `parent_session_id` chain and no `name #N` renumbering; one conversation keeps one durable id for its whole life. This eliminated the session-rotation bug cluster (lost `/goal` state, orphaned sessions, search gaps across boundaries).

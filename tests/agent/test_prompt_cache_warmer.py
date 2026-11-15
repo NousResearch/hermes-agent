@@ -150,7 +150,7 @@ def test_unpriced_or_cheap_prompts_never_pay_for_a_refresh(monkeypatch):
     assert warmer.start(_request(), _RESPONSE) == "cache economics unavailable"
     monkeypatch.setattr(pcw.PromptCacheWarmer, "_pricing", lambda self: _OPUS)
     warmer = pcw.get_prompt_cache_warmer(_agent())
-    assert warmer.start(_request(), SimpleNamespace(usage=_Usage(3_000, 30, 0, 0))) == "expected savings below threshold"
+    assert warmer.start(_request(), SimpleNamespace(usage=_Usage(30, 30, 0, 3_000))) == "expected savings below threshold"
     # The pure economics: pi's decision rule (p * miss - warm >= $0.05).
     d = pcw.evaluate_economics(_OPUS, 100_000)
     assert (round(d.warm_cost, 4), round(d.miss_cost, 4), d.action) == (0.05, 0.575, "warm")
@@ -312,3 +312,34 @@ def test_every_stop_reason_is_logged_once_at_info(priced, caplog):
     stops = [r for r in caplog.records if "prompt cache warming stopped" in r.getMessage()]
     assert len(stops) == 1 and stops[0].levelno == logging.INFO
     assert "cache lifetime unavailable" in stops[0].getMessage()
+
+
+def test_an_uncached_tail_is_priced_at_the_input_rate(priced):
+    """A refresh re-sends the tail past the last cache marker at the full input rate: a request
+    with a small cached prefix and a large tail costs more to refresh than the miss it prevents."""
+    d = pcw.evaluate_economics(_OPUS, 10_000, 110_000)
+    assert d.warm_cost == pytest.approx(10_000 * 0.5e-6 + 110_000 * 5e-6 + 25e-6) and d.action == "stop"
+    warmer = pcw.get_prompt_cache_warmer(_agent())
+    assert (warmer.start(_request(), SimpleNamespace(usage=_Usage(110_000, 30, 10_000, 0)))
+            == "refreshes would cost more than the cache write they prevent")
+
+
+def test_a_refresh_in_flight_when_the_session_rotates_is_booked_where_it_was_sent(priced):
+    """Compression (``in_place: false``) can rotate ``session_id`` while the timer thread waits
+    for the reply; the refresh's tokens and dollars belong to the session that sent it."""
+    booked = []
+    agent = _agent(_session_db=SimpleNamespace(queue_token_counts=lambda sid, **kw: booked.append((sid, kw))))
+    client = agent._anthropic_client
+    real_create = client._create
+
+    def _create_then_rotate(**kw):
+        agent.session_id = "s-after-compression"
+        return real_create(**kw)
+
+    client.messages = SimpleNamespace(create=_create_then_rotate)
+    warmer = pcw.get_prompt_cache_warmer(agent)
+    assert warmer.start(_request(), _RESPONSE) is None
+    _fire(warmer)
+    ((sid, kw),) = booked
+    assert sid == "s" and kw["task"] == "cache_warm" and kw["cache_read_tokens"] == 119_997
+    assert agent.session_cache_read_tokens == 0, "the new session's in-memory totals stay untouched"

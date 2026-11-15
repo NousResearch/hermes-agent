@@ -6,6 +6,7 @@ import time
 from aiohttp import web
 
 from agent.async_utils import drain_task
+from gateway.platforms.webhook_coalesce import group_key
 from gateway.platforms.webhook_coalesce_recovery import accept_coalesced, ingress_revision, prior_coalesced
 from gateway.session_authority import keyed_turn
 
@@ -26,9 +27,10 @@ async def dispatch_received(adapter, *, request, route_config, route_name, profi
         now = time.time()
         coalesce = route_config.get('coalesce')
         non_durable = bool(route_config.get('deliver_only') or route_config.get('cron_job'))
-        # Ordinary same-mode retries still use the producer's immutable-envelope check.
+        coalescing = (isinstance(coalesce, dict) and group_key(
+            route_name, coalesce['key'], payload, event_type, adapter._render_prompt) is not None)
         seen_at = adapter._seen_deliveries.get(identity)
-        if ((non_durable or isinstance(coalesce, dict)) and seen_at is not None
+        if ((non_durable or coalescing) and seen_at is not None
                 and now - seen_at < adapter._idempotency_ttl):
             return duplicate(delivery_id)
         try:
@@ -57,8 +59,14 @@ async def dispatch_received(adapter, *, request, route_config, route_name, profi
         return response
 
     async with keyed_turn(adapter._coalescer.delivery_turns, identity):
-        # A disconnected HTTP waiter cannot release this key ahead of its physical commit.
-        return await drain_task(asyncio.create_task(admit_once()))
+        if adapter._coalescer._closed:
+            return web.json_response({'error': 'Listener closing; retry this delivery'}, status=503)
+        task = asyncio.create_task(admit_once())
+        adapter._coalescer.intakes.add(task)
+        try:
+            return await drain_task(task)
+        finally:
+            adapter._coalescer.intakes.discard(task)
 
 
 def duplicate(delivery_id):

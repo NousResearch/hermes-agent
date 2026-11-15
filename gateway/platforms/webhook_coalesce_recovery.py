@@ -7,7 +7,7 @@ import logging
 import time
 from datetime import datetime, UTC
 
-from agent.async_utils import consume_detached_task_result, drain_thread
+from agent.async_utils import consume_detached_task_result, drain_task, drain_thread
 from gateway.platforms.webhook_coalesce import (
     DEFAULT_MAX_WAIT_SECONDS, DEFAULT_WINDOW_SECONDS, group_key, prompt_with_note,
 )
@@ -28,6 +28,7 @@ class DurableWebhookCoalescer:
         self._worker = None
         self._inflight = {}
         self.delivery_turns = {}
+        self.intakes = set()
         self._closed = False
 
     async def binding(self, route_name, profile, delivery_id, payload):
@@ -46,10 +47,10 @@ class DurableWebhookCoalescer:
             destination = snapshot_destination(self.adapter, delivery_info(self.adapter, route, profile, payload, route_name))
             return binding_from(self.adapter, authority, store_id, digest, destination)
 
-    async def start(self):
-        """Only explicit adapter connect may reopen a closed intake."""
+    async def start(self, *, recover=True):
         self._closed = False
-        self._ensure_worker()
+        if recover:
+            self._ensure_worker()
 
     def _ensure_worker(self):
         if not self._closed and (self._worker is None or self._worker.done()):
@@ -77,7 +78,7 @@ class DurableWebhookCoalescer:
                                       float(coalesce.get('window_seconds', DEFAULT_WINDOW_SECONDS)),
                                       float(coalesce.get('max_wait_seconds', DEFAULT_MAX_WAIT_SECONDS)))
         finally:
-            self._changed.set()  # also discover a transaction that committed after its waiter cancelled
+            self._changed.set()
 
     async def _recover(self):
         while not self._closed:
@@ -149,8 +150,6 @@ class DurableWebhookCoalescer:
         if outcome is None:
             await drain_thread(self.store.defer, row['id'], RETRY_SECONDS, 'admission_unavailable')
         else:
-            # Also terminal for deliberate plugin consumption, as on immediate webhooks. Plugin
-            # side effects have no durable receipt and are not exactly-once across process death.
             await drain_thread(self.store.finish, row['id'])
 
     async def flush(self):
@@ -166,7 +165,6 @@ class DurableWebhookCoalescer:
                     raise
                 if cancelled is None:
                     cancelled = exc
-                    # Let a newly created owner enter its try/finally before cancelling it.
                     asyncio.get_running_loop().call_soon(owner.cancel)
             except Exception:
                 if cancelled is not None:
@@ -177,12 +175,13 @@ class DurableWebhookCoalescer:
 
     async def _flush_closed(self):
         try:
+            if self.intakes:
+                await drain_task(asyncio.gather(*self.intakes, return_exceptions=True))
             if self._worker is not None:
                 self._worker.cancel()
                 await asyncio.gather(self._worker, return_exceptions=True)
             if not self.store.path.exists():
                 return
-            # The logical limit does not bound cancellation-safe physical SQLite I/O.
             try:
                 rows = await drain_thread(self.store.schedule)
             except Exception:

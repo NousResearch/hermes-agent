@@ -304,14 +304,13 @@ class WebhookAdapter(BasePlatformAdapter):
         logger.info("[webhook] Listening on %s:%d — routes: %s", self._host or "* (all interfaces, IPv4+IPv6)",
                     self._port, ", ".join(self._routes.keys()) or "(none configured)")
         self._wire_plugin_handlers(None)
-        if self._coalescer.store.path.exists() or any(isinstance(route.get("coalesce"), dict)
-                                                    for route in self._routes.values()):
-            await self._coalescer.start()
+        await self._coalescer.start(recover=self._coalescer.store.path.exists() or any(
+            isinstance(route.get("coalesce"), dict) for route in self._routes.values()))
         return True
 
     async def disconnect(self) -> None:
         try:
-            await self._coalescer.flush()  # refused/unknown work remains durable
+            await self._coalescer.flush()
         finally:
             if self._runner:
                 await self._runner.cleanup()

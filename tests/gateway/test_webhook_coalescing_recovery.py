@@ -65,7 +65,7 @@ async def test_refused_handoff_keeps_frozen_batch_and_retries(monkeypatch):
             return not await asyncio.to_thread(adapter._coalescer.store.schedule)
 
         await async_wait_until(retired, timeout=2, what='retired batch')
-        assert calls[0][:3] == calls[1][:3]  # cache timestamp is the current handoff time
+        assert calls[0][:3] == calls[1][:3]
         assert await asyncio.to_thread(adapter._coalescer.store.pending) == []
     finally:
         await adapter.disconnect()

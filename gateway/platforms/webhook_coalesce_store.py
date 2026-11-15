@@ -11,7 +11,7 @@ from contextlib import contextmanager
 
 MAX_PENDING = 1024
 MAX_MEMBERS = 10000
-MAX_BYTES = 16 * 1024 * 1024  # JSON work; lookup keys are fixed-size SHA-256 digests
+MAX_BYTES = 16 * 1024 * 1024
 
 
 def _key(value):
@@ -66,7 +66,7 @@ class CoalesceStore:
                 return 'duplicate'
             row = conn.execute('SELECT * FROM batches WHERE group_key=?', (_key(group),)).fetchone()
             if row and (row['sealed'] or json.loads(row['work']).get('binding') != work.get('binding')):
-                return 'busy'  # never reinterpret or mutate work that may already be admitted
+                return 'busy'
             quota = conn.execute('SELECT count(*), COALESCE(SUM(bytes),0) FROM batches').fetchone()
             members = conn.execute('SELECT count(*) FROM members').fetchone()[0]
             if (members >= MAX_MEMBERS or (not row and quota[0] >= MAX_PENDING)
@@ -85,9 +85,7 @@ class CoalesceStore:
             return 'coalesced'
 
     def seen(self, identity):
-        # Serialize with pending acceptance: an uncommitted first request cannot earn a
-        # duplicate ACK, nor can a mode-switched retry bypass an acknowledged member.
-        with self.connection() as conn:
+        with self.connection(write=False) as conn:
             return conn.execute('SELECT 1 FROM members WHERE identity=? AND (expires IS NULL OR expires>?)',
                                 (_key(identity), time.time())).fetchone() is not None
 

@@ -51,7 +51,6 @@ _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 # --- Per-session approval state (thread-safe) -----------------------------------------------------------------------
 
 _lock = threading.RLock()  # re-entrant: a card settle checks and resolves under one hold
-_pending: dict[str, dict] = {}
 _session_approved: dict[str | tuple[str, str], set] = {}
 _session_yolo: set[str] = set()
 # Session keys whose launch YOLO (`hermes chat --yolo` session policy) was already seeded by
@@ -319,12 +318,6 @@ def get_pending_gateway_approval(session_key: str) -> dict | None:
         return dict(queue[0].data)
 
 
-def submit_pending(session_key: str, approval: dict):
-    """Store a pending approval request for a session."""
-    with _lock:
-        _pending[session_key] = approval
-
-
 def approve_session(session_key: str, pattern_key: str):
     """Approve a pattern for this session and the profile executing it."""
     with _lock:
@@ -373,7 +366,6 @@ def clear_session(session_key: str) -> None:
                 _session_approved.pop(key, None)
         _session_yolo.discard(session_key)
         _launch_yolo_applied.discard(session_key)
-        _pending.pop(session_key, None)
         from tools.approval_notify_lease import revoke_session_locked
         revoke_session_locked(session_key)
         for entry in _gateway_queues.pop(session_key, []):
@@ -703,25 +695,16 @@ def _gateway_notify_cb(session_key: str):
 def _pending_result(spec, session_key: str, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], body: str | None,
                     smart_denied: bool, gateway: bool = False, one_shot: bool = False) -> dict:
-    """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
-    ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
-    ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``.
-    A command the scanners could not read to the end is refused instead (only a human may approve it),
-    and a gateway background child that no chat can show a prompt to fails closed (#133514)."""
+    """Return the result for an approval nobody can answer right now (no gateway notifier, no
+    CLI panel): a refusal when the scanners could not read the command to the end (only a human
+    may approve it), a fail-closed denial for a gateway background child no chat can prompt for
+    (#133514), ``approval_required`` for the action gate, and otherwise the backward-compatible
+    ``pending_approval`` shape (``pattern_keys`` + STOP text) for command/code gates."""
     from tools.approval_notify_lease import stranded_denial
     if _SCAN_INCOMPLETE_DESCRIPTION in pattern_keys:
         return _scan_incomplete_block(_NO_REVIEWER_PRESENT)
     if (denied := stranded_denial(session_key, gateway, spec.noun, pattern_key, description)) is not None:
         return denied
-    pending = {"command": command, "pattern_key": pattern_key}
-    if spec.pending_keys:
-        pending["pattern_keys"] = pattern_keys
-    pending["description"] = description
-    if smart_denied:
-        pending.update(smart_denied=True, allow_permanent=False)
-    if one_shot:
-        pending.update(allow_session=False, allow_permanent=False)
-    submit_pending(session_key, pending)
     if not spec.pending_keys:
         return {
             "approved": False, "pattern_key": pattern_key, "status": "approval_required",
@@ -1514,9 +1497,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     pattern_key = "execute_code"
     description = _EXECUTE_CODE_DESCRIPTION
 
-    # Isolated backends already sandbox the child. vercel_sandbox has no host-bind concept so it stays always-skipped.
-    if env_type == "vercel_sandbox":
-        return _approved()
+    # Isolated backends already sandbox the child.
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _approved()
     approval_mode = approval_context._get_approval_mode()

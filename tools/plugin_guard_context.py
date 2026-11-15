@@ -347,7 +347,6 @@ def is_base64_archive_roundtrip(finding: Finding, line: str) -> bool:
 # ``"sudo apt install x"``, ``"env | grep KEY"`` or ``"mkfs.ext4 /dev/sda1"`` inside a
 # ``subprocess.run(...)`` literal is how an attack is written and never qualifies. Only
 # word-shaped patterns are eligible.
-LITERAL_INERT_PATTERN_IDS = {"sudo_usage", "dump_all_env", "format_filesystem"}
 _LITERAL_SPANS = re.compile(
     r"""(?P<s>[rRbBuUfF]{0,2}"(?:[^"\\\n]|\\.)*"|[rRbBuUfF]{0,2}'(?:[^'\\\n]|\\.)*'|`(?:[^`\\\n]|\\.)*`)"""
     r"""|(?P<rx>(?<![\w)\]])/(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[dgimsuvy]*(?![A-Za-z]))"""  # js regex literal
@@ -803,7 +802,6 @@ def is_own_proc_read(finding: Finding, line: str) -> bool:
 
 __all__ = [
     "DOC_PROSE_EXTENSIONS",
-    "LITERAL_INERT_PATTERN_IDS",
     "STEP_DOWN",
     "TEST_TREE_DIRS",
     "is_agent_facing",

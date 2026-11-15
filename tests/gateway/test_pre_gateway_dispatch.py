@@ -657,11 +657,15 @@ async def test_an_identical_webhook_delivery_waits_for_the_running_hook_and_gets
         first = asyncio.create_task(_post_webhook(client, "please rewrite", "d-1"))
         await async_wait_until(lambda: fired, what="the first delivery in the hook")
         second = asyncio.create_task(_post_webhook(client, "please rewrite", "d-1"))
-        parked = lambda: any(waiting > 1 for _lock, waiting in getattr(ingress, "_deliveries", {}).values())
-        await async_wait_until(lambda: len(entered) == 2 and (len(fired) > 1 or parked()),
-                               what="the identical delivery parked or in the hook")
-        release.set()
-        first, second = await asyncio.gather(first, second)
+        parked = lambda: any(waiting > 1 for _lock, waiting in (
+            *ingress._deliveries.values(), *adapter._coalescer.delivery_turns.values()))
+        try:
+            await async_wait_until(lambda: len(fired) > 1 or parked(),
+                                   what="the identical delivery parked or in the hook")
+        finally:
+            release.set()
+            first, second = await asyncio.gather(first, second)
+        assert entered == ["d-1", "d-1"]
         assert first.status == 202
         assert (second.status, (await second.json())["status"]) == (200, "duplicate")
         rows = raw_holder(authority.persistence)._read_all("SELECT payload_json FROM session_admissions")

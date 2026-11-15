@@ -614,9 +614,77 @@ class TestSymlinkedCategoryDiagnostic:
             recorded = _read_manifest()
         warn = self._warn_line(capsys.readouterr().out, "demo")
         assert warn, "v1-tracked copy behind a symlink went unwarned"
+        assert "v1 manifest entry" in warn, "v1 remedy must say why no automatic relocation"
         assert not result["relocated"], "no origin hash, no move"
         assert dir_hash(old) == origin_hash, "external content was mutated"
         assert recorded.get("demo") == "", "v1 provenance untouched by the diagnostic"
+
+    def test_v1_entry_with_a_visible_copy_is_not_labeled_symlinked(self, tmp_path, capsys):
+        """A v1 entry whose copy sits at the old path as a PLAIN directory is the ordinary
+        kept case — no symlink, no stranding, no warning."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        old = self._skill(skills_dir, "research/demo")  # real directory, no symlinks anywhere
+        origin_hash = dir_hash(old)
+        manifest_file.write_text("demo\n")  # v1
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=False)
+        assert not result["relocation_warnings"], "a visible v1 copy was mislabeled as stranded"
+        assert dir_hash(old) == origin_hash
+
+    def test_visible_real_directory_matched_by_basename_alone_never_warns(self, tmp_path, capsys):
+        """The diagnostic matches on basename too, but a plain visible directory reached with
+        no symlink must never be labeled 'only reachable through a category symlink' — the
+        warning text would simply be false."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Frontmatter name differs, directory basename matches the tracked skill name.
+        stranger = self._skill(skills_dir, "misc/demo", name="other-skill")
+        origin_hash = dir_hash(stranger)
+        manifest_file.write_text(f"demo:{origin_hash}\n")
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=False)
+        assert not result["relocation_warnings"], "a plain visible directory was labeled symlinked"
+        assert not result["relocated"] and not result["copied"]
+        assert dir_hash(stranger) == origin_hash, "an unrelated visible skill was touched"
+
+    def test_v1_remedy_move_to_new_location_baselines(self, tmp_path, capsys):
+        """The v1 remedy must be real: moving the copy to the new upstream location lets the
+        next sync baseline the manifest from it (the documented v1 migration) and updates
+        resume from there."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        external = tmp_path / "external-research"
+        self._skill(external, "demo")
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text("demo\n")  # v1
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/demo", body="# Updated upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=False)
+        capsys.readouterr()
+
+        # Follow the warned v1 remedy: move the copy to the new location.
+        (skills_dir / "research").unlink()
+        shutil.move(str(external / "demo"), str(skills_dir / "web" / "demo"))
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result2 = sync_skills(quiet=False)
+            recorded = _read_manifest()
+        assert not result2["relocation_warnings"], "remedied v1 copy still warned"
+        assert recorded.get("demo") == dir_hash(skills_dir / "web" / "demo"), (
+            "v1 migration did not baseline from the relocated copy")
 
     def test_hub_owned_match_does_not_hide_a_later_non_hub_copy(self, tmp_path, capsys):
         """Hub ownership attaches to the install PATH, not to every copy of the identity:

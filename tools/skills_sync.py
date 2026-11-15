@@ -265,7 +265,20 @@ def _loader_visible_name(skill_md: Path) -> Optional[str]:
     return name if isinstance(name, str) and name else None
 
 
-def _warn_invisible_renamed_copy(st: "_SyncState", skill_name: str, dest: Path) -> None:
+def _reached_through_category_symlink(directory: Path) -> bool:
+    """True when the path from the skills root down to ``directory`` traverses at least one
+    symlinked directory — the #143470 scenario the warning describes. A plain real directory
+    is visible to every consumer and must never be labeled symlink-only-reachable."""
+    root = _skills_dir()
+    current = directory
+    while current != root and current != current.parent:
+        if current.is_symlink():
+            return True
+        current = current.parent
+    return False
+
+
+def _warn_invisible_renamed_copy(st: "_SyncState", skill_name: str, dest: Path, *, v1_entry: bool = False) -> None:
     """#143470: the loader follows symlinked category dirs, so a skill whose only copy sits under
     one is ACTIVE for the agent yet invisible to the rglob-based active index — an upstream
     rename then reads as a user deletion. READ-ONLY fallback diagnostic: first match only (one
@@ -307,15 +320,26 @@ def _warn_invisible_renamed_copy(st: "_SyncState", skill_name: str, dest: Path) 
             # Alias of a hub-installed directory: whichever symlink reached the inode first,
             # the content is hub-managed — silence must not depend on traversal order.
             continue
+        if not _reached_through_category_symlink(md.parent):
+            # A plain visible directory is not the stranding scenario — the label
+            # "only reachable through a category symlink" must never be applied to one.
+            continue
+        if v1_entry:
+            remedy = (
+                f"Move the copy to {_rel_skills_posix(dest)} to resume updates: a v1 manifest "
+                f"entry records no origin hash, so sync cannot authorize an automatic "
+                f"relocation and baselines from your copy once it is at the new location.")
+        else:
+            remedy = (
+                "Replace the category symlink with a real directory containing the copy to "
+                "make it visible again: a pristine copy then relocates on the next sync, and "
+                "a modified one is kept at the old path with your edits preserved. Removing "
+                "the symlink alone would strand it — the retained manifest entry makes sync "
+                "read the missing destination as a user deletion.")
         message = (
             f"{skill_name}: upstream moved this skill to {_rel_skills_posix(dest)}, but the copy "
             f"at {rel} is only reachable through a category symlink, so it was not automatically "
-            f"relocated. It is left untouched and will not receive updates. Replace the category "
-            f"symlink with a real directory containing the copy to make it visible again: a "
-            f"pristine copy then relocates on the next sync, and a modified one is kept at the "
-            f"old path with your edits preserved. Removing the symlink alone would strand it — "
-            f"the retained manifest entry makes sync read the missing destination as a user "
-            f"deletion.")
+            f"relocated. It is left untouched and will not receive updates. {remedy}")
         st.relocation_warnings.append(message)
         st.say(f"  ⚠ {message}")
         return
@@ -356,9 +380,11 @@ def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Opt
     origin_hash = st.manifest.get(skill_name, "")
     active_index = _ensure_recovery_index(st)
     if not origin_hash:
-        # v1 plain-name entry (empty hash): no hash can authorize a move, but the read-only
-        # #143470 diagnostic still applies — stranding is identity-based, not hash-based.
-        _warn_invisible_renamed_copy(st, skill_name, dest)
+        # v1 plain-name entry (empty hash): no hash can authorize a move. The read-only
+        # #143470 diagnostic applies only when NO visible copy exists — exactly like the v2
+        # path below; a visible copy at the old path is the ordinary kept case, not stranding.
+        if not active_index.get(skill_name):
+            _warn_invisible_renamed_copy(st, skill_name, dest, v1_entry=True)
         return None
     for candidate in active_index.get(skill_name, []):
         if candidate == dest or not candidate.is_dir():

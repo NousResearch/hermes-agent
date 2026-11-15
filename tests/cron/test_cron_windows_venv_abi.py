@@ -63,3 +63,58 @@ def test_managed_install_uses_the_committed_generation_not_the_in_tree_venv(
     assert overlay is not None, "the committed generation must supply a site-packages entry"
     assert overlay == committed / "Lib" / "site-packages"
     assert not overlay.is_relative_to(stale)
+
+
+
+def test_uv_managed_base_interpreter_falls_back_to_virtual_env(tmp_path, monkeypatch):
+    """#153043: a gateway started from a uv-managed base interpreter keeps its venv packages.
+
+    ``interpreter.parent.parent`` is the uv Python directory there, which has no ``pyvenv.cfg``;
+    the launcher's ``VIRTUAL_ENV`` names the real venv, so the overlay must still be produced.
+    """
+    from cron import scheduler_script as sched_script
+
+    uv_python_dir = tmp_path / "uv-python" / "cpython-3.12"
+    uv_python_dir.mkdir(parents=True)
+    base_python = uv_python_dir / "python.exe"
+    base_python.write_text("", encoding="utf-8")
+
+    venv = _write_venv(tmp_path / "venv")
+    (venv / "pyvenv.cfg").write_text(f"home = {uv_python_dir}\nuv = 0.9.0\n", encoding="utf-8")
+
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _root: None)
+    monkeypatch.setattr("pm.environments.committed_venv", lambda _root: None)
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv))
+
+    interpreter, env_overlay = sched_script._windows_cron_python_invocation(str(base_python))
+
+    assert interpreter == str(base_python)
+    assert env_overlay.get("VIRTUAL_ENV") == str(venv)
+    overlay = _site_packages_in(env_overlay)
+    assert overlay == venv / "Lib" / "site-packages"
+
+
+def test_virtual_env_from_an_unrelated_venv_is_ignored(tmp_path, monkeypatch):
+    """A stray VIRTUAL_ENV must not leak another environment's packages into the cron child."""
+    from cron import scheduler_script as sched_script
+
+    uv_python_dir = tmp_path / "uv-python" / "cpython-3.12"
+    uv_python_dir.mkdir(parents=True)
+    base_python = uv_python_dir / "python.exe"
+    base_python.write_text("", encoding="utf-8")
+
+    other_base = tmp_path / "other-python"
+    other_base.mkdir()
+    (other_base / "python.exe").write_text("", encoding="utf-8")
+    unrelated = _write_venv(tmp_path / "unrelated")
+    (unrelated / "pyvenv.cfg").write_text(f"home = {other_base}\nuv = 0.9.0\n", encoding="utf-8")
+
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _root: None)
+    monkeypatch.setattr("pm.environments.committed_venv", lambda _root: None)
+    monkeypatch.setenv("VIRTUAL_ENV", str(unrelated))
+
+    interpreter, env_overlay = sched_script._windows_cron_python_invocation(str(base_python))
+
+    assert interpreter == str(base_python)
+    assert "VIRTUAL_ENV" not in env_overlay
+    assert "PYTHONPATH" not in env_overlay

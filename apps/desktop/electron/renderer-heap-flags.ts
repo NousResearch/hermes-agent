@@ -15,6 +15,13 @@ export interface DesktopLaunchConfig {
   rendererAccessibility?: boolean
   /** `desktop.ssh_path`: explicit Windows ssh client (#103288); unset when absent. */
   sshPath?: string
+  /**
+   * `desktop.ssh_connect_timeout` / `desktop.ssh_forward_timeout` (#132508), as
+   * written: whole seconds. Left raw here so this module stays import-free;
+   * `resolveSshBudgetMs` validates them. Unset when the key is absent or empty.
+   */
+  sshConnectTimeout?: string
+  sshForwardTimeout?: string
 }
 
 export interface PlannedSwitch {
@@ -74,6 +81,12 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
 
       if (sshPath) {
         out.sshPath = sshPath
+      }
+    } else if (key === 'ssh_connect_timeout' || key === 'ssh_forward_timeout') {
+      const seconds = unquote(value)
+
+      if (seconds) {
+        out[key === 'ssh_connect_timeout' ? 'sshConnectTimeout' : 'sshForwardTimeout'] = seconds
       }
     } else if (key === 'renderer_accessibility') {
       const word = unquote(value).toLowerCase()

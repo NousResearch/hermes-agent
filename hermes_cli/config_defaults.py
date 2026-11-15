@@ -2609,6 +2609,12 @@ DEFAULT_CONFIG = {
         # missing or broken. Empty = System32 OpenSSH, then Git for Windows' ssh.exe, then PATH.
         # Read by the app before its first window; restart to apply. Ignored off-Windows.
         "ssh_path": "",
+        # Seconds the app gives SSH to connect, and to set up its port forward (#132508). The app
+        # passes the connect limit on the ssh command line, so ~/.ssh/config cannot raise it; raise
+        # these for a slow link. Whole seconds, up to 120. Read before the first window; restart
+        # to apply.
+        "ssh_connect_timeout": 15,
+        "ssh_forward_timeout": 15,
         # Auto-continue a turn killed by a crash: resuming re-submits the interrupted prompt if
         # fresh; a stale one just shows the recovered partial transcript.
         "auto_continue": {

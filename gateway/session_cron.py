@@ -261,7 +261,8 @@ def _run_identified(run_job, job, execution_id, **kwargs):
         exit_cron_execution(token)
 
 
-# The end reason of a fire whose run_job returned before the agent ran (a gate or a pre-agent refusal).
+# The end reason of a fire whose run_job returned or raised before the agent ran (a gate, a pre-agent
+# refusal or failure).
 CRON_SKIPPED_END_REASON = 'cron_skipped'
 
 
@@ -305,10 +306,16 @@ async def execute(authority, ref, row, policy):
     job = dict(data['cron_job'], execution_id=execution_id)
     token = bind_execution(authority, ref.session_id, job['id'], execution_id)
     try:
-        db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
-        with _profile_runtime_scope(db_path.parent):
-            result = await asyncio.to_thread(_run_identified, run_job, job, execution_id,
-                                             extra_prompt=data['extra_prompt'], cancel_event=cancel)
+        try:
+            db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
+            with _profile_runtime_scope(db_path.parent):
+                result = await asyncio.to_thread(_run_identified, run_job, job, execution_id,
+                                                 extra_prompt=data['extra_prompt'], cancel_event=cancel)
+        except Exception:
+            # A run_job that raised before the agent ran (monitor, preflight) left the row as unused
+            # as a gate does. Not on cancellation: its thread may still be about to run the agent.
+            await _close_unopened_session(authority, ref.session_id)
+            raise
         await _close_unopened_session(authority, ref.session_id)
         # run_job stamps run-side verdicts on ITS job copy (quota hold, unreachable model); the
         # firing scheduler's bookkeeping reads them off its own dict, so they ride the result.

@@ -27,6 +27,8 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    # Who may answer it from a chat (``gateway.approval_actor.clarify_refusal``).
+    authority: Optional[dict] = None
 
 
 _lock = threading.RLock()
@@ -47,11 +49,15 @@ CANCELLED = "\x00cancelled"
 
 
 def register(clarify_id: str, session_key: str, question: str, choices: Optional[list[str]],
-             multi_select: bool = False) -> _ClarifyEntry:
+             multi_select: bool = False, authority: Optional[dict] = None) -> _ClarifyEntry:
     """Register a pending clarify request; caller then blocks on ``wait_for_response``.
-    Open-ended (no choices) entries start in text mode: the next message IS the response."""
+    Open-ended (no choices) entries start in text mode: the next message IS the response.
+    *authority* says who may answer it; default: the current turn's actor, approvers and admins."""
+    if authority is None:
+        from tools.approval_context import prompt_authority
+        authority = prompt_authority()
     entry = _ClarifyEntry(clarify_id, session_key, question, list(choices) if choices else None,
-                          bool(multi_select) and bool(choices), awaiting_text=not bool(choices))
+                          bool(multi_select) and bool(choices), awaiting_text=not bool(choices), authority=authority)
     with _lock:
         _entries[clarify_id] = entry
         _session_index.setdefault(session_key, []).append(clarify_id)
@@ -233,6 +239,16 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
 def attempt_text_response_for_session(session_key: str, response: str) -> str:
     """Try to resolve the oldest pending clarify from typed text; returns a TEXT_* outcome."""
     entry = get_pending_for_session(session_key, include_choice_prompts=True)
+    return _attempt_text_response(entry, response)
+
+
+def attempt_text_response(clarify_id: str, response: str) -> str:
+    """Like :func:`attempt_text_response_for_session`, but only for the entry ``clarify_id`` names:
+    a reply checked against one question (its requester) never settles another raised meanwhile."""
+    return _attempt_text_response(get_pending(clarify_id), response)
+
+
+def _attempt_text_response(entry: Optional[_ClarifyEntry], response: str) -> str:
     if entry is None:
         return TEXT_NO_PENDING
     coerced, reason = _coerce_text_response_detailed(entry, response)

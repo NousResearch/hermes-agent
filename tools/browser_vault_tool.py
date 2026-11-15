@@ -455,7 +455,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
         if written is not None:
             return written
     prompt = get_code_prompt_callback()
-    if prompt is None or not can_prompt_here():
+    if prompt is None or not can_prompt_here(prompt):
         return json.dumps({"success": False, "error_type": "prompt_unavailable",
                            "error": (f"{site} asks for a one-time code and this session cannot ask the user (headless/cron/API). "
                                      "Save an authenticator key for this login so codes can be generated automatically.")})

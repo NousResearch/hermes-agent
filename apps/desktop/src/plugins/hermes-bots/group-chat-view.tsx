@@ -89,7 +89,7 @@ import {
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { LegacyRoomTitle, LegacyWorkingRow } from './group-chat-legacy-parts'
-import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
+import { focusComposerEnd, GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
 import { GroupMemberPicker } from './group-chat-view-members'
 import { compressGroupMemberHistory } from './group-compress'
@@ -1021,6 +1021,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   // view on mount and whenever the log grows — but only when the user is
   // already near the bottom, so reading history is never yanked away.
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null)
+  const [mainComposerInput, threadReplyInput] = [useRef<HTMLTextAreaElement>(null), useRef<HTMLTextAreaElement>(null)]
   const stickToBottomRef = useRef(true)
   // eslint-disable-next-line no-restricted-syntax -- tracks live scroll position from a DOM listener, not an atom
   useEffect(() => {
@@ -1441,15 +1442,10 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
       current.includes(`@${tag}`) ? current : `@${tag} ${current}`.replace(/\s+$/, ' ')
 
     const thread = groupThreadOf(entry)
+    const inThread = replyThread === thread
+    focusComposerEnd(inThread ? threadReplyInput : mainComposerInput)
 
-    if (replyThread === thread) {
-      setReplyDrafts(prev => ({
-        ...prev,
-        [thread]: seed(prev[thread] || '')
-      }))
-    } else {
-      setDraft(seed)
-    }
+    if (inThread) {setReplyDrafts(prev => ({ ...prev, [thread]: seed(prev[thread] || '') }))} else {setDraft(seed)}
   }
 
   // Same appearance pipeline as the roster: custom image/pet, else the deterministic shape+color face.
@@ -1625,6 +1621,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
               onPaste={event => pasteImages(id, event)}
               onSubmitDraft={() => submitReply(id)}
               placeholder={b.group.replyInThreadPlaceholder}
+              ref={threadReplyInput}
               value={replyDrafts[id] || ''}
             />
             {attachButton(id)}
@@ -1671,10 +1668,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
       onDrop={dropFiles}
     >
       {dragOver ? (
-        <div
-          className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center border-2 border-dashed border-(--ui-accent) text-sm font-medium text-(--ui-accent)"
-          key={'dropzone'}
-        >
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center border-2 border-dashed border-(--ui-accent) text-sm font-medium text-(--ui-accent)" key={'dropzone'}>
           {replyThread ? b.group.dropToThread : b.group.dropToRoom}
         </div>
       ) : null}
@@ -1737,6 +1731,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
           onPaste={event => pasteImages(null, event)}
           onSubmitDraft={submit}
           placeholder={b.group.newThreadPlaceholder(group)}
+          ref={mainComposerInput}
           value={draft}
         />
       </RoomComposer>

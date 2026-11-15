@@ -221,6 +221,11 @@ class ProviderProfile:
     process_args: tuple = ()             # default argv tail, e.g. ("--mode", "acp")
     process_command_env_vars: tuple = ()  # env overrides for the binary, in priority order
     process_args_env_var: str = ""       # env override for argv (shlex-split)
+    # The CLI's own sign-in, as an argv tail after the resolved binary, e.g. ("auth", "login"). Sign-in
+    # hints (error copy, cron notices, the Desktop card) show it; empty keeps ``hermes model``. Declared,
+    # not probed: hints are built on the gateway's event loop, so they never run ``setup_status()``.
+    # Keyword-only so a plugin subclass's own positional option keeps its slot.
+    login_args: tuple = field(default=(), kw_only=True)
 
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
@@ -241,6 +246,8 @@ class ProviderProfile:
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
+    # Opt-in: auxiliary calls forward an explicit max_tokens only on routes known to honor it (#139778).
+    forwards_max_tokens: bool = field(default=False, kw_only=True)
     # ``response_format`` types the API rejects outright (e.g. ("json_schema",)); aux requests omit them up front.
     unsupported_response_formats: tuple = ()
     default_aux_model: str = (

@@ -882,6 +882,16 @@ class TestSecurityScanGate:
 
         assert result is not None
 
+    def test_scan_failure_blocks_when_flag_on(self, tmp_path):
+        """A scanner crash must not let the skill through once the guard is enabled."""
+        from tools.skill_manager_tool import _security_scan_skill
+
+        with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
+             patch("tools.skill_manager_tool.scan_skill", side_effect=UnicodeError("boom")):
+            result = _security_scan_skill(tmp_path)
+
+        assert result is not None and "boom" in result
+
     def test_guard_flag_handles_config_error(self):
         """If load_config raises, _guard_agent_created_enabled defaults to False (fail-safe off)."""
         from tools.skill_manager_tool import _guard_agent_created_enabled

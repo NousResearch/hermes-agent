@@ -103,9 +103,11 @@ def test_secondary_reads_own_yaml_and_never_the_launch_env(homes, monkeypatch):
 
 
 def test_explicit_env_beats_yaml_for_the_owning_profile(homes, monkeypatch):
-    """Single-profile / owning-profile contract: DISCORD_ALLOW_MENTION_EVERYONE=false beats
+    """Single-profile / owning-profile contract: a ``.env`` DISCORD_ALLOW_MENTION_EVERYONE=false beats
     ``everyone: true`` and TELEGRAM_REACTIONS=true beats the stock ``reactions: false`` (#109032)."""
+    from hermes_cli import env_loader
     launch, _ = homes
+    monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", {"DISCORD_ALLOW_MENTION_EVERYONE", "TELEGRAM_REACTIONS"})
     (launch / "config.yaml").write_text(
         "discord:\n  allow_mentions:\n    everyone: true\ntelegram:\n  reactions: false\n", encoding="utf-8")
     monkeypatch.setenv("DISCORD_ALLOW_MENTION_EVERYONE", "false")

@@ -23,11 +23,11 @@ it('keeps a member’s outcome from a thread that still works after the user pos
   const outcomes = memberOutcomes(events)
 
   expect(focusThread(events)).toBe('B')
-  expect(memberStatus('b', activity, outcomes, 0)).toMatchObject({ kind: 'failed', reason: 'provider_error' })
-  expect(memberStatus('a', activity, outcomes, 0).kind).toBe('replied')
-  expect(memberStatus('c', activity, outcomes, 0).kind).toBe('working')
+  expect(memberStatus('b', activity, outcomes)).toMatchObject({ kind: 'failed', reason: 'provider_error' })
+  expect(memberStatus('a', activity, outcomes).kind).toBe('replied')
+  expect(memberStatus('c', activity, outcomes).kind).toBe('working')
   // Once thread A is done, its failure still stands while thread B runs; a newer message in A supersedes it.
-  expect(memberStatus('b', [{ member_id: 'a', status: 'running', thread_id: 'B' }], memberOutcomes(events), 0).kind).toBe('failed')
+  expect(memberStatus('b', [{ member_id: 'a', status: 'running', thread_id: 'B' }], memberOutcomes(events)).kind).toBe('failed')
   expect(memberOutcomes([...events, user(6, 'a2', 'A')]).get('b')).toBeUndefined()
 })
 
@@ -49,6 +49,6 @@ it('reads a member the driver parked as unavailable, and never a room-level stal
   ]
 
   const outcomes = memberOutcomes(parked)
-  expect(memberStatus('scout', [], outcomes, 0).kind).toBe('unavailable')
+  expect(memberStatus('scout', [], outcomes).kind).toBe('unavailable')
   expect([...outcomes.keys()]).toEqual(['scout'])
 })

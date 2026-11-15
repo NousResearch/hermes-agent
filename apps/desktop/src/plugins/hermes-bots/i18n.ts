@@ -81,7 +81,7 @@ const en: BotsMessages = {
     shareKeys: 'Share keys & accounts with the main profile',
     shareKeysOn: target => `Share keys & accounts with the default profile on ${target}`,
     shareKeysHint:
-      'Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.',
+      'Subscriptions, OAuth logins, and API keys stay shared with the default profile (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.',
     needsModel:
       'No model provider is ready for it yet, so it skipped its introduction. Pick a provider and model under Advanced.',
     configureModel: 'Configure model',
@@ -521,7 +521,7 @@ const ja: BotsMessages = {
     shareKeys: 'メインプロファイルとキー・アカウントを共有',
     shareKeysOn: target => `${target} の default プロファイルとキー・アカウントを共有`,
     shareKeysHint:
-      'サブスクリプション、OAuth ログイン、API キーをコピーせず共有するため、トークン更新で互いに無効になりません。チェックを外すと独立したスナップショットをコピーします。',
+      'サブスクリプション、OAuth ログイン、API キーを default プロファイルとコピーせず共有するため、トークン更新で互いに無効になりません。チェックを外すと独立したスナップショットをコピーします。',
     needsModel:
       'まだ使用できるモデルプロバイダーがないため、自己紹介をスキップしました。「詳細設定」でプロバイダーとモデルを選んでください。',
     configureModel: 'モデルを設定',
@@ -962,7 +962,7 @@ const zh: BotsMessages = {
     shareKeys: '与主配置档案共享密钥和账户',
     shareKeysOn: target => `与 ${target} 上的 default 配置档案共享密钥和账户`,
     shareKeysHint:
-      '订阅、OAuth 登录和 API 密钥保持共享而非复制，令牌刷新不会使另一方失效。取消勾选则创建隔离的快照副本。',
+      '订阅、OAuth 登录和 API 密钥与 default 配置档案保持共享而非复制，令牌刷新不会使另一方失效。取消勾选则创建隔离的快照副本。',
     needsModel: '它还没有可用的模型提供商，因此跳过了自我介绍。请在“高级”中选择提供商和模型。',
     configureModel: '配置模型',
     createEmpty: '创建空配置（跳过内置技能）',
@@ -1388,7 +1388,7 @@ const zhHant: BotsMessages = {
     shareKeys: '與主要設定檔共用金鑰和帳戶',
     shareKeysOn: target => `與 ${target} 上的 default 設定檔共用金鑰和帳戶`,
     shareKeysHint:
-      '訂閱、OAuth 登入和 API 金鑰保持共用而非複製，權杖更新不會使另一方失效。取消勾選則建立隔離的快照副本。',
+      '訂閱、OAuth 登入和 API 金鑰與 default 設定檔保持共用而非複製，權杖更新不會使另一方失效。取消勾選則建立隔離的快照副本。',
     needsModel: '它還沒有可用的模型提供者，因此略過了自我介紹。請在「進階」中選擇提供者和模型。',
     configureModel: '設定模型',
     createEmpty: '建立空白設定（略過內建技能）',

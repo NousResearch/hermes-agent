@@ -276,9 +276,12 @@ class RoomContext(Result):
 
 
 class GroupsStateResult(Result):
+    """``change_events``: this backend broadcasts ``groups.changed`` when the room moves, so a client's poll is
+    only a backstop (absent on older backends: keep polling at the old rate)."""
     room: Room
     driver_status: RoomDriverStatus | None = None
     context: RoomContext | None = None
+    change_events: bool | None = None
 
 
 method("groups.state", params=GroupsStateParams, result=GroupsStateResult,

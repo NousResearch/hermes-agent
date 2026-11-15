@@ -1,0 +1,79 @@
+name: Catalog dead repos
+
+# Weekly: delist plugin-catalog entries whose repository was deleted or whose pinned commit is
+# gone (force-pushed away), since `hermes plugins install` can no longer install them. Delisting
+# deletes the entry file (plugin-catalog/README.md "Delisting"); it never touches removed.yaml.
+#
+# The script refuses to delist anything when a lookup does not answer cleanly or when too many
+# entries look dead at once (an outage, not a week of deletions). Changes land as ONE PR on the
+# bot/catalog-dead-repos branch for a maintainer to review and merge; nothing auto-merges.
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: catalog-dead-repos
+  cancel-in-progress: false
+
+jobs:
+  delist:
+    if: github.repository == 'NousResearch/hermes-agent'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    environment: trusted-automation
+    permissions:
+      contents: write # push bot/catalog-dead-repos
+      pull-requests: write # open or update its PR
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install ruamel.yaml
+        uses: ./.github/actions/retry
+        with:
+          command: pip install ruamel.yaml==0.18.17
+
+      - name: Get GitHub App token
+        id: app-token
+        uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Find and delete dead entries
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: python3 scripts/ci/catalog_dead_repos.py --delete --report "$RUNNER_TEMP/body.md"
+
+      - name: Open or update the delisting PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BOT_BRANCH: bot/catalog-dead-repos
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- plugin-catalog/; then
+            echo "Every catalog entry is installable. Nothing to delist."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A plugin-catalog/
+          git commit -q -m "chore(catalog): delist entries whose repository or pinned commit is gone"
+          # Bot-only branch, rebuilt from main every run.
+          git push --force origin HEAD:"$BOT_BRANCH"
+          pr=$(gh pr list --head "$BOT_BRANCH" --state open --json number --jq '.[0].number')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --head "$BOT_BRANCH" --base main \
+              --title "Catalog: delist entries that can no longer be installed" \
+              --body-file "$RUNNER_TEMP/body.md"
+          fi

@@ -1,0 +1,45 @@
+name: airflow-mlops
+repo: https://github.com/dayzell/MLOps_Assistant_Hermes_x_AirFlow
+sha: 1417f40f29c28fd7aac571758c34475c6dc11ad9
+description: "Apache Airflow MLOps assistant: watch DAGs, diagnose failed runs, approved targeted retries, fixes tested in a Docker sandbox. Calls your Airflow REST API; optional docker run sandbox. Disclosure — calls only the Airflow REST API at your configured base_url with your Airflow credentials; while a DAG folder is configured it inspects Hermes' write_file, patch, terminal and execute_code calls and blocks or asks approval for changes to DAG files; task retries ask Hermes approval unless you enable auto_remediation_enabled, which lets it retry tasks it classified as transient on its own (including inside the optional night-watch cron job); the optional sandbox (off by default) runs your DAG code plus the model's patch in a local `docker run --network none` container through Hermes' terminal tool."
+maintainer: dayzell
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/dayzell/MLOps_Assistant_Hermes_x_AirFlow
+version: "1.3.0"
+readme: true
+platforms: []
+title: Airflow MLOps
+known_issues:
+  - "The sandbox (off by default) needs Docker reachable from Hermes' local terminal and an image with Airflow and your DAG dependencies."
+  - "In Hermes' yolo mode, approvals are skipped by Hermes; the plugin's blocks still apply."
+capabilities:
+  provides_tools:
+    - airflow_list_dags
+    - airflow_get_dag
+    - airflow_get_dag_runs
+    - airflow_get_run_status
+    - airflow_get_task_logs
+    - airflow_get_xcoms
+    - airflow_get_dependencies
+    - airflow_get_dag_source
+    - airflow_review_dag
+    - airflow_watch_check
+    - airflow_diagnose_run
+    - airflow_build_report
+    - airflow_clear_tasks
+    - airflow_sandbox_test
+    - airflow_audit_plan
+    - airflow_audit_select
+    - airflow_audit_progress
+    - airflow_audit_timeline
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env:
+    - AIRFLOW_USERNAME
+    - AIRFLOW_PASSWORD
+    - AIRFLOW_TOKEN

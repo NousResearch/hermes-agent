@@ -353,14 +353,32 @@ def _allocate_display() -> int:
 def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """``base_env`` (default ``os.environ``) with this profile's DISPLAY/XAUTHORITY/DBUS_SESSION_BUS_ADDRESS
     merged in when its desktop is running. Unchanged otherwise, so hosts with a real seat keep it.
-    Pure: never starts anything (it is called from env builders, status probes and tests)."""
+    Pure: never starts anything (it is called from env builders, status probes and tests). While the screen is
+    hosted inside the terminal backend this machine's seat is removed instead: a GUI child started here then has
+    no screen and fails, rather than acting on the seat a human is sitting at (#90374 class)."""
+    from tools.bot_desktop import sandbox_host
     env = dict(os.environ if base_env is None else base_env)
-    published = published_env()
+    published = host_published_env()
     if published:
         touch_activity()  # a browser / cua-driver spawn is the agent using its screen
         env.update(published)
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+    elif sandbox_host._read_marker():
+        for key in ("DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY"):
+            env.pop(key, None)
+        if is_running():
+            touch_activity()  # the sandbox-hosted screen: the spawn is still the agent using it
     return env
+
+
+def host_published_env() -> dict[str, str]:
+    """The published values that are valid for a process started on THIS machine: the gateway-hosted screen's,
+    or ``{}`` while the host-side marker routes the screen to the terminal backend. Those values name a display,
+    an Xauthority file and XDG dirs inside the sandbox; only processes run there (:func:`published_env`) use them."""
+    from tools.bot_desktop import sandbox_host
+    if sandbox_host._read_marker():
+        return {}
+    return published_env()
 
 
 def ensure_started_for_tool() -> None:
@@ -792,6 +810,7 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             child_env.pop(key, None)
         from hermes_cli._launchers import installation_command
         from tools.bot_desktop.idle_watch import next_check_in
+        from hermes_cli._startup_fast import project_root_str
         child_env.update({
             "HERMES_BD_PROFILE": _profile_name(),
             "HERMES_BD_DISPLAY_NUM": str(num),
@@ -807,7 +826,7 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             # so the inherited PYTHONPATH generation is never pinned, and on a store install neither is this
             # interpreter.
             "HERMES_BD_IDLE_CMD": shlex.join(installation_command(
-                Path(__file__).resolve().parents[2], module="tools.bot_desktop.idle_watch")),
+                Path(project_root_str()), module="tools.bot_desktop.idle_watch")),
             "HERMES_BD_HOME": str(get_hermes_home()),
             "HERMES_BD_IDLE_FIRST_DELAY": str(next_check_in(idle_stop_seconds(), 0.0)),
         })

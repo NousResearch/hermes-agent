@@ -1,0 +1,44 @@
+name: sheets
+title: Hermes Sheets
+repo: https://github.com/Adolanium/hermes-sheets
+sha: 6c63095c148ade472a8a9b5d8815ef4ad3f028bc
+description: >-
+  An agentic spreadsheet. Ask for a sheet and a Hermes agent finds the rows on
+  the web, each with its source, or bring your own. Hermes suggests typed
+  columns, fills only the ones you pick, explains what the answers add up to,
+  and, once you allow it, lets any chat read your grids and propose cells,
+  columns and rows that you approve and can undo. Formula columns, a totals
+  row, cell formatting with highlight rules, and Excel import and export are
+  built in. Disclosure — Build sheet,
+  research columns and Ask start hidden Hermes sessions that use your Hermes
+  tools and read third-party web pages; approval prompts inside build and
+  research sessions are denied; import reads and export writes the one file
+  you pick in the system dialog (text, CSV or an Excel workbook), through the
+  plugin's own backend, and the
+  folder source reads a folder you grant; grids live in Desktop plugin
+  storage, with a copy under plugin-data/sheets/ only after you turn on chat
+  access, which starts off, and each Hermes profile that has the plugin keeps
+  its own copy; with the Data or Whiteboard plugin
+  installed, a click hands a table or ticked rows to that page through a
+  window event, with no file, backend or model involved; no telemetry, no credentials, no shell commands or
+  background processes of its own. Independent community project, not
+  affiliated with Nous Research.
+maintainer: Adolanium
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/Adolanium/hermes-sheets#readme
+version: "0.1.9"
+image: https://raw.githubusercontent.com/Adolanium/hermes-sheets/6c63095c148ade472a8a9b5d8815ef4ad3f028bc/docs/assets/catalog.png
+screenshots:
+  - https://raw.githubusercontent.com/Adolanium/hermes-sheets/6c63095c148ade472a8a9b5d8815ef4ad3f028bc/docs/assets/hero.jpg
+  - https://raw.githubusercontent.com/Adolanium/hermes-sheets/6c63095c148ade472a8a9b5d8815ef4ad3f028bc/docs/assets/built.png
+capabilities:
+  provides_tools:
+    - sheets_list
+    - sheets_read
+    - sheets_propose
+    - sheets_create
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

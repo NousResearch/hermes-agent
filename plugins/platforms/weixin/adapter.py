@@ -32,7 +32,7 @@ from gateway.platforms.helpers import MessageDeduplicator, cancel_task, greedy_p
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from agent.i18n import t
 from gateway.platforms.base import (
-    _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult,
+    _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
@@ -353,10 +353,17 @@ async def _upload_ciphertext(session: aiohttp.ClientSession, *, ciphertext: byte
 
 
 async def _download_bytes(session: aiohttp.ClientSession, *, url: str, timeout_seconds: float = 60.0) -> bytes:
+    from gateway.platforms.base import read_httpx_body_with_limit
+    from gateway.platforms.helpers import ssrf_checked_aiohttp_get
+
     async def _do() -> bytes:
-        async with session.get(url) as response:
+        # Callers vet ``url`` (is_safe_url for reply URLs, the CDN allowlist or configured CDN base for
+        # inbound media), so a fake-ip resolver answering the CDN with 198.18.x.x still works; every
+        # redirect hop is re-checked, since either can 302 anywhere.
+        async with ssrf_checked_aiohttp_get(session, url, first_hop_vetted=True) as response:
             response.raise_for_status()
-            return await response.read()
+            return await read_httpx_body_with_limit(
+                response, media_type="media", body=response.content.iter_chunked(65536))
     return await asyncio.wait_for(_do(), timeout=timeout_seconds)
 
 
@@ -1028,7 +1035,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     attempt += 1
                     wait = self._send_chunk_retry_delay_seconds * attempt
                     logger.warning("[%s] send chunk failed to=%s attempt=%d/%d, retrying in %.2fs: %s",
-                                   self.name, _safe_id(chat_id), attempt, self._send_chunk_retries + 1, wait, exc)
+                                   self.name, _safe_id(chat_id), attempt, self._send_chunk_retries + 1, wait, describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or exc)
                     if wait > 0:
                         await asyncio.sleep(wait)
             assert last_error is not None
@@ -1063,8 +1070,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     await asyncio.sleep(self._send_chunk_delay_seconds)
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
-            logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
-            return SendResult(success=False, error=str(exc))
+            logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), shown := describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or str(exc))
+            return SendResult(success=False, error=shown)  # the text may echo the proxy URL
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
         """Return a valid typing ticket, refreshing via getConfig once the 600s TTL evicts it —
@@ -1094,7 +1101,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def send_image(self, chat_id: str, image_url: str, caption: str, reply_to: Optional[str] = None, metadata=None) -> SendResult:
         cleanup = image_url.startswith(("http://", "https://"))
-        file_path = await self._download_remote_media(image_url) if cleanup else image_url.replace("file://", "")
+        try:
+            file_path = await self._download_remote_media(image_url) if cleanup else image_url.replace("file://", "")
+        except Exception as exc:  # unsafe, failed or over gateway.max_inbound_media_bytes: keep the link
+            logger.warning("[%s] image download refused, sending the URL as text: %s", self.name, exc, exc_info=True)
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
         if not cleanup and not os.path.isabs(file_path):
             file_path = os.path.abspath(file_path)
         try:
@@ -1113,8 +1124,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         try:
             return SendResult(success=True, message_id=await self._send_file(chat_id, path, caption, **kwargs))
         except Exception as exc:
-            logger.error("[%s] %s failed to=%s: %s", self.name, label, _safe_id(chat_id), exc)
-            return SendResult(success=False, error=str(exc))
+            logger.error("[%s] %s failed to=%s: %s", self.name, label, _safe_id(chat_id), shown := describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or str(exc))
+            return SendResult(success=False, error=shown)
 
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None, reply_to: Optional[str] = None,
@@ -1287,11 +1298,11 @@ async def _standalone_send(pconfig: Any, chat_id: str, message: str, *, thread_i
     if not check_weixin_requirements():
         return send_error("Weixin requirements not met. Need aiohttp + cryptography.")
     try:
-        return await send_weixin_direct(extra=getattr(pconfig, "extra", None) or {}, token=getattr(pconfig, "token", None),
-                                        chat_id=chat_id, message=message, media_files=media_files)
+        return await send_weixin_direct(extra=(extra := getattr(pconfig, "extra", None) or {}), token=getattr(pconfig, "token", None), chat_id=chat_id, message=message, media_files=media_files)
     except Exception as e:
-        logger.debug("Weixin standalone send failed", exc_info=True)
-        return send_error(f"Weixin send failed: {e}")
+        hosts = (_extra_or_secret(extra, "base_url", ILINK_BASE_URL), _extra_or_secret(extra, "cdn_base_url", WEIXIN_CDN_BASE_URL))
+        logger.debug("Weixin standalone send failed", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction(*hosts, trust_env=gateway_trust_env()))))
+        return send_error(f"Weixin send failed: {shown or e}")
 
 
 # Weixin DM policy by menu index (index 2 = allowlist is prompted separately).

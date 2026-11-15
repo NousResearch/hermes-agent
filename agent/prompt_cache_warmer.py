@@ -183,7 +183,7 @@ class _Run:
     spent_usd: float = 0.0
     last_warm_usd: float = 0.0
     #: The session and billing route that sent the request: a refresh still in flight when
-    #: compression rotates the session is booked where it was sent, never on the new session.
+    #: compression rotates the session is booked in state.db where it was sent.
     billing: dict[str, Any] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -429,7 +429,9 @@ class PromptCacheWarmer:
             if amount is not None:
                 run.spent_usd += amount
                 run.last_warm_usd = amount
-            if getattr(agent, "session_id", None) == b["session_id"]:
+            # Compression keeps the running counters (a refresh still adds to them); only
+            # ``reset_session_state`` zeroes them, and it zeroes ``session_api_calls`` with them.
+            if getattr(agent, "session_api_calls", 0) >= b["api_calls"]:
                 self._add_to_session_totals(canonical, amount)
             db = getattr(agent, "_session_db", None)
             if db is not None and b["session_id"]:
@@ -518,6 +520,7 @@ class PromptCacheWarmer:
             "session_id": getattr(agent, "session_id", None), "source": _agent_session_source(agent),
             "provider": agent.provider, "base_url": agent.base_url, "model": agent.model,
             "api_mode": agent.api_mode, "api_key": getattr(agent, "api_key", ""),
+            "api_calls": getattr(agent, "session_api_calls", 0),
         }
 
     @staticmethod

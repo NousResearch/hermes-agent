@@ -353,8 +353,9 @@ def _compress(agent):  # compression.in_place: false rotates the id, keeps the r
     agent.session_id = "s-after-compression"
 
 
-def _new_session(agent):  # reset_session_state: a fresh session's counters start at zero
+def _new_session(agent):  # reset_session_state: a fresh session's counters start at zero, a new epoch
     agent.session_id, agent.session_api_calls = "s-new", 0
+    agent._session_reset_epoch = getattr(agent, "_session_reset_epoch", 0) + 1
 
 
 @pytest.mark.parametrize("rotate, totals_include_refresh", [(_compress, True), (_new_session, False)])

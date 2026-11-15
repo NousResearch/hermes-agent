@@ -37,10 +37,10 @@ class _Client:
         return SimpleNamespace(usage=_Usage(3, 1, 119_997, 0), content=[], stop_reason="max_tokens")
 
 
-def _agent(mode="streaming", **over):
+def _agent(**over):
     base = dict(
         api_mode="anthropic_messages", _use_prompt_caching=True, _cache_disabled=False, _cache_ttl="5m",
-        _cache_warming_mode=mode, _interrupt_requested=False, _anthropic_client=_Client(),
+        _interrupt_requested=False, _anthropic_client=_Client(),
         model="claude-opus-4-7", provider="anthropic", base_url="https://api.anthropic.com", api_key="",
         session_api_calls=7, session_prompt_tokens=0, session_completion_tokens=0, session_total_tokens=0,
         session_input_tokens=0, session_output_tokens=0, session_cache_read_tokens=0,
@@ -81,7 +81,7 @@ def test_replay_is_the_original_request_capped_at_one_token(priced):
     warmer = pcw.get_prompt_cache_warmer(agent)
     request = _request()
     assert warmer.start(request, _RESPONSE) is None
-    assert warmer.status["state"] == "scheduled" and warmer.status["phase"] == "streaming"
+    assert warmer.status["state"] == "scheduled"
     # The loop redecorates message dicts in place before the next request; the replay must
     # still send what wrote the cache entry.
     request["messages"][0]["content"][0].pop("cache_control")
@@ -102,30 +102,29 @@ def test_replay_is_the_original_request_capped_at_one_token(priced):
     assert warmer.status["state"] == "scheduled" and warmer.status["warm_count"] == 1
 
 
-def test_settle_ends_streaming_mode_but_idle_mode_keeps_warming(priced):
-    agent = _agent("streaming")
+def test_turn_end_stops_warming_and_a_run_never_outspends_the_miss_it_prevents(priced):
+    """No warming between turns (the next request would be a guess), and a tool call that
+    outlasts ``miss / warm`` refreshes stops warming rather than pay more than one cache write."""
+    agent = _agent()
     warmer = pcw.get_prompt_cache_warmer(agent)
     warmer.start(_request(), _RESPONSE)
-    warmer.on_turn_settled()
-    assert warmer.status == {"state": "inactive", "reason": "agent run settled", "decision": warmer.status["decision"]}
+    pcw.cancel_prompt_cache_warming(agent, "agent run settled")
+    assert warmer._run is None and warmer.status["reason"] == "agent run settled"
 
-    agent._cache_warming_mode = "idle"
-    warmer.start(_request(), SimpleNamespace(usage=_Usage(50, 30, 0, 400_000)))
-    warmer.on_turn_settled()
-    assert warmer.status["phase"] == "idle"
-    _fire(warmer)
-    assert len(agent._anthropic_client.calls) == 1
-    # Idle economics: 15% continuation chance must still clear the $0.05 floor; at 120k Opus
-    # tokens it does not, so the same idle run stops before spending.
     warmer.start(_request(), _RESPONSE)
-    warmer.on_turn_settled()
-    _fire(warmer)
-    assert len(agent._anthropic_client.calls) == 1
+    d = pcw.evaluate_economics(_OPUS, 120_000)  # _RESPONSE's prompt size
+    affordable = int(d.miss_cost // d.warm_cost)
+    for _ in range(affordable + 3):
+        if warmer._run is None:
+            break
+        _fire(warmer)
+    assert len(agent._anthropic_client.calls) == affordable
     assert warmer.status["reason"] == "expected savings below threshold"
+    assert affordable * d.warm_cost <= d.miss_cost
 
 
 @pytest.mark.parametrize("mutate, reason", [
-    (lambda a, r: setattr(a, "_cache_warming_mode", "off"), "cache warming disabled"),
+    (lambda a, r: setattr(a, "_skip_prompt_cache_warming", True), "the parent agent keeps this prefix warm"),
     (lambda a, r: setattr(a, "api_mode", "codex_responses"), "only Anthropic Messages and Chat Completions requests are warmed"),
     (lambda a, r: setattr(a, "_cache_ttl", None), "cache lifetime unavailable"),
     (lambda a, r: r.update(thinking={"type": "enabled", "budget_tokens": 2048}), "request cannot be replayed safely (budget thinking)"),
@@ -148,9 +147,8 @@ def test_unpriced_or_cheap_prompts_never_pay_for_a_refresh(monkeypatch):
     warmer = pcw.get_prompt_cache_warmer(_agent())
     assert warmer.start(_request(), SimpleNamespace(usage=_Usage(3_000, 30, 0, 0))) == "expected savings below threshold"
     # The pure economics: pi's decision rule (p * miss - warm >= $0.05).
-    d = pcw.evaluate_economics(_OPUS, 100_000, "streaming")
+    d = pcw.evaluate_economics(_OPUS, 100_000)
     assert (round(d.warm_cost, 4), round(d.miss_cost, 4), d.action) == (0.05, 0.575, "warm")
-    assert pcw.evaluate_economics(_OPUS, 100_000, "idle").action == "stop"
 
 
 def test_a_new_real_request_or_a_changed_conversation_stops_the_run(priced):
@@ -172,7 +170,6 @@ def test_a_new_real_request_or_a_changed_conversation_stops_the_run(priced):
 def test_timer_delay_keeps_a_ten_second_margin():
     assert pcw.cache_warming_delay_s(300) == 270 and pcw.cache_warming_delay_s(3600) == 3240
     assert pcw.cache_warming_delay_s(12) == 2 and pcw.cache_warming_delay_s(10) is None
-    assert pcw.normalize_cache_warming_mode(" Idle ") == "idle" and pcw.normalize_cache_warming_mode(True) == "off"
 
 
 def test_chat_completions_gateway_is_warmed_on_the_five_minute_schedule(priced):
@@ -195,18 +192,14 @@ def test_chat_completions_gateway_is_warmed_on_the_five_minute_schedule(priced):
     assert pcw.warm_ttl_seconds(_agent(_cache_ttl="1h")) == 3600  # native Anthropic keeps its tier
 
 
-def test_config_file_turns_warming_on_and_slow_responses_refresh_sooner(priced, tmp_path, monkeypatch):
-    """The setting is read from the profile's config.yaml, and a response that took 200 s to
+def test_warming_needs_no_config_and_slow_responses_refresh_sooner(priced, tmp_path, monkeypatch):
+    """With an empty config.yaml warming arms (no knob), and a response that took 200 s to
     finish refreshes 200 s sooner: the entry's lifetime started when the request was sent."""
     import time as _time
 
-    import hermes_yaml as yaml
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"prompt_caching": {"cache_warming": "streaming"}}))
-    agent = _agent()
-    del agent._cache_warming_mode
-    assert pcw.cache_warming_mode(agent) == "streaming"
-    warmer = pcw.get_prompt_cache_warmer(agent)
+    (tmp_path / "config.yaml").write_text("{}\n")
+    warmer = pcw.get_prompt_cache_warmer(_agent())
     sent = _time.time() - 200
     assert warmer.start(_request(), _RESPONSE, sent_at=sent) is None
     assert warmer._run.next_warm_at == pytest.approx(sent + pcw.cache_warming_delay_s(300))

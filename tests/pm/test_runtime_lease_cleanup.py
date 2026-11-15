@@ -39,6 +39,22 @@ def test_pruner_removes_abandoned_file_while_holding_its_lock(tmp_path, monkeypa
     assert locked_at_delete == [True]
 
 
+@pytest.mark.platforms("any")
+def test_lease_records_its_lessee(tmp_path):
+    """An orphaned lease names the process that held it (#122928 diagnosability)."""
+    generation = _generation(tmp_path / "generation")
+    release = runtime_state.lease_directory(generation)
+    try:
+        lease = next((generation / ".leases").iterdir())
+        payload = json.loads(lease.read_text(encoding="utf-8"))
+        assert payload["pid"] == os.getpid()
+        assert payload["created"]
+        assert payload["argv0"]
+    finally:
+        release()
+    assert list((generation / ".leases").iterdir()) == []
+
+
 @pytest.mark.platforms("windows")
 def test_pruner_keeps_a_windows_creator_before_its_first_lock(tmp_path, monkeypatch):
     generation = _generation(tmp_path / "generation")

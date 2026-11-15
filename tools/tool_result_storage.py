@@ -207,7 +207,7 @@ def _write_to_spillover(content: str, filename: str, subdir: str = SPILLOVER_SUB
         path.write_bytes(data)
         persisted_size = os.stat(path).st_size
     except OSError as exc:
-        logger.warning("Spillover write failed for %s: %s", filename, exc)
+        logger.warning("Archive write to %s failed for %s: %s", subdir, filename, exc)
         return None
     if persisted_size != len(data):
         logger.warning(
@@ -374,6 +374,19 @@ def _pageable_text(content: str) -> str:
     except (TypeError, ValueError):
         return text
     return f"{text}\n\n{_ENVELOPE_METADATA_TAG}\n{metadata}\n{_ENVELOPE_METADATA_CLOSING_TAG}\n"
+
+
+_PRUNED_JSON_ARCHIVE_RE = re.compile(r"(?:^|[/\\])cache[/\\]pruned[/\\][^/\\]+\.json$")
+
+
+def is_pruned_json_archive(path: str) -> bool:
+    """True for a JSON prune archive (``cache/pruned/<name>.json``): ``read_file`` pages its text."""
+    return isinstance(path, str) and _PRUNED_JSON_ARCHIVE_RE.search(path) is not None
+
+
+def pageable_archive_text(raw: str) -> str:
+    """The pageable rendering of an archived JSON tool result: the text it wraps, nothing dropped."""
+    return _pageable_text(raw)
 
 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:

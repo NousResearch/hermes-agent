@@ -36,7 +36,7 @@ def _keep_running_turn(
 
     The post-tool site runs between tool rounds of a live turn; a count-only tail let a long tool loop
     stub its own earlier calls, so the model re-ran them or answered blind."""
-    if not (isinstance(turn_start, int) and 0 < turn_start < len(messages)
+    if not (isinstance(turn_start, int) and 0 <= turn_start < len(messages)
             and isinstance(messages[turn_start], dict) and messages[turn_start].get("role") == "user"):
         return pruned, 0
     return [*pruned[:turn_start], *messages[turn_start:]], _changed_rows(messages[turn_start:], pruned[turn_start:])

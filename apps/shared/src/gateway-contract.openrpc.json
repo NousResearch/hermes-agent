@@ -14236,6 +14236,18 @@
             ],
             "default": null,
             "title": "Already Installed"
+          },
+          "upstream_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Upstream Repo"
           }
         },
         "required": [

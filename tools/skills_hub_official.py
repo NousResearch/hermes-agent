@@ -58,12 +58,14 @@ class OptionalSkillSource(SkillSource):
     def _rel(identifier: str) -> str:
         return identifier.split("/", 1)[-1] if identifier.startswith("official/") else identifier
 
-    def _meta(self, rel_dir: str, name: str, description: str, tags: list) -> SkillMeta:
+    def _meta(self, rel_dir: str, name: str, description: str, tags: list,
+              upstream: Optional[dict[str, str]] = None) -> SkillMeta:
         return SkillMeta(
             name=name, description=description, source="official", identifier=f"official/{rel_dir}",
-            trust_level="builtin", repo=self.OFFICIAL_REPO,
+            trust_level="trusted" if upstream else "builtin",
+            repo=upstream["repo"] if upstream else self.OFFICIAL_REPO,
             # The centralized skills index consumes repo-root-relative paths.
-            path=f"{self.OPTIONAL_SKILLS_PREFIX}/{rel_dir}", tags=tags,
+            path=upstream["path"] if upstream else f"{self.OPTIONAL_SKILLS_PREFIX}/{rel_dir}", tags=tags,
         )
 
     def _remote_meta(self, rel_dir: str) -> SkillMeta:
@@ -225,7 +227,11 @@ class OptionalSkillSource(SkillSource):
                 content = content.decode("utf-8")
             except UnicodeDecodeError:
                 return None
-        meta_block = _parse_frontmatter(content).get("metadata")
+        return self._upstream_pointer_from_frontmatter(_parse_frontmatter(content))
+
+    @staticmethod
+    def _upstream_pointer_from_frontmatter(fm: dict) -> Optional[dict[str, str]]:
+        meta_block = fm.get("metadata")
         hermes_meta = meta_block.get("hermes") if isinstance(meta_block, dict) else None
         upstream = hermes_meta.get("upstream") if isinstance(hermes_meta, dict) else None
         if not isinstance(upstream, dict):
@@ -276,7 +282,8 @@ class OptionalSkillSource(SkillSource):
             fm = _parse_frontmatter(content)
             tags = _hermes_tags(fm)
             results.append(self._meta(parent.relative_to(self._optional_dir).as_posix(), fm.get("name", parent.name),
-                                      fm.get("description", "")[:200], tags if isinstance(tags, list) else []))
+                                      fm.get("description", "")[:200], tags if isinstance(tags, list) else [],
+                                      upstream=self._upstream_pointer_from_frontmatter(fm)))
         return results
 
 
@@ -376,6 +383,8 @@ class HermesIndexSource(SkillSource):
             bundle.name = slug
         bundle.source = entry.get("source", "hermes-index")
         bundle.identifier = identifier
+        if bundle.source == "official" and repo and repo != OptionalSkillSource.OFFICIAL_REPO:
+            bundle.metadata = {**bundle.metadata, "upstream_repo": repo, "upstream_path": path}
         return bundle
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:

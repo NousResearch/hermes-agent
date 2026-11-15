@@ -54,7 +54,8 @@ _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 # Per home: the subset of the snapshot a dotenv reload may re-assert — see ``AppliedVar.authoritative`` (#74265).
 _SECRET_SOURCE_RESTORE_BY_HOME: dict[str, dict[str, str]] = {}
 # Per home: what the process-global path WROTE into ``os.environ`` for an external source — name →
-# (source name, value written, value the name held before the first write or None). The per-home
+# (source name, value written, value the name held before the first write or None). The frozen launch
+# env keeps its own record of the writes it holds (``launch_profile_policy._source_writes``). The per-home
 # snapshot above is republished on every pass, but ``os.environ`` is not: without this record a value a
 # since-removed or disabled source injected stayed in the process env, and single-profile
 # ``get_secret()`` kept serving it through its ``os.environ`` fallback until restart. Deliberately NOT
@@ -911,6 +912,13 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
     home_key = hermes_home_key(home_path)
     writes = _SECRET_SOURCE_WRITES_BY_HOME.get(home_key)
     claims = _RELEASED_BRIDGE_CLAIMS_BY_HOME.get(home_key)
+    # The frozen launch env's copies of this home's writes, revoked by their own record: the
+    # os.environ record may be gone or retargeted since (another writer, a failed fetch).
+    policy = _launch_policy()
+    if policy is not None:
+        for name, source in policy._launch_env_source_writes(home_key).items():
+            if not keep(name, source):
+                policy._revoke_launch_env_write(home_key, name)
     if not writes and not claims:
         return
     try:
@@ -1069,6 +1077,10 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     if active is not None:
         _revoke_secret_source_writes(home_path, keep=lambda _name, source: source in active)
     environ_before = dict(os.environ)
+    # Read the capture state AFTER the copy (and before the publish: see _record_secret_source_writes):
+    # an activation landing first is then seen as captured, so an adopted prior always predates capture.
+    policy = _launch_policy()
+    launch_env_captured = policy is not None and policy._launch_env_captured()
     # Latched before the sources run: a source must not be able to re-select the backend (D32).
     from hermes_cli.config_backend import get_config_backend
 
@@ -1112,7 +1124,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         if name in os.environ:
             values[name] = os.environ[name]
             _release_bridge_claim(name)  # a value a source supplies is the operator's, even one it skipped
-    _record_secret_source_writes(home_key, report, supplied, environ_before)
+    _record_secret_source_writes(home_key, report, supplied, environ_before, staged, launch_env_captured)
     if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
     _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {
@@ -1148,10 +1160,38 @@ def _record_released_bridge_claims(home_key: str, report, supplied: set[str], en
         _RELEASED_BRIDGE_CLAIMS_BY_HOME.pop(home_key, None)
 
 
-def _record_secret_source_writes(home_key: str, report, supplied: set[str], environ_before: dict) -> None:
+def _published_value(name: str, staged: dict) -> str | None:
+    """The value this pass published for *name*, in the form ``_sanitize_loaded_credentials`` leaves it."""
+    value = staged.get(name)
+    if value is None or value.isascii() or not name.endswith(_CREDENTIAL_SUFFIXES):
+        return value
+    return value.encode("ascii", errors="ignore").decode("ascii")
+
+
+def _launch_policy():
+    """``tui_gateway.launch_profile_policy`` once something imported it, else None: until then no
+    launch env is frozen, and a boot path must not import the gateway package just to learn that."""
+    return sys.modules.get("tui_gateway.launch_profile_policy")
+
+
+def _recorded_environ_writes() -> list[tuple[str, str, str, str, str | None]]:
+    """For ``launch_profile_policy`` at capture: every recorded write as
+    ``(home key, name, source, value written, os.environ prior)``."""
+    return [(home, name, *rec) for home, writes in list(_SECRET_SOURCE_WRITES_BY_HOME.items())
+            for name, rec in list(writes.items())]
+
+
+def _record_secret_source_writes(home_key: str, report, supplied: set[str], environ_before: dict,
+                                 staged: dict, launch_env_captured: bool = True) -> None:
     """Refresh ``_SECRET_SOURCE_WRITES_BY_HOME`` after one process-global pass, revoking a write its
     still-enabled source has stopped supplying (rotated out, mapping removed). A source whose fetch
-    FAILED this pass keeps its earlier writes: a transient vault outage is not a revocation."""
+    FAILED this pass keeps its earlier writes: a transient vault outage is not a revocation.
+
+    The frozen launch env keeps its own record of the writes it holds and follows only the value
+    the source published (*staged*): another thread may write the same name into os.environ during
+    the fetch, and that value must never enter the snapshot. *launch_env_captured* is whether the
+    launch env was frozen before this pass published: when activation landed mid-pass, the snapshot
+    may hold this pass's write without any record of it yet."""
     failed = {src.name for src in report.sources if not src.result.ok}
     previous = _SECRET_SOURCE_WRITES_BY_HOME.get(home_key, {})
     _revoke_secret_source_writes(
@@ -1159,6 +1199,7 @@ def _record_secret_source_writes(home_key: str, report, supplied: set[str], envi
         keep=lambda name, source: name in report.provenance or name in supplied or source in failed)
     writes = {name: rec for name, rec in _SECRET_SOURCE_WRITES_BY_HOME.get(home_key, {}).items()
               if name not in report.provenance and os.environ.get(name) == rec[1]}
+    held: list[str] = []  # names whose published value os.environ still holds
     for name, applied in report.provenance.items():
         if name not in os.environ:
             continue
@@ -1166,11 +1207,18 @@ def _record_secret_source_writes(home_key: str, report, supplied: set[str], envi
         earlier = previous.get(name)
         # Re-applied over our own earlier write: the pre-source value is the one recorded then.
         prior = earlier[2] if earlier is not None and earlier[1] == before else before
-        writes[name] = (applied.source, os.environ[name], prior)
+        writes[name] = (applied.source, _published_value(name, staged), prior)
+        if os.environ[name] == writes[name][1]:
+            held.append(name)
     if writes:
         _SECRET_SOURCE_WRITES_BY_HOME[home_key] = writes
     else:
         _SECRET_SOURCE_WRITES_BY_HOME.pop(home_key, None)
+    # Tracked only once the record is published: an activation landing before this point adopts the
+    # writes (adopt=), one landing after it finds them in the record at capture.
+    policy = _launch_policy()
+    for name in held if policy is not None else ():
+        policy._track_launch_env_write(home_key, name, *writes[name], adopt=not launch_env_captured)
 
 
 def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope: str | None = None) -> str:

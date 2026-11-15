@@ -299,3 +299,37 @@ async def test_context_breakdown_follows_an_in_place_row_rewrite(owner, monkeypa
     assert db.set_user_message_content(stored, row_id, expanded) == 1
     after = await owner.call('session.context_breakdown', session_id=sid)
     assert after['estimated_total'] == len(expanded) > before['estimated_total']
+
+
+@pytest.mark.asyncio
+async def test_context_details_are_opt_in_and_do_not_pollute_the_cached_summary(owner, monkeypatch):
+    from agent import context_breakdown, context_file_sources
+    from hermes_constants import get_hermes_home
+    from agent.runtime_cwd import scoped_session_cwd
+
+    sid = (await owner.call('session.create', request_id='details', source='cli',
+                            cwd=str(owner.workdir)))['session_id']
+    agent = SimpleNamespace(model='fake-model', provider='custom')
+    owner.authority.runner._cached_agent_for = lambda route: agent
+    monkeypatch.setattr(context_breakdown, 'compute_session_context_breakdown', lambda a, m: {
+        'categories': [{'id': 'system', 'label': 'System prompt', 'tokens': 10, 'color': '#fff'}],
+        'context_max': 1000, 'context_used': 10, 'context_percent': 1, 'estimated_total': 10,
+        'context_estimated': True, 'context_source': 'local_estimate', 'model': 'fake-model'})
+    monkeypatch.setattr(context_file_sources, 'context_file_sources_for_agent', lambda a: [])
+    calls = []
+    details = {'skills': [], 'toolsets': [{'toolset': 'terminal', 'tool_count': 1, 'schema_tokens': 123}]}
+
+    def compute_details(a):
+        assert a is agent
+        assert get_hermes_home() == owner.home
+        assert scoped_session_cwd() == str(owner.workdir)
+        calls.append(a)
+        return details
+
+    monkeypatch.setattr(context_breakdown, 'compute_context_details', compute_details)
+    summary = await owner.call('session.context_breakdown', session_id=sid)
+    assert not calls and 'details' not in summary
+    expanded = await owner.call('session.context_breakdown', session_id=sid, include_details=True)
+    assert expanded['details'] == details and calls == [agent]
+    again = await owner.call('session.context_breakdown', session_id=sid)
+    assert again == summary and 'details' not in again and calls == [agent]

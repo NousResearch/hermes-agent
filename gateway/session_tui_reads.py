@@ -138,7 +138,9 @@ async def context_breakdown(connection, ref, params) -> dict:
     its stored usage."""
     from gateway.session_busy_controls import authorize
     from hermes_state_runtime import RuntimeStoreError
-    if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
+    if (set(params) - {'session_id', 'profile', 'include_details'}
+            or not isinstance(params.get('include_details', False), bool)
+            or not isinstance(ref.session_id, str) or not ref.session_id):
         raise RuntimeStoreError('invalid_params')
     authorize(connection, ref, params, 'session:read')
     authority = connection.authority
@@ -155,7 +157,7 @@ async def context_breakdown(connection, ref, params) -> dict:
     from gateway.session_commands import _session_workspace
 
     def build():
-        from agent.context_breakdown import compute_session_context_breakdown
+        from agent.context_breakdown import compute_context_details, compute_session_context_breakdown
         from agent.context_file_sources import context_file_sources_for_agent
         with owner_scope(authority), _session_workspace(authority.runner, live.source):
             tip = _context_id(authority, ref)
@@ -168,14 +170,17 @@ async def context_breakdown(connection, ref, params) -> dict:
                    row.get('system_prompt'), row.get('tool_names'))
             cached = live.context_breakdown
             if cached is not None and cached[0] == key:
-                return dict(cached[1])
-            conversation = _model_history(authority.db, tip)
-            if agent is None:
-                payload = _stored_breakdown(row, conversation, usage)
+                payload = dict(cached[1])
             else:
-                payload = compute_session_context_breakdown(agent, conversation)
-                payload['context_files'] = context_file_sources_for_agent(agent)
-            live.context_breakdown = (key, payload)
+                conversation = _model_history(authority.db, tip)
+                if agent is None:
+                    payload = _stored_breakdown(row, conversation, usage)
+                else:
+                    payload = compute_session_context_breakdown(agent, conversation)
+                    payload['context_files'] = context_file_sources_for_agent(agent)
+                live.context_breakdown = (key, dict(payload))
+            if params.get('include_details') and agent is not None:
+                payload['details'] = compute_context_details(agent)
             return dict(payload)
     return await asyncio.to_thread(build)
 

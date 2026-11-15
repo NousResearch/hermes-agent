@@ -1323,7 +1323,7 @@ def _redecorate_prompt_cache_for_provider(
             # Clamp per-destination: a configured 1h regresses to 5m on
             # Qwen/Alibaba routes, whose context cache is 5m-only (#84733).
             cache_ttl=effective_cache_ttl(agent._cache_ttl, provider=agent.provider, model=agent.model,
-                                          base_url=agent.base_url or ""),
+                                          base_url=getattr(agent, "base_url", "") or ""),
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=static if isinstance(static, str) else None,
             session_system_prompt=agent._cached_system_prompt,

@@ -174,11 +174,18 @@ class _Run:
     deadline_at: float  # the clock's guaranteed-warm end for the entry this run keeps alive
     is_current: Callable[[], bool]
     started_at: float
+    #: ``prompt_cache_clock.context_witness`` when armed: the prompt (session, generation, rewrites)
+    #: and route the replay carries. A refresh is sent, and its reply folded into the clock, only
+    #: while the session still matches it; a compaction or route switch meanwhile makes it stale.
+    witness: tuple = ()
     api_mode: str = "anthropic_messages"
     next_warm_at: float = 0.0
     refresh_deadline_at: float = 0.0
     timer: Optional[threading.Timer] = None
     refreshing: bool = False
+    #: Set under the warmer lock when the run is cleared; checked under the same lock right
+    #: before a request is admitted, so a cancel that returned never sees a later send.
+    cancelled: bool = False
     warm_count: int = 0
     spent_usd: float = 0.0
     last_warm_usd: float = 0.0
@@ -254,12 +261,18 @@ class PromptCacheWarmer:
         self._last_decision = decision
         if decision.action != "warm":
             return self._stop(decision.stop_reason)
+        from agent.prompt_cache_clock import context_witness
+
         api_calls = getattr(agent, "session_api_calls", 0)
         model = getattr(agent, "model", "")
+        epoch = getattr(agent, "_session_reset_epoch", 0)
 
         def _is_current() -> bool:
+            # The epoch, not the counter alone: a reset zeroes session_api_calls, which the new
+            # session's own requests then raise back to the armed value.
             return (
-                getattr(agent, "session_api_calls", None) == api_calls
+                getattr(agent, "_session_reset_epoch", 0) == epoch
+                and getattr(agent, "session_api_calls", None) == api_calls
                 and getattr(agent, "model", None) == model
                 and not getattr(agent, "_interrupt_requested", False)
             )
@@ -270,7 +283,7 @@ class PromptCacheWarmer:
             api_kwargs=self._replay_kwargs(api_kwargs), client=client, model=model,
             cached_tokens=cached_tokens, uncached_tokens=uncached_tokens, ttl_s=window[1],
             deadline_at=window[0], is_current=_is_current, started_at=time.time(), api_mode=api_mode,
-            billing=self._billing_snapshot(),
+            witness=context_witness(agent), billing=self._billing_snapshot(),
         )
         with self._lock:
             self._run = run
@@ -284,6 +297,8 @@ class PromptCacheWarmer:
     def _clear_run(self) -> Optional[_Run]:
         with self._lock:
             run, self._run = self._run, None
+            if run is not None:
+                run.cancelled = True
         if run is None:
             return None
         with run.lock:
@@ -339,31 +354,41 @@ class PromptCacheWarmer:
             run.timer = timer
         timer.start()
 
-    def _validate(self, run: _Run) -> bool:
-        with self._lock:  # check ownership and stop in one step: never cancel a newer run
-            if self._run is not run:
+    def _stale_reason(self, run: _Run) -> Optional[str]:
+        """Why ``run`` no longer replays the live prefix, or None. Caller holds ``self._lock``."""
+        from agent.prompt_cache_clock import context_witness
+
+        if not run.is_current() or context_witness(self.agent) != run.witness:
+            return "conversation context changed"
+        return None
+
+    def _admit(self, run: _Run) -> bool:
+        """The one send admission: ownership, cancellation, currency and deadline checked, and
+        the run marked in flight, in one step under the lock ``cancel`` takes. The network request
+        itself runs outside the lock."""
+        with self._lock:
+            if self._run is not run or run.cancelled:
                 return False
-            reason = None
-            if not run.is_current():
-                reason = "conversation context changed"
-            elif time.time() > run.refresh_deadline_at:
+            reason = self._stale_reason(run)
+            if reason is None and time.time() > run.refresh_deadline_at:
                 reason = "cache refresh deadline missed"
             if reason is not None:
                 self._stop(reason)
                 return False
+            run.refreshing = True
             return True
 
     def _refresh(self, run: _Run) -> None:
         with run.lock:
             run.timer = None
-        if not self._validate(run):
-            return
+        # Pricing may be slow (a pricing fetch); it decides nothing until admission rechecks.
         decision = self._evaluate(run)
         self._last_decision = decision
         if decision.action != "warm":
             self._stop_if_current(run, decision.stop_reason)
             return
-        run.refreshing = True
+        if not self._admit(run):
+            return
         sent_at = time.time()
         try:
             message = self._send(run)
@@ -380,6 +405,10 @@ class PromptCacheWarmer:
             return
         with self._lock:
             if self._run is not run:
+                return
+            stale = self._stale_reason(run)
+            if stale is not None:  # its reply was not folded: nothing to schedule from
+                self._stop(stale)
                 return
             window = guaranteed_window(self.agent)
             if window is None:
@@ -429,8 +458,8 @@ class PromptCacheWarmer:
                 run.spent_usd += amount
                 run.last_warm_usd = amount
             # Compression keeps the running counters (a refresh still adds to them); only
-            # ``reset_session_state`` zeroes them, and it zeroes ``session_api_calls`` with them.
-            if getattr(agent, "session_api_calls", 0) >= b["api_calls"]:
+            # ``reset_session_state`` zeroes them, and it advances the reset epoch with them.
+            if getattr(agent, "_session_reset_epoch", 0) == b["reset_epoch"]:
                 self._add_to_session_totals(canonical, amount)
             clock = self._fold_clock(run, canonical, sent_at)
             db = getattr(agent, "_session_db", None)
@@ -466,17 +495,21 @@ class PromptCacheWarmer:
     def _fold_clock(self, run: _Run, canonical: Any, sent_at: float) -> dict[str, str]:
         """Record the refresh in the shared clock while this run still owns the live prefix (the
         loop cancels the run under the same lock before it stamps its own next request), and
-        return the ``prompt_cache_clock`` column for its token row."""
+        return the ``prompt_cache_clock`` column for its token row. A reply to a prefix a
+        compaction or route switch has since replaced is accounted but certifies nothing: the
+        event is stamped with the arm-time witness, so a rewrite committing even now leaves the
+        clock unknown rather than vouching for the new prefix."""
         from agent.prompt_cache_clock import attempt_facts, record_cache_response
         from agent.turn_usage import _cache_clock_column
 
         agent, b = self.agent, run.billing
         with self._lock:
-            if self._run is not run or getattr(agent, "session_id", None) != b["session_id"]:
+            if self._run is not run or self._stale_reason(run) is not None:
                 return {}
             attempt = dict(attempt_facts(run.api_kwargs) or {}, sent_at=sent_at)
             event = record_cache_response(agent, canonical, model=b["model"], provider=b["provider"],
-                                          base_url=b["base_url"], api_mode=b["api_mode"], attempt=attempt)
+                                          base_url=b["base_url"], api_mode=b["api_mode"], attempt=attempt,
+                                          witness=run.witness)
         return _cache_clock_column(event)
 
     def _add_to_session_totals(self, canonical: Any, amount: Optional[float]) -> None:
@@ -536,7 +569,7 @@ class PromptCacheWarmer:
             "session_id": getattr(agent, "session_id", None), "source": _agent_session_source(agent),
             "provider": agent.provider, "base_url": agent.base_url, "model": agent.model,
             "api_mode": agent.api_mode, "api_key": getattr(agent, "api_key", ""),
-            "api_calls": getattr(agent, "session_api_calls", 0),
+            "reset_epoch": getattr(agent, "_session_reset_epoch", 0),
         }
 
     @staticmethod

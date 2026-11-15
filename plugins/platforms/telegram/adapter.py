@@ -196,6 +196,7 @@ from plugins.platforms.telegram.telegram_text_photo_pairing import (
 from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
 from plugins.platforms.telegram.telegram_media_retry import unconfirmed_media_result as _unconfirmed
 from plugins.platforms.telegram import telegram_flood_window as _flood_window
+from plugins.platforms.telegram.telegram_rich_media import attach_rich_media, rich_media_items, rich_media_source
 from plugins.platforms.telegram.telegram_media_fetch import (
     cache_replied_media, fetch_telegram_file, local_root, merged_typed_text, record_typed_text)
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
@@ -5673,6 +5674,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if msg.document:
             doc = msg.document
             return doc, doc.file_name or "", (doc.mime_type or "").lower(), None
+        if (bot := self._bot) is not None and (rich := rich_media_items(msg)):  # replied-to/observed rich photo (#155902)
+            file_id, media, mime, kind = rich[0]
+            return rich_media_source(bot, file_id, media), str(media.get("file_name") or ""), mime, kind
         return None, "", "", None
 
     @staticmethod
@@ -5846,7 +5850,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text (or text-less ``rich_message`` blocks); buffers client-split chunks into one event."""
         msg = self._effective_update_message(update)
-        if not msg or not (msg.text or rich_message_text(msg)):
+        if not msg or not (msg.text or rich_message_text(msg) or rich_media_items(msg)):
             return
         # Auth check first: blocked users must not reach batching, the observed transcript, or the agent.
         if not self._is_user_authorized_from_message(msg):
@@ -5857,7 +5861,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
         await self._ensure_forum_commands(update.message)
-        self._enqueue_text_event(await self._build_triggered_event(msg, update, MessageType.TEXT))
+        event = await self._build_triggered_event(msg, update, MessageType.TEXT)
+        await attach_rich_media(self, msg, event)  # a photo/file sent inside rich blocks (#155902)
+        self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""

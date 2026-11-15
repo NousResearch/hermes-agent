@@ -2,8 +2,12 @@
 
 export type {
   HermesPlugin,
+  PetInteraction,
+  PetInteractInfo,
   PetMessageTone,
+  PetReactOptions,
   PetSayOptions,
+  PetState,
   PluginAppActionId,
   PluginAppActionInfo,
   PluginContext,

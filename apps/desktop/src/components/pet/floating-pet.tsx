@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { computed } from 'nanostores'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
@@ -11,14 +12,18 @@ import { $changeEventsAvailable, $petChange } from '@/store/live-sync'
 import {
   $petAtRest,
   $petInfo,
+  $petPosing,
   $petRoam,
-  $petRoamDir,
+  $petSpriteTarget,
   clearPetUnread,
   hasPetSpriteForMeta,
   mergePetInfoMeta,
   type PetInfo,
   type PetInfoMeta,
+  petInteract,
+  petMaps,
   petProfile,
+  setPetHandling,
   setPetInfo
 } from '@/store/pet'
 import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
@@ -27,8 +32,10 @@ import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
+import { animateDrop, dropTarget, isDragMove } from './pet-handling'
 import { PET_STARTUP_RETRY_MS, petInfoPollIntervalMs } from './pet-info-poll'
-import { PetSprite, roamWalkRow } from './pet-sprite'
+import { PetSprite } from './pet-sprite'
+import { walkableLedges } from './roam-geometry'
 import { usePetRoam } from './use-pet-roam'
 import { type PetZoomAnchor, usePetZoomGesture } from './use-pet-zoom-gesture'
 
@@ -78,6 +85,9 @@ function loadPosition(): Point {
   return clampPoint(24, (window.innerHeight || 600) - 220, NOMINAL_PET_PX, NOMINAL_PET_PX)
 }
 
+// The travel facing of what the sprite draws (undefined at rest); a primitive, so it re-renders only on a flip.
+const $travelMirror = computed($petSpriteTarget, target => target.mirror)
+
 /**
  * In-window floating petdex mascot. Always-on-top within the app, draggable,
  * and reactive to agent activity via `$petState`. Fetches the active pet via
@@ -110,7 +120,7 @@ export function FloatingPet() {
   const overlayActive = useStore($petOverlayActive)
   const roamEnabled = useStore($petRoam)
   const atRest = useStore($petAtRest)
-  const roamDir = useStore($petRoamDir)
+  const travelMirror = useStore($travelMirror)
   const routeOverlayOpen = useRouteOverlayActive()
 
   const [position, setPosition] = useState<Point>(loadPosition)
@@ -125,10 +135,25 @@ export function FloatingPet() {
   const shadowW = Math.round(petW * 0.55)
   const shadowH = Math.max(3, Math.round(shadowW * 0.28))
   const shadowAlpha = resolvedMode === 'light' ? 0.2 : 0.55
-  // Live drag offset (pointer → element top-left). Drag updates the DOM
-  // directly to avoid a React re-render (and canvas reflow) per pointermove —
-  // state is only committed on release.
-  const dragRef = useRef<{ dx: number; dy: number; x: number; y: number } | null>(null)
+
+  // Live press: pointer → element top-left offset, the press point, and the
+  // position to commit. Drag updates the DOM directly to avoid a React
+  // re-render (and canvas reflow) per pointermove — state is only committed on
+  // release. `carried` flips once the pointer passes the drag threshold; until
+  // then the press is a poke.
+  const dragRef = useRef<{
+    carried: boolean
+    dx: number
+    dy: number
+    startX: number
+    startY: number
+    x: number
+    y: number
+  } | null>(null)
+
+  // Cancels the in-flight drop fall (caught mid-air, unmount).
+  const dropRef = useRef<(() => void) | null>(null)
+  const loopMs = info.loopMs ?? 1100
 
   // Keep the *whole* pet on-screen at its current size, so growing it near an
   // edge can't leave the window cropping it. Shared by drag + the reclamp effect.
@@ -337,29 +362,66 @@ export function FloatingPet() {
     return () => window.removeEventListener('resize', reclamp)
   }, [clamp])
 
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
-    const el = containerRef.current
-
-    if (!el) {
-      return
-    }
-
-    const rect = el.getBoundingClientRect()
-
-    // Shift-click pops the pet out into a free-floating desktop overlay (it can
-    // leave the window and stays visible while Hermes is minimized) instead of
-    // starting an in-window drag. Primary window only — the overlay is anchored
-    // to it.
-    if (e.shiftKey && !isSecondaryWindow()) {
-      popOutPet({ height: rect.height, width: rect.width, x: rect.left, y: rect.top })
-
-      return
-    }
-
-    dragRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top, x: rect.left, y: rect.top }
-    el.setPointerCapture(e.pointerId)
-    el.style.cursor = 'grabbing'
+  // Commit a position the DOM was driven to imperatively (drag release, a
+  // landing, the wander settling) back to React state + storage, so the inline
+  // style matches. Stable identity keeps the roam effect from restarting every
+  // render.
+  const commitPosition = useCallback((point: Point) => {
+    setPosition(point)
+    persistString(POSITION_KEY, JSON.stringify(point))
   }, [])
+
+  // Never leave a fall running or a handling row stuck after the pet goes away.
+  useEffect(
+    () => () => {
+      dropRef.current?.()
+      setPetHandling(null)
+    },
+    []
+  )
+
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      const el = containerRef.current
+
+      if (!el) {
+        return
+      }
+
+      const rect = el.getBoundingClientRect()
+
+      // Caught mid-fall: the drop stops where the pet is now.
+      if (dropRef.current) {
+        dropRef.current()
+        dropRef.current = null
+        setPetHandling(null)
+        commitPosition({ x: rect.left, y: rect.top })
+      }
+
+      // Shift-click pops the pet out into a free-floating desktop overlay (it can
+      // leave the window and stays visible while Hermes is minimized) instead of
+      // starting an in-window drag. Primary window only — the overlay is anchored
+      // to it.
+      if (e.shiftKey && !isSecondaryWindow()) {
+        popOutPet({ height: rect.height, width: rect.width, x: rect.left, y: rect.top })
+
+        return
+      }
+
+      dragRef.current = {
+        carried: false,
+        dx: e.clientX - rect.left,
+        dy: e.clientY - rect.top,
+        startX: e.clientX,
+        startY: e.clientY,
+        x: rect.left,
+        y: rect.top
+      }
+      el.setPointerCapture(e.pointerId)
+      el.style.cursor = 'grabbing'
+    },
+    [commitPosition]
+  )
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
@@ -368,6 +430,15 @@ export function FloatingPet() {
 
       if (!drag || !el) {
         return
+      }
+
+      if (!drag.carried) {
+        if (!isDragMove(e.clientX - drag.startX, e.clientY - drag.startY)) {
+          return
+        }
+
+        drag.carried = true
+        petInteract('pickup')
       }
 
       const next = clamp({ x: e.clientX - drag.dx, y: e.clientY - drag.dy })
@@ -386,23 +457,53 @@ export function FloatingPet() {
     [clamp, petW]
   )
 
-  const onPointerUp = useCallback((e: React.PointerEvent) => {
-    const drag = dragRef.current
-
-    if (drag) {
+  const onPointerUp = useCallback(
+    (e: React.PointerEvent) => {
+      const drag = dragRef.current
+      const el = containerRef.current
       dragRef.current = null
-      const committed = { x: drag.x, y: drag.y }
-      setPosition(committed)
-      persistString(POSITION_KEY, JSON.stringify(committed))
-    }
 
-    const el = containerRef.current
+      if (el) {
+        el.style.cursor = 'grab'
+        el.releasePointerCapture?.(e.pointerId)
+      }
 
-    if (el) {
-      el.style.cursor = 'grab'
-      el.releasePointerCapture?.(e.pointerId)
-    }
-  }, [])
+      if (!drag || !el) {
+        return
+      }
+
+      // A press that never left the threshold is a click on the pet, not a drop;
+      // a cancelled one (OS gesture, capture lost) is neither.
+      if (!drag.carried) {
+        if (e.type === 'pointercancel') {
+          return
+        }
+
+        petInteract('poke')
+
+        return
+      }
+
+      const dropped = { x: drag.x, y: drag.y }
+      commitPosition(dropped)
+
+      // Gravity is opt-in: only a pet that maps `fall` drops; otherwise it stays where it was released.
+      const ground = petMaps('fall')
+        ? dropTarget(walkableLedges(petW, petH, routeOverlayOpen), dropped.x, dropped.y, petH)
+        : null
+
+      petInteract('drop', ground === null ? null : 'fall')
+
+      if (ground !== null) {
+        dropRef.current = animateDrop(el, dropped.y, ground, () => {
+          dropRef.current = null
+          commitPosition({ x: dropped.x, y: ground })
+          petInteract('land')
+        })
+      }
+    },
+    [commitPosition, petH, petW, routeOverlayOpen]
+  )
 
   // Alt+wheel over the pet resizes it (persisted via the same path as the
   // settings slider). Zoom toward the cursor — shift the top-left so the pixel
@@ -429,34 +530,23 @@ export function FloatingPet() {
 
   usePetZoomGesture(containerRef, onScale, active && !overlayActive)
 
-  // Commit a roamed-to position back to React state + storage when the wander
-  // loop settles, so the inline style matches the DOM once the loop stops
-  // driving it imperatively. Stable identity keeps the roam effect from
-  // restarting every render.
-  const commitRoamPosition = useCallback((point: Point) => {
-    setPosition(point)
-    persistString(POSITION_KEY, JSON.stringify(point))
-  }, [])
-
-  const isDragging = useCallback(() => dragRef.current !== null, [])
+  // The wander yields while the user presses or handles the pet, or a reaction
+  // plays: the sprite drops its walk row then, so moving would slide the pet.
+  const isHandling = useCallback(() => dragRef.current !== null || $petPosing.get(), [])
 
   // Roam only the in-window pet, only while it's idle (agent at rest) and not
   // popped out into the OS overlay. Activity pauses the wander; the pet reacts
   // in place, then resumes strolling when the turn ends.
   usePetRoam({
-    commit: commitRoamPosition,
+    commit: commitPosition,
     containerRef,
     enabled: roamEnabled && active && !overlayActive && atRest,
-    isInteracting: isDragging,
-    loopMs: info.loopMs ?? 1100,
+    isInteracting: isHandling,
+    loopMs,
     overlayOpen: routeOverlayOpen,
     petH,
     petW
   })
-
-  // While roaming, drive the directional run row + mirror from the travel
-  // direction; at rest, fall back to the inward-facing static mascot.
-  const walk = roamWalkRow(roamDir, info.stateRows)
 
   // While popped out, the desktop overlay window owns the mascot — hide the
   // in-window one so there aren't two.
@@ -466,6 +556,7 @@ export function FloatingPet() {
 
   return (
     <div
+      onPointerCancel={onPointerUp}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -500,11 +591,12 @@ export function FloatingPet() {
         style={{
           lineHeight: 0,
           position: 'relative',
-          transform: roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : facing(position.x, petW),
+          // Travelling, the resolved target says which way the drawn row faces; at rest it faces inward.
+          transform: travelMirror === undefined ? facing(position.x, petW) : travelMirror ? 'scaleX(-1)' : 'none',
           zIndex: 1
         }}
       >
-        <PetSprite info={info} rowOverride={walk.row} />
+        <PetSprite info={info} />
       </div>
       {/* Hearts puff off the pet; its celebrate ("yay"/jump) pose is driven by
           burstVibeHearts's router. */}

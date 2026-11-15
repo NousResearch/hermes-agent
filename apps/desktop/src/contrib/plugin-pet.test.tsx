@@ -1,12 +1,19 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { FloatingPet } from '@/components/pet/floating-pet'
 import { PetBubble } from '@/components/pet/pet-bubble'
-import { $petActivity, setPetInfo } from '@/store/pet'
+import {
+  $petActivity,
+  $petSpriteTarget,
+  petInteract,
+  type PetInteractInfo,
+  type PetInteraction,
+  setPetHandling,
+  setPetInfo
+} from '@/store/pet'
 import { $petOverlayActive, popInPet, popOutPet } from '@/store/pet-overlay'
 import { $petPluginMessages, mirrorPetPluginMessages, resetPetPluginMessages } from '@/store/pet-plugin-messages'
+import { mountPet, PET } from '@/test/floating-pet'
 
 import { createPluginContext } from './plugin'
 import { publishPlugin } from './plugins-store'
@@ -18,19 +25,7 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway: vi.fn(async () => null) })
 }))
 vi.mock('@/themes/context', () => ({ useTheme: () => ({ resolvedMode: 'dark' }) }))
-vi.mock('@/components/pet/pet-sprite', () => ({
-  PetSprite: () => <canvas aria-label="Boba pet" />,
-  roamWalkRow: () => ({ mirror: false, row: undefined })
-}))
-
-const PET = {
-  displayName: 'Boba',
-  enabled: true,
-  frameH: 208,
-  frameW: 192,
-  scale: 0.33,
-  spritesheetBase64: 'stub'
-}
+vi.mock('@/components/pet/pet-sprite', () => ({ PetSprite: () => <canvas aria-label="Boba pet" /> }))
 
 // Each test gets its own plugin id, so per-plugin rate windows never leak
 // between tests; afterEach resets the store so a live line cannot leak.
@@ -43,14 +38,6 @@ function plugin(name = 'Pet Wallet') {
   const ctx = createPluginContext(id, dispose => disposers.push(dispose))
 
   return { ctx, id, unload: () => act(() => disposers.splice(0).forEach(dispose => dispose())) }
-}
-
-function mountPet() {
-  return render(
-    <MemoryRouter>
-      <FloatingPet />
-    </MemoryRouter>
-  )
 }
 
 const bubble = () => document.querySelector('[data-slot="pet-plugin-bubble"]')
@@ -208,6 +195,51 @@ describe('ctx.pet — plugin lines in the core pet bubble', () => {
   })
 })
 
+describe('ctx.pet.onInteract / ctx.pet.react', () => {
+  afterEach(() => {
+    setPetHandling(null)
+    setPetInfo({ enabled: false })
+  })
+
+  it('hears handling events until the plugin unloads', () => {
+    const { ctx, unload } = plugin()
+    const heard: Array<[PetInteraction, PetInteractInfo]> = []
+    const stop = ctx.pet.onInteract((kind, info) => heard.push([kind, info]))
+    const other = plugin()
+    other.ctx.pet.onInteract(() => {
+      throw new Error('boom')
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    petInteract('pickup')
+    expect(heard).toEqual([['pickup', { asleep: false }]])
+
+    unload()
+    petInteract('drop')
+    expect(heard).toHaveLength(1)
+    stop() // idempotent after unload
+    other.unload()
+  })
+
+  it('plays a state and is cleared when the plugin unloads', () => {
+    const { ctx, unload } = plugin()
+
+    ctx.pet.react('wave', { ms: 60_000 })
+    expect($petSpriteTarget.get().state).toBe('wave')
+    unload()
+    expect($petSpriteTarget.get().state).toBe('idle')
+  })
+
+  it('ignores a state name that is not a pet state', () => {
+    const { ctx } = plugin()
+
+    for (const bogus of ['constructor', '__proto__', 'dance']) {
+      ctx.pet.react(bogus as never)
+      expect($petSpriteTarget.get().state).toBe('idle')
+    }
+  })
+})
+
 describe('PetBubble — core status keeps priority', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -291,5 +323,22 @@ describe('pop-out overlay', () => {
     // A malformed push clears rather than throws.
     act(() => mirrorPetPluginMessages(undefined))
     expect($petPluginMessages.get()).toEqual([])
+  })
+
+  it('pushes a plugin reaction to the overlay window', () => {
+    const pushState = vi.fn()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      petOverlay: { close: vi.fn(async () => ({ ok: true })), open: vi.fn(async () => ({ ok: true })), pushState }
+    }
+    setPetInfo(PET)
+    popOutPet({ height: 70, width: 64, x: 10, y: 10 })
+
+    const { ctx, id } = plugin()
+    const cancel = ctx.pet.react('wave', { ms: 5_000 })
+    expect(pushState.mock.calls.at(-1)?.[0]).toMatchObject({ pluginReaction: { owner: id, state: 'wave' } })
+
+    cancel()
+    expect(pushState.mock.calls.at(-1)?.[0]).toMatchObject({ pluginReaction: null })
   })
 })

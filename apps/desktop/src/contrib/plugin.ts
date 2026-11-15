@@ -25,7 +25,15 @@ import {
 } from '@/lib/keybinds/plugin-actions'
 import { readKey, writeKey } from '@/lib/storage'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
-import { $petActive } from '@/store/pet'
+import {
+  $petActive,
+  clearPetReaction,
+  onPetInteract,
+  type PetInteractInfo,
+  type PetInteraction,
+  type PetState,
+  reactPet
+} from '@/store/pet'
 import { clearPetMessages, type PetSayOptions, sayPetMessage } from '@/store/pet-plugin-messages'
 
 import { type GatewayEventListener, onGatewayEvent } from './events'
@@ -44,6 +52,7 @@ export type { PluginRestOptions } from '@/hermes'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 export type { PluginAppActionId, PluginAppActionInfo, PluginRunActionResult } from '@/lib/keybinds/plugin-actions'
 export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
+export type { PetInteractInfo, PetInteraction, PetState } from '@/store/pet'
 export type { PetMessageTone, PetSayOptions } from '@/store/pet-plugin-messages'
 
 /** A contribution as a plugin author writes it — provenance + id scoping are
@@ -104,6 +113,15 @@ export interface PluginPet {
   /** True while a pet is installed and shown (in-window or popped out). A
    *  plugin can fall back to its own chip or pane while this is false. */
   visible: ReadableAtom<boolean>
+  /** Hear the user handle the in-window pet (see the SDK docs). Returns an unsubscribe; removed on unload. */
+  onInteract: (listener: (kind: PetInteraction, info: PetInteractInfo) => void) => () => void
+  /** Briefly play a state's row (see the SDK docs). Returns a cancel; cleared on unload. */
+  react: (state: PetState, options?: PetReactOptions) => () => void
+}
+
+export interface PetReactOptions {
+  /** How long the reaction plays, in ms. Default: one animation loop. */
+  ms?: number
 }
 
 export interface PluginFileDialogOptions {
@@ -287,22 +305,35 @@ function createPluginOs(pluginId: string): PluginOs {
 }
 
 // Lines are attributed by the inventory name the loader published before
-// register() ran; the id is the fallback. Every line this plugin still has up
-// is cleared with it on unload/disable (tracked on first use).
+// register() ran; the id is the fallback. Every line and reaction this plugin
+// still has up is cleared with it on unload/disable (tracked on first use).
 function createPluginPet(pluginId: string, track: (dispose: () => void) => () => void): PluginPet {
   let tracked = false
+
+  const trackOnce = () => {
+    if (!tracked) {
+      tracked = true
+      track(() => {
+        clearPetMessages(pluginId)
+        clearPetReaction(pluginId)
+      })
+    }
+  }
 
   return {
     clear: id => clearPetMessages(pluginId, id),
     say: (text, options) => {
-      if (!tracked) {
-        tracked = true
-        track(() => clearPetMessages(pluginId))
-      }
+      trackOnce()
 
       return sayPetMessage(pluginId, $pluginRecords.get()[pluginId]?.name ?? pluginId, text, options)
     },
-    visible: $petActive
+    visible: $petActive,
+    onInteract: listener => track(onPetInteract(listener)),
+    react: (state, options) => {
+      trackOnce()
+
+      return reactPet(pluginId, state, options?.ms)
+    }
   }
 }
 

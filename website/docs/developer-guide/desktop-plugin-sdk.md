@@ -1425,6 +1425,8 @@ ctx.files.readText(folder, 'notes/a.md')   // folder = 'data' or a granted folde
 ctx.pet.say(text, { id?, tone?, ttlMs? })   // line in the core pet's speech bubble → disposer
 ctx.pet.clear(id?)                         // drop one line (or all of yours)
 ctx.pet.visible                            // ReadableAtom<boolean> — is a pet on screen?
+ctx.pet.onInteract((kind, { asleep }) => …) // 'poke' | 'pickup' | 'drop' | 'land' → unsubscribe
+ctx.pet.react('jump', { ms? })             // briefly play a state's row → cancel
 ctx.runAction('view.showBrowser')          // run a built-in app action → { ok: true } | { ok: false, reason, error }
 ctx.listActions()                          // [{ id, label, category }] — the ids runAction accepts
 host.navigate('/route')                    // hash-route navigation
@@ -1708,6 +1710,8 @@ interface PluginPet {
   say(text: string, options?: { id?: string; tone?: 'info' | 'wait' | 'error'; ttlMs?: number }): () => void
   clear(id?: string): void
   visible: ReadableAtom<boolean>
+  onInteract(listener: (kind: 'poke' | 'pickup' | 'drop' | 'land', info: { asleep: boolean }) => void): () => void
+  react(state: PetState, options?: { ms?: number }): () => void
 }
 ```
 
@@ -1738,8 +1742,27 @@ the core status lines. The overlay is a separate window that loads no plugin
 code; the main window sends it the live lines with the rest of the pet state.
 
 Pointer input on the pet (drag, shift-click pop-out, overlay click) belongs to
-the host and has no plugin hook. Use a palette command, a status-bar item, or
-your own pane for actions.
+the host. A plugin can hear it and answer with a pose, but not take it over:
+
+```ts
+register(ctx) {
+  ctx.pet.onInteract(kind => {
+    if (kind === 'poke') ctx.pet.say('Hi!', { id: 'poke', ttlMs: 1500 })
+    if (kind === 'land') ctx.pet.react('jump') // one animation loop
+  })
+}
+```
+
+- **`onInteract`** hears the in-window pet: `poke` (a click without dragging),
+  `pickup`, `drop`, then `land` (only for pets whose `pet.json` maps `fall`).
+  `{ asleep }` says the pet was asleep when touched (touching wakes it).
+  Removed when your plugin unloads.
+- **`react(state, { ms? })`** plays a state's row for `ms` (default one
+  animation loop, capped at 10 s), never over `failed`, `waiting` or a sleeping
+  pet. The latest call from any plugin wins; the returned function cancels it,
+  unloading clears it, and it shows in the popped-out overlay too.
+
+For actions, use a palette command, a status-bar item, or your own pane.
 
 ### Run app actions — `ctx.runAction` {#run-app-actions}
 
@@ -2485,7 +2508,7 @@ pipeline as a trust boundary.
 | Category | Exports |
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.spellcheck`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
-| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
+| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PetState`, `PetInteraction`, `PetInteractInfo`, `PetReactOptions`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
 | Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |

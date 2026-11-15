@@ -1,7 +1,9 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 
 import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
-import { $petState, type PetInfo, type PetState } from '@/store/pet'
+import { $petSpriteTarget, type PetInfo, type PetSpriteTarget, type PetState } from '@/store/pet'
+
+import { DEFAULT_STATE_ROWS } from './pet-rows'
 
 const DEFAULT_FRAME_W = 192
 const DEFAULT_FRAME_H = 208
@@ -52,27 +54,19 @@ function useDevicePixelRatio(): number {
   return ratio
 }
 
-// Mirrors agent.pet.constants.CODEX_STATE_ROWS (Petdex current taxonomy).
-export const DEFAULT_STATE_ROWS = [
-  'idle',
-  'running-right',
-  'running-left',
-  'waving',
-  'jumping',
-  'failed',
-  'waiting',
-  'running',
-  'review'
-]
+/** Default hold for each row of a state that cycles several (pet.json `holdSeconds`). */
+export const ROW_HOLD_MS = 30_000
 
-const STATE_ALIASES: Record<PetState, string[]> = {
+const STATE_ALIASES: Partial<Record<PetState, string[]>> = {
   idle: ['idle'],
   wave: ['wave', 'waving'],
   jump: ['jump', 'jumping'],
   run: ['run', 'running'],
   failed: ['failed'],
   review: ['review'],
-  waiting: ['waiting']
+  waiting: ['waiting'],
+  // Opt-in (pet.json `behaviors.sleep`); without it the idle row shows.
+  sleep: ['sleep', 'idle']
 }
 
 const ROW_TO_STATE: Record<string, PetState> = {
@@ -90,47 +84,6 @@ const ROW_TO_STATE: Record<string, PetState> = {
   waiting: 'waiting'
 }
 
-/**
- * Pick the running row + mirror for a horizontal travel direction.
- *
- * Codex sheets ship dedicated `running-left` / `running-right` locomotion rows
- * (already facing their way → no flip). Pets without them fall back to the
- * in-place `running`/`run` row, which faces left by convention, so rightward
- * travel is mirrored. Returns no `row` in that fallback case so the caller lets
- * `$petState` resolve it (and applies `mirror`).
- */
-export function roamWalkRow(dir: -1 | 0 | 1, stateRows?: string[]): { row?: string; mirror: boolean } {
-  if (dir === 0) {
-    return { mirror: false }
-  }
-
-  const rows = stateRows ?? DEFAULT_STATE_ROWS
-  const hasLeft = rows.includes('running-left')
-  const hasRight = rows.includes('running-right')
-
-  if (dir > 0) {
-    if (hasRight) {
-      return { mirror: false, row: 'running-right' }
-    }
-
-    if (hasLeft) {
-      return { mirror: true, row: 'running-left' }
-    }
-
-    return { mirror: true }
-  }
-
-  if (hasLeft) {
-    return { mirror: false, row: 'running-left' }
-  }
-
-  if (hasRight) {
-    return { mirror: true, row: 'running-right' }
-  }
-
-  return { mirror: false }
-}
-
 interface PetSpriteProps {
   info: PetInfo
   /** Opt in to pausing on blur; visible pets animate by default. */
@@ -138,7 +91,7 @@ interface PetSpriteProps {
   /** On-screen scale multiplier applied on top of the pet's native scale. */
   zoom?: number
   /**
-   * Force a specific animation state instead of reading the live `$petState`.
+   * Force a specific animation state instead of reading the live `$petSpriteTarget`.
    * Used by the generate-flow preview to showcase every row without driving (or
    * being driven by) the real agent activity that moves the floating mascot.
    */
@@ -150,9 +103,10 @@ interface PetSpriteProps {
 /**
  * Canvas renderer for a petdex spritesheet — the one piece that must be
  * TypeScript (the engine's decode/encode is Python). Draws the row matching the
- * live `$petState`, stepping `framesPerState` frames across a `loopMs` loop.
+ * live `$petSpriteTarget` (or a preview's overrides), stepping
+ * `framesPerState` frames across a `loopMs` loop.
  *
- * State is read from `$petState` via a ref + subscription rather than a prop,
+ * The target is read via a ref + subscription rather than a prop,
  * so the frequent activity-driven state changes during an agent turn update the
  * canvas (inside its RAF loop) WITHOUT triggering a React re-render. Combined
  * with `memo`, this component effectively never re-renders after mount until
@@ -160,7 +114,7 @@ interface PetSpriteProps {
  */
 function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUnfocused = false }: PetSpriteProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const stateRef = useRef<PetState>($petState.get())
+  const targetRef = useRef<PetSpriteTarget>($petSpriteTarget.get())
   const overrideRef = useRef<PetState | undefined>(stateOverride)
   const rowOverrideRef = useRef<string | undefined>(rowOverride)
   const kickAnimationRef = useRef<() => void>(() => undefined)
@@ -186,6 +140,8 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
   const loopMs = info.loopMs ?? DEFAULT_LOOP_MS
   const scale = (info.scale ?? DEFAULT_SCALE) * zoom
   const rows = info.stateRows ?? DEFAULT_STATE_ROWS
+  const rowOverrides = info.behaviors?.rows
+  const rowHolds = info.behaviors?.holdSeconds
   const pixelRatio = useDevicePixelRatio()
 
   const drawW = Math.round(frameW * scale)
@@ -221,7 +177,7 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
     }
 
     // Track state via subscription, not a prop — no re-render on activity ticks.
-    stateRef.current = $petState.get()
+    targetRef.current = $petSpriteTarget.get()
 
     let raf = 0
     let wakeTimer = 0
@@ -293,6 +249,21 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
       kickAnimation()
     }
 
+    // pet.json `behaviors`: the rows each state cycles through (only ones the sheet has), and their hold.
+    const cycles = new Map(
+      Object.entries(rowOverrides ?? {}).map(([s, names]) => [
+        s,
+        { holdMs: (rowHolds?.[s as PetState] ?? 0) * 1000 || ROW_HOLD_MS, names: names.filter(n => rows.includes(n)) }
+      ])
+    )
+
+    // Wall-clock slots, so remounts and every surface stay in step.
+    const overrideRow = (s: PetState): string | undefined => {
+      const cycle = cycles.get(s)
+
+      return cycle?.names.length ? cycle.names[Math.floor(Date.now() / cycle.holdMs) % cycle.names.length] : undefined
+    }
+
     const rowIndexForState = (s: PetState): number => {
       for (const key of STATE_ALIASES[s] ?? [s]) {
         const idx = rows.indexOf(key)
@@ -309,6 +280,12 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
     // with no real frames (ragged sheet, empty row) falls back to idle rather
     // than flashing blank padding.
     const resolve = (s: PetState): { row: number; count: number } => {
+      const override = overrideRow(s)
+
+      if (override) {
+        return resolveRow(override)
+      }
+
       const real = framesByState?.[s] ?? frames
 
       if (real > 0) {
@@ -337,8 +314,8 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
         return
       }
 
-      const forcedRow = rowOverrideRef.current
-      const { row, count } = forcedRow ? resolveRow(forcedRow) : resolve(overrideRef.current ?? stateRef.current)
+      const forcedRow = rowOverrideRef.current ?? (overrideRef.current ? undefined : targetRef.current.row)
+      const { row, count } = forcedRow ? resolveRow(forcedRow) : resolve(overrideRef.current ?? targetRef.current.state)
 
       if (row !== activeRow || count !== activeCount) {
         activeRow = row
@@ -383,8 +360,8 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
 
     kickAnimationRef.current = kickAnimation
 
-    const unsubState = $petState.listen(next => {
-      stateRef.current = next
+    const unsubState = $petSpriteTarget.listen(next => {
+      targetRef.current = next
       kickAnimation()
     })
 
@@ -400,7 +377,21 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
       pauseController?.dispose()
       unsubState()
     }
-  }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, backingW, backingH, rows, pauseWhenUnfocused])
+  }, [
+    image,
+    frameW,
+    frameH,
+    frames,
+    framesByState,
+    framesByRow,
+    loopMs,
+    backingW,
+    backingH,
+    rows,
+    rowOverrides,
+    rowHolds,
+    pauseWhenUnfocused
+  ])
 
   return (
     <canvas

@@ -31,9 +31,14 @@ const FLOOR_BAR_SELECTOR = '[data-slot="statusbar"]'
 
 // Sprites carry a few px of transparent padding below the feet; sink the pet by
 // this much so the visible feet meet the surface instead of hovering above it.
-const FEET_DROP_PX = 4
+export const FEET_DROP_PX = 4
 // Snap distance: how close the feet must be to count as "on this ledge".
 export const GROUND_EPS = 2
+// Downward acceleration for falls between ledges and a released pet's drop:
+// fast enough to read as a drop.
+export const GRAVITY_PX_S2 = 5200
+// Cap dt so a backgrounded/throttled tab can't teleport the pet on resume.
+export const MAX_DT_S = 0.05
 
 const vw = (): number => window.innerWidth || 800
 const vh = (): number => window.innerHeight || 600
@@ -128,3 +133,7 @@ export function overlayLedge(petW: number): Ledge {
 
   return { left: inset, right: Math.max(0, vw() - inset - petW), y: vh() - inset }
 }
+
+/** The surfaces the pet can stand on right now: an open route overlay's base, else the app's. */
+export const walkableLedges = (petW: number, petH: number, overlayOpen: boolean): Ledge[] =>
+  overlayOpen ? [overlayLedge(petW)] : snapshotLedges(petW, petH)

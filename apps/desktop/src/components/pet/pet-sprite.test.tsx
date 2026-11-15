@@ -5,8 +5,8 @@ vi.mock('@/store/pet', () => {
   const listeners = new Set<(state: string) => void>()
 
   return {
-    $petState: {
-      get: () => 'idle',
+    $petSpriteTarget: {
+      get: () => ({ state: 'idle' }),
       listen: (callback: (state: string) => void) => {
         listeners.add(callback)
 
@@ -18,11 +18,13 @@ vi.mock('@/store/pet', () => {
   }
 })
 
+import type { PetInfo } from '@/store/pet'
 import { reactRoot } from '@/test/react-root'
 
 import { installWindowStateBridge, setDocumentHidden, type WindowStateBridge } from '../../test/window-state'
 
-import { PetSprite } from './pet-sprite'
+import { roamHopRow } from './pet-rows'
+import { PetSprite, ROW_HOLD_MS } from './pet-sprite'
 
 const INFO = {
   enabled: true,
@@ -130,6 +132,27 @@ describe('PetSprite RAF scheduling', () => {
     expect(raf.request).toHaveBeenCalledTimes(2)
   })
 
+  const CYCLE = ['idle', 'running', 'dancing', 'juggling']
+  const RUN = { rows: { run: ['dancing', 'juggling'] } }
+  const FAILED = { rows: { failed: ['crying'] } }
+
+  // [case, stateRows, behaviors, state, wall clock, row drawn]
+  it.each([
+    ['draws the row a behavior points a state at', ['idle', 'failed', 'review', 'crying'], FAILED, 'failed', 0, 3],
+    ['ignores a behavior row the sheet lacks', ['idle', 'failed'], FAILED, 'failed', 0, 1],
+    ['cycles listed rows by wall-clock slot (slot 3)', CYCLE, RUN, 'run', ROW_HOLD_MS * 3, 3],
+    ['cycles listed rows by wall-clock slot (slot 4)', CYCLE, RUN, 'run', ROW_HOLD_MS * 4, 2],
+    ["holds each row for the state's holdSeconds", CYCLE, { ...RUN, holdSeconds: { run: 5 } }, 'run', 5_000, 3]
+  ] as const)('%s', (_case, stateRows, behaviors, state, now, row) => {
+    const raf = installRaf()
+    vi.setSystemTime(now)
+
+    mount.render(<PetSprite info={{ ...INFO, stateRows, behaviors } as PetInfo} stateOverride={state} />)
+    act(() => raf.runNext(0))
+
+    expect(drawImage).toHaveBeenLastCalledWith(expect.anything(), 0, row * 16, 16, 16, 0, 0, 16, 16)
+  })
+
   it('uses a DPR-sized backing store while preserving the CSS footprint', () => {
     Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 })
     const raf = installRaf()
@@ -195,5 +218,14 @@ describe('PetSprite RAF scheduling', () => {
       window.dispatchEvent(new Event('focus'))
     })
     expect(raf.pending()).toBe(0)
+  })
+})
+
+describe('roamHopRow', () => {
+  it("uses the sheet's own jump row for roam hops, never a remapped state", () => {
+    expect(roamHopRow('jump', ['idle', 'jumping', 'smiling'])).toBe('jumping')
+    expect(roamHopRow('jump')).toBe('jumping')
+    expect(roamHopRow('walk', ['idle', 'jumping'])).toBeUndefined()
+    expect(roamHopRow('jump', ['idle'])).toBeUndefined()
   })
 })

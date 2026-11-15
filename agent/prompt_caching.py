@@ -6,7 +6,6 @@ breakpoint plus the last 3 messages). All markers share one TTL (5m or 1h).
 """
 
 import copy
-import time
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -223,48 +222,6 @@ def route_ttl_ceiling(provider: str, base_url: str = "") -> str | None:
         if ceiling in _CEILING_TIERS:
             return ceiling
     return None
-
-
-_CACHE_TTL_SECONDS = {"5m": 300, "1h": 3600}
-# Slack past the TTL before calling the cache expired: a prune on a still-warm cache is a paid cache break.
-_CACHE_EXPIRY_SLACK_SECONDS = 30
-
-
-def _epoch(value: Any) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-
-
-def _last_response_wall_time(agent: Any, messages: Any) -> float | None:
-    """Wall-clock time of the last provider response: this process's stamp, else (a resumed session) the
-    newest assistant row's ``timestamp`` in *messages*, else the store's. Gateway and TUI replays drop
-    assistant timestamps, so without the store a resumed agent's first turn never read the cache as cold."""
-    if (last := _epoch(getattr(agent, "_last_api_response_at", None))) is not None:
-        return last
-    newest = next((m for m in reversed(messages if isinstance(messages, list) else ())
-                   if isinstance(m, dict) and m.get("role") == "assistant"), None)
-    if newest is None:
-        return None
-    if (ts := _epoch(newest.get("timestamp"))) is not None:
-        return ts
-    reader = getattr(getattr(agent, "_session_db", None), "latest_assistant_timestamp", None)
-    return _epoch(reader(getattr(agent, "session_id", "") or "")) if callable(reader) else None
-
-
-def provider_cache_expired(agent: Any, messages: Any = None, now: float | None = None) -> bool:
-    """True only when this agent's ``cache_control`` prompt cache has certainly expired: caching is on and
-    more than the route's effective TTL (+ slack) has passed since the last provider response. Caching off,
-    no known response time, or an unknown tier all answer False, so callers keep warm-cache behaviour."""
-    if not getattr(agent, "_use_prompt_caching", False) or getattr(agent, "_cache_disabled", False):
-        return False
-    last = _last_response_wall_time(agent, messages)
-    if last is None:
-        return False
-    ttl = _CACHE_TTL_SECONDS.get(effective_cache_ttl(
-        getattr(agent, "_cache_ttl", None), model=getattr(agent, "model", "") or "",
-        provider=getattr(agent, "provider", "") or ""))
-    if ttl is None:
-        return False
-    return (time.time() if now is None else now) - last > ttl + _CACHE_EXPIRY_SLACK_SECONDS
 
 
 def _apply_system_cache_markers(

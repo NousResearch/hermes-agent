@@ -415,7 +415,7 @@ def _proactive_tool_result_prune(
     if _accepts_keyword_argument(prune, "cold_cache"):  # older plugin engines keep their signature
         from agent.turn_proactive_prune import prompt_cache_is_cold
 
-        kwargs["cold_cache"] = prompt_cache_is_cold(agent, messages)
+        kwargs["cold_cache"] = prompt_cache_is_cold(agent)
     if isinstance(turn_start, int) and _accepts_keyword_argument(prune, "turn_start"):
         kwargs["turn_start"] = turn_start  # the running turn is never shortened
     try:

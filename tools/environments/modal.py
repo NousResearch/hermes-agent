@@ -133,6 +133,9 @@ class _AsyncWorker:
 # the routed FAL, Bedrock and Entra clients, replaced when that profile's pair changes. A replaced
 # client is not closed: a sandbox created through it keeps running its RPCs on it.
 _profile_clients: dict[str, tuple[tuple[str, str], Any]] = {}
+# Profile home key -> lock held across that home's check-and-build; _profile_clients_lock guards
+# only this mapping, so one profile's slow handshake never holds up another profile's.
+_profile_client_locks: dict[str, threading.Lock] = {}
 _profile_clients_lock = threading.Lock()
 
 
@@ -154,15 +157,19 @@ def _routed_token_pair() -> tuple[str, str] | None:
     return token_id, token_secret
 
 
-async def _profile_client(modal: Any, home: str, pair: tuple[str, str]) -> Any:
+def _profile_client(modal: Any, pair: tuple[str, str]) -> Any:
+    """The serving profile's cached client, built in the caller's thread under that home's lock.
+    Building under the lock matters: each ``Client.from_credentials`` opens a channel the SDK keeps
+    until process exit, so two concurrent first sandboxes must not both build one. The sync SDK
+    call runs on the SDK's own loop thread, never on an environment's worker loop."""
+    home = hermes_home_key()
     with _profile_clients_lock:
+        home_lock = _profile_client_locks.setdefault(home, threading.Lock())
+    with home_lock:
         cached = _profile_clients.get(home)
-    if cached is not None and cached[0] == pair:
+        if cached is None or cached[0] != pair:
+            cached = _profile_clients[home] = (pair, modal.Client.from_credentials(*pair))
         return cached[1]
-    client = await modal.Client.from_credentials.aio(*pair)
-    with _profile_clients_lock:
-        _profile_clients[home] = (pair, client)
-    return client
 
 
 class ModalEnvironment(BaseEnvironment):
@@ -190,17 +197,16 @@ class ModalEnvironment(BaseEnvironment):
             _get_snapshot_restore_candidate(self._task_id) if self._persistent else (None, False))
         if restored_snapshot_id:
             logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
-        # Read in the caller's thread: the SDK coroutines run on the worker loop, outside the turn's
-        # profile scope.
+        # Resolved in the caller's thread: the SDK coroutines run on the worker loop, outside the
+        # turn's profile scope.
         pair = _routed_token_pair()
-        home = hermes_home_key() if pair else ""
         ensure_lazy_dep("modal")
         import modal as _modal
+        client = _profile_client(_modal, pair) if pair else None
         self._worker.start()
 
         def _create(image_spec: Any) -> None:
             async def _create_sandbox():
-                client = await _profile_client(_modal, home, pair) if pair else None
                 app = await _modal.App.lookup.aio("hermes-agent", create_if_missing=True, client=client)
                 create_kwargs = dict(modal_sandbox_kwargs or {})
                 sandbox = await _modal.Sandbox.create.aio(

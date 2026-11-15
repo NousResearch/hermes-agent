@@ -38,7 +38,7 @@ def test_monitor_keys_pin_controls_across_roster_changes(monkeypatch):
                 pipe.send_text(text)
                 await asyncio.wait_for(rendered.wait(), 3)
 
-            await send('\x1b[B\rsFocus on tests\r')
+            await send('\x1b[BtsFocus on tests\r')  # t: the raw live tail
             await send('x')
             registry._active_subagents.pop('second')
             dock.refresh()

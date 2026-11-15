@@ -33,6 +33,7 @@ class SubagentMonitor:
     def __init__(self, cli):
         self.cli = cli
         self.entries = []
+        self.finished = []  # stored subagents of this conversation that are no longer live (list only)
         self.processes = []
         self.goal = ''
         self.loop = ''
@@ -46,6 +47,7 @@ class SubagentMonitor:
         self.opening = False
         self.collapsed = False
         self.detail = False  # the monitor's detail view is open (its tick fetches the gateway tail)
+        self.viewer = None  # the open subagent viewer (cli_subagent_viewer.SubagentViewer)
 
     @property
     def has_rows(self):
@@ -53,8 +55,9 @@ class SubagentMonitor:
 
     @property
     def roster(self):
-        """Agents first, then processes — the order the dock and the full-height monitor paint."""
-        return [*self.entries, *self.processes]
+        """Live agents, then finished ones, then processes — the full-height monitor's order (the
+        dock paints only the live rows)."""
+        return [*self.entries, *self.finished, *self.processes]
 
     @staticmethod
     def _key(row):
@@ -80,23 +83,29 @@ class SubagentMonitor:
             self._local = LocalSubagents(self.cli)
         return self._local
 
-    def refresh(self, now=None):
+    def refresh(self, now=None, *, history=None):
+        """Re-read the live rows; ``history`` also reads this conversation's finished subagents from
+        the session store (the full-height monitor's list; the dock never paints them). By default
+        they are read only while the full-height monitor is open."""
         now = time.time() if now is None else now
+        history = self.app is not None if history is None else history
         entries = self.subagents().subagent_rows(busy=bool(getattr(self.cli, '_agent_running', False)))
         for row in entries:
             row['elapsed'] = max(0, int(now - (row.get('started_at') or now)))
             row['last_tool'] = row.get('last_tool') or ''
             row['key'] = row['subagent_id']
             row.pop('running_seconds', None)
+        finished = finished_rows(self.cli, entries) if history else []
         processes = procs.process_rows(now)
         session_rows.sync_automation(self.cli)
         goal = session_rows.goal_line(self.cli)
         loop_badge, loop, loop_prompt = session_rows.loop_row(self.cli, now)
         queued = session_rows.queued_prompts(self.cli)
-        signature = json.dumps([entries, processes, goal, loop, queued], sort_keys=True, default=str)
+        signature = json.dumps([entries, finished, processes, goal, loop, queued], sort_keys=True, default=str)
         changed = signature != self._signature
         self._signature = signature
         self.entries = entries
+        self.finished = finished
         self.processes = processes
         self.goal = goal
         self.loop = loop
@@ -130,6 +139,8 @@ class SubagentMonitor:
         try:
             changed = self.refresh()
             changed = self._poll_tail() or changed
+            viewer = self.viewer
+            changed = (viewer is not None and viewer.poll()) or changed
         except Exception:  # health: allow BLE001 -- the spinner thread runs this tick; one raise would end that thread for the session
             logger.debug("subagent monitor tick failed", exc_info=True)
             return
@@ -157,6 +168,8 @@ class SubagentMonitor:
 
     def control(self, action, message=None, *, target=None):
         target = target or self.selected_id
+        if any(r['key'] == target for r in self.finished):
+            return {'error': t('cli.subagents.finished_cannot_control')}
         if any(r['key'] == target for r in self.processes):
             if action != 'stop':
                 return {'error': t('cli.subagents.cannot_steer_process')}
@@ -184,6 +197,16 @@ class SubagentMonitor:
         if session and self.queued:
             parts.append(t('cli.subagents.count_queued', count=len(self.queued)))
         return ' · '.join(parts)
+
+    def list_title(self):
+        """The full-screen list's heading: live and finished subagents, then processes."""
+        subagents = bool(self.entries or self.finished)
+        title = (t('cli.subagents.title_live_work') if subagents and self.processes
+                 else t('cli.subagents.title_subagents') if subagents else t('cli.subagents.title_processes'))
+        parts = [self._counts(session=False)] if (self.entries or self.processes) else []
+        if self.finished:
+            parts.append(t('cli.subagents.count_finished', count=len(self.finished)))
+        return ' · '.join([title, *[part for part in parts if part]])
 
     def _title(self):
         if self.entries and self.processes:
@@ -276,6 +299,38 @@ class SubagentMonitor:
         return '\n'.join(' ' + line for line in lines)
 
 
+def master_session_id(cli):
+    """The stored id of the conversation the CLI shows (the agent's follows compression rotations)."""
+    return getattr(getattr(cli, 'agent', None), 'session_id', None) or getattr(cli, 'session_id', None)
+
+
+def finished_rows(cli, live_rows):
+    """This conversation's stored subagents that are not live (oldest first), as list rows keyed
+    by their stored session id. Empty without a session store; a store error reads as none."""
+    db, session_id = getattr(cli, '_session_db', None), master_session_id(cli)
+    if db is None or not session_id:
+        return []
+    try:
+        stored = db.list_subagent_sessions(session_id)
+    except Exception:  # health: allow BLE001 -- the list is a view; a locked or older store must not break the monitor
+        logger.debug("stored subagent read failed", exc_info=True)
+        return []
+    live = {row.get('child_session_id') for row in live_rows if row.get('child_session_id')}
+    rows = []
+    for record in stored:
+        if record['session_id'] in live:
+            continue
+        ended, started = record.get('ended_at'), record.get('started_at')
+        rows.append({
+            'kind': 'finished', 'key': record['session_id'], 'subagent_id': record['session_id'],
+            'child_session_id': record['session_id'], 'goal': record.get('goal') or record.get('title') or '',
+            # 0 = a direct child: the live registry's (and subagent.list's) convention
+            'depth': record.get('depth', 1) - 1, 'model': record.get('model'), 'ended': ended is not None,
+            'elapsed': max(0, int(ended - started)) if ended and started else 0,
+        })
+    return rows
+
+
 def read_tail(path):
     if not path:
         return t('cli.subagents.transcript_unavailable')
@@ -326,8 +381,13 @@ def build_monitor_application(monitor, **kwargs):
                 prefix = f"{procs.process_glyph(row)} {procs.process_activity(row)} · "
                 activity = ''
                 subject = row['command']
+            elif row.get('kind') == 'finished':
+                state_text = t('cli.subagents.finished_status' if row.get('ended') else 'cli.subagents.not_live_status')
+                prefix = f"✓ {row['elapsed']}s · {state_text} · "
+                activity = ''
+                subject = row.get('goal') or row['subagent_id']
             else:
-                prefix = f"{row['elapsed']}s · {row.get('status') or t('cli.subagents.starting')} · "
+                prefix = f"● {row['elapsed']}s · {row.get('status') or t('cli.subagents.starting')} · "
                 activity = ' · ' + t('cli.subagents.last_tool', tool=row['last_tool']) if row.get('last_tool') else ''
                 subject = row.get('goal') or row['subagent_id']
             goal_width = max(0, size.columns - 2 - get_cwidth(prefix + activity))
@@ -359,7 +419,7 @@ def build_monitor_application(monitor, **kwargs):
 
     def header():
         row = monitor.selected
-        title = f"{monitor._title()} · {monitor._counts(session=False)}"
+        title = monitor.list_title()
         if monitor.detail and row:
             title += f" · {monitor._key(row)} · {row.get('goal') or row.get('command') or ''}"
         return [('class:subagent-dock.heading', _clip(title, app.output.get_size().columns))]
@@ -371,6 +431,8 @@ def build_monitor_application(monitor, **kwargs):
             noun = t('cli.subagents.noun_process' if process else 'cli.subagents.noun_subagent')
             return (t('cli.subagents.footer_confirm_stop_compact') if narrow
                     else t('cli.subagents.footer_confirm_stop', noun=noun))
+        if monitor.viewer is not None:
+            return viewer_footer()
         if state['steering']:
             return t('cli.subagents.footer_steering_compact' if narrow else 'cli.subagents.footer_steering')
         steer = '' if process else t('cli.subagents.footer_steer_key')
@@ -380,7 +442,7 @@ def build_monitor_application(monitor, **kwargs):
         steer = '' if process else t('cli.subagents.footer_steer_key_long')
         return t('cli.subagents.footer_detail' if monitor.detail else 'cli.subagents.footer_roster', steer=steer)
 
-    def run_control(action, message, target):
+    def run_call(call):
         """Steer/stop off the UI loop: a stalled gateway call (up to its timeout) must not freeze the
         monitor's repaint, Esc or Ctrl+C. The answer lands in the notice line when it arrives."""
         import asyncio
@@ -394,12 +456,20 @@ def build_monitor_application(monitor, **kwargs):
             state['notice'] = result.get('error') or result.get('note') or str(result)
             app.invalidate()
 
-        asyncio.get_running_loop().run_in_executor(
-            None, lambda: monitor.control(action, message, target=target)).add_done_callback(done)
+        asyncio.get_running_loop().run_in_executor(None, call).add_done_callback(done)
+
+    def run_control(action, message, target):
+        run_call(lambda: monitor.control(action, message, target=target))
+
+    from hermes_cli.cli_subagent_viewer import SubagentViewer, viewer_ui
+    viewer_box, viewer_entry, viewer_kb, viewer_header, viewer_footer = viewer_ui(
+        monitor, state, lambda: app, run_call)
+    viewing = Condition(lambda: monitor.viewer is not None)
 
     kb = KeyBindings()
     normal = Condition(lambda: not state['steering'] and not state['confirm'])
-    listing = normal & Condition(lambda: not monitor.detail)
+    keys = normal & ~viewing  # single-letter shortcuts; in the viewer, letters are typed into its input
+    listing = keys & Condition(lambda: not monitor.detail)
 
     @kb.add('up', filter=listing)
     def up(event):
@@ -410,14 +480,35 @@ def build_monitor_application(monitor, **kwargs):
         monitor.select(1)
 
     @kb.add('enter', filter=listing)
-    def detail(event):
-        if monitor.selected:
-            monitor.detail = True
-            monitor.poll_soon()  # the spinner thread's next tick fetches the tail
-            update_tail()
-            app.layout.focus(tail)
+    def open_entry(event):
+        row = monitor.selected
+        if row is None:
+            return
+        if row.get('kind') == 'process':
+            show_tail()
+            return
+        monitor.viewer = SubagentViewer(monitor, row.get('child_session_id') or row['subagent_id'])
+        app.layout.focus(viewer_entry)
 
-    @kb.add('s', filter=normal)
+    @kb.add('t', filter=listing)
+    def raw_tail(event):
+        """The raw live transcript tail of a running subagent (or a process's log)."""
+        row = monitor.selected
+        if row is not None and row.get('kind') != 'finished':
+            show_tail()
+
+    def show_tail():
+        monitor.detail = True
+        monitor.poll_soon()  # the spinner thread's next tick fetches the tail
+        update_tail()
+        app.layout.focus(tail)
+
+    @kb.add('m', filter=listing)
+    def master_view(event):
+        monitor.viewer = SubagentViewer(monitor, 'master')
+        app.layout.focus(viewer_entry)
+
+    @kb.add('s', filter=keys)
     def start_steer(event):
         if monitor.selected and monitor.selected_process is None:
             state['steering'] = True
@@ -433,7 +524,7 @@ def build_monitor_application(monitor, **kwargs):
         state['steering'] = False
         app.layout.focus(tail if monitor.detail else roster)
 
-    @kb.add('x', filter=normal)
+    @kb.add('x', filter=keys)
     def stop(event):
         if monitor.selected:
             state['confirm'] = True
@@ -441,21 +532,34 @@ def build_monitor_application(monitor, **kwargs):
 
     @kb.add('y', filter=Condition(lambda: state['confirm']))
     def confirm(event):
-        run_control('stop', None, state['target'])
+        action = state.pop('confirm_action', None)
+        if action is not None:
+            run_call(action)
+        else:
+            run_control('stop', None, state['target'])
         state['confirm'] = False
 
-    @kb.add('escape', eager=True)
+    def focus_home():
+        app.layout.focus(viewer_entry if monitor.viewer else tail if monitor.detail else roster)
+
+    # Eager everywhere but the viewer, where Alt+Left/Right arrive as Esc + arrow and must win.
+    @kb.add('escape', eager=True, filter=~viewing)
+    @kb.add('escape', filter=viewing)
     def back(event):
         if state['steering'] or state['confirm']:
             state['steering'] = state['confirm'] = False
-            app.layout.focus(tail if monitor.detail else roster)
+            state.pop('confirm_action', None)
+            focus_home()
+        elif monitor.viewer is not None:
+            monitor.viewer = None
+            app.layout.focus(roster)
         elif monitor.detail:
             monitor.detail = False
             app.layout.focus(roster)
         else:
             app.exit()
 
-    @kb.add('q', filter=normal)
+    @kb.add('q', filter=keys)
     @kb.add('f6', filter=normal)
     @kb.add('c-t', filter=normal)
     @kb.add('c-c')
@@ -463,9 +567,10 @@ def build_monitor_application(monitor, **kwargs):
         app.exit()
 
     layout = Layout(HSplit([
-        Window(FormattedTextControl(header), height=1),
-        ConditionalContainer(roster, filter=Condition(lambda: not monitor.detail)),
-        ConditionalContainer(tail, filter=Condition(lambda: monitor.detail)),
+        Window(FormattedTextControl(lambda: viewer_header() if monitor.viewer else header()), height=1),
+        ConditionalContainer(roster, filter=Condition(lambda: not monitor.detail) & ~viewing),
+        ConditionalContainer(tail, filter=Condition(lambda: monitor.detail) & ~viewing),
+        ConditionalContainer(viewer_box, filter=viewing),
         ConditionalContainer(steer, filter=Condition(lambda: state['steering'])),
         Window(FormattedTextControl(lambda: _clip(state['notice'], app.output.get_size().columns)), height=1),
         Window(FormattedTextControl(footer), height=1),
@@ -481,7 +586,9 @@ def build_monitor_application(monitor, **kwargs):
     from prompt_toolkit.styles import Style
     from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
     kwargs.setdefault('style', Style.from_dict(get_prompt_toolkit_style_overrides()))
-    app = Application(layout=layout, key_bindings=kb, full_screen=True, mouse_support=False,
+    from prompt_toolkit.key_binding import merge_key_bindings
+    app = Application(layout=layout, key_bindings=merge_key_bindings([kb, viewer_kb]), full_screen=True,
+                      mouse_support=False,
                       before_render=before_render, **kwargs)
     return app
 
@@ -495,15 +602,28 @@ def open_monitor(cli):
     monitor.opening = True
 
     async def run():
+        from hermes_cli import cli_render
         try:
             async with in_terminal():
-                # Paint the roster the dock's tick already holds; refreshing here would block the UI
-                # loop on the gateway's subagent.list. The spinner thread's next tick re-reads it.
-                monitor.poll_soon()
-                monitor.app = build_monitor_application(monitor)
-                await monitor.app.run_async()
+                # Master output (``_cprint``) paints through the app prompt_toolkit reports as current,
+                # which is the monitor while it is open: each paint would leave its alternate screen,
+                # print on the main screen and redraw it, a flicker per streamed chunk. Hold it until
+                # the monitor closes, then paint it in order on the main screen. Paints a pending
+                # resize recovery already holds stay held for that recovery to release.
+                owns_hold = cli_render._HELD_PAINTS is None
+                cli_render._hold_paints()
+                try:
+                    # Paint the roster the dock's tick already holds; refreshing here would block the
+                    # UI loop on the gateway's subagent.list. The spinner thread's next tick re-reads it.
+                    monitor.poll_soon()
+                    monitor.app = build_monitor_application(monitor)
+                    await monitor.app.run_async()
+                finally:
+                    monitor.app = None  # paints released below go to the main screen, not the monitor
+                    if owns_hold:
+                        cli_render._release_paints()
         finally:
-            monitor.app = None
+            monitor.app = monitor.viewer = None
             monitor.detail = monitor.opening = False
             cli._invalidate()
 

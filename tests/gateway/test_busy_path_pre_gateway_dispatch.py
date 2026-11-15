@@ -85,7 +85,6 @@ def _make_runner():
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._busy_ack_ts = {}
     runner._draining = False
     runner._busy_input_mode = "interrupt"
     runner.adapters = {}
@@ -95,7 +94,7 @@ def _make_runner():
     runner.hooks.emit = AsyncMock()
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = True
-    runner._is_user_authorized = lambda _source: True
+    runner._is_user_authorized_for_source = lambda _source: True
     return runner, _AGENT_PENDING_SENTINEL
 
 
@@ -157,7 +156,9 @@ class TestBusyPathPreGatewayDispatch:
         adapter._send_with_retry.assert_not_called(), "no busy-ack on skip"
         mock_merge.assert_not_called(), "skip must not enqueue the event"
         agent.interrupt.assert_not_called(), "skip must not interrupt the run"
-        assert sk not in runner._busy_ack_ts, "skip should not stamp ack-cooldown"
+        assert runner._session_state(sk).turn.busy_ack_ts == 0.0, (
+            "skip should not stamp ack-cooldown"
+        )
 
         # Idle-path contract: signature must match exactly.
         mock_invoke.assert_awaited_once()
@@ -175,7 +176,7 @@ class TestBusyPathPreGatewayDispatch:
         no-action; skip must win first so plugins can ingest without pairing.
         """
         runner, _ = _make_runner()
-        runner._is_user_authorized = lambda _source: False
+        runner._is_user_authorized_for_source = lambda _source: False
         adapter = _make_adapter()
 
         event = _make_event(text="customer message during handover")
@@ -198,13 +199,13 @@ class TestBusyPathPreGatewayDispatch:
         adapter._send_with_retry.assert_not_called()
         mock_merge.assert_not_called()
         agent.interrupt.assert_not_called()
-        assert sk not in runner._busy_ack_ts
+        assert runner._session_state(sk).turn.busy_ack_ts == 0.0
 
     @pytest.mark.asyncio
     async def test_unauthorized_without_skip_still_dropped(self):
         """Unauthorized + no plugin skip still hits the auth gate (no interrupt)."""
         runner, _ = _make_runner()
-        runner._is_user_authorized = lambda _source: False
+        runner._is_user_authorized_for_source = lambda _source: False
         adapter = _make_adapter()
 
         event = _make_event(text="intruder")
@@ -232,7 +233,7 @@ class TestBusyPathPreGatewayDispatch:
         for hook_return in ([], None):
             adapter._send_with_retry.reset_mock()
             agent.interrupt.reset_mock()
-            runner._busy_ack_ts.clear()
+            runner._session_state(sk).turn.busy_ack_ts = 0.0
 
             with patch(
                 "hermes_cli.lifecycle.ainvoke_hook", new_callable=AsyncMock, return_value=hook_return
@@ -289,7 +290,7 @@ class TestBusyPathPreGatewayDispatch:
         ):
             adapter._send_with_retry.reset_mock()
             agent.interrupt.reset_mock()
-            runner._busy_ack_ts.clear()
+            runner._session_state(sk).turn.busy_ack_ts = 0.0
 
             with patch(
                 "hermes_cli.lifecycle.ainvoke_hook", new_callable=AsyncMock, return_value=hook_return

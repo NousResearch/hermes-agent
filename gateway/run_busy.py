@@ -831,11 +831,20 @@ class GatewayBusySessionMixin:
                 turn.ctx.reply_expected = turn.event.reply_expected
         return turn
 
-    async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
+    async def _interrupt_running_agent_for_busy_event(
+        self,
+        event: MessageEvent,
+        adapter,
+        running_agent,
+        interrupt_text: str | None = None,
+    ) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point.
-        The event is already queued: a voice note is transcribed by its follow-up turn, not here."""
+        The event is already queued: a voice note is transcribed by its follow-up turn, not here.
+        ``interrupt_text``, when set, is the inbound fragment snapshotted before pending-queue merge."""
         try:
-            running_agent.interrupt(self._busy_interrupt_text(event))
+            running_agent.interrupt(
+                interrupt_text if interrupt_text is not None else self._busy_interrupt_text(event)
+            )
         except Exception:
             pass  # don't let interrupt failure block the ack
 

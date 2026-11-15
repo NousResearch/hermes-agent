@@ -1098,3 +1098,52 @@ class TestSiblingHomeBackends:
         filter upstream already spares those, so anything reaching here is treated as before."""
         result, signalled, _respawn, _ = self._run(tmp_path, monkeypatch, {7004: None})
         assert 7004 in signalled and result["spared"] == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="systemd units")
+@pytest.mark.parametrize("backend_home", ["root", "profile"])
+def test_update_restarts_a_backend_unit_outside_the_name_families(tmp_path, monkeypatch, backend_home):
+    """#152200 / #152913: ``hermes update`` run from the root home, with a ``hermes serve`` whose
+    systemd unit is named outside ``hermes-gateway*``/``-serve*``/``-dashboard*`` (so the fleet's
+    unit pass never lists it). Only the post-update sweep can reach it, through the unit owning
+    its MainPID. That works for a backend on the invoking home; a sibling profile's backend was
+    outside the sweep's single-home scope and kept serving pre-update code."""
+    from types import SimpleNamespace
+    from hermes_cli import update_cmd
+
+    root = tmp_path / "root"
+    kay = root / "profiles" / "kay"
+    kay.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr("hermes_cli.update_fleet_scope.update_scope_homes",
+                        lambda: {root.resolve(), kay.resolve()})
+    home = {"root": root, "profile": kay}[backend_home]
+    unit = "hermes-kay-serve.service"
+    monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes",
+                        lambda exclude_pids=None: [(8801, "hermes serve --host 0.0.0.0 --port 8642")])
+    monkeypatch.setattr(dashboard_procs, "_caller_ancestor_pids", lambda: set())
+    monkeypatch.setattr(dashboard_procs, "_is_caller_wrapper_shell", lambda pid, ancestors: False)
+    monkeypatch.setattr(dashboard_procs, "_hermes_home_for_pid", lambda pid: str(home))
+    monkeypatch.setattr(dashboard_procs, "_lock_owned_serve_pids", lambda: set())
+    monkeypatch.setattr(dashboard_procs, "_exclude_pids_from_env", lambda: set())
+    monkeypatch.setattr(main_dashboard, "_restart_managed_dashboard_service", lambda reason: False)
+    monkeypatch.setattr(main_dashboard, "_loaded_launchd_backend_jobs", list)
+    monkeypatch.setattr(main_dashboard, "_get_pid_cgroup_path", lambda pid: f"/user.slice/{unit}")
+    monkeypatch.setattr(main_dashboard, "_get_systemd_service_for_pid", lambda pid: unit)
+    restarted: list[str] = []
+    monkeypatch.setattr(main_dashboard, "_try_restart_systemd_service",
+                        lambda svc, cgroup=None: restarted.append(svc) or True)
+    monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(
+        _kill_stale_dashboard_processes=dashboard_procs._kill_stale_dashboard_processes))
+    monkeypatch.setattr(update_cmd, "_record_update_step", lambda *a, **k: None)
+    alive = {8801}
+
+    def fake_kill(pid, sig):
+        if sig == 0 and pid not in alive:
+            raise ProcessLookupError
+        alive.discard(pid)
+
+    with patch("os.kill", side_effect=fake_kill), patch("time.sleep"):
+        down = update_cmd_maint._refresh_dashboard_after_update(already_restarted_units={"hermes-gateway"})
+    assert restarted == [unit], f"{backend_home}-home backend under {unit} was not restarted"
+    assert down == set()

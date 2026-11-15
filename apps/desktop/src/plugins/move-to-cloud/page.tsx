@@ -419,8 +419,8 @@ function BackupCard({ copy }: { copy: MoveCopy }) {
   )
 }
 
-/** Creating a cloud agent from here needs a Nous Portal change still under review; until it ships
- *  this says so and links to the portal, where one click creates it. */
+/** Creating a cloud agent from here waits on Nous Portal letting this client create agents
+ *  (NousResearch/hermes-portal#2160); until then this links to the portal, where one click does it. */
 function NewAgentCard({ copy, openExternal }: { copy: MoveCopy; openExternal: (url: string) => Promise<boolean> }) {
   return (
     <div className="flex items-center gap-3 rounded-lg border border-dashed border-(--ui-stroke-tertiary) px-4 py-3">

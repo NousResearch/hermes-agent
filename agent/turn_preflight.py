@@ -404,9 +404,12 @@ def _proactive_tool_result_prune(
             _record_checkpoint_gate_suppression(agent, "the proactive tool-result prune")
         return messages
     prune = getattr(compressor, "prune_tool_results_only", None)
-    # No bound session row keeps the originals: a committed prune would drop them for good.
-    if not (callable(prune) and getattr(compressor, "_session_db", None) is not None
-            and getattr(compressor, "_session_id", "")):
+    if not callable(prune):
+        return messages
+    # The built-in prunes only a session with a store row; it opts in to that gate, so a plugin engine
+    # that keeps its own originals is never held to the built-in's private fields.
+    if getattr(compressor, "prune_needs_session_store", False) and not (
+            getattr(compressor, "_session_db", None) is not None and getattr(compressor, "_session_id", "")):
         return messages
     kwargs: dict[str, Any] = {"current_tokens": current_tokens}
     if _accepts_keyword_argument(prune, "cold_cache"):  # older plugin engines keep their signature

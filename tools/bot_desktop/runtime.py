@@ -344,12 +344,6 @@ def _pick_display() -> int:
     raise RuntimeError("no free X display number in the Bot Desktop band")
 
 
-def _allocate_display() -> int:
-    _ALLOC_LOCK.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with _flocked(_ALLOC_LOCK):
-        return _pick_display()
-
-
 def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """``base_env`` (default ``os.environ``) with this profile's DISPLAY/XAUTHORITY/DBUS_SESSION_BUS_ADDRESS
     merged in when its desktop is running. Unchanged otherwise, so hosts with a real seat keep it.

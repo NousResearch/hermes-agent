@@ -100,7 +100,6 @@ def test_foreground_support_is_discovered_from_tool_input_schema():
     session = _CuaDriverSession.__new__(_CuaDriverSession)
     session._capabilities = {}
     session._input_properties = {}
-    session._capability_version = ""
     asyncio.run(session._populate_capabilities(_McpSession()))
 
     assert session.supports_input_property("click", "delivery_mode") is True

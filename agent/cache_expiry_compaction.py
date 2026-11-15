@@ -36,6 +36,8 @@ MIN_WINDOW_SECONDS = 3600
 MIN_CONTEXT_TOKENS = 100_000
 #: How often the surface owners look (the fire range is the last 10% of the window: 6 minutes).
 CHECK_INTERVAL_SECONDS = 30.0
+#: A session touched more recently than this is not idle enough to be anywhere near the fire point.
+_ACTIVE_SECONDS = 0.75 * MIN_WINDOW_SECONDS
 #: Telemetry trigger name for these compactions.
 TRIGGER = "cache_expiry"
 
@@ -88,6 +90,8 @@ def _window_due(agent: Any, now: float) -> tuple[bool, str]:
         return False, f"short_window:{window.tier}"
     if not cache_certainly_warm(window, now=now):
         return False, "already_cold"
+    if getattr(agent, "_cache_expiry_attempted_window", None) == window.guaranteed_until:
+        return False, "attempted"  # a no-op or failed attempt leaves the window as it was: once per window
     fire_at = float(window.guaranteed_until) - (1.0 - FIRE_FRACTION) * tier_seconds
     return (now >= fire_at), ("due" if now >= fire_at else "not_yet")
 
@@ -100,7 +104,9 @@ def cache_expiry_compaction_due(agent: Any, *, now: Optional[float] = None) -> t
         return False, "disabled"
     if getattr(agent, "api_mode", None) == "codex_app_server":
         return False, "codex_app_server"
-    if now - float(getattr(agent, "_last_activity_ts", now) or now) < FIRE_FRACTION * MIN_WINDOW_SECONDS:
+    # Cheap prefilter only (the window decides the moment): activity is stamped when the response
+    # lands, after the send time the deadline counts from, so this must sit well below the fire point.
+    if now - float(getattr(agent, "_last_activity_ts", now) or now) < _ACTIVE_SECONDS:
         return False, "recently_active"
     if not _human_paced(agent):
         return False, "machine_paced"
@@ -110,3 +116,13 @@ def cache_expiry_compaction_due(agent: Any, *, now: Optional[float] = None) -> t
     if blocked := _compressor_blocked(agent):
         return False, blocked
     return _window_due(agent, now)
+
+
+def claim_cache_expiry_compaction(agent: Any, *, now: Optional[float] = None) -> bool:
+    """:func:`cache_expiry_compaction_due`, and when due, latch the window so an attempt that
+    commits nothing (lock held, nothing to summarise, a failure) is not retried every tick."""
+    due, _reason = cache_expiry_compaction_due(agent, now=now)
+    if due:
+        from agent.prompt_cache_clock import cache_window
+        agent._cache_expiry_attempted_window = cache_window(agent).guaranteed_until
+    return due

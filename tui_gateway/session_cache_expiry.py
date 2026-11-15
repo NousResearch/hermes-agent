@@ -16,7 +16,7 @@ _cache_expiry_lock = threading.Lock()
 
 
 def _cache_expiry_candidates() -> list[tuple[str, dict]]:
-    from agent.cache_expiry_compaction import cache_expiry_compaction_due
+    from agent.cache_expiry_compaction import claim_cache_expiry_compaction
     with _sessions_lock:
         live = list(_sessions.items())
     picked = []
@@ -27,7 +27,7 @@ def _cache_expiry_candidates() -> list[tuple[str, dict]]:
         if _session_uses_compute_host(session):
             continue  # the compute host owns that transcript; it is not compacted from here
         with _session_profile_runtime_scope(session):
-            due, _reason = cache_expiry_compaction_due(agent)
+            due = claim_cache_expiry_compaction(agent)
         if due:
             picked.append((sid, session))
     return picked

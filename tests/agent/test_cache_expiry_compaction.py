@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.cache_expiry_compaction import cache_expiry_compaction_due
+from agent.cache_expiry_compaction import cache_expiry_compaction_due, claim_cache_expiry_compaction
 from agent.prompt_cache_clock import record_attempt_sent, record_cache_response
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, normalize_usage
 
@@ -47,8 +47,12 @@ def _idle_chat(monkeypatch, *, provider="anthropic", base_url="https://api.anthr
 
 def test_idle_chat_compacts_at_ninety_percent_of_a_warm_one_hour_window(monkeypatch):
     agent = _idle_chat(monkeypatch)
-    assert cache_expiry_compaction_due(agent, now=_SENT + 50 * 60) == (False, "recently_active")
+    assert cache_expiry_compaction_due(agent, now=_SENT + 30 * 60) == (False, "recently_active")
+    assert cache_expiry_compaction_due(agent, now=_SENT + 50 * 60) == (False, "not_yet")
     assert cache_expiry_compaction_due(agent, now=_SENT + 54 * 60) == (True, "due")
+    # Once claimed, an attempt that committed nothing is not retried every tick in the same window.
+    assert claim_cache_expiry_compaction(agent, now=_SENT + 54 * 60) is True
+    assert cache_expiry_compaction_due(agent, now=_SENT + 55 * 60) == (False, "attempted")
     # Past the deadline the cache is already cold: compacting now saves nothing.
     assert cache_expiry_compaction_due(agent, now=_SENT + 61 * 60)[0] is False
 

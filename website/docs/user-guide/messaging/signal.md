@@ -133,13 +133,25 @@ DM access follows the same pattern as all other Hermes platforms:
 
 ### Group Access
 
-Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
+`SIGNAL_GROUP_ALLOWED_USERS` picks the groups the bot listens to:
 
 | Configuration | Behavior |
 |---------------|----------|
 | Not set (default) | All group messages are ignored. The bot only responds to DMs. |
 | Set with group IDs | Only listed groups are monitored (e.g., `groupId1,groupId2`). |
-| Set to `*` | The bot responds in any group it's a member of. |
+| Set to `*` | Every group the bot is a member of is monitored. |
+
+In a monitored group each sender is still checked like a DM sender: with `SIGNAL_ALLOWED_USERS` set,
+only those users are answered. To let every member of a group talk to the bot, also list the group in
+`signal.group_allowed_chats` in `config.yaml` (the same group IDs, or `"*"` for every monitored group), as
+on Telegram. Which slash commands a member may run is decided separately
+([Admins vs regular users](./index.md#admins-vs-regular-users)).
+
+```yaml
+# ~/.hermes/config.yaml
+signal:
+  group_allowed_chats: ["groupId1"]
+```
 
 ---
 
@@ -231,6 +243,7 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | **"signal-cli not found on PATH"** | Install signal-cli and ensure it's in your PATH, or use Docker |
 | **Connection keeps dropping** | Check signal-cli logs for errors. Ensure Java 17+ is installed. |
 | **Group messages ignored** | Configure `SIGNAL_GROUP_ALLOWED_USERS` with specific group IDs, or `*` to allow all groups. |
+| **Bot answers only allowlisted users in a group** | `SIGNAL_ALLOWED_USERS` also gates group senders; list the group in `signal.group_allowed_chats` in `config.yaml` to let every member talk to the bot. |
 | **Bot responds to no one** | Configure `SIGNAL_ALLOWED_USERS`, use DM pairing, or explicitly allow all users through gateway policy if you want broader access. |
 | **Duplicate messages** | Ensure only one signal-cli instance is listening on your phone number |
 

@@ -98,6 +98,12 @@ def _allows(allowed: set[str], candidate: Optional[str]) -> bool:
     return "*" in allowed or candidate in allowed
 
 
+def _allows_group_chat(allowed: set[str], source) -> bool:
+    """Chat allowlist match on a group's ``chat_id`` or ``chat_id_alt``: Signal emits
+    ``chat_id="group:<id>"`` and keeps the raw ``<id>`` its allowlist holds in ``chat_id_alt``."""
+    return "*" in allowed or bool({source.chat_id, source.chat_id_alt} & allowed)
+
+
 def _adapter_config_extra(adapter) -> dict:
     return getattr(getattr(adapter, "config", None), "extra", None) or {}
 
@@ -754,11 +760,11 @@ class GatewayAuthorizationMixin:
             chat_allowlist_env = _group_chat_env(source.platform)
             if chat_allowlist_env and _allows(_coerce_allow_set(_auth_env(chat_allowlist_env)), source.chat_id):
                 return True
-            # config.yaml fallback (``extra.group_allowed_chats``): Telegram observe-unmentioned mode
-            # strips user_id, so the env-only check above misses it.
+            # config.yaml rung (``<platform>.group_allowed_chats``, the receiving adapter's ``extra``): every
+            # platform's YAML chat allowlist, and Telegram's observe-unmentioned mode, which strips user_id.
             with contextlib.suppress(Exception):
                 adapter_group_allowed = self._adapter_extra_for_source(source).get("group_allowed_chats")
-                if adapter_group_allowed and _allows(_coerce_allow_set(adapter_group_allowed), source.chat_id):
+                if adapter_group_allowed and _allows_group_chat(_coerce_allow_set(adapter_group_allowed), source):
                     return True
         # Bots admitted by the platform's ``allow_bots_env`` (scoped env → the routed adapter's YAML
         # ``allow_bots`` → none) bypass the human allowlist (#4466). Checked here, before the no-user-id

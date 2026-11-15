@@ -37,7 +37,9 @@ METRIC_FIX = {
     " `<stem>/` package (with `__init__.py`) and move an existing function or class into a topic"
     " module there (moved code keeps its cap); never a new flat `<stem>_<topic>.py`. A model tool"
     " in a folder registers from `tools/<stem>/tool.py`, the only file tool discovery imports"
-    " there. New tests go in `tests/<area>/<stem>/test_<topic>.py` (with `__init__.py`);"
+    " there. A root module or an `acp_adapter/` one also lists its new package in pyproject's"
+    " `[tool.setuptools.packages.find] include`, or the wheel drops it. New tests go in"
+    " `tests/<area>/<stem>/test_<topic>.py` (with `__init__.py`);"
     " new behaviour never goes into a facade. Folder shape: root AGENTS.md § Packages and"
     " Python shape",
     "MEASURE": "the file must parse and measure (a file that cannot be measured cannot be"

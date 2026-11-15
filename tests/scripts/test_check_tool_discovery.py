@@ -41,3 +41,8 @@ def test_flat_modules_and_package_tool_py_pass(tmp_path):
         "pkg/helpers.py": "def helper():\n    return 1\n",
     })
     assert unreached_registrations(tools_dir) == []
+
+
+def test_package_tool_py_without_init_is_flagged(tmp_path):
+    tools_dir = _tracked_tools(tmp_path, {"__init__.py": "", "pkg/tool.py": _REGISTERS})
+    assert unreached_registrations(tools_dir) == [tools_dir / "pkg/tool.py"]

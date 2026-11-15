@@ -29,14 +29,18 @@ def unreached_registrations(tools_dir: Path) -> list[Path]:
         tools_dir / rel for rel in listed.split("\0")
         if rel and _module_registers_tools(tools_dir / rel)
     }
-    return sorted(registering - set(_tool_module_candidates(tools_dir)))
+    # Discovery also skips a package without __init__.py (setuptools would drop it from the wheel).
+    discovered = {p for p in _tool_module_candidates(tools_dir)
+                  if p.parent == tools_dir or (p.parent / "__init__.py").is_file()}
+    return sorted(registering - discovered)
 
 
 def main() -> int:
     missed = unreached_registrations(ROOT / current_path("tools"))
     if missed:
         print("These modules call registry.register() at import, but tool discovery never imports"
-              " them. Inside a package, register from <pkg>/tool.py:", file=sys.stderr)
+              " them. Inside a package, register from <pkg>/tool.py and give the package an"
+              " __init__.py:", file=sys.stderr)
         for path in missed:
             print(f"  {path.relative_to(ROOT).as_posix()}", file=sys.stderr)
         return 1

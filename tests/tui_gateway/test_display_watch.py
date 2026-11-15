@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -32,9 +33,25 @@ def _wait_for(pred, timeout: float = 3.0) -> bool:
     return pred()
 
 
+def _serialize_polls(server, monkeypatch) -> None:
+    """The process-wide watcher thread runs the same poll passes every 0.5 s that these tests drive by
+    hand. A pass is check-mark → snapshot → broadcast, so a watcher pass that claims a transition first
+    broadcasts it only after its (slow, under load) snapshot — past the test's assert, which saw an
+    unchanged mark and no event. One lock around every pass (the thread resolves these names from the
+    server globals on each tick) makes a hand-driven poll return only once any claimed transition is out."""
+    lock = threading.Lock()
+    for name in ("_poll_lease_files", "_poll_runtime_files"):
+        def locked(real=getattr(server, name)) -> None:
+            with lock:
+                real()
+        monkeypatch.setattr(server, name, locked)
+
+
 def _watching(server, home: Path, monkeypatch) -> list:
     from hermes_constants import hermes_home_key
     events: list = []
+    # Before the home is watched: no pass that can see it runs unlocked.
+    _serialize_polls(server, monkeypatch)
     monkeypatch.setattr(server, "_broadcast_global_event", lambda ev, payload=None: events.append((ev, payload)))
     monkeypatch.setattr(server, "_hermes_home", str(home))
     server._ensure_lease_watcher()

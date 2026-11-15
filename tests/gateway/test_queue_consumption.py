@@ -122,7 +122,6 @@ class TestQueueConsumptionAfterCompletion:
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
         adapter = _StubAdapter()
         session_key = "telegram:user:123"
 
@@ -183,7 +182,6 @@ class TestBusyInputModeQueueFifo:
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
         adapter = _StubAdapter()
         runner.adapters = {Platform.TELEGRAM: adapter}
         return runner, adapter
@@ -210,7 +208,7 @@ class TestBusyInputModeQueueFifo:
 
         # Head slot keeps the first; overflow keeps the rest in order.
         assert adapter._pending_messages[session_key].text == "one"
-        assert [e.text for e in runner._queued_events[session_key]] == [
+        assert [e.text for e in runner._session_state(session_key).conversation.queued_events] == [
             "two",
             "three",
             "four",
@@ -243,7 +241,7 @@ class TestBusyInputModeQueueFifo:
             session_key, self._media_event("/tmp/notes.pdf", "application/pdf", MessageType.DOCUMENT))
 
         assert adapter._pending_messages[session_key].media_urls == ["/tmp/v1.ogg"]
-        assert [e.media_urls for e in runner._queued_events[session_key]] == [
+        assert [e.media_urls for e in runner._session_state(session_key).conversation.queued_events] == [
             ["/tmp/v2.ogg"], ["/tmp/v3.ogg"], ["/tmp/clip.mp4"], ["/tmp/notes.pdf"],
         ]
         assert runner._queue_depth(session_key, adapter=adapter) == 5
@@ -265,3 +263,18 @@ class TestBusyInputModeQueueFifo:
         assert head.media_urls == ["/tmp/a.jpg", "/tmp/b.jpg"]
         assert "first" in head.text and "second" in head.text
         assert runner._queue_depth(session_key, adapter=adapter) == 1
+
+    def test_photo_never_merges_into_a_queued_goal_continuation(self):
+        """A human photo arriving behind a synthetic continuation keeps its own turn: merged, it
+        would run under the continuation's inherited pins instead of its own channel inputs."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:goal-photo"
+        continuation = self._text_event("[goal] continue")
+        continuation.inherit_channel_pin = True
+        runner._queue_or_replace_pending_event(session_key, continuation)
+        runner._queue_or_replace_pending_event(
+            session_key, self._media_event("/tmp/a.jpg", "image/jpeg", MessageType.PHOTO))
+
+        assert adapter._pending_messages[session_key] is continuation
+        assert continuation.media_urls == []
+        assert runner._queue_depth(session_key, adapter=adapter) == 2

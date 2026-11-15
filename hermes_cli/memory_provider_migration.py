@@ -8,9 +8,9 @@ name, the settings it already read, its data directory and tool names, so the mi
   just rebuilt anyway).
 * agent init — when the configured provider cannot be found at all, once per process (Desktop
   users update through the app and never run ``hermes update`` by hand). After a failed attempt,
-  starts skip it for :data:`STARTUP_RETRY_SECONDS` (``hermes update`` always retries): every
-  ``hermes chat``, cron run and Desktop restart otherwise paid the network round trip again and
-  showed the same failure.
+  starts skip it for :data:`STARTUP_RETRY_SECONDS`, doubling with each further failure up to
+  :data:`STARTUP_RETRY_MAX_SECONDS` (``hermes update`` always retries): every ``hermes chat``, cron
+  run and Desktop restart otherwise paid the network round trip again and showed the same failure.
 
 Both install the catalog entry at its reviewed pin through the normal plugin install path (kill
 list, dependency constraints, enable), never a custom source. Every outcome — installed, refused,
@@ -35,28 +35,49 @@ _attempted: set[tuple[str, str]] = set()
 # (a synced config, a cloned profile) still needs an explicit install.
 _LEFT_CORE = frozenset({"hindsight", "honcho", "mem0", "supermemory", "openviking", "retaindb", "byterover", "holographic"})
 
+# The startup retry window doubles with each consecutive failure, up to a week: a flat window had a
+# home whose install can never succeed (a version gate, a root-owned plugins dir, no route to GitHub)
+# fail once an hour for good, while an offline laptop still gets its plugin within the hour.
 STARTUP_RETRY_SECONDS = 3600.0
+STARTUP_RETRY_MAX_SECONDS = 7 * 24 * 3600.0
 
 
 def _failure_stamp(home: Path, plugin: str) -> Path:
-    """Touched on every failed automatic install; its mtime gates the next startup attempt."""
+    """Written on every failed automatic install: its mtime and failure count gate the next startup attempt."""
     return home / "cache" / f"left-core-{plugin}.failed"
+
+
+def _failure_count(stamp: Path) -> int:
+    """Consecutive failures recorded in *stamp*; the empty stamp an older Hermes touched counts once."""
+    try:
+        text = stamp.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return 0
+    return int(text) if text.isdigit() else 1
 
 
 def _note_failure(home: Path, plugin: str) -> None:
     stamp = _failure_stamp(home, plugin)
     try:
         stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.touch()
+        stamp.write_text(str(_failure_count(stamp) + 1), encoding="utf-8")
     except OSError as exc:
         logger.debug("left-core retry stamp not written for %s: %s", home, exc)
 
 
 def _failed_recently(home: Path, plugin: str) -> bool:
+    stamp = _failure_stamp(home, plugin)
     try:
-        return time.time() - _failure_stamp(home, plugin).stat().st_mtime < STARTUP_RETRY_SECONDS
+        age = time.time() - stamp.stat().st_mtime
     except OSError:
         return False
+    failures = min(_failure_count(stamp), 32)
+    return age < min(STARTUP_RETRY_SECONDS * 2 ** (failures - 1), STARTUP_RETRY_MAX_SECONDS)
+
+
+def _note_success(home: Path, plugin: str) -> None:
+    """A later failure (the plugin removed, then missed again) starts the backoff from an hour."""
+    _failure_stamp(home, plugin).unlink(missing_ok=True)
 
 
 def configured_provider(home: Path) -> str:
@@ -294,9 +315,11 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
         return False
     if _failed_recently(home, name):
         report(f"⚠ Memory provider '{name}' is not installed, so external memory is off for this session. "
-               f"Its automatic install failed less than an hour ago: run `{_install_command(name, home)}`.")
+               f"Its automatic install failed recently: run `{_install_command(name, home)}`.")
         return False
     installed = migrate_home(home, install=_install_into(home, consent=True), say=report) == name
-    if not installed:
+    if installed:
+        _note_success(home, name)
+    else:
         _note_failure(home, name)
     return installed

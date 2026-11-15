@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -146,6 +147,66 @@ def test_nudge_attempts_are_bounded(tmp_path, monkeypatch):
         attempts=2,
         max_attempts=2,
     ) is None
+
+
+def test_piped_verification_run_satisfies_the_guard(tmp_path, monkeypatch):
+    """A piped run counts once the shell's PIPESTATUS is recorded with it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    changed = str(tmp_path / "src" / "app.ts")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+    record_terminal_result(
+        command="pnpm test 2>&1 | tail -20",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="ok",
+        pipeline_status=[0, 0],
+    )
+
+    assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed]) is None
+
+
+def test_nudge_explains_only_a_check_run_the_shell_could_not_attribute(tmp_path, monkeypatch):
+    """The how-to-run advice names the hidden-status run, and only until a run is scored."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    changed = str(tmp_path / "src" / "app.ts")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+
+    def nudge() -> str:
+        text = build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed])
+        assert text is not None
+        return text
+
+    no_run = nudge()
+    record_terminal_result(command="pnpm test || true", cwd=tmp_path, session_id="s1", exit_code=0)
+    hidden = nudge()
+    record_terminal_result(command="pnpm test 2>&1 | tail -5", cwd=tmp_path, session_id="s1",
+                           exit_code=0, pipeline_status=[1, 0])
+    scored = nudge()
+
+    assert "did not count" not in no_run
+    assert "Your last check run (`pnpm test || true`) did not count" in hidden
+    assert "did not count" not in scored
+
+def test_nudge_drops_the_unscored_run_warning_once_hermes_verify_records(tmp_path, monkeypatch):
+    """``hermes verify`` records from its own process: its newer failure is the latest check."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    changed = str(tmp_path / "src" / "app.ts")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+    record_terminal_result(command="pnpm test || true", cwd=tmp_path, session_id="s1", exit_code=0)
+
+    subprocess.run(
+        [sys.executable, "-c", "import sys; from agent.verification_evidence import record_verify_run; "
+         "record_verify_run(root=sys.argv[1], session_id='s1', ok=False)", str(tmp_path)],
+        cwd=Path(__file__).resolve().parents[2], check=True,
+    )
+    nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed])
+
+    assert nudge is not None
+    assert "hermes verify" in nudge and "did not count" not in nudge
 
 # ---------------------------------------------------------------------------
 # Fix C: documentation/prose edits carry no verifiable behavior and must never

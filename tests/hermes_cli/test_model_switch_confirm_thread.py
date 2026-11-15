@@ -125,12 +125,19 @@ def test_confirm_runs_off_main_thread_when_tui_present(monkeypatch):
     # recorder onto the instance so the worker thread hits it.
     monkeypatch.setattr(stub, "_confirm_expensive_model_switch", _confirm.__get__(stub))
 
+    before = set(threading.enumerate())
     cli_mod.HermesCLI._handle_model_switch(
         stub, "/model claude-sonnet-4.6 --provider anthropic"
     )
 
-    # The worker thread performs the confirm and completes the apply.
-    assert ready.wait(timeout=10)
+    # The worker thread performs the confirm and completes the apply. Join it before asserting:
+    # a daemon worker still applying (and printing) when the test file's interpreter exits aborts
+    # it holding the stdout lock (CI: "could not acquire lock for <stdout> at interpreter shutdown").
+    workers = [t for t in threading.enumerate() if t not in before]
+    for worker in workers:
+        worker.join(timeout=10)
+    assert not any(worker.is_alive() for worker in workers)
+    assert ready.is_set()
     assert called_on["is_main"] is False
 
     # Apply still lands on CLI + agent state.

@@ -99,7 +99,7 @@ def _fake_remote_backend(monkeypatch, remote_root: Path) -> list:
         calls.append((command, kwargs.get("task_id")))
         proc = subprocess.run(
             command, shell=True, cwd=remote_root, capture_output=True, text=True,
-            env={"PATH": os.environ.get("PATH", ""), "HOME": str(remote_root)})
+            env={"PATH": os.environ.get("PATH", ""), "HOME": str(remote_root)}, check=False)
         return json.dumps({"output": proc.stdout, "exit_code": proc.returncode})
 
     monkeypatch.setattr(terminal_tool_mod, "terminal_tool", fake_terminal_tool)

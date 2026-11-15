@@ -82,7 +82,7 @@ const TERMINAL_TREE = split(
 const TERMINAL_RESTING = ['terminal', 'files', 'review'] as const
 
 // The first-run intro's borrowed layout: the chat alone, no tab strip. Unlisted,
-// and applied while layout persistence is held (onboarding-chat/assembly.ts).
+// and applied while layout persistence is held (onboarding/first-run/assembly.ts).
 export const DEMO_LAYOUT_ID = 'demo'
 
 export const DEMO_TREE = group(['workspace'], { tabStrip: 'never' })

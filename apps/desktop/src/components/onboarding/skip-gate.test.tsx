@@ -2,9 +2,13 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
+import { markOnboardingDecided } from '@/store/onboarding-presence'
 import { makeOAuthProvider } from '@/test/oauth-provider'
 
 import { DesktopOnboardingOverlay } from '.'
+
+// The boot due check has run and no first-run onboarding is open.
+markOnboardingDecided()
 
 const HEADER = "Let's get you setup with Hermes Agent"
 

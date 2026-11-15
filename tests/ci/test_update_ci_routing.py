@@ -32,6 +32,7 @@ from typing import Any
 
 import pytest
 
+from hermes_agent.compat.paths import current_module, current_path, original_path
 from hermes_platform.host.facts import native_arch
 from tests.ci import _gha_expr as gha
 from tests.ci import workflow_steps
@@ -301,8 +302,8 @@ _R15_CASES = {
 @_NATIVE_WINDOWS_TOO
 @pytest.mark.parametrize("path,lanes", list(_R15_CASES.items()))
 def test_update_owner_change_dispatches_its_suites_end_to_end(path, lanes):
-    assert (_REPO / path).is_file(), f"{path} moved: update this table"
-    classified = _real_classifier([path])
+    assert (_REPO / current_path(path)).is_file(), f"{path} is gone: update this table"
+    classified = _real_classifier([current_path(path)])
     run = _ci_run(classified)
     for lane in lanes:
         assert classified[lane], f"{path}: classifier leaves {lane} off"
@@ -340,7 +341,7 @@ def test_update_path_change_selects_every_suite_that_exercises_it(path, lanes):
 
 # Review CI2/CI3: update-path files the classifier sent to the wrong suites.
 _CI3_CASES = {
-    # /api/health `commit`: host-backend-attach compares it before attaching after an update.
+    # /api/health `commit`: the Desktop compares it before attaching after an update.
     "hermes_cli/web_routers/status.py": ("python", "e2e_desktop_update"),
     # The SSH remote's marker judge/gate: typecheck/vitest and the marker contract's script tests.
     "apps/desktop/electron/remote-update-marker-programs.ts": ("frontend", "desktop_updater"),
@@ -359,8 +360,8 @@ _TAURI_UPDATER = tuple(f"apps/bootstrap-installer/src-tauri/src/{name}.rs" for n
 @pytest.mark.parametrize("path", _TAURI_UPDATER)
 def test_tauri_updater_routes_as_one_unit_to_the_lane_that_builds_it(path):
     """No slow lane builds the bootstrap installer: starting one for its updater runs nothing of it."""
-    assert (_REPO / path).is_file(), f"{path} moved: update this table"
-    classified = _real_classifier([path])
+    assert (_REPO / current_path(path)).is_file(), f"{path} is gone: update this table"
+    classified = _real_classifier([current_path(path)])
     assert classified["rust"], f"{path}: cargo test never runs"
     started = [lane for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update", "e2e_desktop_core") if classified[lane]]
     assert not started, f"{path}: starts {started}, which never build the Tauri installer"
@@ -415,7 +416,7 @@ def test_marker_corpus_change_runs_every_language_that_reads_it():
 def _tracked_mentions(name: str) -> list[str]:
     try:
         out = subprocess.run(["git", "-C", str(_REPO), "grep", "-l", "-F", name, "--", "."],
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, text=True, timeout=60, check=False)
     except OSError:
         pytest.skip("git unavailable: cannot list the fixture's consumers")
     if out.returncode not in (0, 1):
@@ -574,7 +575,7 @@ def test_replay_python3_is_the_replay_interpreter_when_its_dir_has_only_python(t
              "print(json.dumps([sys.executable, workflow_steps.outputs(json.loads(sys.argv[1]), {})]))")
     env = {**os.environ, "PYTHONPATH": str(_REPO)}
     result = subprocess.run([str(interpreter), "-c", probe, json.dumps(_PROBE_STEP)], cwd=_REPO, env=env,
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stderr
     replay_python, out = json.loads(result.stdout)
     assert out["py3"] == replay_python
@@ -633,15 +634,16 @@ _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", ".worktrees", "tests", "w
 
 
 def _product_python() -> list[Path]:
+    """Product modules where they live; a file left at a path ``MOVES`` maps elsewhere only forwards."""
     out = []
     for dirpath, dirnames, filenames in os.walk(_REPO):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
         out += [Path(dirpath) / f for f in filenames if f.endswith(".py")]
-    return out
+    return [p for p in out if current_path(rel := p.relative_to(_REPO).as_posix()) == rel]
 
 
 def _module_file(module: str) -> Path | None:
-    base = _REPO / module.replace(".", "/")
+    base = _REPO / current_module(module).replace(".", "/")
     for candidate in (base.with_suffix(".py"), base / "__init__.py"):
         if candidate.is_file():
             return candidate
@@ -650,7 +652,7 @@ def _module_file(module: str) -> Path | None:
 
 @cache
 def _imports(path: Path) -> frozenset[str]:
-    """Repo modules ``path`` imports anywhere (module level or lazily in a function)."""
+    """Repo modules ``path`` imports anywhere (module level or lazily in a function), by original path."""
     try:
         tree = ast.parse(path.read_text(encoding="utf-8-sig"))
     except (SyntaxError, UnicodeDecodeError):
@@ -673,12 +675,12 @@ def _imports(path: Path) -> frozenset[str]:
     for name in names:
         target = _module_file(name)
         if target is not None and target != path:
-            found.add(target.relative_to(_REPO).as_posix())
+            found.add(original_path(target.relative_to(_REPO).as_posix()))
     return frozenset(found)
 
 
 def _entry_modules(prefixes: tuple[str, ...]) -> list[Path]:
-    hits = [p for p in _product_python() if p.relative_to(_REPO).as_posix().startswith(prefixes)]
+    hits = [p for p in _product_python() if original_path(p.relative_to(_REPO).as_posix()).startswith(prefixes)]
     assert hits, f"no module matches {prefixes}: the entry-point list went stale"
     return sorted(hits)
 

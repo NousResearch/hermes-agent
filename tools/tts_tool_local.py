@@ -53,6 +53,7 @@ def _tts_cache_get_or_load(cache: dict[str, Any], key: str, load: Callable[[], A
 def _run_helper(cmd: list, timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout, stdin=subprocess.DEVNULL,
+        check=False,
     )
 
 

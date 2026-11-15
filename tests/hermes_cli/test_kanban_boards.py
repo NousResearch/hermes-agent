@@ -342,6 +342,7 @@ def _cli(args: list[str], env_extra: dict | None = None) -> subprocess.Completed
         text=True,
         cwd=str(_WORKTREE),
         timeout=30,
+        check=False,
     )
 
 

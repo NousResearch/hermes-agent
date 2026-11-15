@@ -17,7 +17,7 @@ from hermes_cli.cli_output import (
 def _run_text(cmd: list, *, timeout, capture_output: bool = True,
               **kwargs) -> subprocess.CompletedProcess:
     """Run a text subprocess with consistent decoding."""
-    return subprocess.run(cmd, capture_output=capture_output, text=True, encoding="utf-8",
+    return subprocess.run(cmd, capture_output=capture_output, text=True, encoding="utf-8",  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
                           errors="replace", timeout=timeout, **kwargs)
 
 
@@ -180,7 +180,7 @@ def _cua_driver_autostart_registered_windows(binary: Optional[str] = None) -> bo
     try:
         result = subprocess.run(
             ["schtasks.exe", "/Query", "/TN", "cua-driver-serve", "/XML"],
-            capture_output=True, timeout=10, creationflags=_post_setup_no_window_flags())
+            capture_output=True, timeout=10, creationflags=_post_setup_no_window_flags(), check=False)
         if result.returncode:
             return False
         # Parse bytes: schtasks' XML declaration carries the output encoding.

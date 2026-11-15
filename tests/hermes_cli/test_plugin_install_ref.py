@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from tests.hermes_cli.plugin_worker_support import (
-    isolated_python as isolated_python,
-    plugin_world as plugin_world,
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 import hermes_yaml as yaml
 
@@ -570,11 +570,11 @@ def test_install_refuses_a_non_https_update_url(monkeypatch, tmp_path, update_ur
 def test_install_saves_an_https_update_url_tag(monkeypatch, tmp_path):
     from hermes_cli.plugins_cmd import _install_plugin_core
 
-    repo, _old, sha = _plugin_repo(tmp_path)
+    repo, _old, _sha = _plugin_repo(tmp_path)
     (repo / "plugin.yaml").write_text(
         yaml.safe_dump({"name": "demo", "version": "1.0.0", "update_url": " https://feed.example/f.yml "}),
         encoding="utf-8")
-    sha = _commit(repo, "feed", "feed")
+    _commit(repo, "feed", "feed")
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
 

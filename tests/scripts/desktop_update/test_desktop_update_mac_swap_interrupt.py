@@ -52,6 +52,7 @@ def test_killed_app_swap_recovers_to_a_complete_bundle(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         timeout=240,
+        check=False,
     )
     report = proc.stdout + proc.stderr
     assert proc.returncode == 0, report

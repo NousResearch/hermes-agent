@@ -98,10 +98,11 @@ def _tool_calls_to_blocks(tool_calls: Any, redact: bool) -> list[dict[str, Any]]
         parsed = _parse_tool_args(fn.get("arguments"))
         if redact:
             try:
-                parsed = json.loads(_redact(json.dumps(parsed), redact))
-            except (json.JSONDecodeError, ValueError):
-                logger.warning("Trace upload redacted tool arguments are not valid JSON; refusing upload")
-                raise TraceRedactionError(_REDACTION_BLOCKED_MESSAGE)
+                from agent.redact_structured import redact_structured
+                parsed = redact_structured(parsed)
+            except Exception as exc:
+                logger.warning("Trace upload structured redaction failed; refusing upload", exc_info=True)
+                raise TraceRedactionError(_REDACTION_BLOCKED_MESSAGE) from exc
         blocks.append({"type": "tool_use", "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
                        "name": fn.get("name") or tc.get("name") or "tool", "input": parsed})
     return blocks
@@ -114,7 +115,7 @@ def _git_branch(cwd: str) -> str:
         import subprocess
         r = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=cwd,
-                           stdin=subprocess.DEVNULL)
+                           stdin=subprocess.DEVNULL, check=False)
     except Exception:
         return ""
     return r.stdout.strip() if r.returncode == 0 else ""

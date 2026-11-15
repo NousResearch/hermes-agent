@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hermes_cli import env_loader
+from hermes_constants import hermes_home_key
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +46,7 @@ def test_get_secret_source_values_returns_home_snapshot_copy(tmp_path):
     home_a.mkdir()
     home_b.mkdir()
 
-    env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(home_a.resolve())] = {
+    env_loader._SECRET_SOURCE_VALUES_BY_HOME[hermes_home_key(home_a)] = {
         "ANTHROPIC_API_KEY": "sk-profile-a"
     }
 
@@ -544,9 +545,13 @@ def test_external_secret_values_are_isolated_between_homes(tmp_path, monkeypatch
         str(home_b.resolve()): "value-b",
     }
 
-    def _fake_apply_all(_cfg, home_path):
+    # Registered for teardown restore, then removed: the loader publishes the source's write itself.
+    monkeypatch.setenv("SHARED_API_KEY", "unset")
+    monkeypatch.delenv("SHARED_API_KEY")
+
+    def _fake_apply_all(_cfg, home_path, environ=None):
         value = values[str(Path(home_path).resolve())]
-        monkeypatch.setenv("SHARED_API_KEY", value)
+        environ["SHARED_API_KEY"] = value  # startup applies sources into a staging copy
         return ApplyReport(
             # Real apply_all always appends a SourceReport per enabled
             # source; the env_loader guard (#40597) early-returns on an
@@ -729,7 +734,7 @@ def test_env_shadowed_reapply_keeps_home_snapshot(tmp_path, monkeypatch, _fresh_
     env_loader.reset_secret_source_cache()
     env_loader.load_hermes_dotenv(hermes_home=home)
 
-    assert str(home.resolve()) in env_loader._APPLIED_HOMES
+    assert hermes_home_key(home) in env_loader._APPLIED_HOMES
     assert env_loader.hydrate_profile_secret_sources(home) == {"GLM_API_KEY": "vault-value"}
     assert build_profile_secret_scope(home)["GLM_API_KEY"] == "vault-value"
 
@@ -753,4 +758,4 @@ def test_home_scoped_reset_preserves_sibling_snapshot(tmp_path, monkeypatch, _fr
 
     assert env_loader.get_secret_source_values(home) == {}
     assert env_loader.get_secret_source_values(sibling) == {"GLM_API_KEY": "vault-b"}
-    assert str(sibling.resolve()) in env_loader._APPLIED_HOMES
+    assert hermes_home_key(sibling) in env_loader._APPLIED_HOMES

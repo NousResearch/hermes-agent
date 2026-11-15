@@ -115,7 +115,7 @@ class SubagentWorktreeTests(unittest.TestCase):
         branches = _git(["branch", "--list", info["branch"]], repo).stdout
         self.assertEqual(branches.strip(), "")
 
-    def test_finalize_keeps_worktree_with_commits(self):
+    def test_finalize_archives_worktree_with_commits(self):
         repo = _make_repo(self.tmp)
         info = sw.create_subagent_worktree(str(repo), "work1")
         assert info is not None
@@ -126,19 +126,26 @@ class SubagentWorktreeTests(unittest.TestCase):
         _git(["config", "user.name", "Child"], wt)
         _git(["commit", "-q", "-m", "child work"], wt)
         payload = sw.finalize_subagent_worktree(info)
-        self.assertFalse(payload["pruned"])
+        # Contract (snapshot-then-delete, approved 2026-10-17): never removed without a
+        # restorable archive; the branch stays for the parent to merge.
+        self.assertTrue(payload["pruned"])
         self.assertEqual(payload["commits"], 1)
-        self.assertTrue(os.path.isdir(info["path"]))
+        self.assertFalse(os.path.isdir(info["path"]))
+        self.assertEqual(_git(["rev-parse", payload["archive"] + "^1"], repo).stdout,
+                         _git(["rev-parse", info["branch"]], repo).stdout)
 
-    def test_finalize_keeps_dirty_worktree(self):
+    def test_finalize_archives_dirty_worktree(self):
         repo = _make_repo(self.tmp)
         info = sw.create_subagent_worktree(str(repo), "dirty1")
         assert info is not None
         (Path(info["path"]) / "wip.txt").write_text("uncommitted\n", encoding="utf-8")
         payload = sw.finalize_subagent_worktree(info)
-        self.assertFalse(payload["pruned"])
+        # Contract (snapshot-then-delete, approved 2026-10-17): the uncommitted file lives on in
+        # the archive commit before the tree is removed.
+        self.assertTrue(payload["pruned"])
         self.assertTrue(payload["dirty"])
-        self.assertTrue(os.path.isdir(info["path"]))
+        self.assertFalse(os.path.isdir(info["path"]))
+        self.assertEqual(_git(["show", payload["archive"] + ":wip.txt"], repo).stdout, "uncommitted\n")
 
     def test_finalize_keeps_worktree_when_git_inspection_fails(self):
         """#88113: a non-zero git status exit must not be read as "clean".

@@ -70,6 +70,8 @@ def install(root: Path) -> None:
     cp = I.run_installer(I.Sandbox(root=sb.root, env={**sb.env, "GIT_NO_LAZY_FETCH": "1"}))
     if cp.returncode != 0:
         _fail("scripts/install.sh --non-interactive", cp)
+    # publishUpstream() lands commits on main, never a release: follow main, not the stable default.
+    I.pin_main_channel(sb)
     # The real way a CLI install gets the Desktop app on Linux: build + package into
     # apps/desktop/release/linux-unpacked, the tree the Desktop updater swaps in place.
     cp = sb.cli("desktop", "--build-only", timeout=1800)

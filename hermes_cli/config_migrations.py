@@ -1,18 +1,22 @@
 """Table-driven config migration registry.
 
-Each step is ``_migrate_to_N(results, quiet)``; the version gate and strict ascending order live
-in :func:`run_migrations`. Every write goes through ``hermes_cli.config._persist_migration`` so a
+Each step is ``_migrate_to_N(results, quiet)`` (a large topical step lives in a
+``config_migrations_<topic>.py`` sibling, registered here); the version gate and strict ascending
+order live in :func:`run_migrations`. Every write goes through ``hermes_cli.config._persist_migration`` so a
 step may only persist values that differ from the schema default (plus removals/renames).
 """
 
 from __future__ import annotations
 
+import contextvars
 import copy
 import functools
 import logging
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
+
+from hermes_cli.config_migrations_browser import migrate_to_52
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +26,18 @@ logger = logging.getLogger(__name__)
 #: untouched — the process continues with defaults deep-merged at read time, matching the
 #: non-fatal posture for unparseable configs — and a message tells the user how to proceed.
 SUPPORT_FLOOR_VERSION = 12
+
+#: True while :func:`run_migrations` runs with ``config_only=True``: the remote config backend's
+#: in-memory migrations (D12) and its write-validation simulation. Such a run transforms the config
+#: document and nothing else: steps that also touch local files (``.env``, profile ``SOUL.md``,
+#: ``logs/``) skip that part, so reading a profile's remote config, or a refused write's check, never
+#: changes a file on disk — a sibling profile's least of all.
+_CONFIG_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar("config_migrations_config_only", default=False)
+
+
+def _local_files_allowed() -> bool:
+    """Whether the running step may change files other than the config document itself."""
+    return not _CONFIG_ONLY.get()
 
 
 def support_floor_message() -> str:
@@ -106,6 +122,28 @@ def _rewrite_stale_default(*, old: Any, **kw: Any) -> Callable[[dict[str, Any], 
     return functools.partial(_rewrite_key, match=lambda cur: cur == old, **kw)
 
 
+def _rewrite_stale_defaults(results: dict[str, Any], quiet: bool, *, section: str,
+                            rows: Iterable[tuple[str, Any, Any, str, str]]) -> None:
+    """Rewrite every ``<section>.<key>`` still equal to its OLD default to its new one (None =
+    delete) in ONE write: a failing step is retried whole, so a half-landed one would rewrite
+    again a value the user set back since. *rows*: (key, old, new, added, message)."""
+    config = read_raw_config()
+    raw = _dict_at(config, section)
+    due = [row for row in rows if raw.get(row[0]) == row[1]]
+    if not due:
+        return
+    for key, _old, new, _added, _message in due:
+        if new is None:
+            del raw[key]
+        else:
+            raw[key] = new
+    _persist_migration(config)
+    for *_row, added, message in due:
+        results["config_added"].append(added)
+        if not quiet:
+            print(message)
+
+
 def _lower_is(word: str) -> Callable[[Any], bool]:
     return lambda cur: isinstance(cur, str) and cur.strip().lower() == word
 
@@ -171,6 +209,8 @@ def _migrate_to_12(results: dict[str, Any], quiet: bool) -> None:
 def _migrate_to_13(results: dict[str, Any], quiet: bool) -> None:
     # 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env (written by the old setup wizard;
     # nothing reads them — config.yaml is the sole source of truth).
+    if not _local_files_allowed():
+        return  # .env only
     _c = _cfg()
     for dead_var in ("LLM_MODEL", "OPENAI_MODEL"):
         try:
@@ -336,11 +376,12 @@ def _migrate_to_23(results: dict[str, Any], quiet: bool) -> None:
     _c = _cfg()
     DEFAULT_CONFIG = _c.DEFAULT_CONFIG
 
-    try:
-        curator_dir = _c.get_hermes_home() / "logs" / "curator"
-        curator_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        results["warnings"].append(f"Could not create {curator_dir}: {e}")
+    if _local_files_allowed():
+        try:
+            curator_dir = _c.get_hermes_home() / "logs" / "curator"
+            curator_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            results["warnings"].append(f"Could not create {curator_dir}: {e}")
 
     config = read_raw_config()
 
@@ -538,6 +579,8 @@ def _migrate_to_41(results: dict[str, Any], quiet: bool) -> None:
     # 40 → 41: drop the plugin-era "## Messaging other agents" append from every SOUL.md. The
     # server injects the live Bot Mode section in Bot Chat sessions; the frozen SOUL copy taxed
     # every other session (~600 tok) and shadowed the live roster in Bot Chat itself.
+    if not _local_files_allowed():
+        return  # SOUL.md files only, across the whole roster
     from hermes_constants import get_hermes_home
     from tools.bot_mode_probe import _PROTOCOL_HEADING, _hermes_root, _roster, strip_legacy_protocol
 
@@ -611,14 +654,14 @@ def _migrate_to_46(results: dict[str, Any], quiet: bool) -> None:
     # false` (the key every reader uses) and drop `disabled`, so the editor and runtime agree.
     # `disabled: true` wins over an explicit `enabled: true`: `hermes mcp add` writes that, and the
     # old editor only added `disabled`, so letting `enabled` win would skip nearly every server.
-    from hermes_cli.tools_config import _parse_enabled_flag
+    from tools.mcp_tool_common import _parse_boolish
 
     config = read_raw_config()
     servers = config.get("mcp_servers")
     if not isinstance(servers, dict):
         return
     legacy = {n: e for n, e in servers.items() if isinstance(e, dict) and "disabled" in e}
-    turned_off = sorted((n for n, e in legacy.items() if _parse_enabled_flag(e["disabled"], default=False)), key=str)
+    turned_off = sorted((n for n, e in legacy.items() if _parse_boolish(e["disabled"], default=False)), key=str)
     if not turned_off:
         return  # a falsy `disabled` is inert; the runtime never read it
     for name in turned_off:
@@ -639,22 +682,16 @@ def _migrate_to_48(results: dict[str, Any], quiet: bool) -> None:
     # is a pin and a pin recreates a persisted Docker container without asking; unpinned, the
     # runtime keeps an existing sandbox and the CLI / Screen pane ask first. A pinned image stays.
     from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGES
-    for legacy in LEGACY_SANDBOX_IMAGES:
-        for key, old in (
-            ("docker_image", legacy),
-            ("modal_image", legacy),
-            ("daytona_image", legacy),
-            ("singularity_image", f"docker://{legacy}"),
-        ):
-            _rewrite_stale_default(
-                section="terminal", key=key, old=old, new=None,
-                added=f"terminal.{key} unset (follows the default, {DEFAULT_SANDBOX_IMAGE})",
-                message=f"  ✓ terminal.{key}: was the old default; now follows the default sandbox image "
-                        f"({DEFAULT_SANDBOX_IMAGE})",
-            )(results, quiet)
+    _rewrite_stale_defaults(results, quiet, section="terminal", rows=[
+        (key, old, None, f"terminal.{key} unset (follows the default, {DEFAULT_SANDBOX_IMAGE})",
+         f"  ✓ terminal.{key}: was the old default; now follows the default sandbox image ({DEFAULT_SANDBOX_IMAGE})")
+        for legacy in LEGACY_SANDBOX_IMAGES
+        for key, old in (("docker_image", legacy), ("modal_image", legacy), ("daytona_image", legacy),
+                         ("singularity_image", f"docker://{legacy}"))])
 
 
-#: Registry of (target_version, step), strictly ascending; simple default-flip steps are
+#: Registry of (target_version, step), strictly ascending (one step per version: a failing step
+#: is retried whole); simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
 #: configs already AT v12 still get every step below; only configs BELOW 12 are refused by the
@@ -677,10 +714,24 @@ def _migrate_to_49(results: dict[str, Any], quiet: bool) -> None:
                 f"({DEFAULT_VERCEL_IMAGE})",
     )(results, quiet)
     _c = _cfg()
+    if not _local_files_allowed():
+        return  # the .env mirror is a local file
     if (_c.get_env_value_prefer_dotenv("TERMINAL_VERCEL_RUNTIME") or "").strip() == LEGACY_VERCEL_RUNTIME:
         _c.remove_env_value("TERMINAL_VERCEL_RUNTIME")
         if not quiet:
             print("  ✓ Cleared TERMINAL_VERCEL_RUNTIME from .env (was the old default; the image is used instead)")
+
+
+# 43 → 44: curator prunes faster — stale 30→14 days, archive 90→30 days. A skill nobody has
+# touched in a month is prompt weight, not knowledge; archival is recoverable. Only the OLD
+# defaults are rewritten; an explicit user value is preserved. Both keys land in one write.
+_migrate_to_44 = functools.partial(_rewrite_stale_defaults, section="curator", rows=(
+    ("stale_after_days", 30, 14, "curator.stale_after_days=14 (was: 30)",
+     "  ✓ curator.stale_after_days 30→14 — unused skills are flagged stale after two weeks."),
+    ("archive_after_days", 90, 30, "curator.archive_after_days=30 (was: 90)", (
+        "  ✓ curator.archive_after_days 90→30 — skills unused for a month are archived to skills/.archive/ "
+        "(recoverable with `hermes curator restore`). Set it back to 90 to keep the old window.")),
+))
 
 
 _RETIRED_TIRITH_KEYS = ("tirith_enabled", "tirith_path", "tirith_timeout", "tirith_fail_open")
@@ -700,6 +751,36 @@ def _migrate_to_50(results: dict[str, Any], quiet: bool) -> None:
         del security[key]
     _commit(config, results, quiet, "removed security.tirith_* (scanner no longer bundled)",
             "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
+
+
+def disable_suspicious_mcp_servers(results: dict[str, Any], quiet: bool) -> None:
+    """Post-migration: disable exfiltration-shaped MCP stdio entries (hand-edited or from older
+    installs). The stanza is preserved for auditability but marked disabled."""
+    config = read_raw_config()
+    # Preserve the stanza for auditability but mark it disabled so the next startup will not spawn it.
+    # (#45620)
+    raw_mcp_servers = config.get("mcp_servers")
+    if not isinstance(raw_mcp_servers, dict):
+        return
+    try:
+        from hermes_cli.mcp_security import validate_mcp_server_entry
+    except Exception:
+        return
+    mcp_touched = False
+    for server_name, entry in raw_mcp_servers.items():
+        issues = validate_mcp_server_entry(server_name, entry) if isinstance(entry, dict) else None
+        if not issues:
+            continue
+        entry["enabled"] = False
+        mcp_touched = True
+        results["warnings"].append(f"Disabled suspicious MCP server '{server_name}'")
+        if not quiet:
+            for issue in issues:
+                print(f"  ⚠ {issue}")
+            print(f"  ⚠ Disabled MCP server '{server_name}' pending review")
+    if mcp_touched:
+        config["mcp_servers"] = raw_mcp_servers
+        _persist_migration(config)
 
 
 MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
@@ -801,19 +882,8 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
             "  ✓ Removed gateway.multiplex_profile_allowlist — the multiplexing gateway now serves "
             "every profile under profiles/. Delete or archive a profile you do not want served."),
         extra_guard=lambda raw: "multiplex_profile_allowlist" in raw)),
-    # 43 → 44: curator prunes faster — stale 30→14 days, archive 90→30 days. A skill nobody has
-    # touched in a month is prompt weight, not knowledge; archival is recoverable. Only the OLD
-    # defaults are rewritten; an explicit user value is preserved.
-    (44, _rewrite_stale_default(
-        section="curator", key="stale_after_days", old=30, new=14,
-        added="curator.stale_after_days=14 (was: 30)",
-        message="  ✓ curator.stale_after_days 30→14 — unused skills are flagged stale after two weeks.")),
-    (44, _rewrite_stale_default(
-        section="curator", key="archive_after_days", old=90, new=30,
-        added="curator.archive_after_days=30 (was: 90)",
-        message=(
-            "  ✓ curator.archive_after_days 90→30 — skills unused for a month are archived to "
-            "skills/.archive/ (recoverable with `hermes curator restore`). Set it back to 90 to keep the old window."))),
+    # 43 → 44: curator prunes faster (see _migrate_to_44).
+    (44, _migrate_to_44),
     # 44 → 45: saved platform_toolsets lists predate the connections toolset (see _migrate_to_45).
     (45, _migrate_to_45),
     # 45 → 46: legacy editor `disabled: true` on MCP servers becomes `enabled: false` (see _migrate_to_46).
@@ -835,6 +905,27 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (49, _migrate_to_49),
     # 49 → 50: security.tirith_* dropped; the bundled scanner is gone (see _migrate_to_50).
     (50, _migrate_to_50),
+    # 50 → 51: cron.bot_chat_delivery_timeout_seconds is gone with the local `hermes chat`
+    # fallback lane it bounded. Bot Chat deliveries are admitted to the running gateway and
+    # settle on its durable receipt; there is no cron-side turn left to time out.
+    (51, functools.partial(
+        _rewrite_key, section="cron", key="bot_chat_delivery_timeout_seconds", new=None,
+        match=lambda _cur: True,
+        added="removed cron.bot_chat_delivery_timeout_seconds",
+        message=(
+            "  ✓ Removed cron.bot_chat_delivery_timeout_seconds — bot-chat deliveries are now "
+            "admitted to the target profile's running gateway and tracked by receipt, so cron no "
+            "longer runs (or times out) a Bot Chat turn of its own."),
+        extra_guard=lambda raw: "bot_chat_delivery_timeout_seconds" in raw)),
+    # 51 -> 52: browser.backend + browser.extension_control dropped, AGENT_BROWSER_* .env settings ->
+    # browser.* (see config_migrations_browser.migrate_to_52).
+    (52, migrate_to_52),
+    # 52 -> 53: clarify_timeout 3600 -> 90. An hour-long wait held the chat's turn hostage; a
+    # value the user picked themselves is kept.
+    (53, _rewrite_stale_default(
+        section="agent", key="clarify_timeout", old=3600, new=90,
+        added="agent.clarify_timeout=90",
+        message="  ✓ Lowered agent.clarify_timeout from 3600 to 90 seconds (unanswered questions no longer hold the chat for an hour)")),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -846,29 +937,64 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
 #: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50})
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51, 52})
+
+#: Legacy-key steps that run on every migration pass whatever the stamp says, because a stamp at
+#: or past their version does not prove they ran: unreleased builds of the gateway-runtime branch
+#: put their retired-cron-key step at 44, 45, 46, 47 and 50 before it landed at 51, so a home one
+#: of them stamped skipped main's step of that number. Only a step triggered by a key no runtime
+#: reads, or reads exactly as the step resolves it (v46's `disabled`), qualifies: re-running it
+#: changes no behaviour and never overrides a value something consumes. The value-based steps such a home also skipped (44 curator defaults, 45
+#: connections, 47 threshold_tokens) are NOT re-run: past the stamp, their trigger value may be
+#: the user's own choice.
+STAMP_INDEPENDENT_STEPS = frozenset({46, 50})
 
 
 def run_migrations(
-    current_ver: int, results: dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
-    """Apply every registered migration whose target version exceeds *current_ver*; a config
-    with no ``_config_version`` (*unversioned*) gets only :data:`LEGACY_KEY_STEPS`.
+    current_ver: int, results: dict[str, Any], quiet: bool, *, unversioned: bool = False,
+    config_only: bool = False, stop_at_failure: bool = True) -> Optional[int]:
+    """Apply every registered migration whose target version exceeds *current_ver* (plus
+    :data:`STAMP_INDEPENDENT_STEPS`); a config with no ``_config_version`` (*unversioned*) gets
+    only :data:`LEGACY_KEY_STEPS`.
 
     *current_ver* is the on-disk schema version captured ONCE before any step runs and does not
     advance between steps — each step is gated on the same initial value.
+
+    Returns the target version of the first step that raised (also ``results["failed_step"]``,
+    with its warning in ``results["failed_warning"]``), else None. The ladder stops there: the
+    caller stamps no further than the step before it, so the next pass retries it, and the later
+    steps wait for it. Running them now would make that pass run them a second time, and a
+    one-time step would then overwrite a value the user set in between. A stamp-independent step
+    (46, 50) that raises stops the ladder too, so the later steps wait for it even though the stamp
+    is already past its number and does not move. *stop_at_failure* False
+    (an in-memory migration that is never written back) runs the rest anyway.
+
+    *config_only* transforms the config document alone (see :data:`_CONFIG_ONLY`).
     """
-    for target_ver, migration_fn in MIGRATIONS:
-        if current_ver < target_ver and (target_ver in LEGACY_KEY_STEPS or not unversioned):
-            try:
-                migration_fn(results, quiet)
-            except Exception as exc:
-                # A malformed nested value in one step must not abort the rest of the
-                # ladder (config loading itself fails otherwise). Loud, not silent.
-                warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
-                results.setdefault("warnings", []).append(warning)
-                # Quiet callers (profile creation, unattended update) discard ``results`` and
-                # migrate_config still stamps the latest version, so without a log line the
-                # skipped step vanishes for good.
-                logger.warning("%s", warning)
-                if not quiet:
-                    print(f"  ⚠ {warning}")
+    failed: Optional[int] = None
+    token = _CONFIG_ONLY.set(config_only)
+    try:
+        for target_ver, migration_fn in MIGRATIONS:
+            due = current_ver < target_ver or target_ver in STAMP_INDEPENDENT_STEPS
+            if due and (target_ver in LEGACY_KEY_STEPS or not unversioned):
+                try:
+                    migration_fn(results, quiet)
+                except Exception as exc:
+                    # A malformed nested value must not abort the pass (config loading itself
+                    # fails otherwise), nor be stamped over. Quiet callers (boot, profile
+                    # creation, unattended update) discard ``results``: this log line is the
+                    # pass's one warning.
+                    warning = (f"config migration to v{target_ver} failed: {exc}. It and the steps after "
+                               "it run again on the next start (`hermes doctor` shows it)")
+                    results.setdefault("warnings", []).append(warning)
+                    logger.warning("%s", warning)
+                    if not quiet:
+                        print(f"  ⚠ {warning}")
+                    if failed is None:
+                        failed = results["failed_step"] = target_ver
+                        results["failed_warning"] = warning
+                    if stop_at_failure:
+                        break
+        return failed
+    finally:
+        _CONFIG_ONLY.reset(token)

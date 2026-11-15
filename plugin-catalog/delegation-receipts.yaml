@@ -1,0 +1,18 @@
+name: delegation-receipts
+repo: https://github.com/dacheah/delegation-receipts
+sha: 60cf2445a45d66df8592e21adae276ac64b035d8
+description: "Verify what a subagent says it did before the parent reports the work as done. A \"receipts\" delegation backend asks every child to end its reply with a receipt (status, the files it changed, and the one command that proves the work); when a child stops, the plugin resolves and hashes each claimed path, matches every claim against the write targets that child's own tool history records so it cannot take credit for a file someone else wrote, and checks the cited command against a closed set of fixed check forms (pytest, uv run --no-sync pytest, cargo/go/npm/pnpm/yarn test), refusing a path rather than a bare name, a launcher, or inline evaluation. Host re-run is opt-in and off by default, because a hook-driven re-run bypasses Hermes' dangerous-command approval and the child's terminal backend; when an operator enables it, the command is re-run argv-style with no shell, in its own process group, with output and time bounded. Either way a verdict reaches the parent: a rejection is appended to the delegate_task result, with the failing output attached when there is one; a background child's verdict arrives on the parent's next turn instead. Every check stays in a local JSONL ledger shown by `hermes receipts`. One command per receipt, one receipt per child. Disclosure — the receipt's `verified:` command is written by the subagent being checked; host re-run is off by default, and when you enable `plugins.entries.delegation-receipts.settings.host_rerun` that command (one of pytest, uv run --no-sync pytest, cargo/go/npm/pnpm/yarn test) runs on this host with your privileges in the child's inferred workspace, outside Hermes' command approval and the configured terminal backend, and executes the project's test code and scripts, including files the subagent wrote (no shell, argv-split, filtered environment, 120 s default timeout); receipts and claimed paths are checked locally, the ledger is local at <HERMES_HOME>/plugin-data/delegation-receipts/ledger.jsonl, and the plugin makes no network calls and holds no credentials."
+maintainer: dacheah
+tier: community
+category: tools
+docs_url: https://github.com/dacheah/delegation-receipts#readme
+version: "0.3.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - subagent_stop
+    - transform_tool_result
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

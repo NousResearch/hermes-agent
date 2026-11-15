@@ -54,12 +54,12 @@ print(result.stdout)
     probe = tmp_path / "probe.py"
     probe.write_text("import json, truststore; print(json.dumps({'tls': truststore.__file__}))")
     command = [sys.executable, "-I", "-S", "-c", code, str(stage), str(probe)]
-    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=180)
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=180, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert Path(json.loads(result.stdout)["tls"]).is_relative_to(home)
     assert "Preparing the isolated Hermes runtime" in result.stderr
     assert "must-not-fetch.invalid" not in result.stderr
-    warm = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    warm = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert warm.returncode == 0, warm.stdout + warm.stderr
     assert "Preparing the isolated Hermes runtime" not in warm.stderr
     assert warm.stdout == result.stdout
@@ -161,13 +161,13 @@ raise SystemExit(module['main']())
         command = [str(python), "-I", "-B", "-c", driver, str(tmp_path / "missing-ca"),
                    str(repo / "pm" / "launch.py"), str(repo), "install", "tls-test"]
         rejected = subprocess.run(command, cwd=tmp_path, env=env,
-                                  capture_output=True, text=True, timeout=60)
+                                  capture_output=True, text=True, timeout=60, check=False)
         assert rejected.returncode == 1, rejected.stdout + rejected.stderr
         assert "CERTIFICATE_VERIFY_FAILED" in rejected.stdout + rejected.stderr
         assert not list((home / "tools").glob("tls-test-*/payload.txt"))
         command[5] = str(bundle)
         result = subprocess.run(command, cwd=tmp_path, env=env,
-                                capture_output=True, text=True, timeout=60)
+                                capture_output=True, text=True, timeout=60, check=False)
         assert result.returncode == 0, result.stdout + result.stderr
         installed = list((home / "tools").glob("tls-test-*/payload.txt"))
         assert len(installed) == 1, result.stdout + result.stderr
@@ -271,7 +271,7 @@ Download([Source(sys.argv[2], dest, sys.argv[4])], partials_dir=dest.parent / "p
                  f"https://127.0.0.1:{server.server_port}/tool", str(dest),
                  hashlib.sha256(payload).hexdigest()],
                 env={**env, "SSL_CERT_FILE": str(tmp_path / f"{name}.pem")},
-                capture_output=True, text=True, timeout=60)
+                capture_output=True, text=True, timeout=60, check=False)
     finally:
         server.shutdown()
         server.server_close()

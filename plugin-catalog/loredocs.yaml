@@ -1,0 +1,21 @@
+name: loredocs
+title: LoreDocs
+repo: https://github.com/labyrinth-analytics/loredocs
+sha: 1f15568c6edf2a2b1dbf9f3872f1de239c0e0069
+subdir: integrations/hermes
+version: "0.1.33"
+description: "LoreDocs knowledge vaults over MCP: store, version, tag and search project documents, and inject them into agent context. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only: Hermes runs `uvx loredocs==0.1.33` as a local stdio MCP server. Disclosure — runs the loredocs package (BUSL-1.1, with lancedb, fastembed and onnxruntime) via `uvx loredocs==0.1.33` as a local stdio MCP server; stores documents under ~/.loredocs (or LOREDOCS_ROOT), shared with other LoreDocs clients; its add-document tool can read any local file path the agent passes into a vault; no telemetry; a paid Pro license enables semantic search, which downloads a Hugging Face embedding model once."
+maintainer: labyrinth-analytics
+tier: community
+category: tools
+requires_hermes: ">=0.21.1"
+docs_url: https://github.com/labyrinth-analytics/loredocs?tab=readme-ov-file#loredocs
+readme: true
+known_issues:
+  - "With some models, long multi-line tool calls (for example a large vault_add_doc body) fail with \"tool_call 'calls' is not valid JSON\" (Hermes #119640). Workaround: set tools.tool_search.enabled to \"off\" in ~/.hermes/config.yaml."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - LOREDOCS_PRO

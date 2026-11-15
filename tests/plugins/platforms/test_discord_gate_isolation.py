@@ -190,7 +190,7 @@ class TestSlashGateIsolation:
     def test_evaluate_slash_channel_gate_per_adapter(self, monkeypatch):
         import types
 
-        discord_lib = pytest.importorskip(
+        pytest.importorskip(
             "discord", reason="discord.py optional dep not installed"
         )
 

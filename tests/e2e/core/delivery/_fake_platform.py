@@ -465,7 +465,7 @@ def _serve(spool: Path) -> None:  # pragma: no cover - runs in the child process
     async def main() -> None:
         nonlocal runner
         parent = int(os.environ.get("C12_PARENT_PID") or os.getppid())
-        watchdog = asyncio.ensure_future(orphan_watchdog(parent))
+        watchdog = asyncio.ensure_future(orphan_watchdog(parent))  # noqa: F841 -- strong ref: the loop holds tasks weakly
         runner = GatewayRunner(config)
         ok = await runner.start()
         if not ok:

@@ -179,6 +179,60 @@ def test_in_flight_probe_cannot_restore_account_after_newer_429(tmp_path, monkey
     assert selected is not None and selected.id == "codex-2"
 
 
+def test_429_only_invalidates_the_failed_route_probe(monkeypatch):
+    from types import SimpleNamespace
+
+    token = _token("shared-account")
+    calls = []
+
+    class UsageClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, url, **_kwargs):
+            calls.append(url)
+            return self
+
+        status_code = 200
+
+        def json(self):
+            return {"rate_limit": {"primary_window": {"used_percent": 0}}}
+
+    monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **_kwargs: UsageClient())
+    monkeypatch.setattr(auth_codex, "_codex_pool_route_base_url", lambda url: url)
+    route_a, route_b = "https://route-a.example", "https://route-b.example"
+    assert auth_codex._probe_codex_quota_restored(token, base_url=route_a) is True
+    assert auth_codex._probe_codex_quota_restored(token, base_url=route_b) is True
+    assert len(calls) == 2
+    entry = SimpleNamespace(access_token=token, base_url=route_a, last_error_code=429,
+                            last_error_reason="usage_limit_reached", last_error_message="")
+    auth_codex._record_codex_quota_exhausted(entry)
+    assert auth_codex._probe_codex_quota_restored(token, base_url=route_a) is False
+    assert auth_codex._probe_codex_quota_restored(token, base_url=route_b) is True
+    assert len(calls) == 2
+
+
+def test_failed_token_refresh_is_throttled_across_routes(monkeypatch):
+    token = _jwt({"exp": time.time() - 7200, "sub": "shared-account"})
+    calls = []
+
+    def fail_refresh(*_args, **_kwargs):
+        calls.append(True)
+        raise RuntimeError("synthetic refresh failure")
+
+    monkeypatch.setattr(auth_codex, "refresh_codex_oauth_pure", fail_refresh)
+    assert auth_codex._refresh_expired_codex_probe_token(
+        token, "synthetic-refresh", base_url="https://route-a.example"
+    ) is None
+    assert auth_codex._refresh_expired_codex_probe_token(
+        token, "synthetic-refresh", base_url="https://route-b.example"
+    ) is None
+    assert len(calls) == 1
+
+
 def test_sole_entry_still_surfaces_no_recovery(tmp_path, monkeypatch):
     primary = _token("primary")
     pool, _auth_path = _load(tmp_path, monkeypatch, [_entry(1, primary)])

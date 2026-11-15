@@ -121,6 +121,24 @@ def test_timeout_and_interrupt_early_results():
     assert admission.early_result["interrupt_message"] == "stop"
 
 
+def test_interrupt_before_any_wait_does_not_blame_another_process():
+    """Ctrl+C right after submit lands before the first lease attempt (tracker #134889 N4): nothing
+    else held the session, so the reply must not say it stopped waiting for another process."""
+    agent = _agent(_Db(acquired=False), _interrupt_requested=True)
+    agent.clear_interrupt = lambda: None
+    reply = _admit(agent).early_result["final_response"]
+    assert "another Hermes process" not in reply and "not processed" in reply
+
+    class _HeldDb(_Db):
+        def acquire_session_turn_lease(self, session_id, holder, **kwargs):
+            kwargs["on_wait"](0.5)  # another holder seen, then the user interrupted the wait
+            return False
+
+    agent = _agent(_HeldDb(), _interrupt_requested=True)
+    agent.clear_interrupt = lambda: None
+    assert "another Hermes process" in _admit(agent).early_result["final_response"]
+
+
 def _active_lease(db):
     agent = _agent(db)
     calls = []

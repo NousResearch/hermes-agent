@@ -43,7 +43,7 @@ fitted face and hair stay fixed. Standalone wordmarks remain centered.
 
 GENERATED OUTPUTS ARE COMMITTED. Regular builds and installs consume them and
 never render; flavored release bundles (canary/commit) render to a product dir.
-icons-freshness-check.yml regenerates, runs --check, and fails on any diff.
+The icon step of repo-guards.yml regenerates, runs --check, and fails on any diff.
 
 Rendering: resvg (resvg-py) for SVG -> PNG fidelity at every size.
 Containers: Pillow for multi-size .ico and .icns.
@@ -967,7 +967,6 @@ def cmd_check(source: Path, out: Path) -> int:
         for i in range(count):
             entry = data[6 + i * 16 : 6 + (i + 1) * 16]
             w = entry[0] or 256
-            h = entry[1] or 256
             sizes.append(w)
         return sorted(set(sizes))
 

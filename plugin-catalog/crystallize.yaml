@@ -1,0 +1,27 @@
+name: "crystallize"
+repo: "https://github.com/itsflownium/hermes-crystallize"
+sha: "fc34138782796e94bca9131dd12c71f2dd843031"
+description: "Spend less on repeated work in Hermes chats and cron jobs, without making your model think less: trims repeated context and tool output in chats, and lets a cron job skip its AI run when its input has not changed, with local receipts showing what each change saved. Disclosure — reads Hermes session costs, user-message counts and final cron answers (state.db, read-only), cron outcomes and job definitions (cron/executions.db, cron/jobs.json) and your config and rate cards; looks up public model prices from the active route's /models endpoint and models.dev once a day with no credentials or chat data (off with hermes crystal prices --lookup off); the optional helper, compare and check features make paid model calls through your own Hermes route; cron tuning, promote and undo run hermes cron CLI commands that edit the chosen job, choosing a helper model or deferring tools runs hermes config set (auxiliary.crystallize_chat, tools.tool_search.defer), and generated pre-run wrappers, drafted snapshot scripts (which replay the job's recorded shell commands and URL reads) and approved snapshot scripts are written under scripts/crystallize/, scripts/crystallize-drafts/ and scripts/crystallize-native/ and run as ordinary cron scripts once attached; in CLI and TUI chats posts one short status line after each turn with ctx.post_message (never on Desktop or messaging platforms; off with /crystallize line off); stores captured tool results, cache entries and receipts in its plugin-data folder; no telemetry, no credential reads, no self-update."
+maintainer: "itsflownium"
+tier: "community"
+category: "automation"
+requires_hermes: ">=0.22.7"
+version: "0.6.0"
+title: "Crystallize"
+readme: true
+known_issues:
+  - "Live savings at unchanged reasoning are measured on Nous and OpenAI Codex, with small samples and synthetic fixtures; other providers are untested. Hand-offs cost more in live tests and are off by default."
+  - "Frozen fixture checks do not prove semantic equivalence or universal provider coverage."
+  - "Automatic nested tool execution and pre-run/no-AI replay of learned tool plans are unavailable on the audited SDK; explicit tool mode returns pending normal-host-tool plans."
+  - "Configured/declared routes have unverified authentication and availability. User rate cards and public provider quotes are estimates, not billing evidence."
+  - "Optional native Python snapshot sources require explicit source approval, and a job that delivers needs confirmation that an unchanged run sends nothing; copied code/imports run with ordinary cron permissions, and host text trimming/redaction still apply."
+capabilities:
+  provides_tools: ["crystal_cheap", "crystal_full_result", "crystal_list", "crystal_run"]
+  provides_hooks: ["on_session_end", "post_api_request", "post_llm_call", "post_tool_call", "pre_llm_call", "pre_tool_call", "transform_llm_output", "transform_tool_result"]
+  provides_middleware: ["llm_request", "tool_execution"]
+  requires_env: []
+screenshots:
+  - "https://raw.githubusercontent.com/itsflownium/hermes-crystallize/fc34138782796e94bca9131dd12c71f2dd843031/assets/review/panel-cron-and-chat.png"
+  - "https://raw.githubusercontent.com/itsflownium/hermes-crystallize/fc34138782796e94bca9131dd12c71f2dd843031/assets/review/panel-job-details.png"
+docs_url: "https://github.com/itsflownium/hermes-crystallize/blob/fc34138782796e94bca9131dd12c71f2dd843031/README.md"
+image: "https://raw.githubusercontent.com/itsflownium/hermes-crystallize/fc34138782796e94bca9131dd12c71f2dd843031/assets/social-preview.png"

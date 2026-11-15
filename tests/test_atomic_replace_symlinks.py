@@ -637,10 +637,10 @@ def test_windows_readonly_target_still_raises(tmp_path: Path) -> None:
     target = tmp_path / "readonly.json"
     target.write_text("old", encoding="utf-8")
     tmp = _write_tmp(tmp_path, "new")
-    subprocess.run(["attrib", "+R", str(target)], capture_output=True)
+    subprocess.run(["attrib", "+R", str(target)], capture_output=True, check=False)
     try:
         with pytest.raises(OSError):
             atomic_replace(tmp, target)
         assert target.read_text(encoding="utf-8") == "old"
     finally:
-        subprocess.run(["attrib", "-R", str(target)], capture_output=True)
+        subprocess.run(["attrib", "-R", str(target)], capture_output=True, check=False)

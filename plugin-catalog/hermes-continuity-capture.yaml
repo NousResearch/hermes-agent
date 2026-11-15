@@ -1,0 +1,23 @@
+name: hermes-continuity-capture
+repo: https://github.com/Goitonthefloor/hermes-continuity-capture
+sha: 0b7ca3b853c63fba8d9f076754f5661aebb5d2a1
+description: "Records Hermes lifecycle events (session, subagent, and kanban task) as Continuity schema-v2 events in a local SQLite spool under the plugin data directory, and can forward them to a NATS/JetStream server you run yourself. Disclosure - binds nine lifecycle hooks and writes SQLite (spool_path defaults to spool.db in the plugin data directory, 90-day retention, periodic sweep; the file grows with event volume); free-text fields (prompts, tool results, args, summary, reason, tool_call_history) are always dropped before the INSERT and only their length is kept (there is no setting that keeps them). The optional NATS password is read from the environment variable HERMES_CONTINUITY_CAPTURE_NATS_PASSWORD, never from config.yaml. Delivery is opt-in: the default publish_mode is spool-only (nothing leaves the host); in core/jetstream mode a background thread publishes to your own NATS endpoint using the bundled standard-library client, and failed deliveries stay as error rows and are retried. Only the NATS server itself is external - it is not part of this plugin. Inactive until an operator enables it. Disclosure — binds nine lifecycle hooks and writes a SQLite spool (default spool.db in the plugin data directory, 90-day retention sweep) holding event type, profile/agent id, host FQDN, process id and start time, session/subagent/task ids and tool names; prompts, tool args/results, summaries, reasons and tool_call_history are always dropped before writing and only their lengths kept. Default publish_mode is spool-only (nothing leaves the host); in the opt-in core/jetstream modes a background thread sends those events to the NATS server you configure in nats_url (default 127.0.0.1) using the bundled standard-library client, and unless nats_tls is on or the URL uses tls:// (TLS is off by default) the NATS user and password travel in plaintext."
+maintainer: Goitonthefloor
+tier: community
+category: automation
+requires_hermes: ">=0.21.6"
+version: "0.2.2"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - on_session_finalize
+    - post_tool_call
+    - subagent_start
+    - subagent_stop
+    - kanban_task_claimed
+    - kanban_task_completed
+    - kanban_task_blocked
+  provides_middleware: []
+  requires_env: []

@@ -44,12 +44,39 @@ class EventContract:
     doc: str = ""
 
 
+@dataclass(frozen=True)
+class NamespaceContract:
+    """A family of canonical methods whose names exist only at runtime (``plugin.<plugin_id>.<name>``).
+    ``name`` is the pattern, every member starts with ``prefix``, and ``capability`` is the
+    ``runtime.describe`` string a client checks before calling one. A member's result is its own
+    JSON value; an unknown member answers ``-32601`` like any unknown method."""
+
+    name: str
+    prefix: str
+    capability: str
+    params: type[Params]
+    doc: str = ""
+
+
 METHODS: dict[str, MethodContract] = {}
+# ``hermes-gateway-v1`` verbs only ``gateway/session_controls.py::AuthorityConnection`` serves
+# (``contracts/canonical.py``), plus explicit overrides where a shared name has a different wire.
+CANONICAL_METHODS: dict[str, MethodContract] = {}
 SERVER_REQUESTS: dict[str, ServerRequestContract] = {}
 EVENTS: dict[str, EventContract] = {}
+# Dynamic ``hermes-gateway-v1`` namespaces the session authority serves after its own verbs.
+CANONICAL_NAMESPACES: dict[str, NamespaceContract] = {}
+
+
+def unknown_method_message(method: str) -> str:
+    """The ``-32601`` text both routes send. A JSON-RPC client sends no version, so a missing
+    method says only what the backend knows: this backend does not serve it."""
+    return f"unknown method: {method} — not available on this Hermes backend"
 
 
 def _declare(table: dict, entry) -> None:
+    # Method names may have different envelopes on independently shipped
+    # transports. Duplicates within one transport's catalog are still errors.
     if entry.name in table:
         raise RuntimeError(f"contract declared twice: {entry.name}")
     table[entry.name] = entry
@@ -58,6 +85,21 @@ def _declare(table: dict, entry) -> None:
 def method(name: str, *, params: type[Params], result: type[Result], doc: str = "") -> MethodContract:
     entry = MethodContract(name, params, result, doc)
     _declare(METHODS, entry)
+    return entry
+
+
+def canonical_method(name: str, *, params: type[Params], result: type[Result], doc: str = "") -> MethodContract:
+    entry = MethodContract(name, params, result, doc)
+    _declare(CANONICAL_METHODS, entry)
+    return entry
+
+
+def canonical_namespace(name: str, *, prefix: str, capability: str, params: type[Params],
+                        doc: str = "") -> NamespaceContract:
+    if not name.startswith(prefix):
+        raise RuntimeError(f"namespace {name!r} must start with its prefix {prefix!r}")
+    entry = NamespaceContract(name, prefix, capability, params, doc)
+    _declare(CANONICAL_NAMESPACES, entry)
     return entry
 
 
@@ -107,6 +149,21 @@ def validate_params(contract: MethodContract | ServerRequestContract, params: di
                               "the Hermes backend are out of sync (different versions); run `hermes update` "
                               "and restart both")
     return params, None
+
+
+def canonical_param_problems(contract: MethodContract, params: dict) -> list[str]:
+    """Key paths the canonical dispatcher refuses (``4001 invalid_params``): unknown and missing
+    keys — the closed set its handlers enforced by hand. Value/type checks stay in the handlers,
+    which own their domain reasons (``stale_generation``, ``not_found``, …)."""
+    try:
+        contract.params.model_validate(params)
+    except ValidationError as exc:
+        # Shared methods preserve handler-owned missing-field/permission refusals,
+        # while refusing malformed values before the handler indexes them.
+        return [".".join(str(p) for p in err.get("loc", ())) or "params" for err in exc.errors()
+                if (err.get("type") != "missing" if contract.name in METHODS
+                    else err.get("type") in ("extra_forbidden", "missing"))]
+    return []
 
 
 def check_params_accepted(contract: MethodContract | ServerRequestContract, params: dict) -> None:

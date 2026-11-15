@@ -159,9 +159,10 @@ def _persisted_action_id(log_dir: Path, name: str) -> Optional[str]:
 
 @router.post("/api/gateway/restart")
 async def restart_gateway(profile: Optional[str] = None):
-    """Kick off a ``hermes gateway restart`` in the background."""
+    """Kick off a ``hermes gateway restart --interrupt`` in the background: the user-commanded force
+    path that supersedes a drain (D6, 19b26244046), so live sessions do not refuse it."""
     with http_failure("Failed to spawn gateway restart", 500, "Failed to restart gateway"):
-        proc, _reused = _spawn_gateway_restart(profile)
+        proc, _reused = _spawn_gateway_restart(profile, interrupt=True)
     return {"ok": True, "pid": proc.pid, "name": "gateway-restart"}
 
 
@@ -280,6 +281,11 @@ _NON_APPLYABLE_MESSAGES = {
 }
 
 
+def _source_release_label(status: dict[str, Any]) -> str:
+    version = status.get("sourceVersion")
+    return f"{status.get('channel') or 'stable'} release" + (f" v{version}" if version else "")
+
+
 @router.get("/api/hermes/update/check")
 async def check_hermes_update(force: bool = False, profile: Optional[str] = None):
     """Report whether a Hermes update is available, without applying it.
@@ -323,6 +329,7 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
 
     # source_check.check_for_updates() handles git / nix-revision paths through the GitHub API and
     # caches the result for 24h. ``force`` busts the cache so "Check now" reflects reality.
+    status: dict[str, Any] = {}
     try:
         from hermes_cli.source_check import check_for_updates
 
@@ -336,12 +343,24 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
     payload["behind"] = behind
     if behind is None:
         payload["message"] = "Couldn't reach the update source — try again later."
+    elif behind == 0 and status.get("held"):
+        version = status.get("sourceVersion")
+        payload.update(held=status["held"], source_version=version,
+                       message=f"This build is newer than {_source_release_label(status)}, which predates the gateway "
+                               "runtime its sessions use. It stays on this build until a newer release ships.")
     elif behind == 0:
         payload["message"] = "You're on the latest version."
     else:
         payload["update_available"] = True
+        if status.get("rollback"):
+            # A stable release this build already contains: applying it moves back.
+            payload.update(rollback_to=status.get("sourceVersion"),
+                           message=f"This build is newer than {_source_release_label(status)}. "
+                                   "Updating moves it back to that release.")
         # "What's changed" for the desktop's remote update overlay; best-effort
-        # (empty list on any failure).
+        # (empty list on any failure). Channel + release name pick its notes source.
+        payload.update(channel=status.get("channel"), branch=status.get("branch"),
+                       source_version=status.get("sourceVersion"))
         payload["commits"] = [{**row, "sha": row["sha"][:7], "at": row["at"] // 1000}
                               for row in status.get("commits", [])[:20]]
     return payload

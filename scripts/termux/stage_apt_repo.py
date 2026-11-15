@@ -389,6 +389,7 @@ def _gpg_run(
                 input=stdin,
                 stdin=subprocess.DEVNULL if stdin is None else None,
                 stdout=fo, stderr=fe, env=env,
+                check=False,
             )
         result.stdout = out_path.read_bytes()
         result.stderr = err_path.read_bytes()

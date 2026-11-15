@@ -71,7 +71,8 @@ async def test_command_is_truncated_to_the_platform_budget():
     adapter = _Small()
     await adapter.send_exec_approval("chat", "x" * 100, "sess")
     (prompt,) = adapter.prompts
-    assert "x" * 20 + "..." in prompt.text and "x" * 21 not in prompt.text
+    assert "x" * 10 + "..." in prompt.text and "x" * 11 not in prompt.text  # half: the rest is the notice
+    assert "Preview shortened" in prompt.text
     assert prompt.command == "x" * 100  # the raw command stays available for embeds/cards
 
 

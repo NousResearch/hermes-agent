@@ -18,6 +18,9 @@ ROOT = Path(__file__).resolve().parents[2]
 LAYERED_ICON = "icon.icon"  # apps/desktop/assets/icon.icon: the macOS 26 Icon Composer package
 DMG_VOLUME = Path("apps/desktop/packaging/dmg-volume.icns")  # hand-made drive artwork, not a tile
 
+# ``generate`` builds a fresh PM runtime environment, which provisions the locked toolchain.
+pytestmark = pytest.mark.allow_network
+
 
 @pytest.fixture(scope="module")
 def generate(tmp_path_factory):
@@ -48,14 +51,14 @@ def generate(tmp_path_factory):
                    "PYTHONHOME": str(root / "foreign-python"), "HERMES_DISABLE_LAZY_INSTALLS": "1"}
             command = [node, str(ROOT / "scripts/generate-icons.mjs"),
                        "--source", str(source), "--out", str(out)]
-            result = subprocess.run(command, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+            result = subprocess.run(command, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, check=False)
             if rejected:
                 assert result.returncode != 0, "invalid build identity generated icons"
                 assert not out.exists()
                 return
             assert result.returncode == 0, result.stdout + result.stderr
             if not outputs:
-                checked = subprocess.run([*command, "--check"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+                checked = subprocess.run([*command, "--check"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, check=False)
                 assert checked.returncode == 0, checked.stdout + checked.stderr
             outputs[key] = out
         return outputs[key]

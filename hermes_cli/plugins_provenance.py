@@ -50,7 +50,7 @@ def read_sidecar_rows(plugins_dir: Path) -> dict:
         return {}
     try:
         data = json.loads(sidecar.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):  # ValueError: bad JSON and bytes that are not UTF-8
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -71,6 +71,7 @@ def _git_origin_url(plugin_dir: Path) -> Optional[str]:
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
                 timeout=10,
+                check=False,
             )
             if proc.returncode == 0:
                 url = (proc.stdout or "").strip()

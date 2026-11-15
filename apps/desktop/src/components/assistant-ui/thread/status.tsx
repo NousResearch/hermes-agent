@@ -8,7 +8,6 @@ import { toolPresentVerb } from '@/components/assistant-ui/tool/run-summary'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
-import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { StatusPulse } from '@/components/ui/status-pulse'
@@ -370,9 +369,7 @@ const TurnActivityRow: FC<TurnActivityRowProps> = ({ active, elapsed, hint, loca
 export const TurnActivityIndicator: FC<{ thinking?: boolean }> = ({ thinking = false }) => {
   // Same rule the reasoning disclosure renders by (message-parts.tsx).
   const showReasoning = useStore($showReasoning)
-  const guidedChat = useOnboardingChatActive()
-  const reasoningShown = showReasoning && !guidedChat
-  const activity = useAuiState(s => activitySignature(s.message.content, reasoningShown))
+  const activity = useAuiState(s => activitySignature(s.message.content, showReasoning))
 
   // Timestamp of the last visible progress, held from the moment the quiet
   // spell qualifies. Holding the timestamp (not a boolean) is what lets the
@@ -446,7 +443,7 @@ export const TurnActivityIndicator: FC<{ thinking?: boolean }> = ({ thinking = f
 
   // A reply that has only thought so far, with the thinking not drawn, has
   // still put nothing on screen: it keeps the pre-first-token row.
-  if (thinking && !reasoningShown) {
+  if (thinking && !showReasoning) {
     return <ResponseLoadingIndicator />
   }
 

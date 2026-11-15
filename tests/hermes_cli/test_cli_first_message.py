@@ -30,7 +30,7 @@ def test_first_cli_message_in_a_fresh_home_reaches_the_model_unchanged(tmp_path)
         )
         env = {**os.environ, "HERMES_HOME": str(home), "PYTHONUTF8": "1"}
         env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
-        for name in ("HERMES_GUEST_ONBOARDING", "HERMES_DESKTOP"):
+        for name in ("HERMES_DESKTOP", "HERMES_DASHBOARD_SESSION_TOKEN"):
             env.pop(name, None)
         proc = subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", "chat", "-q", PROMPT],

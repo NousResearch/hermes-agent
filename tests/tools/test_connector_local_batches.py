@@ -25,7 +25,7 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
     assert name is None and "exactly one entry" in error
     invoked = []
     monkeypatch.setattr(model_tools.registry, "dispatch", lambda *a, **kw: invoked.append(a))
-    monkeypatch.setattr(bridge, "_default_client_factory", lambda: invoked.append("gateway"))
+    monkeypatch.setattr(bridge, "_default_client_factory", lambda call=None: invoked.append("gateway"))
     result = json.loads(model_tools.handle_function_call(
         "tool_call", {"calls": calls}, enabled_toolsets=["connections", "session_search", "todo"]))
     assert "exactly one entry" in result["error"]

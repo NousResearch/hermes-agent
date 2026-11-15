@@ -19,7 +19,7 @@ from tools.environments.local import LocalEnvironment
 
 
 def _pkill(pattern: str) -> None:
-    subprocess.run(f"pkill -9 -f {pattern!r} 2>/dev/null", shell=True)
+    subprocess.run(f"pkill -9 -f {pattern!r} 2>/dev/null", shell=True, check=False)
 
 
 @pytest.fixture

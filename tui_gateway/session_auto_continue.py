@@ -68,10 +68,6 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         return None
     if not marker.get("auto_continue", True):
         return None  # The mailbox owns recovery and receipt identity for imported turns.
-    from agent.initiate_setup_prompt import intro_resends
-    if intro_resends(marker["prompt"], _session_source(session)):
-        clear_turn_marker(home, session_key)  # the desktop intro sends /initiate-setup again itself
-        return None
     # Ownership, not forensics: a sibling backend sharing this HERMES_HOME can be mid-turn on this very session, so
     # its live marker says "someone is working on it", never "someone crashed". Leave the marker for its writer —
     # clearing it would cancel the live turn's own account of itself. See #94778.
@@ -107,6 +103,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                 session["_auto_continue_scheduled"] = False  # a real user prompt beat us; it clears the marker
                 return
             session["running"] = True
+            session["_notif_turn_claim"] = claim = object()  # the exception release below frees only this claim
             session["last_active"] = time.time()
         # Ownership admission BEFORE message.start: a sibling backend sharing this HERMES_HOME may have written the
         # marker and still be mid-turn. Leave the marker so a later resume retries.
@@ -134,7 +131,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                     **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
         except Exception as exc:
             _notif_log_failure("auto-continue dispatch failed", exc)
-            _notif_release_turn(session)  # rebound from session_notifications
+            _notif_release_claim(session, claim)  # a user turn admitted after a refusal keeps its ``running``
     if _start_session_work(kickoff, name=f"auto-continue-{sid}") is None:
         session["_auto_continue_scheduled"] = False
         return None
@@ -467,6 +464,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         queue_generation = int(session.get("_queued_prompt_generation", 0))
         _ac_set_queue(session, session.get("queued_prompts") or [])
         session["running"] = True
+        session["_notif_turn_claim"] = claim = object()  # the exception release below frees only this claim
         queued_transport = queued.get("transport")
         # The queuer's transport is pinned so the drained turn reaches the client that sent it — but
         # ATTACHED, not rebound: a mid-turn prompt from a second client used to silence the first for the
@@ -519,7 +517,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             dispatch_failed = True
     except Exception as exc:
         _notif_log_failure("queued prompt dispatch failed", exc)
-        _notif_release_turn(session)
+        _notif_release_claim(session, claim)
         dispatch_failed = True
     if dispatch_failed:
         with session["history_lock"]:

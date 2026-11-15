@@ -15,7 +15,7 @@ import pytest
 from gateway.run_turn_runner import TurnRunner
 
 
-def _wire(user_config):
+def _wire(user_config, **runner_attrs):
     """Run `_wire_turn_agent_callbacks` over minimal fakes; return the agent."""
     agent = types.SimpleNamespace()
     ctx = types.SimpleNamespace(
@@ -44,9 +44,11 @@ def _wire(user_config):
     )
     holder = types.SimpleNamespace(
         _ctx=ctx,
+        _approval_owner=None,
         _runner=types.SimpleNamespace(
             _service_tier=None,
             _consume_pending_turn_sidecar_notes=lambda key: [],
+            **runner_attrs,
         ),
         _make_bg_review_callbacks=lambda: (lambda message: None, lambda: None),
         _merge_turn_request_overrides=TurnRunner._merge_turn_request_overrides,
@@ -67,3 +69,10 @@ def test_null_or_missing_display_falls_back_to_on(user_config):
 def test_memory_notifications_setting_still_applies():
     agent = _wire({"display": {"memory_notifications": "verbose"}})
     assert agent.memory_notifications == "verbose"
+
+
+def test_owner_surface_is_recorded_apart_from_the_daybreak_switch():
+    """Daybreak delegation routes read the chat's owner verdict, which holds with the switch off."""
+    agent = _wire({}, _load_daybreak=lambda source: False, _daybreak_surface=lambda source: True)
+    assert (agent.daybreak, agent.daybreak_surface) == (False, True)
+    assert _wire({}).daybreak_surface is False

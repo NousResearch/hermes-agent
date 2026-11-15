@@ -22,6 +22,6 @@ def legacy_read(home: Path) -> dict:
             "const live = readLiveUpdateMarker(process.argv[1]); "
             "console.log(JSON.stringify({ live, kept: fs.existsSync(process.argv[1] + '/.hermes-update-in-progress') }))")
     out = subprocess.run([node, "--input-type=module", "-e", code, str(home)], capture_output=True, text=True,
-                         encoding="utf-8", timeout=60)
+                         encoding="utf-8", timeout=60, check=False)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout.strip().splitlines()[-1])

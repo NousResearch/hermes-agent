@@ -1,7 +1,7 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
 
-import { isMissingPendingPromptRequest, isMissingRpcMethod } from './gateway-rpc'
+import { isMissingPendingPromptRequest, isMissingRpcMethod, isOfflineMaintenance } from './gateway-rpc'
 
 describe('isMissingRpcMethod', () => {
   it('trusts the JSON-RPC code over the message when the frame survived', () => {
@@ -19,6 +19,20 @@ describe('isMissingRpcMethod', () => {
   it('ignores unrelated failures', () => {
     expect(isMissingRpcMethod(new Error('Hermes gateway is not connected'))).toBe(false)
     expect(isMissingRpcMethod(new Error('no such project'))).toBe(false)
+  })
+})
+
+describe('isOfflineMaintenance', () => {
+  it('matches only the anchored HTTP 409 status marker, bare or through the IPC bridge', () => {
+    // Real server form (api-transport.ts::httpStatusError) and its IPC-wrapped twin.
+    const detail = '{"detail":"Exclusive maintenance refused: Gateway runtime already owns profile /x. Drain and stop the gateway, then retry."}'
+    expect(isOfflineMaintenance(new Error(`409: ${detail}`))).toBe(true)
+    expect(isOfflineMaintenance(new Error(`Error invoking remote method 'hermes:api': Error: 409: ${detail}`))).toBe(true)
+    // Decoys: a 409 token in a body, a longer number, another status, bare conflict text.
+    expect(isOfflineMaintenance(new Error('500: Query returned 409 rows'))).toBe(false)
+    expect(isOfflineMaintenance(new Error('4096: not a status'))).toBe(false)
+    expect(isOfflineMaintenance(new Error('404: {"detail":"Not Found"}'))).toBe(false)
+    expect(isOfflineMaintenance(new Error('conflict: gateway owns the profile'))).toBe(false)
   })
 })
 

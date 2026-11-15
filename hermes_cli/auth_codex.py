@@ -22,7 +22,8 @@ from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 from hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
-    CODEX_OAUTH_USER_AGENT, CODEX_RATE_LIMITED_CODE, DEFAULT_CODEX_BASE_URL, _codex_err, httpx)
+    CODEX_RATE_LIMITED_CODE, DEFAULT_CODEX_BASE_URL, _codex_err, httpx)
+from hermes_cli.version_info import hermes_user_agent
 from utils import env_float, normalize_proxy_env_vars
 
 if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
@@ -68,7 +69,25 @@ def _codex_access_token_is_expiring(access_token: Any, skew_seconds: int) -> boo
 
 
 def _codex_base_url() -> str:
-    return os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
+    """The owning profile's ``HERMES_CODEX_BASE_URL`` override, else canonical chatgpt.com (the
+    singleton route itself goes through ``_codex_pool_route_base_url``, which adds ``model.base_url``).
+
+    Read through the profile scope, never ``os.environ``, for the same reason the pooled route does
+    (#121486): on a multiplexed gateway the raw process env is the *launch* profile's gateway, so a
+    routed sibling's token would be addressed to it. Outside multiplexing ``get_secret_str`` still
+    falls through to the process env, so single-profile deployments are unaffected.
+
+    An unscoped read while multiplexing is on cannot name the owning profile, so it degrades to the
+    canonical host — the same answer ``_codex_pool_route_base_url`` already produces in that state,
+    rather than a new failure mode on the credential path.
+    """
+    from agent.secret_scope import UnscopedSecretError, get_secret_str
+    try:
+        override = get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+    except UnscopedSecretError:
+        logger.debug("No profile secret scope bound; Codex base URL falls back to canonical", exc_info=True)
+        override = ""
+    return override or DEFAULT_CODEX_BASE_URL
 
 
 def _codex_pool_route_base_url(entry_base_url: Optional[str] = "") -> str:
@@ -95,7 +114,8 @@ def _codex_pool_route_base_url(entry_base_url: Optional[str] = "") -> str:
 def _codex_runtime_result(
     api_key: str, *, source: str, last_refresh: Optional[str], base_url: Optional[str] = None) -> dict[str, Any]:
     return {
-        "provider": "openai-codex", "base_url": base_url or _codex_base_url(), "api_key": api_key,
+        "provider": "openai-codex",
+        "base_url": base_url or _codex_pool_route_base_url(DEFAULT_CODEX_BASE_URL), "api_key": api_key,
         "source": source, "last_refresh": last_refresh, "auth_mode": "chatgpt"}
 
 
@@ -489,7 +509,7 @@ def refresh_codex_oauth_pure(
                          "codex_auth_missing_refresh_token", relogin=True)
     with _codex_http_client(
         timeout=httpx.Timeout(max(5.0, float(timeout_seconds))),
-        headers={"Accept": "application/json", "User-Agent": CODEX_OAUTH_USER_AGENT}) as client:
+        headers={"Accept": "application/json", "User-Agent": hermes_user_agent()}) as client:
         response = client.post(
             CODEX_OAUTH_TOKEN_URL, headers={"Content-Type": "application/x-www-form-urlencoded"},
             data={
@@ -714,8 +734,13 @@ _codex_quota_probe_cache: dict[str, tuple[float, Optional[bool]]] = {}
 _codex_quota_probe_lock = threading.Lock()
 
 
-def _codex_quota_probe_cache_key(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+def _codex_quota_probe_cache_key(token: str, base_url: Optional[str] = None) -> str:
+    route = _codex_usage_probe_url(base_url)
+    return hashlib.sha256(f"{token}\0{route}".encode()).hexdigest()[:16]
+
+
+def _codex_refresh_failure_cache_key(token: str) -> str:
+    return "refresh:" + hashlib.sha256(token.encode()).hexdigest()[:16]
 
 
 def _codex_usage_probe_url(base_url: Optional[str]) -> str:
@@ -743,8 +768,9 @@ def _record_codex_quota_exhausted(entry: Any) -> None:
             getattr(entry, "last_error_code", None), getattr(entry, "last_error_reason", None),
             getattr(entry, "last_error_message", None)):
         return
+    route = _codex_pool_route_base_url(getattr(entry, "base_url", None))
     with _codex_quota_probe_lock:
-        _codex_quota_probe_cache[_codex_quota_probe_cache_key(token)] = (time.monotonic(), False)
+        _codex_quota_probe_cache[_codex_quota_probe_cache_key(token, route)] = (time.monotonic(), False)
 
 
 def _probe_codex_quota_restored(
@@ -752,8 +778,7 @@ def _probe_codex_quota_restored(
     min_interval_seconds: float = CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS) -> Optional[bool]:
     """Ask the Codex usage endpoint whether this account's quota is usable again.
 
-    Probes are throttled per access token (module-local cache) so the hot selection path can fire
-    this freely.
+    Quota verdicts are throttled per access token and probe route.
     """
     from hermes_cli.auth import _codex_quota_probe_cache, _nonempty_str
     token = _stripped(access_token)
@@ -761,9 +786,13 @@ def _probe_codex_quota_restored(
     # network calls for corrupt/placeholder entries (and keeps hermetic test fixtures offline).
     if not token or not _decode_jwt_claims(token):
         return None
-    cache_key = _codex_quota_probe_cache_key(token)
+    cache_key = _codex_quota_probe_cache_key(token, base_url)
+    failure_key = _codex_refresh_failure_cache_key(token)
     now = time.monotonic()
     with _codex_quota_probe_lock:
+        failed_refresh = _codex_quota_probe_cache.get(failure_key)
+        if failed_refresh is not None and (now - failed_refresh[0]) < min_interval_seconds:
+            return None
         cached = _codex_quota_probe_cache.get(cache_key)
         if cached is not None and (now - cached[0]) < min_interval_seconds:
             return cached[1]
@@ -810,7 +839,7 @@ def _probe_codex_quota_restored(
 
 
 def _refresh_expired_codex_probe_token(
-    access_token: Any, refresh_token: Any, *,
+    access_token: Any, refresh_token: Any, *, base_url: Optional[str] = None,
     min_interval_seconds: float = CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS) -> Optional[dict[str, Any]]:
     """Refresh an EXPIRED stored access token so the quota probe can get a real answer.
 
@@ -821,19 +850,21 @@ def _refresh_expired_codex_probe_token(
     Returns the rotated token pair (callers MUST persist it: refresh tokens are single-use) or
     None when no refresh was needed/possible. The cooldown itself is left untouched.
 
-    Shares the probe's per-token throttle: a refresh that keeps failing (revoked grant, network
-    down) would otherwise POST to the token endpoint on every credential selection, while the
-    probe itself is capped at one call per ``min_interval_seconds``. A failed attempt reserves
-    the stale token's probe slot, so neither the refresh nor the doomed 401 probe fire again
+    Failed refreshes are throttled per token across routes; quota probe verdicts
+    remain route-scoped. A failed refresh also suppresses probes with the stale token
     until the interval has elapsed.
     """
     from hermes_cli.auth import _codex_quota_probe_cache
     token, refresh = _stripped(access_token), _stripped(refresh_token)
     if not token or not refresh or not _codex_access_token_is_expiring(token, 0):
         return None
-    cache_key = _codex_quota_probe_cache_key(token)
+    cache_key = _codex_quota_probe_cache_key(token, base_url)
+    failure_key = _codex_refresh_failure_cache_key(token)
     now = time.monotonic()
     with _codex_quota_probe_lock:
+        failed_refresh = _codex_quota_probe_cache.get(failure_key)
+        if failed_refresh is not None and (now - failed_refresh[0]) < min_interval_seconds:
+            return None
         cached = _codex_quota_probe_cache.get(cache_key)
         if cached is not None and (now - cached[0]) < min_interval_seconds:
             return None
@@ -842,7 +873,7 @@ def _refresh_expired_codex_probe_token(
     except Exception:
         logger.debug("Codex pre-probe token refresh failed", exc_info=True)
         with _codex_quota_probe_lock:
-            _codex_quota_probe_cache[cache_key] = (now, None)
+            _codex_quota_probe_cache[failure_key] = (now, None)
         return None
 
 
@@ -850,7 +881,8 @@ def _probe_codex_pool_entry_quota_restored(entry: dict[str, Any]) -> Optional[bo
     """``_probe_codex_quota_restored`` for a persisted pool entry, refreshing an expired token first."""
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
     token = _stripped(entry.get("access_token"))
-    fresh = _refresh_expired_codex_probe_token(token, entry.get("refresh_token"))
+    route = _codex_pool_route_base_url(entry.get("base_url"))
+    fresh = _refresh_expired_codex_probe_token(token, entry.get("refresh_token"), base_url=route)
     if fresh:
         token = fresh["access_token"]
         try:

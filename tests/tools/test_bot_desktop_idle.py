@@ -147,6 +147,28 @@ def test_idle_stop_disabled_by_zero(tmp_path, monkeypatch):
     assert runtime.stop_if_idle() is False and stops == []
 
 
+def test_idle_due_matches_launcher_by_marker_not_clock(tmp_path, monkeypatch):
+    """_idle_due compares launcher identity tokens by equality so a clock jump cannot make the same
+    screen look like a replacement."""
+    sd = tmp_path / "bd"
+    sd.mkdir()
+    (sd / "env").write_text("DISPLAY=:20\n", encoding="utf-8")
+    monkeypatch.setattr(runtime, "state_dir", lambda: sd)
+    monkeypatch.setattr(runtime, "idle_stop_seconds", lambda: 600.0)
+    monkeypatch.setattr(runtime, "is_running", lambda: True)
+    monkeypatch.setattr(runtime, "idle_seconds", lambda: 900.0)
+    monkeypatch.setattr(runtime, "_process_start_marker", lambda pid: "linux:12345")
+    monkeypatch.setattr(runtime, "_pid_alive", lambda pid: pid == 4242)
+
+    (sd / "launcher.pid").write_text("4242 marker:linux:12345", encoding="utf-8")
+    identity = runtime._launcher_identity()
+    assert identity == (4242, "linux:12345")
+    assert runtime._idle_due(identity) == 900.0
+
+    (sd / "launcher.pid").write_text("4242 marker:linux:99999", encoding="utf-8")
+    assert runtime._idle_due(identity) is None
+
+
 def test_an_infinite_idle_window_is_off_and_never_overflows_the_next_check(monkeypatch):
     """``idle_stop_minutes: .inf`` meant "never stop" before the self-stop; the launcher's first-check delay
     is computed from it in start(), where an infinite window raised OverflowError."""

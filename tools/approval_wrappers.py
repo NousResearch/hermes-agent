@@ -27,9 +27,9 @@ _WRAPPER_WORDS = frozenset({
 _MULTI_CALL_WORDS = frozenset({"busybox", "toybox"})
 
 _WRAPPER_STR_OPERAND = {
-    "sudo": {"-u", "-g", "-h", "-p", "-U", "-D", "-R", "-T",
-             "--user", "--group", "--host", "--prompt", "--chdir",
-             "--role", "--type"},
+    "sudo": {"-u", "-g", "-h", "-p", "-U", "-D", "-R", "-T", "-a", "-c", "-r", "-t",
+             "--user", "--group", "--host", "--prompt", "--chdir", "--auth-type", "--login-class",
+             "--role", "--type", "--chroot", "--command-timeout", "--other-user"},
     "doas": {"-u", "-C"},
     # -S / --split-string carry the command itself: carried_command_variants scans that payload.
     "env": {"-u", "-C", "-a", "-S",
@@ -57,6 +57,16 @@ _WRAPPER_QUERY_OPTIONS = {
     "sudo": {"-l", "--list", "-v", "--validate", "-K", "--remove-timestamp"},
 }
 
+# sudo's no-operand long options. getopt_long takes any unambiguous prefix of the full set (`--us` is --user).
+_SUDO_LONG_FLAGS = frozenset({
+    "--askpass", "--background", "--bell", "--preserve-env", "--edit", "--set-home", "--help", "--login",
+    "--reset-timestamp", "--non-interactive", "--preserve-groups", "--stdin", "--shell", "--version",
+})
+
+# A redirection before (or between) the words of a simple command (`2>/dev/null reboot`); not a heredoc or a
+# process substitution. Its target word follows.
+_LEADING_REDIRECT_RE = re.compile(r"[^\S\n]*+(?:\d+|&)?(?:>>|>&|>\||<>|<&|<<<|>|<)(?![<(])")
+
 # GNU timeout durations: optional `+`, decimal/exponent, hex integer, inf/infinity, one s/m/h/d
 # suffix (`-` is rejected); the numeric options (nice -n, ionice -n, sudo -C) take a plain integer.
 _WRAPPER_DURATION_RE = re.compile(
@@ -79,6 +89,29 @@ def _short_bundle(base: str, word: str) -> tuple[str, str | None, str]:
         if "-" + char in valued:
             return word[1:index - 1], "-" + char, word[index:]
     return word[1:], None, ""
+
+
+def _long_option(base: str, word: str) -> str:
+    """The full name of an abbreviated sudo long option (`--chd=x` -> `--chdir=x`); other words unchanged."""
+    name, equals, value = word.partition("=")
+    if base != "sudo" or not name.startswith("--"):
+        return word
+    known = {o for o in itertools.chain(_WRAPPER_STR_OPERAND["sudo"], _WRAPPER_NUM_OPERAND["sudo"],
+                                        _WRAPPER_QUERY_OPTIONS["sudo"], _SUDO_LONG_FLAGS) if o.startswith("--")}
+    hits = [o for o in known if o.startswith(name)]
+    return hits[0] + equals + value if name not in known and len(hits) == 1 else word
+
+
+def _skip_redirects(command: str, pos: int) -> int:
+    """Offset after any redirections (operator and target word) at *pos*."""
+    from tools.approval_detection import _read_shell_word
+
+    while (match := _LEADING_REDIRECT_RE.match(command, pos)):
+        ws, we, _ = _read_shell_word(command, match.end())
+        if ws == we:
+            return pos
+        pos = we
+    return pos
 
 
 def _option_kind(base: str, word: str) -> str | None:
@@ -127,6 +160,9 @@ def _wrapper_prefix_end(command: str, start: int) -> int:
 
     pos, seen_prefix = start, False
     while True:
+        # `2>/dev/null reboot`: the shell applies a redirection and runs the next word.
+        if (after := _skip_redirects(command, pos)) != pos:
+            pos, seen_prefix = after, True
         ws, we, word = _read_shell_word(command, pos)
         if ws == we:
             return start  # prefix with no program: nothing executes
@@ -148,7 +184,9 @@ def _wrapper_prefix_end(command: str, start: int) -> int:
         wrapper_start = ws if seen_prefix else start
         seen_prefix, pos = True, we
         while True:  # this wrapper's options / assignments / leading positional
+            pos = _skip_redirects(command, pos)
             ows, owe, oword = _read_shell_word(command, pos)
+            oword = _long_option(base, oword)
             if ows == owe or oword == "--":
                 pos = _timeout_duration_end(command, owe) if base == "timeout" else owe
                 break

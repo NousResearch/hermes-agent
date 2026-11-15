@@ -48,9 +48,15 @@ function Host() {
   return <MemoryRouter>{node?.type === 'group' && <TreeGroup node={node} />}</MemoryRouter>
 }
 
+/** A phone picker opens on a completed tap, never at the start of a swipe. */
+function tapPicker(picker: HTMLElement) {
+  fireEvent.pointerDown(picker, { button: 0, pointerId: 1, pointerType: 'touch' })
+  fireEvent.pointerUp(picker, { button: 0, pointerId: 1, pointerType: 'touch' })
+}
+
 /** Opens the phone picker, then the given tab's own menu from its row. */
 function openTabMenu(title: string) {
-  fireEvent.pointerDown(screen.getByRole('button', { name: /^3 tabs/ }), { button: 0, ctrlKey: false })
+  tapPicker(screen.getByRole('button', { name: /^3 tabs/ }))
   fireEvent.click(screen.getByRole('menuitem', { name: `Actions for ${title}` }))
 }
 
@@ -129,9 +135,9 @@ it("offers the main tab's menu only once it holds a session, and targets that se
   render(<Host />)
   const picker = () => screen.getByRole('button', { name: /^3 tabs/, hidden: true })
 
-  fireEvent.pointerDown(picker(), { button: 0, ctrlKey: false })
+  tapPicker(picker())
   expect(screen.queryByRole('menuitem', { name: 'Actions for Main chat' })).toBeNull()
-  fireEvent.pointerDown(picker(), { button: 0, ctrlKey: false })
+  tapPicker(picker())
 
   act(() => $selectedStoredSessionId.set('s1'))
   openTabMenu('Main chat')
@@ -143,7 +149,9 @@ it('hands focus back to the picker when a tab menu closes without a dialog', asy
   render(<Host />)
 
   openTabMenu('Trip plan')
-  fireEvent.keyDown((await screen.findByRole('menuitem', { name: 'Archive' })).closest('[role=menu]')!, { key: 'Escape' })
+  fireEvent.keyDown((await screen.findByRole('menuitem', { name: 'Archive' })).closest('[role=menu]')!, {
+    key: 'Escape'
+  })
 
   await waitFor(() => expect(globalThis.document.activeElement).toBe(screen.getByRole('button', { name: /^3 tabs/ })))
 })

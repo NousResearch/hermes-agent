@@ -1,7 +1,7 @@
 name: proactive-continuity
 title: Proactive Continuity
 repo: https://github.com/iknowterry/hermes-proactive-continuity
-sha: 58590f02242bcbc89d649dd1806c0200c03686d0
+sha: 09aae57d2f269f63dd44d914059c355bbfc8ba71
 version: "0.1.0"
 description: "Keeps the agent working through multi-step tasks and stops it losing pending work. Adds working rules as a system prompt section, lists open Kanban cards when a session starts, gives a short catch-up after idle time, continues with the next step when the agent ends a turn with work remaining (capped per hour), hands tool calls that send, post, pay, deploy or edit system files to Hermes' own approval gate, and names a failed tool instead of going silent. Glue over built-in Kanban, cron, approvals and memory: no tool, scheduler, memory store or approval UI of its own. Works with any model. Adds `hermes proactive-continuity setup|status|uninstall` and the `/continuity` slash command. Disclosure: the setup command, run by the user, backs up config.yaml and SOUL.md, then changes approval and display settings through `hermes config set`, enables the kanban toolset, grants itself allow_gateway_injection, copies one script into ~/.hermes/scripts and creates a paused cron job; uninstall reverses this. It reads config.yaml and the Kanban board, makes no network calls and sends no telemetry."
 maintainer: iknowterry

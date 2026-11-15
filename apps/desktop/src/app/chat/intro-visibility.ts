@@ -1,10 +1,15 @@
 /**
  * Whether the empty-chat intro splash renders.
  *
- * The splash is the full-height empty state of the primary chat: it belongs to
- * a fresh draft in the main window and nothing else. Auxiliary and non-primary
- * windows are scratch surfaces, a routed or active session already owns the
- * view, and any transcript at all means the conversation started.
+ * The splash is the full-height empty state of a fresh chat. Two shapes count:
+ * a pure view-reset draft in the main window (the `/new` route — no session
+ * bound at all), and a DRAFT SESSION — a real, unlisted, never-sent session
+ * as minted by the tab-strip "+" / ⌘T / ⌘N (`openNewSessionTab`). The
+ * `draftSession` marker is authoritative for the second shape: the bound
+ * session is selected, routed and active, so the view-reset gates must not
+ * apply to it — only its own emptiness (messages) and the user's Appearance
+ * toggle decide. Auxiliary windows stay scratch surfaces either way, and any
+ * transcript at all means the conversation started.
  *
  * `enabled` is the user's Appearance toggle and outranks every other clause:
  * turning the splash off never depends on which window asks.
@@ -12,6 +17,7 @@
 export function shouldShowIntro(input: {
   activeSessionId: null | string
   auxiliaryWindow: boolean
+  draftSession: boolean
   enabled: boolean
   freshDraftReady: boolean
   messagesEmpty: boolean
@@ -21,12 +27,13 @@ export function shouldShowIntro(input: {
 }): boolean {
   return (
     input.enabled &&
-    input.primary &&
     !input.auxiliaryWindow &&
-    input.freshDraftReady &&
-    !input.routedSessionView &&
-    !input.selectedSessionId &&
-    !input.activeSessionId &&
-    input.messagesEmpty
+    input.messagesEmpty &&
+    (input.draftSession ||
+      (input.primary &&
+        input.freshDraftReady &&
+        !input.routedSessionView &&
+        !input.selectedSessionId &&
+        !input.activeSessionId))
   )
 }

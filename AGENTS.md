@@ -102,8 +102,9 @@ Every former god file is a **facade** (public entry points + the names other pac
 - **Patch where production reads:** a sibling doing `from <facade> import name` inside the function
   makes the facade the seam; a patch on the defining module passes silently.
 - **Size and complexity are ratcheted per unit:** new functions CC ≤ 20, ≤ 300 lines, nesting ≤ 6;
-  files ≤ 2,000 lines; units already over may only go down (move a function into a sibling to
-  offset growth, or put new tests in a new test file). Behaviour goes in a sibling, never a facade;
+  files ≤ 2,000 lines; units already over may only go down (offset growth by making `<stem>.py` a
+  `<stem>/` folder and moving code into it, never a new flat `<stem>_<topic>.py`; a tool in a folder
+  registers from `tool.py`; tests too). Behaviour goes in a sibling, never a facade;
   name ladders become a dict → handler.
 - **No re-export shims for internal moves;** internal paths are not API. Moving a symbol means
   fixing its docs in the same PR (grep `website/docs`, `skills/`, every `AGENTS.md`).

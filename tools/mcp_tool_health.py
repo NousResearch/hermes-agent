@@ -20,8 +20,6 @@ _KEEPALIVE_RPC_TIMEOUT = 30.0
 class MCPServerHealthMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
-    __slots__ = ()
-
     def _is_http(self) -> bool:
         return "url" in self._config
 

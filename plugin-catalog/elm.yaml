@@ -1,0 +1,43 @@
+name: elm
+title: ELM
+repo: https://github.com/Miawd3/ELM-Hermes-plugin
+sha: 005f52c0bc3f6c81a6d9554df9cfdb098d8c782c
+subdir: stock-plugin
+version: "0.3.0-preview"
+description: >-
+  Local, reviewable long-term memory. You save notes (or approve notes the model proposes);
+  matching notes are recalled automatically, one chat at a time, only in chats you turn ELM on
+  for (Desktop/TUI chats: `hermes elm grant` from a terminal; the model can never grant). Works
+  as a general plugin or in the memory slot (`memory.provider: elm`, with the recall indicator).
+  Optional memory-aware delegation backend (`delegation.backend: elm`): you name agents (models or
+  profiles) and ELM routes subagent tasks to the one that did best on similar earlier tasks.
+  Disclosure — no network calls, dependencies, telemetry, self-updater or background daemon of its
+  own. Data stays in the profile's plugin-data/elm SQLite file. Recalled notes are added to the
+  current message and so reach your model provider. Two optional, per-chat opt-in features make
+  model calls through Hermes's auxiliary model slots: a search planner (query text only) and an
+  organizer (selected captured text). Opt-in capture stores finished turns as plain text locally.
+  Routing stores agent names, up to 12 plain-word goal keywords, success and duration (no task or
+  result text), only for chats with ELM on, scoped like notes. Deleting a chat deletes its private
+  notes, captures and routing history. `hermes elm sessions` reads the profile's session list to help pick a chat ID.
+maintainer: Miawd3
+tier: community
+category: memory
+docs_url: https://github.com/Miawd3/ELM-Hermes-plugin/blob/005f52c0bc3f6c81a6d9554df9cfdb098d8c782c/stock-plugin/README.md
+capabilities:
+  provides_tools:
+    - elm_memory
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - post_compaction
+    - on_session_delete
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - Preview. Recall is keyword-based (no embeddings); ask with words that appear in the note.
+  - Desktop/TUI/ACP chats need `hermes elm grant` in a terminal; `/elm on` works only in the classic CLI.
+  - Memory-aware routing needs the plugin enabled (`hermes plugins enable elm`), not only `memory.provider`.
+  - Tested on Windows 11 and Linux; macOS not yet tested.
+requires_hermes: ">=0.23.1"

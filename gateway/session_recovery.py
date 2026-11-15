@@ -329,11 +329,11 @@ class SessionRecoveryMixin:
         not read the session the user chose as a stale capture and move the chat off it. ``_delegate_from``
         is kept: compression lineage and the still-running worker's publish check both read it."""
         from gateway.session_lifecycle import CHAT_ADOPTED_MARKER, is_delegate_child_row
-        db = self._db_for_key(session_key)
-        row = db.get_session(session_id)
-        if not (row and is_delegate_child_row(row)):
+        store = self._persistence_for_key(session_key)
+        record = store.sessions.get(session_id)
+        if not (record and is_delegate_child_row(record.as_session_row())):
             return False
-        db.patch_session_model_config(session_id, {CHAT_ADOPTED_MARKER: True})
+        store.sessions.patch_model_config(session_id, {CHAT_ADOPTED_MARKER: True})
         return True
 
     def _record_gateway_session_peer(

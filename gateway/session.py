@@ -1376,7 +1376,7 @@ class SessionStore(
             # Adopt a delegate target under the route lock, after the CAS and BEFORE the route moves: a
             # failed marker write leaves the old route intact, and a refused switch never adopts, so it
             # has nothing to undo that an overlapping successful switch onto the same row relies on.
-            if not refused and self._db_for_key(session_key):
+            if not refused and self._persistence_for_key(session_key):
                 self._adopt_delegate_row(session_key, target_session_id)
             if not refused and old_entry.session_id != target_session_id:
                 new_entry = self._replace_route_locked(

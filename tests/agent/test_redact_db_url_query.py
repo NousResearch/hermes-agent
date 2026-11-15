@@ -74,6 +74,36 @@ def test_semicolon_in_libpq_query_password_does_not_leak_suffix():
     ) == "postgresql://db/app?user=u;password=***"
 
 
+_SCHEMES = ["postgresql://u@h/db", "postgres://h:5432/db", "mysql://h/db", "mariadb://h/db", "mongodb://h1,h2/db",
+            "mongodb+srv://c.x.net/db", "redis://h:6379/0", "rediss://h/0", "amqps://h/vh",
+            "postgresql+psycopg2://h/db", "jdbc:postgresql://h/db", "jdbc:mysql://h/db"]
+
+
+@pytest.mark.parametrize("scheme", _SCHEMES)
+@pytest.mark.parametrize("query, expected", [
+    # A template first value ends at a ``;key=`` sibling, which is judged on its own.
+    ("?password={x};password=Zq7x9LmP2kk", "?password={x};password=***"),
+    ("?password=${PG};password=Zq7x9LmP2kk", "?password=${PG};password=***"),
+    ("?pwd=${X};sslpassword=Zq7x9LmP2kk", "?pwd=${X};sslpassword=***"),
+    # A placeholder word followed by ``;`` data is no template: the whole value is masked.
+    ("?password=PASSWORD;Zq7x9LmP2kk", "?password=***"),
+    ("?password={pw};Zq7x9LmP2kk", "?password=***"),
+    ("?password=${PG};sslmode=require", "?password=${PG};sslmode=require"),
+])
+def test_template_value_does_not_hide_a_semicolon_sibling(scheme, query, expected):
+    for text in (scheme + query, f'"url": "{scheme}{query}"'):
+        assert redact_sensitive_text(text) == text.replace(query, expected)
+
+
+def test_template_sibling_chain_scans_in_linear_time():
+    import time
+
+    text = "postgresql://h/db?password=" + "${PG};password=" * 30_000 + "Zq7x9LmP2kk"
+    t0 = time.perf_counter()
+    assert redact_sensitive_text(text, force=True).endswith(";password=***")
+    assert time.perf_counter() - t0 < 2.0
+
+
 def test_repeated_db_schemes_without_query_scan_in_linear_time():
     import time
 

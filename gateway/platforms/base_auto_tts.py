@@ -108,7 +108,9 @@ async def play_spoken_reply(adapter, event, session_key: str, text_content: str,
                             metadata: dict, record_delivery: Callable) -> tuple[str, bool]:
     """Play the auto-TTS files (each removed afterwards) -> ``(chat text to send, caption_delivered)``.
     ``caption_delivered`` is True when the text rode along as the first file's Telegram caption. The
-    chat text is the original reply unless every file reached the chat."""
+    chat text is the original reply unless every file reached the chat. A runner voice reply that
+    already went out is counted as a delivery: without that, a plugin returning ``""`` would skip
+    the text send and the turn would report FAILURE even though the voice note arrived."""
     reply = await reply_text_after_speech(adapter, event, session_key, text_content, tts_paths, record_delivery)
     caption_delivered = False
     for index, path in enumerate(tts_paths):
@@ -118,4 +120,7 @@ async def play_spoken_reply(adapter, event, session_key: str, text_content: str,
         finally:
             with contextlib.suppress(OSError):
                 os.remove(path)
+    if not tts_paths and getattr(event, "_voice_reply_sent", False):
+        from gateway.platforms.base import SendResult
+        record_delivery(SendResult(success=True))
     return reply.after_delivery(), caption_delivered

@@ -77,7 +77,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
                 logger.debug("SessionStore prune failed: %s", e)
             self._last_session_store_prune_ts = time.time()
 
-    def _cache_expiry_due_keys(self) -> list[str]:
+    def _cache_expiry_due_keys(self) -> list[tuple[str, object]]:
         """Cached, idle, human-paced sessions whose warm cache window is about to close."""
         from agent.cache_expiry_compaction import claim_cache_expiry_compaction
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -92,7 +92,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
             if agent is None or agent is _AGENT_PENDING_SENTINEL or self._is_session_running(key):
                 continue
             if claim_cache_expiry_compaction(agent):
-                due.append(key)
+                due.append((key, agent))
         return due
 
     async def _compact_idle_sessions_before_cache_expiry(self) -> None:
@@ -101,7 +101,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         automatic trigger. Skipped for a session a turn has claimed meanwhile."""
         from agent.cache_expiry_compaction import TRIGGER
         from agent.conversation_compression_manual import MIN_MESSAGES, CompressRequest
-        for key in self._cache_expiry_due_keys():
+        for key, live_agent in self._cache_expiry_due_keys():
             entry = await self.async_session_store.lookup_by_session_key(key)
             if entry is None or entry.origin is None or self._is_session_running(key):
                 continue
@@ -109,18 +109,22 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
                 history = await self.async_session_store.load_transcript(entry.session_id)
                 if len(history or ()) < MIN_MESSAGES or self._is_session_running(key):
                     continue
-                await self._compact_with_profile_scope(entry, history, TRIGGER, CompressRequest())
+                # The summary call replays the live agent's last request, so it reads that warm cache.
+                warm = (live_agent, list(getattr(live_agent, "_session_messages", None) or history))
+                await self._compact_with_profile_scope(entry, history, TRIGGER, CompressRequest(), warm_prefix=warm)
                 logger.info("Cache-expiry compaction: session=%s", key)
             except Exception as e:
                 logger.warning("Cache-expiry compaction failed for %s: %s", key, e, exc_info=True)
 
-    async def _compact_with_profile_scope(self, entry, history, trigger, request) -> None:
+    async def _compact_with_profile_scope(self, entry, history, trigger, request, *, warm_prefix=None) -> None:
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            await self._run_manual_compression(entry.origin, entry, history, request, trigger=trigger)
+            await self._run_manual_compression(entry.origin, entry, history, request, trigger=trigger,
+                                               warm_prefix=warm_prefix)
             return
         from gateway.run import _profile_runtime_scope
         with _profile_runtime_scope(self._resolve_profile_home_for_source(entry.origin)):
-            await self._run_manual_compression(entry.origin, entry, history, request, trigger=trigger)
+            await self._run_manual_compression(entry.origin, entry, history, request, trigger=trigger,
+                                               warm_prefix=warm_prefix)
 
     def _session_stall_timeout_seconds(self) -> float:
         """Return configured stall timeout (seconds); 0 disables the watchdog."""

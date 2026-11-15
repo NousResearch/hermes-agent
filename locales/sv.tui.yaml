@@ -926,3 +926,20 @@ connectors.notice.browserDidNotOpen: "Webbläsaren öppnades inte. Kopiera länk
 connectors.hint: "r byt namn · a lägg till · c återanslut · x ta bort · Tab avvecklade · Esc/q stäng"
 connectors.hintHealthy: "r byt namn · a lägg till · x ta bort · Tab avvecklade · Esc/q stäng"
 connectors.errorLine: "fel: {0}"
+
+pickers.common.error: "fel: {0}"
+pickers.common.invalidResponse: "ogiltigt svar: {0}"
+pickers.common.moreAbove: " ↑ {0} till ovan"
+pickers.common.moreBelow: " ↓ {0} till nedan"
+pickers.common.filter: "filter: {0}"
+pickers.common.typeToFilter: "skriv för att filtrera"
+
+pickers.model.disconnect.title: "Koppla från {0}?"
+pickers.model.disconnect.removesCredentials: "Detta tar bort sparade inloggningsuppgifter för {0}."
+pickers.model.disconnect.reauthLater: "Du kan logga in igen senare genom att välja den på nytt."
+pickers.model.disconnect.disconnecting: "kopplar från…"
+pickers.model.disconnect.hint: "y/Enter bekräfta · n/Esc avbryt"
+
+pickers.model.effort.title: "Resoneringsnivå (steg 3/3)"
+pickers.model.effort.subtitle: "{0} · tillämpas vid bytet (samma omfattning) · Esc tillbaka"
+pickers.model.effort.hint: "↑/↓ välj · Enter byt · Esc tillbaka · q stäng"

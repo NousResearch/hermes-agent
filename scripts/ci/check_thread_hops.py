@@ -180,14 +180,14 @@ def scan(paths=None, root=ROOT, tree=None):
     if paths is None:
         files = production_files(root, tree, untracked=True)
     else:
-        original = original_paths(root, tree)
+        original, generated = original_paths(root, tree), gitio.generated_files(root, tree)
         files = {}
         for path in map(Path, paths):
             resolved = (path if path.is_absolute() else root / path).resolve()
             if not resolved.is_relative_to(root.resolve()):
                 raise ValueError(f'{path} is outside {root}')
             rel = resolved.relative_to(root.resolve()).as_posix()
-            if path.suffix == '.py' and in_scope(rel):
+            if path.suffix == '.py' and in_scope(rel) and rel not in generated:
                 files[rel] = original(rel)
     if clashes := sorted(old for old, n in Counter(files.values()).items() if n > 1):
         raise ValueError(f'{clashes[0]} is both a moved file and an undeclared old-path copy; '

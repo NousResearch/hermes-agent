@@ -276,3 +276,28 @@ def test_an_undeclared_old_copy_beside_its_moved_file_fails_closed(tmp_path):
     for tree in (None, head):
         with pytest.raises(ValueError, match='undeclared old-path copy'):
             guard.scan(root=tmp_path, tree=tree)
+
+
+def test_explicit_paths_skip_a_declared_old_path_copy(tmp_path, monkeypatch):
+    _moved_repo(tmp_path)
+    monkeypatch.setattr(guard, 'ROOT', tmp_path)
+    assert guard.main(['tools/a.py', 'hermes_agent/tools/a.py']) == 1
+
+
+@pytest.mark.parametrize('source', ['from threading import Timer\nTimer(1, f)\n', 'loop.run_in_executor(None, f)\n'])
+def test_a_file_with_one_kind_of_handoff_is_scanned(source):
+    assert len(guard.sites('tools/a.py', source)) == 1
+
+
+def test_update_drops_entries_the_base_never_had(tmp_path, monkeypatch):
+    git(tmp_path, 'init', '-q')
+    put(tmp_path, 'tools/a.py', 'x.submit(a)\n')
+    kept = sorted(guard.sites('tools/a.py', 'x.submit(a)\n'))
+    put(tmp_path, 'scripts/ci/thread_hops_baseline.json', json.dumps(kept))
+    base = commit(tmp_path, 'baseline')
+    monkeypatch.setattr(guard, 'ROOT', tmp_path)
+    monkeypatch.setattr(guard, 'BASELINE', tmp_path / 'scripts/ci/thread_hops_baseline.json')
+    put(tmp_path, 'tools/a.py', 'x.submit(a)\nx.submit(b)\n')
+    put(tmp_path, 'scripts/ci/thread_hops_baseline.json', json.dumps(sorted(guard.sites('tools/a.py', 'x.submit(a)\nx.submit(b)\n'))))
+    assert guard.main(['--base', base, '--update']) == 1
+    assert json.loads(guard.BASELINE.read_text(encoding='utf-8')) == kept

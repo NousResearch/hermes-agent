@@ -157,6 +157,14 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
             _enqueue_prompt(session, text, current_transport() or _stdio_transport)
             session["last_active"] = time.time()
             return _ok(rid, {"status": "queued", "text": text})
+        # A deferred model pick applies at the next turn start. Explicit corrections would reach
+        # the old-model live agent even though session.info already shows the new pick.
+        if session.get("running") and session.get("pending_model_switch"):
+            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+            session["last_active"] = time.time()
+            if verb == "redirect":
+                _interrupt_busy_session(str(params.get("session_id") or ""), session, agent)
+            return _ok(rid, {"status": "queued", "text": text})
         if not supported(agent):
             return _err(rid, 4010, unsupported)
         # An idle agent accepts steer() but only the next turn drains it, spliced after an old tool

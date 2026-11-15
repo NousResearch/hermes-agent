@@ -175,6 +175,36 @@ def test_session_redirect_queues_while_compressing(monkeypatch):
     assert seen == []
 
 
+@pytest.mark.parametrize("method,expect_interrupt", [
+    ("session.redirect", True),
+    ("session.steer", False),
+])
+def test_direct_correction_waits_for_pending_model_pick(monkeypatch, method, expect_interrupt):
+    """A direct correction must not run on the old model after config.set defers a pick."""
+    monkeypatch.setattr(server, "_session_compression_in_flight", lambda session: False)
+    delivered, interrupted = [], []
+    monkeypatch.setattr(server, "_interrupt_busy_session", lambda sid, session, agent: interrupted.append(sid))
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=lambda text: delivered.append(("redirect", text)) or True,
+        steer=lambda text: delivered.append(("steer", text)) or True,
+    )
+    pick = {"raw": "haiku --provider anthropic"}
+    session = _session(agent=agent, pending_model_switch=pick)
+    monkeypatch.setitem(server._sessions, "sid", session)
+    try:
+        resp = server.handle_request({
+            "id": "r1", "method": method, "params": {"session_id": "sid", "text": "next"}})
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "queued"
+    assert delivered == []
+    assert session["queued_prompt"]["text"] == "next"
+    assert session["pending_model_switch"] is pick
+    assert interrupted == (["sid"] if expect_interrupt else [])
+
+
 # ── manual compaction holds the session busy (#133504) ────────────────────
 
 def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch):

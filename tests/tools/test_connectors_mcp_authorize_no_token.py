@@ -78,9 +78,9 @@ def serve(tmp_path):
 ], ids=["static-header", "no-auth"])
 def test_authorize_without_a_token_leaves_the_saved_entry_alone(
         tmp_path, monkeypatch, serve, auth, required, refusal):
+    """The original auth mode survives discovery failures under default connect retries."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("NO_PROXY", "*")
-    monkeypatch.setattr("tools.mcp_tool._MAX_INITIAL_CONNECT_RETRIES", 0)  # one connect is the whole case
     entry = {"url": serve(required), **auth, "enabled": True}
     config = tmp_path / "config.yaml"
     config.write_text(yaml.safe_dump({"mcp_servers": {"notes": entry}}), encoding="utf-8")

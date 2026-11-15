@@ -113,6 +113,16 @@ def install_deps():
 def _ensure_deps():
     """Let PM check imports and stop if activation needs a new process."""
     if pm is None:
+        # pm lives at the hermes-agent repo root, which is not on sys.path when
+        # this script runs standalone; accept an interpreter that already has
+        # the Google libraries (e.g. the Hermes venv) instead of refusing.
+        try:
+            import google.oauth2.credentials
+            import google_auth_oauthlib.flow
+            import googleapiclient.discovery
+            return
+        except ImportError:
+            pass
         print("ERROR: Run this script in the Hermes environment; use hermes setup first.")
         sys.exit(1)
     try:
@@ -382,33 +392,50 @@ def revoke():
     """Revoke stored token and delete it."""
     if not TOKEN_PATH.exists():
         print("No token to revoke.")
-        return
+        return True
 
     _ensure_deps()
     from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
 
     try:
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-
+        # No refresh first: revoking the refresh token also kills its access
+        # tokens, and an already-dead token must still be cleanable (Google
+        # answers 400 below, handled as "already invalid").
+        import urllib.error
+        import urllib.parse
         import urllib.request
-        urllib.request.urlopen(
-            urllib.request.Request(
-                f"https://oauth2.googleapis.com/revoke?token={creds.token}",
-                method="POST",
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            ),
-            timeout=15,
-        )
-        print("Token revoked with Google.")
+        revocable = creds.refresh_token or creds.token
+        if not revocable:
+            print("Token file holds no token: deleting it.")
+            TOKEN_PATH.unlink(missing_ok=True)
+            return True
+        data = urllib.parse.urlencode({"token": revocable}).encode()
+        try:
+            urllib.request.urlopen(
+                urllib.request.Request(
+                    "https://oauth2.googleapis.com/revoke",
+                    data=data,
+                    method="POST",
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                ),
+                timeout=15,
+            )
+            print("Token revoked with Google.")
+        except urllib.error.HTTPError as e:
+            # 400 invalid_token = already revoked/expired: safe to delete locally.
+            if e.code != 400:
+                raise
+            print("Token already invalid at Google.")
     except Exception as e:
-        print(f"Remote revocation failed (token may already be invalid): {e}")
+        print(f"REVOKE_FAILED: {e}")
+        print(f"  Token kept at {TOKEN_PATH}. Retry, or revoke at https://myaccount.google.com/permissions")
+        return False
 
     TOKEN_PATH.unlink(missing_ok=True)
     PENDING_AUTH_PATH.unlink(missing_ok=True)
     print(f"Deleted {TOKEN_PATH}")
+    return True
 
 
 def main():
@@ -434,7 +461,7 @@ def main():
     elif args.auth_code:
         exchange_auth_code(args.auth_code)
     elif args.revoke:
-        revoke()
+        sys.exit(0 if revoke() else 1)
     elif args.install_deps:
         sys.exit(0 if install_deps() else 1)
 

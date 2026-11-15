@@ -104,6 +104,10 @@ class TestStrandedToolCallName:
         ("```\n<function=terminal>\n<parameter=command>ls</parameter>\n</function>\n```", None),
         ("Use the <function=terminal> tag syntax in prose.", None),  # no parameter/closer
         ('<tool_call>{"name": not json}</tool_call>', None),
+        ('<|tool_call>call:terminal{command:<|"|>hostname<|"|>}<tool_call|>', "terminal"),
+        ('<|tool_call>call:terminal{command:<|"|>hostname<|"|>}', "terminal"),  # unclosed
+        (_GEMMA4_MARKUP, None),  # search_files is not an available tool
+        ('```\n<|tool_call>call:terminal{command:<|"|>ls<|"|>}<tool_call|>\n```', None),
         ("Plain answer with no markup.", None),
         ("", None),
         (None, None),
@@ -234,14 +238,7 @@ class TestDroppedToolCallRecovery:
 
     def test_gemma4_missed_parser_reprompts_without_executing_text(self, loop_agent):
         """Issue #6626: Gemma 4's vLLM parser can leave a valid call in content."""
-        from agent.turn_dropped_tool_call import stranded_tool_call_name
         from tests.agent.test_run_agent import _mock_response
-
-        assert stranded_tool_call_name(_GEMMA4_MARKUP, {"search_files"}) == "search_files"
-        assert stranded_tool_call_name(_GEMMA4_MARKUP, {"terminal"}) is None
-        assert stranded_tool_call_name(
-            "```text\n" + _GEMMA4_MARKUP + "\n```", {"search_files"}
-        ) is None
 
         loop_agent.valid_tool_names = {"search_files"}
         loop_agent.client.chat.completions.create.side_effect = [

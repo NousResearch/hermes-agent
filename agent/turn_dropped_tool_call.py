@@ -7,7 +7,8 @@ Two shapes trip it:
   * ``finish_reason="tool_calls"`` with an empty ``tool_calls`` array (observed: copilot/Claude).
   * a ``stop`` whose visible content carries raw tool-call markup naming an available tool because
     the server's tool parser missed it (observed: qwen3-coder on Ollama returning its native
-    ``<function=NAME><parameter=KEY>`` form as plain text). Markup stranded in promoted reasoning
+    ``<function=NAME><parameter=KEY>`` form as plain text; Gemma 4 on vLLM leaving its
+    ``<|tool_call>call:NAME{...}<tool_call|>`` form, #6626). Markup stranded in promoted reasoning
     is a separate case (#129440).
 
 Markup is only DETECTED, never parsed into a call and executed, so tool syntax quoted from file or
@@ -34,12 +35,9 @@ _QWEN_FUNCTION_CALL_RE = re.compile(
     r"<function=([\w.:-]+)>\s*(?:<parameter=|</function>)", re.IGNORECASE,
 )
 _JSON_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL | re.IGNORECASE)
-# Gemma 4 leaked content uses pipe-delimited tags and brace arguments (#6626).
-_GEMMA4_CALL_RE = re.compile(
-    r"<\|tool_call>\s*call:([A-Za-z_]\w*)\{.*?\}\s*<tool_call\|>",
-    re.DOTALL,
-)
-
+# Gemma 4 form, ``<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>`` (#6626). The opening
+# token plus ``call:NAME{`` is enough: an unclosed call is just as stranded (cf. the bare Qwen form).
+_GEMMA4_CALL_RE = re.compile(r"<\|tool_call>\s*call:([\w.:-]+)\{")
 _FENCED_CODE_RE = re.compile(r"```.*?(?:```|$)", re.DOTALL)
 
 

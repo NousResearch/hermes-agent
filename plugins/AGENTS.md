@@ -19,13 +19,12 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 - **No new in-tree memory providers (May 2026).** `plugins/memory/` is closed (byterover,
   retaindb stay until their Oct 15 2026 removal). hindsight (Sep 2026), honcho, supermemory,
   mem0, openviking and holographic (Oct 2026) moved to the plugin catalog — `plugin-catalog/<name>.yaml`, auto-installed by
-  `hermes_cli/memory_provider_migration.py` for homes still configured for them. Host-side code a
-  catalog provider still relies on (the `honcho_host_block` config storage kind, profile clone /
-  rename / update-sync hooks) resolves the provider's modules through
-  `plugins.memory.import_provider_module`, never a `plugins.memory.<name>` import. Generic seams
-  supersede that code (it is removed once the catalog provider implements them): a provider owns its profile setup through `MemoryProvider.on_profile_created` /
-  `on_profile_renamed` and its dashboard config file through `storage=STORAGE_PROVIDER` +
-  `read_config_fields` / `write_config_fields`; new provider-specific host code is refused. New
+  `hermes_cli/memory_provider_migration.py` for homes still configured for them. Core keeps no
+  provider-specific code for them: a provider owns its profile setup through
+  `MemoryProvider.on_profile_created` / `on_profile_renamed` and its dashboard config file through
+  `storage=STORAGE_PROVIDER` + `read_config_fields` / `write_config_fields`. Host-side code that
+  still needs a provider module resolves it through `plugins.memory.import_provider_module`,
+  never a `plugins.memory.<name>` import. New
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
 - **Other features that leave core** (Home Assistant platform + toolset, Oct 2026 →

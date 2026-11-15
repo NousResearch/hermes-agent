@@ -218,7 +218,8 @@ def _has_learning_signal(node: SkillNode) -> bool:
 def build_learning_graph() -> dict[str, Any]:
     """Full payload for the desktop learning panel: non-base skills with real
     learning signal (agent-created or used) plus memory chunks as graph nodes."""
-    roots = [("base", Path(__file__).resolve().parent.parent / "skills"), ("profile", get_hermes_home() / "skills")]
+    from hermes_cli._startup_fast import project_root_str
+    roots = [("base", Path(project_root_str()) / "skills"), ("profile", get_hermes_home() / "skills")]
     learned_skills = {
         name: node for name, node in build_skill_nodes(roots).items()
         if node.source != "base" and _has_learning_signal(node)

@@ -8,6 +8,8 @@ import path from 'node:path'
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 
+import { PLUGIN_CATALOG_NAME_RE } from '../../shared/src/desktop-plugin-files'
+
 import { platformDefaultHermesHome } from './data-paths'
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
 import { removeDesktopPlugin } from './desktop-plugin-remove'
@@ -179,7 +181,9 @@ export function registerFsIpc({
       return { ok: false, error: 'identifier is required', agent: false, desktop: false, warnings: [] }
     }
 
-    return probePluginRepo(resolveGitBinary(), identifier)
+    return probePluginRepo(resolveGitBinary(), identifier, {
+      ref: typeof payload?.ref === 'string' ? payload.ref : undefined
+    })
   })
 
   ipcMain.handle('hermes:plugin:installDesktop', async (_event, payload) => {
@@ -189,13 +193,14 @@ export function registerFsIpc({
       return { ok: false, error: 'identifier is required' }
     }
 
-    return installDesktopPluginFromGit(
-      resolveGitBinary(),
-      identifier,
-      await desktopPluginsRoot(),
-      Boolean(payload?.force),
-      typeof payload?.sha === 'string' ? payload.sha : undefined
-    )
+    const catalogName = typeof payload?.catalogName === 'string' ? payload.catalogName.trim() : ''
+
+    return installDesktopPluginFromGit(resolveGitBinary(), identifier, await desktopPluginsRoot(), {
+      force: Boolean(payload?.force),
+      sha: typeof payload?.sha === 'string' ? payload.sha : undefined,
+      // Recorded on disk as the plugin's catalog entry: only a name the catalog could carry.
+      catalogName: PLUGIN_CATALOG_NAME_RE.test(catalogName) ? catalogName : undefined
+    })
   })
 
   // Uninstall a standalone desktop plugin by FOLDER NAME under the app-level

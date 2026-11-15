@@ -1,0 +1,27 @@
+name: parallax
+title: Hermes Parallax
+description: Multi-perspective fact-vs-frame lens, blind code security taste-test, and rubric-gated DPO/SFT dataset forge
+repo: https://github.com/kruschdev/Hermes-Parallax
+sha: "4fff9b4873ed1be606fbf7dabe375efb53408df6"
+maintainer: kruschdev
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.23.1"
+image: https://raw.githubusercontent.com/kruschdev/Hermes-Parallax/4fff9b4873ed1be606fbf7dabe375efb53408df6/docs/assets/hermes-parallax-video-card.jpg
+readme: true
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools:
+    - parallax_frame_audit
+    - parallax_code_audit
+    - parallax_curate_pair
+    - parallax_export_dataset
+    - parallax_ledger_status
+  provides_hooks:
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

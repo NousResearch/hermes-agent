@@ -1,0 +1,40 @@
+name: gemini-live
+title: Gemini Live for Hermes
+repo: https://github.com/cineglobe/hermes-gemini-live
+sha: b6c2f24354aeed1a8b5651b62944d14ed96a472d
+description: >-
+  Full-duplex Gemini Live voice calls in Hermes Desktop and the web dashboard. The voice takes the
+  profile's name and hands real work to your Hermes agent while you keep talking. It can steer
+  running jobs, threads, bot chats and subagents, use the profile's MCP tools, recall memory and
+  past conversations, set and read iPhone alarms, timers and reminders through
+  hermes-mobile-device-access when a phone is paired, and report back when work finishes. Read-only
+  local commands need three
+  layers to agree: hard rules, a safety review and a contained run; files are read only from the
+  workspace folder, /var/log and a few plain system files. When a job needs approval, the voice says so and Approve and Deny buttons appear;
+  the voice model can never answer one, and spoken approval is opt-in. With the AirPods
+  Approvals plugin, a nod or shake answers it too. Disclosure — pressing Start captures microphone audio and streams it from the
+  client to generativelanguage.googleapis.com on a single-use ephemeral token; the Gemini key stays
+  on the Hermes backend, read through Hermes' secret scope. Gemini also receives the voice's
+  instructions, tool results, and, unless share_chat_context is off, the open chat's title and
+  recent messages. On Gemini's free tier, Google may use this content to improve its products.
+  Delegated work runs as a normal Hermes turn with that profile's tools and approvals. The iPhone
+  tools call that plugin directly, within the access granted in the Hermes Agent app, and send
+  alarm and reminder details to Gemini; turn them off with phone_tools. The opt-in
+  readonly_shell and system_checks settings, both off by default, run bounded commands on the
+  Hermes host. No telemetry and no background processes.
+maintainer: cineglobe
+tier: community
+category: voice
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/cineglobe/hermes-gemini-live#readme
+version: "1.2.1"
+image: https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/b6c2f24354aeed1a8b5651b62944d14ed96a472d/docs/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/b6c2f24354aeed1a8b5651b62944d14ed96a472d/docs/assets/approval.png
+  - https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/b6c2f24354aeed1a8b5651b62944d14ed96a472d/docs/assets/transcript.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

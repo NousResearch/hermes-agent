@@ -550,6 +550,105 @@ class TestRevoke:
         assert "alice" in final
         assert "carol" not in final
 
+    def test_revoke_invalidates_same_user_pending_codes_only(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            approved_code = store.generate_code("telegram", "user1", "Alice")
+
+            limits = store._load_json(store._rate_limit_path())
+            limits["telegram:user1"] = time.time() - RATE_LIMIT_SECONDS - 1
+            store._save_json(store._rate_limit_path(), limits)
+
+            stale_code = store.generate_code("telegram", "user1", "Alice")
+            other_code = store.generate_code("telegram", "user2", "Bob")
+            store.approve_code("telegram", approved_code)
+
+            assert store.revoke("telegram", "user1") is True
+            pending = store.list_pending("telegram")
+
+            assert [entry["user_id"] for entry in pending] == ["user2"]
+            assert store.approve_code("telegram", stale_code) is None
+            assert store.approve_code("telegram", other_code) == {
+                "user_id": "user2",
+                "user_name": "Bob",
+            }
+
+    def test_failed_pending_write_leaves_revoke_retryable(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("gateway.pairing._sync_allowlist_add"), \
+                patch("gateway.pairing._sync_allowlist_remove") as allowlist_remove:
+            store = PairingStore()
+            store._approve_user("telegram", "user1")
+            stale_code = store.generate_code("telegram", "user1", "Alice")
+            real_save = PairingStore._save_json
+
+            def failing_pending_save(path, data):
+                if path == store._pending_path("telegram"):
+                    raise OSError("disk full")
+                real_save(path, data)
+
+            with patch.object(store, "_save_json", side_effect=failing_pending_save):
+                with pytest.raises(OSError):
+                    store.revoke("telegram", "user1")
+
+            assert store.is_approved("telegram", "user1") is True
+            assert store.revoke("telegram", "user1") is True
+            assert store.is_approved("telegram", "user1") is False
+            assert store.approve_code("telegram", stale_code) is None
+            allowlist_remove.assert_called_once_with("telegram", "user1")
+
+    def test_unreadable_pending_file_still_revokes_and_kills_stale_codes(self, tmp_path):
+        """A pending file revoke can't read must neither block the revoke nor leave a
+        pre-revoke code that approves once the file reads again."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("gateway.pairing._sync_allowlist_add"), patch("gateway.pairing._sync_allowlist_remove"):
+            store = PairingStore()
+            store._approve_user("telegram", "user1")
+            stale_code = store.generate_code("telegram", "user1", "Alice")
+            pending_path, real_read = store._pending_path("telegram"), Path.read_text
+
+            def deny_pending(path, *args, **kwargs):
+                if path == pending_path:
+                    raise PermissionError("not readable")
+                return real_read(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", deny_pending):
+                assert store.revoke("telegram", "user1") is True
+
+            assert store.is_approved("telegram", "user1") is False
+            assert store.approve_code("telegram", stale_code) is None
+
+    @pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
+    def test_malformed_pending_file_is_reset_and_never_blocks_revoke(self, tmp_path, content):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("gateway.pairing._sync_allowlist_add"), patch("gateway.pairing._sync_allowlist_remove"):
+            store = PairingStore()
+            store._approve_user("telegram", "user1")
+            store._pending_path("telegram").write_text(content)
+
+            assert store.revoke("telegram", "user1") is True
+            assert store.is_approved("telegram", "user1") is False
+            assert json.loads(store._pending_path("telegram").read_text()) == {}
+
+    @pytest.mark.parametrize("approve_via", ["code", "request_id"])
+    def test_revoke_from_other_store_invalidates_codes_for_both_approval_paths(self, tmp_path, approve_via):
+        """The CLI revokes while the dashboard holds its own store: neither the DM'd code nor
+        the admin request id issued before the revoke may re-grant access."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("gateway.pairing._sync_allowlist_add"), patch("gateway.pairing._sync_allowlist_remove"):
+            gateway = PairingStore()
+            gateway._approve_user("whatsapp", "15551234567")
+            stale_code = gateway.generate_code("whatsapp", "15551234567@s.whatsapp.net", "Alice")
+            dashboard, cli = PairingStore(), PairingStore()
+            [request] = dashboard.list_pending("whatsapp")
+
+            assert cli.revoke("whatsapp", "15551234567@s.whatsapp.net") is True
+            if approve_via == "code":
+                assert dashboard.approve_code("whatsapp", stale_code) is None
+            else:
+                assert dashboard.approve_request("whatsapp", request["request_id"]) is None
+            assert gateway.is_approved("whatsapp", "15551234567") is False
+
 
 # ---------------------------------------------------------------------------
 # List & clear

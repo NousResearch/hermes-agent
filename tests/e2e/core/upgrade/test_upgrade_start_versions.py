@@ -23,7 +23,7 @@ def _fresh_resolver(monkeypatch):
     monkeypatch.delenv("HERMES_E2E_UPGRADE_BASE", raising=False)
     monkeypatch.delenv("HERMES_E2E_N1_REF", raising=False)
     I.upgrade_base.cache_clear()
-    if not I.release_tags("HEAD~1"):
+    if not I.release_tags(before=True):
         pytest.skip("no release tag reachable before HEAD (fetch tags)")
     yield
     I.upgrade_base.cache_clear()
@@ -31,7 +31,7 @@ def _fresh_resolver(monkeypatch):
 
 def test_default_start_is_the_newest_release_before_head():
     base = I.upgrade_base()
-    newest = max(I.release_tags("HEAD~1"), key=lambda t: int(_git("log", "-1", "--format=%ct", t)))
+    newest = max(I.release_tags(before=True), key=lambda t: int(_git("log", "-1", "--format=%ct", t)))
     assert base is not None and base.ref == newest
     assert "+" not in base.ref and not base.ref.startswith(("rc.", "abandoned-"))
 
@@ -41,12 +41,12 @@ def test_a_generation_name_starts_from_the_newest_release_that_ships_it(generati
     monkeypatch.setenv("HERMES_E2E_UPGRADE_BASE", generation)
     base = I.upgrade_base()
     assert I.updater_generation(base.ref) == generation
-    newer = I.release_tags("HEAD~1")[: I.release_tags("HEAD~1").index(base.ref)]
+    newer = I.release_tags(before=True)[: I.release_tags(before=True).index(base.ref)]
     assert all(I.updater_generation(t) != generation for t in newer)
 
 
 def test_an_explicit_ref_and_the_older_variable_both_pin_the_start(monkeypatch):
-    oldest = I.release_tags("HEAD~1")[-1]
+    oldest = I.release_tags(before=True)[-1]
     monkeypatch.setenv("HERMES_E2E_N1_REF", oldest)
     assert I.upgrade_base().ref == oldest
     I.upgrade_base.cache_clear()

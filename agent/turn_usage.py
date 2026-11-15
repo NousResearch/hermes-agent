@@ -250,8 +250,8 @@ def record_response_usage(
         _agg_cost_base_url = _agg_slot.get("base_url") or agent.base_url
     from agent.prompt_cache_clock import record_cache_response
     _cache_event = record_cache_response(
-        agent, aggregator_usage, model=_agg_cost_model, provider=_agg_cost_provider, base_url=_agg_cost_base_url,
-        api_mode=(_agg_slot or {}).get("api_mode") or agent.api_mode)
+        agent, aggregator_usage, model=agent.model, provider=agent.provider, base_url=agent.base_url,
+        api_mode=agent.api_mode)
     cost_result = estimate_usage_cost(
         _agg_cost_model, aggregator_usage, provider=_agg_cost_provider,
         base_url=_agg_cost_base_url, api_key=getattr(agent, "api_key", ""),

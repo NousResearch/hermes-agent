@@ -437,8 +437,10 @@ gateway:
     hint_all: "使用 /context all 查看每个技能和工具集的开销。"
     cache_warm: "提示词缓存：有效至 {until}（剩余 {remaining}；{ttl}，{confidence}）。"
     cache_expired: "提示词缓存：已于 {ago} 前过期（{ttl}，{confidence}）；下一条消息将重新处理完整提示词。"
+    cache_maybe_warm: "提示词缓存：可能仍有效至 {until}（最多再 {remaining}；{ttl}，{confidence}）。"
     cache_unknown_moved: "提示词缓存：未知（自上次缓存请求以来，路由、会话或上下文已变更）。"
     cache_unknown_route: "提示词缓存：未知（此提供商未公布其缓存保留时间）。"
+    cache_unknown_runtime: "提示词缓存：未知（此运行时自行设置缓存选项，Hermes 无法观察）。"
     cache_confidence:
       proven: "已证实"
       declared: "已声明"

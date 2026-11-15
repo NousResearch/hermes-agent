@@ -33578,9 +33578,9 @@
       },
       "PromptCacheWindow": {
         "additionalProperties": false,
-        "description": "``agent.prompt_cache_clock.cache_window``: when the session's cached prompt prefix expires.\n``confidence`` is ``proven`` | ``declared`` | ``assumed`` | ``unknown``; times are epoch seconds.",
+        "description": "``agent.prompt_cache_clock.cache_window``: until when the session's cached prompt prefix is warm.\n``guaranteed_until``: the whole prefix is warm before it (a documented minimum or a proven tier);\n``estimated_until``: certainly gone after it; between the two it may still be warm. ``coverage``\nmaps each cached tier to its deadline. ``confidence`` is ``proven`` | ``declared`` | ``assumed`` |\n``unknown``; times are epoch seconds.",
         "properties": {
-          "expires_at": {
+          "guaranteed_until": {
             "anyOf": [
               {
                 "type": "number"
@@ -33589,9 +33589,9 @@
                 "type": "null"
               }
             ],
-            "title": "Expires At"
+            "title": "Guaranteed Until"
           },
-          "floor_at": {
+          "estimated_until": {
             "anyOf": [
               {
                 "type": "number"
@@ -33600,7 +33600,7 @@
                 "type": "null"
               }
             ],
-            "title": "Floor At"
+            "title": "Estimated Until"
           },
           "tier": {
             "anyOf": [
@@ -33632,11 +33632,19 @@
             ],
             "default": null,
             "title": "Refreshed At"
+          },
+          "coverage": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "default": {},
+            "title": "Coverage",
+            "type": "object"
           }
         },
         "required": [
-          "expires_at",
-          "floor_at",
+          "guaranteed_until",
+          "estimated_until",
           "tier",
           "confidence",
           "reason"

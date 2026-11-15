@@ -166,17 +166,18 @@ def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "",
 
     Qwen/Alibaba routes drop ``1h`` (→ ``5m``) except on ``MEASURED_1H_PROVIDERS`` minus
     ``NO_1H_TIER_MODELS``; that check runs BEFORE the generic Qwen clamp, which would swallow it.
-    Then the route's declared ceiling applies (:func:`route_ttl_ceiling`): the prompt-cache clock
-    reads the same helper, so what Hermes asks for and what it believes never disagree.
+    Then the route's declared ceiling (:func:`route_ttl_ceiling`) applies to that result on every
+    path: the prompt-cache clock reads the same helper, so what Hermes asks for and what it
+    believes never disagree.
     """
     if ttl != "1h":
         return ttl or "5m"
     provider_lower = (provider or "").lower()
     if provider_lower in MEASURED_1H_PROVIDERS:
-        return "5m" if _flat_model(model) in NO_1H_TIER_MODELS else "1h"
-    if is_qwen_model(model) or provider_lower in ALIBABA_FAMILY_PROVIDERS:
-        return "5m"
-    return "5m" if route_ttl_ceiling(provider, base_url) == "5m" else "1h"
+        clamped = "5m" if _flat_model(model) in NO_1H_TIER_MODELS else "1h"
+    else:
+        clamped = "5m" if is_qwen_model(model) or provider_lower in ALIBABA_FAMILY_PROVIDERS else "1h"
+    return "5m" if clamped == "5m" or route_ttl_ceiling(provider, base_url) == "5m" else "1h"
 
 
 # Seconds per tier name: Anthropic markers (5m/1h), OpenAI GPT-5.6+ ``prompt_cache_options.ttl`` (30m/12h).

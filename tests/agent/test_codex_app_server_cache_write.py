@@ -33,3 +33,9 @@ def test_cache_write_tokens_are_read_and_not_double_counted(monkeypatch):
     assert (result["input_tokens"], result["cache_read_tokens"], result["cache_write_tokens"]) == (30, 20, 50)
     assert result["prompt_tokens"] == 100  # uncached + read + write == inputTokens, never more
     assert agent.session_cache_write_tokens == 50
+    # The app-server sets its own cache options: the clock records the activity as an explicit
+    # unknown, so no older window outlives it and /context names the reason.
+    from agent.prompt_cache_clock import cache_window, render_prompt_cache_line
+    window = cache_window(agent)
+    assert (window.confidence, window.reason) == ("unknown", "codex_app_server")
+    assert "runtime sets its own cache options" in render_prompt_cache_line(window.__dict__)

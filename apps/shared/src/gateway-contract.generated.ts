@@ -3665,14 +3665,15 @@ export interface ContextFileSource {
   loaded: boolean
   status: string
 }
-/** ``agent.prompt_cache_clock.cache_window``: when the session's cached prompt prefix expires. ``confidence`` is ``proven`` | ``declared`` | ``assumed`` | ``unknown``; times are epoch seconds. */
+/** ``agent.prompt_cache_clock.cache_window``: until when the session's cached prompt prefix is warm. ``guaranteed_until``: the whole prefix is warm before it (a documented minimum or a proven tier); ``estimated_until``: certainly gone after it; between the two it may still be warm. ``coverage`` maps each cached tier to its deadline. ``confidence`` is ``proven`` | ``declared`` | ``assumed`` | ``unknown``; times are epoch seconds. */
 export interface PromptCacheWindow {
-  expires_at: number | null
-  floor_at: number | null
+  guaranteed_until: number | null
+  estimated_until: number | null
   tier: string | null
   confidence: string
   reason: string
   refreshed_at?: number | null
+  coverage?: Record<string, number>
 }
 export interface SessionCompressParams {
   session_id: string

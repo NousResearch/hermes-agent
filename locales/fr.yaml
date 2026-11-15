@@ -477,8 +477,10 @@ gateway:
     hint_all: "Utilisez /context all pour les coûts par skill et par ensemble d'outils."
     cache_warm: "Cache du prompt : actif jusqu'à {until} (reste {remaining} ; {ttl}, {confidence})."
     cache_expired: "Cache du prompt : expiré il y a {ago} ({ttl}, {confidence}) ; le prochain message retraitera tout le prompt."
+    cache_maybe_warm: "Cache du prompt : peut-être encore actif jusqu'à {until} (au plus {remaining} de plus ; {ttl}, {confidence})."
     cache_unknown_moved: "Cache du prompt : inconnu (la route, la session ou le contexte a changé depuis la dernière requête mise en cache)."
     cache_unknown_route: "Cache du prompt : inconnu (ce fournisseur ne publie pas sa durée de rétention)."
+    cache_unknown_runtime: "Cache du prompt : inconnu (ce runtime fixe ses propres options de cache, que Hermes ne peut pas observer)."
     cache_confidence:
       proven: "prouvé"
       declared: "déclaré"

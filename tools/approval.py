@@ -1487,12 +1487,9 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     approving the script as a whole. Same dict contract as ``check_all_command_guards``.
     Documented limitation: a purely local non-interactive non-gateway session returns approved
     (the terminal auto-approve contract); the hardline floor still blocks catastrophic
-    ``terminal()`` commands the script issues.
-
-    See #30882.
-    The hardline floor still blocks catastrophic ``terminal()`` commands the script issues; running
-    arbitrary code headlessly without any approval surface is trusted-by-config (set a gateway/ask surface
-    or ``approvals.cron_mode`` to require approval). See #30882.
+    ``terminal()`` commands the script issues. Running arbitrary code headlessly without any
+    approval surface is trusted-by-config (set a gateway/ask surface or ``approvals.cron_mode``
+    to require approval). See #30882.
     """
     pattern_key = "execute_code"
     description = _EXECUTE_CODE_DESCRIPTION

@@ -35,11 +35,17 @@ export function setSkillEnabled(
   enabled: boolean,
   profile?: ProfileScope
 ): Promise<{ ok: boolean; name: string; enabled: boolean }> {
+  const scope = capabilityScoped(profile)
+
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
-    ...capabilityScoped(profile),
+    ...scope,
     path: '/api/skills/toggle',
     method: 'PUT',
-    body: { name, enabled }
+    // The toggle endpoint scopes its write by body.profile first
+    // (web_routers/skills.py). On a multiplex host the Electron bridge can
+    // classify this PUT as unscopable and drop the `?profile=` query — the
+    // body copy keeps the write off the global default config (#119088).
+    body: { name, enabled, profile: scope.profile }
   })
 }
 

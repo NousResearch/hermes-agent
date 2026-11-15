@@ -64,6 +64,9 @@ case "$ARCH" in arm64|x64) ;; *) echo "error: --arch must be arm64 or x64" >&2; 
 # and real Squirrel.Mac, so it is meaningful only on a macOS CI runner.
 [ "$(uname -s)" = "Darwin" ] || { echo "error: this driver runs on macOS only" >&2; exit 1; }
 [ "${GITHUB_ACTIONS:-}" = true ] || { echo "error: this driver is CI-only (GITHUB_ACTIONS required)" >&2; exit 1; }
+# The package must be native to this host: an x64 bundle on Apple Silicon
+# would launch under Rosetta and prove nothing about native coverage.
+[ "$(uname -m)" = "${ARCH/x64/x86_64}" ] || { echo "error: --arch $ARCH does not match this $(uname -m) host" >&2; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ASSETS="$REPO_ROOT/tests/install/e2e-assets"
@@ -76,6 +79,7 @@ WORK_ROOT="${HERMES_E2E_WORKROOT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hermes-bundled
 LOG_DIR="${HERMES_E2E_LOG_DIR:-$WORK_ROOT/logs}"
 HOME_SANDBOX="$WORK_ROOT/home"
 export HOME_SANDBOX
+RUNNER_HOME="$HOME"
 export HERMES_HOME="$HOME_SANDBOX/.hermes"
 export HOME="$HOME_SANDBOX"   # the app must see the ISOLATED home, not the runner's
 export HERMES_DESKTOP_USER_DATA_DIR="$WORK_ROOT/electron-user-data"
@@ -107,10 +111,19 @@ export E2E_ARCH="$ARCH"
 # scope, on success AND on failure paths (no watcher/server leak).
 SERVE_PID=""
 WATCHER_PID=""
+UPDATE_APP=""
 cleanup() {
+  local rc=$?
   if [ -n "$WATCHER_PID" ]; then kill "$WATCHER_PID" 2>/dev/null || true; fi
   if [ -n "$SERVE_PID" ]; then kill "$SERVE_PID" 2>/dev/null || true; fi
   if declare -F mock_stop >/dev/null 2>&1; then mock_stop 2>/dev/null || true; fi
+  if [ "$rc" -ne 0 ] && [ -n "$UPDATE_APP" ]; then
+    step "collecting update evidence after exit $rc"
+    bash "$ASSETS/mac-update-evidence.sh" --out "$LOG_DIR/update-evidence" \
+      --since "$LOG_DIR/update-started" --app "$UPDATE_APP" \
+      --home "$HOME_SANDBOX" --home "$RUNNER_HOME" \
+      --hermes-home "$HERMES_HOME" --user-data "$HERMES_DESKTOP_USER_DATA_DIR" 2>&1 | ts_prefix || true
+  fi
 }
 trap cleanup EXIT
 
@@ -233,6 +246,8 @@ phase_update() {
   [ -d "$old_app" ] || fail "installed app $old_app (from the install receipt) is gone"
   [ -x "$old_app_bin" ] || fail "installed executable $old_app_bin (from the install receipt) is gone"
   ok "update phase using the receipt's installed executable: $old_app_bin"
+  touch "$LOG_DIR/update-started"
+  UPDATE_APP="$old_app"
 
   local new_tag new_version new_commit new_identity new_team new_zip
   new_tag="$(manifest_side new tag)"; new_version="$(manifest_side new version)"
@@ -359,28 +374,11 @@ phase_update() {
   ok "no stale bundle processes"
 
   step "probing the relaunched app's backend health"
-  local backend_pid backend_port health
-  backend_pid="$(ps -axo pid=,ppid=,command= | awk -v p="$new_pid" '$2==p && /serve/ && /hermes/ {print $1; exit}')"
-  if [ -n "$backend_pid" ]; then
-    backend_port="$(lsof -nP -a -p "$backend_pid" -iTCP -sTCP:LISTEN | awk 'NR>1{sub(".*:","",$9); print $9; exit}')"
-  fi
-  if [ -z "${backend_port:-}" ]; then
-    # Fallback: the newest listening 127.0.0.1 port owned by any descendant
-    # of the relaunched app (helper wrappers can reparent the backend).
-    backend_port="$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk '/127\.0\.0\.1/ {print $1, $2, $9}' \
-      | while read -r _ pid addr; do
-          if ps -o ppid= -p "$pid" 2>/dev/null | grep -qw "$new_pid" || [ "$pid" = "$new_pid" ]; then
-            printf '%s\n' "${addr##*:}"; break
-          fi
-        done)"
-  fi
-  [ -n "$backend_port" ] || fail "could not discover the relaunched backend's listening port"
-  for _ in $(seq 1 30); do
-    health="$(curl -fsS "http://127.0.0.1:$backend_port/api/health" 2>/dev/null)" && break
-    sleep 2
-  done
-  [ -n "${health:-}" ] || fail "backend /api/health never answered on 127.0.0.1:$backend_port"
-  printf '%s\n' "$health" | ts_prefix | tee "$LOG_DIR/backend-health.json"
+  local backend_port
+  backend_port="$(bash "$ASSETS/mac-backend-health.sh" --payload "$old_app/Contents/Resources/agent-payload" \
+    --newer-than "$new_pid" --timeout 180 --out "$LOG_DIR/backend-health.json")" \
+    || fail "the relaunched app's backend never answered /api/health (payload processes listed above)"
+  ts_prefix < "$LOG_DIR/backend-health.json"
   ok "backend healthy on 127.0.0.1:$backend_port"
 
   # ── user state survived ───────────────────────────────────────────────
@@ -410,6 +408,12 @@ phase_update() {
     --home "$HERMES_HOME" --user-data "$HERMES_DESKTOP_USER_DATA_DIR" \
     --out "$LOG_DIR" --phase new --expect-commit "$new_commit" --mock-url "$HERMES_E2E_MOCK_URL" \
     2>&1 | ts_prefix | tee "$LOG_DIR/desktop-chat-new.log"
+
+  # The check right after relaunch can win the race against the app's first payload-Python spawn.
+  step "re-verifying the NEW bundle's signature after it ran a chat"
+  codesign --verify --deep --strict --verbose=2 "$old_app" 2>&1 | ts_prefix | tee "$LOG_DIR/new-bundle-seal-after-chat.log" \
+    || fail "the NEW bundle modified its own signed files while it ran (new-bundle-seal-after-chat.log)"
+  ok "NEW bundle still satisfies its code signature after the chat"
 
   step "PASS: packaged $(manifest_side old tag) -> $new_tag via the real About -> Update now route"
 }

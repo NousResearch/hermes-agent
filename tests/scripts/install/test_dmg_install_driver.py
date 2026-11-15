@@ -75,6 +75,7 @@ def test_dmg_driver_requires_complete_pm_source_install(tmp_path, missing, expec
          "--install-timeout-secs", "2", "--proof-dir", str(tmp_path / "proof")],
         env=dict(os.environ, HOME=str(home), PATH=f"{mocks}:{os.environ['PATH']}"),
         capture_output=True, text=True, timeout=15,
+        check=False,
     )
     assert (result.returncode == 0) is expected, result.stdout + result.stderr
     assert ("install landed:" in result.stdout) is expected, result.stdout

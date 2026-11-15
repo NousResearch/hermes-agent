@@ -12,7 +12,7 @@ from pm.artifact_mirror import object_key
 from pm.downloader import HashError
 from scripts.ci import archive_inputs as inputs
 from scripts.releases import r2
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 from tests.scripts.test_termux_runtime_libs import _Server, _build_deb
 
 

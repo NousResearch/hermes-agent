@@ -94,7 +94,7 @@ class TestResolveAutoCustomEndToEnd:
         mod.clear_runtime_main()
         try:
             mod.set_runtime_main("custom:openclaw", "glm-5.1")
-            client, resolved = mod.resolve_provider_client("auto", None)
+            client, _resolved = mod.resolve_provider_client("auto", None)
             assert client is not None
             base = self._client_base_url(client)
             assert base and base.rstrip("/") == "https://withcfg.example/v1"

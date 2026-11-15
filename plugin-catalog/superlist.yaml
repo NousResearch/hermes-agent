@@ -1,0 +1,18 @@
+name: superlist
+title: Superlist
+repo: https://github.com/superlistapp/superlist-mcp
+sha: 08019bee2821011ba811556ea81c93b258cb47a7
+version: "1.0.1"
+description: "Tasks and lists in Superlist through Superlist's official hosted MCP server (Streamable HTTP at https://app.superlist.com/mcp, OAuth 2.0 sign-in with the user's Superlist account, no keys in config): capture tasks with due dates, reminders, priorities, labels and repetition, plan projects as lists, read the Today and Inbox views, search, update, move, assign, complete, share lists, and read or reply to task messages. Bundles one workflow skill. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Setup after install and enable: add an mcp_servers.superlist entry to ~/.hermes/config.yaml with url https://app.superlist.com/mcp, auth: oauth and trust: untrusted (required; hermes mcp login fails without auth: oauth, and this entry replaces the package's, trust included), then run hermes mcp login superlist. Disclosure: hosted-only connector with no local code; every tool call goes to app.superlist.com and acts with the signed-in user's own permissions. Tools can delete and restore tasks and lists and change list sharing; share_list sends the invited person an email and a push notification. The package marks the server untrusted, so Hermes asks before every write-capable call. OAuth tokens are stored by Hermes, not by the plugin. The plugin sends no telemetry, but the Superlist server records each MCP call for product analytics, including the MCP client's name and version, and keeps per-tool usage metrics; this is part of the hosted service and not opt-in. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Superlist
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/superlistapp/superlist-mcp/blob/08019bee2821011ba811556ea81c93b258cb47a7/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

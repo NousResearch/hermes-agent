@@ -27,6 +27,7 @@ from agent.deadline import (
     MAX_SAFE_TIMEOUT_S,
     clamp_timeout,
     kill_process_tree,
+    poll_until,
     resolve_timeout,
     run_bounded_async,
     run_bounded_sync,
@@ -71,13 +72,61 @@ class TestClampTimeout:
 
 
 # ---------------------------------------------------------------------------
+# poll_until
+# ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    def __init__(self):
+        self.now = 0.0
+        self.slept: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def fake_clock(monkeypatch):
+    clock = _FakeClock()
+    monkeypatch.setattr("agent.deadline.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("agent.deadline.time.sleep", clock.sleep)
+    return clock
+
+
+class TestPollUntil:
+    def test_returns_the_truthy_result_without_sleeping(self, fake_clock):
+        assert poll_until(lambda: 4242, 10.0, 0.5) == 4242
+        assert fake_clock.slept == []
+
+    def test_gives_up_at_the_deadline_with_the_last_falsy_result(self, fake_clock):
+        assert poll_until(lambda: False, 2.0, 0.5) is False
+        assert sum(fake_clock.slept) == 2.0
+
+    def test_condition_that_holds_when_the_deadline_arrives_counts(self, fake_clock):
+        # Interval 3 against a 5 s budget: the second sleep is cut to 2 s, and the check made at
+        # the deadline itself still sees the condition.
+        assert poll_until(lambda: fake_clock.now >= 5.0, 5.0, 3.0) is True
+        assert fake_clock.slept == [3.0, 2.0]
+
+    def test_zero_timeout_is_one_check(self, fake_clock):
+        calls = []
+        assert poll_until(lambda: calls.append(1), 0.0, 1.0) is None
+        assert calls == [1]
+        assert fake_clock.slept == []
+
+
+# ---------------------------------------------------------------------------
 # resolve_timeout
 # ---------------------------------------------------------------------------
 
 
 class TestResolveTimeout:
     def test_default_wins_when_nothing_configured(self, monkeypatch):
-        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
         monkeypatch.delenv("HERMES_TEST_DEADLINE_X", raising=False)
         assert (
             resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
@@ -85,7 +134,7 @@ class TestResolveTimeout:
         )
 
     def test_env_var_beats_default(self, monkeypatch):
-        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
         monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "17.5")
         assert (
             resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
@@ -124,7 +173,7 @@ class TestResolveTimeout:
         )
 
     def test_invalid_env_value_falls_through_to_default(self, monkeypatch):
-        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
         monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "banana")
         assert (
             resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
@@ -514,12 +563,12 @@ class TestConcurrentToolTimeoutMigration:
 
 
     def test_env_var_still_works(self, monkeypatch):
-        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
         monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "60")
         assert self._resolver()() == 60.0
 
     def test_env_zero_still_disables(self, monkeypatch):
-        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
         monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0")
         assert self._resolver()() is None
 
@@ -544,13 +593,13 @@ class TestSequentialToolTimeoutResolver:
     def test_inherits_concurrent_default(self, monkeypatch):
         from agent import tool_executor
 
-        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
         monkeypatch.delenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", raising=False)
         assert self._resolver()() == tool_executor._resolve_concurrent_tool_timeout()
 
     def test_inherits_concurrent_env_bridge(self, monkeypatch):
         # No sequential-specific setting -> concurrent env var flows through.
-        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        monkeypatch.setattr("agent.deadline._timeouts_section", dict)
         monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "60")
         assert self._resolver()() == 60.0
 

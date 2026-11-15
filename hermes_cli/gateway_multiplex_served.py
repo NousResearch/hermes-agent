@@ -50,8 +50,8 @@ def multiplexer_served_secondaries() -> list[str]:
 
 def served_profile_unserved_platforms(profile: str) -> dict[str, str]:
     """``{platform: reason}`` for a served profile's platforms the multiplexer deliberately does not run
-    (WhatsApp/Relay are shared ingress owned by the default; ``gateway.run_adapters`` stamps
-    ``<profile>:<platform>`` as ``disabled`` with ``error_code=multiplex_shared_ingress``)."""
+    (unpaired WhatsApp or Relay shared ingress; ``gateway.run_adapters`` stamps
+    ``<profile>:<platform>`` as ``disabled`` with a reason and remedy)."""
     from hermes_constants import get_default_hermes_root
     from gateway.status import read_runtime_status
     if not profile or live_default_gateway_pid() is None:
@@ -65,7 +65,7 @@ def served_profile_unserved_platforms(profile: str) -> dict[str, str]:
         key[len(prefix):]: str(entry.get("error_message") or "not served under multiplex")
         for key, entry in platforms.items()
         if isinstance(key, str) and key.startswith(prefix) and isinstance(entry, dict)
-        and entry.get("error_code") == "multiplex_shared_ingress"
+        and entry.get("error_code") in {"multiplex_shared_ingress", "whatsapp_unpaired"}
     }
 
 

@@ -21,7 +21,7 @@ description: "可选的供应商技能，用于 Parallel CLI — 面向 agent �
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Research`, `Web`, `Search`, `Deep-Research`, `Enrichment`, `CLI` |
-| 相关技能 | [`duckduckgo-search`](/user-guide/skills/optional/research/research-duckduckgo-search), [`mcporter`](/user-guide/skills/optional/mcp/mcp-mcporter) |
+| 相关技能 | [`mcporter`](/user-guide/skills/optional/mcp/mcp-mcporter) |
 
 ## 参考：完整 SKILL.md
 

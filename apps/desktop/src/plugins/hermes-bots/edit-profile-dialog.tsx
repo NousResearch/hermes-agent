@@ -25,6 +25,7 @@ import { avatarColor, botAppearance, BotFace } from './avatar'
 import { AvatarPicker } from './avatar-picker'
 import { $botMeta, botSelectionKey, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled } from './dialog-parts'
+import { editedLook, type EditProfileLook } from './edit-profile-look'
 import { useBots } from './i18n'
 import { displayName } from './labels'
 import { AdvancedProfileConfig, applyAdvancedConfig, emptyAdvancedState } from './profile-config'
@@ -65,7 +66,19 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
   const [shape, setShape] = useState(appearance.shape)
   const [color, setColor] = useState<null | string>(appearance.color)
   const [image, setImage] = useState<null | string>(appearance.image ?? null)
-  const [title, setTitle] = useState(meta?.title || '')
+  // A thin row from another connection carries its backend's title on the
+  // row itself; there may be no local record for it.
+  const openingTitle = meta?.title || bot?.title || ''
+
+  const opening: EditProfileLook = {
+    shape: appearance.shape,
+    color: appearance.color,
+    image: appearance.image ?? null,
+    title: openingTitle
+  }
+
+  const [opened, setOpened] = useState(opening)
+  const [title, setTitle] = useState(openingTitle)
   const [description, setDescription] = useState(bot?.description || '')
   const [busy, setBusy] = useState(false)
   const [advanced, setAdvanced] = useState(false)
@@ -82,7 +95,8 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
       setShape(appearance.shape)
       setColor(appearance.color)
       setImage(appearance.image ?? null)
-      setTitle(meta?.title || '')
+      setTitle(openingTitle)
+      setOpened(opening)
       setDescription(bot.description || '')
       setBusy(false)
       setAdvanced(false)
@@ -102,19 +116,13 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
     setBusy(true)
     let advancedFailed = false
 
-    const persistence = await saveBotMeta(bot, {
-      shape,
-      color: color ?? undefined,
-      image,
-      imageKind: image ? 'photo' : 'shape',
-      title: title.trim(),
-      custom: true
-    })
+    const look = editedLook(opened, { shape, color, image, title })
+    const persistence = look ? await saveBotMeta(bot, look) : null
 
     // Only an explicit remote failure is an error — 'unsupported' is the
     // documented older-gateway fallback (local wins, silently), and toasting
     // it would flag every save on every legacy setup forever.
-    const lookFailed = persistence.serverOutcome === 'failed'
+    const lookFailed = persistence?.serverOutcome === 'failed'
 
     if (lookFailed) {
       host.notify({
@@ -123,7 +131,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
       })
     }
 
-    if (persistence.serverOutcome === 'persisted') {
+    if (persistence?.serverOutcome === 'persisted') {
       queryClient.invalidateQueries({
         queryKey: ROSTER_KEY
       })

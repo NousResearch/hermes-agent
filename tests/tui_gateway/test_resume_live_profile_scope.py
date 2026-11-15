@@ -64,7 +64,7 @@ def homes(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
     monkeypatch.setattr(server, "_maybe_schedule_auto_continue", lambda *a, **k: None)
     monkeypatch.setattr(server, "_default_session_cwd", lambda *a, **k: str(tmp_path))
-    monkeypatch.setattr(server, "_child_run_active", lambda _key: False)
+    monkeypatch.setattr(server, "_child_run_active", lambda *a, **k: False)
     monkeypatch.setattr(
         server, "_live_session_payload", lambda sid, session, **_k: {"session_id": sid, "message_count": 0, "messages": [], "info": {}}
     )

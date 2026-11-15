@@ -10,11 +10,10 @@ import tempfile
 
 from hermes_cli.release_channels import ChannelReader, build_prefix, canonical_json, decode_json, require_sha256, validate_request
 from scripts.releases import commit_build, handoff, r2
-
-NATIVE_LEGS = ("darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64", "windows-universal")
-REQUIRED_JOBS = ("validate", "build-darwin-arm64", "build-darwin-x64",
+from scripts.releases.desktop_targets import MANIFEST_PLATFORM, NATIVE_LEGS, TARGETS
+REQUIRED_JOBS = ("validate", "build-darwin-arm64",
                  "build-win32-arm64", "build-win32-x64", "assemble-win32-bundle",
-                 "smoke-darwin-arm64", "smoke-darwin-x64",
+                 "smoke-darwin-arm64",
                  "smoke-win32-arm64", "smoke-win32-x64")
 
 
@@ -83,7 +82,7 @@ def admit(request: dict, env: dict[str, str]) -> dict[str, str]:
 
 
 def _metadata(root: Path, request: dict, platform: str, arch: str) -> dict:
-    native_platform = {"darwin": "macos", "win32": "windows"}[platform]
+    native_platform = MANIFEST_PLATFORM[platform]
     row = json.loads((root / f"metadata-{native_platform}-{arch}.json").read_text(encoding="utf-8-sig"))
     identity_key, version_key = (("appId", "version") if platform == "darwin"
                                  else ("msixAppIdWithOrg", "windowsVersion"))
@@ -113,7 +112,7 @@ def assemble(request: dict, root: Path, *, needs: dict) -> tuple[dict, list[Path
             expected = {f"{product}-{request['windowsVersion']}-win.msixbundle"}
         else:
             platform, arch = name.split("-")
-            native = "macos" if platform == "darwin" else "windows"
+            native = MANIFEST_PLATFORM[platform]
             expected = {f"metadata-{native}-{arch}.json"}
             if platform == "darwin":
                 expected.update(f"{product}-{request['version']}-mac-{arch}.{suffix}"
@@ -129,8 +128,7 @@ def assemble(request: dict, root: Path, *, needs: dict) -> tuple[dict, list[Path
             if file.stat().st_size != row["size"] or r2.file_sha256(file) != row["sha256"]:
                 raise ValueError("Channel artifact differs from its receipt")
             files[row["path"]] = row
-    rows = [_metadata(root, request, platform, arch)
-            for platform in ("darwin", "win32") for arch in ("arm64", "x64")]
+    rows = [_metadata(root, request, platform, arch) for platform, arch in TARGETS]
     return assemble_native(request, {"files": files, "packages": rows}, root, artifact_prefix=prefix)
 
 

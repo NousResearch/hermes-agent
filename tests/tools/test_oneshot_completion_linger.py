@@ -7,8 +7,7 @@ exits.  The reply child writes to a stdout pipe owned by the dying parent and
 is destroyed a few seconds later — the handoff reply is silently lost.
 
 Fix under test: ``ProcessRegistry.wait_for_pending_completions`` gives the
-one-shot exit paths (``cli._finalize_single_query`` and
-``hermes_cli.oneshot``) a bounded linger over every tracked
+one-shot exit path (``cli._finalize_single_query``) a bounded linger over every tracked
 ``notify_on_complete`` process, so the delivery lands before the parent dies.
 
 Covers:
@@ -226,9 +225,14 @@ def test_default_timeout_read_from_config(registry, monkeypatch):
 
 # ── CLI exit paths invoke the linger ─────────────────────────────────────────
 
-def test_finalize_single_query_lingers_before_teardown(monkeypatch):
-    """cli._finalize_single_query must call the registry wait BEFORE the
-    durable flush / cleanup so deliveries land while the parent is alive."""
+def test_finalize_single_query_settles_session_then_releases_then_lingers(monkeypatch):
+    """cli._finalize_single_query ordering contract: session-owned settlement
+    (durable flush incl. end_session, finalize hook, memory-provider session
+    finalization — providers commit THIS session's remote state at on_session_end)
+    completes BEFORE the lease release, so a successor can never receive a stale
+    end-stamp or a remote commit mid-turn; the lease release precedes the exit
+    linger, so a finished turn stops refusing deliveries (#118826); the linger
+    precedes teardown (the parent owns the children's pipes)."""
     import cli as cli_mod
 
     order = []
@@ -245,6 +249,9 @@ def test_finalize_single_query_lingers_before_teardown(monkeypatch):
     monkeypatch.setattr(
         cli_mod, "_notify_single_query_session_finalize", lambda cli, **k: order.append("finalize")
     )
+    monkeypatch.setattr(
+        cli_mod, "_shutdown_agent_memory_provider", lambda agent: order.append("memory")
+    )
     monkeypatch.setattr(cli_mod, "_run_cleanup", lambda **k: order.append("cleanup"))
 
     class _FakeCli:
@@ -255,7 +262,7 @@ def test_finalize_single_query_lingers_before_teardown(monkeypatch):
             order.append("release")
 
     cli_mod._finalize_single_query(_FakeCli())
-    assert order[0] == "wait"
+    assert order == ["flush", "finalize", "memory", "release", "wait", "cleanup"]
 
 def test_finalize_single_query_survives_wait_failure(monkeypatch):
     """A raising wait must not break the durable flush path."""
@@ -331,6 +338,7 @@ def _run_e2e_parent(tmp_path, *, linger: bool) -> Path:
         timeout=60,
         env=env,
         cwd=str(tmp_path),
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     assert "SPAWNED" in proc.stdout

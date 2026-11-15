@@ -241,7 +241,7 @@ def register_cli(subparser) -> None:
 
 ### 参考实现
 
-完整示例请参见 `plugins/memory/honcho/cli.py`，包含 13 个子命令、跨 profile 管理（`--target-profile`）以及配置读写。
+完整示例请参见 Honcho 插件的 [`cli.py`](https://github.com/plastic-labs/honcho/blob/main/hermes-plugin-honcho/cli.py)，包含 13 个子命令、跨 profile 管理（`--target-profile`）以及配置读写。
 
 ### 含 CLI 的目录结构
 

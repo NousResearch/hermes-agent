@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_agent.compat.paths import original_path
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_MARKER = "<module>"
 _RESOLUTION_ALLOWLIST_PATH = REPO_ROOT / "tests/fixtures/resolution_allowlist.json"
@@ -47,7 +49,7 @@ _KNOWN_PATH_FRAGMENTS = (
 
 # Runtimes Hermes provisions into HERMES_HOME and must therefore resolve
 # through a managed-aware helper rather than PATH.
-_MANAGED_COMMANDS = frozenset({"uv", "node", "npm", "npx"})
+_MANAGED_COMMANDS = frozenset({"uv", "node", "npm", "npx", "pnpm"})
 
 # Directories that are not Hermes-owned subprocess code: plugins ship their own
 # resolution policy, tests assert against PATH deliberately, and skills/scripts/
@@ -61,6 +63,7 @@ _EXEMPT_DIRS = (
     "evals",
     "website",
     "node_modules",
+    ".build",
     ".cache",
     ".git",
     ".venv",
@@ -77,33 +80,30 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "can only run what is on that subshell's PATH, which local.py populates "
         "with the managed dirs — so PATH is the correct question to ask here."
     ),
-    ("hermes_cli/gateway.py", "node"): (
-        "Fallback rung of _append_node_dir_for_service(), after the managed "
-        "dirs from iter_hermes_node_dirs() are already appended."
-    ),
     ("hermes_cli/main_tui_launch.py", "node"): (
-        "_ensure_tui_node()'s idempotence gate: the question really is 'is "
-        "node already discoverable on PATH', before bootstrapping one."
+        "PM-composed launch context: `which(node)` runs against the PATH "
+        "pm.ensure('node'|'pnpm') just composed (store dirs first), not the ambient one."
     ),
-    ("hermes_cli/main_tui_launch.py", "npm"): (
-        "Same _ensure_tui_node() gate as node."
-    ),
-    ("hermes_cli/main_install_repair.py", "npm"): (
-        "_resolve_node_runtime_npm()'s WSL re-scan: PATH minus /mnt/* IS the question."
+    ("hermes_cli/main_tui_launch.py", "pnpm"): (
+        "Same PM-composed launch context as the node lookup above."
     ),
     ("hermes_cli/source_build.py", "node"): (
         "PM-composed build context: `which(node)` runs against the PATH pm's "
-        "ensure('npm')/env_for('node') just composed, not the ambient one."
+        "ensure('pnpm')/env_for('node') just composed, not the ambient one."
     ),
-    ("hermes_cli/source_build.py", "npm"): (
+    ("hermes_cli/source_build.py", "pnpm"): (
         "Same PM-composed build context as the node lookup above."
     ),
-    ("hermes_cli/main_desktop.py", "npm"): (
-        "Desktop build resolves npm inside the PM-prepared build_env PATH."
+    ("hermes_cli/main_desktop.py", "pnpm"): (
+        "Desktop build resolves pnpm inside the PM-prepared build_env PATH."
     ),
     ("pm/workspace.py", "npm"): (
         "Plugin workspace installs resolve npm inside the PM runner env that "
         "pm.ensure('npm') just composed."
+    ),
+    ("tools/mcp_tool_config.py", "node"): (
+        "Looks up node only inside the sealed payload's own node dirs (an explicit "
+        "`path=`, never the ambient PATH), to run a package bin on the packaged node."
     ),
     ("apps/desktop/electron/fixtures/source-backend.py", "uv"): (
         "Test fixture drives the real uv deliberately placed on the test "
@@ -230,10 +230,11 @@ def _source_files() -> list[Path]:
         for fname in filenames:
             if fname.endswith(".py"):
                 files.append(Path(dirpath) / fname)
-    return files
+    # A moved exempt tree (plugins/) is exempt where it lives now.
+    return [f for f in files if original_path(f.relative_to(REPO_ROOT).as_posix()).split("/", 1)[0] not in _EXEMPT_DIRS]
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _is_packaging_copy(top_level: str) -> bool:
     """Whether *top_level* (a dir name under REPO_ROOT) is a build artifact."""
     if top_level in ("build", "dist") or top_level.endswith(".egg-info"):
@@ -258,7 +259,7 @@ def _findings() -> list[tuple[str, str, int]]:
             tree = ast.parse(source)
         except SyntaxError:
             continue
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        rel = original_path(path.relative_to(REPO_ROOT).as_posix())
         for command, lineno in _iter_which_calls(tree):
             found.append((rel, command, lineno))
     return found
@@ -268,7 +269,7 @@ def _resolution_sites() -> set[tuple[str, str, str]]:
     """Return (path, symbol, kind) for the resolution sites under review."""
     sites: set[tuple[str, str, str]] = set()
     for path in _source_files():
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        rel = original_path(path.relative_to(REPO_ROOT).as_posix())
         if rel == "hermes_platform" or rel.startswith("hermes_platform/"):
             continue
         try:

@@ -72,7 +72,9 @@ it('a portal status reply superseded by a newer status request does not move run
   )
 
   const view = renderHook(() => useScreenPortalState(bot))
-  expect(host.requestProfile).toHaveBeenCalledWith('ops', 'display.status', {})
+  // `displayRequest` injects the route's profile at the choke point, so the
+  // RPC carries it even when the caller passed no params (#120966).
+  expect(host.requestProfile).toHaveBeenCalledWith('ops', 'display.status', { profile: 'ops' })
 
   // The pane opens while the portal's fetch is still in flight and asks again (newer request).
   const paneRequest = beginScreenStatusRequest(bot)

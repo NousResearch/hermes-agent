@@ -100,7 +100,6 @@ def _make_runner(adapter):
     runner._is_user_authorized = lambda source: True
     runner._session_key_for_source = lambda source: SESSION_KEY
     runner._delivery_adapter_for = lambda source: adapter
-    runner._update_prompt_pending = {}
     return runner
 
 
@@ -139,7 +138,7 @@ async def test_thread_prose_not_swallowed_by_native_multi_choice_clarify():
         entry = cm._entries.get("cl-native")
     assert entry is not None
     assert entry.event.is_set()
-    assert entry.response == ""
+    assert entry.response == cm.CANCELLED
     _clear_clarify_state()
 
 
@@ -284,7 +283,7 @@ async def test_native_multi_select_prose_releases_clarify_before_routing():
         entry = cm._entries.get("cl-ms-prose")
     assert entry is not None
     assert entry.event.is_set()
-    assert entry.response == ""
+    assert entry.response == cm.CANCELLED
     _clear_clarify_state()
 
 

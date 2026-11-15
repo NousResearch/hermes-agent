@@ -1,7 +1,7 @@
 // Compare the native primary-buffer transcript with the virtualized ScrollBox path.
 //
 // Run from ui-tui:
-//   npx tsx scripts/bench-native-history.tsx --warmups=1 --samples=3 --items=100,1000,10000
+//   pnpm exec tsx scripts/bench-native-history.tsx --warmups=1 --samples=3 --items=100,1000,10000
 //
 // Native scrolling is handled by the terminal after rows are written, so this
 // compares the work before scrolling begins: mount, rerender, memory, and output.

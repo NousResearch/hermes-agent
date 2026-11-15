@@ -110,7 +110,7 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         return {str(part).strip() for part in parts if str(part).strip()}
 
     @staticmethod
-    def _select_allowlist(extra: Dict[str, Any], config_keys, env_keys, read_env) -> tuple[Optional[str], Any]:
+    def _select_allowlist(extra: dict[str, Any], config_keys, env_keys, read_env) -> tuple[Optional[str], Any]:
         """``(source, raw)`` by key *presence*: a config key wins (an explicit empty list stays authoritative),
         then the first truthy env carrier; ``(None, None)`` when neither is set."""
         for key in config_keys:
@@ -122,7 +122,7 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
                 return env, raw
         return None, None
 
-    def _select_dm_allowlist(self, extra: Dict[str, Any], env_keys, read_env) -> Any:
+    def _select_dm_allowlist(self, extra: dict[str, Any], env_keys, read_env) -> Any:
         """Raw DM allowlist; records the winning source in ``_dm_allowlist_source`` so live DM checks keep
         the same precedence."""
         self._dm_allowlist_source, raw = self._select_allowlist(extra, ("allow_from", "allowFrom"), env_keys, read_env)
@@ -210,14 +210,14 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             logger.info("[%s] Loaded %d WhatsApp mention pattern(s)", self.name, len(compiled))
         return compiled
 
-    def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
+    def _bot_ids_from_message(self, data: dict[str, Any]) -> set[str]:
         return {nid for c in (data.get("botIds") or []) if (nid := self._normalize_whatsapp_id(c))}
 
-    def _message_is_reply_to_bot(self, data: Dict[str, Any]) -> bool:
+    def _message_is_reply_to_bot(self, data: dict[str, Any]) -> bool:
         quoted_participant = self._normalize_whatsapp_id(data.get("quotedParticipant"))
         return bool(quoted_participant) and quoted_participant in self._bot_ids_from_message(data)
 
-    def _message_mentions_bot(self, data: Dict[str, Any]) -> bool:
+    def _message_mentions_bot(self, data: dict[str, Any]) -> bool:
         bot_ids = self._bot_ids_from_message(data)
         if not bot_ids:
             return False
@@ -230,11 +230,11 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             for bare in (bot_id.split("@", 1)[0].lower() for bot_id in bot_ids)
         )
 
-    def _message_matches_mention_patterns(self, data: Dict[str, Any]) -> bool:
+    def _message_matches_mention_patterns(self, data: dict[str, Any]) -> bool:
         body = str(data.get("body") or "")
         return any(pattern.search(body) for pattern in self._mention_patterns or ())
 
-    def _clean_bot_mention_text(self, text: str, data: Dict[str, Any]) -> str:
+    def _clean_bot_mention_text(self, text: str, data: dict[str, Any]) -> str:
         if not text:
             return text
         cleaned = text
@@ -244,7 +244,8 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
                 cleaned = re.sub(rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned)
         return cleaned.strip() or text
 
-    def _should_process_message(self, data: Dict[str, Any]) -> bool:
+    def _should_process_message(self, data: dict[str, Any], *, spoken_mention: bool = False) -> bool:
+        """``spoken_mention``: a voice note's transcript matched ``mention_patterns`` (the caller checked)."""
         chat_id = str(data.get("chatId") or "")
         # Broadcast pseudo-chats are filtered even in self-chat mode (fromMe events).
         if self._is_broadcast_chat(chat_id):
@@ -261,6 +262,7 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             str(data.get("body") or "").strip().startswith("/")
             or self._message_is_reply_to_bot(data)
             or self._message_mentions_bot(data)
+            or spoken_mention
             or self._message_matches_mention_patterns(data)
         )
 
@@ -291,7 +293,8 @@ def resolve_whatsapp_bridge_dir() -> Path:
     /opt/hermes) is mirrored to HERMES_HOME so npm install works."""
     import shutil
     from hermes_constants import get_hermes_home
-    install_bridge = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+    from hermes_cli._startup_fast import project_root_str
+    install_bridge = Path(project_root_str()) / "scripts" / "whatsapp-bridge"
     hermes_home_bridge = get_hermes_home() / "scripts" / "whatsapp-bridge"
     try:
         (install_bridge / ".write_test").touch()
@@ -300,6 +303,14 @@ def resolve_whatsapp_bridge_dir() -> Path:
     except OSError:
         pass
     if hermes_home_bridge.exists():
+        # Refresh the source on every resolve: a mirror frozen at its first copy would keep spawning a pre-update
+        # bridge (one without /auth-proof can never pass the adapter's token proof). node_modules is the mirror's
+        # own install (re-run by the adapter when package.json changes), so it is left alone.
+        try:
+            shutil.copytree(install_bridge, hermes_home_bridge, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("node_modules"))
+        except (OSError, shutil.Error):
+            pass  # unreadable install tree: the mirror as it stands is still the best runnable copy
         return hermes_home_bridge
     try:
         hermes_home_bridge.parent.mkdir(parents=True, exist_ok=True)

@@ -41,9 +41,9 @@ def _stringify_enum_value(item: Any) -> Any:
     return item if isinstance(item, str) else None
 
 
-def _normalize_gemini_type_array(type_array: list, cleaned: Dict[str, Any]) -> None:
+def _normalize_gemini_type_array(type_array: list, cleaned: dict[str, Any]) -> None:
     """Keep union alternatives and their branch-local structural constraints."""
-    derived: Dict[str, Any] = {}
+    derived: dict[str, Any] = {}
     _normalize_type_array(type_array, derived)
     if "anyOf" in derived:
         constraints = {"anyOf": cleaned["anyOf"]} if "anyOf" in cleaned else {}
@@ -65,13 +65,13 @@ def _normalize_gemini_type_array(type_array: list, cleaned: Dict[str, Any]) -> N
         cleaned["nullable"] = True
 
 
-def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
+def sanitize_gemini_schema(schema: Any) -> dict[str, Any]:
     """Gemini-compatible copy of a tool parameter schema: keeps only the documented subset
     (drops e.g. ``$schema`` / ``additionalProperties``) and recursively sanitizes nested
     ``properties`` / ``items`` / ``anyOf``."""
     if not isinstance(schema, dict):
         return {}
-    cleaned: Dict[str, Any] = {}
+    cleaned: dict[str, Any] = {}
     for key, value in schema.items():
         if key not in _GEMINI_SCHEMA_ALLOWED_KEYS:
             continue
@@ -119,7 +119,7 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
     return cleaned
 
 
-def sanitize_gemini_tool_parameters(parameters: Any) -> Dict[str, Any]:
+def sanitize_gemini_tool_parameters(parameters: Any) -> dict[str, Any]:
     """Normalize tool parameters to a valid Gemini object schema."""
     return sanitize_gemini_schema(parameters) or {"type": "object", "properties": {}}
 
@@ -132,13 +132,13 @@ def sanitize_gemini_tool_parameters(parameters: Any) -> Dict[str, Any]:
 # schema goes as-is; only same-document $refs are inlined (MCP pydantic / zod emit
 # them and Google rejects reference indirection) and root ``$schema`` is dropped.
 
-_EMPTY_OBJECT_SCHEMA: Dict[str, Any] = {"type": "object", "properties": {}}
+_EMPTY_OBJECT_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
 # Real tool schemas hold a handful of refs; the cap stops circular pydantic models
 # from expanding forever.
 _MAX_REF_EXPANSIONS = 256
 
 
-def _resolve_local_ref(root: Dict[str, Any], ref: str) -> Optional[Dict[str, Any]]:
+def _resolve_local_ref(root: dict[str, Any], ref: str) -> Optional[dict[str, Any]]:
     """Resolve a same-document JSON pointer (``#/$defs/Foo``) against *root*."""
     if not isinstance(ref, str) or not ref.startswith("#/"):
         return None
@@ -151,7 +151,7 @@ def _resolve_local_ref(root: Dict[str, Any], ref: str) -> Optional[Dict[str, Any
     return node if isinstance(node, dict) else None
 
 
-def _inline_refs(node: Any, root: Dict[str, Any], budget: List[int], stack: tuple = ()) -> Any:
+def _inline_refs(node: Any, root: dict[str, Any], budget: list[int], stack: tuple = ()) -> Any:
     """Recursively inline same-document ``$ref`` nodes; ``ValueError`` on an unresolvable
     or circular reference or an exhausted budget (the caller then keeps the original)."""
     if isinstance(node, list):
@@ -176,7 +176,7 @@ def _inline_refs(node: Any, root: Dict[str, Any], budget: List[int], stack: tupl
     return {**inlined, **_inline_refs(siblings, root, budget, stack)} if siblings else inlined
 
 
-def prepare_gemini_tool_parameters(parameters: Any) -> Dict[str, Any]:
+def prepare_gemini_tool_parameters(parameters: Any) -> dict[str, Any]:
     """Full JSON Schema for ``parametersJsonSchema``: deep-copied, root ``$schema`` dropped,
     same-document ``$ref`` inlined, object root guaranteed. A schema whose references
     cannot all be resolved is sent untouched so the provider names the real problem."""

@@ -10,15 +10,7 @@ from hermes_cli.config import DEFAULT_CONFIG
 from hermes_cli.observability.shared_metrics_send_config import (
     DEFAULT_ENDPOINT,
     resolve_send_config,
-    reset_warning_latch_for_tests,
 )
-
-
-@pytest.fixture(autouse=True)
-def _reset_latch():
-    reset_warning_latch_for_tests()
-    yield
-    reset_warning_latch_for_tests()
 
 
 def _config(**shared):

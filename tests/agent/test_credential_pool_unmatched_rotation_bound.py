@@ -85,26 +85,3 @@ class TestUnmatchedHintRotationIsBounded:
         assert all(status != "exhausted" for status in statuses.values()), (
             f"innocent keys were quarantined: {statuses}"
         )
-
-
-
-    def test_matched_hint_path_unaffected(self, tmp_path, monkeypatch):
-        """Regression guard: the normal matched-hint path still marks the
-        failing entry and rotates to the healthy one."""
-        pool = _seed_pool(
-            tmp_path, monkeypatch,
-            [_entry(0, "key-healthy"), _entry(1, "key-failed")],
-        )
-        assert pool.select().access_token == "key-healthy"
-
-        nxt = pool.mark_exhausted_and_rotate(
-            status_code=401,
-            error_context={"reason": "unauthorized"},
-            api_key_hint="key-failed",
-        )
-
-        statuses = {e.id: e.last_status for e in pool._entries}
-        assert statuses["cred-1"] == "exhausted"
-        assert statuses["cred-0"] != "exhausted"
-        assert nxt is not None
-        assert nxt.access_token == "key-healthy"

@@ -63,7 +63,7 @@ def _positive_int_setting(kanban_cfg: dict, key: str) -> Optional[int]:
     return value
 
 
-def _resolve_auto_decompose_settings(load_config: Callable[[], Any]) -> "tuple[bool, int]":
+def _resolve_auto_decompose_settings(load_config: Callable[[], Any]) -> tuple[bool, int]:
     """Live (enabled, per_tick) auto-decompose settings, re-read every dispatcher tick.
 
     Fails safe: a config read error returns ``(False, 3)`` rather than
@@ -110,7 +110,7 @@ def _kanban_dispatch_allowed() -> bool:
     return not check_paused("kanban", logger)
 
 
-def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
+def _acquire_singleton_lock(lock_path) -> tuple[Optional[object], str]:
     """Take the exclusive, non-blocking advisory lock for the sole dispatcher.
 
     Only one gateway machine-wide may run the embedded dispatcher: concurrent

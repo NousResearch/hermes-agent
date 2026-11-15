@@ -6,6 +6,7 @@ child timeout/status conversion, interrupt propagation and cleanup are real.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from types import SimpleNamespace
 
@@ -96,7 +97,7 @@ def harness(monkeypatch, tmp_path):
         return child
 
     monkeypatch.setattr(dt, "_build_child_agent", build_child)
-    monkeypatch.setattr(dt, "_load_config", lambda: {})
+    monkeypatch.setattr(dt, "_load_config", dict)
     monkeypatch.setattr(dt, "_get_max_concurrent_children", lambda: 2)
     monkeypatch.setattr(dt, "_get_worktree_isolation", lambda: False)
     monkeypatch.setattr(dt, "_get_child_timeout", lambda: 4)
@@ -165,16 +166,28 @@ def test_finite_batch_returns_timeout_while_child_unwinds(harness, monkeypatch):
     assert slow.closed.wait(2)
 
 
-def test_finite_batch_returns_parent_interruption(harness):
+def test_finite_batch_returns_parent_interruption(harness, monkeypatch):
     parent, children, dispatch = harness
     children.extend([_Child(), _Child("slow")])
     slow = children[1]
     stop_errors = []
+    # The child's own close() runs inside its worker before the future resolves, so stopping the
+    # parent then can catch the sibling still pending and report it interrupted. Wait until the
+    # parent has collected the completed sibling instead.
+    from tools import delegate_tool_dispatch as dispatch_mod
+    collected = threading.Event()
+    report = dispatch_mod._report_child_done
+
+    def report_and_signal(*args, **kwargs):
+        report(*args, **kwargs)
+        collected.set()
+
+    monkeypatch.setattr(dispatch_mod, "_report_child_done", report_and_signal)
 
     def stop_parent():
         try:
             assert slow.started.wait(3)
-            assert children[0].closed.wait(3)
+            assert collected.wait(3)
             parent.hard_interrupt("test parent stop")
         except Exception as exc:
             stop_errors.append(exc)
@@ -226,3 +239,43 @@ def test_nonfinite_marker_preserves_background_dispatch(harness, monkeypatch, ma
     if api_history:
         assert event["origin_session_id"] == "history-session"
     assert all(child.closed.wait(2) for child in children)
+
+
+def test_owner_finite_scope_overrides_history_without_leaking(harness, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from gateway.session_finite import finite_turn_scope, finite_turn_required
+    from tools.delegate_tool_dispatch import _resolve_async_wake_sid
+
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    gate = threading.Barrier(2)
+    before = dict(os.environ)
+
+    def resolve(finite):
+        with finite_turn_scope(finite):
+            sc.set_session_vars(async_delivery=True, session_history_delivery="1")
+            gate.wait(5)
+            return _resolve_async_wake_sid("history", True)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(resolve, [True, False]))
+    assert results == [None, ""]
+    assert dict(os.environ) == before
+    assert finite_turn_required() is None
+    assert _resolve_async_wake_sid("history", True) is None
+
+
+def test_oneshot_started_session_joins_children_on_an_interactive_turn(harness, monkeypatch):
+    """A ``chat -q`` session resumed interactively keeps its pinned one-shot ``delegate_task`` schema ("joined in
+    this call", no list/steer/stop), so an interactive (finite=False) turn must still join, never detach."""
+    from agent.oneshot_footprint import agent_is_oneshot
+    from gateway.session_finite import finite_turn_scope
+    from gateway.session_policy import build_policy, policy_scope
+
+    parent, _children, dispatch = harness
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION")
+    with policy_scope(build_policy({"source": "oneshot", "cwd": str(os.getcwd()), "model": "m"}, {})):
+        assert agent_is_oneshot(parent)  # the pin the tool build froze for this session
+    sc.set_session_vars(async_delivery=True)
+    with finite_turn_scope(False):
+        result = dispatch("completed", "error")
+    _joined(result, ["completed", "error"])

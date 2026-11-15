@@ -124,8 +124,19 @@ test.each(authCases)(
       'session-token',
       context,
       {
-        showSaveDialog: async (settings: { defaultPath: string; title: string }): Promise<GatewaySaveDialogResult> => {
-          expect(settings).toEqual({ defaultPath: 'server.bin', title: 'Save File' })
+        showSaveDialog: async (settings: {
+          defaultPath: string
+          filters?: unknown
+          title: string
+        }): Promise<GatewaySaveDialogResult> => {
+          // #92480: the dialog must carry the download's file type so Windows has
+          // a default extension to append; the resolved name reaches it intact.
+          expect(settings.defaultPath).toBe('server.bin')
+          expect(settings.title).toBe('Save File')
+          expect(settings.filters).toEqual([
+            { name: 'BIN File', extensions: ['bin'] },
+            { name: 'All Files', extensions: ['*'] }
+          ])
           dialogEntered.resolve()
 
           return decision.promise
@@ -281,6 +292,61 @@ test('cookie transport streams bytes after approval and preserves HTTP status on
   }
 })
 
+test('a token or cookie body that stalls mid-read is destroyed after the idle deadline, never the dialog', async (): Promise<void> => {
+  // R4 for the non-native transports: headers drop the connect timeout, so without a body
+  // deadline a stalled stream hung the save forever. The open dialog (150 ms > 50 ms) is the
+  // user's time and is not counted.
+  const slowDialog = (destination: string): GatewayFileSaveDeps => ({
+    showSaveDialog: async (): Promise<GatewaySaveDialogResult> => {
+      await new Promise(resolve => setTimeout(resolve, 150))
+
+      return { canceled: false, filePath: destination }
+    }
+  })
+
+  const baseUrl: string = await serve((request: http.IncomingMessage, response: http.ServerResponse): void => {
+    response.writeHead(200, { 'Content-Type': 'application/octet-stream' })
+
+    if (request.url === '/whole') {
+      response.end('bytes')
+
+      return
+    }
+
+    response.write('head-')
+  })
+
+  const whole: string = path.join(directory, 'whole.bin')
+  await expect(
+    downloadViaTokenToFile(`${baseUrl}/whole`, 'tok', context, slowDialog(whole), { bodyIdleTimeoutMs: 50 })
+  ).resolves.toEqual({ saved: true, path: whole })
+  await expect(
+    downloadViaTokenToFile(`${baseUrl}/stall`, 'tok', context, slowDialog(path.join(directory, 'stall.bin')), {
+      bodyIdleTimeoutMs: 50
+    })
+  ).rejects.toThrow('stalled')
+
+  const request: CookieRequest = new CookieRequest()
+  const response = Object.assign(new PassThrough(), { statusCode: 200, headers: {} })
+
+  const pending: Promise<GatewayFileSaveResult> = downloadViaOauthSessionToFile(
+    'https://gateway.example/file',
+    context,
+    {
+      ...slowDialog(path.join(directory, 'cookie.bin')),
+      getSession: (): FixtureSession => ({ partition: 'persist:gateway-test' }),
+      request: (): GatewayOauthDownloadRequest => request
+    },
+    { bodyIdleTimeoutMs: 50 }
+  )
+
+  request.emit('response', response)
+  response.write('head-')
+  await expect(pending).rejects.toThrow('stalled')
+  expect(request.aborted).toBe(true)
+  expect((await fs.promises.readdir(directory)).sort()).toEqual(['whole.bin'])
+}, 5_000)
+
 test.each([404, 401, 403, 500])(
   'HTTP %i preserves status and permits only the scoped 404 fallback',
   async (statusCode: number): Promise<void> => {
@@ -383,4 +449,48 @@ test('data-URL fallback keeps a pre-existing temp collision and destination inta
   ).rejects.toMatchObject({ code: 'EEXIST' })
   expect(await fs.promises.readFile(destination, 'utf8')).toBe('original')
   expect(await fs.promises.readFile(temp, 'utf8')).toBe('other download')
+})
+
+// #92480: both gateway save dialogs opened with no `filters`, so the Windows
+// dialog offered only "All Files" and had no default extension to append. The
+// streaming path is asserted above inside the token-download test; this covers
+// the data-url fallback, which any gateway old enough to 404 the streaming
+// route falls back into. The helper's own behavior (whitelist, All Files last)
+// is covered in gateway-file-download.test.ts.
+test('the data-url save dialog carries a file type too', async (): Promise<void> => {
+  const suggested = 'suggested.bin'
+  const seen: { filters?: unknown }[] = []
+  const destination: string = path.join(directory, 'saved.bin')
+
+  const result: GatewayFileSaveResult = await saveGatewayDownload(
+    { dataUrl: '/api/fs/read-data-url?path=/x', download: '/download' },
+    { fallbackName: 'fallback.bin', suggested },
+    {
+      download: async (): Promise<GatewayFileSaveResult> => {
+        throw Object.assign(new Error('not found'), { statusCode: 404 })
+      },
+      readDataUrl: async (): Promise<string> => 'data:application/octet-stream,hello',
+      showSaveDialog: async (settings: {
+        defaultPath: string
+        filters?: unknown
+      }): Promise<GatewaySaveDialogResult> => {
+        seen.push(settings)
+
+        return { canceled: false, filePath: destination }
+      }
+    }
+  )
+
+  expect(result.saved).toBe(true)
+  expect(seen).toEqual([
+    {
+      defaultPath: suggested,
+      filters: [
+        { name: 'BIN File', extensions: ['bin'] },
+        { name: 'All Files', extensions: ['*'] }
+      ],
+      title: 'Save File'
+    }
+  ])
+  await expect(fs.promises.readFile(destination, 'utf8')).resolves.toBe('hello')
 })

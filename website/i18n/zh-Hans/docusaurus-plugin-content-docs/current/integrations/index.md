@@ -14,7 +14,7 @@ Hermes 开箱即支持多个 AI 推理提供商。使用 `hermes model` 进行�
 
 - **[AI 提供商](../user-guide/features/provider-routing.md)** — OpenRouter、Anthropic、OpenAI、Google 以及任何兼容 OpenAI 的端点。Hermes 会自动检测每个提供商的能力，包括视觉、流式传输和工具调用。
 - **[提供商路由](../user-guide/features/provider-routing.md)** — 精细控制哪些底层提供商处理你的 OpenRouter 请求。通过排序、白名单、黑名单和显式优先级排序，在成本、速度或质量之间优化。
-- **[备用提供商](../user-guide/features/fallback-providers.md)** — 当主模型遇到错误时，自动故障转移到备用 LLM 提供商。包括主模型回退，以及用于视觉、压缩和网页提取的独立辅助任务回退。
+- **[备用提供商](../user-guide/features/fallback-providers.md)** — 当主模型遇到错误时，自动故障转移到备用 LLM 提供商。包括主模型回退，以及用于视觉、压缩和标题生成等辅助任务的独立回退。
 
 ## 工具服务器（MCP）
 
@@ -42,12 +42,14 @@ web:
 
 ## 浏览器自动化
 
-Hermes 内置完整的浏览器自动化功能，提供多种后端选项，用于网站导航、表单填写和信息提取：
+Hermes 通过 `browser_exec`（基于 CDP 的 Python）提供完整的浏览器自动化功能，用于网站导航、表单填写和信息提取，浏览器可运行在以下位置：
 
 - **Browserbase** — 托管云端浏览器，具备反机器人工具、CAPTCHA 解决和住宅代理
 - **Browser Use** — 备选云端浏览器提供商
 - **本地 Chromium 系 CDP** — 使用 `/browser connect` 连接正在运行的 Chrome、Brave、Chromium 或 Edge 浏览器
-- **本地 Chromium** — 通过 `agent-browser` CLI 使用无头本地浏览器
+- **本地 Chromium** — 由 Hermes 自行启动的无头本地 Chromium（默认）
+
+Camofox 反检测浏览器以目录插件形式提供：`hermes plugins install camofox`。
 
 详见[浏览器自动化](../user-guide/features/browser.md)的配置与使用说明。
 
@@ -82,13 +84,13 @@ Hermes 内置完整的浏览器自动化功能，提供多种后端选项，用�
 
 Hermes 可作为 gateway（网关）机器人运行于 19+ 个消息平台，均通过同一 `gateway` 子系统配置：
 
-- **[Telegram](../user-guide/messaging/telegram.md)**、**[Discord](../user-guide/messaging/discord.md)**、**[Slack](../user-guide/messaging/slack.md)**、**[WhatsApp](../user-guide/messaging/whatsapp.md)**、**[Signal](../user-guide/messaging/signal.md)**、**[Matrix](../user-guide/messaging/matrix.md)**、**[Mattermost](../user-guide/messaging/mattermost.md)**、**[Email](../user-guide/messaging/email.md)**、**[SMS](../user-guide/messaging/sms.md)**、**[DingTalk](../user-guide/messaging/dingtalk.md)**、**[Feishu/Lark](../user-guide/messaging/feishu.md)**、**[WeCom](../user-guide/messaging/wecom.md)**、**[WeCom Callback](../user-guide/messaging/wecom-callback.md)**、**[Weixin](../user-guide/messaging/weixin.md)**、**[BlueBubbles](../user-guide/messaging/bluebubbles.md)**、**[QQ Bot](../user-guide/messaging/qqbot.md)**、**[Yuanbao](../user-guide/messaging/yuanbao.md)**、**[Home Assistant](../user-guide/messaging/homeassistant.md)**、**[Microsoft Teams](../user-guide/messaging/teams.md)**、**[Webhooks](../user-guide/messaging/webhooks.md)**
+- **[Telegram](../user-guide/messaging/telegram.md)**、**[Discord](../user-guide/messaging/discord.md)**、**[Slack](../user-guide/messaging/slack.md)**、**[WhatsApp](../user-guide/messaging/whatsapp.md)**、**[Signal](../user-guide/messaging/signal.md)**、**[Matrix](../user-guide/messaging/matrix.md)**、**[Mattermost](../user-guide/messaging/mattermost.md)**、**[Email](../user-guide/messaging/email.md)**、**[SMS](../user-guide/messaging/sms.md)**、**[DingTalk](../user-guide/messaging/dingtalk.md)**、**[Feishu/Lark](../user-guide/messaging/feishu.md)**、**[WeCom](../user-guide/messaging/wecom.md)**、**[WeCom Callback](../user-guide/messaging/wecom-callback.md)**、**[Weixin](../user-guide/messaging/weixin.md)**、**[BlueBubbles](../user-guide/messaging/bluebubbles.md)**、**[QQ Bot](../user-guide/messaging/qqbot.md)**、**[Yuanbao](../user-guide/messaging/yuanbao.md)**、**[Home Assistant](../user-guide/messaging/homeassistant.md)**（插件）、**[Microsoft Teams](../user-guide/messaging/teams.md)**、**[Webhooks](../user-guide/messaging/webhooks.md)**
 
 平台对比表和配置指南详见[消息 Gateway 概览](../user-guide/messaging/index.md)。
 
 ## 家庭自动化
 
-- **[Home Assistant](../user-guide/messaging/homeassistant.md)** — 通过四个专用工具（`ha_list_entities`、`ha_get_state`、`ha_list_services`、`ha_call_service`）控制智能家居设备。配置 `HASS_TOKEN` 后，Home Assistant 工具集将自动激活。
+- **[Home Assistant](../user-guide/messaging/homeassistant.md)** — 通过四个专用工具（`ha_list_entities`、`ha_get_state`、`ha_list_services`、`ha_call_service`）控制智能家居设备，并通过 gateway 响应实时状态变更。以插件目录中的 `homeassistant` 插件形式提供（`hermes plugins install homeassistant`）；配置 `HASS_TOKEN` 后，其工具集将自动激活。
 
 ## 插件
 

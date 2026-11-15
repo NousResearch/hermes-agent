@@ -177,7 +177,7 @@ def test_dependency_block_with_open_parent_stays_parked_across_dispatch_tick(
             with kb.write_txn(conn):
                 conn.execute("UPDATE tasks SET status='running' WHERE id=?", (child,))
         assert kb.block_task(conn, child, reason="wait", kind="dependency")
-        res = kbd.dispatch_once(conn, spawn_fn=fake_spawn)
+        kbd.dispatch_once(conn, spawn_fn=fake_spawn)
         assert kb.get_task(conn, child).status == "todo"
         assert child not in spawns
         with kb.write_txn(conn):

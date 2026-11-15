@@ -6,17 +6,17 @@ Drives the real ``hermes`` argparse entrypoint; only the network fetch is replac
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from unittest.mock import patch
 
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from hermes_cli import main as hermes_main
 
 _SNAPSHOT = AccountUsageSnapshot(
-    provider="openai-codex", source="usage_api", fetched_at=datetime(2026, 9, 19, 12, 0, tzinfo=timezone.utc),
+    provider="openai-codex", source="usage_api", fetched_at=datetime(2026, 9, 19, 12, 0, tzinfo=UTC),
     plan="Plus",
     windows=(
-        AccountUsageWindow(label="Session", used_percent=37.0, reset_at=datetime(2026, 9, 19, 21, 0, tzinfo=timezone.utc)),
+        AccountUsageWindow(label="Session", used_percent=37.0, reset_at=datetime(2026, 9, 19, 21, 0, tzinfo=UTC)),
         AccountUsageWindow(label="Weekly", used_percent=12.5, reset_at=None),
     ),
     details=("You have 1 reset banked - use /usage reset to activate",),

@@ -9,7 +9,11 @@ the turn ends: warming between turns would bet money on the user replying in tim
 
 Every refresh is gated on expected savings ``miss_cost - warm_cost >= $0.05`` so a cheap,
 unpriced or subscription-included route never pays for one, the refreshes of one run never cost
-more in total than the single miss they prevent, and a one-hour age limit bounds the rest.
+more in total than the single miss they prevent, and a one-hour age limit bounds the rest. That
+total is the estimated billed cost of the refreshes actually sent (from their own usage), and a
+refresh whose usage shows no cache read or any cache write ends the run: the entry is gone or was
+re-written, so further refreshes would pay write prices for nothing. Every stop reason is logged
+at INFO (once per change), so warming never ends silently.
 
 Requests that carry ``cache_control`` markers are warmed on the Anthropic Messages wire and on
 the Chat Completions wire (Nous Portal, OpenRouter and other gateways in front of Claude). A
@@ -56,7 +60,9 @@ def cache_warming_delay_s(ttl_s: float) -> Optional[float]:
 
 def warm_ttl_seconds(agent: Any) -> Optional[float]:
     """Seconds the agent's cache entry is trusted to live: the requested tier on native
-    Anthropic, 5 minutes on every other route (gateways may drop the ``1h`` tier)."""
+    Anthropic, 5 minutes on every other route (gateways may drop the ``1h`` tier).
+
+    The warmer's only lifetime source: the shared prompt-cache clock replaces this body."""
     ttl_s = TTL_SECONDS.get(getattr(agent, "_cache_ttl", None) or "")
     if ttl_s is None:
         return None
@@ -109,17 +115,26 @@ class CacheWarmingDecision:
     expected_savings: float
     economics_available: bool
     action: str  # "warm" | "stop"
+    within_miss: bool = True
+
+    @property
+    def stop_reason(self) -> str:
+        if not self.economics_available:
+            return "cache economics unavailable"
+        if not self.within_miss:
+            return "refreshes would cost more than the cache write they prevent"
+        return "expected savings below threshold"
 
 
 def _per_token(rate: Optional[Decimal]) -> float:
     return float(rate) / 1_000_000 if rate is not None else 0.0
 
 
-def evaluate_economics(pricing: Any, prompt_tokens: int, warms_sent: int = 0) -> CacheWarmingDecision:
+def evaluate_economics(pricing: Any, prompt_tokens: int, spent_usd: float = 0.0) -> CacheWarmingDecision:
     """Price one refresh against the miss it prevents using a ``PricingEntry``-shaped object
-    (``input/output/cache_read/cache_write_cost_per_million``). ``warms_sent`` refreshes already
-    paid for count against that miss: a tool call that outlasts ``miss / warm`` TTLs would make
-    warming dearer than letting the entry expire once, so the run stops there."""
+    (``input/output/cache_read/cache_write_cost_per_million``). ``spent_usd`` is what the run's
+    refreshes were billed so far; once it plus one more refresh would exceed the miss, warming is
+    dearer than letting the entry expire once, so the run stops there."""
     read = _per_token(getattr(pricing, "cache_read_cost_per_million", None))
     write = _per_token(getattr(pricing, "cache_write_cost_per_million", None))
     inp = _per_token(getattr(pricing, "input_cost_per_million", None))
@@ -130,11 +145,11 @@ def evaluate_economics(pricing: Any, prompt_tokens: int, warms_sent: int = 0) ->
     miss_cost = max(0.0, miss_full - hit_cost)
     economics_available = prompt_tokens > 0 and (hit_cost > 0 or miss_full > 0)
     expected = miss_cost - warm_cost
-    within_miss = (warms_sent + 1) * warm_cost <= miss_cost
+    within_miss = spent_usd + warm_cost <= miss_cost
     action = "warm" if economics_available and within_miss and expected >= MINIMUM_EXPECTED_SAVINGS_USD else "stop"
     return CacheWarmingDecision(
         warm_cost=warm_cost, miss_cost=miss_cost, expected_savings=expected,
-        economics_available=economics_available, action=action,
+        economics_available=economics_available, action=action, within_miss=within_miss,
     )
 
 
@@ -155,6 +170,7 @@ class _Run:
     timer: Optional[threading.Timer] = None
     refreshing: bool = False
     warm_count: int = 0
+    spent_usd: float = 0.0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -169,6 +185,7 @@ class PromptCacheWarmer:
         self._lock = threading.RLock()
         self._run: Optional[_Run] = None
         self._inactive_reason = "waiting for first request"
+        self._logged_reason: Optional[str] = None
         self._last_decision: Optional[CacheWarmingDecision] = None
 
     # -- read side ------------------------------------------------------------------------------
@@ -225,10 +242,7 @@ class PromptCacheWarmer:
         decision = evaluate_economics(self._pricing(), prompt_tokens)
         self._last_decision = decision
         if decision.action != "warm":
-            return self._stop(
-                "expected savings below threshold" if decision.economics_available
-                else "cache economics unavailable"
-            )
+            return self._stop(decision.stop_reason)
         api_calls = getattr(agent, "session_api_calls", 0)
         model = getattr(agent, "model", "")
 
@@ -255,22 +269,34 @@ class PromptCacheWarmer:
             return None if self._run is run else self._inactive_reason
 
     def cancel(self, reason: str = "inactive") -> None:
-        self._stop(reason)
+        self._stop(reason, lifecycle=True)
 
     # -- internals ------------------------------------------------------------------------------
-    def _clear_run(self) -> None:
+    def _clear_run(self) -> Optional[_Run]:
         with self._lock:
             run, self._run = self._run, None
         if run is None:
-            return
+            return None
         with run.lock:
             if run.timer is not None:
                 run.timer.cancel()
                 run.timer = None
+        return run
 
-    def _stop(self, reason: str) -> str:
+    def _stop(self, reason: str, *, lifecycle: bool = False) -> str:
+        """Log why warming stopped at INFO, once per change of reason (each request of a
+        non-warmable route repeats its refusal). A ``lifecycle`` stop (the loop's own next
+        request or turn end) is routine and logs at INFO only when the run sent refreshes."""
         with self._lock:
-            self._clear_run()
+            run = self._clear_run()
+            sent = run.warm_count if run else 0
+            routine = lifecycle and not sent
+            if not routine and reason != self._logged_reason:
+                logger.info("%sprompt cache warming stopped: %s (refreshes=%d, spent=$%.4f)",
+                            self._prefix(), reason, sent, run.spent_usd if run else 0.0)
+                self._logged_reason = reason
+            elif routine:
+                logger.debug("%sprompt cache warming ended: %s", self._prefix(), reason)
             self._inactive_reason = reason
         return reason
 
@@ -326,8 +352,7 @@ class PromptCacheWarmer:
         decision = self._evaluate(run)
         self._last_decision = decision
         if decision.action != "warm":
-            self._stop_if_current(run, "expected savings below threshold" if decision.economics_available
-                                  else "cache economics unavailable")
+            self._stop_if_current(run, decision.stop_reason)
             return
         run.refreshing = True
         sent_at = time.time()
@@ -340,7 +365,10 @@ class PromptCacheWarmer:
         finally:
             run.refreshing = False
         run.warm_count += 1
-        self._record(run, message, decision)
+        miss = self._record(run, message, decision)
+        if miss is not None:
+            self._stop_if_current(run, miss)
+            return
         with self._lock:
             if self._run is run:
                 run.anchor_at = sent_at
@@ -366,13 +394,15 @@ class PromptCacheWarmer:
         kwargs["max_tokens"] = 1
         return create_anthropic_message(client, kwargs, log_prefix=self._prefix(), prefer_stream=False)
 
-    def _record(self, run: _Run, message: Any, decision: CacheWarmingDecision) -> None:
+    def _record(self, run: _Run, message: Any, decision: CacheWarmingDecision) -> Optional[str]:
         """Fold the refresh's tokens and dollars into the session totals (never into the
-        compressor or usage anchors: a one-token replay is not a conversation turn)."""
+        compressor or usage anchors: a one-token replay is not a conversation turn) and into the
+        run's spend. Returns why warming must stop when the refresh did not prove a cache hit at
+        a known price, ``None`` when it did."""
         agent = self.agent
         usage = getattr(message, "usage", None)
         if not usage:
-            return
+            return "cache refresh returned no usage"
         try:
             from agent.usage_pricing import estimate_usage_cost, normalize_usage
 
@@ -394,6 +424,7 @@ class PromptCacheWarmer:
             amount = float(cost.amount_usd) if cost.amount_usd is not None else None
             if amount is not None:
                 agent.session_estimated_cost_usd += amount
+                run.spent_usd += amount
             db = getattr(agent, "_session_db", None)
             if db is not None and getattr(agent, "session_id", None):
                 from agent.turn_usage import _agent_session_source
@@ -410,17 +441,24 @@ class PromptCacheWarmer:
                     model=agent.model, api_call_count=1, task="cache_warm",
                 )
             logger.info(
-                "%sprompt cache warmed (#%d): cache_read=%d write=%d cost=%s "
+                "%sprompt cache refresh sent (#%d): cache_read=%d write=%d cost=%s "
                 "expected_savings=$%.3f next=%s", self._prefix(), run.warm_count,
                 canonical.cache_read_tokens, canonical.cache_write_tokens,
                 f"${amount:.4f}" if amount is not None else "?", decision.expected_savings,
                 time.strftime("%H:%M:%S", time.localtime(time.time() + run.delay_s)),
             )
-        except Exception:
+        except Exception:  # health: allow BLE001 -- unaccounted means stop warming; logged
             logger.debug("prompt cache warm accounting failed", exc_info=True)
+            return "cache refresh usage unreadable"
+        if canonical.cache_read_tokens <= 0 or canonical.cache_write_tokens > 0:
+            return (f"cache refresh missed (read={canonical.cache_read_tokens}, "
+                    f"write={canonical.cache_write_tokens}, cost={f'${amount:.4f}' if amount is not None else '?'})")
+        if amount is None:
+            return "cache refresh cost unavailable"
+        return None
 
     def _evaluate(self, run: _Run) -> CacheWarmingDecision:
-        return evaluate_economics(self._pricing(), run.prompt_tokens, run.warm_count)
+        return evaluate_economics(self._pricing(), run.prompt_tokens, run.spent_usd)
 
     def _pricing(self) -> Any:
         agent = self.agent

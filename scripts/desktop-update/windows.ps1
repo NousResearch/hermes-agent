@@ -134,10 +134,9 @@ function Sync-HandoffLog {
         }
         try { $held = $mutex.WaitOne(5000) }
         catch [System.Threading.AbandonedMutexException] { $held = $true }  # a writer died mid-append; the wait still granted ownership
-        # Full sharing: never conflicts with a reader. This overload exists on Windows PowerShell
-        # 5.1 AND PowerShell 7; the (path, mode, FileSystemRights, share, size, options) one is
-        # .NET Framework only, so under pwsh it threw, the catch below swallowed it, and the log
-        # was never created (the shim runs this script under pwsh-real.exe).
+        if (-not $held) { return $false }  # WaitOne timed out: do not write without ownership.
+        # Full sharing; FileAccess.Write works on PowerShell 5.1 and 7,
+        # unlike the .NET Framework-only FileSystemRights overload.
         $fs = New-Object System.IO.FileStream($LogPath, [System.IO.FileMode]::Append,
             [System.IO.FileAccess]::Write,
             ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete), 4096)

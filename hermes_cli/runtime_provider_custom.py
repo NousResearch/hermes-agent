@@ -75,6 +75,25 @@ def _model_cfg_key_env_for(model_cfg: dict[str, Any], base_url: str) -> str:
     return _key_env_secret(model_cfg, "model")
 
 
+def _warn_model_key_withheld(model_cfg: dict[str, Any], base_url: str, api_key: str,
+                             use_config_base_url: bool, is_openrouter_context: bool) -> None:
+    """Name the two settings that disagree when a key declared for ``model.base_url`` stays back.
+
+    CUSTOM_BASE_URL outranks ``model.base_url``; ``model.api_key`` and ``model.key_env`` then stay
+    with their own URL (#154435). A request left with no key at all otherwise shows up only as the
+    endpoint's 401. Setting names only: the key, and the URLs (they can carry user info), stay out.
+    """
+    cfg_base_url = _clean(model_cfg.get("base_url")).rstrip("/")
+    if api_key or is_openrouter_context or not use_config_base_url or cfg_base_url == _clean(base_url).rstrip("/"):
+        return
+    declared = [name for name in ("api_key", "api", "key_env", "api_key_env")
+                if isinstance(model_cfg.get(name), str) and model_cfg[name].strip()]
+    if declared:
+        logger.warning("model.%s is declared for model.base_url, but CUSTOM_BASE_URL sends this request to another "
+                       "endpoint: the key is not sent there and the request carries none, so expect a 401/403. "
+                       "Unset CUSTOM_BASE_URL or give that endpoint its own credential", declared[0])
+
+
 def _entry_url(entry: dict[str, Any]) -> str:
     return entry.get("api") or entry.get("url") or entry.get("base_url") or ""
 

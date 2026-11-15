@@ -158,7 +158,8 @@ def _resolve_openrouter_runtime(
     )
     # A ``providers:`` entry that owns the resolved URL and declares a credential supplies it: on a bare
     # ``custom`` route, and on an OpenRouter mirror off openrouter.ai (the built-in key is another account's).
-    from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for, _owning_entry_credential
+    from hermes_cli.runtime_provider_custom import (_model_cfg_key_env_for, _owning_entry_credential,
+                                                    _warn_model_key_withheld)
     owned_route = requested_norm == "custom" or (is_openrouter_context and not is_openrouter_url)
     declared, entry_key = _owning_entry_credential(rp, base_url) if owned_route else (False, "")
     if is_openrouter_context:
@@ -195,6 +196,7 @@ def _resolve_openrouter_runtime(
     cfg_api_mode = rp._parse_api_mode(model_cfg.get("api_mode"))
     # Explicit "custom" stays "custom" rather than relabeling to "openrouter".
     if requested_norm != "custom":
+        _warn_model_key_withheld(model_cfg, base_url, api_key, use_config_base_url, is_openrouter_context)
         return rp._runtime("openrouter", cfg_api_mode or rp._detect_api_mode_for_url(base_url) or "chat_completions", base_url,
                            api_key, source=source)
     # An explicit launch key is the operator's credential for this route and wins over the pool (R2-M1).
@@ -202,6 +204,7 @@ def _resolve_openrouter_runtime(
         pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", cfg_api_mode, provider_name=None)
         if pool_result:
             return pool_result
+    _warn_model_key_withheld(model_cfg, base_url, api_key, use_config_base_url, is_openrouter_context)
     # Local no-auth servers get a placeholder key — the OpenAI SDK requires a non-empty string.
     if not api_key and not is_openrouter_url:
         api_key = "no-key-required"

@@ -49,7 +49,7 @@ from gateway.platforms._shared import (
     platform_gate_env as _scoped_gate_env, request_never_left, send_error
 )
 from gateway.platforms.base_log_safety import safe_url_for_log
-from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices, inline_document_text
+from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices, inline_document_text, is_fence_delimiter
 from plugins.platforms.slack.adapter_config_readers import (
     _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
 from gateway.platforms.base import (
@@ -228,7 +228,7 @@ def _wrap_markdown_tables(text: str) -> str:
     i = 0
     while i < len(lines):
         line = lines[i]
-        if line.lstrip().startswith("```"):
+        if is_fence_delimiter(line.lstrip()):
             in_fence = not in_fence
         elif (
             not in_fence and "|" in line and i + 1 < len(lines)

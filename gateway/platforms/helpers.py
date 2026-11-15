@@ -602,7 +602,7 @@ def convert_table_to_bullets(text: str) -> str:
     i = 0
     while i < len(lines):
         line = lines[i]
-        is_fence_line = line.lstrip().startswith('```')
+        is_fence_line = is_fence_delimiter(line.lstrip())
         in_fence ^= is_fence_line
         if not (in_fence or is_fence_line) and '|' in line and i + 1 < len(lines) \
                 and TABLE_SEPARATOR_RE.match(lines[i + 1]):
@@ -793,9 +793,15 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
 # now a plugin) and weixin (``greedy_pack_blocks``).
 
 
+def is_fence_delimiter(line: str) -> bool:
+    """True when *line* opens or closes a ``` fence. CommonMark forbids a backtick after the
+    fence run, so ```pip install x``` alone on a line is inline code, not an opener."""
+    return line.startswith('```') and '`' not in line.lstrip('`')
+
+
 def text_has_unclosed_fence(text: str) -> bool:
     """Return True when *text* ends inside an unclosed ``` code fence."""
-    return sum(line.startswith('```') for line in text.split('\n')) % 2 == 1
+    return sum(is_fence_delimiter(line) for line in text.split('\n')) % 2 == 1
 
 
 def text_ends_with_table_row(text: str) -> bool:
@@ -805,7 +811,7 @@ def text_ends_with_table_row(text: str) -> bool:
 
 def is_fence_atom(text: str) -> bool:
     """True when an atomic block is a code block (starts with ```)."""
-    return text.lstrip().startswith('```')
+    return is_fence_delimiter(text.lstrip().split('\n', 1)[0])
 
 
 def _is_pipe_row(line: str) -> bool:
@@ -867,10 +873,10 @@ def split_markdown_atoms(text: str) -> list[str]:
     for line in text.split('\n'):
         if in_fence:
             current_lines.append(line)
-            if line.startswith('```'):
+            if is_fence_delimiter(line):
                 in_fence = False
                 _flush_current()
-        elif line.startswith('```'):
+        elif is_fence_delimiter(line):
             _flush_current()
             in_fence = True
             current_lines.append(line)
@@ -992,7 +998,7 @@ def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> tuple
     """Walk ``text`` line by line toggling on ``` lines; return the final (in_code, lang)."""
     for line in text.split("\n"):
         stripped = line.strip()
-        if stripped.startswith("```"):
+        if is_fence_delimiter(stripped):
             tag = stripped[3:].split()
             in_code, lang = (False, "") if in_code else (True, tag[0] if tag else "")
     return in_code, lang

@@ -207,6 +207,7 @@ class TestBlueprintBridge:
         assert rec["source"] == "blueprint"
         assert rec["job_spec"]["skills"] == ["morning-brief"]
         assert rec["job_spec"]["schedule"] == "0 8 * * *"
+        assert rec["job_spec"]["deliver"] == "telegram"
 
 class TestCommandHandler:
     def test_bare_lists_pending(self, store):

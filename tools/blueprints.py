@@ -3,8 +3,7 @@
 A blueprint is NOT a new object type: it is an ordinary skill whose frontmatter declares
 ``metadata.hermes.blueprint`` (``schedule`` required; optional ``deliver`` [default "origin"],
 ``prompt``, ``no_agent``, ``model``, ``provider``, ``enabled_toolsets``), so it rides the whole
-skills-hub pipeline for free. This module only bridges that block to cron ``create_job()``,
-plus the inverse (``export_blueprint``) back to a SKILL.md.
+skills-hub pipeline for free. This module only bridges that block to cron ``create_job()``.
 """
 
 from __future__ import annotations
@@ -21,8 +20,6 @@ __all__ = [
     "BlueprintSpec",
     "blueprint_spec_for_installed",
     "blueprint_to_job_spec",
-    "create_blueprint_job",
-    "export_blueprint",
     "parse_blueprint",
     "register_blueprint_suggestion",
 ]
@@ -124,25 +121,13 @@ def blueprint_spec_for_installed(skill_name: str) -> Optional[BlueprintSpec]:
 
 
 def blueprint_to_job_spec(spec: BlueprintSpec, *, name: Optional[str] = None) -> dict[str, Any]:
-    """``cron.jobs.create_job`` kwargs for a spec — the single translation used by
-    both ``create_blueprint_job`` and the suggestion path so they never drift."""
+    """``cron.jobs.create_job`` kwargs for a spec."""
     return {
         "prompt": spec.prompt, "schedule": spec.schedule, "name": name or f"blueprint:{spec.skill_name}",
         "deliver": spec.deliver, "skills": [spec.skill_name] if spec.skill_name else None,
         "model": spec.model, "provider": spec.provider, "enabled_toolsets": spec.enabled_toolsets,
         "no_agent": spec.no_agent,
     }
-
-
-def create_blueprint_job(spec: BlueprintSpec, *, origin: Optional[dict[str, Any]] = None,
-                         name: Optional[str] = None) -> dict[str, Any]:
-    """Create the cron job for a spec (skill preloaded via ``skills=[name]``); returns the job dict."""
-    from cron.scheduler import create_job_with_scheduler_registration
-
-    job_spec = blueprint_to_job_spec(spec, name=name)
-    if origin is not None:
-        job_spec["origin"] = origin
-    return create_job_with_scheduler_registration(**job_spec)
 
 
 def register_blueprint_suggestion(spec: BlueprintSpec) -> Optional[dict[str, Any]]:
@@ -163,53 +148,3 @@ def register_blueprint_suggestion(spec: BlueprintSpec) -> Optional[dict[str, Any
         job_spec=blueprint_to_job_spec(spec),
         dedup_key=f"blueprint:{spec.skill_name}:{spec.schedule}",
     )
-
-
-def export_blueprint(job: dict[str, Any], body: str, *, blueprint_name: Optional[str] = None) -> str:
-    """Inverse of ``create_blueprint_job``: render a cron job as a SKILL.md (with a
-    ``metadata.hermes.blueprint`` block) ready for ``hermes skills publish``.
-    ``body`` becomes the SKILL.md body; its first line is the description."""
-    import hermes_yaml as yaml
-
-    # Sanitize to a valid skill identifier.
-    name = str(blueprint_name or job.get("name") or "shared-blueprint").lower()
-    name = "".join(c if (c.isalnum() or c in "-_") else "-" for c in name).strip("-_") or "shared-blueprint"
-
-    block: dict[str, Any] = {"schedule": job.get("schedule_display") or _schedule_to_string(job.get("schedule"))}
-    if job.get("deliver") and job["deliver"] != "origin":
-        block["deliver"] = job["deliver"]
-    if job.get("prompt"):
-        block["prompt"] = job["prompt"]
-    if job.get("no_agent"):
-        block["no_agent"] = True
-    block.update({k: job[k] for k in ("model", "provider", "enabled_toolsets") if job.get(k)})
-
-    body = body.strip()
-    frontmatter = {
-        "name": name, "description": body.splitlines()[0][:200] if body else "Shared automation blueprint.",
-        "version": "1.0.0", "license": "MIT",
-        "metadata": {"hermes": {"tags": ["blueprint", "automation"], "blueprint": block}},
-    }
-    fm_yaml = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).strip()
-    body_text = body or f"# {name}\n\nShared automation blueprint."
-    return f"---\n{fm_yaml}\n---\n\n{body_text}\n"
-
-
-def _schedule_to_string(schedule: Any) -> str:
-    """Best-effort render of a parsed schedule dict back to a string."""
-    if isinstance(schedule, str):
-        return schedule
-    if isinstance(schedule, dict):
-        kind = schedule.get("kind")
-        if kind == "cron" and schedule.get("expr"):
-            return str(schedule["expr"])
-        if kind == "interval":
-            # parse_schedule stores interval periods as "minutes"; tolerate a legacy/foreign "seconds" form too.
-            if schedule.get("minutes"):
-                mins = int(schedule["minutes"])
-                return f"every {mins // 60}h" if mins % 60 == 0 else f"every {mins}m"
-            if schedule.get("seconds"):
-                secs = int(schedule["seconds"])
-                return (f"every {secs // 3600}h" if secs % 3600 == 0
-                        else f"every {secs // 60}m" if secs % 60 == 0 else f"every {secs}s")
-    return "0 9 * * *"  # safe daily fallback

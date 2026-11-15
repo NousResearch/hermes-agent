@@ -14,6 +14,10 @@ import hashlib
 import json
 from pathlib import Path
 
+# The parts a move carries (``move_receive.STEPS``), spelled here so building the parser stays
+# import-free.
+STEP_NAMES = ("config", "soul", "memory", "skills", "cron", "sessions")
+
 
 def build_move_parser(subparsers) -> None:
     parser = subparsers.add_parser(
@@ -33,6 +37,12 @@ def build_move_parser(subparsers) -> None:
 
     receive = sub.add_parser("receive", help="Preview, then merge a move bundle into the active profile")
     receive.add_argument("bundle", help="Path to a move bundle")
+    receive.add_argument("--replace", metavar="PARTS", default="",
+                         help="Comma-separated parts where the bundle wins instead of merging: "
+                              f"{', '.join(STEP_NAMES)}, or 'all'. Replaced conversations are archived, "
+                              "not deleted, and `hermes move undo` restores everything")
+    receive.add_argument("--only", metavar="PARTS", default="",
+                         help="Comma-separated parts to apply (default: all)")
     receive.add_argument("-y", "--yes", action="store_true", help="Apply without asking")
     receive.add_argument("--json", action="store_true", help="Print the result as JSON")
     receive.set_defaults(func=_cmd_receive)
@@ -86,33 +96,57 @@ def _cmd_export(args) -> int:
     return 0
 
 
-def _local_import(home: Path):
-    """Session import for a CLI receive: through the live gateway when one owns the store, else
-    straight into the store under the owner lock (a stopped install, a fresh one)."""
-    import uuid
+def _sessions_writer(home: Path):
+    """Conversation writes for a CLI receive/undo: through the live gateway when one owns the
+    store, else straight into the store under the owner lock (a stopped install, a fresh one)."""
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_cli.move_sessions import OfflineSessions, OwnerSessions, RevisionConflict
 
-    live = discover_gateway_endpoint(home, timeout=1.5).endpoint is not None
+    if discover_gateway_endpoint(home, timeout=1.5).endpoint is None:
+        return OfflineSessions(home)
 
-    def through_gateway(session: dict) -> dict:
+    def mutate(session_id, request_id, operation, payload, revision, generation):
+        from hermes_cli.gateway_client import GatewayClientError
         from hermes_cli.gateway_session_store import session_store
-        return session_store().call("session.mutate", session_id=session["id"], request_id=uuid.uuid4().hex,
-                                    expected_revision=0, operation="import", payload={"sessions": [session]})
+        params = dict(session_id=session_id, request_id=request_id, expected_revision=revision,
+                      operation=operation, payload=payload)
+        if generation is not None:
+            params["expected_generation"] = generation
+        try:
+            return session_store().call("session.mutate", **params)
+        except GatewayClientError as exc:
+            if "revision_conflict" in str(exc):
+                raise RevisionConflict(str(exc)) from None
+            raise
 
-    def offline(session: dict) -> dict:
-        from gateway.runtime_ownership import exclusive_maintenance
-        from hermes_state import SessionDB
-        with exclusive_maintenance([home]):
-            db = SessionDB(db_path=home / "state.db")
-            try:
-                result = db.import_sessions([session])
-            finally:
-                db.close()
-        if not result.get("ok"):
-            raise ValueError("; ".join(str(e.get("error")) for e in result.get("errors") or []))
-        return result
+    return OwnerSessions(home, mutate)
 
-    return through_gateway if live else offline
+
+def _parts(raw: str) -> set[str]:
+    parts = {p.strip() for p in (raw or "").split(",") if p.strip()}
+    if "all" in parts:
+        return set(STEP_NAMES)
+    unknown = parts - set(STEP_NAMES)
+    if unknown:
+        raise SystemExit(f"Unknown part(s): {', '.join(sorted(unknown))}. Choose from {', '.join(STEP_NAMES)}.")
+    return parts
+
+
+def _print_replace_warning(preview: dict, replace: set[str]) -> None:
+    target = preview.get("target") or {}
+    lines = {
+        "memory": "Memory notes on this agent are overwritten by the incoming ones.",
+        "soul": "The persona (SOUL.md) is overwritten.",
+        "skills": f"{len(preview['skills']['keep_existing'])} same-named skill(s) are swapped for the incoming copy.",
+        "cron": f"All {target.get('cron_jobs', 0)} scheduled job(s) here are removed; the incoming ones arrive paused.",
+        "sessions": f"All {target.get('conversations', 0)} visible conversation(s) here are archived (kept, not deleted).",
+        "config": "Settings the bundle carries replace this agent's (model, sign-ins and hosting stay).",
+    }
+    print("This REPLACES, on this agent:")
+    for part in STEP_NAMES:
+        if part in replace:
+            print(f"  - {lines[part]}")
+    print("Undo restores all of it: `hermes move undo <id>`.")
 
 
 def _cmd_receive(args) -> int:
@@ -128,18 +162,21 @@ def _cmd_receive(args) -> int:
                                    data_b64=base64.b64encode(data[offset:offset + step]).decode())
     state = move_receive.finish(home, state["id"])
     preview = state["preview"]
+    replace, only = _parts(args.replace), _parts(args.only) or None
     if not args.json:
         src = preview.get("source") or {}
         print(f"From {src.get('host', '?')} ({src.get('profile', '?')}):")
-        print(f"  New skills: {len(preview['skills']['add'])}, kept yours: {len(preview['skills']['keep_existing'])}")
+        print(f"  New skills: {len(preview['skills']['add'])}, same-named here: {len(preview['skills']['keep_existing'])}")
         print(f"  Scheduled jobs: {len(preview['cron']['add'])} (paused)")
         print(f"  Conversations: {preview['sessions']}")
         print(f"  Persona: {preview['soul']['action'].replace('_', ' ')}")
+        if replace:
+            _print_replace_warning(preview, replace & (only or set(STEP_NAMES)))
     if not args.yes:
         if input("Apply? [y/N] ").strip().lower() not in {"y", "yes"}:
             print(f"Not applied. Run `hermes move receive {path}` again to continue.")
             return 1
-    state = move_receive.apply(home, state["id"], import_session=_local_import(home))
+    state = move_receive.apply(home, state["id"], sessions=_sessions_writer(home), include=only, replace=replace)
     if args.json:
         print(json.dumps(state, indent=2))
     else:
@@ -150,7 +187,7 @@ def _cmd_receive(args) -> int:
 def _cmd_undo(args) -> int:
     from hermes_cli import move_receive
     home, _ = _home_and_profile()
-    state = move_receive.undo(home, args.move_id)
+    state = move_receive.undo(home, args.move_id, sessions=_sessions_writer(home))
     print(f"Move {state['id']}: {state['status']}.")
     return 0
 

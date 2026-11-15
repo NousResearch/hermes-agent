@@ -177,6 +177,8 @@ class TestQuotedHomePrefixHardline:
     @pytest.mark.parametrize("command", [
         'rm -rf "/"etc', "rm -rf '/'root", 'rm -rf "/"usr/*', 'rm -rf "/"etc/', 'rm -rf "//"bin', 'rm -rf "/"\'var\'',
         'sudo rm -rf "/"var', 'rm -rf "/"e"tc"', 'rm -rf "/""etc"', "rm -rf '/'b'in'/*",
+        # A quote that closes the name, then a quoted collapse segment: still /etc/.
+        'rm -rf "/"etc"/"', "rm -rf '/'etc'/'*",
     ])
     def test_quoted_root_glued_to_a_system_dir_stays_hardline(self, command):
         from tools.approval import detect_hardline_command
@@ -205,6 +207,8 @@ class TestQuotedHomePrefixHardline:
         "rm -rf \"$HOME\"" + "'/'" * 1300 + "x",
         "rm -rf \"/\"" + "'./" * 1300 + "x",
         "rm -rf \"/root\"" + "\"/." * 1300 + "x",
+        # `"'"` survives normalization as a quote run; the `; true` keeps it under the parser limit.
+        "rm -rf \"/\"etc" + "\"'\"" * 12000 + "x; true",
     ])
     def test_quoted_collapse_tail_scans_in_linear_time(self, command):
         from tools.approval import detect_hardline_command

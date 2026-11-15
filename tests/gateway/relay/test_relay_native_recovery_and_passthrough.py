@@ -78,16 +78,15 @@ def _stub_turns(runner, monkeypatch, turns):
 
 
 def _rows(authority):
-    from hermes_state_runtime import list_session_admissions
-    return [r for sid in list(authority.sessions)
-            for r in list_session_admissions(authority.db, session_id=sid, pending_only=False)]
+    from gateway.session_authority import admission_row
+    return [admission_row(r) for sid in list(authority.sessions)
+            for r in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
 
 
 @pytest.mark.asyncio
 async def test_relay_admission_queued_across_a_restart_runs_and_replies_with_egress_routing(tmp_path, monkeypatch):
     from gateway.run_runtime import recover_gateway_native_sessions
     from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from hermes_state_runtime import list_session_admissions
 
     connector = _Connector('discord')
     raw = {'text': 'queued before restart', 'message_id': 'm-1', 'source': {
@@ -108,8 +107,8 @@ async def test_relay_admission_queued_across_a_restart_runs_and_replies_with_egr
                 await async_wait_until(lambda: any(f.get('type') == 'inbound_ack' for f in connector.outgoing),
                                        timeout=10, what='the frame committed and acked')
             sid = next(iter(authority.sessions))
-            assert [r['status'] for r in list_session_admissions(authority.db, session_id=sid)] == ['queued']
-            authority.db.close()
+            assert [r.status for r in authority.persistence.admissions.list(session_id=sid)] == ['queued']
+            authority.persistence.close()
         assert not turns
 
         # Boot 2: a fresh runner, authority and relay socket over the same home. The hosted-room
@@ -133,7 +132,7 @@ async def test_relay_admission_queued_across_a_restart_runs_and_replies_with_egr
                 assert reply['metadata'].get('user_id') == 'owner-1'
                 assert [r['status'] for r in _rows(authority)] == ['terminal']
         finally:
-            authority.db.close()
+            authority.persistence.close()
 
 
 def _reserve_homes(tmp_path, monkeypatch):
@@ -176,7 +175,7 @@ async def test_multiplexed_stamped_admission_queued_across_a_restart_runs_in_its
 
     def _close(runner):
         for authority in list(getattr(runner, 'session_authorities', None) or []):
-            authority.db.close()
+            authority.persistence.close()
         for _, home in homes:
             process_ownership.release(home)
 
@@ -261,7 +260,7 @@ async def test_forwarded_discord_component_is_admitted_like_relayed_text(tmp_pat
                 assert 'relay inbound refused' not in caplog.text
                 assert 'permission_denied' not in caplog.text
     finally:
-        authority.db.close()
+        authority.persistence.close()
 
 
 @pytest.mark.asyncio
@@ -284,7 +283,7 @@ async def test_heartbeat_for_a_restored_relay_session_admits_with_warm_egress_ro
         async with _wired_relay(runner, connector, url) as (_adapter, ws):
             await ws.send(json.dumps({'type': 'inbound', 'event': raw, 'bufferId': 'b-h'}) + '\n')
             await async_wait_until(lambda: connector.replies('chan-h'), timeout=20, what='the first turn answered')
-        authority.db.close()
+        authority.persistence.close()
 
         runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
         authority = await initialize_session_authority(runner, profile_id='default', instance_id='hb-2')
@@ -302,7 +301,7 @@ async def test_heartbeat_for_a_restored_relay_session_admits_with_warm_egress_ro
                 assert seen, 'the heartbeat never reached admission'
                 assert (seen[0].get('scope_id'), seen[0].get('user_id')) == ('guild-h', 'owner-h')
         finally:
-            authority.db.close()
+            authority.persistence.close()
 
 
 def test_priming_from_a_restored_event_never_replaces_live_routing():

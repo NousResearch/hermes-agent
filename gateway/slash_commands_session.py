@@ -190,15 +190,15 @@ async def paused_followers(runner, session_id) -> int:
     resume button, so unsaid they look lost. Counted after the route rotated: nothing can join the
     old queue from then on, so the count includes a message admitted while the reset ran."""
     from gateway.session_authorities import active_authority
-    from hermes_state_runtime import list_session_admissions
+    from gateway.session_persistence import authority_persistence
     authority = active_authority(runner)
     if authority is None or not session_id:
         return 0
-    rows = await asyncio.to_thread(list_session_admissions, authority.db,
+    rows = await asyncio.to_thread(authority_persistence(authority).admissions.list,
                                    session_id=authority.logical_owner(session_id))
-    if not any(row['status'] == 'unknown' for row in rows):
+    if not any(row.status == 'unknown' for row in rows):
         return 0
-    return sum(row['status'] == 'queued' and row['principal_id'].startswith('messaging:') for row in rows)
+    return sum(row.status == 'queued' and row.principal_id.startswith('messaging:') for row in rows)
 
 
 def discard_command_for(source) -> str:

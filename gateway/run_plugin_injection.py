@@ -91,10 +91,11 @@ def wake_background_wait(authority, ref, *, person_input=False):
 
 
 def _wake_if_person_queued(authority, ref, wait):
+    from gateway.session_authority import admission_row
+    from gateway.session_persistence import authority_persistence
     from gateway.session_unattended_unknown import is_unattended
-    from hermes_state_runtime import list_session_admissions
-    if any(row["status"] == "queued" and not is_unattended(row)
-           for row in list_session_admissions(authority.db, session_id=ref.session_id)):
+    rows = authority_persistence(authority).admissions.list(session_id=ref.session_id)
+    if any(row["status"] == "queued" and not is_unattended(row) for row in map(admission_row, rows)):
         wait.set()
 
 

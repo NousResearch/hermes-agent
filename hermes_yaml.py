@@ -8,7 +8,9 @@ from io import StringIO
 from typing import Any, IO, overload
 
 from ruamel.yaml import YAML
+from ruamel.yaml.emitter import RoundTripEmitter
 from ruamel.yaml.error import YAMLError
+from ruamel.yaml.events import MappingEndEvent
 from ruamel.yaml.resolver import VersionedResolver
 
 
@@ -86,9 +88,24 @@ def safe_dump(
 ROUNDTRIP_YAML_WIDTH = 2**31 - 1
 
 
+class _RoundTripEmitter(RoundTripEmitter):
+    """A comment that opens a block list (``key:  # note``, or a comment or blank line above the
+    items) leaves ruamel's ``no_newline`` set for the first item. A scalar or nested-list item
+    clears it; an empty ``{}`` item writes its line break but keeps it, so the NEXT item's line
+    break is skipped and two items fuse: ``- {}`` / ``- false`` / ``- 1`` reloads as
+    ``[{}, 'false - 1']`` on a no-op save. The line break is written, so the flag is spent."""
+
+    def expect_first_flow_mapping_key(self) -> None:
+        closes_empty = isinstance(self.event, MappingEndEvent)
+        super().expect_first_flow_mapping_key()
+        if closes_empty and self.flow_level == 0:
+            self.no_newline = False
+
+
 def roundtrip_yaml() -> YAML:
     """Create a fresh comment/quote-preserving editor for user-authored YAML."""
     yaml = YAML(typ="rt")
+    yaml.Emitter = _RoundTripEmitter
     yaml.width = ROUNDTRIP_YAML_WIDTH
     yaml.Resolver = _Yaml11Resolver
     yaml.preserve_quotes = True

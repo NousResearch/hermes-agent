@@ -2001,9 +2001,26 @@ class MatrixAdapter(BasePlatformAdapter):
         prompt layer can render "[Replying to: ...]" like Signal/Slack/Telegram."""
         reply_to = (relates_to.get("m.in_reply_to") or {}).get("event_id")
         reply_to_text = reply_to_author_id = reply_to_author_name = None
-        if reply_to and body.startswith("> "):
-            reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
-            body = _strip_reply_fallback(body)
+        if reply_to:
+            if body.startswith("> "):
+                # Legacy fallback path: quoted text is embedded in the body.
+                reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
+                body = _strip_reply_fallback(body)
+            else:
+                # Modern clients (Element X): no fallback block — fetch the original event.
+                try:
+                    orig_event = await self._client.get_event(room_id, reply_to)
+                    orig_content = getattr(orig_event, "content", None) or {}
+                    orig_body = orig_content.get("body") or ""
+                    if not orig_body:
+                        orig_body = re.sub(r"<[^>]+>", "", orig_content.get("formatted_body", "")).strip()
+                    reply_to_text = orig_body or None
+                    reply_to_author_id = getattr(orig_event, "sender", None)
+                except Exception:
+                    logger.debug(
+                        "Failed to fetch reply origin event %s in %s",
+                        reply_to, room_id, exc_info=True,
+                    )
             # Resolve the replied-to author's display name (falls back to localpart).
             if reply_to_author_id:
                 reply_to_author_name = await self._get_display_name(room_id, reply_to_author_id)

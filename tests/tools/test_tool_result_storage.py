@@ -416,6 +416,41 @@ class TestSpillover:
         assert spill_file.read_text(encoding="utf-8") == content
         assert str(spill_file) in result
 
+    def test_env_none_under_a_remote_backend_never_names_a_host_path(self, monkeypatch):
+        """No sandbox registered right now (never started, or unregistered by the idle reaper
+        while the persistent container lives on) is NOT "host side" under a remote backend: the
+        agent's read_file/terminal run in the sandbox, where the host path dangles. Without an env
+        to probe or write through, the result is truncated inline rather than pointing at a path
+        the agent cannot read (the caller passes ensure_task_env(), so this is the failed-start
+        case only)."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        content = "w" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="tw_git",
+            tool_use_id="tc_idle_1",
+            env=None,
+            threshold=30_000,
+        )
+        assert str(get_spillover_dir()) not in result
+        assert "Full output could not be saved" in result
+
+    def test_env_none_when_the_profile_policy_is_unreadable_never_names_a_host_path(self):
+        """A refusal scope (the profile's terminal policy could not be read) leaves the backend
+        unknown: fail closed to inline truncation, the way the terminal tool refuses there."""
+        from tools.terminal_scope import TerminalPolicyRefusal, reset_terminal_scope, set_terminal_scope
+
+        token = set_terminal_scope(TerminalPolicyRefusal("unreadable config.yaml"))
+        try:
+            result = maybe_persist_tool_result(
+                content="r" * 60_000, tool_name="tw_git", tool_use_id="tc_refused_1", env=None,
+                threshold=30_000,
+            )
+        finally:
+            reset_terminal_scope(token)
+        assert str(get_spillover_dir()) not in result
+        assert "Full output could not be saved" in result
+
     def test_local_env_persists_to_spillover_not_sandbox(self):
         """LocalEnvironment routes host-side: no env.execute() shell-out."""
         from tools.environments.local import LocalEnvironment

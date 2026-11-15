@@ -192,3 +192,27 @@ class TestPatchEndToEnd:
         assert r["success"] is True
         assert r.get("note") is None
         assert f.read_text() == content.replace(old, new)
+
+
+@pytest.mark.parametrize("content,old,new,expected", [
+    ('label = "你好"\n', r'label = "\u4f60\u597d"', r'label = "\u518d\u89c1"', 'label = "再见"\n'),
+    ('{"l": "\\u4F60\\u597D"}\n', '"l": "你好"', '"l": "再见"', '{"l": "\\u518D\\u89C1"}\n'),
+    ('e = "\\ud83d\\ude00"\n', 'e = "😀"', 'e = "😁"', 'e = "\\ud83d\\ude01"\n'),
+], ids=["escaped_anchor_plain_file", "plain_anchor_escaped_file_keeps_hex_case", "surrogate_pair"])
+def test_unicode_spelling_drift_is_matched_in_the_files_spelling(workdir, content, old, new, expected):
+    f = workdir / "u.py"
+    f.write_text(content, encoding="utf-8")
+    r = _patch_tool(path=str(f), old_string=old, new_string=new, task_id="t-unicode")
+    assert r["success"] is True
+    assert "escape-drift auto-corrected" in r["note"]
+    assert f.read_text(encoding="utf-8") == expected
+
+
+@pytest.mark.parametrize("content,old,new", [
+    ('a="你好"\nb="\\u4f60\\u597d"\n', '="\\u4f60\\u597d"', '="x"'),  # two spellings: ambiguous
+    ('s = "\\\\u4f60"\n', 's = "你"', 's = "x"'),                     # escaped backslash, not an escape
+    ('x = "\\u4f60\\u597d"\n', '你\\u59', 'z'),                        # slice would split an escape
+    ('q = "\\u0041"\n', 'q = "A"', 'q = "B"'),                        # ASCII escapes are never decoded
+], ids=["mixed_spellings", "literal_backslash_u", "split_token", "ascii_escape"])
+def test_unicode_spelling_recovery_refuses_unsafe_slices(workdir, content, old, new):
+    assert maybe_correct_escape_drift(old, new, content) == (old, new, None)

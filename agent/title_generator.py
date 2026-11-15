@@ -770,7 +770,7 @@ def apply_subagent_title(session_db, session_id: str, goal: str, *, persistence=
 
 def apply_instant_title(
     session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None,
-    title_preview: str | None = None, *, persistence=None,
+    title_preview: str | None = None, *, persistence=None, dedupe: bool = False,
 ) -> Optional[str]:
     """Write the derived title inline. Returns it, or None (no usable text, or a ``derived``+ title exists). Never raises.
 
@@ -781,7 +781,7 @@ def apply_instant_title(
     try:
         title = derive_title(user_message, title_preview) if is_titleable_user_message(user_message) else None
         persisted = _persist_session_title(
-            session_db, session_id, title, source="derived", dedupe=False, persistence=persistence,
+            session_db, session_id, title, source="derived", dedupe=dedupe, persistence=persistence,
         ) if title else None
         if persisted:
             _notify_title(title_callback, persisted, "derived", "Instant-title")
@@ -943,8 +943,9 @@ def maybe_auto_title(
     if not _auto_title_enabled():  # config read after the cheap guards so the file isn't touched every turn
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return None
+    # Without a model upgrade, a duplicate instant title has no later chance to be repaired.
     apply_instant_title(session_db, session_id, user_message, title_callback, title_preview=title_preview,
-                        persistence=persistence)
+                        persistence=persistence, dedupe=not model_upgrade)
     if not model_upgrade:
         return None
     if not _model_title_upgrade_enabled():

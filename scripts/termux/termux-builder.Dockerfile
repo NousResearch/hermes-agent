@@ -23,12 +23,16 @@ ENV PREFIX=/data/data/com.termux/files/usr
 ENV PATH="${PREFIX}/bin:/usr/bin:/bin"
 ENV DEBIAN_FRONTEND=noninteractive
 
+# libc++ is named on purpose. The base image ships libc++ 29, apt's cmake needs a newer
+# build, and cmake's `Depends: libc++` has no version bound, so apt keeps the old one and
+# cmake fails to start. scikit-build-core then reads that as "no cmake" and compiles one
+# from PyPI source, which dies in its bootstrap (pillow -> pybind11 sdist build).
 RUN printf '%s\n' "deb https://packages.termux.dev/apt/termux-main stable main" \
       > "${PREFIX}/etc/apt/sources.list" \
  && rm -f "${PREFIX}/etc/apt/sources.list.d/"*.list \
  && (apt update || apt update) \
  && apt install -y \
-      clang rust make git patchelf binutils pkg-config protobuf cmake ninja \
+      libc++ clang rust make git patchelf binutils pkg-config protobuf cmake ninja \
       autoconf automake libtool \
       libandroid-posix-semaphore libandroid-support libbz2 libffi \
       libjpeg-turbo libpng freetype libtiff libwebp openjpeg littlecms \

@@ -10,7 +10,7 @@ All run zero LLM calls.
 """
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import pytest
 
@@ -115,7 +115,7 @@ class TestBrowseShape:
                 return []
 
         db = _DB()
-        monkeypatch.setattr("hermes_state_registry.acquire", lambda: db)
+        monkeypatch.setattr("hermes_state.SessionDB", lambda **kwargs: db)
         monkeypatch.setattr(
             "hermes_state_registry.release_or_close",
             lambda _: setattr(db, "released", db.released + 1),
@@ -164,6 +164,32 @@ class TestBrowseShape:
         result = json.loads(session_search(db=db, current_session_id="s_newest"))
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
+
+    def test_derived_metadata_is_strictly_redacted_but_explicit_messages_are_not(self, db):
+        secret = "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"  # split: push protection
+        db.create_session("s_secret", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET title = ? WHERE id = ?",
+            (f"Deploy credentials {secret}", "s_secret"),
+        )
+        db.append_message(
+            "s_secret", role="user", content=f"deployneedle uses {secret}"
+        )
+        db._conn.commit()
+
+        discovered = json.loads(session_search(query="deployneedle", db=db))["results"][0]
+        browsed = next(
+            row for row in json.loads(session_search(db=db))["results"]
+            if row["session_id"] == "s_secret"
+        )
+        read = json.loads(session_search(session_id="s_secret", db=db))
+
+        assert secret not in discovered["title"]
+        assert secret not in discovered["snippet"]
+        assert secret not in browsed["title"]
+        assert secret not in browsed["preview"]
+        assert secret not in read["session_meta"]["title"]
+        assert secret in read["messages"][0]["content"]
 
 
 # =========================================================================
@@ -1120,7 +1146,7 @@ class TestNewResetLineageBrowse:
 
 
 def _unix(year, month, day):
-    return int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
+    return int(datetime(year, month, day, tzinfo=UTC).timestamp())
 
 
 def _set_started(db, **started_at_by_sid):
@@ -1208,3 +1234,131 @@ class TestDiscoverySessionExclusion:
         excluded = json.loads(session_search(
             query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
         assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}
+
+
+class TestBrowseDefaultLimit:
+    def test_no_limit_browse_returns_ten_on_every_entry_point(self, db):
+        """Browse must not inherit discovery's default of 3 via the function, the registry
+        handler, or the inline executor (the live path), each of which used to bake in 3."""
+        from types import SimpleNamespace
+
+        from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+        from tools.registry import registry
+
+        for i in range(12):
+            db.create_session(f"s_browse_{i:02d}", source="cli")
+            db.append_message(f"s_browse_{i:02d}", role="user", content=f"browse seed {i}")
+        agent = SimpleNamespace(_get_session_db_for_recall=lambda: db, session_id="current")
+        ctx = InlineToolContext(effective_task_id="task-1", tool_call_id="call-1")
+
+        for raw in (session_search(db=db), registry.get_entry("session_search").handler({}, db=db),
+                    INLINE_TOOL_EXECUTORS["session_search"](agent, {}, ctx)):
+            result = json.loads(raw)
+            assert result["mode"] == "browse"
+            assert len(result["results"]) == 10
+        assert len(json.loads(session_search(db=db, limit=4))["results"]) == 4
+
+
+class TestSameLineageHiddenDisclosure:
+    """#103184: same-lineage hits dropped by the live-context skip must be
+    disclosed in the payload instead of silently vanishing."""
+
+    def test_unended_predecessor_hits_disclosed_not_silent(self, db):
+        """A gateway predecessor whose end-write was lost (unended, same
+        lineage) is still hidden, but the payload must say so instead of
+        returning 0 results with no signal."""
+        db.create_session("s_root", source="telegram", session_key="tg:user:1")
+        db.end_session("s_root", "session_reset")
+        db.create_session(
+            "s_lost", source="telegram",
+            parent_session_id="s_root", session_key="tg:user:1",
+            model_config={"_reset_from": "s_root"},
+        )
+        db.append_message(
+            "s_lost", role="user", content="published the zephyrwidgets repo link"
+        )
+        db.create_session(
+            "s_cur", source="telegram",
+            parent_session_id="s_lost", session_key="tg:user:1",
+            model_config={"_reset_from": "s_lost"},
+        )
+        db._conn.commit()
+        result = json.loads(session_search(
+            query="zephyrwidgets", db=db, current_session_id="s_cur",
+        ))
+        assert result["success"] is True
+        assert result["count"] == 0  # still hidden: unended == treated as live
+        hidden = result["hidden_same_lineage"]
+        assert hidden["count"] >= 1
+        sessions = [s["session_id"] for s in hidden["sessions"]]
+        assert "s_lost" in sessions
+        lost = next(s for s in hidden["sessions"] if s["session_id"] == "s_lost")
+        assert lost["end_reason"] is None  # the tell-tale of the lost end-write
+        # The recovery the note recommends must work: a plain read of the disclosed id
+        # (scroll rejects anchors in the current lineage, so the note must not suggest it).
+        assert "around_message_id" not in hidden["note"]
+        read = json.loads(session_search(session_id="s_lost", db=db, current_session_id="s_cur"))
+        assert read["success"] is True and read["mode"] == "read"
+        assert any("zephyrwidgets" in m["content"] for m in read["messages"])
+
+    def test_current_session_live_rows_not_disclosed_as_hidden(self, db):
+        """The current session's own live rows are already in context —
+        skipping them is expected and must NOT light up hidden_same_lineage."""
+        db.create_session("s_root", source="telegram", session_key="tg:user:1")
+        db.end_session("s_root", "session_reset")
+        db.create_session(
+            "s_cur", source="telegram",
+            parent_session_id="s_root", session_key="tg:user:1",
+            model_config={"_reset_from": "s_root"},
+        )
+        db.append_message("s_cur", role="user", content="zephyrwidgets note to self")
+        db._conn.commit()
+        result = json.loads(session_search(
+            query="zephyrwidgets", db=db, current_session_id="s_cur",
+        ))
+        assert result["count"] == 0
+        assert "hidden_same_lineage" not in result
+
+    def test_ended_predecessor_surfaces_without_disclosure(self, db):
+        """The normal /new path (ended predecessor) keeps returning results and
+        never grows a hidden_same_lineage note."""
+        _seed_gateway_new_reset_chain(db)
+        result = json.loads(session_search(
+            query="ibuprofen", db=db, current_session_id="s_today",
+        ))
+        assert result["count"] >= 1
+        assert "hidden_same_lineage" not in result
+
+
+class TestDiscoveryMetadataFromMatchedSession:
+    """#103184: when/title must describe the matched conversation, not the
+    (possibly months older) lineage root of a long-lived gateway chain."""
+
+    def _age_the_root(self, db):
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (1754956800, "MCP root servers", "s_aug12"),
+        )
+        db._conn.commit()
+
+    def test_fts_hit_metadata_from_matching_session(self, db):
+        _seed_gateway_new_reset_chain(db)
+        self._age_the_root(db)
+        result = json.loads(session_search(
+            query="ibuprofen", db=db, current_session_id="s_today",
+        ))
+        hit = next(r for r in result["results"] if r["session_id"] == "s_night")
+        assert hit["title"] == "Night ibuprofen plan"
+        assert "2025" not in hit["when"]  # not the root's August-2025 started_at
+        assert hit["parent_session_id"] == "s_aug12"  # lineage still exposed
+
+    def test_title_match_metadata_from_matched_session(self, db):
+        _seed_gateway_new_reset_chain(db)
+        self._age_the_root(db)
+        result = json.loads(session_search(
+            query="Night ibuprofen plan", db=db, current_session_id="s_today",
+        ))
+        assert result["count"] >= 1
+        hit = next(r for r in result["results"] if r["session_id"] == "s_night")
+        assert hit["title"] == "Night ibuprofen plan"
+        assert "2025" not in hit["when"]

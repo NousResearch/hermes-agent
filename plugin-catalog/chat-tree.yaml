@@ -1,0 +1,29 @@
+name: chat-tree
+title: Chat Tree
+repo: https://github.com/Ronitron007/hermes-chat-tree
+sha: "55c1c4d0448cb529962f58402f55c1c04c30efd7"
+subdir: chat-tree
+description: "One window for branching chats in Hermes Desktop. A side pane draws the open chat and its branches as a git graph, one node for each exchange. Branch from a node, ask on a model you pick, and merge back into any ancestor chat with Merge as-is or Digest. The model writes each digest through ctx.llm (auxiliary task chat_tree_digest, which follows the title generation model unless you set auxiliary.chat_tree_digest). Disclosure — Desktop pane reads up to 500 persisted session summaries and the transcripts, usage and subagent lists of the chats in the open lineage; it branches, resumes a chat, submits a prompt or sets a branch's model only when you click; Digest sends up to 24,000 characters of one chat (secrets redacted) to your configured auxiliary model (chat_tree_digest, defaults to the title-generation model) and only drafts the result in the composer; the Python history RPC opens the profile's state.db read-only for at most 30 chats of the open lineage; branch ids are shared with the side-chat plugin through the localStorage key __hermesSideChatBranchIds."
+maintainer: Ronitron007
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+version: "0.2.0"
+image: https://raw.githubusercontent.com/Ronitron007/hermes-chat-tree/df6fb5d686937eedfb06a4b75882142fbd37ee52/docs/assets/catalog/chat-tree-card.png
+screenshots:
+  - https://raw.githubusercontent.com/Ronitron007/hermes-chat-tree/df6fb5d686937eedfb06a4b75882142fbd37ee52/docs/assets/catalog/chat-tree-pane.png
+  - https://raw.githubusercontent.com/Ronitron007/hermes-chat-tree/df6fb5d686937eedfb06a4b75882142fbd37ee52/docs/assets/catalog/chat-tree-tree.png
+  - https://raw.githubusercontent.com/Ronitron007/hermes-chat-tree/df6fb5d686937eedfb06a4b75882142fbd37ee52/docs/assets/catalog/chat-tree-branch-here.png
+  - https://raw.githubusercontent.com/Ronitron007/hermes-chat-tree/df6fb5d686937eedfb06a4b75882142fbd37ee52/docs/assets/catalog/chat-tree-merge-pick.png
+  - https://raw.githubusercontent.com/Ronitron007/hermes-chat-tree/df6fb5d686937eedfb06a4b75882142fbd37ee52/docs/assets/catalog/chat-tree-digest.png
+docs_url: https://github.com/Ronitron007/hermes-chat-tree/tree/outbox/competition-entry/chat-tree#readme
+readme: true
+platforms: []
+known_issues:
+  - Requires Hermes Desktop.
+  - Digests and stored histories need hermes plugins enable chat-tree and a gateway restart.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

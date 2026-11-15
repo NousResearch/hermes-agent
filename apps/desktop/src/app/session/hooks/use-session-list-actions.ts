@@ -35,6 +35,7 @@ import {
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
+  setSessionProfilesFailed,
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
   setSessions,
@@ -42,10 +43,23 @@ import {
   setSessionsLoading,
   stampMessagingRowsWithListServer
 } from '@/store/session'
-import { $removedSessionIds } from '@/store/session-removal'
+import {
+  $removedSessionIds,
+  captureSessionTombstoneGenerations,
+  sessionRemovalIntersected,
+  type SessionTombstoneGenerationSnapshot,
+  tombstoneRowIds
+} from '@/store/session-removal'
 import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
 import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
+
+import {
+  botModeFetchScope,
+  sidebarFetchProfile,
+  sidebarRetryProfiles,
+  watchSidebarFetchProfile
+} from './bot-mode-fetch-scope'
 
 // The recents list is local-only: cron rows have their own section, kanban
 // dispatcher workers are read on the board, finite one-shot runs (`hermes -z`,
@@ -53,8 +67,20 @@ import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions
 // (telegram, discord, …) is fetched separately into its own self-managed
 // sidebar section (refreshMessagingSessions). Excluding them here keeps
 // "Load more" paging through interactive local chats instead of
-// interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'oneshot', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+// interleaving gateway threads that bury them. ACP rows are editor-driven
+// conversations: every editor wake mints an auto-titled row, so they would
+// bury local chats — and they were never ended before #118216, which also
+// kept prune/archive away from them.
+const SIDEBAR_EXCLUDED_SOURCES = [
+  'acp',
+  'cron',
+  'kanban',
+  'oneshot',
+  'subagent',
+  'tool',
+  ...MESSAGING_SESSION_SOURCE_IDS
+]
+
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
@@ -66,13 +92,39 @@ const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
 // Honoring the optimistic tombstone at every ingestion point keeps the removal
 // stable; the tombstone self-clears once projects.tree confirms the delete,
 // and a failed delete untombstones immediately, so nothing is filtered on the
-// non-destructive paths.
+// non-destructive paths. A tombstone matches the row on ANY id the
+// conversation has answered to (tip, root, and every intermediate lineage
+// segment) — armed on one name, it must still catch the same conversation
+// returning under another (#123685).
 function dropTombstoned(sessions: SessionInfo[]): SessionInfo[] {
   const tombstones = $removedSessionIds.get()
 
-  return tombstones.size
-    ? sessions.filter(s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id)))
-    : sessions
+  if (!tombstones.size) {
+    return sessions
+  }
+
+  const tombstoned = (session: SessionInfo): boolean => tombstoneRowIds(session).some(id => tombstones.has(id))
+
+  const kept = sessions.filter(session => !tombstoned(session))
+
+  return kept.length === sessions.length ? sessions : kept
+}
+
+// A fetch whose page was READ before an archive/delete committed can land
+// after the projects.tree prune has already dropped the tombstone (the tree is
+// right to prune — the id is gone from its snapshot), so `dropTombstoned` has
+// nothing left to honor and the stale row resurrected through the keep set
+// (#123685). The tombstone's generation counter survives the prune: capture it
+// at fetch start, and reject any row whose removal lifecycle moved toward
+// removal underneath the request. A release edge (failed RPC, unarchive)
+// re-admits the row as before.
+function dropRemovalRaced(sessions: SessionInfo[], snapshot: SessionTombstoneGenerationSnapshot): SessionInfo[] {
+  const raced = (session: SessionInfo): boolean =>
+    tombstoneRowIds(session).some(id => sessionRemovalIntersected(snapshot, id))
+
+  const kept = sessions.filter(session => !raced(session))
+
+  return kept.length === sessions.length ? sessions : kept
 }
 
 function publishMessagingRows(rows: SessionInfo[], scopeProfile: string): SessionInfo[] {
@@ -134,22 +186,30 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     profileScopeRef.current = profileScope
   }, [profileScope])
 
-  /** Refresh the active profile's messaging-platform sidebar slice. */
+  /** Refresh the active profile's messaging-platform sidebar slice. In Bot
+   *  Mode with a selected bot, refresh THAT bot's profile instead — its
+   *  Telegram DM-topic threads live there, invisible under the ambient scope
+   *  (#126732). */
   const refreshMessagingSessions = useCallback(async () => {
-    const sessionProfile = sidebarProfileForScope(profileScope)
+    const sessionProfile = sidebarFetchProfile(profileScope)
 
     // A callback captured before a profile switch may still be queued by an
     // event subscription. Do not let it start a request against the old scope.
-    if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
+    // In Bot Mode the scope is the selected bot: a bot switch voids the page
+    // the same way a profile switch does.
+    if (sidebarFetchProfile(profileScopeRef.current) !== sessionProfile) {
       return
     }
 
     const requestId = refreshMessagingSessionsRequestRef.current + 1
     refreshMessagingSessionsRequestRef.current = requestId
 
+    // Same removal-race guard as the recents refresh (#123685).
+    const removalSnapshot = captureSessionTombstoneGenerations()
+
     const owns = () =>
       refreshMessagingSessionsRequestRef.current === requestId &&
-      sidebarProfileForScope(profileScopeRef.current) === sessionProfile
+      sidebarFetchProfile(profileScopeRef.current) === sessionProfile
 
     const fetchPage = () =>
       listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
@@ -174,7 +234,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
       const rows = publishMessagingRows(
-        dropTombstoned(result.sessions.filter(s => isMessagingSource(s.source))),
+        dropRemovalRaced(dropTombstoned(result.sessions.filter(s => isMessagingSource(s.source))), removalSnapshot),
         sessionProfile
       )
 
@@ -187,28 +247,38 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     }
   }, [profileScope])
 
-  /** Page one messaging platform without replacing another platform's rows. */
+  /** Page one messaging platform without replacing another platform's rows.
+   *  In Bot Mode with a selected bot, pages THAT bot's profile (fetch via its
+   *  logical route, match rows by its backend target) so its Telegram threads
+   *  page without switching the ambient scope (#126732). */
   const loadMoreMessagingForPlatform = useCallback(
     async (platform: string) => {
-      const sessionProfile = sidebarProfileForScope(profileScope)
+      const sessionProfile = sidebarFetchProfile(profileScope)
+      const displayProfile = botModeFetchScope(profileScope)?.displayProfile ?? sessionProfile
 
-      if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
+      if (sidebarFetchProfile(profileScopeRef.current) !== sessionProfile) {
         return
       }
 
-      const requestKey = messagingTotalsKey(sessionProfile, platform)
+      // Totals are keyed by the backend profile rows carry, so the render
+      // lookup (display scope) hits what this fetch stores.
+      const requestKey = messagingTotalsKey(displayProfile, platform)
       const requestId = (loadMoreMessagingRequestRef.current[requestKey] ?? 0) + 1
       loadMoreMessagingRequestRef.current[requestKey] = requestId
 
       const inProfile = (s: SessionInfo) =>
-        sessionProfile === 'all' || normalizeProfileKey(s.profile) === sessionProfile
+        displayProfile === 'all' || normalizeProfileKey(s.profile) === displayProfile
 
       const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform && inProfile(s)
       const loaded = $messagingSessions.get().filter(inPlatform).length
 
+      // Same removal-race guard as the recents refresh: this page was read
+      // before an archive could commit and can outlive the tombstone prune.
+      const removalSnapshot = captureSessionTombstoneGenerations()
+
       const owns = () =>
         loadMoreMessagingRequestRef.current[requestKey] === requestId &&
-        sidebarProfileForScope(profileScopeRef.current) === sessionProfile
+        sidebarFetchProfile(profileScopeRef.current) === sessionProfile
 
       const fetchPage = () =>
         listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', sessionProfile, {
@@ -234,7 +304,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         return
       }
 
-      const incoming = publishMessagingRows(dropTombstoned(result.sessions.filter(inPlatform)), sessionProfile)
+      const incoming = publishMessagingRows(
+        dropRemovalRaced(dropTombstoned(result.sessions.filter(inPlatform)), removalSnapshot),
+        sessionProfile
+      )
 
       setMessagingSessions(prev => [
         ...prev.filter(s => !inPlatform(s)),
@@ -252,7 +325,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     [profileScope]
   )
 
-  /** Refresh cron jobs only while the profile that requested them remains active. */
+  /** Refresh cron jobs only while the profile that requested them remains active.
+   *  Jobs stay on the ambient profile in Bot Mode: the jobs overlay, Run now
+   *  and Manage all write `$cronJobs` for `$profileScope`, so a bot-scoped
+   *  list here would be replaced by their next refresh. */
   const refreshCronJobs = useCallback(async () => {
     const sessionProfile = sidebarProfileForScope(profileScope)
 
@@ -267,12 +343,17 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     }
   }, [profileScope])
 
-  /** Refresh every sidebar session slice without committing an obsolete profile response. */
+  /** Refresh every sidebar session slice without committing an obsolete profile response.
+   *  In Bot Mode with a selected bot, scope the whole payload to THAT bot's
+   *  profile (fetch via its logical route) so its Telegram threads land in
+   *  the messaging slice instead of the ambient profile's (#126732). */
   const refreshSessions = useCallback(
     async (shouldPublish: () => boolean = () => true) => {
-      const sessionProfile = sidebarProfileForScope(profileScope)
+      const sessionProfile = sidebarFetchProfile(profileScope)
+      // Failure maps are keyed by the backend name too (a remote alias fetches as the alias).
+      const retryProfiles = sidebarRetryProfiles(profileScope)
 
-      if (!shouldPublish() || sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
+      if (!shouldPublish() || sidebarFetchProfile(profileScopeRef.current) !== sessionProfile) {
         return
       }
 
@@ -292,7 +373,12 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       const owns = () =>
         shouldPublish() &&
         refreshSessionsRequestRef.current === requestId &&
-        sidebarProfileForScope(profileScopeRef.current) === sessionProfile
+        sidebarFetchProfile(profileScopeRef.current) === sessionProfile
+
+      // Snapshot the removal lifecycle BEFORE the first read: a page read
+      // pre-archive-commit can land post-prune, and only the generation
+      // delta (not tombstone membership) still names the doomed row then.
+      const removalSnapshot = captureSessionTombstoneGenerations()
 
       try {
         const limit = $sessionsLimit.get()
@@ -340,10 +426,21 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           const recents = result.recents
           const recentsErrors = recents.errors ?? result.errors
 
+          const scopedRetry =
+            recents.retry === true ||
+            retryProfiles.some(
+              name =>
+                (name !== 'all' && recents.profiles_failed?.[name]?.retry === true) ||
+                result.profiles_failed?.[name]?.retry === true
+            )
+
           setCorruptSessionStores(result.storage)
           // A damaged store already has its own notice; Retry can't repair it.
           const retryableErrors = recentsErrors?.filter(e => !result.storage?.[e.profile])
-          setSessionsLoadError(Boolean(showLoading && retryableErrors?.length && recents.sessions.length === 0))
+          setSessionsLoadError(
+            Boolean(showLoading && (scopedRetry || retryableErrors?.length) && (recents.sessions?.length ?? 0) === 0)
+          )
+          setSessionProfilesFailed(recentsErrors)
 
           // Drop rows the user just deleted/archived: a refresh can race an
           // in-flight mutation and the backend page still carries the doomed row.
@@ -358,7 +455,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
               carryForwardFailedProfileSessions(prev, recents.sessions ?? [], recents.errors ?? result.errors)
             )
 
-            const next = mergeSessionPage(prev, incoming, sessionsToKeep())
+            // Filter AFTER the merge: the guard must also catch survivors
+            // (a stale previous slice can still hold the doomed row through
+            // the keep set once the tombstone prune has cleared membership).
+            const next = dropRemovalRaced(mergeSessionPage(prev, incoming, sessionsToKeep()), removalSnapshot)
 
             return sameCronSignature(prev, next) ? prev : next
           })
@@ -390,11 +490,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           })
 
           // Cron section: latest N cron sessions (kept so a pinned cron run still
-          // resolves via sessionByAnyId), signature-gated like above.
+          // resolves via sessionByAnyId), signature-gated like above. The
+          // optimistic tombstone applies here too — the batched page can carry
+          // a cron run whose delete/archive RPC is still in flight (#50928).
           setCronSessions(prev => {
             const incoming = carryForwardFailedProfileSessions(
               prev,
-              result.cron.sessions ?? [],
+              dropRemovalRaced(dropTombstoned(result.cron.sessions ?? []), removalSnapshot),
               result.cron.errors ?? result.errors
             )
 
@@ -407,12 +509,15 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           const messagingErrors = result.messaging.errors ?? result.errors
 
           const messagingRows = publishMessagingRows(
-            dropTombstoned(
-              carryForwardFailedProfileSessions(
-                $messagingSessions.get(),
-                (result.messaging.sessions ?? []).filter(s => isMessagingSource(s.source)),
-                messagingErrors
-              )
+            dropRemovalRaced(
+              dropTombstoned(
+                carryForwardFailedProfileSessions(
+                  $messagingSessions.get(),
+                  (result.messaging.sessions ?? []).filter(s => isMessagingSource(s.source)),
+                  messagingErrors
+                )
+              ),
+              removalSnapshot
             ),
             sessionProfile
           )
@@ -439,7 +544,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       }
 
       // Cron *jobs* are a distinct API (getCronJobs), not a session slice.
-      if (shouldPublish() && sidebarProfileForScope(profileScopeRef.current) === sessionProfile) {
+      if (shouldPublish() && sidebarFetchProfile(profileScopeRef.current) === sessionProfile) {
         void refreshCronJobs()
       }
     },
@@ -479,6 +584,20 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         }
       }),
     [refreshSessions]
+  )
+
+  // A Bot Mode switch moves the fetch scope while $profileScope stays put
+  // (#126732): refresh the slices for the bot now selected.
+  useEffect(
+    () =>
+      watchSidebarFetchProfile(
+        () => profileScopeRef.current,
+        () => {
+          void refreshSessions()
+          void refreshMessagingSessions()
+        }
+      ),
+    [refreshMessagingSessions, refreshSessions]
   )
 
   return {

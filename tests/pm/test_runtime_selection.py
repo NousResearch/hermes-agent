@@ -59,9 +59,46 @@ def test_boot_uses_one_selected_dependency_tree_in_fresh_process(tmp_path, monke
         "print(importlib.util.find_spec('base_only') is None)"
     )
     process = subprocess.run([sys.executable, "-c", code, str(root), str(site_of(base))],
-                             env=dict(os.environ), text=True, capture_output=True, timeout=30)
+                             env=dict(os.environ), text=True, capture_output=True, timeout=30, check=False)
     assert process.returncode == 0, process.stderr
     assert process.stdout.splitlines() == ["new", "True"]
+
+
+def test_boot_puts_the_checkout_launcher_ahead_of_the_venvs_own_console_script(tmp_path, monkeypatch):
+    """#124627: the venv's `hermes` console script is an editable install bound to the
+    build-time source snapshot. A child resolving `hermes` off PATH must reach the
+    checkout's own launcher, never that stale copy."""
+    import os
+    import subprocess
+    import sys
+    from pm import environments as runtime_paths
+
+    root = tmp_path / "repo"
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state = runtime_paths.install_state_dir(root)
+    selected = state / "environments" / "new" / "venv"
+    def site_of(venv):
+        return venv / ("Lib/site-packages" if os.name == "nt" else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
+    site_of(selected).mkdir(parents=True)
+    (selected / "pyvenv.cfg").write_text("home = test")
+    venv_bin = runtime_paths.venv_bin_dir(selected)
+    venv_bin.mkdir(parents=True)
+    checkout_bin = root / ".hermes" / "bin"
+    checkout_bin.mkdir(parents=True)
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "facts.json").write_text(json.dumps({"schema": 1, "packages": {
+        "venv": {"environment": str(selected)}
+    }}))
+    code = (
+        "import os, sys; from pathlib import Path; from pm.environments import activate_dependencies; "
+        "activate_dependencies(Path(sys.argv[1])); print(os.environ.get('PATH', ''))"
+    )
+    process = subprocess.run([sys.executable, "-c", code, str(root)],
+                             env=dict(os.environ), text=True, capture_output=True, timeout=30, check=False)
+    assert process.returncode == 0, process.stderr
+    entries = process.stdout.strip().split(os.pathsep)
+    assert entries.index(str(checkout_bin)) < entries.index(str(venv_bin))
 
 
 @pytest.mark.parametrize("command,allowed", [(["pm", "install", "--help"], True), (["pm", "doctor"], True),
@@ -79,7 +116,7 @@ def test_broken_environment_keeps_explicit_repair_entry_reachable(tmp_path, monk
     record.write_text(json.dumps({"packages": {"venv": {"environment": str(tmp_path / "missing")}}}))
     code = "import sys; sys.argv = ['hermes', *sys.argv[1:]]; import hermes_bootstrap; print('bootstrap-ready')"
     result = subprocess.run([sys.executable, "-c", code, *command], env=dict(os.environ),
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert (result.returncode == 0) is allowed, result.stderr
     if not allowed:
         assert "hermes pm repair" in result.stderr
@@ -105,7 +142,7 @@ def test_manual_repair_bypasses_damaged_generation_activation(tmp_path, monkeypa
     }}}), encoding="utf-8")
     env = {**os.environ, "PYTHONPATH": str(repo)}
     result = subprocess.run([sys.executable, "-S", "-m", "hermes_cli.main", "pm", "repair", "--help"],
-                            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+                            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert "hermes pm repair" in result.stdout
 
@@ -146,7 +183,7 @@ def test_boot_never_activates_the_pre_pm_venv(tmp_path, monkeypatch, interpreter
         "print('legacy importable:', importlib.util.find_spec('legacy_only') is not None)"
     )
     result = subprocess.run([python, "-I", "-c", code, str(repo), str(root)], env=dict(os.environ),
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     expected = ("refused: no dependency environment is committed" if interpreter == "store"
                 else "legacy importable: False")

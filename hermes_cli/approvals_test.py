@@ -6,8 +6,9 @@ order the runtime guard (``check_all_command_guards``) applies them:
 
 1. container-skip gate (isolated backends bypass all guards), 2. hardline blocklist (never
 bypassable, fires before yolo/off), 3. sudo-stdin guard (unconditional), 4. user ``approvals.deny``
-rules (fire before yolo/off), 5. yolo / ``approvals.mode: off`` bypass, 6. permanent
-``command_allowlist``, 7. dangerous-pattern detection (would prompt).
+rules (fire before yolo/off), 5. yolo / ``approvals.mode: off`` bypass (which refuses a command
+the hardline scan could not read to the end: only a human may approve that), 6. permanent
+``command_allowlist`` (not for such a command), 7. dangerous-pattern detection (would prompt).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ EXIT_DENY = 3
 
 _VERDICT_EXIT = {
     "allow": EXIT_ALLOW, "ask-approval": EXIT_ASK, "hardline-deny": EXIT_DENY,
-    "user-deny": EXIT_DENY,
+    "user-deny": EXIT_DENY, "scan-incomplete-deny": EXIT_DENY,
 }
 
 
@@ -32,7 +33,7 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
     carries ``verdict``, ``exit_code``, ``rule``, ``detail`` and ``normalized_variants`` (the
     de-obfuscated forms the detectors actually evaluated).
     """
-    import tools.approval as approval
+    from tools import approval
     from tools import approval_context, approval_detection, approval_floors
     # Sync config-persisted "always" patterns so the allowlist check below sees what the runtime
     # would see (load is read-only).
@@ -89,7 +90,18 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
                    "config.yaml (blocked even under --yolo / mode=off)",
         )
 
-    # 5. Yolo / approvals.mode=off bypass.
+    # 5. Yolo / approvals.mode=off bypass. A command the hardline scan could not finish is
+    #    human-only, so the bypass refuses it instead (as the runtime does).
+    unread = approval_detection.hardline_scan_incomplete(command)
+    bypass = (approval._YOLO_MODE_FROZEN
+              or approval.is_current_session_yolo_enabled()
+              or approval_context._get_approval_mode() == "off")
+    if unread and bypass:
+        return result(
+            "scan-incomplete-deny", rule=approval_detection._SCAN_INCOMPLETE_DESCRIPTION,
+            detail="the hardline scan could not read the whole command, so only a human may approve "
+                   "it; --yolo / approvals.mode: off (like cron/-q/unattended contexts) refuse it",
+        )
     if (approval._YOLO_MODE_FROZEN
             or approval.is_current_session_yolo_enabled()
             or approval_context._get_approval_mode() == "off"):
@@ -99,12 +111,19 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
                    "only hardline/deny rules would block",
         )
 
-    # 6. Permanent command_allowlist.
-    if approval_floors._command_matches_permanent_allowlist(command):
+    # 6. Permanent command_allowlist (never for a command the hardline scan could not finish).
+    if not unread and approval_floors._command_matches_permanent_allowlist(command):
         return result("allow", detail="matches command_allowlist in config.yaml (permanently approved)")
 
     # 7. Dangerous-pattern detection → would prompt.
     is_dangerous, pattern_key, description = approval_detection.detect_dangerous_command(command)
+    if is_dangerous and unread:
+        return result(
+            "ask-approval", rule=description,
+            detail="the hardline scan could not read the whole command: the runtime asks a human "
+                   "once (no session/always scope; smart approval does not decide it) and refuses it "
+                   "where no human can answer (cron, -q, unattended platforms)",
+        )
     if is_dangerous:
         return result(
             "ask-approval", rule=description,

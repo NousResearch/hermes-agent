@@ -6,13 +6,11 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
-import { _electron, type ElectronApplication, type Page } from '@playwright/test'
-import { z } from 'zod'
-
 import { resolveDesktopHermesHome } from '../../../apps/desktop/electron/data-paths.mjs'
 import { applyBundleEnvironment } from '../../../apps/desktop/scripts/bundle-env.mjs'
-import { readChatIdentity, runDesktopChatSmoke, waitForChatReady } from '../../../tests-js/scripts/desktop-chat-smoke.ts'
-import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readInstallationCommit } from '../../../tests-js/scripts/desktop-smoke-process.ts'
+import { type ChatIdentity, readChatIdentity, runDesktopChatSmoke, waitForChatReady } from '../../../tests-js/scripts/desktop-chat-smoke.ts'
+import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readInstallationCommit, reusedDesktopBuildCommit } from '../../../tests-js/scripts/desktop-smoke-process.ts'
+import { _electron, type ElectronApplication, type Page, z } from '../../../tests-js/scripts/e2e-driver-deps.ts'
 import { validateMockUrl, writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config.ts'
 import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server.ts'
 
@@ -92,6 +90,19 @@ function requireEmptyHermesHome(home: string): void {
   const entries = fs.readdirSync(home)
   if (entries.length > 0) {
     throw new Error(`Predicted Hermes home ${home} is not empty (${entries.length} entries); refusing to seed an existing profile`)
+  }
+}
+
+/** After an update the app reopens the profile the OLD phase left, so the post-update
+ * smoke expects state there. Reseeding it is safe only when the prediction is one of
+ * this run's own homes, never a real profile the resolver fell through to. */
+export function admitPredictedHermesHome(home: string, phase: SmokeOptions['phase'], runHomes: readonly string[]): void {
+  if (phase !== 'new') {
+    requireEmptyHermesHome(home)
+    return
+  }
+  if (!runHomes.some((runHome: string): boolean => path.relative(runHome, home) === '')) {
+    throw new Error(`Predicted Hermes home ${home} is not one of this run's homes (${runHomes.join(', ')}); refusing to seed it after the update`)
   }
 }
 
@@ -259,6 +270,20 @@ async function verifyRunningDesktop(app: ElectronApplication, options: SmokeOpti
   return running
 }
 
+function assertResolvedIdentity(identity: ChatIdentity, options: SmokeOptions, predictedHome: string | undefined): void {
+  if (options.origin === 'source' && fs.realpathSync(identity.hermesRoot) !== fs.realpathSync(options.root)) {
+    throw new Error('Desktop resolved a different source installation')
+  }
+  // A bundled artifact that bakes its own env resolves its home itself; the
+  // app must report the home the driver predicted and seeded, not some other
+  // (possibly real, pre-existing) profile.
+  if (predictedHome) {
+    if (!identity.hermesHome || fs.realpathSync(identity.hermesHome) !== fs.realpathSync(predictedHome)) {
+      throw new Error(`Desktop resolved Hermes home ${identity.hermesHome ?? '(unreported)'} instead of the predicted ${predictedHome}`)
+    }
+  }
+}
+
 export type LaunchElectron = (launch: Parameters<typeof _electron.launch>[0]) => Promise<ElectronApplication>
 
 // `launchApp` is a parameter so a test can substitute a failing launcher and
@@ -275,9 +300,15 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions, launchApp:
   try {
     fs.accessSync(options.exe, fs.constants.X_OK)
     fs.accessSync(options.root)
+    const launch: Launch = resolveSmokeLaunch(options)
+    const bundleEnv: Record<string, string | null> | undefined = options.origin === 'bundled' ? readBundledBundleEnv(options.root) : undefined
+    predictedHome = bundleEnv ? predictSmokeHermesHome(launch.env, bundleEnv) : undefined
+
+    // Check before the driver creates its sandbox folders inside this home.
+    if (predictedHome) { admitPredictedHermesHome(predictedHome, options.phase, candidateSmokeHermesHomes(options.home, options['user-data'])) }
+
     fs.mkdirSync(options.home, { recursive: true })
     fs.mkdirSync(options['user-data'], { recursive: true })
-    const launch = resolveSmokeLaunch(options)
     fs.mkdirSync(launch.env.HOME!, { recursive: true })
     // Electron resolves shell folders before app 'ready': Windows SHGetFolderPath
     // fails (and applyDesktopIdentity crashes the process) when the roaming/local
@@ -296,10 +327,7 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions, launchApp:
     // provider config and .env. When the artifact's stamp carries its baked
     // bundle env, predict the home the app will actually resolve and seed that
     // too, refusing to seed a non-empty one.
-    const bundleEnv = options.origin === 'bundled' ? readBundledBundleEnv(options.root) : undefined
-    predictedHome = bundleEnv ? predictSmokeHermesHome(launch.env, bundleEnv) : undefined
     for (const home of new Set([...candidateSmokeHermesHomes(options.home, options['user-data']), ...(predictedHome ? [predictedHome] : [])])) {
-      if (predictedHome && home === predictedHome) { requireEmptyHermesHome(home) }
       writeMockProviderConfig(home, mockUrl)
       writeEnvFile(home, 'e2e-mock-key', mockUrl)
     }
@@ -318,32 +346,26 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions, launchApp:
       throw new Error('Required local backend was replaced by a remote connection')
     }
     const identity = await readChatIdentity(page)
-    if (options.origin === 'source' && fs.realpathSync(identity.hermesRoot) !== fs.realpathSync(options.root)) {
-      throw new Error('Desktop resolved a different source installation')
-    }
-    // A bundled artifact that bakes its own env resolves its home itself; the
-    // app must report the home the driver predicted and seeded, not some other
-    // (possibly real, pre-existing) profile.
-    if (predictedHome) {
-      if (!identity.hermesHome || fs.realpathSync(identity.hermesHome) !== fs.realpathSync(predictedHome)) {
-        throw new Error(`Desktop resolved Hermes home ${identity.hermesHome ?? '(unreported)'} instead of the predicted ${predictedHome}`)
-      }
-    }
-    const backend = localBackendProcess(Number(base.port), running.pid)
-    // Evidence before assertions: the backend's identity must be on disk when
-    // assertBackendOrigin fails, or the leg reports a mismatch with nothing to
-    // inspect.
+    assertResolvedIdentity(identity, options, predictedHome)
+    // The ordinary host-attach path may reuse the updater's relaunched app's
+    // backend, and `hermes gateway ensure` attaches to (or starts, detached) the
+    // canonical gateway. Observe the ledger and gateway_state.json the app's home
+    // resolves to (its machine root), not an arbitrary listener, and retain the
+    // OS listener + installed-tree proof below.
     fs.writeFileSync(path.join(out, `desktop-backend-${options.phase}.log`), connection.logs.map(redact).join('\n'))
-    // `identity.hermesRoot` was asserted against options.root above, and the listener was
-    // tied to this app process when it was identified, so on a platform that cannot read
-    // the backend's own environment those two facts are the available evidence.
-    assertBackendOrigin(backend, options.root, options.origin, { appReportedRoot: identity.hermesRoot })
+    const backend = localBackendProcess(Number(base.port), running.pid, predictedHome ?? options.home)
+    // `identity.hermesRoot` was asserted against options.root above. For a listener that
+    // descends from this app process, on a platform that cannot read the backend's own
+    // environment, those two facts are the available evidence; a ledger-attached host
+    // backend is not tied to the app by ancestry and must prove its tree itself; a canonical
+    // gateway whose cwd is unreadable must report the installed commit.
     const provenanceCommit = readInstallationCommit(options.root, options.origin)
+    assertBackendOrigin(backend, options.root, options.origin, { appReportedRoot: identity.hermesRoot, installedCommit: provenanceCommit })
     if (provenanceCommit !== options['expect-commit']) { throw new Error('Installed commit differs from --expect-commit') }
-    fs.writeFileSync(path.join(out, `desktop-backend-${options.phase}.log`), connection.logs.map(redact).join('\n'))
     // Trace only chat actions. Connection probes can return credential-bearing logs.
     await app.context().tracing.start({ screenshots: true, snapshots: false, sources: false })
-    const chat = await runDesktopChatSmoke(page, { mockUrl, phase: options.phase, outDir: out, expectCommit: options['expect-commit'], provenanceCommit })
+    const reusedBuildCommit = reusedDesktopBuildCommit(options.root, options.origin, provenanceCommit)
+    const chat = await runDesktopChatSmoke(page, { mockUrl, phase: options.phase, outDir: out, expectCommit: options['expect-commit'], provenanceCommit, reusedBuildCommit })
     fs.writeFileSync(receiptPath, `${JSON.stringify({ ...chat, status: 'closing' }, null, 2)}\n`)
     const result = { ...chat, origin: options.origin, root: options.root, executable: options.exe, running, predictedHome,
       localModeConfigured: true, backend: { ...backend, command: redact(backend.command) }, launchKind: options.phase === 'new' ? 'post-update-launch' : 'installed-launch' }
@@ -374,6 +396,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     'user-data': { type: 'string' }, out: { type: 'string' }, phase: { type: 'string' },
     'expect-commit': { type: 'string' }, 'launch-spec': { type: 'string' }, 'mock-url': { type: 'string' },
   } })
+
+  // When the app exits before printing its debugger line, Playwright's Electron.launch rejects
+  // the awaited watcher and leaves its sibling stderr watchers' rejections unhandled. Without a
+  // listener Node dies on those first, so the catch below never writes the failed receipt or the
+  // launch call log (the app's exit code and stderr). Still fail the run.
+  process.on('unhandledRejection', (reason: unknown): void => {
+    console.error(`unhandled rejection: ${redact(String(reason))}`)
+    process.exitCode = 1
+  })
+
   try {
     await runInstalledDesktopSmoke(optionsSchema.parse(values))
   } catch (error) {

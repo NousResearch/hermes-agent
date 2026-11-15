@@ -69,6 +69,27 @@ export function preventCloseButtonAutoFocus(event: Event) {
   event.preventDefault()
 }
 
+// The dialog's top-right X. Radix Close routes through the modal's
+// onOpenChange, same path as Escape. Exported for bespoke Radix shells (the
+// boot-failure overlay) that can't use DialogContent but want the same X.
+function DialogCloseButton() {
+  const { t } = useI18n()
+
+  return (
+    <DialogPrimitive.Close asChild data-slot="dialog-close-button">
+      <Button
+        aria-label={t.common.close}
+        className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+        size="icon-xs"
+        variant="ghost"
+      >
+        <X className="size-4" />
+        <span className="sr-only">{t.common.close}</span>
+      </Button>
+    </DialogPrimitive.Close>
+  )
+}
+
 function DialogContent({
   className,
   bodyClassName,
@@ -105,8 +126,6 @@ function DialogContent({
   banner?: React.ReactNode
   bannerTone?: DialogBannerTone
 }) {
-  const { t } = useI18n()
-
   const widthClass = fitContent ? 'w-auto max-w-[92vw]' : 'w-full max-w-lg'
 
   // Publish the dialog's content node so popovers (Select / Popover /
@@ -133,20 +152,8 @@ function DialogContent({
   // an input) is what most dialogs want. Dialogs with no input should pass
   // `onOpenAutoFocus={preventCloseButtonAutoFocus}` explicitly instead.
 
-  // No tip on the X — the glyph is the label. Keep aria-label / sr-only for a11y.
-  const closeButton = showCloseButton ? (
-    <DialogPrimitive.Close asChild data-slot="dialog-close-button">
-      <Button
-        aria-label={t.common.close}
-        className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-        size="icon-xs"
-        variant="ghost"
-      >
-        <X className="size-4" />
-        <span className="sr-only">{t.common.close}</span>
-      </Button>
-    </DialogPrimitive.Close>
-  ) : null
+  // No tip on the X — the glyph is the label (DialogCloseButton keeps aria-label / sr-only).
+  const closeButton = showCloseButton ? <DialogCloseButton /> : null
 
   // With a banner, the border can't live on the scroll/clip box (it would draw a
   // line around the banner too). The white body keeps its own bottom radius and
@@ -314,6 +321,7 @@ function DialogDescription({ className, ...props }: React.ComponentProps<typeof 
 export {
   Dialog,
   DialogClose,
+  DialogCloseButton,
   DialogContent,
   DialogDescription,
   DialogFooter,

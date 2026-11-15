@@ -150,7 +150,7 @@ def run_python(code: str, home: Path, *args: str, timeout: float = 120.0,
                extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """A fresh interpreter importing the worktree's Hermes under the hermetic env."""
     return subprocess.run([sys.executable, "-c", code, *args], cwd=str(home), env=hermetic_env(home, extra_env),
-                          capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+                          capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
 
 
 def db_blob(db: Path) -> str:

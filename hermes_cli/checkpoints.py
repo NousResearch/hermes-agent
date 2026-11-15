@@ -219,26 +219,3 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
         p_clear = subs.add_parser(name, help=help_text)
         p_clear.add_argument("-f", "--force", action="store_true", help="Skip confirmation prompt")
         p_clear.set_defaults(func=func)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from datetime import datetime  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'cmd_list': ('hermes_cli.plugins_cmd', 'cmd_list'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -114,7 +114,7 @@ async def test_registration_failure_after_failed_discovery_leads_with_discovery(
     from mcp.client.auth.oauth2 import OAuthRegistrationError
     from tools.mcp_oauth import humanize_oauth_registration_error
 
-    httpx, req, flow = await _make_flow(tmp_path, monkeypatch, registered=False)
+    httpx, _req, flow = await _make_flow(tmp_path, monkeypatch, registered=False)
     outbound = await flow.__anext__()
     response = httpx.Response(401, request=outbound, headers={"www-authenticate": "Bearer"})
     with pytest.raises(OAuthRegistrationError) as excinfo:

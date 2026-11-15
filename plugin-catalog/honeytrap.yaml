@@ -1,0 +1,19 @@
+name: honeytrap
+repo: https://github.com/imabhays/honeytrap
+sha: eab217eff5387afbc42cb214b7f0925b061fcaa2
+title: "Honeytrap - catch a hijacked agent in the act"
+description: "Catch a hijacked agent by the fake credentials it goes looking for. Honeytrap hides a realistic ops note (prod-access.md) in the agent's workspace with six decoys (deploy ref, signing key, AWS id, database URL, admin portal, license key) in shapes Hermes's redactor leaves visible, and never mentions them to the model. If one shows up in any tool call, plain or disguised (base64, hex, URL-encoded, reversed, split, zero-width or Unicode-tag smuggled, lookalike letters, or leaked in fragments across calls), or the decoy file is sent out by path (curl -F @file, cat | nc), the call is blocked (pre_tool_call), the session's outbound tools are quarantined until /honeytrap release, the chat gets an alert with the attack chain (untrusted source, decoy read, blocked egress) and an OCSF-style Detection Finding is written for your SIEM. /honeytrap plants, tests, lists incidents and switches mode; hermes honeytrap generates, rotates and removes decoys. Disclosure - writes one decoy file into the agent workspace when you run /honeytrap plant (through the agent's write_file) or hermes honeytrap init --dir/plant; stores the decoys, their placements and incidents (tool name, decoy kind, encoding, destination host, chain of tool names; never arguments or conversation text) in its own plugin data. No network, subprocesses, tools, credentials or telemetry. Disclosure — adds pre_tool_call/post_tool_call hooks that scan every tool call's arguments and results (up to 256 KB each) for its own decoys; in the default enforce mode it blocks a call carrying a decoy, blocks the session's outbound tools after a critical hit until /honeytrap release (in-memory, cleared on restart, and release lifts every session), and blocks every tool call if the guard itself errors (switch to monitor mode to recover); /honeytrap plant (through the agent's write_file) or hermes honeytrap init --dir/plant writes a decoy file prod-access.md into the chosen workspace; stores decoy values, placements and incidents (tool name, decoy kind, encoding, destination host, tool-name chain; never arguments or conversation text) under its plugin data dir; no network, subprocesses, tools, credential reads or telemetry."
+maintainer: imabhays
+tier: community
+category: tools
+docs_url: https://github.com/imabhays/honeytrap/tree/eab217eff5387afbc42cb214b7f0925b061fcaa2#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.22.3"

@@ -1,0 +1,24 @@
+name: breeze-tts
+title: Breeze Blue TTS
+repo: https://github.com/MDsniper/hermes-breeze-tts
+subdir: breeze-tts
+sha: a7b9e6ffa0143d7f07562d8708fd16a2f10eb2fb
+description: "Breeze Blue text-to-speech as a Hermes voice provider (tts.provider: breeze-blue), driven by the Breeze Blue Developer API. Voices come from the Breeze console — stock, cloned or designed — and the provider speaks whole replies through text_to_speech and read-aloud, with mp3 (default), wav, flac, opus, aac or pcm output, so Opus voice notes work on messaging platforms. No new Python dependencies: the plugin posts directly to the ElevenLabs-shaped endpoint. Disclosure — sends the text being spoken, the chosen voice id and model, and your BREEZE_API_KEY (header xi-api-key) to api.breeze.blue, or to BREEZE_BASE_URL when you set it; synthesis is billed to your Breeze Blue account; generated audio is written to Hermes's audio cache; the text is not logged; no tools, hooks or middleware; no telemetry. Not implemented: realtime/WebSocket streaming (voice-mode replies are spoken sentence by sentence instead) and voice listing."
+maintainer: MDsniper
+tier: community
+category: voice
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/MDsniper/hermes-breeze-tts#readme
+version: "0.1.0"
+readme: true
+platforms: []
+known_issues:
+  - "The provider is named breeze-blue, not breeze: 'breeze' is the self-hosted local streaming server keyed under tts.streaming.provider (PR #105299), so the hosted API provider takes its vendor name."
+  - "tts.voice is mandatory: Breeze Blue has no built-in voice and every voice id is account-scoped, so the provider raises instead of guessing one."
+  - "No voice listing or realtime streaming; per-sentence synthesis covers voice mode at higher latency."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - BREEZE_API_KEY

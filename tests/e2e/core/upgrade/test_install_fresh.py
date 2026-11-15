@@ -58,7 +58,8 @@ def _login_shell_hermes(sb: I.Sandbox) -> str:
     env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
     bash = shutil.which("bash")
     assert bash is not None, "bash required for install.sh and the login-shell probe"
-    cp = H.run([bash, "-lic", "command -v hermes"], env=env, cwd=sb.root, writable=[sb.root], timeout=60)
+    cp = H.run([bash, "-lic", "command -v hermes"], env=env, cwd=sb.root, writable=[sb.root], timeout=60,
+               ro_binds=H.LOGIN_SHELL_RO_BINDS)
     assert cp.returncode == 0, H.describe(cp)
     return cp.stdout.strip()
 

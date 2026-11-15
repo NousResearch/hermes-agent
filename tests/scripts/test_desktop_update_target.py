@@ -127,6 +127,7 @@ def _run_handoff(tmp_path, target, *, windows=False, inherited_home=True, modern
         text=True,
         encoding="utf-8",
         timeout=90,
+        check=False,
     )
     calls = (
         [json.loads(line) for line in capture.read_text(encoding="utf-8").splitlines()]
@@ -263,7 +264,7 @@ def test_pm_handoff_uses_published_launcher_and_does_not_retry(tmp_path, code):
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("foreign", [False, True])
 def test_earlier_pm_userbin_publication_requires_exact_source_identity(tmp_path, foreign):
-    result, calls, home, install = _run_handoff(tmp_path, [], modern=True, userbin_only=True, foreign=foreign)
+    result, calls, _home, install = _run_handoff(tmp_path, [], modern=True, userbin_only=True, foreign=foreign)
     assert result.returncode == (3 if foreign else 0), result.stdout + result.stderr
     assert len(calls) == (0 if foreign else 1)
     assert not (install / '.hermes/bin/hermes').exists()

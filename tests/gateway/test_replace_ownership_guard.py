@@ -15,14 +15,21 @@ Pinned surfaces:
   ``tim`` (the substring heuristic's false-allow), while an exact different
   profile flag contradicts and refuses;
 * signal boundary — ``start_gateway(replace=True)`` on unprovable ownership
-  returns refusal without calling ``terminate_pid`` or writing a takeover
-  marker; the legitimate bound same-home target still reaches the replace
-  flow.
+  refuses without calling ``terminate_pid`` or writing a takeover marker; the
+  legitimate bound same-home target still reaches the replace flow;
+* retained stamp (#135392) — the unprovable-ownership refusal stamps
+  ``gateway_state: startup_failed`` (with an ``exit_reason`` code) so the
+  stale PID record stops being trusted (``get_runtime_status_running_pid()``
+  returns None for startup_failed) and /api/status shows reality, while the
+  exit stays 1 so a supervisor's next attempt can win.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -301,7 +308,7 @@ class TestSignalBoundary:
     def _run_replace(self, agent_patches):
         from gateway import run as gateway_run
 
-        calls = {"terminate": 0, "marker": 0}
+        calls = {"terminate": 0, "marker": 0, "status": []}
 
         def _fake_terminate(pid, force=False):
             calls["terminate"] += 1
@@ -309,9 +316,13 @@ class TestSignalBoundary:
         def _fake_marker(pid):
             calls["marker"] += 1
 
+        def _fake_status(**fields):
+            calls["status"].append(fields)
+
         base = [
             patch("gateway.status.get_running_pid", return_value=424242),
             patch.object(gateway_run, "_replace_target_belongs_to_other_profile"),
+            patch("gateway.status.write_runtime_status", side_effect=_fake_status),
             patch("gateway.status.terminate_pid", side_effect=_fake_terminate),
             patch("gateway.status.write_takeover_marker", side_effect=_fake_marker),
         ]
@@ -331,7 +342,6 @@ class TestSignalBoundary:
     def test_unprovable_ownership_never_signals(self, profile_env):
         """Unprovable ownership → start_gateway returns False WITHOUT calling
         terminate_pid or writing a takeover marker."""
-        from unittest.mock import MagicMock
 
         def configure(stack):
             guard = stack.enter_context(
@@ -344,13 +354,35 @@ class TestSignalBoundary:
 
         result, calls = self._run_replace(lambda s: configure(s))
 
-        assert result is False
+        assert result is False, (
+            "the refusal must stay exit-1-shaped so a supervisor's next attempt "
+            "can succeed once the stale record stops being trusted"
+        )
         assert calls["terminate"] == 0, (
             "--replace must not signal a target whose ownership is unproven"
         )
         assert calls["marker"] == 0, (
             "no takeover marker may be written for a refused target"
         )
+
+    def test_unprovable_ownership_stamps_startup_failed(self, profile_env):
+        """The refusal publishes the retained fatal state + an exit reason, so
+        /api/status reports startup_failed instead of a stale heartbeat and the
+        next start no longer trusts the stale PID record."""
+        def configure(stack):
+            stack.enter_context(
+                patch(
+                    "gateway.run._replace_target_belongs_to_other_profile",
+                    return_value=True,
+                )
+            )
+
+        _result, calls = self._run_replace(configure)
+
+        assert calls["status"], "the ownership refusal must stamp runtime status"
+        stamp = calls["status"][-1]
+        assert stamp.get("gateway_state") == "startup_failed"
+        assert stamp.get("exit_reason") == "gateway_replace_ownership_unproven"
 
     def test_provable_same_home_reaches_replace_flow(self, profile_env):
         """Counterpart: bound same-home target still enters the replace flow
@@ -371,7 +403,7 @@ class TestSignalBoundary:
             )
             stack.enter_context(patch("gateway.run.time.sleep"))
 
-        result, calls = self._run_replace(configure)
+        _result, calls = self._run_replace(configure)
 
         assert calls["terminate"] == 1, (
             "a provably same-home target must still be replaceable"
@@ -391,3 +423,74 @@ async def _swallow(coro):
         return await coro
     except Exception:
         return "raised"
+
+
+_CHILD_SCRIPT = '''
+import asyncio, sys, time
+sys.path.insert(0, r"@@REPO@@")
+
+import gateway.run as gateway_run
+import gateway.status as status
+
+# A stale record nothing can prove belongs to this home.
+status.get_running_pid = lambda *args, **kwargs: 424242
+gateway_run._replace_target_belongs_to_other_profile = lambda pid: True
+
+# A stalled disk: the background writer takes five seconds to persist, so an
+# unflushed stamp dies with the process (the CLI exits through os._exit).
+def _slow_write(path, payload):
+    time.sleep(5.0)
+    status._write_json_file(path, payload)
+
+status._get_runtime_status_writer = lambda: status._RuntimeStatusWriter(write_fn=_slow_write)
+
+result = None
+try:
+    result = asyncio.run(gateway_run.start_gateway(replace=True))
+except SystemExit as exc:
+    result = exc.code
+print(f"start_gateway -> {result!r}", file=sys.stderr)
+# The real CLI exit path (gateway/run.py main()): False -> exit 1 -> os._exit.
+gateway_run._exit_after_graceful_shutdown(0 if result is True else (1 if result is False else 2))
+'''
+
+
+class TestStampDurability:
+    """The refusal stamp must be durable BEFORE the CLI's os._exit hard-exit path.
+
+    _write_runtime_status_quiet only queues the snapshot to the background
+    writer; the caller then hard-exits without flushing it, so the next
+    supervised start could read the same stale record and refuse again — the
+    exact loop this branch exists to break. Regression crosses the process
+    boundary: a child enters the refusal branch and exits through the real
+    hard-exit path; the parent verifies what actually reached disk.
+    """
+
+    def test_refusal_stamp_reaches_disk_before_the_hard_exit(self, tmp_path):
+        home = tmp_path / "scratch-home"
+        home.mkdir()
+        (home / "gateway_state.json").write_text(
+            json.dumps({"gateway_state": "running", "pid": 424242}), encoding="utf-8")
+        repo_root = str(Path(__file__).resolve().parents[2])
+        child = tmp_path / "refusal_child.py"
+        child.write_text(_CHILD_SCRIPT.replace("@@REPO@@", repo_root), encoding="utf-8")
+        env = {**os.environ, "HERMES_HOME": str(home)}
+
+        proc = subprocess.run(
+            [sys.executable, str(child)],
+            env=env, capture_output=True, text=True, timeout=120, check=False,
+        )
+
+        assert proc.returncode == 1, f"child stderr: {proc.stderr[-2000:]}"
+        stamped = json.loads((home / "gateway_state.json").read_text(encoding="utf-8"))
+        assert stamped.get("gateway_state") == "startup_failed"
+        assert stamped.get("exit_reason") == "gateway_replace_ownership_unproven"
+
+        verify = subprocess.run(
+            [sys.executable, "-c",
+             "import gateway.status as s; print(s.get_runtime_status_running_pid())"],
+            env=env, capture_output=True, text=True, timeout=60, cwd=repo_root, check=False,
+        )
+        assert verify.stdout.strip() == "None", (
+            "a fresh process must no longer trust the stale PID after the refusal"
+        )

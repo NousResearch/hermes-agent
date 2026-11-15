@@ -6,8 +6,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from gateway.config import Platform
-from gateway.platforms.qqbot.adapter import QQAdapter
-from gateway.platforms.qqbot.keyboards import InteractionEvent
+from plugins.platforms.qqbot.adapter import QQAdapter
+from plugins.platforms.qqbot.keyboards import InteractionEvent
 from gateway.session import SessionSource, build_session_key
 
 

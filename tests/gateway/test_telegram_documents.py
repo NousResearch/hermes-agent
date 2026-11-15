@@ -27,7 +27,8 @@ from gateway.platforms.event import MessageEvent, MessageType
 # Mock the telegram package if it's not installed
 # ---------------------------------------------------------------------------
 # Now we can safely import
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
+from tests.waiting import async_wait_until
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +68,7 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     # Media flags — all None except explicit payload
     msg.photo = photo
     msg.video = None
+    msg.video_note = None
     msg.audio = None
     msg.voice = None
     msg.sticker = None
@@ -87,9 +89,16 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
 
 
 def _make_update(msg):
-    """Wrap a message in a mock Update."""
+    """Wrap a message in a mock Update.
+
+    Mirrors python-telegram-bot, where ``Update.effective_message`` resolves to
+    the underlying message for DMs/groups (and to ``channel_post`` for channel
+    broadcasts).  The media handler resolves via ``_effective_update_message``,
+    so the mock must expose ``effective_message`` like the real object does.
+    """
     update = MagicMock()
     update.message = msg
+    update.effective_message = msg
     return update
 
 
@@ -128,6 +137,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "image_cache"
     )
 
 
@@ -256,14 +268,29 @@ class TestDocumentDownloadBlock:
         event = adapter.handle_message.call_args[0][0]
         assert "could not be downloaded" in (event.text or "")
 
+    @pytest.mark.asyncio
+    async def test_video_note_failure_reply_is_localized(self, adapter, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "de")
+        msg = _make_message()
+        msg.video_note = _make_video()
+        msg.video_note.file_size = 100
+        msg.video_note.get_file = AsyncMock(side_effect=RuntimeError("CDN down"))
+
+        await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        reply = str(msg.reply_text.await_args)
+        assert "Videodatei" in reply and "video note" not in reply
+        assert "send a video note" in adapter.handle_message.call_args[0][0].text
+
 
 class TestVideoDownloadBlock:
     @pytest.mark.asyncio
-    async def test_native_video_is_cached(self, adapter):
+    @pytest.mark.parametrize("attr", ["video", "video_note"])
+    async def test_native_video_is_cached(self, adapter, attr):
         file_obj = _make_file_obj(b"fake-mp4")
-        file_obj.file_path = "videos/clip.mp4"
+        file_obj.file_path = f"{attr}s/clip.mp4"
         msg = _make_message()
-        msg.video = _make_video(file_obj)
+        setattr(msg, attr, _make_video(file_obj))
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
@@ -273,10 +300,104 @@ class TestVideoDownloadBlock:
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
 
+    def test_media_handler_accepts_video_notes(self, adapter):
+        class _Names:  # filter stand-in: | collects names; & and ~ only need to compose
+            def __init__(self, *names):
+                self.names = set(names)
+
+            def __or__(self, other):
+                return _Names(*self.names, *other.names)
+
+            __and__ = __or__
+
+            def __invert__(self):
+                return self
+
+        class _Filter(_Names):  # base of the adapter's own filters (rich_message)
+            def __init__(self, name):
+                super().__init__(name)
+
+        fake_filters = SimpleNamespace(
+            **{name: _Names(name) for name in ("TEXT", "COMMAND", "LOCATION", "VENUE", "CONTACT", "PHOTO", "VIDEO",
+                                                "VIDEO_NOTE", "AUDIO", "VOICE")},
+            Document=SimpleNamespace(ALL=_Names("DOCUMENT")), Sticker=SimpleNamespace(ALL=_Names("STICKER")),
+            Dice=SimpleNamespace(ALL=_Names("DICE")), StatusUpdate=None, MessageFilter=_Filter)
+        registered = {}
+        with patch.multiple("plugins.platforms.telegram.adapter", filters=fake_filters,
+                            TelegramMessageHandler=lambda flt, callback: registered.setdefault(callback, flt)):
+            adapter._register_handlers(MagicMock())
+        assert {"VIDEO", "VIDEO_NOTE"} <= registered[adapter._handle_media_message].names
+
+    @pytest.mark.asyncio
+    async def test_reply_to_a_video_note_caches_it(self, adapter):
+        file_obj = _make_file_obj(b"fake-mp4")
+        file_obj.file_path = "video_notes/file_1.mp4"
+        replied = _make_message()
+        replied.video_note = _make_video(file_obj)
+        replied.video_note.file_size = 1024
+        msg = _make_message()
+        msg.reply_to_message = replied
+        event = MessageEvent(text="what is in this?", message_type=MessageType.TEXT)
+
+        await adapter._cache_replied_media(msg, event)
+        assert event.message_type == MessageType.VIDEO
+        assert event.media_types == ["video/mp4"]
+        assert os.path.exists(event.media_urls[0])
+
 
 # ---------------------------------------------------------------------------
 # TestMediaGroups — media group (album) buffering
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# TestImageDocuments — photos sent "as a file" (uncompressed)
+# ---------------------------------------------------------------------------
+
+_HEIC_BYTES = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic" + b"\x00" * 64
+
+
+class TestImageDocuments:
+    """iOS sends uncompressed photos as HEIC documents; they must reach the agent
+    as images instead of "could not be read as an image"."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("file_name,mime_type,ext", [
+        ("IMG_0001.HEIC", "image/heic", ".heic"),
+        (None, "image/heic", ".heic"),
+        ("IMG_0002.HEIF", "image/heif", ".heif"),
+    ])
+    async def test_heic_document_is_cached_as_image(self, adapter, file_name, mime_type, ext):
+        doc = _make_document(file_name=file_name, mime_type=mime_type,
+                             file_size=len(_HEIC_BYTES), file_obj=_make_file_obj(_HEIC_BYTES))
+        msg = _make_message(document=doc)
+
+        await adapter._handle_media_message(_make_update(msg), MagicMock())
+        await async_wait_until(lambda: adapter.handle_message.await_count, timeout=5)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.PHOTO
+        assert len(event.media_urls) == 1 and event.media_urls[0].endswith(ext)
+        assert event.media_types == [mime_type]
+        assert "could not be read" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [
+        b"<!DOCTYPE html><html>error</html>",
+        b"\x00\x00\x00\x18ftypheic",  # 12-byte stub: the box claims 24 bytes
+        b"abcdftypheic is the HEIC brand, says this text file",  # box size 'abcd' is huge
+    ])
+    async def test_spoofed_heic_document_is_still_rejected(self, adapter, payload):
+        doc = _make_document(file_name="photo.heic", mime_type="image/heic", file_size=40,
+                             file_obj=_make_file_obj(payload))
+        msg = _make_message(document=doc)
+
+        await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == []
+        assert "could not be read as an image" in (event.text or "")
+
 
 class TestMediaGroups:
     @pytest.mark.asyncio

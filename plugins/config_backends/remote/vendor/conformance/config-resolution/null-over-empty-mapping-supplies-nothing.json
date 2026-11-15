@@ -1,0 +1,63 @@
+{
+  "fixtureVersion": 1,
+  "name": "null-over-empty-mapping-supplies-nothing",
+  "description": "Proves rule-5, r8: null over an empty upper mapping is ignored like null over any mapping, so the empty mapping keeps the provenance of the level that supplied it.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "mcp_servers": {}
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "mcp_servers": null
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "mcp_servers": {}
+    },
+    "provenance": {
+      "mcp_servers": "global"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "unset",
+      "path": "mcp_servers",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ],
+  "defaultsMerge": {
+    "defaults": {
+      "mcp_servers": {}
+    },
+    "expect": {
+      "mcp_servers": {}
+    }
+  }
+}

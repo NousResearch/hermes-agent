@@ -57,7 +57,7 @@ class ApprovalRequest:
         cls, *, command: str, description: str, pattern_key: str, pattern_keys: tuple[str, ...],
         session_key: str, surface: str, allow_session: bool, allow_permanent: bool,
         timeout_seconds: float = 300,
-    ) -> "ApprovalRequest":
+    ) -> ApprovalRequest:
         choices: list[ApprovalChoice] = ["once"]
         if allow_session:
             choices.append("session")

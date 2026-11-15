@@ -1,5 +1,6 @@
 import type { BrowserWindow, BrowserWindowConstructorOptions, Session } from 'electron'
 
+import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { cookiesHavePortalSession, portalAccessCookies, type PortalCookie } from './portal-cookies'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 
@@ -21,6 +22,17 @@ interface CookieWindowOptions {
 }
 
 type CookieWindowOutcome = 'landed' | 'closed' | 'timeout' | Error
+
+// Canonical Nous portal base URL, overridable for staging/dev. Mirrors the CLI
+// convention (hermes_cli/auth.py DEFAULT_NOUS_PORTAL_URL + the same env names)
+// so a single override flips every Hermes surface to the same portal.
+const DEFAULT_NOUS_PORTAL_URL = 'https://portal.nousresearch.com'
+
+export function resolvePortalBaseUrl() {
+  const raw = process.env.HERMES_PORTAL_BASE_URL || process.env.NOUS_PORTAL_BASE_URL || DEFAULT_NOUS_PORTAL_URL
+
+  return String(raw).trim().replace(/\/+$/, '')
+}
 
 // Portal credentials belong to NAS, independently of the selected gateway.
 // Read the jar on every operation so provider changes never latch in Desktop.
@@ -175,7 +187,17 @@ export function createPortalSession({
       }
 
       win.on('closed', () => finish('closed'))
-      win.loadURL(portalBaseUrl).catch(error => finish(error instanceof Error ? error : new Error(String(error))))
+      win.loadURL(portalBaseUrl).catch(error => {
+        // A portal redirect can supersede the initial load. Keep watching the
+        // cookie jar instead of destroying the window before sign-in completes.
+        if (isExpectedOauthNavigationAbort(error)) {
+          void checkCookie()
+
+          return
+        }
+
+        finish(error instanceof Error ? error : new Error(String(error)))
+      })
     })
   }
 

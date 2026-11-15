@@ -22,7 +22,7 @@
 // -----------
 // Primarily as an electron-builder `afterExtract` hook (scripts/after-extract.mjs),
 // so EVERY packed build — first install, `hermes desktop`, the installer's
-// --update rebuild, or a dev's manual `npm run pack` — gets a branded exe from
+// --update rebuild, or a dev's manual `pnpm run pack` — gets a branded exe from
 // one place. Previously this stamp lived only in install.ps1, so the update
 // path (which rebuilds via `hermes desktop --build-only`, never install.ps1)
 // shipped a stock "Electron" exe. Keeping it in afterExtract closes that gap.

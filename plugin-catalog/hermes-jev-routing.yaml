@@ -1,0 +1,24 @@
+name: hermes-jev-routing
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: 06a53646587c33174a0fbfbb3713eca90bbb8586
+subdir: public/hermes-jev-routing
+description: "Per-turn model routing for the request that is about to go out. Jev reads the turn, picks the tier it deserves, and the plugin rewrites the provider request onto that model, including the reasoning level when the request carries one. Shadow by default, with notify, confirm and auto modes, a strip under the composer for the turn that was just routed, and a spend ledger. A pick on another provider is reported rather than sent, because a plugin cannot open a second provider client. Disclosure — once a routing JSON is configured, every turn (shadow mode included) sends the current message, up to 4,000 characters of recent user/assistant turns, the active model name, an estimated context size and the spend/budget snapshot to TypeSafe (api.typesafe.ai, endpoint overridable in that JSON), and the jev_route tool and /jev-routing route send their text the same way; in auto mode it rewrites the model and reasoning level on outgoing requests, and in Hermes Desktop the auto mode and the approve row also switch the session's model, including onto another provider (core's expensive-model confirmation is shown to the user, never answered automatically)."
+maintainer: apoapostolov
+tier: community
+category: models
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/hermes-jev-routing
+version: "1.1.0"
+requires_hermes: ">=0.22.3"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/06a53646587c33174a0fbfbb3713eca90bbb8586/public/hermes-jev-routing/docs/hero.png
+platforms: []
+capabilities:
+  provides_tools:
+    - jev_route
+  provides_hooks:
+    - pre_llm_call
+    - post_api_request
+    - on_session_delete
+  provides_middleware:
+    - llm_request
+  requires_env:
+    - TYPESAFE_API_KEY

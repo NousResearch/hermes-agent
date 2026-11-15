@@ -204,7 +204,7 @@ class TestCloudTrimSettings:
         assert keep == 0
 
     def test_non_dict_config(self):
-        enabled, threshold, keep = _cloud_trim_settings(None)
+        enabled, threshold, _keep = _cloud_trim_settings(None)
         assert enabled is True
         assert threshold == _CLOUD_TRIM_THRESHOLD_DB_DEFAULT
 

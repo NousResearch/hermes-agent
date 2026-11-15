@@ -20,7 +20,7 @@
       "ADDRESS path is fully hyphen-joined and joins street+city+state+ZIP with hyphens (e.g. /address/123-Main-St-Anytown-NY-12345) and REQUIRES the ZIP. The older slash form (/address/Street/City-ST) and any ZIP-less form 404.",
       "NAME and PHONE and EMAIL paths use a slash before city/state and do NOT need a ZIP: /name/First-Last/City-ST , /phone/AAA-PPP-LLLL , /email/addr@host.",
       "Street abbreviations are kept verbatim (Ave, Pl, St) - do NOT expand to Avenue/Place/Street; expanding 404s.",
-      "A 404 on a constructed URL means WRONG PATTERN, not 'no record present'. Treat as INCONCLUSIVE: fall back to the on-site search box (browser_type into the address/name field + submit) and read the resulting canonical URL."
+      "A 404 on a constructed URL means WRONG PATTERN, not 'no record present'. Treat as INCONCLUSIVE: fall back to the on-site search box (browser_exec fill_input into the address/name field + submit) and read the resulting canonical URL."
     ]
   },
   "optout": {

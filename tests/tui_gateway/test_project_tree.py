@@ -619,7 +619,6 @@ def test_sibling_probe_is_bounded():
 
     def resolve(cwd):
         probed.append(cwd)
-        return None
 
     assert pt._probe_sibling_worktree("/a-b-c/d-e-f/g-h-i/j-k-l", resolve) == ""
     assert len(probed) <= pt._MAX_SIBLING_PROBES

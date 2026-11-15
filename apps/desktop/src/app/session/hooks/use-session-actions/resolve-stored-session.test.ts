@@ -147,6 +147,15 @@ describe('resolveStoredSession profile ownership', () => {
     expect($unlistedSessionOwnerRows.get().find(s => s.id === 's1')?.hidden).toBe(true)
   })
 
+  it('returns an internal delegate child without promoting it into regular sessions', async () => {
+    mockGetSession.mockResolvedValueOnce(session({ id: 'child', is_internal_child: true }))
+
+    const resolved = await resolveStoredSession('child')
+
+    expect(resolved).toMatchObject({ id: 'child', is_internal_child: true, profile: 'meta' })
+    expect($sessions.get()).toEqual([])
+  })
+
   it('probed desktop profile overrides a remote backend answering as its own "default"', async () => {
     // Per-profile remote override: Electron strips the desktop alias before
     // forwarding, so the standalone backend stamps its backend-local root.

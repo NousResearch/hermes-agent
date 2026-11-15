@@ -1,0 +1,34 @@
+name: sovereign-finance
+title: Sovereign Finance
+repo: https://github.com/gabonaut/hermes-sovereign-finance
+sha: 9ff5c773ecb0b391d8eb7ab3f0dea745a4a4d385
+description: "A self-custodial Smart Agentic Wallet for your agent on BNB Chain and Ethereum, with a Desktop pane. Your passkey is the admin, and the agent's session key is limited onchain to the contracts, functions and daily caps you approve. Powered by Altana. Disclosure — Crypto wallet plugin: the agent signs BNB Chain/Ethereum swaps and liquidity actions with a session key stored in plugin-data; every sovereign_execute call asks for Hermes approval (an \"always\" answer covers one pool or swap direction for that session key), but YOLO mode, approvals.mode off or approvals.cron_mode approve skip the prompt, and anything that reads the session key file (including the agent's own shell) can sign within the onchain contract/function/daily-cap limits without asking, because those limits do not pin recipients. Signed batches go to the Altana relay; it also talks to publicnode RPCs, DexScreener and skills.altana.network, runs a bundled Node CLI, and serves a localhost-only passkey page during admin actions. Its pre_tool_call guard refuses other tools' calls that mention its files, admin routes or the Hermes gateway socket."
+maintainer: gabonaut
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: https://github.com/gabonaut/hermes-sovereign-finance#readme
+image: https://raw.githubusercontent.com/gabonaut/hermes-sovereign-finance/9ff5c773ecb0b391d8eb7ab3f0dea745a4a4d385/assets/catalog.png
+screenshots:
+  - https://raw.githubusercontent.com/gabonaut/hermes-sovereign-finance/9ff5c773ecb0b391d8eb7ab3f0dea745a4a4d385/assets/screenshots/1-setup-steps.png
+  - https://raw.githubusercontent.com/gabonaut/hermes-sovereign-finance/9ff5c773ecb0b391d8eb7ab3f0dea745a4a4d385/assets/screenshots/2-permissions.png
+  - https://raw.githubusercontent.com/gabonaut/hermes-sovereign-finance/9ff5c773ecb0b391d8eb7ab3f0dea745a4a4d385/assets/screenshots/3-position-in-range.png
+  - https://raw.githubusercontent.com/gabonaut/hermes-sovereign-finance/9ff5c773ecb0b391d8eb7ab3f0dea745a4a4d385/assets/screenshots/4-refused-transfer.png
+platforms: [macos, linux]
+known_issues:
+  - "The session scope limits contracts, functions and daily amounts. Recipients are set by the plugin before signing, so keep the session key file private."
+  - "YOLO mode, approvals.mode off and approvals.cron_mode approve skip the approval prompt. The onchain limits still apply."
+  - "Verified on BNB Chain, BNB testnet and Sepolia. Ethereum mainnet activation is not verified: start on BNB Chain."
+  - "Works best with a capable model. A small model may not find the plugin's tools unless the request names one."
+capabilities:
+  provides_tools:
+    - sovereign_status
+    - sovereign_positions
+    - sovereign_quote
+    - sovereign_execute
+    - sovereign_skill
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

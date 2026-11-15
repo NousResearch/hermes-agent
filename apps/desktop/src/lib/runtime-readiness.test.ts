@@ -50,6 +50,34 @@ describe('interpretRuntimeReadiness', () => {
     })
   })
 
+  const NOT_CONNECTED = 'Hermes is not connected to any AI provider yet. Run `hermes model` to pick one.'
+
+  it.each([
+    ['runtime_check', { runtime: { error: NOT_CONNECTED, ok: false }, runtimeError: null }],
+    ['setup_status', { runtime: null, runtimeError: NOT_CONNECTED }]
+  ] as const)('gives the default reason, not the CLI sentence, when nothing is set up (%s)', (source, runtime) => {
+    const result = interpretRuntimeReadiness(
+      { setup: { provider_configured: false }, setupError: null, ...runtime },
+      { defaultReason: 'Pick a provider.' }
+    )
+
+    expect(result).toMatchObject({ ready: false, reason: 'Pick a provider.', source })
+  })
+
+  it('keeps the cause for an explicitly requested provider even when nothing is set up', () => {
+    const result = interpretRuntimeReadiness(
+      {
+        setup: { provider_configured: false },
+        setupError: null,
+        runtime: { error: 'No usable credentials found for nous.', ok: false },
+        runtimeError: null
+      },
+      { requestedProvider: 'nous' }
+    )
+
+    expect(result.reason).toBe('No usable credentials found for nous.')
+  })
+
   it('uses explicit fallback when both checks are missing', () => {
     const result = interpretRuntimeReadiness({
       setup: null,

@@ -10,7 +10,7 @@ import pytest
 
 from gateway.platforms.api_server import ThreadSafeAsyncQueue
 from tests.gateway.test_api_server_reasoning_stream import (
-    _fake_writer_env, _frames, _stub_create_agent_runtime, adapter,  # noqa: F401
+    _fake_writer_env, _frames, _stub_create_agent_runtime, adapter,
 )
 
 _LADDER = "⏳ Provider temporarily unavailable — retrying automatically in 15s (cycle 1/5); cancel the request to stop"

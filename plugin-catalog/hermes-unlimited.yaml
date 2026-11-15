@@ -1,0 +1,30 @@
+name: hermes-unlimited
+repo: https://github.com/nsolland/hermes-unlimited
+sha: 09cd80374b994fa38abc5ed6b8904b98ac9b3554
+description: "Create and operate AI-native provider organizations with scoped services and Hermes tasks. Disclosure — Creates and reads Hermes Kanban tasks (run by your Hermes workers as the current profile) through the local `hermes kanban` CLI on a per-tenant board, and stores company, service and request records in a local SQLite file you configure; sends your JustYou session token only to a loopback JustYou validator you configure."
+maintainer: nsolland
+tier: community
+category: platform
+requires_hermes: ">=0.21.5"
+version: "0.1.0-alpha.4"
+title: "Hermes Unlimited"
+readme: true
+known_issues:
+  - "Experimental public core; no live billing, payment settlement or independently attested customer fulfillment."
+  - "Requires a configured JustYou session validator, signed Ed25519 profile bindings and provisioned tenant boards."
+capabilities:
+  provides_tools:
+    - hermes_unlimited_status
+    - unlimited_company_create
+    - unlimited_company_list
+    - unlimited_service_publish
+    - unlimited_service_request
+    - unlimited_company_task
+    - unlimited_company_result
+    - unlimited_a2ui_surface
+    - unlimited_service_dispatch
+    - unlimited_service_result
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - HERMES_UNLIMITED_JUSTYOU_SESSION_TOKEN

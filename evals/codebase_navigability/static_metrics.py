@@ -57,7 +57,7 @@ def analyse(files):
         try: tree = ast.parse(src)
         except Exception: m["unparsable"] = m.get("unparsable", 0) + 1; continue
         rel = os.path.relpath(p, TREE)[:-3].replace(os.sep, ".")
-        if rel.endswith(".__init__"): rel = rel[:-9]
+        rel = rel.removesuffix(".__init__")
         mods[rel] = p
         for n in ast.walk(tree):
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -129,12 +129,11 @@ def radon(files):
     R = shutil.which("radon") or os.path.join(os.path.dirname(sys.executable), "radon")
     import tempfile
     out = {}
-    lst = "\n".join(files)
     # radon can't take a list file; run per-directory roots instead
     roots = sorted({os.path.relpath(f, TREE).split(os.sep)[0] if os.sep in os.path.relpath(f, TREE) else os.path.relpath(f, TREE) for f in files})
     roots = [r for r in roots if r != "tests"]
-    cc = subprocess.run([R, "cc", "-j", "-s", "-e", "tests/*,tests/**", *roots], cwd=TREE, capture_output=True, text=True).stdout
-    mi = subprocess.run([R, "mi", "-j", "-e", "tests/*,tests/**", *roots], cwd=TREE, capture_output=True, text=True).stdout
+    cc = subprocess.run([R, "cc", "-j", "-s", "-e", "tests/*,tests/**", *roots], cwd=TREE, capture_output=True, text=True, check=False).stdout
+    mi = subprocess.run([R, "mi", "-j", "-e", "tests/*,tests/**", *roots], cwd=TREE, capture_output=True, text=True, check=False).stdout
     try:
         ccj = json.loads(cc); blocks = [b for v in ccj.values() if isinstance(v, list) for b in v if isinstance(b, dict) and "complexity" in b]
         cs = sorted(b["complexity"] for b in blocks)

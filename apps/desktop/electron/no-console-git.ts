@@ -8,7 +8,7 @@
 // unchanged. simple-git cannot take a creation flag, so its binary tuple is
 // [python, this host script].
 
-import { spawn, type SpawnOptions } from 'node:child_process'
+import { type ChildProcess, execFile, execFileSync, spawn, type SpawnOptions } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -244,6 +244,58 @@ export function hiddenGitSpawnSpec(
   }
 }
 
+// Timed commands still running. On POSIX they lead their own process group,
+// so nothing reaches them when the app exits unless we do it here (#125243:
+// probes and their promisor fetches outliving a restart, reparented to PID 1).
+const timedChildren = new Set<ChildProcess>()
+
+const TASKKILL_OPTIONS = { windowsHide: true, timeout: 5000 }
+
+// On Windows a root that already exited has no tree left for taskkill /T to
+// walk, and its pid may already belong to someone else. A POSIX group
+// outlives its leader, so it is always signaled.
+function hasTreeToKill(child: ChildProcess): child is ChildProcess & { pid: number } {
+  if (!child.pid) {
+    return false
+  }
+
+  return process.platform !== 'win32' || (child.exitCode === null && child.signalCode === null)
+}
+
+function killGroup(child: ChildProcess & { pid: number }): void {
+  try {
+    process.kill(-child.pid, 'SIGKILL')
+  } catch {
+    child.kill('SIGKILL')
+  }
+}
+
+/** Kill every timed git command still running, with its descendants. For app quit. */
+export function killTimedGitChildren(): void {
+  const live = [...timedChildren].filter(hasTreeToKill)
+  timedChildren.clear()
+
+  if (process.platform !== 'win32') {
+    live.forEach(killGroup)
+
+    return
+  }
+
+  if (live.length === 0) {
+    return
+  }
+
+  // One synchronous call for every tree: will-quit cannot wait on N serial ones.
+  try {
+    execFileSync('taskkill', [...live.flatMap(child => ['/PID', String(child.pid)]), '/T', '/F'], {
+      ...TASKKILL_OPTIONS,
+      stdio: 'ignore'
+    })
+  } catch {
+    live.forEach(child => child.kill('SIGKILL'))
+  }
+}
+
 export function execGit(
   gitBin: string,
   args: string[],
@@ -252,6 +304,9 @@ export function execGit(
   const spec = hiddenGitSpawnSpec(gitBin, args, {
     cwd: options.cwd,
     env: options.env,
+    // Timed commands own a POSIX group so a promisor fetch cannot outlive
+    // the git process. On Windows taskkill follows the Python host's tree.
+    detached: Boolean(options.timeoutMs) && process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
@@ -260,6 +315,7 @@ export function execGit(
     let stdout = ''
     let stderr = ''
     let settled = false
+    let timeoutError: (NodeJS.ErrnoException & { stderr?: string }) | undefined
 
     const finish = (error?: Error, code: number | null = child.exitCode) => {
       if (settled) {
@@ -267,6 +323,10 @@ export function execGit(
       }
 
       settled = true
+
+      if (timer) {
+        clearTimeout(timer)
+      }
 
       if (error) {
         reject(error)
@@ -279,11 +339,31 @@ export function execGit(
 
     const timer = options.timeoutMs
       ? setTimeout(() => {
-          child.kill()
-          const error = new Error('git timed out') as NodeJS.ErrnoException & { stderr?: string }
+          timeoutError = Object.assign(new Error('git timed out'), { code: 'ETIMEDOUT', stderr })
 
-          error.stderr = stderr
-          finish(error)
+          const done = () => {
+            // Pipes held by descendants must not keep Electron alive after a
+            // failed tree kill. The timeout remains a failure, never exit 0.
+            child.stdout?.destroy()
+            child.stderr?.destroy()
+            timedChildren.delete(child)
+            finish(timeoutError)
+          }
+
+          if (!hasTreeToKill(child)) {
+            done()
+          } else if (process.platform === 'win32') {
+            execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], TASKKILL_OPTIONS, error => {
+              if (error) {
+                child.kill('SIGKILL')
+              }
+
+              done()
+            })
+          } else {
+            killGroup(child)
+            done()
+          }
         }, options.timeoutMs)
       : null
 
@@ -293,19 +373,21 @@ export function execGit(
     child.stderr?.on('data', chunk => {
       stderr += chunk.toString()
     })
-    child.once('error', error => {
-      if (timer) {
-        clearTimeout(timer)
-      }
 
+    if (timer) {
+      timedChildren.add(child)
+      child.once('close', () => timedChildren.delete(child))
+    }
+
+    child.once('error', error => {
+      timedChildren.delete(child)
       finish(error)
     })
     child.once('close', code => {
-      if (timer) {
-        clearTimeout(timer)
+      // On Windows wait for taskkill's completion, not just the root's exit.
+      if (!timeoutError) {
+        finish(undefined, code)
       }
-
-      finish(undefined, code)
     })
   })
 }

@@ -1453,6 +1453,8 @@ class DockerEnvironment(BaseEnvironment):
                 self._labels.get("hermes-task-id", ""),
                 self._labels.get("hermes-profile", ""),
                 self._labels.get(_EGRESS_LABEL_KEY, "off"), self._network)
+            if not reused and self._image:
+                self._restore_requested_image()
         except (RuntimeError, OSError, UnicodeError, sqlite3.Error) as exc:
             logger.error("Recovery: cannot verify the saved Docker configuration: %s", exc)
             self._release_missing_runtime_owner(lease)
@@ -1462,7 +1464,6 @@ class DockerEnvironment(BaseEnvironment):
             if not self._image:
                 logger.error("Recovery: no saved image name, cannot recreate container")
                 return False
-            self._restore_requested_image()
             try:
                 self._container_id = self._docker_run(self.cwd)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, sqlite3.Error) as e:
@@ -1480,6 +1481,13 @@ class DockerEnvironment(BaseEnvironment):
                 logger.warning("Recovery: deferring previous Docker owner release: %s", exc)
             else:
                 replacement.previous = None
+
+        owners = getattr(self, "_reuse_owners", None)
+        if owners is not None:
+            try:
+                owners.supersede(self._labels, self._runtime_fp)
+            except (sqlite3.Error, OSError) as exc:
+                logger.warning("Recovery: deferring superseded container reclamation: %s", exc)
 
         try:
             self._snapshot_ready = False

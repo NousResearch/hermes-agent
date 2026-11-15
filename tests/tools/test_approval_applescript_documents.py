@@ -181,6 +181,26 @@ def test_read_only_and_unrelated_commands_are_unchanged(command):
     assert detect_dangerous_command(command) == (False, None, None), command
 
 
+@pytest.mark.parametrize("selector", [
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth",
+    "last", "front", "back", "middle", "some", "every", "1st", "2nd", "3rd", "4th", "23rd", "-1st",
+])
+def test_content_selector_assignments_need_human(selector, smart_interactive):
+    command = f'osascript -e \'tell application "TextEdit" to set the {selector} paragraph of front document to ""\''
+    prompts = []
+
+    def human(cmd, desc, **kwargs):
+        prompts.append(kwargs)
+        return "deny"
+
+    result = check_all_command_guards(command, "local", approval_callback=human)
+    assert result["approved"] is False
+    assert len(prompts) == 1
+    assert prompts[0]["allow_session"] is False
+    assert prompts[0]["allow_permanent"] is False
+    assert smart_interactive == []
+
+
 @pytest.fixture
 def smart_interactive(monkeypatch):
     """Interactive smart mode with a guardian that would APPROVE everything and records its calls."""

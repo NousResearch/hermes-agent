@@ -1,0 +1,26 @@
+name: reminders-kanban
+title: "Reminders Kanban"
+version: "0.1.0-beta.2"
+repo: https://github.com/nicolasdmolina/hermes-reminders-kanban-plugin
+sha: 03f6575212d0e77ad52b332144af0b27067e0b21
+subdir: plugin
+description: "Apple Reminders as a Kanban board in Hermes Desktop: pick lists, move cards between To do, Ready for Agent, In progress, Needs you and Done, and edit titles, notes, due dates, priorities and lists, saved back to Reminders. Experimental macOS preview; agent delegation stays off on released Hermes until a supported board-scoped execution seam exists. Disclosure — on an explicit Set up Reminders access click it compiles a small Swift EventKit helper from the plugin's own source with the local Xcode Command Line Tools (offering xcode-select --install when missing), creates a per-user self-signed code-signing certificate with /usr/bin/openssl, imports it into the login keychain and trusts it for code signing only (user domain, no system trust or Gatekeeper change), and signs the helper with it; the helper reads and writes the Apple Reminders lists the user selects, after the macOS Reminders consent prompt; setup files live in ~/Library/Application Support/reminders-kanban and the build in ~/Library/Caches/reminders-kanban; while enabled in a running gateway a background pass runs every five seconds; an explicit task-link setup action reads local Tailscale status and can back up and edit Hermes config or add a private Tailscale Serve route; no third-party network calls, telemetry or self-update; imports some private Hermes Kanban and dashboard-auth modules that can change between releases."
+maintainer: nicolasdmolina
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+platforms:
+  - macos
+docs_url: https://github.com/nicolasdmolina/hermes-reminders-kanban-plugin/blob/03f6575212d0e77ad52b332144af0b27067e0b21/docs/installation.md
+screenshots:
+  - https://raw.githubusercontent.com/nicolasdmolina/hermes-reminders-kanban-plugin/03f6575212d0e77ad52b332144af0b27067e0b21/docs/media/board.png
+readme: true
+known_issues:
+  - "Agent delegation is unavailable on released Hermes; browsing and editing work."
+  - "Needs Xcode Command Line Tools and macOS Reminders permission."
+  - "Clean-account setup and iPhone-to-Mac iCloud sync are not yet verified."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

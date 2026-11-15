@@ -216,6 +216,8 @@ def _plain(*keys: str) -> tuple:
 _SHARED_KEYS: tuple = (
     ("unauthorized_dm_behavior", None, "dm"),
     ("notice_delivery", None, lambda v: _normalize_choice(v, {"public", "private"}, "public")),
+    ("setup_notices", None, lambda v: _normalize_choice(v, {"author", "operator", "off"}, "author")),
+    ("operator_ids", None, None),
     *_plain("reply_prefix", "reply_in_thread", "cron_continuable_surface", "require_mention", "send_read_receipts"),
     ("allowed_chats", _TELEGRAM, None),
     ("group_allowed_chats", _TELEGRAM, None),

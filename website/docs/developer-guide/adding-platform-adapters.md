@@ -569,7 +569,7 @@ def register(ctx):
     )
 ```
 
-The hook is invoked during `load_gateway_config()` after the generic shared-key loop (which handles common keys like `unauthorized_dm_behavior`, `notice_delivery`, `reply_prefix`, `require_mention`, etc.) and before `_apply_env_overrides()`, so your plugin only needs to bridge **platform-specific** keys.
+The hook is invoked during `load_gateway_config()` after the generic shared-key loop (which handles common keys like `unauthorized_dm_behavior`, `notice_delivery`, `setup_notices`/`operator_ids` (who may receive the runtime's own setup notices), `reply_prefix`, `require_mention`, etc.) and before `_apply_env_overrides()`, so your plugin only needs to bridge **platform-specific** keys.
 
 Exceptions raised by the hook are swallowed and logged at debug level — a misbehaving plugin never aborts gateway config load.
 

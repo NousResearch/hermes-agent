@@ -163,6 +163,10 @@ def _coerce_dict(value: Any) -> dict[str, Any]:
 # "pair" DMs a pairing code, "ignore" drops silently, "decline" sends one polite refusal then goes
 # silent toward that sender for gateway.pairing.DECLINE_DEDUPE_SECONDS (#88028).
 UNAUTHORIZED_DM_BEHAVIORS = {"pair", "ignore", "decline"}
+#: Who receives the notices a first-contact DM carries about the runtime's own setup:
+#: ``author`` (today's behaviour), ``operator`` (the ``operator_ids`` a platform block declares),
+#: ``off`` (never).
+SETUP_NOTICE_AUDIENCES = {"author", "operator", "off"}
 DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE = (
     "Hi! I'm a personal assistant and can only chat with my owner, so I can't help you directly. Sorry!"
 )
@@ -848,6 +852,34 @@ class GatewayConfig:
         """Effective notice-delivery mode ("public"/"private") for a platform."""
         choice = self._extra_choice(platform, "notice_delivery", {"public", "private"}, "public")
         return "public" if choice is None else choice
+
+    def get_setup_notices(self, platform: Optional[Platform] = None) -> str:
+        """Effective setup-notice audience ("author"/"operator"/"off") for a platform.
+
+        Setup notices are the ones a first-contact DM carries about the runtime's own setup (the
+        onboarding note, the "no home channel" prompt). ``author`` is today's behaviour; ``operator``
+        narrows them to the authors named in ``operator_ids``; ``off`` never sends them.
+        """
+        choice = self._extra_choice(platform, "setup_notices", SETUP_NOTICE_AUDIENCES, "author")
+        return "author" if choice is None else choice
+
+    def get_operator_ids(self, platform: Optional[Platform] = None) -> tuple:
+        """The operators a platform block declares (``operator_ids``), normalised to strings.
+
+        A single comma/space-separated string is accepted beside the list form, because both spellings
+        are what people write in a config file; anything else is no declaration at all.
+        """
+        platform_cfg = self.platforms.get(platform) if platform else None
+        if platform_cfg is None:
+            return ()
+        raw = platform_cfg.extra.get("operator_ids")
+        if isinstance(raw, str):
+            raw = raw.replace(",", " ").split()
+        if isinstance(raw, (set, frozenset)):
+            raw = sorted(raw, key=str)
+        if not isinstance(raw, (list, tuple)):
+            return ()
+        return tuple(str(value).strip() for value in raw if str(value).strip())
 
 
 def load_gateway_config(*, strict: bool = False) -> GatewayConfig:

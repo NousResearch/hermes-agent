@@ -668,8 +668,14 @@ class GatewayTurnPrepareMixin:
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
         the session has no history). Delivered on the user message (sidecar), NOT the ephemeral
         system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild."""
+        from gateway.bot_peer_notices import setup_notices_allowed
         from gateway.run import _gateway_config_home, _home_target_env_var, _load_gateway_config
         if history or internal:  # internal = plugin/system turn: no human made first contact
+            return
+        # A setup notice is the operator's business: on a served instance the authors who write in
+        # are members, not operators, so ``setup_notices: operator`` + ``operator_ids`` keeps both
+        # notes below away from them (a profile declaring neither keeps today's behaviour).
+        if not setup_notices_allowed(source, getattr(self, "config", None)):
             return
         # LOCAL sessions (one-shot, chat -q, ACP, TUI attach) are the classic in-process CLI's
         # surfaces: it never appended this note, and mark_seen would rewrite config.yaml under

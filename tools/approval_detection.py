@@ -1767,13 +1767,9 @@ def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[
                 applied.append(span)
                 cursor = span[1]
         variant = _splice(normalized, applied)
-        if fresh(variant):
-            yield variant
         # A dequoted verb after a separator (`ls; "reboot"`) reaches _CMDPOS only once its start is marked; not inside
         # a quoted-delimiter heredoc fed to a non-shell (that body is literal data).
-        marked_variant = _mark_command_starts(variant, skip=literal_heredoc_bodies(variant))
-        if fresh(marked_variant):
-            yield marked_variant
+        yield from filter(fresh, (variant, _mark_command_starts(variant, skip=literal_heredoc_bodies(variant))))
         pending = carry
 
 

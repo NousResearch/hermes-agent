@@ -1,9 +1,9 @@
-"""Shared threat-pattern library (prompt injection / promptware / exfiltration) for
-``agent/prompt_builder.py``, ``tools/memory_tool.py`` and ``agent/tool_dispatch_helpers.py``.
+"""Shared threat-pattern library (prompt injection / promptware / exfiltration).
 Each pattern is ``(regex, pattern_id, scope)``; scope is cumulative: ``"all"`` everywhere,
 ``"context"`` adds promptware / C2 / role hijack for context files, memory and tool results
 (warn-level: that content is not user-authored), ``"strict"`` adds aggressive checks only for
-user-mediated writes (memory, skill installs) where a block is resolvable. New patterns must
+memory writes, where a block is resolvable. Skill installs are scanned by ``skills_guard``,
+not here. New patterns must
 anchor on C2 vocabulary or unambiguous attack behavior, NOT bossy English ("you must" is common
 in legitimate AGENTS.md); filler between tokens is the bounded ``_FILLER``."""
 

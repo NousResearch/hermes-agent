@@ -208,8 +208,9 @@ class ProviderProfile:
 
     # Longest prompt-cache tier this route actually keeps ("5m" | "1h"); None = whatever is asked.
     # Hermes clamps the requested tier to it and the prompt-cache clock never believes more.
-    # Config ``prompt_caching.route_ttl_ceilings`` overrides it per provider.
-    prompt_cache_max_ttl: str | None = None
+    # Config ``prompt_caching.route_ttl_ceilings`` overrides it per provider. Keyword-only so
+    # plugin subclasses' positional fields keep their slots.
+    prompt_cache_max_ttl: str | None = field(default=None, kw_only=True)
 
     # Private replay carriers use a namespaced '<provider>.native_assistant' type
     # in reasoning_details. Only this profile may receive its matching carrier;

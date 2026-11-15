@@ -27,13 +27,16 @@ class TestSensitiveCreateLinkPattern:
             assert key is not None, command
 
     def test_relocations_follow_profile_scope_without_launch_fallback(self, tmp_path, monkeypatch):
+        from pathlib import Path
         from agent.file_safety import is_write_approval_required
         from agent.secret_scope import (
             reset_multiplex_context, reset_secret_scope, set_multiplex_context, set_secret_scope,
         )
 
         def values(name):
-            root = tmp_path / name
+            # Classification performs no I/O. /private/tmp is intentionally a sensitive
+            # system prefix, so use an ordinary logical path to isolate profile authority.
+            root = Path("/opt/hermes-approval-profiles") / name
             return {"ZDOTDIR": str(root / "zsh"), "XDG_CONFIG_HOME": str(root / "xdg"),
                     "BASH_ENV": str(root / "bash-startup"), "ENV": str(root / "sh-startup")}
 

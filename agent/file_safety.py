@@ -55,7 +55,10 @@ SHELL_RC_ZSH_FILENAMES: tuple[str, ...] = (
 
 def _resolve_configured_path(value: str, home: str) -> str:
     """Resolve a path-valued shell environment variable against ``home``."""
-    expanded = os.path.expanduser(os.path.expandvars(value))
+    from agent.secret_scope import serves_routed_profile
+    expanded = value if serves_routed_profile() else os.path.expandvars(value)
+    if expanded == "~" or expanded.startswith("~/"):
+        expanded = home + expanded[1:]
     if not os.path.isabs(expanded):
         expanded = os.path.join(home, expanded)
     return os.path.realpath(expanded)
@@ -68,7 +71,9 @@ def build_shell_rc_approval_paths(home: str) -> set[str]:
         for relative in SHELL_RC_RELATIVE_PATHS
     }
 
-    zdotdir = os.getenv("ZDOTDIR")
+    from agent.secret_scope import current_secret_scope, serves_routed_profile
+    environment = (current_secret_scope() or {}) if serves_routed_profile() else os.environ
+    zdotdir = environment.get("ZDOTDIR")
     if zdotdir:
         zsh_dir = _resolve_configured_path(zdotdir, home)
         paths.update(
@@ -76,7 +81,7 @@ def build_shell_rc_approval_paths(home: str) -> set[str]:
             for filename in SHELL_RC_ZSH_FILENAMES
         )
 
-    xdg_config_home = os.getenv("XDG_CONFIG_HOME")
+    xdg_config_home = environment.get("XDG_CONFIG_HOME")
     if xdg_config_home:
         paths.add(
             os.path.join(
@@ -87,7 +92,7 @@ def build_shell_rc_approval_paths(home: str) -> set[str]:
         )
 
     for variable in ("BASH_ENV", "ENV"):
-        configured = os.getenv(variable)
+        configured = environment.get(variable)
         if configured:
             paths.add(_resolve_configured_path(configured, home))
 

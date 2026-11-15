@@ -1026,33 +1026,6 @@ def _lower_preserving_flags(command: str) -> str:
     return ''.join(t if t.startswith('-') else t.lower() for t in re.split(r'(\s+)', command))
 
 
-def _rewrite_resolved_shell_rc_env_dirs(command: str) -> str:
-    """Fold ZDOTDIR / XDG_CONFIG_HOME prefixes to the shared ``$zdotdir`` /
-    ``$xdg_config_home`` spellings so absolute relocated rc paths match."""
-    from tools.approval_home_fold import _fold_home_prefixes
-
-    zdotdir = os.getenv("ZDOTDIR")
-    if zdotdir:
-        expanded = os.path.expanduser(os.path.expandvars(zdotdir)).strip()
-        if expanded:
-            paths = [expanded]
-            try:
-                paths.append(os.path.realpath(expanded))
-            except OSError:
-                pass
-            command = _fold_home_prefixes(command, paths, "$ZDOTDIR")
-    xdg = os.getenv("XDG_CONFIG_HOME")
-    if xdg:
-        expanded = os.path.expanduser(os.path.expandvars(xdg)).strip()
-        if expanded:
-            paths = [expanded]
-            try:
-                paths.append(os.path.realpath(expanded))
-            except OSError:
-                pass
-            command = _fold_home_prefixes(command, paths, "$XDG_CONFIG_HOME")
-    return command
-
 _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")
 _PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
 _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")

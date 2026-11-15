@@ -121,7 +121,8 @@ def _runner_draining(adapter: Any) -> bool:
 
 
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,
-                       notification_category: str = "result", profile: Optional[str] = None) -> None:
+                       notification_category: str = "result", profile: Optional[str] = None,
+                       kanban_notices: Optional[list[dict]] = None) -> None:
     """Deliver a wake turn to the session behind ``adapter``. ``session_id`` is the RAW session id
     (``X-Hermes-Session-Id`` / state.db key) — required for non-push adapters. ``source`` is the
     ``SessionSource`` for the synthetic event — required for push-capable adapters. ``profile``
@@ -137,6 +138,8 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
             from gateway.session_automation import admit_route_wake
             from persistence.core.errors import AuthorityRefusal
             category = {"notification_category": notification_category} if notification_category != "result" else {}
+            if kanban_notices:
+                category["kanban_notices"] = kanban_notices
             try:
                 if await admit_route_wake(runner, adapter, source, text, "kanban-wake", category):
                     return  # committed to the session FIFO: never interrupts the admitted turn

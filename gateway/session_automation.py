@@ -385,7 +385,7 @@ def automation_display_metadata(metadata):
 # classic resolver (802fd5782f3, fd4e277c849). They are accepted and not persisted (a sibling set in the
 # fingerprint would make the same completion's retry a new identity); execute_admission re-stamps the
 # proof at execution from the target the pre-claim check validated, and the turn's resolver reads it.
-_AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
+_AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities', 'kanban_notices',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
     'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick',
     'completion_wakes_parent', 'completion_resumes_parent', 'requester_user_id'})
@@ -507,8 +507,9 @@ def snapshot_automation(authority, adapter, event, identity):
             or event.media_urls or event.prompt_response or event.source.platform == Platform.API_SERVER
             or set(event.metadata) - _AUTOMATION_METADATA):
         raise AuthorityRefusal('invalid_params')
+    from gateway.session_kanban_digest import notice_metadata
     notification = (automation_notification_metadata(event.metadata) | automation_display_metadata(event.metadata)
-                    | _tick_metadata(event.metadata))
+                    | _tick_metadata(event.metadata) | notice_metadata(event.metadata))
     entry = _owner(runner, event, authority)
     from gateway.session_detached import detached_route_of
     if event.source.platform == Platform.LOCAL or detached_route_of(event.source):
@@ -595,6 +596,8 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
     descriptor.update(automation_notification_metadata(event.metadata))
     descriptor.update(automation_display_metadata(event.metadata))
     descriptor.update(_tick_metadata(event.metadata))
+    from gateway.session_kanban_digest import notice_metadata
+    descriptor.update(notice_metadata(event.metadata))
     if 'completion_wakes_parent' in event.metadata:
         # A failed async delegation: the parent must act on it, so it runs as a turn even when no viewer
         # is attached (gateway/session_completion_notes.py). Only ``True`` is stored, so an older
@@ -658,6 +661,21 @@ def restore_local_automation(authority, ref, row):
 
 
 async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None):
+    try:
+        kanban = json.loads(identity)[0] == 'kanban-wake'
+    except (ValueError, TypeError, IndexError, KeyError):
+        kanban = False
+    if kanban:
+        payload, _ = snapshot_automation(authority, adapter, event, identity)
+        desc = payload.get('local_automation_v1') or payload['native_text_v1']['automation']
+        # Serialize the read/fold/write with other Kanban admissions and claims.
+        # The durable guard still fences cancellation/rotation from other writers.
+        async with authority.sessions[desc['owner']].mutation_lock:
+            return await _admit_automation(authority, adapter, event, identity, replaces, fold)
+    return await _admit_automation(authority, adapter, event, identity, replaces, fold)
+
+
+async def _admit_automation(authority, adapter, event, identity, replaces=None, fold=None):
     """``replaces``: a queued automation row of the same session this input supersedes (a liveness
     tick carrying the output of the one still waiting). Its cancellation commits in this admission's
     own transaction, so neither lands without the other. ``fold``: ``replaces`` is a completion this
@@ -678,24 +696,28 @@ async def admit_automation(authority, adapter, event, identity, replaces=None, f
     from gateway.session_runtime_workers import tracked_write
     from gateway.session_authority import admission_row
     admitted, replaced = partial(authority._admitted, ref, event), []
-    if replaces is not None:
+    from gateway.session_kanban_digest import is_kanban, fold_event
+    folded = []
+    if is_kanban({'request_id': identity, 'principal_id': 'automation:' + entry.session_key}):
+        folded = fold_event(authority, sid, event, identity)
+        if folded:
+            payload, entry = snapshot_automation(authority, adapter, event, identity)
+    if folded or replaces is not None:
         def admitted(row, admitted=admitted):
-            if replaced:  # cancelled in the committed write; an exact replay cancels nothing
-                authority._settle_cancelled(ref, replaces)
+            for old_id in replaced:  # exact replays cancel nothing
+                authority._settle_cancelled(ref, old_id)
             return admitted(row)
     store, payload = authority_persistence(authority), deepcopy(payload)
     from persistence.authority.admissions import QueuedFold
 
     def admit():
-        # A replaced tick is cancelled in this admission's own transaction; one claimed or settled first
-        # (its output already ran) refuses the replacement. A folded completion must also still be the
-        # queued tail but for the finishing process's ticks.
         row, created = store.admissions.admit(
             epoch=authority.epoch, principal_id='automation:' + entry.session_key, session_id=ref.session_id,
             request_id=identity, payload=payload, gate=authority.gate_refusal(),
             supersedes=replaces if fold is None else None,
-            fold=None if fold is None else QueuedFold(replaces, frozenset(fold)))
-        replaced[:] = [replaces] if created and replaces is not None else []
+            fold=None if fold is None else QueuedFold(replaces, frozenset(fold)),
+            retires=tuple(folded))
+        replaced[:] = [*folded, *([replaces] if replaces is not None else [])] if created else []
         return admission_row(row)
     return await tracked_write(authority, admit, then=admitted, ordered=True,
                                after=partial(authority._schedule_admitted, ref))

@@ -8,9 +8,8 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 """
 
 import contextvars as _ctxvars
-import hashlib
 import json
-from contextlib import ExitStack, suppress
+from contextlib import suppress
 import logging
 import re
 import shutil
@@ -31,6 +30,7 @@ from tools.skill_manager_guards import (
     _background_review_delete_guard, _background_review_preflight, _background_review_read_before_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _pinned_guard,
     _validate_delete_target, _is_background_review, _refusal as _err)
+from tools.skill_manager_locks import _skill_lock_path, _skill_mutation_lock, _skill_mutation_locks
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skill_manager_scan import (
@@ -76,30 +76,6 @@ def _security_scan_skill(skill_dir: Path, baseline: Optional[Counter] = None,
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
         return f"Security scan could not complete, so this skill was blocked: {e}"
     return None
-
-
-def _skill_lock_path(name: str) -> Path:
-    """Per-skill lock file under ``<skills>/.locks/`` (same idiom as the usage ledger's
-    ``.usage.json.lock``), never inside the skill dir so delete/recreate cannot unlink it under a
-    waiting writer. Keyed by a digest of the basename so ``foo`` and ``category/foo`` share one
-    lock and no name can hit a filesystem limit (callers validate the basename first)."""
-    digest = hashlib.sha256(Path(name).name.encode("utf-8", "surrogatepass")).hexdigest()
-    return _skills_dir() / ".locks" / f"{digest}.lock"
-
-
-def _skill_mutation_lock(name: str):
-    """Exclusive lock held across one skill's whole read-modify-write; thread-re-entrant."""
-    from tools.skill_usage import skill_file_lock
-    return skill_file_lock(_skill_lock_path(name))
-
-
-def _skill_mutation_locks(names):
-    """Every lock of an atomic batch, acquired in one stable path order (deadlock-free across batches)."""
-    from tools.skill_usage import skill_file_lock
-    stack = ExitStack()
-    for lock_path in sorted({_skill_lock_path(n) for n in names}):
-        stack.enter_context(skill_file_lock(lock_path))
-    return stack
 
 
 MAX_NAME_LENGTH = 64

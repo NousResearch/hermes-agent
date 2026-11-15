@@ -1413,7 +1413,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             logger.warning("%s wait failed; recording known exit status: %s", label, e)
         self._finish_exited(session, exit_code())
 
-    _log_delta_command = staticmethod(log_delta_command)
 
     def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
         """Background thread: poll a sandbox log file for non-local backends.
@@ -1428,7 +1427,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             try:
                 # Read only the bytes written since the last poll, plus the process status.
                 raw = env.execute(
-                    self._log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path)),
+                    log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path)),
                     timeout=10).get("output", "")
                 reply = parse_log_delta_reply(raw)
                 delta = reply.delta if reply else ""

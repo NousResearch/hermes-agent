@@ -10,8 +10,13 @@ from tools import write_approval as wa
 
 
 def _fmt_state(subsystem: str) -> str:
-    on = wa.write_approval_enabled(subsystem)
-    return f"{subsystem}.write_approval = {'on' if on else 'off'}"
+    if not wa.write_approval_enabled(subsystem):
+        return f"{subsystem}.write_approval = off"
+    return f"{subsystem}.write_approval = on ({_scope_label(wa.write_approval_scope(subsystem))})"
+
+
+def _scope_label(scope: str) -> str:
+    return "background writes only; your own turns apply directly" if scope == wa.SCOPE_BACKGROUND else "all writes"
 
 
 def _fmt_pending_list(subsystem: str) -> str:
@@ -37,7 +42,8 @@ def handle_pending_subcommand(
     """Dispatch a /memory or /skills write-approval subcommand.
 
     ``memory_store`` applies approved memory writes (CLI passes its live store; gateway a freshly
-    loaded one); ``set_mode_fn`` persists the write_approval boolean. Returns text for the user,
+    loaded one); ``set_mode_fn(settings)`` persists exactly the ``{key: value}`` settings it is given
+    (``write_approval`` and, when turning the gate on, ``write_approval_scope``). Returns text for the user,
     or None when the args are not a write-approval subcommand so the caller falls through to its
     other handling (e.g. /skills search).
     """
@@ -163,26 +169,46 @@ def _diff(rest: list[str]) -> str:
     return f"# Pending skill write {rec['id']}: {rec.get('summary', '')}\n\n" + wa.skill_pending_diff(rec)
 
 
-_APPROVAL_VALUES = {
-    **dict.fromkeys(("on", "true", "yes", "1", "enable", "enabled"), True),
-    **dict.fromkeys(("off", "false", "no", "0", "disable", "disabled"), False)}
+# Settings per word, scope first: a setter that persists key by key and fails half way leaves the
+# old gate with the new scope, never a gate narrower than both the old and the requested state.
+_ON = {wa.SCOPE_KEY: wa.SCOPE_ALL, wa.CONFIG_KEY: True}
+_BACKGROUND = {wa.SCOPE_KEY: wa.SCOPE_BACKGROUND, wa.CONFIG_KEY: True}
+_OFF = {wa.CONFIG_KEY: False}  # the scope is kept for the next "on"
+_APPROVAL_SETTINGS = {
+    **dict.fromkeys(("on", "true", "yes", "1", "enable", "enabled"), _ON),
+    **dict.fromkeys(wa.BACKGROUND_SCOPE_WORDS, _BACKGROUND),
+    **dict.fromkeys(("off", "false", "no", "0", "disable", "disabled"), _OFF)}
+
+
+def settings_saver(save_fn, subsystem: str):
+    """A ``set_mode_fn`` over a per-key ``save_fn(dotted_key, value) -> bool`` (the classic CLI's
+    config writer): saves the settings in the order given and raises on the first False, so the
+    command reports the change as not saved instead of confirming it."""
+    def _save_settings(settings: dict) -> None:
+        for key, value in settings.items():
+            if not save_fn(f"{subsystem}.{key}", value):
+                raise RuntimeError(f"could not save {subsystem}.{key} to config.yaml")
+    return _save_settings
 
 
 def _set_approval(subsystem: str, rest: list[str], set_mode_fn) -> str:
-    """Turn the approval gate on/off for a subsystem."""
+    """Turn the approval gate on (every write), on for background writes only, or off."""
     if not rest:
         return (f"{_fmt_state(subsystem)}\n"
-                f"Set with: /{subsystem} approval <on|off>")
+                f"Set with: /{subsystem} approval <on|off|background>")
     arg = rest[0].strip().lower()
-    enabled = _APPROVAL_VALUES.get(arg)
-    if enabled is None:
-        return f"Invalid value '{arg}'. Use: on or off."
+    settings = _APPROVAL_SETTINGS.get(arg)
+    if settings is None:
+        return (f"Invalid value '{arg}'. Use: on, off, or background "
+                "(gate only background writes; your own turns apply directly).")
     if set_mode_fn is None:
-        val = "true" if enabled else "false"
-        return (f"To change the {subsystem} approval gate, run:\n"
-                f"  hermes config set {subsystem}.write_approval {val}")
+        commands = "\n".join(f"  hermes config set {subsystem}.{key} {str(value).lower()}"
+                             for key, value in settings.items())
+        return f"To change the {subsystem} approval gate, run:\n{commands}"
     try:
-        set_mode_fn(enabled)
+        set_mode_fn(dict(settings))
     except Exception as e:
         return f"Failed to set {subsystem}.write_approval: {e}"
-    return f"{subsystem}.write_approval set to '{'on' if enabled else 'off'}'."
+    if not settings[wa.CONFIG_KEY]:
+        return f"{subsystem}.write_approval set to 'off'."
+    return f"{subsystem}.write_approval set to 'on' ({_scope_label(settings[wa.SCOPE_KEY])})."

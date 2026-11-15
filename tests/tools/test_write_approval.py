@@ -271,9 +271,9 @@ def test_handle_approval_on(hermes_home):
     captured = {}
     out = handle_pending_subcommand(
         wa.MEMORY, ["approval", "on"],
-        set_mode_fn=lambda enabled: captured.update(enabled=enabled),
+        set_mode_fn=lambda settings: captured.update(settings),
     )
-    assert captured["enabled"] is True
+    assert captured == {"write_approval_scope": "all", "write_approval": True}
     assert "on" in out
 
 def test_handle_approval_off(hermes_home):
@@ -282,9 +282,9 @@ def test_handle_approval_off(hermes_home):
     captured = {}
     out = handle_pending_subcommand(
         wa.SKILLS, ["approval", "off"],
-        set_mode_fn=lambda enabled: captured.update(enabled=enabled),
+        set_mode_fn=lambda settings: captured.update(settings),
     )
-    assert captured["enabled"] is False
+    assert captured == {"write_approval": False}
     assert "off" in out
 
 # ---------------------------------------------------------------------------

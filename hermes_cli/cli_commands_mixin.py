@@ -1254,10 +1254,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         args = cmd.strip().split()[1:]
         review_words = {"pending", "approve", "apply", "reject", "deny", "drop", "diff", "approval", "mode"}
         if args and args[0].lower() in review_words:
-            from hermes_cli.write_approval_commands import handle_pending_subcommand
+            from hermes_cli.write_approval_commands import handle_pending_subcommand, settings_saver
             from tools import write_approval as wa
             out = handle_pending_subcommand(
-                wa.SKILLS, args, set_mode_fn=lambda enabled: self._save_write_approval("skills", enabled),
+                wa.SKILLS, args, set_mode_fn=settings_saver(_save, "skills"),
             )
             if out is not None:
                 return print(out)
@@ -1266,7 +1266,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     def _handle_memory_command(self, cmd: str):
         """Handle /memory slash command — pending review + approval-gate toggle."""
-        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from hermes_cli.write_approval_commands import handle_pending_subcommand, settings_saver
         from tools import write_approval as wa
         args = cmd.strip().split()[1:]
         store = getattr(self.agent, "_memory_store", None) if getattr(self, "agent", None) else None
@@ -1281,12 +1281,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             store = load_on_disk_store()
         out = handle_pending_subcommand(
             wa.MEMORY, args, memory_store=store,
-            set_mode_fn=lambda enabled: self._save_write_approval("memory", enabled))
+            set_mode_fn=settings_saver(_save, "memory"))
         print(out if out is not None else _t("memory.unknown_subcommand"))
-
-    def _save_write_approval(self, subsystem: str, enabled: bool):
-        """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""
-        _save(f"{subsystem}.write_approval", bool(enabled))
 
     # ---- prompt-queueing handlers: /learn, /plan, /init -----------------------------------
     def _queue_prompt_turn(self, msg: str, command: str, ack: str = "") -> None:

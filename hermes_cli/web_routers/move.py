@@ -57,6 +57,10 @@ class MoveChunk(BaseModel):
 
 class MoveApply(BaseModel):
     include: Optional[list[str]] = None
+    # Parts where the incoming copy wins (memory, persona, skills, cron, sessions, config). Requires
+    # ``confirm_replace`` so a client cannot overwrite an agent by forgetting to ask the user.
+    replace: Optional[list[str]] = None
+    confirm_replace: bool = False
 
 
 def _home(profile: Optional[str]) -> tuple[str, Path]:
@@ -188,36 +192,46 @@ async def finish_move_upload(move_id: str, profile: Optional[str] = None):
     return await _run(move_receive.finish, home, move_id)
 
 
+def _owner_sessions(request: Request, profile: Optional[str], move_id: str, home: Path):
+    """Conversation writes for a move through the same revision-fenced mutation the Sessions page
+    uses, run on this loop from the worker thread the move runs on."""
+    from hermes_cli.move_sessions import OwnerSessions, RevisionConflict
+    from hermes_cli.web_server_sessions import _mutate_session_request
+    loop = asyncio.get_running_loop()
+
+    def mutate(session_id, request_id, operation, payload, revision, generation):
+        future = asyncio.run_coroutine_threadsafe(_mutate_session_request(
+            request, profile, session_id, request_id=request_id, expected_revision=revision,
+            expected_generation=generation, operation=operation, payload=payload), loop)
+        try:
+            return future.result(timeout=120)
+        except HTTPException as exc:
+            if exc.status_code == 409 and "revision_conflict" in str(exc.detail):
+                raise RevisionConflict(str(exc.detail)) from None
+            raise RuntimeError(str(exc.detail)) from None
+
+    return OwnerSessions(home, mutate, move_id=move_id)
+
+
 @router.post("/api/move/uploads/{move_id}/apply")
 async def apply_move_upload(move_id: str, body: MoveApply, request: Request, profile: Optional[str] = None):
     from hermes_cli import move_receive
     profile = destructive_profile(profile, "POST /api/move/uploads/{id}/apply")
     _name, home = _home(profile)
-    loop = asyncio.get_running_loop()
-
-    def import_session(session: dict[str, Any]) -> dict[str, Any]:
-        """One conversation through the same revision-fenced import the Sessions page uses."""
-        from hermes_cli.web_server_sessions import _mutate_session_request
-        future = asyncio.run_coroutine_threadsafe(_mutate_session_request(
-            request, profile, session["id"], request_id=f"move-{move_id}-{session['id']}",
-            expected_revision=0, operation="import", payload={"sessions": [session]}), loop)
-        try:
-            return future.result(timeout=120)
-        except HTTPException as exc:
-            if exc.status_code == 409 and "revision_conflict" in str(exc.detail):
-                return {"imported": 0, "skipped": 1}
-            raise RuntimeError(str(exc.detail)) from None
-
+    if body.replace and not body.confirm_replace:
+        raise HTTPException(status_code=400, detail={
+            "code": "confirm_required", "message": "Replacing this agent's data needs the user's confirmation."})
     include = set(body.include) if body.include else None
-    return await _run(move_receive.apply, home, move_id, import_session=import_session, include=include)
+    return await _run(move_receive.apply, home, move_id, sessions=_owner_sessions(request, profile, move_id, home),
+                      include=include, replace=set(body.replace or ()))
 
 
 @router.post("/api/move/uploads/{move_id}/undo")
-async def undo_move_upload(move_id: str, profile: Optional[str] = None):
+async def undo_move_upload(move_id: str, request: Request, profile: Optional[str] = None):
     from hermes_cli import move_receive
     profile = destructive_profile(profile, "POST /api/move/uploads/{id}/undo")
     _name, home = _home(profile)
-    return await _run(move_receive.undo, home, move_id)
+    return await _run(move_receive.undo, home, move_id, sessions=_owner_sessions(request, profile, move_id, home))
 
 
 @router.delete("/api/move/uploads/{move_id}")

@@ -14,6 +14,13 @@ overwrite), cron through the jobs lock (imported jobs arrive paused), memory thr
 file lock, config through a deep merge where the target's own values win, skills as new
 directories (an existing same-named skill is kept and the incoming one is reported).
 
+``apply(..., replace={...})`` names the parts where the bundle wins instead: memory and persona are
+overwritten, same-named skills and jobs are swapped for the incoming ones, the target's other jobs
+are removed, its visible conversations are archived (never deleted), and config keys the bundle
+carries win. What the hosting platform set up stays: credentials are never in a bundle, and the
+config sections in :data:`_PLATFORM_CONFIG_KEYS` keep the target's values in every mode. Undo
+restores all of it.
+
 Every state change lands in ``<home>/moves/<id>/state.json`` so a crash mid-apply is visible and
 resumable rather than silent: ``apply`` skips steps already recorded as done.
 """
@@ -34,6 +41,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_cli.move_bundle import MANIFEST_NAME, read_manifest
+from hermes_cli.move_sessions import visible_session_ids
 
 # Hard ceilings. A profile bundle without media is a few MB; history pushes it to tens.
 MAX_BUNDLE_BYTES = 512 * 1024 * 1024
@@ -45,6 +53,13 @@ _SNAPSHOT = "snapshot"
 _ID_RE = re.compile(r"^[a-f0-9]{32}$")
 _SHA_RE = re.compile(r"^[a-f0-9]{64}$")
 STEPS = ("config", "soul", "memory", "skills", "cron", "sessions")
+# Config the receiving install's platform owns (Hermes Cloud seeds the model, the Nous tool gateway
+# and the Chronos scheduler): a move never changes these, because the keys that would make the
+# source's choices work never travel with it.
+_PLATFORM_CONFIG_KEYS = frozenset({
+    "model", "providers", "fallback_providers", "fallback", "auxiliary", "nous", "auth", "cron", "web",
+    "image_gen", "tts", "stt", "max_concurrent_sessions", "max_live_sessions",
+})
 
 _lock = threading.Lock()
 
@@ -89,7 +104,7 @@ def _write_state(move_dir: Path, state: dict[str, Any]) -> None:
 
 def _public(state: dict[str, Any]) -> dict[str, Any]:
     keys = ("id", "status", "bytes", "received", "sha256", "created_at", "updated_at", "preview",
-            "steps", "result", "error", "applied_at", "undone_at")
+            "steps", "result", "error", "applied_at", "undone_at", "replace")
     return {k: state.get(k) for k in keys if k in state}
 
 
@@ -252,6 +267,9 @@ def preview(home: Path, zf: zipfile.ZipFile, manifest: dict[str, Any]) -> dict[s
         "config_keys": inv.get("config_keys") or [],
         "mcp_servers": inv.get("mcp_servers") or [],
         "keys_to_reenter": inv.get("keys_to_reenter") or [],
+        # What a replace would take away here, so the confirmation can name it.
+        "target": {"skills": len(existing_skills), "cron_jobs": len(existing_jobs),
+                   "conversations": len(visible_session_ids(home)), "soul_customized": soul_customized},
     }
 
 
@@ -265,7 +283,8 @@ def _snapshot(home: Path, move_dir: Path) -> dict[str, Any]:
     """Copy every file apply can rewrite; record which ones did not exist yet."""
     snap = move_dir / _SNAPSHOT
     snap.mkdir(exist_ok=True)
-    record: dict[str, Any] = {"files": {}, "added_skills": [], "added_sessions": [], "added_jobs": []}
+    record: dict[str, Any] = {"files": {}, "added_skills": [], "replaced_skills": [], "added_sessions": [],
+                              "archived_sessions": [], "added_jobs": []}
     for rel in _SNAPSHOT_PATHS:
         src = home / rel
         if src.is_file():
@@ -278,8 +297,10 @@ def _snapshot(home: Path, move_dir: Path) -> dict[str, Any]:
     return record
 
 
-def undo(home: Path, move_id: str) -> dict[str, Any]:
-    """Put back every file the move rewrote and remove what it added."""
+def undo(home: Path, move_id: str, *, sessions) -> dict[str, Any]:
+    """Put back every file the move rewrote, every skill it swapped and every conversation it
+    archived, and remove what it added. ``sessions`` writes through the store's owner
+    (:mod:`hermes_cli.move_sessions`)."""
     move_dir = _move_dir(home, move_id)
     with _lock:
         state = _read_state(move_dir)
@@ -288,47 +309,57 @@ def undo(home: Path, move_id: str) -> dict[str, Any]:
         record = state.get("undo") or {}
         problems: list[str] = []
         for rel, how in (record.get("files") or {}).items():
-            target = home / rel
             try:
-                if how == "existed":
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(move_dir / _SNAPSHOT / rel, target)
-                elif target.exists():
-                    target.unlink()
+                _restore_file(home, move_dir, rel, how)
             except OSError as exc:
                 problems.append(f"{rel}: {exc}")
-        for rel in record.get("added_skills") or []:
+        skills_root = (home / "skills").resolve()
+        for rel in [*(record.get("added_skills") or []), *(record.get("replaced_skills") or [])]:
             path = home / "skills" / rel
-            if path.is_dir() and path.resolve().is_relative_to((home / "skills").resolve()):
+            if path.is_dir() and path.resolve().is_relative_to(skills_root):
                 shutil.rmtree(path, ignore_errors=True)
-        removed_sessions = _delete_sessions(home, record.get("added_sessions") or [], problems)
+        for rel in record.get("replaced_skills") or []:
+            kept = move_dir / _SNAPSHOT / "skills" / rel
+            if kept.is_dir():
+                (home / "skills" / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(kept), home / "skills" / rel)
+        removed = _each(record.get("added_sessions") or [], sessions.delete, "remove", problems)
+        restored = _each(record.get("archived_sessions") or [], lambda sid: sessions.set_archived(sid, False),
+                         "unarchive", problems)
         state.update(status="undone", undone_at=time.time(),
                      result={**(state.get("result") or {}), "undo_problems": problems,
-                             "sessions_removed": removed_sessions})
+                             "sessions_removed": removed, "sessions_unarchived": restored})
         _write_state(move_dir, state)
         return _public(state)
 
 
-def _delete_sessions(home: Path, ids: list[str], problems: list[str]) -> int:
-    if not ids:
-        return 0
-    try:
-        from hermes_state import SessionDB
-        from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
-    except ImportError:
-        return 0
-    try:
-        with exclusive_maintenance([home]):
-            db = SessionDB(db_path=home / "state.db")
-            try:
-                return db.delete_sessions(ids)
-            finally:
-                db.close()
-    except OwnershipConflict:
-        # A live gateway owns the store; deleting through it needs per-session revisions. The
-        # imported sessions stay, listed so the user can remove them from the sidebar.
-        problems.append(f"{len(ids)} imported conversation(s) were kept because the agent is running")
-        return 0
+def _restore_file(home: Path, move_dir: Path, rel: str, how: str) -> None:
+    target = home / rel
+    if rel == "cron/jobs.json":
+        # The live ticker shares this file: restore under its lock, as a wholesale rewrite.
+        from agent.runtime_scope import bind_profile_scope
+        from cron import jobs as cron_jobs
+        kept = json.loads((move_dir / _SNAPSHOT / rel).read_text(encoding="utf-8")) if how == "existed" else {}
+        jobs = kept.get("jobs") if isinstance(kept, dict) else kept
+        with bind_profile_scope(home, hydrate_secrets=False), cron_jobs.use_cron_store(home):
+            cron_jobs.save_jobs(jobs if isinstance(jobs, list) else [], replace=True)
+        return
+    if how == "existed":
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(move_dir / _SNAPSHOT / rel, target)
+    elif target.exists():
+        target.unlink()
+
+
+def _each(ids: list[str], write: Callable[[str], None], verb: str, problems: list[str]) -> int:
+    done = 0
+    for sid in ids:
+        try:
+            write(sid)
+            done += 1
+        except Exception as exc:  # health: allow BLE001 -- one row must not stop the rest of an undo
+            problems.append(f"could not {verb} conversation {sid}: {exc}")
+    return done
 
 
 # --------------------------------------------------------------------------- apply
@@ -344,7 +375,7 @@ def _deep_merge_missing(target: Any, incoming: Any) -> Any:
     return target
 
 
-def _apply_config(home: Path, zf: zipfile.ZipFile, _ctx: dict[str, Any]) -> dict[str, Any]:
+def _apply_config(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dict[str, Any]:
     import hermes_yaml as yaml
     from hermes_cli.config import require_readable_config_before_write, save_config
     from agent.runtime_scope import bind_profile_scope
@@ -354,110 +385,148 @@ def _apply_config(home: Path, zf: zipfile.ZipFile, _ctx: dict[str, Any]) -> dict
         return {"keys_added": []}
     if not isinstance(incoming, dict):
         return {"keys_added": []}
+    replace = "config" in ctx["replace"]
     with bind_profile_scope(home, hydrate_secrets=False):
         existing = require_readable_config_before_write(home / "config.yaml")
-        merged = _deep_merge_missing(existing, incoming)
-        added = sorted(k for k in incoming if k not in existing)
-        # model/provider: the cloud agent already runs on Nous; an empty target model is the only
-        # case the source's choice is adopted.
-        if isinstance(existing.get("model"), (str, dict)) and existing.get("model"):
-            merged["model"] = existing["model"]
+        # Replace: the bundle's settings win, section by section. Merge: the target's always win.
+        merged = _deep_merge_missing(incoming, existing) if replace else _deep_merge_missing(existing, incoming)
+        # What the hosting platform set up (model, Nous tool gateway, scheduler) stays as it is in
+        # both modes: the credentials that would make the source's choices work never travel.
+        for key in _PLATFORM_CONFIG_KEYS:
+            if key in existing:
+                merged[key] = existing[key]
+            else:
+                merged.pop(key, None)
+        changed = sorted(k for k in incoming if k not in _PLATFORM_CONFIG_KEYS and merged.get(k) != existing.get(k))
         save_config(merged)
-        return {"keys_added": added}
+        return {"keys_added" if not replace else "keys_changed": changed}
 
 
 def _apply_soul(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dict[str, Any]:
-    if ctx["preview"]["soul"]["action"] != "replace":
-        return {"action": ctx["preview"]["soul"]["action"]}
+    action = ctx["preview"]["soul"]["action"]
+    if "soul" in ctx["replace"] and ctx["preview"]["soul"]["incoming"]:
+        action = "replace"
+    if action != "replace":
+        return {"action": action}
     from utils import atomic_write_text
     atomic_write_text(home / "SOUL.md", zf.read("SOUL.md").decode("utf-8"), preserve_mode=True)
     return {"action": "replace"}
 
 
-def _apply_memory(home: Path, zf: zipfile.ZipFile, _ctx: dict[str, Any]) -> dict[str, Any]:
-    """Union of entries, target first, deduplicated. Over the char limit is allowed on load and
-    reported, never truncated: the user decides what to prune."""
+def _apply_memory(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dict[str, Any]:
+    """Merge: union of entries, target first, deduplicated. Replace: the incoming entries only.
+    Over the char limit is allowed on load and reported, never truncated: the user decides what to
+    prune."""
     from tools.memory_tool_store import ENTRY_DELIMITER, MemoryStore
     from utils import atomic_write_text
+    replace = "memory" in ctx["replace"]
     added: dict[str, int] = {}
     for name in ("MEMORY.md", "USER.md"):
         try:
             incoming = MemoryStore._parse_entries(zf.read(f"memories/{name}").decode("utf-8"))
         except KeyError:
-            continue
+            incoming = None
         path = home / "memories" / name
+        if incoming is None and not (replace and path.is_file()):
+            continue
         path.parent.mkdir(parents=True, exist_ok=True)
         with MemoryStore._file_lock(path):
             raw, ok = MemoryStore._read_raw_checked(path)
-            if not ok:
+            if not ok and not replace:
                 raise MoveError(f"{name} on this agent is unreadable; nothing was merged into it.", 409)
-            current = MemoryStore._parse_entries(raw)
-            new = [e for e in incoming if e not in current]
-            if new:
+            current = [] if replace else MemoryStore._parse_entries(raw)
+            new = [e for e in incoming or [] if e not in current]
+            if new or replace:
                 atomic_write_text(path, ENTRY_DELIMITER.join(current + new), tmp_prefix=".mem_")
             added[name] = len(new)
-    return {"entries_added": added}
+    return {"entries_added" if not replace else "entries_now": added}
 
 
 def _apply_skills(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dict[str, Any]:
-    from hermes_cli.archive_safe import normalize_archive_parts
+    """New skills land as new directories. Replace also swaps each same-named skill for the
+    incoming copy (the target's is kept in the move's snapshot for undo); other skills stay."""
     root = (home / "skills").resolve()
-    adding = set(ctx["preview"]["skills"]["add"])
-    written: list[str] = []
-    for skill in sorted(adding):
-        dest = (root / skill)
-        if dest.exists() or not dest.resolve().is_relative_to(root):
+    skills = ctx["preview"]["skills"]
+    swapping = set(skills["keep_existing"]) if "skills" in ctx["replace"] else set()
+    written, swapped = [], []
+    for skill in sorted(set(skills["add"]) | swapping):
+        dest = root / skill
+        if not dest.resolve().is_relative_to(root):
             continue
-        staging = root / f".move-{uuid.uuid4().hex[:8]}"
-        prefix = f"skills/{skill}/"
+        if dest.exists() and skill not in swapping:
+            continue
+        staging = _stage_skill(root, zf, skill)
         try:
-            for member in zf.namelist():
-                if not member.startswith(prefix) or member.endswith("/"):
-                    continue
-                parts = normalize_archive_parts(member[len(prefix):])
-                out = staging.joinpath(*parts)
-                out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_bytes(zf.read(member))
+            if dest.exists():
+                kept = ctx["move_dir"] / _SNAPSHOT / "skills" / skill
+                kept.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(dest), kept)
+                ctx["undo"]["replaced_skills"].append(skill)
+                swapped.append(skill)
+            else:
+                ctx["undo"]["added_skills"].append(skill)
+                written.append(skill)
             dest.parent.mkdir(parents=True, exist_ok=True)
             os.replace(staging, dest)
-            written.append(skill)
-            ctx["undo"]["added_skills"].append(skill)
         finally:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=True)
-    return {"added": written}
+    return {"added": written, "replaced": swapped}
+
+
+def _stage_skill(root: Path, zf: zipfile.ZipFile, skill: str) -> Path:
+    from hermes_cli.archive_safe import normalize_archive_parts
+    staging = root / f".move-{uuid.uuid4().hex[:8]}"
+    prefix = f"skills/{skill}/"
+    for member in zf.namelist():
+        if not member.startswith(prefix) or member.endswith("/"):
+            continue
+        out = staging.joinpath(*normalize_archive_parts(member[len(prefix):]))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(zf.read(member))
+    return staging
+
+
+def _paused(job: dict[str, Any], now: str) -> dict[str, Any]:
+    meta = job.pop("_move", {}) or {}
+    needs = meta.get("needs_this_machine") or []
+    job.update(enabled=False, state="paused", paused_at=now, next_run_at=None,
+               paused_reason=("Moved from another computer. Check its script and folder paths, "
+                              "then resume it." if needs else
+                              "Moved from another computer. Resume it when you are ready."),
+               repeat={"times": (job.get("repeat") or {}).get("times"), "completed": 0}
+               if isinstance(job.get("repeat"), dict) else job.get("repeat"))
+    return job
 
 
 def _apply_cron(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dict[str, Any]:
+    """Merge: incoming jobs whose id is new here are added. Replace: the job list becomes the
+    incoming one. Moved jobs always arrive paused."""
     try:
         jobs = json.loads(zf.read("cron/jobs.json")).get("jobs") or []
     except (KeyError, ValueError, AttributeError):
-        return {"added": []}
+        jobs = []
     from agent.runtime_scope import bind_profile_scope
     from cron import jobs as cron_jobs
+    replace = "cron" in ctx["replace"]
     add_ids = {str(j.get("id")) for j in ctx["preview"]["cron"]["add"]}
     now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-    added = []
     with bind_profile_scope(home, hydrate_secrets=False):
         with cron_jobs.use_cron_store(home), cron_jobs._jobs_lock():
             current = cron_jobs.load_jobs()
-            have = {j.get("id") for j in current}
-            for job in jobs:
-                if not isinstance(job, dict) or str(job.get("id")) not in add_ids or job.get("id") in have:
-                    continue
-                meta = job.pop("_move", {}) or {}
-                needs = meta.get("needs_this_machine") or []
-                job.update(enabled=False, state="paused", paused_at=now, next_run_at=None,
-                           paused_reason=("Moved from another computer. Check its script and folder paths, "
-                                          "then resume it." if needs else
-                                          "Moved from another computer. Resume it when you are ready."),
-                           repeat={"times": (job.get("repeat") or {}).get("times"), "completed": 0}
-                           if isinstance(job.get("repeat"), dict) else job.get("repeat"))
-                current.append(job)
-                added.append(str(job["id"]))
-            cron_jobs.save_jobs(current)
+            incoming = [_paused(j, now) for j in jobs if isinstance(j, dict)
+                        and (replace or str(j.get("id")) in add_ids)]
+            if replace:
+                removed = [str(j.get("id")) for j in current]
+                cron_jobs._save_jobs_unlocked(incoming, removed_ids=removed)
+            else:
+                have = {str(j.get("id")) for j in current}
+                incoming = [j for j in incoming if str(j.get("id")) not in have]
+                removed = []
+                cron_jobs._save_jobs_unlocked(current + incoming)
+    added = [str(j["id"]) for j in incoming]
     ctx["undo"]["added_jobs"] = added
-    return {"added": added, "paused": True}
+    return {"added": added, "removed": removed, "paused": True}
 
 
 def _taken_titles(home: Path) -> set[str]:
@@ -488,7 +557,17 @@ def _free_title(title: Any, taken: set[str]) -> Any:
 
 
 def _apply_sessions(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dict[str, Any]:
-    importer: Callable[[dict[str, Any]], dict[str, Any]] = ctx["import_session"]
+    """Merge: incoming conversations are added beside the target's. Replace: the target's visible
+    conversations are archived first (kept, never deleted; undo brings them back)."""
+    sessions = ctx["sessions"]
+    archived = 0
+    if "sessions" in ctx["replace"]:
+        done = set(ctx["undo"]["archived_sessions"])
+        for sid in visible_session_ids(home):
+            if sid not in done:
+                sessions.set_archived(sid, True)
+                ctx["undo"]["archived_sessions"].append(sid)
+                archived += 1
     imported = skipped = failed = 0
     errors: list[str] = []
     taken = _taken_titles(home)
@@ -502,7 +581,7 @@ def _apply_sessions(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dic
         if isinstance(session.get("title"), str):
             taken.add(session["title"])
         try:
-            result = importer(session)
+            result = sessions.import_session(session)
         except Exception as exc:  # health: allow BLE001 -- one bad session must not abort the rest
             failed += 1
             if len(errors) < 5:
@@ -511,7 +590,8 @@ def _apply_sessions(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dic
         imported += int(result.get("imported") or 0)
         skipped += int(result.get("skipped") or 0)
         ctx["undo"]["added_sessions"].extend(result.get("imported_ids") or [])
-    return {"imported": imported, "already_here": skipped, "failed": failed, "errors": errors}
+    return {"imported": imported, "already_here": skipped, "failed": failed, "errors": errors,
+            "archived": archived}
 
 
 _APPLIERS: dict[str, Callable[[Path, zipfile.ZipFile, dict[str, Any]], dict[str, Any]]] = {
@@ -520,9 +600,15 @@ _APPLIERS: dict[str, Callable[[Path, zipfile.ZipFile, dict[str, Any]], dict[str,
 }
 
 
-def apply(home: Path, move_id: str, *, import_session: Callable[[dict[str, Any]], dict[str, Any]],
-          include: Optional[set[str]] = None) -> dict[str, Any]:
-    """Merge a verified bundle. Resumable: steps already recorded as done are skipped."""
+def apply(home: Path, move_id: str, *, sessions, include: Optional[set[str]] = None,
+          replace: Optional[set[str]] = None) -> dict[str, Any]:
+    """Apply a verified bundle: each part in ``include`` (default: all), merged, or replaced when it
+    is also in ``replace``. ``sessions`` writes conversations through the store's owner
+    (:mod:`hermes_cli.move_sessions`). Resumable: steps already recorded as done are skipped, and
+    the include/replace choice is fixed by the first apply so a retry cannot change its meaning."""
+    unknown = (set(include or ()) | set(replace or ())) - set(STEPS)
+    if unknown:
+        raise MoveError(f"Unknown part(s): {', '.join(sorted(unknown))}.", 400, "bad_parts")
     move_dir = _move_dir(home, move_id)
     with _lock:
         state = _read_state(move_dir)
@@ -532,11 +618,14 @@ def apply(home: Path, move_id: str, *, import_session: Callable[[dict[str, Any]]
             raise MoveError("Finish the upload before applying it.", 409, "not_ready")
         if "undo" not in state:
             state["undo"] = _snapshot(home, move_dir)
+            state["include"] = sorted(include) if include is not None else list(STEPS)
+            state["replace"] = sorted(set(replace or ()) & set(state["include"]))
         state["status"] = "applying"
         state.setdefault("steps", {})
         _write_state(move_dir, state)
-    ctx = {"preview": state["preview"], "undo": state["undo"], "import_session": import_session}
-    chosen = [s for s in STEPS if include is None or s in include]
+    ctx = {"preview": state["preview"], "undo": state["undo"], "sessions": sessions, "move_dir": move_dir,
+           "replace": set(state.get("replace") or ())}
+    chosen = [s for s in STEPS if s in set(state.get("include") or STEPS)]
     with zipfile.ZipFile(move_dir / _BUNDLE) as zf:
         for step in chosen:
             if (state["steps"].get(step) or {}).get("status") == "done":

@@ -129,9 +129,15 @@ class _Sessions:
     def __init__(self):
         self.seen = []
 
-    def __call__(self, session):
+    def import_session(self, session):
         self.seen.append(session["id"])
         return {"imported": 1, "skipped": 0, "imported_ids": [session["id"]]}
+
+    def set_archived(self, session_id, archived):
+        raise AssertionError("a merge never archives")
+
+    def delete(self, session_id):
+        pass
 
 
 def test_receive_merges_without_overwriting_and_undo_restores(tmp_path):
@@ -145,7 +151,7 @@ def test_receive_merges_without_overwriting_and_undo_restores(tmp_path):
                                  "left_behind": preview["skills"]["left_behind"]}
     assert [j["id"] for j in preview["cron"]["add"]] == ["job1", "job2"]
 
-    state = move_receive.apply(home, state["id"], import_session=_Sessions())
+    state = move_receive.apply(home, state["id"], sessions=_Sessions())
     assert state["status"] == "applied", state
     config = yaml.safe_load((home / "config.yaml").read_text())
     assert config["model"] == {"default": "nous/hermes", "provider": "nous"}
@@ -162,7 +168,7 @@ def test_receive_merges_without_overwriting_and_undo_restores(tmp_path):
     assert "script and folder paths" in jobs["job2"]["paused_reason"]
     assert "last_status" not in jobs["job1"]
 
-    state = move_receive.undo(home, state["id"])
+    state = move_receive.undo(home, state["id"], sessions=_Sessions())
     assert state["status"] == "undone"
     assert (home / "config.yaml").read_text() == before_config
     assert (home / "memories" / "MEMORY.md").read_text() == "cloud note\n§\nprefers tabs\n"
@@ -176,7 +182,7 @@ def test_customized_soul_on_target_is_kept(tmp_path):
     (home / "SOUL.md").write_text("I am the cloud persona.\n")
     state = _upload(home, out.read_bytes())
     assert state["preview"]["soul"]["action"] == "keep_existing"
-    move_receive.apply(home, state["id"], import_session=_Sessions())
+    move_receive.apply(home, state["id"], sessions=_Sessions())
     assert (home / "SOUL.md").read_text() == "I am the cloud persona.\n"
 
 
@@ -187,10 +193,10 @@ def test_new_skill_lands_and_undo_removes_it(tmp_path):
     shutil.rmtree(home / "skills" / "custom")
     state = _upload(home, out.read_bytes())
     assert state["preview"]["skills"]["add"] == ["custom/mine"]
-    state = move_receive.apply(home, state["id"], import_session=_Sessions())
+    state = move_receive.apply(home, state["id"], sessions=_Sessions())
     assert (home / "skills" / "custom" / "mine" / "SKILL.md").is_file()
     assert not list((home / "skills").glob(".move-*"))
-    move_receive.undo(home, state["id"])
+    move_receive.undo(home, state["id"], sessions=_Sessions())
     assert not (home / "skills" / "custom" / "mine").exists()
 
 
@@ -240,14 +246,14 @@ def test_a_failed_step_is_reported_and_the_rest_still_apply(tmp_path):
     home = _target_home(tmp_path)
     state = _upload(home, out.read_bytes())
     (home / "memories" / "MEMORY.md").write_bytes(b"\xff\xfe not utf8")
-    state = move_receive.apply(home, state["id"], import_session=_Sessions())
+    state = move_receive.apply(home, state["id"], sessions=_Sessions())
     assert state["status"] == "partial"
     assert state["steps"]["memory"]["status"] == "failed"
     assert state["steps"]["cron"]["status"] == "done"
-    again = move_receive.apply(home, state["id"], import_session=_Sessions())
+    again = move_receive.apply(home, state["id"], sessions=_Sessions())
     assert again["steps"]["cron"]["status"] == "done"
     (home / "memories" / "MEMORY.md").write_text("fixed\n")
-    healed = move_receive.apply(home, state["id"], import_session=_Sessions())
+    healed = move_receive.apply(home, state["id"], sessions=_Sessions())
     assert healed["status"] == "applied"
     assert "works on hermes" in (home / "memories" / "MEMORY.md").read_text()
     jobs = json.loads((home / "cron" / "jobs.json").read_text())["jobs"]
@@ -271,7 +277,7 @@ def test_history_is_exported_and_each_session_is_imported_once(tmp_path):
     target = _target_home(tmp_path)
     state = _upload(target, out.read_bytes())
     importer = _Sessions()
-    state = move_receive.apply(target, state["id"], import_session=importer)
+    state = move_receive.apply(target, state["id"], sessions=importer)
     assert sorted(importer.seen) == ["s0", "s1", "s2"]
     assert state["steps"]["sessions"]["imported"] == 3
 
@@ -337,16 +343,11 @@ def test_a_title_already_used_on_the_target_gets_a_suffix(tmp_path):
     tdb.import_sessions([{"id": "other", "source": "cli", "title": "Taxes", "messages": [{"role": "user", "content": "x"}]}])
     tdb.close()
 
-    def real_import(session):
-        db = SessionDB(db_path=target / "state.db")
-        try:
-            return db.import_sessions([session])
-        finally:
-            db.close()
-
+    from hermes_cli.move_sessions import OfflineSessions
     state = _upload(target, out.read_bytes())
-    state = move_receive.apply(target, state["id"], import_session=real_import)
-    assert state["steps"]["sessions"] == {"status": "done", "imported": 1, "already_here": 0, "failed": 0, "errors": []}
+    state = move_receive.apply(target, state["id"], sessions=OfflineSessions(target))
+    assert state["steps"]["sessions"] == {"status": "done", "imported": 1, "already_here": 0, "failed": 0, "errors": [],
+                                          "archived": 0}
     db = SessionDB(db_path=target / "state.db", read_only=True)
     try:
         assert db.get_session("src1")["title"] == "Taxes #2"

@@ -36,8 +36,9 @@ class _ApprovalEntry:
         self.event = threading.Event()
         self.data = dict(data)
         self.data.setdefault("request_id", uuid.uuid4().hex)
-        # True: a card tap may only deny until a renderer proves its card shows the whole command (#62359).
-        self.card_deny_only = False
+        # Born Deny-only: a card tap may only deny until a renderer proves its card shows the whole
+        # command (#62359), so no tap can approve an entry in the window before its card is drawn.
+        self.card_deny_only = True
         # Who may answer (gateway.approval_actor): the turn's actor, approvers and admins. Kept off
         # ``data`` so the prompt and replay payloads sent to clients stay exactly what was raised.
         self.authority = _ctx.prompt_authority()
@@ -190,13 +191,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     from tools.approval_notify_lease import current
     owner = current(session_key)
     keys = list(approval_data.get("pattern_keys") or [])
-    # Born Deny-only: the mark exists before the entry is published, so no tap can approve it in the window
-    # before its renderer has decided whether the card shows the whole command.
     entry = _ApprovalEntry(approval_data)
     if identity is not None:
         # Two commands that render alike after redaction must not share one session/always answer.
         entry.identity = _identity_digest(identity)
-    entry.card_deny_only = True
     entry.owner = owner
     # Captured before the entry is published: a coalesced follower can find it while the pre-request
     # hooks still run, and must wait this same timeout rather than re-read a since-edited config.

@@ -7,6 +7,7 @@ rescue-served response, or the one-shot rescue becomes sticky for a whole TTL. L
 """
 
 import logging
+from typing import Any
 
 logger = logging.getLogger("tools.web_tools")
 
@@ -28,6 +29,45 @@ def _keyless_rescue_enabled() -> bool:
     except Exception as exc:
         logger.debug("keyless rescue tier check failed: %s", exc)
         return False
+
+
+_KEYLESS_RESCUE_VETO_NOTE = " [pre_keyless_rescue veto: keyless cloud rescue skipped]"
+
+
+def annotate_pre_keyless_rescue_veto(backend_name: str, result) -> None:
+    """Surface a plugin veto on a rescue attempt so the refusal is visible, not silent."""
+    if result is None:
+        return
+    logger.warning("pre_keyless_rescue vetoed keyless cloud rescue for backend '%s'", backend_name)
+    if isinstance(result, dict) and result.get("error"):
+        result["error"] = f"{result['error']}{_KEYLESS_RESCUE_VETO_NOTE}"
+    elif isinstance(result, list):
+        for entry in result:
+            if isinstance(entry, dict) and entry.get("error"):
+                entry["error"] = f"{entry['error']}{_KEYLESS_RESCUE_VETO_NOTE}"
+
+
+def _pre_keyless_rescue_allowed(*, kind: str, backend_name: str, error: str, query: str | None = None,
+                                urls: list[str] | None = None) -> bool:
+    """Fire the pre_keyless_rescue hook and treat any falsy callback return as a veto.
+
+    Hook callback failures stay fail-open so privacy hooks never take down the tool.
+    """
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+    except ImportError:
+        return True
+    payload: dict[str, Any] = {"kind": kind, "backend_name": backend_name, "error": (error or "")[:500]}
+    if query is not None:
+        payload["query"] = query
+    if urls is not None:
+        payload["urls"] = list(urls)
+    try:
+        results = invoke_hook("pre_keyless_rescue", **payload)
+    except Exception:
+        logger.warning("pre_keyless_rescue hook dispatch failed; proceeding with rescue", exc_info=True)
+        return True
+    return not any(not result for result in results)
 
 
 def _ring_vendor_keyless(name: str) -> bool:
@@ -93,6 +133,12 @@ def _rescue_eligible(provider) -> bool:
 def _rescue_search(provider_name: str, original_error: str, query: str, limit: int) -> dict:
     """Rescue a failed search via the ring; annotate the result with the original failure."""
     from plugins.web.keyless_mcp import search_with_failover
+    if not _pre_keyless_rescue_allowed(
+        kind="search", backend_name=provider_name, error=original_error, query=query,
+    ):
+        failed = {"success": False, "error": original_error or "search failed"}
+        annotate_pre_keyless_rescue_veto(provider_name, failed)
+        return failed
     logger.warning(
         "web_search backend '%s' failed (%s); one-shot keyless rescue",
         provider_name, (original_error or "")[:200],
@@ -141,6 +187,11 @@ def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
     rescue_urls = [urls[i] for i in rescue_idx] if parity else list(urls)
     errors = (results[i].get("error") for i in rescue_idx if results[i].get("error"))
     original_error = next(errors, "extract failed")
+    if not _pre_keyless_rescue_allowed(
+        kind="extract", backend_name=provider_name, error=original_error, urls=rescue_urls,
+    ):
+        annotate_pre_keyless_rescue_veto(provider_name, results)
+        return results
     logger.warning(
         "web_extract backend '%s' failed all %d URL(s) (%s); one-shot keyless rescue",
         provider_name, len(rescue_urls), (original_error or "")[:200],

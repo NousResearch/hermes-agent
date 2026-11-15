@@ -15,6 +15,7 @@ import {
   GlyphSpinner,
   host,
   Input,
+  PROFILE_ID_ARG_RE,
   queryClient,
   RowButton,
   SearchField,
@@ -85,8 +86,6 @@ import { deleteBot } from './profile-ops'
 import { botRosterMeta } from './routing'
 import { composeSoul } from './soul'
 import type { BotMeta, ConnectionRow, RosterRow } from './types'
-
-const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
 /** Share one in-flight async operation across concurrent callers. Failures
  * clear the slot so a later attempt can retry. */
@@ -402,7 +401,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const [error, setError] = useState<null | string>(null)
   const { slug, title: botTitle } = botProfileIdentity(name, title)
   const descriptionText = [botTitle, description].filter(Boolean).join(' — ')
-  const valid = slug.length > 0 && NAME_RE.test(slug)
+  const valid = slug.length > 0 && PROFILE_ID_ARG_RE.test(slug)
 
   // Once the draft profile is materialized (Capabilities tab / MCP setup) it
   // shows up in the roster — its OWN slug must not read as "taken".

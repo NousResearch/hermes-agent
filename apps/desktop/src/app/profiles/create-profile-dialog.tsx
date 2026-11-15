@@ -1,3 +1,4 @@
+import { PROFILE_ID_ARG_RE } from '@hermes/shared/profile-id'
 import { useEffect, useState } from 'react'
 
 import { ActionStatus } from '@/components/ui/action-status'
@@ -20,8 +21,6 @@ import { dropBrowserProfilePrefs } from '@/lib/browser-profile-prefs'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import type { ProfileInfo } from '@/types/hermes'
-
-import { PROFILE_ID_ARG_RE } from '../../../electron/profile-id-guard'
 
 export function isValidProfileName(name: string): boolean {
   return PROFILE_ID_ARG_RE.test(name.trim())

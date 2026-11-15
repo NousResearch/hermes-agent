@@ -1,9 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { PROFILE_ID_ARG_RE } from '../../shared/src/profile-id'
+
 import { LOCAL_CONNECTION_ID } from './connection-registry'
 import { profileNameFromDeleteRequest } from './profile-delete-routing'
-import { PROFILE_ID_ARG_RE } from './profile-id-guard'
 import { profileRenameFromRequest, type ProfileRenameRequest } from './profile-rename-routing'
 import type { WindowConnectionRoute } from './window-connection-route'
 

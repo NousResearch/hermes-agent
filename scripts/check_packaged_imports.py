@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tomllib
 from fnmatch import fnmatchcase
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -30,15 +30,14 @@ def _tracked_py(root: Path) -> list[str]:
 
 
 def shipped_packages(root: Path, tracked: list[str]) -> set[str]:
-    """Dotted names ``find_packages(include=...)`` returns: directories with ``__init__.py``,
-    reached only through parents that are packages, matching an include pattern."""
+    """Dotted names pyproject's ``packages.find`` ships: it defaults to ``namespaces = true``, so
+    every directory holding tracked Python (``__init__.py`` or not) that an include pattern
+    matches. Git paths are POSIX on every host."""
     include = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8-sig"))[
         "tool"]["setuptools"]["packages"]["find"]["include"]
-    packages = {str(Path(rel).parent).replace("/", ".") for rel in tracked
-                if Path(rel).name == "__init__.py" and Path(rel).parent != Path(".")}
-    reachable = {p for p in packages if all(".".join(p.split(".")[:i]) in packages
-                                            for i in range(1, p.count(".") + 1))}
-    return {p for p in reachable if any(fnmatchcase(p, pattern) for pattern in include)}
+    dirs = {PurePosixPath(rel).parent.parts for rel in tracked} - {()}
+    packages = {".".join(parts[:i]) for parts in dirs for i in range(1, len(parts) + 1)}
+    return {p for p in packages if any(fnmatchcase(p, pattern) for pattern in include)}
 
 
 def imported_names(path: Path, package: tuple[str, ...]) -> set[str]:
@@ -63,11 +62,12 @@ def unshipped_imports(root: Path) -> list[str]:
     shipped = shipped_packages(root, tracked)
     shipped_files = [rel for rel in tracked
                      if ("/" not in rel and rel != "setup.py")
-                     or str(Path(rel).parent).replace("/", ".") in shipped]
-    initialised = {str(Path(rel).parent) for rel in tracked if Path(rel).name == "__init__.py"}
+                     or ".".join(PurePosixPath(rel).parent.parts) in shipped]
+    initialised = {PurePosixPath(rel).parent.as_posix() for rel in tracked
+                   if PurePosixPath(rel).name == "__init__.py"}
     missing: set[str] = set()
     for rel in shipped_files:
-        for name in imported_names(root / rel, Path(rel).parent.parts):
+        for name in imported_names(root / rel, PurePosixPath(rel).parent.parts):
             parts = name.split(".")
             for i in range(1, len(parts) + 1):
                 pkg, parent = ".".join(parts[:i]), ".".join(parts[: i - 1])

@@ -51,3 +51,15 @@ def test_shipped_packages_and_plain_names_pass(tmp_path):
         "plugins/browser/adapter.py": "",
     })
     assert unshipped_imports(repo) == []
+
+
+def test_files_under_a_namespace_directory_are_scanned(tmp_path):
+    # pyproject's packages.find defaults to namespaces = true, so plugins/browser/ (no __init__.py)
+    # ships under "plugins.*" and its imports count.
+    repo = _repo(tmp_path, {
+        "pyproject.toml": '[tool.setuptools.packages.find]\ninclude = ["plugins", "plugins.*"]\n',
+        "plugins/__init__.py": "",
+        "plugins/browser/vendor/adapter.py": "import toolsets\n",
+        "toolsets/__init__.py": "",
+    })
+    assert unshipped_imports(repo) == ["toolsets"]

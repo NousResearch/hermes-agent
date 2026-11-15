@@ -686,15 +686,16 @@ def restore_skill(skill_name: str) -> tuple[bool, str]:
     archive_root = _archive_dir()
     if not archive_root.exists():
         return False, "no archive directory"
-    # Exact name first (recursive: older archives left nested layouts), then the timestamped duplicate. Only
-    # "<skill>-YYYYMMDDHHMMSS" counts — a bare startswith("<skill>-") would let restoring "git" steal "git-helpers".
+    # A timestamped collision is newer than the un-suffixed archive. Prefer the newest
+    # matching snapshot without confusing e.g. "git-helpers" with "git".
     dirs = [p for p in archive_root.rglob("*") if p.is_dir()]
     prefix = f"{skill_name}-"
+    timestamped = sorted(
+        (p for p in dirs if p.name.startswith(prefix) and len(p.name) - len(prefix) == 14
+         and p.name[len(prefix):].isdigit()), reverse=True)
     # Older archives were flattened under the DIRECTORY name (`accelerate` for `huggingface-accelerate`),
     # so fall back to the frontmatter name before giving up.
-    candidates = [p for p in dirs if p.name == skill_name] or sorted(
-        (p for p in dirs if p.name.startswith(prefix) and len(p.name) - len(prefix) == 14
-         and p.name[len(prefix):].isdigit()), reverse=True) or [
+    candidates = timestamped or [p for p in dirs if p.name == skill_name] or [
         p for p in dirs if (p / "SKILL.md").is_file() and read_skill_name(p / "SKILL.md", fallback=p.name) == skill_name]
     if not candidates:
         return False, f"skill '{skill_name}' not found in archive"

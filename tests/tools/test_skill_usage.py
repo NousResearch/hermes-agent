@@ -363,6 +363,30 @@ def test_archive_and_restore_key_on_skill_name_not_directory_name(skills_home):
     assert (skills_dir / "huggingface-accelerate" / "SKILL.md").exists()
 
 
+def test_restore_prefers_newer_timestamped_archive_over_old_exact_name(skills_home):
+    """Issue #154965: restoring after an archive-name collision must not resurrect stale instructions."""
+    from tools.skill_usage import archive_skill, mark_agent_created, restore_skill
+
+    skills_dir = skills_home / "skills"
+    archive = skills_dir / ".archive"
+    old = _write_skill(archive, "demo-skill")
+    (old / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: old\n---\nOLD\n", encoding="utf-8")
+    current = _write_skill(skills_dir, "demo-skill")
+    (current / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: new\n---\nNEW\n", encoding="utf-8")
+    mark_agent_created("demo-skill")
+
+    ok, message = archive_skill("demo-skill")
+    assert ok, message
+    assert len(list(archive.glob("demo-skill-??????????????"))) == 1
+
+    ok, message = restore_skill("demo-skill")
+    assert ok, message
+    assert (skills_dir / "demo-skill" / "SKILL.md").read_text(encoding="utf-8").endswith("NEW\n")
+    assert old.is_dir()
+
+
 def test_forget_removes_record(skills_home):
     from tools.skill_usage import bump_view, forget, load_usage
     bump_view("x")

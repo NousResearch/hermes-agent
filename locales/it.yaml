@@ -441,6 +441,7 @@ gateway:
     cache_unknown_moved: "Cache del prompt: sconosciuta (percorso, sessione o contesto sono cambiati dall'ultima richiesta in cache)."
     cache_unknown_route: "Cache del prompt: sconosciuta (questo provider non pubblica la conservazione della cache)."
     cache_unknown_runtime: "Cache del prompt: sconosciuta (questo runtime imposta le proprie opzioni di cache, che Hermes non può osservare)."
+    cache_unknown_storage: "Cache del prompt: sconosciuta (impossibile leggere l'archivio della sessione)."
     cache_confidence:
       proven: "provato"
       declared: "dichiarato"

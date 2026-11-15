@@ -165,7 +165,8 @@ async def context_breakdown(connection, ref, params) -> dict:
             # A revision probe is two indexed reads; the rebuild walks the whole transcript and the
             # system prompt. Reuse the payload while neither the transcript nor the agent moved.
             key = (id(agent), _agent_context_marks(agent), authority.db.conversation_revision(tip),
-                   row.get('system_prompt'), row.get('tool_names'), row.get('prompt_cache_clock'))
+                   row.get('system_prompt'), row.get('tool_names'), row.get('prompt_cache_clock'),
+                   row.get('model'), row.get('model_config'))
             cached = live.context_breakdown
             if cached is not None and cached[0] == key:
                 return dict(cached[1])
@@ -200,7 +201,15 @@ def _stored_breakdown(row, conversation, usage, *, tip, db) -> dict:
             'context_estimated': bool(usage.get('context_estimated', False)),
             'context_source': str(usage.get('context_source') or 'provider_usage'), 'model': str(usage.get('model') or ''),
             'prompt_cache': stored_cache_window(row.get('prompt_cache_clock'), session_id=tip,
-                                                generation=current_generation(db, tip))}
+                                                generation=current_generation(db, tip), saved_route=_saved_route(row))}
+
+
+def _saved_route(row) -> tuple:
+    """``(provider, base_url, model)`` as the row persists them (``session.mutate`` writes the model and
+    ``model_config.provider``; ``update_session_model`` also the base_url)."""
+    from hermes_state_sessions import _parse_model_config
+    config = _parse_model_config(row.get('model_config'))
+    return config.get('provider'), config.get('base_url'), row.get('model')
 
 
 def _agent_context_marks(agent) -> tuple:

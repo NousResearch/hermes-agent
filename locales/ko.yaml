@@ -441,6 +441,7 @@ gateway:
     cache_unknown_moved: "프롬프트 캐시: 알 수 없음 (마지막 캐시 요청 이후 경로, 세션 또는 컨텍스트가 변경됨)."
     cache_unknown_route: "프롬프트 캐시: 알 수 없음 (이 공급자는 캐시 보존 기간을 공개하지 않음)."
     cache_unknown_runtime: "프롬프트 캐시: 알 수 없음 (이 런타임은 자체 캐시 옵션을 사용하며 Hermes가 관찰할 수 없습니다)."
+    cache_unknown_storage: "프롬프트 캐시: 알 수 없음 (세션 저장소를 읽을 수 없습니다)."
     cache_confidence:
       proven: "입증됨"
       declared: "요청됨"

@@ -425,6 +425,11 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         self._session(session_id)
         return self._apply('session.row_role', {'row_id': int(row_id)})['value']
 
+    def prompt_cache_generation(self, session_id):
+        # The owner's durable count, so a worker's prompt-cache event compares like the owner's own.
+        self._session(session_id)
+        return self._apply('session.cache_generation', {})['value']
+
     def get_compression_failure_cooldown_row(self, session_id):
         row = self.get_session(session_id)
         return {'session_exists': True, 'cooldown_until': row.get('compression_failure_cooldown_until'),

@@ -441,6 +441,7 @@ gateway:
     cache_unknown_moved: "提示詞快取：未知（自上次快取請求以來，路由、工作階段或上下文已變更）。"
     cache_unknown_route: "提示詞快取：未知（此供應商未公布其快取保留時間）。"
     cache_unknown_runtime: "提示詞快取：未知（此執行環境自行設定快取選項，Hermes 無法觀察）。"
+    cache_unknown_storage: "提示詞快取：未知（無法讀取工作階段儲存）。"
     cache_confidence:
       proven: "已證實"
       declared: "已宣告"

@@ -29,6 +29,9 @@ Consumers ask :func:`cache_certainly_warm` (before ``guaranteed_until``) or
 :func:`cache_certainly_cold` (past ``estimated_until``; never past only a minimum). Between the two
 the cache MAY still be warm. An unknown window is neither.
 
+Storage is advisory here: a failed read (SQLite, a worker's owner RPC) makes the window
+``unknown`` (``storage_unavailable``) and never raises into the turn that produced a reply.
+
 Validity: an event is bound to the session id, the full route (provider, normalized base URL with
 scheme, host, port and path, model) and the session's durable context generation (how many rows a
 compaction or prune archived: it survives restarts and only grows). Any difference makes the window
@@ -43,7 +46,9 @@ route switch, fallback, compaction, or a runtime whose requests Hermes does not 
 from __future__ import annotations
 
 import json
+import logging
 import re
+import sqlite3
 import time
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Optional
@@ -51,7 +56,10 @@ from typing import Any, Callable, Optional
 from agent.prompt_caching import TTL_SECONDS, route_ttl_ceiling
 from utils import base_url_host_matches, base_url_hostname
 
+logger = logging.getLogger(__name__)
+
 PROVEN, DECLARED, ASSUMED, UNKNOWN = "proven", "declared", "assumed", "unknown"
+STORAGE_UNAVAILABLE = -1  # a generation read that failed: never equal to a real (>= 0) generation
 _CONFIDENCE_RANK = {UNKNOWN: 0, ASSUMED: 1, DECLARED: 2, PROVEN: 3}
 _OPENAI_HOSTS = ("api.openai.com", "chatgpt.com")
 _GPT_VERSION = re.compile(r"gpt-(\d+)(?:\.(\d+))?")
@@ -318,12 +326,23 @@ def _compression_count(agent: Any) -> int:
     return int(getattr(getattr(agent, "context_compressor", None), "compression_count", 0) or 0)
 
 
+def _storage_errors() -> tuple[type[BaseException], ...]:
+    """What a store read can raise: SQLite and the filesystem on the owner, the owner RPC in a worker."""
+    from agent.runtime_session_store import WorkerPersistenceError
+    return sqlite3.Error, OSError, WorkerPersistenceError
+
+
 def current_generation(db: Any, session_id: Any) -> Optional[int]:
-    """The session's durable context generation, or None when the store cannot say (a worker store)."""
+    """The session's durable context generation; None when the store has none (no session db),
+    :data:`STORAGE_UNAVAILABLE` when the read failed."""
     reader = getattr(db, "prompt_cache_generation", None)
     if not session_id or not callable(reader):
         return None
-    value = reader(str(session_id))
+    try:
+        value = reader(str(session_id))
+    except _storage_errors() as exc:
+        logger.debug("prompt-cache clock: generation read failed for %s (%s); window unknown", session_id, exc)
+        return STORAGE_UNAVAILABLE
     return value if isinstance(value, int) else None
 
 
@@ -332,6 +351,8 @@ def _invalid_reason(event: CacheEvent, *, session_id: str, generation: Optional[
     """Why *event* no longer describes the cache the next request reaches, or None."""
     if event.session_id and event.session_id != session_id:
         return "session_rotated"
+    if STORAGE_UNAVAILABLE in (generation, event.generation):
+        return "storage_unavailable"
     if generation is not None and event.generation != generation:
         return "compacted"
     if route is not None and event.route != route:
@@ -339,8 +360,11 @@ def _invalid_reason(event: CacheEvent, *, session_id: str, generation: Optional[
     return None
 
 
-def _agent_invalid_reason(agent: Any, event: CacheEvent) -> Optional[str]:
-    generation = current_generation(getattr(agent, "_session_db", None), getattr(agent, "session_id", None))
+def _agent_generation(agent: Any) -> Optional[int]:
+    return current_generation(getattr(agent, "_session_db", None), getattr(agent, "session_id", None))
+
+
+def _agent_invalid_reason(agent: Any, event: CacheEvent, generation: Optional[int]) -> Optional[str]:
     # No durable generation (a worker store): this process's compressor count is the only witness.
     if generation is None and getattr(agent, "_prompt_cache_compression_mark", 0) != _compression_count(agent):
         return "compacted"
@@ -356,7 +380,7 @@ def _set_event(agent: Any, event: Optional[CacheEvent]) -> None:
 # ── Response side ───────────────────────────────────────────────────────────
 
 
-def _valid_previous(agent: Any) -> Optional[CacheEvent]:
+def _valid_previous(agent: Any, generation: Optional[int]) -> Optional[CacheEvent]:
     """The event this response folds onto: the saved one on a resumed agent (restored first), and
     only while it still describes the same cache."""
     if not getattr(agent, "_prompt_cache_clock_restored", False):
@@ -364,7 +388,7 @@ def _valid_previous(agent: Any) -> Optional[CacheEvent]:
     previous = getattr(agent, "_prompt_cache_clock", None)
     if not isinstance(previous, CacheEvent) or previous.confidence == UNKNOWN:
         return None
-    return None if _agent_invalid_reason(agent, previous) else previous
+    return None if _agent_invalid_reason(agent, previous, generation) else previous
 
 
 def _moa_destination(agent: Any) -> tuple[Optional[dict], Optional[dict]]:
@@ -389,7 +413,8 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
     if moa_route is not None:
         model, provider = moa_route.get("model") or model, moa_route.get("provider") or provider
         base_url, api_mode = moa_route.get("base_url") or "", moa_route.get("api_mode") or ""
-    previous = _valid_previous(agent)
+    generation = _agent_generation(agent)
+    previous = _valid_previous(agent, generation)
     attempt = moa_attempt or getattr(agent, "_prompt_cache_attempt", None) or {}
     ctx = _Ctx(
         route_class=classify_route(provider=provider, base_url=base_url, api_mode=api_mode or "", model=model or "",
@@ -413,8 +438,9 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
         tier=min(coverage, key=coverage.__getitem__) if coverage else verdict.tier,
         confidence=confidence if estimated is not None else UNKNOWN, reason=reason, coverage=coverage,
         guaranteed_until=guaranteed, estimated_until=estimated, session_id=str(getattr(agent, "session_id", "") or ""),
-        generation=current_generation(getattr(agent, "_session_db", None), getattr(agent, "session_id", None)),
+        generation=generation,
     )
+    agent._prompt_cache_clock_restored = True  # a live event supersedes a store that could not be read
     _set_event(agent, event)
     return event
 
@@ -430,8 +456,7 @@ def record_unobserved_cache_response(agent: Any, usage: Any, *, reason: str) -> 
     event = CacheEvent(
         route=route, destination=route, route_class="unobserved", requested_ttl=None, sent_at=time.time(),
         read_tokens=read, write_tokens=write, tier=None, confidence=UNKNOWN, reason=reason,
-        session_id=str(getattr(agent, "session_id", "") or ""),
-        generation=current_generation(getattr(agent, "_session_db", None), getattr(agent, "session_id", None)),
+        session_id=str(getattr(agent, "session_id", "") or ""), generation=_agent_generation(agent),
     )
     agent._prompt_cache_clock_restored = True
     _set_event(agent, event)
@@ -480,13 +505,19 @@ def _fallback_event(agent: Any, last_assistant_at: float, generation: Optional[i
 
 def restore_cache_clock(agent: Any) -> Optional[CacheEvent]:
     """Load the session's stored clock once per agent (resume, gateway re-creation). The saved
-    generation is kept as saved: a compaction committed since then invalidates it."""
-    agent._prompt_cache_clock_restored = True
+    generation is kept as saved: a compaction committed since then invalidates it. A failed read
+    restores nothing and is retried on the next consumer."""
     db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
     reader = getattr(db, "get_prompt_cache_clock", None)
     if not session_id or not callable(reader):
+        agent._prompt_cache_clock_restored = True
         return None
-    stored: Any = reader(session_id) or {}
+    try:
+        stored: Any = reader(session_id) or {}
+    except _storage_errors() as exc:
+        logger.debug("prompt-cache clock: restore failed for %s (%s); window unknown", session_id, exc)
+        return None
+    agent._prompt_cache_clock_restored = True
     event = event_from_json(stored.get("clock"))
     if event is not None:
         event = replace(event, session_id=event.session_id or str(session_id))
@@ -516,18 +547,33 @@ def cache_window(agent: Any) -> Optional[CacheWindow]:
     if event is None and not getattr(agent, "_prompt_cache_clock_restored", False):
         event = restore_cache_clock(agent)
     if not isinstance(event, CacheEvent):
-        return None
-    reason = _agent_invalid_reason(agent, event)
+        # A restore that could not read the store: the session may have a window nobody can see.
+        return None if getattr(agent, "_prompt_cache_clock_restored", False) else _unknown("storage_unavailable")
+    reason = _agent_invalid_reason(agent, event, _agent_generation(agent))
     return _unknown(reason, event) if reason else _window(event)
 
 
-def stored_cache_window(raw_clock: Any, *, session_id: str, generation: Optional[int]) -> Optional[dict[str, Any]]:
-    """:func:`cache_window_payload` for a session with no live agent, from its saved column. With no
-    agent there is no live route to compare: the saved route is the one a resume starts on."""
+def _saved_route_changed(event: CacheEvent, saved: tuple[Any, Any, Any]) -> bool:
+    """Whether the session's persisted route (what ``session.mutate`` / ``/model`` wrote, and what
+    a resume starts on) differs from the route the event was recorded on. Only persisted parts
+    count: a row without a provider or base_url says nothing about them. A ``custom`` agent
+    names the transport class while the row names the entry, so its endpoint is the base_url."""
+    provider, base_url, model = _route_key(*saved)
+    ev_provider, ev_url, ev_model = event.route
+    return bool((model and model != ev_model) or (base_url and base_url != ev_url)
+                or (provider and ev_provider != "custom" and provider != ev_provider))
+
+
+def stored_cache_window(raw_clock: Any, *, session_id: str, generation: Optional[int],
+                        saved_route: tuple[Any, Any, Any] = (None, None, None)) -> Optional[dict[str, Any]]:
+    """:func:`cache_window_payload` for a session with no live agent, from its saved column, checked
+    against the session's persisted ``(provider, base_url, model)``."""
     event = event_from_json(raw_clock)
     if event is None:
         return None
     reason = _invalid_reason(event, session_id=session_id, generation=generation, route=None)
+    if reason is None and _saved_route_changed(event, saved_route):
+        reason = "route_changed"
     return asdict(_unknown(reason, event) if reason else _window(event))
 
 
@@ -559,7 +605,8 @@ def cache_certainly_cold(window: Any, *, now: Optional[float] = None) -> bool:
 # ── /context line (surface absorbed from #142387) ──────────────────────────
 
 _UNKNOWN_LINES = {"session_rotated": "cache_unknown_moved", "compacted": "cache_unknown_moved",
-                  "route_changed": "cache_unknown_moved", "codex_app_server": "cache_unknown_runtime"}
+                  "route_changed": "cache_unknown_moved", "codex_app_server": "cache_unknown_runtime",
+                  "storage_unavailable": "cache_unknown_storage"}
 
 
 def _duration(seconds: float) -> str:

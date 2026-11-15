@@ -6,7 +6,14 @@ model that rejects ``temperature``, ``max_tokens`` or a reasoning field failed t
 though the same parameter rungs would have recovered it on the primary path (#78273, #72351).
 This module runs those rungs — and only those — around a candidate's request.
 """
+import re
 from typing import Any, Awaitable, Callable, Dict, Optional
+
+
+def _fallback_provider_from_label(label: str) -> str:
+    """Recover the provider identifier from a fallback display label."""
+    match = re.match(r"(?:fallback_chain\[\d+\]|fallback_providers\[\d+\]|main-agent)\(([^)]+)\)$", label or "")
+    return match.group(1).strip() if match else str(label or "").strip()
 
 
 def reapply_repairs(kwargs: dict[str, Any], repairs: tuple) -> dict[str, Any]:

@@ -36,7 +36,7 @@ from agent.error_classifier import (
 from agent.auxiliary_custom_credentials import (
     _normalize_api_key, declared_custom_credential_identity, declared_custom_key_for_base_url, fast_catalog_provider)
 from agent.errors import InvalidProviderResponseError
-from agent.auxiliary_fallback_recovery import reapply_repairs
+from agent.auxiliary_fallback_recovery import _fallback_provider_from_label, reapply_repairs
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_profile_gates import (
@@ -51,7 +51,7 @@ from agent.codex_headers import (
 )
 from agent.codex_runtime import _codex_event_has_content
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
-from agent.local_network import local_network_outage, probe_connectivity_async, route_needs_external_network
+from agent.local_network import local_network_outage, probe_connectivity_async, skip_offline_candidate
 
 # `openai.OpenAI` is imported lazily (~240 ms cold); `OpenAI` below is a proxy
 # so in-module calls, `auxiliary_client.OpenAI` reads and
@@ -3748,12 +3748,6 @@ def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[floa
     return _coerce_positive_timeout(entry.get("timeout") if entry else None)
 
 
-def _fallback_provider_from_label(label: str) -> str:
-    """Recover the provider identifier from a fallback display label."""
-    match = re.match(r"(?:fallback_chain\[\d+\]|fallback_providers\[\d+\]|main-agent)\(([^)]+)\)$", label or "")
-    return match.group(1).strip() if match else str(label or "").strip()
-
-
 class _FallbackDestination(NamedTuple):
     provider: str
     base_url: str
@@ -4187,8 +4181,7 @@ def _try_configured_fallback_chain(
 ) -> tuple[Optional[Any], Optional[str], str]:
     """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
     ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still run after a
-    model-scoped failure); this walk's ``skip_lanes`` are passed over. ``suppress_external`` skips entries that need the
-    outside network while the machine is offline, keeping loopback/LAN entries eligible (agent/local_network.py). Returns (client, model, label)."""
+    model-scoped failure); this walk's ``skip_lanes`` are passed over. Returns (client, model, label)."""
     if not task:
         return None, None, ""
     chain = _get_auxiliary_task_config(task).get("fallback_chain")
@@ -4206,7 +4199,7 @@ def _try_configured_fallback_chain(
             continue
         fb_model_raw = str(entry.get("model", "")).strip()
         fb_base_url = _custom_health_base_url(fb_provider, entry.get("base_url"))
-        if skip(fb_provider, fb_model_raw, fb_base_url):
+        if skip(fb_provider, fb_model_raw, fb_base_url) or (suppress_external and skip_offline_candidate(fb_provider, entry)):
             continue
         if _is_provider_unhealthy(fb_provider, fb_base_url, fb_model_raw):
             _log_skip_unhealthy(fb_provider, task, base_url=fb_base_url, model=fb_model_raw)
@@ -4214,11 +4207,6 @@ def _try_configured_fallback_chain(
             continue
         fb_model = fb_model_raw or None
         label = f"fallback_chain[{i}]({fb_provider})"
-        if suppress_external and route_needs_external_network(fb_provider, str(entry.get("base_url") or "")):
-            logger.info("Auxiliary %s: skipping %s (%s needs the external network; machine is offline)",
-                        task or "call", label, fb_provider)
-            tried.append(f"{label} (needs network)")
-            continue
         try:
             fb_client, resolved_model = _resolve_fallback_entry(entry)
         except Exception:
@@ -4275,14 +4263,11 @@ def _resolve_fallback_entry(entry: dict[str, Any]) -> tuple[Optional[Any], Optio
 
 def _try_main_fallback_chain(
     task: Optional[str], failed_provider: str = "", reason: str = "error", *,
-    failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None, skip_lanes=(),
-    suppress_external: bool = False,
+    failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None, skip_lanes=(), suppress_external: bool = False,
 ) -> tuple[Optional[Any], Optional[str], str]:
     """Top-level main-agent fallback chain for a ``provider: auto`` auxiliary call: auto tasks honour the
     user's main fallback policy before the built-in discovery chain; read via ``get_fallback_chain`` so
-    ``fallback_providers`` and legacy ``fallback_model`` keep the main agent's order.
-    ``suppress_external`` skips entries that need the outside network while the machine is offline
-    (agent/local_network.py), keeping loopback/LAN entries eligible."""
+    ``fallback_providers`` and legacy ``fallback_model`` keep the main agent's order."""
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.fallback_config import get_fallback_chain
@@ -4305,13 +4290,8 @@ def _try_main_fallback_chain(
             continue
         fb_norm = fb_provider.lower()
         label = f"fallback_providers[{i}]({fb_provider})"
-        if suppress_external and route_needs_external_network(fb_provider, str(entry.get("base_url") or "")):
-            logger.info("Auxiliary %s: skipping %s (%s needs the external network; machine is offline)",
-                        task or "call", label, fb_provider)
-            tried.append(f"{label} (needs network)")
-            continue
         fb_base_url = _custom_health_base_url(fb_provider, entry.get("base_url"))
-        if fb_norm == "auto" or skip(fb_provider, fb_model, fb_base_url):
+        if fb_norm == "auto" or skip(fb_provider, fb_model, fb_base_url) or (suppress_external and skip_offline_candidate(fb_provider, entry)):
             tried.append(f"{label} (skipped)")
             continue
         if _is_provider_unhealthy(fb_norm, fb_base_url, fb_model):
@@ -7670,8 +7650,7 @@ def _ladder_credential_rungs(
 
 def _next_fallback_after_quarantine(
     task: Optional[str], resolved_provider: str, is_auto: bool, route: _LadderRoute,
-    failed_model: Optional[str], failure_scope: Any, *, task_chain_only: bool = False, skip_lanes=(),
-    suppress_external: bool = False,
+    failed_model: Optional[str], failure_scope: Any, *, task_chain_only: bool = False, skip_lanes=(), suppress_external: bool = False,
 ) -> tuple[Optional[Any], Optional[str], str]:
     """Next candidate after a fallback entry was quarantined mid-request (dead credential or a
     capacity error): remaining configured entries (task chain, then main chain on auto) before the
@@ -7679,14 +7658,12 @@ def _next_fallback_after_quarantine(
     stops at the task chain — the user never opted that task into discovery or the main model."""
     walk = dict(reason="fallback candidate unavailable", failed_base_url=route.base_info,
                 failure_scope=failure_scope, skip_lanes=skip_lanes)
-    fb = _try_configured_fallback_chain(task, resolved_provider or "auto", failed_model=failed_model,
-                                        suppress_external=suppress_external, **walk)
+    fb = _try_configured_fallback_chain(task, resolved_provider or "auto", failed_model=failed_model, suppress_external=suppress_external, **walk)
     if task_chain_only:
         return fb
     if fb[0] is None and is_auto:
-        fb = _try_main_fallback_chain(task, resolved_provider or "auto", failed_model=failed_model,
-                                      suppress_external=suppress_external, **walk)
-    if fb[0] is None and not suppress_external:
+        fb = _try_main_fallback_chain(task, resolved_provider or "auto", failed_model=failed_model, suppress_external=suppress_external, **walk)
+    if fb[0] is None and not suppress_external:  # discovery rungs are cloud-only
         fb = _try_payment_fallback(resolved_provider, task, main_runtime=route.main_runtime, **walk)
     return fb
 
@@ -7698,10 +7675,7 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
     this request regardless of user intent. An auth error from an explicit provider may only use the
     task's own configured fallback_chain; it never implies an unconfigured provider hop."""
     task, tag, resolved_provider, first_err = route.task, route.tag, route.resolved_provider, failure.error
-    # Machine-level outage (agent/local_network.py): consume only an ALREADY-CACHED verdict — this
-    # ladder is also advanced from an event loop (_drive_ladder_async), so it must never block on
-    # socket work. Suppression stays route-scoped: loopback/LAN fallback entries remain eligible.
-    _suppress_external = local_network_outage(first_err, allow_probe=False)
+    _offline = local_network_outage(first_err, allow_probe=False)  # cached verdict only: may run on an event loop
     is_auto = resolved_provider in {"auto", "", None}
     reason = aux_errors.fallback_label(failure, rung_spent=rung_spent)
     is_capacity_error = reason not in (None, aux_errors.AUTH_ERROR)
@@ -7744,20 +7718,16 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
     )
     fb_client, fb_model, fb_label = _try_configured_fallback_chain(
         task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
-        failed_base_url=route.base_info, failure_scope=_chain_failure_scope,
-        suppress_external=_suppress_external)
+        failed_base_url=route.base_info, failure_scope=_chain_failure_scope, suppress_external=_offline)
     if fb_client is None and is_auto:
         fb_client, fb_model, fb_label = _try_main_fallback_chain(
             task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
-            failed_base_url=route.base_info, failure_scope=_chain_failure_scope,
-            suppress_external=_suppress_external)
-        if fb_client is None and not _suppress_external:
-            # Discovery/payment rungs are cloud providers by construction: with the machine offline
-            # they cannot serve the call, so they are skipped rather than attempted and failed.
+            failed_base_url=route.base_info, failure_scope=_chain_failure_scope, suppress_external=_offline)
+        if fb_client is None and not _offline:
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task, reason=reason, failed_base_url=route.base_info,
                 failure_scope=_chain_failure_scope, main_runtime=route.main_runtime)
-    elif fb_client is None and not explicit_auth_with_task_chain and not _suppress_external:
+    elif fb_client is None and not explicit_auth_with_task_chain and not _offline:
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
             failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
@@ -7782,8 +7752,7 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
             return fb_resp
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
             task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,
-            task_chain_only=explicit_auth_with_task_chain, skip_lanes=tried_lanes,
-            suppress_external=_suppress_external)
+            task_chain_only=explicit_auth_with_task_chain, skip_lanes=tried_lanes, suppress_external=_offline)
     # All fallback layers exhausted: one user-visible warning (#26882), then the caller re-raises.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
                    "(fallback_chain + main agent model). Raising the primary error.",
@@ -8234,9 +8203,7 @@ async def _async_call_llm_impl(
     resp, exc = await _aoutcome(_primary(provider=request_provider, base_url=req.base_info))
     if exc is None:
         return resp
-    if _is_connection_error(exc):
-        # Refresh the outage verdict OFF the event loop: the sync ladder consumes the cached verdict.
-        await probe_connectivity_async()
+    await probe_connectivity_async(exc)  # refresh the outage verdict off-loop; the ladder reads the cache
     failure = _primary_failure(req, exc)
     # The async Codex adapter wraps the sync stream via to_thread: same TimeoutError here.
     if _should_retry_same_provider(task, failure, " (async)"):

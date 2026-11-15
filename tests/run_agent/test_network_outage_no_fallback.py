@@ -70,11 +70,9 @@ def _always_fails_with(error):
 
 def _offline(probe: bool):
     """Patch the outage verdict's probe (the seam production reads) and keep waits off the clock."""
-    from agent import turn_recovery
-
     return (
         patch("agent.local_network.probe_connectivity", return_value=probe),
-        patch.object(turn_recovery, "network_outage_max_wait_seconds", return_value=0.0),
+        patch("agent.local_network.network_outage_max_wait_seconds", return_value=0.0),
     )
 
 

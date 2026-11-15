@@ -133,16 +133,19 @@ def probe_connectivity(
     return verdict
 
 
-async def probe_connectivity_async() -> Optional[bool]:
+async def probe_connectivity_async(error: Any = None) -> Optional[bool]:
     """Off-loop refresh of the cached verdict (blocking socket work in a worker thread).
 
-    The async auxiliary lane calls this before it classifies a transport error, so the
-    sync ladder that follows can consume the verdict without touching a socket.
+    The async auxiliary lane calls this before it classifies a failure, so the sync ladder
+    that follows can consume the verdict without touching a socket. With ``error`` given,
+    only a connect-class or DNS/routing failure triggers the probe.
     """
+    if error is not None and not (is_connect_failure(error) or has_local_outage_marker(error)):
+        return None
     try:
         return await asyncio.to_thread(probe_connectivity)
-    except Exception as exc:  # pragma: no cover - thread/loop shutdown races
-        logger.debug("Off-loop connectivity probe failed: %s", exc)
+    except RuntimeError:  # executor already shut down (interpreter/loop teardown)
+        logger.debug("Off-loop connectivity probe unavailable", exc_info=True)
         return None
 
 
@@ -164,8 +167,8 @@ def _probe_uncached(*, timeout: float, deadline: float) -> Optional[bool]:
                 )
                 return False
             continue
-        except Exception as exc:  # pragma: no cover - non-OSError probe faults
-            logger.debug("Connectivity probe failed unexpectedly on %s:%s: %s", host, port, exc)
+        except ValueError:  # malformed witness/timeout: the probe itself is untrustworthy
+            logger.debug("Connectivity probe failed on %s:%s", host, port, exc_info=True)
             return None
     return False
 
@@ -207,7 +210,7 @@ def local_network_outage(error: Any, *, allow_probe: bool = True) -> bool:
 
     ``allow_probe=False`` consumes only an already-cached verdict (no socket work at all) —
     used where blocking is unacceptable, e.g. the auxiliary ladder reachable from an event
-    loop. With no cached verdict the hard markers still decide.
+    loop. With no cached verdict it answers False (never suppresses a fallback on text alone).
     """
     text = failure_text(error)
     if any(marker in text for marker in _ANSWERED_MARKERS):
@@ -217,8 +220,10 @@ def local_network_outage(error: Any, *, allow_probe: bool = True) -> bool:
         return False
     verdict = probe_connectivity(cache_only=not allow_probe)
     if verdict is None:
-        # No trustworthy probe (or none allowed here): only explicit DNS/routing evidence counts.
-        return markers
+        # A cache-only read with nothing cached proves nothing: one dead provider domain also reads
+        # "name not known", so suppressing there would drop a fallback that works. An untrustworthy
+        # probe that DID run leaves only the explicit DNS/routing evidence.
+        return markers and allow_probe
     return not verdict
 
 
@@ -256,8 +261,8 @@ def network_outage_max_wait_seconds() -> float:
         agent_cfg = (load_config_readonly() or {}).get("agent") or {}
         raw = agent_cfg.get("network_outage_max_wait_seconds", _DEFAULT_MAX_WAIT_SECONDS)
         return max(float(raw), 0.0)
-    except Exception as exc:
-        logger.debug("network_outage_max_wait_seconds fell back to default: %s", exc)
+    except Exception:  # config unreadable or a non-numeric value: keep the documented default
+        logger.debug("network_outage_max_wait_seconds fell back to default", exc_info=True)
         return _DEFAULT_MAX_WAIT_SECONDS
 
 
@@ -281,3 +286,52 @@ def outage_wait_plan(waited: float, retry_count: int, *, cap: float) -> float:
         return 0.0
     remaining = max(cap - max(waited, 0.0), 0.0)
     return min(network_outage_wait_seconds(retry_count), remaining)
+
+
+def skip_offline_candidate(provider: str, entry: dict) -> bool:
+    """True (and logged) when a fallback entry needs the WAN while the machine is offline.
+
+    Not marked unavailable: the outage is transient and the entry is fine once the network
+    returns; the chain index still advances, so the walk moves on.
+    """
+    if not route_needs_external_network(provider, str(entry.get("base_url") or "")):
+        return False
+    logger.info("Fallback skip: %s/%s needs the external network and the machine is offline "
+                "(route-scoped suppression)", provider, entry.get("model"))
+    return True
+
+
+def hold_primary_while_offline(agent: Any, retry_state: Any, *, retry_count: int, max_retries: int) -> int:
+    """Keep retrying the SAME route while the machine has no network; returns the ceiling to use.
+
+    Switching to another external route cannot help (every external provider is unreachable)
+    and it would outlive the outage: the session would resume on the fallback model with a
+    cold prompt cache, billed at that model's rate, for a fault that was never the provider's.
+    The seconds reserved here are the seconds the loop sleeps (``reserved_outage_wait``), so
+    ``network_outage_max_wait_seconds`` bounds real wall-clock waiting.
+    """
+    cap = network_outage_max_wait_seconds()
+    waited = float(getattr(retry_state, "network_outage_waited", 0.0) or 0.0)
+    wait = outage_wait_plan(waited, retry_count, cap=cap)
+    retry_state.network_outage_sleep = wait
+    if wait <= 0:
+        return max_retries  # budget spent (or disabled): normal handling finishes the turn
+    retry_state.network_outage_waited = waited + wait
+    agent._buffer_diagnostic_status(
+        f"🌐 No internet access — holding {agent.model} via {agent.provider} "
+        f"and waiting for connectivity ({retry_state.network_outage_waited:.0f}s of {cap:.0f}s)"
+    )
+    logger.info("Local network outage: holding %s via %s, waited %.1fs of %.0fs (retry %s/%s)",
+                agent.model, agent.provider, retry_state.network_outage_waited, cap, retry_count, max_retries)
+    return max(max_retries, retry_count + 1)
+
+
+def reserved_outage_wait(api_error: Any, retry_state: Any, wait_time: float) -> tuple[bool, float]:
+    """``(offline, wait)`` for the retry backoff: an offline failure sleeps exactly the seconds
+    ``hold_primary_while_offline`` reserved (single use); no reservation keeps ``wait_time``."""
+    if not local_network_outage(api_error):
+        return False, wait_time
+    reserved = float(getattr(retry_state, "network_outage_sleep", 0.0) or 0.0)
+    if retry_state is not None:
+        retry_state.network_outage_sleep = 0.0
+    return True, (reserved if reserved > 0 else wait_time)

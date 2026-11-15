@@ -16,8 +16,8 @@ from __future__ import annotations
 import pytest
 
 from tools import approval as A
-import tools.approval_prompt as approval_prompt
-import tools.approval_detection as approval_detection
+from tools import approval_prompt
+from tools import approval_detection
 from tools import approval_context
 from tools import approval_smart
 

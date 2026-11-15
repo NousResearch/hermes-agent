@@ -141,7 +141,7 @@ class Scenario:
     call_bound: int = MAX_PROVIDER_CALLS_PER_FAILED_TURN
     exact_calls: int | None = None
     # Poll condition (run, ctx-free) that, once true, sends ``interrupt`` to the driver.
-    interrupt_when: Callable[["Run"], bool] | None = None
+    interrupt_when: Callable[[Run], bool] | None = None
     tool_tokens: bool = False  # parallel batch: each result must carry its own token
     # "answer": the PROBE gets the scripted reply; "breaker": the stale breaker refuses it
     # immediately with a surfaced error and no provider call.
@@ -248,7 +248,7 @@ class Run:
         self.tag = new_tag()
         self.nonce = uuid.uuid4().hex[:10]
         self.session_id = f"chaos-{self.nonce}"
-        self.events: "queue.Queue[tuple[float, dict[str, Any]]]" = queue.Queue()
+        self.events: queue.Queue[tuple[float, dict[str, Any]]] = queue.Queue()
         self.seen: list[tuple[float, dict[str, Any]]] = []
         self.srv = FakeLLMServer(self._respond)
         self.fault_msg = f"[[chaos:{sc.id}]] please help ({self.nonce})"

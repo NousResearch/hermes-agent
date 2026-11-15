@@ -19,7 +19,7 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -198,7 +198,7 @@ def _record_connect(platform: Any, event: str, *, exc: BaseException | None, fat
 
     # Keyed by the real adapter (two custom adapters both emit "plugin"); projected only at emission.
     key = (str(get_hermes_home()), str(getattr(platform, "value", platform)))
-    day = datetime.now(timezone.utc).date().isoformat()
+    day = datetime.now(UTC).date().isoformat()
     if event != "connect_failed" or terminal:
         counted = _failing_connects.pop(key, None) == day
     elif not enabled():  # nothing is recorded, so nothing is latched: opting in mid-outage counts it
@@ -464,7 +464,9 @@ def record_cron_finish(record: Any, delivery_outcome: Any = None) -> None:
         _cron_skipped.discard(execution_id)
     started = record.get("started_at")
     success = record.get("status") == "completed"
-    if gated or (not started and not success and delivery_outcome is None):
+    if record.get("status") == "cancelled":  # an operator stop, not a failure
+        outcome = "cancelled"
+    elif gated or (not started and not success and delivery_outcome is None):
         outcome = "skipped"
     else:
         outcome = "success" if success else "failed"

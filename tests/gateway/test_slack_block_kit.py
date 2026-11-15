@@ -29,7 +29,7 @@ class TestNestedLists:
     def test_nested_bullets_produce_increasing_indent(self):
         md = "- a\n  - b\n    - c"
         blocks = render_blocks(md)
-        rich = [b for b in blocks if b["type"] == "rich_text"][0]
+        rich = next(b for b in blocks if b["type"] == "rich_text")
         indents = [e["indent"] for e in rich["elements"] if e["type"] == "rich_text_list"]
         # true nesting: indent levels must strictly increase across the run
         assert indents == sorted(indents)
@@ -49,7 +49,7 @@ class TestInlineFormatting:
             "- <https://example.com/x|GitLab #1> — allow `in_progress`"
         )
         assert blocks is not None
-        rich = [b for b in blocks if b["type"] == "rich_text"][0]
+        rich = next(b for b in blocks if b["type"] == "rich_text")
         els = rich["elements"][0]["elements"][0]["elements"]
         links = [e for e in els if e.get("type") == "link"]
         assert len(links) == 1
@@ -59,13 +59,18 @@ class TestInlineFormatting:
         assert any(e.get("style", {}).get("code") for e in els)
 
     def test_slack_mentions_in_bullet_are_not_links(self):
+        """Mentions must become mention elements, never link elements.
+
+        rich_text does not interpret mrkdwn, so a token left as a text element
+        renders literally in Slack (see #133315).
+        """
         blocks = render_blocks("- ping <@U123> in <#C456>")
         assert blocks is not None
         els = blocks[0]["elements"][0]["elements"][0]["elements"]
         assert all(e.get("type") != "link" for e in els)
-        blob = "".join(e.get("text") or "" for e in els)
-        assert "<@U123>" in blob
-        assert "<#C456>" in blob
+        assert {"type": "user", "user_id": "U123"} in els
+        assert {"type": "channel", "channel_id": "C456"} in els
+        assert not any("<@" in (e.get("text") or "") or "<#" in (e.get("text") or "") for e in els)
 
 
     def test_blank_line_separated_ordered_items_stay_in_one_list(self):
@@ -77,12 +82,105 @@ class TestInlineFormatting:
         """
         md = "1. alpha\n\n1. beta\n\n1. gamma"
         blocks = render_blocks(md)
-        rich = [b for b in blocks if b["type"] == "rich_text"][0]
+        rich = next(b for b in blocks if b["type"] == "rich_text")
         lists = [e for e in rich["elements"] if e["type"] == "rich_text_list"]
         # Must be ONE list with 3 items, not 3 separate single-item lists
         assert len(lists) == 1
         items = lists[0]["elements"]
         assert len(items) == 3
+
+
+class TestSlackMentions:
+    """Mention tokens must become rich_text user/channel/broadcast elements.
+
+    Regression coverage for #133315: mentions inside rich_text (lists, quotes,
+    table cells) were emitted as text elements, so Slack showed the raw token
+    literally instead of a mention.
+    """
+
+    @staticmethod
+    def _item_elements(blocks):
+        rich = next(b for b in blocks if b["type"] == "rich_text")
+        return rich["elements"][0]["elements"][0]["elements"]
+
+    def test_channel_mention_with_label_keeps_only_the_id(self):
+        blocks = render_blocks("- see <#C0C6N2RF5HS|general>")
+        assert blocks is not None
+        els = self._item_elements(blocks)
+        assert {"type": "channel", "channel_id": "C0C6N2RF5HS"} in els
+        assert not any("general" in (e.get("text") or "") for e in els)
+
+    def test_broadcast_mentions_map_to_range(self):
+        blocks = render_blocks("- <!here> <!channel> <!everyone>")
+        assert blocks is not None
+        els = self._item_elements(blocks)
+        assert [e["range"] for e in els if e.get("type") == "broadcast"] == [
+            "here",
+            "channel",
+            "everyone",
+        ]
+
+    def test_usergroup_mention_becomes_usergroup_element(self):
+        blocks = render_blocks("- notify <!subteam^S0123ABC|@marketing> and <!subteam^S987XYZ>")
+        assert blocks is not None
+        els = self._item_elements(blocks)
+        assert {"type": "usergroup", "usergroup_id": "S0123ABC"} in els
+        assert {"type": "usergroup", "usergroup_id": "S987XYZ"} in els
+        assert not any("marketing" in (e.get("text") or "") for e in els)
+
+    def test_mention_label_with_underscores_is_not_split_by_italic(self):
+        blocks = render_blocks("- see <#C1|dev_ops_alerts> and <!subteam^S1|@eng_team_x>")
+        assert blocks is not None
+        els = self._item_elements(blocks)
+        assert {"type": "channel", "channel_id": "C1"} in els
+        assert {"type": "usergroup", "usergroup_id": "S1"} in els
+        assert not any(e.get("style") for e in els)
+        assert not any("<" in (e.get("text") or "") for e in els)
+
+    def test_mention_in_quote_becomes_mention_element(self):
+        blocks = render_blocks("> ping <@U123> now")
+        assert blocks is not None
+        quote = blocks[0]["elements"][0]
+        assert quote["type"] == "rich_text_quote"
+        assert {"type": "user", "user_id": "U123"} in quote["elements"]
+
+    def test_mention_in_table_cell_becomes_mention_element(self):
+        blocks = render_blocks("| who | note |\n| --- | --- |\n| <@U123> | ok |")
+        assert blocks is not None
+        assert blocks[0]["type"] == "table"
+        cell = blocks[0]["rows"][1][0]
+        assert {"type": "user", "user_id": "U123"} in cell["elements"][0]["elements"]
+
+    def test_unmatched_angle_token_is_preserved_as_text(self):
+        # Not a mention and not an autolink: must survive verbatim, not vanish.
+        blocks = render_blocks("- a <b> c")
+        assert blocks is not None
+        els = self._item_elements(blocks)
+        assert "a <b> c" in "".join(e.get("text") or "" for e in els)
+
+    def test_mention_inside_emphasis_preserves_styling_and_mention(self):
+        # Regression: emphasis wrapping a mention must not be destroyed into literal delimiters
+        blocks = render_blocks("- **ping <@U123> now**")
+        assert blocks is not None
+        els = self._item_elements(blocks)
+        assert not any("**" in (e.get("text") or "") for e in els)
+        assert {"type": "user", "user_id": "U123"} in els
+        assert any(e.get("text") == "ping " and e.get("style", {}).get("bold") for e in els)
+        assert any(e.get("text") == " now" and e.get("style", {}).get("bold") for e in els)
+
+        # Italic
+        blocks = render_blocks("- *ping <#C456>*")
+        els = self._item_elements(blocks)
+        assert not any("*" in (e.get("text") or "") for e in els)
+        assert {"type": "channel", "channel_id": "C456"} in els
+        assert any(e.get("text") == "ping " and e.get("style", {}).get("italic") for e in els)
+
+        # Strike
+        blocks = render_blocks("- ~~hi <!here>~~")
+        els = self._item_elements(blocks)
+        assert not any("~~" in (e.get("text") or "") for e in els)
+        assert {"type": "broadcast", "range": "here"} in els
+        assert any(e.get("text") == "hi " and e.get("style", {}).get("strike") for e in els)
 
 
 class TestTables:

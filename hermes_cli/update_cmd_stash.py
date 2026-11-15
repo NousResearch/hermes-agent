@@ -6,10 +6,13 @@ Origin helpers are imported lazily per function (no cycle; test patches on the o
 
 import logging
 import re
+from dataclasses import dataclass
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Optional
+
+from hermes_cli.update_cmd_common import _record_stop
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -83,15 +86,151 @@ def _print_first_line(text: str) -> None:
         print(f"  {text.strip().splitlines()[0]}")
 
 
-def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path, *, checkout_move=None) -> Optional[str]:
-    """Stash local changes before the update moves the checkout; the stash commit, or None when clean.
-    ``checkout_move`` binds the push (and its cleanup reset) to the paused gateways' tree gate."""
+def _porcelain_records(porcelain_z: str) -> list[str]:
+    """``status --porcelain -z`` records; a rename/copy's second (prefix-less) field is skipped."""
+    fields, records = porcelain_z.split("\0"), []
+    i = 0
+    while i < len(fields):
+        if len(fields[i]) > 3:
+            records.append(fields[i])
+            i += 1 if fields[i][0] not in "RC" else 2
+        else:
+            i += 1
+    return records
+
+
+def _target_tree_paths(git_cmd: list[str], cwd: Path, refs) -> Optional[tuple[set[str], set[str]]]:
+    """Casefolded (files, directories) the update can write, unioned over every *ref* that resolves;
+    None when no ref resolves or a tree cannot be read. Casefolded so a case-insensitive filesystem's
+    ``Config.py`` vs ``config.py`` still counts as a collision (over-stashing is always safe)."""
+    files: set[str] = set()
+    read_any = False
+    for ref in dict.fromkeys(refs):
+        resolved = _git_quiet(git_cmd, ["rev-parse", "-q", "--verify", f"{ref}^{{tree}}"], cwd)
+        if resolved is None:
+            return None
+        if resolved.returncode:
+            continue  # e.g. no local branch of that name: it cannot be landed on
+        paths = _git_paths_z(git_cmd, ["ls-tree", "-r", "--name-only", "-z", ref], cwd)
+        if paths is None:
+            return None
+        files |= {p.casefold() for p in paths}
+        read_any = True
+    if not read_any:
+        return None
+    dirs = {p.rsplit("/", i)[0] for p in files for i in range(1, p.count("/") + 1)}
+    return files, dirs
+
+
+def _untracked_collides(entry: str, files: set[str], dirs: set[str]) -> bool:
+    """Whether the update could write where the untracked *entry* (a ``dir/`` record or a file) sits."""
+    path = entry.rstrip("/").casefold()
+    if path in files or path in dirs:
+        return True
+    parts = path.split("/")
+    return any("/".join(parts[:i]) in files for i in range(1, len(parts)))
+
+
+@dataclass(frozen=True)
+class _LocalChanges:
+    """What ``git status`` shows, split by what the update has to move out of its way."""
+
+    porcelain: str
+    tracked: bool  # any modified/staged/deleted tracked path
+    stash_untracked: tuple[str, ...]  # untracked entries the update could overwrite
+    leave_untracked: tuple[str, ...]  # untracked entries no target touches: never moved
+
+    @property
+    def needs_moving(self) -> bool:
+        return self.tracked or bool(self.stash_untracked)
+
+
+def _scan_local_changes(git_cmd: list[str], cwd: Path, untracked_targets=()) -> Optional[_LocalChanges]:
+    """Local changes, or None when the tree is clean. An untracked file the update cannot write over
+    blocks no pull or checkout, so with *untracked_targets* (every ref the update may land on) only the
+    colliding ones are moved; without targets, or when a target tree is unreadable, all of them are."""
+    from hermes_cli.update_cmd_git import _git_run
+    # Explicit mode: status.showUntrackedFiles=no would hide every untracked entry, and an empty
+    # leave-set means the stash takes them all.
+    status = _git_run(git_cmd, ["status", "--porcelain", "-z", "--untracked-files=normal"], cwd, check=True)
+    if not status.stdout.strip():
+        return None
+    records = _porcelain_records(status.stdout)
+    untracked = [r[3:] for r in records if r.startswith("?? ")]
+    trees = _target_tree_paths(git_cmd, cwd, untracked_targets) if untracked_targets and untracked else None
+    collide = [u for u in untracked if trees is None or _untracked_collides(u, *trees)]
+    return _LocalChanges(
+        porcelain=status.stdout, tracked=len(untracked) < len(records),
+        stash_untracked=tuple(collide), leave_untracked=tuple(u for u in untracked if u not in collide))
+
+
+def _target_would_move_head(git_cmd: list[str], cwd: Path, target_ref: str) -> bool:
+    """True unless *target_ref* is HEAD or an ancestor of it (nothing to pull). An unresolvable
+    target answers True: the update fails on it later, and asking first is the safe side."""
+    probe = _git_quiet(git_cmd, ["merge-base", "--is-ancestor", f"{target_ref}^{{commit}}", "HEAD"], cwd)
+    return probe is None or probe.returncode != 0
+
+
+def _literal(path: str, *magic: str) -> str:
+    """Pathspec matching *path* byte-for-byte (relative to the checkout root git runs in)."""
+    return f":({','.join(('literal', *magic))}){path}"
+
+
+def _ask_keep_local_changes(changes: _LocalChanges) -> bool:
+    """The restore question, asked BEFORE anything moves: keeping means stash and re-apply after the
+    update; declining discards now, so no stash entry is ever left behind. Closed stdin keeps them."""
+    print("→ Local changes detected:")
+    for line in (f"  • tracked file edits: {'yes' if changes.tracked else 'none'}",
+                 f"  • untracked files the update would overwrite: {len(changes.stash_untracked)}"):
+        print(line)
+    if changes.leave_untracked:
+        print(f"  ({len(changes.leave_untracked)} other untracked entr"
+              f"{'y stays' if len(changes.leave_untracked) == 1 else 'ies stay'} in place either way.)")
+    print("Keep these changes after updating? [Y/n]  (n deletes them now)")
+    try:
+        response = input().strip().lower()
+    except (EOFError, UnicodeDecodeError):
+        response = ""
+    return response not in {"n", "no"}
+
+
+def _discard_local_changes_before_update(
+        git_cmd: list[str], cwd: Path, changes: _LocalChanges, *, checkout_move=None) -> None:
+    """Delete exactly what would have been stashed: tracked edits and the colliding untracked entries."""
+    from hermes_cli.update_cmd_git import _git_run, _no_move
+    from hermes_cli.update_receipt import record_step
+    with (checkout_move or _no_move)(revert=True):  # every tracked change goes back to HEAD
+        if changes.tracked:
+            _git_run(git_cmd, ["reset", "--hard", "HEAD"], cwd, check=True)
+        if changes.stash_untracked:
+            _git_run(git_cmd, ["clean", "-f", "-d", "--", *(_literal(p) for p in changes.stash_untracked)],
+                     cwd, check=True)
+    print("→ Discarded local changes (you chose not to keep them).")
+    record_step("local_changes_stash", True, "discarded before update (user declined keeping them)")
+
+
+def _stash_local_changes_if_needed(
+        git_cmd: list[str], cwd: Path, *, checkout_move=None, untracked_targets=(),
+        ask_first: bool = False) -> Optional[str]:
+    """Stash local changes before the update moves the checkout; the stash commit, or None when
+    nothing needs moving. ``checkout_move`` binds the push (and its cleanup reset) to the paused
+    gateways' tree gate; ``untracked_targets`` scopes untracked files (``_scan_local_changes``).
+    ``ask_first`` asks whether to keep them; a "no" discards them instead of stashing (None)."""
     global _pending_autostash
     from hermes_cli.update_cmd_git import _git_run, _no_move
     _pending_autostash = None
-    status = _git_run(git_cmd, ["status", "--porcelain", "-z"], cwd, check=True)
-    if not status.stdout.strip():
+    changes = _scan_local_changes(git_cmd, cwd, untracked_targets)
+    if changes is None:
         return None
+    if changes.leave_untracked:
+        print(f"→ Leaving {len(changes.leave_untracked)} untracked entr"
+              f"{'y' if len(changes.leave_untracked) == 1 else 'ies'} in place (the update does not touch them).")
+    if not changes.needs_moving:
+        return None
+    if ask_first and not _ask_keep_local_changes(changes):
+        _discard_local_changes_before_update(git_cmd, cwd, changes, checkout_move=checkout_move)
+        return None
+    status = subprocess.CompletedProcess([], 0, changes.porcelain, "")
     # Unmerged index entries (interrupted merge/rebase) make `git stash` fail with
     # "needs merge"; `git reset` drops only the index conflict state, not the tree.
     if _git_run(git_cmd, ["ls-files", "--unmerged"], cwd).stdout.strip():
@@ -109,21 +248,23 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path, *, checkout_mo
         if add.returncode != 0:
             _print_nonempty(add.stderr)
 
-    stash_name = datetime.now(timezone.utc).strftime(f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S")
+    stash_name = datetime.now(UTC).strftime(f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S")
     print("→ Local changes detected — stashing before update...")
     prev_stash = _git_run(git_cmd, ["rev-parse", "--verify", "refs/stash"], cwd).stdout.strip()
     with (checkout_move or _no_move)(revert=True):  # push and reset put every tracked change back to HEAD
-        stash_ref = _push_stash(git_cmd, cwd, stash_name, prev_stash)
+        stash_ref = _push_stash(git_cmd, cwd, stash_name, prev_stash, leave=changes.leave_untracked)
     _pending_autostash = (
-        stash_ref, len([entry for entry in status.stdout.split("\0") if entry]))
+        stash_ref, len(_porcelain_records(status.stdout)) - len(changes.leave_untracked))
     return stash_ref
 
 
-def _push_stash(git_cmd: list[str], cwd: Path, stash_name: str, prev_stash: str) -> str:
+def _push_stash(git_cmd: list[str], cwd: Path, stash_name: str, prev_stash: str, leave=()) -> str:
     """``git stash push``; the stash commit. Raises when nothing was saved; resets tracked leftovers
-    when a push saved everything but could not clean up."""
+    when a push saved everything but could not clean up. Untracked entries in *leave* stay on disk
+    (an exclude pathspec: git never hashes them, which is what made a 55 GB stray dir take minutes)."""
     from hermes_cli.update_cmd_git import _git_run
-    push = _git_run(git_cmd, ["stash", "push", "--include-untracked", "-m", stash_name], cwd)
+    scope = ["--", ".", *(_literal(p, "exclude") for p in leave)] if leave else []
+    push = _git_run(git_cmd, ["stash", "push", "--include-untracked", "-m", stash_name, *scope], cwd)
     _print_nonempty(push.stdout)
     stash_probe = _git_run(git_cmd, ["rev-parse", "--verify", "refs/stash"], cwd)
     stash_ref = stash_probe.stdout.strip()
@@ -200,7 +341,7 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
         stash_list = _git_run(git_cmd, ["stash", "list", "--format=%gd %s"], cwd)
         if stash_list.returncode != 0:
             return 0
-        cutoff = datetime.now(timezone.utc) - timedelta(days=_AUTOSTASH_WARN_AGE_DAYS)
+        cutoff = datetime.now(UTC) - timedelta(days=_AUTOSTASH_WARN_AGE_DAYS)
         stale: list[tuple[str, str]] = []
         for line in stash_list.stdout.splitlines():
             selector, _, subject = line.strip().partition(" ")
@@ -209,7 +350,7 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
                 continue
             stamp = subject[pos + len(_AUTOSTASH_NAME_PREFIX):][:15]  # "YYYYMMDD-HHMMSS"
             try:
-                stash_time = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+                stash_time = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(tzinfo=UTC)
             except ValueError:
                 continue  # age unknown — leave it alone rather than guess
             if stash_time < cutoff:
@@ -333,6 +474,53 @@ def _restored_python_paths(git_cmd: list[str], cwd: Path) -> tuple[str, ...] | N
     return tuple(sorted(paths))
 
 
+#: Closed allowlist of suffixes that no Python import can load or read during startup.
+#: Everything else (.py, .so/.pyd/.dll/.dylib, .pyc, .pth, .egg-link, data files such as
+#: .json/.yaml/.toml that modules read on import, extensionless files) keeps the import check.
+_NON_RUNTIME_SUFFIXES = frozenset({
+    ".md", ".mdx", ".rst", ".txt", ".adoc",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
+})
+
+
+def _restore_is_non_runtime(git_cmd: list[str], cwd: Path, stash_ref: str) -> bool:
+    """True only when every path the stash restores is demonstrably unable to change an import.
+
+    The set is read from the stash commit itself (worktree and index changes against its base,
+    renames split into delete + add, plus its untracked tree), never from the working tree,
+    which also holds what the clean import probe wrote. Each path must have an allowlisted
+    suffix, must not be a symlink, and may only sit in a directory ``HEAD`` already tracks, so
+    the restore cannot create a namespace-package directory. Any Git failure counts as
+    runtime-affecting.
+    """
+    restored: set[str] = set()
+    for side in (stash_ref, f"{stash_ref}^2"):  # worktree, index
+        changed = _git_paths_z(
+            git_cmd, ["diff", "--name-only", "--no-renames", "-z", f"{stash_ref}^1", side, "--"], cwd)
+        if changed is None:
+            return False
+        restored |= changed
+    has_untracked = _git_quiet(git_cmd, ["rev-parse", "-q", "--verify", f"{stash_ref}^3"], cwd)
+    if has_untracked is None:
+        return False
+    if has_untracked.returncode == 0:
+        untracked = _git_paths_z(git_cmd, ["ls-tree", "-r", "--name-only", "-z", f"{stash_ref}^3"], cwd)
+        if untracked is None:
+            return False
+        restored |= untracked
+    if not restored:
+        return True
+    head_dirs = _git_paths_z(git_cmd, ["ls-tree", "-r", "-d", "--name-only", "-z", "HEAD"], cwd)
+    if head_dirs is None:
+        return False
+    for path in restored:
+        parent = Path(path).parent.as_posix()
+        if (Path(path).suffix.lower() not in _NON_RUNTIME_SUFFIXES or (cwd / path).is_symlink()
+                or (parent != "." and parent not in head_dirs)):
+            return False
+    return True
+
+
 def _reject_unsafe_stash_restore(
     git_cmd: list[str], cwd: Path, stash_ref: str, preexisting_untracked: set[str], failing_target: str,
     detail: str | None, *, checkout_move=None,
@@ -368,6 +556,7 @@ def _reject_unsafe_stash_restore(
     print(f"  Inspect them with: git stash show --stat {stash_ref}")
     print(f"  Restore manually after fixing them: git stash apply {stash_ref}")
     _clear_pending_autostash()  # named right above, and the update fails
+    _record_stop("stash_restore_rejected")
     raise SystemExit(1)
 
 
@@ -492,7 +681,13 @@ def _restore_stashed_changes(
     syntax_ok, failing_path, syntax_error = _validate_python_files_syntax(cwd, restored_python)
     if not syntax_ok:
         reject(failing_path or "restored Python source", syntax_error)
-    for module, error in _critical_module_import_failures(cwd, report_runtime_errors=True).items():
+    # Probe outcomes also move with install state between the two runs (launch preparation,
+    # dependency sync), so a restore that cannot affect an import (docs, images) must not be
+    # rejected on that difference (#130101). Anything else, including a native extension or
+    # bytecode that shadows a healthy module, is still compared.
+    non_runtime = _restore_is_non_runtime(git_cmd, cwd, stash_ref)
+    for module, error in (() if non_runtime else
+                          _critical_module_import_failures(cwd, report_runtime_errors=True).items()):
         if clean_import_failures.get(module) != error:
             reject(f"agent import {module or 'unknown'}", error[1])
             break

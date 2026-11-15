@@ -21,7 +21,8 @@ from tests.pm.activation_support import (
 def test_bash_scripts_pass_syntax_check():
     for script in (ACTIVATE, SETUP_HERMES_SH):
         result = subprocess.run(
-            [bash(), "-n", posix(script)], capture_output=True, text=True, env=child_env()
+            [bash(), "-n", posix(script)], capture_output=True, text=True, env=child_env(),
+            check=False,
         )
         assert result.returncode == 0, f"{script.name}: {result.stderr}"
 
@@ -41,6 +42,7 @@ def test_source_activate_exports_the_pm_env(tmp_path: Path):
         text=True,
         cwd=posix(tmp_path),
         env=bash_env(store),
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "env-ok"
@@ -66,6 +68,7 @@ def test_activate_exports_the_sentinel_to_child_processes(tmp_path: Path):
         text=True,
         cwd=posix(tmp_path),
         env=bash_env(store),
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "exported-then-cleared"
@@ -88,6 +91,7 @@ def test_deactivate_restores_the_prior_shell(tmp_path: Path):
         text=True,
         cwd=posix(tmp_path),
         env=bash_env(store),
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "restored"
@@ -114,6 +118,7 @@ def test_activate_leaves_the_shell_paths_in_posix_form(tmp_path: Path):
         text=True,
         cwd=posix(tmp_path),
         env=bash_env(store),
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "posix"
@@ -132,6 +137,7 @@ def test_activate_fails_cleanly_without_a_store(tmp_path: Path):
         text=True,
         cwd=posix(tmp_path),
         env=env,
+        check=False,
     )
     # Without any provisioned python the source must refuse — never
     # silently no-op with a half-activated shell.
@@ -159,6 +165,7 @@ def test_powershell_scripts_parse():
             ],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode == 0, f"{script.name}: {result.stdout}{result.stderr}"
 
@@ -181,6 +188,7 @@ def test_powershell_activate_exports_and_deactivates(tmp_path: Path):
          "Write-Output ('active=' + $env:PYTHONPATH); deactivate; "
          "Write-Output ('after=' + $env:PYTHONPATH)"],
         capture_output=True, text=True, cwd=str(tmp_path), env=env, timeout=40,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     # Nothing is committed, so the checkout alone: the bootstrap .venv's packages never leak in.

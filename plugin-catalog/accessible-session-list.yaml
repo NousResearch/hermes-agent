@@ -1,0 +1,34 @@
+name: accessible-session-list
+title: Accessible Session List
+repo: https://github.com/denis-skripnik/hermes-accessible-session-list
+sha: 7f2c7a17e377348a6a6a72785a9d3a4c0631e8e0
+description: >-
+  Keyboard-first, screen-reader-friendly native session picker for Hermes Desktop.
+  Search titles, select with arrows without navigating, open with Enter or
+  Shift+Enter, and use a keyboard-accessible actions menu. Filters background
+  runs and empty drafts; sorts the fetched sessions by activity. English and
+  Russian UI. Disclosure: reads up to 500 persisted session summaries from the
+  active profile through the public Desktop SDK and opens the selected session
+  through Hermes; this may communicate with the configured gateway. No external
+  services, credentials, filesystem access, shell, backend, telemetry, stored
+  session content, or self-updater.
+maintainer: denis-skripnik
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "1.0.0"
+docs_url: https://github.com/denis-skripnik/hermes-accessible-session-list#readme
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/denis-skripnik/hermes-accessible-session-list/7f2c7a17e377348a6a6a72785a9d3a4c0631e8e0/docs/synthetic-session-list.png
+known_issues:
+  - Requires Hermes Desktop; enable the Desktop component after installation.
+  - If core handles Ctrl+H first, use the Session list command in the command palette; the plugin does not override core shortcut handlers.
+  - Search and activity sorting cover at most 500 creation-ordered fetched sessions, not the entire history.
+  - Enter uses the SDK primary-area or existing-tab intent; it cannot replace an arbitrary focused secondary tab. Shift+Enter focuses an existing tab instead of duplicating it.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import pytest
 
 from gateway.config import PlatformConfig, GatewayConfig, Platform, _apply_env_overrides, load_gateway_config
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.fixture()
@@ -81,6 +81,35 @@ class TestSendWithReplyToMode:
         assert calls[2].kwargs.get("reply_to_message_id") is None
 
 
+class TestMultipartAnchorOptOut:
+    """``extra.anchor_multipart_replies: false`` drops the anchor only from split replies."""
+
+    @staticmethod
+    def _adapter(chunks, **extra):
+        config = PlatformConfig(enabled=True, token="test-token", reply_to_mode="first", extra=extra)
+        adapter = TelegramAdapter(config)
+        adapter._bot = MagicMock()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+        adapter.truncate_message = lambda content, max_len, **kw: list(chunks)
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_opted_out_split_reply_sends_no_anchor_but_single_reply_keeps_it(self):
+        split = self._adapter(["chunk1", "chunk2"], anchor_multipart_replies=False)
+        await split.send("12345", "long content", reply_to="999")
+        assert [c.kwargs.get("reply_to_message_id") for c in split._bot.send_message.call_args_list] == [None, None]
+
+        single = self._adapter(["only"], anchor_multipart_replies=False)
+        await single.send("12345", "short", reply_to="999")
+        assert single._bot.send_message.call_args.kwargs.get("reply_to_message_id") == 999
+
+    @pytest.mark.asyncio
+    async def test_default_still_anchors_first_chunk_of_split_reply(self):
+        adapter = self._adapter(["chunk1", "chunk2"])
+        await adapter.send("12345", "long content", reply_to="999")
+        assert [c.kwargs.get("reply_to_message_id") for c in adapter._bot.send_message.call_args_list] == [999, None]
+
+
 class TestConfigSerialization:
     """Tests for reply_to_mode serialization."""
 
@@ -147,6 +176,41 @@ class TestTelegramYamlConfigLoading:
         load_gateway_config()
 
         assert os.environ.get("TELEGRAM_REPLY_TO_MODE") == "all"
+
+
+class TestSyntheticReplyAnchor:
+    """A route wake's synthetic identity reaches send() as ``reply_to`` (#139611): the reply goes out
+    unanchored (or on the DM topic's own anchor) instead of failing on ``int()``."""
+
+    WAKE_ID = '["kanban-wake","agent:main:telegram:dm:12345:42","0f1e2d3c4b5a69788796a5b4c3d2e1f0"]'
+
+    @pytest.mark.asyncio
+    async def test_synthetic_anchor_sends_unanchored(self, adapter_factory):
+        adapter = adapter_factory(reply_to_mode="all")
+        adapter._bot = MagicMock()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
+
+        result = await adapter.send("12345", "test content", reply_to=self.WAKE_ID)
+
+        assert result.success, result.error
+        calls = adapter._bot.send_message.call_args_list
+        assert len(calls) == 2
+        assert all(call.kwargs.get("reply_to_message_id") is None for call in calls)
+
+    @pytest.mark.asyncio
+    async def test_synthetic_anchor_in_dm_topic_uses_the_topic_anchor(self, adapter_factory):
+        adapter = adapter_factory()
+        adapter._bot = MagicMock()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1"]
+        metadata = {"thread_id": "42", "telegram_dm_topic_reply_fallback": True,
+                    "telegram_reply_to_message_id": "12345"}
+
+        result = await adapter.send("12345", "test content", reply_to=self.WAKE_ID, metadata=metadata)
+
+        assert result.success, result.error
+        assert adapter._bot.send_message.call_args.kwargs.get("reply_to_message_id") == 12345
 
 
 class TestDMTopicFallbackReplyToMode:

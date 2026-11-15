@@ -66,10 +66,10 @@ _process_read_permits = threading.BoundedSemaphore(_READ_POOL_PROCESS_MAX)
 _read_open_denied_fd_headroom = 0
 
 _fd_usage_lock = threading.Lock()
-_fd_usage_cache: "tuple[float, Optional[int]]" = (0.0, None)
+_fd_usage_cache: tuple[float, Optional[int]] = (0.0, None)
 
 
-def _proc_fd_targets(pid: int) -> "Iterator[tuple[str, str]]":
+def _proc_fd_targets(pid: int) -> Iterator[tuple[str, str]]:
     """Yield ``(readlink target, fd path)`` for every entry in /proc/<pid>/fd (unreadable
     links skipped). Raises OSError when the fd directory itself cannot be listed."""
     fd_dir = f"/proc/{pid}/fd"
@@ -154,7 +154,7 @@ class _PathReadBudget:
         self.permits = threading.BoundedSemaphore(_READ_POOL_MAX)
         self._lock = threading.Lock()
         # Weak: a SessionDB dropped without close() must not pin peers' budget.
-        self._members: "weakref.WeakSet[SessionDB]" = weakref.WeakSet()
+        self._members: weakref.WeakSet[SessionDB] = weakref.WeakSet()
         self._duplicate_handles_warned = False
 
     def register(self, db: "SessionDB") -> None:
@@ -237,7 +237,7 @@ class _PathReadBudget:
 
 # canonical db path -> permits for that file. Weak values: the budget lives only
 # while some SessionDB on the path holds it, so tmp_path churn can't grow this.
-_read_budgets: "weakref.WeakValueDictionary[str, _PathReadBudget]" = (weakref.WeakValueDictionary())
+_read_budgets: weakref.WeakValueDictionary[str, _PathReadBudget] = (weakref.WeakValueDictionary())
 _read_budgets_lock = threading.Lock()
 
 
@@ -257,3 +257,33 @@ def _read_budget_for(db_path) -> _PathReadBudget:
             budget = _PathReadBudget()
             _read_budgets[key] = budget
         return budget
+
+
+# A read that finds every permit out is served on the writer connection under SessionDB._lock, so it queues
+# behind every writer, including one parked on a slow -shm lock (network filesystems). It used to be DEBUG,
+# invisible where it mattered; now one WARNING per database per window, counting the degraded reads between.
+_POOL_EXHAUSTION_WARN_INTERVAL_S = 60.0
+_pool_exhaustion_lock = threading.Lock()
+_pool_exhaustion_warned_at: dict[str, float] = {}
+_pool_exhaustion_suppressed: dict[str, int] = {}
+
+
+def note_read_pool_exhausted(db_path) -> None:
+    """Log (rate-limited) that a read degraded to the locked writer connection for ``db_path``."""
+    key = str(db_path)
+    now = time.monotonic()
+    with _pool_exhaustion_lock:
+        last = _pool_exhaustion_warned_at.get(key)
+        if last is not None and now - last < _POOL_EXHAUSTION_WARN_INTERVAL_S:
+            _pool_exhaustion_suppressed[key] = _pool_exhaustion_suppressed.get(key, 0) + 1
+            return
+        _pool_exhaustion_warned_at[key] = now
+        suppressed = _pool_exhaustion_suppressed.pop(key, 0)
+    logger.warning(
+        "read pool at capacity (%d) for %s; serving this read from the locked writer connection, so it waits "
+        "behind every in-flight write%s. Sustained, this means long writes or slow storage (a network "
+        "filesystem) are holding readers too. Logged at most once per %.0fs per database.",
+        _READ_POOL_MAX, db_path,
+        f" ({suppressed} more reads since the last warning)" if last is not None else "",
+        _POOL_EXHAUSTION_WARN_INTERVAL_S,
+    )

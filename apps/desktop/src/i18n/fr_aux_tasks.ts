@@ -9,10 +9,6 @@ export const frAuxTasks: AuxTaskCopyMap = {
     label: 'Compression',
     hint: 'Compaction de contexte'
   },
-  skills_hub: {
-    label: 'Hub de skills',
-    hint: 'Recherche de skills'
-  },
   approval: {
     label: 'Approbation',
     hint: 'Auto-approbation intelligente'
@@ -29,6 +25,7 @@ export const frAuxTasks: AuxTaskCopyMap = {
     label: 'Révision',
     hint: 'Sous-agent de révision /review'
   },
+  voice_chat: { label: 'Chat vocal', hint: 'Réponses parlées du mode vocal' },
   triage_specifier: {
     label: 'Précision du triage',
     hint: 'Détail des spécifications Kanban'

@@ -121,8 +121,7 @@ def _image_part_to_turn_input(item: dict) -> Optional[dict]:
         return None
     if ref.startswith(_IMAGE_URL_SCHEMES):
         return {"type": "image", "url": ref}
-    if ref.startswith("file://"):
-        ref = ref[len("file://"):]
+    ref = ref.removeprefix("file://")
     return {"type": "localImage", "path": ref}
 
 

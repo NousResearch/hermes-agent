@@ -22,8 +22,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from hermes_cli.plugin_catalog import load_catalog  # noqa: E402
-from hermes_cli.plugin_isolation_audit import audit_plugin_dir  # noqa: E402
+from hermes_cli.plugin_catalog import load_catalog
+from hermes_cli.plugin_isolation_audit import audit_plugin_dir
 
 
 def _git(args, cwd: Path) -> None:

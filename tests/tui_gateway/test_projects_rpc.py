@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 def _call(method, params=None):
@@ -217,7 +217,7 @@ def test_remote_scan_failure_merges_instead_of_replacing_cache(tmp_path, monkeyp
     call regardless of success).
     """
     from hermes_cli import projects_db as pdb
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     def _git_repo(path):
         repo = path
@@ -270,7 +270,7 @@ def test_remote_scan_missing_root_does_not_wipe_cache(tmp_path):
     root must contribute nothing, and the scan must merge — never wipe.
     """
     from hermes_cli import projects_db as pdb
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     def _git_repo(path):
         repo = path
@@ -308,7 +308,7 @@ def test_remote_scan_missing_root_does_not_wipe_cache(tmp_path):
 def test_remote_scan_full_authoritative_replaces_cache(tmp_path):
     """Only a fully-walked scan may replace the stale cache."""
     from hermes_cli import projects_db as pdb
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     def _git_repo(path):
         repo = path
@@ -759,3 +759,25 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 
 
+def test_projects_tree_leaves_messaging_sessions_to_their_own_section(monkeypatch, tmp_path):
+    """Telegram/Slack rows have their own Messaging section; with no workspace cwd they
+    used to land in Home as well, listing the same conversation twice."""
+    from hermes_state import SessionDB
+
+    launch_home = _profile_dir(tmp_path, "launch")
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
+    db = SessionDB(db_path=launch_home / "state.db")
+    try:
+        for session_id, source in (("local-chat", "desktop"), ("tg-chat", "telegram"), ("slack-chat", "slack")):
+            db.create_session(session_id, source)
+        db._conn.execute("UPDATE sessions SET message_count = 1")
+        db._conn.commit()
+    finally:
+        db.close()
+
+    with _serving_launch_profile(launch_home):
+        tree = _call("projects.tree")
+
+    assert tree["scoped_session_ids"] == ["local-chat"]
+    home = next(p for p in tree["projects"] if p.get("isNoProject"))
+    assert [s["id"] for s in home["previewSessions"]] == ["local-chat"]

@@ -24,7 +24,7 @@ def test_processes_import_runs_no_other_local_runtime_module():
 
 
 def test_package_exports_still_resolve():
-    import hermes_cli.local_runtime as local_runtime
+    from hermes_cli import local_runtime
     from hermes_cli.local_runtime.hardware import probe_budget
 
     assert local_runtime.probe_budget is probe_budget

@@ -8,8 +8,9 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Tuple
 
@@ -23,11 +24,19 @@ from gateway.session_identity import replace_source
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+# Serializes a command's "route still mine?" check with its topic-binding write (process-wide: the
+# critical section is one sqlite upsert).
+_TOPIC_SWITCH_BIND_LOCK = threading.Lock()
+
+class TopicLinkedElsewhere(RuntimeError):
+    """A topic switch lost the race to a binding of its session to another topic; the route was
+    put back. The message is the user-facing refusal."""
+
 
 def _topic_restore_steps() -> tuple:
     return (t("gateway.topic.restore_step_1"), t("gateway.topic.restore_step_2"))
@@ -85,10 +94,14 @@ class GatewayTopicThreadsMixin:
         )
 
     def _is_telegram_topic_lane(self, source: SessionSource) -> bool:
-        """True for a user-created Telegram private-chat topic lane."""
+        """True for a user-created Telegram private-chat topic lane. Never a conversation its chat
+        moved past (gateway/session_detached.py): its turns neither heal nor rewrite the topic's
+        binding, nor rename the topic, which belong to the chat's current conversation."""
+        from gateway.session_detached import detached_route_of
         tid = str(source.thread_id or "")
         return (
-            self._is_telegram_dm(source) and self._telegram_topic_mode_enabled(source)
+            detached_route_of(source) is None
+            and self._is_telegram_dm(source) and self._telegram_topic_mode_enabled(source)
             and bool(tid) and tid not in self._TELEGRAM_GENERAL_TOPIC_IDS
         )
 
@@ -138,8 +151,12 @@ class GatewayTopicThreadsMixin:
 
     # ── Telegram topic bindings ─────────────────────────────────────────────────────────────
 
-    def _record_telegram_topic_binding(self, source: SessionSource, session_entry) -> None:
-        """Persist the Telegram topic -> Hermes session binding for topic lanes (off-loop)."""
+    def _record_telegram_topic_binding(
+        self, source: SessionSource, session_entry, *, expected_session_id: Optional[str] = None,
+        move_session: bool = False,
+    ) -> None:
+        """Persist the Telegram topic -> Hermes session binding for topic lanes (off-loop).
+        ``expected_session_id`` and ``move_session``: see ``bind_telegram_topic``."""
         session_db = self._sync_session_db()
         if session_db is None or not source.chat_id or not source.thread_id:
             return
@@ -147,6 +164,7 @@ class GatewayTopicThreadsMixin:
             chat_id=str(source.chat_id), thread_id=str(source.thread_id), user_id=str(source.user_id or ""),
             session_key=session_entry.session_key, session_id=session_entry.session_id,
             profile_name=self._telegram_topic_profile_name(source),
+            expected_session_id=expected_session_id, move_session=move_session,
         )
 
     def _sync_telegram_topic_binding(self, source: SessionSource, session_entry, *, reason: str) -> None:
@@ -161,9 +179,159 @@ class GatewayTopicThreadsMixin:
         try:
             self._record_telegram_topic_binding(source, session_entry)
         except Exception:
-            logger.debug("telegram topic binding refresh failed (%s)", reason, exc_info=True)
+            # Not silent: a stale binding makes the next message's heal switch the topic back.
+            logger.warning("telegram topic binding refresh failed (%s)", reason, exc_info=True)
+
+    @staticmethod
+    def _telegram_topic_key(source: SessionSource) -> tuple:
+        return (str(source.chat_id), str(source.thread_id))
+
+    @contextmanager
+    def _telegram_topic_publication(self, source: SessionSource):
+        """Brackets a command's route switch and its topic-binding write. Between the two the route
+        names the new session while the binding still names the old one, and the binding heal would
+        switch the route straight back; the heal reads this marker and never acts across it.
+        Synchronous bookkeeping only: never spans the remote topic rename."""
+        state = self.__dict__.setdefault("_topic_publications", {}).setdefault(
+            self._telegram_topic_key(source), [0, 0])
+        state[0] += 1  # in flight
+        state[1] += 1  # publications begun (kept per topic so a finished one is still seen)
+        try:
+            yield
+        finally:
+            state[0] -= 1
+
+    def _telegram_topic_publication_token(self, source: SessionSource) -> tuple:
+        """(in flight, begun) for this topic; the heal snapshots it before reading the binding."""
+        return tuple(self.__dict__.get("_topic_publications", {}).get(self._telegram_topic_key(source), (0, 0)))
+
+    def _telegram_topic_publication_moved(self, source: SessionSource, token: tuple) -> bool:
+        """True when a switch was in flight at ``token`` or began since: a binding read under it may
+        predate that switch's own write, so acting on it would undo the switch."""
+        return bool(token[0]) or self._telegram_topic_publication_token(source) != token
+
+    async def _follow_telegram_topic_switch(self, source: SessionSource, session_entry, *, reason: str,
+                                            departed, move: bool = False) -> bool:
+        """A command that repoints a topic lane at another session (/branch --here, /resume, a
+        handoff) rewrites the persisted topic binding, else the next message's binding heal switches
+        the topic straight back to the old session (#58850). Call inside ``_telegram_topic_publication``
+        right after the route switch off ``departed`` (the route's entry before it). False = a newer switch superseded this one
+        (nothing written); True otherwise, including when ``source`` is not a topic lane.
+
+        ``move`` (a handoff carries the conversation off whatever topic held it): the old topic's
+        binding and route are released, so it starts afresh instead of sharing the session. Without
+        it a session bound to another topic since the caller's conflict check is refused: the route
+        goes back to ``departed`` and ``TopicLinkedElsewhere`` carries the refusal text."""
+        if not await asyncio.to_thread(self._is_telegram_topic_lane, source):
+            return True
+        released = []
+        try:
+            holds = await asyncio.to_thread(self._bind_telegram_topic_if_route_holds, source, session_entry,
+                                            reason=reason, move=move, released=released)
+        except ValueError:
+            await asyncio.to_thread(self.session_store.restore_route, departed,
+                                    expected_session_id=session_entry.session_id)
+            raise TopicLinkedElsewhere(t("gateway.topic.already_linked")) from None
+        for key in released:  # the left topic's next message is a new conversation: none of its overrides
+            self._clear_conversation_scope(key, reason="handoff_moved")
+            self._evict_cached_agent(key)
+        return holds
+
+    async def _rename_telegram_topic_after_switch(self, source: SessionSource, session_entry, title: str) -> None:
+        """Rename the topic to the session a switch moved it to. Per topic, renames land in switch
+        order and only while the route still names ``session_entry``: an older /resume parked in its
+        rename would otherwise land its title after a newer switch renamed the topic."""
+        if not title or not await asyncio.to_thread(self._is_telegram_topic_lane, source):
+            return
+        from gateway.session_authority import keyed_turn
+        locks = self.__dict__.setdefault("_topic_switch_locks", {})
+        async with keyed_turn(locks, self._telegram_topic_key(source)):
+            route = await asyncio.to_thread(self.session_store.peek_session_id, session_entry.session_key)
+            if route == session_entry.session_id:
+                await self._rename_telegram_topic_for_session_title(source, session_entry.session_id, title)
+
+    def _bind_telegram_topic_if_route_holds(self, source: SessionSource, session_entry, *, reason: str,
+                                            move: bool = False, released: Optional[list] = None) -> bool:
+        """Bind only while the route still names ``session_entry``: commands dispatch concurrently, and
+        an older /resume that resumes after a newer one switched and bound must not restore its own
+        session. One lock spans check + write, so the newer switch (which happens before its own
+        guarded write) always writes last. False = superseded (nothing written). Raises ValueError
+        when the session is bound to a topic it may not leave (another topic, unless ``move``).
+        ``move``: the topic it leaves loses its route too, under the same lock (its key is appended
+        to ``released``), so two topics never route to one session."""
+        with _TOPIC_SWITCH_BIND_LOCK:
+            if self.session_store.peek_session_id(session_entry.session_key) != session_entry.session_id:
+                logger.info("Topic binding for %s not moved to %s (%s): the route switched again since",
+                            session_entry.session_key, session_entry.session_id, reason)
+                return False
+            if not self._is_telegram_topic_lane(source):
+                return True
+            session_db = self._sync_session_db() if move else None
+            left = session_db.get_telegram_topic_binding_by_session(session_id=session_entry.session_id) if (
+                session_db is not None) else None
+            try:
+                self._record_telegram_topic_binding(source, session_entry, move_session=move)
+            except ValueError:
+                raise
+            except Exception:
+                logger.warning("telegram topic binding refresh failed (%s)", reason, exc_info=True)
+                return True
+            left_key = str((left or {}).get("session_key") or "")
+            if left_key and left_key != session_entry.session_key and self.session_store.release_route(
+                    left_key, session_entry.session_id) and released is not None:
+                released.append(left_key)
+            return True
+
+    async def _handoff_repoint_with_topic_binding(self, dest, session_key: str, cli_session_id: str) -> None:
+        """Handoff's route switch plus its topic-binding move. A Telegram DM topic lane follows its
+        persisted binding, which would switch the route straight back to the topic's previous session
+        on the next turn; the binding moves with the route, and only while the route still names the
+        handoff. A handoff carries the conversation, so a topic still bound to it (an earlier handoff
+        the user since resumed on the CLI) lets it go. Raises when a /new, /resume or /branch --here
+        moved the topic meanwhile: the synthetic turn would load the handoff's history into that
+        newer conversation, and failing keeps the CLI session."""
+        prior = await self.async_session_store.get_or_create_session(dest.source)
+        with self._telegram_topic_publication(dest.source):
+            entry = await self._handoff_repoint(dest, session_key, cli_session_id)
+            holds = await self._follow_telegram_topic_switch(dest.source, entry, reason="handoff",
+                                                             departed=prior, move=True)
+        if not holds:
+            raise RuntimeError("the destination topic switched to another session during the handoff")
+
+    async def _handoff_source_session_id(self, row: dict, profile_name: Optional[str]) -> str:
+        """``row``'s session id once a Telegram handoff may take it: a session bound to another
+        profile's topic is refused before a fresh topic is created, which would stay empty."""
+        session_id = row["id"]
+        if self._session_db is None or str(row.get("handoff_platform") or "").strip().lower() != "telegram":
+            return session_id
+        from gateway.session_route_recovery import conversation_head
+        _authority, _local_owner, head = await conversation_head(self, session_id)
+        bound = await self._session_db.get_telegram_topic_binding_by_session(session_id=head)
+        if bound and str(bound.get("profile_name") or "default") != (profile_name or "default"):
+            raise RuntimeError(t("gateway.topic.already_linked"))
+        return session_id
+
+    async def _telegram_topic_switch_conflict(self, source: SessionSource, target_session_id: str) -> Optional[str]:
+        """Refusal text when ``target_session_id`` is bound to ANOTHER topic: a session links to one
+        topic only, so after the route moved the binding write would fail and the next message's heal
+        would snap the topic back. Checked before the switch; None = this lane may take it."""
+        if self._session_db is None or not await asyncio.to_thread(self._is_telegram_topic_lane, source):
+            return None
+        bound = await self._session_db.get_telegram_topic_binding_by_session(session_id=target_session_id)
+        here = (self._telegram_topic_profile_name(source), str(source.chat_id), str(source.thread_id))
+        if bound and (str(bound.get("profile_name")), str(bound.get("chat_id")), str(bound.get("thread_id"))) != here:
+            return t("gateway.topic.already_linked")
+        return None
 
     def _recover_telegram_topic_thread_id(self, source: SessionSource) -> Optional[str]:
+        """Adapter-ingress recovery hook (sync, called off-loop before session keying): lobby recovery,
+        except when ``dm_topic_auto_transfer`` is on — then the root-DM source is left alone so
+        ``_transfer_telegram_root_dm`` can open a fresh topic (and fall back to this recovery itself)."""
+        if self._telegram_topic_auto_transfer_enabled(source):
+            return None
+        return self._recover_telegram_lobby_thread_id(source)
+
+    def _recover_telegram_lobby_thread_id(self, source: SessionSource) -> Optional[str]:
         """Pin lobby-shaped topic-mode DM replies (missing ``message_thread_id`` or General) to the
         user's most-recent bound topic. Never rewrite a non-lobby, unbound thread id: a brand-new DM
         topic is also "unknown" until its first message is recorded. None = leave the source alone."""
@@ -191,6 +359,42 @@ class GatewayTopicThreadsMixin:
                 return recovered if recovered and recovered != inbound else None
         return None
 
+    def _telegram_dm_topic_auto_transfer_configured(self, source: SessionSource) -> bool:
+        """The RECEIVING bot's ``extra.dm_topic_auto_transfer`` (default False): under multiplexing each
+        bot owns its opt-in. Off keeps the v0.22 lobby recovery (#136567). No state.db read."""
+        adapter = self._delivery_adapter_for(source)
+        platform_cfg = getattr(adapter, "config", None) if adapter is not None else None
+        return is_truthy_value((getattr(platform_cfg, "extra", None) or {}).get("dm_topic_auto_transfer"))
+
+    def _telegram_topic_auto_transfer_enabled(self, source: SessionSource) -> bool:
+        """The key is on and ``source`` is a ``/topic``-mode root DM (reads state.db: call off-loop)."""
+        return self._telegram_dm_topic_auto_transfer_configured(source) and self._is_telegram_topic_root_lobby(source)
+
+    async def _transfer_telegram_root_dm(self, source: SessionSource) -> Optional[tuple[str, bool]]:
+        """Adapter-ingress transfer hook for an opted-in root-DM message (#139136).
+
+        ``(thread_id, True)``: a fresh topic was created and the turn runs there. ``(thread_id, False)``:
+        creating it failed, so the message falls back to lobby recovery (the last bound topic).
+        ``None``: not applicable (key off, not a topic-mode root DM) or nothing to recover to.
+        """
+        if (not source.chat_id or not self._telegram_dm_topic_auto_transfer_configured(source)
+                or not await asyncio.to_thread(self._is_telegram_topic_root_lobby, source)):
+            return None
+        adapter = self._delivery_adapter_for(source)
+        create_topic = getattr(adapter, "_create_dm_topic", None) if adapter is not None else None
+        thread_id = None
+        if callable(create_topic):
+            try:
+                thread_id = await create_topic(int(source.chat_id), t("gateway.topic.default_title"))
+            except Exception:
+                logger.debug("Failed to auto-transfer Telegram root DM into a new topic", exc_info=True)
+        if thread_id:
+            logger.info("telegram topic auto-transfer: chat=%s user=%s root -> new topic %s",
+                        source.chat_id, source.user_id, thread_id)
+            return str(thread_id), True
+        recovered = await asyncio.to_thread(self._recover_telegram_lobby_thread_id, source)
+        return (recovered, False) if recovered else None
+
     # ── Telegram topic mode: /topic activation helpers ──────────────────────────────────────
 
     async def _get_telegram_topic_capabilities(self, source: SessionSource) -> dict:
@@ -213,35 +417,6 @@ class GatewayTopicThreadsMixin:
             return me.get(name) if isinstance(me, dict) else None
 
         return {"checked": True, **{k: _field(k) for k in ("has_topics_enabled", "allows_users_to_create_topics")}}
-
-    async def _ensure_telegram_system_topic(self, source: SessionSource) -> None:
-        """Create/pin the managed System topic after /topic activation when possible."""
-        adapter = self._delivery_adapter_for(source)
-        create_topic = getattr(adapter, "_create_dm_topic", None) if adapter is not None and source.chat_id else None
-        if not callable(create_topic):
-            return
-        try:
-            thread_id = await create_topic(int(source.chat_id), t("gateway.topic.system_topic_name"))
-        except Exception:
-            logger.debug("Failed to create Telegram System topic", exc_info=True)
-            return
-        if not thread_id:
-            return
-        try:
-            send_result = await adapter.send(
-                source.chat_id, t("gateway.topic.system_topic_intro"), metadata={"thread_id": str(thread_id)},
-            )
-            message_id = getattr(send_result, "message_id", None)
-        except Exception:
-            logger.debug("Failed to send Telegram System topic intro", exc_info=True)
-            return
-        bot = getattr(adapter, "_bot", None)
-        if not message_id or bot is None or not hasattr(bot, "pin_chat_message"):
-            return
-        try:
-            await bot.pin_chat_message(chat_id=int(source.chat_id), message_id=int(message_id), disable_notification=True)
-        except Exception:
-            logger.debug("Failed to pin Telegram System topic intro", exc_info=True)
 
     async def _send_telegram_topic_setup_image(self, source: SessionSource) -> None:
         """Send the bundled BotFather Threads Settings screenshot when available."""
@@ -329,7 +504,7 @@ class GatewayTopicThreadsMixin:
             and getattr(source, "delivered_via_upstream_relay", False) is True
         )
 
-    def _relay_auto_thread_info(self, source: SessionSource) -> Optional[Tuple[str, str]]:
+    def _relay_auto_thread_info(self, source: SessionSource) -> Optional[tuple[str, str]]:
         """(thread_id, initial_name) when the RELAY connector auto-threaded our reply — the title-turn
         sibling of _is_discord_auto_thread_lane (whose markers only exist from turn 2 on; the title
         turn's source is the PARENT channel event).
@@ -357,7 +532,7 @@ class GatewayTopicThreadsMixin:
             return _as_thread_info(info_fn(str(source.chat_id)))
         return None
 
-    async def _await_relay_auto_thread_info(self, source: SessionSource) -> Optional[Tuple[str, str]]:
+    async def _await_relay_auto_thread_info(self, source: SessionSource) -> Optional[tuple[str, str]]:
         """``_relay_auto_thread_info``, waited out until this turn delivers (the legacy send-result
         path can only answer once the reply is sent; the caller asks at title time, one turn early).
         The timeout is only a backstop for a turn that never sends: the turn's own inactivity limit."""
@@ -377,7 +552,7 @@ class GatewayTopicThreadsMixin:
 
     async def _rename_discord_auto_thread_for_session_title(
         self, source: SessionSource, session_id: str, title: str,
-        relay_info: Optional[Tuple[str, str]] = None,
+        relay_info: Optional[tuple[str, str]] = None,
     ) -> None:
         """Best-effort semantic rename of a newly auto-created Discord thread. ``relay_info`` is the
         connector's (thread_id, initial_name) feedback, supplied on the title turn where the source
@@ -485,11 +660,10 @@ class GatewayTopicThreadsMixin:
         )
 
     def _telegram_topic_auto_rename_disabled(self, source: SessionSource) -> bool:
-        """``gateway.platforms.telegram.extra.disable_topic_auto_rename``; default False (auto-rename on)."""
-        config = getattr(self, "config", None)
-        platform_cfg = config.platforms.get(source.platform) if config and getattr(config, "platforms", None) else None
-        if platform_cfg is None:
-            return False
+        """The RECEIVING bot's ``extra.disable_topic_auto_rename`` (default False: auto-rename on); under
+        multiplexing each bot owns its kill-switch, like ``dm_topic_auto_transfer``."""
+        adapter = self._delivery_adapter_for(source)
+        platform_cfg = getattr(adapter, "config", None) if adapter is not None else None
         return is_truthy_value((getattr(platform_cfg, "extra", None) or {}).get("disable_topic_auto_rename"))
 
     async def _rename_telegram_topic_for_session_title(self, source: SessionSource, session_id: str, title: str) -> None:
@@ -631,6 +805,8 @@ class GatewayTopicThreadsMixin:
                 return already_linked
             raise
         title = await db.get_session_title(session_id) or session_id
+        # Restored titles bypass auto-titling, so rename the newly bound topic here.
+        await self._rename_telegram_topic_for_session_title(source, session_id, title)
         last_assistant = None
         with suppress(Exception):
             for message in reversed(await db.get_messages(session_id)):

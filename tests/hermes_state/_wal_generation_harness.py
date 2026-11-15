@@ -171,7 +171,7 @@ class GatewayWriter:
         self._proc = proc
         self.path = path
         self._stderr_path = stderr_path
-        self._events: "queue.Queue[str | None]" = queue.Queue()
+        self._events: queue.Queue[str | None] = queue.Queue()
         self._reader = threading.Thread(target=self._read_events, daemon=True)
         self._reader.start()
 

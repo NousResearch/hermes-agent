@@ -313,7 +313,7 @@ export function FindBar() {
       <input
         aria-label={t.keybinds.actions['view.findInPage'] ?? 'Find in page'}
         autoComplete="off"
-        className="h-6 w-40 bg-transparent text-xs text-(--ui-text-primary) outline-none placeholder:text-(--ui-text-tertiary)"
+        className="h-6 w-40 bg-transparent text-xs text-(--ui-text-primary) placeholder:text-(--ui-text-tertiary) focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
         onChange={onInput}
         onKeyDown={onKeyDown}
         placeholder={t.keybinds.actions['view.findInPage'] ?? 'Find in page'}

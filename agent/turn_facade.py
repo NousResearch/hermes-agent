@@ -8,7 +8,7 @@ MRO unchanged.
 import logging
 import uuid
 from contextlib import suppress
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 from agent.lazy_forward import forward as _forward
 
@@ -20,16 +20,17 @@ class TurnFacadeMixin:
     """run_conversation()/chat() (see module docstring)."""
 
     def run_conversation(
-        self, user_message: Any, system_message: str=None,
-        conversation_history: List[Dict[str, Any]]=None, task_id: str=None,
+        self, user_message: Any, system_message: str | None=None,
+        conversation_history: list[dict[str, Any]] | None=None, task_id: str | None=None,
         stream_callback: Optional[callable]=None, persist_user_message: Optional[Any]=None,
         persist_user_timestamp: Optional[float]=None, persist_user_display_kind: Optional[str]=None,
-        persist_user_display_metadata: Optional[Dict[str, Any]]=None,
+        persist_user_display_metadata: Optional[dict[str, Any]]=None,
         persist_user_platform_id: Optional[str]=None, moa_config: Optional[dict[str, Any]]=None,
-        turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None,
+        turn_author: Optional[dict[str, Any]] = None,
+        relay_metadata: Optional[dict[str, Any]] = None,
         title_user_message: Optional[str]=None,
-    ) -> Dict[str, Any]:
+        prelude: Optional[Generator]=None,
+    ) -> dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review shares this session_id for cache parity: fence review startup or interrupt
         # an admitted request and await its exit before opening live-turn instrumentation.
@@ -110,7 +111,7 @@ class TurnFacadeMixin:
                 session_cwd=relay_session_cwd,
                 turn_cwd=relay_turn_cwd,
             )
-            relay_turn_kwargs: Dict[str, Any] = {
+            relay_turn_kwargs: dict[str, Any] = {
                 "turn_id": relay_turn_id,
                 "task_id": effective_task_id,
             }
@@ -153,6 +154,7 @@ class TurnFacadeMixin:
                         persist_user_platform_id=persist_user_platform_id, moa_config=moa_config,
                         turn_author=turn_author,
                         title_user_message=title_user_message,
+                        prelude=prelude,
                     )
                 finally:
                     # Post-loop relay/task finalization must not receive a late refresh interrupt;

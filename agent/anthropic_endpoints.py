@@ -157,3 +157,29 @@ def _is_azure_anthropic_endpoint(base_url: str | None) -> bool:
     host_padded = f".{(parsed.hostname or '').lower().rstrip('.')}."
     is_azure_host = ".services.ai.azure." in host_padded or ".openai.azure." in host_padded
     return is_azure_host and "/anthropic" in (parsed.path or "").lower()
+
+
+def _is_bedrock_runtime_endpoint(base_url: str | None) -> bool:
+    """Amazon Bedrock's runtime host (``bedrock-runtime[-fips].<region>.amazonaws.com[.cn]``, and VPC
+    endpoint names carrying the same label), which the AnthropicBedrock SDK path binds as its base URL."""
+    host = base_url_hostname(base_url or "")
+    return any(label.startswith("bedrock-runtime") for label in host.split(".")) and (
+        base_url_host_matches(host, "amazonaws.com") or base_url_host_matches(host, "amazonaws.com.cn")
+    )
+
+
+def _is_vertex_ai_endpoint(base_url: str | None) -> bool:
+    """Vertex AI hosts: global ``aiplatform.googleapis.com`` and regional ``<region>-aiplatform.googleapis.com``."""
+    host = base_url_hostname(base_url or "")
+    return host == "aiplatform.googleapis.com" or host.endswith("-aiplatform.googleapis.com")
+
+
+def _is_claude_platform_endpoint(base_url: str | None) -> bool:
+    """Cloud platforms serving Claude under Anthropic's own thinking signatures: Bedrock, Vertex AI and
+    Azure AI Foundry ``/anthropic``. Anthropic documents ``signature`` values as compatible across the
+    Claude API, Bedrock and Google Cloud, so these replay signed thinking like the direct API."""
+    return (
+        _is_bedrock_runtime_endpoint(base_url)
+        or _is_vertex_ai_endpoint(base_url)
+        or _is_azure_anthropic_endpoint(base_url)
+    )

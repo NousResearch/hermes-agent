@@ -204,6 +204,32 @@ describe('useContextBreakdown (#94001)', () => {
     expect(requestGateway).toHaveBeenCalledTimes(2)
   })
 
+  it('serves an agentless breakdown that has categories but no known window', async () => {
+    // `session.context_breakdown` after a restart or reap: measured from the
+    // session's freeze, beside stored usage that carries no window.
+    const agentless: ContextBreakdown = {
+      categories: [{ color: '#888', id: 'system', label: 'System prompt', tokens: 3_200 }],
+      context_estimated: false,
+      context_max: 0,
+      context_percent: 0,
+      context_source: 'provider_usage',
+      context_used: 0,
+      estimated_total: 3_200,
+      model: ''
+    }
+
+    const requestGateway = vi.fn(async () => agentless) as unknown as GatewayRequester
+
+    const { result } = renderHook(props => useContextBreakdown(props), {
+      initialProps: { busy: false, enabled: true, requestGateway, sessionId: 's1' as null | string }
+    })
+
+    await flushAsync()
+
+    expect(result.current.breakdown).toEqual(agentless)
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+  })
+
   it('never serves a previous session’s cached numbers after its own refetch exhausts retries', async () => {
     // Scenario 1 guard: the s1 cache must not paint under s2 while s2's fetch
     // exhausts its retries against a failing backend.

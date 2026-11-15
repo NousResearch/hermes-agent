@@ -9,15 +9,19 @@ import { connectorToolsQueryOptions } from './queries'
 
 const PREFETCH_LIMIT = 3
 
-export function prefetchConnectorTools(scope: ProfileScope, slug: string): void {
-  void queryClient.prefetchQuery(connectorToolsQueryOptions(scope, slug))
+// Only a connected hosted account has tools to list; an unconnected card's read is a wasted gateway call.
+export function hasConnectedTools(card: ConnectorCardModel): boolean {
+  return card.ways.hosted?.state === 'connected'
+}
+
+export function prefetchConnectorTools(scope: ProfileScope, card: ConnectorCardModel): void {
+  if (hasConnectedTools(card)) {
+    void queryClient.prefetchQuery(connectorToolsQueryOptions(scope, card.slug))
+  }
 }
 
 export function usePrefetchConnectedTools(scope: ProfileScope, cards: readonly ConnectorCardModel[]): void {
-  const slugs = useMemo(
-    () => cards.filter(card => card.ways.hosted?.state === 'connected').map(card => card.slug),
-    [cards]
-  )
+  const slugs = useMemo(() => cards.filter(hasConnectedTools).map(card => card.slug), [cards])
 
   useEffect(() => {
     let stopped = false

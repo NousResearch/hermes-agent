@@ -40,7 +40,7 @@ def _token_pair(tokens: Any) -> tuple[str, str]:
     return _clean(tokens.get("access_token")), _clean(tokens.get("refresh_token"))
 
 
-def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _xai_oauth_state_from_store(auth_store: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Return usable xAI OAuth state from provider state or credential pool."""
     from hermes_cli.auth import _load_provider_state
     state = _load_provider_state(auth_store, "xai-oauth")
@@ -66,11 +66,11 @@ def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str
     return state if isinstance(state, dict) else None
 
 
-def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
+def _xai_oauth_state_has_usable_tokens(state: Optional[dict[str, Any]]) -> bool:
     return isinstance(state, dict) and all(_token_pair(state.get("tokens")))
 
 
-def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+def _read_xai_oauth_tokens(*, _lock: bool = True) -> dict[str, Any]:
     from hermes_cli.auth import _load_global_auth_store
     state = _xai_oauth_state_from_store(_load_auth_store_maybe_locked(_lock))
     if not _xai_oauth_state_has_usable_tokens(state):
@@ -97,7 +97,7 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
-def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
+def _write_through_xai_oauth_to_global_root(state: dict[str, Any]) -> None:
     """Best-effort persist of a rotated xAI grant into the global-root auth.json.
 
     xAI rotates refresh_token on every refresh, so a profile that refreshed a root-resolved grant
@@ -125,7 +125,7 @@ def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
 
 
 def _save_xai_oauth_tokens(
-    tokens: Dict[str, Any], *, discovery: Optional[Dict[str, Any]] = None, redirect_uri: str = "",
+    tokens: dict[str, Any], *, discovery: Optional[dict[str, Any]] = None, redirect_uri: str = "",
     last_refresh: Optional[str] = None, auth_mode: str = "oauth_device_code",
     set_active: bool = True,
 ) -> None:
@@ -266,7 +266,7 @@ def _xai_validate_inference_base_url(value: str, *, fallback: str) -> str:
     return fallback
 
 
-def _xai_oauth_discovery(timeout_seconds: float = 15.0) -> Dict[str, str]:
+def _xai_oauth_discovery(timeout_seconds: float = 15.0) -> dict[str, str]:
     try:
         response = httpx.get(XAI_OAUTH_DISCOVERY_URL, headers={"Accept": "application/json"}, timeout=timeout_seconds)
     except Exception as exc:
@@ -287,7 +287,7 @@ def _xai_oauth_discovery(timeout_seconds: float = 15.0) -> Dict[str, str]:
     return endpoints
 
 
-def _xai_tokens_from_payload(payload: Dict[str, Any], access_token: str, fallback_refresh: str) -> Dict[str, Any]:
+def _xai_tokens_from_payload(payload: dict[str, Any], access_token: str, fallback_refresh: str) -> dict[str, Any]:
     """Token block persisted for xAI OAuth; falls back to *fallback_refresh* when none is rotated in."""
     return {
         "access_token": access_token,
@@ -300,7 +300,7 @@ def _xai_tokens_from_payload(payload: Dict[str, Any], access_token: str, fallbac
 def refresh_xai_oauth_pure(
     access_token: str, refresh_token: str, *, token_endpoint: str = "",
     timeout_seconds: float = 20.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     from hermes_cli.auth import _nonempty_str, _utc_now_z, _xai_oauth_discovery
     del access_token
     if not _nonempty_str(refresh_token):
@@ -352,8 +352,8 @@ def refresh_xai_oauth_pure(
 
 
 def _refresh_xai_oauth_tokens(
-    tokens: Dict[str, Any], *, token_endpoint: str, redirect_uri: str = "", timeout_seconds: float
-) -> Dict[str, Any]:
+    tokens: dict[str, Any], *, token_endpoint: str, redirect_uri: str = "", timeout_seconds: float
+) -> dict[str, Any]:
     # Keep the stored auth_mode (legacy logins may carry ``oauth_pkce``): refresh must not relabel it.
     from hermes_cli.auth import _load_auth_store, _load_provider_state, refresh_xai_oauth_pure
     try:
@@ -417,10 +417,10 @@ def _xai_oauth_inference_base_url() -> str:
 def resolve_xai_oauth_runtime_credentials(
     *, force_refresh: bool = False, refresh_if_expiring: bool = True,
     refresh_skew_seconds: Optional[int] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     from hermes_cli.auth import _auth_store_lock, _is_terminal_xai_oauth_refresh_error, _refresh_xai_oauth_tokens, _xai_oauth_discovery
 
-    def _should_refresh(data: Dict[str, Any]) -> bool:
+    def _should_refresh(data: dict[str, Any]) -> bool:
         access_token = _clean(data["tokens"].get("access_token"))
         skew = (
             int(refresh_skew_seconds) if refresh_skew_seconds is not None
@@ -501,7 +501,7 @@ def _login_xai_oauth(args, pconfig: ProviderConfig, *, force_new_login: bool = F
     _print_login_success("xai-oauth", config_path, show_auth_state=True)
 
 
-def _xai_oauth_request_device_code(client: httpx.Client, *, scope: str = XAI_OAUTH_SCOPE) -> Dict[str, Any]:
+def _xai_oauth_request_device_code(client: httpx.Client, *, scope: str = XAI_OAUTH_SCOPE) -> dict[str, Any]:
     response = client.post(
         XAI_OAUTH_DEVICE_CODE_URL, headers=_FORM_JSON_HEADERS, data={"client_id": XAI_OAUTH_CLIENT_ID, "scope": scope},
     )
@@ -522,9 +522,9 @@ def _xai_oauth_request_device_code(client: httpx.Client, *, scope: str = XAI_OAU
 def _xai_oauth_poll_device_token(
     client: httpx.Client, *, token_endpoint: str, device_code: str, expires_in: int,
     poll_interval: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     from hermes_cli.auth import _poll_device_token_generic
-    def _validate(payload: Dict[str, Any]) -> None:
+    def _validate(payload: dict[str, Any]) -> None:
         for field_name, article in (("access_token", "an"), ("refresh_token", "a")):
             if not payload.get(field_name):
                 raise _xai_err(
@@ -554,7 +554,7 @@ def _xai_oauth_poll_device_token(
     )
 
 
-def _xai_oauth_device_code_login(*, timeout_seconds: float = 20.0, open_browser: bool = True) -> Dict[str, Any]:
+def _xai_oauth_device_code_login(*, timeout_seconds: float = 20.0, open_browser: bool = True) -> dict[str, Any]:
     from hermes_cli.auth import _can_open_graphical_browser, _is_remote_session, _print_device_code_instructions, _utc_now_z, _xai_oauth_discovery, _xai_oauth_poll_device_token
     discovery = _xai_oauth_discovery(timeout_seconds)
     timeout = httpx.Timeout(max(20.0, timeout_seconds))

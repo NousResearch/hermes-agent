@@ -90,7 +90,7 @@ def test_resolve_mcp_invocation_sanitizes_env(monkeypatch):
         cua_backend.subprocess, "run", _capture_run(captured, stdout=manifest)
     )
 
-    cmd, args = cua_backend_driver._resolve_mcp_invocation("cua-driver")
+    cmd, _args = cua_backend_driver._resolve_mcp_invocation("cua-driver")
     assert cmd == "cua-driver"
     _assert_sanitized(captured)
     assert captured["creationflags"] == CREATE_NO_WINDOW

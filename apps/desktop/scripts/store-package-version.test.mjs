@@ -1,13 +1,16 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { AppInfo } from 'app-builder-lib'
 import { afterEach, expect, test, vi } from 'vitest'
 import { appIdentity, storeManifestTemplate, storePackageVersion, storePackageVersionAt } from '../../../scripts/msix-shared.mjs'
 import { stageReleaseManifest, stageStoreManifest } from './before-build.mjs'
-import { AppInfo } from '../../../node_modules/app-builder-lib/dist/appInfo.js'
-import { substituteManifestMacros } from '../../../node_modules/app-builder-lib/dist/targets/win/winAppUtil.js'
+
+const require = createRequire(import.meta.url)
+const { substituteManifestMacros } = require(path.join(path.dirname(require.resolve('app-builder-lib')), 'targets', 'win', 'winAppUtil.js'))
 
 const roots = []
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
@@ -89,18 +92,20 @@ test('Store calendar ordering survives minute, hour, day and year boundaries and
 test('stable candidate identity uses the admitted claim epoch before the final tag exists', () => {
   const { root, app } = fixture()
   execFileSync('git', ['tag', '-d', 'v0.27.1'], { cwd: root, stdio: 'pipe' })
-  execFileSync('git', ['tag', '-a', 'v0.27.1-rc', '-m', 'claim'], {
+  execFileSync('git', ['tag', '-a', 'rc.3-v0.27.1', '-m', 'claim'], {
     cwd: root,
     env: { ...process.env, ...gitIdentityEnv, GIT_COMMITTER_DATE: '2026-09-07T00:18:00Z' },
     stdio: 'pipe'
   })
   const epoch = Date.parse('2026-09-07T00:18:00Z') / 1000
-  vi.stubEnv('RELEASE_CLAIM_TAG', 'v0.27.1-rc')
-  vi.stubEnv('RELEASE_CLAIM_OBJECT', execFileSync('git', ['rev-parse', 'v0.27.1-rc'], {
+  vi.stubEnv('RELEASE_CLAIM_TAG', 'rc.3-v0.27.1')
+  vi.stubEnv('RELEASE_CLAIM_OBJECT', execFileSync('git', ['rev-parse', 'rc.3-v0.27.1'], {
     cwd: root, encoding: 'utf8'
   }).trim())
   try {
     expect(appIdentity(app, 'v0.27.1').version).toBe(storePackageVersionAt(epoch))
+    vi.stubEnv('RELEASE_CLAIM_TAG', 'rc.3-v0.27.10')
+    expect(() => appIdentity(app, 'v0.27.1')).toThrow('Stable claim tag differs from its payload tag')
   } finally {
     vi.unstubAllEnvs()
   }

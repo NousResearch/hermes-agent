@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.tools._child_env_fixtures import child_env, project_python, run_code  # noqa: F401
+from tests.tools._child_env_fixtures import child_env, project_python, run_code
 from tools import code_execution_env as ce
 from tools.code_execution_tool import build_execute_code_schema
 

@@ -214,7 +214,7 @@ When Hermes Desktop is connected to a **remote gateway**, audio does not need to
 
 There is nothing to configure on the client: the profile you're talking to is the single source of truth for providers and keys, exactly as if the gateway had done the work itself. Keys are held in the desktop's memory for the session only — never written to disk on the client.
 
-Providers that can only run on the gateway host (local whisper, `edge` TTS, command providers, plugins) automatically fall back to the relay path (`/api/audio/transcribe` and the speech WebSocket), as does any older backend without the endpoint. To force the relay for every provider, set:
+Providers that can only run on the gateway host (local whisper, `edge` TTS, command providers, plugins) automatically fall back to the relay path (`/api/audio/transcribe` and the speech WebSocket), as does any older backend without the endpoint. The Webapp (the desktop UI in a browser) always relays: a browser tab cannot call a provider that does not allow cross-origin requests (such as Nous-managed audio), and its keys stay on the host. To force the relay for every provider, set:
 
 ```yaml
 voice:
@@ -240,6 +240,24 @@ Requirements: an OpenAI API key (`OPENAI_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`, or 
 How it works: pressing the voice button opens a WebRTC session from the desktop to GPT-Live; the desktop only ever receives a session id and an SDP answer — the key stays on the gateway host, which performs the session creation (`POST /api/audio/voice-live/session`). Each `session.delegation.created` becomes a normal turn on the open chat (the bubble shows what you said; the recent spoken exchange rides the model input as a per-turn note, never the system prompt, so the reply is speakable prose). Tool activity is fed to the voice as quiet context ("Hermes is working: terminal") so it can tell you what is happening if you ask; the final answer is streamed back sentence by sentence. Saying the stop phrase ends the conversation. If `gpt-live` is selected but no key resolves, the button falls back to the chained mode with a notice.
 
 Not supported in this mode: the Nous-managed audio proxy (direct key only), the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
+
+### Voice chat model
+
+Spoken turns can run on a different (usually faster) model than the one you type to. Set the `voice_chat` auxiliary slot, in Settings → Models → Auxiliary models on Desktop, in `hermes model` → Auxiliary models, or in config.yaml:
+
+```yaml
+auxiliary:
+  voice_chat:
+    provider: openrouter          # "auto" = the session's model (default)
+    model: google/gemini-3-flash-preview   # empty with a provider = that provider's fast model
+    reasoning_effort: none        # default: reasoning off on voice turns (see below)
+```
+
+Reasoning is off on voice turns by default, also when the slot is left on `auto` and the session's model answers. A model that cannot switch reasoning off (gpt-6-astra, mandatory-thinking Claude, routes whose catalog marks it mandatory) gets its lowest accepted level instead, and a route that rejects the disable at runtime is remembered for the next voice turn. Set any level, or `""` to use the session's effort.
+
+It applies to every chained voice turn: CLI and TUI voice mode, the Desktop voice conversation, and voice notes on messaging platforms. The voice turn has the full toolset; only the model answering it changes. The next typed message goes back to the session's model, and so do memory and skill reviews after the turn. Usage is recorded under the `voice_chat` task, so the session keeps the model you picked as its own.
+
+The voice model never forces a compaction: when the conversation is already larger than its context window, that turn runs on the session's model and a one-time notice says so. GPT-Live voice chat ignores this slot, because there the voice layer already is the fast model and delegates real work to the session's model.
 
 ### Barge-in
 
@@ -478,7 +496,8 @@ DISCORD_ALLOWED_USERS=284102345871466496
 voice:
   record_key: "ctrl+b"            # Key to start/stop recording
   max_recording_seconds: 120       # Maximum recording length
-  auto_tts: false                  # Auto-enable TTS when voice mode starts
+  auto_tts: false                  # Enable automatic spoken replies in gateway chats
+  auto_tts_mode: "all"             # "all" (legacy default) | "voice_only"
   beep_enabled: true               # Play record start/stop beeps
   silence_threshold: 200           # RMS level (0-32767) below which counts as silence
   silence_duration: 3.0            # Seconds of silence before auto-stop
@@ -490,13 +509,18 @@ stt:
                                     # the gateway still caches the audio file and
                                     # passes its path to the agent as part of the
                                     # inbound message, useful for custom pipelines
-                                    # (diarization, alignment, archival, etc.)
+                                    # (diarization, alignment, archival, etc.).
+                                    # When enabled, the agent gets the quoted
+                                    # transcript followed by a
+                                    # "[User sent audio: <path>]" line, so the
+                                    # recording stays reachable after STT succeeds
   provider: "local"                  # "local" (free) | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
+  language: "en"                     # global hint for every provider; set "" to auto-detect
   local:
-    model: "base"                    # tiny, base, small, medium, large-v3
-    language: ""                     # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    model: "base"                    # tiny, base, small, medium, large-v3, turbo
+    language: ""                     # optional ISO-639-1 hint; blank = stt.language, then HERMES_LOCAL_STT_LANGUAGE, then auto-detect
   groq:
-    language: ""                     # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""                     # optional ISO-639-1 hint; blank = stt.language, then HERMES_LOCAL_STT_LANGUAGE, then auto-detect
   # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
@@ -522,6 +546,8 @@ tts:
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
 ```
+
+Blank provider language settings inherit the global `stt.language` value (default `"en"`) before consulting the environment. See [STT language resolution](../configuration.md#speech-to-text-stt) for the auto-detection conditions and command-backend limits.
 
 ### Environment Variables
 

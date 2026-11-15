@@ -17,16 +17,16 @@ import pytest
 
 # Re-use the shared discord-stub bootstrap and FakeBot from the connect
 # test module so this file doesn't duplicate the (large) mock surface.
-from tests.gateway.test_discord_connect import (  # noqa: E402
+from tests.gateway.test_discord_connect import (
     FakeBot,
     _ensure_discord_mock,
 )
 
 _ensure_discord_mock()
 
-import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
-from gateway.config import PlatformConfig  # noqa: E402
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+import plugins.platforms.discord.adapter as discord_platform
+from gateway.config import PlatformConfig
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class _LiveBot(FakeBot):
@@ -237,7 +237,7 @@ async def _connect(adapter: DiscordAdapter, monkeypatch, bot_factory):
         "gateway.status.acquire_scoped_lock",
         lambda scope, identity, metadata=None: (True, None),
     )
-    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr("gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: None)
     intents = SimpleNamespace(
         message_content=False, dm_messages=False, guild_messages=False,
         members=False, voice_states=False,

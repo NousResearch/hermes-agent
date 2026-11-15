@@ -25,6 +25,7 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
     )
     from hermes_cli import update_receipt
     from hermes_cli.update_receipt import TAIL_FOLLOWUPS, record_build_stage, record_followup
+    from hermes_cli.update_launch_files import refresh_launch_files
 
     owed = followups if followups is not None else []
     runtime_safe = False
@@ -57,6 +58,7 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
         _write_gateway_update_exit_code(True)
     run = update_receipt._current.get()
     update_id = run.data.get("update_id") if run is not None else None
+    refresh_launch_files()
     try:
         restarted = _restart_gateway_fleet_after_update(plan, gateway_mode)
         _resume_windows_gateways_and_merge_outcome(restarted, windows_resume, gateway_mode)
@@ -104,7 +106,7 @@ def main(context: Path, result: Path) -> int:
         # selected store Python. Bootstrap must run before any app imports;
         # its ordinary currency check is now a no-op, not another update.
         sys.argv = list(request["argv"]) if restarting else [str(root / "hermes"), "update"]
-        import hermes_bootstrap  # noqa: F401
+        import hermes_bootstrap
         # Import failures are update failures too: keep the original receipt
         # open before importing the application graph from the new checkout.
         from hermes_cli import main as cli
@@ -182,7 +184,7 @@ def main(context: Path, result: Path) -> int:
         if resume is not None:
             try:
                 resume(token)
-            except Exception as exc:  # noqa: BLE001 — a restart failure is owed, never the exit status (C3)
+            except Exception as exc:
                 attempted = True
                 update_receipt.owe_followup(request["update_id"], "windows_resume", f"Windows gateway recovery failed: {exc}")
         handled = cli_started or (begun and update_receipt._current.get() is None)

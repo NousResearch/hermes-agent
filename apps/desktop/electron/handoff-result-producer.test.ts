@@ -77,6 +77,7 @@ test.skipIf(process.platform === 'win32').each(['legacy', 'protocol-2'])(
       output += chunk
     })
     const exited = once(child, 'exit')
+
     // The hand-off hands the marker to a custodian that outlives it, so an old Desktop never
     // reads a dead owner; the log names that custodian together with this hand-off's pid.
     const custodian = () => {

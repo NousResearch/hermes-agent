@@ -5,13 +5,27 @@ import type { ClarifyQuestion } from '../types.js'
 
 import { patchOverlayState } from './overlayStore.js'
 import { rememberServerRequest } from './serverRequestStore.js'
+import { getUiState } from './uiStore.js'
 
 export interface ServerRequestHandlerContext {
+  /** The session this view shows (default: the UI store's); a live request for another session waits for its activation. */
+  focusedSessionId?: () => null | string
   ringPromptBell: () => void
   setStatus: (status: string) => void
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+
+// The cards this handler opens; anything else is declined below and must keep failing fast.
+const PROMPT_METHODS = new Set([
+  'approval',
+  'clarify',
+  'secret',
+  'sudo',
+  'vault.code',
+  'vault.save_login',
+  'vault.unlock_prompt'
+])
 
 const strList = (v: unknown): null | string[] =>
   Array.isArray(v) && v.length > 0 ? v.filter((c): c is string => typeof c === 'string') : null
@@ -26,7 +40,7 @@ const strList = (v: unknown): null | string[] =>
  * deadline.
  */
 export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (request: ServerRequest) => boolean {
-  const { ringPromptBell, setStatus } = ctx
+  const { focusedSessionId = () => getUiState().sid, ringPromptBell, setStatus } = ctx
 
   const open = (request: ServerRequest, status: string) => {
     rememberServerRequest(request)
@@ -37,8 +51,25 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
     }
   }
 
+  // A session kept running in the background (/new mid-turn, the switcher's `+ new`) still asks its
+  // questions on this socket. Its card must not open over another session's view: the request stays
+  // open on the backend unanswered, and activating that session hands it back as `open_requests`,
+  // which the activation re-delivers once the view shows it (`hydrateSharedPrompts`, after the
+  // reset). The copy the channel replays before the activation resolves is still another
+  // session's, so it waits too. The status poll tells the user the session is waiting.
+  const belongsElsewhere = (request: ServerRequest) => {
+    const owner = request.params.session_id
+    const focused = focusedSessionId()
+
+    return PROMPT_METHODS.has(request.method) && typeof owner === 'string' && Boolean(focused) && owner !== focused
+  }
+
   return request => {
     const p = request.params
+
+    if (belongsElsewhere(request)) {
+      return true
+    }
 
     switch (request.method) {
       case 'clarify': {

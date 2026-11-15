@@ -1,0 +1,19 @@
+name: field-from-above
+repo: https://github.com/kneblewskitomasz-sys/hermes-field-from-above
+sha: f84c4275c44bbd0abad5d9ce5e6108eeef29166d
+description: "Free Sentinel-2 NDRE and terrain context for a Polish parcel or any point via GUGiK ULDK/NMT and Earth Search STAC. Disclosure — requested parcel IDs or coordinates (as bounding boxes) are sent to uldk.gugik.gov.pl, earth-search.aws.element84.com and services.gugik.gov.pl, and Sentinel-2 band files (up to 400 MB each, several per new scene) are downloaded from sentinel-cogs.s3.us-west-2.amazonaws.com into a raster cache capped at 2 GB under HERMES_HOME/plugin-data/field-from-above, where the PNG maps are also written; no credentials, shell commands or background processes are used."
+maintainer: Tomasz Kneblewski
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/kneblewskitomasz-sys/hermes-field-from-above
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - field_from_above_parcel
+    - field_from_above_point
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

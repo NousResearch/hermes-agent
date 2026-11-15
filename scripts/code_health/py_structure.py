@@ -98,9 +98,7 @@ def _self_references(node: ast.AST, name: str) -> list[ast.Name | ast.Attribute]
             if isinstance(child, _SCOPES):
                 if not _binds(child, name):
                     todo.append(child)
-            elif isinstance(child, ast.Name) and child.id == name and isinstance(child.ctx, ast.Load):
-                refs.append(child)
-            elif (isinstance(child, ast.Attribute) and child.attr == name
+            elif isinstance(child, ast.Name) and child.id == name and isinstance(child.ctx, ast.Load) or (isinstance(child, ast.Attribute) and child.attr == name
                   and isinstance(child.ctx, ast.Load)
                   and isinstance(child.value, ast.Name) and child.value.id in ("self", "cls")):
                 refs.append(child)

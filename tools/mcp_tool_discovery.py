@@ -310,7 +310,7 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
     return server is not None and server.session is not None
 
 
-def _get_connected_server_for_call(server_name: str) -> Optional[_core.MCPServerTask]:
+def _get_connected_server_for_call(server_name: str, *, scoped: bool = True) -> Optional[_core.MCPServerTask]:
     """Return a connected server; the single first-use connect point for lazy servers and
     the wake-up point for recycled stdio ones.
 
@@ -320,6 +320,8 @@ def _get_connected_server_for_call(server_name: str) -> Optional[_core.MCPServer
     The transport is picked here, per call, from the caller's session cwd: a session in another
     project than the baseline child gets its own clone (``tools.mcp_tool_project_scope``), so a
     session cwd change takes effect on the very next call without touching the tool list.
+    ``scoped=False`` skips the clone and always answers the baseline — for the handlers that
+    manage per-server state shared by every project (the events utilities).
     """
     from tools import mcp_tool_project_scope as _project_scope
     with _core._lock:
@@ -330,7 +332,8 @@ def _get_connected_server_for_call(server_name: str) -> Optional[_core.MCPServer
         _ensure_lazy_server_connected(server_name)
         with _core._lock:
             server = _core._servers.get(key)
-    server = _project_scope._server_for_call(server_name, key, server)
+    if scoped:
+        server = _project_scope._server_for_call(server_name, key, server)
     if server is not None and server.session is None and server._is_recycled_stdio():
         _request_lazy_reconnect(server_name, server)
     return server

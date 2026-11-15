@@ -39,6 +39,8 @@ for line in sys.stdin:
     elif method == "tools/call":
         time.sleep(float((r["params"].get("arguments") or {}).get("seconds") or 0))
         result = {"content": [{"type": "text", "text": f"{START}|{os.getpid()}"}]}
+    elif method == "events/list":
+        result = {"events": [{"name": f"pid-{os.getpid()}"}]}
     else:
         result = {}
     print(json.dumps({"jsonrpc": "2.0", "id": ident, "result": result}), flush=True)
@@ -366,3 +368,23 @@ def test_a_discarded_clone_whose_shutdown_failed_is_handed_to_the_reaper(root, m
         with mcp_tool._lock:
             _orphan_stdio_pids.discard(4711)
             _orphan_stdio_pid_servers.pop(4711, None)
+
+
+def test_event_utility_handlers_serve_the_baseline_not_the_callers_clone(probe):
+    """The events utilities manage webhook routes keyed by server NAME, shared by every project:
+    each clone resubscribing them would deliver the same event several times, and a clone child's
+    terminal refusal would delete the route for every project. They always talk to the baseline
+    (port review finding 2)."""
+    from tools.mcp_tool_events import _make_list_event_types_handler
+    _, clone_pid = _call(cwd=probe.a)
+    _, baseline_pid = _call()
+    assert clone_pid != baseline_pid
+    set_session_cwd(probe.a)
+    try:
+        payload = _make_list_event_types_handler("cwdprobe", 30)({})
+    finally:
+        clear_session_cwd()
+    listing = json.loads(payload)
+    assert "error" not in listing, listing
+    assert int(listing["events"][0]["name"].removeprefix("pid-")) == baseline_pid, \
+        "the events handler talked to the caller's project clone"

@@ -94,3 +94,7 @@ optional_env:
     description: "Tapback 👀/👍/👎 on messages as processing status and route tapbacks on bot messages to the agent (true/false, default false)"
     prompt: "Enable reaction tapbacks? (true/false)"
     password: false
+  - name: PHOTON_CATCHUP
+    description: "Resume the inbound stream from a saved cursor after a sidecar restart, so messages sent while it was down are still delivered (on/off, default on)"
+    prompt: "Catch up on messages missed during restarts? (on/off)"
+    password: false

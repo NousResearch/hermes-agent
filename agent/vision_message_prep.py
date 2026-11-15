@@ -143,8 +143,9 @@ class VisionMessagePrepMixin:
             return False
 
     def _provider_supports_vision_tool_messages(self) -> bool:
-        """True if the active provider accepts list-type tool content (some, e.g. Xiaomi MiMo, take
-        multimodal user messages but 400 on list-type tool content; profile ``supports_vision_tool_messages``)."""
+        """True if the active provider accepts list-type tool content (some providers take
+        multimodal user messages but 400 on list-type tool content; the profile's
+        ``supports_vision_tool_messages`` records that wire quirk)."""
         try:
             from providers import routed_model_rejects_vision_tool_messages
             return not routed_model_rejects_vision_tool_messages(
@@ -260,8 +261,9 @@ class VisionMessagePrepMixin:
     ) -> bool:
         """Downgrade list-type tool messages to text in place; True if any were downgraded.
 
-        Recovery for providers that 400 on list-type tool content (e.g. MiMo "text is not set"). By default
-        records (provider, model) in ``_no_list_tool_content_models`` so later results downgrade without a
+        Recovery for providers that 400 on list-type tool content (the historical MiMo
+        "text is not set" class). By default records (provider, model) in
+        ``_no_list_tool_content_models`` so later results downgrade without a
         round-trip; 413 recovery passes ``remember_model=False`` (body too large ≠ provider rejects lists).
         """
         if not isinstance(api_messages, list):

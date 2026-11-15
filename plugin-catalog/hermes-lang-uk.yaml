@@ -1,0 +1,17 @@
+name: hermes-lang-uk
+repo: https://github.com/angusvka-spec/hermes-lang-uk
+sha: 05dda20aaa702294e53c66862fae4f133a0179d2
+description: Ukrainian localization for the original Hermes Agent CLI, TUI and Desktop.
+maintainer: angusvka-spec
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+version: "0.5.0"
+title: "Ukrainian for Hermes Agent"
+docs_url: https://github.com/angusvka-spec/hermes-lang-uk/blob/05dda20aaa702294e53c66862fae4f133a0179d2/README.md
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

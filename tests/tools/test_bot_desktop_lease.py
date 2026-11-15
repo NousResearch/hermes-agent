@@ -9,6 +9,7 @@ import pytest
 
 from tools.bot_desktop import lease
 from tools.bot_desktop.rfb_filter import RfbClientFilter
+from tests.bot_desktop_lease import reset_lease
 
 _HANDSHAKE = b"RFB 003.008\n" + b"\x01" + b"\x00"
 _KEY = b"\x04\x01\x00\x00\x00\x00\x00\x61"          # KeyEvent 'a' down
@@ -25,10 +26,10 @@ def _fresh_lease():
     from tools.computer_use import tool
 
     tool.reset_backend_for_tests()
-    lease._reset_for_tests()
+    reset_lease()
     yield
     tool.reset_backend_for_tests()
-    lease._reset_for_tests()
+    reset_lease()
 
 
 def test_rfb_filter_forwards_input_only_from_the_lease_holder_across_arbitrary_chunking():

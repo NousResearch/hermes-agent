@@ -3,6 +3,11 @@
 The timer callback is invoked directly after the armed timer is cancelled, so no test sleeps.
 """
 
+import json
+import logging
+import threading
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
@@ -119,8 +124,8 @@ def test_turn_end_stops_warming_and_a_run_never_outspends_the_miss_it_prevents(p
             break
         _fire(warmer)
     assert len(agent._anthropic_client.calls) == affordable
-    assert warmer.status["reason"] == "expected savings below threshold"
-    assert affordable * d.warm_cost <= d.miss_cost
+    assert warmer.status["reason"] == "refreshes would cost more than the cache write they prevent"
+    assert agent.session_estimated_cost_usd <= d.miss_cost
 
 
 @pytest.mark.parametrize("mutate, reason", [
@@ -205,3 +210,105 @@ def test_warming_needs_no_config_and_slow_responses_refresh_sooner(priced, tmp_p
     assert warmer._run.next_warm_at == pytest.approx(sent + pcw.cache_warming_delay_s(300))
     warmer.cancel("done")
     assert warmer.start(_request(), _RESPONSE, sent_at=_time.time() - 400) == "cache entry already expired"
+
+
+@contextmanager
+def _chat_completions_stub(usage):
+    """A local Chat Completions endpoint that answers every request with ``usage``, driven
+    through the real OpenAI client (the warmer reads what the SDK parses, not a fake object)."""
+    from openai import OpenAI
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            self.server.requests.append(body)
+            data = json.dumps({
+                "id": "r", "object": "chat.completion", "created": 1, "model": body["model"],
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "x"}, "finish_reason": "length"}],
+                "usage": usage,
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(data)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    srv.requests = []
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    client = OpenAI(api_key="local-stub", base_url=f"http://127.0.0.1:{srv.server_port}/v1")
+    try:
+        yield client, srv.requests
+    finally:
+        client.close()
+        srv.shutdown()
+        srv.server_close()
+
+
+def _cc_usage(read, write, uncached):
+    """OpenAI-shaped totals plus the Anthropic fields a Claude gateway passes through (the
+    agent fixture is ``provider=anthropic``, which normalizes on the Anthropic fields)."""
+    return {
+        "prompt_tokens": read + write + uncached, "completion_tokens": 1,
+        "total_tokens": read + write + uncached + 1,
+        "prompt_tokens_details": {"cached_tokens": read, "cache_write_tokens": write},
+        "input_tokens": uncached, "output_tokens": 1,
+        "cache_read_input_tokens": read, "cache_creation_input_tokens": write,
+    }
+
+
+def _cc_agent(client):
+    return _agent(api_mode="chat_completions", client=client, _anthropic_client=None)
+
+
+def _cc_request():
+    return {"model": "claude-opus-4-7", "max_tokens": 100,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}]}]}
+
+
+def test_a_refresh_that_misses_the_cache_stops_warming_and_says_why(priced, caplog):
+    """A refresh billed as a cache WRITE (entry already gone, or the replay re-wrote it) ends the
+    run at once: every further refresh would pay write prices, not the cheap read assumed."""
+    with _chat_completions_stub(_cc_usage(read=0, write=120_000, uncached=0)) as (client, requests):
+        agent = _cc_agent(client)
+        warmer = pcw.get_prompt_cache_warmer(agent)
+        assert warmer.start(_cc_request(), _RESPONSE) is None
+        with caplog.at_level(logging.INFO, logger=pcw.__name__):
+            _fire(warmer)
+        assert warmer._run is None and len(requests) == 1
+    reason = warmer.status["reason"]
+    assert reason.startswith("cache refresh missed (read=0, write=120000")
+    assert agent.session_cache_write_tokens == 120_000  # the miss is still accounted
+    assert any("prompt cache warming stopped: cache refresh missed" in r.getMessage()
+               and r.levelno == logging.INFO for r in caplog.records)
+
+
+def test_the_spend_cap_counts_what_refreshes_were_billed_not_an_assumed_read(priced):
+    """Refreshes that hit but bill a large uncached tail cost far more than ``prompt * read``;
+    the cap stops the run once their summed estimated cost would pass the miss they prevent."""
+    with _chat_completions_stub(_cc_usage(read=60_000, write=0, uncached=60_000)) as (client, requests):
+        agent = _cc_agent(client)
+        warmer = pcw.get_prompt_cache_warmer(agent)
+        assert warmer.start(_cc_request(), _RESPONSE) is None
+        for _ in range(12):
+            if warmer._run is None:
+                break
+            _fire(warmer)
+        d = pcw.evaluate_economics(_OPUS, 120_000)
+        billed = agent.session_estimated_cost_usd
+        assert len(requests) == 2, "two refreshes at ~$0.33 each, not the 11 an assumed $0.06 read allows"
+        assert billed + d.warm_cost > d.miss_cost >= billed
+    assert warmer.status["reason"] == "refreshes would cost more than the cache write they prevent"
+
+
+def test_every_stop_reason_is_logged_once_at_info(priced, caplog):
+    agent = _agent(_cache_ttl=None)
+    warmer = pcw.get_prompt_cache_warmer(agent)
+    with caplog.at_level(logging.INFO, logger=pcw.__name__):
+        for _ in range(3):
+            warmer.start(_request(), _RESPONSE)
+    stops = [r for r in caplog.records if "prompt cache warming stopped" in r.getMessage()]
+    assert len(stops) == 1 and stops[0].levelno == logging.INFO
+    assert "cache lifetime unavailable" in stops[0].getMessage()

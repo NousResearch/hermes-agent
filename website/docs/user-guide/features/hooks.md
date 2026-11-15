@@ -1975,6 +1975,7 @@ Use shell hooks when you want a drop-in, single-file script (Bash, Python, anyth
 - **Run after a tool call** — auto-format Python or TypeScript files that the agent just wrote, log API calls, trigger a CI workflow.
 - **Inject context into the next LLM turn** — prepend `git status` output, the current weekday, or retrieved documents to the user message (see [`pre_llm_call`](#pre_llm_call)).
 - **Observe lifecycle events** — write a log line when a subagent completes (`subagent_stop`) or a session starts (`on_session_start`).
+- **Wake an idle session when something happens**: an [`async_rewake`](#async-rewake) hook runs in the background and starts a new turn when it exits 2 (an incoming message, a finished CI run, a file in an inbox).
 
 Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cfg)` at both CLI startup (`hermes_cli/main.py`) and gateway startup (`gateway/run.py`). They compose naturally with Python plugin hooks — both flow through the same dispatcher.
 
@@ -2000,13 +2001,17 @@ hooks:
     - matcher: "<regex>"         # Optional; used for pre/post_tool_call only
       command: "<shell command>" # Required; runs via shlex.split, shell=False
       timeout: <seconds>         # Optional; default 60, capped at 300
+                                 # (async_rewake: default 3600, capped at 86400)
       fail_closed: <bool>        # Optional; default false. pre_tool_call only.
                                  # `failClosed` also accepted (Cursor/Claude Code compat)
+      async_rewake: <bool>       # Optional; default false. Run in the background and
+                                 # wake the session on exit 2 (see "Async rewake").
+                                 # `asyncRewake` also accepted (Claude Code compat)
 
 hooks_auto_accept: false         # See "Consent model" below
 ```
 
-Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning. `fail_closed: true` on an event other than `pre_tool_call` warns and is ignored (only blocking-capable events can fail closed).
+Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning (`> 86400` for an `async_rewake` hook). `fail_closed: true` on an event other than `pre_tool_call` warns and is ignored (only blocking-capable events can fail closed), and so does `fail_closed: true` together with `async_rewake: true`.
 
 On Windows, a `command` that starts with an existing script file — the `~/.hermes/agent-hooks/x.sh` shape the examples below use — is spawned through that file's own interpreter (Git Bash for `.sh`/`.bash`, the running Hermes Python for `.py`), because `CreateProcess` has no shebang support and rejects a bare script with `WinError 193`. Every other command, and every POSIX platform, passes `argv` straight to `Popen`, where the kernel already honours the shebang.
 
@@ -2087,7 +2092,7 @@ echo "policy violation: rm -rf is not permitted" >&2
 exit 2
 ```
 
-For events whose block directive is not honored (everything except `pre_tool_call`), exit 2 is treated like any other non-zero exit: a warning is logged and stdout is still parsed.
+For events whose block directive is not honored (everything except `pre_tool_call`), exit 2 is treated like any other non-zero exit: a warning is logged and stdout is still parsed. An [`async_rewake`](#async-rewake) hook is the exception on every event: its exit 2 wakes the session.
 
 ### Fail-open vs fail-closed
 
@@ -2115,6 +2120,56 @@ With `fail_closed: true`, each of these now **blocks** the tool call with `hook 
 | Clean exit, valid no-op JSON (`{}`) | proceed | proceed |
 
 `fail_closed` only applies to blocking-capable events (`pre_tool_call` today); setting it on any other event logs a warning at config-parse time and is ignored. `hermes hooks test` reflects these semantics — the `parsed` line shows exactly the block shape the dispatcher would receive.
+
+### Async rewake: wake an idle session {#async-rewake}
+
+A hook with `async_rewake: true` runs in the background instead: the event that fired it goes on at once, the hook may wait for minutes or hours, and when it **exits 2** Hermes starts a new turn in the session that fired it, even when that session is idle. This is Hermes' counterpart of Claude Code's `asyncRewake`.
+
+```yaml
+hooks:
+  post_llm_call:                 # every finished turn re-arms the watcher
+    - command: "~/.hermes/agent-hooks/wait-for-inbox.sh"
+      async_rewake: true
+      timeout: 43200             # 12 h; default 3600, capped at 86400
+```
+
+```bash
+#!/usr/bin/env bash
+# ~/.hermes/agent-hooks/wait-for-inbox.sh: wake the session when a file lands in ~/inbox
+cat - >/dev/null                 # the usual JSON payload; session_id identifies the session
+while :; do
+  for f in ~/inbox/*; do
+    [ -e "$f" ] && { echo "New file in ~/inbox: ${f##*/}. Read it and act on it." >&2; exit 2; }
+  done
+  sleep 5
+done
+```
+
+| Hook outcome | What happens |
+|---|---|
+| Exit **2** | The session is woken. The text it reads is the hook's **stderr**, or its stdout when stderr is empty (the last 4,000 characters). |
+| Exit 0 | Nothing. Use it when the hook is no longer needed. |
+| Any other exit, a spawn error | A warning in the log, no wake. |
+| Timeout | The hook and everything it started are killed, no wake. |
+
+**How the wake arrives.** The wake takes the path a background process's `notify_on_complete` / `watch_patterns` notice takes, on every surface that runs agent turns: the classic CLI, the TUI, Desktop and the dashboard chat, and messaging chats through the gateway (into the chat and thread whose turn fired the hook). It starts a turn **between turns only**, never inside a running turn. The turn's input is a user-role notice, the one channel that leaves the prompt cache intact, and it says what it is:
+
+```text
+[IMPORTANT: Shell hook wake. The async_rewake hook for post_llm_call exited 2 after 2h4m and woke this session.
+Command: ~/.hermes/agent-hooks/wait-for-inbox.sh
+Hook output (written by that command, not by the user):
+New file in ~/inbox: report.pdf. Read it and act on it.]
+```
+
+The model is told the text comes from the hook, not from you, and context compression never keeps it as something you typed. Messaging chats additionally get the gateway's internal-notification footer, and the CLI, TUI and Desktop paint a one-line `Shell Hook Wake: <command>` title instead of the raw notice. `display.background_process_notifications: off` does not mute these wakes: they are an explicit opt-in per hook, not background-process chatter.
+
+**Lifetime.** Each firing is its own process, in its own process group. To keep a hook on a per-turn event from piling up one waiting process per turn, a new firing of the same hook for the same session **replaces** the previous run (it is stopped and never wakes). A run is also stopped, without waking, when its session is finalized or reset (`/new`, exit, gateway reset or shutdown), when the hook is removed from `config.yaml` or revoked, and when Hermes exits. Stopping sends SIGTERM to the hook's process group and SIGKILL two seconds later (at exit, and on Windows, the tree is killed at once).
+
+**Where it does not start.** A delegated subagent's events, and sessions that cannot receive anything after their turn (`hermes chat -q` / `-z` one-shots, cron jobs, Kanban workers, stateless API requests), never start an `async_rewake` hook: nothing could deliver its wake.
+
+**Consent and testing.** Consent is the same as for any shell hook (allowlist per `(event, command)`). `hermes hooks test <event>` runs an `async_rewake` hook in the foreground and prints the wake it would deliver; `hermes hooks doctor` does not execute it, because it may wait for hours and a synthetic firing would reach whatever it waits on.
+
+**A presence pattern.** A hook pair can tell an external service when the agent is reachable: an `async_rewake` hook on `post_llm_call` (or `on_session_end`, which also fires after failed and interrupted turns) registers the session as idle and blocks until there is work, exiting 2 with a short note; a synchronous `pre_llm_call` hook marks the session busy; an `on_session_finalize` hook says goodbye. The service makes a waiting hook exit 0 when it is no longer needed.
 
 ### Worked examples
 

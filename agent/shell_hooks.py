@@ -2,7 +2,8 @@
 callbacks on the plugin hook manager, so every ``invoke_hook()`` site dispatches to the scripts.
 Wire: stdin JSON ``{hook_event_name, tool_name, tool_input, session_id, cwd, extra}``; optional stdout
 JSON ``{"decision"|"action": "block"|"modify", ...}`` / ``{"context": ...}`` via ``_parse_response``.
-Exit code 2 blocks a ``pre_tool_call`` even without JSON (Claude-Code / Cursor). Fail open unless ``fail_closed``."""
+Exit code 2 blocks a ``pre_tool_call`` even without JSON (Claude-Code / Cursor). Fail open unless ``fail_closed``.
+An ``async_rewake`` entry runs in the background instead and wakes its session on exit 2 (``shell_hooks_rewake``)."""
 
 from __future__ import annotations
 
@@ -36,6 +37,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 300
+# async_rewake hooks wait for something to happen (a message, a CI run), so their bounds are their own.
+DEFAULT_REWAKE_TIMEOUT_SECONDS = 3600
+MAX_REWAKE_TIMEOUT_SECONDS = 86400
 ALLOWLIST_FILENAME = "shell-hooks-allowlist.json"
 _DEFAULT_BLOCK_MESSAGE = "Blocked by shell hook."
 # Exit code that signals "block this action" independent of stdout (Claude Code / Cursor).
@@ -146,6 +150,7 @@ class ShellHookSpec(_ToolMatcherMixin):
     matcher: Optional[str] = None
     timeout: int = DEFAULT_TIMEOUT_SECONDS
     fail_closed: bool = False
+    async_rewake: bool = False
     compiled_matcher: Optional[re.Pattern] = field(default=None, repr=False)
 
 
@@ -235,6 +240,8 @@ def sync_from_config(load_cfg: Callable[[], dict[str, Any]]) -> None:
                 # Replaced, never edited in place: a concurrent invoke_hook keeps iterating the old list.
                 manager._hooks[event] = [cb for cb in manager._hooks.get(event, [])
                                          if getattr(cb, "shell_hook_key", None) not in stale]
+    from agent.shell_hooks_rewake import cancel_hooks
+    cancel_hooks(stale)  # a revoked or removed async_rewake hook stops waiting now, not at its timeout
     for _home, event, _matcher, command in stale:
         logger.info("shell hook unregistered (removed from config or allowlist): %s -> %s", event, command)
 
@@ -302,8 +309,11 @@ def _wire(manager: Any, home_key: str, specs: list[ShellHookSpec]) -> list[Shell
         manager._hooks.setdefault(spec.event, []).append(callback)
         _registered.add(key)
         registered.append(spec)
-        logger.info("shell hook registered: %s -> %s (matcher=%s, timeout=%ds, fail_closed=%s)",
-                    spec.event, spec.command, spec.matcher, spec.timeout, spec.fail_closed)
+        logger.info("shell hook registered: %s -> %s (matcher=%s, timeout=%ds, fail_closed=%s, async_rewake=%s)",
+                    spec.event, spec.command, spec.matcher, spec.timeout, spec.fail_closed, spec.async_rewake)
+    if any(spec.async_rewake for spec in registered):
+        from agent.shell_hooks_rewake import install_session_reaper
+        install_session_reaper(manager)
     return registered
 
 
@@ -355,8 +365,10 @@ def re_register_config_hooks() -> None:
 
 
 def reset_for_tests() -> None:
-    """Test-only: clear the idempotence set."""
+    """Test-only: clear the idempotence set and stop background (``async_rewake``) runs."""
     global _process_accept
+    from agent.shell_hooks_rewake import cancel_all
+    cancel_all()
     with _registered_lock:
         _registered.clear()
     _launch_consent.clear()
@@ -427,17 +439,24 @@ def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookS
         warn(".matcher=%r will be ignored at runtime — the matcher field is only honored for "
              "pre_tool_call / post_tool_call.  The hook will fire on every %s event.", matcher, event)
         matcher = None
+    # ``async_rewake`` (canonical) wins over ``asyncRewake`` (Claude-Code compat), as for fail_closed.
+    async_rewake = raw.get("async_rewake", raw.get("asyncRewake", False))
+    if not isinstance(async_rewake, bool):
+        warn(".async_rewake must be a boolean (got %r); running the hook synchronously", async_rewake)
+        async_rewake = False
+    default_timeout, max_timeout = ((DEFAULT_REWAKE_TIMEOUT_SECONDS, MAX_REWAKE_TIMEOUT_SECONDS) if async_rewake
+                                    else (DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS))
     try:
-        timeout = int(raw.get("timeout", DEFAULT_TIMEOUT_SECONDS))
+        timeout = int(raw.get("timeout", default_timeout))
     except (TypeError, ValueError):
-        warn(".timeout must be an int (got %r); using default %ds", raw.get("timeout"), DEFAULT_TIMEOUT_SECONDS)
-        timeout = DEFAULT_TIMEOUT_SECONDS
+        warn(".timeout must be an int (got %r); using default %ds", raw.get("timeout"), default_timeout)
+        timeout = default_timeout
     if timeout < 1:
-        warn(".timeout must be >=1; using default %ds", DEFAULT_TIMEOUT_SECONDS)
-        timeout = DEFAULT_TIMEOUT_SECONDS
-    elif timeout > MAX_TIMEOUT_SECONDS:
-        warn(".timeout=%ds exceeds max %ds; clamping", timeout, MAX_TIMEOUT_SECONDS)
-        timeout = MAX_TIMEOUT_SECONDS
+        warn(".timeout must be >=1; using default %ds", default_timeout)
+        timeout = default_timeout
+    elif timeout > max_timeout:
+        warn(".timeout=%ds exceeds max %ds; clamping", timeout, max_timeout)
+        timeout = max_timeout
     # ``fail_closed`` (canonical) wins over ``failClosed`` (Cursor/Claude-Code compat).
     fail_closed = raw.get("fail_closed", raw.get("failClosed", False))
     if not isinstance(fail_closed, bool):
@@ -447,7 +466,12 @@ def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookS
         warn(".fail_closed=true will be ignored at runtime — fail_closed only applies to blocking-capable "
              "events (%s).  The hook will fail open on %s like any other hook.", ", ".join(sorted(_BLOCKING_EVENTS)), event)
         fail_closed = False
-    return ShellHookSpec(event=event, command=command.strip(), matcher=matcher, timeout=timeout, fail_closed=fail_closed)
+    if fail_closed and async_rewake:
+        warn(".fail_closed=true is ignored with async_rewake: a background hook cannot block the action it was "
+             "fired for")
+        fail_closed = False
+    return ShellHookSpec(event=event, command=command.strip(), matcher=matcher, timeout=timeout,
+                         fail_closed=fail_closed, async_rewake=async_rewake)
 
 
 # --- Subprocess callback ---
@@ -481,8 +505,10 @@ def _windows_script_argv(argv: list[str]) -> list[str]:
     return [_find_bash(), *argv]
 
 
-def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
-    """The single subprocess site: run ``spec.command`` with ``stdin_json`` on stdin. Same result keys for every outcome."""
+def _spawn(spec: ShellHookSpec, stdin_json: str,
+           on_spawn: Optional[Callable[[subprocess.Popen], None]] = None) -> dict[str, Any]:
+    """The single subprocess site: run ``spec.command`` with ``stdin_json`` on stdin. Same result keys for every outcome.
+    ``on_spawn`` receives the live process (an ``async_rewake`` run keeps it to stop the hook early)."""
     result: dict[str, Any] = {"returncode": None, "stdout": "", "stderr": "", "timed_out": False, "elapsed_seconds": 0.0, "error": None}
 
     def failed(error: str) -> dict[str, Any]:
@@ -523,6 +549,8 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
             # operator on a non-English Windows could not act on it at all.
             return failed(f"{argv[0]!r} {_NOT_DIRECTLY_EXECUTABLE}")
         return failed(str(exc))
+    if on_spawn is not None:
+        on_spawn(proc)
     try:
         stdout, stderr = proc.communicate(input=stdin_json, timeout=spec.timeout)
     except BaseException as exc:
@@ -551,6 +579,10 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
         if safe_worker_enabled() or not host_feature_enabled("shell_hooks"):
             return None
         if spec.event in _TOOL_EVENTS and not spec.matches_tool(kwargs.get("tool_name")):
+            return None
+        if spec.async_rewake:  # never waits, never directs: the event goes on at once
+            from agent.shell_hooks_rewake import start
+            start(spec, getattr(_callback, "shell_hook_key", None), kwargs, _serialize_payload(spec.event, kwargs))
             return None
         return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs)))
 
@@ -859,5 +891,9 @@ def script_is_executable(command: str) -> bool:
 def run_once(spec: ShellHookSpec, kwargs: dict[str, Any]) -> dict[str, Any]:
     """Fire one hook with a synthetic payload (``hermes hooks test`` / doctor) through the production path."""
     result = _spawn(spec, _serialize_payload(spec.event, kwargs))
+    if spec.async_rewake:  # run in the foreground here, so the test shows the wake it would deliver
+        from agent.shell_hooks_rewake import wake_output
+        result["parsed"] = {"wake": wake_output(result) if result["returncode"] == BLOCK_EXIT_CODE else None}
+        return result
     result["parsed"] = _evaluate_result(spec, result)
     return result

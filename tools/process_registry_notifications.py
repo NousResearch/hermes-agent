@@ -1,5 +1,5 @@
 """Human-readable rendering of ``ProcessRegistry.completion_queue`` events (completion,
-watch_match, watch_disabled, watch_overflow_*, async_delegation) into the
+watch_match, watch_disabled, watch_overflow_*, async_delegation, hook_wake) into the
 ``[IMPORTANT: ...]`` / ``[ASYNC DELEGATION ...]`` text the CLI drain loop, gateway and
 TUI inject into the agent conversation."""
 
@@ -452,6 +452,28 @@ def process_completion_display_text(events: list) -> str:
     return f"Background Process {outcome}{detail}: {cmd}" if cmd else f"Background Process {outcome}{detail}"
 
 
+# Start of every hook_wake notice; compression's synthetic-row checks match it, so the hook's text is
+# never kept as words the user typed.
+HOOK_WAKE_PREFIX = "[IMPORTANT: Shell hook wake."
+# Wakes the user opted into per hook or per task, so ``display.background_process_notifications: off``
+# (which silences background-process chatter) does not swallow them.
+OPT_IN_WAKE_TYPES = frozenset({"async_delegation", "hook_wake"})
+
+
+def hook_wake_display_text(evt: dict) -> str:
+    """One-line UI title for an async_rewake wake; the model reads the full notice."""
+    cmd = _short_command(evt.get("command"))
+    return f"Shell Hook Wake: {cmd}" if cmd else "Shell Hook Wake"
+
+
+def _format_hook_wake(evt: dict) -> str:
+    output = str(evt.get("output") or "").strip() or "(the hook printed nothing)"
+    return (f"{HOOK_WAKE_PREFIX} The async_rewake hook for {evt.get('hook_event') or 'an event'} exited 2 after "
+            f"{_format_age(float(evt.get('elapsed') or 0))} and woke this session.\n"
+            f"Command: {evt.get('command', 'unknown')}\n"
+            f"Hook output (written by that command, not by the user):\n{output}]")
+
+
 HEARTBEAT_DISPLAY_KIND = "hidden"  # a wake, not a message: no surface paints the row
 HEARTBEAT_OUTPUT_CHARS = 2000
 
@@ -551,6 +573,8 @@ def format_process_notification(evt: dict) -> str | None:
         return f"[IMPORTANT: {evt.get('message', '')}]"
     if evt_type == "async_delegation":
         return _format_async_delegation(evt)
+    if evt_type == "hook_wake":
+        return _format_hook_wake(evt)
     _sid, _cmd = evt.get("session_id", "unknown"), evt.get("command", "unknown")
     _attribution = _delegation_attribution_line(evt)
     if evt.get("handoff_note"):

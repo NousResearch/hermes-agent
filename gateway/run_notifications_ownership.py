@@ -48,6 +48,10 @@ def _local_completion_card(evt: dict) -> dict[str, str]:
         from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
         from tools.process_registry_notifications import heartbeat_display_text
         return {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND, "display_text": heartbeat_display_text(evt)}
+    if evt_type == "hook_wake":  # an idle classic CLI opens only a turn that carries a card
+        from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+        from tools.process_registry_notifications import hook_wake_display_text
+        return {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND, "display_text": hook_wake_display_text(evt)}
     return {}
 
 

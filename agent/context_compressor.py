@@ -936,8 +936,8 @@ _LEAN_USER_MESSAGE_MAX_CHARS = 4_000
 _LEAN_USER_MESSAGES_HEADING = "## User Messages (verbatim, newest first)"
 _LEAN_RECOVERY_HEADING = "## Context Recovery"
 _SYNTHETIC_USER_ROW_PREFIXES = (
-    "[System:", "[CONTEXT", "[PRIOR CONTEXT", "[IMPORTANT: Background", "[Your active task list",
-    "[Planning state preserved", "[ASYNC DELEGATION", "[OUT-OF-BAND", "Cronjob Response:",
+    "[System:", "[CONTEXT", "[PRIOR CONTEXT", "[IMPORTANT: Background", "[IMPORTANT: Shell hook wake.",
+    "[Your active task list", "[Planning state preserved", "[ASYNC DELEGATION", "[OUT-OF-BAND", "Cronjob Response:",
 )
 
 

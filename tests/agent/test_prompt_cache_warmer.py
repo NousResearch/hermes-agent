@@ -324,22 +324,37 @@ def test_an_uncached_tail_is_priced_at_the_input_rate(priced):
             == "refreshes would cost more than the cache write they prevent")
 
 
-def test_a_refresh_in_flight_when_the_session_rotates_is_booked_where_it_was_sent(priced):
-    """Compression (``in_place: false``) can rotate ``session_id`` while the timer thread waits
-    for the reply; the refresh's tokens and dollars belong to the session that sent it."""
+def _rotating_agent(rotate):
     booked = []
     agent = _agent(_session_db=SimpleNamespace(queue_token_counts=lambda sid, **kw: booked.append((sid, kw))))
     client = agent._anthropic_client
     real_create = client._create
 
     def _create_then_rotate(**kw):
-        agent.session_id = "s-after-compression"
+        rotate(agent)
         return real_create(**kw)
 
     client.messages = SimpleNamespace(create=_create_then_rotate)
+    return agent, booked
+
+
+def _compress(agent):  # compression.in_place: false rotates the id, keeps the running counters
+    agent.session_id = "s-after-compression"
+
+
+def _new_session(agent):  # reset_session_state: a fresh session's counters start at zero
+    agent.session_id, agent.session_api_calls = "s-new", 0
+
+
+@pytest.mark.parametrize("rotate, totals_include_refresh", [(_compress, True), (_new_session, False)])
+def test_a_refresh_in_flight_when_the_session_rotates_is_booked_where_it_was_sent(priced, rotate, totals_include_refresh):
+    """The session can rotate while the timer thread waits for the reply: the state.db row goes
+    to the session that sent it. Compression keeps the agent's running totals, so they still
+    count the refresh; a reset (new session) zeroed them, so they do not."""
+    agent, booked = _rotating_agent(rotate)
     warmer = pcw.get_prompt_cache_warmer(agent)
     assert warmer.start(_request(), _RESPONSE) is None
     _fire(warmer)
     ((sid, kw),) = booked
     assert sid == "s" and kw["task"] == "cache_warm" and kw["cache_read_tokens"] == 119_997
-    assert agent.session_cache_read_tokens == 0, "the new session's in-memory totals stay untouched"
+    assert (agent.session_cache_read_tokens == 119_997) is totals_include_refresh

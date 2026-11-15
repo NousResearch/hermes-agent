@@ -304,8 +304,8 @@ class TestReportDatabaseJournalModes:
         # #110848 remainder: network filesystems never refuse WAL for fresh databases (single-writer NFS homes are
         # legitimate), so doctor is the surface that must flag an existing WAL file there, with the offline remedy.
         _make_db(tmp_path / "state.db", journal_mode="WAL")
-        monkeypatch.setattr("hermes_state_wal._path_on_cross_vm_fs", lambda p: False)
-        monkeypatch.setattr("hermes_state_wal._path_on_network_fs", lambda p: True)
+        monkeypatch.setattr("sqlite_support.path_on_cross_vm_fs", lambda p: False)
+        monkeypatch.setattr("sqlite_support._path_on_network_fs", lambda p: True)
 
         doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
 

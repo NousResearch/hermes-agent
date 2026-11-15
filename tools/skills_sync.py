@@ -288,9 +288,11 @@ def _warn_invisible_renamed_copy(st: "_SyncState", skill_name: str, dest: Path, 
     directory containing the copy) is stated instead. The wording is deliberately generic about
     the copy's contents: deciding "pristine vs modified" would hash external content reached
     through the symlink, a cost the diagnostic does not need — user edits are untouched either
-    way. A candidate matches on the directory basename, the manifest's line-based name read, or
-    the loader's YAML name — the diagnostic answers "can the agent still load this?", so it
-    must not miss a copy the loader invokes under a name the line reader garbles.
+    way. A candidate matches on the manifest's line-based name read (which itself falls back
+    to the directory basename when the frontmatter has no name) or on the loader's YAML name —
+    the diagnostic answers "can the agent still address this copy?", so it must not miss a
+    copy the loader invokes under a name the line reader garbles, and must not claim a
+    directory that only shares a basename.
 
     The warning is APPENDED to ``st.relocation_warnings`` (rendered by quiet production
     callers from the sync result) and only additionally printed via ``st.say`` when not
@@ -298,9 +300,12 @@ def _warn_invisible_renamed_copy(st: "_SyncState", skill_name: str, dest: Path, 
     for md in _iter_skill_mds_following_links():
         if md.parent == dest or not md.parent.is_dir():
             continue
+        # Identity = how the agent can address this copy: the manifest's line-based name read
+        # (which itself falls back to the directory basename when the frontmatter has no name)
+        # or the loader's YAML name. A directory whose basename merely equals the tracked
+        # skill name is NOT that skill by loader identity and is deliberately not matched.
         if (
-            md.parent.name != skill_name
-            and read_skill_name(md, md.parent.name) != skill_name
+            read_skill_name(md, md.parent.name) != skill_name
             and _loader_visible_name(md) != skill_name
         ):
             continue
@@ -373,6 +378,22 @@ def _ensure_recovery_index(st: "_SyncState") -> dict[str, list[Path]]:
     return st.active_index
 
 
+def _visible_non_hub_copy(skill_name: str, dest: Path, active_index: dict[str, list[Path]], st: "_SyncState") -> bool:
+    """True when a visible copy exists that recovery could actually act on. A hub-owned
+    install path is visible but untouchable — it must not suppress the read-only diagnostic
+    for a separate stranded copy behind a category symlink."""
+    for candidate in active_index.get(skill_name, []):
+        if candidate == dest or not candidate.is_dir():
+            continue
+        try:
+            rel = _rel_skills_posix(candidate)
+        except ValueError:
+            continue
+        if rel not in st.hub_paths:
+            return True
+    return False
+
+
 def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Optional[str]:
     """Move a bundled skill's stale copy to its new canonical path after an upstream RENAME /
     RECATEGORIZATION (else it is misread as user-deleted and stranded forever). Only a copy
@@ -381,9 +402,9 @@ def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Opt
     active_index = _ensure_recovery_index(st)
     if not origin_hash:
         # v1 plain-name entry (empty hash): no hash can authorize a move. The read-only
-        # #143470 diagnostic applies only when NO visible copy exists — exactly like the v2
-        # path below; a visible copy at the old path is the ordinary kept case, not stranding.
-        if not active_index.get(skill_name):
+        # #143470 diagnostic applies only when no actionable visible copy exists — exactly
+        # like the v2 path below; a visible copy at the old path is the ordinary kept case.
+        if not _visible_non_hub_copy(skill_name, dest, active_index, st):
             _warn_invisible_renamed_copy(st, skill_name, dest, v1_entry=True)
         return None
     for candidate in active_index.get(skill_name, []):
@@ -409,9 +430,10 @@ def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Opt
         logger.info("Relocated renamed bundled skill: %s -> %s", candidate, dest)
         st.say(f"  → {skill_name} (moved {rel} → {_rel_skills_posix(dest)})")
         return rel
-    if not st.active_index.get(skill_name):
-        # No visible copy anywhere — but the loader sees through symlinked category dirs, so an
-        # invisible copy may still exist. Read-only diagnostic; never migrates (#143470).
+    if not _visible_non_hub_copy(skill_name, dest, active_index, st):
+        # No actionable visible copy — but the loader sees through symlinked category dirs, so
+        # an invisible copy may still exist (a hub-owned install alone does not count).
+        # Read-only diagnostic; never migrates (#143470).
         _warn_invisible_renamed_copy(st, skill_name, dest)
     return None
 

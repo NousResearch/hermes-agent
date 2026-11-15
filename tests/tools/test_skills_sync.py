@@ -686,6 +686,37 @@ class TestSymlinkedCategoryDiagnostic:
         assert recorded.get("demo") == dir_hash(skills_dir / "web" / "demo"), (
             "v1 migration did not baseline from the relocated copy")
 
+    def test_visible_hub_install_does_not_suppress_the_symlink_diagnostic(self, tmp_path, capsys):
+        """A hub install is a VISIBLE copy recovery can never act on: it must not satisfy the
+        "a visible copy exists" guard, or a separate stranded copy behind a category symlink
+        stays silent — for v1 and v2 manifests alike."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Hub install: a REAL visible directory at the locked path.
+        hub_dir = self._skill(skills_dir, "hubarea/hub-skill", name="hub-skill")
+        origin_hash = dir_hash(hub_dir)
+        external = tmp_path / "external-research"
+        self._skill(external, "hub-skill", name="hub-skill")
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        lock = skills_dir / ".hub" / "lock.json"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(json.dumps(
+            {"version": 1, "installed": {"hub-skill": {"install_path": "hubarea/hub-skill"}}}))
+        (skills_dir / "research").symlink_to(external, target_is_directory=True)
+        self._skill(bundled, "web/hub-skill", name="hub-skill", body="# Updated upstream\n")
+
+        for manifest_line in (f"hub-skill:{origin_hash}\n", "hub-skill\n"):  # v2, v1
+            manifest_file.write_text(manifest_line)
+            with self._patches(bundled, skills_dir, manifest_file):
+                result = sync_skills(quiet=False)
+            warn = self._warn_line(capsys.readouterr().out, "hub-skill")
+            assert warn, f"visible hub install suppressed the diagnostic for {manifest_line!r}"
+            assert "research/hub-skill" in warn, f"wrong copy named: {warn}"
+            assert not result["relocated"], "hub content or symlinked copy was moved"
+            assert dir_hash(hub_dir) == origin_hash, "hub install was mutated"
+
     def test_hub_owned_match_does_not_hide_a_later_non_hub_copy(self, tmp_path, capsys):
         """Hub ownership attaches to the install PATH, not to every copy of the identity:
         a hub-owned match must be skipped, not end the search — a non-hub copy later in the

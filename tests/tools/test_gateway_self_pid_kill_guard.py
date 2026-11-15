@@ -98,6 +98,12 @@ def test_string_runner_payloads_open_shell_payloads_and_scripts(run, tmp_path, c
     assert run(command.format(pid=PID, script=script)) is not None
 
 
+@pytest.mark.parametrize("runner", ["eval 'bash k.sh'", "cmd /c 'bash k.sh'", "x=$(eval 'bash k.sh')"])
+def test_string_runner_payloads_see_heredoc_written_scripts(run, runner):
+    # k.sh doesn't exist yet: the payload rescan only finds the kill through the heredoc body.
+    assert run(f"cat > k.sh <<'EOF'\nkill -9 {PID}\nEOF\n{runner}") is not None
+
+
 def test_oversized_numeric_operand_keeps_the_script_walk(run, tmp_path):
     script = tmp_path / "restart.sh"
     script.write_text("#!/bin/sh\nhermes gateway restart\n")
@@ -124,3 +130,15 @@ def test_stop_process_whatif_preview_is_safe_but_disabled_switch_is_blocked(run,
     assert run(command.format(pid=PID)) is None
     assert run(f"Stop-Process -Id {PID} -WhatIf:$false") is not None
     assert run(f"powershell -c 'Stop-Process -Id {PID} -WhatIf:$false'") is not None
+
+
+@pytest.mark.parametrize("command", [
+    "Stop-Process -Id {pid}; Get-Process -WhatIf",
+    "Stop-Process -Id {pid} | Out-Null -WhatIf",
+    "Stop-Process -Id {pid} -WhatIf; Stop-Process -Id {pid}",
+    "powershell -c 'Stop-Process -Id {pid}\nGet-Item x -WhatIf'",
+    "Stop-Process -Id {pid} <# -WhatIf #>",
+    "Stop-Process -Id {pid} -wi:$false",
+])
+def test_stop_process_whatif_only_previews_its_own_statement(run, command):
+    assert run(command.format(pid=PID)) is not None

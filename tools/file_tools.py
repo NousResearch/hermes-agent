@@ -368,13 +368,45 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     return file_ops
 
 
-def clear_file_ops_cache(task_id: str | None = None):
-    """Clear file-operation state for a finished task, or all tasks."""
+def invalidate_file_ops_env_cache(task_id: str | None = None) -> None:
+    """Invalidate cached ShellFileOperations wrapper(s) when a sandbox env is torn down or idle-reaped.
+
+    Does NOT clear ``_read_tracker`` or ``file_state`` — those belong to the logical session/task
+    lifecycle and must survive 5-minute terminal idle reaping and turns where no persistent sandbox ran."""
     with _file_ops_lock:
         if task_id:
             _file_ops_cache.pop(task_id, None)
+            _file_ops_cache.pop(f"session:{task_id}", None)
+            if task_id.startswith("session:"):
+                _file_ops_cache.pop(task_id[len("session:"):], None)
         else:
             _file_ops_cache.clear()
+
+
+def migrate_file_ops_state(old_task_id: str | None, new_task_id: str | None) -> None:
+    """Carry cached file operations, patch failure counters, and read/write baselines across session rotation."""
+    if not old_task_id or not new_task_id or old_task_id == new_task_id:
+        return
+    old_tid = str(old_task_id)
+    new_tid = str(new_task_id)
+    with _file_ops_lock:
+        for src_k, dst_k in ((old_tid, new_tid), (f"session:{old_tid}", f"session:{new_tid}")):
+            ops = _file_ops_cache.pop(src_k, None)
+            if ops is not None and dst_k not in _file_ops_cache:
+                _file_ops_cache[dst_k] = ops
+    with _patch_failure_lock:
+        pf = _patch_failure_tracker.pop(old_tid, None)
+        if pf:
+            dst_pf = _patch_failure_tracker.setdefault(new_tid, {})
+            for p, cnt in pf.items():
+                dst_pf[p] = max(dst_pf.get(p, 0), cnt)
+    from tools.file_tools_read_tracking import migrate_file_read_state
+    migrate_file_read_state(old_tid, new_tid)
+
+
+def clear_file_ops_cache(task_id: str | None = None):
+    """Clear file-operation state for a finished task, or all tasks."""
+    invalidate_file_ops_env_cache(task_id)
 
     with _read_tracker_lock:
         if task_id:

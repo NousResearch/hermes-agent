@@ -117,3 +117,34 @@ def test_pinned_verification_skills_and_invariant_floor_present():
     for skill_name in ("always-verify", "dab", "rca", "deep-research", "research-and-plan"):
         assert skill_name in _PINNED_OUTBOUND_SKILL_NAMES
     assert "Pinned Invariant Floor" in SKILL_SAFETY_RULE
+
+
+def test_collect_protected_skill_names_ignores_synthetic_compaction_rows():
+    from agent.context_compressor import _collect_protected_skill_names
+
+    messages = [
+        {
+            "role": "user",
+            "content": "[CONTEXT COMPACTION — REFERENCE ONLY] ## Pruned Skills\n[SKILL_PRUNED: reload with skill_view(name='impeccable')]\n",
+            "_compressed_summary": True,
+        },
+        {
+            "role": "user",
+            "content": "[STILL IN PROGRESS — Do NOT respond yet. Continue the tool chain.]",
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_sv_old",
+                    "type": "function",
+                    "function": {"name": "skill_view", "arguments": json.dumps({"name": "impeccable"})},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_sv_old", "content": json.dumps({"name": "impeccable", "content": "x" * 9000})},
+    ] + [{"role": "assistant", "content": f"step {i}"} for i in range(15)]
+
+    protected = _collect_protected_skill_names(messages, prune_boundary=len(messages) - 4)
+    assert "impeccable" not in protected

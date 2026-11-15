@@ -1644,6 +1644,26 @@ def _adopt_live_compression_child(
     if not confirmed or str(confirmed) != child_session_id:
         return None
     agent.session_id = child_session_id
+    agent._rotated_to_child_session = True
+    _rot_hist = getattr(agent, "_rotated_from_session_ids", None)
+    if not isinstance(_rot_hist, set):
+        _rot_hist = set()
+        agent._rotated_from_session_ids = _rot_hist
+    if parent_session_id:
+        _rot_hist.add(parent_session_id)
+    with contextlib.suppress(Exception):
+        from agent.vertex_adapter import (
+            EUROPE_WEST2_VERTEX_REGION,
+            _record_session_vertex_region_affinity,
+            reset_vertex_sticky_region,
+        )
+        reset_vertex_sticky_region(parent_session_id)
+        _record_session_vertex_region_affinity(child_session_id, EUROPE_WEST2_VERTEX_REGION)
+    with contextlib.suppress(Exception):
+        from tools.file_tools import migrate_file_ops_state
+        from tools.skills_tool_dedup import migrate_skill_view_state
+        migrate_file_ops_state(parent_session_id, child_session_id)
+        migrate_skill_view_state(parent_session_id, child_session_id)
     _rebind_session_context(child_session_id)
     _hand_off_metrics_segment(parent_session_id, child_session_id)
     agent._session_db_created = True
@@ -3292,6 +3312,17 @@ def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: An
     # /goal, /heartbeat, /loop: carried locally, or atomically by the owner on a RuntimeSessionStore.
     from agent.compression_automation import carry_compression_automation
     carry_compression_automation(agent, old_session_id)
+    _rot_hist = getattr(agent, "_rotated_from_session_ids", None)
+    if not isinstance(_rot_hist, set):
+        _rot_hist = set()
+        agent._rotated_from_session_ids = _rot_hist
+    if old_session_id:
+        _rot_hist.add(old_session_id)
+    with _swallow('Could not carry file/skill state on compression rotation: %s'):
+        from tools.file_tools import migrate_file_ops_state
+        from tools.skills_tool_dedup import migrate_skill_view_state
+        migrate_file_ops_state(old_session_id, agent.session_id)
+        migrate_skill_view_state(old_session_id, agent.session_id)
     with _swallow('Could not carry rejected thinking on compression: %s'):
         from agent.anthropic_thinking_replay import carry_rejected_thinking_to_session
         carry_rejected_thinking_to_session(agent, old_session_id)
@@ -3442,8 +3473,11 @@ def _reset_read_dedup_caches(
     The computer_use screenshot dedup is session-keyed and forgets its last frame for the same reason.
     """
     with contextlib.suppress(Exception):
-        from tools.file_tools_read_tracking import reset_file_dedup
+        from tools.file_tools_read_tracking import migrate_file_read_state, reset_file_dedup
         reset_file_dedup(task_id, surviving_messages=surviving_messages)
+        if session_id and session_id != task_id:
+            migrate_file_read_state(task_id, session_id)
+            reset_file_dedup(session_id, surviving_messages=surviving_messages)
     if session_id:
         with contextlib.suppress(Exception):
             from tools.computer_use.tool import reset_screenshot_dedup
@@ -3453,7 +3487,11 @@ def _reset_read_dedup_caches(
             reset_vertex_sticky_region(session_id, only_if_global=True)
     with contextlib.suppress(Exception):
         from tools.skills_tool import reset_skill_view_dedup
+        from tools.skills_tool_dedup import migrate_skill_view_state
         reset_skill_view_dedup(task_id, surviving_messages=surviving_messages)
+        if session_id and session_id != task_id:
+            migrate_skill_view_state(task_id, session_id)
+            reset_skill_view_dedup(session_id, surviving_messages=surviving_messages)
 
 
 def _finish_compaction_boundary(

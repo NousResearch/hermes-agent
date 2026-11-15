@@ -229,6 +229,22 @@ class FileStateRegistry:
             for p in [p for p, (writer_tid, _ts) in self._last_writer.items() if writer_tid == task_id]:
                 del self._last_writer[p]
 
+    def migrate_task(self, old_task_id: str, new_task_id: str) -> None:
+        """Carry read stamps and writer claims across session rotation (old_session_id -> new_session_id)."""
+        if not old_task_id or not new_task_id or old_task_id == new_task_id:
+            return
+        with self._state_lock:
+            old_reads = self._reads.pop(old_task_id, None)
+            if old_reads:
+                dst = self._reads.setdefault(new_task_id, {})
+                for p, stamp in old_reads.items():
+                    existing = dst.get(p)
+                    if existing is None or stamp[1] >= existing[1]:
+                        dst[p] = stamp
+            for p, (writer_tid, ts) in list(self._last_writer.items()):
+                if writer_tid == old_task_id:
+                    self._last_writer[p] = (new_task_id, ts)
+
     def clear(self) -> None:
         """Reset all state. Intended for tests only."""
         with self._state_lock:
@@ -271,12 +287,17 @@ def known_reads(task_id: str) -> list[str]:
     return _registry.known_reads(task_id)
 
 
+def migrate_task(old_task_id: str, new_task_id: str) -> None:
+    _registry.migrate_task(old_task_id, new_task_id)
+
+
 __all__ = [
     "FileStateRegistry",
     "check_stale",
     "get_registry",
     "known_reads",
     "lock_path",
+    "migrate_task",
     "note_write",
     "record_read",
     "writes_since",

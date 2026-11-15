@@ -271,8 +271,11 @@ def seed_file_dedup_from_messages(task_id: str | None, messages: list | None) ->
             content = str(msg.get("content") or "")
             if not content or "[read_file output demoted at compaction" in content:
                 continue
+            stripped = content.lstrip()
+            if not stripped.startswith("{"):
+                continue
             try:
-                payload = json.loads(content)
+                payload, _ = json.JSONDecoder().raw_decode(stripped)
             except Exception:
                 continue
             if isinstance(payload, dict) and isinstance(payload.get("content"), str) and not payload.get("deduplicated"):
@@ -282,16 +285,63 @@ def seed_file_dedup_from_messages(task_id: str | None, messages: list | None) ->
     candidate_keys = [call_args[cid] for cid in surviving_call_ids if cid in call_args]
     with _read_tracker_lock:
         td = _read_tracker.get(tid)
-        if not td:
-            return
-        dedup_map = dict(td.get("dedup") or {})
-    valid_keys = [k for k in candidate_keys if k in dedup_map and _file_metadata(k[0]) == dedup_map[k]]
+        dedup_map = dict((td or {}).get("dedup") or {})
+    valid_keys: list[tuple[str, int, int]] = []
+    missing_meta: dict[tuple[str, int, int], tuple] = {}
+    for k in candidate_keys:
+        meta = _file_metadata(k[0])
+        if meta is None:
+            continue
+        if k in dedup_map:
+            if meta == dedup_map[k]:
+                valid_keys.append(k)
+        else:
+            valid_keys.append(k)
+            missing_meta[k] = meta
     if valid_keys:
         with _read_tracker_lock:
-            td = _read_tracker.get(tid)
-            if td is not None:
-                gen = td.setdefault("dedup_generation_reads", set())
-                gen.update(valid_keys)
+            td = _read_tracker.setdefault(
+                tid, {"last_key": None, "consecutive": 0, "dedup": {}, "dedup_generation_reads": set()}
+            )
+            dedup_store = td.setdefault("dedup", {})
+            for k, meta in missing_meta.items():
+                dedup_store.setdefault(k, meta)
+            gen = td.setdefault("dedup_generation_reads", set())
+            gen.update(valid_keys)
+
+
+def migrate_file_read_state(old_task_id: str | None, new_task_id: str | None) -> None:
+    """Carry per-task read/write tracking across session rotation (old_session_id -> new_session_id)."""
+    if not old_task_id or not new_task_id:
+        return
+    old_tid = str(old_task_id)
+    new_tid = str(new_task_id)
+    if old_tid == new_tid:
+        return
+    with _read_tracker_lock:
+        old_data = _read_tracker.pop(old_tid, None)
+        if old_data:
+            dst = _read_tracker.get(new_tid)
+            if dst is None:
+                _read_tracker[new_tid] = old_data
+            else:
+                for map_key in ("dedup", "dedup_hits", "full_write_baselines", "not_found_cache"):
+                    src_map = old_data.get(map_key)
+                    if isinstance(src_map, dict) and src_map:
+                        dst_map = dst.setdefault(map_key, {})
+                        for k, v in src_map.items():
+                            dst_map.setdefault(k, v)
+                src_ts = old_data.get("read_timestamps")
+                if isinstance(src_ts, dict) and src_ts:
+                    dst_ts = dst.setdefault("read_timestamps", {})
+                    for k, v in src_ts.items():
+                        if k not in dst_ts or v > dst_ts[k]:
+                            dst_ts[k] = v
+                src_gen = old_data.get("dedup_generation_reads")
+                if isinstance(src_gen, set) and src_gen:
+                    dst.setdefault("dedup_generation_reads", set()).update(src_gen)
+    from tools import file_state
+    file_state.get_registry().migrate_task(old_tid, new_tid)
 
 
 def reset_file_dedup(task_id: str | None = None, *, surviving_messages: list | None = None):

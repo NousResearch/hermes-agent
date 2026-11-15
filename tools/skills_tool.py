@@ -25,7 +25,12 @@ from tools.skills_tool_plugin import (
     MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, _INJECTION_PATTERNS, _fail, _json,
     _mark_background_review_read, _preprocess_skill, _read_skill_text, _safe_frontmatter,
     _serve_plugin_skill, _serve_skill_file, _truncate_description)
-from tools.skills_tool_dedup import dedup_skill_view, reset_skill_view_dedup
+from tools.skills_tool_dedup import (
+    clear_skill_view_state,
+    dedup_skill_view,
+    migrate_skill_view_state,
+    reset_skill_view_dedup,
+)
 from tools.skill_provenance import is_background_review
 
 logger = logging.getLogger(__name__)

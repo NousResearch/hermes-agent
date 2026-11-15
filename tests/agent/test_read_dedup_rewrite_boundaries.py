@@ -144,3 +144,36 @@ def test_native_checkpoint_rearms_read_dedup(served, monkeypatch):
     re_view = [m for m in result["messages"] if m.get("role") == "tool" and m.get("tool_call_id") == "call_view"]
     assert re_view and "Do the demo steps." in re_view[-1]["content"]
     assert _dedup_state()[1] is False  # the file read served before the checkpoint is off the wire too
+
+
+def test_seed_file_dedup_from_messages_handles_hook_suffix_and_rotation(tmp_path):
+    from tools.file_tools import clear_file_ops_cache, read_file_tool
+    from tools.file_tools_read_tracking import migrate_file_read_state, reset_file_dedup
+
+    target = tmp_path / "sample.py"
+    target.write_text("x = 1\ny = 2\n", encoding="utf-8")
+    raw_first = read_file_tool(path=str(target), offset=1, limit=50, task_id="sid_old")
+    hook_annotated = raw_first + "\n\n[skill-error-router] advisory footer\n[[skill-error-router] end]"
+    surviving = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "tc_read_1",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": json.dumps({"path": str(target), "offset": 1, "limit": 50}),
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tc_read_1", "content": hook_annotated},
+    ]
+    migrate_file_read_state("sid_old", "sid_new")
+    reset_file_dedup("sid_new", surviving_messages=surviving)
+    second = json.loads(read_file_tool(path=str(target), offset=1, limit=50, task_id="sid_new"))
+    assert second.get("dedup") is True
+    assert second.get("status") == "unchanged"
+    clear_file_ops_cache("sid_new")

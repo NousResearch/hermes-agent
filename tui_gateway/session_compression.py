@@ -175,6 +175,11 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     # Invalidate the cached trigger so the next preflight re-derives from percent/window, then the cap.
     cc._threshold_tokens = cc._tail_token_budget = None
     _ag_sid = str(getattr(agent, "session_id", "") or "")
+    if _ag_sid and not getattr(agent, "_rotated_to_child_session", False):
+        with contextlib.suppress(Exception):
+            _sdb = getattr(agent, "_session_db", None)
+            if _sdb is not None and (_sdb.get_session(_ag_sid) or {}).get("parent_session_id"):
+                agent._rotated_to_child_session = True
     _had_in_place_compaction = _was_in_place or int(getattr(cc, "compression_count", 0) or 0) > 0
     if (
         not getattr(agent, "compression_in_place", False)

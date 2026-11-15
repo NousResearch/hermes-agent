@@ -128,11 +128,19 @@ class ClientLifecycleMixin:
         def forget_file_state() -> None:
             # File tools key their read stamps / writer claims by the per-turn task_id (cron:
             # ``cron:<job>:<uuid>``, subagents: ``subagent-N-xxxx``), which differs from session_id;
-            # cleanup_vm(session_id) alone leaves a finished run looking like a live sibling (#114446).
+            # cleanup_vm(session_id) only invalidates ShellFileOperations env cache, so agent close
+            # must release read/write/skill trackers for task_id, rotated parent IDs, and all owned task IDs (#114446).
             from tools.file_tools import clear_file_ops_cache
-            for owner in getattr(self, "_process_owner_task_ids", ()):
-                if owner and owner != task_id:
+            from tools.skills_tool_dedup import clear_skill_view_state
+            owners = {
+                task_id,
+                *getattr(self, "_process_owner_task_ids", ()),
+                *(getattr(self, "_rotated_from_session_ids", None) or ()),
+            }
+            for owner in owners:
+                if owner:
                     clear_file_ops_cache(owner)
+                    clear_skill_view_state(owner)
 
         for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
                      release_computer_use, forget_file_state):

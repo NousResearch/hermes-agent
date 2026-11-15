@@ -2437,6 +2437,22 @@ def cleanup_task_resources(agent, task_id: str) -> None:
             if agent.verbose_logging:
                 logger.warning("Failed to cleanup %s for task %s: %s", label, task_id, e)
 
+    try:
+        sid = getattr(agent, "session_id", None) or ""
+        if getattr(agent, "_persist_disabled", False):
+            from tools.file_tools import clear_file_ops_cache
+            from tools.skills_tool_dedup import clear_skill_view_state
+            clear_file_ops_cache(task_id)
+            clear_skill_view_state(task_id)
+        elif sid and sid != task_id and task_id in (getattr(agent, "_rotated_from_session_ids", None) or ()):
+            from tools.file_tools import migrate_file_ops_state
+            from tools.skills_tool_dedup import migrate_skill_view_state
+            migrate_file_ops_state(task_id, sid)
+            migrate_skill_view_state(task_id, sid)
+    except Exception as e:
+        if agent.verbose_logging:
+            logger.warning("Failed to settle file/skill state for task %s: %s", task_id, e)
+
 
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
     dropped_tool_names=None, overflow_terminal=False, api_mode=None, clean_eof=False):

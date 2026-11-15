@@ -214,3 +214,38 @@ def reset_skill_view_dedup(
             _skill_view_tracker.pop(str(task_id), None)
     if task_id is not None and surviving_messages:
         seed_skill_view_dedup_from_messages(task_id, surviving_messages)
+
+
+def migrate_skill_view_state(old_task_id: str | None, new_task_id: str | None) -> None:
+    """Carry skill_view dedup and cross-epoch load history across session rotation."""
+    if not old_task_id or not new_task_id:
+        return
+    old_tid = str(old_task_id)
+    new_tid = str(new_task_id)
+    if old_tid == new_tid:
+        return
+    with _skill_view_tracker_lock:
+        old_cache = _skill_view_tracker.pop(old_tid, None)
+        if old_cache:
+            dst_cache = _skill_view_tracker.setdefault(new_tid, {})
+            for k, v in old_cache.items():
+                dst_cache.setdefault(k, v)
+        old_epochs = _skill_view_epoch_history.pop(old_tid, None)
+        if old_epochs:
+            dst_epochs = _skill_view_epoch_history.setdefault(new_tid, {})
+            for k, (digest, loads, compact_json) in old_epochs.items():
+                prev = dst_epochs.get(k)
+                if prev is None or (prev[0] == digest and loads > prev[1]):
+                    dst_epochs[k] = (digest, loads, compact_json)
+
+
+def clear_skill_view_state(task_id: str | None = None) -> None:
+    """Release both current-epoch and cross-epoch skill_view state when a session/task closes."""
+    with _skill_view_tracker_lock:
+        if task_id is None:
+            _skill_view_tracker.clear()
+            _skill_view_epoch_history.clear()
+        else:
+            tid = str(task_id)
+            _skill_view_tracker.pop(tid, None)
+            _skill_view_epoch_history.pop(tid, None)

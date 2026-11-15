@@ -1517,12 +1517,17 @@ def _collect_protected_skill_names(messages: list[dict[str, Any]], prune_boundar
             i for i in range(total - 1, -1, -1)
             if messages[i].get("role") == "user" and not _is_synthetic_mid_turn_user_row(messages[i])
         ),
-        next((i for i in range(total - 1, -1, -1) if messages[i].get("role") == "user"), total),
+        total,
     )
     protect_from = min(max(0, total - _SKILL_PRUNE_RECENT_WINDOW), max(0, prune_boundary), last_user)
     tail_user_texts = [
         m["content"].lower() for m in messages[min(max(0, prune_boundary), last_user):]
-        if m.get("role") == "user" and isinstance(m.get("content"), str) and m["content"]
+        if (
+            m.get("role") == "user"
+            and not _is_synthetic_mid_turn_user_row(m)
+            and isinstance(m.get("content"), str)
+            and m["content"]
+        )
     ]
     return {
         skill.lower() for idx, skill in _skill_view_call_sites(messages)

@@ -263,6 +263,45 @@ class FileToolsIntegrationTests(unittest.TestCase):
         with open(p) as f:
             self.assertEqual(f.read(), "B wrote\n")
 
+    def test_migrate_task_transfers_reads_and_writer_claims_without_self_sibling_block(self):
+        from tools.file_tools import migrate_file_ops_state
+
+        p = self._write_seed("rotated.txt", "v1\n")
+        self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="sess_parent")))
+        self.assertNotIn("error", json.loads(write_file_tool(path=p, content="v2\n", task_id="sess_parent")))
+
+        migrate_file_ops_state("sess_parent", "sess_child")
+        self.assertIsNone(file_state.check_stale("sess_child", p))
+        w_child = json.loads(write_file_tool(path=p, content="v3\n", task_id="sess_child"))
+        self.assertNotIn("error", w_child)
+
+    def test_terminal_lifecycle_cache_invalidation_preserves_write_baselines(self):
+        from tools.terminal_tool_lifecycle import _clear_file_ops_cache
+
+        p = self._write_seed("survive_reap.txt", "initial\n")
+        self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="sess_active")))
+        _clear_file_ops_cache("sess_active")
+
+        w_after = json.loads(write_file_tool(path=p, content="updated after reap\n", task_id="sess_active"))
+        self.assertNotIn("error", w_after)
+
+    def test_persist_disabled_fork_cleans_up_without_polluting_parent(self):
+        from types import SimpleNamespace
+        from agent.chat_completion_helpers import cleanup_task_resources
+
+        p = self._write_seed("fork_read.txt", "hello\n")
+        self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="fork_uuid_1")))
+        fork = SimpleNamespace(
+            session_id="parent_sess_1",
+            _persist_disabled=True,
+            verbose_logging=False,
+        )
+        with patch("run_agent.cleanup_vm"), patch("run_agent.cleanup_browser"):
+            cleanup_task_resources(fork, "fork_uuid_1")
+
+        self.assertEqual(file_state.known_reads("fork_uuid_1"), [])
+        self.assertEqual(file_state.known_reads("parent_sess_1"), [])
+
 
 
 

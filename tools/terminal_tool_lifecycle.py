@@ -98,8 +98,8 @@ def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None
 def _clear_file_ops_cache(task_id: str) -> None:
     """Invalidate the file_ops cache entry so ShellFileOperations can't reference a dead sandbox."""
     try:
-        from tools.file_tools import clear_file_ops_cache
-        clear_file_ops_cache(task_id)
+        from tools.file_tools import invalidate_file_ops_env_cache
+        invalidate_file_ops_env_cache(task_id)
     except ImportError:
         pass
 
@@ -306,7 +306,11 @@ def is_persistent_env(task_id: str) -> bool:
     env = get_active_env(task_id)
     if env is None:
         return False
-    return bool(getattr(env, "_session_scoped", False) or getattr(env, "_persistent", False))
+    return bool(
+        getattr(env, "_session_scoped", False)
+        or getattr(env, "_persistent", False)
+        or getattr(env, "_persist_env", False)
+    )
 
 
 def cleanup_all_environments():

@@ -124,13 +124,18 @@ def _candidate_spans(text, shadow, noise, orig_idx, pattern, prefix_re, skip):
 def _iter_with_swallowed(pattern: re.Pattern, text: str):
     """``pattern.finditer(text)`` plus each match that starts inside a yielded one and runs past
     its end: ``1//0…log-sk-abc.<key>`` ends the ``1//0`` match at the ``.``, but the ``sk-`` inside
-    it runs on through ``<key>``, which finditer then never sees. One search from inside each
-    match finds it and stops at the next match, so the scan stays linear."""
+    it runs on through ``<key>``, which finditer then never sees. The search from inside each
+    match steps over the matches it contains (``sk-…-hf_<key>-x_1//0…``) and stops at the first
+    one that runs past it or starts after it; each step starts past the last, so the scan stays
+    linear."""
     for m in pattern.finditer(text):
         yield m
-        inner = pattern.search(text, m.start(1) + 1)
-        if inner is not None and inner.start(1) < m.end(1) < inner.end(1):
-            yield inner
+        pos = m.start(1) + 1
+        while (inner := pattern.search(text, pos)) is not None and inner.start(1) < m.end(1):
+            if inner.end(1) > m.end(1):
+                yield inner
+                break
+            pos = inner.end(1)
 
 
 def _union(spans) -> list:

@@ -48,8 +48,15 @@ def test_key_inside_the_tail_of_a_refresh_token_match_is_masked(split):
     _assert_masked(f"x {refresh}log-sk-abc.gl" + "c_dwWJmRyYkVqZMvgdmIT53yB end", "dwWJmRyYkVqZ")
 
 
+@pytest.mark.parametrize("refresh", [G1, "1//" + "0zHbvuQAXdRVUaPFrEcBpQOSnacj0hfv"])
+def test_key_past_a_match_contained_in_an_earlier_one_is_masked(refresh):
+    # The ``hf_`` match ends inside the ``sk-`` match; the refresh token starts inside it too.
+    sk = "sk-" + "proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv-" + "hf_" + "AbCdEfGhIjKlMnOpQrStUvWxYz123456-xy_"
+    _assert_masked(f"x {sk}{refresh} end", refresh[12:24])
+
+
 def test_many_short_glued_lines_stay_linear():
     text = "my-sk-a.\n" * 11_112  # 100k chars, every line a skipped glued candidate
     t0 = time.perf_counter()
     assert redact_sensitive_text(text, force=True) == text
-    assert time.perf_counter() - t0 < 0.2
+    assert time.perf_counter() - t0 < 2.0

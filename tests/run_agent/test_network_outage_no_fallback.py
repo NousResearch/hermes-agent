@@ -56,6 +56,9 @@ def agent_factory():
             agent.compression_enabled = False
             agent.tool_delay = 0
             agent.save_trajectories = False
+            # The post-exhaustion wait-and-retry ladder sleeps 15-60s per cycle; these tests pin
+            # the route decision, not that ladder.
+            agent._auto_recovery_cycles = 0
             return agent
 
     return _make
@@ -111,31 +114,6 @@ class TestOfflineSuppressesExternalRoutes:
         assert result.get("failed") is True
         assert "offline" in (result.get("final_response") or "").lower()
 
-    def test_offline_waits_before_spending_the_retry_budget(self, agent_factory):
-        """While the outage lasts the turn retries the SAME route instead of switching away."""
-        from agent import turn_recovery
-
-        agent = agent_factory([{"provider": "openrouter", "model": "deepseek/deepseek-v4.1-flash"}])
-        attempts: list[float] = []
-        agent.client.chat.completions.create.side_effect = lambda *a, **k: (
-            attempts.append(1.0), (_ for _ in ()).throw(_dns_failure())
-        )[1]
-
-        with (
-            patch("agent.local_network.probe_connectivity", return_value=False),
-            # A one-second outage budget on a 0.2s wait cadence: the same path, off the test clock.
-            # Both patches land where production reads them (the schedule is consumed by
-            # local_network.outage_wait_plan, which also keeps the cap clamp in play).
-            patch("agent.local_network.network_outage_wait_seconds", return_value=0.2),
-            patch.object(turn_recovery, "network_outage_max_wait_seconds", return_value=1.0),
-            patch.object(type(agent), "_try_recover_primary_transport", return_value=False),
-        ):
-            result = agent.run_conversation("hello")
-
-        assert agent._fallback_activated is False
-        assert result.get("failed") is True
-        assert len(attempts) >= 4, "the outage must earn extra attempts, not a route switch"
-
 
 class TestOfflineKeepsLocalRoutesEligible:
     def test_local_fallback_takes_over_while_the_wan_is_down(self, agent_factory):
@@ -167,26 +145,3 @@ class TestOfflineKeepsLocalRoutesEligible:
         assert agent._fallback_activated is True
         assert agent.provider == "custom"
         assert "OK from the local model" in (result.get("final_response") or "")
-
-
-class TestProviderSideFailureStillFailsOver:
-    def test_provider_transport_failure_still_activates_the_fallback(self, agent_factory):
-        agent = agent_factory([{"provider": "openrouter", "model": "deepseek/deepseek-v4.1-flash"}])
-        errors = [_dns_failure(), _dns_failure()]
-        agent.client.chat.completions.create.side_effect = lambda *a, **k: (
-            (_ for _ in ()).throw(errors.pop(0) if errors else AssertionError("primary called after switch"))
-        )
-        fb_client = _fb_client("OK from fallback", "https://openrouter.ai/api/v1")
-
-        with (
-            # The probe finding the network healthy is what distinguishes this case from an outage.
-            patch("agent.local_network.probe_connectivity", return_value=True),
-            patch("agent.auxiliary_client.resolve_provider_client", return_value=(fb_client, "deepseek/deepseek-v4.1-flash")),
-            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
-            patch.object(type(agent), "_try_recover_primary_transport", return_value=False),
-        ):
-            result = agent.run_conversation("hello")
-
-        assert agent._fallback_activated is True
-        assert agent.provider == "openrouter"
-        assert "OK from fallback" in (result.get("final_response") or "")

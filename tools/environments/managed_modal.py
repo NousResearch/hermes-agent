@@ -15,7 +15,7 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, touch_activity_if_due
 from tools.interrupt import is_interrupted
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.terminal_tool_sudo_askpass import fill_timeout_token
@@ -122,13 +122,7 @@ class ManagedModalEnvironment(BaseEnvironment):
             if time.monotonic() >= deadline:
                 self._cancel_exec(exec_id)
                 return _result(f"Managed Modal exec timed out after {timeout}s", 124)
-            # Periodic activity touch so the gateway knows we're alive (lazy import:
-            # tests stub tools.environments.base with only BaseEnvironment)
-            try:
-                from tools.environments.base import touch_activity_if_due
-                touch_activity_if_due(_activity_state, "modal command running")
-            except Exception:
-                pass
+            touch_activity_if_due(_activity_state, "modal command running")
             time.sleep(0.25)
 
     @staticmethod

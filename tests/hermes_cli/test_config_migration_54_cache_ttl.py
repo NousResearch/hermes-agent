@@ -1,4 +1,4 @@
-"""Migration 52→53: prompt_caching.cache_ttl defaults to "auto".
+"""Migration 53→54: prompt_caching.cache_ttl defaults to "auto".
 
 Contract: a saved ``cache_ttl: "5m"`` (the old default, copied in by the template seeder) is dropped
 so the file follows the new default; ``1h``, ``auto`` and an off value are the user's and survive.
@@ -17,9 +17,9 @@ def _run(home, ttl):
 
     home.mkdir()
     (home / "config.yaml").write_text(
-        yaml.safe_dump({"_config_version": 52, "prompt_caching": {"cache_ttl": ttl}}), encoding="utf-8")
+        yaml.safe_dump({"_config_version": 53, "prompt_caching": {"cache_ttl": ttl}}), encoding="utf-8")
     with patch.dict(os.environ, {"HERMES_HOME": str(home)}, clear=False):
-        run_migrations(52, {"env_added": [], "config_added": [], "warnings": []}, quiet=True)
+        run_migrations(53, {"env_added": [], "config_added": [], "warnings": []}, quiet=True)
     return yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")).get("prompt_caching") or {}
 
 

@@ -55,7 +55,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes egress` | Outbound credential-injection firewall for remote terminal sandboxes (iron-proxy). Disabled by default. See [Egress proxy](../user-guide/egress/iron-proxy.md). |
 | `hermes lsp` | Manage Language Server Protocol integration (semantic diagnostics for write_file/patch). |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
-| `hermes move` | Carry this profile to another Hermes (a Hermes Cloud agent, a new computer) as a merge that can be undone. See [Move to Hermes Cloud](../user-guide/move-to-hermes-cloud.md). |
+| `hermes move` | Carry this profile to another Hermes (a Hermes Cloud agent, a new computer), merged or replacing the parts you name, and undoable. See [Backup & Move](../user-guide/move-to-hermes-cloud.md). |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
 | `hermes whatsapp-cloud` | Configure the official Meta WhatsApp Business Cloud API adapter (Business account + public webhook required). Distinct from `hermes whatsapp` (Baileys personal-account bridge). |
 | `hermes slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
@@ -656,22 +656,24 @@ Common flags for migration subcommands:
 
 ```bash
 hermes move export [-o FILE] [--no-history] [--history-limit N] [--dry-run] [--json]
-hermes move receive FILE [-y] [--json]
+hermes move receive FILE [--replace PARTS] [--only PARTS] [-y] [--json]
 hermes move undo MOVE_ID
 hermes move list
 ```
 
-Carries one profile to another Hermes. Hermes Desktop's **Move to Hermes Cloud** runs the same code over `/api/move/*`; these verbs are the scriptable path.
+Carries one profile to another Hermes. Hermes Desktop's **Backup & Move** runs the same code over `/api/move/*`; these verbs are the scriptable path.
 
 `export` writes a move bundle of the active profile: config with credential-shaped keys and this-computer sections (`terminal`, `browser`, `gateway`, …) removed, `SOUL.md`, memory, your own and hub-installed skills (unchanged built-in skills stay behind), cron job definitions, and the most recent conversations (200 by default). It never includes `.env`, `auth.json` or `state.db`, and any credential value from `.env` or `auth.json` that appears inside a transcript or skill is replaced with `[redacted NAME]`. The manifest lists the names of keys to enter again on the other side.
 
-`receive` previews, then merges a bundle into the active profile while the gateway keeps running. The target's own config values, persona, skills and jobs always win; incoming memory entries are appended without duplicates; conversations are imported under new rows only; cron jobs arrive paused. A snapshot taken first makes `undo` put back every file the move rewrote and remove what it added.
+`receive` previews, then merges a bundle into the active profile while the gateway keeps running. The target's own config values, persona, skills and jobs always win; incoming memory entries are appended without duplicates; conversations are imported under new rows only; cron jobs arrive paused. `--replace` makes the bundle win for the parts it names instead: memory and `SOUL.md` are overwritten, same-named skills swapped, the target's cron jobs removed, its visible conversations archived, and the bundle's config values win. Config keys the hosting platform owns (`model`, `providers`, `fallback_providers`, `fallback`, `auxiliary`, `nous`, `auth`, `cron`, `web`, `image_gen`, `tts`, `stt`, `max_concurrent_sessions`, `max_live_sessions`) are never changed in either mode. A snapshot taken first makes `undo` put back every file the move rewrote, unarchive what it archived and remove what it added.
 
 | Flag | Description |
 |------|-------------|
 | `--no-history` | Leave conversations behind. |
 | `--history-limit N` | Most recent conversations to carry (default 200). |
 | `--dry-run` | List what would be carried; write nothing. |
+| `--replace PARTS` | `receive`: comma-separated parts where the bundle wins (`config`, `soul`, `memory`, `skills`, `cron`, `sessions`, or `all`). |
+| `--only PARTS` | `receive`: apply only these parts (default: all). |
 | `-y`, `--yes` | `receive` without the confirmation prompt. |
 
 ## `hermes codex-runtime`

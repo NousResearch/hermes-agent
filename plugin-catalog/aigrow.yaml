@@ -1,0 +1,25 @@
+name: aigrow
+title: AIGROW
+repo: https://github.com/guglielmo-io/hermes-aigrow-provider
+sha: e3905bc37ca552fbeba0fea7f906ef93bf9e9c5a
+subdir: aigrow
+description: >-
+  AIGROW as a Hermes model provider: prepaid API credit for Claude, GPT, Gemini and Grok
+  models on one OpenAI-compatible endpoint. Pick AIGROW in `hermes model` or use
+  `--provider aigrow`. Disclosure: registers one model provider at import and nothing else
+  (no tools, hooks, middleware, commands, background work or file access); chat requests
+  (prompts, tool schemas and results, images for models that accept them) and the model list
+  go to https://aigrow.gg/v1 through Hermes's own client with AIGROW_API_KEY, which Hermes
+  reads; usage is billed to your AIGROW credit; the plugin itself opens no connections.
+maintainer: AIGROW
+tier: community
+category: models
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/guglielmo-io/hermes-aigrow-provider/tree/e3905bc37ca552fbeba0fea7f906ef93bf9e9c5a/aigrow#readme
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - AIGROW_API_KEY

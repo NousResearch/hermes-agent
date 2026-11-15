@@ -1259,11 +1259,15 @@ def _last_assistant_index(messages: list[dict[str, Any]]) -> int:
 
 def _pending_tool_round(messages: list[dict[str, Any]]) -> range:
     """Indices of the tool results the transcript ends with — a round the model has not answered yet; empty when
-    the transcript ends in any other row. /steer rows after the round do not answer it: a steer is delivered
-    after the newest tool result before the next API call, and two can land in one iteration (one when the tool
-    batch ends, one before the request), so every contiguous trailing steer row is skipped."""
+    the round already has an assistant answer.
+
+    The model answers a tool result by emitting the NEXT assistant message, so rows that landed after the round
+    without being one do not settle it: a /steer (delivered after the newest tool result, and two can land in one
+    iteration), a background-process notice delivered as a user row, a prompt queued behind the turn. Those rows
+    are walked over, and the round is reported pending while no assistant row follows it (#137105)."""
     end = len(messages)
-    while end and messages[end - 1].get("display_kind") == STEER_DISPLAY_KIND:
+    # Walk back over the rows appended after the round that are not the model's answer to it.
+    while end and messages[end - 1].get("role") not in ("assistant", "tool"):
         end -= 1
     start = end
     while start > 0 and messages[start - 1].get("role") == "tool":
@@ -1840,6 +1844,14 @@ def _sum_template(template: str, **defaults):
     return summarize
 
 
+# Tools whose result is a JSON envelope ({"output": "...", "exit_code": N}) rather than bare text, so a
+# line count taken on the raw string counts escaped newlines and always reports one line (#137105).
+_JSON_ENVELOPE_TOOLS = frozenset({"terminal", "execute_code"})
+
+# Head and tail kept from an unread tool result that the pressure pass must still demote. Large enough to
+# carry the shape of the output (headers, the first rows, the final error), small enough to fit the tail share.
+_UNREAD_STUB_EXCERPT_CHARS = 600
+
 # tool_name -> (name, args, content, content_len, line_count) -> one-line summary.
 _TOOL_RESULT_SUMMARIZERS = {
     "terminal": _sum_terminal,
@@ -1906,6 +1918,45 @@ def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> 
     return f"[{tool_name}]{target} {outcome}"[:_PRUNE_MIN_CHARS - 1]
 
 
+def _tool_output_text(tool_name: str, content: str) -> str:
+    """The text a tool result actually shows the model, for counting lines in it.
+
+    A terminal/execute_code result is a JSON envelope (``{"output": "...\\n...", "exit_code": 0}``) whose
+    newlines are escaped, so counting on the envelope reports 1 line for a 2,000-line output (#137105). Other
+    results carry their payload bare. Unparseable content is its own text.
+    """
+    if tool_name not in _JSON_ENVELOPE_TOOLS or not content.lstrip().startswith("{"):
+        return content
+    try:
+        parsed = json.loads(content)
+    except (ValueError, TypeError):
+        return content
+    if not isinstance(parsed, dict):
+        return content
+    parts = [parsed[key] for key in ("output", "stdout", "result", "text") if isinstance(parsed.get(key), str)]
+    return "\n".join(parts) if parts else content
+
+
+def _pending_round_demoted_stub(tool_name: str, tool_args: str, content: str) -> str:
+    """Stub for an unread tool result that must still give way (it alone exceeds the tail's hard share).
+
+    A one-line summary leaves the model unable to tell what it lost, so it re-runs the call — side effects
+    included — or answers blind. Keep the beginning and the end of the output and say how to page the rest,
+    the same way the compaction stub points at session history (#137105)."""
+    summary = _summarize_tool_result(tool_name, tool_args, content)
+    output_text = _tool_output_text(tool_name, content)
+    if len(output_text) <= _UNREAD_STUB_EXCERPT_CHARS * 2:
+        return summary
+    head = output_text[:_UNREAD_STUB_EXCERPT_CHARS]
+    tail = output_text[-_UNREAD_STUB_EXCERPT_CHARS:]
+    return (
+        f"{summary} — the full output was demoted unread; its first {_UNREAD_STUB_EXCERPT_CHARS:,} and last "
+        f"{_UNREAD_STUB_EXCERPT_CHARS:,} chars follow. Re-read the rest from the source (or page it with a "
+        f"narrower command) rather than re-running this call.\n"
+        f"--- begin excerpt ---\n{head}\n--- end of head / start of tail ---\n{tail}\n--- end excerpt ---"
+    )
+
+
 def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Build the summary line (unguarded; see ``_summarize_tool_result``)."""
     args = _json_dict(tool_args)
@@ -1913,7 +1964,8 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     if (refused := _summarize_refused_tool_result(tool_name, args, content)) is not None:
         return refused
     content_len = len(content)
-    line_count = content.count("\n") + 1 if content.strip() else 0
+    output_text = _tool_output_text(tool_name, content)
+    line_count = output_text.count("\n") + 1 if output_text.strip() else 0
     summarizer = _TOOL_RESULT_SUMMARIZERS.get(tool_name)
     if summarizer is not None:
         return summarizer(tool_name, args, content, content_len, line_count)
@@ -3099,6 +3151,26 @@ class ContextCompressor(
             if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
                 demoted += 1
 
+        def _shrink_unread(round_indices: range) -> None:
+            """Demote an unread round that cannot be spared: keep a head/tail excerpt so the model can see what
+            it lost and page the rest, instead of a 1-line stub that makes it re-run the call (#137105)."""
+            nonlocal demoted
+            for i in round_indices:
+                if i in spared:
+                    continue
+                msg = result[i]
+                content = msg.get("content", "")
+                if msg.get("role") != "tool" or not isinstance(content, str) or not content:
+                    continue
+                if (
+                    content == _PRUNED_TOOL_PLACEHOLDER or _is_summary_stub(content)
+                    or len(content) <= min_prune_chars
+                ):
+                    continue
+                tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
+                result[i] = {**msg, "content": _pending_round_demoted_stub(tool_name, tool_args, content)}
+                demoted += 1
+
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
             return 0
         for i in range(start, demote_end):
@@ -3111,12 +3183,12 @@ class ContextCompressor(
             for i in (i for i in range(start, len(result)) if i != last_tool_idx):
                 _shrink_at(i)
             # Last resort, unless it is the spared pending round: the newest body may exceed the soft budget
-            # alone (one 200KB read); summarize it.
+            # alone (one 200KB read); keep a head/tail excerpt of it so the model can page it (#137105).
             if (
                 last_tool_idx is not None and last_tool_idx not in spared and last_tool_idx >= prune_boundary
                 and _protected_region_tokens() > soft_ceiling
-            ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
-                demoted += 1
+            ):
+                _shrink_unread(range(last_tool_idx, last_tool_idx + 1))
         if demoted and not self.quiet_mode:
             logger.info(
                 "Pre-compression pressure demotion: reclaimed protected-tail tool output (%d change(s); "

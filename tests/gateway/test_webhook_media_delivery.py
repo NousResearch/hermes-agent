@@ -64,8 +64,7 @@ def _make_delivery_adapter(fake) -> WebhookAdapter:
     runner = SimpleNamespace(
         _adapters_for_profile=lambda profile=None: {Platform.DISCORD: fake},
         _authorization_adapter=lambda platform, profile=None: fake,
-        # Cross-platform delivery gates the FINAL target through the runner's shared-bot route
-        # check (#147602); a plain route is always allowed.
+        # main's shared-bot route gate (#147602) runs on the final target before the send.
         _shared_bot_target_allowed=lambda platform, profile, chat_id, thread_id=None: True,
         config=None,
     )

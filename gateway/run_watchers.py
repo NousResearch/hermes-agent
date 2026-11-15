@@ -79,7 +79,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
 
     def _cache_expiry_due_keys(self) -> list[str]:
         """Cached, idle, human-paced sessions whose warm cache window is about to close."""
-        from agent.cache_expiry_compaction import cache_expiry_compaction_due
+        from agent.cache_expiry_compaction import claim_cache_expiry_compaction
         from gateway.run import _AGENT_PENDING_SENTINEL
         from gateway.run_agent_cache import _tuple_agent
         cache, lock = getattr(self, "_agent_cache", None), getattr(self, "_agent_cache_lock", None)
@@ -91,7 +91,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         for key, agent in entries:
             if agent is None or agent is _AGENT_PENDING_SENTINEL or self._is_session_running(key):
                 continue
-            if cache_expiry_compaction_due(agent)[0]:
+            if claim_cache_expiry_compaction(agent):
                 due.append(key)
         return due
 

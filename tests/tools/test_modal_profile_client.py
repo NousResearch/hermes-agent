@@ -432,3 +432,45 @@ def test_an_older_pair_finishing_late_never_replaces_the_newer_one(modal_sdk, pr
     assert cached[0] == ("ak-B-rotated", "as-B-rotated")
     _routed_sandbox(modal_env, profiles("B-rotated"))
     assert calls["clients"] == ["ak-B", "ak-B-rotated"]
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
+def test_interrupted_startup_abandons_its_client_build(modal_sdk, profiles, monkeypatch, interruption):
+    """An interrupted constructor must not leave the new shared flight poisoning later starts."""
+    modal_env, calls = modal_sdk
+    monkeypatch.setattr(modal_env, "_client_flights", {})
+    run_coroutine = modal_env._AsyncWorker.run_coroutine
+    start = modal_env._AsyncWorker.start
+    workers = []
+    interrupt_once = [True]
+
+    def tracking_start(self):
+        workers.append(self)
+        return start(self)
+
+    def interrupted(self, coro, timeout=600):
+        if interrupt_once:
+            interrupt_once.clear()
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
+            assert _wait_until(lambda: calls["clients"] == ["ak-B"])
+            raise interruption()
+        return run_coroutine(self, coro, timeout=min(timeout, 15))
+
+    monkeypatch.setattr(modal_env._AsyncWorker, "start", tracking_start)
+    monkeypatch.setattr(modal_env._AsyncWorker, "run_coroutine", interrupted)
+    gate = _fake_from_credentials().gates["ak-B"] = Future()
+    home = profiles("B")
+    try:
+        with pytest.raises(interruption):
+            _routed_sandbox(modal_env, home)
+        assert modal_env._client_flights == {}, "interrupted startup retained a poisoned shared build"
+        assert not workers[0]._thread.is_alive(), "interrupted startup left its worker running"
+        gate.set_result(None)
+        _routed_sandbox(modal_env, home)
+        assert calls["clients"] == ["ak-B", "ak-B"]
+        assert calls["creates"] == ["ak-B"]
+    finally:
+        if not gate.done():
+            gate.set_result(None)
+        for worker in workers:
+            worker.stop()

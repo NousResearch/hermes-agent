@@ -42,11 +42,16 @@ def _make_entry(key: str, session_id: str, **kw) -> SessionEntry:
     )
 
 
+def _record(row: dict) -> SimpleNamespace:
+    """A ``sessions.get`` record carrying *row*'s fields, whose ``as_session_row()`` is the row dict."""
+    return SimpleNamespace(**row, as_session_row=lambda: dict(row))
+
+
 def _db_returning(rows: dict) -> MagicMock:
     """Mock store (legacy and storage handle) where get_session / sessions.get map session_id -> row."""
     db = MagicMock()
     db.get_session.side_effect = lambda sid: rows.get(sid)
-    db.sessions.get.side_effect = lambda sid: SimpleNamespace(**rows[sid]) if sid in rows else None
+    db.sessions.get.side_effect = lambda sid: _record(rows[sid]) if sid in rows else None
     # By default recovery finds nothing (forces a fresh session).
     db.routing.latest_session_for_peer.return_value = None
     # No compression continuation → the tip is the session itself (identity),

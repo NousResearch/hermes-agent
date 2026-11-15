@@ -1362,28 +1362,24 @@ class TestSameLineageHiddenDisclosure:
     """#103184: same-lineage hits dropped by the live-context skip must be
     disclosed in the payload instead of silently vanishing."""
 
-    def test_unended_predecessor_hits_disclosed_not_silent(self, db):
+    def test_unended_predecessor_hits_disclosed_not_silent(self, db, persistence):
         """A gateway predecessor whose end-write was lost (unended, same
         lineage) is still hidden, but the payload must say so instead of
         returning 0 results with no signal."""
-        db.create_session("s_root", source="telegram", session_key="tg:user:1")
-        db.end_session("s_root", "session_reset")
-        db.create_session(
-            "s_lost", source="telegram",
+        seed_session(db, "s_root", "telegram", session_key="tg:user:1", end_reason="session_reset")
+        seed_session(
+            db, "s_lost", "telegram",
             parent_session_id="s_root", session_key="tg:user:1",
             model_config={"_reset_from": "s_root"},
         )
-        db.append_message(
-            "s_lost", role="user", content="published the zephyrwidgets repo link"
-        )
-        db.create_session(
-            "s_cur", source="telegram",
+        seed_messages(db, "s_lost", {"role": "user", "content": "published the zephyrwidgets repo link"})
+        seed_session(
+            db, "s_cur", "telegram",
             parent_session_id="s_lost", session_key="tg:user:1",
             model_config={"_reset_from": "s_lost"},
         )
-        db._conn.commit()
         result = json.loads(session_search(
-            query="zephyrwidgets", db=db, current_session_id="s_cur",
+            query="zephyrwidgets", db=db, persistence=persistence, current_session_id="s_cur",
         ))
         assert result["success"] is True
         assert result["count"] == 0  # still hidden: unended == treated as live
@@ -1396,34 +1392,32 @@ class TestSameLineageHiddenDisclosure:
         # The recovery the note recommends must work: a plain read of the disclosed id
         # (scroll rejects anchors in the current lineage, so the note must not suggest it).
         assert "around_message_id" not in hidden["note"]
-        read = json.loads(session_search(session_id="s_lost", db=db, current_session_id="s_cur"))
+        read = json.loads(session_search(session_id="s_lost", db=db, persistence=persistence, current_session_id="s_cur"))
         assert read["success"] is True and read["mode"] == "read"
         assert any("zephyrwidgets" in m["content"] for m in read["messages"])
 
-    def test_current_session_live_rows_not_disclosed_as_hidden(self, db):
+    def test_current_session_live_rows_not_disclosed_as_hidden(self, db, persistence):
         """The current session's own live rows are already in context —
         skipping them is expected and must NOT light up hidden_same_lineage."""
-        db.create_session("s_root", source="telegram", session_key="tg:user:1")
-        db.end_session("s_root", "session_reset")
-        db.create_session(
-            "s_cur", source="telegram",
+        seed_session(db, "s_root", "telegram", session_key="tg:user:1", end_reason="session_reset")
+        seed_session(
+            db, "s_cur", "telegram",
             parent_session_id="s_root", session_key="tg:user:1",
             model_config={"_reset_from": "s_root"},
         )
-        db.append_message("s_cur", role="user", content="zephyrwidgets note to self")
-        db._conn.commit()
+        seed_messages(db, "s_cur", {"role": "user", "content": "zephyrwidgets note to self"})
         result = json.loads(session_search(
-            query="zephyrwidgets", db=db, current_session_id="s_cur",
+            query="zephyrwidgets", db=db, persistence=persistence, current_session_id="s_cur",
         ))
         assert result["count"] == 0
         assert "hidden_same_lineage" not in result
 
-    def test_ended_predecessor_surfaces_without_disclosure(self, db):
+    def test_ended_predecessor_surfaces_without_disclosure(self, db, persistence):
         """The normal /new path (ended predecessor) keeps returning results and
         never grows a hidden_same_lineage note."""
         _seed_gateway_new_reset_chain(db)
         result = json.loads(session_search(
-            query="ibuprofen", db=db, current_session_id="s_today",
+            query="ibuprofen", db=db, persistence=persistence, current_session_id="s_today",
         ))
         assert result["count"] >= 1
         assert "hidden_same_lineage" not in result
@@ -1434,28 +1428,27 @@ class TestDiscoveryMetadataFromMatchedSession:
     (possibly months older) lineage root of a long-lived gateway chain."""
 
     def _age_the_root(self, db):
-        db._conn.execute(
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
             "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
             (1754956800, "MCP root servers", "s_aug12"),
-        )
-        db._conn.commit()
+        ))
 
-    def test_fts_hit_metadata_from_matching_session(self, db):
+    def test_fts_hit_metadata_from_matching_session(self, db, persistence):
         _seed_gateway_new_reset_chain(db)
         self._age_the_root(db)
         result = json.loads(session_search(
-            query="ibuprofen", db=db, current_session_id="s_today",
+            query="ibuprofen", db=db, persistence=persistence, current_session_id="s_today",
         ))
         hit = next(r for r in result["results"] if r["session_id"] == "s_night")
         assert hit["title"] == "Night ibuprofen plan"
         assert "2025" not in hit["when"]  # not the root's August-2025 started_at
         assert hit["parent_session_id"] == "s_aug12"  # lineage still exposed
 
-    def test_title_match_metadata_from_matched_session(self, db):
+    def test_title_match_metadata_from_matched_session(self, db, persistence):
         _seed_gateway_new_reset_chain(db)
         self._age_the_root(db)
         result = json.loads(session_search(
-            query="Night ibuprofen plan", db=db, current_session_id="s_today",
+            query="Night ibuprofen plan", db=db, persistence=persistence, current_session_id="s_today",
         ))
         assert result["count"] >= 1
         hit = next(r for r in result["results"] if r["session_id"] == "s_night")

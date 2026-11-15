@@ -12,6 +12,8 @@ that executable code and non-docstring string constants keep their full severity
 
 from pathlib import Path
 
+import pytest
+
 from tools.plugin_guard import scan_plugin, should_allow_plugin_install
 
 PASSPHRASE = "/etc/passwd"
@@ -116,3 +118,16 @@ def run():
 '''})
         _result, findings = _findings(plugin)
         assert [f.severity for f in findings] == ["critical"]
+
+    @pytest.mark.parametrize("source", [
+        f'"""x"""; __import__("os").system("cat {PASSPHRASE}")\n',
+        f'import os\ndef f():\n    """cat {PASSPHRASE}"""\nos.system(f.__doc__)\n',
+        f'import os\ndef f():\n    """cat {PASSPHRASE}"""\nos.system(getattr(f, "__doc__"))\n',
+        f'import inspect, os\ndef f():\n    """cat {PASSPHRASE}"""\nos.system(inspect.getdoc(f))\n',
+    ])
+    def test_docstring_that_code_shares_or_reads_back_stays_critical(self, tmp_path, source):
+        """Code on the docstring's own line, or a file that reads its docstrings back as data, can run them."""
+        plugin = _mk_plugin(tmp_path, {"core/store.py": source})
+        result, findings = _findings(plugin)
+        assert "critical" in [f.severity for f in findings]
+        assert result.verdict == "dangerous"

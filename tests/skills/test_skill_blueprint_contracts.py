@@ -1,11 +1,12 @@
 """Blueprint-to-skill relationships, independent of the generic catalog/renderer tests."""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import pytest
 from croniter import croniter
 
 from cron.blueprint_catalog import CATALOG, fill_blueprint, get_blueprint
+import itertools
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -53,7 +54,7 @@ def test_price_watch_fills_and_persists_with_chosen_cadence(hours, tmp_path, mon
     assert saved["deliver"] == "local"
     for text in ("https://example.test/widget", "below 42 credits", "[SILENT]"):
         assert text in saved["prompt"], text
-    ticks = croniter(saved["schedule"]["expr"], datetime(2026, 1, 1, tzinfo=timezone.utc))
+    ticks = croniter(saved["schedule"]["expr"], datetime(2026, 1, 1, tzinfo=UTC))
     # Span a day boundary: wrong-field steps can otherwise look valid once.
     times = [ticks.get_next(datetime) for _ in range(26)]
-    assert {b - a for a, b in zip(times, times[1:])} == {timedelta(hours=int(hours))}
+    assert {b - a for a, b in itertools.pairwise(times)} == {timedelta(hours=int(hours))}

@@ -104,9 +104,9 @@ export function getMemoryProviderOAuthStatus(
 // Memory data + curator (parity with `hermes memory` / `hermes curator`).
 // ---------------------------------------------------------------------------
 
-export function getMemoryStatus(): Promise<MemoryStatusResponse> {
+export function getMemoryStatus(profile?: null | string): Promise<MemoryStatusResponse> {
   return hermesApi<MemoryStatusResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/memory'
   })
 }
@@ -171,11 +171,7 @@ export function checkHermesUpdate(force = false): Promise<BackendUpdateCheckResp
   })
 }
 
-export function getActionStatus(
-  name: string,
-  lines = 200,
-  profile?: ProfileScope
-): Promise<ActionStatusResponse> {
+export function getActionStatus(name: string, lines = 200, profile?: ProfileScope): Promise<ActionStatusResponse> {
   return window.hermesDesktop.api<ActionStatusResponse>({
     ...capabilityScoped(profile),
     path: `/api/actions/${encodeURIComponent(name)}/status?lines=${Math.max(1, lines)}`
@@ -271,16 +267,6 @@ export function getElevenLabsVoices(profile?: null | string): Promise<ElevenLabs
   })
 }
 
-/** `gh` CLI presence + auth state, for the composer's GitHub skill pill
- *  (GitHub is deliberately not an MCP — the github/* skills are the
- *  integration). Backend caches for 5 minutes; `refresh` bypasses. */
-export function getGhAuthStatus(refresh = false): Promise<{ available: boolean; authenticated: boolean }> {
-  return hermesApi<{ available: boolean; authenticated: boolean }>({
-    ...profileScoped(),
-    path: `/api/git/gh-auth${refresh ? '?refresh=true' : ''}`
-  })
-}
-
 // ---------------------------------------------------------------------------
 // Maintenance operations (parity with `hermes doctor` / `hermes security
 // audit` / `hermes backup` / `hermes debug share` and the dashboard System
@@ -315,13 +301,15 @@ export function runBackup(): Promise<ActionResponse & { archive?: string }> {
   })
 }
 
-export function runDebugShare(): Promise<DebugShareResponse> {
-  return hermesApi<DebugShareResponse>({
-    ...profileScoped(),
+// `owner` is resolved before the consent dialog opens: profile shortcuts stay
+// live behind it, so the ambient scope at upload time may be another profile.
+export function runDebugShare(owner: ResolvedOwner): Promise<DebugShareResponse> {
+  return hermesApiAs<DebugShareResponse>(owner, {
     path: '/api/ops/debug-share',
     method: 'POST',
-    body: {},
-    // Synchronous upload of report + logs to the paste service.
+    // Only called after the user confirmed the upload; the backend refuses a missing consent.
+    body: { consent: true },
+    // Synchronous upload of the allowlisted summary to the public paste service.
     timeoutMs: 120_000
   })
 }

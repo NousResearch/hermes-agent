@@ -50,8 +50,8 @@ def build_approvals_parser(subparsers, *, cmd_approvals: Callable) -> None:
             "detection, allowlist, yolo/off bypass — and print the verdict, "
             "the matching rule, and the normalized-command trace, without "
             "executing the command, prompting anyone, or persisting anything. "
-            "Exit codes: 0 allow, 2 ask-approval, 3 deny (hardline or user "
-            "deny rule). Tip: use `--` before the command so its own flags "
+            "Exit codes: 0 allow, 2 ask-approval, 3 deny (hardline, user "
+            "deny rule, or a command too complex to scan under yolo/off). Tip: use `--` before the command so its own flags "
             "aren't parsed: hermes approvals test -- rm -rf ./build")
     test_parser.add_argument(
         "--env-type", dest="env_type", default="local",

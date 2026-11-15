@@ -1,0 +1,17 @@
+name: safeailabs-provider
+title: Safe AI Labs
+repo: https://github.com/nevertrust-ai/hermes-safeailabs-provider
+sha: 3fa82ed3b8fc2aa52e96afeabdfbe19fa6a043fc
+description: "Safe AI Labs as a Hermes model provider (`--provider safeailabs`, or Safe AI Labs in `hermes model`): an OpenAI-compatible API with one endpoint per region, the model list from its /v1/models and the context window of its fallback model declared. Disclosure — registers one model provider at import and nothing else (no tools, hooks, commands or threads); chat requests and the model list go to https://us.api.safeailabs.ai/v1 (or SAFE_AI_BASE_URL) through Hermes' own client with SAFE_AI_KEY, which Hermes reads; the plugin itself opens no connections, reads and writes no files and starts no processes."
+maintainer: nevertrust-ai
+tier: community
+category: models
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+docs_url: https://github.com/nevertrust-ai/hermes-safeailabs-provider#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - SAFE_AI_KEY

@@ -44,6 +44,7 @@ def test_tty_passthrough_to_container(built_image: str) -> None:
     r = subprocess.run(
         ["script", "-qc", cmd, "/dev/null"],
         capture_output=True, text=True, timeout=120,
+        check=False,
     )
     output = r.stdout
     matches = re.findall(rf"{marker}=(\S+)", output)

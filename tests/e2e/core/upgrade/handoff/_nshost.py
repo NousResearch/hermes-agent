@@ -40,7 +40,7 @@ class NamespaceHost:
         self._proc = subprocess.Popen(
             H.sandbox_argv([sys.executable, "-u", str(_AGENT)], writable=[root]),
             env=env, cwd=str(root), text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=open(root / "ns-agent.stderr", "w"),  # noqa: SIM115 - lives as long as the sandbox
+            stderr=open(root / "ns-agent.stderr", "w"),
             start_new_session=True,
         )
         self._reader = threading.Thread(target=self._read, daemon=True)

@@ -102,7 +102,6 @@ def _make_runner(adapter: CaptureSlackAdapter) -> gateway_run.GatewayRunner:
     runner.session_store.transcript_tail_role = MagicMock(return_value="user")
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None

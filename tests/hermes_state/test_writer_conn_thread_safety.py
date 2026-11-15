@@ -66,13 +66,13 @@ class TestConcurrentReadersDoNotRaceTheWriter:
             while not stop.is_set():
                 try:
                     db.append_messages_batch(sid, [
-                        {"role": "user", "content": "u%d" % n},
-                        {"role": "assistant", "content": "a%d" % n},
-                        {"role": "tool", "content": "t%d" % n,
-                         "tool_name": "x", "tool_call_id": "c%d" % n},
+                        {"role": "user", "content": f'u{n:d}'},
+                        {"role": "assistant", "content": f'a{n:d}'},
+                        {"role": "tool", "content": f't{n:d}',
+                         "tool_name": "x", "tool_call_id": f'c{n:d}'},
                     ])
                     n += 1
-                except Exception as exc:  # noqa: BLE001 — the assertion IS the catch
+                except Exception as exc:
                     errors.append(("writer", type(exc).__name__, str(exc)))
                     stop.set()
                     return
@@ -81,7 +81,7 @@ class TestConcurrentReadersDoNotRaceTheWriter:
             while not stop.is_set():
                 try:
                     reader_fn(db, sid)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     errors.append(("reader", type(exc).__name__, str(exc)))
                     stop.set()
                     return

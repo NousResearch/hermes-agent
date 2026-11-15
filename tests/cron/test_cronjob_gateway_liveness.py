@@ -56,7 +56,7 @@ def _create_job() -> dict:
 
 class TestCreateSurfacesGatewayLiveness:
     def test_create_with_gateway_running_has_no_warning(self, hermes_env):
-        with patch_liveness(provider="builtin", pids=[12345]) as patches:
+        with patch_liveness(provider="builtin", pids=[12345]):
             result = _create_job()
 
         assert result["success"] is True

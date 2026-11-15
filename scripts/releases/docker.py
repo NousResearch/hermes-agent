@@ -115,9 +115,15 @@ def _version_digest(tag: str, suffix: str, run) -> str:
     return digest
 
 
-def promote_stable(tag: str, digest: str, *, run=output, sleep=time.sleep) -> None:
-    """Move each variant's aliases from its immutable versioned registry image."""
+def promote_stable(tag: str, digest: str, release_tag: str, *, run=output, sleep=time.sleep) -> None:
+    """Point the final ``vX.Y.Z``, stable and latest tags at the attempt's registry images.
+
+    ``tag`` is the attempt ref the images were pushed under; ``release_tag`` is
+    the final ``vX.Y.Z``, which only exists once the release publishes.
+    """
     require_stable_tag(tag)
+    if not STABLE_TAG_RE.fullmatch(release_tag):
+        raise DockerReleaseError(f"Not a final release tag: {release_tag!r}")
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
         raise DockerReleaseError("Invalid published manifest-list digest")
     if _version_digest(tag, "", run) != digest:
@@ -126,8 +132,9 @@ def promote_stable(tag: str, digest: str, *, run=output, sleep=time.sleep) -> No
     variants = (("", digest), ("-desktop", _version_digest(tag, "-desktop", run)))
     for suffix, version_digest in variants:
         command = [
-            "docker", "buildx", "imagetools", "create", "-t", f"{IMAGE}:stable{suffix}",
-            "-t", f"{IMAGE}:latest{suffix}", f"{IMAGE}@{version_digest}",
+            "docker", "buildx", "imagetools", "create", "-t", f"{IMAGE}:{release_tag}{suffix}",
+            "-t", f"{IMAGE}:stable{suffix}", "-t", f"{IMAGE}:latest{suffix}",
+            f"{IMAGE}@{version_digest}",
         ]
         for attempt in range(3):
             try:
@@ -137,7 +144,7 @@ def promote_stable(tag: str, digest: str, *, run=output, sleep=time.sleep) -> No
                 if attempt == 2:
                     raise
                 sleep(20)
-        for alias in ("stable", "latest"):
+        for alias in (release_tag, "stable", "latest"):
             for attempt in range(3):
                 if _inspect(f"{IMAGE}:{alias}{suffix}", run) == version_digest:
                     break

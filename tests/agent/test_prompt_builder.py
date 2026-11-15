@@ -169,8 +169,8 @@ class TestDynamicContextFileCap:
     @pytest.fixture(autouse=True)
     def _no_explicit_config(self, monkeypatch):
         # No explicit context_file_max_chars → dynamic path is eligible.
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.load_config", dict)
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", dict)
 
 
 
@@ -509,6 +509,63 @@ class TestBuildContextFilesPrompt:
         assert "From uppercase" in result
         assert "From lowercase" not in result
 
+    @pytest.mark.require_symlinks
+    @pytest.mark.parametrize("rel", [".hermes.md", "AGENTS.md", "CLAUDE.md", ".cursorrules", ".cursor/rules/team.mdc"])
+    def test_context_file_loads_only_when_it_resolves_inside_the_project(self, tmp_path, rel):
+        outside = tmp_path / "outside.txt"
+        outside.write_text("OUTSIDE-MARKER")
+        project = tmp_path / "project"
+        (project / ".git").mkdir(parents=True)
+        (project / "docs").mkdir()
+        (project / "docs" / "shared.md").write_text("INSIDE-MARKER")
+        link = project / rel
+        link.parent.mkdir(parents=True, exist_ok=True)
+
+        link.symlink_to(outside)
+        assert "OUTSIDE-MARKER" not in build_context_files_prompt(cwd=str(project), skip_soul=True)
+        # The /context manifest shares the discovery walk and reports the refusal, not a read failure.
+        from agent.context_file_sources import list_context_file_sources
+        sources = list_context_file_sources(cwd=str(project), skip_soul=True)
+        assert sources and {(s["status"], s["loaded"]) for s in sources} == {("skipped", False)}
+        link.unlink()
+        link.symlink_to(project / "docs" / "shared.md")
+        assert "INSIDE-MARKER" in build_context_files_prompt(cwd=str(project), skip_soul=True)
+        link.unlink()
+        link.write_text("REGULAR-MARKER")
+        assert "REGULAR-MARKER" in build_context_files_prompt(cwd=str(project), skip_soul=True)
+
+    @pytest.mark.require_symlinks
+    @pytest.mark.parametrize("loader", ["startup", "subdirectory_hint"])
+    def test_home_or_above_is_never_the_containment_root(self, tmp_path, monkeypatch, loader):
+        """A dotfiles repo at $HOME (startup context) or a session rooted at / (subdirectory hints) would
+        contain every file below it: a download the agent unpacked must not link a context file to a home file."""
+        home = tmp_path / "home"
+        (home / ".git").mkdir(parents=True)
+        (home / "notes.md").write_text("HOME-MARKER")
+        (home / "AGENTS.md").write_text("OWN-HOME-AGENTS")
+        unpacked = home / "Downloads" / "unpacked"
+        (unpacked / "docs").mkdir(parents=True)
+        (unpacked / "docs" / "rules.md").write_text("INSIDE-MARKER")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+
+        def load() -> str:
+            if loader == "startup":
+                return build_context_files_prompt(cwd=str(unpacked), skip_soul=True)
+            from agent.subdirectory_hints import SubdirectoryHintTracker
+            # A $HOME working dir disables hints outright (#76902); "/" is the remaining wide root.
+            return SubdirectoryHintTracker(working_dir="/").check_tool_call(
+                "read_file", {"path": str(unpacked / "x.py")}) or ""
+
+        link = unpacked / "AGENTS.md"
+        link.symlink_to(home / "notes.md")
+        assert "HOME-MARKER" not in load()
+        link.unlink()
+        link.symlink_to(unpacked / "docs" / "rules.md")
+        assert "INSIDE-MARKER" in load()
+        if loader == "startup":  # the user's own AGENTS.md at the dotfiles root still loads
+            assert "OWN-HOME-AGENTS" in load()
+
 
 
 
@@ -727,7 +784,7 @@ class TestEnvironmentHints:
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
-        monkeypatch.setattr("tools.bot_desktop.runtime.published_env", lambda: {})
+        monkeypatch.setattr("tools.bot_desktop.runtime.published_env", dict)
         _pb._BACKEND_PROBE_CACHE.clear()
         assert "Bot Screen" not in _pb.build_environment_hints()
 
@@ -838,7 +895,7 @@ class TestEnvironmentHints:
         probe must use the bare call instead of dying on TypeError."""
         import agent.prompt_builder as _pb
 
-        monkeypatch.setenv("TERMINAL_ENV", "singularity")
+        monkeypatch.setenv("TERMINAL_ENV", "daytona")
         _pb._clear_backend_probe_cache()
 
         calls = []
@@ -859,7 +916,7 @@ class TestEnvironmentHints:
         import tools.terminal_tool_backends as _tt
         monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _LegacyEnv())
 
-        assert _pb._probe_remote_backend("singularity") is not None
+        assert _pb._probe_remote_backend("daytona") is not None
         assert calls == ["bare"]
 
     def test_probe_remote_backend_ssh_is_probe_only_and_torn_down(self, monkeypatch):

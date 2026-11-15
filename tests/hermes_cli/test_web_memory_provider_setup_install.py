@@ -117,7 +117,7 @@ def test_setup_reports_restart_and_preserves_external_steps(tmp_path, monkeypatc
     }))
     monkeypatch.setattr("plugins.memory.find_provider_dir", lambda name: provider)
     monkeypatch.setattr(mp, "_load_memory_provider", lambda name: None)
-    monkeypatch.setattr(mp, "_discover_memory_provider_statuses", lambda: [])
+    monkeypatch.setattr(mp, "_discover_memory_provider_statuses", list)
     # The resolver seam is isolated; real union behavior is exercised above.
     def sync(*args, **kwargs):
         if python_failure:

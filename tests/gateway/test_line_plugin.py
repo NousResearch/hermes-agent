@@ -327,6 +327,45 @@ class TestSlowLLMPostbackRegression:
         assert adapter._client.reply.await_args.args[1][0]["text"] == adapter.expired_text
         assert "Uchat" not in adapter._pending_buttons
 
+    @staticmethod
+    def _tap(adapter, chat_id, rid):
+        asyncio.run(adapter._handle_postback_event({
+            "replyToken": f"reply-{chat_id}", "source": {"type": "user", "userId": chat_id},
+            "postback": {"data": json.dumps({"action": "show_response", "request_id": rid})}}))
+
+    @staticmethod
+    def _entry_in(adapter, state):
+        rid = adapter._cache.register_pending("Uchat-a")
+        if state is State.ERROR:
+            adapter._cache.set_error(rid, "private error for A")
+        elif state is not State.PENDING:
+            adapter._cache.set_ready(rid, "private answer for A")
+            if state is State.DELIVERED:
+                adapter._cache.mark_delivered(rid)
+        return rid
+
+    @pytest.mark.parametrize("state", list(State))
+    def test_request_id_from_another_chat_is_treated_as_unknown(self, adapter, state):
+        # #38628: a request id is a routing handle — chat B replaying chat A's id
+        # must not receive A's cached output nor settle A's entry.
+        rid = self._entry_in(adapter, state)
+        adapter._pending_buttons["Uchat-a"] = rid
+        self._tap(adapter, "Uchat-b", rid)
+        adapter._client.push.assert_not_awaited()
+        adapter._client.reply.assert_awaited_once()
+        assert adapter._client.reply.await_args.args == ("reply-Uchat-b", [{"type": "text", "text": adapter.expired_text}])
+        assert adapter._cache.get(rid).state is state
+        assert adapter._pending_buttons == {"Uchat-a": rid}
+
+    def test_originating_chat_still_receives_its_cached_answer(self, adapter):
+        rid = self._entry_in(adapter, State.READY)
+        adapter._pending_buttons["Uchat-a"] = rid
+        self._tap(adapter, "Uchat-a", rid)
+        assert adapter._client.reply.await_args.args[0] == "reply-Uchat-a"
+        assert adapter._client.reply.await_args.args[1][0]["text"] == "private answer for A"
+        assert adapter._cache.get(rid).state is State.DELIVERED
+        assert "Uchat-a" not in adapter._pending_buttons
+
 
 class TestEnvEnablement:
 
@@ -341,9 +380,9 @@ class TestStandaloneSend:
     def test_missing_token_returns_error(self, monkeypatch):
         monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
         from gateway.config import PlatformConfig
-        cfg = PlatformConfig(enabled=True, extra={})
-        result = asyncio.run(_standalone_send(cfg, "Uchat", "hi"))
-        assert "error" in result
+        for extra in ({}, {"channel_access_token": "   "}):  # a blank token never reaches the push API
+            result = asyncio.run(_standalone_send(PlatformConfig(enabled=True, extra=extra), "Uchat", "hi"))
+            assert "missing token" in result["error"]
 
 
 class TestPostbackButtonShape:
@@ -366,6 +405,8 @@ class TestCheckRequirements:
     def test_rejects_without_secret(self, monkeypatch):
         monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
         monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        assert not check_requirements()
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "   ")
         assert not check_requirements()
 
 
@@ -415,6 +456,13 @@ class TestAdapterInit:
         ad = LineAdapter(cfg)
         assert ad.channel_access_token == "tok"
         assert ad.channel_secret == "sec"
+        # A whitespace-only secret reads as unset, so connect fails closed instead of keying HMAC with blanks.
+        # So do null and other non-strings, which must not become guessable keys like "None" or "True".
+        for blank in ("   ", None, True, 0):
+            assert LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": "tok",
+                                                                   "channel_secret": blank})).channel_secret == ""
+            assert LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": blank,
+                                                                   "channel_secret": "sec"})).channel_access_token == ""
         assert ad.webhook_port == 7777
         assert ad.public_base_url == "https://x.example.com"
         assert ad.allowed_users == {"U1", "U2"}

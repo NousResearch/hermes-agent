@@ -24,4 +24,8 @@ Windows artifacts are signed universal `.msixbundle` files. macOS artifacts are 
 
 The native drivers run only on disposable GitHub Actions hosts. They verify old installation identity/provenance, click the actual in-app Update control, and observe native package replacement plus automatic relaunch. The driver must not launch the new app or manually start the relaunch waiter as the pass signal. New process identity, payload provenance, version/commit, backend health, and preserved user/plugin state must all agree. Recordings and logs use the existing per-leg artifact/report conventions.
 
+## When an arm fails
+
+Both drivers record the OLD app's own stdout and stderr (`old-app-output.log` on macOS, `proof/app-output.log` on Windows). When the macOS update phase fails, `update-evidence/` in its artifact holds what separates OLD crashing on quit, NEW crashing at launch and a swap that never ran: ShipIt's logs and a listing of its cache (from the sandbox and the runner's real home), crash reports written since the phase began, the installed bundle's version, stamp, signature and Gatekeeper verdict, the app's Hermes logs, matching processes and the unified log for ShipIt, the app and ReportCrash. The job log prints a summary of the same.
+
 Unit tests of feed/manifest helpers use transport fixtures only. Passing them does not prove native signing, deployment, update, or relaunch. A green merge/typecheck does not establish those properties either. Each release acceptance claim needs a real native run and its parsed receipts.

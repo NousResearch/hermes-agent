@@ -57,7 +57,7 @@ task = (f"Work in {work} (create it). Before EACH tool call, think carefully for
         "5) read it back; then reply DONE.")
 ag.run_conversation(task)
 time.sleep(1)
-log = subprocess.run(f"grep -h '\\[{sid}\\]' ~/.hermes/logs/agent.log | grep 'API call #'", shell=True, capture_output=True).stdout.decode("utf-8", "replace")
+log = subprocess.run(f"grep -h '\\[{sid}\\]' ~/.hermes/logs/agent.log | grep 'API call #'", shell=True, capture_output=True, check=False).stdout.decode("utf-8", "replace")
 rows = re.findall(r"API call #(\d+): .*in=(\d+) out=(\d+) .*cache=(\d+)/(\d+) \((\d+)%\)", log)
 for r in rows: print(f"  call {r[0]:>2} in={int(r[1]):>6} out={int(r[2]):>5} cached={int(r[3]):>6} ({r[5]}%) uncached={int(r[1])-int(r[3])}")
 print(f"ARM {arm}: captured {len(captured)} payloads")

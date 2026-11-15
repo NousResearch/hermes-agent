@@ -57,7 +57,11 @@ class _TerminalSlot:
                     turn_id=getattr(self.batch.agent, "_current_turn_id", "") or "",
                 )
                 try:
-                    self.guard_key = (ref.args["command"], config["env_type"], tt._docker_has_host_access(config))
+                    # Key on what will actually run: a foreground `cmd &` executes as `cmd`.
+                    command = ref.args["command"]
+                    if not ref.args.get("background"):
+                        command = tt.trailing_amp_background_command(command) or command
+                    self.guard_key = (command, config["env_type"], tt._docker_has_host_access(config))
                     self.decision = tt._check_all_guards(*self.guard_key)
                 finally:
                     reset_current_observability_context(tokens)
@@ -310,7 +314,12 @@ def terminal_approval_batch(agent, calls, messages, task_id):
                 batch.start()
             except (_CancelledPreparation, TimeoutError) as exc:
                 batch.close()
-                agent.interrupt(str(exc))
+                # A cancellation means a stop is already published (or our own
+                # close() ran): re-interrupting would overwrite the user's queued
+                # message/redirect. A timeout is a system stop: tool_reason only, no
+                # message (callers re-queue _interrupt_message as the user's next turn).
+                if isinstance(exc, TimeoutError):
+                    agent.interrupt(tool_reason="terminal batch preparation timeout")
                 # The sequential path must still persist a result for every
                 # assistant tool call, even if preparation never finished.
         yield

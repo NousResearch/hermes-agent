@@ -26,7 +26,7 @@ Usa cualquier modelo que quieras — [Nous Portal](https://portal.nousresearch.c
 <tr><td><b>Un bucle de aprendizaje cerrado</b></td><td>Memoria curada por el agente con recordatorios periódicos. Creación autónoma de habilidades tras tareas complejas. Las habilidades mejoran solas durante el uso. Búsqueda FTS5 de sesiones con resumención por LLM para recuperación entre sesiones. Modelado de usuario dialéctico <a href="https://github.com/plastic-labs/honcho">Honcho</a>. Compatible con el estándar abierto de <a href="https://agentskills.io">agentskills.io</a>.</td></tr>
 <tr><td><b>Automatizaciones programadas</b></td><td>Planificador cron integrado con entrega a cualquier plataforma. Informes diarios, copias de seguridad nocturnas, auditorías semanales — todo en lenguaje natural, ejecutándose de forma autónoma.</td></tr>
 <tr><td><b>Delega y paraleliza</b></td><td>Lanza subagentes aislados para flujos de trabajo paralelos. Escribe scripts de Python que llaman a herramientas vía RPC, convirtiendo pipelines de múltiples pasos en turnos de coste cero de contexto.</td></tr>
-<tr><td><b>Funciona en cualquier lugar, no solo en tu laptop</b></td><td>Siete backends de terminal — local, Docker, SSH, Singularity, Modal, Daytona y Vercel Sandbox. Daytona y Modal ofrecen persistencia sin servidor — el entorno de tu agente hiberna cuando está inactivo y se activa bajo demanda, costando casi nada entre sesiones. Ejecútalo en un VPS de $5 o un clúster de GPUs.</td></tr>
+<tr><td><b>Funciona en cualquier lugar, no solo en tu laptop</b></td><td>Seis backends de terminal integrados — local, Docker, SSH, Modal, Daytona y Vercel Sandbox — además de backends de plugins como Singularity/Apptainer. Daytona y Modal ofrecen persistencia sin servidor — el entorno de tu agente hiberna cuando está inactivo y se activa bajo demanda, costando casi nada entre sesiones. Ejecútalo en un VPS de $5 o un clúster de GPUs.</td></tr>
 <tr><td><b>Listo para investigación</b></td><td>Generación de trayectorias en lote, compresión de trayectorias para entrenar la próxima generación de modelos de llamadas a herramientas.</td></tr>
 </table>
 
@@ -50,7 +50,7 @@ Ejecuta esto en PowerShell:
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-El instalador de código fuente usa PM para Python 3.14, Node.js, npm,
+El instalador de código fuente usa PM para Python 3.14, Node.js, npm, pnpm,
 ripgrep, FFmpeg y las dependencias de Python. Si falta Git, descarga el archivo
 verificado de Git for Windows en el almacén de Hermes, sin reemplazar el Git
 del sistema. MSIX/App Installer es una distribución separada.
@@ -158,6 +158,7 @@ Si vienes de OpenClaw, Hermes puede importar automáticamente tu configuración,
 **En cualquier momento después de instalar:**
 
 ```bash
+hermes plugins install agent-importers  # una vez: OpenClaw, Claude Code, Codex y Cursor
 hermes claw migrate              # Migración interactiva (preset completo)
 hermes claw migrate --dry-run    # Vista previa de qué se migraría
 hermes claw migrate --preset user-data   # Migrar sin secretos

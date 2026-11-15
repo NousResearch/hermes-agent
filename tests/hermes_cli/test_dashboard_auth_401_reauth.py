@@ -142,7 +142,7 @@ class TestApi401Envelope:
     def test_invalid_cookie_clears_dead_cookie(self, gated_app):
         """Dead-cookie cleanup — Phase 6 requirement so the browser
         doesn't keep replaying the stale token on every request."""
-        gated_app.cookies.set(SESSION_AT_COOKIE, "garbage")
+        gated_app.cookies.set(f"__Host-{SESSION_AT_COOKIE}", "garbage")
         r = gated_app.get("/api/sessions")
         set_cookies = r.headers.get_list("set-cookie")
         assert any(
@@ -223,18 +223,26 @@ class TestTransparentRefreshOnAccessTokenEviction:
                 self.refresh_calls += 1
                 raise AssertionError("foreign refresh token reached Basic provider")
 
+        # Browsing is read-only; initialize the real store as its owner would.
+        from contextlib import closing
+        from hermes_state import SessionDB
+
+        with closing(SessionDB()) as db:
+            db.create_session("refresh-owner-session", source="cli")
+
         wrong = WrongProvider()
         _provider, valid_rt = self._build_rt_only_app()
         clear_providers()
         register_provider(wrong)
         register_provider(StubAuthProvider(default_ttl=900))
         gated_app.cookies.clear()
-        gated_app.cookies.set(SESSION_RT_COOKIE, valid_rt)
-        gated_app.cookies.set(SESSION_PROVIDER_COOKIE, "stub")
+        gated_app.cookies.set(f"__Host-{SESSION_RT_COOKIE}", valid_rt)
+        gated_app.cookies.set(f"__Host-{SESSION_PROVIDER_COOKIE}", "stub")
 
         response = gated_app.get("/api/sessions", follow_redirects=False)
 
         assert response.status_code == 200
+        assert [row["id"] for row in response.json()["sessions"]] == ["refresh-owner-session"]
         assert wrong.refresh_calls == 0
         assert any(
             SESSION_PROVIDER_COOKIE in cookie and "stub" in cookie
@@ -257,7 +265,7 @@ class TestTransparentRefreshOnAccessTokenEviction:
         import time as _t
         from tests.hermes_cli.conftest_dashboard_auth import _sign
         dead_rt = _sign({"sub": "u", "kind": "refresh", "exp": int(_t.time()) - 1})
-        gated_app.cookies.set(SESSION_RT_COOKIE, dead_rt)
+        gated_app.cookies.set(f"__Host-{SESSION_RT_COOKIE}", dead_rt)
         r = gated_app.get("/api/sessions")
         assert r.status_code == 401
         assert r.json()["error"] == "session_expired"
@@ -314,7 +322,7 @@ class TestAutoSsoRedirect:
         so instead of auto-redirecting again (which would ping-pong forever)
         we fall back to the /login interstitial and clear the marker."""
         # Simulate the return trip: guard cookie present, still no session.
-        gated_app.cookies.set(self.SSO_ATTEMPT_COOKIE, "1")
+        gated_app.cookies.set(f"__Host-{self.SSO_ATTEMPT_COOKIE}", "1")
         r = gated_app.get("/sessions", follow_redirects=False)
         assert r.status_code == 302
         # Falls back to the interstitial, NOT another /auth/login bounce.

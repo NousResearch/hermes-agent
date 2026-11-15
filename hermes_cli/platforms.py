@@ -29,7 +29,6 @@ PLATFORMS: OrderedDict[str, PlatformInfo] = OrderedDict([
     ("wecom_callback", PlatformInfo(label="💬 WeCom Callback",  default_toolset="hermes-wecom-callback")),
     ("weixin",         PlatformInfo(label="💬 Weixin",          default_toolset="hermes-weixin")),
     ("qqbot",          PlatformInfo(label="💬 QQBot",           default_toolset="hermes-qqbot")),
-    ("yuanbao",        PlatformInfo(label="🤖 Yuanbao",         default_toolset="hermes-yuanbao")),
     ("webhook",        PlatformInfo(label="🔗 Webhook",         default_toolset="hermes-webhook")),
     ("api_server",     PlatformInfo(label="🌐 API Server",      default_toolset="hermes-api-server")),
     ("cron",           PlatformInfo(label="⏰ Cron",            default_toolset="hermes-cron")),
@@ -55,7 +54,7 @@ def platform_label(key: str, default: str = "") -> str:
     return default
 
 
-def get_all_platforms() -> "OrderedDict[str, PlatformInfo]":
+def get_all_platforms() -> OrderedDict[str, PlatformInfo]:
     """PLATFORMS plus plugin-registered platforms (appended after builtins) — use for menus."""
     merged = OrderedDict(PLATFORMS)
     try:

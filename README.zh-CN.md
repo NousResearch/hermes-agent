@@ -23,7 +23,7 @@
 <tr><td><b>闭环学习</b></td><td>代理管理记忆并定期自我提醒。复杂任务后自动创建技能。技能在使用中自我改进。FTS5 会话搜索配合 LLM 摘要实现跨会话回溯。<a href="https://github.com/plastic-labs/honcho">Honcho</a> 辩证式用户建模。兼容 <a href="https://agentskills.io">agentskills.io</a> 开放标准。</td></tr>
 <tr><td><b>定时自动化</b></td><td>内置 cron 调度器，支持向任何平台投递。日报、夜间备份、周审计——全部用自然语言描述，无人值守运行。</td></tr>
 <tr><td><b>委派与并行</b></td><td>生成隔离子代理处理并行工作流。编写 Python 脚本通过 RPC 调用工具，将多步管道压缩为零上下文开销的轮次。</td></tr>
-<tr><td><b>随处运行</b></td><td>七种终端后端——本地、Docker、SSH、Daytona、Singularity、Modal 和 Vercel Sandbox。Daytona 和 Modal 提供 Serverless 持久化——代理环境空闲时休眠、按需唤醒，空闲期间几乎零成本。$5 VPS 或 GPU 集群都能跑。</td></tr>
+<tr><td><b>随处运行</b></td><td>六种内置终端后端——本地、Docker、SSH、Modal、Daytona 和 Vercel Sandbox，以及 Singularity/Apptainer 等插件后端。Daytona 和 Modal 提供 Serverless 持久化——代理环境空闲时休眠、按需唤醒，空闲期间几乎零成本。$5 VPS 或 GPU 集群都能跑。</td></tr>
 <tr><td><b>研究就绪</b></td><td>批量轨迹生成、轨迹压缩——用于训练下一代工具调用模型。</td></tr>
 </table>
 
@@ -144,6 +144,7 @@ Hermes 有两种入口：用 `hermes` 启动终端 UI，或运行网关从 Teleg
 **安装后任意时间：**
 
 ```bash
+hermes plugins install agent-importers  # 一次即可：支持 OpenClaw、Claude Code、Codex 和 Cursor
 hermes claw migrate              # 交互式迁移（完整预设）
 hermes claw migrate --dry-run    # 预览将要迁移的内容
 hermes claw migrate --preset user-data   # 仅迁移用户数据，不含密钥

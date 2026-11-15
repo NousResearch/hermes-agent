@@ -1,0 +1,20 @@
+name: hermes-verifier
+repo: https://github.com/am423/hermes-verifier
+sha: 514ff4a7a937e391fca763ba3c9732103f351531
+description: "Attach an independent verifier (advisor) model to your Hermes session: it reviews each primary-agent turn delta, raises findings (note / caution / blocker), and can steer a blocker back into the session before the primary agent goes wrong. Read-only tool access (read_file, search_files) is available but off by default and best treated as opt-in plumbing -- measured across 216 reviews the reviewer made ~4 tool calls. Supports a VERIFIER.yml roster of named specialists, each with its own model and tool grant, plus VERIFIER.md review priorities. Ships disabled and off by default. Disclosure — off by default. When enabled, each primary turn's regex-redacted transcript delta goes to the verifier model's provider on that provider's terms and billing (one or more calls per turn per roster entry). So do any VERIFIER.md / VERIFIER.yml briefs found in HERMES_HOME and from the working directory up to the repo root (confined to that root, 256 KiB per file). A project VERIFIER.yml can add named verifiers and instructions whose findings are injected into your session, and a blocker finding can keep a coding turn going. With advisor_tools on, an advisor can read any file the session can read through read_file/search_files, and those reads also go to the provider. The optional engagement gate sends a ≤1,500-char redacted digest per turn. The optional phase gate sends the redacted arguments of an impending destructive or publishing tool call and can block that call (it fails open). Findings, reasoning, short redacted excerpts and gate decisions are logged under HERMES_HOME/plugin-data/hermes-verifier (rotated at 8 MB). Adds a /verify command, a dashboard API and a Desktop Verifier page. Development scripts (evals/, sidecar/, autoresearch/) run only when launched by hand: provider experiments use DEEPSEEK_API_KEY from the process environment or the host `hermes` CLI, and offline analysis reads the active profile's session database and decision logs. No telemetry, no runtime shell execution, no access to Hermes's stored credentials."
+maintainer: am423
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/am423/hermes-verifier#readme
+version: "0.4.1"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_llm_call
+    - pre_tool_call
+    - pre_llm_call
+    - pre_verify
+    - on_session_reset
+  provides_middleware: []
+  requires_env: []

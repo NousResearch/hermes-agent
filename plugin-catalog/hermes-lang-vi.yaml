@@ -5,7 +5,7 @@ description: "Vietnamese (Tieng Viet) language pack for Hermes Agent — full UI
 maintainer: moken627-hub
 tier: community
 category: general
-requires_hermes: '>=0.22'
+requires_hermes: '>=0.21.6'
 docs_url: https://github.com/moken627-hub/hermes-lang-vi#readme
 version: "1.1.1"
 platforms: []

@@ -67,7 +67,7 @@ class TeamsPipelineConfig:
     teams_delivery: dict[str, Any] | None = None
 
     @classmethod
-    def from_dict(cls, payload: Optional[dict[str, Any]]) -> "TeamsPipelineConfig":
+    def from_dict(cls, payload: Optional[dict[str, Any]]) -> TeamsPipelineConfig:
         data = dict(payload or {})
         tmp_dir = data.get("tmp_dir") or data.get("tmpDir")
         flags = {"transcript_preferred": True, "transcript_required": False, "transcription_fallback": True, "ffmpeg_extract_audio": True}

@@ -273,7 +273,9 @@ def _discover_repos_payload(
     def _agg(root: str) -> dict:
         return repos.setdefault(
             root, {"root": root, "label": "", "sessions": 0, "last_active": 0.0})
-    cwd_rows = list(db.distinct_session_cwds())
+    # ``db`` is None for a profile whose session store was never initialized (read-only foreign
+    # handles never bootstrap it): the scan cache in projects.db is still authoritative.
+    cwd_rows = list(db.distinct_session_cwds()) if db is not None else []
     # Parallel-warm the per-cwd git probes so a cold first paint doesn't serialize them.
     git_probe.warm_roots(str(r.get("cwd") or "") for r in cwd_rows)
     cwd_to_root: dict[str, str] = {}
@@ -291,7 +293,7 @@ def _discover_repos_payload(
     # A read-only handle (foreign-profile RPC) must not attempt the persistence write: it would
     # raise and be swallowed here, silently dropping the backfill. That profile's own gateway
     # backfills on its own refreshes.
-    if backfill and not getattr(db, "read_only", False):
+    if backfill and db is not None and not getattr(db, "read_only", False):
         try:
             db.backfill_repo_roots(cwd_to_root)
         except Exception:
@@ -316,7 +318,17 @@ def _discover_repos_payload(
 
 
 # Not user conversations; subagent/compression children are dropped by include_children=False.
-_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot"]
+# Messaging-platform rows are user conversations, but the desktop lists them in their own
+# per-platform Messaging section. With no workspace cwd they would all fall into Home too, so the
+# same chat showed twice. Keep in step with MESSAGING_SESSION_SOURCE_IDS in
+# apps/desktop/src/lib/session-source.ts: dropping a source the desktop does not render under
+# Messaging would hide its rows from the sidebar entirely.
+_MESSAGING_SESSION_SOURCES = (
+    "telegram", "discord", "slack", "mattermost", "matrix", "signal", "whatsapp", "bluebubbles",
+    "photon", "homeassistant", "email", "sms", "webhook", "api_server", "weixin", "wecom", "qqbot",
+    "yuanbao", "dingtalk", "feishu",
+)
+_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot", *_MESSAGING_SESSION_SOURCES]
 
 
 def _project_tree_row(r: dict) -> dict:

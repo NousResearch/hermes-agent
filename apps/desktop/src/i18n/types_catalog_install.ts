@@ -14,7 +14,7 @@ export interface CatalogInstallTranslations {
   hideNames: string
   skill: (name: string) => string
   kind: { plugin: string; skill: string }
-  tier: { official: string; community: string }
+  tier: { official: string; verified: string; community: string }
   targetProfile: (profile: string) => string
   sendFailed: string
   commitLabel: string

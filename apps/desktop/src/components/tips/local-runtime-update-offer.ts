@@ -1,7 +1,7 @@
 import { getLocalModelsJobs, getLocalModelsStatus } from '@/hermes'
 import type { Translations } from '@/i18n/types'
 import { queryClient } from '@/lib/query-client'
-import { localSetupDue } from '@/lib/tips/local-cta'
+import { localTipDue } from '@/lib/tips/local-cta'
 import { $activeGatewayRoute } from '@/store/gateway'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { localRuntimeInstallBusy, startLocalRuntimeInstall } from '@/store/local-runtime-jobs'
@@ -97,7 +97,7 @@ export function offerLocalRuntimeUpdateTip(copy: Translations['tips'], openLocal
 
   const tipId = `local-runtime-update:${status.configured_tag}`
 
-  if ($retiredTips.get().includes(tipId) || !localSetupDue(Date.now(), $tipShownAt.get()[tipId])) {
+  if ($retiredTips.get().includes(tipId) || !localTipDue(Date.now(), $tipShownAt.get()[tipId])) {
     return false
   }
 

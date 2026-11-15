@@ -90,7 +90,7 @@ async def test_send_with_retry_uses_structured_retryable_flag(
     async def _fake_sleep(delay: float) -> None:
         sleeps.append(delay)
 
-    async def _fake_sidecar_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fake_sidecar_call(path: str, body: dict[str, Any]) -> dict[str, Any]:
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -124,9 +124,9 @@ async def test_typing_cooldown_suppresses_rapid_repeats(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _make_adapter(monkeypatch)
-    calls: list[Dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
 
-    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+    async def _fake_call(path: str, payload: dict[str, Any]) -> Any:
         calls.append(payload)
         return {"ok": True}
 
@@ -147,7 +147,7 @@ async def test_stop_typing_resets_cooldown(
     adapter = _make_adapter(monkeypatch)
     starts = 0
 
-    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+    async def _fake_call(path: str, payload: dict[str, Any]) -> Any:
         nonlocal starts
         if payload.get("state") == "start":
             starts += 1
@@ -274,7 +274,7 @@ async def test_degraded_stream_health_raises_retryable_fatal(
     adapter._inbound_running = True
     adapter._sidecar_health_interval = 0.0
 
-    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+    async def _fake_call(path: str, payload: dict[str, Any]) -> Any:
         assert path == "/healthz"
         return {
             "ok": True,
@@ -491,7 +491,7 @@ async def test_standalone_send_classifies_target_not_allowed(
         )
 
         @staticmethod
-        def json() -> Dict[str, Any]:
+        def json() -> dict[str, Any]:
             return {
                 "ok": False,
                 "error": "internal sidecar error",
@@ -503,10 +503,10 @@ async def test_standalone_send_classifies_target_not_allowed(
         def __init__(self, *a: Any, **k: Any) -> None:
             pass
 
-        async def __aenter__(self) -> "_FakeClient":
+        async def __aenter__(self) -> _FakeClient:
             return self
 
-        async def __aexit__(self, *a: Any) -> bool:
+        async def __aexit__(self, *a: object) -> bool:
             return False
 
         async def post(self, *a: Any, **k: Any) -> _Resp:

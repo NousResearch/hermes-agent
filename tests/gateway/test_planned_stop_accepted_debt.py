@@ -12,7 +12,7 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import pytest
@@ -54,7 +54,7 @@ def _accepted_unrecorded(tmp_path: Path, monkeypatch, *, home_writable: bool) ->
         root.chmod(0o755)
     body = json.loads(marker.read_text(encoding="utf-8"))
     assert body.get("accepted") is (None if home_writable else True), "premise: receipt vs stamped request"
-    body["written_at"] = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+    body["written_at"] = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
     marker.write_text(json.dumps(body), encoding="utf-8")
     saved = pause_record.read()["token"]
     assert saved["stop_sent"] == [], "premise: no checkpoint landed in the record"

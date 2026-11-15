@@ -97,6 +97,18 @@ def _source_channels_resolve_locally(request, monkeypatch):
         return ChannelResolution(record, record, None)
 
     monkeypatch.setattr(source_releases, "_resolve_channel", resolve)
+    # stable reads GitHub releases directly; keep it off the network the same way.
+    monkeypatch.setattr(source_releases, "_resolve_stable", lambda repository, *_: source_releases.SourceTarget(
+        "stable", "stable", repository, branch="stable"))
+
+
+@pytest.fixture(autouse=True)
+def _no_detached_commit_graph_writer(monkeypatch):
+    """The update's maintenance starts a detached ``git commit-graph write`` on the checkout it ran
+    from: in a test, this repository or a tmp copy deleted under it. In-process runs never spawn it."""
+    from hermes_cli import git_commit_graph
+
+    monkeypatch.setattr(git_commit_graph, "spawn_commit_graph_refresh", lambda root: False)
 
 
 @pytest.fixture(autouse=True)

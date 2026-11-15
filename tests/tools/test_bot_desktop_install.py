@@ -256,7 +256,7 @@ def test_install_slot_is_held_across_processes(tmp_path):
             "import fcntl,sys\nfh=open(sys.argv[1],'a+',encoding='utf-8')\n"
             "try:\n    fcntl.flock(fh.fileno(), fcntl.LOCK_EX|fcntl.LOCK_NB); print('free')\n"
             "except OSError:\n    print('held')", str(runtime.state_dir() / "install.lock")],
-            capture_output=True, text=True)
+            capture_output=True, text=True, check=False)
         assert probe.stdout.strip() == "held", probe
     finally:
         install.release(key)

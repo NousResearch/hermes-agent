@@ -69,7 +69,7 @@ def _build(n_pairs, big_indices, big_chars=9000, small="ok"):
 
 
 def _tool_by_id(msgs, cid):
-    return [m for m in msgs if m.get("role") == "tool" and m.get("tool_call_id") == cid][0]
+    return next(m for m in msgs if m.get("role") == "tool" and m.get("tool_call_id") == cid)
 
 
 def test_prunes_below_compression_threshold():
@@ -145,7 +145,7 @@ def test_successful_full_compression_resets_proactive_runway():
         proactive_prune_tokens=48_000,
         proactive_prune_min_result_chars=8_000,
     )
-    first, n1 = c.prune_tool_results_only(
+    _first, n1 = c.prune_tool_results_only(
         _build(8, big_indices={0, 1, 2}), current_tokens=120_000,
     )
     assert n1 >= 3

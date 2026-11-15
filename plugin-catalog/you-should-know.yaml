@@ -1,0 +1,21 @@
+name: you-should-know
+repo: https://github.com/bonesnasty/you-should-know
+sha: e100b4abe10dd8f078e6420e2633173950c5957b
+description: "A side agent rereads the conversation while Hermes works on longer turns and surfaces the one thing you might have missed — a silent tradeoff, an unverified result, an irreversible action — as a dismissible note above the prompt. Disclosure — on tool-using turns in Desktop, CLI and TUI (configurable via `platforms`), sends up to 12,000 characters of the recent conversation, including clipped tool calls and results, to Hermes's configured auxiliary model up to five extra times per turn (45 s cooldown), which adds model cost; notes are stored in the plugin's own data folder."
+maintainer: BonesNasty
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/bonesnasty/you-should-know#readme
+version: "1.0.0"
+platforms: []
+title: "You should know"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_api_request
+    - post_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

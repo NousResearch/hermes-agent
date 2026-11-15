@@ -131,11 +131,67 @@ def _format_live_refine_output(sid: str, session: Optional[dict], arg: str) -> s
     )
 
 
+def _usage_route(session: dict) -> dict:
+    """``provider`` / ``base_url`` / ``api_key`` that /usage reports for: the agent's, else the route its
+    build resolves (``_resolve_agent_model_runtime`` over the session's pick or stored route, so
+    ``provider: auto`` is the saved login). Call inside ``_session_profile_runtime_scope(session)``."""
+    if (agent := session.get("agent")) is not None:
+        return {key: getattr(agent, key, None) for key in ("provider", "base_url", "api_key")}
+    build = _deferred_build_agent_kwargs(session, None)
+    try:
+        return _resolve_agent_model_runtime(build.get("model_override"), build.get("provider_override"))[1]
+    except (RuntimeError, ValueError):  # signed out or unconfigured (AuthError is a RuntimeError): no route
+        return {}
+
+
+def _usage_on_nous_route(route: dict) -> bool:
+    """The /topup CTA applies to a Nous route only; another provider's session sees the balance alone."""
+    from agent.billing_links import is_nous_inference_route
+    return is_nous_inference_route(route.get("provider") or "", route.get("base_url") or "")
+
+
+def _usage_nous_fields(session: dict) -> dict:
+    """``session.usage``'s Nous fields: ``nous_route`` (the /topup CTA applies), plus the balance lines
+    whenever Nous is signed in (``nous_credits_usage_fields``, which never raises), in the session's scope."""
+    from agent.account_usage_nous import nous_credits_usage_fields
+    with _session_profile_runtime_scope(session):
+        nous_route = _usage_on_nous_route(_usage_route(session))
+        return {**nous_credits_usage_fields(session.get("agent"), nous_route=nous_route), "nous_route": nous_route}
+
+
+def _usage_account_blocks(session: dict) -> list[str]:
+    """Provider limits then the Nous section (``nous_usage_lines``), as CLI/messaging /usage show them;
+    neither needs an agent. Both read the session profile's credentials, unreadable outside its scope
+    when multiplexed (#132422)."""
+    from agent.account_usage import account_limit_lines
+    from agent.account_usage_nous import nous_usage_lines
+    agent = session.get("agent")
+    lines: list[str] = []
+    with _session_profile_runtime_scope(session):
+        route = _usage_route(session)
+        with contextlib.suppress(Exception):
+            lines += account_limit_lines(route.get("provider"), base_url=route.get("base_url"),
+                                         api_key=route.get("api_key"))
+        with contextlib.suppress(Exception):
+            # Window plans: the last reply's gauges lift the portal's lagging percents (``is True``: a
+            # Mock agent's attribute is not a plan). Every other account: no gauges.
+            state = getattr(agent, "_credits_state", None)
+            window = getattr(state, "is_usage_window", False) is True
+            lines += nous_usage_lines(nous_route=_usage_on_nous_route(route), credits_state=state if window else None)
+    return lines
+
+
 def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
+    extra = _usage_account_blocks(session)
+    tokens = _format_live_usage_tokens(session)
+    return "\n\n".join(filter(None, [tokens, "\n".join(extra)])) or _NO_AGENT_USAGE
+
+
+def _format_live_usage_tokens(session: dict) -> str:
     agent = session.get("agent")
     usage = _session_usage_snapshot(session)
     if agent is None and not usage:
-        return _NO_AGENT_USAGE
+        return ""
     if session.get("_metadata_message_count") is not None:
         message_count = int(session.get("_metadata_message_count") or 0)
     else:
@@ -156,7 +212,8 @@ def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
     rows += [("Messages:", f"{message_count:,}"), ("Compressions:", n("compressions"))]
     model = usage.get("model") or _metadata_mirror(session).get("model") or getattr(agent, "model", "") or "(unknown)"
     lines = ["Session Token Usage", "────────────────────────────────────────", f"Model: {model}"]
-    return "\n".join(lines + [f"{label:<30}{value}" for label, value in rows])
+    lines += [f"{label:<30}{value}" for label, value in rows]
+    return "\n".join(lines)
 
 
 def _live_session_messages(session: dict) -> Optional[list]:
@@ -415,7 +472,7 @@ def _mirror_personality(sid, session, agent, arg) -> None:
 
 
 _FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None, "auto": "auto", "cold": "cold",
-               "ultrafast": "ultrafast"}
+               "ultrafast": "ultrafast", "ultra": "ultrafast"}
 
 
 def _mirror_fast(sid, session, agent, arg) -> None:
@@ -438,6 +495,17 @@ def _mirror_stop(sid, session, agent, arg) -> None:
 
 
 # name → mirror(sid, session, agent, arg); a falsy return means "no warning".
+def _mirror_autoprune(sid, session, agent, arg) -> str:
+    """An answered low-disk question drops its sticky notice (``later`` too: it re-arms in a week);
+    ``status``, a typo or a failed save leave it up."""
+    from pathlib import Path
+    from hermes_cli.prune_advisor import answered
+    home = session.get("profile_home")
+    if arg and answered(Path(home) if home else None):
+        _emit("notification.clear", sid, {"key": "sessions.auto_prune"})
+    return ""
+
+
 _SLASH_MIRRORS = {
     "model": lambda sid, session, agent, arg: (
         _apply_model_switch(sid, session, arg).get("warning", "") if arg and agent else ""),
@@ -445,7 +513,8 @@ _SLASH_MIRRORS = {
     "compress": lambda sid, session, agent, arg: (
         _compress_live_with_feedback(sid, session, agent, arg, snapshot_kwargs=False) if agent else ""),
     "fast": _mirror_fast,
-    "reload-mcp": _mirror_reload_mcp, "stop": _mirror_stop}
+    "reload-mcp": _mirror_reload_mcp, "stop": _mirror_stop,
+    "autoprune": _mirror_autoprune}
 
 
 def _compute_host_slash(sid: str, session: dict, name: str, command: str) -> tuple[str, str]:
@@ -455,17 +524,18 @@ def _compute_host_slash(sid: str, session: dict, name: str, command: str) -> tup
     waits longer and installs a late-ack adopter so a slow compression still lands here."""
     route_name = f"slash.{name}"
     is_compress = name == "compress"
-
-    def _on_late_ack(late: dict, _sid=sid) -> None:
-        _adopt_late_compute_host_compress_ack(_sid, session, late, route_name=route_name)
     try:
-        ack = _send_compute_host_control(
-            sid, route_name=route_name, command=command, wait=True,
-            **({"timeout": _compute_host_compress_wait_seconds(), "on_late_ack": _on_late_ack} if is_compress else {}))
+        if name == "personality":
+            ack = _send_compute_host_control(sid, route_name=route_name, command=command, wait=True)
+        else:  # the host's /model marker and /compress commit write this chat's transcript
+            ack = _send_claimed_compute_host_control(
+                sid, session, route_name=route_name, command=command, compress=is_compress)
     except queue.Empty:
         if is_compress:
             return "pending", "compression still running in the background; the transcript will refresh when it finishes"
         return "failed", f"compute-host {route_name} failed: timed out"
+    except SessionNotOwned:
+        raise  # refused before the host was contacted: every route answers 4090, not a host failure
     except Exception as exc:
         return "failed", f"compute-host {route_name} failed: {exc}"
     if ack.get("type") in {"control.error", "error"}:
@@ -496,6 +566,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             return mirror(sid, session, agent, arg) or ""
     except CompressionBusy as e:  # a turn won the race after the unlocked running check above
         return str(e)
+    except SessionNotOwned:
+        raise  # another surface owns the chat: the RPC answers 4090, not a sync warning
     except Exception as e:
         if name == "compress" and agent:
             from agent.conversation_compression import finalize_context_engine_compression_notification

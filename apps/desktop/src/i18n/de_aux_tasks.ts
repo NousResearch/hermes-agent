@@ -9,10 +9,6 @@ export const deAuxTasks: AuxTaskCopyMap = {
     label: 'Kompression',
     hint: 'Kontext-Verdichtung'
   },
-  skills_hub: {
-    label: 'Skills-Hub',
-    hint: 'Skill-Suche'
-  },
   approval: {
     label: 'Freigabe',
     hint: 'Intelligente Auto-Freigabe'
@@ -29,6 +25,7 @@ export const deAuxTasks: AuxTaskCopyMap = {
     label: 'Review',
     hint: '/review Bewertungs-Subagent'
   },
+  voice_chat: { label: 'Sprachchat', hint: 'Gesprochene Antworten im Sprachmodus' },
   triage_specifier: {
     label: 'Triage-Spezifizierer',
     hint: 'Kanban-Spezifikation ausarbeiten'

@@ -99,7 +99,7 @@ console.log(JSON.stringify(process.env));
         # -File, not -Command: Windows PowerShell 5.1 reads a multi-line -Command argument as
         # far as the first line break and exits 0 having run only the preference line.
         script = tmp_path / "probe.ps1"
-        script.write_text('''$ErrorActionPreference = 'Stop'
+        script.write_text(r'''$ErrorActionPreference = 'Stop'
 [Console]::Error.WriteLine("probe start: $($PSVersionTable.PSVersion) assets=$env:ASSETS python=$env:PROBE_PYTHON")
 trap { [Console]::Error.WriteLine("probe trap: $_"); [Console]::Error.WriteLine($_.ScriptStackTrace); exit 97 }
 . (Join-Path $env:ASSETS 'source-build-env.ps1')
@@ -137,8 +137,10 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
         print("powershell probe:", shell, file=sys.stderr)
     for sha in (old, new):
         git("checkout", "-q", "-B", "installed", sha)
+        # A liveness bound, not a speed assertion: a cold Windows PowerShell 5.1 plus its git and
+        # Python children exceeded 30 s on a loaded arm64 runner with the probe otherwise healthy.
         result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True, stdin=subprocess.DEVNULL,
-                                text=True, encoding="utf-8", errors="replace", timeout=30)
+                                text=True, encoding="utf-8", errors="replace", timeout=180, check=False)
         assert result.returncode == 0, result.stdout + result.stderr
         assert Path(env["PROBE_OUT"]).is_file(), (
             f"the build child wrote no stamp (shell={command[0]} rc={result.returncode})\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}")

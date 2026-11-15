@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRIBUTORS_EMAILS_DIR = REPO_ROOT / "contributors" / "emails"
 
 
-def _load_contributor_dir(directory: "Path | None" = None) -> dict:
+def _load_contributor_dir(directory: Path | None = None) -> dict:
     """Load one-file-per-email mappings from contributors/emails/.
 
     Filename = commit-author email, first non-comment line = GitHub login.

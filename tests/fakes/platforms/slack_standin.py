@@ -61,20 +61,20 @@ class SlackStandin(StandinServer):
         self._ts_base = int(time.time())
         self._ts_seq = itertools.count(100)
         self._ids = itertools.count(1)
-        self._sockets: List[web.WebSocketResponse] = []
-        self.acks: Dict[str, Dict[str, Any]] = {}
-        self.envelopes: List[Dict[str, Any]] = []
+        self._sockets: list[web.WebSocketResponse] = []
+        self.acks: dict[str, dict[str, Any]] = {}
+        self.envelopes: list[dict[str, Any]] = []
         # (channel, ts) -> Visible for BOT messages; every message (bot + inbound) per channel for
         # conversations.history/replies.
-        self._visible: Dict[tuple, Visible] = {}
-        self._history: Dict[str, List[Dict[str, Any]]] = {}
-        self.files: Dict[str, Dict[str, Any]] = {}
-        self.uploads: Dict[str, bytes] = {}
-        self.users: Dict[str, Dict[str, Any]] = {}
+        self._visible: dict[tuple, Visible] = {}
+        self._history: dict[str, list[dict[str, Any]]] = {}
+        self.files: dict[str, dict[str, Any]] = {}
+        self.uploads: dict[str, bytes] = {}
+        self.users: dict[str, dict[str, Any]] = {}
         # Ephemeral replies (response_url POSTs + chat.postEphemeral): seen only by one user, so kept
         # out of ``visible()``. response id -> (channel, user) for response_url routing.
-        self._responses: Dict[str, tuple] = {}
-        self._ephemerals: List[Dict[str, Any]] = []
+        self._responses: dict[str, tuple] = {}
+        self._ephemerals: list[dict[str, Any]] = []
 
     @property
     def api_base(self) -> str:
@@ -97,8 +97,8 @@ class SlackStandin(StandinServer):
         app.router.add_post("/response/{rid}", self._response_url)
         return app
 
-    async def _params(self, request: web.Request) -> Dict[str, Any]:
-        params: Dict[str, Any] = dict(request.query)
+    async def _params(self, request: web.Request) -> dict[str, Any]:
+        params: dict[str, Any] = dict(request.query)
         ctype = request.content_type or ""
         if ctype == "application/json":
             params.update(await request.json() or {})
@@ -114,11 +114,11 @@ class SlackStandin(StandinServer):
         return {k: _decode(k, v) for k, v in params.items()}
 
     @staticmethod
-    def _token(request: web.Request, params: Dict[str, Any]) -> str:
+    def _token(request: web.Request, params: dict[str, Any]) -> str:
         auth = request.headers.get("Authorization", "")
         return auth[7:] if auth.startswith("Bearer ") else str(params.pop("token", ""))
 
-    def _reply(self, body: Dict[str, Any]) -> web.Response:
+    def _reply(self, body: dict[str, Any]) -> web.Response:
         return web.json_response(body, headers={"x-oauth-scopes": _SCOPES, "x-accepted-oauth-scopes": ""})
 
     async def _api(self, request: web.Request) -> web.Response:
@@ -149,7 +149,7 @@ class SlackStandin(StandinServer):
         self.record(method, params, body)
         return self._reply(body)
 
-    def _fault_view(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _fault_view(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method not in ("chat.appendStream", "chat.stopStream"):
             return params
         with self._lock:
@@ -190,7 +190,7 @@ class SlackStandin(StandinServer):
         self._responses[rid] = (channel, user_id)
         return f"{self.base_url}/response/{rid}"
 
-    def ephemerals(self, channel: str) -> List[Dict[str, Any]]:
+    def ephemerals(self, channel: str) -> list[dict[str, Any]]:
         with self._lock:
             return [e for e in self._ephemerals if e["channel"] == str(channel)]
 
@@ -228,15 +228,15 @@ class SlackStandin(StandinServer):
     def socket_count(self) -> int:
         return len([ws for ws in self._sockets if not ws.closed])
 
-    async def _asend(self, envelope: Dict[str, Any]) -> None:
+    async def _asend(self, envelope: dict[str, Any]) -> None:
         live = [ws for ws in self._sockets if not ws.closed]
         if not live:
             raise RuntimeError("no Socket Mode client connected to the Slack stand-in")
         # Slack delivers one envelope to ONE of the app's connections.
         await live[-1].send_str(json.dumps(envelope))
 
-    def push(self, envelope_type: str, payload: Dict[str, Any], *, retry_attempt: int = 0,
-             retry_reason: str = "", accepts_response_payload: bool = False) -> Dict[str, Any]:
+    def push(self, envelope_type: str, payload: dict[str, Any], *, retry_attempt: int = 0,
+             retry_reason: str = "", accepts_response_payload: bool = False) -> dict[str, Any]:
         envelope = {"envelope_id": str(uuid.uuid4()), "type": envelope_type, "payload": payload,
                     "accepts_response_payload": accepts_response_payload,
                     "retry_attempt": retry_attempt, "retry_reason": retry_reason}
@@ -245,12 +245,12 @@ class SlackStandin(StandinServer):
         self.run_in_loop(self._asend(envelope))
         return envelope
 
-    def acked(self, envelope: Dict[str, Any]) -> bool:
+    def acked(self, envelope: dict[str, Any]) -> bool:
         with self._lock:
             return envelope["envelope_id"] in self.acks
 
     # Web API methods ---------------------------------------------------------------------------
-    def _user(self, user_id: str) -> Dict[str, Any]:
+    def _user(self, user_id: str) -> dict[str, Any]:
         if user_id in self.users:
             return self.users[user_id]
         is_bot = user_id == BOT_USER_ID
@@ -259,9 +259,9 @@ class SlackStandin(StandinServer):
                 "is_bot": is_bot, "is_app_user": False, "tz": "UTC",
                 "profile": {"display_name": name, "real_name": name.title(), "bot_id": BOT_ID if is_bot else None}}
 
-    def _channel(self, channel: str) -> Dict[str, Any]:
+    def _channel(self, channel: str) -> dict[str, Any]:
         is_im = channel.startswith("D")
-        info: Dict[str, Any] = {"id": channel, "is_im": is_im, "is_channel": channel.startswith("C"),
+        info: dict[str, Any] = {"id": channel, "is_im": is_im, "is_channel": channel.startswith("C"),
                                 "is_group": channel.startswith("G"), "is_mpim": False, "is_private": not channel.startswith("C"),
                                 "is_member": True, "is_archived": False, "context_team_id": TEAM_ID}
         if is_im:
@@ -270,42 +270,42 @@ class SlackStandin(StandinServer):
             info["name"] = f"standin-{channel.lower()}"
         return info
 
-    def _m_auth_test(self, _p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_auth_test(self, _p: dict[str, Any]) -> dict[str, Any]:
         return {"url": "https://standin.slack.com/", "team": "Standin", "user": BOT_NAME, "team_id": TEAM_ID,
                 "user_id": BOT_USER_ID, "bot_id": BOT_ID, "is_enterprise_install": False}
 
-    def _m_apps_connections_open(self, _p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_apps_connections_open(self, _p: dict[str, Any]) -> dict[str, Any]:
         return {"url": self.ws_url}
 
-    def _m_users_info(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_users_info(self, p: dict[str, Any]) -> dict[str, Any]:
         return {"user": self._user(str(p.get("user", "")))}
 
-    def _m_bots_info(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_bots_info(self, p: dict[str, Any]) -> dict[str, Any]:
         return {"bot": {"id": p.get("bot", BOT_ID), "name": BOT_NAME, "user_id": BOT_USER_ID, "app_id": APP_ID}}
 
-    def _m_conversations_info(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_conversations_info(self, p: dict[str, Any]) -> dict[str, Any]:
         return {"channel": self._channel(str(p.get("channel", "")))}
 
-    def _m_users_conversations(self, _p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_users_conversations(self, _p: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             ids = sorted(c for c in self._history if not c.startswith("D"))
         return {"channels": [self._channel(c) for c in ids], "response_metadata": {"next_cursor": ""}}
 
-    def _m_conversations_open(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_conversations_open(self, p: dict[str, Any]) -> dict[str, Any]:
         users = str(p.get("users", "")).split(",")[0]
         return {"channel": self._channel("D" + users[1:])}
 
-    def _thread_messages(self, channel: str, ts: str) -> List[Dict[str, Any]]:
+    def _thread_messages(self, channel: str, ts: str) -> list[dict[str, Any]]:
         with self._lock:
             msgs = list(self._history.get(channel, []))
         return [m for m in msgs if m["ts"] == ts or m.get("thread_ts") == ts]
 
-    def _m_conversations_replies(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_conversations_replies(self, p: dict[str, Any]) -> dict[str, Any]:
         msgs = self._thread_messages(str(p.get("channel", "")), str(p.get("ts", "")))
         limit = int(p.get("limit") or 1000)
         return {"messages": msgs[:limit], "has_more": False, "response_metadata": {"next_cursor": ""}}
 
-    def _m_conversations_history(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_conversations_history(self, p: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             msgs = [m for m in self._history.get(str(p.get("channel", "")), []) if not m.get("thread_ts")
                     or m.get("thread_ts") == m["ts"]]
@@ -313,11 +313,11 @@ class SlackStandin(StandinServer):
         return {"messages": list(reversed(msgs))[:limit], "has_more": False,
                 "response_metadata": {"next_cursor": ""}}
 
-    def _remember(self, channel: str, msg: Dict[str, Any]) -> None:
+    def _remember(self, channel: str, msg: dict[str, Any]) -> None:
         with self._lock:
             self._history.setdefault(channel, []).append(msg)
 
-    def _bot_post(self, channel: str, text: str, p: Dict[str, Any], kind: str) -> Dict[str, Any]:
+    def _bot_post(self, channel: str, text: str, p: dict[str, Any], kind: str) -> dict[str, Any]:
         ts = self.next_ts()
         msg = {"type": "message", "user": BOT_USER_ID, "bot_id": BOT_ID, "app_id": APP_ID, "text": text,
                "ts": ts, "team": TEAM_ID}
@@ -332,7 +332,7 @@ class SlackStandin(StandinServer):
                 "kind": kind, "thread_ts": msg.get("thread_ts"), "blocks": p.get("blocks")})
         return msg
 
-    def _m_chat_postMessage(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_chat_postMessage(self, p: dict[str, Any]) -> dict[str, Any]:
         channel = str(p.get("channel", ""))
         text = str(p.get("text") or "")
         if not channel:
@@ -344,20 +344,20 @@ class SlackStandin(StandinServer):
         msg = self._bot_post(channel, text, p, "text")
         return {"channel": channel, "ts": msg["ts"], "message": msg}
 
-    def _m_chat_postEphemeral(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_chat_postEphemeral(self, p: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             self._ephemerals.append({"channel": str(p.get("channel", "")), "user": p.get("user"),
                                      "text": p.get("text", ""), "via": "chat.postEphemeral"})
         return {"message_ts": self.next_ts()}
 
-    def _vis(self, p: Dict[str, Any]) -> Visible:
+    def _vis(self, p: dict[str, Any]) -> Visible:
         with self._lock:
             vis = self._visible.get((str(p.get("channel", "")), str(p.get("ts", ""))))
         if vis is None or vis.deleted:
             raise _ApiError("message_not_found")
         return vis
 
-    def _m_chat_update(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_chat_update(self, p: dict[str, Any]) -> dict[str, Any]:
         vis = self._vis(p)
         text = str(p.get("text") or "")
         if len(text) > MAX_TEXT:
@@ -370,20 +370,20 @@ class SlackStandin(StandinServer):
         return {"channel": p["channel"], "ts": p["ts"], "text": text,
                 "message": {"type": "message", "user": BOT_USER_ID, "bot_id": BOT_ID, "text": text}}
 
-    def _m_chat_delete(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_chat_delete(self, p: dict[str, Any]) -> dict[str, Any]:
         vis = self._vis(p)
         with self._lock:
             vis.deleted = True
         return {"channel": p["channel"], "ts": p["ts"]}
 
-    def _m_chat_startStream(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_chat_startStream(self, p: dict[str, Any]) -> dict[str, Any]:
         channel = str(p.get("channel", ""))
         if not p.get("thread_ts"):
             raise _ApiError("invalid_arguments")
         msg = self._bot_post(channel, str(p.get("markdown_text") or ""), p, "stream")
         return {"channel": channel, "ts": msg["ts"]}
 
-    def _append(self, p: Dict[str, Any], stop: bool) -> Dict[str, Any]:
+    def _append(self, p: dict[str, Any], stop: bool) -> dict[str, Any]:
         vis = self._vis(p)
         if vis.extra.get("stopped"):
             raise _ApiError("message_not_in_streaming_state")
@@ -396,26 +396,26 @@ class SlackStandin(StandinServer):
                     vis.extra["blocks"] = p["blocks"]
         return {"channel": p["channel"], "ts": p["ts"]}
 
-    def _m_chat_appendStream(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_chat_appendStream(self, p: dict[str, Any]) -> dict[str, Any]:
         return self._append(p, stop=False)
 
-    def _m_chat_stopStream(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_chat_stopStream(self, p: dict[str, Any]) -> dict[str, Any]:
         return self._append(p, stop=True)
 
-    def _m_ok(self, _p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_ok(self, _p: dict[str, Any]) -> dict[str, Any]:
         return {}
 
     # Side-effect-only methods the adapter calls (reactions, assistant thread status/title/prompts).
     _m_reactions_add = _m_reactions_remove = _m_ok
     _m_assistant_threads_setStatus = _m_assistant_threads_setTitle = _m_assistant_threads_setSuggestedPrompts = _m_ok
 
-    def _m_files_getUploadURLExternal(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_files_getUploadURLExternal(self, p: dict[str, Any]) -> dict[str, Any]:
         fid = f"F{next(self._ids):08d}"
         self.files[fid] = {"id": fid, "name": p.get("filename"), "title": p.get("filename"),
                            "size": int(p.get("length") or 0)}
         return {"upload_url": f"{self.base_url}/upload/{fid}", "file_id": fid}
 
-    def _m_files_completeUploadExternal(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_files_completeUploadExternal(self, p: dict[str, Any]) -> dict[str, Any]:
         entries = p.get("files") or []
         channel = str(p.get("channel_id") or p.get("channels") or "")
         out = []
@@ -430,7 +430,7 @@ class SlackStandin(StandinServer):
                     self._visible[(channel, msg["ts"])].extra.update(file_id=e["id"], title=f.get("title"))
         return {"files": out}
 
-    def _m_files_info(self, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _m_files_info(self, p: dict[str, Any]) -> dict[str, Any]:
         f = self.files.get(str(p.get("file", "")))
         if f is None:
             raise _ApiError("file_not_found")
@@ -442,9 +442,9 @@ class SlackStandin(StandinServer):
 
     def message_event(self, channel: str, user_id: str, text: str, *, channel_type: str,
                       thread_ts: Optional[str] = None, event_type: str = "message", ts: Optional[str] = None,
-                      **extra: Any) -> Dict[str, Any]:
+                      **extra: Any) -> dict[str, Any]:
         ts = ts or self.next_ts()
-        event: Dict[str, Any] = {"type": event_type, "user": user_id, "text": text, "ts": ts, "event_ts": ts,
+        event: dict[str, Any] = {"type": event_type, "user": user_id, "text": text, "ts": ts, "event_ts": ts,
                                  "channel": channel, "team": TEAM_ID, "client_msg_id": str(uuid.uuid4()),
                                  "blocks": [{"type": "rich_text", "block_id": "b1", "elements": [
                                      {"type": "rich_text_section", "elements": [{"type": "text", "text": text}]}]}]}
@@ -455,8 +455,8 @@ class SlackStandin(StandinServer):
         event.update(extra)
         return event
 
-    def deliver(self, event: Dict[str, Any], *, event_id: Optional[str] = None, retry_attempt: int = 0,
-                retry_reason: str = "") -> Dict[str, Any]:
+    def deliver(self, event: dict[str, Any], *, event_id: Optional[str] = None, retry_attempt: int = 0,
+                retry_reason: str = "") -> dict[str, Any]:
         """Wrap ``event`` in an ``event_callback`` and push it over Socket Mode."""
         if retry_attempt == 0 and event.get("type") in ("message", "app_mention") and "subtype" not in event:
             self._remember(event["channel"], {k: v for k, v in event.items() if k != "blocks"})
@@ -468,18 +468,18 @@ class SlackStandin(StandinServer):
                    "is_ext_shared_channel": False, "event_context": f"4-standin-{uuid.uuid4().hex[:12]}"}
         return self.push("events_api", payload, retry_attempt=retry_attempt, retry_reason=retry_reason)
 
-    def redeliver(self, envelope: Dict[str, Any]) -> Dict[str, Any]:
+    def redeliver(self, envelope: dict[str, Any]) -> dict[str, Any]:
         """Slack's at-least-once retry: same event_id/event, new envelope, ``retry_attempt`` + 1."""
         payload = envelope["payload"]
         return self.deliver(payload["event"], event_id=payload["event_id"],
                             retry_attempt=int(envelope.get("retry_attempt") or 0) + 1, retry_reason="timeout")
 
-    def dm(self, user_id: str, text: str, **extra: Any) -> Dict[str, Any]:
+    def dm(self, user_id: str, text: str, **extra: Any) -> dict[str, Any]:
         event = self.message_event(self.dm_channel(user_id), user_id, text, channel_type="im", **extra)
         return self.deliver(event)
 
     def channel_post(self, channel: str, user_id: str, text: str, *, mention: bool,
-                     thread_ts: Optional[str] = None) -> List[Dict[str, Any]]:
+                     thread_ts: Optional[str] = None) -> list[dict[str, Any]]:
         """A human posts in a channel. With ``mention`` Slack emits BOTH ``app_mention`` and the
         ``message`` (channel_type=channel) event for the same ts, as separate envelopes."""
         if mention:
@@ -492,7 +492,7 @@ class SlackStandin(StandinServer):
             out.insert(0, self.deliver(app_mention))
         return out
 
-    def dm_file(self, user_id: str, filename: str, data: bytes, mime: str, caption: str = "") -> Dict[str, Any]:
+    def dm_file(self, user_id: str, filename: str, data: bytes, mime: str, caption: str = "") -> dict[str, Any]:
         fid = f"F{next(self._ids):08d}"
         path = f"{TEAM_ID}-{fid}/{filename}"
         url = f"{self.base_url}/files-pri/{path}"
@@ -504,7 +504,7 @@ class SlackStandin(StandinServer):
                                    subtype="file_share", files=[public])
         return self.deliver(event)
 
-    def block_action(self, user_id: str, channel: str, message_ts: str, action: Dict[str, Any]) -> Dict[str, Any]:
+    def block_action(self, user_id: str, channel: str, message_ts: str, action: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             vis = self._visible.get((channel, message_ts))
         message = {"type": "message", "user": BOT_USER_ID, "bot_id": BOT_ID, "ts": message_ts,
@@ -526,7 +526,7 @@ class SlackStandin(StandinServer):
                    "response_url": self._new_response_url(channel, user_id), "actions": [act]}
         return self.push("interactive", payload, accepts_response_payload=False)
 
-    def slash(self, user_id: str, channel: str, command: str, text: str = "") -> Dict[str, Any]:
+    def slash(self, user_id: str, channel: str, command: str, text: str = "") -> dict[str, Any]:
         payload = {"token": "verification-token", "team_id": TEAM_ID, "team_domain": "standin",
                    "channel_id": channel, "channel_name": self._channel(channel).get("name", "directmessage"),
                    "user_id": user_id, "user_name": f"user{user_id.lower()}", "command": command, "text": text,
@@ -536,11 +536,11 @@ class SlackStandin(StandinServer):
         return self.push("slash_commands", payload, accepts_response_payload=True)
 
     # ground truth ------------------------------------------------------------------------------
-    def visible(self, channel: str) -> List[Visible]:
+    def visible(self, channel: str) -> list[Visible]:
         with self._lock:
             return [v for (c, _), v in self._visible.items() if c == str(channel) and not v.deleted]
 
-    def buttons(self, channel: str) -> List[Dict[str, Any]]:
+    def buttons(self, channel: str) -> list[dict[str, Any]]:
         """Every button element in blocks the bot currently shows in ``channel`` (with ``message_id``)."""
         out = []
         with self._lock:

@@ -90,6 +90,7 @@ def _run_gateway_import(
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
     if result.returncode != 0:
         pytest.fail(

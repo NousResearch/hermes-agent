@@ -1,0 +1,23 @@
+name: ariadne-thread
+repo: https://github.com/benoit-dev/ariadne-thread
+sha: a4ca623e7fe45d5b09e1c313b4f90077b00434de
+title: "Ariadne's Thread"
+description: "n8n-style flows for Hermes Desktop: each cron job, webhook route and skill drawn as a chain of steps, with the scheduler's true cron status, run output, delivery targets and a health bar, plus in-place editing with history and undo. Desktop page plus a dashboard API router; no tools, hooks, middleware or env vars. Disclosure — reads cron/jobs.json, cron/output/<job id>/, every SKILL.md under skills/ and skills.external_dirs, config.yaml (skills.external_dirs only), a script in scripts/ when opened, and profiles/ folder names; reads webhook routes and cron delivery targets from Hermes' own GET /api/webhooks and GET /api/cron/delivery-targets through the raw window.hermesDesktop.api bridge (the plugin SDK has no route to core endpoints), never opening webhook_subscriptions.json; writes only on Save, in the active profile only: SKILL.md (atomic, inside skills/ only), files in scripts/, and a cron's prompt and deliver target through Hermes' cron.jobs.update_job, each save first keeping the replaced text under plugin-data/ariadne-thread/history (0600, newest 10 per target) and refusing if the file changed since it was opened; webhook prompts are read-only; \"Ask agent\" only drafts a new chat and nothing runs until you send it; no shell commands, no network beyond the local Hermes backend, no credentials, no telemetry, no self-update."
+maintainer: benoit-dev
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/benoit-dev/ariadne-thread/blob/a4ca623e7fe45d5b09e1c313b4f90077b00434de/README.md
+version: "0.2.2"
+image: "https://raw.githubusercontent.com/benoit-dev/ariadne-thread/a4ca623e7fe45d5b09e1c313b4f90077b00434de/docs/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/benoit-dev/ariadne-thread/a4ca623e7fe45d5b09e1c313b4f90077b00434de/docs/crons.png"
+  - "https://raw.githubusercontent.com/benoit-dev/ariadne-thread/a4ca623e7fe45d5b09e1c313b4f90077b00434de/docs/skill-flow.png"
+  - "https://raw.githubusercontent.com/benoit-dev/ariadne-thread/a4ca623e7fe45d5b09e1c313b4f90077b00434de/docs/webhook-flow.png"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

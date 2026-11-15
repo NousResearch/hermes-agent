@@ -21,7 +21,7 @@ import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
 import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from '../../cron/job-state'
-import { openCronRun, reconcileCronRunVerdicts } from '../../cron/open-cron-run'
+import { isCronRunRow, openCronRun, reconcileCronRunVerdicts } from '../../cron/open-cron-run'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
 import { SidebarRowBody, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
@@ -65,13 +65,6 @@ function formatRunTime(seconds?: null | number): string {
   const date = new Date(seconds * 1000)
 
   return Number.isNaN(date.valueOf()) ? '—' : fmtDayTime.format(date)
-}
-
-// Script-only (no_agent) jobs have no agent sessions; the runs endpoint
-// surfaces their per-fire output docs as rows with source='cron_output'
-// (see _list_cron_output_runs in hermes_cli/web_routers/cron.py).
-function isSyntheticCronOutputRun(run: SessionInfo): boolean {
-  return run.source === 'cron_output'
 }
 
 interface SidebarCronJobsSectionProps {
@@ -369,7 +362,7 @@ function CronJobSidebarRow({
             <SidebarRowBody
               aria-expanded={expanded}
               aria-label={expanded ? c.hideRuns : c.showRuns}
-              className="focus-visible:bg-(--chrome-action-hover) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              className="focus-visible:bg-(--chrome-action-hover) focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40"
               onClick={onTogglePeek}
             >
               <SidebarRowLead>
@@ -471,7 +464,7 @@ function CronJobSidebarRuns({
       ) : (
         <>
           {runs.map(run =>
-            isSyntheticCronOutputRun(run) ? (
+            !isCronRunRow(run) ? (
               // Output-doc rows have no backing session to open.
               <div
                 className="truncate rounded-md px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) tabular-nums"
@@ -484,7 +477,7 @@ function CronJobSidebarRuns({
               // closed (watchdog kill / crash) opens view-only (#88443).
               <button
                 className={cn(
-                  'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                  'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40',
                   run.id === selectedSessionId
                     ? 'bg-(--ui-row-active-background) text-foreground'
                     : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'

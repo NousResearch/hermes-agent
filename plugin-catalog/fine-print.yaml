@@ -1,0 +1,56 @@
+name: fine-print
+repo: https://github.com/Joko-F/hermes-fine-print
+sha: 7b574f1b5c8dc8eafe3ea9f87ae6b0111853f0ba
+title: Fine Print
+description: 'Shows where Hermes silently shrinks, cuts, swaps or hides what the model sees. When a turn ends in which
+  a limit bit and no follow-up by the model was seen, the user gets one card with before/after numbers and
+  the fix (a `hermes config set` command, a workaround, or "hardcoded in v0.23.0"): a web page cut to head
+  and tail, an image downscaled 4x or more, a search page that stopped at 50 with no "more" flag, a failed
+  search backend swapped for the keyless tier, a file read whose lines were all cut at 2,000 chars,
+  terminal output of which under half was kept, a tool result replaced by a 1,500-char preview, a context
+  compaction, loaded images that the request no longer carries, an attached image that reached the model
+  as a helper model''s description, a pinned context window that is not in force, a sixth URL that
+  web_extract never requested, a workbook read up to row 5,000 with its hidden sheet skipped. The model
+  gets one short note inside the tool result only where Hermes itself tells nobody. `/limits` shows the
+  session''s hits, explains 81 catalogued limits of v0.23.0 (`/limits explain <id>`), replays the same
+  detectors and card policy over your own history (`/limits report`, or `/limits report html` for one
+  self-contained page) and lists every detector with its status (`/limits self-test`): 16 are verified (on
+  real history, or in a live session for limits that leave no stored row) and may raise cards, 19 are
+  fixture-only and only log. Disclosure — no LLM calls, no network, no Python dependencies, no tools, no
+  middleware. Reads tool results in memory through hooks (failed calls included) and, by structure and
+  size only, each request''s message lists and the user message of a turn (image parts, Hermes''s own
+  placeholder and image notes); keeps a metadata-only ledger (sizes, counts, a URL host or file basename,
+  hashes) in its plugin-data directory. Adds one `_fine_print` key or first line to a tool result for
+  limits where core tells nobody (never on failed calls, images, write_file, patch or skill_manage;
+  `/limits notes off`), and a section of under 1,000 chars to the system prompt of new sessions (`/limits
+  sheet off`). Reads outside its own data, read-only: the profile''s session database for `/limits report`
+  (aggregates only; the FINE_PRINT_STATE_DB variable can name another copy), the .xlsx/.docx file that
+  read_file just extracted (to count rows, sheets and tables), and the Hermes config. Writes one file only
+  when asked (`/limits report html`, into the profile''s cache folder). Posts one notice per turn into the
+  chat in the CLI and the TUI (in Desktop 0.23.0 the notice call was refused in my check; there the hits
+  are listed by `/limits`); off on messaging platforms by default.'
+maintainer: Joko-F
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: https://github.com/Joko-F/hermes-fine-print#readme
+screenshots:
+  - https://raw.githubusercontent.com/Joko-F/hermes-fine-print/7b574f1b5c8dc8eafe3ea9f87ae6b0111853f0ba/docs/card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - transform_tool_result
+    - post_llm_call
+    - on_session_end
+    - pre_llm_call
+    - pre_api_request
+    - api_request_error
+    - post_api_request
+    - post_auxiliary_call
+    - post_compaction
+    - subagent_start
+    - on_session_delete
+  provides_middleware: []
+  requires_env: []

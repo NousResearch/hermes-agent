@@ -17,6 +17,7 @@ from typing import Collection, Optional
 from hermes_cli._early_recovery import _keep_aside
 from hermes_cli._early_recovery_zip import (
     ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap, write_zip_swap_journal, zip_entry_identity, zip_swap_owner_lock)
+from hermes_cli.update_cmd_common import _record_stop
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -35,15 +36,17 @@ _ZIP_JOURNAL_TEMP = re.compile(r"\.hermes-update-zip-swap\.[0-9a-f]{12}\.tmp")
 _ZIP_PRESERVED_TOP_LEVEL = {"venv", ".venv", "node_modules", ".git", ".env"}
 
 # Gitignored build outputs the source ZIP never ships, nested under top-level entries the swap replaces
-# (so `_ZIP_PRESERVED_TOP_LEVEL` cannot shield them): the packaged Desktop app, its renderer bundle and
-# its own node_modules (electron itself), and the dashboard assets. The dirty-tree guard admits them and
-# `_stage_entries` grafts the live copies into the staged tree so the swap keeps them (#90495).
+# (so `_ZIP_PRESERVED_TOP_LEVEL` cannot shield them): the packaged Desktop app, its renderer bundle,
+# the TUI and dashboard bundles, and the WhatsApp bridge's npm install. The dirty-tree guard admits them
+# and `_stage_entries` grafts the live copies into the staged tree so the swap keeps them (#90495).
+# Workspace node_modules are not carried: they hold only pnpm's links into the root virtual store, and
+# Windows links are junctions, which the copy turns into real directories that no longer resolve their
+# own dependencies. The next build relinks them from pnpm's store.
 _ZIP_PRESERVED_NESTED = {
-    "apps": ("desktop/release", "desktop/dist", "desktop/node_modules", "desktop/build"),
+    "apps": ("desktop/release", "desktop/dist", "desktop/dist-webapp", "desktop/build"),
     "hermes_cli": ("web_dist",),
     "scripts": ("whatsapp-bridge/node_modules",),
-    "ui-tui": ("dist", "node_modules", "packages/hermes-ink/dist"),
-    "web": ("node_modules",),
+    "ui-tui": ("dist", "packages/hermes-ink/dist"),
 }
 
 _STASH_HINT = "  Stash or commit your changes, then rerun `hermes update`."
@@ -342,6 +345,7 @@ def _abort_zip_update_if_dirty_tree() -> None:
     print("  Overlaying the ZIP would overwrite uncommitted edits and permanently delete untracked files.")
     print(_STASH_HINT)
     print("  To inspect: git status --porcelain")
+    _record_stop("local_changes_blocked")
     _m().sys.exit(1)
 
 
@@ -407,7 +411,7 @@ def _require_staging_space(extracted: str, entries: list[str], project_root: str
 
 
 def _link_or_copy_artifact(source: str, destination: str) -> None:
-    """Hardlink where the filesystem allows (apps/desktop/node_modules is hundreds of MB, and a link stays
+    """Hardlink where the filesystem allows (apps/desktop/release is hundreds of MB, and a link stays
     valid after the swap unlinks the old tree; on Windows a link also succeeds on a locked Hermes.exe
     where copy2 raises); byte copy otherwise."""
     try:
@@ -443,7 +447,7 @@ def _stage_entries(extracted: str, entries: list[str], project_root: str,
                 os.path.join(extracted, item), dst,
                 None if on_created is None else (lambda path, i=index: on_created(i, path))), dst))
             # The source ZIP carries only source; the built outputs (#70337/#87331 release/, then
-            # dist/, apps/desktop/node_modules and web_dist — #90495) exist only in the LIVE tree. Graft
+            # dist/ and web_dist — #90495) exist only in the LIVE tree. Graft
             # them into the staged copy BEFORE the swap so the commit preserves them atomically.
             _graft_nested_artifacts(item, dst, staged[-1][0])
     except Exception:
@@ -514,6 +518,7 @@ def _journaled_stage_and_swap(extracted: str, entries: list[str], root: Path, ta
             print(f"✗ ZIP fallback aborted before the swap: {recheck_reason}.")
             print("  Files appeared in the checkout while the update was downloading; committing the swap would delete them.")
             print(_STASH_HINT)
+            _record_stop("local_changes_blocked")
             _m().sys.exit(1)
         # Pre-commit gate: a target whose startup modules do not compile is refused untouched, judged
         # under the interpreter the target admits (``startup_syntax_error``, review N15).
@@ -545,6 +550,18 @@ def _journaled_stage_and_swap(extracted: str, entries: list[str], root: Path, ta
     return staged
 
 
+def _zip_stop_class(exc: BaseException, *, downloaded: bool) -> str:
+    """Closed stop token for a failed ZIP update: by exception type and errno, never its text."""
+    import errno
+
+    if getattr(exc, "errno", None) == errno.ENOSPC or (
+            isinstance(exc, RuntimeError) and str(exc).startswith("not enough free disk space")):
+        return "disk_full"  # _require_staging_space's own refusal, or ENOSPC mid-copy
+    if isinstance(exc, SyntaxError):
+        return "target_syntax_error"  # the pre-commit gate refused the extracted tree; nothing moved
+    return "zip_failed" if downloaded else "download_failed"
+
+
 def _download_and_swap_zip(branch: str, zip_url: str, target_sha: str | None = None) -> Optional[str]:
     """Download the source ZIP for *branch* and two-phase swap it into the checkout; return the commit it
     installed: the archive's own, which must equal ``target_sha`` when one is pinned.
@@ -558,9 +575,11 @@ def _download_and_swap_zip(branch: str, zip_url: str, target_sha: str | None = N
     from urllib.request import urlretrieve
     print("→ Downloading latest version...")
     tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
+    downloaded = False
     try:
         zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
         urlretrieve(zip_url, zip_path)
+        downloaded = True
         print("→ Extracting...")
         _extract_zip_safely(zip_path, tmp_dir)
         # The installed identity comes from the downloaded bytes (``git archive``'s comment), pinned or
@@ -589,6 +608,7 @@ def _download_and_swap_zip(branch: str, zip_url: str, target_sha: str | None = N
         # Two-phase replace commits all or rolls all back, so no mixed tree here — don't push a needless reinstall.
         print("  Your existing install was left in place.")
         print("  Re-run `hermes update` to retry; if the agent won't start, reinstall from https://hermes-agent.nousresearch.com")
+        _record_stop(_zip_stop_class(e, downloaded=downloaded))
         _m().sys.exit(1)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -614,6 +634,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
             "or NTFS filter holding files open) and rerun `hermes update "
             f"--branch {branch}`, or update against main with `hermes update`."
         )
+        _record_stop("branch_unsupported")
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
     # Older callers lack the snapshot/receipt/lifecycle handoff. Refuse before swap.

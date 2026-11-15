@@ -341,7 +341,7 @@ class TestStreamerFormatAndLooping:
 
     def test_audio_format_tracks_resolved_streamer(self):
         streamer = FakeStreamer(chunks_per_clause=1, sample_rate=48000, channels=2, sample_width=4)
-        import tools.tts_streaming as tts_streaming
+        from tools import tts_streaming
         original_resolve = tts_streaming.resolve_streaming_provider
         tts_streaming.resolve_streaming_provider = lambda *_args, **_kwargs: streamer
         loop = asyncio.new_event_loop()
@@ -356,7 +356,7 @@ class TestStreamerFormatAndLooping:
 
     def test_chunker_min_len_comes_from_tts_streaming_config(self):
         """The gateway consumer honours tts.streaming.min_len (#96927) instead of the class default."""
-        import tools.tts_streaming as tts_streaming
+        from tools import tts_streaming
         original_resolve = tts_streaming.resolve_streaming_provider
         tts_streaming.resolve_streaming_provider = lambda *_args, **_kwargs: None
         loop = asyncio.new_event_loop()

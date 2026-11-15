@@ -31,7 +31,7 @@ def _embedded(resource):
 @pytest.fixture()
 def doc_cache(tmp_path, monkeypatch):
     """Point the document cache at a temp dir."""
-    import gateway.platforms.base as base
+    from gateway.platforms import base
 
     monkeypatch.setattr(base, "DOCUMENT_CACHE_DIR", tmp_path)
     monkeypatch.setenv("HERMES_DOCUMENT_CACHE_DIR", str(tmp_path))
@@ -116,7 +116,7 @@ class TestAudioBlock:
         assert _cache_mcp_audio_block(block) == ""
 
     def test_audio_block_cached_as_media(self, tmp_path, monkeypatch):
-        import gateway.platforms.base as base
+        from gateway.platforms import base
         from tools.mcp_tool_content import _cache_mcp_audio_block
 
         monkeypatch.setattr(base, "AUDIO_CACHE_DIR", tmp_path)
@@ -171,6 +171,7 @@ class TestErrorPathResourceText:
         mcp_tool._reset_server_error("test-server")
         try:
             with mock_patch.dict(mcp_tool._servers, {"test-server": fake_server}), \
+                 mock_patch.dict(mcp_tool._server_trust_levels, {"test-server": "full"}), \
                  mock_patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
                 fake_session.call_tool = AsyncMock()
                 yield fake_session, _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)

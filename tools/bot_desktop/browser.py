@@ -45,7 +45,7 @@ def executable() -> Optional[str]:
     if explicit and os.access(explicit, os.X_OK) and not _is_headless_shell(explicit):
         return explicit
     finders = [_managed_executable, _system_executable]
-    if not _is_root() and _userns_restricted():
+    if not runtime.is_root() and _userns_restricted():
         finders.reverse()
     return next((exe for find in finders if (exe := find())), None)
 
@@ -65,10 +65,6 @@ def _is_headless_shell(exe: str) -> bool:
 
 def _system_executable() -> Optional[str]:
     return next((shutil.which(name) for name in _SYSTEM_BROWSERS if shutil.which(name)), None)
-
-
-def _is_root() -> bool:
-    return hasattr(os, "geteuid") and os.geteuid() == 0
 
 
 def _userns_restricted() -> bool:

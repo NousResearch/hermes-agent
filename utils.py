@@ -657,6 +657,10 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
         current = dst[key]
         if isinstance(value, dict) and isinstance(current, CommentedMap):
             _merge(current, value)
+            if not current:
+                # A section emptied by the merge keeps its children's comments, and ruamel dumps
+                # them ahead of a root-level ``{}`` the next load rejects (#154436): start clean.
+                dst[key] = CommentedMap()
         elif isinstance(value, list) and isinstance(current, CommentedSeq):
             _merge_seq(current, value)
         elif not _unchanged(current, value):

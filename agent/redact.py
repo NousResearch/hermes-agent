@@ -20,6 +20,7 @@ from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENA
 from agent.redact_command_segments import _command_segments
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
 from agent.redact_control_split import mask_control_split_tokens
+from agent.redact_db_url import _DSN_PW_PLACEHOLDER_RE, _is_userinfo_placeholder, redact_db_url_query_passwords
 from agent.redact_discord import _redact_discord_tokens
 from agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
@@ -1514,23 +1515,6 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     return text
 
 
-# A docs placeholder is a lower-case or ALL-CAPS name in angle brackets (``<password>``) or an
-# upper-case env var reference (``${REDIS_PASSWORD}``); ``$ecretPassw0rd`` or ``<Zq8x…>`` is
-# a real password that happens to start with the same character.
-_DSN_PW_PLACEHOLDER_RE = re.compile(r"<(?:[a-z][a-z_ -]*|[A-Z][A-Z_ -]*)>|\$\{?[A-Z_][A-Z0-9_]*\}?|%[A-Z_][A-Z0-9_]*%")
-
-
-# ``https://user:password@host`` in docs names the field instead of filling it in.
-_USERINFO_PLACEHOLDER_WORDS = frozenset({"password", "passwd", "pass", "pw", "pwd", "secret", "token"})
-
-
-def _is_userinfo_placeholder(password: str) -> bool:
-    """A template (``{pw}``, ``{{ pw }}``), docs placeholder or field name, never a literal secret."""
-    return ((password.startswith("{") and password.endswith("}"))
-            or _DSN_PW_PLACEHOLDER_RE.fullmatch(password) is not None
-            or password.casefold() in _USERINFO_PLACEHOLDER_WORDS)
-
-
 def _redact_userinfo_passwords(text: str) -> str:
     """Mask the password half of ``scheme://user:pass@host`` userinfo (#125664).
 
@@ -1572,6 +1556,7 @@ def _redact_url_credentials(text: str, code_file: bool, *, file_read: bool = Fal
         return m.group(0)
 
     text = _DB_CONNSTR_RE.sub(_redact_db, text)
+    text = redact_db_url_query_passwords(text)
     text = _WEBHOOK_URL_RE.sub(_redact_webhook, text)
     text = _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
     return _redact_userinfo_passwords(text)

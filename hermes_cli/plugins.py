@@ -1046,6 +1046,12 @@ def has_middleware(kind: str) -> bool:
     return bool(getattr(manager, "_middleware", {}).get(kind))
 
 
+def has_fail_closed_hook(hook_name: str) -> bool:
+    """True while the active manager holds a required (``fail_closed=True``) callback on *hook_name*.
+    Never discovers: callers ask right after dispatching the hook, which already did."""
+    return get_plugin_manager().has_fail_closed_hook(hook_name)
+
+
 def has_hook(hook_name: str) -> bool:
     """True when a loaded plugin handles a hook (lazy-discovers first, like :func:`has_middleware`).
 

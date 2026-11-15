@@ -241,7 +241,7 @@ class RecordingContext:
     def register_tool(self, name, *args, **kwargs):
         recorded["tools"].append(str(name))
 
-    def register_hook(self, hook_name, callback, *, hold_stream=False):
+    def register_hook(self, hook_name, callback, *, hold_stream=False, fail_closed=False):
         recorded["hooks"].append(str(hook_name))
 
     def register_middleware(self, kind, callback):

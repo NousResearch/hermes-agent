@@ -1,6 +1,6 @@
 name: project_content
 repo: https://github.com/mikemonty/hermes-project-manager
-sha: ca536291b69fd74b7674dd125c9df34aa9d26b1c
+sha: 40b1886359505c559a950e314539fc9fe5b02716
 description: Experimental local-first project workspace; a Desktop block editor and media library plus version-checked agent tools over an explicit project folder.
 maintainer: mikemonty
 tier: community
@@ -11,6 +11,7 @@ known_issues:
   - Desktop/agent shared-folder interoperability is only partially tested (selected block and media operations), not verified end to end; do not edit the same project from Desktop and an agent at the same time.
   - Desktop uses two window.hermesDesktop bridge calls outside the plugin SDK surface; both are feature-detected and documented in LIMITATIONS.md.
   - Desktop UI has synthetic adapter coverage and a partial stock-host smoke test; save/reopen and media permission flows remain unverified.
+  - Folder selection cannot start at the project path using the current SDK; wrong selections may require manual grant review when prior grants cannot be determined.
   - The block editor's folder-backed store requires the Web Locks API and fails closed when it is unavailable.
   - Audio and video use the host media stream, and YouTube embeds can contact YouTube.
 capabilities:

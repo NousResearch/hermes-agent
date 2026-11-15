@@ -115,13 +115,17 @@ def _format_live_refine_output(sid: str, session: Optional[dict], arg: str) -> s
 
     review_skills = "skill_manage" in getattr(agent, "valid_tool_names", set())
     try:
-        agent._spawn_background_review(
-            messages_snapshot=list(snapshot),
-            review_memory=True,
-            review_skills=review_skills,
-            focus=arg.strip() or None,
-            explicit=True,
-        )
+        # slash.exec runs off-turn (RPC pool): bind the session's profile scope like /review
+        # and the mirrors do, or under multiplex the review fork's secrets resolve against the
+        # launch home and its ledger/skill writes land in the wrong profile (#155857).
+        with _session_profile_runtime_scope(session):
+            agent._spawn_background_review(
+                messages_snapshot=list(snapshot),
+                review_memory=True,
+                review_skills=review_skills,
+                focus=arg.strip() or None,
+                explicit=True,
+            )
     except Exception as exc:
         return f"/refine failed to start: {exc}"
     tail = f" (focus: {arg.strip()})" if arg.strip() else ""

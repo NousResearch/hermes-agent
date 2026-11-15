@@ -145,3 +145,33 @@ def test_the_same_cron_loop_halts_when_only_the_dedup_caches_are_reset():
     assert seen[-1][2] == "idempotent_no_progress_block"
     assert seen[-1][3] == 5
     assert c.halt_decision is not None
+
+
+def test_a_committed_compaction_resets_the_live_agents_guard():
+    """Through the real post-commit hook on a real agent, not the new helper: _finish_compaction_boundary
+    must drop the guard's window evidence, otherwise every post-compaction reload keeps counting (#146217)."""
+    from unittest.mock import patch
+
+    from agent.conversation_compression import _finish_compaction_boundary
+
+    with patch("agent.process_bootstrap.OpenAI"):
+        from run_agent import AIAgent
+
+        agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
+                        skip_context_files=True, skip_memory=True, max_iterations=4)
+    agent._tool_guardrails = _controller()
+    c = agent._tool_guardrails
+    for window in range(3):
+        assert not _reload_then_work(c, window).should_halt
+    assert c._no_progress, "the reloads must have accumulated repeat-result evidence first"
+
+    _finish_compaction_boundary(
+        agent, [{"role": "user", "content": "[CONTEXT COMPACTION] summary"}], new_system_prompt="",
+        old_session_id=None, in_place=True, compacted_in_place=True, session_commit_succeeded=True,
+        defer_context_engine_notification=False, compression_made_progress=True,
+        compression_used_fallback=False, compression_feasibility_skip=False, task_id="task-commit",
+    )
+
+    assert c._no_progress == {}
+    decision = c.after_call("skill_view", {"name": "x"}, _SKILL_BODY, failed=False)
+    assert decision.code != "idempotent_no_progress_warning", decision

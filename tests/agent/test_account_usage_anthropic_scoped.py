@@ -55,10 +55,16 @@ def test_scoped_limit_without_model_name_gets_generic_label(monkeypatch):
 
 def test_flat_model_keys_take_precedence_over_limits(monkeypatch):
     payload = _payload(seven_day_opus={"utilization": 40.0, "resets_at": "2026-11-18T06:59:59+00:00"})
+    payload["limits"][2]["scope"]["model"]["display_name"] = "Opus"
     snap = _fetch(monkeypatch, payload)
-    labels = set(_by_label(snap))
-    assert "Opus week" in labels
-    assert "Fable week" not in labels
+    assert [w.used_percent for w in snap.windows if w.label == "Opus week"] == [40.0]
+
+
+def test_flat_model_window_does_not_hide_other_scoped_limit(monkeypatch):
+    payload = _payload(seven_day_opus={"utilization": 40.0, "resets_at": "2026-11-18T06:59:59+00:00"})
+    snap = _fetch(monkeypatch, payload)
+    model_windows = {w.label: w.used_percent for w in snap.windows if w.scope == "model"}
+    assert model_windows == {"Opus week": 40.0, "Fable week": 100.0}
 
 
 def test_missing_or_malformed_limits_add_nothing(monkeypatch):

@@ -544,8 +544,11 @@ def _fetch_anthropic_account_usage(
                   ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
         model_scoped={"seven_day_opus", "seven_day_sonnet"},
     )
-    if not any(w.scope == "model" for w in windows):
-        windows.extend(_anthropic_scoped_limit_windows(payload))
+    model_labels = {w.label for w in windows if w.scope == "model"}
+    for window in _anthropic_scoped_limit_windows(payload):
+        if window.label not in model_labels:
+            windows.append(window)
+            model_labels.add(window.label)
     details: list[str] = []
     extra = payload.get("extra_usage") or {}
     used_credits, monthly_limit = extra.get("used_credits"), extra.get("monthly_limit")

@@ -25,8 +25,8 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("acknowledged", "authority", "cancelled", "card_deny_only", "data", "event", "expired", "identity",
-                 "observers", "owner", "reason", "result", "settle")
+    __slots__ = ("authority", "cancelled", "card_deny_only", "data", "event", "expired", "identity", "observers",
+                 "owner", "reason", "result", "settle")
 
     def __init__(self, data: dict):
         self.owner = None
@@ -41,7 +41,6 @@ class _ApprovalEntry:
         # Who may answer (gateway.approval_actor): the turn's actor, approvers and admins. Kept off
         # ``data`` so the prompt and replay payloads sent to clients stay exactly what was raised.
         self.authority = _ctx.prompt_authority()
-        self.acknowledged = False
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.
         self.settle = None

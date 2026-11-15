@@ -287,13 +287,9 @@ def observe_gateway_settle(session_key: str, request_id: str, observer) -> bool:
 
 
 def ack_gateway_approval(session_key: str, request_id: str) -> bool:
-    """Record that a client received a particular pending approval request."""
+    """A client's receipt of one approval request: True while that request is still pending."""
     with _lock:
-        entry = _entry_for_request(session_key, request_id)
-        if entry is None:
-            return False
-        entry.acknowledged = True
-        return True
+        return _entry_for_request(session_key, request_id) is not None
 
 
 def has_blocking_approval(session_key: str) -> bool:

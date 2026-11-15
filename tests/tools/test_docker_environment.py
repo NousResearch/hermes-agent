@@ -293,7 +293,8 @@ def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, t
         # Name-only -e flags (#96268): values come from the client env kwarg.
         client_env = kwargs.get("env") or os.environ
         child_env = os.environ.copy()
-        index = 2
+        assert cmd[2:4] == ["-w", "/"]
+        index = 4
         while index < container_index:
             assert cmd[index] == "-e"
             key = cmd[index + 1]

@@ -232,8 +232,8 @@ def _osascript_program(args: str, value_options: tuple[str, ...]) -> tuple[str, 
             # with their option below, so a real `-e ' '` argument never reaches this skip.
             i += 1
             continue
-        if token in (">", ">>", ">|", ">&") or (token.isdigit() and nxt.startswith(">")):
-            i += 1 if token.isdigit() else 2
+        if token in (">", ">>", ">|", ">&") or ((token.isdigit() or token == "&") and nxt.startswith(">")):
+            i += 2 if token.startswith(">") else 1  # `2>x` / `&>x` reach here as `2` / `&`, then `>`
             continue
         if token == "<<<":
             pieces.append(nxt)

@@ -1625,9 +1625,12 @@ def _iter_shell_command_word_spans(command: str):
 
 
 def _shell_command_segment(command: str, start: int) -> str:
-    """Bound a candidate to its command, preserving quoted argument bytes."""
+    """Bound a candidate to its command, preserving quoted argument bytes. The ``&`` of a ``2>&1``,
+    ``<&3`` or ``&>`` redirection is part of the command, not a separator."""
     end = len(command)
     for kind, i, _, quote in _scan_shell(command, start, subst="uq", brace=True, comments=True):
+        if kind == "char" and command[i] == "&" and (command[i - 1:i] in ("<", ">") or command.startswith(">", i + 1)):
+            continue
         if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n)`"):
             end = i
             break

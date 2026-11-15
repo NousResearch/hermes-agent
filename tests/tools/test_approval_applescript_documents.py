@@ -83,6 +83,10 @@ FRONTMOST = ("osascript -e 'tell application \"System Events\" to get name of fi
     # osacompile builds an applet from the same `-e` / `-l` program.
     'osacompile -o /tmp/C.app -e \'tell app "Keynote" to close front document saving no\'',
     'osacompile -l JavaScript -o /tmp/C.scpt -e \'Application("Keynote").documents.length\'',
+    # A `2>&1` / `>&2` / `&>` redirection between `-e` arguments does not end the command.
+    "osascript -e 'get name of me' 2>&1 -e 'tell app \"Keynote\" to close front document saving no'",
+    "osascript -e 'get name of me' >&2 -e 'tell app \"Keynote\" to quit'",
+    "osascript -e 'get name of me' &>/dev/null -e 'tell app \"Keynote\" to quit'",
     # ANSI-C quoting in the executable name: bash and zsh decode it to osascript.
     "$'\\157sascript' -e 'tell application \"Keynote\" to close front document saving no'",
     "$'\\x6fsascript' -e 'tell application \"Keynote\" to quit'",
@@ -153,6 +157,9 @@ def test_unreviewable_program_is_flagged(command):
     # A read-only heredoc whose body merely contains the word in prose, and an explicit AppleScript `-l`.
     "osascript <<'EOF'\nget name of me\nEOF",
     "osascript -l AppleScript -e 'get name of me'",
+    # A trailing `2>&1` keeps a read-only program unflagged; a real `&` still ends the command.
+    "osascript -e 'get name of me' 2>&1",
+    "osascript -e 'get name of me' & echo done",
     # An escaped `$` in an unquoted heredoc body stays literal.
     "osascript <<EOF\nget \"costs \\$5\" -- it's literal\nEOF",
     # Where the output of a literal read-only program goes does not change the program.

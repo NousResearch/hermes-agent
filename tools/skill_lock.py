@@ -84,7 +84,13 @@ def _guard_state() -> tuple[list[tuple[str, str]], str | None]:
     The guards then fail CLOSED over every skill in the profile: an unknown lock set is not "nothing is
     locked", and ``locked_skill_names`` keeps its best-effort answer for the listings (#147986)."""
     try:
-        names = set(_skill_usage().locked_skill_names(strict=True))
+        su = _skill_usage()
+        try:
+            names = set(su.locked_skill_names(strict=True))
+        except TypeError:
+            import importlib
+            su = importlib.reload(su)
+            names = set(su.locked_skill_names(strict=True))
     except (OSError, ValueError) as e:  # json.JSONDecodeError subclasses ValueError
         return [], str(e) or type(e).__name__
     return _skill_dirs(names), None

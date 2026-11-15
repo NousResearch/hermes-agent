@@ -161,9 +161,10 @@ def test_a_turn_without_a_lapsed_primary_keeps_its_own_provider_on_the_card():
     assert surface['provider'] == _DIRECTSDK['provider']
 
 
-@pytest.mark.parametrize('reason', ['rate_limit', 'context_overflow'])
+@pytest.mark.parametrize('reason', ['rate_limit', 'context_overflow', 'billing'])
 def test_a_fallback_failing_for_its_own_reason_keeps_its_card(reason):
-    """A rate limit or an oversized request on the fallback is not fixed by signing the primary in."""
+    """A rate limit, an oversized request or an empty account on the fallback is not fixed by signing the primary
+    in: the fallback keeps its own card."""
     failure = {**_FALLBACK_SIGNED_OUT, 'failure_reason': reason, 'failure_retryable': reason == 'rate_limit',
                'failure_resets_at': 1900000000.0, 'error': 'HTTP 429'}
     surface = _complete(*_authority_turn(Platform.LOCAL, failure, identity=_DIRECTSDK))['error_surface']

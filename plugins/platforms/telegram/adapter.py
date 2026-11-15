@@ -196,7 +196,7 @@ from plugins.platforms.telegram.telegram_text_photo_pairing import (
 from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
 from plugins.platforms.telegram.telegram_media_retry import unconfirmed_media_result as _unconfirmed
 from plugins.platforms.telegram import telegram_flood_window as _flood_window
-from plugins.platforms.telegram.telegram_rich_media import attach_rich_media, rich_media_items, rich_media_source
+from plugins.platforms.telegram.telegram_rich_media import dispatch_rich_media, observe_skipped, rich_media_items, rich_media_source
 from plugins.platforms.telegram.telegram_media_fetch import (
     cache_replied_media, fetch_telegram_file, local_root, merged_typed_text, record_typed_text)
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
@@ -5675,7 +5675,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             doc = msg.document
             return doc, doc.file_name or "", (doc.mime_type or "").lower(), None
         if (bot := self._bot) is not None and (rich := rich_media_items(msg)):  # replied-to/observed rich photo (#155902)
-            file_id, media, mime, kind = rich[0]
+            _block, file_id, media, mime, kind = rich[0]
             return rich_media_source(bot, file_id, media), str(media.get("file_name") or ""), mime, kind
         return None, "", "", None
 
@@ -5858,11 +5858,16 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         if await self.consume_vault_code_reply(msg):  # a one-time code: deleted, handed over, never a turn
             return
-        if not self._gate_or_observe(msg, update, MessageType.TEXT):
+        if (has_media := bool(rich_media_items(msg))) and not self._should_process_message(msg):
+            await observe_skipped(self, msg, update)  # observed WITH its cached attachment
+            return
+        if not has_media and not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
         await self._ensure_forum_commands(update.message)
         event = await self._build_triggered_event(msg, update, MessageType.TEXT)
-        await attach_rich_media(self, msg, event)  # a photo/file sent inside rich blocks (#155902)
+        if has_media:  # a photo/file sent inside rich blocks (#155902)
+            await dispatch_rich_media(self, msg, event)
+            return
         self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

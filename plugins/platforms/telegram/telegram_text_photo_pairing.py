@@ -46,7 +46,9 @@ def is_image_document(doc: Any) -> bool:
 def _carries_media(msg: Any) -> bool:
     """Any attachment the media handler downloads into the turn: images, and also video, voice,
     audio and documents (a forwarded clip with a comment arrives as TEXT, then the media; #105050)."""
-    return any(getattr(msg, attr, None) for attr in ("photo", "document", "video", "video_note", "voice", "audio"))
+    from plugins.platforms.telegram.telegram_rich_media import rich_media_items
+    return (any(getattr(msg, attr, None) for attr in ("photo", "document", "video", "video_note", "voice", "audio"))
+            or bool(rich_media_items(msg)))  # a photo/file inside rich_message blocks (#155902)
 
 
 def claim_pending_text(adapter: Any, msg: Any, event: MessageEvent) -> None:
@@ -115,10 +117,15 @@ def tracking_media_items(handler):
         try:
             return await handler(adapter, update, context)
         finally:
-            claim = _claims(adapter).pop(id(msg), None) if msg is not None else None
-            if claim is not None:
-                claim[2].set()
+            release_text_claim(adapter, msg)
     return tracking_album_items(wrapper)
+
+
+def release_text_claim(adapter: Any, msg: Any) -> None:
+    """Let a text flush the media handler for ``msg`` claimed proceed (no-op without a claim)."""
+    claim = _claims(adapter).pop(id(msg), None) if msg is not None else None
+    if claim is not None:
+        claim[2].set()
 
 
 async def wait_text_flush(adapter: Any, key: str, delay: float) -> None:

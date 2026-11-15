@@ -18,14 +18,14 @@ from plugins.platforms.telegram.telegram_entities import _MAX_RICH_DEPTH
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
 
-# block type -> (field holding the file, default cache kind, default MIME)
+# block type -> (field holding the file, default cache kind, default MIME); the field is the block type
 _MEDIA_BLOCKS = {
-    "photo": ("photo", "image", ""),
-    "animation": ("animation", "video", "video/mp4"),
-    "video": ("video", "video", "video/mp4"),
-    "audio": ("audio", "audio", ""),
-    "voice_note": ("voice_note", "audio", "audio/ogg"),
-    "document": ("document", None, ""),
+    "photo": ("image", ""),
+    "animation": ("video", "video/mp4"),
+    "video": ("video", "video/mp4"),
+    "audio": ("audio", ""),
+    "voice_note": ("audio", "audio/ogg"),
+    "document": (None, ""),
 }
 # One message, not an album: a hostile payload cannot make us download hundreds of files.
 _MAX_RICH_ATTACHMENTS = 10
@@ -51,28 +51,39 @@ def _walk(blocks: Any, depth: int = 0) -> Iterator[Mapping]:
                 yield from _walk(item.get("blocks"), depth + 1)
 
 
-def rich_media_items(message: Any) -> list[tuple[str, Mapping, str, str | None]]:
-    """``(file_id, media, mime, default_kind)`` per attachment in ``message``'s rich blocks, in order."""
+def rich_media_items(message: Any) -> list[tuple[str, str, Mapping, str, str | None]]:
+    """``(block_type, file_id, media, mime, default_kind)`` per attachment in ``message``'s rich blocks, in order."""
     rich = _raw_rich(message)
     if not isinstance(rich, Mapping):
         return []
     found = []
     for block in _walk(rich.get("blocks")):
-        spec = _MEDIA_BLOCKS.get(str(block.get("type") or ""))
-        if spec is None:
+        block_type = str(block.get("type") or "")
+        if block_type not in _MEDIA_BLOCKS:
             continue
-        field, kind, mime = spec
-        media = block.get(field)
-        if field == "photo":  # PhotoSize list: largest last
+        kind, mime = _MEDIA_BLOCKS[block_type]
+        media = block.get(block_type)
+        if block_type == "photo":  # PhotoSize list: largest last
             media = media[-1] if isinstance(media, list) and media else None
         if not isinstance(media, Mapping):
             continue
         file_id = media.get("file_id")
         if isinstance(file_id, str) and file_id:
-            found.append((file_id, media, str(media.get("mime_type") or mime).lower(), kind))
+            found.append((block_type, file_id, media, str(media.get("mime_type") or mime).lower(), kind))
         if len(found) >= _MAX_RICH_ATTACHMENTS:
             break
     return found
+
+
+def _message_type(block_type: str, cached_kind: str) -> Any:
+    """The type a top-level attachment of this kind gets: an audio FILE is AUDIO (no auto-transcription),
+    only a voice note is VOICE; an image document is a PHOTO."""
+    from gateway.platforms.event import MessageType
+    if cached_kind == "image":
+        return MessageType.PHOTO
+    if block_type == "voice_note":
+        return MessageType.VOICE
+    return {"audio": MessageType.AUDIO, "video": MessageType.VIDEO}.get(cached_kind, MessageType.DOCUMENT)
 
 
 def rich_media_source(bot: Any, file_id: str, media: Mapping) -> SimpleNamespace:
@@ -85,13 +96,12 @@ async def attach_rich_media(adapter: Any, msg: Any, event: Any) -> None:
     sent photo, other files get the saved-path note the document path gives them. A file that
     cannot be fetched leaves a note, so the agent never answers from the caption alone."""
     from gateway.platforms.base import cache_media_bytes_async
-    from gateway.platforms.event import MessageType
     from plugins.platforms.telegram.telegram_batching import pad_inline_flags
     from plugins.platforms.telegram.telegram_media_fetch import fetch_telegram_file, local_root
 
     max_bytes = getattr(adapter, "_max_doc_bytes", 20 * 1024 * 1024)
     bot = getattr(adapter, "_bot", None)
-    for file_id, media, mime, kind in rich_media_items(msg) if bot is not None else []:
+    for block_type, file_id, media, mime, kind in rich_media_items(msg) if bot is not None else []:
         if adapter._int_or_zero(media.get("file_size")) > max_bytes:
             event.text = adapter._append_observed_note(
                 event.text, f"[The user sent an attachment larger than {max_bytes // (1024 * 1024)} MB; it was not downloaded.]")
@@ -115,9 +125,42 @@ async def attach_rich_media(adapter: Any, msg: Any, event: Any) -> None:
         event.media_text_inlined = pad_inline_flags(event) + [False]
         event.media_urls.append(cached.path)
         event.media_types.append(cached.media_type)
-        if cached.kind == "image":
-            if event.message_type == MessageType.TEXT:
-                event.message_type = MessageType.PHOTO
-        else:
+        if len(event.media_urls) == 1:  # the first attachment sets the type, as on the top-level path
+            event.message_type = _message_type(block_type, cached.kind)
+        if cached.kind != "image":
             event.text = adapter._append_observed_note(event.text, cached.context_note())
         logger.info("[Telegram] Cached rich message %s at %s", cached.kind, cached.path)
+
+
+async def dispatch_rich_media(adapter: Any, msg: Any, event: Any) -> None:
+    """Deliver an addressed rich message carrying attachments the way the media handler delivers a
+    top-level one: claim the question typed just before it BEFORE the download awaits (else that
+    question flushes alone), then an image joins the photo batcher and anything else goes out
+    with the claimed text absorbed."""
+    from gateway.platforms.event import MessageType
+    from plugins.platforms.telegram.telegram_text_photo_pairing import (
+        absorb_claimed_text, claim_pending_text, release_text_claim)
+    claim_pending_text(adapter, msg, event)
+    try:
+        await attach_rich_media(adapter, msg, event)
+        if event.message_type == MessageType.PHOTO:
+            await adapter._route_photo_event(msg, event)
+            return
+        absorb_claimed_text(adapter, msg, event)
+        if event.message_type == MessageType.TEXT:  # every download failed: the notes ride as text
+            adapter._enqueue_text_event(event)
+        else:
+            await adapter.handle_message(event)
+    finally:
+        release_text_claim(adapter, msg)
+
+
+async def observe_skipped(adapter: Any, msg: Any, update: Any) -> None:
+    """Record an unaddressed group message as observed context (when configured), with its first
+    rich attachment cached like an observed top-level one, so a later question can open it."""
+    from gateway.platforms.event import MessageType
+    if not adapter._should_observe_unmentioned_group_message(msg):
+        return
+    event = adapter._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+    await adapter._cache_observed_media(msg, event)
+    adapter._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id, event=event)

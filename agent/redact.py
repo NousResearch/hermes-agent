@@ -11,15 +11,15 @@ import os
 import re
 import shlex
 import threading
-import unicodedata
 from urllib.parse import unquote_plus
 
 # Shared with agent/file_safety's read-block list so the two defenses can't
 # drift: a blocked file_tools read that falls back to ``cat`` is still caught.
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
+from agent.redact_approval_display import sanitize_command_for_display  # re-exported: callers import it from agent.redact
 from agent.redact_command_segments import _command_segments
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
-from agent.redact_control_split import mask_control_split_tokens
+from agent.redact_control_split import mask_control_split_tokens, mask_prefix_matches
 from agent.redact_db_url import _DSN_PW_PLACEHOLDER_RE, _is_userinfo_placeholder, redact_db_url_query_passwords
 from agent.redact_discord import _redact_discord_tokens
 from agent.redact_credential_stores import (
@@ -157,6 +157,7 @@ _PREFIX_PATTERNS = [
     r"GOCSPX-[A-Za-z0-9_-]{8,}",        # Google OAuth client secret (pasted client_secret.json, #64351)
     r"ya29\.(?:[a-z]\.)?[A-Za-z0-9_-]{20,}",  # Google OAuth access token: user a0…, service-account c., STS d. (#64351)
     r"AQ\.[A-Za-z0-9_-]{40,}",           # Google Gemini authorization keys (newer "AQ." prefix; AIza pattern doesn't catch them) — #66920
+    r"1//0[A-Za-z0-9_-]{20,}",          # Google OAuth refresh token (#39654)
     r"pplx-[A-Za-z0-9]{10,}",           # Perplexity
     r"fal_[A-Za-z0-9_-]{10,}",          # Fal.ai
     r"fc-[A-Za-z0-9]{10,}",             # Firecrawl
@@ -885,8 +886,8 @@ def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
 def _compile_prefix_sub_matcher(patterns: list) -> re.Pattern[str]:
     """_PREFIX_RE for the masking pass, also admitting a key glued to an identifier by ``-``/``_``
     (``backup-sk-…``, ``x-ghp_…``), which _PREFIX_RE rejects so ``scikit-learn`` stays whole. One
-    fixed-width lookbehind keeps main's single scan; _mask_prefix_match masks a glued match only
-    when its body is opaque, so ``backup-sk-learn`` stays whole too (#147240)."""
+    fixed-width lookbehind keeps main's single scan; _is_glued_identifier keeps a glued match unless
+    its body is opaque, so ``backup-sk-learn`` stays whole too (#147240)."""
     # Branches grouped by their literal first char (every pattern opens on one, see
     # register_redaction_patterns): admitting ``-``/``_`` before a key makes every separator a
     # candidate, and a flat 60-way alternation per candidate doubled the cost of a ``_ghp_`` flood.
@@ -914,13 +915,13 @@ def _is_opaque_prefixed_token(token: str) -> bool:
     return False
 
 
-def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
-    glued = m.start() > 0 and m.string[m.start() - 1] in "-_"
-    token = m.group(1)
+def _is_glued_identifier(m: "re.Match[str]", token: str | None = None) -> bool:
+    """A _PREFIX_SUB_RE match glued to an identifier by ``-``/``_`` whose body (``token``,
+    default the match's) is not opaque."""
+    token = m.group(1) if token is None else token
     # Google OAuth prefixes are distinctive even when base64url separators break every long run.
-    if glued and not token.startswith(("GOCSPX-", "ya29.")) and not _is_opaque_prefixed_token(token):
-        return m.group(0)
-    return mask(token)
+    return (m.start() > 0 and m.string[m.start() - 1] in "-_"
+            and not token.startswith(("GOCSPX-", "ya29.", "1//0")) and not _is_opaque_prefixed_token(token))
 
 # mask_secret strips EVERY control char (incl. \n/\t, C1, DEL, zero-width) so a
 # masked secret never emits multiline or invisible bytes into display output.
@@ -936,57 +937,6 @@ def mask_secret(value: str, *, head: int = 4, tail: int = 4, floor: int = 12,
     if not value:
         return empty
     return placeholder if len(value) < floor else f"{value[:head]}...{value[-tail:]}"
-
-
-# Approval-prompt display integrity: the copy a human approves must show everything that will run.
-# Code points that render as nothing or as a line break become visible escapes: every control,
-# format, private-use, unassigned and surrogate code point (category C*, except tab/newline), line
-# and paragraph separators (Zl/Zp), and blank-rendering marks/letters in other categories (variation
-# selectors incl. U+E0100-E01EF, CGJ, Khmer/Mongolian selectors, Hangul fillers, Braille blank).
-# Ordinary non-ASCII text is untouched. Padding that pushes the tail off screen or past a preview
-# cut (space runs, whitespace-only lines) collapses to a marker; real indentation is kept.
-_APPROVAL_NON_ASCII_RE = re.compile(r"[^\x20-\x7e\t\n]+")
-_APPROVAL_BLANK_GLYPHS = frozenset(
-    "\u034f\u115f\u1160\u17b4\u17b5\u180b\u180c\u180d\u180f\u2800\u3164\uffa0"
-    + "".join(map(chr, range(0xFE00, 0xFE10))) + "".join(map(chr, range(0xE0100, 0xE01F0))))
-_APPROVAL_SPACE = r"[ \t\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]"
-# Mid-line runs (after visible text) of 21+, or line-leading runs past any sane indentation.
-_APPROVAL_PAD_RE = re.compile(rf"(?<=\S){_APPROVAL_SPACE}{{21,}}|(?m:^){_APPROVAL_SPACE}{{65,}}")
-# 3+ consecutive blank or whitespace-only lines; the match ends at a newline so the next line keeps its indent.
-_APPROVAL_BLANK_RE = re.compile(rf"\n(?:{_APPROVAL_SPACE}*\n){{3,}}")
-_APPROVAL_SAME_CHAR_RUN_RE = re.compile(r"(.)\1*", re.DOTALL)
-# Prose mode (questions shown to a human, never executed) surfaces only what can hide or reorder
-# text: controls, bidi embeddings/overrides/isolates, line/paragraph separators and padding. ZWJ,
-# ZWNJ and variation selectors stay, because emoji and scripts such as Persian need them.
-_PROSE_BIDI_CONTROLS = frozenset("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
-
-
-def _escape_approval_run(run: str, prose: bool = False) -> str:
-    """Escape the invisible code points of a non-ASCII run; 4+ repeats of one show once with their count."""
-    def one(m: re.Match) -> str:
-        ch, n = m.group(1), len(m.group())
-        cat = unicodedata.category(ch)
-        if prose:
-            hidden = cat == "Cc" or cat in ("Zl", "Zp") or ch in _PROSE_BIDI_CONTROLS
-        else:
-            hidden = ch in _APPROVAL_BLANK_GLYPHS or cat[0] == "C" or cat in ("Zl", "Zp")
-        if not hidden:
-            return m.group()
-        esc = ch.encode("unicode_escape").decode("ascii")
-        return f"⟨{esc} ×{n}⟩" if n >= 4 else esc * n
-    return _APPROVAL_SAME_CHAR_RUN_RE.sub(one, run)
-
-
-def sanitize_command_for_display(text: str | None, *, prose: bool = False) -> str:
-    """Make hidden content in an approval-prompt string visible; clean text comes back unchanged.
-
-    Display-only: the executed command, smart assessment and allowlist keys never see this copy.
-    ``prose=True`` is the lighter pass for question text (see ``_PROSE_BIDI_CONTROLS``)."""
-    if not text:
-        return ""
-    out = _APPROVAL_NON_ASCII_RE.sub(lambda m: _escape_approval_run(m.group(), prose), text)
-    out = _APPROVAL_BLANK_RE.sub(lambda m: f"\n⟨+{m.group().count(chr(10)) - 1} blank lines⟩\n", out)
-    return _APPROVAL_PAD_RE.sub(lambda m: f" ⟨+{len(m.group())} whitespace chars⟩ ", out)
 
 
 def redact_approval_display(text: str | None, *, force: bool = False, prose: bool = False) -> str:
@@ -1606,8 +1556,8 @@ def redact_credential_shapes(text: str, *, force: bool = False, code_file: bool 
         # across them — a secret smuggled as ``sk-abc\\x1bdef…`` leaks verbatim (issue #77484). Mask such
         # runs by first matching on a control-stripped copy, then re-masking the corresponding span in the
         # original (the stripped copy and the original are aligned 1:1 for non-control chars).
-        text = mask_control_split_tokens(text, _prefix_sub, _PREFIX_RE)
-        text = _PREFIX_SUB_RE.sub(lambda m: _mask_prefix_match(m, _prefix_sub), text)
+        text = mask_control_split_tokens(text, _prefix_sub, _PREFIX_RE, _PREFIX_SUB_RE, _is_glued_identifier)
+        text = mask_prefix_matches(text, _prefix_sub, _PREFIX_SUB_RE, _is_glued_identifier)
 
     if "." in text:
         _mask = _mask_token_nonreusable if file_read else _mask_token

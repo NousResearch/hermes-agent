@@ -34,7 +34,6 @@ from tools.approval_shell_tokens import _shell_tokens_with_spans
 from tools.approval_windows_hardline import whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns
 from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_RISKY_DESCRIPTION, classify_osascript
 from tools.approval_quoted_newlines import _mask_quoted_newlines
-from tools.approval_pipe_launchers import _PIPE_PATH_PREFIX_RE, _PIPE_WRAPPERS_RE
 from tools.approval_variation_selectors import _EMOJI_RANGE, _HIDDEN_VARIATION_SELECTOR_RE
 from tools.approval_wmic import WmicShadowDeleteMatcher
 from tools.shell_heredoc import mask_heredoc_bodies_for_shell_scan

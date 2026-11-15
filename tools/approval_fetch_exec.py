@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from tools.approval_pipe_launchers import _PIPE_LAUNCHER_VALUE_FLAGS, _pipe_launcher_re
+from tools.approval_pipe_launchers import _PIPE_LAUNCHER_VALUE_FLAGS, _PIPE_PATH_PREFIX_RE, _PIPE_WRAPPERS_RE, _pipe_launcher_re
 from tools.shell_heredoc import mask_heredoc_bodies_for_shell_scan
 
 _FETCH_RE = re.compile(r"\b(?:curl|wget)\b", re.IGNORECASE)
@@ -22,7 +22,6 @@ _TARGET_RE = re.compile(
 )
 _TERMINATOR = r"(?=[\s;&|)`'\"]|$)"
 _SCRIPT_INTERPRETERS_RE = r"python[0-9.]*+|perl|ruby|node|php|pwsh|powershell|cmd"
-_PIPE_PATH_PREFIX_RE = r"(?>(?:[a-zA-Z]:)?(?:[.\w~-]*+[/\\])*+)"
 
 
 def _launcher_wrappers_re(ws: str) -> str:
@@ -30,7 +29,6 @@ def _launcher_wrappers_re(ws: str) -> str:
     return rf"(?>{_PIPE_PATH_PREFIX_RE}(?:{launchers}){ws}++)*+"
 
 
-_PIPE_WRAPPERS_RE = _launcher_wrappers_re(r"\s")
 # The run matcher never crosses a newline: `command -v bash` and `bash job.sh` on two lines are two commands.
 _H = r"[^\S\n]"
 _LINE_WRAPPERS_RE = _launcher_wrappers_re(_H)

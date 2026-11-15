@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("aiohttp")
 
-from gateway.platforms.api_server import _resolve_media_to_data_urls
+from gateway.platforms.api_server import APIServerAdapter, _resolve_media_to_data_urls
 
 # 1x1 transparent PNG
 _PNG_BYTES = base64.b64decode(
@@ -56,6 +56,49 @@ class TestResolveMediaToDataUrls(unittest.TestCase):
     def test_non_image_left_untouched(self):
         text = "MEDIA:/tmp/archive.zip"
         self.assertEqual(_resolve_media_to_data_urls(text), text)
+
+
+class TestHistoryMessagesInlineMedia(unittest.TestCase):
+    """``GET /api/sessions/{id}/messages`` was the one outbound path that skipped inlining.
+
+    A stored reply keeps the raw ``MEDIA:<path>`` form, so a remote frontend opening an old
+    session got a tag it has no filesystem to resolve. The projection now opts in, per request.
+    """
+
+    def _png(self):
+        import tempfile
+        from pathlib import Path
+
+        d = Path(tempfile.mkdtemp(prefix="hermes_history_media"))
+        p = d / "shot.png"
+        p.write_bytes(_PNG_BYTES)
+        return p
+
+    @staticmethod
+    def _row(role: str, content):
+        return {"id": 1, "session_id": "s1", "role": role, "content": content, "timestamp": 0.0}
+
+    def test_default_keeps_the_wire_shape(self):
+        p = self._png()
+        out = APIServerAdapter._message_response(self._row("assistant", f"Here: MEDIA:{p}"))
+        self.assertIn("MEDIA:", out["content"])
+        self.assertNotIn("data:image", out["content"])
+
+    def test_opted_in_assistant_row_is_inlined(self):
+        p = self._png()
+        out = APIServerAdapter._message_response(
+            self._row("assistant", f"Here: MEDIA:{p}"), inline_media=True)
+        self.assertIn("data:image/png;base64,", out["content"])
+        self.assertNotIn("MEDIA:", out["content"])
+
+    def test_opted_in_leaves_non_assistant_rows_alone(self):
+        p = self._png()
+        out = APIServerAdapter._message_response(self._row("tool", f"MEDIA:{p}"), inline_media=True)
+        self.assertIn("MEDIA:", out["content"])
+
+    def test_null_content_is_not_a_crash(self):
+        out = APIServerAdapter._message_response(self._row("tool", None), inline_media=True)
+        self.assertIsNone(out["content"])
 
 
 if __name__ == "__main__":

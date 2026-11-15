@@ -20,9 +20,11 @@ the Chat Completions wire (Nous Portal, OpenRouter and other gateways in front o
 request whose thinking is budget-based is skipped because ``max_tokens=1`` would change
 ``budget_tokens``, which Anthropic keys the message cache on (and which it rejects outright).
 
-Only a native Anthropic route is trusted to keep the ``1h`` tier: a gateway may drop or shorten
-it (on Nous Portal a ``ttl: "1h"`` entry was measured gone after 7 minutes), so every other route
-is warmed on the 5-minute schedule whatever TTL the request asked for.
+When the entry expires is the shared prompt-cache clock's answer (``agent/prompt_cache_clock.py``),
+never the warmer's own: a refresh is due shortly before the clock's guaranteed-warm deadline, and a
+session whose window carries no guarantee (unknown route, a gateway asked for an untrusted ``1h``,
+the cache moved) is not warmed. Each refresh is folded back into the clock, so the next one is
+scheduled from the deadline the refresh itself bought.
 """
 
 from __future__ import annotations
@@ -42,8 +44,6 @@ logger = logging.getLogger(__name__)
 MAX_WARMING_AGE_S = 60 * 60
 #: A refresh is sent only when it is expected to save at least this many dollars.
 MINIMUM_EXPECTED_SAVINGS_USD = 0.05
-#: Anthropic cache tiers, as ``agent._cache_ttl`` spells them.
-TTL_SECONDS = {"5m": 300, "1h": 3600}
 #: Wires the warmer can replay a request on.
 WARMABLE_API_MODES = frozenset({"anthropic_messages", "chat_completions"})
 #: Replays are one HTTP round trip; never let a hung socket pin the timer thread.
@@ -58,16 +58,17 @@ def cache_warming_delay_s(ttl_s: float) -> Optional[float]:
     return max(1.0, min(ttl_s * 0.9, ttl_s - 10))
 
 
-def warm_ttl_seconds(agent: Any) -> Optional[float]:
-    """Seconds the agent's cache entry is trusted to live: the requested tier on native
-    Anthropic, 5 minutes on every other route (gateways may drop the ``1h`` tier).
+def guaranteed_window(agent: Any) -> Optional[tuple[float, float]]:
+    """``(guaranteed-warm deadline, tier seconds)`` from the shared prompt-cache clock, or ``None``
+    when the clock guarantees nothing now (no window, unknown, assumed, or already past)."""
+    from agent.prompt_cache_clock import cache_certainly_warm, cache_window
+    from agent.prompt_caching import TTL_SECONDS
 
-    The warmer's only lifetime source: the shared prompt-cache clock replaces this body."""
-    ttl_s = TTL_SECONDS.get(getattr(agent, "_cache_ttl", None) or "")
-    if ttl_s is None:
+    window = cache_window(agent)
+    ttl_s = TTL_SECONDS.get(getattr(window, "tier", None) or "")
+    if ttl_s is None or not cache_certainly_warm(window):
         return None
-    native = getattr(agent, "api_mode", None) == "anthropic_messages" and getattr(agent, "provider", "") == "anthropic"
-    return ttl_s if native else min(ttl_s, TTL_SECONDS["5m"])
+    return float(window.guaranteed_until), float(ttl_s)
 
 
 def has_cache_markers(api_kwargs: dict[str, Any]) -> bool:
@@ -170,11 +171,10 @@ class _Run:
     cached_tokens: int
     uncached_tokens: int
     ttl_s: float
-    delay_s: float
+    deadline_at: float  # the clock's guaranteed-warm end for the entry this run keeps alive
     is_current: Callable[[], bool]
     started_at: float
     api_mode: str = "anthropic_messages"
-    anchor_at: float = 0.0
     next_warm_at: float = 0.0
     refresh_deadline_at: float = 0.0
     timer: Optional[threading.Timer] = None
@@ -218,7 +218,7 @@ class PromptCacheWarmer:
         }
 
     # -- lifecycle ------------------------------------------------------------------------------
-    def start(self, api_kwargs: dict[str, Any], response: Any, *, sent_at: Optional[float] = None) -> Optional[str]:
+    def start(self, api_kwargs: dict[str, Any], response: Any) -> Optional[str]:
         """Arm a refresh for the request that just produced ``response``. Returns the reason
         nothing was armed, ``None`` when a timer is scheduled."""
         self._clear_run()
@@ -236,16 +236,13 @@ class PromptCacheWarmer:
             return self._stop("MoA requests are not replayable")
         if getattr(agent, "_interrupt_requested", False):
             return self._stop("turn interrupted")
-        ttl_s = warm_ttl_seconds(agent)
-        if ttl_s is None:
-            return self._stop("cache lifetime unavailable")
         if not has_cache_markers(api_kwargs):
             return self._stop("request carries no cache markers")
         if not is_replayable(api_kwargs):
             return self._stop("request cannot be replayed safely (budget thinking)")
-        delay_s = cache_warming_delay_s(ttl_s)
-        if delay_s is None:
-            return self._stop("cache lifetime unavailable")
+        window = guaranteed_window(agent)
+        if window is None or cache_warming_delay_s(window[1]) is None:
+            return self._stop("cache window not guaranteed warm")
         cached_tokens, uncached_tokens = self._prompt_split(response)
         if cached_tokens + uncached_tokens <= 0:
             return self._stop("prompt size unavailable")
@@ -271,13 +268,10 @@ class PromptCacheWarmer:
         # tool-result eviction); the replay must send exactly what wrote the entry.
         run = _Run(
             api_kwargs=self._replay_kwargs(api_kwargs), client=client, model=model,
-            cached_tokens=cached_tokens, uncached_tokens=uncached_tokens, ttl_s=ttl_s,
-            delay_s=delay_s, is_current=_is_current, started_at=time.time(), api_mode=api_mode,
+            cached_tokens=cached_tokens, uncached_tokens=uncached_tokens, ttl_s=window[1],
+            deadline_at=window[0], is_current=_is_current, started_at=time.time(), api_mode=api_mode,
             billing=self._billing_snapshot(),
         )
-        # The entry's lifetime runs from when the provider served the request, not from when
-        # the (possibly long) response finished: the first refresh is due that much sooner.
-        run.anchor_at = sent_at if sent_at is not None else run.started_at
         with self._lock:
             self._run = run
             self._schedule(run)
@@ -323,14 +317,14 @@ class PromptCacheWarmer:
 
     def _schedule(self, run: _Run) -> None:
         now = time.time()
-        run.next_warm_at = (run.anchor_at or now) + run.delay_s
-        run.anchor_at = 0.0  # later refreshes count from the refresh itself
-        if run.next_warm_at - run.delay_s + run.ttl_s <= now:
+        margin = run.ttl_s - (cache_warming_delay_s(run.ttl_s) or run.ttl_s)
+        run.next_warm_at = run.deadline_at - margin
+        if run.deadline_at <= now:
             self._stop("cache entry already expired")
             return
         # A timer can fire late after sleep or a blocked interpreter. Keep half of the planned
         # pre-expiry margin for that: a late refresh is a full-price write, not a warm.
-        run.refresh_deadline_at = run.next_warm_at + (run.ttl_s - run.delay_s) / 2
+        run.refresh_deadline_at = run.next_warm_at + margin / 2
         deadline = run.started_at + MAX_WARMING_AGE_S
         if run.next_warm_at > deadline or now >= deadline:
             self._stop("one-hour safety limit reached")
@@ -380,14 +374,19 @@ class PromptCacheWarmer:
         finally:
             run.refreshing = False
         run.warm_count += 1
-        miss = self._record(run, message, decision)
+        miss = self._record(run, message, decision, sent_at)
         if miss is not None:
             self._stop_if_current(run, miss)
             return
         with self._lock:
-            if self._run is run:
-                run.anchor_at = sent_at
-                self._schedule(run)
+            if self._run is not run:
+                return
+            window = guaranteed_window(self.agent)
+            if window is None:
+                self._stop("cache window not guaranteed warm")
+                return
+            run.deadline_at, run.ttl_s = window
+            self._schedule(run)
 
     def _send(self, run: _Run) -> Any:
         client = run.client
@@ -409,10 +408,10 @@ class PromptCacheWarmer:
         kwargs["max_tokens"] = 1
         return create_anthropic_message(client, kwargs, log_prefix=self._prefix(), prefer_stream=False)
 
-    def _record(self, run: _Run, message: Any, decision: CacheWarmingDecision) -> Optional[str]:
+    def _record(self, run: _Run, message: Any, decision: CacheWarmingDecision, sent_at: float) -> Optional[str]:
         """Fold the refresh's tokens and dollars into the session totals (never into the
-        compressor or usage anchors: a one-token replay is not a conversation turn) and into the
-        run's spend. Returns why warming must stop when the refresh did not prove a cache hit at
+        compressor or usage anchors: a one-token replay is not a conversation turn), into the
+        run's spend, and into the prompt-cache clock (a read restarts the window). Returns why warming must stop when the refresh did not prove a cache hit at
         a known price, ``None`` when it did."""
         agent, b = self.agent, run.billing
         usage = getattr(message, "usage", None)
@@ -433,6 +432,7 @@ class PromptCacheWarmer:
             # ``reset_session_state`` zeroes them, and it zeroes ``session_api_calls`` with them.
             if getattr(agent, "session_api_calls", 0) >= b["api_calls"]:
                 self._add_to_session_totals(canonical, amount)
+            clock = self._fold_clock(run, canonical, sent_at)
             db = getattr(agent, "_session_db", None)
             if db is not None and b["session_id"]:
                 db.queue_token_counts(
@@ -444,14 +444,14 @@ class PromptCacheWarmer:
                     cost_status=cost.status, cost_source=cost.source,
                     billing_provider=b["provider"], billing_base_url=b["base_url"],
                     billing_mode="subscription_included" if cost.status == "included" else None,
-                    model=b["model"], api_call_count=1, task="cache_warm",
+                    model=b["model"], api_call_count=1, task="cache_warm", **clock,
                 )
             logger.info(
                 "%sprompt cache refresh sent (#%d): cache_read=%d write=%d cost=%s "
-                "expected_savings=$%.3f next=%s", self._prefix(), run.warm_count,
+                "expected_savings=$%.3f warm_until(before)=%s", self._prefix(), run.warm_count,
                 canonical.cache_read_tokens, canonical.cache_write_tokens,
                 f"${amount:.4f}" if amount is not None else "?", decision.expected_savings,
-                time.strftime("%H:%M:%S", time.localtime(time.time() + run.delay_s)),
+                time.strftime("%H:%M:%S", time.localtime(run.deadline_at)),
             )
         except Exception:  # health: allow BLE001 -- unaccounted means stop warming; logged
             logger.debug("prompt cache warm accounting failed", exc_info=True)
@@ -462,6 +462,22 @@ class PromptCacheWarmer:
         if amount is None:
             return "cache refresh cost unavailable"
         return None
+
+    def _fold_clock(self, run: _Run, canonical: Any, sent_at: float) -> dict[str, str]:
+        """Record the refresh in the shared clock while this run still owns the live prefix (the
+        loop cancels the run under the same lock before it stamps its own next request), and
+        return the ``prompt_cache_clock`` column for its token row."""
+        from agent.prompt_cache_clock import attempt_facts, record_cache_response
+        from agent.turn_usage import _cache_clock_column
+
+        agent, b = self.agent, run.billing
+        with self._lock:
+            if self._run is not run or getattr(agent, "session_id", None) != b["session_id"]:
+                return {}
+            attempt = dict(attempt_facts(run.api_kwargs) or {}, sent_at=sent_at)
+            event = record_cache_response(agent, canonical, model=b["model"], provider=b["provider"],
+                                          base_url=b["base_url"], api_mode=b["api_mode"], attempt=attempt)
+        return _cache_clock_column(event)
 
     def _add_to_session_totals(self, canonical: Any, amount: Optional[float]) -> None:
         # Not session_api_calls: that counter is the conversation's request sequence (and the
@@ -545,15 +561,13 @@ def get_prompt_cache_warmer(agent: Any) -> PromptCacheWarmer:
     return warmer
 
 
-def start_prompt_cache_warming(
-    agent: Any, api_kwargs: Any, response: Any, *, sent_at: Optional[float] = None,
-) -> None:
-    """Called once per successful provider response with the request that produced it;
-    ``sent_at`` is when that request went out (the cache entry's lifetime starts there)."""
+def start_prompt_cache_warming(agent: Any, api_kwargs: Any, response: Any) -> None:
+    """Called once per successful provider response with the request that produced it, after
+    the response was folded into the prompt-cache clock."""
     if not isinstance(api_kwargs, dict):
         return
     try:
-        get_prompt_cache_warmer(agent).start(api_kwargs, response, sent_at=sent_at)
+        get_prompt_cache_warmer(agent).start(api_kwargs, response)
     except Exception:
         logger.debug("prompt cache warming did not arm", exc_info=True)
 

@@ -56,6 +56,10 @@ class WorkerPersistenceError(RuntimeError):
     pass
 
 
+class WorkerOwnerUnavailable(WorkerPersistenceError):
+    """Gateway discovery failed before a worker RPC request was sent."""
+
+
 class WorkerReceiptTimeout(TimeoutError):
     """The owner did not answer a sent request within ``RECEIPT_WAIT_S``: its outcome is unknown.
 
@@ -161,7 +165,7 @@ class WorkerRPC:
         if discovery.state == 'ready' and discovery.endpoint is not None:
             self.endpoint = discovery.endpoint
         elif discovery.state != 'draining' or self.endpoint is None:
-            raise WorkerPersistenceError('owner_unavailable')
+            raise WorkerOwnerUnavailable('owner_unavailable')
         from hermes_cli.gateway_runtime import control_home_for
         endpoint = self.endpoint
         descriptor = query_identify(control_home_for(self.home, endpoint), timeout=5)
@@ -403,8 +407,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
     @staticmethod
     def _owner_unreachable(exc):
         from websockets.exceptions import ConnectionClosed
-        return (isinstance(exc, (TimeoutError, OSError, ConnectionClosed))
-                or (isinstance(exc, WorkerPersistenceError) and str(exc) == 'owner_unavailable'))
+        return isinstance(exc, (TimeoutError, OSError, ConnectionClosed, WorkerOwnerUnavailable))
 
     def adopt(self, epoch):
         """Install only a separately verified worker.adopt result; never self-adopt."""

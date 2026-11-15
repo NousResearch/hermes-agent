@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import agent.runtime_session_store as session_store
+
 from agent.runtime_session_store import (
     RECEIPT_RECOVERY_S, RuntimeSessionStore, WorkerPersistenceError, WorkerReceiptTimeout, WorkerRPC)
 
@@ -109,7 +111,7 @@ def test_a_later_stall_gets_its_own_budget(tmp_path):
 @pytest.mark.parametrize('redial_error', [
     lambda n: TimeoutError('open handshake timed out'),
     lambda n: ConnectionRefusedError(),
-    lambda n: WorkerPersistenceError('owner_unavailable'),
+    lambda n: session_store.WorkerOwnerUnavailable('owner_unavailable'),
 ])
 def test_a_redial_that_also_stalls_stays_inside_the_same_window(tmp_path, redial_error):
     calls = []
@@ -216,3 +218,33 @@ def test_a_real_connection_that_stalls_once_is_redialled_and_commits_once(stalli
     finally:
         store.close()
         rpc.close()
+
+
+def test_owner_unavailable_reply_after_timeout_is_final(tmp_path):
+    """A real owner refusal must not be mistaken for a pre-send discovery failure.
+
+    Regression for #147839: after the first lost ACK, the owner may explicitly
+    answer the retry with the same text that discovery uses. That answer ends
+    this attempt; a third send could silently overwrite the owner's refusal.
+    """
+    calls = []
+
+    def rpc(method, **params):
+        calls.append((method, params))
+        if len(calls) == 1:
+            raise WorkerReceiptTimeout('worker_receipt_timeout')
+        if len(calls) == 2:
+            raise WorkerPersistenceError('owner_unavailable')
+        return {'count': 1, 'annotations': [{}]}
+
+    store = RuntimeSessionStore(rpc, SCOPE, tmp_path / 'private')
+    try:
+        with pytest.raises(WorkerPersistenceError, match='owner_unavailable'):
+            store.append_messages_batch('s', [{'role': 'user', 'content': 'hi'}])
+        assert [(method, params['sequence']) for method, params in calls] == [
+            ('worker.persist', 1), ('worker.persist', 1)]
+        assert store.failure == 'owner_unavailable'
+        assert len(store.journal['pending']) == 1
+    finally:
+        with pytest.raises(WorkerPersistenceError, match='owner_unavailable'):
+            store.close()

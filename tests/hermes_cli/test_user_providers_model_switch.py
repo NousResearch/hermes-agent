@@ -104,6 +104,37 @@ def test_current_model_from_another_provider_is_still_injected():
     assert finalized[0]["total_models"] == 2
 
 
+def test_current_qualified_alias_does_not_duplicate_grouped_provider_model(monkeypatch):
+    """The active provider may be an alias of a grouped endpoint's first slug."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "radiance-main": {
+            "base_url": "http://127.0.0.1:8100/v1",
+            "models": ["qwen35"],
+            "discover_models": False,
+        },
+        "radiance-alias": {
+            "base_url": "http://127.0.0.1:8100/v1",
+            "models": ["qwen35"],
+            "discover_models": False,
+        },
+    }
+    rows = list_authenticated_providers(
+        current_provider="radiance-alias",
+        current_model="radiance-alias/qwen35",
+        user_providers=user_providers,
+        custom_providers=[],
+        probe_custom_providers=False,
+    )
+
+    row = next(r for r in rows if r["slug"] == "radiance-main")
+    assert row["is_current"] is True
+    assert row["models"] == ["qwen35"]
+    assert row["total_models"] == 1
+
+
 def test_list_authenticated_providers_enumerates_dict_format_models(monkeypatch):
     """providers: dict entries with ``models:`` as a dict keyed by model id
     (canonical Hermes write format) should surface every key in the picker.

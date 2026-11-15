@@ -1310,10 +1310,10 @@ def list_authenticated_providers(
     if custom_providers and isinstance(custom_providers, list):
         _lap_custom_provider_rows(b, custom_providers)
 
-    return _finalize_picker_rows(b.results, user_providers, current_model)
+    return _finalize_picker_rows(b.results, user_providers, current_model, current_provider=b.current_provider)
 
 
-def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
+def _finalize_picker_rows(results: list, user_providers, current_model: str, *, current_provider: str = "") -> list:
     """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
     # gate; matched by slug and ``provider_id``.
@@ -1339,13 +1339,12 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
             if not row.get("is_current") or row.get("native_catalog_empty"):
                 continue
             models = row.get("models") or []
-            slug = str(row.get("slug") or "").strip()
-            prefix = f"{slug}/"
-            bare_current_model = (
-                current_model[len(prefix):]
-                if slug and current_model.casefold().startswith(prefix.casefold())
-                else current_model
-            )
+            bare_current_model = current_model
+            for provider_id in (str(row.get("slug") or "").strip(), current_provider):
+                prefix = f"{provider_id}/"
+                if provider_id and current_model.casefold().startswith(prefix.casefold()):
+                    bare_current_model = current_model[len(prefix):]
+                    break
             if current_model not in models and bare_current_model not in models:
                 from hermes_cli.models import _model_requires_account_discovery
 

@@ -42,6 +42,9 @@ def _call_make_agent(cfg):
                 return_value=_runtime(),
             )
         )
+        # Importing run_agent from a linked worktree probes its Git metadata on startup;
+        # this is unrelated to prompt assembly and forbidden by the hermetic home-I/O guard.
+        stack.enter_context(patch("hermes_cli._early_recovery.restore_interrupted_pull", return_value=False))
         mock_agent = stack.enter_context(patch("run_agent.AIAgent"))
         from tui_gateway.server import _make_agent
 
@@ -58,7 +61,7 @@ def test_make_agent_uses_display_personality_when_set():
         },
     }
     kwargs = _call_make_agent(cfg)
-    assert kwargs["ephemeral_system_prompt"] == "You are helpful."
+    assert kwargs["ephemeral_system_prompt"] == "manual forever\n\nYou are helpful."
 
 
 def test_make_agent_preserves_manual_prompt_without_personality():

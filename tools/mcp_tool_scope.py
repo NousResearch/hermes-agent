@@ -77,6 +77,7 @@ def rekey_unscoped_connections(scope: str) -> None:
     """Move every bare-name connection under ``(scope, name)``. A single-profile process keys its
     connections by bare name; once it starts multiplexing, the launch profile's lookups resolve
     ``(launch scope, name)``, so without this its live servers read as disconnected until a restart."""
+    from tools.mcp_tool_project_scope import _discard_orphan_clone, rekey_unscoped
     from tools.registry import registry
     with _core._lock:
         for attr in _KEYED_LEDGERS:
@@ -88,6 +89,9 @@ def rekey_unscoped_connections(scope: str) -> None:
             bare = {k for k in keys if isinstance(k, str)}
             keys.difference_update(bare)
             keys.update((scope, k) for k in bare)
+        # The project clones follow their baseline, or the pre-multiplex ones (live children) are
+        # stranded until a wildcard shutdown reaps them (#151827 port, review finding 3).
+        orphaned_clones = rekey_unscoped(scope)
         # The owner and the tools follow the key: status, config pruning and /reload-mcp select by
         # owner == scope, and teardown deregisters from the owner's overlay, not the global map.
         tool_names = []
@@ -99,6 +103,8 @@ def rekey_unscoped_connections(scope: str) -> None:
         for key in set(_core._servers) | set(_core._lazy_server_tool_names):
             if _key_scope(key) == scope:
                 _core._server_tool_scopes.setdefault(key, set()).add(scope)
+    for clone in orphaned_clones:  # never shut a clone down under _core._lock
+        _discard_orphan_clone(clone, clone.name, clone._scoped_cwd)
     from tools.mcp_tool_costs import rekey_unscoped
     rekey_unscoped(scope)  # chats' spend totals follow their server's policy key
     registry.move_to_scope(tool_names, scope)

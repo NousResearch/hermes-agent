@@ -401,6 +401,10 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # Non-empty on a per-project clone (``tools.mcp_tool_project_scope``): the project dir it
         # serves. A clone never registers tools; the baseline in ``_servers`` owns them.
         self._scoped_cwd: str = ""
+        # Handlers currently holding this clone (its evictability), counted on the object: a
+        # multiplex flip rekeys the clone ledgers mid-call, and a count keyed by the old key
+        # would strand here — the release could never find it (#151827 port, review finding 3).
+        self._scoped_leases: int = 0
         # Dir the current stdio child was spawned in ("" until the first stdio spawn).
         self._spawn_cwd: str = ""
         self.session: Optional[Any] = None

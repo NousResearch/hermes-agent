@@ -190,7 +190,7 @@ def test_a_clone_in_use_is_never_evicted(probe, monkeypatch):
     worker = threading.Thread(target=lambda: result.update(a=_call(tool="slow", cwd=probe.a, seconds=2)))
     worker.start()
     deadline = time.monotonic() + 10
-    while not scope._scoped_active_calls and time.monotonic() < deadline:
+    while not getattr(busy, "_scoped_leases", 0) and time.monotonic() < deadline:
         time.sleep(0.01)
 
     _call(cwd=probe.b)  # over the cap while project a's call is in flight
@@ -198,7 +198,7 @@ def test_a_clone_in_use_is_never_evicted(probe, monkeypatch):
 
     assert result["a"][0] == probe.a
     assert busy.session is not None, "the in-flight project's child was evicted"
-    assert scope._scoped_active_calls == {}
+    assert busy._scoped_leases == 0, "the handler's lease was never released"
 
 
 def test_reload_tears_down_a_servers_clones(root, probe):
@@ -388,3 +388,126 @@ def test_event_utility_handlers_serve_the_baseline_not_the_callers_clone(probe):
     assert "error" not in listing, listing
     assert int(listing["events"][0]["name"].removeprefix("pid-")) == baseline_pid, \
         "the events handler talked to the caller's project clone"
+
+
+def _reap_bare_keyed_clones() -> None:
+    """Reap clones stranded under a bare baseline key (the rekey bug's signature), so a run of
+    these tests never leaks its children into the next one."""
+    from tools import mcp_tool, mcp_tool_loop
+    from tools import mcp_tool_project_scope as pscope
+    with mcp_tool._lock:
+        strays = pscope.pop_clones({k[0] for k in pscope._scoped_servers if isinstance(k[0], str)})
+    for clone in strays:
+        try:
+            mcp_tool_loop._run_on_mcp_loop(clone.shutdown, timeout=15)
+        except Exception:
+            pass
+
+
+def test_a_runtime_multiplex_flip_rekeys_and_reuses_the_pre_flip_project_clones(root):
+    """When the gateway flips to multiplexing at runtime, rekey_unscoped_connections moves the
+    baseline under ``(scope, name)``; the project clones must follow their baseline, or the
+    pre-flip clones (live children, up to the cap per server) turn invisible to lookup, eviction
+    and scoped teardown, every project pays a fresh child, and only a wildcard shutdown reaps
+    the old ones (#151827 port, review finding 3)."""
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from tools.mcp_tool_scope import rekey_unscoped_connections
+    from tools.registry import session_tool_scope
+
+    name = "cwdprobe_rekey"
+    _register(root, name)
+    project = str(root / "a")
+    spawn_cwd, pid = _call(name, cwd=project)
+    from tools import mcp_tool_project_scope as pscope
+    assert (name, os.path.realpath(project)) in pscope._scoped_servers, \
+        "test premise: the pre-flip call created a project clone (else both legs use the baseline)"
+    try:
+        rekey_unscoped_connections("rekey-scope")
+        with session_tool_scope("rekey-scope"):
+            reuse_cwd, reuse_pid = _call(name, cwd=project)
+    finally:
+        shutdown_mcp_servers(scope="rekey-scope", names={name})
+        _reap_bare_keyed_clones()
+    assert (reuse_cwd, reuse_pid) == (spawn_cwd, pid), \
+        "the multiplex flip stranded the project's child and spawned a second one"
+
+
+def test_the_rekey_moves_every_project_scope_sidecar(root):
+    """Gate-level twin: every project-scope sidecar follows the baseline's key. A connect still
+    in flight under the old key keeps its own entries (its baseline check now fails, so it
+    discards its clone and its release reaps them); a clone whose project a post-flip twin
+    already serves is discarded instead of overwriting it."""
+    from tools import mcp_tool, mcp_tool_project_scope as pscope
+    from tools.mcp_tool_scope import rekey_unscoped_connections
+
+    name = "cwdprobe_rekey_gate"
+    with mcp_tool._lock:
+        clone, twin = mcp_tool.MCPServerTask(name), mcp_tool.MCPServerTask(name)
+        old_key, new_key = (name, "/p/a"), (("rekey-scope", name), "/p/a")
+        pscope._scoped_servers[old_key] = clone
+        pscope._scoped_servers[new_key] = twin  # a post-flip clone already serves this project
+        busy_lock = pscope._scoped_connect_locks.setdefault((name, "/p/b"), threading.Lock())
+        busy_lock.acquire()
+        pscope._scoped_connect_waiters[(name, "/p/b")] = 1
+        pscope._scoped_connect_locks.setdefault((name, "/p/c"), threading.Lock())
+    try:
+        rekey_unscoped_connections("rekey-scope")
+        with mcp_tool._lock:
+            assert pscope._scoped_servers.get(new_key) is clone, \
+                "the live clone lost its seat to the idle twin"
+            assert pscope._scoped_servers.get(old_key) is None \
+                and not any(c is twin for c in pscope._scoped_servers.values()), \
+                "a duplicate clone survived the rekey"
+            assert (name, "/p/b") in pscope._scoped_connect_locks \
+                and pscope._scoped_connect_waiters.get((name, "/p/b")) == 1, \
+                "an in-flight connect lost its lock or waiter seat"
+            assert (name, "/p/c") not in pscope._scoped_connect_locks, \
+                "a settled dead lock survived the rekey"
+    finally:
+        busy_lock.release()
+        from tools import mcp_tool_loop
+        with mcp_tool._lock:  # the rekeyed clone was never a registered server's; reap it directly
+            strays = pscope.pop_clones({("rekey-scope", name)})
+        for stray in strays:
+            try:
+                mcp_tool_loop._run_on_mcp_loop(stray.shutdown, timeout=15)
+            except Exception:
+                pass
+        _reap_bare_keyed_clones()
+
+
+def test_an_in_flight_call_survives_a_rekey_and_stays_releasable(probe, monkeypatch):
+    """Leases are counted on the clone object, so a multiplex flip mid-call neither evicts the
+    busy clone nor strands its lease under the dead key: once the call returns, the clone is
+    idle again and eviction reaps it like any other (review finding 3, lease half)."""
+    from tools import mcp_tool_project_scope as pscope
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from tools.mcp_tool_scope import rekey_unscoped_connections
+    from tools.registry import session_tool_scope
+    from tests.waiting import wait_until
+
+    monkeypatch.setattr(pscope, "_MAX_SCOPED_TRANSPORTS_PER_SERVER", 1)
+    _call(cwd=probe.a)
+    busy = _clones()[probe.a]
+    result: dict = {}
+    worker = threading.Thread(target=lambda: result.update(a=_call(tool="slow", cwd=probe.a, seconds=2)))
+    worker.start()
+    wait_until(lambda: bool(getattr(pscope, "_scoped_active_calls", None))
+               or bool(getattr(busy, "_scoped_leases", 0)),
+               timeout=10, what="the in-flight call to take its lease")
+    # The _scoped_active_calls leg is a red-on-base accommodation: pre-fix trees count leases in
+    # that module dict, post-fix trees on the clone; the run must work under either accounting.
+    try:
+        rekey_unscoped_connections("rekey2-scope")  # the flip lands mid-call
+        with session_tool_scope("rekey2-scope"):
+            _call(cwd=probe.b)  # over the cap while the pre-flip call is still in flight
+            worker.join(timeout=30)
+            assert result["a"][0] == probe.a
+            assert busy.session is not None, "the in-flight project's child was evicted mid-call"
+            _call(cwd=probe.c)  # cap eviction: the returned clone must now count as idle
+        assert not any(c is busy for c in pscope._scoped_servers.values()), \
+            "the pre-flip clone was never evictable again (a stranded lease or a stranded key)"
+    finally:
+        worker.join(timeout=30)
+        shutdown_mcp_servers(scope="rekey2-scope", names={"cwdprobe"})
+        _reap_bare_keyed_clones()

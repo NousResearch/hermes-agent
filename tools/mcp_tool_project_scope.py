@@ -46,11 +46,11 @@ _scoped_connect_locks: dict[tuple[Any, str], threading.Lock] = {}
 # here, so a lock whose generation never installed a clone is reaped when the last seat leaves
 # instead of accumulating for the process lifetime (independent review, suggestion 3).
 _scoped_connect_waiters: dict[tuple[Any, str], int] = {}
-# Clone key -> handlers currently holding it (lookup through release, retries included).
-_scoped_active_calls: dict[tuple[Any, str], int] = {}
 
-# The handler's lease list: every clone a lookup hands this handler is counted in
-# ``_scoped_active_calls`` until the handler returns. None outside a leased handler.
+# The handler's lease list: every clone a lookup hands this handler is counted on the clone
+# itself (``_scoped_leases``) until the handler returns — counted on the object, never by key,
+# so a rekey or a reload that moves the key mid-call cannot strand the count (review finding 3).
+# None outside a leased handler.
 _call_leases: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar("mcp_scoped_call_leases", default=None)
 
 
@@ -134,7 +134,7 @@ def _server_for_call(server_name: str, key: Any, baseline: Any, *, connect: bool
     with _core._lock:
         clone = _scoped_servers.get(clone_key)
         if clone is not None:
-            _lease(clone_key)
+            _lease(clone)
             return clone
         if not connect:
             return None
@@ -161,7 +161,7 @@ def _server_for_call(server_name: str, key: Any, baseline: Any, *, connect: bool
             # ever reap or re-register. The clone goes down with its baseline or not at all.
             if _core._servers.get(key) is baseline:
                 _scoped_servers[clone_key] = clone
-                _lease(clone_key)
+                _lease(clone)
                 _release_connect_lock(clone_key, keep=True)
             else:
                 orphan = clone
@@ -192,30 +192,27 @@ def _connect_clone(server_name: str, baseline: Any, cwd: str) -> Any:
     return clone
 
 
-def _lease(clone_key: tuple) -> None:
-    """Count *clone_key* as in use by the running handler. Caller holds ``_core._lock``, so a
-    clone is leased in the same critical section that hands it out: eviction never sees a gap."""
+def _lease(clone: Any) -> None:
+    """Count *clone* as in use by the running handler. Caller holds ``_core._lock``, so a clone
+    is leased in the same critical section that hands it out: eviction never sees a gap."""
     leases = _call_leases.get()
     if leases is not None:
-        _scoped_active_calls[clone_key] = _scoped_active_calls.get(clone_key, 0) + 1
-        leases.append(clone_key)
+        clone._scoped_leases += 1
+        leases.append(clone)
 
 
 def leased_handler(handler):
     """Wrap a tool/utility handler so every clone it touches stays un-evictable until it returns."""
     @wraps(handler)
     def _leased(args: dict, **kwargs):
-        token = _call_leases.set([])
+        leases: list = []
+        token = _call_leases.set(leases)
         try:
             return handler(args, **kwargs)
         finally:
             with _core._lock:
-                for clone_key in _call_leases.get():
-                    remaining = _scoped_active_calls.get(clone_key, 1) - 1
-                    if remaining:
-                        _scoped_active_calls[clone_key] = remaining
-                    else:
-                        _scoped_active_calls.pop(clone_key, None)
+                for clone in leases:
+                    clone._scoped_leases -= 1
             _call_leases.reset(token)
     return _leased
 
@@ -232,7 +229,7 @@ def _evict_idle_overflow(key: Any, *, keep: tuple) -> None:
             if len(victims) == excess:
                 break
             connect_lock = _scoped_connect_locks.get(clone_key)
-            if (clone_key == keep or _scoped_active_calls.get(clone_key) or clone._rpc_lock.locked()
+            if (clone_key == keep or clone._scoped_leases or clone._rpc_lock.locked()
                     or (connect_lock is not None and connect_lock.locked())):
                 continue
             victims.append(clone)
@@ -253,3 +250,33 @@ def pop_clones(keys: Optional[set]) -> list:
     for clone_key in popped:
         _scoped_connect_locks.pop(clone_key, None)
     return [_scoped_servers.pop(k) for k in popped]
+
+
+def rekey_unscoped(scope: str) -> list:
+    """Follow ``tools.mcp_tool_scope.rekey_unscoped_connections``: when a single-profile process
+    starts multiplexing, every bare-name baseline key becomes ``(scope, name)`` and its project
+    clones must follow — otherwise the pre-flip clones (live children, up to the cap per server)
+    turn invisible to lookup, eviction and scoped teardown, and only a wildcard shutdown reaps
+    them (#151827 port, review finding 3). A connect still in flight under an old key keeps its
+    own lock and waiter entries: its baseline check now fails, so it discards its clone and its
+    release reaps the entries. A clone whose project a post-flip twin already serves keeps the
+    seat only while in use; the redundant one is returned for the caller to shut down off the
+    registry lock. Caller holds ``_core._lock``."""
+    orphans = []
+    for clone_key in [k for k in _scoped_servers if isinstance(k[0], str)]:
+        new_key = ((scope, clone_key[0]), clone_key[1])
+        clone = _scoped_servers.pop(clone_key)
+        existing = _scoped_servers.get(new_key)
+        if existing is None or not existing._scoped_leases:
+            _scoped_servers[new_key] = clone
+            if existing is not None:
+                orphans.append(existing)  # an idle duplicate of a live project
+        else:
+            orphans.append(clone)  # the live twin keeps the seat; this one is the leftover
+    for lock_key in [k for k in _scoped_connect_locks if isinstance(k[0], str)]:
+        # Waiter seats are left alone: their releases reap them (a seat with a free lock is a
+        # thread still acquiring it — deleting the lock under it would split the generation).
+        lock = _scoped_connect_locks[lock_key]
+        if not lock.locked() and lock_key not in _scoped_connect_waiters:
+            del _scoped_connect_locks[lock_key]
+    return orphans

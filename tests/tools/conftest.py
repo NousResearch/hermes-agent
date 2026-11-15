@@ -187,6 +187,10 @@ class FakeKeepWarmTimer:
     def cancel(self):
         self.cancelled = True
 
+    @property
+    def pending(self):
+        return self.started and not self.cancelled
+
     def fire(self):
         self.function(*self.args)
 

@@ -60,7 +60,7 @@ def timers(tts_keep_warm_timers):
 
 
 def _pending(timers):
-    return [t for t in timers if t.started and not t.cancelled]
+    return [t for t in timers if t.pending]
 
 
 # --------------------------------------------------------------------------

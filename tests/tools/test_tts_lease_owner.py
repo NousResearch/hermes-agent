@@ -9,6 +9,7 @@ hook and the secrets that hook forwards must still come from B.
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
 
 import pytest
 
@@ -24,7 +25,7 @@ pytestmark = pytest.mark.usefixtures("tts_lifecycle_reset")
 def timers(tts_keep_warm_timers):
     """Fire every pending keep-warm timer; returns their intervals."""
     def fire():
-        pending = [t for t in tts_keep_warm_timers if t.started and not t.cancelled]
+        pending = [t for t in tts_keep_warm_timers if t.pending]
         for t in pending:
             t.fire()
         return [t.interval for t in pending]
@@ -86,24 +87,33 @@ def test_voice_toggle_release_by_another_profile_follows_the_acquirer(
     assert tts_tool_lifecycle.tts_lease_holders() == []
 
 
-@pytest.fixture
-def profiles(tmp_path, monkeypatch):
-    """Homes a/b with their own command-provider config; ``as_profile(x)`` binds one."""
-    from contextlib import contextmanager
-    homes = {name: tmp_path / name for name in ("a", "b")}
-    configs = {name: _srv_config(name.upper(), keep_warm) for name, keep_warm in (("a", 0), ("b", 30))}
-    for home in homes.values():
-        home.mkdir()
-    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: configs[get_hermes_home().name])
-    monkeypatch.setenv("SRV_TOKEN", "token")
+@contextmanager
+def _as_home(home):
+    """Bind ``home`` by HERMES_HOME override only: no secret scope is hydrated (unlike
+    ``bind_profile_scope``), so every profile reads the one process-env SRV_TOKEN."""
+    token = set_hermes_home_override(str(home))
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
 
-    @contextmanager
-    def as_profile(name):
-        token = set_hermes_home_override(str(homes[name]))
-        try:
-            yield
-        finally:
-            reset_hermes_home_override(token)
+
+@pytest.fixture
+def homes(tmp_path, monkeypatch):
+    """Bare homes a/b -> ``(dirs, as_profile)``; ``as_profile(name)`` binds one with ``_as_home``."""
+    dirs = {name: tmp_path / name for name in ("a", "b")}
+    for home in dirs.values():
+        home.mkdir()
+    monkeypatch.setenv("SRV_TOKEN", "token")
+    return dirs, lambda name: _as_home(dirs[name])
+
+
+@pytest.fixture
+def profiles(homes, monkeypatch):
+    """Homes a/b with their own command-provider config (a: 0s window, b: 30s); returns ``as_profile``."""
+    _dirs, as_profile = homes
+    configs = {name: _srv_config(name.upper(), keep_warm) for name, keep_warm in (("a", 0), ("b", 30))}
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: configs[get_hermes_home().name])
     return as_profile
 
 
@@ -211,7 +221,9 @@ def test_reacquire_during_a_running_release_warms_after_it(plugin, timers, monke
         # The reacquire is at the barrier while the running release still holds it (a non-blocking
         # try from here fails), so it cannot have warmed: no timing assumption.
         assert barrier.reached.wait(5), "the reacquire never waited for the running release"
-        assert not barrier.lock.acquire(blocking=False)
+        if barrier.lock.acquire(blocking=False):
+            barrier.lock.release()  # never leave the module's real lock held by a failing run
+            pytest.fail("the running release did not hold the teardown barrier")
         assert plugin.calls == ["warm", "release-start"]
     finally:
         plugin.gate.set()
@@ -263,29 +275,17 @@ def test_unload_never_enters_an_owner_context_another_thread_is_in(monkeypatch, 
 
 
 @pytest.fixture
-def real_profiles(tmp_path, monkeypatch):
+def real_profiles(homes):
     """Homes a/b whose ``config.yaml`` the real loader reads, both healthy command providers.
-    Returns ``(as_profile, write)``: ``as_profile(x)`` binds one; ``write(name, text)`` replaces a
-    profile's config file (an edit made while the lease is held: a broken file already fails that
-    profile's own warm-up)."""
-    from contextlib import contextmanager
+    Returns ``(as_profile, write)``; ``write(name, text)`` replaces a profile's config file (an edit
+    made while the lease is held: a broken file already fails that profile's own warm-up)."""
     from hermes_cli.config import atomic_config_write
-    homes = {name: tmp_path / name for name in ("a", "b")}
-    for name, home in homes.items():
-        home.mkdir()
+    dirs, as_profile = homes
+    for name, home in dirs.items():
         atomic_config_write(home / "config.yaml", {"tts": _srv_config(name.upper(), 0)})
-    monkeypatch.setenv("SRV_TOKEN", "token")
-
-    @contextmanager
-    def as_profile(name):
-        token = set_hermes_home_override(str(homes[name]))
-        try:
-            yield
-        finally:
-            reset_hermes_home_override(token)
 
     def write(name, text):
-        (homes[name] / "config.yaml").write_text(text)
+        (dirs[name] / "config.yaml").write_text(text)
     return as_profile, write
 
 
@@ -371,3 +371,55 @@ def test_an_owner_config_backend_outage_does_not_stop_the_healthy_owner(
     _join_hook_threads()
     assert _release_hooks(hooks) == ["release-B"]
     assert tts_tool_lifecycle._tts_owners == {}
+
+
+@pytest.fixture
+def signals(monkeypatch):
+    """Record each user-provider lease signal as ``(hook, provider, home name)``; config is ``srv``."""
+    seen: list = []
+    monkeypatch.setattr(tts_tool_lifecycle, "_signal_user_tts_provider",
+                        lambda name, cfg, hook: seen.append((hook, name, get_hermes_home().name)))
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "srv", "keep_warm_seconds": 0})
+    return seen
+
+
+def _resident(**counts):
+    from tools import tts_tool_local
+    for name, n in counts.items():
+        tts_tool_local._LOCAL_TTS_MODEL_CACHES[name].update({f"m{i}": object() for i in range(n)})
+    return tts_tool_local._LOCAL_TTS_MODEL_CACHES
+
+
+@pytest.mark.parametrize("provider", [None, "", "   "], ids=["none", "blank", "whitespace"])
+def test_release_provider_default_signals_once_and_drops_every_cache(signals, provider):
+    caches = _resident(piper=2, kittentts=1)
+    assert tts_tool_lifecycle.release_tts_provider(provider) == {"released": 3}
+    assert [s[:2] for s in signals] == [("release", "srv")]
+    assert not any(caches.values())
+
+
+@pytest.mark.parametrize("provider", ["piper", " Piper "])
+def test_release_provider_named_drops_only_that_cache_and_signals_nothing(signals, provider):
+    caches = _resident(piper=2, kittentts=1)
+    assert tts_tool_lifecycle.release_tts_provider(provider) == {"released": 2}
+    assert signals == []
+    assert (len(caches["piper"]), len(caches["kittentts"])) == (0, 1)
+
+
+def test_release_provider_unknown_name_drops_nothing(signals):
+    caches = _resident(piper=1)
+    assert tts_tool_lifecycle.release_tts_provider("no-such-engine") == {"released": 0}
+    assert signals == [] and len(caches["piper"]) == 1
+
+
+def test_unload_signals_each_owner_once_in_its_profile_and_counts_models_once(homes, signals, timers):
+    _dirs, as_profile = homes
+    for name in ("a", "b"):
+        with as_profile(name):
+            tts_tool_lifecycle.acquire_tts_lease(f"lease-{name}")
+    caches = _resident(piper=2)
+    with as_profile("a"):
+        tts_tool_lifecycle.release_tts_lease("lease-b")
+        assert tts_tool_lifecycle.release_tts_lease("lease-a") == {"leases": 0, "released": 2}
+    assert sorted(s for s in signals if s[0] == "release") == [("release", "srv", "a"), ("release", "srv", "b")]
+    assert not caches["piper"] and tts_tool_lifecycle._tts_owners == {}

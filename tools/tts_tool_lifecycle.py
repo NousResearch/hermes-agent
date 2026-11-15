@@ -141,13 +141,15 @@ def warm_tts_provider(tts_config: Optional[dict[str, Any]] = None, provider: Opt
     return result
 
 
-def release_tts_provider(provider: Optional[str] = None) -> dict[str, Any]:
-    """Drop resident local models -> ``{"released": <count>}``. With ``provider`` only that engine's
-    cache is cleared; otherwise every cache is, and the configured user provider is signalled."""
-    name = (provider or "").lower().strip()
-    if not name:
-        tts_config = _origin()._load_tts_config()
-        _signal_user_tts_provider(_origin()._get_provider(tts_config), tts_config, "release")
+def _signal_release() -> None:
+    """Send the release hook to the user provider configured for the CURRENT profile."""
+    tts_config = _origin()._load_tts_config()
+    _signal_user_tts_provider(_origin()._get_provider(tts_config), tts_config, "release")
+
+
+def _drop_local_models(name: str = "") -> int:
+    """Clear resident local models (only ``name``'s cache when given); returns how many were dropped.
+    Reads no config, so it needs no profile context."""
     released = 0
     for cache_name, cache in _LOCAL_TTS_MODEL_CACHES.items():
         if not name or cache_name == name:
@@ -155,7 +157,16 @@ def release_tts_provider(provider: Optional[str] = None) -> dict[str, Any]:
             cache.clear()
     if released:
         logger.info("[TTS] released %d resident local model(s)", released)
-    return {"released": released}
+    return released
+
+
+def release_tts_provider(provider: Optional[str] = None) -> dict[str, Any]:
+    """Drop resident local models -> ``{"released": <count>}``. With ``provider`` only that engine's
+    cache is cleared; otherwise every cache is, and the configured user provider is signalled."""
+    name = (provider or "").lower().strip()
+    if not name:
+        _signal_release()
+    return {"released": _drop_local_models(name)}
 
 
 def _run_as_owner(owner: Context, fn: Callable[[], Any], fallback: Any, what: str) -> Any:
@@ -213,9 +224,9 @@ def _schedule_release_locked() -> Optional[int]:
 
 
 def _release_after_keep_warm(generation: int) -> int:
-    """Unload unless a holder came back: claim the owners under the lease lock, then release each
-    one (its config, provider hook and secrets) in a copy of its acquisition context, outside that
-    lock. Returns the count of local models released."""
+    """Unload unless a holder came back: claim the owners under the lease lock, then signal each one's
+    release (its config, provider hook and secrets) in a copy of its acquisition context, outside that
+    lock, and drop the local models once. Returns the count of local models released."""
     global _keep_warm_timer
     with _tts_teardown_lock:
         with _tts_lease_lock:
@@ -224,10 +235,10 @@ def _release_after_keep_warm(generation: int) -> int:
             _keep_warm_timer = None
             owners = list(_tts_owners.values())
             _tts_owners.clear()
-        released = sum(_run_as_owner(owner, release_tts_provider, {"released": 0}, "release")["released"]
-                       for owner in owners)
-        # Local caches need no owner config: drop whatever a failed owner release left resident.
-        return released + sum(release_tts_provider(name)["released"] for name in _LOCAL_TTS_MODEL_CACHES)
+        for owner in owners:
+            _run_as_owner(owner, _signal_release, None, "release")
+        # Context-free, once: also covers the models an owner whose release failed left resident.
+        return _drop_local_models()
 
 
 def acquire_tts_lease(lease: str, tts_config: Optional[dict[str, Any]] = None) -> dict[str, Any]:

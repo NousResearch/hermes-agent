@@ -629,7 +629,7 @@ from gateway.platforms.send_targets import StandaloneSendPolicy
 
 ctx.register_platform(
     name="my_platform",
-    ...
+    ...,
     standalone_sender_fn=_standalone_send,
     standalone_send=StandaloneSendPolicy(label="My Platform", media=True),
 )

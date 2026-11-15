@@ -1,6 +1,6 @@
 name: chereda
 repo: https://github.com/kostyk348/chereda-hermes-plugin
-sha: e7c1dcc86b44b6d578186d7a66f3e5b9c64cc399
+sha: f1c1bbf2c44efa71425609a5fdad96be4fc97db9
 description: >-
   Череда in the Hermes desktop app — obligation loops instead of status cards. Each
   loop shows whose move it is (customer or performer), the clock and deadline, the
@@ -25,7 +25,7 @@ maintainer: kostyk348
 tier: community
 category: desktop
 docs_url: https://github.com/kostyk348/chereda-hermes-plugin#readme
-version: "0.1.1"
+version: "0.1.2"
 platforms: []
 capabilities:
   provides_tools: []

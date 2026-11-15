@@ -7,6 +7,7 @@ splits sessions via parent_session_id chains; sessions are source-tagged
 
 import asyncio
 import atexit
+import errno
 import hashlib
 import json
 import logging
@@ -49,7 +50,7 @@ from hermes_state_guard import (
     _STATE_DB_GUARD_BYPASS_ENV, _in_test_context, _is_production_state_db, _real_platform_state_root,
     _register_test_instance, _set_last_init_error, get_last_init_error,
 )
-from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
+from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for, note_read_pool_exhausted
 from hermes_state_sessions import SessionSessionsMixin
 from hermes_state_fts import SessionFtsSetupMixin
 from hermes_state_portability import SessionPortabilityMixin
@@ -59,8 +60,10 @@ from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
 import hermes_state_lockguard as _lockguard
 from hermes_state_lockowners import log_write_lock_holders
+from hermes_state_write import WriterMutexTimeout, maintain_after_commit, write_site, writer_mutex_until
 from hermes_state_dbfile import (
-    _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
+    _chmod_pinned_inode, _connect_tracked_db, _fd_is_truly_unlinked, _is_operator_store_link,
+    _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
@@ -251,13 +254,16 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
     the process umask (commonly 0644 under 0022). Read-only SessionDB
     attachments never call this helper and remain observational.
 
-    Existing files are tightened with ``chmod(2)`` on the path: opening the
+    Existing files are tightened without ever (re)opening them: opening the
     file and closing that descriptor would drop every POSIX ``fcntl`` lock the
     process holds on its inode — including the locks of an already-open SQLite
     connection to the same database. A lock-losing close in one process lets a
     sibling's connection take the shared-memory DMS exclusively at its own
     close, checkpoint, and unlink the sidecars while long-lived holders
     (gateway, desktop ``hermes serve``) keep using the deleted inodes.
+    Symlinked state paths fail closed with ``ELOOP`` before the caller's
+    ``sqlite3.connect()`` can follow them (#109857), except a ``state.db``
+    link the operator made to a store of their own (#145075).
     """
     if os.name == "nt":
         return
@@ -287,20 +293,26 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
         db_path.with_name(db_path.name + "-wal"),
         db_path.with_name(db_path.name + "-shm"),
     ):
-        # fchmod on an fd of a pre-existing file cannot be used here: close(fd)
-        # would release this process's POSIX locks on that inode, stripping the
-        # locks of any live SQLite connection to the same database. chmod(2)
-        # never opens the file, so it leaves the lock state untouched.
+        # fchmod on an ordinary fd of a pre-existing file cannot be used here:
+        # close(fd) would release this process's POSIX locks on that inode,
+        # stripping the locks of any live SQLite connection to the same database.
+        # _chmod_pinned_inode never takes a lock-bearing descriptor.
         try:
             st = os.lstat(path)
         except FileNotFoundError:
             continue
         if stat.S_ISLNK(st.st_mode):
-            # Refuse a planted symlink exactly like O_NOFOLLOW would.
-            continue
+            if path == main_path and _is_operator_store_link(path, st):
+                # A store moved to other storage and linked back (#145075): SQLite follows the link as
+                # before, and the target keeps the mode its owner gave it.
+                continue
+            # Fail closed exactly like the O_NOFOLLOW create above: silently
+            # skipping the link lets the caller's sqlite3.connect() follow it
+            # and operate on whatever it points at (#109857).
+            raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path))
         if not stat.S_ISREG(st.st_mode):
             continue
-        os.chmod(path, 0o600)
+        _chmod_pinned_inode(path, 0o600)
 
 
 # Openings of the background-review harness prompts (agent/background_review.py).
@@ -873,10 +885,7 @@ class SessionDB(
                 return None
         # Permit BEFORE the open: openers race for permits, not descriptors.
         if not self._read_budget.acquire(self):
-            logger.debug(
-                "read pool at capacity (%d) for %s; serving this read from the "
-                "locked writer connection", _READ_POOL_MAX, self.db_path,
-            )
+            note_read_pool_exhausted(self.db_path)
             return None
         conn = None  # bound before the try so the handlers can close a half-open one
         try:
@@ -1044,7 +1053,7 @@ class SessionDB(
             # stable post-close state (identity cleared → adopt / reopen path).
             fn_started = False
             try:
-                with self._lock:
+                with writer_mutex_until(self._lock, deadline, db=self, site=write_site(fn)):
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
@@ -1060,12 +1069,11 @@ class SessionDB(
                             pass
                         raise
                 # Success — periodic best-effort checkpoint + FTS merge.
-                self._write_count += 1
-                if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
-                    self._try_wal_checkpoint()
-                if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
-                    self._try_incremental_merge_fts()
+                maintain_after_commit(self)
                 return result
+            except WriterMutexTimeout:
+                # No transaction began; preserve local contention attribution and never replay it.
+                raise
             except SessionCompressionInProgressError:
                 # Transient (see _COMPRESSION_BUSY_WAIT_S): a steer landing mid-compression must not abort.
                 # A live foreign compression lock is transient: the compressor publishes in a couple of

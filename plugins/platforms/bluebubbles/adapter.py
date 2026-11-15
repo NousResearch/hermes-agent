@@ -19,6 +19,7 @@ import httpx
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret
 from gateway.platforms._shared import config_connected_extra
+from gateway.platforms._shared import secrets_match
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
@@ -73,6 +74,16 @@ def _redact(text: str) -> str:
     return _EMAIL_RE.sub("[REDACTED]", _PHONE_RE.sub("[REDACTED]", text))
 
 
+def _safe_error(exc: BaseException, server_url: Optional[str]) -> str:
+    """Log/SendResult text for a REST failure. Every request URL carries ``?password=`` and
+    httpx's HTTPStatusError text embeds that URL, so query credentials are masked here: the
+    default log redaction leaves URL query params alone. Empty text falls back to the type name
+    so the base-layer timeout guard can still match it (#78183)."""
+    from agent.redact import redact_sensitive_text
+    return (describe_proxy_error(exc, env_proxy_for_redaction(server_url))
+            or redact_sensitive_text(str(exc), force=True, redact_url_credentials=True) or type(exc).__name__)
+
+
 def check_bluebubbles_requirements() -> bool:
     try:
         import aiohttp
@@ -121,7 +132,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.BLUEBUBBLES)
         extra = config.extra or {}
         self.server_url = _normalize_server_url(_extra_or_secret(extra, "server_url", "BLUEBUBBLES_SERVER_URL"))
-        self.password = extra.get("password") or _get_scoped_secret("BLUEBUBBLES_PASSWORD", "")
+        # Whitespace-only is unset (connect() then refuses rather than accept "   " on the webhook); any
+        # other value is kept byte-exact, since the same string is sent to the server on every request.
+        self.password = str(extra.get("password") or _get_scoped_secret("BLUEBUBBLES_PASSWORD", "") or "")
+        if not self.password.strip():
+            self.password = ""
         self.webhook_host = _extra_or_secret(extra, "webhook_host", "BLUEBUBBLES_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
         self.webhook_port = int(_extra_or_secret(extra, "webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
         path = str(_extra_or_secret(extra, "webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH))
@@ -184,7 +199,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             msg_id = str(data.get("guid") or data.get("messageGuid") or "ok")
             return SendResult(success=True, message_id=msg_id, raw_response=res)
         except Exception as exc:
-            return SendResult(success=False, error=describe_proxy_error(exc, env_proxy_for_redaction(self.server_url)) or str(exc) or type(exc).__name__)
+            return SendResult(success=False, error=_safe_error(exc, self.server_url))
 
     async def _private_api_chat_call(self, chat_id: str, action: str, method: str) -> bool:
         """Fire a private-API chat action (typing/read); True only if the call was made."""
@@ -217,7 +232,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.info("[bluebubbles] connected to %s (private_api=%s, helper=%s)",
                         self.server_url, self._private_api_enabled, self._helper_connected)
         except Exception as exc:
-            logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, describe_proxy_error(exc, env_proxy_for_redaction(self.server_url)) or exc)
+            logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, _safe_error(exc, self.server_url))
             await self._close_client()
             return False
         # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
@@ -307,7 +322,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.warning("[bluebubbles] webhook registration returned status %s: %s", status, res.get("message"))
             return False
         except Exception as exc:
-            logger.warning("[bluebubbles] failed to register webhook with server: %s", exc)
+            logger.warning("[bluebubbles] failed to register webhook with server: %s", _safe_error(exc, self.server_url))
             return False
 
     async def _unregister_webhook(self) -> bool:
@@ -323,7 +338,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if removed:
                 logger.info("[bluebubbles] webhook unregistered: %s", self._webhook_register_url_for_log)
         except Exception as exc:
-            logger.debug("[bluebubbles] failed to unregister webhook (non-critical): %s", exc)
+            logger.debug("[bluebubbles] failed to unregister webhook (non-critical): %s", _safe_error(exc, self.server_url))
         return removed
 
     # --- Chat GUID resolution ---
@@ -421,7 +436,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                                   raw_response=result)
             return SendResult(success=False, error=result.get("message", "Attachment upload failed"))
         except Exception as e:  # httpx reads HTTPS_PROXY itself: the text may echo it
-            return SendResult(success=False, error=describe_proxy_error(e, env_proxy_for_redaction(self.server_url)) or str(e))
+            return SendResult(success=False, error=_safe_error(e, self.server_url))
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -497,7 +512,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             # Videos, documents, and everything else
             return await cache_document_from_bytes_async(data, att_meta.get("transferName", "") or f"file_{uuid.uuid4().hex[:8]}")
         except Exception as exc:
-            logger.warning("[bluebubbles] failed to download attachment %s: %s", _redact(att_guid), exc)
+            logger.warning("[bluebubbles] failed to download attachment %s: %s", _redact(att_guid), _safe_error(exc, self.server_url))
             return None
 
     # --- Webhook handling ---
@@ -576,7 +591,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def _handle_webhook(self, request):
         from aiohttp import web
 
-        if self._webhook_token(request) != self.password:
+        if not secrets_match(self._webhook_token(request), self.password):
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             payload = self._parse_webhook_body(await request.read())
@@ -606,7 +621,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 logger.debug("[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)")
                 return _ok()
             text = self._clean_mention_text(text)
-        media_urls, media_types, msg_type, voice_paths = await self._collect_attachments(record)
+        chat_type = "group" if is_group else "dm"
+        # The fetch spends the server password and disk on a sender-chosen file: only the gateway's explicit
+        # True permits it. The message still dispatches so the runner applies denial/pairing.
+        has_attachments = bool(record.get("attachments"))
+        media_urls, media_types, msg_type, voice_paths = [], [], MessageType.TEXT, []
+        if has_attachments and self._is_sender_authorized(sender, chat_type, session_chat_id) is True:
+            media_urls, media_types, msg_type, voice_paths = await self._collect_attachments(record)
         # Only the memo's audio enters gate STT; a rejected envelope's other files are deleted with it.
         if spoken and not await spoken_mention_clips(
                 voice_paths, self._mention_patterns, adapter=self, source=self.build_source(
@@ -619,12 +640,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return _ok()
         if spoken:  # speech admitted it: a photo/PDF beside the memo must not demote its audio out of STT
             msg_type = MessageType.VOICE
-        if not text and media_urls:
+        if not text and (media_urls or has_attachments):
             text = "(attachment)"
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
         source = self.build_source(chat_id=session_chat_id, chat_name=chat_identifier or sender,
-                                   chat_type="group" if is_group else "dm", user_id=sender, user_name=sender,
+                                   chat_type=chat_type, user_id=sender, user_name=sender,
                                    chat_id_alt=chat_identifier)
         event = MessageEvent(
             text=text, message_type=msg_type, source=source, raw_message=payload,
@@ -634,7 +655,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
-        if self.send_read_receipts and session_chat_id:  # fire-and-forget read receipt
+        # Fire-and-forget read receipt, only for senders the runner admits: BlueBubbles runs on the owner's
+        # own Apple ID, so a "Read" to a stranger comes from the owner (#149024).
+        if (self.send_read_receipts and session_chat_id
+                and self._is_sender_authorized(sender, chat_type, session_chat_id) is True):
             asyncio.create_task(self.mark_read(session_chat_id))
         return _ok()
 

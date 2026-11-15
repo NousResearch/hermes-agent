@@ -915,16 +915,6 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         self._sync_voice_mode_state_to_adapter(adapter)
         self._bind_voice_input_callback(adapter)
 
-    def _schedule_planned_restart_replay(self) -> None:
-        """Replay the owed planned-restart notice after a reconnect, in the background: notification delivery
-        must not hold up adapter recovery or other platforms' reconnects."""
-        from gateway.run import _planned_restart_notification_pending
-        if _planned_restart_notification_pending():
-            task = self._retain_background_task(asyncio.create_task(
-                self._replay_pending_planned_restart_notification(),
-            ))
-            task.add_done_callback(self._late_failure_callback("planned-restart notification replay failed"))
-
     async def _install_reconnected_adapter(self, platform, adapter) -> None:
         """Publish a freshly reconnected primary adapter and replay what it missed while down."""
         self._publish_primary_adapter(platform, adapter)
@@ -943,7 +933,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             logger.info("⚠ %s reconnected in degraded mode (receive path not yet confirmed)", platform.value)
         else:
             logger.info("✓ %s reconnected successfully", platform.value)
-        self._schedule_planned_restart_replay()
+        self._schedule_restart_notice_replay()
         # Responses rejected while down are owned by this live process (startup recovery cannot claim them).
         with _log_suppressed(
             logging.DEBUG, "failed-obligation redelivery after %s reconnect failed",
@@ -954,6 +944,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         with suppress(Exception):
             from gateway.channel_directory import build_channel_directory
             await build_channel_directory(self.adapters)
+        # A late Relay connection must retry the durable FIFO, not only legacy resume_pending rows.
+        if platform == Platform.RELAY:
+            from gateway.session_native_recovery_routes import recover_after_late_connection
+            await recover_after_late_connection(self)
         # A platform offline at startup skipped its restart-interrupted sessions; resume them now.
         try:
             self._schedule_resume_pending_sessions(platform=platform)

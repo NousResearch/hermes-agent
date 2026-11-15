@@ -1,14 +1,15 @@
 name: eselsbruecke
 title: Eselsbrücke
 repo: https://github.com/studioluftbruecke/hermes-eselsbruecke
-sha: 9a67182b7d03595680c52340c5d105541458a839
-description: "A helper toolbox for Hermes with tools you switch on and off: a today pad, a pomodoro, a billable time log, a formatter, a colour picker and small tools, which your agent can call for exact answers. Disclosure — local files only, no credentials, no telemetry. The optional \"Alerts while Desktop is closed\" switch (off by default) writes `scripts/eselsbruecke_alerts.py` into your Hermes profile and adds a no-model Hermes job, `eselsbruecke-alerts`, that runs every minute and delivers due timer and reminder alerts to all of the profile's home channels."
+sha: 745bcf6f0eec246659fe43a8649592ae4128810c
+description: "A helper toolbox for Hermes with tools you switch on and off: a today pad, a pomodoro, a billable time log, a formatter, a colour picker and small tools, which your agent can call for exact answers. Disclosure — local files only, no credentials, no telemetry. The optional \"Alerts while Desktop is closed\" switch (off by default) writes `scripts/eselsbruecke_alerts.py` into your Hermes profile and adds a no-model Hermes job, `eselsbruecke-alerts`, that runs every minute and delivers due timer and reminder alerts to all of the profile's home channels. Desktop clicks that set up that job or make a pad line into a Kanban card run Hermes' own CLI for the profile (`hermes -p <profile> cron list|create|remove`, `kanban create --json`) as an argument list, without a shell."
 maintainer: studioluftbruecke
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/studioluftbruecke/hermes-eselsbruecke#readme
-version: "0.2.0"
+version: "0.2.2"
+image: https://raw.githubusercontent.com/studioluftbruecke/hermes-eselsbruecke/745bcf6f0eec246659fe43a8649592ae4128810c/docs/banner.png
 readme: true
 platforms: [linux, macos]
 known_issues:

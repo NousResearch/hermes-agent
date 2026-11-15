@@ -79,6 +79,7 @@ def test_a_refusal_that_is_not_requeued_does_not_delay_the_poller(monkeypatch):
     waits = []
     monkeypatch.setattr(server, "time", SimpleNamespace(sleep=waits.append, time=lambda: 1))
     monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **k: False)
-    session = {"history_lock": threading.RLock(), "running": True}
+    session = {"history_lock": threading.RLock(), "running": False}
+    assert server._notif_claim_turn(session)  # every caller claims first; the refusal releases that claim
     assert server._notif_submit("r", "ui", session, "tick", "loop wakeup send failed") is False
     assert session["running"] is False and not waits

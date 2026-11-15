@@ -146,7 +146,7 @@ class TestUsageAccountSection:
         )
         # The credits block routes through the shared nous_credits_lines() helper;
         # stub it so this account-section test stays hermetic (no portal/auth lookup).
-        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda **_kw: [])
+        monkeypatch.setattr("agent.account_usage_nous.nous_credits_lines", lambda **_kw: [])
 
         event = MagicMock()
         result = await runner._handle_usage_command(event)
@@ -175,7 +175,8 @@ class TestUsageAccountSection:
             return fn(*args, **kwargs)
 
         monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
-        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"model": {"provider": "openai-codex"}})
+        # The route the session's first turn resolves (a profile on Codex).
+        runner._resolve_session_agent_runtime = lambda **kw: ("gpt-5.5", {"provider": "openai-codex"})
         monkeypatch.setattr(
             "gateway.slash_commands_status.fetch_account_usage",
             lambda provider, base_url=None, api_key=None: object(),
@@ -185,7 +186,7 @@ class TestUsageAccountSection:
             lambda snapshot, markdown=False: ["📈 **Account limits**", "Provider: openai-codex (Plus)",
                                               "Weekly: 91% remaining (9% used)"],
         )
-        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda **_kw: [])
+        monkeypatch.setattr("agent.account_usage_nous.nous_credits_lines", lambda **_kw: [])
 
         result = await runner._handle_usage_command(MagicMock())
 
@@ -223,7 +224,7 @@ class TestUsageAccountSection:
             "gateway.slash_commands_status.render_account_usage_lines",
             lambda snapshot, markdown=False: ["account limits"],
         )
-        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda **_kw: [])
+        monkeypatch.setattr("agent.account_usage_nous.nous_credits_lines", lambda **_kw: [])
 
         await runner._handle_usage_command(MagicMock())
 

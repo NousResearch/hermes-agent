@@ -20,7 +20,7 @@ from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
-from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
+from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
 from hermes_cli.profiles_export_scrub import (
     GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
@@ -32,6 +32,7 @@ from hermes_constants import (
 from hermes_cli.config_backend import (
     config_cache_version, config_cache_version_or_none, config_exists, require_file_tooling)
 from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read, json_safe_dumps
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -161,8 +162,8 @@ _OS_CREDENTIAL_STORES = (*HOME_CREDENTIAL_DIRS, ".envrc")
 # keeps recovery copies of them. Never shipped in a profile export, and user-owned (never
 # overwritten) on a distribution install. Add a store here when a writer or loader starts using one.
 PROFILE_CREDENTIAL_PATHS = frozenset({
-    "auth.json", ".env", "auth/google_oauth.json",
-    ".op.env",                      # 1Password service-account token (env_loader)
+    "auth.json", "auth/google_oauth.json",
+    *HOME_ENV_FILES,                # .env + the 1Password service-account token (env_loader)
     "npmrc",                        # npm registry auth (source_build)
     ".anthropic_oauth.json",        # Anthropic OAuth tokens (credential_sources)
     "google_token.json", "google_oauth_pending.json", "google_client_secret.json",
@@ -173,12 +174,10 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "mem0.json",                    # Mem0 api_key (self-hosted server key) next to its settings
     "webhook_subscriptions.json",   # per-route HMAC secrets
     "teams_pipeline_store.json",    # Graph subscription client_state (webhook shared secret)
-    "mcp-tokens",                   # MCP OAuth tokens
-    "vault",                        # vault.key + vault.json.enc
+    *CREDENTIAL_STORE_DIRS,         # MCP OAuth tokens, vault, pairing, messaging sessions (both layouts)
     "browser-profile", "browser_auth", "bot-desktop", "webapp",  # browser cookies / logins, Webapp sign-in
     "browser-profiles", "browser_profiles",  # live CDP profiles, Browser Use CLI dir (Cookies, Login Data)
-    "pairing", "platforms/pairing", "feishu_comment_pairing.json",
-    "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
+    "feishu_comment_pairing.json",
     *SECRET_CACHE_STORES,           # Bitwarden / 1Password value caches, Photon sidecar token
     "workspace/meetings/node_token.json",  # google_meet node RPC secret
     "weixin/accounts",              # WeChat bot tokens + per-peer context tokens
@@ -1466,14 +1465,13 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False, problems: Option
         if not quiet:
             print(*lines, sep="\n")
 
-    project_root = Path(__file__).parent.parent.resolve()
     try:
         result = subprocess.run(
             [sys.executable, "-c",
              "import json; from tools.skills_sync import sync_skills; "
              "r = sync_skills(quiet=True); print(json.dumps(r))"],
             env={**os.environ, "HERMES_HOME": str(profile_dir)},
-            cwd=str(project_root),
+            cwd=project_root_str(),
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
             check=False,
         )
@@ -2187,14 +2185,8 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
-        # Remove foreign runtime state before publishing, including file-shaped roots.
-        # A failed removal must abort import rather than install a stale PM selection.
-        for child in final_source.iterdir():
-            if child.name in PM_RUNTIME_ROOT_DIRS:
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
+        from hermes_cli.profiles_initialization import prepare_imported_tree
+        prepare_imported_tree(final_source)
         shutil.move(str(final_source), str(profile_dir))
     clear_named_profile_deleted(profile_dir)
     return profile_dir

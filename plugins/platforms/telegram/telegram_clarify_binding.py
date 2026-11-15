@@ -63,6 +63,7 @@ async def tap_matches_prompt(query: Any, clarify_id: str, prompt: ClarifyPrompt,
 def log_resolved(query: Any, clarify_id: str, prompt: ClarifyPrompt, choice: str, user_display: str) -> None:
     """Audit line for a resolved clarify: which caller, which callback query, which prompt message."""
     logger.info(
-        "Telegram clarify button resolved (id=%s, choice=%r, user=%s, caller_id=%s, callback_query=%s, chat=%s, message=%s)",
-        clarify_id, choice, user_display, _ident(getattr(getattr(query, "from_user", None), "id", None)),
+        "Telegram clarify button resolved (id=%s, choice_len=%d, caller_id=%s, callback_query=%s, chat=%s, message=%s)",
+        clarify_id, len(choice), _ident(getattr(getattr(query, "from_user", None), "id", None)),
         getattr(query, "id", None), prompt.chat_id, prompt.message_id)
+    logger.debug("Telegram clarify choice text (id=%s, user=%s): %.100r", clarify_id, user_display, choice)

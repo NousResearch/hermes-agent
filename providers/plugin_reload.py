@@ -23,6 +23,8 @@ import tempfile
 import threading
 from pathlib import Path
 
+from hermes_constants import get_process_hermes_home, mkdir_under_hermes_home
+
 logger = logging.getLogger(__name__)
 
 # Directories inside a plugin tree that never hold code the provider imports.
@@ -40,7 +42,8 @@ def _snapshot(plugin_dir: Path, module_name: str) -> Path:
     global _snapshot_root
     with _snapshot_lock:
         if _snapshot_root is None:
-            _snapshot_root = Path(tempfile.mkdtemp(prefix="hermes-provider-plugins-"))
+            runtime = mkdir_under_hermes_home(get_process_hermes_home() / "runtime" / "provider-plugins")
+            _snapshot_root = Path(tempfile.mkdtemp(prefix="hermes-provider-plugins-", dir=runtime))
             atexit.register(shutil.rmtree, _snapshot_root, True)
     target = _snapshot_root / module_name / plugin_dir.name
     if target.is_dir():

@@ -372,10 +372,11 @@ async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
         if payload.active:
             with _config_profile_scope(profile):
                 return acquire_tts_lease(lease)
-        # The keep-warm window and the unload follow the profiles that ACQUIRED (tools/
-        # tts_tool_lifecycle.py), not this requester. Entering the requester's scope is kept for its
-        # existing validation and hosting side effects; a profile that is gone must still drop the
-        # lease — a stuck lease pins the local model in memory.
+        # The keep-warm window and the unload follow the profiles that ACQUIRED the lease
+        # (tools/tts_tool_lifecycle.py); release reads nothing from this requester. Its scope is still
+        # entered for the side effects it had before (multi-profile hosting activation, secret-source
+        # hydration). A profile that is gone must still drop the lease: a stuck lease pins the local
+        # model in memory.
         try:
             with _config_profile_scope(profile):
                 return release_tts_lease(lease)

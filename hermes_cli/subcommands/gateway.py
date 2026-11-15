@@ -148,6 +148,28 @@ def build_gateway_parser(
                                 help="Start deadline in seconds for --start/--recover (default: 60)")
     gateway_attach.set_defaults(func=cmd_gateway_attach)
 
+    from hermes_cli.gateway_runtime_tickets import cmd_gateway_tickets
+    gateway_tickets = gateway_subparsers.add_parser(
+        "tickets",
+        help="Mint single-use HTTP and WebSocket tickets for a client that reaches the gateway over SSH",
+        description="For a client that forwards the gateway's loopback port (for example over SSH) and "
+                    "calls its HTTP API. --probe prints what this host can mint and touches no gateway. "
+                    "--serve prints a hello line with the running gateway's endpoint, then answers each "
+                    'stdin line {"id": ..., "purpose": "native-http"} with one stdout line holding a '
+                    'single-use ticket, until stdin closes. A line may add "profile": "<name>" for '
+                    'another profile the same gateway serves. Purpose "interactive" is the WebSocket\'s '
+                    "ticket for every profile that gateway serves. It never starts a gateway: use "
+                    "`hermes gateway attach --start` for that. Tickets are credentials: they are printed "
+                    "for the calling process only and never logged.",
+        epilog="Exit codes: 0 probe printed, or --serve ended at stdin EOF; 2 invalid invocation; "
+               "otherwise (--serve with no gateway to use) the exit code `hermes gateway ensure` "
+               "gives the same verdict.")
+    _flag(gateway_tickets, "--json", help="Emit JSON lines (default)")
+    tickets_mode = gateway_tickets.add_mutually_exclusive_group(required=True)
+    _flag(tickets_mode, "--probe", help="Print the protocol version and the ticket purposes; start nothing")
+    _flag(tickets_mode, "--serve", help="Answer ticket requests on stdin until it closes")
+    gateway_tickets.set_defaults(func=cmd_gateway_tickets)
+
     gateway_start = gateway_subparsers.add_parser(
         "start", help="Start the installed systemd/launchd background service")
     _add_system_flag(gateway_start)

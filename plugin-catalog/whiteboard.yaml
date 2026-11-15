@@ -1,7 +1,7 @@
 name: whiteboard
 title: Hermes Whiteboard
 repo: https://github.com/Adolanium/hermes-whiteboard
-sha: 2d50c6124e993834b6c7d912082725a97ea4e814
+sha: eeb336546628e4a5d203630dc55fbdeeddffc879
 description: >-
   An agentic whiteboard. Say what you're planning and Hermes lays it out as a
   route, columns or a map, with hand-drawn stickers. Add rough notes and
@@ -10,6 +10,9 @@ description: >-
   board and delivers the result next to the note with its sources, or run the
   whole route and get a brief at the end. Select anything and ask about it.
   Once you allow it, any chat can read your boards and propose changes.
+  Link a board to the chat its work is in: the board shows what that chat is
+  doing, and the chat hears what you change on the board. Send notes to Hermes
+  Kanban or lay a Kanban board out as a whiteboard.
   Disclosure — laying out a board, grouping notes, unpacking a result and the
   brief each start a hidden Hermes session told to use no tools; Hand to
   Hermes, Run the route and Ask start hidden sessions that use your Hermes
@@ -23,25 +26,51 @@ description: >-
   signed in to in Hermes when a session is created, and a refused model stops
   the run; with the Sheets or Data plugin
   installed, a click on that page pins notes to the open board through a
-  window event, with no file, backend or model involved; no telemetry, no credentials, no
-  shell commands or background processes of its own. Independent community
+  window event, with no file, backend or model involved; Send to Kanban and
+  New board from Kanban make the plugin's backend run the `hermes kanban`
+  command, with no shell and with note text passed after `--` and on standard
+  input, to list boards, create cards and read a board; cards are created in
+  Blocked with no assignee, and in Triage, which Hermes works through on its
+  own, only when you tick a box; while the page is open on a board that has
+  Kanban cards it reads those Kanban boards about every 25 seconds, and it
+  never changes a card after making it; a board can remember the id of the
+  chat it is linked to, the page places a request in that chat's message box
+  for you to send and never sends it, and after that it listens to that one
+  chat for up to 30 minutes and reads its answer from the transcript; the
+  plugin registers four hooks (pre_llm_call, post_llm_call, on_session_end,
+  post_compaction) that run on every chat turn and return at once unless the
+  chat is linked to a board; for a linked chat they keep the state of its
+  latest turn and the first line of its answer under plugin-data/whiteboard/,
+  and, only while chat access is on, add to the message you send in that chat
+  a short notice that the board exists and the notes you added, edited or
+  removed on it since the chat's last turn; the plugin never sends a message
+  to a chat; the linked chat can put a doing, done or blocked mark on its own
+  board's notes with no review, which changes nothing else and clears with a
+  click; which chat each board is linked to is kept under
+  plugin-data/whiteboard/ as ids only, whether or not chat access is on; no
+  telemetry, no credentials, no background processes of its own, and no
+  command other than `hermes kanban`. Independent community
   project, not affiliated with Nous Research.
 maintainer: Adolanium
 tier: community
 category: desktop
 requires_hermes: ">=0.22.6"
 docs_url: https://github.com/Adolanium/hermes-whiteboard#readme
-version: "0.1.7"
-image: https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/2d50c6124e993834b6c7d912082725a97ea4e814/docs/assets/catalog.png
+version: "0.1.9"
+image: https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/eeb336546628e4a5d203630dc55fbdeeddffc879/docs/assets/catalog.png
 screenshots:
-  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/2d50c6124e993834b6c7d912082725a97ea4e814/docs/assets/route.jpg
-  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/2d50c6124e993834b6c7d912082725a97ea4e814/docs/assets/delivered.jpg
+  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/eeb336546628e4a5d203630dc55fbdeeddffc879/docs/assets/route.jpg
+  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/eeb336546628e4a5d203630dc55fbdeeddffc879/docs/assets/delivered.jpg
 capabilities:
   provides_tools:
     - whiteboard_list
     - whiteboard_read
     - whiteboard_propose
     - whiteboard_create
-  provides_hooks: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - on_session_end
+    - post_compaction
   provides_middleware: []
   requires_env: []

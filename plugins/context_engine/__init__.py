@@ -49,7 +49,9 @@ def discover_context_engines() -> list[tuple[str, str, bool]]:
 
 def find_engine_dir(name: str) -> Optional[Path]:
     """Resolve an engine name to its directory (bundled first, then user-installed)."""
-    bundled = _CONTEXT_ENGINE_PLUGINS_DIR / name
+    bundled = _loader.plugin_child_dir(_CONTEXT_ENGINE_PLUGINS_DIR, name)
+    if bundled is None:
+        return None
     if bundled.is_dir():
         return bundled
     user_dir = _loader.user_plugins_dir()
@@ -72,7 +74,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional[ContextEngine]:
     """Import an engine module and extract its ContextEngine (register(ctx) or subclass)."""
     from agent.context_engine import ContextEngine
     name = engine_dir.name
-    is_bundled = engine_dir.parent == _CONTEXT_ENGINE_PLUGINS_DIR
+    is_bundled = _loader.is_direct_child(engine_dir, _CONTEXT_ENGINE_PLUGINS_DIR)
     module_name = f"{__package__}.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
     from hermes_cli.plugin_isolation import user_plugin_host
     host = None if is_bundled else user_plugin_host()

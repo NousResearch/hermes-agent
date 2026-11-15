@@ -2667,15 +2667,11 @@ def _redact_process_result(result: dict) -> dict:
 def _list_processes(task_id) -> dict:
     # Also surface session-scoped background processes (e.g. a forgotten preview
     # server): they share the gateway session_key and can block session reset.
-    session_key = ""
-    with suppress(Exception):
-        # See #29177.
-        from tools.approval_context import get_current_session_key
-        session_key = get_current_session_key(default="") or ""
+    from tools.process_registry_access import caller_session_key
     return {"processes": [
         _redact_process_result(p)
         for p in process_registry.list_sessions(
-            task_id=task_id, session_key=session_key or None, include_retained=True)]}
+            task_id=task_id, session_key=caller_session_key() or None, include_retained=True)]}
 
 
 # action -> (handler(session_id, args) -> dict, redact output?). Output-bearing
@@ -2705,6 +2701,10 @@ def _handle_process(args, **kw):
     if action in _SESSION_ACTIONS:
         if not session_id:
             return tool_error(f"session_id is required for {action}")
+        from tools.process_registry_access import resolve_actionable
+        allowed, session_id = resolve_actionable(session_id, kw.get("task_id"))
+        if not allowed:
+            return json.dumps(_not_found(session_id), ensure_ascii=False)
         handler, redact = _SESSION_ACTIONS[action]
         from tools.process_registry_wait_policy import apply_wait_poll_policy
         result = apply_wait_poll_policy(action, session_id, handler(session_id, args))

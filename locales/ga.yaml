@@ -985,6 +985,16 @@ platform:
     denied: "❌ Diúltaithe."
     approval_expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)."
   shared:
+    vault_code:
+      title: "🔐 Cód fíoraithe do {site}"
+      body: "Tá cód aonúsáide (téacs nó ríomhphost) á iarraidh ag {site}. Brúigh an cnaipe agus clóscríobh é san fhoirm a osclaíonn: téann sé díreach isteach sa leathanach agus ní phostáiltear anseo é choíche."
+      button: "Cuir isteach cód"
+      modal_title: "Cód do {site}"
+      input_label: "Cód aonúsáide"
+      submitted: "Cód seolta; á chur isteach sa leathanach."
+      ended: "Tá an t-iarratas cóid seo thart; níor cuireadh aon rud isteach."
+      not_author: "Ní féidir ach leis an duine a thosaigh an t-iarratas seo an cód a chur isteach."
+      submitted_footer: "✓ Cód seolta"
     response_as_file: "📎 Freagra fada: tá an téacs iomlán ceangailte."
     truncated_suffix: "\n...(giorraithe)"
     unknown: "anaithnid"
@@ -1197,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ Níorbh fhéidir `{filename}` a cheangal — sáraíonn {size_mb} MB teorainn uaslódála {limit_mb} MB Discord don chainéal seo. Dlúthaigh an comhad nó roinn nasc ina ionad."
       image_skipped_too_large: "⚠️ Léimeadh thar `{filename}` — sáraíonn {size_mb} MB teorainn uaslódála {limit_mb} MB Discord."
   telegram:
+    vault_code:
+      body: "Freagair an teachtaireacht seo leis an gcód. Scriosann Hermes do fhreagra láithreach agus cuireann sé an cód isteach sa leathanach; ní fheiceann an tsamhail é riamh."
+      delete_failed: "Níorbh fhéidir do fhreagra a scriosadh anseo. Scrios féin é, le do thoil."
     approval:
       action_once: "✅ Uair amháin"
       action_session: "✅ Seisiún"
@@ -3315,6 +3328,10 @@ cli:
     total: "📚 {count} scil(eanna) ar fáil"
     added_header: "➕ Scileanna Curtha leis:"
     removed_header: "➖ Scileanna Bainte:"
+  gateway_restart:
+    waiting: "Tá Hermes ag atosú chun nuashonrú nó atosú a chríochnú; ag fanacht go dtiocfaidh sé ar ais…"
+    timed_out: "Níor tháinig Hermes ar ais óna atosú in am. Seiceáil `hermes gateway status`, ansin tosaigh `hermes` arís."
+    stopped: "Stopadh ag fanacht le hatosú Hermes; níor tosaíodh aon rud."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Níl stór na seisiún ar fáil[/bold yellow] — [bold]NÍ shábhálfar[/bold] an comhrá seo agus ní féidir é a atosú níos déanaí. Tá cuardach seisiún roimhe seo díchumasaithe freisin.\n  Cúis: {reason}.\n  {action}\n  [dim]Sonraí: {details}[/dim]"
     unavailable_plain: "RABHADH: Níl stór na seisiún ar fáil — NÍ shábhálfar an comhrá seo agus ní féidir é a atosú níos déanaí. Cúis: {reason}. {action}"

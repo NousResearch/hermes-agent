@@ -143,7 +143,7 @@ class TestDesktopEndpointEdit:
         assert probed and all(base == "https://llm.new.example/v1" for _key, base in probed)
         assert all("sk-old-origin-fixture" not in str(key) for key, _base in probed)
 
-    @pytest.mark.parametrize("new_key", ["", "sk-new...ture"])
+    @pytest.mark.parametrize("new_key", ["", "sk-new-dotenv-fixture"])
     def test_move_leaves_no_old_key_under_the_legacy_variable(self, new_key):
         """The guard leaves ``key_env`` to ``_apply_endpoint_key``, which clears or rewrites the row's
         own ``HERMES_CUSTOM_*`` variable; dropping it first left the old host's key in .env."""
@@ -165,7 +165,7 @@ class TestDesktopEndpointEdit:
 
 @pytest.mark.parametrize(("address_field", "credential"), [
     ("api", {"key_env": "MYEP_KEY"}), ("url", {"key_env": "MYEP_KEY"}), ("baseUrl", {"key_env": "MYEP_KEY"}),
-    ("base_url", {"apiKey": "sk-old...ture"}), ("base_url", {"keyEnv": "MYEP_KEY"}),
+    ("base_url", {"apiKey": "sk-old-dotenv-fixture"}), ("base_url", {"keyEnv": "MYEP_KEY"}),
     ("base_url", {"apiKeyEnv": "MYEP_KEY"}),
 ])
 def test_desktop_move_of_an_entry_addressed_by_api_or_url_drops_its_key(_isolate_hermes_home, address_field,
@@ -182,7 +182,7 @@ def test_desktop_move_of_an_entry_addressed_by_api_or_url_drops_its_key(_isolate
     cfg["providers"] = {"myep": {"name": "myep", address_field: "https://llm.old.example/v1", "model": "m",
                                  **credential, "models": {"m": {}}}}
     save_config(cfg)
-    save_env_value("MYEP_KEY", "sk-old...ture")
+    save_env_value("MYEP_KEY", "sk-old-dotenv-fixture")
     client = TestClient(app)
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     body = {"id": "myep", "name": "myep", "base_url": "https://llm.new.example/v1", "model": "m",
@@ -196,12 +196,12 @@ def test_desktop_move_of_an_entry_addressed_by_api_or_url_drops_its_key(_isolate
     assert not ({"api", "url", "baseUrl", "key_env", "api_key", *credential} & entry.keys())
     runtime = resolve_runtime_provider(requested="myep")
     assert runtime["base_url"] == "https://llm.new.example/v1"
-    assert runtime.get("api_key") != "sk-old...ture"
+    assert runtime.get("api_key") != "sk-old-dotenv-fixture"
     # Bare ``provider: custom`` at the new address must not find the old key on the entry either.
     cfg = load_config()
     cfg["model"] = {"provider": "custom", "base_url": "https://llm.new.example/v1", "default": "m"}
     save_config(cfg)
-    assert resolve_runtime_provider().get("api_key") != "sk-old...ture"
+    assert resolve_runtime_provider().get("api_key") != "sk-old-dotenv-fixture"
 
 
 def test_desktop_move_of_a_legacy_custom_providers_row_keeps_its_key_home(_isolate_hermes_home):
@@ -213,7 +213,7 @@ def test_desktop_move_of_a_legacy_custom_providers_row_keeps_its_key_home(_isola
     cfg = load_config()
     cfg.pop("providers", None)
     cfg["custom_providers"] = [{"name": "legacyep", "base_url": "https://llm.old.example/v1",
-                                "api_key": "sk-leg...ture", "model": "m"}]
+                                "api_key": "sk-legacy-row-fixture", "model": "m"}]
     save_config(cfg)
     client = TestClient(app)
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
@@ -223,7 +223,7 @@ def test_desktop_move_of_a_legacy_custom_providers_row_keeps_its_key_home(_isola
         "make_default": False})
 
     assert response.status_code == 400
-    assert "sk-leg...ture" not in (get_env_path().read_text(encoding="utf-8-sig")
+    assert "sk-legacy-row-fixture" not in (get_env_path().read_text(encoding="utf-8-sig")
                                    if get_env_path().exists() else "")
     assert not (load_config().get("providers") or {}).get("legacyep")
 

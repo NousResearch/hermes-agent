@@ -478,18 +478,71 @@ def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
     return any(phrase in body for phrase in _IMAGE_CORRUPT_PHRASES)
 
 
+# Internal tool-call markup emitted in the agent's raw output stream. A closed block is replaced
+# wherever it sits (never spanning another open tag, so an earlier inline mention keeps its prose);
+# a block left unclosed by truncation (stored reply previews are capped, so a block can be cut
+# mid-JSON) only at a block boundary, as the outbound filter does, so prose that merely mentions
+# ``<TOOLCALL>`` keeps everything after it.
+_TOOLCALL_CLOSED_RE = re.compile(r"<TOOLCALL>(?:(?!<TOOLCALL>).)*?</TOOLCALL>", re.DOTALL | re.IGNORECASE)
+_TOOLCALL_UNCLOSED_RE = re.compile(r"(?:\A|(?<=\n))([ \t]*)<TOOLCALL>(?:(?!</TOOLCALL>).)*\Z", re.DOTALL | re.IGNORECASE)
+
+_TOOLCALL_PLACEHOLDER = "[processing...]"
+
+
+def strip_internal_markup(text: str | None) -> str | None:
+    """Redact internal ``<TOOLCALL>`` blocks from user-facing text.
+
+    Raw agent output can carry ``<TOOLCALL>{...}</TOOLCALL>`` protocol
+    markup. When that text is surfaced back to users — e.g. as the
+    ``reply_to_text`` preview resolved from a replied-to bot message
+    (#61217) — the markup must not be shown verbatim. Each block (closed,
+    or unclosed through end-of-text) is replaced with a neutral
+    placeholder; an unclosed one only when it starts a line, so a quoted
+    inline mention of the tag keeps its trailing prose. Redaction is surgical: only the markup blocks change,
+    so surrounding user content (including leading/trailing whitespace)
+    is preserved byte-for-byte. Text without markup is returned
+    unchanged, and ``None``/empty input passes through as-is.
+    """
+    if not text or "<toolcall>" not in text.lower():
+        return text
+    text = _TOOLCALL_CLOSED_RE.sub(_TOOLCALL_PLACEHOLDER, text)
+    return _TOOLCALL_UNCLOSED_RE.sub(lambda m: m.group(1) + _TOOLCALL_PLACEHOLDER, text)
+
+
 __all__ = [
-    "_SURROGATE_RE", "_escape_invalid_chars_in_json_strings", "_messages_carry_images", "_repair_tool_call_arguments",
-    "_sanitize_messages_non_ascii", "_sanitize_messages_surrogates", "_sanitize_structure_non_ascii",
-    "_sanitize_structure_surrogates", "_sanitize_surrogates", "_sanitize_tools_non_ascii",
-    "_strip_images_from_messages", "_strip_non_ascii", "apply_reasoning_content_policy",
-    "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
-    "deterministic_call_id", "matches_reasoning_echo_family", "needs_reasoning_echo",
-    "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
-    "reasoning_replay_route", "record_reasoning_field_rejection", "rejected_reasoning_carriers",
+    "_SURROGATE_RE",
+    "_escape_invalid_chars_in_json_strings",
+    "_messages_carry_images",
+    "_repair_tool_call_arguments",
+    "_sanitize_messages_non_ascii",
+    "_sanitize_messages_surrogates",
+    "_sanitize_structure_non_ascii",
+    "_sanitize_structure_surrogates",
+    "_sanitize_surrogates",
+    "_sanitize_tools_non_ascii",
+    "_strip_images_from_messages",
+    "_strip_non_ascii",
+    "apply_reasoning_content_policy",
+    "close_interrupted_tool_sequence",
+    "coalesce_tool_call_id",
+    "coerce_tool_name",
+    "deterministic_call_id",
+    "matches_reasoning_echo_family",
+    "needs_reasoning_echo",
+    "normalize_provider_tool_call_ids",
+    "reapply_reasoning_echo",
+    "reasoning_echo_family",
+    "reasoning_replay_route",
+    "record_reasoning_field_rejection",
+    "rejected_reasoning_carriers",
     "route_reasoning_carriers",
-    "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
-    "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
+    "sanitize_outbound_kwargs",
+    "stale_thinking_reaches_wire",
+    "strip_images_for_rejecting_model",
+    "strip_internal_markup",
+    "tool_call_id_variants",
+    "tool_result_id_variants",
+    "uniquify_tool_call_ids",
 ]
 
 

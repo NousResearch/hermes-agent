@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from agent.file_safety import get_nt_namespace_error, get_write_denied_error, is_write_approval_required
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, SECRET_CACHE_STORES
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.staged_uploads import (
     ensure_profile_subdir, is_staged_upload, removed_on_failure, resolve_upload_home,
@@ -48,6 +48,7 @@ from hermes_cli.web_models import (
     ChatImageUpload, FileTicketRequest, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete,
     ManagedFileUpload,
 )
+from utils import atomic_write_bytes, atomic_write_text
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -85,8 +86,8 @@ _FS_READDIR_HIDDEN = {
 # browser is a security leak — see issue #57505.
 _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
-    "google_token.json", "google_oauth_pending.json", "google_oauth.json",
-    "webhook_subscriptions.json",
+    "google_token.json", "google_client_secret.json", "google_oauth_pending.json", "google_oauth.json",
+    "webhook_subscriptions.json", *HOME_ENV_FILES, "vault.key", "vault.json.enc",
     *(PurePosixPath(store).name for store in SECRET_CACHE_STORES),  # secret caches, Photon sidecar token
     ".git-credentials",  # git's credential-store cache (file_safety blocks it too)
 })
@@ -94,9 +95,13 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
 # Directory names whose whole subtree is credential material (the canonical
 # guards deny these as trees: _ROOT_CREDENTIAL_DIRS and the mcp-tokens/ prefix
 # match). The browser can descend into subdirs, so a basename-only guard would
-# still expose ``mcp-tokens/<server>.json``; match on ANY path component so the
-# trees are blocked wherever they sit under the root, no HERMES_HOME resolution.
-_SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing"})
+# still expose ``mcp-tokens/<server>.json``; match the store's components as a run
+# anywhere in the path so the trees are blocked wherever they sit under the root,
+# no HERMES_HOME resolution (``whatsapp/session``, not every ``session`` dir).
+# vault/ is covered by its file names above: a bare ``vault`` component is too
+# common (an Obsidian vault) to hide wherever it appears.
+_SENSITIVE_MANAGED_DIR_PARTS = tuple(
+    tuple(PurePosixPath(store).parts) for store in CREDENTIAL_STORE_DIRS if store != "vault")
 
 
 def _is_sensitive_filename(name: str) -> bool:
@@ -117,7 +122,9 @@ def _is_sensitive_path(path: Path) -> bool:
     """
     if _is_sensitive_filename(path.name):
         return True
-    return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
+    parts = tuple(part.lower() for part in path.parts)
+    return any(parts[i:i + len(store)] == store
+               for store in _SENSITIVE_MANAGED_DIR_PARTS for i in range(len(parts) - len(store) + 1))
 
 
 _LINK_CHAIN_MAX_HOPS = 40  # the kernel's symlink loop limit
@@ -519,6 +526,8 @@ _MEDIA_PROXY_ALLOWED_HOSTS = (
     "*.fal.media", "*.fal.run",
 )
 _MEDIA_PROXY_TIMEOUT_S = 20.0
+_MEDIA_PROXY_MAX_REDIRECTS = 3
+_MEDIA_PROXY_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 
 
 def _media_proxy_host_allowed(host: str) -> bool:
@@ -527,6 +536,27 @@ def _media_proxy_host_allowed(host: str) -> bool:
         host == allowed.lstrip("*.") or (allowed.startswith("*.") and host.endswith(allowed[1:]))
         for allowed in _MEDIA_PROXY_ALLOWED_HOSTS
     )
+
+
+async def _media_proxy_get(url: str):
+    """GET ``url``, following up to ``_MEDIA_PROXY_MAX_REDIRECTS`` redirects only while each hop
+    stays on the allowlist (httpx's ``follow_redirects`` would chase a 30x to any host, e.g. a
+    link-local metadata or RFC1918 address). A redirect still pending after the cap is returned
+    as-is and fails the caller's 200 check."""
+    import httpx
+
+    async with httpx.AsyncClient(timeout=_MEDIA_PROXY_TIMEOUT_S, follow_redirects=False) as client:
+        response = await client.get(url)
+        for _ in range(_MEDIA_PROXY_MAX_REDIRECTS):
+            location = response.headers.get("location")
+            if response.status_code not in _MEDIA_PROXY_REDIRECT_CODES or not location:
+                break
+            url = urllib.parse.urljoin(url, location)
+            hop = urllib.parse.urlparse(url)
+            if hop.scheme not in ("http", "https") or not _media_proxy_host_allowed(hop.hostname or ""):
+                raise HTTPException(status_code=403, detail="Image redirect host not allowed")
+            response = await client.get(url)
+    return response
 
 
 @router.get("/api/media/proxy")
@@ -550,11 +580,10 @@ async def proxy_remote_media(url: str, request: Request):
         if Path(parsed.path).suffix and Path(parsed.path).suffix.lower() not in _MEDIA_CONTENT_TYPES:
             raise HTTPException(status_code=415, detail="Unsupported media type")
 
-    import httpx
-
     try:
-        async with httpx.AsyncClient(timeout=_MEDIA_PROXY_TIMEOUT_S, follow_redirects=True) as client:
-            response = await client.get(url)
+        response = await _media_proxy_get(url)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Image fetch failed: {exc}")
 
@@ -945,7 +974,11 @@ def upload_managed_file(payload: ManagedFileUpload, request: Request):
     data, _mime_type = _decode_data_url(payload.data_url)
     with _io_errors("File is not writable", "Could not write file"):
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        owner = target.stat() if os.name == "posix" and target.exists() else None
+        atomic_write_bytes(target, data)
+        if owner is not None:  # os.replace swaps in our uid; keep an overwritten file's owner/group
+            with contextlib.suppress(OSError):
+                os.chown(target, owner.st_uid, owner.st_gid, follow_symlinks=False)  # a swapped-in link: never chown its target
     return _managed_write_result(policy, target, display_path)
 
 
@@ -1226,16 +1259,8 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     if not target.parent.is_dir():
         raise HTTPException(status_code=400, detail="Parent directory does not exist")
 
-    tmp = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
-    try:
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, target)
-    except PermissionError:
-        tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=403, detail="File is not writable")
-    except OSError as exc:
-        tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+    with _io_errors("File is not writable", "Could not write file"):
+        atomic_write_text(target, text, preserve_mode=True)
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
 
 

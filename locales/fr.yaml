@@ -1173,6 +1173,16 @@ platform:
     denied: "❌ Refusé."
     approval_expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà résolue ailleurs)."
   shared:
+    vault_code:
+      title: "🔐 Code de vérification pour {site}"
+      body: "{site} demande un code à usage unique (SMS ou e-mail). Appuie sur le bouton et saisis-le dans le formulaire qui s'ouvre : il va directement dans la page et n'est jamais publié ici."
+      button: "Saisir le code"
+      modal_title: "Code pour {site}"
+      input_label: "Code à usage unique"
+      submitted: "Code envoyé ; saisie dans la page en cours."
+      ended: "Cette demande de code est terminée ; rien n'a été saisi."
+      not_author: "Seule la personne qui a lancé cette demande peut saisir le code."
+      submitted_footer: "✓ Code envoyé"
     response_as_file: "📎 Réponse longue : le texte complet est en pièce jointe."
     truncated_suffix: |2-
 
@@ -1401,6 +1411,9 @@ platform:
       upload_too_large: "⚠️ Impossible de joindre `{filename}` — {size_mb} Mo dépasse la limite d'envoi Discord de {limit_mb} Mo pour ce canal. Compressez le fichier ou partagez plutôt un lien."
       image_skipped_too_large: "⚠️ `{filename}` ignoré — {size_mb} Mo dépasse la limite d'envoi Discord de {limit_mb} Mo."
   telegram:
+    vault_code:
+      body: "Répondez à ce message avec le code. Hermes supprime aussitôt votre réponse et saisit le code dans la page ; le modèle ne le voit jamais."
+      delete_failed: "Impossible de supprimer votre réponse ici. Supprimez-la vous-même."
     approval:
       action_once: "✅ Une fois"
       action_session: "✅ Session"
@@ -3625,6 +3638,10 @@ cli:
     total: "📚 {count} skill(s) disponible(s)"
     added_header: "➕ Skills ajoutées :"
     removed_header: "➖ Skills supprimées :"
+  gateway_restart:
+    waiting: "Hermes redémarre pour terminer une mise à jour ou un redémarrage ; en attente de son retour…"
+    timed_out: "Hermes n'est pas revenu de son redémarrage à temps. Vérifiez `hermes gateway status`, puis relancez `hermes`."
+    stopped: "Attente du redémarrage de Hermes interrompue ; rien n'a été lancé."
   session_store:
     unavailable_rich: |-
       [bold yellow]⚠ Stockage des sessions indisponible[/bold yellow] — cette conversation ne sera [bold]PAS enregistrée[/bold] et ne pourra pas être reprise plus tard. La recherche dans les sessions passées est aussi désactivée.

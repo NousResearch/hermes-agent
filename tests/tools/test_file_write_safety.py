@@ -1108,3 +1108,25 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
             reset_hermes_home_override(tok)
         assert err is not None
         assert "Refusing to write to Hermes config file" in err
+
+
+def test_config_hard_block_follows_file_identity_not_spelling(tmp_path):
+    """A second name for config.yaml (a differently-cased spelling on a case-insensitive
+    filesystem, or here a hard link) is still the config file (#117815)."""
+    import tools.file_tools_write_guards as ft
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("approvals:\n  mode: manual\n", encoding="utf-8")
+    alias = tmp_path / "alias.yaml"
+    os.link(home / "config.yaml", alias)
+    (tmp_path / "other.yaml").write_text("x: 1\n", encoding="utf-8")
+    tok = set_hermes_home_override(str(home))
+    try:
+        err = ft._check_sensitive_path(str(alias), "default")
+        other = ft._check_sensitive_path(str(tmp_path / "other.yaml"), "default")
+    finally:
+        reset_hermes_home_override(tok)
+    assert err is not None and "Refusing to write to Hermes config file" in err
+    assert other is None

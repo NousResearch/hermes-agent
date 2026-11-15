@@ -109,3 +109,76 @@ def test_a_resumed_first_pure_read_keeps_the_saved_proven_tier(tmp_path, monkeyp
         assert (event.tier, event.confidence, event.guaranteed_until) == ("12h", "proven", 44_200.0)
     finally:
         db.close()
+
+
+def test_a_failed_store_read_never_loses_the_reply_and_reports_unknown(tmp_path, monkeypatch):
+    """The clock is advisory: a SQLite error on the restore or generation read inside
+    record_response_usage leaves the response recorded (session counters move) and the window unknown."""
+    import sqlite3
+
+    from agent import turn_usage
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    agent = AIAgent(api_key="k", base_url=_OR[1], provider=_OR[0], api_mode="chat_completions", model=_OR[2],
+                    session_id="s1", platform="cli", session_db=db, quiet_mode=True, skip_context_files=True,
+                    skip_memory=True, save_trajectories=False, enabled_toolsets=["file"])
+    try:
+        def broken(*_a, **_k):
+            raise sqlite3.OperationalError("database is locked")
+        monkeypatch.setattr(db, "get_prompt_cache_clock", broken)
+        monkeypatch.setattr(db, "prompt_cache_generation", broken)
+        record_attempt_sent(agent, {"messages": [{"role": "system", "content": [
+            {"type": "text", "text": "s", "cache_control": {"type": "ephemeral", "ttl": "1h"}}]}]})
+        usage = SimpleNamespace(prompt_tokens=5000, completion_tokens=3, total_tokens=5003, completion_tokens_details=None,
+                                prompt_tokens_details=SimpleNamespace(cached_tokens=4000, cache_write_tokens=0))
+        turn_usage.record_response_usage(agent, SimpleNamespace(usage=usage, id=None, model=_OR[2]),
+                                         messages=[{"role": "user", "content": "hi"}], api_call_count=1,
+                                         api_duration=0.1, compression_attempts=0, max_compression_attempts=3)
+        assert agent.session_cache_read_tokens == 4000
+        window = cache_window(agent)
+        assert (window.confidence, window.reason) == ("unknown", "storage_unavailable")
+    finally:
+        agent.close()
+        db.close()
+
+
+def test_a_managed_worker_clock_carries_the_owner_generation(tmp_path, monkeypatch):
+    """A worker agent's session_db is a RuntimeSessionStore: its event must carry the owner's durable
+    generation, so the owner's agentless read sees the fresh window as warm, not compacted."""
+    from agent.runtime_session_store import RuntimeSessionStore
+    from hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("s1", "cli")
+        for i in range(4):
+            db.append_message("s1", "user" if i % 2 == 0 else "assistant", f"m{i}")
+        db.archive_and_compact("s1", [{"role": "user", "content": "[summary]"}])
+        owner_generation = db.prompt_cache_generation("s1")
+        assert owner_generation > 0
+        scope = dict(epoch=begin_runtime_epoch(db, instance_id="fixture"), execution_id="w", session_id="s1",
+                     generation=0)
+        register_worker_execution(db, **scope, kind="compute", adoption_secret="secret")
+        store = RuntimeSessionStore(lambda method, **p: mutate_worker_execution(db, **p), scope, tmp_path / "outbox")
+        try:
+            agent = _resumed_agent(store, "s1")
+            record_attempt_sent(agent, {"messages": [{"role": "system", "content": [
+                {"type": "text", "text": "s", "cache_control": {"type": "ephemeral", "ttl": "1h"}}]}]})
+            write = normalize_usage({"prompt_tokens": 5000, "completion_tokens": 3,
+                                     "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 4800}},
+                                    provider=_OR[0], api_mode="chat_completions")
+            event = record_cache_response(agent, write, model=_OR[2], provider=_OR[0], base_url=_OR[1],
+                                          api_mode="chat_completions")
+            assert event.generation == owner_generation
+            store.queue_token_counts("s1", input_tokens=10, cache_write_tokens=4800, api_call_count=1,
+                                     prompt_cache_clock=event_to_json(event))
+        finally:
+            store.close()
+        stored = stored_cache_window(db.get_session("s1")["prompt_cache_clock"], session_id="s1",
+                                     generation=db.prompt_cache_generation("s1"))
+        assert (stored["confidence"], stored["tier"]) == ("declared", "1h")
+    finally:
+        db.close()

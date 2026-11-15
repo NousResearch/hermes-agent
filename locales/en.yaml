@@ -445,6 +445,7 @@ gateway:
     cache_unknown_moved: "Prompt cache: unknown (the route, session or context changed since the last cached request)."
     cache_unknown_route: "Prompt cache: unknown (this provider does not publish its cache retention)."
     cache_unknown_runtime: "Prompt cache: unknown (this runtime sets its own cache options, which Hermes cannot observe)."
+    cache_unknown_storage: "Prompt cache: unknown (the session store could not be read)."
     cache_confidence:
       proven: "proven"
       declared: "declared"

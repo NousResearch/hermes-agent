@@ -441,6 +441,7 @@ gateway:
     cache_unknown_moved: "Taisce an phrompta: anaithnid (d'athraigh an bealach, an seisiún nó an comhthéacs ón iarratas taisce deireanach)."
     cache_unknown_route: "Taisce an phrompta: anaithnid (ní fhoilsíonn an soláthraí seo a choinneáil taisce)."
     cache_unknown_runtime: "Taisce an phróimpte: anaithnid (socraíonn an timpeallacht rite seo a roghanna taisce féin, nach féidir le Hermes a fheiceáil)."
+    cache_unknown_storage: "Taisce an phróimpte: anaithnid (níorbh fhéidir stór an tseisiúin a léamh)."
     cache_confidence:
       proven: "cruthaithe"
       declared: "fógartha"

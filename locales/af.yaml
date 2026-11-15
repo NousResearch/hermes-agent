@@ -441,6 +441,7 @@ gateway:
     cache_unknown_moved: "Prompt-kas: onbekend (die roete, sessie of konteks het sedert die laaste gekaste versoek verander)."
     cache_unknown_route: "Prompt-kas: onbekend (hierdie verskaffer publiseer nie sy kasretensie nie)."
     cache_unknown_runtime: "Prompt-kas: onbekend (hierdie looptyd stel sy eie kasopsies wat Hermes nie kan sien nie)."
+    cache_unknown_storage: "Prompt-kas: onbekend (die sessiestoor kon nie gelees word nie)."
     cache_confidence:
       proven: "bewys"
       declared: "verklaar"

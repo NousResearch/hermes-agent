@@ -87,3 +87,11 @@ def worker_row_role(db, conn, session_id, payload):
     row = conn.execute('SELECT role FROM messages WHERE id=? AND session_id=? AND active=1',
                        (payload['row_id'], session_id)).fetchone()
     return {'value': row[0] if row else None}
+
+
+def worker_cache_generation(db, conn, session_id, payload):
+    """``SessionDB.prompt_cache_generation`` on the receipt connection (the prompt-cache clock)."""
+    from hermes_state_usage import _ARCHIVED_ROWS_SQL
+    if payload:
+        raise RuntimeStoreError('invalid_params')
+    return {'value': int(conn.execute(_ARCHIVED_ROWS_SQL, (session_id,)).fetchone()[0])}

@@ -444,6 +444,7 @@ gateway:
     cache_unknown_moved: "Prompt-gyorsítótár: ismeretlen (az útvonal, a munkamenet vagy a kontextus megváltozott az utolsó gyorsítótárazott kérés óta)."
     cache_unknown_route: "Prompt-gyorsítótár: ismeretlen (ez a szolgáltató nem teszi közzé a gyorsítótár megőrzési idejét)."
     cache_unknown_runtime: "Prompt-gyorsítótár: ismeretlen (ez a futtatókörnyezet saját gyorsítótár-beállításokat használ, amelyeket a Hermes nem lát)."
+    cache_unknown_storage: "Prompt-gyorsítótár: ismeretlen (a munkamenet-tároló nem olvasható)."
     cache_confidence:
       proven: "igazolt"
       declared: "kért"

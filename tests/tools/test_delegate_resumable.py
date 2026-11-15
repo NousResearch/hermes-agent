@@ -2,7 +2,7 @@
 rebuilds it from after the process is gone, the record says how it may resume, and its worktree is kept from the
 startup sweep for the record's life.
 
-Only the model is scripted; the child build, registry, SessionDB, async dispatch, boot recovery and the worktree
+Only the model is scripted; the child build, registry, store, async dispatch, boot recovery and the worktree
 sweep are the real ones, against a temp HERMES_HOME.
 """
 
@@ -15,17 +15,14 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.fixtures.storage_holder import raw_holder
 from tests.tools.test_delegate_continue import _completion, _parent, _ScriptedModel, _spawn
 
 
 def _db_rows(parent):
-    import sqlite3
-    conn = sqlite3.connect(parent._session_db.db_path)  # health: allow HX015 -- test reads a temp-home store
-    try:
+    with raw_holder(parent.persistence)._read_ctx() as conn:
         return {sid: (state, pinned, {**json.loads(raw), "stop_cause": cause}) for sid, state, pinned, raw, cause in
                 conn.execute("SELECT subagent_id, state, pinned, record_json, stop_cause FROM resumable_subagents")}
-    finally:
-        conn.close()
 
 
 def _forget_process_state():
@@ -195,7 +192,7 @@ def test_crashed_childs_worktree_survives_the_sweep_until_its_record_expires(tmp
     import sqlite3
 
     from hermes_cli.worktree_sweep import plan_sweep, run_sweep, sweep_settings
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from tools.async_delegation import recover_abandoned_delegations
     from tools.delegate_tool_resumable import _upsert, _write
     from hermes_constants import get_hermes_home
@@ -209,7 +206,7 @@ def test_crashed_childs_worktree_survives_the_sweep_until_its_record_expires(tmp
     tree = repo / ".worktrees" / "subagent-sa-crash"
     _git("worktree", "add", "-q", str(tree), "-b", "subagent-sa-crash", cwd=repo)
     (tree / "work.txt").write_text("unsaved child work")
-    SessionDB(db_path=get_hermes_home() / "state.db").close()
+    open_persistence(profile_scope(home=get_hermes_home()), eager=True).close()
 
     db = get_hermes_home() / "state.db"
     assert _write(db, lambda ledger: _upsert(ledger, "sa-crash", {

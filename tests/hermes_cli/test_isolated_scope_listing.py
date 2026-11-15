@@ -42,14 +42,12 @@ def homes(monkeypatch, _isolate_hermes_home):
 
 
 def _seed(home, session_id):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(db_path=home / "state.db")
-    try:
-        db.create_session(session_id, source="cli")
-        db.append_message(session_id=session_id, role="user", content="hi")
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, session_id, "cli")
+        seed_messages(db, session_id, {"role": "user", "content": "hi"})
 
 
 def _seed_cron(home, job_id):

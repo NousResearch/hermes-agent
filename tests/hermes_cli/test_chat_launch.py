@@ -9,18 +9,17 @@ from hermes_cli.main import PROJECT_ROOT
 
 
 def test_exit_summary_names_the_launchers_command(tmp_path, monkeypatch, capsys):
-    from hermes_state import SessionDB
     from hermes_cli.chat_launch import print_exit_summary
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     home = tmp_path / '.hermes'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
-    db = SessionDB(db_path=home / 'state.db')
-    db.create_session('20261110_120000_abc123', source='tui')
-    db.set_session_title('20261110_120000_abc123', 'Demo chat')
-    db.append_message('20261110_120000_abc123', 'user', 'q')
-    db.append_message('20261110_120000_abc123', 'assistant', 'a')
-    db.create_session('20261110_120001_empty0', source='tui')
-    db.close()
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, '20261110_120000_abc123', 'tui', title='Demo chat')
+        seed_messages(db, '20261110_120000_abc123', {'role': 'user', 'content': 'q'},
+                      {'role': 'assistant', 'content': 'a'})
+        seed_session(db, '20261110_120001_empty0', 'tui')
 
     print_exit_summary('20261110_120000_abc123', command='hermes demo')
     out = capsys.readouterr().out

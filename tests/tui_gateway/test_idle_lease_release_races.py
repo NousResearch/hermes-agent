@@ -14,7 +14,8 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli.active_sessions import try_acquire_active_session
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 from tui_gateway import server
 
 
@@ -45,11 +46,11 @@ def chat(monkeypatch):
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
-    db = SessionDB(db_path=get_hermes_home() / "state.db")
+    db = open_persistence(profile_scope(home=get_hermes_home()))
     monkeypatch.setattr(server, "_db", db)
     competitors = []
     sid = "idle-race"
-    db.create_session(sid, source="desktop")
+    seed_session(db, sid, "desktop")
     ready = threading.Event()
     ready.set()
     long_ago = time.time() - 3600

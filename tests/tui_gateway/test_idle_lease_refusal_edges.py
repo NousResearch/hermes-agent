@@ -1,7 +1,7 @@
 """Edges of the idle-released Desktop lease: every refusal answers 4090, changes nothing, and never clears
 another turn's ``running`` or leaks a transcript claim.
 
-Real SQLite SessionDB, real active-session registry, real reaper and real JSON-RPC handlers. Interleavings
+Real SQLite store, real active-session registry, real reaper and real JSON-RPC handlers. Interleavings
 are pinned at production seams (the refusal ``error`` frame, the supervisor's late-handler registration).
 """
 
@@ -14,7 +14,10 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli.active_sessions import try_acquire_active_session
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tui_gateway import server
 
 
@@ -42,18 +45,18 @@ class _Agent:
 def _make(monkeypatch, sid):
     from hermes_constants import get_hermes_home
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
-    db = SessionDB(db_path=get_hermes_home() / "state.db")
+    db = open_persistence(profile_scope(home=get_hermes_home()))
     monkeypatch.setattr(server, "_db", db)
-    db.create_session(sid, source="desktop")
+    seed_session(db, sid, "desktop")
     for n in range(3):
-        db.append_message(sid, "user", f"question {n}")
-        db.append_message(sid, "assistant", f"answer {n}")
+        seed_messages(db, sid, {"role": "user", "content": f"question {n}"},
+                      {"role": "assistant", "content": f"answer {n}"})
     ready = threading.Event()
     ready.set()
     long_ago = time.time() - 3600
     record = {
         "session_key": sid, "source": "desktop", "history_version": 0, "history_lock": threading.Lock(),
-        "history": db.get_messages_as_conversation(sid, include_row_ids=True), "agent_ready": ready,
+        "history": conversation(db, sid, ConversationRequest(include_row_ids=True)), "agent_ready": ready,
         "running": False, "created_at": long_ago, "last_active": long_ago, "transport": _LiveSocket(),
         "agent": _Agent(sid), "attached_images": [], "cols": 80}
     server._sessions[sid] = record
@@ -90,14 +93,14 @@ def taken(chat):
     assert chat.record.get("active_session_lease") is None
     lease = chat.compete()
     assert lease is not None
-    chat.db.append_message(chat.sid, "user", "telegram message")
-    chat.db.append_message(chat.sid, "assistant", "telegram answer")
+    seed_messages(chat.db, chat.sid, {"role": "user", "content": "telegram message"},
+                  {"role": "assistant", "content": "telegram answer"})
     chat.lease = lease
     return chat
 
 
 def _transcript(chat):
-    return [m["content"] for m in chat.db.get_messages_as_conversation(chat.sid)]
+    return [m["content"] for m in conversation(chat.db, chat.sid)]
 
 
 # ── SessionNotOwned on the compute-host paths answers 4090 (Greptile 4569456266)
@@ -187,9 +190,9 @@ def foreign(monkeypatch):
     sid = "idle-edge-foreign"
     from hermes_constants import get_hermes_home
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
-    db = SessionDB(db_path=get_hermes_home() / "state.db")
+    db = open_persistence(profile_scope(home=get_hermes_home()))
     monkeypatch.setattr(server, "_db", db)
-    db.create_session(sid, source="desktop")
+    seed_session(db, sid, "desktop")
     ready = threading.Event()
     ready.set()
     record = {

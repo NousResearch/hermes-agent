@@ -267,42 +267,14 @@ def _finalize_voice_delivery(
 
 
 # --- Main tool function ---
-_once_warnings: set = set()
-
-
-def _warn_ignored_tts_provider_override(requested: str, configured: str) -> None:
-    """Once-per-process (per distinct requested value) warning for ignored per-call provider
-    overrides — a stale session whose cached tool schema still advertises the param would
-    otherwise repeat it every call; and callers with no tts config at all are silent (nothing
-    to disagree WITH — default resolution just runs). See #90109."""
-    if not configured:
-        return
-    key = ("tts_provider_override", requested)
-    if key in _once_warnings:
-        return
-    _once_warnings.add(key)
-    logger.warning(
-        "Ignoring per-call TTS provider override %r; tts.provider is %r",
-        requested,
-        configured,
-    )
-
-
-def _apply_call_overrides(tts_config: dict[str, Any], speed: Optional[float], provider: Optional[str]):
+def _apply_call_overrides(tts_config: dict[str, Any], speed: Optional[float]):
     """Apply per-call ``speed`` (clamped, on a shallow copy so the cached config isn't mutated) and
-    resolve the provider name. ``tts.provider`` in config.yaml is the authoritative backend
-    selector (#90109): the per-call argument stays for internal/test callers, but a value that
-    disagrees with the configured provider is ignored — the model-facing schema no longer
-    advertises the override, and a leaked platform hint passing one anyway must not reroute
-    speech to another vendor behind the operator's back."""
+    resolve the provider name. ``tts.provider`` in config.yaml is the only backend selector
+    (#90109): there is no per-call override, so a leaked platform hint cannot reroute speech to
+    another vendor behind the operator's back."""
     if speed is not None:
         tts_config = {**tts_config, "speed": max(0.25, min(4.0, float(speed)))}
-    configured_provider = _get_provider(tts_config)
-    if provider:
-        requested = provider.lower().strip()
-        if requested and requested != configured_provider:
-            _warn_ignored_tts_provider_override(requested, configured_provider)
-    return tts_config, configured_provider
+    return tts_config, _get_provider(tts_config)
 
 
 # ElevenLabs voice ids are short alphanumeric tokens; anything else never reaches the URL path.
@@ -501,7 +473,7 @@ def _synthesize_chunks(chunks: list[str], base_path: Path, generated_artifacts: 
 
 def text_to_speech_tool(
     text: str, output_path: Optional[str] = None, speed: Optional[float] = None,
-    instructions: Optional[str] = None, provider: Optional[str] = None,
+    instructions: Optional[str] = None,
     voice_id: Optional[str] = None, find_voices: Optional[dict[str, Any]] = None) -> str:
     """Convert text to speech with long-form chunking; returns the JSON result envelope.
 
@@ -520,7 +492,7 @@ def text_to_speech_tool(
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
-    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed)
     tts_config, error = _apply_voice_override(tts_config, provider, voice_id)
     if error:
         return error

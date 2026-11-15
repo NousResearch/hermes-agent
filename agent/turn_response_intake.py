@@ -12,6 +12,7 @@ import logging
 import re
 from typing import Any, Dict, Optional
 
+from agent.leaked_tool_calls import recover_leaked_tool_calls
 from agent.provider_projection import splice_provider_projection
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import has_incomplete_scratchpad
@@ -188,6 +189,14 @@ def normalize_model_response(
 
     if assistant_message.content is not None and not isinstance(assistant_message.content, str):
         assistant_message.content = _coerce_content_text(assistant_message.content)
+
+    # qwen3-XML (vLLM, provider 'custom') tool-call-parser leak: the server writes the
+    # tool-call markup into ``content`` as plain text with zero structured tool_calls.
+    # Recover complete blocks HERE — before the loop branches on tool_calls and before the
+    # empty-response ladder classifies the leaked text — so the round executes as a real
+    # tool round. Dangling/incomplete markup stays in the row's content unchanged.
+    if recover_leaked_tool_calls(agent, assistant_message):
+        finish_reason = "tool_calls"
 
     # Agent-as-provider projection: splice the provider-agent's own tool work in as
     # call/result rows before this turn's assistant message; no-op for ordinary providers.

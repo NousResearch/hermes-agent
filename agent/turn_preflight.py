@@ -20,7 +20,6 @@ from agent.conversation_compression import (
     compression_skipped_due_to_lock, context_compression_timed_out, conversation_history_after_compression,
 )
 from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
-from agent.prompt_caching import provider_cache_expired
 from agent.turn_context import _review_fork_first_request_pending
 from agent.turn_context_compaction import (
     _apply_grown_window, _blocked_compress_reason, _clear_overflow_warn, _refund_api_call,
@@ -373,7 +372,8 @@ def compress_after_tool_results(
             agent._warn_context_overflow_blocked(
                 _block_reason, _real_tokens, int(getattr(_compressor, "threshold_tokens", 0) or 0)
             )
-        _pruned_msgs = _proactive_tool_result_prune(agent, _compressor, messages, _real_tokens)
+        _pruned_msgs = _proactive_tool_result_prune(
+            agent, _compressor, messages, _real_tokens, turn_start=current_turn_user_idx)
         if _pruned_msgs is not messages:
             messages = _pruned_msgs
             # A committed prune is a content-loss boundary like compaction: demoted skill_view /
@@ -383,7 +383,9 @@ def compress_after_tool_results(
     return _verdict(False)
 
 
-def _proactive_tool_result_prune(agent: Any, compressor: Any, messages: list, current_tokens: int) -> list:
+def _proactive_tool_result_prune(
+    agent: Any, compressor: Any, messages: list, current_tokens: int, *, turn_start: int | None = None,
+) -> list:
     """Proactive tool-result prune (deterministic, no LLM, keeps tail): the pruned list when one
     committed, else the same ``messages`` object. No-op unless proactive_prune_tokens is exceeded;
     commits only past proactive_prune_min_reclaim_tokens so cache breaks stay episodic.
@@ -408,7 +410,11 @@ def _proactive_tool_result_prune(agent: Any, compressor: Any, messages: list, cu
         return messages
     kwargs: dict[str, Any] = {"current_tokens": current_tokens}
     if _accepts_keyword_argument(prune, "cold_cache"):  # older plugin engines keep their signature
-        kwargs["cold_cache"] = provider_cache_expired(agent, messages)
+        from agent.turn_proactive_prune import prompt_cache_is_cold
+
+        kwargs["cold_cache"] = prompt_cache_is_cold(agent, messages)
+    if isinstance(turn_start, int) and _accepts_keyword_argument(prune, "turn_start"):
+        kwargs["turn_start"] = turn_start  # the running turn is never shortened
     try:
         pruned_msgs, pruned_n = prune(messages, **kwargs)
     except Exception:

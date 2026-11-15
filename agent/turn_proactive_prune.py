@@ -15,6 +15,14 @@ from agent.prompt_caching import provider_cache_expired
 logger = logging.getLogger("agent.conversation_loop")
 
 
+def prompt_cache_is_cold(agent: Any, messages: list[dict[str, Any]]) -> bool:
+    """Whether the provider prompt cache has certainly expired, so a history rewrite breaks nothing.
+
+    The prune's ONLY cold-cache reading (both call sites): the shared per-provider cache clock
+    replaces this body in one line when it lands."""
+    return provider_cache_expired(agent, messages)
+
+
 def run_proactive_prune(
     agent: Any, messages: list[dict[str, Any]], current_tokens: int, effective_task_id: Any,
 ) -> list[dict[str, Any]]:
@@ -45,7 +53,7 @@ def turn_start_cold_prune(agent: Any, out: Any, effective_task_id: Any) -> None:
             or not isinstance(idx, int) or not 0 < idx < len(out.messages)
             or any(isinstance(m, dict) and (m.get("_row_id") or m.get(_DB_PERSISTED_MARKER))
                    for m in out.messages[idx:])
-            or not provider_cache_expired(agent, out.messages[:idx])):
+            or not prompt_cache_is_cold(agent, out.messages[:idx])):
         return
     from agent import turn_context as _tc
 

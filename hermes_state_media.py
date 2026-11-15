@@ -19,33 +19,36 @@ def retire_media(conn, payload, request_id=''):
 
 
 def retire_spillover(conn, session_ids):
-    """Record the spillover archives the doomed sessions' messages point at, inside the delete
-    transaction (the pointers vanish with the rows), as durable candidates (#126351)."""
+    """Record the archives (spillover and prune originals) the doomed sessions' messages point at,
+    inside the delete transaction (the pointers vanish with the rows), as durable candidates (#126351).
+    A candidate is its ``cache/<dir>/<name>`` reference; a bare name is a legacy spillover one."""
     from hermes_state_common import _id_chunks, _placeholders
-    from tools.tool_result_storage import SPILLOVER_SQL_FILTER, spillover_names_in_text
+    from tools.tool_result_storage import SPILLOVER_SQL_FILTER, archive_refs_in_text
     for chunk in _id_chunks(list(session_ids)):
         for content, api_content in conn.execute(
                 f"SELECT content, api_content FROM messages WHERE session_id IN ({_placeholders(chunk)})"
                 f" AND {SPILLOVER_SQL_FILTER}", chunk).fetchall():
             conn.executemany('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)',
-                             [(SPILLOVER_PREFIX + n, json.dumps(n)) for n in spillover_names_in_text(content, api_content)])
+                             [(SPILLOVER_PREFIX + r, json.dumps(r)) for r in archive_refs_in_text(content, api_content)])
 
 
 def collect_retired_spillover(db):
     """Unlink retired archives no surviving message references (a branch/compression sibling sharing
     the pointer keeps it until it dies too). Unknown reference set: keep files and candidates."""
-    from tools.tool_result_storage import referenced_spillover_names
+    from tools.tool_result_storage import SPILLOVER_SUBDIR, referenced_archive_refs
     with db._read_ctx() as conn:
         rows = conn.execute('SELECT key,value FROM state_meta WHERE key>=? AND key<?',
                             prefix_range(SPILLOVER_PREFIX)).fetchall()
-    spill_dir = db.db_path.parent / 'cache' / 'spillover'
-    if not rows or (referenced := referenced_spillover_names(spill_dir)) is None:
+    home = db.db_path.parent
+    if not rows or (referenced := referenced_archive_refs(home)) is None:
         return
     done = []
     for key, raw in rows:
         try:
-            if (name := json.loads(raw)) not in referenced:
-                (spill_dir / name).unlink(missing_ok=True)
+            ref = json.loads(raw)
+            ref = ref if '/' in ref else f'{SPILLOVER_SUBDIR}/{ref}'
+            if ref not in referenced:
+                (home / ref).unlink(missing_ok=True)
         except OSError:
             continue  # stays a candidate for the next delete/prune pass
         done.append((key,))

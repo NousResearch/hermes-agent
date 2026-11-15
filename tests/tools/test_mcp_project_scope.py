@@ -278,6 +278,8 @@ def test_a_clone_connecting_during_a_prune_is_discarded(root):
         assert name not in mcp_tool._servers, "test premise: the prune removed the baseline"
         assert not _clones(name), "a clone connected during the prune survived it"
         assert "not connected" in str(result.get("r")), result.get("r")
+        assert not [k for k in scope._scoped_connect_locks if k[0] == name], \
+            "the discarded generation left its connect lock behind"
     finally:
         clear_session_cwd()
         shutdown_mcp_servers()
@@ -285,8 +287,10 @@ def test_a_clone_connecting_during_a_prune_is_discarded(root):
 
 
 def test_the_insert_gate_refuses_a_torn_down_baseline(root, monkeypatch):
-    """Gate-level twin of the prune race: the clone insert must verify the baseline is still the
-    live connection, and a clone connected for a torn-down baseline is shut down, not handed out."""
+    """Gate-level twin of the prune race: when the baseline is already gone, the gate refuses
+    BEFORE any spawn (a queued peer never pays a child spawn for a dead generation), inserts
+    nothing, and leaves no connect lock behind for the dead generation."""
+    import os as _os
     from tools import mcp_tool, mcp_tool_project_scope as scope
 
     name = "cwdprobe_gate"
@@ -295,17 +299,15 @@ def test_the_insert_gate_refuses_a_torn_down_baseline(root, monkeypatch):
     _register(root, name)
     baseline = mcp_tool._servers[name]
 
-    class _OrphanClone:
-        def __init__(self):
-            self.shutdown_called = threading.Event()
+    spawns = []
 
-        async def shutdown(self):
-            self.shutdown_called.set()
+    def _spy_connect(*args, **kwargs):
+        spawns.append(args)
+        return mcp_tool.MCPServerTask(name)  # a real task shell, never started
 
-    orphan = _OrphanClone()
-    monkeypatch.setattr(scope, "_connect_clone", lambda *args, **kwargs: orphan)
+    monkeypatch.setattr(scope, "_connect_clone", _spy_connect)
     with mcp_tool._lock:
-        mcp_tool._servers.pop(name)  # the prune, between the lookup and the insert
+        mcp_tool._servers.pop(name)  # the prune, before the call
 
     set_session_cwd(str(project))
     try:
@@ -315,4 +317,52 @@ def test_the_insert_gate_refuses_a_torn_down_baseline(root, monkeypatch):
 
     assert got is None, "a clone was handed out for a torn-down baseline"
     assert not _clones(name), "the orphaned clone was inserted anyway"
-    assert orphan.shutdown_called.is_set(), "the discarded clone was never shut down"
+    assert not spawns, "a dead baseline was refused only after a wasted spawn"
+    assert not scope._scoped_connect_locks.get((name, _os.path.realpath(str(project)))), \
+        "the refused generation left its connect lock behind"
+
+
+def test_a_discarded_clone_whose_shutdown_failed_is_handed_to_the_reaper(root, monkeypatch):
+    """When the MCP loop died with the prune, the discarded clone's shutdown can never run; its
+    child PIDs must land in the orphan ledger so the next idle sweep reaps them instead of
+    leaking until the final include_active sweep (independent review, suggestion 1)."""
+    import os as _os
+    from tools import mcp_tool, mcp_tool_project_scope as scope
+    from tools.mcp_tool_lifecycle import _orphan_stdio_pids, _orphan_stdio_pid_servers
+
+    name = "cwdprobe_reaper"
+    project = root / "reaperproj"
+    project.mkdir(exist_ok=True)
+    _register(root, name)
+    baseline = mcp_tool._servers[name]
+
+    discarded = mcp_tool.MCPServerTask(name)
+    discarded._stdio_child_pids = {4711}
+
+    def _connect_and_prune(*args, **kwargs):
+        with mcp_tool._lock:
+            mcp_tool._servers.pop(name)  # the prune lands DURING the connect, after the pre-spawn gate
+        return discarded
+
+    monkeypatch.setattr(scope, "_connect_clone", _connect_and_prune)
+
+    def _dead_loop(*args, **kwargs):
+        raise RuntimeError("MCP event loop is not running")
+
+    monkeypatch.setattr(scope._loop, "_run_on_mcp_loop", _dead_loop)
+    # _release_spawned_children re-hands only PIDs that are (or whose group is) still alive;
+    # 4711 is a stand-in, so fake the liveness probe it consults.
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: pid == 4711)
+    try:
+        set_session_cwd(str(project))
+        try:
+            assert scope._server_for_call(name, name, baseline) is None
+        finally:
+            clear_session_cwd()
+
+        assert 4711 in _orphan_stdio_pids, "the discarded child leaked out of the reaper's reach"
+        assert _orphan_stdio_pid_servers.get(4711) == name
+    finally:
+        with mcp_tool._lock:
+            _orphan_stdio_pids.discard(4711)
+            _orphan_stdio_pid_servers.pop(4711, None)

@@ -42,6 +42,10 @@ _MAX_SCOPED_TRANSPORTS_PER_SERVER = 8
 _scoped_servers: dict[tuple[Any, str], Any] = {}
 # Single-flight per clone key, held across the blocking connect (never ``_core._lock``).
 _scoped_connect_locks: dict[tuple[Any, str], threading.Lock] = {}
+# Waiter seats per connect lock: every thread between fetching a lock and releasing it counts
+# here, so a lock whose generation never installed a clone is reaped when the last seat leaves
+# instead of accumulating for the process lifetime (independent review, suggestion 3).
+_scoped_connect_waiters: dict[tuple[Any, str], int] = {}
 # Clone key -> handlers currently holding it (lookup through release, retries included).
 _scoped_active_calls: dict[tuple[Any, str], int] = {}
 
@@ -74,6 +78,51 @@ def _clone_cwd(baseline: Any) -> str:
     return "" if not want or want == os.path.realpath(baseline._spawn_cwd) else want
 
 
+def _acquire_connect_lock(clone_key: tuple[Any, str]) -> threading.Lock:
+    """Fetch or create the per-key single-flight lock and count this thread's waiter seat.
+    Caller holds ``_core._lock``."""
+    lock = _scoped_connect_locks.setdefault(clone_key, threading.Lock())
+    _scoped_connect_waiters[clone_key] = _scoped_connect_waiters.get(clone_key, 0) + 1
+    return lock
+
+
+def _release_connect_lock(clone_key: tuple[Any, str], *, keep: bool) -> None:
+    """Drop this thread's waiter seat. When the last seat leaves a generation that did not
+    install a clone (refused, failed or discarded), the lock goes with it — a fresh generation
+    single-flights on its own lock. Counting makes this race-free: a peer blocked on the object
+    still holds a seat, so the entry survives until it is done. Caller holds ``_core._lock``."""
+    remaining = _scoped_connect_waiters.get(clone_key, 1) - 1
+    if remaining > 0:
+        _scoped_connect_waiters[clone_key] = remaining
+        return
+    _scoped_connect_waiters.pop(clone_key, None)
+    if not keep:
+        _scoped_connect_locks.pop(clone_key, None)
+
+
+def _discard_orphan_clone(orphan: Any, server_name: str, cwd: str) -> None:
+    """Shut down a clone that lost its baseline mid-connect off the registry lock, like every
+    other shutdown. When the shutdown cannot run (the prune's drain stopped the MCP loop), hand
+    the child's PIDs to the orphan reaper instead of leaking them until the final include_active
+    sweep (independent review, suggestion 1)."""
+    try:
+        _loop._run_on_mcp_loop(orphan.shutdown, timeout=15)
+        return
+    # health: allow BLE001 -- one failed close must not fail the call; the reaper still owns the PIDs
+    except Exception:
+        logger.warning("MCP server '%s': discarding an orphaned project transport for %s failed",
+                       server_name, cwd, exc_info=True)
+    pids = set(getattr(orphan, "_stdio_child_pids", ()) or ())
+    if not pids:
+        return
+    try:
+        orphan._release_spawned_children(pids)
+    # health: allow BLE001 -- best-effort ledger handover; the final sweep still owns these PIDs
+    except Exception:
+        logger.warning("MCP server '%s': could not hand a discarded transport's PIDs to the reaper",
+                       server_name, exc_info=True)
+
+
 def _server_for_call(server_name: str, key: Any, baseline: Any, *, connect: bool = True) -> Any:
     """The transport this call must use: *baseline*, or this project's clone (connected lazily
     when *connect*). None when the clone cannot be connected (the handlers already turn a missing
@@ -89,35 +138,36 @@ def _server_for_call(server_name: str, key: Any, baseline: Any, *, connect: bool
             return clone
         if not connect:
             return None
-        connect_lock = _scoped_connect_locks.setdefault(clone_key, threading.Lock())
+        connect_lock = _acquire_connect_lock(clone_key)
     orphan = None
     with connect_lock:
         with _core._lock:
             clone = _scoped_servers.get(clone_key)
+            # Refuse BEFORE spawning when the baseline died while this thread queued on the
+            # single-flight lock: a peer never pays a child spawn for a dead generation
+            # (independent review, suggestion 2).
+            if clone is None and _core._servers.get(key) is not baseline:
+                _release_connect_lock(clone_key, keep=False)
+                return None
         if clone is None:
             clone = _connect_clone(server_name, baseline, cwd)
             if clone is None:
-                with _core._lock:  # a project that never connects must not leave its lock behind
-                    _scoped_connect_locks.pop(clone_key, None)
+                with _core._lock:  # transient failure: peers keep single-flighting; the lock is reaped when the last leaves
+                    _release_connect_lock(clone_key, keep=False)
                 return None
         with _core._lock:
             # A teardown (reload, config prune, shutdown) can remove the baseline while a clone
             # connect is in flight; inserting afterwards would strand a live child no owner will
-            # ever reap or re-register. The clone goes down with its baseline or not at all. The
-            # connect lock stays (a peer may be single-flighted on it); a later eviction or
-            # pop_clones reaps it with the rest of the dead key's state.
+            # ever reap or re-register. The clone goes down with its baseline or not at all.
             if _core._servers.get(key) is baseline:
                 _scoped_servers[clone_key] = clone
                 _lease(clone_key)
+                _release_connect_lock(clone_key, keep=True)
             else:
-                orphan, clone = clone, None
-    if orphan is not None:  # off the lock, like every other shutdown
-        try:
-            _loop._run_on_mcp_loop(orphan.shutdown, timeout=15)
-        # health: allow BLE001 -- one failed close must not fail the call; the orphan reaper still owns its PIDs
-        except Exception:
-            logger.warning("MCP server '%s': discarded an orphaned project transport for %s",
-                           server_name, cwd, exc_info=True)
+                orphan = clone
+                _release_connect_lock(clone_key, keep=False)
+    if orphan is not None:
+        _discard_orphan_clone(orphan, server_name, cwd)
         return None
     _evict_idle_overflow(key, keep=clone_key)
     return clone

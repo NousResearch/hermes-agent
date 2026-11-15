@@ -101,6 +101,9 @@ def test_include_filtered_recursive_delete_stays_approvable(cmd):
     "Remove-Item C:" + B + "* -Recurse -Include *$x",
     "Remove-Item C:" + B + "* -Recurse -Include (Get-Pattern)",
     "Remove-Item -Recurse C:" + B + "; Get-ChildItem -Include *.tmp",
+    # A bare CR ends the delete's statement too, even with the -Include glued to it.
+    "Remove-Item -Recurse C:" + B + "\rGet-ChildItem -Include *.tmp",
+    "Remove-Item -Recurse C:" + B + "*\r-Include *.tmp",
     # Not a PowerShell -Include of this delete: cmd `/s` and GNU `--` take it as a name, `#` comments it
     # out, a quote makes it another argument's data, and a spaced list still ends in `*`.
     "del /s /q C:" + B + "* -Include *.tmp",
@@ -251,9 +254,10 @@ def test_later_list_element_below_the_root_stays_approvable(cmd):
 @pytest.mark.parametrize("command", [
     "Get-Date" + "\r" * 8000 + "; x",
     "Get-Date" + " \r" * 4000 + "; x",
-    "Get-Date" + "\rri -r" * 2000 + "; x",
+    "Get-Date" + "\rri -r" * 14000 + "; x",
+    "Get-Date" + "\rri x" * 16000 + "; x",
     "Get-Date" + "\rpwsh -a" * 1500 + "; x",
-], ids=["cr", "space-cr", "cr-delete-verb", "cr-launcher"])
+], ids=["cr", "space-cr", "cr-delete-verb", "cr-delete-operand", "cr-launcher"])
 def test_bare_cr_runs_scan_in_linear_time(command):
     # A bare CR starts a PowerShell statement; a run of them must not make each CR rescan the rest of the run.
     start = time.perf_counter()

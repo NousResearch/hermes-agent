@@ -3301,6 +3301,7 @@ def set_config_value(key: str, value: str, force: bool = False):
                 "`hermes config unset model.base_url` (and model.api_mode).", Colors.YELLOW)
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
     if key.strip().lower() in ("model.api_base", "api_base"):
+        _exit_if_key_managed("model.base_url", "set")
         # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config
         # set model.api_base ...` lands on the canonical key the runtime resolver actually reads, instead of
         # being silently ignored.

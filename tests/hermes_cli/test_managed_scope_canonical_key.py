@@ -9,6 +9,7 @@ from utils import load_yaml_file_readonly
 MANAGED = """\
 model:
   default: managed/model
+  base_url: https://admin.example/v1
 display:
   platforms:
     telegram:
@@ -77,3 +78,16 @@ def test_set_of_an_unmanaged_rewritten_key_still_writes(homes):
 
     set_config_value("platforms.discord.streaming", "false")
     assert _user_config(homes)["display"]["platforms"]["discord"]["streaming"] is False
+
+
+def test_set_refuses_model_api_base_alias_to_managed_base_url(homes, capsys):
+    """The api_base alias must not write a value pinned as model.base_url."""
+    from hermes_cli.config import set_config_value
+
+    config_path = homes / "config.yaml"
+    before = config_path.read_bytes()
+    with pytest.raises(SystemExit) as exc:
+        set_config_value("model.api_base", "https://user.example/v1")
+    assert exc.value.code != 0
+    assert "managed by your administrator" in capsys.readouterr().err
+    assert config_path.read_bytes() == before

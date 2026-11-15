@@ -6,6 +6,7 @@ import json
 from typing import Any, Iterator, Optional, Sequence
 
 from persistence import ProfileScope, RowVisibility
+from session_rules.media import ARCHIVE_POINTER_MARKERS
 from persistence.conversation.messages import (
     CONTENT_JSON_PREFIX,
     AnchoredView,
@@ -357,7 +358,8 @@ class MessageReadsMixin(MessageBase):
         scope = self._backend.scope
         rows = sorted((row for transcript in self._ns(scope)["transcripts"].values() for row in transcript.rows), key=lambda row: row.id)
         hits = [(_content_text(row.message.content), row.message.api_content) for row in rows
-                if "spillover" in (_content_text(row.message.content) or "") or "spillover" in (row.message.api_content or "")]
+                if any(marker in (_content_text(row.message.content) or "") or marker in (row.message.api_content or "")
+                       for marker in ARCHIVE_POINTER_MARKERS)]
         return tuple(hits[:_SPILLOVER_ROW_CAP])
 
 

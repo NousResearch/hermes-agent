@@ -202,20 +202,10 @@ def coerce_epoch(value: Any, *, session_id: Optional[str] = None, field: str = "
 MAX_TODO_RESULT_CHARS = 512_000
 
 
-# Spillover file names, as tools.tool_result_storage writes them.
-_SPILLOVER_NAME_RE = re.compile(r"spillover(?:/|\\+)([A-Za-z0-9_.-]+)")
-
-
-SPILLOVER_SQL_FILTER = "(instr(content, 'spillover') > 0 OR instr(api_content, 'spillover') > 0)"
-
-
-def spillover_names_in_text(*texts) -> set:
-    """Spillover archive basenames referenced by transcript message text (empty set on none)."""
-    names: set = set()
-    for text in texts:
-        if isinstance(text, str) and "spillover" in text:
-            names.update(_SPILLOVER_NAME_RE.findall(text))
-    return names
+# instr(), not LIKE: structured content is stored behind a NUL sentinel and LIKE stops at NUL. The markers
+# are session_rules.media.ARCHIVE_POINTER_MARKERS (spill archives and prune originals).
+SPILLOVER_SQL_FILTER = ("(instr(content, 'spillover') > 0 OR instr(api_content, 'spillover') > 0"
+                        " OR instr(content, 'cache/pruned/') > 0 OR instr(api_content, 'cache/pruned/') > 0)")
 
 
 RESTORED_FROM_STORE = "_restored_from_store"

@@ -100,3 +100,19 @@ def test_cache_expiry_summary_request_extends_the_last_conversation_request(prov
     assert [m["role"] for m in summary_msgs[len(turn_msgs):]] == ["assistant", "user"]
     assert "context checkpoint" in summary_msgs[-1]["content"]
     assert summary_call.get("max_tokens")  # output bounded by the compressor's summary budget
+
+
+def test_an_explicitly_refused_warm_summary_never_replaces_history(monkeypatch):
+    """A reply carrying both text and an explicit provider refusal is unusable on the warm path too."""
+    from agent.context_compressor_summary import SummaryDispatchMixin
+    from agent.transports.types import NormalizedResponse
+
+    refused = NormalizedResponse(content=SUMMARY, tool_calls=None, finish_reason="stop",
+                                 provider_data={"refusal": "I can't help with that."})
+    monkeypatch.setattr("agent.side_question_request.ask_on_live_prefix", lambda *a, **k: (refused, {}))
+    compressor = SimpleNamespace(_build_summary_prompt=lambda *a: [{"content": "i"}, {"content": "s"}],
+                                 _compression_cancelled=lambda: False, tail_mode="legacy")
+    warm = SimpleNamespace(agent=SimpleNamespace(model=MODEL), history=[])
+    with pytest.raises(RuntimeError, match="refusal"):
+        SummaryDispatchMixin._warm_prefix_summary(compressor, warm, [{"role": "user", "content": "x"}],
+                                                  (2000, None, "", True))

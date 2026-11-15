@@ -97,7 +97,7 @@ def _cmd_export(args) -> int:
     return 0
 
 
-def _sessions_writer(home: Path):
+def _sessions_writer(home: Path, move_id: str):
     """Conversation writes for a CLI receive/undo: through the live gateway when one owns the
     store, else straight into the store under the owner lock (a stopped install, a fresh one)."""
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
@@ -120,7 +120,8 @@ def _sessions_writer(home: Path):
                 raise RevisionConflict(str(exc)) from None
             raise
 
-    return OwnerSessions(home, mutate)
+    # The move id keeps each move's import request ids its own: a repeated id replays the old receipt.
+    return OwnerSessions(home, mutate, move_id=move_id)
 
 
 def _parts(raw: str) -> set[str]:
@@ -177,20 +178,33 @@ def _cmd_receive(args) -> int:
         if input("Apply? [y/N] ").strip().lower() not in {"y", "yes"}:
             print(f"Not applied. Run `hermes move receive {path}` again to continue.")
             return 1
-    state = move_receive.apply(home, state["id"], sessions=_sessions_writer(home), include=only, replace=replace)
+    state = move_receive.apply(home, state["id"], sessions=_sessions_writer(home, state["id"]),
+                               include=only, replace=replace)
     if args.json:
         print(json.dumps(state, indent=2))
     else:
         print(f"Move {state['id']}: {state['status']}. Undo with `hermes move undo {state['id']}`.")
+        for name, step in (state.get("steps") or {}).items():
+            if step.get("status") != "done":
+                print(f"  {name}: {step.get('error') or str(step.get('failed')) + ' failed'}")
+                for err in step.get("errors") or []:
+                    print(f"    {err}")
+        if state["status"] == "partial":
+            print(f"Run `hermes move receive {path}` again to retry what did not finish.")
     return 0 if state["status"] == "applied" else 1
 
 
 def _cmd_undo(args) -> int:
     from hermes_cli import move_receive
     home, _ = _home_and_profile()
-    state = move_receive.undo(home, args.move_id, sessions=_sessions_writer(home))
+    state = move_receive.undo(home, args.move_id, sessions=_sessions_writer(home, args.move_id))
     print(f"Move {state['id']}: {state['status']}.")
-    return 0
+    problems = (state.get("result") or {}).get("undo_problems") or []
+    for problem in problems:
+        print(f"  {problem}")
+    if problems:
+        print(f"Fix these, then run `hermes move undo {state['id']}` again to finish the undo.")
+    return 1 if problems else 0
 
 
 def _cmd_list(args) -> int:

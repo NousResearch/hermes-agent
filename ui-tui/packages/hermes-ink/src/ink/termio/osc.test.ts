@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { supportsOsc52Clipboard } from '../../utils/env.js'
 
-import { shouldEmitClipboardSequence, shouldUseNativeClipboard } from './osc.js'
+import { link, shouldEmitClipboardSequence, shouldUseNativeClipboard } from './osc.js'
 
 describe('shouldEmitClipboardSequence', () => {
   it('suppresses local multiplexer clipboard OSC by default', () => {
@@ -143,5 +143,17 @@ describe('shouldUseNativeClipboard', () => {
     expect(shouldUseNativeClipboard({ SSH_CONNECTION: '1', TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv, 'xterm')).toBe(
       false
     )
+  })
+})
+
+describe('link', () => {
+  it('strips C0, DEL and C1 controls from the URL so it cannot terminate OSC 8 early', () => {
+    const ESC = String.fromCharCode(27)
+    const BEL = String.fromCharCode(7)
+    const out = link(`https://example.com/x${BEL}${ESC}]2;T${BEL}\u009b2J\u007f`)
+
+    expect(out).not.toContain(`${ESC}]2;`)
+    expect(out).not.toContain('\u009b')
+    expect(out).toContain(';https://example.com/x]2;T2J')
   })
 })

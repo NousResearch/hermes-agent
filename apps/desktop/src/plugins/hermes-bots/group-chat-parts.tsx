@@ -9,8 +9,8 @@
  */
 
 import { Button, cn, Codicon, host, Input, RowButton, Textarea, useI18n, useValue } from '@hermes/plugin-sdk'
-import type { ClipboardEvent } from 'react'
-import { useRef, useState } from 'react'
+import type { ClipboardEvent, Ref, RefObject } from 'react'
+import { useImperativeHandle, useRef, useState } from 'react'
 
 import { $imagenAvailable, normalizeAvatarImage, pickImageFromDevice, probeImagen } from './avatar-image'
 import { $botMeta, botHandle, botMentionTag } from './data'
@@ -167,7 +167,22 @@ interface GroupMentionInputProps {
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void
   onSubmitDraft?: () => void
   placeholder?: string
+  ref?: Ref<HTMLTextAreaElement>
   value: string
+}
+
+/** A hover Reply moves the user into the composer, caret after the seeded words, once React has painted them. */
+export function focusComposerEnd(input: RefObject<HTMLTextAreaElement | null>) {
+  requestAnimationFrame(() => {
+    const el = input.current
+
+    if (!el) {
+      return
+    }
+
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  })
 }
 
 /** Mention-aware composer input for group rooms. The core composer's
@@ -177,10 +192,11 @@ interface GroupMentionInputProps {
  *  the strings parseGroupChatMentions resolves. Keyboard: Up/Down navigate,
  *  Enter/Tab insert (Enter falls through to submit when the popover is
  *  closed), Escape dismisses. */
-export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft, value, ...inputProps }: GroupMentionInputProps) {
+export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft, ref, value, ...inputProps }: GroupMentionInputProps) {
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  useImperativeHandle(ref, () => inputRef.current as HTMLTextAreaElement)
   const [token, setToken] = useState<MentionToken | null>(null)
   const [selected, setSelected] = useState(0)
   const options: MentionOption[] = []

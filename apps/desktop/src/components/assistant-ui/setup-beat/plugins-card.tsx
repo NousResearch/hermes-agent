@@ -11,6 +11,7 @@ import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
+import { $pluginRecords, installedDesktopCatalogEntries } from '@/contrib/plugins-store'
 import { useI18n } from '@/i18n'
 import { lookupPluginCatalogEntry } from '@/lib/plugin-catalog'
 import { cn } from '@/lib/utils'
@@ -66,6 +67,7 @@ export function PluginsCard({
   const owner = useConnectionOwner(storedId, true)
   const plugins = useStore($agentPlugins)
   const pluginsProfile = useStore($agentPluginsProfile)
+  const records = useStore($pluginRecords)
   const { requestGateway } = useGatewayRequest()
 
   // The shared plugin list may be empty or another profile's: load the chat's own.
@@ -83,7 +85,12 @@ export function PluginsCard({
   })
 
   const ownRows = owner && pluginsProfile === owner.profile ? plugins : []
-  const installed = new Set(ownRows.flatMap(row => (row.catalog_name ? [row.catalog_name, row.name] : [row.name])))
+
+  // Desktop plugins live in one app-level folder, not a profile's: a desktop-only entry installed is installed.
+  const installed = new Set([
+    ...ownRows.flatMap(row => (row.catalog_name ? [row.catalog_name, row.name] : [row.name])),
+    ...installedDesktopCatalogEntries(records).keys()
+  ])
 
   const rows = presence.data ?? []
 

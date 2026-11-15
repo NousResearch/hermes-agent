@@ -27,7 +27,7 @@ The easiest path is the interactive manager:
 hermes fallback
 ```
 
-`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), and `clear` to manage the chain. Changes persist under the top-level `fallback_providers:` list in `config.yaml`.
+`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), and `clear` to manage the chain, and `check` to verify it (see [Checking the chain](#checking-the-chain)). Changes persist under the top-level `fallback_providers:` list in `config.yaml`.
 
 If you'd rather edit the YAML directly, add a top-level `fallback_providers` list to `~/.hermes/config.yaml`:
 
@@ -58,6 +58,20 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 :::note `fallback_model` vs `fallback_providers`
 `fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
 :::
+
+### Checking the chain
+
+`hermes fallback check` reports whether each entry would work if the fallback switch reached it, without starting an agent session:
+
+```bash
+hermes fallback check            # static: resolve each entry and its credentials, no inference
+hermes fallback check --live     # also send one minimal request per entry, in parallel
+hermes fallback check --live --json
+```
+
+Each entry resolves exactly as the fallback switch resolves it (its `provider`, `model`, `base_url` and `api_key`/`key_env`), and the chain is never walked, so one entry can't hide another. `--live` sends one short completion per statically ready entry over that provider's own API (OpenAI-compatible, Anthropic Messages, Codex Responses, Bedrock, ACP). It is not retried (SDK retries are off; an Anthropic endpoint that refuses streaming gets the one non-streaming resend the adapter always makes) and never answered by another provider. An empty or malformed answer, one with a `failed`/`cancelled` status, or one that reports an error on the choice (OpenRouter's `finish_reason: "error"`) counts as a failure (`incomplete`, a token cap, still counts as answered); a provider error relayed in an HTTP 200 body is reported like the request error it describes. An entry fails as `model_mismatch` when the provider reports a different model (a dated snapshot of the requested model, such as `gpt-4o-2024-08-06` for `gpt-4o`, still counts as a match). The model check is skipped where the reported model proves nothing: Anthropic Messages and Codex Responses adapters don't expose the serving model, Azure reports the base model rather than your deployment name, router meta-models (`openrouter/auto`, `@preset/...`, `<model>@preset/...`) answer under the model they picked, Bedrock ARNs aren't echoed back, and local or private-network servers (llama.cpp, LM Studio, Ollama, a LAN box) often report a placeholder. The live request uses the provider's `request_timeout_seconds` when set (as the switch does), else 30 seconds; on a streamed request the timeout applies to each read, not the whole answer. A static pass for Bedrock (AWS SDK credential chain) or an external-process provider only means the route resolves; use `--live` to prove it. Static mode sends no inference request, but it resolves credentials the way a session does, so an expiring OAuth token may be refreshed and saved. Entries with `provider: auto` (backend picked per call) or `provider: moa` (a fan-out preset) are not one fixed route, so they are never sent a live request and keep their static verdict. The live request goes to the client the fallback switch would build; for Nous and Codex entries that client uses your stored login, as the switch does.
+
+The command exits with status 1 when any entry is not ready, so cron jobs and CI can gate on it. `--json` prints `profile`, `live`, `ready`, `checked_at` and one result per entry (`provider`, `model`, `base_url`, `api_mode`, `auth_source`, `configured`, `auth_ready`, `inference_ready`, `latency_ms`, `model_returned`, `error_class`, `error`, `ready`, `status`). `status` is `ready`, `ready (static)`, `config`, `auth`, `model_mismatch`, `live_response` (an answer with no usable completion) or `live_<reason>` for a failed request (`live_auth`, `live_timeout`, `live_rate_limit`, `live_model_not_found`, ...). Credentials are never printed, and provider error text is redacted. Use `hermes -p <profile> fallback check` to check another profile's chain.
 
 ### Supported Providers
 
@@ -327,7 +341,7 @@ auxiliary:
     model: "qwen2.5-vl"
 ```
 
-`base_url` takes precedence over `provider`. Hermes uses the configured `api_key` for authentication, falling back to `OPENAI_API_KEY` if not set. It does **not** reuse `OPENROUTER_API_KEY` for custom endpoints.
+`base_url` takes precedence over `provider`. Hermes uses the configured `api_key` for authentication; without one it falls back to `OPENAI_API_KEY` only for OpenAI hosts (`*.openai.com`, `*.openai.azure.com`) or the exact `OPENAI_BASE_URL` it is paired with. It does **not** reuse `OPENROUTER_API_KEY` for custom endpoints.
 
 ---
 

@@ -3,6 +3,7 @@
 import pytest
 
 from agent.conversation_compression import (
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
     CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
     ROUTINE_COMPRESSION_STATUS_SAMPLES,
 )
@@ -57,6 +58,8 @@ NOISY_STATUS_MESSAGES = [
         "⚠ Skipping concurrent compression — another path is already "
         "compressing this session. Will retry after it finishes."
     ),
+    # Automatic anti-growth refusal: a no-op diagnostic (nothing dropped), pinned from the emit-site constant.
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
 ]
 
 # Messages that must NEVER be swallowed by the compression-noise filter:
@@ -68,6 +71,8 @@ VISIBLE_COMPRESSION_MESSAGES = [
     "Compression aborted: 30 messages preserved",
     "Compressed with fallback: 30 → 12 messages",
     "No changes from compression: 30 messages",
+    # Manual /compress refused-would-grow feedback stays visible (manual_compression_feedback.py).
+    "Compression refused (summary would grow the conversation): 30 messages preserved",
     (
         "⚠ Compression aborted: auth failure. No messages were dropped — "
         "conversation continues unchanged. Run /compress to retry, or /new "
@@ -91,10 +96,10 @@ VISIBLE_COMPRESSION_MESSAGES = [
     ),
     # Blocked-overflow warning (#62625/#62708): the context is over the
     # compression threshold but compression is blocked (summary-LLM cooldown
-    # or the anti-thrash breaker). FAILURE-CLASS — must reach chat users so
-    # they can /new or /compress before the session dies at the hard token
-    # limit. Formatted from the SAME template the emit site uses, so a
-    # rewording that drifts into the noise regex fails here.
+    # or the anti-thrash breaker). FAILURE-CLASS — must reach a DM so the
+    # owner can /new or /compress before the session dies at the hard token
+    # limit; shared chats drop it (#101003, tests/gateway/test_run_status_filter.py).
+    # Formatted from the SAME template the emit site uses.
     CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
         tokens=85_000, threshold=72_000, reason="cooldown:30"
     ),
@@ -131,6 +136,10 @@ def test_programmatic_surfaces_keep_raw_status():
     for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
         assert (
             _prepare_gateway_status_message(platform, "lifecycle", message) == message
+        )
+        assert (
+            _prepare_gateway_status_message(platform, "warn", COMPRESSION_REFUSED_WOULD_GROW_WARNING)
+            == COMPRESSION_REFUSED_WOULD_GROW_WARNING
         )
 
 
@@ -172,9 +181,10 @@ def test_manual_compress_feedback_and_failure_notices_stay_visible(platform, mes
 
     These are the deliberate carve-outs from routine-compression silence
     (#16775 failures, manual_compression_feedback.py) — widening the noise
-    regex must not start eating them.
+    regex must not start eating them. Pinned in a DM: the blocked-overflow
+    warning is DM-only since #101003.
     """
-    assert _prepare_gateway_status_message(platform, "warn", message) == message
+    assert _prepare_gateway_status_message(platform, "warn", message, "dm") == message
 
 
 @pytest.mark.parametrize("platform", ["slack", "matrix"])
@@ -276,20 +286,29 @@ def test_local_surface_keeps_terminal_eos_control_token():
     assert _sanitize_gateway_final_response("local", "normal answer<|eos|>") == "normal answer<|eos|>"
 
 
-def test_telegram_status_sanitizes_raw_provider_security_errors():
-    """Provider policy/security bodies should be replaced before chat delivery."""
-    raw = (
-        "❌ API failed after 3 retries — HTTP 400: request blocked because "
-        "Operation contains cybersecurity risk. request_id=req_123"
-    )
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+@pytest.mark.parametrize("raw", [
+    "❌ API failed after 3 retries — HTTP 400: request blocked because "
+    "Operation contains cybersecurity risk. request_id=req_123",
+    "❌ Rate limited after 1 attempt — HTTP 429: Rate limit exceeded",
+])
+def test_chat_gateways_suppress_provider_error_status(platform, raw):
+    """Provider-error statuses must not double up with the final response.
 
-    sanitized = _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", raw)
+    The failed turn's final response is rewritten to the same user-safe text
+    by `_sanitize_gateway_final_response`, so a status copy here would land as
+    a second identical persistent message (#72131). Suppression also keeps the
+    raw body (request ids, policy text) out of chat — nothing is delivered on
+    this path at all.
+    """
+    assert _prepare_gateway_status_message(platform, "lifecycle", raw) is None
 
-    assert sanitized is not None
-    assert "rejected this request" in sanitized.lower()
-    assert "cybersecurity risk" not in sanitized.lower()
-    assert "HTTP 400" not in sanitized
-    assert "req_123" not in sanitized
+
+def test_local_status_keeps_raw_provider_errors():
+    """Local/CLI surfaces keep the raw diagnostic stream on the status path."""
+    raw = "API call failed after 3 retries: HTTP 429 Too Many Requests"
+
+    assert _prepare_gateway_status_message("local", "warn", raw) == raw
 
 
 def test_telegram_final_response_sanitizes_raw_provider_errors():
@@ -305,6 +324,63 @@ def test_telegram_final_response_sanitizes_raw_provider_errors():
     assert "cybersecurity risk" not in sanitized.lower()
     assert "HTTP 400" not in sanitized
     assert "req_abc" not in sanitized
+
+
+def test_telegram_final_response_sanitizes_unexpected_status_auth_error():
+    """Provider 401 envelopes that start with "unexpected status" are errors."""
+    raw = (
+        "unexpected status 401 Unauthorized: Missing bearer or basic "
+        "authentication in header"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "sign-in" in sanitized.lower()
+    assert "Missing bearer" not in sanitized
+    assert "401 Unauthorized" not in sanitized
+
+
+def test_telegram_final_response_sanitizes_other_unexpected_status_envelopes():
+    """The envelope shape is status-agnostic: non-auth codes get the generic provider reply."""
+    raw = "unexpected status 503 Service Unavailable: upstream connect error req_xyz"
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "req_xyz" not in sanitized
+    assert "upstream connect error" not in sanitized
+
+
+def test_telegram_final_response_keeps_prose_about_unexpected_status():
+    """Long explanatory prose mentioning unexpected status codes is normal text."""
+    answer = (
+        "An unexpected status 401 Unauthorized means the supplied credentials "
+        "were rejected. Check whether your Authorization header was sent and "
+        "whether the token has expired before retrying the request."
+    )
+
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+@pytest.mark.parametrize("answer", [
+    "Unexpected status 401 means the request was unauthenticated. Add an Authorization header and retry.",
+    "`unexpected status 401` means the server rejected your credentials. Check the token and retry.",
+    "**Unexpected status 500** means the server threw an exception. Check the server log.",
+    "```\nunexpected status 404\n```\nThat means the route isn't registered; check the blueprint.",
+])
+def test_telegram_keeps_short_reply_explaining_unexpected_status(answer):
+    """A short answer that opens with the phrase is not an envelope: no ``<reason>:`` after the code."""
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+    assert _prepare_gateway_status_message(Platform.TELEGRAM, "status", answer) == answer
+
+
+def test_telegram_final_response_sanitizes_unexpected_status_without_canonical_reason():
+    """Codes the http crate has no reason phrase for print as ``520 <unknown status code>``."""
+    raw = "unexpected status 520 <unknown status code>: upstream error, cf-ray: abc123, request id: req_cf"
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "req_cf" not in sanitized
+    assert "cf-ray" not in sanitized
 
 
 def test_telegram_final_response_redacts_auth_secrets():
@@ -359,3 +435,58 @@ def test_chat_gateways_redact_all_issue_23810_credential_shapes(platform, shape_
     # Prose around the secret is preserved — redaction is surgical.
     assert "here is the token you asked me to echo" in sanitized
     assert sanitized.endswith("done.")
+
+
+def _terminal_failure_statuses(status, text, *, nonretryable, body=True):
+    """Statuses the real terminal-failure producers emit for one SDK error, plus the final reply."""
+    import httpx
+    import openai
+
+    import agent.turn_recovery as recovery
+    from agent.api_error_summary import ApiErrorSummaryMixin
+    from agent.error_classifier import classify_api_error
+    from agent.status_output import StatusOutputMixin
+
+    class _Agent(StatusOutputMixin, ApiErrorSummaryMixin):
+        log_prefix, verbose, verbose_logging, suppress_status_output = "", False, False, True
+        provider, model, base_url = "openrouter", "m", "https://openrouter.ai/api/v1"
+        _fallback_chain, _fallback_index, _notification_config = (), 0, {}
+
+        def _persist_session(self, *args): pass
+        def _vprint(self, *args, **kwargs): pass
+        def _dump_api_request_debug(self, *args, **kwargs): pass
+
+    agent, sent = _Agent(), []
+    agent.status_callback = lambda kind, message: sent.append((kind, message))
+    request = httpx.Request("POST", agent.base_url + "/chat/completions")
+    payload = {"error": {"message": text}}
+    response = httpx.Response(status, json=payload, request=request) if body else httpx.Response(status, request=request)
+    error = openai.APIStatusError(text, response=response, body=payload if body else None)
+    classified = classify_api_error(error, provider=agent.provider, model=agent.model)
+    args = dict(api_kwargs=None, api_messages=[], messages=[], conversation_history=[], api_call_count=1,
+                approx_tokens=10, provider=agent.provider, base_url=agent.base_url, model=agent.model)
+    if nonretryable:
+        result = recovery.nonretryable_client_error_result(agent, error, classified, status_code=status, **args)
+    else:
+        result = recovery.max_retries_exhausted_result(agent, error, classified, attempts=1,
+                                                      is_rate_limited=status == 429, error_msg=text.lower(), **args)
+    return sent, result["final_response"]
+
+
+@pytest.mark.parametrize(("status", "text", "nonretryable", "body"), [
+    (401, "Invalid API key", True, True),
+    (404, "The model m does not exist", True, True),
+    (400, "Unsupported parameter: temperature", True, True),
+    (402, "Insufficient credits", True, True),
+    (503, "Upstream unavailable. " + "upstream diagnostic " * 25, False, False),
+    (429, "Rate limit exceeded\nline2\nline3\nline4\nline5\nline6", False, True),
+])
+def test_terminal_provider_failure_status_never_doubles_the_final_reply(status, text, nonretryable, body):
+    """Every terminal provider failure posts one chat message, the final reply: the producer's status
+    copy is dropped on chat surfaces whatever its label, length or line count; local keeps it (#72131)."""
+    sent, final = _terminal_failure_statuses(status, text, nonretryable=nonretryable, body=body)
+    terminal = [(kind, message) for kind, message in sent if str(message).startswith("❌")]
+    assert terminal and final
+    for kind, message in terminal:
+        assert _prepare_gateway_status_message(Platform.TELEGRAM, kind, message) is None
+        assert _prepare_gateway_status_message("local", kind, message) == str(message).strip()

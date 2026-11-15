@@ -205,6 +205,9 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
         sig_name = _shutdown_ctx["signal"] if _shutdown_ctx else None
 
         if planned_takeover:
+            # The replacing gateway serves this home on: telling its home chats "shutting down" is
+            # false, and two services fighting over one home would repeat it every few seconds.
+            runner._planned_takeover_shutdown = True
             logger.info("Received %s as a planned --replace takeover — exiting cleanly", sig_name or "SIGTERM")
         elif planned_stop:
             logger.info("Received %s as a planned gateway stop — exiting cleanly", sig_name or "SIGTERM/SIGINT")
@@ -315,18 +318,22 @@ async def _start_gateway_start_control_socket(runner):
         # manager) relaunches after the code swap.
         _main_loop = asyncio.get_running_loop()
 
-        def _pause_for_update_handler() -> dict:
+        def _pause_for_update_handler(params: dict) -> dict:
+            # ``{"force": true}`` (hermes update --force): stop live work now instead of waiting for idle.
+            force = params.get("force") is True
             try:
                 from hermes_cli.gateway import _get_restart_drain_timeout
-                _drain = float(_get_restart_drain_timeout())
+                _drain = 0.0 if force else float(_get_restart_drain_timeout())
             except Exception:
                 _drain = 30.0
-            accepted_box: list[bool] = []
+            accepted_box: list = []
             _done = threading.Event()
 
             def _request() -> None:
                 try:
-                    accepted_box.append(runner.request_restart(detached=False, via_service=True))
+                    from gateway.restart_when_idle import force_restart, request_service_restart
+                    accepted_box.append(force_restart(runner) if force else request_service_restart(runner))
+                    accepted_box.append(runner._describe_active_work())
                 finally:
                     _done.set()
 
@@ -335,7 +342,8 @@ async def _start_gateway_start_control_socket(runner):
             accepted = bool(accepted_box and accepted_box[0])
             return {
                 "pausing": accepted, "already_stopping": not accepted,
-                "pid": os.getpid(), "drain_timeout": _drain}
+                "pid": os.getpid(), "drain_timeout": _drain, "force": force,
+                "waiting_on": accepted_box[1] if len(accepted_box) > 1 else []}
 
         def _rescan_profiles_handler() -> dict:
             """``hermes profile create/delete`` asks the multiplexer to reconcile ``profiles/`` now
@@ -730,6 +738,15 @@ def _start_gateway_early_environment_probe() -> None:
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
                         verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
+    """Run the gateway without ever turning an inherited daemon TTY (tmux respawn loop, hidden
+    Windows console) into a lazy-install ``input()`` prompt that blocks the event loop (#125607)."""
+    from pm.extras import suppress_interactive_install_prompts
+    with suppress_interactive_install_prompts():
+        return await _start_gateway_runtime(config, replace, verbosity, force, idle_exit)
+
+
+async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace: bool = False,
+                                 verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
     deadlocks); ``force`` starts without consulting the host owner at all; ``idle_exit`` arms the
@@ -879,6 +896,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _log_standalone_profiles_at_boot(runner)
         from gateway.run_runtime import start_gateway_runtime_api
         await start_gateway_runtime_api(runner)
+        from gateway.run_api import await_session_socket_preload, preload_session_socket
+        ws_preload = preload_session_socket() if idle_exit else None  # overlaps the adapter/cron start
 
         def _lifecycle_record_startup() -> Optional[dict]:
             # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
@@ -897,6 +916,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
         _early_verdict = await _start_gateway_run_runner(runner, _signal_initiated_shutdown)
         if _early_verdict is not None:
+            await await_session_socket_preload(ws_preload)  # never left unawaited on the way out
             return _early_verdict
         if _unclean_exit is not None:
             _start_deferred_state_db_integrity_check(_unclean_exit)
@@ -907,6 +927,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # which stops the cron ticker and housekeeping before the adapters they deliver through close.
         from gateway.run_runtime import publish_gateway_runtime_ready, wait_gateway_runtime
         try:
+            await await_session_socket_preload(ws_preload)
             # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
             publish_gateway_runtime_ready(runner)
             runner._start_systemd_watchdog()

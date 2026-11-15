@@ -3,6 +3,8 @@ import type { ToolLabel } from '@hermes/shared'
 import { TOOL_LABELS_ARG } from '@/lib/connector-tools'
 import { firstStringField, normalize } from '@/lib/text'
 import { isTodoToolName, parseTodos } from '@/lib/todos'
+import { effectiveToolCall } from '@/lib/tool-media-renderers'
+import { isCardToolName } from '@/lib/tool-render-class'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { SessionMessage, StoredToolCallLabels } from '@/types/hermes'
 
@@ -1040,14 +1042,18 @@ export function toolPartFromStoredCall(
   const fn = recordFromUnknown(row.function)
   const id = String(row.id || row.tool_call_id || `stored-tool-${fallbackIndex}`)
 
-  const toolName = String(
-    row.name || row.tool_name || fn?.name || (recordFromUnknown(row.input)?.name as string | undefined) || 'tool'
-  )
-
-  const args = {
-    ...firstNonEmptyObject(fn?.arguments, row.arguments, row.args, row.input),
-    ...labelArgs(labels?.[id])
+  const stored = {
+    args: firstNonEmptyObject(fn?.arguments, row.arguments, row.args, row.input),
+    toolName: String(
+      row.name || row.tool_name || fn?.name || (recordFromUnknown(row.input)?.name as string | undefined) || 'tool'
+    )
   }
+
+  // A card tool reached through the deferred-tool bridge is stored as `tool_call` but streams live under its
+  // own name; hydrate it under that name so its card, and the resume re-arm of an open card, still find it.
+  const bridged = effectiveToolCall(stored)
+  const { args: callArgs, toolName } = isCardToolName(bridged.toolName ?? '') ? (bridged as typeof stored) : stored
+  const args = { ...callArgs, ...labelArgs(labels?.[id]) }
 
   return {
     type: 'tool-call',

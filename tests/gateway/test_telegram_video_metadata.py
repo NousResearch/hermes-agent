@@ -103,3 +103,38 @@ def test_video_helpers_read_real_geometry(tmp_path):
     finally:
         with contextlib.suppress(OSError):
             os.remove(thumb)
+
+
+@pytest.fixture
+def tall_clip(tmp_path):
+    clip = tmp_path / "tall.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=64x640:rate=10:duration=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip)],
+        capture_output=True, check=True)
+    return clip
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg/ffprobe not installed (the CI runner ships without them)",
+)
+@pytest.mark.asyncio
+async def test_send_video_tall_thumbnail_fits_telegram_320_box(tall_clip):
+    """Telegram caps a thumbnail at 320px on BOTH sides; a portrait frame must shrink to fit, not to 320 wide."""
+    dims = []
+
+    def _send(**kw):
+        probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0",
+                                kw["thumbnail"]], capture_output=True, text=True, check=True)
+        dims.append(tuple(int(n) for n in probe.stdout.strip().split(",")))
+        return MagicMock(message_id=11)
+
+    adapter = _make_adapter()
+    adapter._bot.send_video = AsyncMock(side_effect=_send)
+
+    result = await adapter.send_video("123", str(tall_clip))
+
+    assert result.success is True
+    (width, height), = dims
+    assert width <= 320 and height <= 320 and height > width

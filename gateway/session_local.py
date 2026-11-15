@@ -442,7 +442,7 @@ def effort_fields(config, tier, model, provider, base_url, api_mode=None):
         effort = 'none' if config.get('enabled') is False else str(config.get('effort') or '')
     wire = ''
     if effort and effort != 'none':
-        wire = str(clamp_effort(effort, route_supported_efforts(provider, model, api_mode)) or '')
+        wire = str(clamp_effort(effort, route_supported_efforts(provider, model, api_mode, base_url)) or '')
     try:
         fast = tier in STATIC_TIERS and resolve_fast_mode_overrides(
             model, provider=provider or None, base_url=base_url or None, tier=tier) is not None

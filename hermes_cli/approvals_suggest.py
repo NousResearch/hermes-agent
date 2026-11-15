@@ -39,7 +39,8 @@ _UNSAFE_CLASS_PATTERNS = [
     # remote/obfuscated execution: pipe-to-shell, encoded PowerShell, heredoc, substitutions
     r"pipe", r"obfuscation", r"remote content", r"remote script", r"heredoc", r"encoded",
     r"command substitution", r"process substitution",
-    r"hardline",
+    # a command the scanners could not read to the end: approved one run at a time, never remembered
+    r"hardline", r"too complex to scan",
 ]
 _UNSAFE_CLASS_RE = re.compile("|".join(_UNSAFE_CLASS_PATTERNS), re.IGNORECASE)
 
@@ -92,7 +93,9 @@ def default_db_path() -> Path:
 
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_state_holders import read_only_db_uri
+    return connect_tracked(read_only_db_uri(db_path), uri=True, tracking_path=db_path)
 
 
 def _fetch_rows(cur) -> Iterator[tuple]:
@@ -148,7 +151,7 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
     """``(command, dangerous_class_description)`` records for dangerous-classified terminal commands
     that actually executed (i.e. carried an implied user approval).
     """
-    from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+    from tools.approval_detection import detect_dangerous_command, detect_hardline_command, hardline_scan_incomplete
     path = Path(db_path) if db_path else default_db_path()
     if not path.exists():
         return []
@@ -163,8 +166,9 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
             if tool_call_id in blocked:
                 continue
             # Hardline commands are unconditionally blocked at runtime; never mine them (defense in
-            # depth against stale DB rows).
-            if detect_hardline_command(command)[0]:
+            # depth against stale DB rows). Nor commands the hardline scan could not read to the end:
+            # their approval is one run at a time, so nothing about them was ever meant to persist.
+            if detect_hardline_command(command)[0] or hardline_scan_incomplete(command):
                 continue
             is_dangerous, _key, description = detect_dangerous_command(command)
             if is_dangerous:

@@ -1,0 +1,31 @@
+name: foreman
+repo: https://github.com/PedValme/foreman
+sha: "ce9b01a2904edb2aadefcb4ae7111d5dc97622c8"
+subdir: plugin
+title: Foreman
+description: "A green check the agent did not rig. A deterministic gate (no model, standard library and git) blocks git commit, git push and gh pr create when the change skips, deletes or moves tests, weakens what the check runs, bypasses hooks or carries a secret, and always blocks an agent-run gh pr merge; an optional second model reviews what rules cannot see, such as a loosened assertion. /foreman shows each pull request with a verdict and merges only on your command; a Desktop panel shows where each change is. Disclosure — runs read-only git in your repository; runs the GitHub CLI only on /foreman commands (merge and reject write to GitHub after your confirmation) and model calls only on /foreman commands or, with auto_review: finish, inside the agent's turn; notifications are off until you turn them on; no telemetry, no credentials, no network calls of its own. Full disclosure in the README."
+maintainer: PedValme
+tier: community
+category: automation
+requires_hermes: ">=0.22.6"
+version: "0.1.0"
+docs_url: https://github.com/PedValme/foreman/blob/main/plugin/README.md
+# Pinned to the same commit as sha.
+# The first image is a real capture of the panel in Hermes Desktop v0.23.0 (demo repository data); the rest are the
+# panel's code rendered in a browser preview with scripted data (the README captions say so).
+screenshots:
+  - "https://raw.githubusercontent.com/PedValme/foreman/ce9b01a2904edb2aadefcb4ae7111d5dc97622c8/docs/screenshots/panel-real-app.png"
+  - "https://raw.githubusercontent.com/PedValme/foreman/ce9b01a2904edb2aadefcb4ae7111d5dc97622c8/docs/screenshots/panel-several-changes-light.png"
+  - "https://raw.githubusercontent.com/PedValme/foreman/ce9b01a2904edb2aadefcb4ae7111d5dc97622c8/docs/screenshots/panel-bounced-dark.png"
+  - "https://raw.githubusercontent.com/PedValme/foreman/ce9b01a2904edb2aadefcb4ae7111d5dc97622c8/docs/screenshots/panel-narrow-360-dark.png"
+  - "https://raw.githubusercontent.com/PedValme/foreman/ce9b01a2904edb2aadefcb4ae7111d5dc97622c8/docs/screenshots/panel-waiting-for-owner-light.png"
+platforms: []
+capabilities:
+  provides_tools:
+    - foreman_check
+    - foreman_review
+  provides_hooks:
+    - pre_tool_call
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

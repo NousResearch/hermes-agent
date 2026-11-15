@@ -299,7 +299,12 @@ def selection_error(section: str, selection_name: str, failure: str) -> str:
             f"tools), but {failure}. Run 'hermes tools' to change it.")
 
 
+def fal_key() -> str:
+    """The active profile's FAL_KEY (scope/env, else ``.env`` for CLI paths that run before dotenv
+    loads), stripped; ``""`` when unset. The key a direct FAL client is built with."""
+    return _scoped_credential("FAL_KEY") or _dotenv_value("FAL_KEY")
+
+
 def fal_key_is_configured() -> bool:
-    """True when FAL_KEY is set (scope/env, else ``.env`` for CLI paths that run before dotenv
-    loads) to a non-whitespace value, so tool-side and CLI setup-time checks agree."""
-    return bool(_scoped_credential("FAL_KEY") or _dotenv_value("FAL_KEY"))
+    """True when :func:`fal_key` is non-empty, so tool-side and CLI setup-time checks agree."""
+    return bool(fal_key())

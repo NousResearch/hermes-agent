@@ -574,6 +574,8 @@ class TestTelegramRichMessagesHint:
         assert "lean into it" in stable
         assert "task lists" in stable
         assert "math/formulas" in stable
+        # The base hint's "(no tables)" steer must be explicitly superseded, after it, not left to contradict.
+        assert stable.index("does not apply") > stable.index("(no tables)")
 
     def test_rich_hint_from_top_level_platforms(self):
         """Top-level ``platforms.telegram.extra.rich_messages`` is merged

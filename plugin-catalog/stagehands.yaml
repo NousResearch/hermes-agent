@@ -1,0 +1,17 @@
+name: stagehands
+repo: https://github.com/Peetbog69/hermes-stagehands
+sha: "ec5aacc6fb01588eefb2fb97934fab74b857b5ef"
+title: "Sovereign & Stagehands"
+description: "Typed backstage subagent delegation provider (scout, librarian, code_monkey, adversary, briefer) and deterministic 48k/120k context-sanitation janitor that keep bulky tool gravel out of the frontier parent session. Disclosure — Stagehands adds a system-prompt section and delegate_task guidance that push the model to send multi-step tool work to subagents, which by default run on fixed worker models (deepseek/deepseek-v4-flash, qwen/qwen3.7-flash, deepseek/deepseek-v4.1-flash, anthropic/claude-haiku-5.5) through your own configured provider, so delegated task text and tool output go to those models; it reads the active profile's state.db read-only for `/stagehands stats` and `@stagehands:` telemetry, and only when you run `/stagehands on|off|janitor` does it change `delegation.backend` and `compression.*` in config.yaml through Hermes's atomic config writer, with no separate backup."
+maintainer: Peetbog69
+tier: community
+category: models
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/Peetbog69/hermes-stagehands/blob/ec5aacc6fb01588eefb2fb97934fab74b857b5ef/README.md
+version: "1.0.0"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

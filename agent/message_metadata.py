@@ -156,10 +156,51 @@ def lift_data_use(message: MutableMapping[str, Any]) -> None:
         message[DATA_USE] = list(metadata[DATA_USE])
 
 
+# Reasoning tokens the provider billed for an assistant turn (``usage.*_tokens_details.reasoning_tokens``),
+# kept inside ``display_metadata`` so it rides every writer, branch and compaction copy without a column.
+# Encrypted reasoning (Codex/xAI ``encrypted_content``, Claude ``signature``) cannot be sized from its
+# bytes, but the provider bills its replay as input at almost exactly this count (live A/B: gpt-5.6-sol
+# 2,765 reported -> +2,767 billed; claude-opus-5.5 3,959 -> +3,959 while its summary text was ~1,016).
+REPLAYED_REASONING_TOKENS = "reasoning_tokens"
+# The same count on a per-call request copy: ``build_api_messages`` drops ``display_metadata`` from every
+# outgoing copy, so the request estimate would lose it. ``assemble_api_request`` pops this key from the
+# request once it is measured; it never reaches a provider.
+REQUEST_REASONING_TOKENS = "_replayed_reasoning_tokens"
+
+
+def stamp_reasoning_tokens(message: MutableMapping[str, Any], tokens: Any) -> None:
+    """Record *tokens* as the provider-reported reasoning size of assistant *message*. An unknown or
+    zero count clears any earlier stamp: it priced reasoning the row no longer carries."""
+    if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0:
+        _set_display_metadata_key(message, REPLAYED_REASONING_TOKENS, tokens)
+        return
+    metadata = message.get("display_metadata")
+    if isinstance(metadata, dict) and REPLAYED_REASONING_TOKENS in metadata:
+        message["display_metadata"] = {k: v for k, v in metadata.items() if k != REPLAYED_REASONING_TOKENS}
+
+
+def stamped_reasoning_tokens(message: Any) -> int:
+    """The provider-reported reasoning size stamped on *message* (stored row or request copy), else 0."""
+    if not isinstance(message, Mapping):
+        return 0
+    value = message.get(REQUEST_REASONING_TOKENS)
+    if value is None:
+        metadata = message.get("display_metadata")
+        value = metadata.get(REPLAYED_REASONING_TOKENS) if isinstance(metadata, Mapping) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def drop_request_reasoning_tokens(messages: Any) -> None:
+    """Pop the request-only reasoning count from every request copy in *messages* (in place)."""
+    for message in messages if isinstance(messages, list) else ():
+        if isinstance(message, dict):
+            message.pop(REQUEST_REASONING_TOKENS, None)
+
+
 # Replay carriers the preflight estimate prices at 0, exactly as the compaction tail walk does (opaque signatures,
 # duplicate reasoning copies, ordered sidecars); a mismatch between the two estimates loops compaction.
 _UNPRICED_CORE_FIELDS = frozenset({"_anthropic_content_blocks", "reasoning_details", "extra_content",
-                                   "bedrock_content_blocks", DATA_USE})
+                                   "bedrock_content_blocks", DATA_USE, REQUEST_REASONING_TOKENS})
 
 
 def unpriced_replay_fields() -> frozenset[str]:

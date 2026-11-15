@@ -191,6 +191,9 @@ def test_stop_process_whatif_only_previews_its_own_statement(run, command):
     "Stop-Process -Id {pid} -WhatIf:$true -WhatIf:$false",
     "Stop-Process -Id {pid} -WhatIf -WhatIf:$false",
     "Stop-Process -Id {pid} -WhatIf -Confirm:$false",
+    # `-X: v` binds the next word to X, so here -WhatIf is ErrorVariable's / OutVariable's value.
+    "Stop-Process -Id {pid} -ErrorVariable: -WhatIf", "Stop-Process -Id {pid} -ev: -wi",
+    "Stop-Process -Id {pid} -OutVariable: -WhatIf",
 ])
 def test_stop_process_whatif_exempts_only_a_single_plain_statement(run, command):
     assert run(command.format(pid=PID)) is not None

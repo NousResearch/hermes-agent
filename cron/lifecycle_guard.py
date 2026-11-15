@@ -926,7 +926,10 @@ def _is_stop_process_whatif_preview(command: str) -> bool:
         return False
     for (previous, _), (word, quoted) in pairwise(words):
         previous = previous.lower()
-        after_value_param = previous[:1] == "-" and ":" not in previous and previous not in _STOP_PROCESS_SWITCHES
+        # `-X: v` binds the NEXT word to X even when it looks like a parameter (`-ErrorVariable: -WhatIf`).
+        after_value_param = previous[:1] == "-" and (
+            previous.endswith(":") or ":" not in previous and previous not in _STOP_PROCESS_SWITCHES
+        )
         if not quoted and word.lower() in _WHATIF_SWITCHES and not after_value_param:
             return True
     return False

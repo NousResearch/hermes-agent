@@ -66,15 +66,18 @@ _CREDENTIAL_STORE_RES = (
 )
 # INI ``password = X`` (``.pypirc``, ``~/.aws/credentials``): the anchored config pass only accepts
 # ``key=value`` with no spaces around ``=``, and stops ``password=a b`` at the first space. The value
-# runs to end of line: configparser keeps internal spaces.
+# runs to end of line: configparser keeps internal spaces, and takes ``:`` as a delimiter beside ``=``.
 # NOTE(perf): the key run is possessive and the secret word is checked in the callback
 # (_CFG_SECRET_WORD_RE): ``run{NAMES}run`` backtracked O(n^2) on a long keyword line with no ``=``.
 # ``(?<=api) (?=key)`` keeps the one key spelling with a space, ``api key = X``, in the key run.
-_INI_SPACED_ASSIGN_RE = re.compile(
+_INI_ASSIGN = (
     rf"(^[ \t]*{_LINE_NUMBER_GUTTER}([A-Za-z0-9_.\-]*+(?:(?<=api) (?=key)[A-Za-z0-9_.\-]*+)?+)"
-    r"(?:[ \t]++=[ \t]*+|=[ \t]++|=(?=\S+[ \t]+[^\s#])))(\S(?:[^\r\n]*\S)?)",
-    re.IGNORECASE | re.MULTILINE,
+    r"(?:[ \t]++D[ \t]*+|D[ \t]++|D(?=\S+[ \t]+[^\s#])))(\S(?:[^\r\n]*\S)?)"
 )
+_INI_SPACED_ASSIGN_RE = re.compile(_INI_ASSIGN.replace("D", "="), re.IGNORECASE | re.MULTILINE)
+# ``:`` only below an INI ``[section]`` header: in YAML (config.yaml) ``key: "<placeholder>"`` is the
+# assignment pass's business, and it keeps placeholders readable.
+_INI_COLON_ASSIGN_RE = re.compile(_INI_ASSIGN.replace("D", "[=:]"), re.IGNORECASE | re.MULTILINE)
 _CFG_SECRET_WORD_RE = re.compile(_SECRET_CFG_NAMES, re.IGNORECASE)
 
 
@@ -112,7 +115,8 @@ def redact_credential_store_lines(text: str, mask, should_redact) -> str:
         return f"{key}{mask(value)}"
 
     # INI first: the netrc scan would mask only the first word of ``password =a b``.
-    text = outside_spans(text, aws_credential_process_keys(text), lambda t: _INI_SPACED_ASSIGN_RE.sub(_ini_sub, t))
+    ini_re = _INI_COLON_ASSIGN_RE if _INI_SECTION_RE.search(text) else _INI_SPACED_ASSIGN_RE
+    text = outside_spans(text, aws_credential_process_keys(text), lambda t: ini_re.sub(_ini_sub, t))
     text = _NETRC_LINE_RE.sub(_netrc_sub, text)
     for pattern in _CREDENTIAL_STORE_RES:
         text = pattern.sub(_sub, text)

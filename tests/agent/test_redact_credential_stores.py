@@ -63,6 +63,10 @@ class TestCredentialStoreReads:
         ("~/.pypirc", "[pypi]\npassword = correct horse {pw}\n"),
         ("~/.pypirc", "[pypi]\npassword=correct horse {pw}\n"),
         ("~/.pypirc", "[pypi]\npassword =correct horse {pw}\n"),
+        # configparser also takes ``:`` as the delimiter.
+        ("~/.pypirc", "[pypi]\npassword : correct horse {pw}\n"),
+        ("~/.pypirc", "[pypi]\npassword: correct horse {pw}\n"),
+        ("~/.pypirc", "[pypi]\npassword:correct horse {pw}\n"),
         ("~/.aws/config", "[profile x]\naws_session_token = {pw}\n"),
     ])
     def test_quoted_and_spaced_values_are_masked_whole(self, path, body):

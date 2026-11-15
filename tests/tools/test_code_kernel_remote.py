@@ -93,10 +93,10 @@ class RemoteKernelBase(unittest.TestCase):
         shutdown_all_remote_kernels()
         # No approval session key in tests → owner falls back to task id,
         # which is exactly the isolation-by-key behavior under test.
-        self._ship = patch(
-            "tools.code_execution_tool._ship_file_to_remote",
-        )
+        self._ship = patch("tools.code_execution_tool._remote_write")
         self._ship.start()
+        self._kernel_ship = patch("tools.code_kernel_remote._remote_write")
+        self._kernel_ship.start()
         self._poll = patch(
             "tools.code_execution_tool._rpc_poll_loop",
         )
@@ -104,6 +104,7 @@ class RemoteKernelBase(unittest.TestCase):
 
     def tearDown(self):
         self._ship.stop()
+        self._kernel_ship.stop()
         self._poll.stop()
         shutdown_all_remote_kernels()
 
@@ -348,7 +349,7 @@ class TestDispatchIntegration(unittest.TestCase):
                    return_value=(env, "ssh")), \
              patch("tools.code_kernel_remote.execute_in_remote_kernel",
                    return_value=None), \
-             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool._remote_write"), \
              patch("tools.code_execution_tool.threading.Thread",
                    return_value=MagicMock()):
             result = json.loads(_execute_remote("print()", "t", ["read_file"]))
@@ -363,6 +364,7 @@ class TestSharedHostLockdown(RemoteKernelBase):
 
     def test_spawn_locks_down_dirs_and_hides_token(self):
         self._ship.stop()  # let the real ship commands reach env.commands
+        self._kernel_ship.stop()
         env = ScriptedEnv(_spawn_ok_handlers([_cell(stdout="hi\n")]))
         result = _run(env)
         self.assertEqual(result["status"], "success", result)
@@ -425,6 +427,7 @@ class TestRemotePerCallSpillE2E(RemoteKernelBase):
         on-disk file must carry the same redaction and ANSI strip the inline
         result got; the warning sends the model to read it."""
         self._ship.stop()
+        self._kernel_ship.stop()
         self._poll.stop()
         from tools.environments.local import LocalEnvironment
         from tools.code_execution_tool import _run_remote_per_call

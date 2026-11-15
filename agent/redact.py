@@ -19,7 +19,7 @@ from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENA
 from agent.redact_approval_display import sanitize_command_for_display  # re-exported: callers import it from agent.redact
 from agent.redact_command_segments import _command_segments
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
-from agent.redact_control_split import mask_control_split_tokens
+from agent.redact_control_split import mask_control_split_tokens, mask_prefix_matches
 from agent.redact_db_url import _DSN_PW_PLACEHOLDER_RE, _is_userinfo_placeholder, redact_db_url_query_passwords
 from agent.redact_discord import _redact_discord_tokens
 from agent.redact_headers import (
@@ -886,8 +886,8 @@ def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
 def _compile_prefix_sub_matcher(patterns: list) -> re.Pattern[str]:
     """_PREFIX_RE for the masking pass, also admitting a key glued to an identifier by ``-``/``_``
     (``backup-sk-…``, ``x-ghp_…``), which _PREFIX_RE rejects so ``scikit-learn`` stays whole. One
-    fixed-width lookbehind keeps main's single scan; _mask_prefix_match masks a glued match only
-    when its body is opaque, so ``backup-sk-learn`` stays whole too (#147240)."""
+    fixed-width lookbehind keeps main's single scan; _is_glued_identifier keeps a glued match unless
+    its body is opaque, so ``backup-sk-learn`` stays whole too (#147240)."""
     # Branches grouped by their literal first char (every pattern opens on one, see
     # register_redaction_patterns): admitting ``-``/``_`` before a key makes every separator a
     # candidate, and a flat 60-way alternation per candidate doubled the cost of a ``_ghp_`` flood.
@@ -922,10 +922,6 @@ def _is_glued_identifier(m: "re.Match[str]", token: str | None = None) -> bool:
     # Google OAuth prefixes are distinctive even when base64url separators break every long run.
     return (m.start() > 0 and m.string[m.start() - 1] in "-_"
             and not token.startswith(("GOCSPX-", "ya29.", "1//0")) and not _is_opaque_prefixed_token(token))
-
-
-def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
-    return m.group(0) if _is_glued_identifier(m) else mask(m.group(1))
 
 # mask_secret strips EVERY control char (incl. \n/\t, C1, DEL, zero-width) so a
 # masked secret never emits multiline or invisible bytes into display output.
@@ -1555,7 +1551,7 @@ def redact_credential_shapes(text: str, *, force: bool = False, code_file: bool 
         # runs by first matching on a control-stripped copy, then re-masking the corresponding span in the
         # original (the stripped copy and the original are aligned 1:1 for non-control chars).
         text = mask_control_split_tokens(text, _prefix_sub, _PREFIX_RE, _PREFIX_SUB_RE, _is_glued_identifier)
-        text = _PREFIX_SUB_RE.sub(lambda m: _mask_prefix_match(m, _prefix_sub), text)
+        text = mask_prefix_matches(text, _prefix_sub, _PREFIX_SUB_RE, _is_glued_identifier)
 
     if "." in text:
         _mask = _mask_token_nonreusable if file_read else _mask_token

@@ -67,19 +67,39 @@ def mask_control_split_tokens(text: str, mask_fn, prefix_re: re.Pattern,
     shadow, noise, orig_idx = _strip_shadow(text)
     if len(shadow) == len(text):
         return text
-    matches, first = [], None
-    # A skipped glued run (``my-sk-learn-config.`` + a stripped ``\n``) can run on into the next line
-    # and swallow a key there that ``finditer`` then never yields. ``prefix_re``'s own candidates
-    # never start glued, so a second pass over them restores it, filling only the gaps between
-    # first-pass spans. Rescanning from the next field after each skip is quadratic on many short
-    # glued lines (``my-sk-a.\n`` x 10k: 10 s at 100k chars).
-    passes = [(sub_re, skip), (prefix_re, None)] if sub_re is not None else [(prefix_re, skip)]
-    for n, m, skip_fn in ((n, m, f) for n, (pattern, f) in enumerate(passes) for m in pattern.finditer(shadow)):
+    spans = []
+    # ``sub_re`` finds glued keys (``log-1//0…``), but one skipped glued run (``my-sk-learn-config.``
+    # + a stripped ``\n``) can swallow a key that ``prefix_re``'s own scan finds, so both scans
+    # run and every span either masks is kept: never less than either alone. Overlapping spans
+    # are masked as one.
+    for pattern, skip_fn in ((prefix_re, None), (sub_re, skip)) if sub_re is not None else ((prefix_re, None),):
+        spans.extend(_candidate_spans(text, shadow, noise, orig_idx, pattern, prefix_re, skip_fn))
+    if not spans:
+        return text
+    if sub_re is not None:
+        # A merged span can end inside a plain glued key the contiguous pass would mask
+        # (``1//0<split>…my-sk-learn-config.<key>``), leaving it a tail it no longer recognises:
+        # take such a key into the span. Keys clear of every span are left to that pass.
+        spans.extend((m.start(1), m.end(1), True) for m in _iter_with_swallowed(sub_re, text)
+                     if skip is None or not skip(m, m.group(1)))
+    out, pos = [], 0
+    for start, end, plain in _union(spans):
+        if not plain:
+            out.append(text[pos:start])
+            out.append(mask_fn("".join(c for k, c in enumerate(text[start:end]) if not noise[start + k])))
+            pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _candidate_spans(text, shadow, noise, orig_idx, pattern, prefix_re, skip):
+    """``(start, end, False)`` spans of ``text`` to mask for each ``pattern`` match on ``shadow``."""
+    for m in _iter_with_swallowed(pattern, shadow):
         body, body_start = m.group(1), m.start(1)
         start = orig_idx[body_start]
         end = orig_idx[m.end(1) - 1] + 1
         span = text[start:end]
-        if skip_fn is not None and skip_fn(m, "".join(
+        if skip is not None and skip(m, "".join(
                 c for k, c in enumerate(re.split(r"[\t\n\r]", span, maxsplit=1)[0]) if not noise[start + k])):
             continue
         # A span crossing a LINE boundary whose fragment already self-matches is a complete token
@@ -98,15 +118,38 @@ def mask_control_split_tokens(text: str, mask_fn, prefix_re: re.Pattern,
                 continue
         if (all(noise[start + k] or c in _TOKEN_BODY_CHARS for k, c in enumerate(span.rstrip("=")))
                 and (end >= len(text) or text[end] != "=")):
-            if n == 0:
-                matches.append((start, end, mask_fn(body)))
-                continue
-            if first is None:
-                first = [(s, e) for s, e, _ in matches]  # sorted and disjoint: one finditer
-            i = bisect_left(first, (start, -1))
-            if not ((i < len(first) and first[i][0] < end) or (i and first[i - 1][1] > start)):
-                matches.append((start, end, mask_fn(body)))
-    out = list(text)
-    for start, end, replacement in sorted(matches, reverse=True):
-        out[start:end] = list(replacement)
+            yield start, end, False
+
+
+def _iter_with_swallowed(pattern: re.Pattern, text: str):
+    """``pattern.finditer(text)`` plus each match that starts inside a yielded one and runs past
+    its end: ``1//0…log-sk-abc.<key>`` ends the ``1//0`` match at the ``.``, but the ``sk-`` inside
+    it runs on through ``<key>``, which finditer then never sees. One search from inside each
+    match finds it and stops at the next match, so the scan stays linear."""
+    for m in pattern.finditer(text):
+        yield m
+        inner = pattern.search(text, m.start(1) + 1)
+        if inner is not None and inner.start(1) < m.end(1) < inner.end(1):
+            yield inner
+
+
+def _union(spans) -> list:
+    """Sorted ``(start, end, flag)`` spans with overlaps merged; a merged flag is ``all`` of its parts."""
+    merged = []
+    for start, end, flag in sorted(spans):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]), merged[-1][2] and flag)
+        else:
+            merged.append((start, end, flag))
+    return merged
+
+
+def mask_prefix_matches(text: str, mask_fn, sub_re: re.Pattern, skip) -> str:
+    """Mask every ``sub_re`` match (and swallowed one, see ``_iter_with_swallowed``) that ``skip``
+    keeps out; overlapping matches are masked as one span."""
+    out, pos = [], 0
+    for start, end, _ in _union((m.start(1), m.end(1), True) for m in _iter_with_swallowed(sub_re, text) if not skip(m)):
+        out += [text[pos:start], mask_fn(text[start:end])]
+        pos = end
+    out.append(text[pos:])
     return "".join(out)

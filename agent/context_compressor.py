@@ -331,6 +331,7 @@ MODEL_ONLY_DISPLAY_METADATA_KEY = "model_only"
 _COMPACTION_TAIL_MARKER = "_compaction_tail"
 PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY = "_proactive_prune_rearm_tokens"
 PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY = "_proactive_prune_cold_credit"
+PROACTIVE_PRUNE_MODEL_CONFIG_CLEAR = {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None, PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY: None}
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
 COMPRESSION_CONTINUATION_USER_CONTENT = (
@@ -2287,8 +2288,7 @@ class ContextCompressor(
 
     def _clear_durable_proactive_prune_rearm(self) -> None:
         """Best-effort removal of the persisted prune-runway keys; transcript untouched."""
-        self._durable_write("patch_session_model_config", "proactive prune runway clear",
-                            dict.fromkeys((PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY)))
+        self._durable_write("patch_session_model_config", "proactive prune runway clear", dict(PROACTIVE_PRUNE_MODEL_CONFIG_CLEAR))
 
     def _persist_fallback_compression_streak(self) -> None:
         self._durable_write("set_compression_fallback_streak", "compression fallback streak", self._fallback_compression_streak)

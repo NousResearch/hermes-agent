@@ -43,6 +43,9 @@ def _keep_running_turn(
 class ProactivePruneMixin:
     """``ContextCompressor`` mixin: the deterministic, no-LLM tool-result prune and its commit."""
 
+    # The host skips this prune for a session with no store row (batch runs): their originals live nowhere else.
+    prune_needs_session_store = True
+
     def would_proactively_prune(self, current_tokens: int | None = None) -> bool:
         """Configured on AND above its trigger: the two state-free preconditions
         ``prune_tool_results_only`` checks first, published so the host can tell a withheld prune

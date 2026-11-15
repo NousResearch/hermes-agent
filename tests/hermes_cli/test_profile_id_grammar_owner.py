@@ -60,7 +60,8 @@ def _saved_remote_profile(name: str):
 def _service_profile_name(name: str):
     from hermes_cli.gateway import _profile_name_from_home
 
-    root = Path("/nonexistent-root")
+    # Resolved like production resolves <default>/profiles (Windows adds the drive).
+    root = Path("/nonexistent-root").resolve()
     return _profile_name_from_home(root / "profiles" / name, root)
 
 

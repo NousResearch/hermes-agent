@@ -341,7 +341,8 @@ async def execute(authority, ref, row, policy):
                                                  extra_prompt=data['extra_prompt'], cancel_event=stop)
         except Exception:
             # A run_job that raised before the agent ran (a gate or prompt preparation that raised
-            # instead of returning a failure) left the row as unused as a gate does. Not on cancellation: its thread may still be about to run the agent.
+            # instead of returning a failure) left the row as unused as a gate does. Not on
+            # cancellation: its thread may still be about to run the agent.
             await _close_unopened_session(authority, ref.session_id)
             raise
         await _close_unopened_session(authority, ref.session_id)

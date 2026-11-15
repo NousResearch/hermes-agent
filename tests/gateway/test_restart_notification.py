@@ -1,5 +1,6 @@
 """Tests for /restart notification — the gateway notifies the requester on comeback."""
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -387,3 +388,25 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
     adapter.send.assert_not_awaited()
 
 
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notice_that_cannot_send_stays_inside_the_exit_budget():
+    """A host shutdown takes the network down first: the notice must give up, not outlast launchd's leash (#156127)."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops Home",
+    )
+    runner._stop_requested_by_signal = True
+    runner._launchd_exit_timeout_s = 2.2
+
+    network_back = asyncio.Event()  # never set: the send hangs until it is cancelled
+
+    async def never_returns(*_args, **_kwargs):
+        await network_back.wait()
+
+    adapter.send = AsyncMock(side_effect=never_returns)
+
+    await asyncio.wait_for(runner._notify_active_sessions_of_shutdown(), timeout=2)
+
+    adapter.send.assert_awaited_once()

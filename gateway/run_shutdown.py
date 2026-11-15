@@ -1011,17 +1011,6 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             return None
         return None, _parsed["platform"], _parsed["chat_id"], _parsed.get("thread_id"), _parsed.get("profile")
 
-    async def _send_shutdown_notice(
-        self, adapter, chat_id: str, msg: str, kind: str, platform_str: str, **send_kwargs
-    ) -> bool:
-        """Send one shutdown notice; True when delivered. Failures are debug-logged, never raised."""
-        where = "home channel " if kind == "home channel" else ""
-        fail_fmt = f"Failed to send shutdown notification to {where}%s:%s: %s"
-        if not await self._send_notice_logged(adapter, chat_id, msg, platform_str, fail_fmt, **send_kwargs):
-            return False
-        logger.info("Sent shutdown notification to %s %s:%s", kind, platform_str, chat_id)
-        return True
-
     @staticmethod
     async def _send_notice_logged(
         adapter, chat_id: str, msg: str, platform_str: str, fail_fmt: str, raise_fmt: Optional[str] = None, **kw

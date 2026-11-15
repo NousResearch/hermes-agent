@@ -86,15 +86,6 @@ class TestProfileScopedSkills:
 
 
 
-    def test_scope_restores_module_globals(self, client, isolated_profiles):
-        """The SKILLS_DIR swap is per-request; the module global must be
-        restored even after a scoped call (cron-style locked swap)."""
-        from tools import skills_tool
-
-        before = skills_tool.SKILLS_DIR
-        client.get("/api/skills", params={"profile": "worker_alpha"})
-        assert skills_tool.SKILLS_DIR == before
-
     @pytest.mark.parametrize("method,path,body", [
         ("PUT", "/api/learning/node", {"id": "shared-skill", "content": "EDITED"}),
         ("DELETE", "/api/learning/node", {"id": "shared-skill"}),

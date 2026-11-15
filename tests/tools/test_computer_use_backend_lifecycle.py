@@ -15,6 +15,7 @@ from tools.bot_desktop import browser, lease, runtime as desktop
 from tools.computer_use import tool as cu
 from tools.computer_use_tool import registry
 from tests.bot_desktop_lease import reset_lease
+from tests.computer_use_fakes import NoopBackend, reset_backend
 
 
 @contextmanager
@@ -59,7 +60,7 @@ def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(browser, "executable", lambda: None)
     created = []
 
-    class Backend(cu._NoopBackend):
+    class Backend(NoopBackend):
         def __init__(self, mode):
             super().__init__()
             self.stopped = False
@@ -77,10 +78,10 @@ def runtime(tmp_path, monkeypatch):
             assert not self.stopped, "teardown ran during dispatch"
             return [{"name": str(created.index(self))}]
 
-    cu.reset_backend_for_tests()
+    reset_backend()
     monkeypatch.setattr(cu, "_new_backend", Backend)
     yield homes, created
-    cu.reset_backend_for_tests()
+    reset_backend()
     reset_lease()
 
 

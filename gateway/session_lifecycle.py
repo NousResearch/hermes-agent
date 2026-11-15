@@ -57,8 +57,8 @@ def is_delegate_child_row(row: dict) -> bool:
     ``_reset_from`` is a /new continuation of the chat whose config picked up the marker (#109073), and
     one carrying ``CHAT_ADOPTED_MARKER`` was chosen by the user; both stay routable (same rule as peer
     recovery's ``_DELEGATE_CHILD_EXCLUSION_SQL``)."""
-    from hermes_state_sessions import _parse_model_config
-    config = _parse_model_config(row.get("model_config"))
+    from persistence.conversation.sessions import parse_model_config
+    config = parse_model_config(row.get("model_config"))
     return (bool(config.get("_delegate_from")) and "_reset_from" not in config
             and not config.get(CHAT_ADOPTED_MARKER))
 

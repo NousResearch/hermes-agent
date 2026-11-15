@@ -64,7 +64,9 @@ def test_a_failed_adoption_leaves_the_old_route_in_place(tmp_path, monkeypatch):
     def locked(*_a, **_k):
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr(db, "patch_session_model_config", locked)
+    persistence = store._persistence_for_key(entry.session_key)
+    assert persistence is not None
+    monkeypatch.setattr(persistence.sessions, "patch_model_config", locked)
     with pytest.raises(RuntimeError):
         store.switch_session(entry.session_key, child)
 

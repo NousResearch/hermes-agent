@@ -183,7 +183,7 @@ _RTC_HOOK_JS = r"""
   }
   window.__hermesRtcStreams = new Map();
   window.__hermesPeerConns = new Set();
-  const CHUNK_MS = 10000;
+  const CHUNK_MS = window.__hermesMeetChunkMs || 10000;
   function hookTrack(track) {
     try {
       if (!track || track.kind !== 'audio' || track.__hermesRtc) return;
@@ -630,6 +630,8 @@ class _RtcTranscriber:
         merged = self.cfg.out_dir / "audio" / f"stream_{stream_id:02d}.webm"
         merged.parent.mkdir(parents=True, exist_ok=True)  # standalone/offline use
         fresh_bytes, last_flush = 0, time.time()
+        flush_sec = float(os.environ.get("HERMES_MEET_FLUSH_SEC", "15") or 15)
+        idle_flush_sec = max(flush_sec + 1.0, 25.0 if flush_sec >= 15.0 else flush_sec * 1.5)
         while True:
             item = self._pop(stream_id)
             if item is None:
@@ -638,7 +640,7 @@ class _RtcTranscriber:
                     self._flush_stream(stream_id, merged, label)
                     return
                 # idle: flush whatever accumulated so the transcript stays near-live
-                if fresh_bytes > 0 and time.time() - last_flush > 25:
+                if fresh_bytes > 0 and time.time() - last_flush > idle_flush_sec:
                     self._drain_stream_queue(stream_id)
                     self._flush_stream(stream_id, merged, label)
                     fresh_bytes, last_flush = 0, time.time()
@@ -646,7 +648,7 @@ class _RtcTranscriber:
                 continue
             _, nbytes = item
             fresh_bytes += int(nbytes or 0)
-            if fresh_bytes > 400_000 or time.time() - last_flush > 15:
+            if fresh_bytes > 400_000 or time.time() - last_flush > flush_sec:
                 self._drain_stream_queue(stream_id)
                 self._flush_stream(stream_id, merged, label)
                 fresh_bytes, last_flush = 0, time.time()
@@ -654,9 +656,10 @@ class _RtcTranscriber:
     def _decode_incremental_tail(self, stream_id: int, merged: Path):
         """Decode only the newly appended WebM clusters in O(1) time; fall back to full _decode if needed."""
         done = self._transcribed.get(stream_id, 0)
+        min_tail_samples = int(16000 * (1.2 if os.environ.get("HERMES_MEET_REALTIME_STANDUP") == "1" else 5.0))
         if "_decode" in self.__dict__:
             audio = self._decode(merged)
-            if audio is None or len(audio) <= done + 16000 * 5:
+            if audio is None or len(audio) <= done + min_tail_samples:
                 return None, done
             tail = audio[done:]
             self._transcribed[stream_id] = len(audio)
@@ -685,7 +688,7 @@ class _RtcTranscriber:
                     if new_clusters.startswith(self._CLUSTER_ID):
                         tail = self._decode_bytes(header + new_clusters)
                         if tail is not None:
-                            if len(tail) <= 16000 * 5:
+                            if len(tail) <= min_tail_samples:
                                 return None, done
                             self._decoded_bytes[stream_id] = file_size
                             self._transcribed[stream_id] = done + len(tail)
@@ -694,7 +697,7 @@ class _RtcTranscriber:
             pass
 
         audio = self._decode(merged)
-        if audio is None or len(audio) <= done + 16000 * 5:
+        if audio is None or len(audio) <= done + min_tail_samples:
             return None, done
         tail = audio[done:]
         self._decoded_bytes[stream_id] = file_size
@@ -740,8 +743,13 @@ class _RtcTranscriber:
             return
         try:
             lang_env = os.environ.get("HERMES_MEET_LANGUAGE", "").strip() or None
+            multilang_set = {
+                x.strip().lower()
+                for x in os.environ.get("HERMES_MEET_MULTILANG", "").split(",")
+                if x.strip()
+            }
             if lang_env == "auto" or lang_env is None:
-                lang_env = self._detected_language
+                lang_env = None if multilang_set else self._detected_language
             prompt_env = os.environ.get("HERMES_MEET_INITIAL_PROMPT", "").strip() or self._last_text.get(stream_id) or None
             with self._whisper_lock:
                 segs_iter, _info = model.transcribe(
@@ -755,13 +763,32 @@ class _RtcTranscriber:
                     initial_prompt=prompt_env,
                 )
                 segs = list(segs_iter)
+                det_lang = getattr(_info, "language", None)
+                if multilang_set and det_lang not in multilang_set and det_lang not in ("no", "da"):
+                    fallback_lang = getattr(self, "_stream_lang", {}).get(stream_id, "en")
+                    segs_iter, _info = model.transcribe(
+                        tail,
+                        language=fallback_lang,
+                        vad_filter=True,
+                        vad_parameters=dict(threshold=0.5, min_speech_duration_ms=350, speech_pad_ms=200),
+                        beam_size=1,
+                        temperature=0.0,
+                        condition_on_previous_text=False,
+                        initial_prompt=prompt_env,
+                    )
+                    segs = list(segs_iter)
+                elif multilang_set and det_lang in multilang_set:
+                    if not hasattr(self, "_stream_lang"):
+                        self._stream_lang = {}
+                    self._stream_lang[stream_id] = det_lang
                 if (
-                    self._detected_language is None
+                    not multilang_set
+                    and self._detected_language is None
                     and speech_dur_s >= 3.0
-                    and getattr(_info, "language", None)
+                    and det_lang
                     and float(getattr(_info, "language_probability", 0.0) or 0.0) >= 0.80
                 ):
-                    self._detected_language = _info.language
+                    self._detected_language = det_lang
             base_offset_s = float(done) / 16000.0
             _hallucination_pat = re.compile(
                 r"^(?:mikael wiehe:?|tack till elever och personal.*|undertextning:?.*|textning\.nu.*)$",
@@ -1208,7 +1235,7 @@ def _join(page, cfg: _BotConfig, state: _BotState, timeout: float = 60.0) -> Non
             if btn is not None and _quiet(_click_nowait, btn, 3_000):
                 if label in ("Ask to join", "Be om att få gå med"):
                     state.set(lobby_waiting=True)
-                _quiet(page.wait_for_timeout, 2_000)
+                _quiet(getattr(page, "wait_for_timeout", None), 2_000)
                 for consent_sel in (
                     'div[role="dialog"] button:has-text("Gå med nu")',
                     'div[role="dialog"] button:has-text("Join now")',
@@ -1219,7 +1246,7 @@ def _join(page, cfg: _BotConfig, state: _BotState, timeout: float = 60.0) -> Non
                     cbtn = _visible(page.locator(consent_sel))
                     if cbtn is not None:
                         _quiet(_click_nowait, cbtn, 2_000)
-                        _quiet(page.wait_for_timeout, 1_000)
+                        _quiet(getattr(page, "wait_for_timeout", None), 1_000)
                 return
         if time.time() >= deadline:
             return
@@ -1438,6 +1465,9 @@ def run_bot() -> int:
                 channel="chromium", executable_path=chromium_executable(), **launch_kwargs)
             context = browser.new_context(**context_args)
             if cfg.rtc_audio:
+                chunk_ms = int(os.environ.get("HERMES_MEET_CHUNK_MS", "10000") or 10000)
+                if chunk_ms != 10000:
+                    context.add_init_script(f"window.__hermesMeetChunkMs = {chunk_ms};")
                 context.add_init_script(_RTC_HOOK_JS)
             page = context.new_page()
             if cfg.rtc_audio:

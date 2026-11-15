@@ -34,7 +34,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -130,20 +130,29 @@ def _per_token(rate: Optional[Decimal]) -> float:
     return float(rate) / 1_000_000 if rate is not None else 0.0
 
 
-def evaluate_economics(pricing: Any, prompt_tokens: int, spent_usd: float = 0.0) -> CacheWarmingDecision:
+def evaluate_economics(
+    pricing: Any, cached_tokens: int, uncached_tokens: int = 0, *,
+    spent_usd: float = 0.0, observed_warm_usd: float = 0.0,
+) -> CacheWarmingDecision:
     """Price one refresh against the miss it prevents using a ``PricingEntry``-shaped object
-    (``input/output/cache_read/cache_write_cost_per_million``). ``spent_usd`` is what the run's
-    refreshes were billed so far; once it plus one more refresh would exceed the miss, warming is
-    dearer than letting the entry expire once, so the run stops there."""
+    (``input/output/cache_read/cache_write_cost_per_million``).
+
+    ``cached_tokens`` is the marked prefix the entry holds (read on a refresh, re-written on a
+    miss); ``uncached_tokens`` is the tail past the last marker, billed at the input rate either
+    way, so it adds to the refresh's cost and nothing to the miss it prevents. A refresh is
+    reserved at no less than ``observed_warm_usd`` (what the last one was actually billed), and
+    ``spent_usd`` (what the run's refreshes were billed so far) plus that reservation may not
+    exceed the miss: past it, warming is dearer than letting the entry expire once."""
     read = _per_token(getattr(pricing, "cache_read_cost_per_million", None))
     write = _per_token(getattr(pricing, "cache_write_cost_per_million", None))
     inp = _per_token(getattr(pricing, "input_cost_per_million", None))
     out = _per_token(getattr(pricing, "output_cost_per_million", None))
-    hit_cost = prompt_tokens * read
-    miss_full = prompt_tokens * (write if write > 0 else inp)
-    warm_cost = hit_cost + out
+    tail_cost = uncached_tokens * inp
+    hit_cost = cached_tokens * read
+    miss_full = cached_tokens * (write if write > 0 else inp)
+    warm_cost = max(hit_cost + tail_cost + out, observed_warm_usd)
     miss_cost = max(0.0, miss_full - hit_cost)
-    economics_available = prompt_tokens > 0 and (hit_cost > 0 or miss_full > 0)
+    economics_available = cached_tokens > 0 and (hit_cost > 0 or miss_full > 0)
     expected = miss_cost - warm_cost
     within_miss = spent_usd + warm_cost <= miss_cost
     action = "warm" if economics_available and within_miss and expected >= MINIMUM_EXPECTED_SAVINGS_USD else "stop"
@@ -158,7 +167,8 @@ class _Run:
     api_kwargs: dict[str, Any]
     client: Any
     model: str
-    prompt_tokens: int
+    cached_tokens: int
+    uncached_tokens: int
     ttl_s: float
     delay_s: float
     is_current: Callable[[], bool]
@@ -171,6 +181,10 @@ class _Run:
     refreshing: bool = False
     warm_count: int = 0
     spent_usd: float = 0.0
+    last_warm_usd: float = 0.0
+    #: The session and billing route that sent the request: a refresh still in flight when
+    #: compression rotates the session is booked where it was sent, never on the new session.
+    billing: dict[str, Any] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -232,14 +246,14 @@ class PromptCacheWarmer:
         delay_s = cache_warming_delay_s(ttl_s)
         if delay_s is None:
             return self._stop("cache lifetime unavailable")
-        prompt_tokens = self._prompt_tokens(response)
-        if prompt_tokens <= 0:
+        cached_tokens, uncached_tokens = self._prompt_split(response)
+        if cached_tokens + uncached_tokens <= 0:
             return self._stop("prompt size unavailable")
         client = getattr(agent, "_anthropic_client" if api_mode == "anthropic_messages" else "client", None)
         if client is None:
             return self._stop("no provider client")
         # Economics before the deep copy: an unpriced/cheap model never pays for the copy either.
-        decision = evaluate_economics(self._pricing(), prompt_tokens)
+        decision = evaluate_economics(self._pricing(), cached_tokens, uncached_tokens)
         self._last_decision = decision
         if decision.action != "warm":
             return self._stop(decision.stop_reason)
@@ -257,8 +271,9 @@ class PromptCacheWarmer:
         # tool-result eviction); the replay must send exactly what wrote the entry.
         run = _Run(
             api_kwargs=self._replay_kwargs(api_kwargs), client=client, model=model,
-            prompt_tokens=prompt_tokens, ttl_s=ttl_s, delay_s=delay_s, is_current=_is_current,
-            started_at=time.time(), api_mode=api_mode,
+            cached_tokens=cached_tokens, uncached_tokens=uncached_tokens, ttl_s=ttl_s,
+            delay_s=delay_s, is_current=_is_current, started_at=time.time(), api_mode=api_mode,
+            billing=self._billing_snapshot(),
         )
         # The entry's lifetime runs from when the provider served the request, not from when
         # the (possibly long) response finished: the first refresh is due that much sooner.
@@ -399,46 +414,35 @@ class PromptCacheWarmer:
         compressor or usage anchors: a one-token replay is not a conversation turn) and into the
         run's spend. Returns why warming must stop when the refresh did not prove a cache hit at
         a known price, ``None`` when it did."""
-        agent = self.agent
+        agent, b = self.agent, run.billing
         usage = getattr(message, "usage", None)
         if not usage:
             return "cache refresh returned no usage"
         try:
             from agent.usage_pricing import estimate_usage_cost, normalize_usage
 
-            canonical = normalize_usage(usage, provider=agent.provider, api_mode=agent.api_mode)
+            canonical = normalize_usage(usage, provider=b["provider"], api_mode=b["api_mode"])
             cost = estimate_usage_cost(
-                agent.model, canonical, provider=agent.provider, base_url=agent.base_url,
-                api_key=getattr(agent, "api_key", ""),
+                b["model"], canonical, provider=b["provider"], base_url=b["base_url"], api_key=b["api_key"],
             )
-            # Not session_api_calls: that counter is the conversation's request sequence (and the
-            # warmer's own currency token); a replay is accounted, not a turn.
-            agent.session_cache_warm_calls = getattr(agent, "session_cache_warm_calls", 0) + 1
-            agent.session_prompt_tokens += canonical.prompt_tokens
-            agent.session_completion_tokens += canonical.output_tokens
-            agent.session_total_tokens += canonical.total_tokens
-            agent.session_input_tokens += canonical.input_tokens
-            agent.session_output_tokens += canonical.output_tokens
-            agent.session_cache_read_tokens += canonical.cache_read_tokens
-            agent.session_cache_write_tokens += canonical.cache_write_tokens
             amount = float(cost.amount_usd) if cost.amount_usd is not None else None
             if amount is not None:
-                agent.session_estimated_cost_usd += amount
                 run.spent_usd += amount
+                run.last_warm_usd = amount
+            if getattr(agent, "session_id", None) == b["session_id"]:
+                self._add_to_session_totals(canonical, amount)
             db = getattr(agent, "_session_db", None)
-            if db is not None and getattr(agent, "session_id", None):
-                from agent.turn_usage import _agent_session_source
-
+            if db is not None and b["session_id"]:
                 db.queue_token_counts(
-                    agent.session_id, source=_agent_session_source(agent),
+                    b["session_id"], source=b["source"],
                     input_tokens=canonical.input_tokens, output_tokens=canonical.output_tokens,
                     cache_read_tokens=canonical.cache_read_tokens,
                     cache_write_tokens=canonical.cache_write_tokens,
                     reasoning_tokens=canonical.reasoning_tokens, estimated_cost_usd=amount,
                     cost_status=cost.status, cost_source=cost.source,
-                    billing_provider=agent.provider, billing_base_url=agent.base_url,
+                    billing_provider=b["provider"], billing_base_url=b["base_url"],
                     billing_mode="subscription_included" if cost.status == "included" else None,
-                    model=agent.model, api_call_count=1, task="cache_warm",
+                    model=b["model"], api_call_count=1, task="cache_warm",
                 )
             logger.info(
                 "%sprompt cache refresh sent (#%d): cache_read=%d write=%d cost=%s "
@@ -457,8 +461,26 @@ class PromptCacheWarmer:
             return "cache refresh cost unavailable"
         return None
 
+    def _add_to_session_totals(self, canonical: Any, amount: Optional[float]) -> None:
+        # Not session_api_calls: that counter is the conversation's request sequence (and the
+        # warmer's own currency token); a replay is accounted, not a turn.
+        agent = self.agent
+        agent.session_cache_warm_calls = getattr(agent, "session_cache_warm_calls", 0) + 1
+        agent.session_prompt_tokens += canonical.prompt_tokens
+        agent.session_completion_tokens += canonical.output_tokens
+        agent.session_total_tokens += canonical.total_tokens
+        agent.session_input_tokens += canonical.input_tokens
+        agent.session_output_tokens += canonical.output_tokens
+        agent.session_cache_read_tokens += canonical.cache_read_tokens
+        agent.session_cache_write_tokens += canonical.cache_write_tokens
+        if amount is not None:
+            agent.session_estimated_cost_usd += amount
+
     def _evaluate(self, run: _Run) -> CacheWarmingDecision:
-        return evaluate_economics(self._pricing(), run.prompt_tokens, run.spent_usd)
+        return evaluate_economics(
+            self._pricing(), run.cached_tokens, run.uncached_tokens,
+            spent_usd=run.spent_usd, observed_warm_usd=run.last_warm_usd,
+        )
 
     def _pricing(self) -> Any:
         agent = self.agent
@@ -473,18 +495,30 @@ class PromptCacheWarmer:
             logger.debug("prompt cache warm pricing unavailable", exc_info=True)
             return None
 
-    def _prompt_tokens(self, response: Any) -> int:
+    def _prompt_split(self, response: Any) -> tuple[int, int]:
+        """``(cached prefix, uncached tail)`` tokens of the request that produced ``response``:
+        the prefix is what it read from or wrote to the cache, the tail its plain input."""
         usage = getattr(response, "usage", None)
         if not usage:
-            return 0
+            return 0, 0
         try:
             from agent.usage_pricing import normalize_usage
 
-            return int(normalize_usage(usage, provider=self.agent.provider,
-                                       api_mode=self.agent.api_mode).prompt_tokens or 0)
+            u = normalize_usage(usage, provider=self.agent.provider, api_mode=self.agent.api_mode)
+            return int(u.cache_read_tokens + u.cache_write_tokens), int(u.input_tokens)
         except Exception:  # health: allow BLE001 -- unknown size means never warm; logged
             logger.debug("prompt cache warm size unavailable", exc_info=True)
-            return 0
+            return 0, 0
+
+    def _billing_snapshot(self) -> dict[str, Any]:
+        agent = self.agent
+        from agent.turn_usage import _agent_session_source
+
+        return {
+            "session_id": getattr(agent, "session_id", None), "source": _agent_session_source(agent),
+            "provider": agent.provider, "base_url": agent.base_url, "model": agent.model,
+            "api_mode": agent.api_mode, "api_key": getattr(agent, "api_key", ""),
+        }
 
     @staticmethod
     def _replay_kwargs(api_kwargs: dict[str, Any]) -> dict[str, Any]:

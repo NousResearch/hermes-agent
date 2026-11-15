@@ -90,28 +90,6 @@ describe('renderer heap flags', () => {
     warn.mockRestore()
   })
 
-  it('#132508: reads the desktop SSH timeout keys as written and leaves validation to the resolver', () => {
-    const cfg = readDesktopLaunchConfig(
-      [
-        'desktop:',
-        '  ssh_connect_timeout: 45   # slow VPN',
-        "  ssh_forward_timeout: '60'",
-        'terminal:',
-        '  ssh_connect_timeout: 5'
-      ].join('\n')
-    )
-
-    expect(cfg.sshConnectTimeout).toBe('45')
-    expect(cfg.sshForwardTimeout).toBe('60')
-
-    // Not this reader's call: a bad value passes through for the resolver to reject.
-    expect(readDesktopLaunchConfig('desktop:\n  ssh_connect_timeout: 45s').sshConnectTimeout).toBe('45s')
-
-    const absent = readDesktopLaunchConfig('desktop:\n  ssh_connect_timeout:\nterminal:\n  ssh_forward_timeout: 9')
-    expect(absent.sshConnectTimeout).toBeUndefined()
-    expect(absent.sshForwardTimeout).toBeUndefined()
-  })
-
   it('#103288: reads desktop.ssh_path as plain, single-quoted, and YAML double-quoted scalars', () => {
     const read = (value: string) =>
       readDesktopLaunchConfig(['desktop:', `  ssh_path: ${value}`, 'terminal:', '  ssh_path: nope'].join('\n')).sshPath

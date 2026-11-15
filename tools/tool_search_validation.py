@@ -147,10 +147,22 @@ def _payload_snippet(text: Any, limit: int = 200) -> str:
     already gates every pattern behind a cheap substring check, so clean payloads pass
     through byte-identical."""
     from agent.redact import redact_sensitive_text
-    snippet = text if isinstance(text, str) else repr(text)
-    if len(snippet) > limit:
-        snippet = snippet[:limit] + "…"
-    return redact_sensitive_text(snippet)
+
+    # Redact the complete payload before selecting a window: cutting first can
+    # separate a credential from the key that tells the redactor to mask it.
+    snippet = redact_sensitive_text(text if isinstance(text, str) else repr(text))
+    if len(snippet) <= limit:
+        return snippet
+    try:
+        json.loads(snippet)
+    except json.JSONDecodeError as exc:
+        # The bad byte is often near the tail of a long tool argument.
+        start = max(0, min(exc.pos - limit // 2, len(snippet) - limit))
+    else:
+        start = 0
+    return ("…" if start else "") + snippet[start:start + limit] + (
+        "…" if start + limit < len(snippet) else ""
+    )
 
 
 def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, Any]], Optional[str]]:

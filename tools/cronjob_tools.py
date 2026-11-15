@@ -61,6 +61,7 @@ from cron.job_args import (
     _validate_context_from_refs,
     _validate_cron_base_url,
     _validate_cron_script_path)
+from tools.delegate_tool_config import _get_max_async_children
 from tools.registry import registry, tool_error
 
 
@@ -624,7 +625,6 @@ def _try_dispatch_background_run(
         return result
 
     try:
-        from tools.delegate_tool import _get_max_async_children
         max_async = _get_max_async_children()
     except Exception:
         max_async = 3

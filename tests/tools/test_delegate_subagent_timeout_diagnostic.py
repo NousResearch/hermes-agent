@@ -142,7 +142,7 @@ class TestRunSingleChildTimeoutDump:
         """Run _run_single_child with a tiny timeout to force the timeout branch."""
         from tools import delegate_tool
         # Force a 0.3s timeout so the test is fast
-        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.3)
+        monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: 0.3)
 
         parent = MagicMock()
         parent._touch_activity = MagicMock()
@@ -178,7 +178,7 @@ class TestRunSingleChildTimeoutDump:
         """The metadata fields are timeout-specific — a child that raises
         must report them as None so consumers can key on presence."""
         from tools import delegate_tool
-        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 30.0)
+        monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: 30.0)
 
         child = _StubChild(api_call_count=1, hang_seconds=0.0)
 

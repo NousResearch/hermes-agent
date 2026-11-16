@@ -781,7 +781,7 @@ def run_import(args) -> Optional[int]:
         from gateway.runtime_ownership import OwnershipConflict
         from hermes_cli.backup_keep_host import KeepHostRefused, keep_host_import
         try:
-            with keep_host_import(args, members, prefix, hermes_root) as keep_host:
+            with keep_host_import(args, zf, members, prefix, hermes_root) as keep_host:
                 restored, restored_external, errors, skipped_runtime, db_shrunk = _import_members(
                     zf, members, prefix, hermes_root, file_count, keep_host)
         except (OwnershipConflict, KeepHostRefused) as exc:

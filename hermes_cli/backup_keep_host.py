@@ -24,7 +24,8 @@ included), under the same ``exclusive_maintenance`` reservation, so nothing here
 * Replace, not merge: in the root home and in every profile the archive carries, a file the archive
   lacks is removed, and the root's ``config.yaml``/``.env``/``auth.json`` keep only their host-owned
   part. Kept: databases (restored page by page, never unlinked under a live reader), logs and the
-  host's runtime records. A profile only the destination has is left exactly as it is.
+  host's runtime records. A profile only the destination has is left exactly as it is, except on
+  an undo: the undo point lists the profiles the agent had, and one the transfer brought is removed.
 
 The undo point is a full ``hermes backup`` of the destination (memory-provider files outside the
 home included), taken under the reservation after the gateway drained, in
@@ -91,6 +92,8 @@ _DB_SUFFIXES = (".db", ".db-wal", ".db-shm", ".db-journal")
 _UNDO_PREFIX = "pre-transfer-"
 _UNDO_KEEP = 3
 _UNFINISHED_MARKER = ".transfer-unfinished"
+# In an undo point: the profiles the agent had, so the undo removes the ones the transfer brought.
+_PROFILES_MANIFEST = ".keep-host-profiles.json"
 # The line the dashboard's action status reads the undo point from.
 UNDO_POINT_LINE = "Undo point: "
 _EXTERNAL = "_external/"
@@ -232,10 +235,21 @@ def create_undo_point(root: Path, external_members: tuple[str, ...] = ()) -> Opt
             return None
         if inside and target.is_file():
             entries.setdefault(member, target)
+    from utils import atomic_write_text
     backups = root / "backups"
     backups.mkdir(parents=True, exist_ok=True, mode=0o700)
+    manifest = backups / _PROFILES_MANIFEST
+    atomic_write_text(manifest, json.dumps(sorted(_profile_names(root))), mode=0o600)
+    entries[_PROFILES_MANIFEST] = manifest
     out = backups / f"{_UNDO_PREFIX}{datetime.now():%Y-%m-%d-%H%M%S}-{secrets.token_hex(3)}.zip"
     return _write_full_zip_backup(out, root, [(path, Path(arc)) for arc, path in entries.items()])
+
+
+def _profile_names(root: Path) -> set[str]:
+    from hermes_constants import PROFILE_ID_RE, named_profile_has_identity
+    profiles = root / "profiles"
+    return {p.name for p in profiles.iterdir() if PROFILE_ID_RE.match(p.name) and not p.is_symlink()
+            and p.is_dir() and named_profile_has_identity(p)} if profiles.is_dir() else set()
 
 
 def _merge_auth_store(target: Path, archive: dict[str, Any], publish_archive: Optional[Callable[[Path], None]]) -> None:
@@ -259,7 +273,8 @@ class KeepHostImport:
     plus :meth:`begin` (before the first write) and :meth:`finish` (after the last), all under the
     import's reservation."""
 
-    def __init__(self, root: Path, members: list[str], prefix: str, source: Path):
+    def __init__(self, root: Path, members: list[str], prefix: str, source: Path,
+                 had_profiles: Optional[set[str]] = None):
         self.root, self.source = root, source.resolve()
         self.rels: set[str] = set()
         self.profiles: set[str] = set()
@@ -273,8 +288,10 @@ class KeepHostImport:
             except ValueError:
                 continue  # reported by the import as a blocked traversal
             self.rels.add("/".join(parts))
-            if len(parts) >= 3 and parts[0] == "profiles":
+            if len(parts) >= 3 and parts[0] == "profiles" and not self.skips(tuple(parts)):
                 self.profiles.add(parts[1])
+        # Restoring an undo point: a profile the agent did not have then came with the transfer.
+        self.created = (_profile_names(root) - had_profiles - self.profiles) if had_profiles is not None else set()
         # Where HOME is the Hermes home (the Cloud image), external files land inside it.
         home, base = Path.home().resolve(), root.resolve()
         for member in self.external:
@@ -283,8 +300,8 @@ class KeepHostImport:
                 self.rels.add(target.relative_to(base).as_posix())
 
     def homes(self) -> list[Path]:
-        """Every profile home the archive writes into, reserved with the root for the whole import."""
-        return [self.root / "profiles" / name for name in sorted(self.profiles)]
+        """Every profile home the import writes into or removes, reserved for the whole import."""
+        return [self.root / "profiles" / name for name in sorted(self.profiles | self.created)]
 
     def around(self, restore: Callable[..., tuple]) -> Callable[..., tuple]:
         """``restore`` with this policy: the undo point first, the replace after the last write."""
@@ -299,7 +316,7 @@ class KeepHostImport:
         """Every folder the archive writes into must be a real folder of this home: through a link the
         restore would land elsewhere, and a backup never carries what is behind one."""
         from hermes_cli.backup import _is_link_path
-        folders = {Path(rel).parent for rel in self.rels}
+        folders = {Path(rel).parent for rel in self.rels} | {Path("profiles", name, "x") for name in self.created}
         for folder in {Path(*f.parts[:n]) for f in folders for n in range(1, len(f.parts) + 1)}:
             if _is_link_path(self.root / folder):
                 raise KeepHostRefused(f"{folder.as_posix()} is a linked folder; nothing was restored. "
@@ -339,6 +356,7 @@ class KeepHostImport:
         """Members the destination keeps its own copy of."""
         home = _home_parts(parts)
         return (parts[-2:] == _SHARED_NOUS_STORE or (len(parts) == 1 and parts[0] in _HOST_ROOT_FILES)
+                or parts == (_PROFILES_MANIFEST,)
                 or (len(parts) > 1 and parts[0] in _HOST_ROOT_DIRS)
                 or (parts[-1].endswith(".lock") and home[0] not in _CONTENT_TREES))
 
@@ -371,8 +389,10 @@ class KeepHostImport:
             else:
                 if removed:
                     print(f"  Removed {removed} file(s) the backup does not have.")
+        if not errors and not problems and self.created:
+            problems = self._remove_created_profiles()
         left = sorted(p.name for p in (self.root / "profiles").glob("*")
-                      if p.is_dir() and p.name not in self.profiles)
+                      if p.is_dir() and p.name not in self.profiles | self.created)
         if left:
             print(f"  Left as they are (not in this backup): profile(s) {', '.join(left)}")
         if errors or problems:
@@ -382,6 +402,18 @@ class KeepHostImport:
         self._marker().unlink(missing_ok=True)
         _prune_prefixed_zips(self.root / "backups", _UNDO_PREFIX, _UNDO_KEEP, "pre-transfer backup")
         return []
+
+    def _remove_created_profiles(self) -> list[str]:
+        """Profiles the undone transfer brought: removed whole (under the reservation, never through a link)."""
+        from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry
+        problems = []
+        for name in sorted(self.created):
+            try:
+                _rmtree_with_retry(self.root / "profiles" / name, _rmtree_make_writable)
+                print(f"  Removed profile {name} (the transfer brought it).")
+            except OSError as exc:
+                problems.append(f"  profiles/{name}: {exc}")
+        return problems
 
     def _clear_absent_host_files(self) -> list[str]:
         """A host file the archive does not carry keeps only its host-owned part."""
@@ -520,14 +552,24 @@ def gateway_paused(home: Path):
             print(f"Warning: the gateway ({slot}) did not start again: {exc}\n  Start it with: hermes gateway start")
 
 
+def _had_profiles(zf: zipfile.ZipFile, prefix: str) -> Optional[set[str]]:
+    try:
+        names = json.loads(zf.read(f"{prefix}{_PROFILES_MANIFEST}").decode("utf-8-sig"))
+    except KeyError:
+        return None
+    except ValueError as exc:
+        raise KeepHostRefused(f"the undo point's profile list is unreadable ({exc}); nothing was restored") from exc
+    return {str(n) for n in names} if isinstance(names, list) else None
+
+
 @contextmanager
-def keep_host_import(args, members: list[str], prefix: str, root: Path):
+def keep_host_import(args, zf: zipfile.ZipFile, members: list[str], prefix: str, root: Path):
     """The :class:`KeepHostImport` ``run_import`` restores with (None without ``--keep-host``), the
     profile's gateway drained around it. :class:`KeepHostRefused` means nothing was written."""
     if not getattr(args, "keep_host", False):
         yield None
         return
-    policy = KeepHostImport(root, members, prefix, Path(args.zipfile).expanduser())
+    policy = KeepHostImport(root, members, prefix, Path(args.zipfile).expanduser(), _had_profiles(zf, prefix))
     policy.refuse_linked_folders()
     print("\nKeeping what this host set up (--keep-host):")
     print("\n".join(kept_summary(root)))

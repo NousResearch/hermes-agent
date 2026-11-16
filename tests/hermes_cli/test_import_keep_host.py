@@ -234,6 +234,7 @@ def test_transfer_then_undo_returns_the_agent_byte_for_byte(homes, monkeypatch):
     after = _tree(dst)
     after.pop("state.db"), before.pop("state.db")  # restored page by page: compared by content
     assert after == before
+    assert not (dst / "profiles/writer").exists()  # the profile the transfer brought is gone again
     assert (dst / "config.yaml").read_text() == DST_CONFIG
     assert _ids(dst / "state.db") == ["cloud-chat"]
 

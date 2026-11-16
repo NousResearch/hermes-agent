@@ -83,9 +83,6 @@ _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 _DOTENV_PUBLISHED: dict[str, tuple[str | None, str, int]] = {}
 _DOTENV_PASSES = itertools.count()
 _DOTENV_LOCK = threading.RLock()
-# The pass of a secret store's credential published before the profile layer (never a load's pass): the
-# layer resolves ``${VAR}`` as if it were not published yet, as the local store's loader does.
-_BOOTSTRAP_PASS = -1
 
 # Per-process credentials a parent mints and injects into the child's environment (the Desktop shell /
 # a link-style launcher spawns `hermes dashboard` with a fresh HERMES_DASHBOARD_SESSION_TOKEN and keeps
@@ -410,40 +407,32 @@ class StoredValue(str):
 
 def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
     """``(name, raw value)`` assignments of one dotenv file, uninterpolated, in file order. For a
-    profile ``.env`` a secret store serves: its view, and for a store of literal values the store's
-    values as :class:`StoredValue` (a later layer may still expand them like any value), then the
-    file's own kept-local lines. The import froze each kept line that referenced an imported name to
-    its value then, so only a kept line added after the import sees the store's names."""
+    profile ``.env`` a store of literal values serves: the store's values as :class:`StoredValue`,
+    then the file's own kept-local lines (literal too: the store refuses to boot otherwise)."""
     from hermes_secret_routing import routed_profile_env, routed_provider, routed_store_env, stays_local
     stored = routed_store_env(path)
-    if stored is None:
-        routed = routed_profile_env(path)
-        return _parse_local_dotenv_file(path) if routed is None else list(routed.items())
-    provider = routed_provider()
-    try:
-        local = [(name, value) for name, value in _parse_local_dotenv_file(path) if stays_local(provider, name)]
-    except FileNotFoundError:
-        local = []
-    return [*((name, StoredValue(value)) for name, value in stored.items()), *local]
+    if stored is not None:
+        provider = routed_provider()
+        try:
+            local = [(k, v) for k, v in parse_dotenv_bytes(path.read_bytes()) if stays_local(provider, k)]
+        except FileNotFoundError:
+            local = []
+        return [*((name, StoredValue(value)) for name, value in stored.items()), *local]
+    routed = routed_profile_env(path)
+    if routed is not None:
+        return list(routed.items())
+    return parse_dotenv_bytes(path.read_bytes())
 
 
-def _parse_local_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
-    """The file's own ``(name, raw value)`` assignments, in file order."""
-    return parse_dotenv_text(decode_dotenv_bytes(path.read_bytes()))
-
-
-def decode_dotenv_bytes(raw: bytes) -> str:
-    """A dotenv file's bytes as the loader decodes them."""
+def parse_dotenv_bytes(raw: bytes) -> list[tuple[str, str | None]]:
+    """``(name, raw value)`` assignments of a dotenv file's *raw* bytes, as the loader decodes them."""
     try:
         # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
         # first key name and silently drop it from os.environ under its canonical name.
-        return raw.decode("utf-8-sig")
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        return raw.removeprefix(codecs.BOM_UTF8).decode("latin-1")
-
-
-def parse_dotenv_text(text: str) -> list[tuple[str, str | None]]:
-    """``(name, raw value)`` assignments of decoded dotenv *text*, uninterpolated, in file order."""
+        raw = raw.removeprefix(codecs.BOM_UTF8)
+        text = raw.decode("latin-1")
     # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
     # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.
     from dotenv.main import DotEnv
@@ -470,17 +459,9 @@ def _resolve_dotenv_assignments(
     """Expand ``${VAR}`` / ``${VAR:-default}`` like ``dotenv.main.resolve_variables``, minus the live
     ``os.environ``: a line sees *lookup_env* and the file's earlier lines (earlier lines win under
     *override*, the environment otherwise)."""
-    return dict(resolve_dotenv_lines(assignments, lookup_env, override=override))
-
-
-def resolve_dotenv_lines(
-    assignments: list[tuple[str, str | None]], lookup_env: dict[str, str], *, override: bool,
-) -> list[tuple[str, str | None]]:
-    """:func:`_resolve_dotenv_assignments` per assignment: each line's own value, in file order."""
     from dotenv.variables import parse_variables
 
     resolved: dict[str, str | None] = {}
-    lines: list[tuple[str, str | None]] = []
     for name, value in assignments:
         if isinstance(value, StoredValue):
             value = str(value)  # a secret store's value is literal
@@ -488,8 +469,7 @@ def resolve_dotenv_lines(
             lookup = {**lookup_env, **resolved} if override else {**resolved, **lookup_env}
             value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
         resolved[name] = value
-        lines.append((name, value))
-    return lines
+    return resolved
 
 
 def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -672,17 +652,14 @@ def selected_config_backend_name(home: Path | None = None) -> str:
     return (_bootstrap_env(home).get(BACKEND_ENV) or "").strip().lower() or "file"
 
 
-def apply_config_bootstrap_env(backend_names, home: Path | None = None, project_env: Path | None = None,
-                               *, store_credentials: bool = True) -> None:
+def apply_config_bootstrap_env(backend_names, home: Path | None = None, project_env: Path | None = None) -> None:
     """Publish ``backend_names(kind)`` (the selected backend's deployment and credential, D26/D32) from the
     launch home's ``.env`` and the managed ``.env``, with the values ``load_hermes_dotenv`` gives
     them. Called before the first config read of a process, which can come before
     ``load_hermes_dotenv`` (``hermes_cli.config`` reads config at import time): the backend is
     selected and authenticated from the same deployment either way. A file deployment gets only its
     selector (the file backend needs nothing else before boot); values the process env holds and
-    no file defines are left alone; ``load_hermes_dotenv`` later publishes the same values. Without
-    *store_credentials* the secret store contributes its selector only: its other bootstrap names
-    are kept-local lines the profile layer already published once."""
+    no file defines are left alone; ``load_hermes_dotenv`` later publishes the same values."""
     from agent.safe_worker_policy import worker_config_snapshot
     from hermes_cli.config_backend import BACKEND_ENV
 
@@ -697,30 +674,66 @@ def apply_config_bootstrap_env(backend_names, home: Path | None = None, project_
     from hermes_secret_port import SECRET_STORE_ENV
     from hermes_secret_routing import bootstrap_env_names_for
 
-    store_names = bootstrap_env_names_for(env.get(SECRET_STORE_ENV)) - {SECRET_STORE_ENV} if store_credentials else ()
-    names |= {SECRET_STORE_ENV, *store_names}
-    with _DOTENV_LOCK:
-        for name in names:
-            value = env.get(name)
-            if value is not None and os.environ.get(name) != value:
-                if name in store_names:  # peeled by every load's lookup (``_dotenv_lookup_env``)
-                    record = _DOTENV_PUBLISHED.get(name)
-                    ours = record is not None and os.environ.get(name) == record[1]
-                    _DOTENV_PUBLISHED[name] = (record[0] if ours else os.environ.get(name), value, _BOOTSTRAP_PASS)
-                os.environ[name] = value
+    names |= bootstrap_env_names_for(env.get(SECRET_STORE_ENV))
+    for name in names:
+        value = env.get(name)
+        if value is not None and os.environ.get(name) != value:
+            os.environ[name] = value
 
 
 def _sanitize_env_file_if_needed(path: Path) -> None:
-    """Pre-sanitize a .env file before python-dotenv reads it (:func:`sanitized_env_lines`)."""
+    """Pre-sanitize a .env file before python-dotenv reads it. Sniffs a leading BOM *before* any text
+    decode: UTF-16 (Notepad "Unicode") is rewritten as clean UTF-8; UTF-32 is refused (left untouched) so
+    we never fall through to the errors=replace corruption path."""
     if not path.exists():
         return
+    try:
+        from hermes_cli.config import _sanitize_env_lines
+    except ImportError:
+        return  # early bootstrap — config module not available yet
+
     try:
         raw = path.read_bytes()
     except Exception:
         return
+
+    # ORDER MATTERS: BOM_UTF32_LE (FF FE 00 00) startswith BOM_UTF16_LE (FF FE); UTF-16 first would mangle it.
+    force_utf8_rewrite = False
+    if raw.startswith(codecs.BOM_UTF32_LE) or raw.startswith(codecs.BOM_UTF32_BE):
+        # Lazy import keeps the module import block identical to #65124's codecs/io additions so the two PRs
+        # auto-merge either order.
+        path_key = str(path.resolve())
+        if path_key not in _WARNED_UTF32_PATHS:
+            _WARNED_UTF32_PATHS.add(path_key)
+            logger.warning("Skipping .env sanitize for %s: UTF-32 BOM detected; "
+                           "leaving file untouched to avoid corruption", path)
+        return
+    if raw.startswith(codecs.BOM_UTF16_LE) or raw.startswith(codecs.BOM_UTF16_BE):
+        # "utf-16" uses the BOM for endianness and strips it; newline=None matches open()'s universal
+        # newlines (not splitlines()'s extra boundaries like U+2028) so sanitize sees the same lines.
+        try:
+            with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-16", newline=None) as f:
+                original = f.readlines()
+        except UnicodeDecodeError:
+            return
+        force_utf8_rewrite = True  # always rewrite UTF-16 as UTF-8 so the dotenv load sees a canonical file
+    else:
+        # utf-8-sig strips a UTF-8 BOM; errors=replace so embedded NULs can be stripped below.
+        try:
+            with open(path, encoding="utf-8-sig", errors="replace") as f:
+                original = f.readlines()
+        except Exception:
+            return
+        # errors=replace turns undecodable leading bytes into U+FFFD; persisting would glue them onto
+        # the first key name permanently — leave the file untouched instead.
+        if original and original[0].startswith("\ufffd"):
+            return
+
     try:
-        sanitized = sanitized_env_lines(raw, path)
-        if sanitized is not None:
+        # Strip NULs (os.environ raises ValueError on them); also repairs BOM-less UTF-16 (NUL-padded ASCII).
+        stripped = [line.replace("\x00", "") for line in original]
+        sanitized = _sanitize_env_lines(stripped)
+        if sanitized != original or force_utf8_rewrite:
             fd, tmp = mkstemp_beside(path, suffix=".tmp", prefix=".env_")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -736,50 +749,6 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
                 raise
     except Exception:
         pass  # best-effort — don't block gateway startup
-
-
-def sanitized_env_lines(raw: bytes, path: Path) -> list[str] | None:
-    """The lines ``_sanitize_env_file_if_needed`` writes for a ``.env`` (*path*) of *raw* bytes, or None
-    when it leaves the file as it is. Sniffs a leading BOM *before* any text decode: UTF-16 (Notepad
-    "Unicode") is rewritten as clean UTF-8; UTF-32 is refused (left untouched) so we never fall through
-    to the errors=replace corruption path."""
-    try:
-        from hermes_cli.config import _sanitize_env_lines
-    except ImportError:
-        return None  # early bootstrap — config module not available yet
-    # ORDER MATTERS: BOM_UTF32_LE (FF FE 00 00) startswith BOM_UTF16_LE (FF FE); UTF-16 first would mangle it.
-    force_utf8_rewrite = False
-    if raw.startswith(codecs.BOM_UTF32_LE) or raw.startswith(codecs.BOM_UTF32_BE):
-        # Lazy import keeps the module import block identical to #65124's codecs/io additions so the two PRs
-        # auto-merge either order.
-        path_key = str(path.resolve())
-        if path_key not in _WARNED_UTF32_PATHS:
-            _WARNED_UTF32_PATHS.add(path_key)
-            logger.warning("Skipping .env sanitize for %s: UTF-32 BOM detected; "
-                           "leaving file untouched to avoid corruption", path)
-        return None
-    if raw.startswith(codecs.BOM_UTF16_LE) or raw.startswith(codecs.BOM_UTF16_BE):
-        # "utf-16" uses the BOM for endianness and strips it; newline=None matches open()'s universal
-        # newlines (not splitlines()'s extra boundaries like U+2028) so sanitize sees the same lines.
-        try:
-            with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-16", newline=None) as f:
-                original = f.readlines()
-        except UnicodeDecodeError:
-            return None
-        force_utf8_rewrite = True  # always rewrite UTF-16 as UTF-8 so the dotenv load sees a canonical file
-    else:
-        # utf-8-sig strips a UTF-8 BOM; errors=replace so embedded NULs can be stripped below. Universal
-        # newlines, as ``open(path)`` reads it.
-        with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8-sig", errors="replace", newline=None) as f:
-            original = f.readlines()
-        # errors=replace turns undecodable leading bytes into U+FFFD; persisting would glue them onto
-        # the first key name permanently — leave the file untouched instead.
-        if original and original[0].startswith("\ufffd"):
-            return None
-    # Strip NULs (os.environ raises ValueError on them); also repairs BOM-less UTF-16 (NUL-padded ASCII).
-    stripped = [line.replace("\x00", "") for line in original]
-    sanitized = _sanitize_env_lines(stripped)
-    return sanitized if sanitized != original or force_utf8_rewrite else None
 
 
 def dotenv_unreadable(path: Path) -> bool:
@@ -822,19 +791,16 @@ def _boot_stores(home_path: Path, project_env_path: Path | None) -> None:
 
     The administrator-managed .env is part of the deployment the backend boots from (it may be
     where the selector, plane URL or instance id live). The override=True loads before this may have
-    replaced those names with the home's values, so re-publish the config deployment names (only
-    those) with the bootstrap precedence -- managed last -- before the boot. The full managed overlay
-    still applies once, last, where it keeps its precedence over secret-source results. The secret
-    store's own credential is not re-published: those are kept-local lines the layer above already
-    published, and resolving them again against the env it wrote would let a forward reference see a
-    later line (the local loader never does).
+    replaced those names with the home's values, so re-publish the deployment names (only those)
+    with the bootstrap precedence -- managed last -- before the boot. The full managed overlay
+    still applies once, last, where it keeps its precedence over secret-source results.
 
     The secret store boots next, before the first secret read: a store that keeps secrets off disk
     fetches this home's view here (failing closed) and it is published like the .env was."""
     from hermes_cli.config_backend import bootstrap_deployment, get_config_backend
     from hermes_secret_routing import boot_secret_store
 
-    bootstrap_deployment(home_path, project_env_path, store_credentials=False)
+    bootstrap_deployment(home_path, project_env_path)
     get_config_backend().boot(home_path)
     boot_secret_store(home_path)
 

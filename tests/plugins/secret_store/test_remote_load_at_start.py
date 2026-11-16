@@ -103,9 +103,8 @@ def test_a_project_line_expands_a_stored_value_once(plane, tmp_path, monkeypatch
 
 def test_bootstrap_lines_still_load_from_the_file(plane, monkeypatch):
     monkeypatch.delenv("TERMINAL_BOOT_PARSE", raising=False)
-    monkeypatch.setenv("SCOPE_SOURCE", "agents")
     with open(plane.home / ".env", "a", encoding="utf-8") as f:
-        f.write('TERMINAL_BOOT_PARSE="${SCOPE_SOURCE}\\tquoted"\n')  # process-global: stays local
+        f.write('TERMINAL_BOOT_PARSE="agents\\tquoted"\n')  # process-global: stays local
     _boot(plane.home)
     assert os.environ["TERMINAL_BOOT_PARSE"] == "agents\tquoted"  # the loader's parser: a tab
     assert plane.patches() == []
@@ -153,40 +152,6 @@ def test_an_imported_launch_reference_is_frozen(plane, monkeypatch):
     assert set(_readers(plane.home, "IMPORT_REF").values()) == {"first-marker/suffix"}
 
 
-# Kept-local (bootstrap / process-global) lines stay in the file and are re-read at every start. The
-# import freezes each one that references an imported (or any non-kept) name to the value the original
-# loader gave that line, as it freezes every imported value; a kept line referencing only kept names
-# stays as written. Expected values were produced by executing the base loader (c2784094b6, local
-# store) on each text in a fresh process with only the listed shell exports.
-KEPT_LOCAL = {
-    "backward": ("RV_DIR=/x\nTERMINAL_RV_REF=${RV_DIR}/sub\n", {}, {"TERMINAL_RV_REF": "/x/sub"}),
-    "backward_shell": ("RV_DIR=/x\nTERMINAL_RV_REF=${RV_DIR}/sub\n", {"RV_DIR": "shell-marker"},
-                       {"TERMINAL_RV_REF": "/x/sub"}),
-    "forward": ("TERMINAL_RV_REF=${RV_DIR}/sub\nRV_DIR=/x\n", {}, {"TERMINAL_RV_REF": "/sub"}),
-    "forward_shell": ("TERMINAL_RV_REF=${RV_DIR}/sub\nRV_DIR=/x\n", {"RV_DIR": "shell-marker"},
-                      {"TERMINAL_RV_REF": "shell-marker/sub"}),
-    "duplicate_before": ("RV_DIR=/x\nRV_DIR=/y\nTERMINAL_RV_REF=${RV_DIR}/sub\n", {}, {"TERMINAL_RV_REF": "/y/sub"}),
-    "duplicate_spanning": ("RV_DIR=/x\nTERMINAL_RV_REF=${RV_DIR}/sub\nRV_DIR=/y\n", {}, {"TERMINAL_RV_REF": "/x/sub"}),
-    "duplicate_spanning_two": ("RV_A=1\nRV_B=1\nTERMINAL_RV_REF=${RV_A}${RV_B}\nRV_A=3\n", {}, {"TERMINAL_RV_REF": "11"}),
-    "chain_through_imported": (
-        "RV_DIR=/x\nTERMINAL_RV_A=${RV_DIR}/a\nRV_LATE=${TERMINAL_RV_A}/late\nTERMINAL_RV_B=${RV_LATE}/b\n", {},
-        {"TERMINAL_RV_A": "/x/a", "TERMINAL_RV_B": "/x/a/late/b"}),
-    "chain_through_kept": (
-        "RV_DIR=/x\nTERMINAL_RV_A=${RV_DIR}/a\nTERMINAL_RV_B=${TERMINAL_RV_A}/b\nRV_DIR=/y\n", {},
-        {"TERMINAL_RV_A": "/x/a", "TERMINAL_RV_B": "/x/a/b"}),
-    "default": ("RV_DIR=/x\nTERMINAL_RV_REF=${RV_DIR:-unset}/${RV_MISSING:-dflt}\n", {}, {"TERMINAL_RV_REF": "/x/dflt"}),
-    "default_forward": ("TERMINAL_RV_REF=${RV_DIR:-unset}\nRV_DIR=/x\n", {}, {"TERMINAL_RV_REF": "unset"}),
-    "kept_line_overriding": ("TERMINAL_RV_OVR=local-wins\nRV_DIR=/x\nTERMINAL_RV_REF=${RV_DIR}/${TERMINAL_RV_OVR}\n", {},
-                             {"TERMINAL_RV_REF": "/x/local-wins", "TERMINAL_RV_OVR": "local-wins"}),
-    "kept_name_reassigned": ("TERMINAL_RV_REF=${RV_DIR}/first\nRV_DIR=/x\nTERMINAL_RV_REF=${RV_DIR}/second\n", {},
-                             {"TERMINAL_RV_REF": "/x/second"}),
-    "kept_line_over_shell": ("RV_DIR=/x\nTERMINAL_RV_OVR=${RV_DIR}/o\n", {"TERMINAL_RV_OVR": "shell-marker"},
-                             {"TERMINAL_RV_OVR": "/x/o"}),
-    "quoted_value": ("RV_DIR=\"/x y #z \\\"q\\\" \\\\b 'c'\"\nTERMINAL_RV_REF=${RV_DIR}/sub\n", {},
-                     {"TERMINAL_RV_REF": "/x y #z \"q\" \\b 'c'/sub"}),
-    "only_kept_refs": ("TERMINAL_RV_OVR=o\nRV_DIR=/x\nTERMINAL_RV_REF=${TERMINAL_RV_OVR}/k\n", {},
-                       {"TERMINAL_RV_REF": "o/k", "TERMINAL_RV_OVR": "o"}),
-}
 _KEPT_NAMES = ("RV_DIR", "RV_A", "RV_B", "RV_LATE", "RV_MISSING", "TERMINAL_RV_REF", "TERMINAL_RV_OVR",
                "TERMINAL_RV_A", "TERMINAL_RV_B")
 
@@ -203,119 +168,6 @@ def _fresh_start(monkeypatch, shell):
         monkeypatch.delenv(name, raising=False)
     for name, value in shell.items():
         monkeypatch.setenv(name, value)
-
-
-@pytest.mark.parametrize("store", ["local", "remote"])
-@pytest.mark.parametrize("case", KEPT_LOCAL)
-def test_a_kept_local_line_resolves_as_the_original_file_did(plane, monkeypatch, store, case):
-    """At the import's start and at every later start (the plane holds the values, the file its
-    kept lines only), each kept name has the value the base loader gives the original file."""
-    from dotenv.variables import Variable, parse_variables
-    from hermes_cli.env_loader import _parse_local_dotenv_file
-    text, shell, expected = KEPT_LOCAL[case]
-    _fresh_start(monkeypatch, shell)
-    if store == "local":
-        monkeypatch.delenv("HERMES_SECRET_STORE")
-        routing.reset_for_tests()
-    (plane.home / ".env").write_text(text, encoding="utf-8")
-    _boot(plane.home)
-    for name, value in expected.items():
-        assert set(_readers(plane.home, name).values()) == {value}, (name, store)
-    if store == "local":
-        assert (plane.home / ".env").read_text(encoding="utf-8") == text
-        return
-    left = _parse_local_dotenv_file(plane.home / ".env")
-    assert all(name.startswith("TERMINAL_") for name, _value in left)
-    for name, value in left:   # frozen, or referencing kept names only
-        assert all(a.name.startswith("TERMINAL_") for a in parse_variables(value) if isinstance(a, Variable))
-    _fresh_start(monkeypatch, shell)   # every later start: same answer
-    _boot(plane.home)
-    for name, value in expected.items():
-        assert set(_readers(plane.home, name).values()) == {value}, (name, "later start")
-
-
-def test_a_kept_line_referencing_only_kept_names_stays_as_written(plane, monkeypatch):
-    text, shell, _expected = KEPT_LOCAL["only_kept_refs"]
-    _fresh_start(monkeypatch, shell)
-    (plane.home / ".env").write_text("# kept\n" + text, encoding="utf-8")
-    _boot(plane.home)
-    assert (plane.home / ".env").read_text(encoding="utf-8") == (
-        "# kept\nTERMINAL_RV_OVR=o\nTERMINAL_RV_REF=${TERMINAL_RV_OVR}/k\n")
-
-
-@pytest.mark.parametrize("value", ["plain", "", "a b", "  lead", "x#y", 'q"q', "s'q", "back\\slash", "\\\"",
-                                   "tab\tin", "ünïcode", "$NOT_A_REF", "trail\\"])
-def test_a_frozen_kept_line_reads_back_as_the_value_it_froze(plane, monkeypatch, value):
-    """The frozen line is written as ``save_env_value`` writes a value; the local loader reads back
-    exactly the value the original file gave that line."""
-    _fresh_start(monkeypatch, {"RV_SHELL": value})
-    (plane.home / ".env").write_text("TERMINAL_RV_REF=${RV_SHELL}\nRV_DIR=/x\n", encoding="utf-8")
-    _boot(plane.home)
-    _fresh_start(monkeypatch, {})
-    monkeypatch.delenv("RV_SHELL", raising=False)
-    _boot(plane.home)
-    assert set(_readers(plane.home, "TERMINAL_RV_REF").values()) == {value}
-
-
-# A value no single physical line carries through BOTH local readers (python-dotenv for the launch
-# load, the one-line tokenizer for scopes and bound get_secret) cannot be frozen: the import leaves
-# that kept line exactly as written, and it resolves at each start as before. Expected values were
-# produced by executing the base loader (06189b9508, local store) on each text.
-MULTILINE = {
-    "escaped_newline": ('RV_DIR="l1\\nl2"\nTERMINAL_RV_REF=${RV_DIR}|\n', "l1\nl2|"),
-    "physical_newline": ('RV_DIR=/x\nTERMINAL_RV_REF="${RV_DIR}\nsecond"\n', "/x\nsecond"),
-}
-
-
-@pytest.mark.parametrize("store", ["local", "remote"])
-@pytest.mark.parametrize("case", MULTILINE)
-def test_a_kept_line_resolving_to_a_multiline_value_is_served_whole(plane, monkeypatch, store, case):
-    text, expected = MULTILINE[case]
-    _fresh_start(monkeypatch, {})
-    if store == "local":
-        monkeypatch.delenv("HERMES_SECRET_STORE")
-        routing.reset_for_tests()
-    (plane.home / ".env").write_text(text, encoding="utf-8")
-    _boot(plane.home)
-    assert set(_readers(plane.home, "TERMINAL_RV_REF").values()) == {expected}
-    if store == "remote":   # the kept line is left exactly as written
-        assert (plane.home / ".env").read_text(encoding="utf-8") == text.split("\n", 1)[1]
-    _fresh_start(monkeypatch, {})
-    _boot(plane.home)
-    assert set(_readers(plane.home, "TERMINAL_RV_REF").values()) == {expected}
-
-
-def _generated_values():
-    import random
-    rng = random.Random(0x5EC2)
-    alphabet = ["a", "Z", "0", " ", "\t", "\n", "\r", '"', "'", "\\", "$", "{", "}", "${", "${RV_DIR}",
-                "${X:-d}", "#", "=", "n", "\u2028", "\x0c", "\u00e9", "export "]
-    values = {"".join(rng.choice(alphabet) for _ in range(rng.randint(1, 6))) for _ in range(160)}
-    return sorted(values | {"\n", "\r", "a\r\nb", "\\n", '"\n"', "${", "$", "${RV_DIR}", "x\ty", "\u2028"})
-
-
-_BREAKS = "\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"   # str.splitlines() boundaries
-
-
-@pytest.mark.parametrize("value", _generated_values(), ids=lambda v: repr(v)[1:-1][:40])
-def test_a_kept_line_is_frozen_only_when_both_readers_read_back_the_frozen_value(plane, monkeypatch, value):
-    """Generated values reach a kept line through a launch reference. Either the line was frozen and
-    every reader (the launch load, the scope tokenizer, bound get_secret, ...) serves exactly the
-    value at every later start, or the import left the line byte for byte as written. A one-line
-    value with no reference in it always freezes."""
-    from dotenv.variables import Variable, parse_variables
-    _fresh_start(monkeypatch, {"RV_SHELL": value})
-    (plane.home / ".env").write_text("TERMINAL_RV_REF=${RV_SHELL}\nRV_DIR=/x\n", encoding="utf-8")
-    _boot(plane.home)
-    left = (plane.home / ".env").read_text(encoding="utf-8")
-    if left == "TERMINAL_RV_REF=${RV_SHELL}\n":
-        assert any(c in value for c in _BREAKS) or any(isinstance(a, Variable) for a in parse_variables(value))
-        return
-    assert "${RV_SHELL}" not in left
-    _fresh_start(monkeypatch, {})
-    monkeypatch.delenv("RV_SHELL", raising=False)
-    _boot(plane.home)
-    assert set(_readers(plane.home, "TERMINAL_RV_REF").values()) == {value}
 
 
 @pytest.mark.parametrize("store", ["local", "remote"])

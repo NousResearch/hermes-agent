@@ -11,8 +11,9 @@ memory only:
 - **one-time import**: local ``.env`` / ``auth.json`` entries outside the bootstrap set are sent once
   with ``expectedProfileVersion: 0`` and the files are rewritten to the bootstrap set; when the plane
   already has the profile (409) it wins and the local entries move to ``.env.unimported`` /
-  ``auth.unimported.json`` (``importer.py``). An import that would change a kept-local ``.env``
-  line never runs: that profile's boot fails closed before anything is staged or sent;
+  ``auth.unimported.json`` (``importer.py``), all under one per-profile import lock. A kept-local
+  ``.env`` line must be literal: one holding a ``${...}`` reference fails that profile's boot
+  closed before anything is staged or sent;
 - **change detection**: a per-process poller asks for every booted view with ``If-None-Match`` every
   :data:`POLL_SECONDS`, holding the version the process booted with or last wrote itself. Nothing is
   installed from a poll: a different version asks the process for a graceful restart
@@ -309,16 +310,17 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
                 "agent to the secrets plane. Hermes does not start without its secrets.")
 
         def attempt() -> _HomeState:
-            # Before anything is staged, refreshed, written or sent: an import that would change a
-            # kept-local line stops the boot here, files untouched (no fallback to the local store).
-            # Staged (from the bytes the check read) before the credential resolves: a token refresh
-            # saves auth.json, and that save keeps only the bootstrap records.
-            checked = importer.check_and_stage(home, self, profile)
-            entries = importer.prepared_entries(home)
-            token = self._bearer(home)  # resolved holding no lock of this store
-            with self._serialized(home):
-                st, imported = self._first_fetch(home, profile, token, entries)
-            importer.finish(home, profile, st.view, self, entries, imported, checked)
+            # The import lock first, before anything is read: a concurrent boot of this profile
+            # waits here and then starts from a fresh read. A non-literal kept-local line stops the
+            # boot in ``prepare``, before anything is staged, refreshed, written or sent; the entries
+            # are staged before the credential resolves (a token refresh saves auth.json with its
+            # bootstrap records only).
+            with importer.import_lock(home, profile):
+                prepared = importer.prepare(home, self, profile)
+                token = self._bearer(home)  # resolved holding no lock of this store
+                with self._serialized(home):
+                    st, imported = self._first_fetch(home, profile, token, (prepared.env, prepared.auth))
+                importer.finish(home, profile, st.view, self, prepared, imported)
             with self._lock:
                 self._states[key] = st
             return st

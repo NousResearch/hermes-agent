@@ -413,6 +413,16 @@ class TestDefaultContextLengths:
                 api_key="oauth-token",
             ) == 256000
 
+    def test_qwen4_max_resolves_to_1m(self):
+        """Qwen 4 Max (bare and provider-prefixed) resolves to 1,000,000 tokens."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            assert get_model_context_length("qwen4-max") == 1_000_000
+            assert get_model_context_length("qwen/qwen4-max") == 1_000_000
+
 
 # =========================================================================
 # Codex OAuth context-window resolution (provider="openai-codex")

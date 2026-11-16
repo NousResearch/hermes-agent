@@ -1,4 +1,4 @@
-"""Targeted tests for ``utils.model_forces_max_completion_tokens``.
+"""Targeted tests for ``agent.provider_route_hooks.model_forces_max_completion_tokens``.
 
 This helper decides whether a given model name requires the newer
 ``max_completion_tokens`` kwarg (rather than the legacy ``max_tokens``) on
@@ -9,7 +9,7 @@ error seen when third-party OpenAI-compatible endpoints serve gpt-4o / 4.1 /
 
 from __future__ import annotations
 
-from utils import model_forces_max_completion_tokens
+from agent.provider_route_hooks import model_forces_max_completion_tokens
 
 
 # ─── Positive cases: families that require max_completion_tokens ────────────

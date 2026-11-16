@@ -161,6 +161,7 @@ def isolated_checkout(tmp_path: Path) -> Path:
     root.mkdir()
     shutil.copytree(REPO_ROOT / "pm", root / "pm", ignore=shutil.ignore_patterns("__pycache__"))
     (root / "hermes_cli").mkdir()
+    (root / "hermes_agent").mkdir()
     (root / "scripts").mkdir()
     for relative in ("activate", "activate.fish", "activate.ps1", "scripts/_activation.sh",
                      "hermes_agent/hermes_constants.py", "hermes_cli/__init__.py",

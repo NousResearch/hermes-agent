@@ -70,11 +70,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "apps/desktop/electron/fixtures/source-backend.py",
-    "symbol": "main",
-    "kind": "bare_which"
-  },
-  {
     "path": "cron/scheduler_script.py",
     "symbol": "_script_argv",
     "kind": "bare_which"
@@ -394,7 +389,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_agent/hermes_constants.py",
+    "path": "hermes_constants.py",
     "symbol": "find_node_executable",
     "kind": "bare_which"
   },

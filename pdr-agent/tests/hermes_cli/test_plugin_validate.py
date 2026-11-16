@@ -524,13 +524,13 @@ def test_runtime_rebind_of_hermes_core_fails_admission(tmp_path):
     (good / "tools" / "__init__.py").write_text("def helper(**kw):\n    return None\n", encoding="utf-8")
     (good / "tests").mkdir()
     (good / "tests" / "test_x.py").write_text(
-        "from unittest import mock\nimport run_agent\nrun_agent.AIAgent.x = 1\nmock.patch('hermes_agent.run_agent.AIAgent.y')\n",
+        "from unittest import mock\nimport run_agent\nrun_agent.AIAgent.x = 1\nmock.patch('run_agent.AIAgent.y')\n",
         encoding="utf-8")
 
     from hermes_cli.plugin_validate_core_override import core_override_findings
 
     assert core_override_findings(bad) == [
-        "hermes_agent.run_agent.AIAgent.run_conversation (__init__.py:6)",
+        "run_agent.AIAgent.run_conversation (__init__.py:6)",
         "_wrap(run_agent.AIAgent, ...) (__init__.py:7)",
         "setattr(srv, ...) (__init__.py:9)",
         "m._PROVIDER_MODELS[...] (__init__.py:11)",

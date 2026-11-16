@@ -1,7 +1,7 @@
 """Backend boot handshake contract, Python side (issue class C5).
 
-The Desktop spawns ``hermes serve`` with stdout piped and learns the port ONLY from
-the READY sentinel on stdout (``apps/desktop/electron/backend-ready.ts``); the Ink
+A spawner of ``hermes serve`` (formerly the Desktop) pipes stdout and learns the port ONLY from
+the READY sentinel on stdout (the rule lives in ``_boot_contract.desktop_parse``); the Ink
 TUI spawns ``tui_gateway.entry`` and treats stdout as a pure JSON-RPC stream whose
 first frame is ``gateway.ready``. Both break the same way — the sentinel/frame goes
 to the wrong stream, arrives after other bytes, or stops parsing — and every such
@@ -9,9 +9,8 @@ break presents to users as "backend failed to start" / a hung spinner.
 
 Invariants (spawned exactly as the real clients spawn them, cold, fake provider):
 
-* serve: the FIRST stdout line is the sentinel, the Desktop's own parser (run under
-  Node, not a Python copy of its regex) resolves a port from the stdout bytes seen
-  up to and including it, and that port is the live backend (authenticated
+* serve: the FIRST stdout line is the sentinel, the READY rule resolves a port from the
+  stdout bytes seen up to and including it, and that port is the live backend (authenticated
   ``/api/status`` answers).
 * tui_gateway: the FIRST stdout line is a JSON-RPC ``gateway.ready`` event whose
   payload validates against the published contract, and every later stdout line
@@ -29,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.core.parity._boot_contract import desktop_parse, require_node
+from tests.e2e.core.parity._boot_contract import desktop_parse
 from tests.e2e.core.parity._drive_rpc import (
     READY_TIMEOUT,
     RpcClient,
@@ -64,7 +63,6 @@ def boot_home(tmp_path: Path):
 
 
 def test_serve_ready_sentinel_is_first_stdout_line_and_names_the_live_port(tmp_path: Path) -> None:
-    require_node()
     with boot_home(tmp_path) as home:
         _check_serve_ready(home)
 

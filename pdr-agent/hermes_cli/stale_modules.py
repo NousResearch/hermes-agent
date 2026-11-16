@@ -26,6 +26,8 @@ from typing import Mapping, Sequence
 # symbol would otherwise break the pre-handoff upgrade path.
 _ROOT_MODULE_REQUIRED_ATTRS: dict[str, tuple[str, ...]] = {
     "utils": ("file_signature", "file_cache_version"),
+    # utils 移入 hermes_agent/ 后的模块名；同样可能被旧进程缓存成缺少新属性的版本
+    "hermes_agent.utils": ("file_signature", "file_cache_version"),
 }
 
 

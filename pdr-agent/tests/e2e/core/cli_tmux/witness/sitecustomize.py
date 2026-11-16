@@ -74,13 +74,14 @@ if _PATH:
 
     def _patch_run_agent(mod):
         cls = getattr(mod, "AIAgent", None)
-        if cls is None:
-            return
+        if cls is None or getattr(cls.__init__, "_witnessed", False):
+            return  # the old-name shim re-exports the moved module's class: patch it once
         original = cls.__init__
 
         def init(self, *args, **kwargs):
             _emit("agent_init", type(self).__name__)
             return original(self, *args, **kwargs)
+        init._witnessed = True
         cls.__init__ = init
 
     def _patch_registry(mod):
@@ -94,7 +95,8 @@ if _PATH:
             return original(self, name, args, *rest, **kwargs)
         cls.dispatch = dispatch
 
-    _PATCHES = {"run_agent": _patch_run_agent, "tools.registry": _patch_registry}
+    _PATCHES = {"run_agent": _patch_run_agent, "hermes_agent.run_agent": _patch_run_agent,
+                "tools.registry": _patch_registry}
 
     class _Loader(importlib.abc.Loader):
         def __init__(self, inner, patch):

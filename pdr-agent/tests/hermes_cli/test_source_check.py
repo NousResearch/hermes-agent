@@ -606,15 +606,15 @@ def test_stable_release_the_updater_refuses_is_held_not_offered(
     sibling = tmp_path / "sibling"
     monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [("sibling", sibling)])
     git("checkout", "-q", "-b", "release-line", base)
-    (root / "hermes_agent/state/common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id)'\n")
-    git("add", "hermes_agent/state/common.py")
+    (root / "hermes_state_common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id)'\n")
+    git("add", "hermes_state_common.py")
     git("commit", "-q", "-m", "release from the older line")
     release = git("rev-parse", "HEAD")
     git("checkout", "-q", "main")
     if not divergent:
         git("merge", "--no-ff", "-qm", "release on main's history", "release-line")
-    (root / "hermes_agent/state/common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS session_admissions (seq)'\n")
-    git("add", "hermes_agent/state/common.py")
+    (root / "hermes_state_common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS session_admissions (seq)'\n")
+    git("add", "hermes_state_common.py")
     git("commit", "-q", "-m", "gateway runtime")
     bare = tmp_path / "origin.git"
     git("clone", "-q", "--bare", str(root), str(bare), cwd=tmp_path)
@@ -684,10 +684,10 @@ def test_an_unfetched_release_is_judged_from_github(installation, tmp_path, monk
     responses[f"{api}/commits/v1.2.3"] = (200, {"sha": release})
     responses[f"{api}/compare/{git('rev-parse', 'HEAD')}...{release}"] = (200, {"status": "diverged"})
     responses[f"{api}/git/trees/{release}"] = (200, {"truncated": False, "tree": [
-        {"path": "hermes_state.py", "type": "blob"}, {"path": "hermes_agent/state/common.py", "type": "blob"},
-        {"path": "hermes_agent/run_agent.py", "type": "blob"}]})
-    responses[f"/NousResearch/hermes-agent/{release}/hermes_state/__init__.py"] = (200, "from hermes_agent.state.common import *\n")
-    responses[f"/NousResearch/hermes-agent/{release}/hermes_state/common.py"] = (
+        {"path": "hermes_state.py", "type": "blob"}, {"path": "hermes_state_common.py", "type": "blob"},
+        {"path": "run_agent.py", "type": "blob"}]})
+    responses[f"/NousResearch/hermes-agent/{release}/hermes_state.py"] = (200, "from hermes_state_common import *\n")
+    responses[f"/NousResearch/hermes-agent/{release}/hermes_state_common.py"] = (
         200, "SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id)'\n")
     if ledgered:
         _ledgered_store(home)
@@ -794,8 +794,8 @@ def test_unknown_runtime_verdict_expires_but_definite_verdict_does_not(installat
     clock = [1000000.0]
     monkeypatch.setattr(source_check.time, "time", lambda: clock[0])
     tree = f"/repos/fixture/fork/git/trees/{sha}"
-    module = f"/fixture/fork/{sha}/hermes_state/common.py"
-    responses[tree] = (200, {"tree": [{"path": "hermes_agent/state/common.py", "type": "blob"}]})
+    module = f"/fixture/fork/{sha}/hermes_state_common.py"
+    responses[tree] = (200, {"tree": [{"path": "hermes_state_common.py", "type": "blob"}]})
     from hermes_agent.state.common import SCHEMA_SQL
     responses[module] = (200, SCHEMA_SQL if runtime else "SCHEMA_SQL = 'old schema'")
     failed_path = tree if failure == "tree" else module

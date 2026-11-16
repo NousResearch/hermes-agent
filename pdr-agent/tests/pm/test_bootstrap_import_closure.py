@@ -13,6 +13,7 @@ def test_minimal_bootstrap_closure_reaches_pm_paths_and_locks(tmp_path):
     repo = Path(__file__).resolve().parents[2]
     stage = tmp_path / "stage"
     shutil.copytree(repo / "pm", stage / "pm", ignore=shutil.ignore_patterns("__pycache__"))
+    __import__('pathlib').Path(stage / 'hermes_agent/hermes_constants.py').parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(repo / "hermes_agent/hermes_constants.py", stage / "hermes_agent/hermes_constants.py")
     (stage / "hermes_cli").mkdir()
     for name in ("__init__.py", "runtime_state.py"):
@@ -45,12 +46,13 @@ def _constants_stage(tmp_path, *, with_acl: bool) -> Path:
     stage.mkdir()
     names = ["hermes_agent/hermes_constants.py", "hermes_agent/hermes_dir_acl.py"] if with_acl else ["hermes_agent/hermes_constants.py"]
     for name in names:
+        (stage / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(repo / name, stage / name)
     return stage
 
 
 def _mkdir_in_stage(stage: Path, home: Path) -> subprocess.CompletedProcess:
-    script = "import hermes_constants, sys; print(hermes_constants.mkdir_under_hermes_home(sys.argv[1]))"
+    script = "import sys; from hermes_agent import hermes_constants; print(hermes_constants.mkdir_under_hermes_home(sys.argv[1]))"
     return subprocess.run([sys.executable, "-S", "-c", script, str(home / "logs")], cwd=stage,
                           env=dict(os.environ, HERMES_HOME=str(home), PYTHONPATH=str(stage)),
                           capture_output=True, text=True, timeout=15, check=False)
@@ -72,7 +74,7 @@ def test_home_mkdir_never_silently_skips_the_elevated_grant(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     stage = _constants_stage(tmp_path, with_acl=False)
-    alone = subprocess.run([sys.executable, "-S", "-c", "import hermes_constants"], cwd=stage,
+    alone = subprocess.run([sys.executable, "-S", "-c", "from hermes_agent import hermes_constants"], cwd=stage,
                            env=dict(os.environ, PYTHONPATH=str(stage)), capture_output=True, text=True,
                            timeout=15, check=False)
     assert alone.returncode == 0, alone.stderr

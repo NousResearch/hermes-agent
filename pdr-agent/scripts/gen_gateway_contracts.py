@@ -40,8 +40,8 @@ from tools.connectors.gateway.wire import ConnectionStatus
 from tools.connectors.portal.tools_cache import ToolsRead
 from tools.connectors.portal.wire import ConnectorTool
 
-TS_OUT = ROOT / "apps" / "shared" / "src" / "gateway-contract.generated.ts"
-OPENRPC_OUT = ROOT / "apps" / "shared" / "src" / "gateway-contract.openrpc.json"
+TS_OUT = ROOT / "ui-tui" / "packages" / "shared" / "src" / "gateway-contract.generated.ts"
+OPENRPC_OUT = ROOT / "ui-tui" / "packages" / "shared" / "src" / "gateway-contract.openrpc.json"
 _ENUM_PAIRS = (
     ("ConnectionTargetState", ConnectionTargetState, "TargetState", TargetState),
     ("ConnectionSettleReason", ConnectionSettleReason, "SettleReason", SettleReason),

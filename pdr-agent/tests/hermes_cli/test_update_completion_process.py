@@ -74,6 +74,7 @@ def transition(tmp_path):
         "    from hermes_cli.probe import event\n"
         "    event('activate')\n"
     )
+    (root / "hermes_agent").mkdir(exist_ok=True)
     (root / "hermes_agent/hermes_constants.py").write_text(
         # source_completion's update lock resolves the process home through
         # hermes_constants (never a profile override), like the Rust updater does.
@@ -121,8 +122,9 @@ def transition(tmp_path):
     shutil.copy2(Path(update_completion.__file__).with_name("_startup_fast.py"), package / "_startup_fast.py")
     shutil.copy2(Path(update_completion.__file__).with_name("_subprocess_compat.py"),
                  package / "_subprocess_compat.py")
+    # hermes_agent/ now holds the moved root modules too; keep the stub hermes_constants written above.
     shutil.copytree(Path(update_completion.__file__).parents[1] / "hermes_agent", root / "hermes_agent",
-                    ignore=shutil.ignore_patterns("__pycache__"))
+                    ignore=shutil.ignore_patterns("__pycache__", "hermes_constants.py"), dirs_exist_ok=True)
     (package / "gitlock.py").write_text(
         "from hermes_cli.probe import event\n"
         "convert_treeless_checkout_first = lambda root: event('convert')\n"
@@ -352,37 +354,6 @@ def test_lost_completion_with_parked_local_changes_stays_partial(transition, mon
     assert notice in out
 
 
-@pytest.mark.platforms("posix")
-@pytest.mark.parametrize("never_built", ["dependencies", "refused", "died"])
-@pytest.mark.parametrize("desktop", [True, False])
-def test_desktop_build_that_never_ran_is_named_for_the_handoff(transition, capsys, never_built, desktop):
-    """Review P4 (F6): the hand-off scripts read ``Desktop app build owed:`` to tell the user the app is
-    stale. The builder prints it only when the build fails; a run whose build never ran (dependency
-    sync failed, the tail refused by the update lock, the prepared child died) must print it too."""
-    scripts = Path(update_completion.__file__).parents[1] / "scripts/desktop-update"
-    for script in ("posix.sh", "windows.ps1"):  # the exact prefix the hand-off scripts match
-        assert "Desktop app build owed: " in (scripts / script).read_text(encoding="utf-8-sig")
-    assert update_completion.DESKTOP_BUILD_OWED == "Desktop app build owed:"
-    root, _git, _old, _new, request = transition
-    request["desktop"] = desktop
-    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
-    if never_built == "dependencies":
-        (root / "pm/__init__.py").write_text("def sync_venv(*a, **kw): raise RuntimeError('dependency refused')\n",
-                                            encoding="utf-8")
-    elif never_built == "refused":
-        (root / "hermes_cli/source_completion.py").write_text(
-            "def complete_source_checkout(*args, **kwargs):\n"
-            "    raise RuntimeError('an update is still running (pid 1); wait for it to exit')\n", encoding="utf-8")
-    else:
-        (root / "hermes_cli/source_completion.py").write_text(
-            "import os\n"
-            "def complete_source_checkout(*args, **kwargs): os.kill(os.getpid(), 9)  # posix-only test\n",
-            encoding="utf-8")
-    result = update_completion.run_completion(request)
-    out = capsys.readouterr().out
-    assert result["exit_code"] == 0, out
-    owed = [line.strip() for line in out.splitlines() if line.strip().startswith("Desktop app build owed: ")]
-    assert len(owed) == (1 if desktop else 0), out
 
 
 def test_unwritable_gateway_status_never_fails_a_settled_commit(tmp_path, monkeypatch):

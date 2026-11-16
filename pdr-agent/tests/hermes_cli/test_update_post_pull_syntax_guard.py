@@ -67,6 +67,7 @@ def test_a_tree_without_a_declared_file_it_lists_is_refused_before_and_after_the
     # A pyproject whose tables have other types is read as declaring nothing, never a crash past the rollback.
     (tmp_path / "pyproject.toml").write_text('project = 42\ntool = 42\n', encoding="utf-8")
     assert commit.startup_files((tmp_path / "pyproject.toml").read_bytes(), running_list) == (tuple(running_list), False)
+    __import__('pathlib').Path(tmp_path / 'hermes_agent/hermes_constants.py').parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / "hermes_agent/hermes_constants.py").write_text("def broken(:\n", encoding="utf-8")
     git("add", ".")
     git("commit", "-m", "broken source with non-table metadata")
@@ -92,6 +93,7 @@ def test_pull_rolls_back_broken_critical_file_and_accepts_corrected_retry(tmp_pa
     git("config", "user.email", "test@example.invalid")
     git("config", "user.name", "Test")
     source = tmp_path / "hermes_agent/hermes_constants.py"
+    source.parent.mkdir(exist_ok=True)
     source.write_text("print('runnable')\n", encoding="utf-8")
     git("add", ".")
     git("commit", "-m", "working")
@@ -139,6 +141,7 @@ def _python_bump_repo(tmp_path, broken_source: str):
     git("init", "-b", "main")
     git("config", "user.email", "test@example.invalid")
     git("config", "user.name", "Test")
+    __import__('pathlib').Path(tmp_path / 'hermes_agent/hermes_constants.py').parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / "hermes_agent/hermes_constants.py").write_text(broken_source, encoding="utf-8")
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text('[project]\nname = "x"\nrequires-python = ">=3.99"\n', encoding="utf-8")
@@ -239,6 +242,7 @@ def test_a_malformed_bootstrap_is_refused_before_the_move(tmp_path):
     git("config", "user.email", "test@example.invalid")
     git("config", "user.name", "Test")
     (tmp_path / "hermes_bootstrap.py").write_text("def broken(:\n", encoding="utf-8")
+    __import__('pathlib').Path(tmp_path / 'hermes_agent/hermes_constants.py').parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / "hermes_agent/hermes_constants.py").write_text("ok = 1\n", encoding="utf-8")
     git("add", ".")
     git("commit", "-m", "broken bootstrap")
@@ -257,6 +261,7 @@ def test_the_preflight_reads_every_critical_file_in_one_git_spawn(tmp_path, monk
     git("config", "user.email", "test@example.invalid")
     git("config", "user.name", "Test")
     for rel in ("hermes_agent/hermes_constants.py", "hermes_agent/cli.py"):
+        __import__('pathlib').Path(tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text("ok = 1\n", encoding="utf-8")
     (tmp_path / "hermes_cli").mkdir()
     (tmp_path / "hermes_cli" / "main.py").write_text("x = (\n", encoding="utf-8")
@@ -304,11 +309,13 @@ def test_a_python_bump_never_admits_a_conflict_marker(tmp_path, monkeypatch):
     git("init", "-b", "main")
     git("config", "user.email", "test@example.invalid")
     git("config", "user.name", "Test")
+    __import__('pathlib').Path(tmp_path / 'hermes_agent/hermes_constants.py').parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / "hermes_agent/hermes_constants.py").write_text("good = True\n", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\nrequires-python = ">=3.8"\n', encoding="utf-8")
     git("add", ".")
     git("commit", "-m", "pre")
     pre = git("rev-parse", "HEAD")
+    __import__('pathlib').Path(tmp_path / 'hermes_agent/hermes_constants.py').parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / "hermes_agent/hermes_constants.py").write_text("<<<<<<< HEAD\na = 1\n=======\na = 2\n>>>>>>> topic\n", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\nrequires-python = ">=3.99"\n', encoding="utf-8")
     git("commit", "-am", "conflicted, and bumps python")
@@ -335,6 +342,7 @@ def test_a_marker_arm_that_times_out_still_rolls_the_broken_pull_back(tmp_path, 
     git("config", "user.email", "test@example.invalid")
     git("config", "user.name", "Test")
     source = tmp_path / "hermes_agent/hermes_constants.py"
+    source.parent.mkdir(exist_ok=True)
     source.write_text("print('runnable')\n", encoding="utf-8")
     git("add", ".")
     git("commit", "-m", "working")

@@ -332,7 +332,7 @@ def load_raw_entries(catalog_dir: Path) -> list[dict]:
 def load_featured(curation_file: Path | None = None) -> list[str]:
     """Curated hero picks (plugin names, in rotation order); empty when the file is absent."""
     try:
-        path = curation_file or REPO_ROOT / "apps" / "shared" / "src" / "catalog-curation.json"
+        path = curation_file or REPO_ROOT / "ui-tui" / "packages" / "shared" / "src" / "catalog-curation.json"
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []

@@ -23,7 +23,7 @@ _PRE_HANDOFF_PURGE_PROTECTED = {"hermes_cli", "hermes_cli.main", "hermes_cli.her
 @pytest.fixture
 def pre_handoff_purge():
     """Evict what a pre-hand-off updater evicts after the pull; restore the original graph after."""
-    saved: dict = {"utils": sys.modules.get("hermes_agent.utils")}
+    saved: dict = {"utils": sys.modules.get("utils")}
 
     def _purge() -> None:
         for name in list(sys.modules):

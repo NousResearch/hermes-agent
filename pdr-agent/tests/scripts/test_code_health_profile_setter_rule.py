@@ -46,7 +46,7 @@ def test_detects_direct_setter_calls(src, flagged):
     ("gateway/run.py", True),
     ("tui_gateway/model_switch.py", True),
     ("agent/runtime_scope.py", False),  # the one module that turns a scope into profile state
-    ("hermes_agent/hermes_constants.py", False),     # the setters' own definitions
+    ("hermes_constants.py", False),     # the setters' own definitions
     ("agent/secret_scope.py", False),
     ("tools/terminal_scope.py", False),
 ])

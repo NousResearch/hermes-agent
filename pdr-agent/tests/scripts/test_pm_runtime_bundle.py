@@ -24,6 +24,7 @@ def _exercise_relocated_pm_runtime(tmp_path, monkeypatch):
     (repo / "hermes_cli").mkdir()
     for name in ("__init__.py", "runtime_state.py"):
         shutil.copy2(source / "hermes_cli" / name, repo / "hermes_cli" / name)
+    __import__('pathlib').Path(repo / 'hermes_agent/hermes_constants.py').parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source / "hermes_agent/hermes_constants.py", repo / "hermes_agent/hermes_constants.py")
     # Copy the base executable, not a venv's launcher. The test host provides
     # its stdlib; production's package stage provides the complete distribution.

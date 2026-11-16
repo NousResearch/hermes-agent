@@ -218,6 +218,7 @@ def test_a_broken_upstream_target_is_refused_before_the_second_move(tmp_path, mo
 
     clone, commits = _fork_behind_upstream(tmp_path, monkeypatch)
     upstream = tmp_path / "upstream"
+    __import__('pathlib').Path(upstream / 'hermes_agent/hermes_constants.py').parent.mkdir(parents=True, exist_ok=True)
     (upstream / "hermes_agent/hermes_constants.py").write_text("def broken(:\n", encoding="utf-8")
     _git(upstream, "add", "hermes_agent/hermes_constants.py")
     _git(upstream, "commit", "-qm", "broken c3")

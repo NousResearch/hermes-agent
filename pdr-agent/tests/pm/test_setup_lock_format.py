@@ -42,7 +42,7 @@ def test_setup_reads_pins_independent_of_indentation(tmp_path, served, indent, b
     calls = tmp_path / "uv-calls"
     receipt = core / "handoff.json"
     (core / "pm" / "__init__.py").touch()
-    (core / "pm" / "hermes_agent/cli.py").write_text(
+    (core / "pm" / "cli.py").write_text(
         "import json, pathlib, sys\n"
         "assert sys.argv[1:] == ['install', '--test-environment', '--trust-recorded'], sys.argv\n"
         f"pathlib.Path({str(receipt)!r}).write_text(json.dumps(sys.argv[1:]))\n",

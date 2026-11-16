@@ -20,10 +20,12 @@ def init_repo(root, monkeypatch):
 def checkout(tmp_path, monkeypatch):
     root = tmp_path / "checkout"
     init_repo(root, monkeypatch)
+    __import__('pathlib').Path(root / 'hermes_agent/cli.py').parent.mkdir(parents=True, exist_ok=True)
     (root / "hermes_agent/cli.py").write_text("value = 1\n", encoding="utf8")
     git(root, "add", ".")
     git(root, "commit", "-qm", "old")
     old = git(root, "rev-parse", "HEAD")
+    __import__('pathlib').Path(root / 'hermes_agent/cli.py').parent.mkdir(parents=True, exist_ok=True)
     (root / "hermes_agent/cli.py").write_text("value = 2\n", encoding="utf8")
     git(root, "commit", "-qam", "new")
     tip = git(root, "rev-parse", "HEAD")
@@ -88,6 +90,7 @@ def test_syntax_failure_returns_to_original_checkout_without_rewriting_main(chec
         old = git(root, "rev-parse", "HEAD")
     # Commit an actually invalid critical file on main; no mocked syntax verdict.
     git(root, "checkout", "-q", "main")
+    __import__('pathlib').Path(root / 'hermes_agent/cli.py').parent.mkdir(parents=True, exist_ok=True)
     (root / "hermes_agent/cli.py").write_text("def broken(\n", encoding="utf8")
     git(root, "commit", "-qam", "bad upstream")
     bad = git(root, "rev-parse", "HEAD")
@@ -110,6 +113,7 @@ def test_rollback_restores_the_commit_when_the_parked_branch_is_taken(checkout, 
     git(root, "commit", "--allow-empty", "-qm", "local")
     feature_tip = git(root, "rev-parse", "HEAD")
     git(root, "checkout", "-q", "main")
+    __import__('pathlib').Path(root / 'hermes_agent/cli.py').parent.mkdir(parents=True, exist_ok=True)
     (root / "hermes_agent/cli.py").write_text("def broken(\n", encoding="utf8")
     git(root, "commit", "-qam", "bad upstream")
     git(root, "update-ref", "refs/remotes/origin/main", git(root, "rev-parse", "HEAD"))
@@ -304,6 +308,7 @@ def test_a_torn_branch_switch_leaves_the_autostash_parked(checkout, monkeypatch,
     from hermes_cli._early_recovery import interrupted_pull_marker
 
     root, _old, _tip = checkout
+    __import__('pathlib').Path(root / 'hermes_agent/cli.py').parent.mkdir(parents=True, exist_ok=True)
     (root / "hermes_agent/cli.py").write_text("value = 'local edit'\n", encoding="utf8")
     restored = []
     monkeypatch.setattr(update_cmd._m(), "_restore_stashed_changes", lambda *a, **k: restored.append(a))

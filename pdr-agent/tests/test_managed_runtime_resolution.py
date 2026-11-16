@@ -105,10 +105,6 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "Looks up node only inside the sealed payload's own node dirs (an explicit "
         "`path=`, never the ambient PATH), to run a package bin on the packaged node."
     ),
-    ("apps/desktop/electron/fixtures/source-backend.py", "uv"): (
-        "Test fixture drives the real uv deliberately placed on the test "
-        "runner's PATH; it is not Hermes-owned subprocess resolution."
-    ),
 }
 
 

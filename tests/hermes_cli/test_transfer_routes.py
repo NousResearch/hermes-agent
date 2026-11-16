@@ -62,3 +62,23 @@ def test_a_body_past_one_chunk_is_refused_before_it_is_read(client):
     response = http.post("/api/ops/transfer/chunk", content=b"x" * (_BODY_MAX + 1),
                          headers={"content-type": "application/json"})
     assert response.status_code == 413
+
+
+def test_starting_an_upload_reclaims_abandoned_ones(client):
+    """A canceled or failed transfer never reaches restore; the next upload drops its leftovers."""
+    import os
+    import time
+
+    from hermes_cli.web_routers.transfer import _backups
+    http, _ = client
+    backups = _backups(None)
+    backups.mkdir(parents=True, exist_ok=True)
+    stale, live = backups / f"transfer-upload-{'a' * 24}.zip", backups / f"transfer-upload-{'b' * 24}.zip"
+    stale.write_bytes(b"partial")
+    live.write_bytes(b"in progress")
+    two_hours_ago = time.time() - 7200
+    os.utime(stale, (two_hours_ago, two_hours_ago))
+
+    assert _send(http, None, 0, b"PK").status_code == 200
+
+    assert not stale.exists() and live.exists()

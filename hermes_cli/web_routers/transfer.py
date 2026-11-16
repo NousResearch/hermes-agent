@@ -131,6 +131,8 @@ async def append_transfer_chunk(request: Request, profile: Optional[str] = None)
     if not create and not path.is_file():
         raise HTTPException(status_code=404, detail="Unknown upload")
     received = await asyncio.to_thread(_append, path, offset, data, create)
+    if create:  # a canceled or failed transfer never reaches restore, which also prunes
+        await asyncio.to_thread(_prune_uploads, path)
     return {"upload_id": upload_id, "received": received}
 
 

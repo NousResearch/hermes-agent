@@ -43,9 +43,9 @@ const NO_SESSION = atom({ user: null })
 export const LOCALES = {
   en: {
     title: 'Apps',
-    subtitle: 'Connect Pipedream apps so your agent can use their tools.',
-    browse: 'Browse',
-    connected: 'Connected',
+    all: 'All',
+    onThisDevice: 'On this device',
+    available: 'Available',
     search: 'Search apps…',
     category: 'Category',
     allCategories: 'All categories',
@@ -103,18 +103,19 @@ export const LOCALES = {
 
 const CSS = `
 .pd-apps { display:flex; flex-direction:column; gap:0.75rem; height:100%; min-height:0; padding-block:1.25rem 0.5rem; color:var(--ui-text-primary); }
-.pd-header { display:flex; align-items:center; justify-content:space-between; gap:0.75rem; flex-wrap:wrap; }
-.pd-header-copy { display:flex; flex-direction:column; gap:0.15rem; min-width:0; }
-.pd-title { font-size:0.9375rem; font-weight:600; letter-spacing:-0.01em; }
-.pd-subtitle { font-size:0.75rem; color:var(--ui-text-tertiary); }
-.pd-browse, .pd-connected { display:flex; flex-direction:column; gap:0.5rem; min-height:0; flex:1; }
+.pd-directory { display:flex; flex-direction:column; gap:0.75rem; min-height:0; flex:1; }
 .pd-toolbar { display:flex; align-items:center; }
 .pd-search { flex:1 1 auto; min-width:0; }
 .pd-toolbar .pd-category-select { flex:0 0 12rem; width:12rem; }
-.pd-scroll { flex:1; min-height:0; overflow-y:auto; padding:0.15rem 0 0.5rem; }
+.pd-scroll { flex:1; min-height:0; overflow-y:auto; padding:0 0 0.5rem; }
 .pd-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:0.75rem; }
 @media (min-width: 1080px) { .pd-grid { grid-template-columns:minmax(0,1fr) minmax(0,1fr); } }
-.pd-card { position:relative; display:flex; align-items:center; gap:0.75rem; padding:0.75rem; border:1px solid var(--ui-stroke-quaternary); border-radius:0.5rem; background:var(--ui-bg-elevated); transition:background-color .15s; }
+.pd-section-heading { display:flex; align-items:flex-end; justify-content:space-between; gap:1.25rem; padding:var(--capabilities-gap-section) var(--capabilities-inset) var(--capabilities-gap-heading); }
+.pd-section:first-child .pd-section-heading { padding-top:var(--capabilities-gap-lead); }
+.pd-section-heading h2 { margin:0; font-size:1.4rem; font-weight:600; letter-spacing:-0.025em; }
+.pd-section-count { margin-left:0.5rem; font-weight:400; color:var(--ui-text-tertiary); font-variant-numeric:tabular-nums; }
+.pd-section-empty { padding:0 var(--capabilities-inset); }
+.pd-card { position:relative; display:flex; align-items:center; gap:0.75rem; padding:0.75rem; border:1px solid var(--ui-stroke-quaternary); border-radius:0; background:var(--ui-bg-elevated); transition:background-color .15s; }
 .pd-card:hover { background:var(--chrome-action-hover); }
 .pd-card[data-connected="true"] { border-color:color-mix(in srgb, var(--ui-green) 35%, var(--ui-stroke-quaternary)); }
 .pd-card-main { display:flex; align-items:center; gap:0.75rem; min-width:0; flex:1; border:0; background:transparent; padding:0; text-align:left; color:inherit; cursor:pointer; font:inherit; }
@@ -131,14 +132,14 @@ const CSS = `
 .pd-state[data-tone="ok"] { color:var(--ui-green); }
 .pd-state[data-tone="warn"] { color:var(--ui-orange); }
 .pd-state[data-tone="bad"] { color:var(--ui-red); }
-.pd-skeleton { display:flex; align-items:center; gap:0.75rem; padding:0.75rem; border:1px solid var(--ui-stroke-quaternary); border-radius:0.5rem; }
+.pd-skeleton { display:flex; align-items:center; gap:0.75rem; padding:0.75rem; border:1px solid var(--ui-stroke-quaternary); border-radius:0; }
 .pd-skeleton-copy { display:flex; flex-direction:column; gap:0.45rem; flex:1; }
 .pd-pager { display:flex; align-items:center; justify-content:space-between; gap:0.75rem; padding-top:0.75rem; }
 .pd-page-label { font-size:0.75rem; color:var(--ui-text-tertiary); }
 .pd-empty-stack { display:flex; flex-direction:column; align-items:center; gap:0.75rem; padding:1.5rem 0; }
 .pd-notice { display:flex; align-items:center; justify-content:space-between; gap:0.5rem; border:1px solid var(--ui-stroke-quaternary); border-radius:0.5rem; padding:0.5rem 0.75rem; font-size:0.75rem; color:var(--ui-text-secondary); background:var(--ui-bg-elevated); }
 .pd-center { display:flex; align-items:center; justify-content:center; gap:0.5rem; min-height:12rem; font-size:0.8125rem; color:var(--ui-text-secondary); }
-.pd-account { display:flex; align-items:center; gap:0.75rem; padding:0.75rem; border:1px solid var(--ui-stroke-quaternary); border-radius:0.5rem; background:var(--ui-bg-elevated); }
+.pd-account { display:flex; align-items:center; gap:0.75rem; padding:0.75rem; border:1px solid var(--ui-stroke-quaternary); border-radius:0; background:var(--ui-bg-elevated); }
 .pd-account-copy { display:flex; flex-direction:column; gap:0.1rem; flex:1; min-width:0; }
 .pd-account-name { font-size:0.8125rem; font-weight:600; }
 .pd-account-sub { font-size:0.72rem; color:var(--ui-text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -334,8 +335,42 @@ function SkeletonCard({ index }) {
   }, index)
 }
 
-export function AppsBrowse({ api, externalUserId, connectedSlugs, onOpen, onConnect }) {
+function matchesQuery(value, query) {
+  const needle = query.trim().toLowerCase()
+  return needle.length === 0 || value.toLowerCase().includes(needle)
+}
+
+function accountMatches(account, query) {
+  return (
+    matchesQuery(appNameOf(account?.app) || '', query) ||
+    matchesQuery(appSlugOf(account?.app) || '', query)
+  )
+}
+
+function SectionHeading({ count, title }) {
+  return jsx('header', {
+    className: 'pd-section-heading',
+    children: jsxs('h2', {
+      children: [title, jsx('span', { className: 'pd-section-count', children: count })]
+    })
+  })
+}
+
+export function AppsDirectory({
+  accounts,
+  accountsError,
+  accountsPending,
+  api,
+  connectedSlugs,
+  externalUserId,
+  onConnect,
+  onDisconnect,
+  onOpen,
+  onReconnect,
+  onRetryAccounts
+}) {
   const t = usePluginI18n(ID)
+  const [view, setView] = useState('all')
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('')
@@ -380,6 +415,20 @@ export function AppsBrowse({ api, externalUserId, connectedSlugs, onOpen, onConn
   const page = history.length + 1
   const showPager = Boolean(data.nextCursor) || history.length > 0
 
+  const connectedAccounts = useMemo(
+    () => accounts.filter(account => accountMatches(account, query)),
+    [accounts, query]
+  )
+  const availableApps = useMemo(
+    () => apps.filter(app => !connectedSlugs.has(appSlugOf(app))),
+    [apps, connectedSlugs]
+  )
+  const availableCount = Math.max(
+    0,
+    (data.totalCount || 0) - new Set(connectedAccounts.map(accountSlugOf).filter(Boolean)).size
+  )
+  const allCount = connectedAccounts.length + availableCount
+
   const selectCategory = next => {
     setCategory(next)
     setCursor(null)
@@ -399,8 +448,79 @@ export function AppsBrowse({ api, externalUserId, connectedSlugs, onOpen, onConn
     setCursor(previous)
   }
 
+  const connectedBody = accountsPending
+    ? jsxs('div', {
+        className: 'pd-center',
+        children: [jsx(GlyphSpinner, { ariaLabel: t('loading') }), t('loading')]
+      })
+    : connectedAccounts.length === 0
+      ? accounts.length === 0
+        ? jsxs('div', {
+            className: 'pd-empty-stack',
+            children: [
+              jsx(EmptyState, { title: t('noAccounts'), description: t('noAccountsHint') }),
+              jsx(Button, {
+                onClick: () => setView('available'),
+                size: 'sm',
+                type: 'button',
+                variant: 'outline',
+                children: t('browseApps')
+              })
+            ]
+          })
+        : jsx('div', {
+            className: 'pd-section-empty',
+            children: jsx(EmptyState, { title: t('noApps'), description: t('noAppsHint') })
+          })
+      : jsx('div', {
+          className: 'pd-grid',
+          children: connectedAccounts.map(account =>
+            jsx(AccountRow, { account, onDisconnect, onReconnect }, account.id)
+          )
+        })
+
+  const availableBody =
+    appsQuery.isPending && apps.length === 0
+      ? jsx('div', {
+          className: 'pd-grid',
+          children: Array.from({ length: 6 }, (_, index) => jsx(SkeletonCard, { index }, index))
+        })
+      : appsQuery.isError
+        ? jsx(ErrorState, {
+            title: t('errorTitle'),
+            description: errorMessage(appsQuery.error),
+            children: jsx(Button, {
+              onClick: () => void appsQuery.refetch(),
+              size: 'sm',
+              variant: 'outline',
+              children: t('retry')
+            })
+          })
+        : availableApps.length === 0
+          ? jsx('div', {
+              className: 'pd-section-empty',
+              children: jsx(EmptyState, { title: t('noApps'), description: t('noAppsHint') })
+            })
+          : jsx('div', {
+              className: 'pd-grid',
+              children: availableApps.map(app =>
+                jsx(AppCard, {
+                  app,
+                  connected: false,
+                  onConnect: () => onConnect(app),
+                  onOpen: () => onOpen(app)
+                }, app.name_slug || app.id || app.name)
+              )
+            })
+
+  const tabs = [
+    { id: 'all', label: `${t('all')} ${allCount}` },
+    { id: 'onDevice', label: `${t('onThisDevice')} ${connectedAccounts.length}` },
+    { id: 'available', label: `${t('available')} ${availableCount}` }
+  ]
+
   return jsxs('div', {
-    className: 'pd-browse',
+    className: 'pd-directory',
     children: [
       jsx('div', {
         className: 'pd-toolbar',
@@ -408,7 +528,7 @@ export function AppsBrowse({ api, externalUserId, connectedSlugs, onOpen, onConn
           containerClassName: 'pd-search h-10 w-full min-w-0 rounded-2xl bg-(--dt-card) py-0',
           leadingContent: jsx(Badge, { size: 'xs', variant: 'muted', children: t('title') }),
           trailingAction:
-            categories.length > 0
+            view !== 'onDevice' && categories.length > 0
               ? jsxs(Select, {
                   value: category || ALL_CATEGORIES,
                   onValueChange: value => selectCategory(value === ALL_CATEGORIES ? '' : value),
@@ -437,64 +557,76 @@ export function AppsBrowse({ api, externalUserId, connectedSlugs, onOpen, onConn
           variant: 'box'
         })
       }),
-      jsx('div', {
-        className: 'pd-scroll',
-        children: appsQuery.isPending && apps.length === 0
-          ? jsx('div', {
-              className: 'pd-grid',
-              children: Array.from({ length: 6 }, (_, index) => jsx(SkeletonCard, { index }, index))
-            })
-          : appsQuery.isError
-            ? jsx(ErrorState, {
-                title: t('errorTitle'),
-                description: errorMessage(appsQuery.error),
-                children: jsx(Button, {
-                  onClick: () => void appsQuery.refetch(),
-                  size: 'sm',
-                  variant: 'outline',
-                  children: t('retry')
-                })
-              })
-            : apps.length === 0
-              ? jsx(EmptyState, { title: t('noApps'), description: t('noAppsHint') })
-              : jsx('div', {
-                  className: 'pd-grid',
-                  children: apps.map(app =>
-                    jsx(AppCard, {
-                      app,
-                      connected: connectedSlugs.has(appSlugOf(app)),
-                      onConnect: () => onConnect(app),
-                      onOpen: () => onOpen(app)
-                    }, app.name_slug || app.id || app.name)
-                  )
-                })
+      jsx(SegmentedControl, {
+        onChange: setView,
+        options: tabs,
+        sizing: 'content',
+        value: view
       }),
-      showPager
+      accountsError
         ? jsxs('div', {
-            className: 'pd-pager',
+            className: 'pd-notice',
             children: [
+              jsx('span', { children: t('accountsUnavailable') }),
               jsx(Button, {
-                disabled: history.length === 0,
-                onClick: previousPage,
-                size: 'sm',
+                onClick: onRetryAccounts,
+                size: 'xs',
                 type: 'button',
                 variant: 'outline',
-                children: t('previous')
-              }),
-              totalPages > 1
-                ? jsx('span', { className: 'pd-page-label', children: t('page', page, totalPages) })
-                : null,
-              jsx(Button, {
-                disabled: !data.nextCursor,
-                onClick: nextPage,
-                size: 'sm',
-                type: 'button',
-                variant: 'outline',
-                children: t('next')
+                children: t('retry')
               })
             ]
           })
-        : null
+        : null,
+      jsxs('div', {
+        className: 'pd-scroll',
+        children: [
+          view !== 'available' && (view === 'onDevice' || connectedAccounts.length > 0)
+            ? jsxs('section', {
+                className: 'pd-section',
+                children: [
+                  jsx(SectionHeading, { count: connectedAccounts.length, title: t('onThisDevice') }),
+                  connectedBody
+                ]
+              })
+            : null,
+          view !== 'onDevice'
+            ? jsxs('section', {
+                className: 'pd-section',
+                children: [
+                  jsx(SectionHeading, { count: availableCount, title: t('available') }),
+                  availableBody,
+                  showPager && !appsQuery.isError && apps.length > 0
+                    ? jsxs('div', {
+                        className: 'pd-pager',
+                        children: [
+                          jsx(Button, {
+                            disabled: history.length === 0,
+                            onClick: previousPage,
+                            size: 'sm',
+                            type: 'button',
+                            variant: 'outline',
+                            children: t('previous')
+                          }),
+                          totalPages > 1
+                            ? jsx('span', { className: 'pd-page-label', children: t('page', page, totalPages) })
+                            : null,
+                          jsx(Button, {
+                            disabled: !data.nextCursor,
+                            onClick: nextPage,
+                            size: 'sm',
+                            type: 'button',
+                            variant: 'outline',
+                            children: t('next')
+                          })
+                        ]
+                      })
+                    : null
+                ]
+              })
+            : null
+        ]
+      })
     ]
   })
 }
@@ -549,60 +681,6 @@ function AccountRow({ account, onReconnect, onDisconnect }) {
         ]
       })
     ]
-  })
-}
-
-export function ConnectedAccounts({ accounts, loading, error, onReconnect, onDisconnect, onBrowse, onRetry }) {
-  const t = usePluginI18n(ID)
-
-  if (loading && accounts.length === 0) {
-    return jsx('div', {
-      className: 'pd-center',
-      children: [jsx(GlyphSpinner, { ariaLabel: t('loading') }), t('loading')]
-    })
-  }
-
-  if (error && accounts.length === 0) {
-    return jsx(ErrorState, {
-      title: t('errorTitle'),
-      description: errorMessage(error),
-      children: jsx(Button, {
-        onClick: onRetry,
-        size: 'sm',
-        variant: 'outline',
-        children: t('retry')
-      })
-    })
-  }
-
-  if (accounts.length === 0) {
-    return jsxs('div', {
-      className: 'pd-empty-stack',
-      children: [
-        jsx(EmptyState, { title: t('noAccounts'), description: t('noAccountsHint') }),
-        jsx(Button, {
-          onClick: onBrowse,
-          size: 'sm',
-          type: 'button',
-          variant: 'outline',
-          children: t('browseApps')
-        })
-      ]
-    })
-  }
-
-  return jsx('div', {
-    className: 'pd-scroll',
-    children: jsx('div', {
-      className: 'pd-grid',
-      children: accounts.map(account =>
-        jsx(AccountRow, {
-          account,
-          onDisconnect,
-          onReconnect
-        }, account.id)
-      )
-    })
   })
 }
 
@@ -896,7 +974,6 @@ export function PipedreamAppsTab({ api, fallbackExternalUserId, openExternal, co
   const t = usePluginI18n(ID)
   const externalUserId = useExternalUserId(fallbackExternalUserId)
   const queryClient = useQueryClient()
-  const [view, setView] = useState('browse')
   const [selectedApp, setSelectedApp] = useState(null)
   const [connectTarget, setConnectTarget] = useState(null)
   const [disconnectTarget, setDisconnectTarget] = useState(null)
@@ -995,62 +1072,20 @@ export function PipedreamAppsTab({ api, fallbackExternalUserId, openExternal, co
   return jsxs('div', {
     className: 'pd-apps capabilities-page',
     children: [
-      jsxs('div', {
-        className: 'pd-header',
-        children: [
-          jsxs('div', {
-            className: 'pd-header-copy',
-            children: [
-              jsx('div', { className: 'pd-title', children: t('title') }),
-              jsx('div', { className: 'pd-subtitle', children: t('subtitle') })
-            ]
-          }),
-          jsx(SegmentedControl, {
-            onChange: setView,
-            options: [
-              { id: 'browse', label: t('browse') },
-              {
-                id: 'connected',
-                label: accounts.length > 0 ? `${t('connected')} (${accounts.length})` : t('connected')
-              }
-            ],
-            sizing: 'content',
-            value: view
-          })
-        ]
+      jsx(AppsDirectory, {
+        accounts,
+        accountsError,
+        accountsPending: accountsQuery.isPending,
+        api,
+        connectedSlugs,
+        externalUserId,
+        onConnect: setConnectTarget,
+        onDisconnect: setDisconnectTarget,
+        onOpen: setSelectedApp,
+        onReconnect: account =>
+          setConnectTarget(account?.app ?? { name_slug: appSlugOf(account), name: appNameOf(account?.app) }),
+        onRetryAccounts: () => void accountsQuery.refetch()
       }),
-      accountsError
-        ? jsxs('div', {
-            className: 'pd-notice',
-            children: [
-              jsx('span', { children: t('accountsUnavailable') }),
-              jsx(Button, {
-                onClick: () => void accountsQuery.refetch(),
-                size: 'xs',
-                type: 'button',
-                variant: 'outline',
-                children: t('retry')
-              })
-            ]
-          })
-        : null,
-      view === 'connected'
-        ? jsx(ConnectedAccounts, {
-            accounts,
-            error: accountsError,
-            loading: accountsQuery.isPending,
-            onBrowse: () => setView('browse'),
-            onDisconnect: setDisconnectTarget,
-            onReconnect: account => setConnectTarget(account?.app ?? { name_slug: appSlugOf(account), name: appNameOf(account?.app) }),
-            onRetry: () => void accountsQuery.refetch()
-          })
-        : jsx(AppsBrowse, {
-            api,
-            connectedSlugs,
-            externalUserId,
-            onConnect: setConnectTarget,
-            onOpen: setSelectedApp
-          }),
       selectedApp
         ? jsx(AppDetailsDialog, {
             app: selectedApp,

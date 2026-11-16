@@ -236,6 +236,50 @@ describe('pipedream apps runtime plugin', () => {
     expect(api.apps).not.toHaveBeenCalled()
   })
 
+  it('lays out All as On this device then Available, keeping the app pager', async () => {
+    const api = {
+      config: vi.fn().mockResolvedValue({ configured: true, environment: 'production', mcpBaseUrl: null }),
+      categories: vi.fn().mockResolvedValue({ categories: [] }),
+      apps: vi.fn().mockResolvedValue({
+        apps: [
+          { name_slug: 'slack', name: 'Slack', description: 'Team chat' },
+          { name_slug: 'github', name: 'GitHub', description: 'Code' }
+        ],
+        nextCursor: 'c2',
+        prevCursor: null,
+        totalCount: 3
+      }),
+      accounts: vi.fn().mockResolvedValue([
+        { id: 'apn_1', email: 'me@example.com', healthy: true, app: { name_slug: 'slack', name: 'Slack' } }
+      ]),
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      mcpEnable: vi.fn()
+    }
+
+    renderWithQuery(
+      <plugin.PipedreamAppsTab
+        api={api}
+        copyText={vi.fn()}
+        fallbackExternalUserId="user-1"
+        openExternal={vi.fn()}
+        toast={toastSpy()}
+      />
+    )
+
+    expect(await screen.findByRole('button', { name: 'All 3' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'On this device 1' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Available 2' })).toBeTruthy()
+
+    expect(await screen.findByRole('heading', { name: /On this device\s*1/ })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: /Available\s*2/ })).toBeTruthy()
+
+    // Connected Slack lives in the device section, so the available grid omits it.
+    expect(screen.getAllByText('Slack')).toHaveLength(1)
+    expect(screen.getByText('GitHub')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Next' })).toBeTruthy()
+  })
+
   it('lists connected accounts and disconnects after confirmation', async () => {
     const api = {
       config: vi.fn().mockResolvedValue({ configured: true, environment: 'production', mcpBaseUrl: null }),
@@ -267,7 +311,7 @@ describe('pipedream apps runtime plugin', () => {
       />
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Connected (1)' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'On this device 1' }))
     expect(await screen.findByText('me@example.com')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))

@@ -309,3 +309,43 @@ def test_real_parser_edit_disable_gate(tmp_path, capsys):
         row = _raw_row(tmp_path, job["id"])
         assert row["enabled"] is False
         assert row["disabled_reason"] == "retiring the watch"
+
+
+def test_preexisting_disable_without_reason_is_never_backfilled(tmp_path):
+    """Incident shape f586101aac06: a job already disabled with NO recorded reason.
+
+    The record must stay honest as a record — the gate requires reasons going
+    forward but never invents history: no unrelated edit back-fills a
+    disabled_reason onto a pre-existing reason-less disable. The historical
+    mutation is made on disk between two store lifetimes, exactly like a
+    legacy file the gate never saw."""
+    with _store(tmp_path):
+        legacy = jobs.create_job(prompt="heartbeat", schedule="*/20 * * * *",
+                                 name="heartbeat")
+        neighbor = jobs.create_job(prompt="other", schedule="*/5 * * * *")
+    # Out-of-band historical write: disabled before the gate existed, no reason.
+    store_file = tmp_path / "cron" / "jobs.json"
+    data = json.loads(store_file.read_text())
+    rows = data["jobs"] if isinstance(data, dict) else data
+    for row in rows:
+        if row["id"] == legacy["id"]:
+            row["enabled"] = False
+            row.pop("disabled_reason", None)
+            row.pop("disabled_at", None)
+            row.pop("paused_reason", None)
+    store_file.write_text(json.dumps(data))
+    with _store(tmp_path):
+        row = _raw_row(tmp_path, legacy["id"])
+        assert row["enabled"] is False
+        assert "disabled_reason" not in row and "paused_reason" not in row
+        # An unrelated schedule edit neither refuses nor invents a reason.
+        args = _built_parser().parse_args(
+            ["cron", "edit", legacy["id"], "--schedule", "10m"])
+        assert cron_command(args) == 0
+        row = _raw_row(tmp_path, legacy["id"])
+        assert row["enabled"] is False
+        assert "disabled_reason" not in row  # history not back-filled
+        # A NEW disable through the gate still demands a reason — the historical
+        # gap does not dilute the forward rule.
+        args = _built_parser().parse_args(["cron", "pause", neighbor["id"]])
+        assert cron_command(args) == 1

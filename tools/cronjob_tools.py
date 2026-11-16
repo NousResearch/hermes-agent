@@ -995,7 +995,11 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
         parsed_schedule = parse_schedule(a["schedule"])
         updates["schedule"] = parsed_schedule
         updates["schedule_display"] = parsed_schedule.get("display", a["schedule"])
-        if job.get("state") != "paused":
+        # A schedule edit must not resurrect a disabled job: the effective disabled
+        # state is ``enabled == False`` regardless of the legacy ``state`` spelling,
+        # so only an actively-enabled job is re-marked scheduled (incident class:
+        # unattributed state changes; found while testing f586101aac06's shape).
+        if job.get("state") != "paused" and job.get("enabled", True):
             updates["state"] = "scheduled"
             updates["enabled"] = True
     return None

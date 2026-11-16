@@ -142,10 +142,12 @@ const COMPLETION_ERROR_PATTERNS = [
   /^(Provider|Gateway)\s+error:/i
 ]
 
-export function completionErrorText(finalText: string): string | null {
+// The text heuristic is for frames without a status: a turn the gateway
+// reports complete is an answer, even one that starts "HTTP 200 OK".
+export function completionErrorText(finalText: string, status?: string): string | null {
   const text = finalText.trim()
 
-  return text && COMPLETION_ERROR_PATTERNS.some(re => re.test(text)) ? text : null
+  return text && status !== 'complete' && COMPLETION_ERROR_PATTERNS.some(re => re.test(text)) ? text : null
 }
 
 // A provider safety-filter refusal (agent/error_classifier.py

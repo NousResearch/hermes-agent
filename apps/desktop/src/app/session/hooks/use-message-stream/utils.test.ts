@@ -20,6 +20,11 @@ describe('completionErrorText', () => {
     expect(completionErrorText('here is your answer')).toBeNull()
     expect(completionErrorText('   ')).toBeNull()
   })
+
+  it('believes a gateway that reports the turn complete', () => {
+    expect(completionErrorText('HTTP 200 OK', 'complete')).toBeNull()
+    expect(completionErrorText('HTTP 500 upstream', 'error')).toMatch(/^HTTP 500/)
+  })
 })
 
 describe('toTodoPayload', () => {

@@ -95,7 +95,7 @@ def test_finalize_turn_leaves_non_string_final_response_alone(monkeypatch):
         _should_review_memory=False,
         _turn_exit_reason="interrupted",
     )
-    assert result["final_response"] is None
+    assert result["final_response"] == "Operation interrupted: interrupted."
 
 
 # ---------------------------------------------------------------------------

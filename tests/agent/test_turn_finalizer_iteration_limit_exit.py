@@ -159,7 +159,8 @@ def test_pending_response_does_not_mask_later_terminal_exit(
         _pending_verification_response="stale premature report",
     )
 
-    assert result["final_response"] is None
+    expected = "Operation interrupted: stopped by user." if interrupted else None
+    assert result["final_response"] == expected
     assert result["turn_exit_reason"] == exit_reason
     assert result["completed"] is False
     assert agent._handle_max_iterations_called is False

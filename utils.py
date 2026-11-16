@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import stat
@@ -203,6 +204,17 @@ def _is_contended_windows_replace_error(exc: OSError) -> bool:
     return _IS_WINDOWS and getattr(exc, "winerror", None) in _WINDOWS_CONTENDED_REPLACE_ERRORS
 
 
+def _replace_retry_delay(attempt: int) -> float:
+    """Seconds to wait before contended-rename retry *attempt* (1-based).
+
+    Exponential from the base, capped at the max, plus up to 50% jitter. ``SystemRandom`` draws
+    from the OS, so concurrent writers (forked ones included) decorrelate without touching the
+    global ``random`` state.
+    """
+    delay = min(_REPLACE_RETRY_BASE_DELAY_S * 2 ** (attempt - 1), _REPLACE_RETRY_MAX_DELAY_S)
+    return delay + random.SystemRandom().uniform(0, 0.5 * delay)
+
+
 def _rewrite_in_place(tmp_str: str, real_path: str) -> None:
     """Overwrite *real_path* through the existing file — last resort for a still-held target.
 
@@ -255,10 +267,8 @@ def atomic_replace(tmp_path: str | Path, target: str | Path) -> str:
         if exc.errno not in _CROSS_DEVICE_ERRNOS and not contended:
             raise
         if contended:
-            # Lazy: keeps ``utils`` free of a package-level dependency on ``agent``.
-            from agent.retry_utils import jittered_backoff
             for attempt in range(1, _REPLACE_RETRY_ATTEMPTS + 1):
-                time.sleep(jittered_backoff(attempt, base_delay=_REPLACE_RETRY_BASE_DELAY_S, max_delay=_REPLACE_RETRY_MAX_DELAY_S))
+                time.sleep(_replace_retry_delay(attempt))
                 try:
                     os.replace(tmp_str, real_path)
                     return real_path

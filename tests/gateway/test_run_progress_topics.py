@@ -2176,3 +2176,99 @@ class TestSlackReplyInThreadProgressRouting:
             event_message_id="evt-trigger-001",
             reply_in_thread=True,
         ) == "evt-trigger-001"
+
+
+class LabelledToolsAgent:
+    """Emits a curated built-in, a path tool and an MCP tool, with previews built the way the
+    real agent builds them (``build_tool_preview`` under the turn's display settings)."""
+
+    CALLS = (
+        ("web_search", {"query": "weather in NYC"}),
+        ("read_file", {"path": "/srv/app/docs/STATUS.md"}),
+        ("mcp_gbrain_query", {"query": "q3 revenue"}),
+    )
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        from agent.display import build_tool_preview
+        for name, args in self.CALLS:
+            self.tool_progress_callback("tool.started", name, build_tool_preview(name, args), args)
+            time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+def _run_labelled_tools(monkeypatch, tmp_path, display_cfg):
+    """Run LabelledToolsAgent through the real gateway turn with *display_cfg* in config.yaml
+    and return every rendered progress line."""
+    import hermes_yaml as yaml
+
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = LabelledToolsAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"display": display_cfg}), encoding="utf-8")
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", thread_id=None)
+    result = asyncio.get_event_loop().run_until_complete(
+        runner._run_agent(
+            message="hello", context_prompt="", history=[], source=source,
+            session_id="sess-labels", session_key="agent:main:telegram:dm:12345",
+        )
+    )
+    assert result["final_response"] == "done"
+    texts = [m["content"] for m in adapter.sent] + [e["content"] for e in adapter.edits]
+    final = max(texts, key=lambda c: c.count("\n"))
+    return final.splitlines()
+
+
+def _line_for(lines, needle):
+    return next(line for line in lines if needle in line)
+
+
+def test_gateway_default_config_keeps_curated_labels_and_basename(monkeypatch, tmp_path):
+    from agent.i18n import t
+
+    lines = _run_labelled_tools(monkeypatch, tmp_path, {})
+    assert t("display.verb.web_search") in _line_for(lines, "weather in NYC")
+    read_line = _line_for(lines, "STATUS.md")
+    assert t("display.verb.read_file") in read_line
+    assert "/srv/app/docs" not in read_line
+    assert 'mcp_gbrain_query: "q3 revenue"' in _line_for(lines, "q3 revenue")
+
+
+def test_gateway_tool_labels_override_curated_and_label_mcp_tools(monkeypatch, tmp_path):
+    from agent.i18n import t
+
+    lines = _run_labelled_tools(monkeypatch, tmp_path, {"tool_labels": {
+        "web_search": "Looking things up", "mcp_gbrain_query": "Searching information",
+    }})
+    web_line = _line_for(lines, "weather in NYC")
+    assert 'Looking things up: "weather in NYC"' in web_line
+    assert t("display.verb.web_search") not in web_line
+    assert 'Searching information: "q3 revenue"' in _line_for(lines, "q3 revenue")
+    # Unmapped built-ins keep their curated label.
+    assert t("display.verb.read_file") in _line_for(lines, "STATUS.md")
+
+
+def test_gateway_per_platform_tool_labels(monkeypatch, tmp_path):
+    lines = _run_labelled_tools(monkeypatch, tmp_path, {
+        "tool_labels": {"mcp_gbrain_query": "Global label"},
+        "platforms": {"telegram": {"tool_labels": {"mcp_gbrain_query": "Telegram label"}}},
+    })
+    assert 'Telegram label: "q3 revenue"' in _line_for(lines, "q3 revenue")
+
+
+def test_gateway_trim_path_previews_false_shows_full_path(monkeypatch, tmp_path):
+    lines = _run_labelled_tools(monkeypatch, tmp_path, {"trim_path_previews": False})
+    assert "/srv/app/docs/STATUS.md" in _line_for(lines, "STATUS.md")

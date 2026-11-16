@@ -307,6 +307,8 @@ def _init_logging_and_display_from_config() -> None:
         lambda: _im("hermes_cli.skin_engine").init_skin_from_config(_cli().CLI_CONFIG),
         lambda: _im("agent.display").set_tool_preview_max_len(int(_display("tool_preview_length", 0) or 0)),
         lambda: _im("agent.display").set_friendly_tool_labels(bool(_display("friendly_tool_labels", True))),
+        lambda: _im("agent.display").set_tool_label_overrides(_display("tool_labels", {})),
+        lambda: _im("agent.display").set_trim_path_previews(bool(_display("trim_path_previews", True))),
     ):
         try:
             step()

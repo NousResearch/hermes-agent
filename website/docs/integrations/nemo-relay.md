@@ -6,15 +6,67 @@ description: "Record Hermes model and tool calls, export traces, and configure N
 
 # NeMo Relay
 
-[NeMo Relay](https://docs.nvidia.com/nemo/relay/v0.11.1/about-nemo-relay/overview) records Hermes sessions, turns, model calls, and tool calls. Use it to investigate a failed run, see retries and delegated work, or send traces to a collector such as Arize Phoenix.
+[NeMo Relay](https://docs.nvidia.com/nemo/relay/v0.11.1/about-nemo-relay/overview) lets you follow a Hermes conversation through its model requests, tool calls, and delegated agents. You can see which commands ran, what they returned, which model requests were retried, and where the run spent its time.
 
 Hermes supports Relay directly. Start Hermes normally; you do not need a separate Relay daemon, the `nemo-relay run` command, or a Hermes observability plugin.
+
+Start with a local trace file, then choose whether to keep files, send traces to a dashboard, or save completed trajectories for analysis. Relay plugins can also redact exported data, add cost and resource measurements, or change live model and tool calls.
 
 :::note Different from Hermes Relay
 NeMo Relay handles agent observability and middleware. [Hermes Relay](../user-guide/messaging/relay.md) connects a Hermes gateway to messaging platforms.
 :::
 
-## Before you start
+## What gets recorded
+
+Relay records work that passes through Hermes's `AIAgent` conversation path. That includes conversations from the CLI, TUI, Desktop, dashboard, ACP, messaging gateway, API server, scheduled and batch jobs, and the Python library when they use that path.
+
+| Activity | What you can inspect |
+|---|---|
+| Sessions and turns | Start/end times, parent-child relationships, turn outcome, and the working directory when known. |
+| Model requests and responses | Provider and model, retained messages and request fields, model output, timing, and outcome. |
+| Retries and fallbacks | A separate provider attempt under the same logical model call. This helps distinguish one user-facing call from several attempts to complete it. |
+| Token usage and cost | Usage reported by the provider. The optional pricing plugin adds estimates when it has matching model prices and usable usage data. |
+| Tool calls | Tool name, call ID, arguments, returned result, timing, and managed-call outcome. For a terminal command, inspect the returned output and exit status as well: an error returned as data need not mark the span as failed. |
+| Streaming | Stream lifecycle, chunk receipt metadata, available usage and finish information, and a reconstructed final response when the provider format supports it. |
+| Delegated agents | Child Hermes sessions under the turn that started them when Hermes has that relationship. |
+| Skills, memory, and MCP | Calls made through Hermes tools, with their arguments and results. These are ordinary tool records, not a separate trace of everything inside those systems. |
+
+The available fields depend on the provider, codec, plugins, and export format. OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages use [provider-aware codecs](https://docs.nvidia.com/nemo/relay/v0.11.1/integrate-into-frameworks/provider-codecs). Other routes use a generic JSON projection and may lack normalized model fields.
+
+### Reading one run
+
+Suppose you ask Hermes to investigate a failing test. In the trace, look for:
+
+1. **`hermes.session`** for the conversation and **`hermes.turn`** for your request.
+2. **`hermes.logical_llm_call`** for a model call, with a child for each provider attempt, such as `openai.chat_completions`.
+3. **`terminal`** or other tool scopes for the commands Hermes ran, their arguments, results, and duration.
+4. Further model calls and tools under the turn as Hermes works toward its answer. Delegated Hermes agents can have their own child sessions.
+
+This lets you distinguish a slow provider request from a slow tool, or a successful tool run from a model request that needed several attempts.
+
+### What is not automatically recorded
+
+Relay does not capture every part of Hermes or your machine. Slash commands, message delivery, voice transcription, and scheduler bookkeeping are outside this conversation path. A call to an external MCP server records the Hermes-level request and result, not the server's internal tools, subprocesses, or network activity.
+
+Streaming chunk marks contain receipt metadata, not every raw text fragment. Resource measurements are optional: the resource-metrics plugin adds host/process readings, not automatic per-tool or per-sandbox accounting. See [available plugins](#available-relay-plugins).
+
+## Choose an output
+
+You can export the same run in more than one format from one observability component. The formats serve different purposes and do not preserve every detail in the same way.
+
+| Output | What it contains | Choose it for |
+|---|---|---|
+| [ATOF](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/observability/atof) | Individual scope start/end events and marks, written incrementally as JSONL. | Inspecting recorded fields, debugging a run, or sending events to a custom collector. |
+| [ATIF](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/observability/atif) | A completed trajectory in JSON, organized into conversation and tool steps. It is written when the top-level agent scope closes. | Offline analysis and preparing evaluation or training datasets. |
+| [OpenTelemetry / OTLP](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/observability/opentelemetry) | Traces sent to an OTLP collector, with separate configuration for logs and metrics. Completed spans can appear before the whole session ends. | Viewing timing, failures, and nested calls in Phoenix or another observability backend. |
+
+**Start with ATOF** if you want to check exactly what Hermes is recording. Use **OpenTelemetry** for a trace dashboard and **ATIF** for a completed trajectory file. ATIF is not a recording that can automatically replay every external tool or model call.
+
+The [Quick Start](#quick-start-write-a-local-trace) writes ATOF. The examples below add [Phoenix](#arize-phoenix), [other OpenTelemetry collectors](#other-opentelemetry-collectors), or [ATIF](#atif-trajectories).
+
+## Quick Start: write a local trace
+
+### Before you start
 
 Complete the normal Hermes setup and confirm that you can run a conversation with your model provider.
 
@@ -28,15 +80,7 @@ Hermes uses `nemo-relay>=0.11,<0.12`. Its dependency configuration installs Rela
 
 Intel Macs and Android/Termux are not supported by this integration. A missing Relay binding does not prevent Hermes from running, but Relay recording and middleware are unavailable. Use the normal Hermes install or update process rather than changing packages in its managed environment. See Relay's [support matrix](https://docs.nvidia.com/nemo/relay/v0.11.1/reference/support-matrix).
 
-### Existing Relay configuration
-
-Hermes loads Relay's normal user configuration, followed by the higher-precedence system configuration. An administrator may therefore already have configured exporters or middleware for this machine. Run `hermes doctor` to see which files apply.
-
-`HERMES_NEMO_RELAY_PLUGINS_TOML` is an **optional override**: it replaces the user file, not the system file. The Quick Start uses it to select one explicit file. You do not need to set it when using Relay's standard configuration locations.
-
-An enabled Relay observability component also recognizes standard `OTEL_EXPORTER_OTLP_*ENDPOINT` environment variables for automatic export. Check inherited OTLP settings before running a local-only test. See [configuration](#how-configuration-is-applied) and [data and privacy](#data-and-privacy).
-
-## Quick Start: write a local trace
+Run `hermes doctor` to check whether Relay configuration already applies to the machine. Hermes reads Relay's user and system files; the optional override below replaces only the user file. An enabled observability component can also pick up inherited OTLP endpoint settings. Review [configuration](#how-configuration-is-applied) before assuming a test will export only to a local file.
 
 ### 1. Create the configuration file
 
@@ -107,25 +151,6 @@ If no file appears, run `hermes doctor` and check `hermes logs --level WARNING`.
 
 Removing the override restores normal Relay discovery; it does **not** turn off a user or system exporter. To stop exporting, update the configuration that enabled the destination and restart Hermes. `OTEL_SDK_DISABLED=true` disables Relay's OTLP exporters, but not ATOF or ATIF.
 
-## What Hermes records
-
-Relay follows Hermes's `AIAgent` conversation path. This includes conversations started through the CLI, TUI, Desktop, dashboard, ACP, messaging gateway, API server, scheduled jobs, batch jobs, and the Python library when they use that path.
-
-| Activity | Recorded information |
-|---|---|
-| Session | A `hermes.session` agent scope and the logical working directory when known. |
-| Turn | A `hermes.turn` child scope, working directory when known, and outcome. |
-| Model call | A `hermes.logical_llm_call` scope with a child for each provider attempt, including retries and fallbacks. Request and response data, available token usage, provider/model metadata, timing, and outcome. |
-| Streaming | Stream lifecycle, chunk receipt metadata, available usage and finish information, and a reconstructed final response when supported. Chunk marks are not a copy of every streamed text fragment. |
-| Tool call | Tool name, arguments, result, call ID, timing, and outcome. Skill, memory, scheduler, and MCP tools appear as ordinary tool calls. |
-| Delegated agent | A child session under the spawning turn when Hermes has that relationship. |
-
-A typical trace reads from `hermes.session` to `hermes.turn`, then to a logical model call, provider attempt, tool, or delegated session. OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages use [provider-aware codecs](https://docs.nvidia.com/nemo/relay/v0.11.1/integrate-into-frameworks/provider-codecs). Other routes use a generic JSON projection and may lack normalized provider fields.
-
-This does not automatically record slash commands, message delivery, voice transcription, scheduler bookkeeping, or work inside an external MCP server or another process. A tool scope shows the Hermes-level call, not everything the called service did internally.
-
-Relay's scope and trajectory IDs are not interchangeable with `hermes sessions` IDs. See the [ATOF format](https://docs.nvidia.com/nemo/relay/v0.11.1/reference/atof-event-format) when joining exported records.
-
 ## Export to a collector
 
 Keep a local ATOF file while setting up a remote destination. It helps distinguish a Hermes recording problem from an exporter or collector problem.
@@ -162,7 +187,15 @@ This example binds Phoenix to your machine and has no authentication. Use your c
 
 ### Other OpenTelemetry collectors
 
-Use the same `opentelemetry` section with an endpoint supported by your collector. Relay supports `full`, `gen_ai`, and `openinference` trace projections. These are different views of the same activity; choose one for each destination rather than exporting several copies unintentionally.
+Relay offers three OpenTelemetry trace projections. A projection chooses how Relay's events become spans and attributes; it is not another file format.
+
+| Projection | Use it for |
+|---|---|
+| `openinference` | OpenInference-compatible agent, model, and tool spans, including the Phoenix example above. |
+| `gen_ai` | Standard OpenTelemetry GenAI fields for collectors that expect those conventions. It omits Relay-specific attributes and non-metric marks from traces. |
+| `full` | Relay's scope hierarchy, metadata, and non-metric marks when you need its detailed event view in an OTLP backend. |
+
+Choose a projection supported by your collector. Different projections must use separate destinations; Relay rejects conflicting projection types at the same endpoint. Configure log and metric pipelines separately if you need those signals.
 
 With Relay's observability component enabled, standard OTLP endpoint environment variables can configure automatic export without an explicit endpoint block. Explicitly configured endpoints and automatic exporters can coexist. Review inherited endpoint and header variables before adding another destination. See [OpenTelemetry configuration](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/observability/opentelemetry).
 
@@ -179,15 +212,30 @@ output_directory = "./hermes-relay"
 filename_template = "trajectory-{session_id}.json"
 ```
 
-[ATIF](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/observability/atif) writes a trajectory when its top-level agent scope closes. A long-running gateway session may therefore show turn spans before it has a completed session trajectory. The historical `{session_id}` filename placeholder identifies the agent trajectory scope; it need not match the document's top-level `session_id`.
+[ATIF](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/observability/atif) writes a trajectory when its top-level agent scope closes. A long-running gateway session may therefore show turn spans before it has a completed session trajectory; see [continuous gateway sessions](#continuous-gateway-sessions).
+
+The filename uses a Relay trajectory identifier, not necessarily the ID shown by `hermes sessions`. If you need to join ATIF files to traces, use Relay's [correlation reference](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/observability/about#correlating-trajectories-and-traces).
+
+## Available Relay plugins
+
+Relay plugins are separate from [Hermes plugins](../user-guide/features/plugins.md). Configure them in Relay's `plugins.toml`, not with `hermes plugins enable`. The following components are included in the Relay Python package used by Hermes:
+
+| Plugin | What it adds | Does it change live calls? |
+|---|---|---|
+| [`observability`](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/observability/about) | ATOF and ATIF files, or OpenTelemetry export. | No; it exports recorded activity. |
+| [`pii_redaction`](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/pii-redaction/about) | Removes detected sensitive values from observability copies before export. | No; model and tool payloads stay unchanged. |
+| [`pricing`](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/model-pricing) | Estimates model-call costs from configured prices and reported usage. | No; an estimate requires matching prices and usable usage data. |
+| [`resource_metrics`](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/resource-metrics) | CPU, memory, process, disk, network, and supported GPU measurements through polling or snapshots. Polling is off until enabled. | No call rewriting. Some readings are system/device-wide; availability depends on the platform and drivers. |
+| [`adaptive`](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/adaptive/about) | Prompt-cache planning, response caching, and other adaptive features. | It can. A cache hit can skip the real provider or tool call. |
+| [`nemo_guardrails`](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/nemo-guardrails/about) | Legacy Guardrails policy checks. **Deprecated; do not choose it for a new setup.** | Yes; policy checks can affect live execution. |
+
+[NeMo Switchyard](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/switchyard) is a separately installed NVIDIA plugin for model routing. It is not bundled with Hermes. Use a release compatible with your Relay version and follow its installation instructions.
+
+For an observability setup, start with `observability`, add `pii_redaction` if needed, and then consider pricing or resource measurements. Execution-changing plugins need testing with your actual provider and tools. Observability redaction does not sanitize response-cache contents.
 
 ## Configure Relay plugins
 
-Relay plugins are separate from Hermes plugins. Configure Relay components and dynamic plugins through Relay's [`plugins.toml`](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/plugin-configuration-files), not `hermes plugins enable`.
-
-- **Exporters** receive observability events.
-- **Observability sanitizers**, such as PII redaction, change exported copies without changing the real model request or tool result.
-- **Execution middleware** can block or change live model or tool calls. This can change what the user sees.
+The examples below extend the Quick Start's `relay-plugins.toml`. For the other components, follow the configuration links in the catalogue. Relay's [configuration reference](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/plugin-configuration-files) describes the file structure.
 
 ### Redact common values from exports
 
@@ -238,8 +286,6 @@ Hermes does not download artifacts or install dependencies when a conversation s
 :::caution Enforcement coverage
 Hermes can continue without Relay plugins after initialization fails. It also skips managed recording and middleware for a later overlapping turn in one session, or a model/tool call nested inside an active managed callback. Do not treat this integration as the only security boundary when every operation must be checked.
 :::
-
-For other built-in components, including adaptive caching, pricing, and resource metrics, use the [Relay plugin guides](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/about). Check whether a component changes live execution or only copied events. In particular, observability redaction does not sanitize response-cache contents.
 
 ## How configuration is applied
 

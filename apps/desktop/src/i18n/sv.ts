@@ -2983,7 +2983,9 @@ export const svOverrides: TranslationOverrides = {
       restarting: 'Serverdelen startar om för att läsa in uppdateringen…',
       notAvailable: 'Uppdateringen är inte tillgänglig för den här serverdelen.',
       failed: 'Uppdateringen av serverdelen misslyckades.',
-      noReturn: 'Serverdelen kom inte tillbaka online. Uppdateringen kan ha misslyckats — kontrollera servervärden.'
+      noReturn: 'Serverdelen kom inte tillbaka online. Uppdateringen kan ha misslyckats — kontrollera servervärden.',
+      owed: steps =>
+        `Serverdelen är uppdaterad, men följande återstår: ${steps}. Kör \`hermes update\` igen för att slutföra dem.`
     },
     appName: 'Hermes',
     bundleSwapPending: 'Starta om för att slutföra uppdateringen',
@@ -3032,7 +3034,32 @@ export const svOverrides: TranslationOverrides = {
     checkingShort: 'Kontrollerar…',
     releaseAvailable: tag => `Version ${tag} är tillgänglig.`,
     version: value => `Version ${value}`,
-    versionUnavailable: 'Version saknas'
+    versionUnavailable: 'Version saknas',
+    discontinuedTitle: 'Den här Hermes-versionen stöds inte längre',
+    discontinuedBody:
+      'Den här Hermes-versionen stöds inte längre och kan sluta fungera — avinstallera den. Dina data blir kvar på disken.',
+    channels: { stable: 'Stabil', canary: 'Canary' },
+    versionDetailsTitle: 'Versionsdetaljer',
+    versionDetailsBody: 'Den här installationen hanteras utanför appen. Uppdatera den på samma sätt som du installerade den.',
+    versionDetailsVersion: 'Version',
+    versionDetailsClient: 'Den här datorn',
+    versionDetailsBackend: 'Ansluten serverdel',
+    versionDetailsCommit: 'Incheckning',
+    versionDetailsBuildOrigin: 'Byggursprung',
+    versionDetailsDistribution: 'Distribution',
+    versionDetailsDistributionDesktop: 'Skrivbordsapp',
+    versionDetailsDistributionDesktopMsix: 'Skrivbordsapp (MSIX)',
+    versionDetailsDistributionDesktopInstaller: 'Skrivbordsapp (installationsprogram)',
+    versionDetailsDistributionSourceInstaller: 'Källkod (installationsskript)',
+    versionDetailsDistributionSourceInstallerDesktop: 'Källkod (installationsskript) + Hermes Desktop',
+    versionDetailsDistributionSource: 'Källkod',
+    versionDetailsDistributionSourceDesktop: 'Källkod + Hermes Desktop',
+    versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsRuntime: 'Körmiljö',
+    versionDetailsRuntimeEmbedded: 'Inbäddad körmiljö',
+    versionDetailsRuntimeExternal: 'Extern (använder datorns körmiljö)',
+    versionDetailsInstallId: 'Installations-ID',
+    versionDetailsUncommittedChanges: 'ej incheckade ändringar'
   },
   statusStack: {
     agents: 'Agenter',

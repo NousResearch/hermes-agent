@@ -23,13 +23,25 @@ def _home_prefix_fold_regex(path: str):
     """Compile a regex matching *path* as an absolute directory prefix.
     Components match with either separator so native Windows, forward-slash, and mixed forms all
     fold; the caller normalizes the tail's backslashes to ``/``. A non-empty tail is required, so a
-    bare home is never folded. Returns ``None`` for an unset/degenerate path (fewer than two
-    components: ``/``, ``C:\\``, ``""``) so a stray HOME cannot rewrite unrelated prefixes."""
+    bare home is never folded. Returns ``None`` for an unset/degenerate path (no components, or a
+    bare root/drive: ``/``, ``C:``, ``C:\\``, ``""``) so a stray HOME cannot rewrite unrelated
+    prefixes.
+
+    A depth-1 home is NOT degenerate: ``/root`` is root's own default HOME, and skipping it left
+    ``/root/.ssh/authorized_keys`` unfolded — hence "safe" — while the identical command spelled
+    under ``/home/alice`` folded to ``~/.ssh/authorized_keys`` and was denied. A single-component
+    home must therefore match a mandatory leading separator, so a relative same-named path
+    (``root/file``) is still left alone."""
     components = [c for c in re.split(r"[/\\]+", path) if c] if path else []
-    if len(components) < 2:
+    if not components or (len(components) == 1 and re.fullmatch(r"[A-Za-z]:", components[0])):
         return None
-    # Optional leading root separator; a Windows drive letter is a component.
-    return re.compile(r"[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components) + _PATH_TAIL)
+    # Optional leading root separator; a Windows drive letter is a component. Mandatory (and anchored
+    # at a path start: ``/data/root/x`` is not ``/data~/x``) for a single-component home, else ``root/file`` folds.
+    # A POSIX single-component home splits only on ``/`` or ``\/``: ``/root\*`` is the literal name ``/root*``.
+    sep = r"(?:\\?/)" if len(components) == 1 and facts.os_family() != "win32" and path.startswith("/") else r"[/\\]"
+    lead = r"(?<![\w.~$}/\\-])" + sep + "+" if len(components) == 1 else sep + "*"
+    tail = _PATH_TAIL if sep == r"[/\\]" else r"(?P<tail>(?:\\?/[^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
+    return re.compile(lead + (sep + "+").join(re.escape(c) for c in components) + tail)
 
 
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
@@ -38,7 +50,7 @@ def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
     for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
         pattern = _home_prefix_fold_regex(path)
         if pattern is not None:
-            command = pattern.sub(lambda m: replacement + m.group("tail").replace("\\", "/"), command)
+            command = pattern.sub(lambda m: replacement + m.group("tail").replace("\\/", "/").replace("\\", "/"), command)
     return command
 
 
@@ -117,4 +129,22 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
         paths = _home_spellings([str(home), str(home.resolve(strict=False))], command)
     except Exception:
         return command
-    return _fold_home_prefixes(command, paths, "~/.hermes")
+    command = _fold_home_prefixes(command, paths, "~/.hermes")
+    # The prefix fold needs a child tail; fold the bare home word too (`mv /opt/data /tmp/x`) so the
+    # Hermes-home rules see it.
+    for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
+        pattern = _bare_home_fold_regex(path)
+        if pattern is not None:
+            command = pattern.sub("~/.hermes", command)
+    return command
+
+
+@functools.lru_cache(maxsize=64)
+def _bare_home_fold_regex(path: str):
+    """*path* as a whole shell word (optional trailing separator); ``None`` when degenerate."""
+    components = [c for c in re.split(r"[/\\]+", path) if c] if path else []
+    if len(components) < 2:
+        return None
+    return re.compile(
+        r"(?<![^\s'\"`=;|&<>(])[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components)
+        + r"[/\\]?(?=[" + _PATH_TOKEN_STOP + r"*]|$)")

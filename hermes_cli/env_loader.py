@@ -244,7 +244,10 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         cfg = _load_secrets_config(home)
     except Exception:
         return {}
-    if not cfg:
+    if not cfg:  # removed: its earlier values are no longer applied, so stop masking them
+        from agent.redact_secret_sources import publish_secret_source_values
+
+        publish_secret_source_values(home, {})
         return {}
 
     try:
@@ -267,7 +270,10 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     except Exception:
         return {}
 
-    if not report.sources:
+    if not report.sources:  # every source disabled: nothing is applied any more, so stop masking it
+        from agent.redact_secret_sources import publish_secret_source_values
+
+        publish_secret_source_values(home, {})
         return {}
     # D32, as on the process-global path: a source must never supply the config backend's own
     # deployment or plane credential, for a routed profile either (this snapshot feeds that
@@ -295,6 +301,9 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
     _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    from agent.redact_secret_sources import publish_secret_source_values
+
+    publish_secret_source_values(home, values)
     return dict(values)
 
 
@@ -1053,6 +1062,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # review). A config READ failure above keeps them — fail-open, same as the fetch-failure path below.
     if not cfg:
         _revoke_secret_source_writes(home_path, keep=lambda _name, _source: False)
+        _publish_live_source_values(home_key, home_path, {})
         return
 
     # Defer the registry import until a source is enabled — bitwarden eagerly loads cryptography._rust.pyd,
@@ -1061,6 +1071,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     any_enabled = any(isinstance(v, dict) and v.get("enabled") is True for v in cfg.values())
     if not any_enabled:
         _revoke_secret_source_writes(home_path, keep=lambda _name, _source: False)
+        _publish_live_source_values(home_key, home_path, {})
         return
 
     try:
@@ -1096,6 +1107,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         return
 
     if not report.sources:  # no source enabled: keep retrying cheaply so flipping one on takes effect
+        _publish_live_source_values(home_key, home_path, {})
         return
     _refuse_protected_env_from_sources(report, backend_before, environ_before, env=staged)
     _publish_staged_env(staged, environ_before)
@@ -1127,6 +1139,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     _record_secret_source_writes(home_key, report, supplied, environ_before, staged, launch_env_captured)
     if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    _publish_live_source_values(home_key, home_path, values)
     _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {
         n: values[n] for n, a in report.provenance.items() if a.authoritative and n in values}
 
@@ -1158,6 +1171,19 @@ def _record_released_bridge_claims(home_key: str, report, supplied: set[str], en
             claims[name] = (owner[name], marker)
     if not claims:
         _RELEASED_BRIDGE_CLAIMS_BY_HOME.pop(home_key, None)
+
+
+def _publish_live_source_values(home_key: str, home_path: Path, values: dict[str, str]) -> None:
+    """Hand the redactor every source value live in ``os.environ`` for this home. A source whose re-pull
+    FAILED keeps its earlier write (not a revocation), so its value must stay masked: publish every
+    recorded write still holding its value, not only this pass's supplied names. Revoked writes were
+    already dropped from the record, so they unregister here — an empty set included."""
+    from agent.redact_secret_sources import publish_secret_source_values
+
+    live = {name: rec[1] for name, rec in _SECRET_SOURCE_WRITES_BY_HOME.get(home_key, {}).items()
+            if os.environ.get(name) == rec[1]}
+    live.update(values)
+    publish_secret_source_values(home_path, live)
 
 
 def _published_value(name: str, staged: dict) -> str | None:

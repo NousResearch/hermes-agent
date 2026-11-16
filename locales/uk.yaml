@@ -435,6 +435,17 @@ gateway:
       provider_usage_plus_estimate: "дані провайдера + оцінка нових повідомлень"
     source_line: "Джерело: {source}; кількість за категоріями — локальні оцінки."
     hint_all: "Використайте /context all, щоб побачити вартість кожної навички та набору інструментів."
+    cache_warm: "Кеш промпту: активний до {until} (залишилось {remaining}; {ttl}, {confidence})."
+    cache_expired: "Кеш промпту: сплив {ago} тому ({ttl}, {confidence}); наступне повідомлення заново обробить увесь промпт."
+    cache_maybe_warm: "Кеш промпту: може бути ще активним до {until} (щонайбільше {remaining}; {ttl}, {confidence})."
+    cache_unknown_moved: "Кеш промпту: невідомо (маршрут, сесія або контекст змінилися після останнього кешованого запиту)."
+    cache_unknown_route: "Кеш промпту: невідомо (цей провайдер не публікує термін зберігання кешу)."
+    cache_unknown_runtime: "Кеш промпту: невідомо (це середовище виконання задає власні параметри кешу, яких Hermes не бачить)."
+    cache_unknown_storage: "Кеш промпту: невідомо (не вдалося прочитати сховище сесії)."
+    cache_confidence:
+      proven: "підтверджено"
+      declared: "запитано"
+      assumed: "припущено"
   status:
     header: "📊 **Стан Hermes Gateway**"
     matrix_scope_header: "**Область Matrix:**"

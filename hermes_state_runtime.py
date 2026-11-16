@@ -950,7 +950,7 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
         raw = payload.get('source')
         source = raw if isinstance(raw, str) else None
         payload = {k: v for k, v in payload.items() if k != 'source'}
-    allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute', 'task'})
+    allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute', 'task', 'prompt_cache_clock'})
     if set(payload) - allowed:
         raise RuntimeStoreError('invalid_params')
     for key, value in payload.items():
@@ -969,6 +969,10 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
             raise RuntimeStoreError('invalid_params')
         db._record_model_usage(conn, session_id, **({'api_call_count': 1} | payload))
     else:
+        if payload.get('prompt_cache_clock') is not None:
+            from hermes_state_worker_context import stamp_cache_generation
+            payload = dict(payload, prompt_cache_clock=stamp_cache_generation(conn, session_id,
+                                                                              payload['prompt_cache_clock']))
         db._update_token_counts_in_transaction(conn, session_id, **payload)
         # The managed worker's platform is the policy label (gui), not the in-process
         # agent surface (desktop). Stamp the same created_surface the insert uses.

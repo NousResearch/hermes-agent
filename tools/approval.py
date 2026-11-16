@@ -30,7 +30,7 @@ from tools.approval_context import (
 )
 from tools.approval_detection import (
     _SCAN_INCOMPLETE_DESCRIPTION, _approval_key_aliases, _check_sudo_stdin_guard, detect_content_rule_keys,
-    detect_dangerous_command, detect_hardline_command, hardline_scan_incomplete,
+    detect_dangerous_command, detect_hardline_command, hardline_scan_incomplete, SMART_MANUAL_ONLY_DESCRIPTIONS,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _matching_permanent_allowlist_entry, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -1038,11 +1038,16 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     ``pattern_keys`` are what :func:`_persist_choice` stores on session/always; a smart-DENY
     owner override reduces every surface to once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
     actually asked, so a smart APPROVE never pays for redacting a large script.
+
+    A key in ``SMART_MANUAL_ONLY_DESCRIPTIONS`` (osascript that can discard the operator's unsaved
+    work) skips the guardian: its APPROVE is not the consent of the person who owns that work
+    (#141346). The human answer then covers this one command; session/always are not offered.
     """
     from agent.redact import redact_approval_display
 
     smart_denied = False
-    if smart:
+    manual_only = not SMART_MANUAL_ONLY_DESCRIPTIONS.isdisjoint(pattern_keys)
+    if smart and not manual_only:
         result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
                                            session_key, human_present=is_cli or is_gateway or is_ask)
         if result is not None:
@@ -1050,7 +1055,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     pending_body = pending_body() if pending_body else None
     # A command the scanners could not read to the end is approved one run at a time: a session or
     # always grant on its key would wave through every later command that trips the scan budget.
-    one_shot = smart_denied or _SCAN_INCOMPLETE_DESCRIPTION in pattern_keys
+    # A manual-only class (an osascript program that can discard unsaved work) is one run too.
+    one_shot = smart_denied or manual_only or _SCAN_INCOMPLETE_DESCRIPTION in pattern_keys
     allow_permanent = not one_shot
 
     def deny(template: str, outcome: str, **fmt) -> dict:
@@ -1074,7 +1080,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 choice, pattern_key, session_key, "/".join(sorted(CONSENT_ANSWERS)))
             return _denied(_UNRECOGNIZED_ANSWER, pattern_key=pattern_key,
                            description=description, outcome="unrecognized_answer", noun=spec.noun)
-        # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
+        # A smart-DENY owner override or a manual-only class is always one operation, even if an older
+        # client returns "session" or "always".
         if not one_shot:
             _persist_choice(session_key, choice, pattern_keys)
         if spec.user_approved:

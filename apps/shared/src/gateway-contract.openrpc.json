@@ -33576,6 +33576,82 @@
         "title": "ProjectsUpdateParams",
         "type": "object"
       },
+      "PromptCacheWindow": {
+        "additionalProperties": false,
+        "description": "``agent.prompt_cache_clock.cache_window``: until when the session's cached prompt prefix is warm.\n``guaranteed_until``: the whole prefix is warm before it (a documented minimum or a proven tier);\n``estimated_until``: certainly gone after it; between the two it may still be warm. ``coverage``\nmaps each cached tier to its deadline. ``confidence`` is ``proven`` | ``declared`` | ``assumed`` |\n``unknown``; times are epoch seconds.",
+        "properties": {
+          "guaranteed_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guaranteed Until"
+          },
+          "estimated_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Until"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          },
+          "confidence": {
+            "title": "Confidence",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Refreshed At"
+          },
+          "coverage": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "default": {},
+            "title": "Coverage",
+            "type": "object"
+          }
+        },
+        "required": [
+          "guaranteed_until",
+          "estimated_until",
+          "tier",
+          "confidence",
+          "reason"
+        ],
+        "title": "PromptCacheWindow",
+        "type": "object"
+      },
       "PromptCancelParams": {
         "additionalProperties": false,
         "properties": {
@@ -37878,6 +37954,17 @@
             },
             "title": "Context Files",
             "type": "array"
+          },
+          "prompt_cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromptCacheWindow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

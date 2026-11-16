@@ -539,6 +539,22 @@ class ContextFileSource(Result):
     status: str
 
 
+class PromptCacheWindow(Result):
+    """``agent.prompt_cache_clock.cache_window``: until when the session's cached prompt prefix is warm.
+    ``guaranteed_until``: the whole prefix is warm before it (a documented minimum or a proven tier);
+    ``estimated_until``: certainly gone after it; between the two it may still be warm. ``coverage``
+    maps each cached tier to its deadline. ``confidence`` is ``proven`` | ``declared`` | ``assumed`` |
+    ``unknown``; times are epoch seconds."""
+
+    guaranteed_until: float | None
+    estimated_until: float | None
+    tier: str | None
+    confidence: str
+    reason: str
+    refreshed_at: float | None = None
+    coverage: dict[str, float] = {}
+
+
 class SessionContextBreakdownResult(Result):
     """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)
     plus the per-file context manifest (empty until the agent exists)."""
@@ -552,6 +568,7 @@ class SessionContextBreakdownResult(Result):
     context_source: str
     model: str
     context_files: list[ContextFileSource] = []
+    prompt_cache: PromptCacheWindow | None = None
 
 
 method("session.context_breakdown", params=SessionContextBreakdownParams, result=SessionContextBreakdownResult,

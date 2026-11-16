@@ -435,6 +435,17 @@ gateway:
       provider_usage_plus_estimate: "úsáid an tsoláthraí + teachtaireachtaí nua measta"
     source_line: "Foinse: {source}; is meastacháin áitiúla iad na comhairimh chatagóire."
     hint_all: "Úsáid /context all le haghaidh costas de réir scile agus de réir tacar uirlisí."
+    cache_warm: "Taisce an phrompta: te go dtí {until} ({remaining} fágtha; {ttl}, {confidence})."
+    cache_expired: "Taisce an phrompta: chuaigh in éag {ago} ó shin ({ttl}, {confidence}); athphróiseálfaidh an chéad teachtaireacht eile an prompta iomlán."
+    cache_maybe_warm: "Taisce an phróimpte: d'fhéadfadh sí a bheith te go dtí {until} ({remaining} eile ar a mhéad; {ttl}, {confidence})."
+    cache_unknown_moved: "Taisce an phrompta: anaithnid (d'athraigh an bealach, an seisiún nó an comhthéacs ón iarratas taisce deireanach)."
+    cache_unknown_route: "Taisce an phrompta: anaithnid (ní fhoilsíonn an soláthraí seo a choinneáil taisce)."
+    cache_unknown_runtime: "Taisce an phróimpte: anaithnid (socraíonn an timpeallacht rite seo a roghanna taisce féin, nach féidir le Hermes a fheiceáil)."
+    cache_unknown_storage: "Taisce an phróimpte: anaithnid (níorbh fhéidir stór an tseisiúin a léamh)."
+    cache_confidence:
+      proven: "cruthaithe"
+      declared: "fógartha"
+      assumed: "glactha leis"
   status:
     header: "📊 **Stádas Hermes Gateway**"
     matrix_scope_header: "**Scóip Matrix:**"

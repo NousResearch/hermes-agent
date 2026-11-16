@@ -66,6 +66,21 @@ class TestSshConfigApprovalGate:
         assert is_write_approval_required(str(tmp_path / "notes.txt")) is False
 
 
+class TestShellRcApprovalGate:
+    """Login shell rc files pair with the terminal gate (#85321)."""
+
+    def test_shell_rc_not_hard_denied(self):
+        from agent.file_safety import is_write_denied
+
+        assert is_write_denied(os.path.expanduser("~/.bashrc")) is False
+
+    def test_shell_rc_is_approval_required(self):
+        from agent.file_safety import is_write_approval_required
+
+        for name in (".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"):
+            assert is_write_approval_required(os.path.expanduser(f"~/{name}")) is True, name
+
+
 
 class TestSafeWriteRoot:
     """HERMES_WRITE_SAFE_ROOT should sandbox writes to a specific subtree."""

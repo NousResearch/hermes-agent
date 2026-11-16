@@ -4,16 +4,20 @@ First thing at store selection, before anything is staged, refreshed, written or
 process computes each kept-local name's value now (the local file, as every reader reads it) and
 afterwards (the stored entries, then the file the import leaves, a kept line frozen when that
 round-trips). When any differs on any reader and the plane has never stored the profile, the import
-is refused: the whole process runs on the local store, exactly as with ``HERMES_SECRET_STORE``
-unset (nothing sent, ``.env`` and ``auth.json`` byte for byte, no poller), and ``hermes doctor``
-and the boot log name the lines (never a value). The next start checks again. Expected values come
-from running the local store on the same text.
+is refused: while no served profile is on the plane the whole process runs on the local store,
+exactly as with ``HERMES_SECRET_STORE`` unset (nothing sent, ``.env`` and ``auth.json`` byte for
+byte, no poller), and ``hermes doctor`` and the boot log name the lines (never a value); once one
+is, it fails closed with nothing written. Each boot checks again before it stages, refreshes or
+writes. Expected values come from running the local store on the same text.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import random
+
+from pathlib import Path
 
 import pytest
 
@@ -351,6 +355,7 @@ def test_an_import_that_still_would_change_a_kept_line_at_boot_fails_closed(plan
         _boot(plane.home)
     assert plane.patches() == []
     assert (plane.home / ".env").read_text(encoding="utf-8") == REFUSED_ENV
+    assert not (plane.home / ".secrets-import.json").exists()
 
 
 def test_hermes_doctor_reports_the_refusal_and_checks_the_local_files(plane, monkeypatch, capsys):
@@ -366,3 +371,260 @@ def test_hermes_doctor_reports_the_refusal_and_checks_the_local_files(plane, mon
     assert any("secrets plane import" in issue for issue in finding.issues)
     assert "first" not in shown and "sk-local" not in shown
     assert plane.patches() == [] and not (plane.home / ".secrets-import.json").exists()
+
+
+# --- rv26: never local once a served profile is on the plane; the check runs before any write -------
+
+PLANE_KEY = "plane-only-key-7c1"
+
+
+def _iso(seconds):
+    return (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=seconds)).isoformat()
+
+
+def _nous_auth(home, *, expires_in, extra=True):
+    """*home*'s auth.json: the Nous record expiring in *expires_in* seconds, plus (``extra``) local
+    OAuth records an import would take."""
+    from tests.plugins.secret_store.stub_secrets_plane import TOKEN
+    nous = {"access_token": TOKEN, "refresh_token": "rt-1", "expires_at": _iso(expires_in),
+            "portal_base_url": "https://portal.nousresearch.com", "client_id": "hermes-cli"}
+    store = {"version": 1, "providers": {"nous": nous}}
+    if extra:
+        store.update(active_provider="openai-codex", credential_pool={"openrouter": [{"id": "p1", "access_token": "pool-local"}]})
+        store["providers"]["openai-codex"] = {"tokens": {"access_token": "codex-local"}}
+    text = json.dumps(store)
+    (Path(home) / "auth.json").write_text(text, encoding="utf-8")
+    return text
+
+
+def _sibling(plane, text, *, name="other"):
+    other = plane.home.parent / name
+    other.mkdir()
+    (other / ".env").write_text(text, encoding="utf-8", newline="")
+    return other
+
+
+def _files(*homes):
+    """Every file under *homes*, byte for byte (what "nothing written" compares)."""
+    return {str(p): p.read_bytes() for home in homes for p in sorted(Path(home).rglob("*")) if p.is_file()}
+
+
+def _named_without_values(err, *profiles):
+    shown = str(err.value.code)
+    assert REF in shown and all(f"'{p}'" in shown for p in profiles), shown
+    for value in ("first", "part|", PLANE_KEY, "imported-key", "codex-local", "pool-local"):
+        assert value not in shown
+
+
+@pytest.mark.parametrize("sibling", ["tokenless", "live-token"])
+def test_a_refused_sibling_fails_closed_when_the_launch_profile_is_on_the_plane(plane, monkeypatch, sibling):
+    """rv26 P1: the launch profile is already on the plane (its files hold only the bootstrap), and
+    another profile's import would change a kept line. Running local would serve the launch profile
+    none of its secrets, so store selection fails closed naming the line; nothing is written."""
+    refreshes = []
+    _fresh_start(monkeypatch, {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _nous_credential(monkeypatch, refreshes)
+    plane.set_level(plane.profile("default"), env={"OPENAI_API_KEY": PLANE_KEY})
+    (plane.home / ".env").write_text("TERMINAL_ENV=local\n", encoding="utf-8")
+    _nous_auth(plane.home, expires_in=10**6, extra=False)
+    other = _sibling(plane, REFUSED_ENV)
+    if sibling == "live-token":
+        _nous_auth(other, expires_in=10**6)
+    before = _files(plane.home.parent)
+    with pytest.raises(routing.SecretStoreUnavailable) as err:
+        _boot(plane.home)
+    _named_without_values(err, "other", "default")
+    assert _files(plane.home.parent) == before
+    assert plane.patches() == [] and refreshes == []
+    assert {r["method"] for r in plane.requests} == {"GET"}
+    assert __import__("os").environ.get("OPENAI_API_KEY") is None
+
+
+def _import_default(plane, monkeypatch, *, expires_in=-10**6):
+    """An actual one-time import of ``default`` (plane credential from the stub): its files are
+    left with the bootstrap only."""
+    _fresh_start(monkeypatch, {})
+    (plane.home / ".env").write_text("OPENAI_API_KEY=imported-key\n", encoding="utf-8")
+    _nous_auth(plane.home, expires_in=expires_in, extra=False)
+    _boot(plane.home)
+    assert routing.routed_provider() is not None and len(plane.patches()) == 1
+    assert "imported-key" not in (plane.home / ".env").read_text(encoding="utf-8")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+
+@pytest.mark.parametrize("evidence", ["plane", "marker-only", "staging"])
+def test_an_imported_profile_with_a_later_refused_sibling_fails_closed(plane, monkeypatch, evidence):
+    """rv26 P1: ``default`` was imported, then a sibling whose import would change a kept line
+    appears. The next start fails closed instead of running local (which would serve ``default``
+    nothing). With no unexpired token anywhere the plane cannot be asked: the local import marker
+    decides. A leftover staging (an import that stopped partway) counts as imported too."""
+    refreshes = []
+    if evidence == "staging":
+        _fresh_start(monkeypatch, {})
+        (plane.home / ".secrets-import.json").write_text(json.dumps({"env": {"OPENAI_API_KEY": "staged"}, "auth": {}}),
+                                                         encoding="utf-8")
+    else:
+        _import_default(plane, monkeypatch)
+    _sibling(plane, REFUSED_ENV)
+    _fresh_start(monkeypatch, {})
+    if evidence == "marker-only":
+        _nous_credential(monkeypatch, refreshes)   # default's token expired, the sibling has none
+    plane.requests.clear()
+    before = _files(plane.home.parent)
+    with pytest.raises(routing.SecretStoreUnavailable) as err:
+        _boot(plane.home)
+    _named_without_values(err, "other", "default")
+    assert _files(plane.home.parent) == before
+    assert plane.patches() == [] and refreshes == []
+    methods = {r["method"] for r in plane.requests}
+    assert methods == set() if evidence == "marker-only" else methods == {"GET"}
+
+
+def test_an_imported_profile_with_a_hand_added_line_and_an_expired_token_serves_the_plane(plane, monkeypatch):
+    """The import marker says ``default`` is on the plane, so its own refusal-shaped lines (added by
+    hand afterwards) never run it local even when the token cannot ask the plane: it refreshes once,
+    the plane wins and serves its value, nothing is sent."""
+    refreshes = []
+    _import_default(plane, monkeypatch)
+    with open(plane.home / ".env", "a", encoding="utf-8", newline="") as f:
+        f.write(REFUSED_ENV)
+    _fresh_start(monkeypatch, {})
+    _nous_credential(monkeypatch, refreshes)
+    _boot(plane.home)
+    assert routing.import_refusal() is None and routing.routed_provider() is not None
+    assert len(refreshes) == 1 and len(plane.patches()) == 1
+    assert set(_readers(plane.home, "OPENAI_API_KEY").values()) == {"imported-key"}
+
+
+def _empty_the_plane_after_selection(plane, monkeypatch):
+    """Store selection sees the stored profile; the plane is emptied right after it."""
+    from plugins.secret_store.remote import backend
+    from tests.plugins.secret_store.stub_secrets_plane import INSTANCE
+    original = backend.RemoteSecretStoreProvider.import_refusal
+    seen = []
+
+    def then_empty(self, homes):
+        seen.append(original(self, homes))
+        plane.profiles[(INSTANCE, "default")] = {"env": {}, "auth": {}, "version": 0}
+        return seen[-1]
+    monkeypatch.setattr(backend.RemoteSecretStoreProvider, "import_refusal", then_empty)
+    return seen
+
+
+def _credential(monkeypatch, mode, refreshes):
+    if mode != "idp":
+        _nous_credential(monkeypatch, refreshes)
+
+
+_EXPIRES = {"idp": 10**6, "nous-live": 10**6, "nous-window": 90}
+
+
+@pytest.mark.parametrize("mode", ["idp", "nous-live", "nous-window"])
+def test_a_plane_emptied_after_selection_fails_closed_before_anything_is_written(plane, monkeypatch, mode):
+    """rv26 P1: the check runs again before any staging, refresh or write. A Nous token inside its
+    refresh window is not refreshed (that save would leave auth.json with the Nous record only), no
+    staging file is left, and the files are byte for byte as they were."""
+    refreshes = []
+    _fresh_start(monkeypatch, {})
+    _credential(monkeypatch, mode, refreshes)
+    plane.set_level(plane.profile("default"), env={"PLANE_ONLY": "plane-val"})
+    (plane.home / ".env").write_text(REFUSED_ENV, encoding="utf-8", newline="")
+    _nous_auth(plane.home, expires_in=_EXPIRES[mode])
+    seen = _empty_the_plane_after_selection(plane, monkeypatch)
+    before = _files(plane.home)
+    with pytest.raises(routing.SecretStoreUnavailable) as err:
+        _boot(plane.home)
+    assert seen == [None]
+    _named_without_values(err, "default")
+    assert _files(plane.home) == before
+    assert plane.patches() == [] and refreshes == []
+
+
+@pytest.mark.parametrize("mode", ["idp", "nous-window"])
+def test_after_a_plane_emptied_at_boot_the_next_start_equals_the_local_store(plane, monkeypatch, mode):
+    from hermes_cli import auth as auth_mod
+    names = ("TERMINAL_RV_REF", "RV_DIR", "OPENAI_API_KEY")
+    refreshes = []
+    _fresh_start(monkeypatch, {})
+    _credential(monkeypatch, mode, refreshes)
+    plane.set_level(plane.profile("default"), env={"PLANE_ONLY": "plane-val"})
+    text = REFUSED_ENV + "OPENAI_API_KEY=old-key\n"
+    (plane.home / ".env").write_text(text, encoding="utf-8", newline="")
+    auth = _nous_auth(plane.home, expires_in=_EXPIRES[mode])
+    _empty_the_plane_after_selection(plane, monkeypatch)
+    with pytest.raises(routing.SecretStoreUnavailable):
+        _boot(plane.home)
+    _fresh_start(monkeypatch, {})
+    _credential(monkeypatch, mode, refreshes)
+    _boot(plane.home)
+    assert routing.routed_provider() is None and routing.import_refusal()
+    remote = ({n: _readers(plane.home, n) for n in names}, sorted(auth_mod._load_auth_store().get("providers", {})))
+    _fresh_start(monkeypatch, {})
+    monkeypatch.setenv("HERMES_SECRET_STORE", "local")
+    routing.reset_for_tests()
+    (plane.home / ".env").write_text(text, encoding="utf-8", newline="")
+    (plane.home / "auth.json").write_text(auth, encoding="utf-8")
+    _boot(plane.home)
+    local = ({n: _readers(plane.home, n) for n in names}, sorted(auth_mod._load_auth_store().get("providers", {})))
+    assert remote == local and refreshes == []
+
+
+def test_a_secret_deleted_while_local_is_never_imported_from_an_old_staging(plane, monkeypatch):
+    """rv26 P1: no staging survives a failed check, so a secret removed while the process ran
+    local is not sent when a later start imports."""
+    from hermes_cli.config import remove_env_value
+    _fresh_start(monkeypatch, {})
+    plane.set_level(plane.profile("default"), env={"PLANE_ONLY": "plane-val"})
+    (plane.home / ".env").write_text(REFUSED_ENV + "OPENAI_API_KEY=old-key\n", encoding="utf-8", newline="")
+    _empty_the_plane_after_selection(plane, monkeypatch)
+    with pytest.raises(routing.SecretStoreUnavailable):
+        _boot(plane.home)
+    assert not (plane.home / ".secrets-import.json").exists()
+    _fresh_start(monkeypatch, {})
+    _boot(plane.home)
+    assert routing.routed_provider() is None
+    remove_env_value("OPENAI_API_KEY")
+    (plane.home / ".env").write_text("RV_DIR=last\nTERMINAL_RV_REF=plain|\n", encoding="utf-8")
+    _fresh_start(monkeypatch, {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _boot(plane.home)
+    assert routing.routed_provider() is not None and len(plane.patches()) == 1
+    assert "OPENAI_API_KEY" not in json.dumps(plane.patches()[0]["body"])
+    assert set(_readers(plane.home, "OPENAI_API_KEY").values()) == {None}
+
+
+def test_a_profile_created_after_selection_fails_closed_before_its_token_refreshes(plane, monkeypatch):
+    refreshes = []
+    _fresh_start(monkeypatch, {})
+    _nous_credential(monkeypatch, refreshes)
+    (plane.home / ".env").write_text("OPENAI_API_KEY=k\n", encoding="utf-8")
+    plane.set_level(plane.profile("default"), env={"PLANE_ONLY": "v"})
+    _nous_auth(plane.home, expires_in=10**6)
+    _boot(plane.home)
+    provider = routing.routed_provider()
+    assert provider is not None
+    later = _sibling(plane, REFUSED_ENV, name="later")
+    _nous_auth(later, expires_in=90)
+    before = _files(later)
+    with pytest.raises(routing.SecretStoreUnavailable) as err:
+        provider.boot(later)
+    _named_without_values(err, "later")
+    assert _files(later) == before and refreshes == []
+    assert plane.patches() == []
+
+
+def test_a_staging_older_than_the_plane_is_never_replayed(plane, monkeypatch):
+    """A staging file left by an earlier version (or a crash) holds a value the plane has since
+    replaced: the plane already has the profile, so nothing is sent and the plane's value is served;
+    the stale value is only set aside for review."""
+    _fresh_start(monkeypatch, {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    (plane.home / ".secrets-import.json").write_text(json.dumps({"env": {"OPENAI_API_KEY": "stale"}, "auth": {}}),
+                                                     encoding="utf-8")
+    plane.set_level(plane.profile("default"), env={"OPENAI_API_KEY": "current"})
+    _boot(plane.home)
+    assert plane.patches() == []
+    assert set(_readers(plane.home, "OPENAI_API_KEY").values()) == {"current"}
+    assert not (plane.home / ".secrets-import.json").exists()
+    assert "stale" in (plane.home / ".env.unimported").read_text(encoding="utf-8")

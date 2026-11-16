@@ -20,6 +20,7 @@ local entry outside the bootstrap set is ever read in its place.
 
 A store may refuse the process at selection (``import_refusal``, asked once, before anything
 routes): the process then runs on the local store for its whole lifetime, as if none were selected.
+A store that cannot safely do either stops the process there (:class:`SecretStoreUnavailable`).
 
 A named store that is missing or unavailable stops the process (:class:`SecretStoreUnavailable`, a
 ``SystemExit`` like the config backend's): many readers fail open with ``except Exception``, and
@@ -127,7 +128,7 @@ def _import_refused(provider: SecretStoreProvider) -> bool:
 
 def _process_homes() -> list[Path]:
     """The launch home, then the root's and every named profile's under it: any of them may be
-    served by this process (multiplexing, the dashboard), so a refusal of any runs it all local."""
+    served by this process (multiplexing, the dashboard), so the store decides for all of them."""
     from hermes_constants import get_default_hermes_root, get_routing_process_hermes_home
     root = get_default_hermes_root()
     try:

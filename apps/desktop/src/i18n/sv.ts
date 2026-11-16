@@ -1781,7 +1781,20 @@ export const svOverrides: TranslationOverrides = {
         'Fjärrplattformen stöds inte. Hermes Desktop SSH-läge stöder Linux, macOS och Windows som fjärrvärdar.',
       sshErrTimeout: 'Tidsgränsen för SSH-anslutningen nåddes. Värden kanske inte kan nås eller är i viloläge.',
       sshErrUpdateRequired: 'Uppdatera Hermes på fjärrvärden innan du ansluter med Desktop SSH.',
+      sshErrInteractiveAuth:
+        'Tailscale SSH kräver en interaktiv kontroll i webbläsaren. Kör `ssh <värd> true` i Terminal, slutför kontrollen och försök sedan igen – Hermes kör SSH utan interaktion.',
       sshErrUnknown: 'SSH-anslutningen misslyckades.',
+      webappHostTitle: 'Hermes-värd',
+      webappHostDesc:
+        'Webbappen körs alltid på den Hermes-värd som tillhandahåller den. De sparade anslutningarna nedan hör till den här datorn och delas med Hermes Desktop; andra gatewayer nås via den här värden.',
+      webappOauthPaste: {
+        title: 'Slutför inloggningen',
+        description:
+          'Om inloggningsfliken avslutades på en adress som inte kunde läsas in eftersom webbläsaren inte är på gatewayens dator, klistrar du in den adressen här.',
+        placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
+        finish: 'Slutför',
+        failed: 'Det gick inte att slutföra inloggningen'
+      },
       cloudSavedTitle: 'Sparade molngatewayer',
       cloudSavedDesc:
         'Använd en sparad gateway utan att ändra ditt standardval. Logga in nedan för att lägga till instanser. Hantera namn och inloggning i listan över sparade anslutningar.',

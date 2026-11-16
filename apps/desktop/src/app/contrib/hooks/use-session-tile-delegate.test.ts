@@ -58,6 +58,7 @@ function renderTile(
   requestGateway: ReturnType<typeof vi.fn>,
   options: {
     branchLoadedSession?: ReturnType<typeof vi.fn>
+    branchStoredSession?: ReturnType<typeof vi.fn>
     runtimeIdByStoredSessionIdRef?: { current: Map<string, string> }
     sessionStateByRuntimeIdRef?: { current: Map<string, unknown> }
     updateSessionState?: ReturnType<typeof vi.fn>
@@ -67,7 +68,7 @@ function renderTile(
     useSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
       branchLoadedSession: (options.branchLoadedSession ?? vi.fn(async () => false)) as never,
-      branchStoredSession: vi.fn(async () => undefined),
+      branchStoredSession: (options.branchStoredSession ?? vi.fn(async () => undefined)) as never,
       executeSlashCommand: vi.fn(async () => undefined) as never,
       removeSession: vi.fn(async () => undefined),
       requestGateway: requestGateway as never,
@@ -854,6 +855,19 @@ describe('useSessionTileDelegate resumeTile', () => {
       runtimeId: 'runtime-x',
       storedSessionId: 'stored-x'
     })
+  })
+
+  it('branches a tile INTO a project: the project id reaches the stored session branch', async () => {
+    // The sidebar's Branch submenu and the tile's right-click menu must be the SAME verb: a tile
+    // that silently dropped the project id would create the child and leave it outside the project
+    // the user picked (the reported "it just made a branch").
+    const branchStoredSession = vi.fn(async () => undefined)
+
+    renderTile(vi.fn(), { branchStoredSession })
+
+    await sessionTileDelegate()!.branchSession('stored-x', 'proj-netsign')
+
+    expect(branchStoredSession).toHaveBeenCalledWith('stored-x', undefined, 'proj-netsign')
   })
 
   it('does not branch when the clicked tile no longer has live state', async () => {

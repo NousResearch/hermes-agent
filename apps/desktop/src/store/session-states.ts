@@ -2177,8 +2177,9 @@ export function unbindTileRuntime(runtimeId: string) {
 export interface SessionTileDelegate {
   /** Archive a stored session (the sidebar's archive, incl. tile cleanup). */
   archiveSession(storedSessionId: string): Promise<void>
-  /** Branch a stored session into a new chat (the sidebar's branch). */
-  branchSession(storedSessionId: string): Promise<void>
+  /** Branch a stored session into a new chat (the sidebar's branch).
+   *  `projectId` re-homes the NEW child into that project (the sidebar's Branch submenu). */
+  branchSession(storedSessionId: string, projectId?: string): Promise<void>
   /** Branch a tile's live transcript through the clicked message. */
   branchSessionAtMessage(storedSessionId: string, runtimeId: string, messageId: string): Promise<boolean>
   /** Delete a stored session (the sidebar's delete, incl. tile cleanup). */

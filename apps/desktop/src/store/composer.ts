@@ -636,6 +636,9 @@ export function announceNewSessionDraftKey(toKey: string | null | undefined): vo
 export const newSessionDraftAnnouncedFor = (toKey: string | null | undefined): boolean =>
   !!announcedNewSessionDraftKey && announcedNewSessionDraftKey === toKey?.trim()
 
+/** Whether a fresh chat's draft is waiting to be adopted by any session. */
+export const newSessionDraftHandoffPending = (): boolean => !!announcedNewSessionDraftKey
+
 /** Consume the announcement; move the `__new__` draft when it names `toKey`.
  *  True when the announcement named `toKey` (the caller hands the rest of the
  *  pre-session chat over), even if there was no draft text to move. */

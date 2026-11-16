@@ -198,11 +198,24 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "(back to the profile timezone); next_run_at is recomputed in the new zone.")
     cron_edit.add_argument("--grace-minutes", dest="grace_minutes",
         help="Catch-up window override in minutes (0-1440). 0 = never catch up. "
-            "Pass empty string to restore the computed window.")
+             "Pass empty string to restore the computed window.")
+    _flag(cron_edit, "--disable", default=None,
+        help="Disable this job (enabled true→false). Requires --reason.")
+    cron_edit.add_argument("--reason",
+        help="Required when the edit disables the job: why it is being disabled. "
+             "Disables without reasons are unattributable.")
+    cron_edit.add_argument("--enabled-reason", dest="enabled_reason",
+        help="Optional note recorded when the edit re-enables the job.")
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
     cron_pause.add_argument("job_id", help="Job ID to pause")
+    cron_pause.add_argument("reason", nargs="?",
+        help="Why this job is being disabled (or pass --reason). Disables without "
+             "reasons are unattributable.")
+    cron_pause.add_argument("--reason", dest="reason_flag",
+        help="Why this job is being disabled (or pass it positionally). Disables "
+             "without reasons are unattributable.")
 
     cron_resume = cron_subparsers.add_parser("resume", help="Resume a paused job")
     cron_resume.add_argument("job_id", help="Job ID to resume")

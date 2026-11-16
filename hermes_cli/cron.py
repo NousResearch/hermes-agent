@@ -836,6 +836,37 @@ def cron_create(args):
     return 0
 
 
+# A disable nobody can attribute after the fact (job f586101aac06 was found disabled with
+# no recorded reason — third silent disable that week). Both CLI doors (pause and edit)
+# refuse reason-less disables with this same shape; the store stamps whatever lands.
+_DISABLE_REASON_REFUSAL = (
+    "Refusing to disable job: no reason given — disables without reasons are "
+    "unattributable. Pass --reason \"<why>\" (or a positional reason for pause).")
+
+
+def _resolve_disable_reason(args) -> Optional[str]:
+    """A pause/edit disable reason from either the --reason flag or the positional."""
+    return (str(getattr(args, "reason_flag", None) or getattr(args, "reason", None) or "")
+            .strip() or None)
+
+
+def cron_pause(args) -> int:
+    """Pause a job; a reason is REQUIRED (incident f586101aac06: a disable with no
+    recorded reason cannot be attributed after the fact)."""
+    reason = _resolve_disable_reason(args)
+    if not reason:
+        print(color(_DISABLE_REASON_REFUSAL, Colors.RED))
+        return 1
+    result = _cron_api(action="pause", job_id=args.job_id, reason=reason)
+    if not result.get("success"):
+        print(color(f"Failed to pause job: {result.get('error', 'unknown error')}", Colors.RED))
+        return 1
+    job = result.get("job") or {}
+    print(color(f"Paused job: {job.get('name', args.job_id)} ({args.job_id})", Colors.GREEN))
+    print(f"  Reason: {reason}")
+    return 0
+
+
 def cron_edit(args):
     from cron.jobs import AmbiguousJobReference, resolve_job_ref
     try:
@@ -847,6 +878,12 @@ def cron_edit(args):
         return 1
     if not job:
         print(color(f"Job not found: {args.job_id}", Colors.RED))
+        return 1
+    # Disable flip gate (same door as pause, same refusal shape): a reason-less
+    # enabled true→false edit is refused before anything is written.
+    disable = getattr(args, "disable", None)
+    if disable and not _resolve_disable_reason(args):
+        print(color(_DISABLE_REASON_REFUSAL, Colors.RED))
         return 1
     existing_skills = list(job.get("skills") or ([job["skill"]] if job.get("skill") else []))
     replacement_skills = _normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None))
@@ -861,16 +898,27 @@ def cron_edit(args):
     elif add_skills or remove_skills:
         final_skills = [skill for skill in existing_skills if skill not in remove_skills]
         final_skills += [skill for skill in add_skills if skill not in final_skills]
+    updates = {}
+    if disable is not None:
+        updates["enabled"] = not disable
+        if disable:
+            updates["paused_reason"] = _resolve_disable_reason(args)
+        elif getattr(args, "enabled_reason", None):
+            updates["enabled_reason"] = args.enabled_reason
     result = _cron_api(action="update", job_id=args.job_id,
                        schedule=getattr(args, "schedule", None),
                        prompt=getattr(args, "prompt", None), skills=final_skills,
-                       no_agent=getattr(args, "no_agent", None), **_job_api_kwargs(args))
+                       no_agent=getattr(args, "no_agent", None),
+                       **{k: v for k, v in _job_api_kwargs(args).items() if k != "pinned" or v is not None},
+                       **updates)
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1
     updated = result["job"]
     print(color(f"Updated job: {updated['job_id']}", Colors.GREEN))
     print(f"  Name: {updated['name']}\n  Schedule: {updated['schedule']}")
+    if disable:
+        print(f"  Disabled: {updated.get('paused_reason')}")
     print(f"  Skills: {', '.join(updated['skills'])}" if updated.get("skills") else
           "  Skills: none")
     _print_job_details(updated)
@@ -1027,7 +1075,7 @@ _CRON_SUBCOMMANDS = {
     "notepad": lambda a: cron_notepad(a),
     "create": lambda a: cron_create(a),
     "edit": lambda a: cron_edit(a),
-    "pause": lambda a: _job_action("pause", a.job_id, "Paused"),
+    "pause": lambda a: cron_pause(a),
     "resume": lambda a: cron_resume(a),
     "run": lambda a: _job_action("run", a.job_id, "Triggered"),
     "cancel": lambda a: cron_cancel(a),

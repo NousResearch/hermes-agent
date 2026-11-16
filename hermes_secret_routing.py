@@ -18,10 +18,6 @@ bootstrap entries (the names and records it needs to select, address and authent
 every other name and record is the store's, read from its view and written through it, and no
 local entry outside the bootstrap set is ever read in its place.
 
-A store may refuse the process at selection (``import_refusal``, asked once, before anything
-routes): the process then runs on the local store for its whole lifetime, as if none were selected.
-A store that cannot safely do either stops the process there (:class:`SecretStoreUnavailable`).
-
 A named store that is missing or unavailable stops the process (:class:`SecretStoreUnavailable`, a
 ``SystemExit`` like the config backend's): many readers fail open with ``except Exception``, and
 reading the local files instead of the selected store is the silent failure this must not become.
@@ -98,57 +94,13 @@ def routed_provider() -> Optional[SecretStoreProvider]:
     if name == "local":
         return None
     provider = _provider_named(name)
-    return None if provider.files_backed or _import_refused(provider) else provider
-
-
-#: Store name -> why this process runs on the local store instead (None: it does not). Decided once.
-_REFUSALS: dict[str, Optional[str]] = {}
-_REFUSAL_LOCK = threading.Lock()
-_DECIDING = threading.local()
-
-
-def _import_refused(provider: SecretStoreProvider) -> bool:
-    """Whether this process runs on the local store although *provider* is selected
-    (:meth:`~hermes_secret_port.SecretStoreProvider.import_refusal`): asked once, at the first
-    routed call, before anything routes or boots, for every profile home the process may serve.
-    The answer holds for the process's lifetime; while it is asked, every read is the local files'."""
-    if provider.name in _REFUSALS:
-        return _REFUSALS[provider.name] is not None
-    if getattr(_DECIDING, "active", False):
-        return True
-    with _REFUSAL_LOCK:
-        if provider.name not in _REFUSALS:
-            _DECIDING.active = True
-            try:
-                _REFUSALS[provider.name] = provider.import_refusal(_process_homes())
-            finally:
-                _DECIDING.active = False
-    return _REFUSALS[provider.name] is not None
-
-
-def _process_homes() -> list[Path]:
-    """The launch home, then the root's and every named profile's under it: any of them may be
-    served by this process (multiplexing, the dashboard), so the store decides for all of them."""
-    from hermes_constants import get_default_hermes_root, get_routing_process_hermes_home
-    root = get_default_hermes_root()
-    try:
-        named = sorted(p for p in (root / "profiles").iterdir() if p.is_dir() and not p.name.startswith("."))
-    except OSError:
-        named = []
-    return list(dict.fromkeys([Path(get_routing_process_hermes_home()), root, *named]))
-
-
-def import_refusal() -> Optional[str]:
-    """Why this process runs on the local store although another is selected, or None."""
-    name = selected_store_name()
-    return None if name == "local" or routed_provider() is not None else _REFUSALS.get(name)
+    return None if provider.files_backed else provider
 
 
 def reset_for_tests() -> None:
     """Forget resolved providers and published views (tests only)."""
     with _PROVIDERS_LOCK:
         _PROVIDERS.clear()
-        _REFUSALS.clear()
         _BOOTSTRAP_GENERATIONS.clear()
     with _PUBLISH_LOCK:
         _PUBLICATIONS.clear()

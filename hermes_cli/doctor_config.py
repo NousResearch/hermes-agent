@@ -173,17 +173,20 @@ def _check_env_file(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT, _DHH
     managed_scope_check()
     env_path = HERMES_HOME / '.env'
-    from hermes_secret_routing import import_refusal, read_env_text, routed_provider
+    from hermes_secret_routing import SecretStoreUnavailable, read_env_text, routed_provider
     store = routed_provider()
-    if refusal := import_refusal():  # names only: this process runs on the local files below
-        check_warn(refusal, "(simplify those .env lines, then restart Hermes to import)")
-        f.issues.append("Simplify the kept-local .env line(s) named above so the secrets plane import can run")
     if store is not None:  # the selected secret store holds this profile's secrets, not the .env file
         check_ok(f"Secret store: {store.describe(HERMES_HOME)}")
         for warning, hint, issue in store.doctor_warnings(HERMES_HOME):
             check_warn(warning, hint)
             f.issues.append(issue)
-        if not check_bool(_has_provider_env_config(read_env_text(env_path)), "API key or custom endpoint configured",
+        try:
+            env_text = read_env_text(env_path)
+        except SecretStoreUnavailable as exc:  # the boot's own stop (names only, never a value)
+            check_fail(str(exc.code))
+            f.issues.append("Hermes does not start with this profile: fix the secret store error above")
+            return
+        if not check_bool(_has_provider_env_config(env_text), "API key or custom endpoint configured",
                           "No API key found in the secret store"):
             f.issues.append("Run 'hermes setup' to configure API keys")
         return

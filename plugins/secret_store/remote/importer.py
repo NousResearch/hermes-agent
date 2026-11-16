@@ -13,10 +13,8 @@ On boot, the local ``.env`` and ``auth.json`` entries outside the bootstrap set 
   moves to ``.env.unimported`` / ``auth.unimported.json`` (0600, merged with what is there), the
   files keep their bootstrap entries, and ``hermes doctor`` warns.
 
-Before any of it, at store selection and again first thing at each boot, :func:`refusal_names`
-(local files only, nothing written) names the kept-local lines an import would change
-(``RemoteSecretStoreProvider.import_refusal`` / ``_check_import``). Once the plane holds the profile,
-:data:`MARKER` records it, so a later start that cannot ask the plane still knows.
+Before any of it, first thing at each boot, :func:`refusal_names` (local files only, nothing
+written) names the kept-local lines an import would change; any name stops the boot there.
 
 Each step is idempotent: a crash anywhere leaves the staging file, and the next boot redoes the
 step it stopped in. Nothing here logs or raises with a value.
@@ -39,8 +37,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 STAGING = ".secrets-import.json"
-#: Written once the plane holds the profile: its local files keep only the bootstrap from then on.
-MARKER = ".secrets-imported"
 UNIMPORTED_ENV = ".env.unimported"
 UNIMPORTED_AUTH = "auth.unimported.json"
 
@@ -149,8 +145,6 @@ def finish(home: Path, profile: str, view, provider, entries, imported: bool) ->
     Staging survives a failed cleanup, so a later boot can finish it against the plane's view.
     """
     env, records = entries
-    if view.profile_version > 0 and not (Path(home) / MARKER).exists():
-        _write_bytes(Path(home) / MARKER, b"", 0o600)
     if env or records:
         if not imported:
             _move_unimported(home, profile, view, env, records)
@@ -171,38 +165,14 @@ def refusal_names(home: Path, provider) -> list[str]:
     return unmatched_kept_names(home, provider, stored) if stored or records or staged_auth else []
 
 
-def import_evidence(home: Path) -> bool:
-    """Whether *home* shows that an import ran or started (the marker, a staging file, entries set
-    aside): its local files may no longer hold all its secrets. Read only."""
-    return any((Path(home) / name).exists() for name in (MARKER, STAGING, UNIMPORTED_ENV, UNIMPORTED_AUTH))
-
-
-def held_nous_token(home: Path):
-    """The Nous access token *home*'s ``auth.json`` holds while it is unexpired, else None: read
-    only, never refreshed (a refresh saves the file)."""
-    from hermes_cli import auth
-    from hermes_cli.anon_auth import held_connectors_token
-    raw = auth._load_auth_store.__wrapped__(Path(home) / "auth.json")  # the file, not the store's view
-    return held_connectors_token((raw.get("providers") or {}).get("nous"), skew_seconds=60)
-
-
-def refusal_text(refused: dict[str, list[str]], stored: Any = None) -> str:
-    """The words for *refused* (profile -> kept-local names): the boot log's and ``hermes doctor``'s
-    when the process runs local; with *stored* (profiles the plane already holds, or None for a
-    boot's own check) the stop's. Names only, never a value."""
-    lines = "; ".join(f"profile {profile!r}: {', '.join(names)}" for profile, names in refused.items())
-    detail = (f"These kept-local .env line(s) would read differently once the other entries move there "
-              f"({lines}), for example a value with a line break that also depends on a name assigned more "
-              "than once. Simplify them (write the value they resolve to on one line, or assign each "
-              "referenced name once) and restart Hermes to import.")
-    if stored is not None:
-        why = (f"profile(s) {', '.join(map(repr, stored))} already moved to the secrets plane (their local "
-               "files hold only the bootstrap entries), so it cannot run on the local files either"
-               if stored else "the secrets plane is selected and this profile has not been stored there")
-        return (f"Remote secrets: the one-time import into the secrets plane would change a kept-local "
-                f".env line, and {why}. Hermes does not start (nothing was sent or written). {detail}")
-    return ("Remote secrets: the one-time import into the secrets plane did not run, so this process runs "
-            f"on the local .env and auth.json (as HERMES_SECRET_STORE=local would). {detail}")
+def refusal_text(profile: str, names: list[str]) -> str:
+    """The stop's words for *profile*'s kept-local *names* (:func:`refusal_names`), also
+    ``hermes doctor``'s. Names only, never a value."""
+    return (f"Remote secrets: the one-time import of profile {profile!r} into the secrets plane would change "
+            f"the kept-local .env line(s) {', '.join(names)}, for example a value with a line break that also "
+            "depends on a name assigned more than once. Hermes does not start (nothing was sent or written; "
+            "there is no fallback to the local store). Simplify them (write the value they resolve to on one "
+            "line, or assign each referenced name once) and restart Hermes to import.")
 
 
 def _move_unimported(home: Path, profile: str, view, env: dict[str, str], records: dict[str, Any]) -> None:

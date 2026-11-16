@@ -12,9 +12,7 @@ memory only:
   with ``expectedProfileVersion: 0`` and the files are rewritten to the bootstrap set; when the plane
   already has the profile (409) it wins and the local entries move to ``.env.unimported`` /
   ``auth.unimported.json`` (``importer.py``). An import that would change a kept-local ``.env``
-  line never runs (:meth:`RemoteSecretStoreProvider.import_refusal`, asked once at store selection,
-  and again first thing at each boot): while no served profile is on the plane the whole process
-  runs on the local store; once one is, it fails closed;
+  line never runs: that profile's boot fails closed before anything is staged or sent;
 - **change detection**: a per-process poller asks for every booted view with ``If-None-Match`` every
   :data:`POLL_SECONDS`, holding the version the process booted with or last wrote itself. Nothing is
   installed from a poll: a different version asks the process for a graceful restart
@@ -51,9 +49,7 @@ from hermes_secret_port import (
     SecretWriteFailed, thaw_secret,
 )
 from plugins.config_backends.remote import client as config_client
-from plugins.config_backends.remote.credentials import (
-    IDP_ENV_PREFIX, PLANE_CREDENTIAL_ENV_NAMES, PlaneCredentialError, credential_kind,
-)
+from plugins.config_backends.remote.credentials import IDP_ENV_PREFIX, PLANE_CREDENTIAL_ENV_NAMES, PlaneCredentialError
 
 from . import client
 
@@ -313,53 +309,22 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
                 "agent to the secrets plane. Hermes does not start without its secrets.")
 
         def attempt() -> _HomeState:
-            # Before anything is staged, refreshed or written: an import that would change a kept
-            # line (a profile selection never saw, a plane emptied since) stops here, files untouched.
-            view = self._check_import(home, profile)
+            # Before anything is staged, refreshed, written or sent: an import that would change a
+            # kept-local line stops the boot here, files untouched (no fallback to the local store).
+            if names := importer.refusal_names(home, self):
+                raise SecretStoreUnavailable(importer.refusal_text(profile, names))
             # Staged before the credential resolves: a token refresh saves auth.json, and that save
             # keeps only the bootstrap records.
             importer.stage(home, self)
             entries = importer.prepared_entries(home)
             token = self._bearer(home)  # resolved holding no lock of this store
-            # No view yet (no unexpired token to ask with): the same check over what would be sent,
-            # for the PATCH below.
-            unmatched = tuple(importer.unmatched_kept_names(home, self, entries[0])) if view is None and any(entries) else ()
             with self._serialized(home):
-                st, imported = self._first_fetch(home, profile, token, entries, unmatched, view)
+                st, imported = self._first_fetch(home, profile, token, entries)
             importer.finish(home, profile, st.view, self, entries, imported)
             with self._lock:
                 self._states[key] = st
             return st
         return self._retrying(profile, attempt)
-
-    def _held_view(self, home: Path, profile: str) -> Optional[View]:
-        """``GET /self`` with a bearer at hand without a refresh (the IdP token, or the Nous access
-        token auth.json holds while unexpired: a refresh saves the file), else None. Raises
-        :class:`_FetchFailed`."""
-        from . import importer
-        token = self._bearer(home) if credential_kind() == "idp" else importer.held_nous_token(home)
-        return None if token is None else self._get(home, profile, token=token)
-
-    def _would_import(self, home: Path, version) -> bool:
-        """Whether *home*'s one-time import would run: the plane has never stored the profile
-        (``profileVersion`` 0); unknown (no bearer at hand) unless the files show an import."""
-        from . import importer
-        pv = version(home)
-        return pv == 0 if pv is not None else not importer.import_evidence(home)
-
-    def _check_import(self, home: Path, profile: str) -> Optional[View]:
-        """A boot's check, before it stages, refreshes or writes anything: fail closed when the
-        import would change a kept-local line. Returns the view it fetched, if any."""
-        from hermes_secret_routing import SecretStoreUnavailable
-
-        from . import importer
-        names = importer.refusal_names(home, self)
-        if not names:
-            return None
-        view = self._held_view(home, profile)
-        if self._would_import(home, lambda _h: None if view is None else view.profile_version):
-            raise SecretStoreUnavailable(importer.refusal_text({profile: names}, stored=()))
-        return view
 
     def _retrying(self, profile: str, attempt):
         """*attempt*'s result, retrying an outage (:data:`BOOT_RETRY_DELAYS`); fail closed otherwise."""
@@ -381,52 +346,11 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
                 f"{client.shown_url()}: {detail}. Hermes does not start without its secrets "
                 "(HERMES_SECRET_STORE=remote has no local fallback).")
 
-    def import_refusal(self, homes: Any) -> Optional[str]:
-        """Refused when a home's one-time import would change a kept-local ``.env`` line and would
-        run (:meth:`_would_import`), and no served profile is on the plane yet: the process then runs
-        on the local files, which still hold every profile's secrets. When one is (``profileVersion``
-        above 0, or its files show an import), local would serve it nothing: fail closed. Reads the
-        local files and, with a bearer at hand without a refresh, ``GET /self``; writes nothing."""
-        from hermes_secret_routing import SecretStoreUnavailable
-
-        from . import importer
-        versions: dict[Path, Optional[int]] = {}
-        profiles: dict[Path, str] = {}
-
-        def version(home: Path) -> Optional[int]:
-            if home not in versions:
-                view = self._retrying(profiles[home], lambda: self._held_view(home, profiles[home]))
-                versions[home] = None if view is None else view.profile_version
-            return versions[home]
-        refused: dict[str, list[str]] = {}
-        for home in map(Path, homes):
-            try:
-                profiles[home] = self._profile_for(home)
-            except SecretStoreUnavailable:
-                continue   # not a profile home: its boot refuses it
-            names = importer.refusal_names(home, self)
-            if names and client.instance_id() and self._would_import(home, version):
-                refused[profiles[home]] = names
-        if not refused:
-            return None
-        stored = [p for h, p in profiles.items() if importer.import_evidence(h) or (version(h) or 0) > 0]
-        if stored:
-            raise SecretStoreUnavailable(importer.refusal_text(refused, stored=sorted(set(stored))))
-        text = importer.refusal_text(refused)
-        logger.warning(text)
-        return text
-
-    def _first_fetch(self, home: Path, profile: str, token: str, entries,
-                     unmatched: tuple[str, ...] = (), view: Optional[View] = None) -> tuple[_HomeState, bool]:
-        """Only network I/O and in-memory work under the home's plane-call lock. *view*: the one
-        the boot's check already fetched (no second read for a race to slip between)."""
-        if view is None:
-            view = self._get(home, profile, token=token)
+    def _first_fetch(self, home: Path, profile: str, token: str, entries) -> tuple[_HomeState, bool]:
+        """Only network I/O and in-memory work under the home's plane-call lock."""
+        view = self._get(home, profile, token=token)
         env, records = entries
         imported = False
-        if (env or records) and view.profile_version == 0 and unmatched:
-            raise _FetchFailed(f"the one-time import would change the kept-local .env line(s) {', '.join(unmatched)}",
-                               retryable=False)
         if (env or records) and view.profile_version == 0:
             body = {"expectedProfileVersion": 0, "set": env,
                     "auth": {rid: {"expectedVersion": 0, "record": r} for rid, r in records.items()}}

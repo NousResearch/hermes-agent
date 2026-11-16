@@ -369,12 +369,6 @@ class SecretStoreProvider(ABC):
         ``.env`` loads and the config backend boots, before the first secret read: a store that
         fetches its secrets does it here, failing closed. A files-backed store does nothing."""
 
-    def import_refusal(self, homes: Any) -> Optional[str]:
-        """Why this process must run on the local store instead of this one (names only, never a
-        value), or None. Asked once per process, before anything routes or boots: it reads only
-        the profile *homes*' local files (and, read-only, the store), and writes nothing."""
-        return None
-
     def env_view(self, home: Any) -> dict[str, str]:
         """*home*'s environment-style secrets as this store resolves them, bootstrap names
         excluded (they stay in the local ``.env``). Raises rather than return a partial view."""

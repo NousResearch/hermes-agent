@@ -759,9 +759,8 @@ def _load_user_dotenv(path: Path, *, load_pass: int) -> bool:
     return True
 
 
-def _boot_stores(home_path: Path, project_env_path: Path | None) -> dict[str, str] | None:
-    """Boot the config backend, then the secret store, for *home_path*; publish and return the
-    store's env view (None with the local store).
+def _boot_stores(home_path: Path, project_env_path: Path | None) -> None:
+    """Boot the config backend, then the secret store, for *home_path*.
 
     The config backend is selected here — after the .env files, before the first config.yaml read
     (``_apply_external_secret_sources`` reads ``secrets:``) — so an unavailable backend stops the
@@ -781,8 +780,7 @@ def _boot_stores(home_path: Path, project_env_path: Path | None) -> dict[str, st
 
     bootstrap_deployment(home_path, project_env_path)
     get_config_backend().boot(home_path)
-    routed_view = boot_secret_store(home_path)
-    return routed_view
+    boot_secret_store(home_path)
 
 
 def load_hermes_dotenv(*, hermes_home=None, project_env=None, load_external_secrets=True):

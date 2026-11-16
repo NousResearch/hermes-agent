@@ -27,7 +27,6 @@ class MemoryViewProvider(SecretStoreProvider):
         self.remote: dict[str, dict[str, Any]] = {}   # home key -> {"env": {}, "auth": {}, "version": int}
         self.cells = {}
         self.seen: dict[str, dict[str, Any]] = {}     # home key -> the snapshot the process reads
-        self.homes: dict[str, Path] = {}              # home key -> the home path it was read for
         self.booted: list[str] = []
         self.writes: list[dict[str, Any]] = []        # every write's names (never values)
         self.failing = False
@@ -58,28 +57,18 @@ class MemoryViewProvider(SecretStoreProvider):
         return hermes_home_key(Path(home))
 
     def _remote(self, home: Any) -> dict[str, Any]:
-        self.homes.setdefault(self._key(home), Path(home))
         return self.remote.setdefault(self._key(home), {"env": {}, "auth": {}, "version": 1})
 
     def refresh(self, home: Any = None) -> None:
-        """Re-read the remote snapshot and notify after releasing publication locks."""
+        """Re-read the remote snapshot and install it in each home's snapshot cell."""
         from hermes_secret_port import SecretSnapshot, SecretSnapshotCell
-        from hermes_secret_routing import view_changed
         keys = [self._key(home)] if home is not None else list(self.remote)
-        moved = []
         with self._lock:
-            if home is not None:
-                self.homes[keys[0]] = Path(home)
             for key in keys:
                 view = copy.deepcopy(self.remote.get(key) or {"env": {}, "auth": {}, "version": 1})
                 self.seen[key] = view
                 cell = self.cells.setdefault(key, SecretSnapshotCell())
-                snapshot = SecretSnapshot(cell.current.version + 1, view["env"], view["auth"])
-                cell.install(snapshot)
-                if key in self.homes:
-                    moved.append(self.homes[key])
-        for path in moved:
-            view_changed(path)
+                cell.install(SecretSnapshot(cell.current.version + 1, view["env"], view["auth"]))
 
     def current_snapshot(self, home):
         self._seen(home)

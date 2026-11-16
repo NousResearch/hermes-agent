@@ -26,7 +26,7 @@ def test_revoked_plane_name_never_falls_back_to_stale_launch(store, monkeypatch)
     load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
     scope = ss.build_profile_secret_scope(home)
     provider._remote(home)["env"] = {}
-    provider.refresh(home)
+    load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
     from hermes_scope import BoundSecrets, push_state
     with push_state(secrets=BoundSecrets(scope, str(home))):
         assert ss.get_secret("OPENAI_API_KEY") is None

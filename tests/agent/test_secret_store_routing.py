@@ -109,21 +109,6 @@ def test_the_launch_load_publishes_the_view_and_no_stale_local_name(store, monke
     assert {"ROUTED_API_KEY", "VIEW_STORE_TOKEN"} <= launch_dotenv_keys()  # launch residue for routed children
 
 
-def test_a_view_change_moves_os_environ_for_the_published_home_only(store, monkeypatch):
-    provider, home = store
-    provider.seed_external(home, {"ROTATING_KEY": "old", "GONE_KEY": "gone"})
-    monkeypatch.delenv("ROTATING_KEY", raising=False)
-    monkeypatch.delenv("GONE_KEY", raising=False)
-    from hermes_cli.env_loader import load_hermes_dotenv
-    load_hermes_dotenv(hermes_home=home)
-    monkeypatch.setenv("SHELL_OWNED", "mine")
-    provider.remote[provider._key(home)]["env"] = {"ROTATING_KEY": MARK}
-    provider.refresh(home)
-    assert os.environ["ROTATING_KEY"] == MARK and "GONE_KEY" not in os.environ
-    routing.view_changed(home.parent / "other", {}, {"SHELL_OWNED": "theirs"})
-    assert os.environ["SHELL_OWNED"] == "mine"
-
-
 def _hold_scope_on_a_thread(home, names):
     """Install *home*'s scope on a worker thread (its own context), park it there, and return a
     function that wakes it and reports what ``get_secret`` resolves for *names* in that scope."""
@@ -217,8 +202,6 @@ def test_under_multiplexing_a_view_change_never_writes_os_environ(store, monkeyp
     provider.refresh(home)
     assert dict(os.environ) == environ_before
     assert read() == {"ROTATING_KEY": MARK, "REVOKED_KEY": None}
-    frozen = launch_profile_policy.capture_launch_env()
-    assert frozen["ROTATING_KEY"] == MARK and "REVOKED_KEY" not in frozen
     launch_scope = launch_profile_policy.launch_secret_scope(home)
     assert launch_scope["ROTATING_KEY"] == MARK and "REVOKED_KEY" not in launch_scope
 

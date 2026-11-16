@@ -76,7 +76,7 @@ def test_build_cannot_tag_old_values_with_a_new_snapshot(store):
     assert scope.get("RACE_SECRET") is None
 
 
-def test_reload_reconciles_removal_before_notification(store, monkeypatch):
+def test_reload_reconciles_a_removed_name(store, monkeypatch):
     import os
     from hermes_cli.env_loader import load_hermes_dotenv
     from hermes_secret_port import SecretSnapshot
@@ -89,7 +89,6 @@ def test_reload_reconciles_removal_before_notification(store, monkeypatch):
     cell.install(SecretSnapshot(cell.current.version + 1, {}, {}))
     monkeypatch.setattr(provider, "boot", lambda home: None)
     load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
-    routing.view_changed(home)
     assert "REMOVED_SECRET" not in os.environ
 
 
@@ -128,5 +127,5 @@ def test_randomized_snapshot_publication_converges_without_revoked_values(store,
             future.result(timeout=20)
     latest = SecretSnapshot(1000, {}, {})
     cell.install(latest)
-    routing.publish(latest, home=home)
+    load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
     assert scope.get("STRESS_SECRET") is None

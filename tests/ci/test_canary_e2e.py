@@ -77,7 +77,12 @@ def test_every_call_is_the_claims_call_on_the_canary_commit():
     canary_jobs = load("canary-e2e.yml")["jobs"]
     claim_jobs = load("stable-release.yml")["jobs"]
     calls = {name: job for name, job in canary_jobs.items() if "uses" in job}
-    assert any(job["uses"] == "./.github/workflows/ci.yaml" for job in calls.values())
+    # The claim's whole E2E set: a dropped call is a suite the daily run stops covering.
+    assert {job["uses"] for job in calls.values()} == {
+        "./.github/workflows/ci.yaml",
+        "./.github/workflows/install-e2e.yml",
+        "./.github/workflows/windows-venv-e2e.yml",
+    }
     for name, job in calls.items():
         assert job["needs"] == "resolve", name
         assert job["with"]["commit"] == "${{ needs.resolve.outputs.commit }}", name

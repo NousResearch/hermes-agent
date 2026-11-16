@@ -1,6 +1,7 @@
 """Closed action handlers inside the runtime mutation receipt transaction."""
 import time
 from hermes_state_runtime import RuntimeStoreError
+from hermes_state_sessions import _LINEAGE_CTE_SQL
 
 METADATA_FIELDS = {'title': str, 'archived': bool, 'hidden': bool, 'pinned': bool, 'unread': bool}
 
@@ -105,11 +106,13 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
     for key, value in payload.items():
         if key == 'title':
             # The listing shows a compressed conversation under its live tip's title, so a rename
-            # addressed to an ended segment (a stale tab/row) lands there (#152624). The addressed
-            # row is affected too: its receipt revision advances like any committed edit.
+            # addressed to an ended segment (a stale tab/row) lands there (#152624). Every segment
+            # can now rename that tip, so a committed rename advances the whole lineage's revision,
+            # as the lineage-wide flags below do: a client holding any segment's older copy refuses.
             tip = db._compression_tip_on(conn, session_id)
-            written = db._set_session_title_in_transaction(conn, tip, value, source=db.TITLE_SOURCE_USER)
-            affected.update(written, [session_id] if written else [])
+            if db._set_session_title_in_transaction(conn, tip, value, source=db.TITLE_SOURCE_USER):
+                affected.update(row[0] for row in conn.execute(
+                    _LINEAGE_CTE_SQL + 'SELECT id FROM lineage', (session_id, session_id)))
             result[key] = conn.execute('SELECT title FROM sessions WHERE id=?', (tip,)).fetchone()[0]
         else:
             column = 'last_read_at' if key == 'unread' else key

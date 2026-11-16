@@ -721,7 +721,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     WebSocket per bot — a second connection kicks the first). The live adapter is the ACTIVE
     PROFILE's (``_live_adapter``): a bare ``runner.adapters`` hit is the default profile's bot under
     multiplex, so a secondary profile's send would leave with the wrong identity."""
-    from tools.send_message_senders import _live_adapter
+    from gateway.outbound.senders import _live_adapter
     try:
         _, adapter = _live_adapter(Platform.WECOM, chat_id, thread_id)
     except PermissionError as e:  # SharedBotTargetRefused: not a routed target for this profile

@@ -11,7 +11,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner, _profile_runtime_scope
-from tools.send_message_senders import _live_adapter
+from gateway.outbound.senders import _live_adapter
 
 
 @pytest.fixture

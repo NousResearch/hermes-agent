@@ -10,6 +10,25 @@ from hermes_state_runtime import RuntimeStoreError
 logger = logging.getLogger(__name__)
 
 
+def compressing_text(message_count: int, tokens: int, focus_topic: str | None) -> str:
+    """The real (non-preview) compress's pinned status line, word for word what the in-process
+    route's ``_status_update`` prints for the same summary work."""
+    focus_suffix = f', focus: "{focus_topic}"' if focus_topic else ""
+    return f"⠋ compressing {message_count} messages (~{tokens:,} tok){focus_suffix}…"
+
+
+def _publish_compress_status(session_id, live, text, *, status_kind='compressing'):
+    """One ``status.update`` frame for the canonical compress. The TUI and Desktop both drive their
+    compacting state from these kinds; publish failures never fail the compaction."""
+    if live is None:
+        return
+    try:
+        live.event_stream.publish(session_id, {"kind": status_kind, "text": text},
+                                  event_type="status.update")
+    except Exception:
+        logger.debug("compress status publish failed for session %s", session_id, exc_info=True)
+
+
 def compress_request(payload):
     """``session.mutate(compress)`` payload → the shared ``CompressRequest``.
 
@@ -29,7 +48,7 @@ def compress_request(payload):
     return request
 
 
-async def prepare_compress(authority, live, payload, prepared):
+async def prepare_compress(authority, live, payload, prepared, *, listed_sid=None):
     from gateway.session_policy import restore_policy, policy_scope
     from agent.context_compressor import ContextCompressor
     from agent.agent_init import _parse_config_int
@@ -89,7 +108,20 @@ async def prepare_compress(authority, live, payload, prepared):
             if not any(m.get('_compressed_summary') for m in compressed):
                 return None, compressor
             return rejoin_compressed_head_and_tail(compressed, tail), compressor
-    compressed, compressor = await asyncio.to_thread(summarize)
+    # Pin the session's viewers the same "compressing" status the in-process route prints
+    # (``tui_gateway/methods_session.py``): the TUI derives its compacting flag from it, so a rewind
+    # pressed meanwhile refuses with a reason instead of queueing a read behind this mutation
+    # (#149517 — on one socket that queued wait ran the whole compaction and was then dropped by
+    # the client's 120 s deadline). Cleared whichever way the summary ends.
+    _publish_compress_status(listed_sid or snapshot['target'], live,
+                             compressing_text(len(messages),
+                                              estimate_request_tokens_rough(messages),
+                                              request.focus_topic))
+    try:
+        compressed, compressor = await asyncio.to_thread(summarize)
+    finally:
+        _publish_compress_status(listed_sid or snapshot['target'], live, '✓ Context compacted',
+                                 status_kind='compacted')
     # The same report every native /compress prints ("Compressed: N → M messages").
     from agent.manual_compression_feedback import summarize_manual_compression
     if compressed is None:

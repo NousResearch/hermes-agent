@@ -5143,6 +5143,12 @@ export const svOverrides: TranslationOverrides = {
     errorBody: 'Inloggningen slutfördes inte. Försök igen.',
     alreadySignedInHeading: 'Redan inloggad.',
     alreadySignedInBody: 'Denna Hermes-installation är redan inloggad på ett Nous-konto.',
+    offer: {
+      heading: 'Fortsätt med Hermes',
+      body: 'Du använder den kostnadsfria nivån. Om du fortsätter använda Hermes kommer du snart att nå gränser. Logga in med ett kostnadsfritt Nous-konto för en större användningsgräns.',
+      signIn: 'Logga in',
+      notNow: 'Inte nu'
+    },
     setupFailed: {
       gateClosed:
         'Den här versionen av Hermes kan inte starta utan ett Nous-konto. Logga in eller skapa ett, det är kostnadsfritt och tar bara någon minut.',

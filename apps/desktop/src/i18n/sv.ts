@@ -36,6 +36,9 @@ export const svOverrides: TranslationOverrides = {
       verb: { authenticate: 'Autentisera', connect: 'Anslut', install: 'Installera', openLogs: 'Öppna loggar', reconnect: 'Återanslut', stopWaiting: 'Sluta vänta', tryAgain: 'Försök igen', turnBackOn: 'Slå på igen' },
       reason: { finishSignIn: 'Slutför inloggningen i webbläsaren.', reconnect: 'Återanslut så fortsätter appen att fungera.', serverError: 'Servern avvisade anslutningen.', serverNeedsAuth: 'Logga in så att servern kan svara.' }
     },
+    add: {
+      action: 'Lägg till egen', title: 'Anslut till en anpassad MCP', hint: 'en ny post i mcp.json på den här datorn', pasteLabel: 'Klistra in ett kommando eller ett kodstycke', pastePlaceholder: 'npx -y @modelcontextprotocol/server-filesystem /sökväg/till/mapp', pasteNoMatch: 'Inget här ser ut som en server. Fyll i fälten nedan i stället.', name: 'Namn', nameTaken: 'Det namnet används redan.', type: 'Typ', typeStdio: 'STDIO', typeHttp: 'Strömmande HTTP', command: 'Kommando att starta', args: 'Argument', addArg: '+ Lägg till argument', envVars: 'Miljövariabler', addEnvVar: '+ Lägg till miljövariabel', passthrough: 'Vidarebefordran av miljövariabler', addPassthrough: '+ Lägg till variabel', cwd: 'Arbetskatalog', url: 'URL', headers: 'Rubriker', addHeader: '+ Lägg till rubrik', auth: 'Autentisering', authNone: 'Ingen', authOauth: 'OAuth', authBearer: 'Bearer-token', keyPlaceholder: 'NYCKEL', valuePlaceholder: 'värde', removeRow: 'Ta bort den här raden', editJson: 'Redigera mcp.json', saveFailed: 'Servern sparades inte.'
+    },
     tools: {
       title: 'Verktyg',
       notInstalledBody: 'Installera den på den här datorn för att se vilka verktyg den ger.',

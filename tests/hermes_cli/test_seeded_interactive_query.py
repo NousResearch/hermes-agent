@@ -42,6 +42,13 @@ class TestShouldSeedInteractive:
             None, "/tmp/x.png", quiet=False, oneshot=False
         )
 
+    def test_image_list_also_seeds(self, monkeypatch, cli_mod):
+        """Repeated --image reaches the seed check as a list, which must be as truthy as one path."""
+        self._tty(monkeypatch, cli_mod)
+        assert cli_mod._should_seed_interactive(
+            None, ["/tmp/x.png", "/tmp/y.png"], quiet=False, oneshot=False
+        )
+
     def test_oneshot_flag_forces_legacy(self, monkeypatch, cli_mod):
         self._tty(monkeypatch, cli_mod)
         assert not cli_mod._should_seed_interactive(

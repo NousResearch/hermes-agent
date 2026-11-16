@@ -1,0 +1,39 @@
+name: iacg-desk
+repo: https://github.com/RajaRenga/iacgenius-ce
+subdir: profiles/iacgenius/plugins/iacg-desk
+sha: dd897541cf571a25e2ad4a3d717038cf3ea36f60
+version: "0.1.0"
+title: IaC Genius Desk — validated Terraform/OpenTofu missions
+description: >-
+  Deterministic Terraform/OpenTofu mission desk on Hermes: a decision ledger asks the costly or
+  irreversible questions before spend, freezes the agreed scope as one build-sheet hash, grounds
+  every argument on the pinned binary provider schema, runs terraform validate / tflint / checkov /
+  secret scan as evidence, repairs within a bounded budget, and delivers a reviewable PR whose body
+  is the ledger. The model proposes; the toolchain decides. Disclosure — talks to a local Unix
+  socket served by the iacg_desk desk service (or runs python -m iacg_desk as a subprocess); reads
+  its own local.json + IACG_* config paths (not secrets); the desk's terraform init fetches providers
+  read-only from the public registry into a shared cache; hard-refuses terraform/tofu apply and cloud
+  write commands at pre_tool_call; holds no cloud credentials and never changes cloud state; GitHub
+  delivery uses a desk-held token only after the gates and a named human approval, then reads the
+  commit back; no telemetry, no self-update.
+maintainer: RajaRenga
+tier: community
+category: tools
+docs_url: https://github.com/RajaRenga/iacgenius-ce/tree/dd897541cf571a25e2ad4a3d717038cf3ea36f60/profiles/iacgenius/plugins/iacg-desk#readme
+image: https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/dd897541cf571a25e2ad4a3d717038cf3ea36f60/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/dd897541cf571a25e2ad4a3d717038cf3ea36f60/docs/media/screens/01-board.png
+requires_hermes: ">=0.23.1"
+platforms: [linux]
+known_issues:
+  - "Needs the iacg_desk desk service running on the Unix socket, or the iacg_desk CLI importable (PYTHONPATH)."
+  - "Linux only: the desk API uses AF_UNIX and /run/iacg, /data/iacg paths."
+capabilities:
+  provides_tools:
+    - iacg_mission
+    - iacg_templates
+  provides_hooks:
+    - on_session_start
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

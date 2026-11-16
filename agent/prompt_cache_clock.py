@@ -11,19 +11,20 @@ Refresh rules, per route class:
 
 - Anthropic family (native, OpenRouter Claude, route ceilings, other Anthropic-wire gateways): the
   tier is fixed at write and a read restarts it, so ``deadline = read + tier``.
-- OpenAI GPT-5.6+ (``prompt_cache_options.ttl``): a read refreshes coverage to at least 30 minutes
-  after it, ``deadline = max(existing, read + 30m)``. A 12h deadline is fixed at ``write + 12h``: a
-  read never restarts it, it only extends the 30-minute floor.
-- Everything else has no published guarantee (OpenAI before 5.6 ``prompt_cache_retention``, an
-  Anthropic-wire gateway asked for 1h, implicit caches): no coverage, at most an estimated end.
+- OpenAI spec: every request with no ``cache_control`` marker on a cached route (OpenAI of any
+  generation, DeepSeek, Qwen, GLM, Kimi, Gemini, xAI, any OpenAI-compatible endpoint) is one automatic
+  prefix cache treated as 30 minutes, renewed by a read: ``deadline = max(existing, read + 30m)``.
+  A proven 12h write (Responses ``ttl_12h_tokens``) is fixed at ``write + 12h``: a read only extends
+  the 30-minute floor. Only two specs exist on purpose: no per-vendor lifetime table.
+- An Anthropic-wire gateway asked for 1h with no declared ceiling has no guarantee: no coverage, at
+  most an estimated end.
 
 Two ends per window, because a documented minimum is not an expiry:
 
 - ``guaranteed_until``: the EARLIEST coverage deadline, so the whole cached prefix is warm before
   it (a response that wrote two tiers is only as warm as its shorter one). ``None`` = no guarantee.
-- ``estimated_until``: after it the entry is certainly gone. Anthropic tiers are exact, so it is the
-  latest coverage deadline; OpenAI "may retain entries longer than the requested minimum" and keeps
-  cache state at most 24 hours, so it is the last touch + 24h (``in_memory``: up to 1h).
+- ``estimated_until``: after it the entry is treated as gone (cold offload and expiry act on it): the
+  latest coverage deadline on both specs.
 
 Consumers ask :func:`cache_certainly_warm` (before ``guaranteed_until``) or
 :func:`cache_certainly_cold` (past ``estimated_until``; never past only a minimum). Between the two
@@ -47,7 +48,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import sqlite3
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -61,11 +61,7 @@ logger = logging.getLogger(__name__)
 PROVEN, DECLARED, ASSUMED, UNKNOWN = "proven", "declared", "assumed", "unknown"
 STORAGE_UNAVAILABLE = -1  # a generation read that failed: never equal to a real (>= 0) generation
 _CONFIDENCE_RANK = {UNKNOWN: 0, ASSUMED: 1, DECLARED: 2, PROVEN: 3}
-_OPENAI_HOSTS = ("api.openai.com", "chatgpt.com")
-_GPT_VERSION = re.compile(r"gpt-(\d+)(?:\.(\d+))?")
 _OPENAI_READ_FLOOR = "30m"
-_OPENAI_MAX_RETENTION_SECONDS = 86_400
-_IN_MEMORY_MAX_SECONDS = 3_600
 
 
 @dataclass(frozen=True)
@@ -175,26 +171,18 @@ def record_attempt_sent(agent: Any, api_kwargs: Any) -> None:
 # ── Route classes and rules ─────────────────────────────────────────────────
 
 
-def _is_gpt_56_plus(model: str) -> bool:
-    match = _GPT_VERSION.search((model or "").lower())
-    return bool(match) and (int(match.group(1)), int(match.group(2) or 0)) >= (5, 6)
-
-
 def classify_route(*, provider: str, base_url: str, api_mode: str, model: str,
                    has_markers: bool, retention: Optional[str]) -> str:
     """Which rule set governs the cache this request reached (ordered: first match wins)."""
     host = base_url_hostname(base_url)
-    openai_host = any(base_url_host_matches(base_url, h) for h in _OPENAI_HOSTS)
     checks: tuple[tuple[bool, str], ...] = (
         (has_markers and route_ttl_ceiling(provider, base_url) is not None, "route_ceiling"),
         (has_markers and api_mode == "anthropic_messages" and (provider == "anthropic" or host == "api.anthropic.com"),
          "anthropic_native"),
         (has_markers and base_url_host_matches(base_url, "openrouter.ai") and "claude" in model.lower(), "openrouter_claude"),
         (has_markers, "anthropic_gateway"),
-        (openai_host and _is_gpt_56_plus(model), "openai_ttl"),
-        (openai_host or retention is not None, "openai_retention"),
     )
-    return next((name for matched, name in checks if matched), "implicit")
+    return next((name for matched, name in checks if matched), "openai_spec")
 
 
 def _written_tiers(tiers: dict[str, int]) -> tuple[str, ...]:
@@ -226,24 +214,12 @@ def _rule_anthropic_gateway(ctx: _Ctx) -> _Verdict:
                     estimate_seconds=TTL_SECONDS.get(ctx.requested_ttl or "", 300))
 
 
-def _rule_openai_ttl(ctx: _Ctx) -> _Verdict:
+def _rule_openai_spec(ctx: _Ctx) -> _Verdict:
+    """One automatic prefix cache, 30 minutes renewed by a read (OpenAI's documented GPT-5.6 minimum,
+    https://developers.openai.com/api/docs/guides/prompt-caching , applied to every OpenAI-spec route)."""
     if proven := _written_tiers(ctx.write_tiers):
-        return _Verdict(proven, PROVEN, "openai_write_tier", estimate_seconds=_OPENAI_MAX_RETENTION_SECONDS)
-    if ctx.write_tokens <= 0:  # a read guarantees at least 30 minutes after it, whatever was asked
-        return _Verdict((_OPENAI_READ_FLOOR,), DECLARED, "openai_read_min_30m",
-                        estimate_seconds=_OPENAI_MAX_RETENTION_SECONDS)
-    return _Verdict((ctx.requested_ttl or _OPENAI_READ_FLOOR,), DECLARED, "openai_min_lifetime",
-                    estimate_seconds=_OPENAI_MAX_RETENTION_SECONDS)
-
-
-def _rule_openai_retention(ctx: _Ctx) -> _Verdict:
-    if ctx.retention == "in_memory":
-        return _Verdict((), ASSUMED, "openai_in_memory", tier="in_memory", estimate_seconds=_IN_MEMORY_MAX_SECONDS)
-    return _Verdict((), ASSUMED, "openai_24h_retention", tier="24h", estimate_seconds=_OPENAI_MAX_RETENTION_SECONDS)
-
-
-def _rule_implicit(ctx: _Ctx) -> _Verdict:
-    return _Verdict((), UNKNOWN, "implicit_cache")
+        return _Verdict(proven, PROVEN, "openai_write_tier")
+    return _Verdict((_OPENAI_READ_FLOOR,), DECLARED, "openai_spec_30m")
 
 
 _RULES: dict[str, Callable[[_Ctx], _Verdict]] = {
@@ -251,9 +227,7 @@ _RULES: dict[str, Callable[[_Ctx], _Verdict]] = {
     "anthropic_native": _rule_anthropic_native,
     "openrouter_claude": _rule_openrouter_claude,
     "anthropic_gateway": _rule_anthropic_gateway,
-    "openai_ttl": _rule_openai_ttl,
-    "openai_retention": _rule_openai_retention,
-    "implicit": _rule_implicit,
+    "openai_spec": _rule_openai_spec,
 }
 
 
@@ -268,7 +242,7 @@ def _refresh_openai(deadline: float, tier: str, at: float) -> float:
 # How a read moves a covered tier's deadline; route classes absent here never hold coverage.
 _REFRESH: dict[str, Callable[[float, str, float], float]] = {
     "route_ceiling": _refresh_restart, "anthropic_native": _refresh_restart, "openrouter_claude": _refresh_restart,
-    "anthropic_gateway": _refresh_restart, "openai_ttl": _refresh_openai,
+    "anthropic_gateway": _refresh_restart, "openai_spec": _refresh_openai,
 }
 
 

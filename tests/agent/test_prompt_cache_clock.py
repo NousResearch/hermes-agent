@@ -95,26 +95,27 @@ def test_openai_12h_deadline_is_fixed_at_write_and_a_read_only_extends_the_30m_f
     assert _ends(agent)[2] == 45_800.0  # near the 12h deadline the read's 30 minutes are the later one
 
 
-def test_openai_minimum_is_not_an_expiry(monkeypatch):
-    """GPT-5.6+ 30m is a documented MINIMUM ("may retain entries longer"; 24h ceiling): warm before it,
-    may still be warm after it, certainly cold only past the retention ceiling."""
-    agent = _agent("openai-api", "https://api.openai.com/v1", "gpt-5.6-luna", api_mode="codex_responses")
-    write = {"input_tokens": 4000, "output_tokens": 2, "input_tokens_details": {
-        "cached_tokens": 0, "cache_write_tokens": 3640, "cache_write_tokens_details": {"ttl_30m_tokens": 3640}}}
-    _turn(agent, {"input": []}, write, sent_at=1_000.0, monkeypatch=monkeypatch)
-    window = cache_window(agent)
-    assert (window.guaranteed_until, window.estimated_until) == (2_800.0, 87_400.0)
-    assert cache_certainly_warm(window, now=2_000.0) and not cache_certainly_cold(window, now=2_000.0)
-    assert not cache_certainly_warm(window, now=3_000.0) and not cache_certainly_cold(window, now=3_000.0)
-    assert cache_certainly_cold(window, now=87_400.0)
-    assert render_prompt_cache_line(dict(window.__dict__), now=3_000.0).startswith("Prompt cache: may still be warm until")
-
-    # Pre-5.6 retention: no guarantee at all, only a ceiling.
-    old = _agent("openai-api", "https://api.openai.com/v1", "gpt-5.4-nano", api_mode="codex_responses")
-    _turn(old, {"input": []}, {"input_tokens": 4000, "output_tokens": 2,
-                               "input_tokens_details": {"cached_tokens": 2816}}, sent_at=1_000.0, monkeypatch=monkeypatch)
-    assert _ends(old)[1:] == ("assumed", None, 87_400.0)
-    assert not cache_certainly_warm(cache_window(old), now=1_001.0)
+def test_openai_spec_routes_hold_30_minutes_renewed_by_a_read(monkeypatch):
+    """Two specs only: every route without cache_control markers (OpenAI of any generation, DeepSeek, Qwen,
+    GLM, Kimi, ...) is one automatic cache declared at 30 minutes, renewed by a read."""
+    for provider, base_url, model, api_mode in (
+            ("openai-api", "https://api.openai.com/v1", "gpt-5.6-luna", "codex_responses"),
+            ("openai-api", "https://api.openai.com/v1", "gpt-4.1-mini", "chat_completions"),
+            ("deepseek", "https://api.deepseek.com/v1", "deepseek-v4", "chat_completions"),
+            ("nous", "https://inference-api.nousresearch.com/v1", "z-ai/glm-5.1", "chat_completions")):
+        agent = _agent(provider, base_url, model, api_mode=api_mode)
+        agent._use_prompt_caching = False
+        usage = ({"input_tokens": 4000, "output_tokens": 2, "input_tokens_details": {"cached_tokens": 3000}}
+                 if api_mode == "codex_responses" else
+                 {"prompt_tokens": 4000, "completion_tokens": 2, "prompt_tokens_details": {"cached_tokens": 3000}})
+        request = {"input": []} if api_mode == "codex_responses" else {"messages": [{"role": "user", "content": "hi"}]}
+        _turn(agent, request, usage, sent_at=1_000.0, monkeypatch=monkeypatch)
+        window = cache_window(agent)
+        assert (window.tier, window.confidence, window.guaranteed_until, window.estimated_until) == (
+            "30m", "declared", 2_800.0, 2_800.0), model
+        assert cache_certainly_cold(window, now=2_800.0)
+        _turn(agent, request, usage, sent_at=2_000.0, monkeypatch=monkeypatch)  # a read renews it
+        assert cache_window(agent).guaranteed_until == 3_800.0
 
 
 def test_the_cache_moves_with_the_full_route_and_dies_at_compaction(monkeypatch):
@@ -193,18 +194,6 @@ def test_moa_records_the_resolved_aggregator_route_and_payload(monkeypatch):
                                   api_mode="chat_completions")
     assert (event.route_class, event.tier, event.confidence) == ("openrouter_claude", "1h", "declared")
     assert _ends(agent)[2] == 4_600.0
-
-
-def test_implicit_caches_report_unknown_rather_than_a_guess(monkeypatch):
-    agent = _agent("deepseek", "https://api.deepseek.com/v1", "deepseek-v4")
-    agent._use_prompt_caching = False
-    usage = {"prompt_tokens": 4000, "completion_tokens": 2, "prompt_cache_hit_tokens": 3000}
-    _turn(agent, {"messages": [{"role": "user", "content": "hi"}]}, usage, sent_at=1_000.0, monkeypatch=monkeypatch)
-    window = cache_window(agent)
-    assert (window.confidence, window.estimated_until) == ("unknown", None)
-    assert not cache_certainly_warm(window) and not cache_certainly_cold(window)
-    assert render_prompt_cache_line({"estimated_until": None, "confidence": "unknown", "reason": "implicit_cache"}) == (
-        "Prompt cache: unknown (this provider does not publish its cache retention).")
 
 
 @pytest.mark.parametrize(("now", "expected"), [

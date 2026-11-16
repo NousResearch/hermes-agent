@@ -15,7 +15,7 @@ from agent.prompt_cache_clock import DECLARED, PROVEN, cache_certainly_cold, cac
 logger = logging.getLogger("agent.conversation_loop")
 
 
-def prompt_cache_is_cold(agent: Any) -> bool:
+def prompt_cache_is_cold(agent: Any, *, now: float | None = None) -> bool:
     """Whether the provider prompt cache has certainly expired, so a history rewrite breaks nothing.
 
     The prune's ONLY cold-cache reading (both call sites), from the shared cache clock: past the
@@ -25,9 +25,15 @@ def prompt_cache_is_cold(agent: Any) -> bool:
 
     Only a proven or declared window prunes. An assumed one includes the window the clock rebuilds for a
     pre-clock session from TODAY's TTL and route: a session cached for 1h (or on another route) then
-    reads cold while still warm. The /context line keeps showing that estimate."""
+    reads cold while still warm. The /context line keeps showing that estimate.
+
+    A route switch (``/model``, a fallback, any change of provider, endpoint or model since the last
+    response) is cold too: the new route has never seen this prefix, so the first request there writes
+    it whole and an offload before it breaks nothing."""
     window = cache_window(agent)
-    return window is not None and window.confidence in (PROVEN, DECLARED) and cache_certainly_cold(window)
+    if window is not None and window.reason == "route_changed":
+        return True
+    return window is not None and window.confidence in (PROVEN, DECLARED) and cache_certainly_cold(window, now=now)
 
 
 def run_proactive_prune(
@@ -69,3 +75,17 @@ def turn_start_cold_prune(agent: Any, out: Any, effective_task_id: Any) -> None:
     pruned = run_proactive_prune(agent, prefix, tokens, effective_task_id)
     if pruned is not prefix and len(pruned) == len(prefix):
         out.messages = pruned + out.messages[idx:]
+
+
+def offload_cold_history(agent: Any, messages: list[dict[str, Any]], task_id: Any = None) -> list[dict[str, Any]]:
+    """Step 3's offload on an idle chat whose cache is over (``prompt_cache_lifecycle.claim_offload``):
+    the same cold prune a return after expiry runs (byte-exact archive + pointer, protected tail, the
+    16k reclaim gate), run by the surface that owns the chat so it is already small when the person comes
+    back. Returns the history to keep (the input object when nothing committed)."""
+    if not messages or not agent.compression_enabled or not prompt_cache_is_cold(agent):
+        return messages
+    from agent.conversation_compression_manual import estimate_request_tokens
+
+    pruned = run_proactive_prune(agent, messages, estimate_request_tokens(agent, messages),
+                                 task_id or getattr(agent, "session_id", None) or "default")
+    return pruned if pruned is not messages and len(pruned) == len(messages) else messages

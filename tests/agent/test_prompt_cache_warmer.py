@@ -166,12 +166,12 @@ def test_requests_that_cannot_be_warmed_arm_nothing(priced, mutate, reason):
     assert warmer._run is None and agent._anthropic_client.calls == []
 
 
-def test_unpriced_or_cheap_prompts_never_pay_for_a_refresh(monkeypatch):
+def test_unpriced_routes_and_uncacheable_prefixes_never_pay_for_a_refresh(monkeypatch):
     monkeypatch.setattr(pcw.PromptCacheWarmer, "_pricing", lambda self: None)
     assert _arm(_agent(), _request(), _RESPONSE) == "cache economics unavailable"
     monkeypatch.setattr(pcw.PromptCacheWarmer, "_pricing", lambda self: _OPUS)
-    assert _arm(_agent(), _request(), SimpleNamespace(usage=_Usage(30, 30, 0, 3_000))) == "expected savings below threshold"
-    # The pure economics: pi's decision rule (p * miss - warm >= $0.05).
+    assert _arm(_agent(), _request(), SimpleNamespace(usage=_Usage(30, 30, 0, 900))) == "cache economics unavailable"
+    # The pure economics: a read that costs less than the rewrite it prevents is sent.
     d = pcw.evaluate_economics(_OPUS, 100_000)
     assert (round(d.warm_cost, 4), round(d.miss_cost, 4), d.action) == (0.05, 0.575, "warm")
 
@@ -193,7 +193,7 @@ def test_a_new_real_request_or_a_changed_conversation_stops_the_run(priced):
 
 
 def test_timer_delay_keeps_a_ten_second_margin():
-    assert pcw.cache_warming_delay_s(300) == 270 and pcw.cache_warming_delay_s(3600) == 3240
+    assert pcw.cache_warming_delay_s(300) == 250 and pcw.cache_warming_delay_s(3600) == 3000
     assert pcw.cache_warming_delay_s(12) == 2 and pcw.cache_warming_delay_s(10) is None
 
 
@@ -417,11 +417,11 @@ def test_a_refresh_moves_the_clock_and_the_next_one_is_due_from_its_new_deadline
     booked = []
     agent = _agent(_session_db=SimpleNamespace(queue_token_counts=lambda sid, **kw: booked.append(kw)))
     warmer = pcw.get_prompt_cache_warmer(agent)
-    assert _arm(agent, sent_at=_time.time() - 250) is None
+    assert _arm(agent, sent_at=_time.time() - 200) is None
     before = cache_window(agent).guaranteed_until
     _fire(warmer)
     after = cache_window(agent)
-    assert after.guaranteed_until > before + 200 and after.confidence != "unknown"
-    assert warmer._run.next_warm_at == pytest.approx(after.guaranteed_until - 30, rel=0, abs=0.5)
+    assert after.guaranteed_until > before + 150 and after.confidence != "unknown"
+    assert warmer._run.next_warm_at == pytest.approx(after.guaranteed_until - 50, rel=0, abs=0.5)
     (row,) = booked
     assert row["task"] == "cache_warm" and json.loads(row["prompt_cache_clock"])["read_tokens"] == 119_997

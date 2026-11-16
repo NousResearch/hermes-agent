@@ -75,7 +75,6 @@ def _runner(monkeypatch, *, due):
         return due
 
     monkeypatch.setattr(pcl, "claim_compaction_at_release", claim)
-    monkeypatch.setattr(pcl, "window_still_warm", lambda a, **k: True)
 
     async def compress(src, ent, history, request, *, trigger=None):
         events.append(("compacted", ent.session_id, trigger))

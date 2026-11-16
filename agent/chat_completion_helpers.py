@@ -33,6 +33,7 @@ from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
 from agent.chat_completion_headers import _chat_completion_capturing_headers
+from agent.chat_completion_helpers_relay import _managed_summary_call
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLifetimeExceeded
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
@@ -2177,17 +2178,6 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     api_messages = [_clone_message_for_send(m) for m in api_messages]
     _sanitize_messages_surrogates(api_messages)
     return api_messages
-
-
-def _managed_summary_call(agent, api_request_id: str, request, callback, *, retry_count: int):
-    from agent import relay_llm
-    return relay_llm.execute_current(
-        request, callback,
-        name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),
-        metadata={"api_mode": str(getattr(agent, "api_mode", "") or "chat_completions"),
-            "api_request_id": api_request_id, "call_role": "iteration_summary", "retry_count": retry_count},
-        defer_logical_completion=True,
-    )
 
 
 def _summary_text(agent, response, record=None, **normalize_kwargs) -> str:

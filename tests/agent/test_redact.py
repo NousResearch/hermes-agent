@@ -724,17 +724,23 @@ class TestElevenLabsTavilyExaKeys:
 
 
 
-    def test_tavily_environment_scoped_keys_redacted(self):
-        # Current Tavily keys carry a tvly-dev-/tvly-prod- segment (#72925).
-        for env in ("dev", "prod"):
-            key = "tvly-" + env + "-Ab3dE5fG7hJ9kL1mN2pQ4rS6"
+    @pytest.mark.parametrize("file_read", [False, True])
+    def test_tavily_key_shapes_redacted(self, file_read):
+        body = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0Qz"
+        keys = (
+            "tvly-" + "abcd-efghi-" + body,
+            "tvly-" + "dev-" + body[:32],
+            "tvly-" + "prod-" + body[:32],
+            "tvly-" + body,
+        )
+        for key in keys:
             for text in (f"echo {key} done", f'{{"query": "{key}"}}'):
-                result = redact_sensitive_text(text)
-                assert "E5fG7hJ9kL1m" not in result, result
+                result = redact_sensitive_text(text, force=True, file_read=file_read)
+                assert key not in result, result
 
     def test_hyphenated_tavily_names_are_not_keys(self):
-        # Package/file names starting with tvly- are not keys; only an env segment may carry a hyphen.
-        for text in ("pip install tvly-python-client", "tvly-config-file"):
+        # Package names, file names, and documentation placeholders are not keys.
+        for text in ("pip install tvly-python-client", "tvly-config-file", "tvly-your-key-here"):
             assert redact_sensitive_text(text) == text
 
     def test_all_three_in_env_dump(self):

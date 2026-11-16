@@ -34,6 +34,10 @@ from hermes_cli import update_cmd_posix_pause as _posix_pause
 from hermes_cli.update_cmd_pause_gate import _checkout_move, _moves_for
 from hermes_cli import update_cmd_check as _check
 
+from hermes_cli.update_cmd_gateway_ownership import (
+    _systemd_service_membership_for_pid, _select_update_manual_gateway_pids,
+)
+
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
 from hermes_cli.update_abort_recovery import (
     _abort_recovery_is_complete, _qualified_serve_skips, _recover_gateway_restart_after_abort,

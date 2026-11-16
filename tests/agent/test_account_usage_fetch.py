@@ -1,10 +1,18 @@
 import concurrent.futures
 import contextvars
+import io
+import json
 import threading
 import time
 from datetime import datetime, timezone, UTC
+from email.message import Message
+from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
+
+import agent.account_usage_nous as nous_usage
+from hermes_cli import nous_account
 
 from agent.account_usage import (
     AccountUsageSnapshot,
@@ -340,3 +348,132 @@ def test_fetch_portal_account_returns_value_and_keeps_caller_context(monkeypatch
     finally:
         marker.reset(token)
     assert seen == {"force_fresh": True, "marker": "profile-scope"}
+
+
+@pytest.fixture
+def stored_nous_portal(tmp_path, monkeypatch):
+    """Real stored-token/auth normalization, with only the HTTP transport replaced."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    state = {"access_token": "stored-access", "refresh_token": "single-use-refresh",
+             "expires_at": "2100-01-01T00:00:00Z", "portal_base_url": "https://portal.example.invalid"}
+    auth_path = home / "auth.json"
+    auth_path.write_text(json.dumps({"version": 1, "providers": {"nous": state}}))
+    payload = {
+        "user": {"privy_did": "did:privy:member", "email": "member@example.invalid"},
+        "organisation": {"id": "org-one"},
+        "subscription": {"plan": "Pro"},
+        "paid_service_access": {"allowed": True, "purchased_credits_remaining": 12.5},
+        "usage_window": {"keep_going_on_credits": True, "gauges": [
+            {"id": "day", "scope": "all", "used_bp": 2500, "resets_at_ms": 1_800_000_000_000},
+            {"id": "top_tier", "scope": "top_tier", "used_bp": 5000},
+        ]},
+    }
+    calls = []
+
+    def urlopen(request, timeout):
+        calls.append((request.get_method(), request.full_url, request.get_header("Authorization"), timeout))
+        return io.BytesIO(json.dumps(payload).encode())
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("A read-only quota fetch must never resolve/refresh Nous credentials or write auth")
+
+    monkeypatch.setattr(nous_account.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(nous_account, "get_nous_portal_account_info", forbidden)
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", forbidden)
+    monkeypatch.setattr("hermes_cli.auth._save_auth_store", forbidden)
+    token = set_hermes_home_override(home)
+    try:
+        yield state, payload, auth_path, calls
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.parametrize("outcome", ["success", "signed_out", "expired", "401", "503", "timeout", "error_body", "explicit_key"])
+def test_nous_read_only_usage_never_repairs_credentials(stored_nous_portal, monkeypatch, outcome):
+    state, payload, auth_path, calls = stored_nous_portal
+    release = threading.Event()
+    if outcome == "signed_out":
+        state.clear()
+    elif outcome == "expired":
+        state["expires_at"] = "2000-01-01T00:00:00Z"
+    auth_path.write_text(json.dumps({"version": 1, "providers": {"nous": state}}))
+    before = auth_path.read_bytes()
+    if outcome in {"401", "503", "timeout"}:
+        def unavailable(request, timeout):
+            calls.append(request.full_url)
+            if outcome == "timeout":
+                release.wait(30)
+                return io.BytesIO(b"{}")
+            raise HTTPError(request.full_url, int(outcome), "unavailable", Message(), None)
+
+        monkeypatch.setattr(nous_account.urllib.request, "urlopen", unavailable)
+    if outcome == "timeout":
+        original = nous_usage._fetch_portal_account
+        monkeypatch.setattr(nous_usage, "_fetch_portal_account",
+                            lambda timeout, **kwargs: original(timeout=0.05, **kwargs))
+    if outcome == "error_body":
+        payload["error"] = "portal unavailable"
+    started = time.monotonic()
+    try:
+        snapshot = fetch_account_usage("nous", read_only=True,
+                                       api_key="other-account-key" if outcome == "explicit_key" else None)
+    finally:
+        release.set()
+    assert time.monotonic() - started < 3
+    assert auth_path.read_bytes() == before
+    if outcome == "success":
+        assert snapshot is not None
+        assert snapshot.provider == "nous" and snapshot.source == "portal-account"
+        assert snapshot.plan == "Pro" and snapshot.usage_window
+        assert snapshot.windows == (
+            AccountUsageWindow("Today", 25.0, datetime.fromtimestamp(1_800_000_000, tz=UTC)),
+            AccountUsageWindow("Large models (monthly)", 50.0),
+        )
+        assert "Top-up credits: $12.50" in snapshot.details
+        assert "Keep going on credits: on. Uses your credits when included usage runs out." in snapshot.details
+        assert snapshot.raw is None
+        assert calls == [("GET", "https://portal.example.invalid/api/oauth/account", "Bearer stored-access", 8)]
+    else:
+        assert snapshot is None
+        assert bool(calls) == (outcome in {"401", "503", "timeout", "error_body"})
+
+
+@pytest.mark.parametrize("section,key,value,same_identity", [
+    ("state", "access_token", "replacement-access", True),
+    ("user", "privy_did", "did:privy:another-member", False),
+    ("organisation", "id", "org-two", False),
+    ("state", "portal_base_url", "https://other-portal.example.invalid", False),
+    ("user", "privy_did", None, None),
+    ("organisation", "id", None, None),
+], ids=["token", "user", "org", "portal", "missing_user", "missing_org"])
+def test_nous_read_only_identity_tracks_the_portal_principal_not_the_token(
+    stored_nous_portal, section, key, value, same_identity,
+):
+    state, payload, auth_path, calls = stored_nous_portal
+    original = fetch_account_usage("nous", read_only=True)
+    assert original is not None and original.identity is not None
+    state["access_token"] = "replacement-access"
+    target = {"state": state, "user": payload["user"], "organisation": payload["organisation"]}[section]
+    if value is None:
+        target.pop(key)
+    else:
+        target[key] = value
+    auth_path.write_text(json.dumps({"version": 1, "providers": {"nous": state}}))
+    updated = fetch_account_usage("nous", read_only=True)
+    assert updated is not None
+    assert len(calls) == 2
+    if same_identity is None:
+        assert updated.identity is None  # no guess from email, token or profile home
+    else:
+        assert updated.identity is not None
+        assert (updated.identity == original.identity) is same_identity
+    for snapshot in (original, updated):
+        assert snapshot.raw is None
+        for sensitive in ("stored-access", "replacement-access", "single-use-refresh",
+                          "member@example.invalid", "did:privy:member"):
+            assert sensitive not in repr(snapshot)

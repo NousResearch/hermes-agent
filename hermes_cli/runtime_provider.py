@@ -410,9 +410,17 @@ def _anthropic_cfg_base_url(model_cfg: dict[str, Any]) -> str:
 
 
 def _anthropic_token_or_raise(*, model: str | None = None) -> str:
-    from agent.anthropic_credentials import resolve_anthropic_token
+    from agent.anthropic_credentials import resolve_anthropic_token, take_refresh_failure
+    take_refresh_failure()  # drop a record left by an earlier, unrelated resolve on this thread
     token = resolve_anthropic_token(model=model)
     if not token:
+        refresh_failure = take_refresh_failure()
+        if refresh_failure is not None:
+            # An expired login whose refresh could not reach the token endpoint is not a missing
+            # login. Chain the transport error so callers can classify it as transient (cron's
+            # unreachable-model re-run ladder walks __cause__).
+            raise AuthError(f"Anthropic login is expired and could not be refreshed: {refresh_failure}",
+                            provider="anthropic", code="refresh_failed", retryable=True) from refresh_failure
         # A key the pool benched for *this* model is not a missing credential; telling the
         # user to re-authenticate would send them chasing a cooldown that lifts on its own.
         if model and resolve_anthropic_token():

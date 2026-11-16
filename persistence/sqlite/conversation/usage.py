@@ -6,14 +6,16 @@ from typing import Any, Mapping, Optional
 
 from persistence import SessionId
 from persistence.conversation.usage import (
-    AuxiliaryTaskUsage, BillingRoute, RouteUsage, TokenCounts, UsageDelta, UsageTotals, UsageTotalsQuery,
+    AuxiliaryTaskUsage, BillingRoute, PromptCacheClockRecord, RouteUsage, TokenCounts, UsageDelta, UsageTotals,
+    UsageTotalsQuery,
 )
 
 from .._backend import SQLiteStore, register_repository
 from .._holder import StoreHolder, set_token_delta_applier
 from ._store.sessions import get_recent_session_model_route
 from ._store.usage import (
-    auxiliary_usage_by_task, record_auxiliary_usage, update_session_billing_route, update_token_counts, usage_totals,
+    auxiliary_usage_by_task, get_prompt_cache_clock, prompt_cache_generation, record_auxiliary_usage,
+    update_session_billing_route, update_token_counts, usage_totals,
 )
 from ._errors import refusals
 
@@ -47,6 +49,7 @@ def _delta_kwargs(delta: UsageDelta) -> dict[str, Any]:
         "model": route.model if route is not None else None,
         "api_call_count": delta.api_call_count,
         "task": delta.task,
+        "prompt_cache_clock": delta.prompt_cache_clock,
     }
 
 
@@ -111,6 +114,20 @@ class SQLiteUsageRepository:
                 estimated_cost_usd=float(row["estimated_cost_usd"]))
             for task, row in rows.items()
         }
+
+    def prompt_cache_clock(self, session_id: SessionId) -> Optional[PromptCacheClockRecord]:
+        holder = self._store.holder()
+        with refusals(holder, session_id):
+            row = get_prompt_cache_clock(holder, session_id)
+        if not row:
+            return None
+        return PromptCacheClockRecord(
+            clock=row["clock"], last_assistant_at=row["last_assistant_at"], generation=row["generation"])
+
+    def prompt_cache_generation(self, session_id: SessionId) -> int:
+        holder = self._store.holder()
+        with refusals(holder, session_id):
+            return prompt_cache_generation(holder, session_id)
 
     # ── queue and barrier ─────────────────────────────────────────────────────
 

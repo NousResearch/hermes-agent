@@ -1974,14 +1974,32 @@ export const svOverrides: TranslationOverrides = {
       desktopHalfPending: 'kopierar…',
       desktopHalfPendingTip:
         'Paketet innehåller en skrivbordsdel som ännu inte har kopierats till appen. Använd Sök igen eller starta om appen.',
+      desktopHalfRemote: 'inte tillgänglig (fjärrserverdel)',
+      desktopHalfRemoteTip:
+        'Paketets skrivbordsdel finns på fjärrserverdelens disk, som den här appen inte kan läsa. Kör Installera från Git med paketets förvars-URL och markera målet Skrivbord för att klona skrivbordsdelen till den här datorn.',
       emptyAll: 'Inga pluginer ännu.',
       empty: 'Inga agentpluginer är installerade för denna profil.',
       emptyHint: 'Bläddra i katalogen nedan och installera ett granskat plugin med ett klick.',
       loadFailed: 'Det gick inte att läsa in agentpluginer',
       toggleFailed: name => `Det gick inte att växla ${name}`,
+      toolsetOn: (name, profile) => `${name}-agentverktyg aktiverade för ${profile}`,
+      toolsetOff: (name, profile) => `${name}-agentverktyg inaktiverade för ${profile}`,
+      toolsetToggleFailed: name =>
+        `Kunde inte växla ${name}-agentverktygen; skrivbordspanelen lämnades oförändrad`,
       legacyBackend:
         'Denna serverdel saknar stöd för pluginreglage med nycklar. Uppdatera Hermes för att hantera den här.',
       portableBadge: 'portabelt',
+      serverStates: {
+        connected: 'ansluten',
+        app_not_running: 'appen körs inte',
+        hermes_not_connected: 'MCP-anslutning saknas',
+        endpoint_unavailable: 'ändpunkten är inte tillgänglig',
+        no_interactive_session: 'ingen interaktiv session',
+        version_too_old: 'versionen är för gammal',
+        missing_app: 'appen saknas',
+        unsupported_gpu: 'GPU stöds inte',
+        unknown: 'okänd status'
+      },
       alreadyInstalled: name => `${name} är redan installerat i denna profil.`,
       catalogProvenance: sha => `Installerat från Hermes-katalogen${sha ? ` vid den låsta incheckningen ${sha}` : ''}.`,
       pinnedProvenance: sha =>
@@ -2004,7 +2022,46 @@ export const svOverrides: TranslationOverrides = {
       updateToPin: sha => `Uppdatera till ${sha}`,
       updateFailed: name => `Det gick inte att uppdatera ${name}`,
       updated: name =>
-        `${name} har uppdaterats till katalogens aktuella låsta incheckning. Starta om gatewayen för att tillämpa ändringen.`
+        `${name} har uppdaterats till katalogens aktuella låsta incheckning. Starta om gatewayen för att tillämpa ändringen.`,
+      uninstall: 'Avinstallera',
+      uninstallTip: (name, profile) => `Avinstallera ${name} från ${profile}`,
+      uninstallConfirmTitle: name => `Avinstallera ${name}?`,
+      uninstallConfirmBody: (name, profile) =>
+        `Detta tar bort pluginets filer från profilen ${profile}. En eventuell medföljande skrivbordsdel tas också bort. Installera om från katalogen eller Git när som helst.`,
+      uninstallFailed: name => `Kunde inte avinstallera ${name}`,
+      uninstalled: name => `${name} avinstallerat. Starta om gatewayen för att läsa ur det.`,
+      uninstallDesktopTip: name => `Avinstallera ${name} från den här appen`,
+      uninstallDesktopConfirmBody: name =>
+        `Detta tar bort ${name} från mappen desktop-plugins på den här datorn och läser ur det nu. Installera om från Git eller lägg tillbaka mappen när som helst.`,
+      uninstalledDesktop: name => `${name} avinstallerat.`,
+      deepLinkErrorTitle: 'Länken för plugininstallation avvisades',
+      deepLinkCatalogInvalidName: 'Länkens katalognamn saknas eller är ogiltigt.',
+      deepLinkCatalogUnknown: name => `”${name}” finns inte i Hermes plugin-katalog. Inget installerades.`,
+      deepLinkCatalogUnavailable:
+        'Kunde inte läsa in Hermes plugin-katalog. Kontrollera anslutningen och öppna länken igen.',
+      settingsToggle: name => `Inställningar: ${name}`,
+      settingsForm: {
+        save: 'Spara inställningar',
+        saved: name => `Inställningarna för ${name} sparades.`,
+        saveFailed: name => `Kunde inte spara inställningarna för ${name}`,
+        required: 'Krävs',
+        optional: '(valfritt)',
+        secretSet: '•••••••• (angiven)',
+        secretStoredAs: env =>
+          `Lagras i profilens .env som ${env}, aldrig i config.yaml. Lämna tomt för att behålla det aktuella värdet.`
+      },
+      folderAccess: {
+        title: 'Mappåtkomst',
+        hint: 'Tillåt ett skrivbordsinsticksprogram att använda en skyddad mapp först när du väljer den här.',
+        pickerTitle: 'Välj en mapp',
+        pickerButton: 'Välj mapp',
+        loadFailed: 'Kunde inte läsa in mappåtkomst',
+        revoke: 'Återkalla åtkomst',
+        revokeLabel: path => `Återkalla åtkomst till ${path}`,
+        revokeFailed: 'Kunde inte återkalla mappåtkomsten',
+        revoked: 'Mappåtkomsten återkallades.',
+        refusedProtected: 'Den här skyddade platsen kan inte väljas.'
+      }
     }
   },
   updates: {

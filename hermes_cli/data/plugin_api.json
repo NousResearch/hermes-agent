@@ -62,6 +62,13 @@
       ]
     },
     {
+      "source": "Kanban dashboard plugin pickup-control contract",
+      "entries": [
+        "hermes_cli.kanban_control:control_status",
+        "hermes_cli.kanban_control:set_control_scope"
+      ]
+    },
+    {
       "source": "PluginContext (hermes_cli/plugins_context.py)",
       "entries": [
         "agent.context_references",

@@ -9,8 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from hermes_cli import kanban_control
-from hermes_cli import kanban_db
+from hermes_cli.kanban_control import control_status, set_control_scope
 
 
 router = APIRouter()
@@ -21,17 +20,14 @@ class ControlMutation(BaseModel):
     board: Optional[str] = None
 
 
-def _board_or_http(board: Optional[str]) -> Optional[str]:
-    if board is None or board == "":
-        return None
-    try:
-        normalized = kanban_db._normalize_board_slug(board)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    active = {item["slug"] for item in kanban_db.list_boards(include_archived=False)}
-    if normalized is None or normalized not in active:
-        raise HTTPException(status_code=404, detail=f"board {board!r} does not exist")
-    return normalized
+def _board(board: Optional[str]) -> Optional[str]:
+    """Preserve the control API's None = all-active-boards selection."""
+    return board or None
+
+
+def _selection_http(exc: ValueError) -> HTTPException:
+    status_code = 404 if "does not exist or is archived" in str(exc) else 400
+    return HTTPException(status_code=status_code, detail=str(exc))
 
 
 def _unknown_503(result: dict):
@@ -73,28 +69,31 @@ def _request_actor(request: Request) -> str:
 
 @router.get("/control")
 def get_control(board: Optional[str] = Query(None)):
-    return _unknown_503(kanban_control.control_status(board=_board_or_http(board)))
+    try:
+        result = control_status(board=_board(board))
+    except ValueError as exc:
+        raise _selection_http(exc) from exc
+    return _unknown_503(result)
+
+
+def _set_control(desired_state: str, payload: ControlMutation, request: Request):
+    try:
+        result = set_control_scope(
+            desired_state,
+            changed_by=_request_actor(request),
+            reason=payload.reason,
+            board=_board(payload.board),
+        )
+    except ValueError as exc:
+        raise _selection_http(exc) from exc
+    return _mutation_response(result)
 
 
 @router.post("/control/pause")
 def pause_control(payload: ControlMutation, request: Request):
-    try:
-        result = kanban_control.set_control_scope(
-            "paused", changed_by=_request_actor(request), reason=payload.reason,
-            board=_board_or_http(payload.board),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _mutation_response(result)
+    return _set_control("paused", payload, request)
 
 
 @router.post("/control/resume")
 def resume_control(payload: ControlMutation, request: Request):
-    try:
-        result = kanban_control.set_control_scope(
-            "running", changed_by=_request_actor(request), reason=payload.reason,
-            board=_board_or_http(payload.board),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _mutation_response(result)
+    return _set_control("running", payload, request)

@@ -258,3 +258,383 @@ registry.register(
     emoji="📚",
     max_result_size_chars=24000,
 )
+
+
+# ── zendesk_create_draft (write, autonomy-gated) ─────────────────────────
+
+_ACTION = "zendesk_create_draft"
+_LOCALE_RE = re.compile(rf"^{_LOC}$")
+_DIGITS = re.compile(r"^\d{1,20}$")
+
+
+def _config() -> dict:
+    """The active profile's raw config.yaml (mtime-cached); indirection for tests."""
+    from hermes_cli.config import read_raw_config
+    return read_raw_config()
+
+
+def _now():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
+
+
+def _audit(action: str, target: str) -> None:
+    from agent.data_access_audit import record_access
+    record_access(tool=_ACTION, action=action, target=target)
+
+
+def _zendesk_settings(cfg: dict) -> dict:
+    z = cfg.get("zendesk") if isinstance(cfg.get("zendesk"), dict) else {}
+
+    def _names(key: str, default: list[str]) -> frozenset[str]:
+        raw = z.get(key, default)
+        if isinstance(raw, str):
+            raw = [raw]
+        return frozenset(str(x).strip() for x in (raw or []) if str(x).strip())
+
+    return {
+        "data_source": str(z.get("release_assets_data_source_id") or "").strip(),
+        # `Published` can never count as sign-off: it means already live.
+        "approved": _names("approved_statuses", ["Approved"]) - {"Published"},
+        "hold": _names("hold_statuses", ["Hold"]),
+    }
+
+
+def _int_arg(value, name: str, *, nullable: bool = False):
+    if value is None and nullable:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer id.")
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, str) and _DIGITS.match(value.strip()):
+        return int(value.strip())
+    raise ValueError(f"{name} must be an integer id.")
+
+
+def _build_request(args: dict) -> dict:
+    """Validate the model's arguments into the stored request (ValueError on bad input)."""
+    title = (args.get("title") or "").strip() if isinstance(args.get("title"), str) else ""
+    body = args.get("body") if isinstance(args.get("body"), str) else ""
+    if not title or len(title) > 255:
+        raise ValueError("title is required (max 255 characters).")
+    if not body.strip():
+        raise ValueError("body (article HTML) is required.")
+    locale = str(args.get("locale") or "en-us").strip().lower()
+    if not _LOCALE_RE.match(locale):
+        raise ValueError(f"locale {locale!r} is not a Zendesk locale like 'en-us'.")
+    section = args.get("section_id")
+    section_id = None if section in (None, "") else _int_arg(section, "section_id")
+    revision = args.get("revision_of_article_id")
+    revision_id = None if revision in (None, "") else _int_arg(revision, "revision_of_article_id")
+    if section_id is None and revision_id is None:
+        raise ValueError("section_id is required (or revision_of_article_id to use its section).")
+    return {
+        "section_id": section_id,
+        "title": title,
+        "body": body,
+        "locale": locale,
+        "permission_group_id": _int_arg(args.get("permission_group_id"), "permission_group_id"),
+        "user_segment_id": _int_arg(args.get("user_segment_id"), "user_segment_id", nullable=True),
+        "revision_of_article_id": revision_id,
+        "release_asset_row_id": str(args.get("release_asset_row_id") or "").strip(),
+        "reconcile_with": None,
+    }
+
+
+async def _resolve_revision(req: dict) -> None:
+    """For an edit to an existing article: confirm it exists, record it for the
+    human to reconcile, and default the section to its section. Never writes it."""
+    if req["revision_of_article_id"] is None:
+        return
+    ok, data = await _zendesk_get(f"api/v2/help_center/articles/{req['revision_of_article_id']}.json")
+    if not ok:
+        raise ValueError(f"revision_of_article_id: {data}")
+    art = (data or {}).get("article") if isinstance(data, dict) else None
+    if not isinstance(art, dict):
+        raise ValueError("revision_of_article_id: Zendesk returned no article.")
+    req["reconcile_with"] = {"id": art.get("id"), "title": art.get("title"),
+                             "html_url": art.get("html_url")}
+    if req["section_id"] is None:
+        req["section_id"] = _int_arg(art.get("section_id"), "section_id")
+
+
+async def _check_row(req: dict, cfg: dict, *, require_approved: bool) -> "object":
+    """Fetch the Release Assets row fresh and check it may drive this draft.
+
+    Raises ``gate.GateError`` with the reason (``gate.RowStopped`` for a
+    Published or held row). Returns the ``RowState``.
+    """
+    from tools import release_asset_gate as gate
+    settings = _zendesk_settings(cfg)
+    base, _e, _t = _zendesk_creds()
+    host = urlsplit(base).netloc
+    page = await gate.fetch_notion_page(req["release_asset_row_id"])
+    row = gate.row_state(page, settings["data_source"])
+    if row.asset_type != "Help article":
+        raise gate.GateError(f"The row's Asset type is {row.asset_type!r}, not 'Help article'.")
+    if row.destination != host:
+        raise gate.GateError(f"The row's Destination is {row.destination!r}, not {host!r}.")
+    if row.status == "Published":
+        raise gate.RowStopped("The row is already Published — never re-push a live article.")
+    if row.status in settings["hold"]:
+        raise gate.RowStopped(f"The row is on {row.status!r} — a product-team member held it.")
+    if require_approved and row.status not in settings["approved"]:
+        raise gate.GateError(
+            f"Sign-off required: the row's Status is {row.status or 'empty'!r}; it must be "
+            f"{' / '.join(sorted(settings['approved']))} (set by a product-team member).")
+    return row
+
+
+async def _create(req: dict) -> dict:
+    """POST the draft. Returns the tool's success payload (raises on failure)."""
+    path = f"api/v2/help_center/{req['locale']}/sections/{req['section_id']}/articles.json"
+    body = {
+        "article": {
+            "title": req["title"],
+            "locale": req["locale"],
+            "body": req["body"],
+            "draft": True,
+            "permission_group_id": req["permission_group_id"],
+            "user_segment_id": req["user_segment_id"],
+        },
+        "notify_subscribers": False,
+    }
+    ok, data = _parse(await _zendesk_write("POST", path, body))
+    if not ok:
+        raise ZendeskWriteRefused(str(data))
+    art = (data or {}).get("article") if isinstance(data, dict) else None
+    if not isinstance(art, dict):
+        raise ZendeskWriteRefused("Zendesk returned no article for the create.")
+    base, _e, _t = _zendesk_creds()
+    return {
+        "ok": True,
+        "article_id": art.get("id"),
+        "html_url": art.get("html_url"),
+        "edit_url": f"{base}/knowledge/articles/{art.get('id')}/{req['locale']}",
+        "draft": art.get("draft", True),
+        "section_id": req["section_id"],
+        "reconcile_required": req["reconcile_with"] is not None,
+        "reconcile_with": req["reconcile_with"],
+        "note": (
+            "Unpublished draft created; a human reviews and publishes it in Zendesk."
+            + (" This is a SEPARATE draft revising a live article (Team Publishing staging "
+               "has no API): ask the team how to reconcile it with the live one."
+               if req["reconcile_with"] else "")),
+    }
+
+
+def _describe(req: dict, row_url: str = "") -> str:
+    what = f"*{req['title']}* (section {req['section_id']}, {req['locale']})"
+    if req["reconcile_with"]:
+        live = req["reconcile_with"]
+        what += f", a separate draft revising <{live.get('html_url')}|{live.get('title')}>"
+    if row_url:
+        what += f", for <{row_url}|this Release Assets row>"
+    return what
+
+
+async def _act(req: dict, level: str, *, pending_id: str = "", row_url: str = "") -> dict:
+    result = await _create(req)
+    result["level"] = level
+    _audit(f"autonomy_{level}",
+           f"{result.get('html_url')} row={req['release_asset_row_id'] or '-'}"
+           + (f" pending={pending_id}" if pending_id else ""))
+    return result
+
+
+async def _queue_veto(req: dict, cfg: dict, row_url: str) -> str:
+    from zoneinfo import ZoneInfo
+    from agent import autonomy
+    from tools import release_asset_gate as gate
+    channel, wait, wh = autonomy.veto_settings(cfg)
+    if not channel:
+        return tool_error("autonomy.announce_channel is not configured — a veto-level action "
+                          "must be announced before it can wait out its veto window.")
+    not_before = autonomy.add_working_hours(_now(), wait, wh)
+    pending_id = autonomy.save_pending(_ACTION, {
+        "status": "announcing", "request": req, "created_at": _now().isoformat(),
+        "not_before": not_before.isoformat(), "announce_channel": channel,
+    })
+    text = (f":hourglass_flowing_sand: I plan to create an *unpublished* Zendesk draft "
+            f"{_describe(req, row_url)}. It goes ahead after "
+            f"{not_before.astimezone(ZoneInfo(wh.timezone)):%a %d %b %H:%M} "
+            f"({wh.timezone}) unless someone reacts :x: here or sets the row to Hold. "
+            f"(autonomy: veto · ref {pending_id})")
+    try:
+        ts = await gate.post_announcement(channel, text)
+    except gate.GateError as e:
+        autonomy.update_pending(_ACTION, pending_id, status="failed", error=str(e))
+        return tool_error(f"Could not announce the veto window, so nothing was queued: {e}")
+    autonomy.update_pending(_ACTION, pending_id, status="pending", announcement_ts=ts)
+    _audit("autonomy_veto_announced", f"pending={pending_id} row={req['release_asset_row_id']}")
+    return tool_result({
+        "status": "pending", "pending_id": pending_id, "not_before": not_before.isoformat(),
+        "announcement_ts": ts,
+        "message": ("Announced. Call zendesk_create_draft again with this pending_id after "
+                    "not_before; it re-checks for a veto (❌ or Hold) and then creates the draft."),
+    })
+
+
+async def _execute_pending(pending_id: str, level: str, cfg: dict) -> str:
+    from datetime import datetime
+    from agent import autonomy
+    from tools import release_asset_gate as gate
+    rec = autonomy.load_pending(_ACTION, pending_id)
+    if rec is None:
+        return tool_error(f"No pending zendesk_create_draft action {pending_id!r}.")
+    if rec.get("status") != "pending":
+        return tool_error(f"Pending action {pending_id} is {rec.get('status')!r}, not pending.")
+    req = rec["request"]
+    channel, ts = rec.get("announce_channel", ""), rec.get("announcement_ts", "")
+
+    if level == "veto" and _now() < datetime.fromisoformat(rec["not_before"]):
+        return tool_error(f"The veto window is open until {rec['not_before']}; try again after.")
+
+    async def _veto(reason: str) -> str:
+        autonomy.update_pending(_ACTION, pending_id, status="vetoed", reason=reason)
+        _audit("autonomy_vetoed", f"pending={pending_id} {reason}")
+        try:
+            await gate.post_announcement(channel, f":no_entry_sign: Not creating it: {reason}.", ts)
+        except gate.GateError:
+            pass
+        return tool_result({"status": "vetoed", "pending_id": pending_id, "reason": reason})
+
+    try:
+        vetoers = await gate.veto_reactions(channel, ts)
+    except gate.GateError as e:
+        return tool_error(f"Could not check the announcement for a veto, so nothing was created: {e}")
+    if vetoers:
+        return await _veto("vetoed with :x: by " + ", ".join(f"<@{u}>" for u in vetoers))
+    try:
+        row = await _check_row(req, cfg, require_approved=(level == "signoff"))
+    except gate.RowStopped as e:
+        return await _veto(str(e).rstrip("."))
+    except gate.GateError as e:
+        return tool_error(str(e))
+    try:
+        result = await _act(req, level, pending_id=pending_id, row_url=row.url)
+    except (ZendeskWriteRefused, ValueError) as e:
+        return tool_error(str(e))
+    autonomy.update_pending(_ACTION, pending_id, status="done", article_id=result.get("article_id"),
+                            html_url=result.get("html_url"))
+    try:
+        await gate.post_announcement(
+            channel, f":white_check_mark: Created the unpublished draft: {result.get('html_url')}", ts)
+    except gate.GateError as e:
+        result["announce_error"] = str(e)
+    return tool_result(result)
+
+
+ZENDESK_CREATE_DRAFT_SCHEMA = {
+    "name": "zendesk_create_draft",
+    "description": (
+        "Create ONE UNPUBLISHED draft article in the Zendesk Help Center. It never publishes, "
+        "edits a live article, archives or deletes — a human publishes in Zendesk. Look up "
+        "section_id, permission_group_id and user_segment_id with zendesk_api first. Pass the "
+        "Release Assets row id (release_asset_row_id) of the Approved help-article row. For a "
+        "change to an existing published article pass revision_of_article_id: a SEPARATE draft "
+        "is created and you must ask the team how to reconcile it. Whether it may act is the "
+        "profile's autonomy level: 'signoff' needs the row Approved; 'veto' announces in the home "
+        "channel and returns a pending_id to call back with after the veto window; 'auto' acts "
+        "and reports. list_pending=true lists waiting veto actions."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "section_id": {"type": "string", "description": "Target Help Center section id."},
+            "title": {"type": "string", "description": "Article title."},
+            "body": {"type": "string", "description": "Article body as Zendesk HTML."},
+            "permission_group_id": {"type": "integer",
+                                    "description": "Guide permission group id (api/v2/guide/permission_groups.json)."},
+            "user_segment_id": {"type": "integer",
+                                "description": "User segment id; omit for visible-to-everyone (null)."},
+            "locale": {"type": "string", "default": "en-us", "description": "Article locale."},
+            "release_asset_row_id": {"type": "string",
+                                     "description": "Notion Release Assets row (page) id the article comes from."},
+            "revision_of_article_id": {"type": "string",
+                                       "description": "Existing article this draft revises (creates a separate draft)."},
+            "pending_id": {"type": "string",
+                           "description": "Run a veto-level action announced earlier (other arguments are ignored)."},
+            "list_pending": {"type": "boolean", "description": "List veto actions still waiting."},
+        },
+        "required": [],
+    },
+}
+
+
+async def _zendesk_create_draft_handler(args: dict, **_kw) -> str:
+    from agent import autonomy
+    from tools import release_asset_gate as gate
+
+    if args.get("list_pending") is True:
+        waiting = [{"pending_id": r.get("pending_id"), "title": (r.get("request") or {}).get("title"),
+                    "not_before": r.get("not_before"),
+                    "release_asset_row_id": (r.get("request") or {}).get("release_asset_row_id")}
+                   for r in autonomy.list_pending(_ACTION) if r.get("status") == "pending"]
+        return tool_result({"ok": True, "pending": waiting})
+
+    cfg = _config()
+    try:
+        level = autonomy.resolve_level(_ACTION, cfg)
+    except autonomy.AutonomyConfigError as e:
+        return tool_error(str(e))
+    if level == "off":
+        return tool_error("zendesk_create_draft is turned off for this profile (autonomy level 'off').")
+    if not _check_zendesk():
+        return tool_error(_NOT_CONFIGURED)
+
+    pending_id = str(args.get("pending_id") or "").strip()
+    if pending_id:
+        return await _execute_pending(pending_id, level, cfg)
+
+    try:
+        req = _build_request(args)
+        await _resolve_revision(req)
+    except ValueError as e:
+        return tool_error(str(e))
+
+    row_url = ""
+    try:
+        if level in ("signoff", "veto") and not req["release_asset_row_id"]:
+            return tool_error(f"release_asset_row_id is required at autonomy level {level!r}: "
+                              "pass the Release Assets row this article comes from.")
+        if req["release_asset_row_id"]:
+            row = await _check_row(req, cfg, require_approved=(level == "signoff"))
+            row_url = row.url
+            if level == "veto" and row.status not in _zendesk_settings(cfg)["approved"]:
+                return await _queue_veto(req, cfg, row_url)
+    except gate.GateError as e:
+        return tool_error(str(e))
+    except autonomy.AutonomyConfigError as e:
+        return tool_error(str(e))
+
+    try:
+        result = await _act(req, level, row_url=row_url)
+    except (ZendeskWriteRefused, ValueError) as e:
+        return tool_error(str(e))
+    if level == "auto":
+        channel, _w, _wh = autonomy.veto_settings(cfg)
+        if channel:
+            try:
+                await gate.post_announcement(
+                    channel, f":memo: Created an unpublished Zendesk draft {_describe(req, row_url)}: "
+                             f"{result.get('html_url')} (autonomy: auto)")
+            except gate.GateError as e:
+                result["announce_error"] = str(e)
+        else:
+            result["announce_error"] = "autonomy.announce_channel is not configured"
+    return tool_result(result)
+
+
+registry.register(
+    name="zendesk_create_draft",
+    toolset="zendesk_write",
+    schema=ZENDESK_CREATE_DRAFT_SCHEMA,
+    handler=lambda args, **kw: _zendesk_create_draft_handler(args, **kw),
+    check_fn=_check_zendesk,
+    requires_env=[],
+    is_async=True,
+    emoji="📝",
+    max_result_size_chars=4000,
+)

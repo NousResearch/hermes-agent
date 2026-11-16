@@ -33,6 +33,11 @@ class GateError(RuntimeError):
     """A human signal could not be read or did not check out — fail closed."""
 
 
+class RowStopped(GateError):
+    """The row is Published or on hold. For an action waiting out its veto
+    window this IS the veto; for a fresh call it is a plain refusal."""
+
+
 @dataclass(frozen=True)
 class RowState:
     status: str

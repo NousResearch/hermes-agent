@@ -2,37 +2,29 @@
    and the page navigation column. Route overlays render outside the chat shell, so every rule gates
    on the root and scopes to [data-page-surface]. */
 
-/* List pages without a panel (Webhooks, Spawn tree) take the catalog column at the stage inset,
-   left-anchored like Capabilities and Library rather than centred in the stage. Agents and
-   Schedules lay out their own panel frame. The margin comes out of the column's width, never on top
-   of it, so a narrow stage never scrolls sideways. */
-:root[data-shell='portal']
-  [data-page-surface]
-  .management-panel:not(.agent-management, .routines-page, .page-frame-fallback) {
-  --management-panel-lead: max(0px, calc(var(--page-stage-inset) - var(--page-content-inset)));
-  width: calc(100% - var(--management-panel-lead));
-  margin-inline: var(--management-panel-lead) 0;
-}
-
 /* ── A page while its code loads (overlays/page-frame-fallback.tsx) ──
-   The frame every page shares: the form column at the stage inset, or past the page's sidebar panel
-   at the frame inset (as Agents, Settings and Schedules lay theirs), so the loaded page's header
-   lands exactly where the placeholder's stood. */
+   The frame every page shares: the form column centred in the stage, which starts past the page's
+   sidebar panel where there is one (as Agents, Settings and Schedules lay theirs), so the loaded
+   page's header lands exactly where the placeholder's stood. */
 [data-page-surface] .management-panel.page-frame-fallback {
+  --page-frame-nav: 0px;
+  --page-frame-gutter: max(
+    var(--page-panel-inset),
+    (100% - var(--page-frame-nav) - var(--page-form-max-width)) / 2
+  );
+
   width: 100%;
-  max-width: calc(var(--page-stage-inset) + var(--page-form-max-width) + var(--page-panel-inset));
+  max-width: none;
   margin-inline: 0;
-  padding: var(--portal-page-top) var(--page-panel-inset) 0 var(--page-stage-inset);
+  padding: var(--portal-page-top) var(--page-frame-gutter) 0 calc(var(--page-frame-nav) + var(--page-frame-gutter));
 }
 
 @media (min-width: 1024px) {
   /* Wide (breakpoints.ts): below it the panel is a sheet over the page, not a column beside it. */
   [data-page-surface] .management-panel.page-frame-fallback:has(> .page-sidebar-panel) {
+    --page-frame-nav: var(--page-nav-width);
+
     position: relative;
-    max-width: calc(
-      var(--page-nav-width) + var(--page-panel-inset) + var(--page-form-max-width) + var(--page-panel-inset)
-    );
-    padding-inline-start: calc(var(--page-nav-width) + var(--page-panel-inset));
   }
 }
 

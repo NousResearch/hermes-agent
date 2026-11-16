@@ -41,36 +41,6 @@
   max-width: 100%;
 }
 
-/* The page column sits at Figma's left inset from the stage edge (919:9281: x 90) rather than
-   centred, so Capabilities and Library land on the same line as every other page; it narrows at
-   the right on a smaller window and keeps its width on a wider one. (A flex item cannot use an
-   auto end margin here: it would shrink to its content.) Only the redesign sets the
-   inset tokens, so classic keeps its centred column. */
-:root[data-shell='portal']
-  [data-page-surface].page-redesigned
-  :is(
-    .page-header,
-    .page-search-empty,
-    .page-search-column,
-    .catalog-search-header,
-    .catalog-filter-bar,
-    .catalog-filtered-results,
-    .catalog-discovery,
-    .capabilities-page
-  ) {
-  --page-column-start: max(0px, calc(var(--page-stage-inset) - var(--page-content-inset)));
-
-  width: calc(100% - var(--page-column-start));
-  margin-inline: var(--page-column-start) 0;
-}
-
-:root[data-shell='portal'] [data-page-surface].page-redesigned > .page-search-body:has(.master-detail) {
-  --page-column-start: max(0px, calc(var(--page-stage-inset) - var(--page-content-inset)));
-
-  width: calc(100% - var(--page-column-start));
-  margin-inline: var(--page-column-start) 0;
-}
-
 /* A header action (Library's refresh): the band's 30px chrome button. */
 .portal-page-header-actions .page-header-chrome-button {
   width: var(--portal-chrome-button-size);
@@ -83,8 +53,3 @@
   background: var(--portal-surface-chrome-hover);
 }
 
-/* A left-anchored column needs no gutter at its start: the scrollbar's reserve stays at the end, so
-   shelves inside a scroller line up with the header above it. */
-:root[data-shell='portal'] [data-page-surface].page-redesigned .capabilities-scroll {
-  scrollbar-gutter: stable;
-}

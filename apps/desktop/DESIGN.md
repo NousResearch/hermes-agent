@@ -279,8 +279,8 @@ the end. Pages cover the chat, they do not replace it (`contrib/route-cover.tsx`
 workspace page paints over a chat that stays mounted, skipped by style, layout and paint
 (`content-visibility: hidden`), inert and aria-hidden, so returning to Chats is a flip with its
 scroll, draft and focus intact. Toasts of every kind stack at the stage's end corner, resting on a
-docked composer, clear of page headers. Page content columns start at Figma's left insets
-(`--portal-frame-inset` past a sidebar panel, `--portal-stage-inset` without one), and Routines lists every
+docked composer, clear of page headers. Page content columns sit centred in their stage (the frame past a
+page's sidebar panel), never closer to its edges than `--portal-frame-inset`, and Routines lists every
 agent's routines in the shared page sidebar panel like Agents (see Routines below).
 Workspace pages (Capabilities, Library, …) and the overlay pages lie in the same
 workspace frame as the chat. Without an explicit skin pick, the redesign paints the
@@ -396,11 +396,11 @@ A page's list panel (Agents, Routines; `PageSidebarPanel`) wears the chat sideba
 Settings column's header: its title 30px in and 30px down on a 36px line, its start row (New agent,
 New routine) 122px under the panel's top where New chat starts, as New chat's borderless light/5 slab
 with rimless mono keycaps, and its open row a light/5 fill with no stroke.
-Every routed page keeps one page frame (`tokens/space.css`): beside a sidebar
-panel the content column starts `--portal-frame-inset` (20px, the freshest frames 1036:7189 /
-895:*) after the panel's divider, on Agents, Settings and Routines alike; without a panel it
-starts `--portal-stage-inset` (Figma 919: x 150 at 1280) into the stage. Columns are
-left-anchored at every window width, never centred, with one max width per page kind:
+Every routed page keeps one page frame (`tokens/space.css`): the content column sits centred in
+the stage, as the chat column does, and beside a sidebar panel the stage is what lies past the
+panel's divider, on Agents, Settings and Routines alike. Figma left-anchors the column; the owner
+centres it. A stage narrower than the column keeps `--portal-frame-inset` (20px) on both sides.
+One max width per page kind:
 `--portal-column-form` (840) for forms and details, `--portal-column-catalog` (980) for
 catalogs, lists and tables. Every H1 (or agent hero) tops out at the same y; header actions end
 at the column's right edge. Global Settings is the exception ("Prod - Desktop" 06 · Settings/Account,
@@ -811,8 +811,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-safe-start` | `env(safe-area-inset-left, 0px)` | ″ |  |
 | `--portal-safe-end` | `env(safe-area-inset-right, 0px)` | ″ |  |
 | `--portal-panel-width` | `var(--portal-sidebar-width, var(--sessions-pane-width))` | ″ | ONE sidebar column for every rail destination: page panels (Agents, Routines, Settings) take the chat sidebar's width — the user's sash width once they size it (published by the pane tree as --portal-sidebar-width), else its default — so switching destinations never moves the panel edge, its divider or the stage's content edge. |
-| `--portal-frame-inset` | `1rem` | ″ | The page-frame contract: where a page's content column starts, from the stage edge it shares with the page's sidebar panel (the freshest frames, 1036:7189 / 895:*: 20px after the divider, one value for Agents, Settings and Routines alike), and from the stage's own edge on a page with no panel (919:9281: x 90 in the stage). Left insets, never centring, at every window width, so switching pages never moves the column sideways. |
-| `--portal-stage-inset` | `1rem` | ″ |  |
+| `--portal-frame-inset` | `1rem` | ″ | The page-frame contract: a page's content column sits centred in its stage (the frame past the page's sidebar panel, where it has one), as the chat column does, and never closer to the stage's edges than this inset. Figma left-anchors the column; the owner centres it. |
 | `--portal-workspace-inset-start` | `0.3125rem` | ″ | The workspace frame's gaps, where the artwork shows, measured in Figma's 1280×880 window (Content 16292:14463 at x 65–1265, y 60–865): 5px past a 60px rail (and before the developer rail), 15px to the window's end (the "inset" column 18521:22266 and the frame's 5px edge) and to its floor (the "Spacer" 18521:17513). 0 for all three puts the panels back on the edges. |
 | `--portal-workspace-inset-end` | `0.9375rem` | ″ |  |
 | `--portal-workspace-inset-bottom` | `0.9375rem` | ″ |  |
@@ -854,7 +853,6 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-row-panel` | `2.5rem` | ″ |  |
 | `--page-nav-width` | `var(--portal-panel-width)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
 | `--page-panel-inset` | `var(--portal-frame-inset)` | ″ |  |
-| `--page-stage-inset` | `var(--portal-stage-inset)` | ″ |  |
 | `--page-form-max-width` | `var(--portal-column-form)` | ″ |  |
 | `--page-catalog-max-width` | `var(--portal-column-catalog)` | ″ |  |
 | `--portal-chrome-button-size` | `var(--portal-row-chrome)` | ″ |  |

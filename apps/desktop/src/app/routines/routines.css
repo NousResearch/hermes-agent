@@ -18,23 +18,16 @@
   }
 }
 
+/* The stage scrolls at its own edge; the catalog column sits centred in it, as the chat column does. */
 .routines-stage {
-  --routines-inset: var(--page-stage-inset);
   display: flex;
   width: 100%;
-  max-width: calc(var(--routines-inset) + var(--page-catalog-max-width) + var(--page-panel-inset));
   min-height: 0;
   flex: 1;
   flex-direction: column;
   padding-block: var(--portal-page-top) var(--portal-page-end-space);
-  padding-inline: var(--routines-inset) var(--page-panel-inset);
+  padding-inline: max(var(--page-panel-inset), (100% - var(--page-catalog-max-width)) / 2);
   overflow-y: auto;
-}
-
-@media (min-width: 1024px) {
-  .page-sidebar-panel ~ .routines-stage {
-    --routines-inset: var(--page-panel-inset);
-  }
 }
 
 .routines-overview,
@@ -46,7 +39,9 @@
 
 /* A routine reads in the form column; the list takes the catalog column. */
 .routines-detail {
+  width: 100%;
   max-width: var(--page-form-max-width);
+  margin-inline: auto;
 }
 
 /* ── Panel rows: status dot, name, agent tag (R1 panel) ── */

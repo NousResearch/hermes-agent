@@ -62,13 +62,10 @@
      --portal-sidebar-width), else its default — so switching destinations never moves the panel edge,
      its divider or the stage's content edge. */
   --portal-panel-width: var(--portal-sidebar-width, var(--sessions-pane-width));
-  /* The page-frame contract: where a page's content column starts, from the stage edge it shares with
-     the page's sidebar panel (the freshest frames, 1036:7189 / 895:*: 20px after the divider, one value
-     for Agents, Settings and Routines alike), and from the stage's own edge on a page with no panel
-     (919:9281: x 90 in the stage). Left insets, never centring, at every window width, so switching
-     pages never moves the column sideways. */
+  /* The page-frame contract: a page's content column sits centred in its stage (the frame past the
+     page's sidebar panel, where it has one), as the chat column does, and never closer to the
+     stage's edges than this inset. Figma left-anchors the column; the owner centres it. */
   --portal-frame-inset: 1.25rem;
-  --portal-stage-inset: 5.625rem;
   /* The workspace frame's gaps, where the artwork shows, measured in Figma's 1280×880 window
      (Content 16292:14463 at x 65–1265, y 60–865): 5px past a 60px rail (and before the developer
      rail), 15px to the window's end (the "inset" column 18521:22266 and the frame's 5px edge) and to
@@ -148,17 +145,14 @@
   /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
   --page-nav-width: var(--portal-panel-width);
   --page-panel-inset: var(--portal-frame-inset);
-  --page-stage-inset: var(--portal-stage-inset);
   --page-form-max-width: var(--portal-column-form);
   --page-catalog-max-width: var(--portal-column-catalog);
   --portal-chrome-button-size: var(--portal-row-chrome);
 }
 
-/* Medium (breakpoints.ts: max-width 1023.98px): one column beside no panel, so a page's column starts
-   at the panel inset rather than Figma's 90px stage inset. */
+/* Medium (breakpoints.ts: max-width 1023.98px). */
 @media (max-width: 1023.98px) {
   :root[data-shell='portal'] {
-    --portal-stage-inset: var(--portal-frame-inset);
     --portal-settings-top: var(--portal-page-top);
   }
 }
@@ -170,7 +164,6 @@
     --portal-rail-reserve: 0px;
     --portal-page-top: 1rem;
     --portal-frame-inset: 1rem;
-    --portal-stage-inset: 1rem;
     --page-content-inset: 1rem;
     --portal-settings-inset: 1rem;
   }

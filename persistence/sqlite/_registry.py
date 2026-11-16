@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
@@ -199,6 +200,10 @@ def acquire(db_path: Path) -> StoreHolder:
     whatever ``StoreHolder.__init__`` raises; on a replacement-open failure the registry
     holds NO entry for the path."""
     raw_path = Path(db_path)
+    if os.name != "nt":
+        from hermes_state_dbfile import refuse_planted_state_db_link
+
+        refuse_planted_state_db_link(raw_path)
     try:
         path = raw_path.resolve()
     except OSError:

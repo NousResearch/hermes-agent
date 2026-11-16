@@ -344,6 +344,15 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
     """
     if not isinstance(entry, dict):
         return []
+    if entry.get("bearer_refresh_cmd"):
+        # A URL server's bearer_refresh_cmd spawns a process too: scan it exactly like ``command``.
+        from tools.mcp_bearer_refresh import bearer_refresh_argv
+        try:
+            argv = bearer_refresh_argv(entry["bearer_refresh_cmd"])
+        except ValueError:
+            argv = [str(entry["bearer_refresh_cmd"])]
+        if argv and (issues := validate_mcp_server_entry(name, {"command": argv[0], "args": argv[1:]})):
+            return issues
 
     issues: list[str] = []
     flat = _entry_text(entry)

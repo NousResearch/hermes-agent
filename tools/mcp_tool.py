@@ -398,6 +398,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
     __slots__ = (
         "_auth_park",
         "_auth_type",
+        "_bearer_refresh",
         "_config",
         "_elicitation",
         "_error",
@@ -481,6 +482,8 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._last_park_line: Optional[str] = None  # last park WARNING text; identical re-parks log at DEBUG
         # (token storage, credential stamp) while parked on an OAuth failure; see _arm_auth_park.
         self._auth_park: Optional[tuple] = None
+        # bearer_refresh_cmd state (minted token, cooldown); memory only, survives reconnects.
+        self._bearer_refresh = None
         # Digest of the resolved inputs the transport last connected with; a cross-profile adopter
         # must resolve the same digest in its own scope. None until the transport publishes it.
         self._resolved_identity: Optional[str] = None

@@ -284,11 +284,13 @@ class MCPServerRunMixin:
             _errors._validate_remote_mcp_url(self.name, config.get("url"))
             # Content-type preflight (Streamable HTTP only; SSE serves text/event-stream): a
             # web-app root returns HTML and would hang the SDK for connect_timeout. Skipped once
-            # _ready was ever set and for OAuth servers (a token-less probe sees HTML/401).
+            # _ready was ever set and for OAuth / bearer_refresh_cmd servers (a token-less or
+            # stale-token probe sees HTML/401).
             from tools.mcp_liveness import liveness_for
             if (config.get("transport") != "sse" and not config.get("skip_preflight")
                     and liveness_for(self.name).kind != "server_json"
-                    and not self._ready.is_set() and self._auth_type != "oauth"):
+                    and not self._ready.is_set() and self._auth_type != "oauth"
+                    and not config.get("bearer_refresh_cmd")):  # its bearer may be stale or not minted yet
                 await self._preflight_content_type(
                     config["url"], headers=dict(config.get("headers") or {}),
                     ssl_verify=config.get("ssl_verify", True),
@@ -305,7 +307,7 @@ class MCPServerRunMixin:
         self._error = exc
         self._ready.set()
 
-    _REMOTE_REBIND_KEYS = ("url", "auth", "oauth", "headers", "transport")
+    _REMOTE_REBIND_KEYS = ("url", "auth", "oauth", "headers", "bearer_refresh_cmd", "transport")
 
     def _refresh_remote_config(self, config: dict) -> dict:
         """Before rebuilding a remote transport, re-read this server's definition from config.yaml and

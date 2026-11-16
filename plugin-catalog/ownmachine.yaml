@@ -1,15 +1,15 @@
 name: ownmachine
 title: OwnMachine
 repo: https://github.com/rbur0425/ownmachine
-sha: 18707efa80e0376fed216a982677842b3d521244
+sha: f0b9160aa9235ea47439b10eb0b20d5ff6ab81bf
 subdir: plugin
 description: "Give Hermes its own Mac, Omarchy or Windows VM to test apps, scrape websites and automate desktop work with private SSH access and you in control. Keep a persistent workspace on infrastructure you control, watch from your browser and take over when needed. Privacy: screenshots and app text follow your configured model provider. Disclosure: Runs OpenSSH using operator-configured aliases, agents and keys to a Mac or Linux KVM host; streams screenshots, accessibility text and computer_use input through a restricted MCP relay. Guided setup executes reviewed remote provisioning stages over a separate temporary setup SSH alias, with administrator registration and manual guest consent/sign-in. Windows uses separate agent/viewer roles, root-owned runtime, libvirt policy, firewall rules and a private Unix console. Opt-in scheduled reminders write a helper in Hermes scripts/ and create one-shot no-agent cron jobs through the profile gateway; shared control state is stored in an operator-chosen directory. Licensed PolyForm Noncommercial 1.0.0."
 maintainer: rbur0425
 tier: community
 category: desktop
 requires_hermes: ">=0.23.1"
-version: "1.1.0"
-docs_url: https://github.com/rbur0425/ownmachine/blob/v1.1.0/README.md
+version: "1.1.1"
+docs_url: https://github.com/rbur0425/ownmachine/blob/v1.1.1/README.md
 readme: true
 platforms: [linux, macos] # Hermes runtime; macOS/Omarchy guests use Apple Silicon, Windows guests use Linux x86-64 KVM.
 # Promotional illustrations, not acceptance screenshots; immutable release asset pin.

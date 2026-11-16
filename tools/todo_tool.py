@@ -27,7 +27,8 @@ class TodoStore:
     """In-memory todo list, one per AIAgent. List position is priority; items are
     ``{id, content, status, parent?}`` — ``parent`` nests a subtask."""
 
-    def __init__(self):
+    def __init__(self, delivery_context=None):
+        self._delivery_context = delivery_context
         self._items: list[dict[str, str]] = []
         self._revision = 0
 
@@ -104,8 +105,9 @@ class TodoStore:
         pending/in_progress items are injected — finished ones make the model re-do work after
         compression. A parent is kept (with its real status marker) when any descendant is
         active so subtasks keep context."""
+        delivery = self._delivery_context() if self._delivery_context else ''
         if not self._items:
-            return None
+            return f"{TODO_INJECTION_HEADER}\n{delivery}" if delivery else None
         children: dict[str, list[dict[str, str]]] = {}
         for item in self._items:
             if item.get("parent"):
@@ -128,6 +130,8 @@ class TodoStore:
         for item in self._items:
             if not item.get("parent"):
                 render(item, 0, lines)
+        if delivery:
+            lines.append(delivery)
         return "\n".join(lines) if len(lines) > 1 else None
 
     @staticmethod
@@ -215,8 +219,10 @@ def todo_tool(todos: Optional[list[dict[str, Any]]] = None, merge: bool = False,
     summary = {"total": len(items)}
     for status in ("pending", "in_progress", "completed", "cancelled"):
         summary[status] = sum(1 for i in items if i["status"] == status)
+    from tools.todo_progress import todo_progress
+
     return json.dumps({"todos": items, "revision": store.snapshot()["revision"],
-                       "summary": summary}, ensure_ascii=False)
+                       "summary": summary, "progress": todo_progress(items)}, ensure_ascii=False)
 
 
 def check_todo_requirements() -> bool:

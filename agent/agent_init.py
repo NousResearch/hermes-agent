@@ -1109,8 +1109,8 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
             agent._session_init_model_config["yolo_mode"] = True
 
     # In-memory todo list for task planning (one per agent/session)
-    from tools.todo_tool import TodoStore
-    agent._todo_store = TodoStore()
+    from hermes_cli.task_delivery.runtime import new_todo_store
+    agent._todo_store = new_todo_store(agent)
 
 
 def _apply_display_config(agent, _agent_cfg, platform):

@@ -134,7 +134,7 @@ class TestWeixinStatePersistence:
         def _boom(_src, _dst):
             raise OSError("disk full")
 
-        monkeypatch.setattr("utils.os.replace", _boom)
+        monkeypatch.setattr("utils.files.os.replace", _boom)
 
         try:
             weixin.save_weixin_account(

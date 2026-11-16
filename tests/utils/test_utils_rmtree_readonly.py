@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-import utils
+import utils.files
 from utils import rmtree_readonly
 
 
@@ -65,7 +65,7 @@ def test_non_permission_failures_propagate(tmp_path, monkeypatch):
         attempts.append(path)
         raise OSError(39, "Directory not empty", str(path))
 
-    monkeypatch.setattr(utils.shutil, "rmtree", _fake)
+    monkeypatch.setattr(utils.files.shutil, "rmtree", _fake)
 
     with pytest.raises(OSError) as excinfo:
         rmtree_readonly(tmp_path)

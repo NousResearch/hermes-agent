@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-import utils
+import utils.files
 from utils import atomic_write_text
 
 
@@ -29,7 +29,7 @@ def test_fsync_dir_targets_resolved_parent_for_symlinked_destination(tmp_path: P
     link = links / "value"
     link.symlink_to(target)
 
-    with patch.object(utils, "fsync_directory") as sync:
+    with patch.object(utils.files, "fsync_directory") as sync:
         atomic_write_text(link, "new", mode=0o600, fsync_dir=True)
 
     assert target.read_text(encoding="utf-8") == "new"
@@ -42,7 +42,7 @@ def test_fsync_dir_uses_destination_parent_without_symlink(tmp_path: Path) -> No
     target = tmp_path / "value"
     target.write_text("old", encoding="utf-8")
 
-    with patch.object(utils, "fsync_directory") as sync:
+    with patch.object(utils.files, "fsync_directory") as sync:
         atomic_write_text(target, "new", fsync_dir=True)
 
     assert target.read_text(encoding="utf-8") == "new"

@@ -277,9 +277,9 @@ class TestAtomicRoundtripYamlSave:
         config_path.write_text("model:\n  default: test-model\n", encoding="utf-8")
 
         chown_calls: list[tuple[Path, int, int]] = []
-        monkeypatch.setattr("utils.preserve_file_owner", lambda _path: (345, 678))
+        monkeypatch.setattr("utils.files.preserve_file_owner", lambda _path: (345, 678))
         monkeypatch.setattr(
-            "utils.os.chown",
+            "utils.files.os.chown",
             lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
         )
 

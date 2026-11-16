@@ -1267,7 +1267,7 @@ class TestImportAtomicWrites:
             lambda p: (123, 456) if Path(p).exists() else None,
         )
         monkeypatch.setattr(
-            "utils.os.chown",
+            "utils.files.os.chown",
             lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
         )
 

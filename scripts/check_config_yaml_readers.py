@@ -42,10 +42,10 @@ sys.path.append(str(ROOT))
 from hermes_agent.compat.paths import current_path, original_path
 DEFAULT_TREES = (
     "hermes_cli", "agent", "gateway", "tui_gateway", "cron", "plugins", "tools", "acp_adapter", "pm",
-    "cli.py", "utils.py", "hermes_constants.py", "hermes_logging.py", "hermes_time.py", "run_agent.py",
+    "cli.py", "utils", "hermes_constants.py", "hermes_logging.py", "hermes_time.py", "run_agent.py",
     "model_tools.py", "batch_runner.py")
 # The backend module itself, and the on-disk primitives it wraps.
-ALLOWED_FILES = {ROOT / current_path("hermes_cli/config_backend.py"), ROOT / current_path("utils.py")}
+ALLOWED_FILES = {ROOT / current_path("hermes_cli/config_backend.py"), ROOT / current_path("utils/files.py")}
 # Modules whose ``config_path`` / ``path`` names are their OWN config file, never a hermes
 # config.yaml (the name heuristic would flag every line of them).
 FOREIGN_CONFIG_FILES = {

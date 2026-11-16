@@ -3864,10 +3864,10 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 
 def schedule_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
-    expected_run_id: Optional[int] = None,
+    expected_run_id: Optional[int] = None, wait: Optional[dict] = None,
 ) -> bool:
-    """Park in ``scheduled`` (waiting on time, not a human; not dispatchable)
-    until ``unblock_task`` re-gates it."""
+    """Park in ``scheduled`` (waiting on time or a process, not a human; not dispatchable)
+    until ``unblock_task`` re-gates it; ``wait`` (kanban_db_wake) lets the dispatcher do so."""
     with write_txn(conn):
         params: list[Any] = [task_id]
         sql = """
@@ -3887,7 +3887,7 @@ def schedule_task(
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="scheduled", status="scheduled", summary=reason, synthesize=bool(reason),
         )
-        _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
+        _append_event(conn, task_id, "scheduled", {"reason": reason, **({"wait": wait} if wait else {})}, run_id=run_id)
         return True
 
 

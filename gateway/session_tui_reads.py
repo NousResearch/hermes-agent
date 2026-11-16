@@ -168,13 +168,14 @@ async def context_breakdown(connection, ref, params) -> dict:
             # A revision probe is two indexed reads; the rebuild walks the whole transcript and the
             # system prompt. Reuse the payload while neither the transcript nor the agent moved.
             key = (id(agent), _agent_context_marks(agent), store.messages.conversation_revision(tip),
-                   *((row.system_prompt, row.tool_pin) if row is not None else (None, None)))
+                   *((row.system_prompt, row.tool_pin, row.prompt_cache_clock, row.model, row.model_config)
+                     if row is not None else (None,) * 5))
             cached = live.context_breakdown
             if cached is not None and cached[0] == key:
                 return dict(cached[1])
             conversation = _model_history(store, tip)
             if agent is None:
-                payload = _stored_breakdown(row, conversation, usage)
+                payload = _stored_breakdown(row, conversation, usage, tip=tip, store=store)
             else:
                 payload = compute_session_context_breakdown(agent, conversation)
                 payload['context_files'] = context_file_sources_for_agent(agent)
@@ -183,11 +184,12 @@ async def context_breakdown(connection, ref, params) -> dict:
     return await asyncio.to_thread(build)
 
 
-def _stored_breakdown(row, conversation, usage) -> dict:
+def _stored_breakdown(row, conversation, usage, *, tip, store) -> dict:
     """``stored_context_breakdown`` over the session row's frozen system prompt and tools[] pin (*row*, a
-    ``SessionRecord`` or None), beside its stored usage. Tools are measured as the next agent restores them
-    (``pinned_tool_defs``); a pin hash whose row was swept reads as no pin."""
+    ``SessionRecord`` or None), beside its stored usage and saved prompt-cache clock. Tools are measured as
+    the next agent restores them (``pinned_tool_defs``); a pin hash whose row was swept reads as no pin."""
     from agent.context_breakdown import stored_context_breakdown
+    from agent.prompt_cache_clock import current_generation, stored_cache_window
     from tools.mcp_tool_agent import pinned_tool_defs
     breakdown = {'categories': [], 'estimated_total': 0}
     # No prompt until an agent first built one: nothing to measure yet, the contract's pre-build shape.
@@ -196,7 +198,19 @@ def _stored_breakdown(row, conversation, usage) -> dict:
     return {**breakdown, 'context_max': int(usage.get('context_max') or 0),
             'context_percent': int(usage.get('context_percent') or 0), 'context_used': int(usage.get('context_used') or 0),
             'context_estimated': bool(usage.get('context_estimated', False)),
-            'context_source': str(usage.get('context_source') or 'provider_usage'), 'model': str(usage.get('model') or '')}
+            'context_source': str(usage.get('context_source') or 'provider_usage'), 'model': str(usage.get('model') or ''),
+            'prompt_cache': stored_cache_window(row.prompt_cache_clock if row is not None else None, session_id=tip,
+                                                generation=current_generation(store.usage, tip),
+                                                saved_route=_saved_route(row))}
+
+
+def _saved_route(row) -> tuple:
+    """``(provider, base_url, model)`` as the row persists them (``session.mutate`` writes the model and
+    ``model_config.provider``; ``update_session_model`` also the base_url)."""
+    if row is None:
+        return None, None, None
+    config = row.model_config
+    return config.get('provider'), config.get('base_url'), row.model
 
 
 def _agent_context_marks(agent) -> tuple:

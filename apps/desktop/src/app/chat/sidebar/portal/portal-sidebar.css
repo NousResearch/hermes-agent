@@ -551,6 +551,17 @@ button.portal-section-title:hover {
   border-radius: var(--portal-sidebar-chat-radius);
 }
 
+/* A row lifted to be reordered rides over its neighbours wearing the hover rule. */
+.portal-session-item[data-dragging] {
+  z-index: 1;
+}
+
+.portal-session-item[data-dragging] > .portal-session-row {
+  box-shadow: inset 0 0 0 var(--portal-sidebar-row-hover-rule-width) var(--portal-sidebar-row-hover-rule);
+  color: var(--portal-sidebar-row-selected-ink);
+  cursor: grabbing;
+}
+
 .portal-session-row[aria-current='page'] {
   background: var(--portal-sidebar-row-selected);
 }

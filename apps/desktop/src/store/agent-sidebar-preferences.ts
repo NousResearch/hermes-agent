@@ -49,6 +49,34 @@ export const $portalPinnedSectionOpen = persistentAtom(
   Codecs.bool
 )
 
+/** A hand-made order for one agent's chats: durable session ids as arranged, and when. */
+export interface AgentChatOrder {
+  at: number
+  ids: string[]
+}
+
+const isAgentChatOrder = (value: unknown): value is AgentChatOrder =>
+  Boolean(value) &&
+  typeof value === 'object' &&
+  typeof (value as AgentChatOrder).at === 'number' &&
+  Array.isArray((value as AgentChatOrder).ids) &&
+  (value as AgentChatOrder).ids.every(id => typeof id === 'string')
+
+/** Redesign-only: each agent's dragged chat order, keyed by `agentSidebarKey` (machine + profile). */
+export const $portalAgentChatOrder = persistentAtom<Record<string, AgentChatOrder>>(
+  'hermes.desktop.portalSidebar.agentChatOrder.v1',
+  {},
+  Codecs.json(value =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).filter(([, order]) => isAgentChatOrder(order)))
+      : {}
+  )
+)
+
+export function setAgentChatOrder(owner: AgentSidebarOwner, order: AgentChatOrder): void {
+  $portalAgentChatOrder.set({ ...$portalAgentChatOrder.get(), [agentSidebarKey(owner)]: order })
+}
+
 export function setSidebarAgentHidden(owner: AgentSidebarOwner, hidden: boolean): void {
   const key = agentSidebarKey(owner)
   const current = $hiddenSidebarAgents.get()
@@ -66,6 +94,13 @@ export function dropAgentSidebarPreferences(owner: AgentSidebarOwner): void {
   if (Object.hasOwn(expanded, key)) {
     const { [key]: _removed, ...rest } = expanded
     $sidebarAgentExpanded.set(rest)
+  }
+
+  const orders = $portalAgentChatOrder.get()
+
+  if (Object.hasOwn(orders, key)) {
+    const { [key]: _removed, ...rest } = orders
+    $portalAgentChatOrder.set(rest)
   }
 }
 
@@ -88,5 +123,12 @@ export function migrateAgentSidebarPreferences(owner: AgentSidebarOwner, profile
   if (Object.hasOwn(expanded, from)) {
     const { [from]: value, ...rest } = expanded
     $sidebarAgentExpanded.set({ ...rest, [to]: value })
+  }
+
+  const orders = $portalAgentChatOrder.get()
+
+  if (Object.hasOwn(orders, from)) {
+    const { [from]: value, ...rest } = orders
+    $portalAgentChatOrder.set({ ...rest, [to]: value })
   }
 }

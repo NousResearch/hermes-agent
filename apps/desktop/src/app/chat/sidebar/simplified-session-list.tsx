@@ -1,5 +1,7 @@
+import { PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
+import { arrayMove } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
 
 import { $apiRequestScope } from '@/api/client'
 import { openSession } from '@/app/open-session'
@@ -25,7 +27,9 @@ import { $sessionTiles, canOpenSessionOwner, runtimeSessionOwner } from '@/store
 
 import { SessionStatusDot } from '../session-status-dot'
 
+import { mergeVisibleReorder } from './order'
 import { capAgentChats } from './portal/agent-chat-cap'
+import { ReorderableList, shellOwnsPress, useSortableBindings } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { SessionRowSlot } from './session-row-slots'
 import { sessionRowKey } from './simplified-session-identity'
@@ -51,6 +55,8 @@ interface SimplifiedSessionListProps {
   onArchiveSession: (id: string, session?: SessionInfo) => void
   onBranchSession: (id: string, profile?: string, session?: SessionInfo) => void
   onUpdate: (row: SessionInfo, field: 'pinned' | 'unread', value: boolean) => void
+  /** Makes the rows draggable: called with every row of the list in its new order. */
+  onReorder?: (rows: SessionInfo[]) => void
 }
 
 type ListSurface = 'search' | 'pinned' | 'agent'
@@ -104,14 +110,27 @@ function SessionAge({ row, now }: { row: SessionInfo; now: number }) {
   )
 }
 
-interface SessionRowProps extends Omit<SimplifiedSessionListProps, 'sessions' | 'activeSessionId' | 'cap'> {
+interface SessionRowProps extends Omit<
+  SimplifiedSessionListProps,
+  'sessions' | 'activeSessionId' | 'cap' | 'onReorder'
+> {
   row: SessionInfo
   selected: boolean
   surface: ListSurface
   meta: ReactNode
+  /** Drag bindings and the keyboard move, when the list can be reordered. */
+  sortable?: ReturnType<typeof useSortableBindings>
+  onMove?: (step: -1 | 1) => void
 }
 
-function SessionRow({ row, selected, surface, meta, ...props }: SessionRowProps) {
+const MOVE_STEP: Record<string, -1 | 1> = { ArrowUp: -1, ArrowDown: 1 }
+
+/** A row of a list the user can arrange: dragged by the row itself, or moved with Alt+Up/Down. */
+function SortableSessionRow(props: SessionRowProps) {
+  return <SessionRow {...props} sortable={useSortableBindings(sessionRowKey(props.row))} />
+}
+
+function SessionRow({ row, selected, surface, meta, sortable, onMove, ...props }: SessionRowProps) {
   const { t } = useI18n()
   const navigate = useStableNavigate()
   const title = sessionTitle(row)
@@ -160,6 +179,29 @@ function SessionRow({ row, selected, surface, meta, ...props }: SessionRowProps)
           props.onResumeSession(row.id, row)
         }
       }}
+      // Alt+Up/Down moves the row a place, the keyboard's way to the order a drag makes.
+      onKeyDown={
+        onMove &&
+        ((event: KeyboardEvent<HTMLElement>) => {
+          const step = MOVE_STEP[event.key]
+
+          if (step && event.altKey) {
+            event.preventDefault()
+            event.stopPropagation()
+            onMove(step)
+          }
+        })
+      }
+      // The row is the drag handle; a press that started in its menu or a dialog is not a grab, and
+      // a finger scrolls the list.
+      onPointerDown={
+        sortable &&
+        (event => {
+          if (shellOwnsPress(event) && event.pointerType !== 'touch') {
+            sortable.dragHandleProps.onPointerDown?.(event)
+          }
+        })
+      }
     >
       <SessionRowMark row={row} />
       {/* Wrappers with no box: a row no plugin decorates (or one it declines) keeps its geometry. */}
@@ -186,7 +228,10 @@ function SessionRow({ row, selected, surface, meta, ...props }: SessionRowProps)
     <div
       className="portal-session-item"
       data-actions={ambiguous ? undefined : ''}
+      data-dragging={sortable?.dragging || undefined}
       data-session-key={sessionRowKey(row)}
+      ref={sortable?.ref}
+      style={sortable?.style}
     >
       {button}
       {!ambiguous && (
@@ -253,8 +298,15 @@ function useMinuteClock(enabled: boolean) {
 }
 
 /** A flat v2 list: owner-qualified keys, live status marks and the desktop's row menu. */
-export function SimplifiedSessionList({ cap, sessions, activeSessionId, ...props }: SimplifiedSessionListProps) {
+export function SimplifiedSessionList({
+  cap,
+  sessions,
+  activeSessionId,
+  onReorder,
+  ...props
+}: SimplifiedSessionListProps) {
   const { t } = useI18n()
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
   const isSelected = useFocusedOwner(activeSessionId)
   const dots = useStore($sessionDotStateById)
   const now = useMinuteClock(!props.showAgent)
@@ -291,18 +343,57 @@ export function SimplifiedSessionList({ cap, sessions, activeSessionId, ...props
   const shown = capped ? capAgentChats(ordered, cap.limit, keep) : ordered
   const foldable = cap && !props.searching && ordered.length > cap.limit
 
+  // A search is a result list, never an arrangement.
+  const reorder = props.searching || shown.length < 2 ? undefined : onReorder
+  const shownKeys = shown.map(row => sessionRowKey(row))
+
+  // Rows past the cap keep their places: only the shown ones trade slots.
+  const commit = (keys: string[]) => {
+    const byKey = new Map(ordered.map(row => [sessionRowKey(row), row]))
+
+    reorder?.(
+      mergeVisibleReorder(
+        ordered.map(row => sessionRowKey(row)),
+        keys
+      ).map(key => byKey.get(key)!)
+    )
+  }
+
+  const move = (index: number, step: -1 | 1, target: HTMLElement) => {
+    const to = index + step
+
+    if (to < 0 || to >= shownKeys.length) {
+      return
+    }
+
+    commit(arrayMove(shownKeys, index, to))
+    // The moved row keeps the focus it was moved with.
+    requestAnimationFrame(() => target.focus())
+  }
+
+  const Row = reorder ? SortableSessionRow : SessionRow
+
+  const list = shown.map((row, index) => (
+    <Row
+      {...props}
+      key={sessionRowKey(row)}
+      meta={metaFor(row)}
+      onMove={reorder && (step => move(index, step, document.activeElement as HTMLElement))}
+      row={row}
+      selected={isSelected(row)}
+      surface={surface}
+    />
+  ))
+
   return (
     <div className="portal-session-list">
-      {shown.map(row => (
-        <SessionRow
-          {...props}
-          key={sessionRowKey(row)}
-          meta={metaFor(row)}
-          row={row}
-          selected={isSelected(row)}
-          surface={surface}
-        />
-      ))}
+      {reorder ? (
+        <ReorderableList ids={shownKeys} onReorder={commit} sensors={sensors}>
+          {list}
+        </ReorderableList>
+      ) : (
+        list
+      )}
       {foldable && (
         <RowButton aria-expanded={cap.showAll} className="portal-session-more" onClick={cap.onToggle}>
           {cap.showAll ? t.simplifiedAgents.showFewerChats : t.simplifiedAgents.showAllChats(ordered.length)}

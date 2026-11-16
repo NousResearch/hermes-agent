@@ -7,8 +7,10 @@ import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { useI18n } from '@/i18n'
 import { ID as BOT_MODE_ID } from '@/plugins/hermes-bots/shared'
-import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
+import { $portalAgentChatOrder, agentSidebarKey, setAgentChatOrder } from '@/store/agent-sidebar-preferences'
+import { setPinnedSessionOrder } from '@/store/layout'
 import { $newChatProfile } from '@/store/profile'
+import { sessionPinId } from '@/store/session'
 
 import type { ChatSidebar } from '../index'
 import { SidebarLoadMoreRow } from '../load-more-row'
@@ -20,6 +22,7 @@ import { SimplifiedSessionList } from '../simplified-session-list'
 import { useAgentSidebar } from '../use-agent-sidebar'
 
 import { AGENT_CHAT_CAP, agentShowAllKey } from './agent-chat-cap'
+import { arrangeAgentChats, orderAgentChats } from './agent-chat-order'
 import { PortalGroupChats } from './portal-group-chats'
 import { PortalPinnedEmpty } from './portal-pinned-empty'
 import { PortalSidebarHead, PortalSidebarSearchField, usePortalSidebarSearch } from './portal-sidebar-head'
@@ -108,6 +111,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
   } = useAgentSidebar(props)
 
   const searchBox = usePortalSidebarSearch(setQuery)
+  const chatOrder = useStore($portalAgentChatOrder)
   // Group chats are Bot Mode's: a disabled or failed plugin leaves no section behind.
   const botModeLoaded = useStore($pluginRecords)[BOT_MODE_ID]?.status === 'loaded'
   const searching = Boolean(query.trim())
@@ -152,6 +156,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
             <SimplifiedPinnedSessions
               {...shared}
               emptyState={!searching && quiet && !error && <PortalPinnedEmpty />}
+              onReorder={rows => setPinnedSessionOrder(rows.map(row => sessionPinId(row)))}
               onResumeSession={resumePinned}
               sessions={pinned}
             />
@@ -165,9 +170,8 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
             onToggle={(id, open) => setExpanded(current => ({ ...current, [id]: !open }))}
             query={query}
             renderSessions={(sessions, agent) => {
-              const showAllKey = agentShowAllKey(
-                agentSidebarKey({ connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile })
-              )
+              const owner = { connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile }
+              const showAllKey = agentShowAllKey(agentSidebarKey(owner))
 
               const showAll = expanded[showAllKey] ?? false
 
@@ -180,7 +184,8 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
                       showAll,
                       onToggle: () => setExpanded(current => ({ ...current, [showAllKey]: !showAll }))
                     }}
-                    sessions={sessions}
+                    onReorder={rows => setAgentChatOrder(owner, arrangeAgentChats(rows))}
+                    sessions={orderAgentChats(sessions, chatOrder[agentSidebarKey(owner)])}
                   />
                 </div>
               )

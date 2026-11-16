@@ -13,7 +13,9 @@ import subprocess
 import sys
 
 import pytest
-from tests.pm.test_plugin_survival_contract import admission_env, _uv_available
+from tests.pm.test_plugin_survival_contract import _uv_available
+
+pytest_plugins = ("tests.pm.test_plugin_survival_contract",)
 
 
 _BACKEND = '''from pathlib import Path
@@ -91,7 +93,7 @@ warden = "fixture_warden:main"
     assert target.is_file()
     env = dict(os.environ, HOME=str(root), USERPROFILE=str(root), LOCALAPPDATA=str(root / 'local'), HERMES_HOME='/wrong-profile')
     env.pop('PYTHONPATH', None)
-    result = subprocess.run(['warden', 'setup', 'a&b', 'space value'], env=env, cwd=root, text=True, capture_output=True, timeout=30)
+    result = subprocess.run(['warden', 'setup', 'a&b', 'space value'], env=env, cwd=root, text=True, capture_output=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     value = json.loads(result.stdout)
     assert value == {'args': ['setup', 'a&b', 'space value'], 'home': str(home)}

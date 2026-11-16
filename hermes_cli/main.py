@@ -438,13 +438,13 @@ def _apply_profile_override() -> None:
     profile_name, consume, profile_index = scan_profile_flag(argv)
     from_sticky_profile = False
 
-    # HERMES_HOME already set with no explicit flag: trust it only when it
-    # points at a specific profile dir ("profiles" as immediate parent). If it
-    # points at the hermes root (systemd hardcodes HERMES_HOME=/root/.hermes)
-    # we must still read active_profile — the user may have run
-    # `hermes profile use` and the gateway should honour it (#22502).
+    # Named homes and installer-owned run-shell dispatch explicitly bind the
+    # profile (including default). Otherwise root-bound services must still
+    # honour active_profile (#22502). An explicit CLI flag always wins.
     hermes_home_env = os.environ.get("HERMES_HOME", "")
-    if profile_name is None and hermes_home_env and Path(hermes_home_env).parent.name == "profiles":
+    if profile_name is None and hermes_home_env and (
+            Path(hermes_home_env).parent.name == "profiles"
+            or argv[:2] == ["plugins", "run-shell"]):
         return
 
     if (profile_name is None and not _under_gateway_supervisor(argv)

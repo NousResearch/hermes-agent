@@ -79,6 +79,75 @@ def _head(repo) -> str:
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
 
 
+@pytest.mark.parametrize("installed", ["custom"], indirect=True)
+@pytest.mark.parametrize("checkout", ['git', 'reclone'])
+@pytest.mark.parametrize("interactive,tty,answer", [(False, False, False), (True, False, True), (True, True, False), (True, True, True)])
+def test_custom_update_gates_shell_additions_before_publication(installed, monkeypatch, interactive, tty, answer, checkout):
+    from hermes_cli import plugins_cmd
+    from hermes_cli.plugins_cmd_update import update_one
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
+    from pm.environments import selected_venv
+    root, home, repo, target, state = installed
+    watched = [target / 'plugin.yaml', home / 'config.yaml', home / 'plugins/.install-metadata.json']
+    if checkout == 'reclone':
+        __import__('shutil').rmtree(target / '.git')
+    before = {p: p.read_bytes() for p in watched}
+    old_head, old_env = _head(target) if checkout == 'git' else None, selected_venv(root / 'core')
+    with (repo / 'plugin.yaml').open('a') as f:
+        f.write('shell_commands: [warden]\n')
+    with (repo / 'pyproject.toml').open('a') as f:
+        f.write('[project.scripts]\nwarden="example:main"\n')
+    state['sha'] = _commit(repo, 'add terminal command')
+    asked = []
+    monkeypatch.setattr(plugins_cmd, '_is_tty', lambda: tty)
+    monkeypatch.setattr(plugins_cmd, '_ask_yes', lambda prompt: asked.append(prompt) or answer)
+    if checkout == 'reclone':
+        import sys
+        monkeypatch.setattr(sys.stdin, 'isatty', lambda: tty)
+        monkeypatch.setattr(sys.stdout, 'isatty', lambda: tty)
+        monkeypatch.setattr('builtins.input', lambda prompt='': 'y' if answer else 'n')
+    accepted = interactive and tty and answer
+    if accepted:
+        assert update_one('transactional', target, plugins_cmd._console(), interactive=interactive)
+        assert _head(target) == state['sha']
+    else:
+        with pytest.raises(RepinConsentRequired, match='terminal commands: warden'):
+            update_one('transactional', target, plugins_cmd._console(), interactive=interactive, force=True)
+        if checkout == 'git':
+            assert _head(target) == old_head
+        assert selected_venv(root / 'core') == old_env
+        assert {p: p.read_bytes() for p in watched} == before
+    assert bool(asked) == (interactive and tty)
+
+
+@pytest.mark.parametrize("installed", ["custom"], indirect=True)
+def test_dashboard_custom_update_refuses_new_shell_commands(installed):
+    from hermes_cli import plugins_cmd
+    _root, home, repo, target, state = installed
+    watched = [target / 'plugin.yaml', home / 'plugins/.install-metadata.json']
+    before = {p: p.read_bytes() for p in watched}
+    with (repo / 'plugin.yaml').open('a') as f:
+        f.write('shell_commands: [warden]\n')
+    with (repo / 'pyproject.toml').open('a') as f:
+        f.write('[project.scripts]\nwarden="example:main"\n')
+    state['sha'] = _commit(repo, 'add terminal command')
+    result = plugins_cmd.dashboard_update_user_plugin('transactional', force=True)
+    assert result.get('ok') is False
+    assert result.get('consent_required') is True
+    assert result['delta'] == {'shell_commands': ['warden']}
+    assert {p: p.read_bytes() for p in watched} == before
+
+
+@pytest.mark.parametrize("installed", ["custom"], indirect=True)
+def test_custom_noninteractive_update_without_shell_additions_still_publishes(installed):
+    from hermes_cli import plugins_cmd
+    from hermes_cli.plugins_cmd_update import update_one
+    _root, _home, repo, target, state = installed
+    state['sha'] = _version(repo, '2.0.0')
+    assert update_one('transactional', target, plugins_cmd._console(), interactive=False)
+    assert _head(target) == state['sha']
+
+
 @pytest.mark.parametrize("installed", ["catalog", "custom"], indirect=True)
 def test_unattended_update_refuses_newly_declared_python_dependencies(installed):
     """Install gates Python deps behind a prompt; an update that ADDS a dependency must not

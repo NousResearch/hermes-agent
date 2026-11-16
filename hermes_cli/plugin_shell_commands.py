@@ -35,7 +35,7 @@ def declared_commands(plugin: Path) -> dict[str, str]:
         return {}
     if len(set(names)) != len(names) or any(not _NAME.fullmatch(n) or n in _RESERVED for n in names):
         raise ValueError('shell_commands contains a duplicate, unsafe or reserved name')
-    project = tomllib.loads((plugin / 'pyproject.toml').read_text(encoding='utf-8'))
+    project = tomllib.loads((plugin / 'pyproject.toml').read_text(encoding='utf-8-sig'))
     scripts = project.get('project', {}).get('scripts', {})
     if not isinstance(scripts, dict) or any(n not in scripts for n in names):
         raise ValueError('Every shell_commands name must exist in project.scripts')
@@ -53,7 +53,7 @@ def _record(path: Path) -> dict:
     try:
         if path.is_symlink() or path.stat().st_size > 16_384:
             return {}
-        value = json.loads(path.read_text(encoding='utf-8'))
+        value = json.loads(path.read_text(encoding='utf-8-sig'))
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -94,20 +94,31 @@ def _windows_launcher(directory: Path, name: str, script: str, python_executable
     return target
 
 
+def _windows_command_script(home: Path, argv: list[str]) -> str:
+    # CRT exec does not quote argv. subprocess uses CreateProcess quoting and
+    # waits so the native launcher reports the child's actual exit status.
+    return ('import os,sys,subprocess\n'
+            f'os.environ["HERMES_HOME"] = {str(home.resolve())!r}\n'
+            'os.environ.pop("HERMES_PROFILE", None)\n'
+            'os.environ.pop("HERMES_ACTIVE_PROFILE", None)\n'
+            f'sys.exit(subprocess.run({argv!r} + sys.argv[1:], shell=False, check=False).returncode)\n')
+
+
 def _private_command_directory(out: Path) -> bool:
     if out.is_symlink():
         return False
     if os.name == 'nt':
         return True  # User-bin ACLs are supplied by the Windows user profile.
     info = out.stat()
-    if info.st_uid != os.getuid() or info.st_mode & 0o002:
+    uid = getattr(os, 'getuid', lambda: None)()
+    if uid is None or info.st_uid != uid or info.st_mode & 0o002:
         return False
     if not info.st_mode & 0o020:
         return True
     import grp
     import pwd
     try:
-        me = pwd.getpwuid(os.getuid()).pw_name
+        me = pwd.getpwuid(uid).pw_name
         members = set(grp.getgrgid(info.st_gid).gr_mem)
         members.update(p.pw_name for p in pwd.getpwall() if p.pw_gid == info.st_gid)
         return not (members - {me})
@@ -148,7 +159,8 @@ def export_commands(plugin: Path, home: Path, out: Path, hermes: Path, *, only: 
         staging = Path(temporary)
         for name, target in targets.items():
             old_record = _record(_marker(out, name))
-            unchanged = (old_record.get('hermes') == str(hermes.absolute())
+            unchanged = (old_record.get('launcher_version') == 2
+                         and old_record.get('hermes') == str(hermes.absolute())
                          and old_record.get('entry') == commands[name]
                          and old_record.get('python') == (str(python_executable) if os.name == 'nt' else None)
                          and _owned(target, old_record, identity)
@@ -157,11 +169,7 @@ def export_commands(plugin: Path, home: Path, out: Path, hermes: Path, *, only: 
                 continue
             argv = [str(hermes.absolute()), 'plugins', 'run-shell', plugin.name, name, '--']
             if os.name == 'nt':
-                script = ('import os,sys\n'
-                          f'os.environ["HERMES_HOME"] = {str(home.resolve())!r}\n'
-                          'os.environ.pop("HERMES_PROFILE", None)\n'
-                          'os.environ.pop("HERMES_ACTIVE_PROFILE", None)\n'
-                          f'os.execv({argv[0]!r}, {argv!r} + sys.argv[1:])\n')
+                script = _windows_command_script(home, argv)
                 staged = _windows_launcher(staging, name, script, python_executable)
             else:
                 script = ('#!/bin/sh\n# Hermes-managed plugin shell command\n'
@@ -178,6 +186,7 @@ def export_commands(plugin: Path, home: Path, out: Path, hermes: Path, *, only: 
             elif not _owned(target, _record(_marker(out, name)), identity):
                 raise FileExistsError(f'{name}: destination changed during installation')
             record = {**identity, 'command': name, 'hermes': str(hermes.absolute()),
+                      'launcher_version': 2,
                       'entry': commands[name], 'python': str(python_executable) if os.name == 'nt' else None,
                       'sha256': _digest(staged), 'previous_sha256': _digest(target)}
             marker = staging / (name + '.json')
@@ -215,13 +224,13 @@ def remove_installed_commands(plugin: Path) -> None:
 
 
 def command_location() -> tuple[Path, Path]:
-    from hermes_cli._launchers import installation_command
+    from hermes_cli._launchers import plugin_command_launcher
     from pm.paths import repo_root
     out = default_command_directory()
     path_dirs = {os.path.normcase(os.path.abspath(p)) for p in os.get_exec_path() if p}
     if os.path.normcase(str(out.absolute())) not in path_dirs:
         raise OSError(f'Hermes user command directory is not on PATH: {out}; no shell configuration was changed')
-    hermes = Path(installation_command(repo_root())[0])
+    hermes = plugin_command_launcher(repo_root())
     if not hermes.is_file():
         raise OSError('Stable Hermes launcher is missing; repair the Hermes installation first')
     return out, hermes
@@ -271,7 +280,6 @@ def sync_plugin_commands(plugin: Path, console=None) -> None:
 
 def refresh_published_commands(out: Path, hermes: Path, *, python_executable: Path | None = None) -> list[str]:
     """Refresh only already-owned names after a core runtime update; never widen exposure."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     groups = {}
     errors = []
     for marker in out.glob(_PREFIX + '*.json'):
@@ -288,7 +296,6 @@ def refresh_published_commands(out: Path, hermes: Path, *, python_executable: Pa
             continue
         groups.setdefault((home, plugin), set()).add(name)
     for (home, plugin), names in groups.items():
-        token = set_hermes_home_override(home)
         try:
             if plugin.is_dir() and enabled_for_home(plugin, home):
                 current = declared_commands(plugin)
@@ -298,8 +305,6 @@ def refresh_published_commands(out: Path, hermes: Path, *, python_executable: Pa
                 remove_commands(plugin, home, out)
         except (OSError, ValueError, RuntimeError) as exc:
             errors.append(f'{plugin.name}: {exc}')
-        finally:
-            reset_hermes_home_override(token)
     return errors
 
 
@@ -320,7 +325,7 @@ def run_command(args) -> int:
     declaration = read_python_declaration(plugin)
     if declaration.pyproject is None or declaration.external:
         raise ValueError('Shell commands require a Hermes-managed Python package')
-    project = tomllib.loads(declaration.pyproject.read_text(encoding='utf-8'))['project']
+    project = tomllib.loads(declaration.pyproject.read_text(encoding='utf-8-sig'))['project']
     distribution = importlib.metadata.distribution(project['name'])
     entries = [ep for ep in distribution.entry_points if ep.group == 'console_scripts'
                and ep.name == args.shell_command and ep.value == expected]

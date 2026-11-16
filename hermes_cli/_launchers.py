@@ -98,7 +98,14 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
         return [str(sealed), *prefix, *args]
     if resolve_store_python(root) is None:
         return runtime_command(root, args, module=module, python=python, home=home)
-    return [str(root / ".hermes" / "bin" / "hermes"), *prefix, *args]
+    launcher = root / ".hermes" / "bin" / "hermes"
+    # The Windows publisher writes a native .exe, not a suffixless file.
+    # Resolve the published artifact explicitly; CreateProcess/PATH suffix
+    # inference does not apply to ownership records or Path.is_file checks.
+    native = launcher.with_suffix(".exe")
+    if native.is_file():
+        launcher = native
+    return [str(launcher), *prefix, *args]
 
 
 def sealed_service_launcher(repo_root: Path) -> Path | None:
@@ -888,13 +895,21 @@ def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
             if (path := stage_launcher(name, root, Path(out_dir))) is not None]
 
 
+def plugin_command_launcher(project_root: Path) -> Path:
+    """Resolve one stable launcher; plugin forwarders cannot persist bootstrap argv."""
+    command = installation_command(project_root)
+    if len(command) != 1:
+        raise OSError('Unsupported Hermes installation: plugin shell commands require a stable single-executable launcher')
+    return Path(command[0])
+
+
 def _refresh_plugin_commands(project_root: Path, result: dict) -> dict:
     if not result.get('ok', False):
         return result
     from hermes_cli.plugin_shell_commands import default_command_directory, refresh_published_commands
     try:
         errors = refresh_published_commands(
-            default_command_directory(), Path(installation_command(project_root)[0]),
+            default_command_directory(), plugin_command_launcher(project_root),
             python_executable=resolve_store_python(project_root, publication=True))
     except (OSError, ValueError, RuntimeError) as exc:
         errors = [str(exc)]

@@ -421,6 +421,14 @@ def list_skins() -> list[dict[str, str]]:
     return result
 
 
+def match_skin_name(name: str, available) -> str:
+    """``name`` as *available* lists it: an exact name wins, else a case-insensitive match, since
+    built-ins are lowercase but a user skin keeps its own case (``MyTheme``). Unknown: unchanged."""
+    if name in available:
+        return name
+    return next((n for n in sorted(available) if n.lower() == name.lower()), name)
+
+
 def load_skin(name: str) -> SkinConfig:
     """Load a skin by name: user skins first, then built-in, then default."""
     skins_path = _skins_dir()

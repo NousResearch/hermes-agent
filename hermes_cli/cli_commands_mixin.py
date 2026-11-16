@@ -1777,7 +1777,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """Handle /skin [name] — show or change the display skin."""
         from cli import _ACCENT
         try:
-            from hermes_cli.skin_engine import list_skins, set_active_skin, get_active_skin_name
+            from hermes_cli.skin_engine import get_active_skin_name, list_skins, match_skin_name, set_active_skin
         except ImportError:
             return print(_t("skin.unavailable"))
         new_skin = _command_arg(cmd)
@@ -1791,11 +1791,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             return _pr(f"\n  {_t('skin.usage')}",
                        f"  {_t('skin.custom_hint', dir=display_hermes_home())}\n")
         available = {s["name"] for s in list_skins()}
-        # Built-ins are lowercase but a user skin keeps its own case (`MyTheme`): an exact name
-        # wins, else a case-insensitive match switches to the listed spelling.
-        if new_skin not in available:
-            new_skin = next((n for n in sorted(available) if n.lower() == new_skin.lower()), new_skin)
-        if new_skin not in available:
+        if (new_skin := match_skin_name(new_skin, available)) not in available:
             return _pr(f"  {_t('skin.unknown', name=new_skin)}",
                        f"  {_t('skin.available', names=', '.join(sorted(available)))}")
         set_active_skin(new_skin)

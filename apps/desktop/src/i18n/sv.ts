@@ -399,7 +399,10 @@ export const svOverrides: TranslationOverrides = {
       errorTitle: 'MCP-server kan inte nås',
       errorMessage: name => `${name} MCP klarade inte sin hälsokontroll.`,
       signIn: 'Logga in',
-      view: 'Visa'
+      view: 'Visa',
+      disable: 'Inaktivera',
+      disabledMessage: name => `${name} MCP är inaktiverad. Du kan aktivera den igen från Funktioner → MCP när som helst.`,
+      disableFailed: name => `Det gick inte att inaktivera ${name} MCP.`
     },
     actions: {
       restartHermes: 'Starta om Hermes',
@@ -414,6 +417,9 @@ export const svOverrides: TranslationOverrides = {
       gatewayAuthFailed: 'Gateway-autentisering misslyckades — kontrollera din API_SERVER_KEY.',
       methodNotAllowed:
         'Skrivbordsserverdelen avvisade begäran (405 Method Not Allowed). Försök att starta om Hermes Desktop.',
+      storageFailure: 'Hermes kunde inte spara i sin datamapp. Öppna Underhåll för att kontrollera och reparera den.',
+      rpcOutOfSync: 'Appen och serverdelen har olika versioner. Uppdatera båda.',
+      restartHermesFailed: 'Det gick inte att starta om Hermes',
       microphonePermission: 'Behörighet till mikrofonen nekades.',
       openaiRejectedApiKey: 'OpenAI avvisade API-nyckeln.',
       openaiTtsNeedsKey: 'OpenAI TTS behöver VOICE_TOOLS_OPENAI_KEY eller OPENAI_API_KEY.',
@@ -427,6 +433,8 @@ export const svOverrides: TranslationOverrides = {
       microphoneConstraintsUnsupported: 'Mikrofonbegränsningar stöds inte av denna enhet.',
       microphoneFailed: 'Mikrofonen misslyckades',
       microphoneInUse: 'Mikrofonen används redan av en annan app.',
+      microphoneNeedsHttps:
+        'Mikrofonen kräver en säker anslutning. Öppna webbappen över HTTPS eller via en SSH-tunnel till 127.0.0.1 för att använda den.',
       microphonePermissionDenied: 'Behörighet till mikrofonen nekades.',
       microphoneStartFailed: 'Det gick inte att starta mikrofoninspelning.',
       microphoneUnsupported: 'Den här körmiljön stöder inte mikrofoninspelning.',
@@ -440,6 +448,8 @@ export const svOverrides: TranslationOverrides = {
       tryRecordingAgain: 'Försök spela in igen.',
       unavailable: 'Röst är inte tillgänglig',
       liveEnded: 'Röstsessionen avslutades',
+      liveEndedConnectionLost: 'Röstsessionen tappade anslutningen.',
+      liveEndedClosed: 'Röstsessionen stängdes av tjänsten.',
       liveError: 'Röstsamtal i realtid',
       liveDelegationFailed: 'Det gick inte att överlämna begäran till Hermes',
       liveUnavailable: reason =>

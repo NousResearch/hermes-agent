@@ -600,12 +600,9 @@ class GatewaySlashCommandsMixin(
         from gateway.restart_ack import send_restart_ack
         ack = t("gateway.draining", count=active_agents) if active_agents else EphemeralReply(t("gateway.restart.restarting"))
         sent = not active_agents and await send_restart_ack(self, self._delivery_adapter_for(event.source), event, ack)
-        # Under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the supervisor /
-        # restart policy restarts us — detached setsid+bash fails there (systemd KillMode=mixed kills
-        # the cgroup; tini exits with the gateway). The explicit marker covers ``sudo env -i`` wrappers.
-        from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
-        via_service = is_gateway_supervisor_process() or is_container_restart_context()
-        self.request_restart(detached=not via_service, via_service=via_service)
+        # Exit 75 for a supervisor, else a detached helper relaunches (``request_planned_restart``).
+        from gateway.restart_when_idle import request_planned_restart
+        request_planned_restart(self)
         return None if sent else ack
 
     async def _handle_autoprune_command(self, event: MessageEvent) -> str:

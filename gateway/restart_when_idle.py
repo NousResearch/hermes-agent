@@ -171,6 +171,16 @@ def request_restart(runner, *, detached: bool, via_service: bool) -> bool:
     return True
 
 
+def request_planned_restart(runner) -> bool:
+    """``/restart``'s plan: under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the
+    supervisor / restart policy restarts us — detached setsid+bash fails there (systemd KillMode=mixed
+    kills the cgroup; tini exits with the gateway); otherwise a detached helper relaunches us. The
+    explicit supervisor marker covers ``sudo env -i`` wrappers."""
+    from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
+    via_service = is_gateway_supervisor_process() or is_container_restart_context()
+    return runner.request_restart(detached=not via_service, via_service=via_service)
+
+
 def force_stop_budgets(runner) -> None:
     """A forced restart does not drain: ``stop()`` interrupts turns, delegations and processes."""
     runner._restart_drain_timeout = 0.0

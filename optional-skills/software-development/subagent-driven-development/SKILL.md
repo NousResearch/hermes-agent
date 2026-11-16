@@ -53,6 +53,20 @@ todo([
 
 **Key:** Read the plan ONCE. Extract everything. Don't make subagents read the plan file — provide the full task text directly in context.
 
+### Persist long-task delivery before dispatch
+
+For a long interactive plan with multiple workers, use `terminal` to create each stable work item
+with `hermes work init`, naming its observable acceptance criterion. Obtain the implementation or
+review context with `hermes work context` and pass that complete output to `delegate_task`. The
+runtime then claims the item before creating a child; a completion notification is evidence to
+inspect, not proof of integration or acceptance. Use `hermes work show` after compression or
+handoff, and reuse existing artifacts instead of assigning an already owned item again.
+
+Load `requesting-code-review` and its task-delivery reference for candidate publication, bounded
+review cycles and final acceptance. Keep an exhausted item for an explicit scope/design decision;
+renaming it or reopening it must not silently reset its review budget. Unmanaged exploratory
+best-of-N tasks can retain ordinary contexts.
+
 ### 2. Per-Task Workflow
 
 For EACH task in the plan:

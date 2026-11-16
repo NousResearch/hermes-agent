@@ -212,7 +212,24 @@ def cmd_whatsapp(args):
     from hermes_cli.main import _require_tty, get_hermes_home
     _require_tty("whatsapp")
     from hermes_cli.config import get_env_value, save_env_value
-    from hermes_constants import ensure_private_store, find_node_executable, with_hermes_node_path
+    from hermes_constants import (ensure_private_store, find_node_executable, profile_name_for_home,
+                                  with_hermes_node_path)
+    from hermes_cli.gateway_multiplex_served import notify_gateway_whatsapp_paired
+
+    def activate_if_running() -> bool:
+        home = get_hermes_home()
+        profile = profile_name_for_home(home) or "default"
+        answer = notify_gateway_whatsapp_paired(home, profile)
+        if answer and (answer.get("active") or answer.get("pending")):
+            print("  WhatsApp is activating on the running gateway; no restart needed.")
+            return True
+        if answer and answer.get("retrying"):
+            print("  Gateway is retrying the WhatsApp connection; check 'hermes gateway status'.")
+            return True
+        if answer and answer.get("reason"):
+            print(f"  Gateway could not activate WhatsApp ({answer['reason']}); check 'hermes gateway status'.")
+            return True
+        return False
     _say("", "☤ WhatsApp Setup", "=" * 50)
 
     wa_mode = _whatsapp_choose_mode(get_env_value, save_env_value)
@@ -256,7 +273,9 @@ def cmd_whatsapp(args):
             # Older installs may have lost WHATSAPP_ENABLED; a kept pairing re-asserts it.
             if (get_env_value("WHATSAPP_ENABLED") or "").lower() != "true":
                 save_env_value("WHATSAPP_ENABLED", "true")
-            _say("\n✓ WhatsApp is configured and paired!", "  Start the gateway with: hermes gateway")
+            _say("\n✓ WhatsApp is configured and paired!")
+            if not activate_if_running():
+                print("  Start or update the gateway with: hermes gateway")
             return
 
     # QR code pairing
@@ -295,9 +314,13 @@ def cmd_whatsapp(args):
     if pair_result is None or pair_result.returncode != 0 or not _whatsapp_has_paired_identity(session_dir):
         print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
         return
+    from plugins.platforms.whatsapp.activation import stamp_whatsapp_pairing
+    stamp_whatsapp_pairing(session_dir)
     # Only enable WhatsApp now that pairing actually succeeded (see above).
     save_env_value("WHATSAPP_ENABLED", "true")
     _say("✓ WhatsApp paired successfully!", "")
+    if activate_if_running():
+        return
     if wa_mode == "bot":
         _say("  Next steps:", "    1. Start the gateway:  hermes gateway",
              "    2. Send a message to the bot's WhatsApp number",

@@ -31,7 +31,7 @@ async def test_handoff_to_telegram_queues_the_row_the_watcher_claims(tmp_path, m
     reply = await _call(owner, 'handoff.request', session_id=ref.session_id, platform='Telegram')
     assert reply.get('result') == {'queued': True, 'session_key': ref.session_id, 'platform': 'telegram',
                                    'home_name': 'Phone'}, reply
-    # The watcher's own read of this store sees it (gateway/run_adapters.py::_handoff_watcher).
+    # The watcher's own read of this store sees it (gateway/run_adapters/__init__.py::_handoff_watcher).
     assert [row.session_id for row in authority.persistence.coordination.list_pending_handoffs()] == [ref.session_id]
     state = await _call(owner, 'handoff.state', session_id=ref.session_id)
     assert state['result'] == {'state': 'pending', 'platform': 'telegram', 'error': ''}

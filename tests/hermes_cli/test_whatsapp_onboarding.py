@@ -49,8 +49,8 @@ def test_apply_whatsapp_onboarding_saves_pairing_policy(monkeypatch):
     monkeypatch.setattr(_web_server_messaging, "_write_platform_enabled", lambda platform, value: enabled.append((platform, value)))
     monkeypatch.setattr(
         _web_server_messaging,
-        "_restart_gateway_after_whatsapp_onboarding",
-        lambda profile=None: {"restart_started": True, "restart_pid": 12345},
+        "_activate_gateway_whatsapp_after_onboarding",
+        lambda profile=None: {"activation_started": True, "needs_restart": False, "active": True},
     )
 
     record = _web_server_messaging._WhatsAppOnboardingSession(
@@ -73,6 +73,8 @@ def test_apply_whatsapp_onboarding_saves_pairing_policy(monkeypatch):
     )
 
     assert result["ok"] is True
+    assert result["active"] is True
+    assert result["needs_restart"] is False
     assert saved["WHATSAPP_MODE"] == "bot"
     assert saved["WHATSAPP_DM_POLICY"] == "pairing"
     assert saved["WHATSAPP_ENABLED"] == "true"
@@ -199,3 +201,5 @@ def test_preexisting_bridge_install_without_stamp_recovers_without_npm(tmp_path)
         json.dumps({"version": "1.0.0"}), encoding="utf-8")
     assert bridge_dependencies_ready(bridge) is True
     assert (bridge / "node_modules" / ".hermes-pkg-hash").exists()
+
+

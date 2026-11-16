@@ -1,6 +1,8 @@
 """Adapter connect/disconnect, fatal-error recovery, reconnect watcher and multiplex profile
 adapters for GatewayRunner (mixin bound via the MRO).
 
+Topic modules: ``whatsapp_activation`` (hot-activating a newly paired WhatsApp adapter).
+
 ``gateway.run`` internals are imported lazily inside method bodies (import cycle), so
 ``patch("gateway.run.X")`` keeps intercepting them at call time.
 """
@@ -27,6 +29,7 @@ from gateway.config import (
 )
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inbound
+from gateway.run_adapters.whatsapp_activation import GatewayWhatsAppActivationMixin
 from gateway.run_adapters_recovery import (
     GatewaySecondaryReconnectMixin,
     _adapter_unavailable_message,
@@ -63,7 +66,7 @@ class _UnresolvedProfileHome:
 UNRESOLVED_PROFILE_HOME = _UnresolvedProfileHome()
 
 
-class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
+class GatewayAdapterLifecycleMixin(GatewayWhatsAppActivationMixin, GatewaySecondaryReconnectMixin):
     """Adapter lifecycle: connect/teardown, fatal recovery, reconnect watcher, multiplex profiles."""
 
     @staticmethod
@@ -822,6 +825,15 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         )
 
     async def _reconnect_failed_platform(self, platform, now: float) -> None:
+        # WhatsApp onboarding can replace the queued policy while a retry is connecting. Serialize
+        # those operations so an old-policy adapter cannot win the race and be published afterward.
+        if platform is Platform.WHATSAPP:
+            async with self._reconcile_lock():
+                await self._reconnect_failed_platform_unlocked(platform, now)
+        else:
+            await self._reconnect_failed_platform_unlocked(platform, now)
+
+    async def _reconnect_failed_platform_unlocked(self, platform, now: float) -> None:
         """One watcher pass for a queued platform: gate, attempt, and record the outcome."""
         from gateway.run import _dispose_unused_adapter, _platform_has_bot_credential
         info = self._failed_platforms.get(platform)
@@ -1281,11 +1293,12 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         return lines
 
     async def _start_one_profile_adapters(
-        self, profile_name: str, profile_home: Path, claimed: dict[tuple, str]
+        self, profile_name: str, profile_home: Path, claimed: dict[tuple, str], *, profile_cfg=None
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
         from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
-        profile_cfg = await self._load_secondary_profile_config(profile_name, profile_home)
+        if profile_cfg is None:
+            profile_cfg = await self._load_secondary_profile_config(profile_name, profile_home)
         # Keep the served profile's config: host-wide passes (planned-restart notices) must reach
         # every served profile's home channels, and this is the only place it is loaded.
         configs = getattr(self, "_profile_configs", None)

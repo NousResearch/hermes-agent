@@ -258,14 +258,15 @@ def test_apply_waits_for_flush_before_restarting_gateway(pairing, monkeypatch):
         proc.returncode = 0
         return 0
 
-    def restart(profile=None):
+    def activate(profile=None):
         assert proc.poll() == 0
         assert pairing.gateway_can_acquire() is True
-        return {"restart_started": True}
+        return {"activation_started": True, "needs_restart": False, "active": True}
 
     monkeypatch.setattr(proc, "wait", wait)
-    monkeypatch.setattr(web_server_messaging, "_restart_gateway_after_whatsapp_onboarding", restart)
+    monkeypatch.setattr(web_server_messaging, "_activate_gateway_whatsapp_after_onboarding", activate)
     assert asyncio.run(messaging.apply_whatsapp_onboarding(result["pairing_id"], web_models.WhatsAppOnboardingApply()))["ok"]
+    assert (pairing.session / ".hermes-pairing-generation").read_text(encoding="utf-8")
 
 
 def test_unverifiable_live_pid_stays_blocked(pairing, monkeypatch):
@@ -361,7 +362,8 @@ def test_apply_retains_flushing_bridge_for_reset_guard(pairing, monkeypatch):
     record.proc = cast(Popen, SimpleNamespace(poll=lambda: None))
     monkeypatch.setattr(config, "save_env_value", lambda *args: None)
     monkeypatch.setattr(web_server_messaging, "_write_platform_enabled", lambda *args: None)
-    monkeypatch.setattr(web_server_messaging, "_restart_gateway_after_whatsapp_onboarding", lambda profile=None: {"restart_started": True})
+    monkeypatch.setattr(web_server_messaging, "_activate_gateway_whatsapp_after_onboarding", lambda profile=None: {"activation_started": True, "needs_restart": False, "active": True})
+    monkeypatch.setattr(messaging.threading, "Thread", pairing.real_thread)
     asyncio.run(messaging.apply_whatsapp_onboarding(result["pairing_id"], web_models.WhatsAppOnboardingApply()))
     assert messaging._whatsapp_onboarding_sessions[result["pairing_id"]] is record
     with pytest.raises(HTTPException) as refused:

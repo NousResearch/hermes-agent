@@ -666,6 +666,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._bridge_port = 3000
         self._bridge_script: str = extra.get("bridge_script", str(self._DEFAULT_BRIDGE_DIR / "bridge.js"))
         self._session_path = _session_dir(extra)
+        from .activation import whatsapp_activation_signature
+        self._activation_signature = whatsapp_activation_signature(self._profile_home, self._session_path)
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         self._dm_policy = str(_extra_or_secret(extra, "dm_policy", "WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
@@ -747,7 +749,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("WhatsApp bridge dependency install failed", exc_info=True)
             detail = f" ({e})"
         self._set_fatal_error("whatsapp_npm_install_failed", f"WhatsApp bridge npm install failed{detail}. "
-                              "Run `hermes whatsapp`, then restart `hermes gateway`.", retryable=False)
+                              "Run `hermes whatsapp` to repair dependencies, then activate WhatsApp again.", retryable=False)
         return False
 
     def _attach_to_bridge(self, managed_process) -> None:

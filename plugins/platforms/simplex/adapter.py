@@ -55,7 +55,7 @@ def _parse_comma_list(value: str) -> list[str]:
 
 
 # (hermes home key, names) already warned about. Module-level: every reconnect builds a FRESH adapter
-# (gateway/run_adapters.py), so an instance flag would re-warn on every retry while the daemon is down.
+# (gateway/run_adapters/__init__.py), so an instance flag would re-warn on every retry while the daemon is down.
 _NAME_ALLOWLIST_WARNED: set = set()
 
 

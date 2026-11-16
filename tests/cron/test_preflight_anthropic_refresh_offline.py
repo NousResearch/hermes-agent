@@ -94,3 +94,54 @@ def test_stale_refresh_failure_from_an_earlier_resolve_is_not_reused(homes):
 
     assert "No Anthropic credentials found" in str(info.value)
     assert info.value.__cause__ is None
+
+
+def test_refresh_timeout_is_retried_as_model_unreachable(homes, monkeypatch):
+    _write_expired_login(homes[1])
+
+    def fake_urlopen(req, timeout=None):
+        raise TimeoutError("The read operation timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(AuthError) as info:
+        _anthropic_token_or_raise(model=JOB["model"])
+    assert info.value.code == "refresh_failed"
+    assert is_model_unreachable_failure(info.value, agent=None)
+    assert _preflight_check_provider_key(JOB, {"cron": {}}) is None
+
+
+def test_token_endpoint_5xx_is_not_a_missing_login(homes, monkeypatch):
+    import io
+
+    _write_expired_login(homes[1])
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 503, "Service Unavailable", {}, io.BytesIO(b"{}"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(AuthError) as info:
+        _anthropic_token_or_raise(model=JOB["model"])
+    assert info.value.code == "refresh_failed"
+    # A server error is not the narrow never-reached-the-network class the re-run ladder serves.
+    assert not is_model_unreachable_failure(info.value, agent=None)
+    assert _preflight_check_provider_key(JOB, {"cron": {}}) is None
+
+
+def test_model_cooldown_still_wins_over_an_incidental_refresh_failure(homes, dns_down, monkeypatch):
+    from agent import credential_pool
+
+    _write_expired_login(homes[1])
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-env")
+
+    class _CooledPool:
+        def token_is_blocked(self, token, model=None):
+            return model is not None
+
+    monkeypatch.setattr(credential_pool, "load_pool", lambda provider: _CooledPool())
+
+    with pytest.raises(AuthError) as info:
+        _anthropic_token_or_raise(model=JOB["model"])
+    assert info.value.code == "model_rate_limited"
+    assert ac.take_refresh_failure() is None

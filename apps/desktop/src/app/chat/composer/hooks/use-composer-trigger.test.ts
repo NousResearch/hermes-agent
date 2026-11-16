@@ -3,7 +3,7 @@ import { act, renderHook } from '@testing-library/react'
 import { createRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { desktopSlashKeepBareEditable, rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { composerPlainText, renderComposerContents, RICH_INPUT_SLOT } from '../rich-editor'
 
@@ -74,13 +74,6 @@ function mountTrigger(editor: HTMLDivElement, items: Unstable_TriggerItem[], sla
 
   return { draftRef, hook, setComposerText }
 }
-
-describe('useComposerTrigger — bare invocations', () => {
-  it('pins /profile as a keep-bare-editable command', () => {
-    expect(desktopSlashKeepBareEditable('/profile')).toBe(true)
-    expect(desktopSlashKeepBareEditable('/personality')).toBe(false)
-  })
-})
 
 describe('useComposerTrigger — the onboarding chat before setup ends', () => {
   it('opens no slash menu, and still opens the @ menu', () => {
@@ -283,6 +276,33 @@ describe('useComposerTrigger — free-text slash arguments', () => {
 
     act(() => hook.result.current.refreshTrigger())
     act(() => hook.result.current.replaceTriggerWithChip(item('/profile', 'Commands')))
+
+    expect(composerPlainText(editor)).toBe('/profile ')
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+  })
+
+  it('expands the completer own `profile ` row (trailing space) instead of chipping it', () => {
+    // The gateway returns `{text: "profile "}` for an exact match — every
+    // command outside _PICKER_COMMANDS gets that trailing space — while /skin
+    // returns a bare `skin`. The trailing space must not read as an arg pick.
+    const completed: Unstable_TriggerItem = {
+      id: 'profile |0',
+      type: 'slash',
+      label: 'profile ',
+      metadata: {
+        command: '/profile ',
+        display: 'profile ',
+        meta: '',
+        group: 'Commands',
+        action: '',
+        rawText: '/profile '
+      }
+    }
+    const editor = mountEditor('/profile')
+    const { hook } = mountTrigger(editor, [completed])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(completed))
 
     expect(composerPlainText(editor)).toBe('/profile ')
     expect(editor.querySelector('[data-slash-kind]')).toBeNull()

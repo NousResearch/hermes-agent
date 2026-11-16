@@ -110,13 +110,13 @@ describe('acceptsTriggerCompletion', () => {
     expect(press('Tab', { freeTextArgStage: true, query: 'goal stat' })).toBe(true)
   })
 
-  it('types a literal space for a bare-valid command instead of taking a highlighted row', () => {
-    // /profile is complete on its own. Whichever row the popover highlights —
-    // the command row or a profile option — Space must just open the arg stage.
-    expect(press(' ', { query: 'profile', keepBareEditable: true })).toBe(false)
-    expect(press(' ', { query: 'profile c', keepBareEditable: true })).toBe(false)
-    expect(press('Tab', { query: 'profile', keepBareEditable: true })).toBe(true)
-    expect(press(' ', { query: 'personality' })).toBe(true)
+  it('takes the highlighted options row on Space, like any other picker', () => {
+    // /profile is an `options` command on the desktop, so it must accept on
+    // Space exactly as /skin and /personality do.
+    expect(press(' ', { query: 'profile' })).toBe(true)
+    expect(press(' ', { query: 'profile c' })).toBe(true)
+    expect(press('Enter', { query: 'profile c' })).toBe(true)
+    expect(press('Tab', { query: 'profile c' })).toBe(true)
   })
 })
 

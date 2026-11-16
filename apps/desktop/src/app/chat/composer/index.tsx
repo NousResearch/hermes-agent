@@ -21,7 +21,6 @@ import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
-import { desktopSlashKeepBareEditable } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { $touchPointer } from '@/lib/touch-interaction'
@@ -55,8 +54,7 @@ import {
   liveComposerDraft,
   type QueueEditState,
   shouldDisableComposerInput,
-  slashArgStage,
-  slashCommandToken
+  slashArgStage
 } from './composer-utils'
 import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS } from './contrib'
@@ -824,7 +822,6 @@ export function ChatBar({
       const accept = acceptsTriggerCompletion({
         activeExplicit: triggerActiveExplicit,
         freeTextArgStage: slashFreeTextArgStage,
-        keepBareEditable: desktopSlashKeepBareEditable(slashCommandToken(trigger.query)),
         key: event.key,
         kind: trigger.kind,
         query: trigger.query

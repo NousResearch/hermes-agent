@@ -1901,7 +1901,36 @@ export const svOverrides: TranslationOverrides = {
         directClear:
           'När denna route tillämpas rensas den direkta ändpunkten och dess sparade nyckel. Andra begärandeinställningar behålls.',
         catalogFailed: 'Modellkatalogen är inte tillgänglig. Ange leverantör och modell manuellt eller försök igen.',
-        draftHint: 'Ändringarna stannar lokalt tills de tillämpas.'
+        draftHint: 'Ändringarna stannar lokalt tills de tillämpas.',
+        routing: {
+          title: 'Ruttning',
+          settingsTitle: 'Standardvärden för underagenter',
+          intro: 'Så får varje underagent sin modell.',
+          modes: {
+            default: { label: 'Standard', description: 'Varje underagent körs med underagentmodellen nedan.' },
+            model_map: { label: 'Modellrutter', description: 'Namnge några modeller. Agenten väljer en för varje underagent.' },
+            profile_routes: { label: 'Profilrutter', description: 'Underagenter körs som en av dina profiler, med egen modell, skills och nycklar.' }
+          },
+          inUse: 'Används',
+          plugin: 'Insticksprogram',
+          pluginMissing: 'Modellrutter och profilrutter kommer från insticksprogrammet Advanced Delegation.',
+          pluginDisabled: 'Advanced Delegation är installerat men avstängt för den här profilen.',
+          pluginNotLoaded: 'Advanced Delegation är på, men Hermes har inte läst in det ännu. Starta om Hermes för att slutföra.',
+          installPlugin: 'Installera insticksprogram',
+          installUnavailable: 'Advanced Delegation finns inte i insticksprogramskatalogen ännu. Installera det från Funktioner › Insticksprogram.',
+          enablePlugin: 'Slå på',
+          enableFailed: 'Det gick inte att slå på Advanced Delegation',
+          modeFailed: 'Det gick inte att ändra underagenternas ruttning',
+          loadFailed: 'Det gick inte att läsa in underagenternas ruttning',
+          blockedPill: 'Körs inte',
+          blockedDetail: 'Det här läget är sparat, så Hermes nekar varje underagent i stället för att tyst använda standardläget.',
+          blockedMissing: 'Underagenter startar inte förrän Advanced Delegation är installerat.',
+          blockedDisabled: 'Underagenter startar inte förrän Advanced Delegation är påslaget för den här profilen.',
+          blockedNotLoaded: 'Underagenter startar inte förrän Hermes har läst in Advanced Delegation. Starta om Hermes för att slutföra.',
+          blockedUnavailable: label => `Underagenter startar inte förrän ${label} kan köras här. Insticksprogrammet rapporterar att det inte kan det.`,
+          blockedUnregistered: name => `Underagenter startar inte förrän ett insticksprogram som tillhandahåller ”${name}” är installerat och påslaget.`,
+          thirdPartyDescription: 'Från ett insticksprogram. Inställningarna finns där.'
+        }
       }
     },
     sessions: {

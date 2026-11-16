@@ -13,16 +13,23 @@ from .method_ctx import bind_module
 
 _cache_expiry_started = False
 _cache_expiry_lock = threading.Lock()
+# Summaries running at once: one slow summary must not hold every other due chat past its window
+# (the ticker used to run them serially), nor may a burst of due chats fan out unbounded.
+_CACHE_EXPIRY_CONCURRENCY = 3
+_cache_expiry_slots = threading.BoundedSemaphore(_CACHE_EXPIRY_CONCURRENCY)
+_cache_expiry_in_flight: set[str] = set()
 
 
 def _cache_expiry_candidates() -> list[tuple[str, dict]]:
     from agent.cache_expiry_compaction import claim_cache_expiry_compaction
     with _sessions_lock:
         live = list(_sessions.items())
+    with _cache_expiry_lock:
+        busy = set(_cache_expiry_in_flight)
     picked = []
     for sid, session in live:
         agent = session.get("agent")
-        if agent is None or session.get("running") or session.get("_closing"):
+        if agent is None or sid in busy or session.get("running") or session.get("_closing"):
             continue
         if _session_uses_compute_host(session):
             continue  # the compute host owns that transcript; it is not compacted from here
@@ -34,9 +41,12 @@ def _cache_expiry_candidates() -> list[tuple[str, dict]]:
 
 
 def _compact_before_cache_expiry(sid: str, session: dict) -> None:
-    from agent.cache_expiry_compaction import TRIGGER
+    from agent.cache_expiry_compaction import TRIGGER, window_still_warm
     from agent.conversation_compression import finalize_context_engine_compression_notification
     agent = session["agent"]
+    with _session_profile_runtime_scope(session):
+        if not window_still_warm(agent):  # waited for a slot past the window
+            return
     with _session_profile_runtime_scope(session), _manual_compress_turn(sid, session):
         try:
             removed, _usage = _compress_session_history(session, trigger=TRIGGER)
@@ -50,14 +60,31 @@ def _compact_before_cache_expiry(sid: str, session: dict) -> None:
     logger.info("Cache-expiry compaction: sid=%s removed=%d messages", sid, removed)
 
 
-def _cache_expiry_tick() -> None:
-    for sid, session in _cache_expiry_candidates():
-        try:
+def _cache_expiry_job(sid: str, session: dict) -> None:
+    try:
+        with _cache_expiry_slots:
             _compact_before_cache_expiry(sid, session)
-        except (CompressionBusy, SessionNotOwned):
-            continue  # a turn or another owner got there first: nothing to do this window
-        except Exception:
-            logger.warning("cache-expiry compaction failed sid=%s", sid, exc_info=True)
+    except (CompressionBusy, SessionNotOwned):
+        pass  # a turn or another owner got there first: nothing to do this window
+    except Exception:
+        logger.warning("cache-expiry compaction failed sid=%s", sid, exc_info=True)
+    finally:
+        with _cache_expiry_lock:
+            _cache_expiry_in_flight.discard(sid)
+
+
+def _cache_expiry_tick() -> list:
+    """Start one job thread per due session (contextvars carried, so the profile scope survives the
+    hop); a sid already in flight is never claimed again. Returns the started threads."""
+    from agent.memory_provider import spawn_context_thread
+    threads = []
+    for sid, session in _cache_expiry_candidates():
+        with _cache_expiry_lock:
+            _cache_expiry_in_flight.add(sid)
+        thread = spawn_context_thread(_cache_expiry_job, name=f"cache-expiry-{sid}", args=(sid, session))
+        thread.start()
+        threads.append(thread)
+    return threads
 
 
 def _start_cache_expiry_compactor() -> None:

@@ -25,6 +25,9 @@ from gateway.session_stall import (
 logger = logging.getLogger("gateway.run")
 
 _SESSION_STORE_PRUNE_INTERVAL = 3600.0  # once per hour
+# Summaries running at once: each is a full-context LLM call, so a burst of due chats must not fan
+# out unbounded, but one slow summary must not hold every other chat past its window either.
+_CACHE_EXPIRY_CONCURRENCY = 3
 
 
 async def _interruptible_sleep(runner, seconds: int) -> None:
@@ -77,8 +80,9 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
                 logger.debug("SessionStore prune failed: %s", e)
             self._last_session_store_prune_ts = time.time()
 
-    def _cache_expiry_due_keys(self) -> list[tuple[str, object]]:
-        """Cached, idle, human-paced sessions whose warm cache window is about to close."""
+    def _cache_expiry_due_keys(self, skip=()) -> list[tuple[str, object]]:
+        """Cached, idle, human-paced sessions whose warm cache window is about to close. *skip* (keys
+        with a compaction in flight) is excluded before the claim, which latches the window."""
         from agent.cache_expiry_compaction import claim_cache_expiry_compaction
         from gateway.run import _AGENT_PENDING_SENTINEL
         from gateway.run_agent_cache import _tuple_agent
@@ -86,7 +90,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         if cache is None or lock is None:
             return []
         with lock:
-            entries = [(key, _tuple_agent(entry)) for key, entry in cache.items()]
+            entries = [(key, _tuple_agent(entry)) for key, entry in cache.items() if key not in skip]
         due = []
         for key, agent in entries:
             if agent is None or agent is _AGENT_PENDING_SENTINEL or self._is_session_running(key):
@@ -96,35 +100,62 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         return due
 
     async def _compact_idle_sessions_before_cache_expiry(self) -> None:
-        """Compact each idle chat whose prompt cache is about to expire, through the manual
-        ``/compress`` pipeline (temporary agent, compression lease, persist, evict) with an
-        automatic trigger. Skipped for a session a turn has claimed meanwhile."""
-        from agent.cache_expiry_compaction import TRIGGER
-        from agent.conversation_compression_manual import MIN_MESSAGES, CompressRequest
-        for key, live_agent in self._cache_expiry_due_keys():
-            entry = await self.async_session_store.lookup_by_session_key(key)
-            if entry is None or entry.origin is None or self._is_session_running(key):
-                continue
+        """Start one compaction job per due session and return without awaiting them: a summary can
+        run for minutes, longer than a later session's fire range and the housekeeping interval, so
+        serial summaries would let later chats go cold and stall the sweeps after this one. Jobs are
+        background tasks (shutdown cancels them), one per session key, at most
+        ``_CACHE_EXPIRY_CONCURRENCY`` summarising at once."""
+        jobs = self.__dict__.setdefault("_cache_expiry_jobs", {})
+        slots = self.__dict__.setdefault("_cache_expiry_slots", asyncio.Semaphore(_CACHE_EXPIRY_CONCURRENCY))
+        for key, live_agent in self._cache_expiry_due_keys(skip=set(jobs)):
+            task = self._retain_background_task(
+                asyncio.create_task(self._compact_before_cache_expiry(key, live_agent, slots)))
+            jobs[key] = task
+            task.add_done_callback(lambda _done, key=key: jobs.pop(key, None))
+
+    async def _compact_before_cache_expiry(self, key: str, live_agent, slots: asyncio.Semaphore) -> None:
+        """Compact one idle chat through the manual ``/compress`` pipeline (temporary agent,
+        compression lease, persist, evict) with an automatic trigger, in the chat's profile scope."""
+        from agent.cache_expiry_compaction import window_still_warm
+        async with slots:
             try:
-                history = await self.async_session_store.load_transcript(entry.session_id)
-                if len(history or ()) < MIN_MESSAGES or self._is_session_running(key):
-                    continue
-                # The summary call replays the live agent's last request, so it reads that warm cache.
-                warm = (live_agent, list(getattr(live_agent, "_session_messages", None) or history))
-                await self._compact_with_profile_scope(entry, history, TRIGGER, CompressRequest(), warm_prefix=warm)
-                logger.info("Cache-expiry compaction: session=%s", key)
+                authority, entry, owner = await asyncio.to_thread(self._cache_expiry_route, key)
+                if entry is None or entry.origin is None:
+                    return
+                with self._profile_scope_for_source(entry.origin):
+                    if not window_still_warm(live_agent):  # waited for a slot past the window
+                        return
+                    live = authority.sessions.get(owner) if authority is not None else None
+                    # The FIFO claim waits on ``claim_gate`` (as behind ``/compress``): a message
+                    # arriving mid-summary starts its turn on the compacted history, not the old one.
+                    async with live.claim_gate if live is not None else contextlib.nullcontext():
+                        await self._compact_claimed_session(key, entry, live_agent)
             except Exception as e:
                 logger.warning("Cache-expiry compaction failed for %s: %s", key, e, exc_info=True)
 
-    async def _compact_with_profile_scope(self, entry, history, trigger, request, *, warm_prefix=None) -> None:
-        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            await self._run_manual_compression(entry.origin, entry, history, request, trigger=trigger,
-                                               warm_prefix=warm_prefix)
+    def _cache_expiry_route(self, key: str):
+        """``(authority, entry, owner session id)`` for *key*. Under an authority the entry may be a
+        detached Desktop conversation's (cached agent, no routing entry of its own)."""
+        from gateway.session_detached import _route_authority, route_entry
+        authority = _route_authority(self, self.session_store, key)
+        if authority is None:
+            return None, self.session_store.lookup_by_session_key(key), None
+        entry = route_entry(authority, key)
+        return authority, entry, authority.logical_owner(entry.session_id) if entry is not None else None
+
+    async def _compact_claimed_session(self, key: str, entry, live_agent) -> None:
+        from agent.cache_expiry_compaction import TRIGGER
+        from agent.conversation_compression_manual import MIN_MESSAGES, CompressRequest
+        if self._is_session_running(key):
             return
-        from gateway.run import _profile_runtime_scope
-        with _profile_runtime_scope(self._resolve_profile_home_for_source(entry.origin)):
-            await self._run_manual_compression(entry.origin, entry, history, request, trigger=trigger,
-                                               warm_prefix=warm_prefix)
+        history = await self.async_session_store.load_transcript(entry.session_id)
+        if len(history or ()) < MIN_MESSAGES or self._is_session_running(key):
+            return
+        # The summary call replays the live agent's last request, so it reads that warm cache.
+        warm = (live_agent, list(getattr(live_agent, "_session_messages", None) or history))
+        await self._run_manual_compression(entry.origin, entry, history, CompressRequest(), trigger=TRIGGER,
+                                           warm_prefix=warm)
+        logger.info("Cache-expiry compaction: session=%s", key)
 
     def _session_stall_timeout_seconds(self) -> float:
         """Return configured stall timeout (seconds); 0 disables the watchdog."""

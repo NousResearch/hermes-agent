@@ -2,7 +2,7 @@
 name: antemuse
 title: Antemuse
 repo: https://github.com/roosiq/antemuse-plugin
-sha: 916d18873cf748c97a59bd2beed5a2669388122f
+sha: d9c3388b741c54c7458cffb333408f5e936e4506
 description: 'One agent state and a concept map you fly yourself. /walk changes the frame the agent works
   in without sending it anywhere: six hops out to the far rim of a concept''s neighbourhood in WordNet,
   one bought per turn, recorded for the pane and never injected into the turn, so what comes back comes
@@ -15,7 +15,7 @@ maintainer: roosiq
 tier: community
 category: desktop
 docs_url: https://github.com/roosiq/antemuse-plugin#readme
-version: "0.11.18"
+version: "0.11.19"
 requires_hermes: '>=0.21.6'
 platforms:
 - linux
@@ -42,8 +42,9 @@ known_issues:
   path, so the pane is expected to work but is unverified there.'
 - The exploration library (spark, keep, collider, selection) is present but runtime-gated behind experimental.enabled
   and makes no quality claim.
-image: https://raw.githubusercontent.com/roosiq/antemuse-plugin/916d18873cf748c97a59bd2beed5a2669388122f/docs/screenshots/banner.png
+image: https://raw.githubusercontent.com/roosiq/antemuse-plugin/d9c3388b741c54c7458cffb333408f5e936e4506/docs/screenshots/banner.png
 screenshots:
-- https://raw.githubusercontent.com/roosiq/antemuse-plugin/916d18873cf748c97a59bd2beed5a2669388122f/docs/screenshots/pane-walk.png
-- https://raw.githubusercontent.com/roosiq/antemuse-plugin/916d18873cf748c97a59bd2beed5a2669388122f/docs/screenshots/return-account.png
-- https://raw.githubusercontent.com/roosiq/antemuse-plugin/916d18873cf748c97a59bd2beed5a2669388122f/docs/screenshots/blocked-tool.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/d9c3388b741c54c7458cffb333408f5e936e4506/docs/screenshots/pane-walk.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/d9c3388b741c54c7458cffb333408f5e936e4506/docs/screenshots/cockpit.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/d9c3388b741c54c7458cffb333408f5e936e4506/docs/screenshots/return-account.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/d9c3388b741c54c7458cffb333408f5e936e4506/docs/screenshots/blocked-tool.png

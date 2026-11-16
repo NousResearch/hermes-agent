@@ -217,3 +217,29 @@ def test_a_bridge_reload_reaches_the_stores_bound_launch_scope(store, monkeypatc
         assert secret_scope.current_secret_scope().get("TELEGRAM_ALLOWED_USERS") == "1"
     finally:
         secret_scope.reset_secret_scope(token)
+
+
+def test_a_store_revocation_is_not_resurrected_from_the_frozen_launch_env(store, monkeypatch):
+    """Kills keeping store-owned names in the frozen launch layer. The real loader publishes the
+    store's view (registering the names it owns); a launch env frozen with a different, stale value
+    for one of them must not answer once the store revokes it."""
+    provider, home = store
+    import hermes_constants
+    from agent import secret_scope
+    from hermes_cli.env_loader import load_hermes_dotenv
+    from tui_gateway import launch_profile_policy as policy
+    monkeypatch.setattr(hermes_constants, "_PINNED_PROCESS_HERMES_HOME", str(home))
+    monkeypatch.setenv("RV_REVOKED", "ambient-stale")
+    monkeypatch.setattr(policy, "_snapshot", None)
+    monkeypatch.setattr(policy, "_source_writes", getattr(policy, "_source_writes", None))
+    policy.capture_launch_env()
+    provider.seed_external(home, {"RV_REVOKED": "store-current"})
+    load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+    secret_scope.set_multiplex_active(True)
+    try:
+        scope = policy.launch_secret_scope(home)
+        assert scope.get("RV_REVOKED") == "store-current"
+        provider.write_view(home, env_unset=("RV_REVOKED",))
+        assert scope.get("RV_REVOKED") is None
+    finally:
+        secret_scope.set_multiplex_active(False)

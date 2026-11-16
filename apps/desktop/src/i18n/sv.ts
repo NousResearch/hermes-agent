@@ -753,6 +753,20 @@ export const svOverrides: TranslationOverrides = {
             captionDefault: 'Standardgräns',
             captionSpending: 'Månatlig fjärranvändning',
             valueUsed: (spent, limit) => `${spent} av ${limit} använt`
+          },
+          window: {
+            today: 'I dag',
+            week: 'Den här veckan',
+            month: 'Den här månaden',
+            topTier: 'Stora modeller (månadsvis)',
+            barLabel: title => `Använd inkluderad användning för ${title}`,
+            captionPaused: 'Pausad: abonnemangsbetalningen misslyckades',
+            captionPausedOther: 'Pausad: se Fakturering i portalen',
+            captionTopTierUsedUp: 'Månadskvoten är förbrukad, krediter täcker resten',
+            captionTopTierUsedUpKeepGoingOff: 'Månadskvoten är förbrukad, andra inkluderade modeller fungerar fortfarande',
+            captionResetsIn: duration => `Återställs om ${duration}`,
+            captionIncluded: 'Inkluderad användning',
+            valueUsed: percent => `${percent} använt`
           }
         }
       }

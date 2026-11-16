@@ -117,10 +117,13 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         """Compact one idle chat through the manual ``/compress`` pipeline (temporary agent,
         compression lease, persist, evict) with an automatic trigger, in the chat's profile scope."""
         from agent.prompt_cache_lifecycle import window_still_warm
+        claimed_session = getattr(live_agent, "session_id", None)
         async with slots:
             try:
                 authority, entry, owner = await asyncio.to_thread(self._cache_expiry_route, key)
-                if entry is None or entry.origin is None:
+                # /new (or a resume) while this job waited re-routed the key: the claim and the warm
+                # window checked below belong to the old chat, not the one the route now serves.
+                if entry is None or entry.origin is None or entry.session_id != claimed_session:
                     return
                 with self._profile_scope_for_source(entry.origin):
                     if not window_still_warm(live_agent):  # waited for a slot past the window

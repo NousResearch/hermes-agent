@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import threading
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -74,7 +75,8 @@ def make_runner(monkeypatch):
         runner.config = GatewayConfig()
         runner.session_store = _Store(entries)
         runner.session_authority = _Authority(runner) if authority else None
-        runner._agent_cache = {key: (object(), "sig") for key in keys}
+        runner._agent_cache = {key: (SimpleNamespace(session_id=entries[key].session_id if key in entries
+                                                     else key.rsplit(":", 1)[-1]), "sig") for key in keys}
         runner._agent_cache_lock = threading.Lock()
         runner.compacted = []
         runners.append(runner)
@@ -187,3 +189,19 @@ async def test_a_detached_desktop_conversation_without_a_routing_entry_is_compac
     await _compact_and_settle(runner)
 
     assert runner.compacted == [(key, "s-det")]
+
+
+@pytest.mark.asyncio
+async def test_a_job_queued_behind_a_summary_skips_a_key_that_new_rerouted(make_runner):
+    """The claim and the warm window belong to the chat the job was queued for: when ``/new``
+    re-routes the key while the job waits for a slot, the new chat is not compacted."""
+    runner = make_runner({"k1": _entry("k1", "s-old", _source())}, ["k1"])
+
+    async def compress(source, entry, history, request, *, trigger=None):
+        runner.compacted.append(entry.session_id)
+    runner._run_manual_compression = compress
+    runner.session_store.entries["k1"] = _entry("k1", "s-new", _source())  # /new before the slot
+
+    await _compact_and_settle(runner)
+
+    assert runner.compacted == []

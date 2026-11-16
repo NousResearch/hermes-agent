@@ -230,14 +230,17 @@ def record_response_usage(
         compressor._context_probed = False
         compressor._context_probe_persistable = False
 
-    agent.session_prompt_tokens += prompt_tokens
-    agent.session_completion_tokens += completion_tokens
-    agent.session_total_tokens += total_tokens
-    agent.session_input_tokens += canonical_usage.input_tokens
-    agent.session_output_tokens += canonical_usage.output_tokens
-    agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
-    agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
-    agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+    from agent.prompt_cache_lifecycle import session_totals_lock
+
+    with session_totals_lock(agent):  # a keep-alive reply landing now adds to these too
+        agent.session_prompt_tokens += prompt_tokens
+        agent.session_completion_tokens += completion_tokens
+        agent.session_total_tokens += total_tokens
+        agent.session_input_tokens += canonical_usage.input_tokens
+        agent.session_output_tokens += canonical_usage.output_tokens
+        agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
+        agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
+        agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
     # Rolling history for status-bar averages (last 10).
     with suppress(Exception):
         hist = getattr(agent, "_api_latency_history", None)
@@ -292,18 +295,17 @@ def record_response_usage(
     # Cost delta = aggregator + MoA advisor cost (already priced per-advisor at each
     # advisor's own model rate), so state.db's estimated_cost_usd matches the folded
     # token counts.
-    _cost_delta = None
-    if cost_result.amount_usd is not None:
-        _cost_delta = float(cost_result.amount_usd)
-        agent.session_estimated_cost_usd += _cost_delta
+    _cost_delta = float(cost_result.amount_usd) if cost_result.amount_usd is not None else None
     if _moa_ref_cost is not None:
         try:
             _moa_cost = float(_moa_ref_cost)
         except (TypeError, ValueError):  # pragma: no cover - defensive
             _moa_cost = None
         if _moa_cost is not None:
-            agent.session_estimated_cost_usd += _moa_cost
             _cost_delta = (_cost_delta or 0.0) + _moa_cost
+    if _cost_delta is not None:
+        with session_totals_lock(agent):
+            agent.session_estimated_cost_usd += _cost_delta
     agent.session_cost_status = cost_result.status
     agent.session_cost_source = cost_result.source
 

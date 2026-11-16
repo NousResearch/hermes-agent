@@ -87,6 +87,14 @@ def relay_root(root: Path | str) -> Path:
     return Path(root) / RELAY_DIR_NAME
 
 
+def install_relay_root() -> Path:
+    """The install root the shared relay state lives under, resolved from the ambient
+    HERMES_HOME (a named profile's home normalizes up to its install root). The one
+    formula for every writer and RPC door: both ends of the mailbox must agree for
+    every HERMES_HOME, including non-``profiles/`` subdirs of ``~/.hermes`` (#146035)."""
+    return _hermes_root(Path(_default_home()))
+
+
 def _ensure_dirs(root: Path | str) -> Path:
     base = relay_root(root)
     for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR):

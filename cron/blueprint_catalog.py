@@ -642,26 +642,91 @@ def blueprint_deeplink(blueprint: AutomationBlueprint, values: Optional[dict[str
     return f"hermes://blueprint/{quote(blueprint.key)}{qs}"
 
 
+_DOW_NAMES = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+_NTH_NAMES = {"1": "first", "2": "second", "3": "third", "4": "fourth", "5": "fifth"}
+_PLACEHOLDER_RE = re.compile(r"^\{(\w+)\}$")
+
+
+def _field_default(blueprint: AutomationBlueprint, field: str) -> str:
+    """A cron field with a ``{slot}`` placeholder replaced by that slot's default ("" if none)."""
+    m = _PLACEHOLDER_RE.match(field)
+    if not m:
+        return field
+    default = _slot_default(blueprint, m.group(1))
+    return "" if default is None else str(default)
+
+
+def _ordinal(day: int) -> str:
+    suffix = "th" if 11 <= day % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    return f"{day}{suffix}"
+
+
+def _join_words(words: list[str]) -> str:
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
+
+
+def _humanize_days(blueprint: AutomationBlueprint, dom: str, month: str, dow: str) -> Optional[str]:
+    """Which days a template's day-of-month / month / day-of-week fields run on, or None when
+    the combination has no plain-English wording here (the caller then stays generic)."""
+    if month != "*":
+        return None
+    if dom != "*" and dow != "*":
+        return None  # cron ORs a restricted day-of-month with a restricted day-of-week
+    if dom != "*":
+        dom = _field_default(blueprint, dom)
+        if dom == "L":
+            return "on the last day of each month"
+        days = dom.split(",")
+        if not all(d.isdigit() and 1 <= int(d) <= 31 for d in days):
+            return None
+        return "monthly on the " + _join_words([_ordinal(int(d)) for d in days])
+    if dow == "*":
+        return "daily"
+    if dow == "1-5":
+        return "weekdays"
+    if dow == "{dow}":
+        return _slot_default(blueprint, "day", "recurrence") or None
+    if dow in ("0,6", "6,0"):
+        return "weekends"
+    nth = re.fullmatch(r"([0-7])#([1-5])", dow)
+    if nth:
+        return f"on the {_NTH_NAMES[nth.group(2)]} {_DOW_NAMES[int(nth.group(1))]} of each month"
+    last = re.fullmatch(r"L([0-7])", dow)
+    if last:
+        return f"on the last {_DOW_NAMES[int(last.group(1))]} of each month"
+    days = dow.split(",")
+    if not all(d.isdigit() and int(d) <= 7 for d in days):
+        return None
+    return "every " + _join_words([_DOW_NAMES[int(d)] for d in days])
+
+
 def _humanize_schedule(blueprint: AutomationBlueprint) -> str:
     """A short human-readable description of when a blueprint runs (defaults)."""
     sched = blueprint.schedule_template
-    if sched.startswith("*/"):
-        every = _slot_default(blueprint, "interval_min") or sched.split("/")[1].split()[0]
+    fields = sched.split()
+    if len(fields) != 5:
+        return "on a schedule"
+    minute, hour, dom, month, dow = fields
+    if minute.startswith("*/"):
+        every = _slot_default(blueprint, "interval_min") or minute.split("/")[1]
         return f"every {every} minutes"
-    if "{interval_hours}" in sched:
-        every = str(_slot_default(blueprint, "interval_hours") or "1")
-        scope = "weekdays, " if "* * 1-5" in sched else ""
+    if "/" in hour:
+        every = _field_default(blueprint, hour.split("/")[1]) or "1"
+        scope = "weekdays, " if dow == "1-5" else ""
         return f"{scope}every hour" if every == "1" else f"{scope}every {every} hours"
-    time_slot = _slot(blueprint, type="time")
-    when = time_slot.default if time_slot else None
-    if "* * 1-5" in sched:
-        return f"weekdays at {when}" if when else "every weekday"
-    if "{dow}" in sched:
-        scope = _slot_default(blueprint, "day", "recurrence") or ""
-        if scope and when:
-            return f"{scope} at {when}"
-        return f"at {when}" if when else "on a schedule"
-    return f"daily at {when}" if when else "on a schedule"
+    if minute == "{minute}" and hour == "{hour}":
+        time_slot = _slot(blueprint, type="time")
+        when = time_slot.default if time_slot else None
+    elif minute.isdigit() and hour.isdigit():
+        when = f"{int(hour):02d}:{int(minute):02d}"
+    else:
+        when = None
+    days = _humanize_days(blueprint, dom, month, dow)
+    if days is None:
+        return f"on a custom schedule at {when}" if when else "on a schedule"
+    if not when:
+        return "every weekday" if days == "weekdays" else "on a schedule"
+    return f"{days} at {when}"
 
 
 def blueprint_catalog_entry(blueprint: AutomationBlueprint) -> dict[str, Any]:

@@ -1,7 +1,7 @@
 """In-place row-rewrite persistence for the proactive prune (#124102).
 
-Split out of :mod:`hermes_state_messages` (FILE_LINES ratchet): the prune's own commit primitive and
-its lease-less staleness probe. Both are ``SessionMessagesMixin`` methods; this sibling defines a
+Split out of :mod:`hermes_state_messages` (FILE_LINES ratchet): the prune's own commit primitive,
+its lease-less staleness probe, and the held-row rewrite ``replace_messages(held_row_ids=...)`` runs. Both are ``SessionMessagesMixin`` methods; this sibling defines a
 ``SessionPruneRewriteMixin`` the facade binds into the same MRO slot, so every existing
 ``session_db.rewrite_pruned_rows(...)`` / ``rewritten_held_row_ids(...)`` call site and test patch
 seam keeps working unchanged.
@@ -9,22 +9,26 @@ seam keeps working unchanged.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Any, Optional
 
 from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY
-from agent.message_metadata import DB_ROW_SNAPSHOT
+from agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID
 from hermes_state_common import _id_chunks, _placeholders
-from hermes_state_messages import _INSERT_MESSAGE_SQL, _parse_tool_calls
+from hermes_state_messages import _INSERT_MESSAGE_SQL, _parse_tool_calls, _tool_calls_len
 
 # _INSERT_MESSAGE_SQL's columns in bind order, so a row rewrite can diff _message_row_params by name.
 _MESSAGE_ROW_COLUMNS = tuple(
     column.strip() for column in _INSERT_MESSAGE_SQL.split("(", 1)[1].split(")", 1)[0].split(","))
 # A prune only changes what a message says; who said it, when, and in which row never move.
 _PRUNE_FIXED_COLUMNS = frozenset({"session_id", "role", "tool_call_id", "timestamp", "active", "display_identity"})
+_LIVE_IDENTITY_ALL_SQL = ("SELECT id, role, content, tool_call_id, tool_calls, message_uid FROM messages "
+                          "WHERE session_id = ? AND active = 1 ORDER BY id")
 
 
 class SessionPruneRewriteMixin:
-    """``SessionDB`` mixin: the proactive prune's in-place row rewrite and held-row staleness probe."""
+    """``SessionDB`` mixin: the proactive prune's in-place row rewrite, held-row staleness probe and
+    held-row archive rewrite."""
 
     def rewritten_held_row_ids(self, session_id: str, held: list[dict[str, Any]]) -> list[int]:
         """Ids among *held* message dicts whose ACTIVE row no longer holds the payload the dict holds.
@@ -272,3 +276,66 @@ class SessionPruneRewriteMixin:
         # failed or retried commit never leaves the replacements stamped with an uncommitted digest.
         return self._execute_transcript_write(
             _do, [replacement for _, replacement in changes])
+
+    def _archive_dropped_held_rows(self, conn, session_id: str, messages: list[dict[str, Any]],
+                                   held_row_ids: Collection[int]) -> tuple[int, int, int, list[int]]:
+        """``replace_messages(held_row_ids=...)``: match *messages* in order against the live rows, skipping
+        live rows the caller never held, and archive only held rows past the first divergence.
+
+        A foreign row before the divergence stays where it is. One after it is re-sequenced after the
+        rewritten suffix, exactly as in-place compaction re-sequences a concurrent tail: the original is
+        archived and the returned ids are cloned once the suffix is inserted, so the rewrite never moves
+        another writer's later turn ahead of this caller's earlier ones.
+
+        Returns ``(kept, live_rows, live_tool_calls, requeue)``: *kept* messages already durable (stamped
+        with their ``_row_id`` and ``message_uid``), the row and tool-call counts left live in place, and the foreign ids to
+        clone after the insert.
+        """
+        held = set(held_row_ids)
+        live = conn.execute(_LIVE_IDENTITY_ALL_SQL, (session_id,)).fetchall()
+        kept = live_rows = live_tool_calls = 0
+        archive: list[int] = []
+        requeue: list[int] = []
+        diverged = False
+        for row in live:
+            if not diverged and kept < len(messages) and self._matches_live_row(messages[kept], row):
+                messages[kept]["_row_id"] = row[0]
+                if row[5]:
+                    messages[kept][MESSAGE_UID] = row[5]
+                kept += 1
+            elif row[0] not in held and not diverged:
+                pass  # another writer's row: this caller never saw it, so it has no say over it
+            elif row[0] not in held:
+                requeue.append(row[0])
+                archive.append(row[0])
+                continue
+            else:
+                diverged = True
+                archive.append(row[0])
+                continue
+            live_rows += 1
+            live_tool_calls += _tool_calls_len(row[4], scalar=1)
+        for chunk in _id_chunks(archive):
+            # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
+            conn.execute(f"UPDATE messages SET active = 0 WHERE session_id = ? AND id IN ({_placeholders(chunk)})",
+                         (session_id, *chunk))
+        return kept, live_rows, live_tool_calls, requeue
+
+    def _requeue_foreign_rows(self, conn, requeue: list[int]) -> tuple[int, int]:
+        """Clone the foreign rows ``_archive_dropped_held_rows`` archived after the divergence, so they
+        follow the rewritten suffix; returns the cloned row and tool-call counts."""
+        _ids, tool_calls = self._tail_rows_after_watermark(
+            conn, f"SELECT id, tool_calls FROM messages WHERE id IN ({_placeholders(requeue)}) ORDER BY id",
+            tuple(requeue))
+        self._clone_message_rows(conn, requeue)
+        return len(requeue), tool_calls
+
+    def _matches_live_row(self, msg: dict[str, Any], row) -> bool:
+        """True when *msg* writes the same identity columns as the live *row* (the kept-prefix compare)."""
+        role = msg.get("role", "unknown")
+        # Cheap scalars first; the content compare pays decode/sanitize/encode on both sides.
+        if row[1] != role or row[3] != msg.get("tool_call_id"):
+            return False
+        return self._row_identity(role, msg.get("content"), msg.get("tool_call_id"),
+                                  _parse_tool_calls(msg.get("tool_calls"))) == self._row_identity(
+            row[1], self._decode_content(row[2]), row[3], _parse_tool_calls(row[4]))

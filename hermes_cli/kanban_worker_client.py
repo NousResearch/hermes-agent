@@ -127,10 +127,16 @@ async def _await_receipt(client, params, board_db, claim):
 
 def _exit_code(receipt, params, board_db):
     from hermes_cli.gateway_client import GatewayClientError
-    if receipt['status'] == 'unknown':
-        raise GatewayClientError('Kanban execution unknown; retained by owner')
     from gateway.session_kanban import worker_result
     result = worker_result(board_db, params)
+    if receipt['status'] == 'unknown':
+        # The owner retained an admission it could not settle. When this attempt already wrote its own
+        # exit, that is the cause worth naming: a worker that died before settlement otherwise reads as
+        # an ownership refusal, and its traceback exists only in managed-worker.log.
+        if result:
+            raise GatewayClientError(
+                f'Kanban worker exited {result.get("exit_code", 1)} before the owner settled the admission')
+        raise GatewayClientError('Kanban execution unknown; retained by owner')
     # The attempt's reply ends the log, as a one-shot worker's did: crash diagnostics quote it.
     if result.get('last_output'):
         print(result['last_output'])

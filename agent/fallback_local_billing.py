@@ -13,11 +13,14 @@ the local switch for background runs.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 from urllib.parse import urlparse
 
 from agent.error_classifier import FailoverReason
+
+logger = logging.getLogger(__name__)
 
 CONFIG_KEY = "background_local_when_billing_blocked"
 
@@ -40,7 +43,7 @@ def is_background_run(agent: Any) -> bool:
     ``hermes_cli.cli_single_query._single_query_exit_code`` maps provider walls by)."""
     if getattr(_delegation_root(agent), "platform", None) == "cron":
         return True
-    return bool(os.environ.get("HERMES_KANBAN_TASK"))
+    return (os.environ.get("HERMES_KANBAN_TASK") or "").strip() != ""
 
 
 def is_local_model_endpoint(base_url: Any) -> bool:
@@ -59,12 +62,13 @@ def _local_allowed_by_config() -> bool:
         from hermes_cli.config import load_config
 
         section = (load_config() or {}).get("fallback")
-    except Exception:
+    except Exception:  # an unreadable config keeps the default (no local switch); the read logs its own cause
+        logger.debug("fallback.%s: config not readable", CONFIG_KEY, exc_info=True)
         return False
     return isinstance(section, dict) and section.get(CONFIG_KEY) is True
 
 
-def declines_local_fallback(agent: Any, reason: "FailoverReason | None", fb_base_url: Any) -> bool:
+def declines_local_fallback(agent: Any, reason: FailoverReason | None, fb_base_url: Any) -> bool:
     """True when this switch is a background run leaving a billing-refused provider for a local
     model, and the operator has not opted back in."""
     return (
@@ -75,12 +79,24 @@ def declines_local_fallback(agent: Any, reason: "FailoverReason | None", fb_base
     )
 
 
-def declines_local_route(agent: Any, reason: "FailoverReason | None", entry: dict, provider: str, model: str) -> bool:
+def declines_local_route(agent: Any, reason: FailoverReason | None, entry: dict, provider: str, model: str) -> bool:
     """:func:`declines_local_fallback` for a fallback-chain entry, checked before the swap binds it.
     The endpoint is the client the swap would bind (``agent.route_binding``), resolved only once the
     cheap gates pass; the pool is not touched until a bind commits its choice."""
     if reason != FailoverReason.billing or provider == "moa" or not is_background_run(agent):
         return False
     from agent.route_binding import resolve_route_entry_client
-    client = resolve_route_entry_client(entry, provider, model).client
-    return client is not None and declines_local_fallback(agent, reason, getattr(client, "base_url", None))
+    try:
+        client = resolve_route_entry_client(entry, provider, model).client
+    except Exception:  # the swap's own attempt reports an unbuildable entry; never decide on it here
+        logger.debug("Fallback %s/%s: endpoint not resolvable for the local check", provider, model, exc_info=True)
+        return False
+    if client is None or not declines_local_fallback(agent, reason, getattr(client, "base_url", None)):
+        return False
+    # Read back by the run's owner (cron's hold notice names the skipped model).
+    agent._declined_local_fallback = f"{model} via {provider}"
+    logger.warning(
+        "Fallback skip: %s/%s is a local model; this background run's provider refused "
+        "for billing/credits, so the run stops here instead of grinding it "
+        "(fallback.background_local_when_billing_blocked: true allows it)", provider, model)
+    return True

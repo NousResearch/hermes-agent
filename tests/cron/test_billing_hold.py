@@ -10,7 +10,7 @@ two fake OpenAI-compatible servers on 127.0.0.1.
 
 import json
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock, patch
 
@@ -79,7 +79,8 @@ def providers(tmp_path, monkeypatch):
         "model:\n  default: grok-4.20\n  provider: custom\n"
         f"  base_url: {primary.url}\n  api_key: sk-test\n"
         "fallback_providers:\n  - provider: custom\n    model: gemma-4-e4b\n"
-        f"    base_url: {local.url}\n    api_key: lm-studio\n",
+        f"    base_url: {local.url}\n    api_key: lm-studio\n"
+        "platforms:\n  slack:\n    enabled: true\n    token: xoxb-test\n",
         encoding="utf-8")
     yield home, primary, local
     for p in (primary, local):
@@ -92,8 +93,8 @@ def _fire(home, job_id, deliveries):
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_state_registry.acquire", return_value=MagicMock()), \
          patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
-         patch.object(sched, "_deliver_result",
-                      side_effect=lambda _job, content, **_kw: deliveries.append(content)):
+         patch("cron.delivery_queue.enqueue",
+               side_effect=lambda _eid, _job, content, **_kw: deliveries.append(content) or {"status": "pending"}):
         sched.run_one_job(dict(get_job(job_id)))
     return get_job(job_id)
 
@@ -101,9 +102,9 @@ def _fire(home, job_id, deliveries):
 @pytest.mark.parametrize("release", ["top_up", "model_change"])
 def test_billing_refused_job_is_held_instead_of_running_on_the_local_fallback(providers, release):
     home, primary, local = providers
-    job_id = create_job("Summarize the news.", "every 5m", name="research digest", deliver="local")["id"]
+    job_id = create_job("Summarize the news.", "every 5m", name="research digest", deliver="slack:alerts")["id"]
     deliveries: list = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     held = _fire(home, job_id, deliveries)
     assert local.requests == 0, "a billing-refused background run must not touch the local model"
@@ -136,6 +137,6 @@ def test_billing_refused_job_is_held_instead_of_running_on_the_local_fallback(pr
     primary.refuse = False
     update_job(job_id, {"next_run_at": now.isoformat()})
     resumed = _fire(home, job_id, deliveries)
-    assert deliveries[-1] == "PRIMARY ANSWER" and resumed["last_status"] == "ok"
+    assert deliveries[-1] == "PRIMARY ANSWER" and resumed["last_status"] == "delivery_queued"
     assert "billing_hold_provider" not in resumed and "quota_hold_until" not in resumed
     assert datetime.fromisoformat(resumed["next_run_at"]) - now < timedelta(minutes=10)

@@ -18,7 +18,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from cron import quota_hold
+from cron import extra_fire, quota_hold
 from hermes_time import now as _hermes_now, safe_strftime
 
 logger = logging.getLogger("cron.scheduler")
@@ -40,13 +40,13 @@ def blocked_provider(exc: BaseException) -> Optional[str]:
     return str(block.get("provider_label") or block.get("provider") or "the provider")
 
 
-def repeat_alert(job: Dict[str, Any]) -> bool:
+def repeat_alert(job: dict[str, Any]) -> bool:
     """This run was refused for billing again while the job was already held; the alert went out
     when the hold began."""
     return bool(job.get("_billing_hold_provider") and job.get(PROVIDER_KEY))
 
 
-def _parked_instant(job: Dict[str, Any], natural_next: datetime, now: datetime) -> datetime:
+def _parked_instant(job: dict[str, Any], natural_next: datetime, now: datetime) -> datetime:
     from cron.jobs import _instant_before, _parse_aware, _schedule_cadence_seconds, _seconds_after, compute_next_run
 
     schedule = job.get("schedule") or {}
@@ -56,11 +56,11 @@ def _parked_instant(job: Dict[str, Any], natural_next: datetime, now: datetime) 
         return natural_next
     if schedule.get("kind") == "cron":
         # Coalesce to a legal occurrence so the stale-expression guard does not re-anchor it.
-        return _parse_aware(compute_next_run(schedule, earliest.isoformat())) or earliest
+        return _parse_aware(compute_next_run(schedule, earliest.isoformat(), timezone=job.get("timezone"))) or earliest
     return earliest
 
 
-def plan_hold(job: Dict[str, Any], provider: str) -> bool:
+def plan_hold(job: dict[str, Any], provider: str) -> bool:
     """Called under the jobs lock AFTER ``_advance_after_run`` computed the natural
     ``next_run_at`` of a run refused for billing. Returns True when the job is held."""
     from cron.jobs import _parse_aware
@@ -72,7 +72,7 @@ def plan_hold(job: Dict[str, Any], provider: str) -> bool:
         return False
     parked = _parked_instant(job, natural_next, _hermes_now())
     if parked is not natural_next:
-        job["next_run_at"] = parked.isoformat()
+        extra_fire.reschedule(job, parked.isoformat())
     job[quota_hold.STATE_KEY] = job["next_run_at"]
     job.pop(quota_hold.SCHEDULE_EXPR_KEY, None)
     job[PROVIDER_KEY] = provider
@@ -82,7 +82,7 @@ def plan_hold(job: Dict[str, Any], provider: str) -> bool:
     return True
 
 
-def hold_notice(job: Dict[str, Any]) -> str:
+def hold_notice(job: dict[str, Any]) -> str:
     """Line appended to the ONE failure alert delivered on entering the hold, else ""."""
     provider = job.get("_billing_hold_provider")
     schedule = job.get("schedule") or {}
@@ -91,7 +91,7 @@ def hold_notice(job: Dict[str, Any]) -> str:
     from cron.jobs import _parse_aware, compute_next_run
 
     now = _hermes_now()
-    natural_next = _parse_aware(compute_next_run(schedule, now.isoformat()))
+    natural_next = _parse_aware(compute_next_run(schedule, now.isoformat(), timezone=job.get("timezone")))
     if natural_next is None:
         return ""
     check_at = safe_strftime(_parked_instant(job, natural_next, now), "%Y-%m-%d %H:%M %Z")

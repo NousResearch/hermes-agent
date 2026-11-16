@@ -640,3 +640,26 @@ class TestSweepOrphanedSessions:
         _make_session(db, "stale-tui", source="tui", started_at=stale, message_at=stale)
         assert db.sweep_orphaned_sessions(max_idle_seconds=0) == []
         assert db.get_session("stale-tui")["ended_at"] is None
+
+
+class TestSupersededRowsKeepTheirBoundary:
+    """#149249: the sweep re-stamped lineage steps that already had a successor, so the local-policy
+    receipt (parent.end_reason must be compression / session_reset) refused the chat forever."""
+
+    @pytest.mark.parametrize("boundary,child_config", [
+        ("compression", None),
+        ("session_reset", {"_reset_from": "parent"}),
+    ])
+    def test_reopened_parent_with_successor_is_not_reaped(self, db, boundary, child_config):
+        old = time.time() - 10 * 86400
+        db.create_session("parent", source="tui")
+        db.create_session("child", source="tui", parent_session_id="parent", model_config=child_config)
+        for sid in ("parent", "child"):
+            _backdate_session(db, sid, old)
+        db.promote_to_session_reset("parent") if boundary == "session_reset" else db.end_session("parent", boundary)
+        db.reopen_session("parent")  # a stale resume of the old id clears the stamp
+
+        swept = db.sweep_orphaned_sessions(max_idle_seconds=60, respect_gateway_heartbeats=False)
+
+        assert swept == ["child"]
+        assert db.get_session("parent")["end_reason"] is None

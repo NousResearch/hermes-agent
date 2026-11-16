@@ -224,8 +224,7 @@ class MCPServerHealthMixin:
     def mark_suspect(self, reason: str) -> None:
         """Latch a suspicion (no I/O) and log it once (#81051/#77765/#84132)."""
         if self._suspect_reason is None and reason:
-            logger.warning("MCP server '%s': connection marked suspect (%s); next call will health-check it",
-                           self.name, reason)
+            logger.warning("MCP server '%s': connection marked suspect (%s)", self.name, reason)
         self._suspect_reason = reason or None
 
     def _fail_inflight_calls(self, reason: str) -> None:

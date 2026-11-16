@@ -3982,11 +3982,44 @@ export const svOverrides: TranslationOverrides = {
     paneControls: 'Panelkontroller',
     appControls: 'Appkontroller',
     modelMenu: {
+      pickDeferred: model => `${model} gäller från nästa meddelande`,
       search: 'Sök modeller',
       noModels: 'Inga modeller hittades',
       editModels: 'Redigera modeller…',
+      followDefault: 'Använd standard från Inställningar',
       refreshModels: 'Uppdatera modeller',
-      fast: 'Snabb'
+      favorites: 'Favoriter',
+      addFavorite: 'Lägg till i favoriter',
+      removeFavorite: 'Ta bort från favoriter',
+      favoriteShortcut: '⇧-klicka',
+      fast: 'Snabb',
+      free: 'kostnadsfri',
+      cacheRead: 'cachad läsning',
+      priceTitle: (input, output, cache) =>
+        `Indata ${input}/Mtok · Utdata ${output}/Mtok${cache ? ` · Cachad läsning ${cache}/Mtok` : ''}`,
+      localSetup: {
+        title: 'Kör lokalt · kostnadsfritt och privat',
+        text: (model, size) => `${model} ryms på denna dator · ${size} hämtning`,
+        action: 'Ställ in'
+      },
+      limited: 'Begränsad',
+      limitedUntil: time => `Begränsad till ${time}`,
+      limitedTip: (provider, time) =>
+        time
+          ? `${provider} har nått sin användningsgräns. Den återställs ${time}; du kan ändå välja en modell för tiden efteråt.`
+          : `${provider} har nått sin användningsgräns. Du kan ändå välja en modell för tiden efter återställningen.`,
+      modelResets: time => `återställs ${time}`,
+      modelLimitedTip: time =>
+        `Den här modellen har nått sin egen gräns och återställs ${time}. De andra modellerna här fungerar fortfarande.`,
+      usageLeft: (percent, time) => (time ? `${percent} % kvar · återställs ${time}` : `${percent} % kvar`),
+      poolAccounts: count => `${count} ${count === 1 ? 'konto' : 'konton'}`,
+      poolLimited: (limited, total) => `${limited}/${total} konton begränsade`,
+      poolAccount: number => `Konto ${number}`,
+      poolUnknown: 'Användningen är inte tillgänglig',
+      poolUnavailable: 'Logga in igen',
+      usageTip: provider => `${provider} är nära sin användningsgräns.`,
+      usageWindow: (label, percent, time) =>
+        time ? `${label}: ${percent} % kvar, återställs ${time}` : `${label}: ${percent} % kvar`
     },
     modelOptions: {
       noOptions: 'Inga alternativ för denna modell',

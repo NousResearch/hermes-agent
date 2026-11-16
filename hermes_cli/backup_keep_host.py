@@ -133,12 +133,9 @@ def _env_name(line: str) -> str:
     return body.removeprefix("export ").split("=", 1)[0].strip()
 
 
-def _host_lines(text: str) -> dict[str, str]:
-    lines: dict[str, str] = {}
-    for line in text.splitlines():
-        if host_env_key(_env_name(line)):
-            lines.setdefault(_env_name(line), line)
-    return lines
+def _host_lines(text: str) -> list[str]:
+    """Every host-owned assignment, in order: .env loading takes the last, so all of them count."""
+    return [line for line in text.splitlines() if host_env_key(_env_name(line))]
 
 
 def merge_env(archive_text: str, host_text: str) -> str:

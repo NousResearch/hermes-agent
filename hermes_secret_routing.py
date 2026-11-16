@@ -97,6 +97,13 @@ def routed_provider() -> Optional[SecretStoreProvider]:
     return None if provider.files_backed else provider
 
 
+def routed_provider_for(home) -> Optional[SecretStoreProvider]:
+    """:func:`routed_provider` when it serves profile *home* (``serves_home``), else None: a home
+    the store declined runs today's file code."""
+    provider = routed_provider()
+    return provider if provider is not None and provider.serves_home(Path(home)) else None
+
+
 def reset_for_tests() -> None:
     """Forget resolved providers and published views (tests only)."""
     with _PROVIDERS_LOCK:
@@ -182,12 +189,14 @@ def stays_local(provider: SecretStoreProvider, name: str) -> bool:
     return _is_global_env(name) or name in _SPAWN_CREDENTIAL_KEYS
 
 
-def _routed_env_home(env_path: Path) -> tuple[Optional[SecretStoreProvider], Optional[Path]]:
+def _routed_env_home(env_path: Path, *, served: bool = True) -> tuple[Optional[SecretStoreProvider], Optional[Path]]:
     provider = routed_provider()
     if provider is None:
         return None, None
     home = _profile_home_of(env_path, ENV_FILENAME)
-    return (provider, home) if home is not None else (None, None)
+    if home is None or (served and not provider.serves_home(home)):
+        return None, None
+    return provider, home
 
 _BOOTSTRAP_GENERATIONS = {}
 _PROFILE_SNAPSHOT = ContextVar("raw_profile_snapshot", default=None)
@@ -258,7 +267,7 @@ def routed_store_env(env_path: Path) -> Optional[dict[str, str]]:
 def env_file_exists(env_path: Path) -> bool:
     """``env_path.exists()`` with the local store; with any other store, whether the profile has
     any secret at all (local bootstrap or the store's view)."""
-    provider, home = _routed_env_home(env_path)
+    provider, home = _routed_env_home(env_path, served=False)   # never boots the store
     if provider is None or home is None:
         return Path(env_path).exists()
     return True  # an authoritative empty profile still occupies the dotenv layer
@@ -306,6 +315,8 @@ def load_profile_dotenv(loader, **kwargs):
     if _PROFILE_SNAPSHOT.get() is not None:
         return loader(**kwargs)
     provider.boot(home)
+    if not provider.serves_home(home):
+        return loader(**kwargs)
     return publish(provider.current_snapshot(home), home=home, loader=loader, **kwargs)
 
 
@@ -403,7 +414,7 @@ def _routed_auth_home(auth_file: Path) -> tuple[Optional[SecretStoreProvider], O
     if provider is None:
         return None, None
     home = _profile_home_of(auth_file, AUTH_FILENAME)
-    return (provider, home) if home is not None else (None, None)
+    return (provider, home) if home is not None and provider.serves_home(home) else (None, None)
 
 
 def boot_before_auth_lock(auth_path: Path):

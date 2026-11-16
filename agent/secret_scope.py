@@ -430,8 +430,8 @@ def build_profile_secret_scope(hermes_home: Path) -> Mapping[str, str]:
     """Build a profile's secret mapping from ``<home>/.env`` plus its external
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
     from ``os.environ`` — so the scope holds only profile secrets."""
-    from hermes_secret_routing import routed_provider
-    provider = routed_provider()
+    from hermes_secret_routing import routed_provider_for
+    provider = routed_provider_for(hermes_home)
     if provider is not None:
         return LiveSecretScope.for_profile(hermes_home, provider, _build_profile_secret_scope)
     return _build_profile_secret_scope(hermes_home)
@@ -604,8 +604,8 @@ def overlay_secret_scope(base, overlay):
 
 def prepare_secret_scope(secrets, home):
     """Explicit mappings are caller overlays, never guessed copies of store values."""
-    from hermes_secret_routing import routed_provider
-    if isinstance(secrets, LiveSecretScope) or routed_provider() is None:
+    from hermes_secret_routing import routed_provider_for
+    if isinstance(secrets, LiveSecretScope) or routed_provider_for(home) is None:
         return secrets
     return overlay_secret_scope(build_profile_secret_scope(Path(home)), secrets)
 

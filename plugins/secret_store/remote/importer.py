@@ -151,6 +151,24 @@ def finish(home: Path, profile: str, view, provider, entries, imported: bool) ->
                     len(env), len(records), profile)
 
 
+def refuse(home: Path, profile: str, names: tuple[str, ...], staged_before: bool) -> None:
+    """The import did not run (:func:`unmatched_kept_names` named *names*): nothing was sent and
+    ``.env`` / ``auth.json`` stay as they are, so the process serves this home from them. Only a
+    staging file this boot created goes (an earlier boot's stays for its own recovery); the next
+    boot checks again."""
+    if not staged_before:
+        _remove(Path(home) / STAGING)
+    logger.warning(refusal_text(profile, names))
+
+
+def refusal_text(profile: str, names: tuple[str, ...]) -> str:
+    return (f"Remote secrets: profile {profile!r} was not imported into the secrets plane: the kept-local "
+            f".env line(s) {', '.join(names)} would read differently once the other entries move there "
+            "(for example a value with a line break that also depends on a name assigned more than once). Hermes keeps "
+            "running on the local .env and auth.json; simplify those lines (e.g. write the value they "
+            "resolve to on one line, or assign each referenced name once) and restart to import.")
+
+
 def _move_unimported(home: Path, profile: str, view, env: dict[str, str], records: dict[str, Any]) -> None:
     """The plane already holds this profile: move what it does not already hold to the
     ``*.unimported`` files."""
@@ -222,25 +240,10 @@ def _keep_bootstrap_only(home: Path, provider) -> None:
         lookup = _reference_env(env_path)   # before the file lock: it takes the loader's lock
         with _env_write_lock(env_path):
             bom, codec, bindings = _dotenv_file(env_path)
-            frozen = _frozen_kept_lines(bindings, lookup, keeps)
-            kept = []
-            changed = False
-            for binding in bindings:
-                original = binding.original.string
-                lead = original[:len(original) - len(original.lstrip())]
-                if id(binding) in frozen:
-                    kept.append(lead + frozen[id(binding)])
-                    changed = True
-                elif binding.key is None or keeps(binding.key):
-                    kept.append(original)
-                else:
-                    # The parser attaches leading whitespace to the next assignment, not to a
-                    # separate blank binding. Preserve it without retaining the assignment.
-                    kept.append(lead)
-                    changed = True
+            kept, changed = _kept_text(bindings, lookup, keeps)
             if changed:
-                _write_bytes(env_path, bom + "".join(kept).encode(codec), stat.S_IMODE(env_path.stat().st_mode))
-            bindings = kept = frozen = lookup = None
+                _write_bytes(env_path, bom + kept.encode(codec), stat.S_IMODE(env_path.stat().st_mode))
+            bindings = kept = lookup = None
     auth_path = Path(home) / "auth.json"
     if auth_path.exists():
         with auth._auth_store_lock(target_path=auth_path):
@@ -253,6 +256,68 @@ def _keep_bootstrap_only(home: Path, provider) -> None:
             _write_bytes(auth_path, json.dumps(local).encode("utf-8"), 0o600)
             raw = local = None
     invalidate_env_file_cache()
+
+
+def _kept_text(bindings: list, lookup: dict[str, str], keeps) -> tuple[str, bool]:
+    """The ``.env`` text the import leaves (its kept lines, :func:`_frozen_kept_lines` applied),
+    and whether it differs from the file's."""
+    frozen = _frozen_kept_lines(bindings, lookup, keeps)
+    kept = []
+    changed = False
+    for binding in bindings:
+        original = binding.original.string
+        lead = original[:len(original) - len(original.lstrip())]
+        if id(binding) in frozen:
+            kept.append(lead + frozen[id(binding)])
+            changed = True
+        elif binding.key is None or keeps(binding.key):
+            kept.append(original)
+        else:
+            # The parser attaches leading whitespace to the next assignment, not to a separate
+            # blank binding. Preserve it without retaining the assignment.
+            kept.append(lead)
+            changed = True
+    return "".join(kept), changed
+
+
+def unmatched_kept_names(home: Path, provider, stored: dict[str, str]) -> list[str]:
+    """The kept-local names of *home*'s ``.env`` whose value would change if the import ran: each
+    one's value now (the local file, as each reader reads it) against its value afterwards (the
+    *stored* entries the import sends, then the file the import leaves), through both reader
+    paths: the dotenv loader's (the launch load, resolved layers, child environments) and the
+    profile scope's (its one-line tokenizer, a template resolved by the loader's resolver). The
+    import runs only when this is empty: a kept line no written form keeps equal (a line break in
+    a value that also depends on a name the import collapses to its last assignment) is never
+    silently given another value. Names only; never a value."""
+    from hermes_secret_routing import stays_local
+    env_path = Path(home) / ".env"
+    try:
+        _bom, _codec, bindings = _dotenv_file(env_path)
+    except OSError:
+        return []
+    def keeps(name):
+        return stays_local(provider, name)
+    lookup = _reference_env(env_path)
+    after, _changed = _kept_text(bindings, lookup, keeps)
+    before = _read_as_served("".join(b.original.string for b in bindings), lookup, {}, None)  # the file's text
+    later = _read_as_served(after, lookup, stored, keeps)
+    names = sorted({b.key for b in bindings if b.key is not None and keeps(b.key)})
+    return [name for name in names if before.get(name) != later.get(name)]
+
+
+def _read_as_served(text: str, lookup: dict[str, str], stored: dict[str, str], keeps) -> dict[str, tuple]:
+    """``{name: (loader value, scope value)}`` for a profile ``.env`` of decoded *text* served the
+    way the readers serve it: with no *keeps*, the local file whole; with *keeps*, a store's
+    literal *stored* entries first and the file's kept lines after them
+    (``env_loader._parse_dotenv_file``, ``hermes_secret_routing.read_profile_env``)."""
+    from hermes_cli.env_loader import StoredValue, resolve_dotenv_lines
+    lines = [(b.key, b.value) for b in parse_stream(io.StringIO(text))
+             if b.key is not None and (keeps is None or keeps(b.key))]
+    loader = dict(resolve_dotenv_lines([*((k, StoredValue(v)) for k, v in stored.items()), *lines],
+                                       lookup, override=True))
+    tokens = {k: v for k, v in _parse_env_text(text).items() if keeps is None or keeps(k)}
+    scope = {k: (loader.get(k) if "${" in v and loader.get(k) is not None else v) for k, v in tokens.items()}
+    return {k: (loader.get(k), scope.get(k)) for k in {*loader, *scope}}
 
 
 def _frozen_kept_lines(bindings: list, lookup: dict[str, str], keeps) -> dict[int, str]:

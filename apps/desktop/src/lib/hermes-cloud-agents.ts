@@ -7,12 +7,12 @@
 
 import { hermesApiAs } from '@/api/client'
 import type { DesktopCloudAgent, DesktopCloudDiscoverResult, DesktopCloudStatus } from '@/global'
-import type { TransferEndpoint } from '@/lib/agent-transfer'
+import { runBackup, type TransferEndpoint, type TransferRequestFn } from '@/lib/agent-transfer'
 import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
 
 export const PORTAL_AGENTS_URL = 'https://portal.nousresearch.com/agents'
 
-const BACKUP_POLL_MS = 1_000
+export const transferRequest: TransferRequestFn = (owner, req) => hermesApiAs(owner, req)
 
 export interface BackupResult {
   /** Where the archive sits on the backend that wrote it. */
@@ -35,46 +35,25 @@ function bridge() {
  *  agent. */
 export const transferAvailable = (): boolean => !servedByHermesCloud()
 
-/** `hermes backup` of the whole Hermes home on `owner`, then a native save of the archive. */
-export async function backup(owner: TransferEndpoint, onLine?: (lines: string[]) => void): Promise<BackupResult> {
-  const started = await hermesApiAs<{ archive?: string; name: string }>(owner, {
-    body: {},
-    method: 'POST',
-    path: '/api/ops/backup'
-  })
-
-  if (!started.archive) {
-    throw new Error('The backup did not say where it was written.')
-  }
-
-  for (;;) {
-    await new Promise(resolve => setTimeout(resolve, BACKUP_POLL_MS))
-
-    const status = await hermesApiAs<{ exit_code: null | number; lines: string[]; running: boolean }>(owner, {
-      path: `/api/actions/${encodeURIComponent(started.name)}/status?lines=40`
-    })
-
-    onLine?.(status.lines)
-
-    if (!status.running) {
-      if (status.exit_code !== 0) {
-        throw new Error(status.lines.slice(-3).join('\n') || 'The backup failed.')
-      }
-
-      break
-    }
-  }
-
+/** `hermes backup` of the whole Hermes home on `owner`, then a save of the archive. */
+export async function backup(owner: TransferEndpoint, onLine?: (line: string) => void): Promise<BackupResult> {
+  const archive = await runBackup(transferRequest, owner, onLine)
   const save = bridge().saveGatewayFile
 
   if (!save) {
-    return { archive: started.archive, saved: false }
+    return { archive, saved: false }
   }
 
-  const suggestedName = started.archive.split(/[\\/]/).pop()
-  const result = await save({ ...owner, path: started.archive, suggestedName })
+  // The backup route serves the archive from the host that wrote it; /api/fs/download would read
+  // the profile's SSH workspace instead.
+  const result = await save({
+    ...owner,
+    downloadPath: `/api/ops/backup/download?archive=${encodeURIComponent(archive)}`,
+    path: archive,
+    suggestedName: archive.split(/[\\/]/).pop()
+  })
 
-  return { archive: started.archive, saved: result.saved }
+  return { archive, saved: result.saved }
 }
 
 export const cloudStatus = (): Promise<DesktopCloudStatus> => bridge().cloud.status()
@@ -95,13 +74,19 @@ export async function connectCloudAgent(agent: DesktopCloudAgent, org?: string):
   }
 
   const url = agent.dashboardUrl.replace(/\/+$/, '')
-  const registry = await desktop.connections.list()
-  const saved = registry.connections.find(c => c.kind === 'cloud' && trimUrl(c.url) === trimUrl(url))
   const signIn = await desktop.cloud.agentSignIn(url)
 
   if (!signIn.connected) {
     throw new Error('Sign-in to this agent did not finish. Sign in to Hermes Cloud again.')
   }
+
+  if (signIn.connectionId) {
+    return signIn.connectionId
+  }
+
+  // Read after the sign-in: on the Webapp the sign-in itself saves the connection.
+  const registry = await desktop.connections.list()
+  const saved = registry.connections.find(c => c.kind === 'cloud' && trimUrl(c.url) === trimUrl(url))
 
   if (saved) {
     return saved.id

@@ -2,18 +2,18 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
-import { hermesApiAs } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import type { DesktopCloudAgent, DesktopCloudOrg } from '@/global'
 import { useI18n } from '@/i18n'
 import type { BackupTransferTranslations } from '@/i18n/types_backup_transfer'
 import {
   cloudEndpoint,
+  createUndoLedger,
   transferAgent,
   type TransferEndpoint,
   transferErrorMessage,
   type TransferProgress,
-  type TransferRequestFn,
+  type UndoPoint,
   undoTransfer
 } from '@/lib/agent-transfer'
 import { openExternalLink } from '@/lib/external-link'
@@ -24,8 +24,10 @@ import {
   connectCloudAgent,
   discoverCloudAgents,
   PORTAL_AGENTS_URL,
+  transferRequest as request,
   transferAvailable
 } from '@/lib/hermes-cloud-agents'
+import { hostHas } from '@/lib/host-capabilities'
 import { Archive, CloudUpload } from '@/lib/icons'
 import { $activeConnectionId } from '@/store/connections'
 import { notifyError } from '@/store/notifications'
@@ -35,10 +37,11 @@ import { $settingsScopeProfile } from '@/store/settings-scope'
 import { CLOUD_AGENT_PARAM } from './backup-palette'
 import { AgentList, ConfirmPanel, OrgPicker, Outcome, ProgressSteps } from './backup-transfer-views'
 import { SettingsContent, SettingsSection } from './primitives'
+import { WebappOauthPasteField } from './webapp-oauth-paste-field'
 
 type Copy = BackupTransferTranslations
 
-const request: TransferRequestFn = (owner, req) => hermesApiAs(owner, req)
+const PROVIDER_ACCOUNTS_ROUTE = '/settings?tab=providers'
 
 type Phase =
   | { kind: 'signin' }
@@ -48,7 +51,7 @@ type Phase =
   | { kind: 'done'; agent: DesktopCloudAgent; target: TransferEndpoint; undoArchive: string }
   | { kind: 'undoing'; agent: DesktopCloudAgent; line?: string }
   | { kind: 'undone'; agent: DesktopCloudAgent }
-  | { kind: 'error'; message: string; retry: () => void }
+  | { kind: 'error'; message: string; retry: () => void; undo?: () => void }
 
 /** `hermes backup` of the whole Hermes home, saved to a file the user picks. */
 function BackupCard({ copy, owner }: { copy: Copy; owner: TransferEndpoint }) {
@@ -61,7 +64,7 @@ function BackupCard({ copy, owner }: { copy: Copy; owner: TransferEndpoint }) {
     setResult(null)
 
     try {
-      setResult(await backup(owner, lines => setLastLine(lines.at(-1) ?? '')))
+      setResult(await backup(owner, setLastLine))
     } catch (error) {
       notifyError(error, copy.backupFailed)
     } finally {
@@ -136,6 +139,7 @@ function TransferCard({ copy, hint, owner }: TransferCardProps) {
   const navigate = useNavigate()
   const [phase, setPhase] = useState<Phase>({ kind: 'agents' })
   const abort = useRef<AbortController | null>(null)
+  const undoPoints = useRef(createUndoLedger())
   const signedOut = useCallback(() => setPhase({ kind: 'signin' }), [])
   const failed = useCallback((message: string, retry: () => void) => setPhase({ kind: 'error', message, retry }), [])
   const cloud = useCloudAgents(signedOut, failed)
@@ -157,42 +161,66 @@ function TransferCard({ copy, hint, owner }: TransferCardProps) {
 
     try {
       show({ phase: 'backup' })
-      const target = cloudEndpoint(await connectCloudAgent(agent, cloud.org))
-      const { undoArchive } = await transferAgent(request, owner, target, show, { signal: controller.signal })
-      setPhase({ agent, kind: 'done', target, undoArchive })
+      const connected = cloudEndpoint(await connectCloudAgent(agent, cloud.org))
+
+      const result = await transferAgent(request, owner, connected, show, {
+        onUndoArchive: archive => undoPoints.current.record(agent.id, { archive, target: connected }),
+        signal: controller.signal
+      })
+
+      const point = undoPoints.current.get(agent.id) ?? { archive: result.undoArchive, target: connected }
+      setPhase({ agent, kind: 'done', target: point.target, undoArchive: point.archive })
     } catch (error) {
-      if (!controller.signal.aborted) {
-        setPhase({ kind: 'error', message: transferErrorMessage(error), retry: () => void run(agent) })
+      if (controller.signal.aborted) {
+        return
       }
+
+      const point = undoPoints.current.get(agent.id)
+
+      setPhase({
+        kind: 'error',
+        message: point
+          ? `${transferErrorMessage(error)}\n\n${copy.partialHelp(agent.name)}`
+          : transferErrorMessage(error),
+        retry: () => void run(agent),
+        ...(point ? { undo: () => void revert(agent, point) } : {})
+      })
     }
   }
 
-  const revert = async (agent: DesktopCloudAgent, target: TransferEndpoint, undoArchive: string) => {
+  const revert = async (agent: DesktopCloudAgent, point: UndoPoint) => {
     setPhase({ agent, kind: 'undoing' })
 
     try {
-      await undoTransfer(request, target, undoArchive, line => setPhase({ agent, kind: 'undoing', line }))
+      await undoTransfer(request, point.target, point.archive, line => setPhase({ agent, kind: 'undoing', line }))
+      undoPoints.current.clear(agent.id)
       setPhase({ agent, kind: 'undone' })
     } catch (error) {
       setPhase({
         kind: 'error',
         message: transferErrorMessage(error),
-        retry: () => void revert(agent, target, undoArchive)
+        retry: () => void revert(agent, point)
       })
     }
   }
 
+  // Only offered before the restore is requested, so nothing on the cloud agent has changed.
   const cancel = () => {
     abort.current?.abort()
-    setPhase({ kind: 'agents' })
+    backToAgents()
   }
+
+  const signIn = () =>
+    hostHas('cloudPortalLogin') ? void cloudLogin().then(backToAgents) : navigate(PROVIDER_ACCOUNTS_ROUTE)
 
   const views: Record<Phase['kind'], () => React.ReactNode> = {
     signin: () => (
       <div className="flex flex-col items-start gap-2">
         <p className="text-sm font-medium">{copy.signInTitle}</p>
-        <p className="text-xs text-muted-foreground">{copy.signInHelp}</p>
-        <Button onClick={() => void cloudLogin().then(backToAgents)}>{copy.signIn}</Button>
+        <p className="text-xs text-muted-foreground">
+          {hostHas('cloudPortalLogin') ? copy.signInHelp : copy.signInWebappHelp}
+        </p>
+        <Button onClick={signIn}>{hostHas('cloudPortalLogin') ? copy.signIn : copy.openProviders}</Button>
       </div>
     ),
     agents: () =>
@@ -213,7 +241,11 @@ function TransferCard({ copy, hint, owner }: TransferCardProps) {
           agent={phase.agent.name}
           copy={copy}
           onCancel={() => setPhase({ kind: 'agents' })}
-          onReplace={() => void run(phase.agent)}
+          onReplace={() => {
+            // A new flow; a Retry keeps the flow's first undo point.
+            undoPoints.current.clear(phase.agent.id)
+            void run(phase.agent)
+          }}
         />
       ),
     working: () =>
@@ -223,8 +255,7 @@ function TransferCard({ copy, hint, owner }: TransferCardProps) {
           copy={copy}
           fraction={phase.progress.fraction}
           line={phase.progress.line}
-          // The upload is one request: once it is sent, the cloud agent restores it regardless.
-          onCancel={phase.progress.phase === 'backup' || (phase.progress.fraction ?? 0) < 0.5 ? cancel : undefined}
+          onCancel={phase.progress.phase === 'restore' ? undefined : cancel}
           phase={phase.progress.phase}
         />
       ),
@@ -232,7 +263,10 @@ function TransferCard({ copy, hint, owner }: TransferCardProps) {
       phase.kind === 'done' && (
         <Outcome
           actions={[
-            { label: copy.undo, onClick: () => void revert(phase.agent, phase.target, phase.undoArchive) },
+            {
+              label: copy.undo,
+              onClick: () => void revert(phase.agent, { archive: phase.undoArchive, target: phase.target })
+            },
             {
               label: copy.openAgent,
               onClick: () =>
@@ -259,6 +293,7 @@ function TransferCard({ copy, hint, owner }: TransferCardProps) {
         <Outcome
           actions={[
             { label: copy.cancel, onClick: backToAgents },
+            ...(phase.undo ? [{ label: copy.undo, onClick: phase.undo }] : []),
             { label: copy.retry, onClick: phase.retry, primary: true }
           ]}
           body={phase.message}
@@ -272,6 +307,7 @@ function TransferCard({ copy, hint, owner }: TransferCardProps) {
     <SettingsSection icon={CloudUpload} title={copy.transferTitle}>
       <p className="mb-3 text-xs text-muted-foreground">{copy.transferHelp}</p>
       {views[phase.kind]()}
+      {phase.kind === 'working' && <WebappOauthPasteField />}
     </SettingsSection>
   )
 }

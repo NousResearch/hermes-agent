@@ -7437,6 +7437,7 @@ interface GatewayFileConnection extends RegistryBackendRequestScope {
 interface GatewayFileSavePayload {
   sessionId?: string
   connectionId?: unknown
+  downloadPath?: unknown
   path?: unknown
   profile?: unknown
   suggestedName?: unknown
@@ -7472,7 +7473,8 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
   const requestPaths = gatewayFileRequestPaths(
     filePath,
     requestPath => gatewayFileRequestPath(connection, connectionId, profile, requestPath),
-    payload.sessionId
+    payload.sessionId,
+    payload.downloadPath
   )
 
   const deps: GatewayFileSaveDeps = {

@@ -16,6 +16,9 @@ export interface BackupTransferTranslations {
   signInTitle: string
   signInHelp: string
   signIn: string
+  /** The Webapp has no portal window: sign-in happens in Settings ▸ Providers. */
+  signInWebappHelp: string
+  openProviders: string
   pickOrg: string
   chooseAgent: string
   provisioning: string
@@ -47,5 +50,6 @@ export interface BackupTransferTranslations {
   undoneHelp: (agent: string) => string
   startAgain: string
   errorTitle: string
+  partialHelp: (agent: string) => string
   retry: string
 }

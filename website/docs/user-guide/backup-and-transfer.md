@@ -23,15 +23,17 @@ On a Webapp that Hermes Cloud itself serves, the section is called **Backup** an
 2. Pick the agent to replace.
 3. Read what gets replaced and what the agent keeps, tick **I understand this replaces &lt;agent&gt;**, and click **Replace &lt;agent&gt;**.
 
-Hermes backs up this agent, uploads the backup to the cloud agent, and the cloud agent restores it with `hermes import --keep-host`. Before it changes anything, the cloud agent backs itself up. That backup is the undo point.
+Hermes checks that the cloud agent can receive a transfer (one older than this feature says it needs a Hermes update), backs up this agent, copies the backup to the cloud agent a few megabytes at a time, and the cloud agent restores it with `hermes import --keep-host`. Once its gateway has finished what it was doing, and before it changes anything, the cloud agent backs itself up. That backup is the undo point. **Cancel** is there while backing up and copying; once the restore has started it cannot be stopped, so the button goes away.
 
-**What comes over:** memory, persona (SOUL.md), skills, conversations, scheduled jobs, settings, and your API keys and logins (other than Nous Portal).
+**What comes over:** memory, persona (SOUL.md), skills, conversations, scheduled jobs, every profile, settings, and your API keys and logins (other than Nous Portal). It replaces the agent: what the backup does not have is removed. A profile only the cloud agent has stays as it is.
 
 **What the cloud agent keeps:** its Nous Portal sign-in, its model and provider, its Hermes Cloud tools (web, images, voice), its dashboard sign-in, and its scheduler settings. Hermes Cloud set these up, and they already work there.
 
 **Messaging bots** (Telegram, Discord, Slack…) come over with their tokens. A bot token can only be used by one running Hermes at a time, so stop the gateway on this computer if you don't want both to answer.
 
-**Undo** on the done screen restores the cloud agent from its undo point. **Start again** goes back to the agent list.
+**Undo** on the done screen restores the cloud agent from its undo point, and removes what the transfer added. If a transfer fails part-way, the error screen offers **Undo** as well as **Retry**; Undo always uses the first undo point, taken before anything changed. **Start again** goes back to the agent list.
+
+**Signing in from the Webapp:** the Webapp uses this install's own Nous Portal sign-in (Settings ▸ Providers). If the browser is on another computer, the sign-in to the cloud agent ends on an address that computer can't open; paste that address into the field the section shows to finish.
 
 **New cloud agent** opens Nous Portal, where you create one. Hermes Desktop cannot create agents yet.
 

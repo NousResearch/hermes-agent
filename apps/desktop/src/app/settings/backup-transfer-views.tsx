@@ -188,8 +188,7 @@ export interface ProgressStepsProps {
 }
 
 export function ProgressSteps({ agent, copy, fraction, line, onCancel, phase }: ProgressStepsProps) {
-  // `read` is the first half of the Uploading step.
-  const current = STEP_ORDER.indexOf(phase === 'read' ? 'upload' : phase)
+  const current = STEP_ORDER.indexOf(phase)
 
   const labels: Record<string, string> = {
     backup: copy.stepBackup,

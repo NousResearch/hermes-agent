@@ -14,7 +14,7 @@ import { isElementInHiddenPane, queryAllVisible, queryVisible } from '@/componen
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { subscribePreviewAnnotateHandoff } from '@/lib/preview-annotate/handoff'
 import { dataUrlToBlob } from '@/lib/preview-annotate/pack'
-import { newSessionDraftHandoffPending } from '@/store/composer'
+import { newSessionDraftAnnouncedFor, pendingNewSessionDraftKey } from '@/store/composer'
 
 import { $floatingComposerOwner } from './floating-state'
 import type { InlineRefInput } from './inline-refs'
@@ -266,17 +266,34 @@ export const releaseActiveComposer = (target: ComposerTarget) => {
  *  a keep-alive-mounted background composer. */
 export const getActiveComposer = (): ComposerTarget => resolveActive()
 
-/** Type-to-focus characters typed while no composer subscribed for their target. */
-const unclaimedTypedChars = new Map<ComposerTarget, string>()
+/** Type-to-focus characters typed while no composer subscribed for their
+ *  target, bound to the session the pending draft handoff names. */
+const unclaimedTypedChars = new Map<ComposerTarget, { chars: string; sessionKey: string }>()
 
 /** Take (and clear) the keystrokes typed for `target` while no composer owned
- *  it, so a freshly mounted composer can append them after its draft. */
-export const takeUnclaimedTypedChars = (target: ComposerTarget): string => {
-  const chars = unclaimedTypedChars.get(target) ?? ''
+ *  it. `adoptedSessionKey` is the session whose announced handoff the calling
+ *  composer just adopted (null when it adopted none): only that chat gets the
+ *  keys, appended after its carried draft. Any other composer gets nothing —
+ *  the keys stay with the handoff, like the carried draft does, and are
+ *  dropped once that handoff is no longer announced (abandoned). */
+export const takeUnclaimedTypedChars = (target: ComposerTarget, adoptedSessionKey: string | null): string => {
+  const held = unclaimedTypedChars.get(target)
 
-  unclaimedTypedChars.delete(target)
+  if (!held) {
+    return ''
+  }
 
-  return chars
+  if (adoptedSessionKey && held.sessionKey === adoptedSessionKey.trim()) {
+    unclaimedTypedChars.delete(target)
+
+    return held.chars
+  }
+
+  if (!newSessionDraftAnnouncedFor(held.sessionKey)) {
+    unclaimedTypedChars.delete(target)
+  }
+
+  return ''
 }
 
 export const requestComposerFocus = (
@@ -296,9 +313,16 @@ export const requestComposerFocus = (
     // draft handoff is pending, keep the keystroke for the composer that
     // mounts next on the target instead of dropping it — type-to-focus has
     // already preventDefault-ed it. Outside a handoff an unclaimed key stays
-    // dropped, so stray typing is never replayed into a later composer.
-    if (!detail.claimed && newSessionDraftHandoffPending()) {
-      unclaimedTypedChars.set(detail.target, `${unclaimedTypedChars.get(detail.target) ?? ''}${typeChar}`)
+    // dropped, so stray typing is never replayed into a later composer. The
+    // keys belong to the handoff's destination chat, never to whichever chat
+    // happens to mount on the shared target first.
+    const sessionKey = detail.claimed ? null : pendingNewSessionDraftKey()
+
+    if (sessionKey) {
+      const held = unclaimedTypedChars.get(detail.target)
+      const prefix = held?.sessionKey === sessionKey ? held.chars : ''
+
+      unclaimedTypedChars.set(detail.target, { chars: `${prefix}${typeChar}`, sessionKey })
     }
   } else if (typeof window !== 'undefined') {
     window.setTimeout(() => {

@@ -395,6 +395,9 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     tui_server_mod = sys.modules.get("tui_gateway.server")
     if tui_server_mod is not None and hasattr(tui_server_mod, "_served_profile_homes"):
         monkeypatch.setattr(tui_server_mod, "_served_profile_homes", set())
+    # Protocol tests must not leave a permanent broadcaster running in later tests.
+    if tui_server_mod is not None and hasattr(tui_server_mod, "_ensure_skin_watcher"):
+        monkeypatch.setattr(tui_server_mod, "_ensure_skin_watcher", lambda: None)
     # A classic CLI's gateway-session toolset reader is process-global too (``_ensure_gateway_session``).
     tools_config_mod = sys.modules.get("hermes_cli.tools_config")
     if tools_config_mod is not None and hasattr(tools_config_mod, "_gateway_plugin_toolsets"):
@@ -834,6 +837,7 @@ def _reset_tui_gateway_server_state():
             "cfg": (mod._cfg_cache, mod._cfg_sig, mod._cfg_path),
             "db": (mod._db, mod._db_error),
             "real_stdout": mod._real_stdout,
+            "stdio_is_rpc_channel": mod._stdio_is_rpc_channel,
         }
 
     yield
@@ -865,6 +869,7 @@ def _reset_tui_gateway_server_state():
         mod._cfg_cache, mod._cfg_sig, mod._cfg_path = snapshot["cfg"]
         mod._db, mod._db_error = snapshot["db"]
         mod._real_stdout = snapshot["real_stdout"]
+        mod._stdio_is_rpc_channel = snapshot["stdio_is_rpc_channel"]
     else:
         # First imported during this test — reset to import-time defaults
         # for the globals we could not snapshot (``_methods`` is left to
@@ -874,6 +879,7 @@ def _reset_tui_gateway_server_state():
         mod._cfg_path = None
         mod._db = None
         mod._db_error = None
+        mod._stdio_is_rpc_channel = False
 
     # A leaked context-local Hermes home override redirects every later
     # ``get_hermes_home()`` call (active-session registry, config paths)

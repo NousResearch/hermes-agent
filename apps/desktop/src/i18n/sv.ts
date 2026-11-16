@@ -604,6 +604,19 @@ export const svOverrides: TranslationOverrides = {
   settings: {
     memoryLayers: svMemoryLayers,
     about: { updates: 'Uppdateringar', channel: svUpdateChannel },
+    hudModifier: {
+      title: 'Aktivera HUD med modifierartangenter',
+      description:
+        'Tryck och släpp ⌘ + Alt på Mac eller Ctrl + Alt på Windows/Linux för att visa HUD:en ovanpå valfri app. Funktionen är avstängd från början och gäller bara den här enheten.',
+      permission:
+        'Tillåt Hermes under Systeminställningar → Integritet och säkerhet → Ingångsövervakning och försök sedan igen. Gesten registrerar varken tangenttryckningar eller skärmen.',
+      unavailable:
+        'Hjälpprogrammet för HUD-gesten kunde inte starta eller avslutades oväntat. Försök igen eller starta om Hermes. Den befintliga HUD-genvägen fungerar fortfarande i Hermes.',
+      missingHelper:
+        'Den här Hermes-installationen saknar hjälpprogrammet för HUD-gesten. Uppdatera eller installera om Hermes och försök sedan igen.',
+      unsupportedSession:
+        'Den här skrivbordssessionen har inte stöd för globala tryck på modifierartangenter. Linux kräver X11; Wayland stöds inte.'
+    },
     customEndpoints: {
       active: 'Aktiv',
       apiKeySet: 'API-nyckel angiven',

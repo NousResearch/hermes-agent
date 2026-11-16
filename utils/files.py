@@ -1,4 +1,5 @@
-"""Shared utility functions for hermes-agent."""
+"""Files on disk: atomic writes and replaces, temp files, directory sync, cleanup, file mode and
+owner, file signatures for caches, and the JSON and YAML file helpers."""
 
 import errno
 import hashlib
@@ -6,7 +7,6 @@ import json
 import logging
 import os
 import random
-import re
 import shutil
 import stat
 import tempfile
@@ -14,29 +14,12 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Union
-from urllib.parse import urlparse
+from typing import Any
 
 import hermes_yaml as yaml
 
-logger = logging.getLogger(__name__)
-
-
-TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
-
-
-def is_truthy_value(value: Any, default: bool = False) -> bool:
-    """Coerce bool-ish values using the project's shared truthy string set."""
-    if value is None:
-        return default
-    if isinstance(value, str):
-        return value.strip().lower() in TRUTHY_STRINGS
-    return bool(value)
-
-
-def env_var_enabled(name: str, default: str = "") -> bool:
-    """Return True when an environment variable is set to a truthy value."""
-    return is_truthy_value(os.getenv(name, default), default=False)
+# Named for the package, not this module: log configs and log readers know the ``utils`` logger.
+logger = logging.getLogger("utils")
 
 
 def file_signature(st: os.stat_result) -> tuple[int, int, int, int]:
@@ -709,163 +692,3 @@ def load_yaml_file_readonly(path: str | Path) -> Any:
     with _YAML_FILE_CACHE_LOCK:
         _YAML_FILE_CACHE[key] = (sig, data)
     return data
-
-
-def _env_number(key: str, default, cast):
-    raw = os.getenv(key, "").strip()
-    try:
-        return cast(raw) if raw else default
-    except (ValueError, TypeError):
-        return default
-
-
-def env_int(key: str, default: int = 0) -> int:
-    """Read an environment variable as an integer, with fallback."""
-    return _env_number(key, default, int)
-
-
-def env_float(key: str, default: float = 0.0) -> float:
-    """Read an environment variable as a float, with fallback."""
-    return _env_number(key, default, float)
-
-
-_PROXY_ENV_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
-_NO_PROXY_ENV_KEYS = ("NO_PROXY", "no_proxy")
-
-
-def normalize_proxy_url(proxy_url: str | None) -> str | None:
-    """Normalize proxy URLs for httpx/aiohttp: WSL/Clash export ``socks://``, httpx needs ``socks5://``."""
-    candidate = str(proxy_url or "").strip()
-    if candidate.lower().startswith("socks://"):
-        return f"socks5://{candidate[len('socks://'):]}"
-    return candidate or None
-
-
-def _bare_ipv6_literal(entry: str) -> str | None:
-    """The bare IPv6 literal a NO_PROXY entry should become, or None when the entry is not an
-    IPv6 form httpx cannot compile (``[::1]``, ``[::1]:8080``, ``[2001:db8::1]/64``, ``::1/128``).
-
-    httpx 0.28.1's ``get_environment_proxies`` routes bracketed entries through its wildcard
-    branch (``all://*[::1]`` → ``InvalidURL: Invalid port`` at ``Client.__init__``) and cannot
-    compile IPv6 CIDR bypasses at all, so both degrade to the bare literal — which httpx compiles
-    into a working ``all://[<v6>]`` bypass and urllib, requests and ``agent.proxy_bypass`` all
-    understand. A ``[<v6>]:port`` entry loses its port: httpx has no port-scoped IPv6 bypass form,
-    and the portless literal still bypasses every port (the operator's intent superset). Bracketed
-    or CIDR IPv4 is left alone (httpx compiles those forms fine).
-    """
-    import ipaddress
-
-    candidate = str(entry or "").strip()
-    m = (re.fullmatch(r"\[([0-9A-Fa-f:.]+)\](?:[/:].*)?", candidate)
-         or re.fullmatch(r"([0-9A-Fa-f:.]+)/\d+", candidate))
-    if not m:
-        return None
-    try:
-        ip = ipaddress.ip_address(m.group(1))
-    except ValueError:
-        return None  # bracketed junk: httpx's wildcard branch compiles it; not ours to touch
-    return m.group(1) if ip.version == 6 else None
-
-
-def sanitize_no_proxy_entries(no_proxy_value: str | None) -> str:
-    """Rewrite NO_PROXY entries httpx 0.28.1 cannot compile into the equivalent bare-IPv6 forms.
-
-    Every other entry passes through verbatim, and the original string is returned byte-stable
-    when nothing needed rewriting (an env without bracketed/CIDR IPv6 entries is untouched).
-    """
-    raw = str(no_proxy_value or "")
-    entries = [part for part in re.split(r"[\s,]+", raw.strip()) if part]
-    if not entries or "*" in entries:  # a wildcard bypasses everything; httpx returns no mounts
-        return raw
-    rewritten: list[str] = []
-    for entry in entries:
-        bare = _bare_ipv6_literal(entry)
-        if bare is None:
-            rewritten.append(entry)  # not ours to touch: IPv4, IPv4 CIDR, domains, junk
-        elif bare not in rewritten:
-            rewritten.append(bare)
-    if rewritten == entries:
-        return raw
-    return ",".join(rewritten)
-
-
-def normalize_proxy_env_vars() -> None:
-    """Rewrite supported proxy env vars to canonical URL forms in-place."""
-    for key in _PROXY_ENV_KEYS:
-        value = os.getenv(key, "")
-        normalized = normalize_proxy_url(value)
-        if normalized and normalized != value:
-            os.environ[key] = normalized
-    for key in _NO_PROXY_ENV_KEYS:
-        value = os.getenv(key)
-        if value:
-            sanitized = sanitize_no_proxy_entries(value)
-            if sanitized != value:
-                os.environ[key] = sanitized
-
-
-def _parse_base_url(base_url: str):
-    """``urlparse`` that tolerates a bare ``host[:port][/path]`` (no scheme)."""
-    raw = (base_url or "").strip()
-    return urlparse(raw if "://" in raw else f"//{raw}") if raw else None
-
-
-def _hostname_of(parsed) -> str:
-    return (parsed.hostname or "").lower().rstrip(".") if parsed else ""
-
-
-def base_url_hostname(base_url: str) -> str:
-    """Lowercased hostname for a base URL, or ``""`` if absent.
-
-    Compare exact hostnames against provider hosts instead of substring-matching the raw URL:
-    ``https://api.openai.com.example/v1`` or ``https://proxy.test/api.openai.com/v1`` would
-    otherwise pass as native endpoints and mis-route api_mode and auth.
-    """
-    return _hostname_of(_parse_base_url(base_url))
-
-
-def base_url_path(base_url: str) -> str:
-    """Lowercased URL path without the trailing slash (``""`` for a bare host); same scheme
-    tolerance as :func:`base_url_hostname` so host and path checks agree on one URL."""
-    parsed = _parse_base_url(base_url)
-    return (parsed.path if parsed else "").lower().rstrip("/")
-
-
-def base_url_origin(base_url: str) -> tuple[str, str, int]:
-    """``(scheme, hostname, effective_port)`` for a base URL; ``("", "", 0)`` on no host/bad port.
-
-    Origin, not just host: ``https://h`` vs ``http://h`` and two ports on one host are different
-    trust boundaries, so handing a bearer secret to a new URL must compare all three — hostname
-    alone would authorise an HTTPS→HTTP downgrade. Port defaults to 443/80 so ``https://h``
-    equals ``https://h:443``.
-    """
-    parsed = _parse_base_url(base_url)
-    hostname = _hostname_of(parsed)
-    if not hostname:
-        return ("", "", 0)
-    scheme = (parsed.scheme or "").lower()
-    try:
-        port = parsed.port
-    except ValueError:  # out-of-range or non-numeric port — not a usable origin
-        return ("", "", 0)
-    return (scheme, hostname, {"https": 443, "http": 80}.get(scheme, 0) if port is None else port)
-
-
-def same_base_url_origin(a: str, b: str) -> bool:
-    """True when both URLs parse to one origin, so a credential stored for *a* may go to *b*.
-
-    Hostnames are compared literally: ``localhost`` and ``127.0.0.1`` are different origins.
-    """
-    origin = base_url_origin(a)
-    return bool(origin[1]) and origin == base_url_origin(b)
-
-
-def base_url_host_matches(base_url: str, domain: str) -> bool:
-    """True when the base URL's hostname is ``domain`` or a subdomain.
-
-    Safer than ``domain in base_url`` (``evil.com/moonshot.ai`` / ``moonshot.ai.evil`` must not
-    match). Accepts bare hosts, full URLs, and URLs with paths.
-    """
-    hostname = base_url_hostname(base_url)
-    domain = (domain or "").strip().lower().rstrip(".")
-    return bool(hostname and domain) and (hostname == domain or hostname.endswith("." + domain))

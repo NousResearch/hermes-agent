@@ -57,7 +57,7 @@ class TestPreserveMode:
         target.write_text("old\n", encoding="utf-8")
         os.chmod(target, 0o640)
 
-        import utils as utils_mod
+        import utils.files as utils_mod
 
         real_replace = utils_mod.atomic_replace
         seen: list[int] = []
@@ -85,9 +85,9 @@ class TestPreserveMode:
         link.symlink_to(real)
 
         chown_calls: list[tuple[Path, int, int]] = []
-        monkeypatch.setattr("utils.preserve_file_owner", lambda _p: (123, 456))
+        monkeypatch.setattr("utils.files.preserve_file_owner", lambda _p: (123, 456))
         monkeypatch.setattr(
-            "utils.os.chown",
+            "utils.files.os.chown",
             lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
         )
 
@@ -104,9 +104,9 @@ class TestPreserveMode:
         target.write_text("old\n", encoding="utf-8")
 
         chown_calls: list[tuple] = []
-        monkeypatch.setattr("utils.preserve_file_owner", lambda _p: (123, 456))
+        monkeypatch.setattr("utils.files.preserve_file_owner", lambda _p: (123, 456))
         monkeypatch.setattr(
-            "utils.os.chown", lambda *a: chown_calls.append(a)
+            "utils.files.os.chown", lambda *a: chown_calls.append(a)
         )
 
         atomic_write_text(target, "new\n")

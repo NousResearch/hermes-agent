@@ -95,12 +95,12 @@ def _seed_file(client, root, name="out/hello.txt"):
 
 @pytest.mark.parametrize("endpoint", ["/api/files/upload", "/api/fs/write-text"])
 def test_atomic_write_failure_preserves_original(forced_files_client, monkeypatch, endpoint):
-    import utils
+    import utils.files
 
     client, root = forced_files_client
     target = _seed_file(client, root)
     previous = target.read_bytes()
-    original_replace = utils.os.replace
+    original_replace = utils.files.os.replace
 
     def fail_target_replace(source, destination):
         if str(destination) == str(target):
@@ -109,7 +109,7 @@ def test_atomic_write_failure_preserves_original(forced_files_client, monkeypatc
         return original_replace(source, destination)
 
     with monkeypatch.context() as patcher:
-        patcher.setattr(utils.os, "replace", fail_target_replace)
+        patcher.setattr(utils.files.os, "replace", fail_target_replace)
         payload = ({"path": str(target), "data_url": "data:text/plain;base64,bmV3"}
                    if endpoint.endswith("upload") else {"path": str(target), "content": "new"})
         response = client.post(endpoint, json=payload)

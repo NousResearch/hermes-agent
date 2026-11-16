@@ -47,6 +47,15 @@ logger = logging.getLogger(__name__)
 # shared default root. See cron/jobs.py for the full rationale.
 CRON_DIR = get_hermes_home().resolve() / "cron"
 SUGGESTIONS_FILE = CRON_DIR / "suggestions.json"
+# Per-call resolution for multiplexed gateways (see cron/notepad.py); a
+# re-pointed constant (tests) still wins.
+_SUGGESTIONS_FILE_AT_IMPORT = SUGGESTIONS_FILE
+
+
+def _suggestions_file() -> Path:
+    if SUGGESTIONS_FILE != _SUGGESTIONS_FILE_AT_IMPORT:
+        return SUGGESTIONS_FILE
+    return get_hermes_home().resolve() / "cron" / "suggestions.json"
 
 # In-process lock protecting load->modify->save cycles (the background review
 # fork and the main agent can both write).
@@ -72,14 +81,15 @@ def _secure_file(path: Path) -> None:
 def _ensure_dir() -> None:
     from cron.jobs import _ensure_cron_dir
 
-    _ensure_cron_dir(CRON_DIR)
+    _ensure_cron_dir(_suggestions_file().parent)
 
 
 def _load_raw() -> Dict[str, Any]:
-    if not SUGGESTIONS_FILE.exists():
+    suggestions_file = _suggestions_file()
+    if not suggestions_file.exists():
         return {"suggestions": []}
     try:
-        with open(SUGGESTIONS_FILE, "r", encoding="utf-8") as f:
+        with open(suggestions_file, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("suggestions.json unreadable (%s); starting empty", e)
@@ -94,7 +104,8 @@ def _load_raw() -> Dict[str, Any]:
 
 def _save_raw(suggestions: List[Dict[str, Any]]) -> None:
     _ensure_dir()
-    fd, tmp_path = tempfile.mkstemp(dir=str(SUGGESTIONS_FILE.parent), suffix=".tmp", prefix=".sugg_")
+    suggestions_file = _suggestions_file()
+    fd, tmp_path = tempfile.mkstemp(dir=str(suggestions_file.parent), suffix=".tmp", prefix=".sugg_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(
@@ -104,8 +115,8 @@ def _save_raw(suggestions: List[Dict[str, Any]]) -> None:
             )
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, SUGGESTIONS_FILE)
-        _secure_file(SUGGESTIONS_FILE)
+        atomic_replace(tmp_path, suggestions_file)
+        _secure_file(suggestions_file)
     except BaseException:
         try:
             os.unlink(tmp_path)

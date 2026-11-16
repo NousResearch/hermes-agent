@@ -4505,7 +4505,17 @@ def _run_job_script(
                 "encoding": "utf-8",
                 "errors": "replace",
             }
-        env = build_subprocess_env()
+        from agent.secret_scope import is_multiplex_active
+
+        if is_multiplex_active():
+            # Fork (multiplex 4f): the script runs as the profile that owns
+            # the job — its .env over the global environment, never the
+            # default profile's credentials (os.environ is the default's).
+            from agent.fork_secrets import scoped_subprocess_env
+
+            env = build_subprocess_env(base=scoped_subprocess_env())
+        else:
+            env = build_subprocess_env()
         env.update(env_overlay)
         # Use the job's workdir as the subprocess cwd when configured,
         # otherwise default to the scripts-dir parent (back-compat).

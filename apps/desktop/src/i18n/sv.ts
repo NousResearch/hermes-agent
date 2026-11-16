@@ -733,6 +733,18 @@ export const svOverrides: TranslationOverrides = {
         minimum: (label, amount) => `${label}: minsta belopp är ${amount}.`,
         maximum: (label, amount) => `${label}: högsta belopp är ${amount}.`
       },
+      errors: {
+        consentRequired: { title: 'Kortbekräftelse krävs', message: 'Bekräfta kortet för terminaldebiteringar på portalen' },
+        insufficientScope: { title: 'Remote Spending kräver godkännande', message: 'Remote Spending måste vara tillåtet. Starta en påfyllning för att tillåta det och försök sedan igen.' },
+        remoteSpendingRevoked: { title: 'Fjärranvändning stoppades', messageByAdmin: 'En administratör stoppade fjärranvändning för den här terminalen.', messageBySelf: 'Du stoppade fjärranvändning för den här terminalen.' },
+        remoteSpendingReconnect: who => `${who} Återanslut från Inställningar → Gateway för att godkänna den här enheten igen.`,
+        sessionRevoked: { title: 'Sessionen loggades ut', message: 'Din session loggades ut. Logga in igen från Inställningar → Gateway.' },
+        cliBillingDisabled: { title: 'Fjärranvändning är avstängd', message: 'Fjärranvändning är avstängd för det här kontot – en faktureringsadministratör kan slå på den från Hermes Agents sida på portalen.' },
+        roleRequired: { title: 'Administratörsroll krävs', message: 'För att lägga till medel krävs en organisationsadministratör eller ägare. Be en administratör om hjälp eller hantera det på portalen.' },
+        idempotencyConflict: { title: 'Starta en ny påfyllning', message: '🔴 Den debiteringsnyckeln har redan använts för ett annat belopp. Starta en ny påfyllning.' },
+        noPaymentMethod: { title: 'Inget sparat kort', message: '💳 Det finns ännu inget sparat kort för terminaldebiteringar. Lägg till ett på portalen (engångsköp av krediter sparar inget återanvändbart kort).' },
+        orgAccessDenied: { title: 'Organisationens åtkomst nekades', message: 'Den här tokenen är inte kopplad till en organisation som du kan hantera' }
+      },
       state: {
         notice: {
           loggedOut: {

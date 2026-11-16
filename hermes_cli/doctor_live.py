@@ -6,6 +6,7 @@ trivial amount of quota. They run ONLY when the user passes ``hermes doctor --li
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Callable, List, Optional
@@ -14,6 +15,8 @@ from hermes_cli.browser_runtime import chromium_executable
 from hermes_cli.doctor import _section, check_info
 from hermes_cli.doctor_report import check_fail, check_ok, check_warn
 from utils import normalize_proxy_env_vars
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_PROBE_TIMEOUT = 10.0
 
@@ -214,16 +217,18 @@ def _fetch_served_models(base_url: str, api_key: Optional[str],
     if not root.endswith("/v1"):
         root = f"{root}/v1"
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    import httpx
+
     try:
         resp = _http_get(f"{root}/models", headers=headers, timeout=timeout)
-    except Exception as exc:
+    except (httpx.HTTPError, httpx.InvalidURL, OSError) as exc:
         return None, f"unreachable ({type(exc).__name__})"
     status = getattr(resp, "status_code", 0)
     if status != 200:
         return None, f"HTTP {status}"
     try:
         payload = resp.json()
-    except Exception:
+    except ValueError:
         return None, "unparseable body"
     entries = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(entries, list):
@@ -259,6 +264,7 @@ def _configured_model_routes(config: dict) -> list:
 
         chain = get_fallback_chain(config)
     except Exception:
+        logger.debug("doctor: fallback chain unreadable; probing the primary only", exc_info=True)
         chain = []
         resolve_entry_api_key = None
     for i, entry in enumerate(chain):
@@ -273,6 +279,7 @@ def _configured_model_routes(config: dict) -> list:
             try:
                 route_key = resolve_entry_api_key(entry)
             except Exception:
+                logger.debug("doctor: no key for fallback[%d]", i, exc_info=True)
                 route_key = None
         routes.append((
             f"fallback[{i}]",
@@ -294,6 +301,7 @@ def _pool_credential(provider: str) -> tuple:
         pool = load_pool(provider)
         cred = pool.peek()
     except Exception:
+        logger.debug("doctor: credential pool for %s unreadable", provider, exc_info=True)
         return None, None, False
     if cred is None:
         return None, None, False
@@ -305,6 +313,7 @@ def _pool_credential(provider: str) -> tuple:
     try:
         due_for_refresh = bool(pool._entry_needs_refresh(cred))
     except Exception:
+        logger.debug("doctor: refresh state of the %s credential unknown", provider, exc_info=True)
         due_for_refresh = False
     return (str(url) if url else None), (str(key) if key else None), due_for_refresh
 
@@ -316,16 +325,15 @@ def _registry_api_key(provider: str) -> Optional[str]:
     through ``agent.secret_scope.get_secret`` (profile-scoped under a
     multiplexed gateway, plain ``os.environ`` otherwise).
     """
-    try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        from agent.secret_scope import get_secret
-    except Exception:
-        return None
+    from agent.secret_scope import get_secret
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
     pconfig = PROVIDER_REGISTRY.get(provider)
     for var in getattr(pconfig, "api_key_env_vars", ()) or ():
         try:
             value = (get_secret(var) or "").strip()
         except Exception:
+            logger.debug("doctor: %s unreadable", var, exc_info=True)
             value = ""
         if value:
             return value

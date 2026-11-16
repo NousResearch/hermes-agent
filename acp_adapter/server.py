@@ -151,7 +151,11 @@ def _user_history_updates(message: dict[str, Any]):
     turn was dropped from the model context. A plain user row replays unchanged."""
     notice = _content_refused_notice(message)
     if notice is not None:
-        if (text := _flatten_history_text(message.get("content"))):
+        # A compression may have merged its handoff summary into the refused ask (a composite carrier):
+        # the ask replays as the user typed it, the projection the REST transcript shows.
+        from agent.compaction_display import project_compaction_message_for_display
+        shown = project_compaction_message_for_display(message) or {}
+        if (text := _flatten_history_text(shown.get("content"))):
             yield UserMessageChunk(
                 session_update="user_message_chunk",
                 content=TextContentBlock(type="text", text=text),

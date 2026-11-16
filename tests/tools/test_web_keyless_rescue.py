@@ -371,3 +371,15 @@ class TestLocalRescueRefusalSurfaced:
         assert out["success"] is True
         assert "web.local_rescue" not in json.dumps(out)
         ring.assert_called_once()
+
+
+@pytest.mark.parametrize("name, private", [
+    ("searxng", True), ("webgraft", True), ("some-future-plugin", True),
+    ("perplexity", False), ("tavily", False), ("brave-free", False), ("ddgs", False), ("xai", False),
+    ("openai-native", False), ("exa", False),
+])
+def test_private_backend_is_local_or_unknown_not_every_non_ring_vendor(name, private):
+    # A bundled cloud backend outside the ring keeps the documented rescue; only local or unknown
+    # (plugin) backends are fail-closed out of it (#155838).
+    provider = type("P", (), {"name": name})()
+    assert web_tools_rescue._is_private_backend(provider) is private

@@ -45,6 +45,12 @@ def _local_rescue_enabled() -> bool:
         return False
 
 
+# Bundled backends that are cloud services themselves: their failed call already went to a vendor, so
+# the documented keyed rescue stays (free fast search on managed Perplexity relies on it). Any other
+# name not in the ring (SearXNG, a plugin backend, a name added later) stays private: fail closed.
+_CLOUD_BACKENDS = frozenset({"perplexity", "tavily", "brave-free", "ddgs", "xai", "openai-native"})
+
+
 def _is_private_backend(provider) -> bool:
     """True when the backend has no ring-vendor key relationship (local, self-hosted, plugin).
 
@@ -59,7 +65,7 @@ def _is_private_backend(provider) -> bool:
             from plugins.web.firecrawl.provider import _env, is_managed_route
             if _env("FIRECRAWL_API_URL") and not is_managed_route():
                 return True
-        return name not in _KEYLESS_RING
+        return name not in _KEYLESS_RING and name not in _CLOUD_BACKENDS
     except Exception:
         logger.debug("private-backend check failed", exc_info=True)
         return False
@@ -150,6 +156,9 @@ def _rescue_eligible(provider) -> bool:
         if _is_private_backend(provider):
             # Private backend (including direct self-hosted Firecrawl): opt-in only.
             return _local_rescue_enabled()
+        from plugins.web.keyless_mcp import _KEYLESS_RING
+        if name not in _KEYLESS_RING:
+            return True  # a bundled cloud backend outside the ring: it never walked the ring
         return not _ring_vendor_keyless(name)
     except Exception as exc:
         logger.debug("rescue eligibility check failed: %s", exc)

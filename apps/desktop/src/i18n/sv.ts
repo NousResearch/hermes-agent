@@ -2645,6 +2645,11 @@ export const svOverrides: TranslationOverrides = {
       uninstallStarted: name => `Avinstallerar ${name}…`,
       updateStarted: 'Uppdaterar installerade skills…',
       actionFailed: 'Åtgärden för skillen misslyckades',
+      installBlockedTitle: name => `Det gick inte att installera ${name}`,
+      installBlockedMessage: (findings, unverified) =>
+        `Säkerhetsskanningen flaggade ${findings > 0 ? `${findings} ${findings === 1 ? 'sak' : 'saker'}` : 'riskabla mönster'} som behöver granskas${unverified ? ' och skillen kommer från en overifierad källa' : ''}. Läs skanningen innan du avgör om författaren är betrodd.`,
+      viewScan: 'Visa skanning',
+      openLog: 'Öppna logg',
       actionLog: 'Åtgärdslogg',
       alreadyInstalled: (name: string) => `”${name}” är redan installerad`,
       pickerTitle: 'Skillhubb',

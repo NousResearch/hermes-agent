@@ -17,27 +17,28 @@ import weakref
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
-# The delegate_tool_* siblings hold the pieces split out of this module; every name callers or patching tests reach as
-# ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
+# The delegate_tool_* siblings hold the pieces split out of this module; the names this module's code uses, and the
+# ones callers reach as ``tools.delegate_tool.<name>``, are imported here. Config readers are patched in their owner,
+# ``tools.delegate_tool_config``. Mutable flag globals live only in their owning module.
+from tools import delegate_tool_config
 from tools.delegate_tool_child_run import (
     _ChildRun, _attach_child, _build_child_goal_message, _close_child, _detach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
-    _lease_child_credential, _merge_late_steer, _register_child, _reserve_child_transcript, _start_heartbeat, _validate_child_output_schema,
+    _lease_child_credential, _merge_late_steer, _register_child, _reserve_child_transcript, _Heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (
-    _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
-    _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
-    _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
-    _resolve_child_runtime, _resolve_delegation_credentials,
+    _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_max_concurrent_children,
+    _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled,
+    _inherit_parent_capabilities, _merge_request_overrides, _resolve_child_credential_pool,
+    _resolve_child_runtime,
     _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
 from tools.delegate_tool_progress import (
-    DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
+    SUBAGENT_FAILURE_STATUSES, _build_child_progress_callback,
     _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
     _safe_progress, format_batch_tag, format_subagent_failure_line,
 )
@@ -104,17 +105,6 @@ def _normalize_role(r: Optional[str]) -> str:
     return r_norm
 
 DEFAULT_MAX_ITERATIONS = 250
-_HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
-# Stale-heartbeat thresholds (cycles of _HEARTBEAT_INTERVAL with no progress). Progress = iteration, current_tool OR
-# last_activity_ts advancing; an in-flight model wait refreshes last_activity_ts, so slow models are not "idle". Idle
-# stays tight so a truly wedged child doesn't mask the gateway timeout; in-tool is much higher so legitimately long
-# tools can finish.
-_HEARTBEAT_STALE_CYCLES_IDLE = 15  # 450s idle between turns → stale
-_HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 1200s stuck on same tool → stale
-# After the stale verdict ends the wait, keep polling the worker this long for its real
-# result (#113222): a child that already wrote its final answer often finishes unwinding a
-# moment later, and that recorded result must be collected instead of a synthesized timeout.
-_STALE_RESULT_GRACE_SECONDS = 2.0
 
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
@@ -258,7 +248,7 @@ def _build_child_agent(
     # General delegation behavior (reasoning, compression, capabilities) stays
     # global. Only fallback policy follows the owner of a per-call route such
     # as auxiliary.review.
-    delegation_cfg = _load_config()
+    delegation_cfg = delegate_tool_config._load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
     child_prompt = _build_child_system_prompt(
         workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
@@ -416,7 +406,7 @@ def _run_single_child(
         child_pool, leased_cred_id = _lease_child_credential(child)
         # Heartbeat keeps the parent's _last_activity_ts moving so the gateway inactivity timeout doesn't fire while
         # the child works; once the child looks stale (see _HEARTBEAT_STALE_CYCLES_*) it also ends await_child's wait.
-        heartbeat = _start_heartbeat(child, parent_agent, task_index)
+        heartbeat = _Heartbeat(child, parent_agent, task_index)
         # TUI/RPC registry entry (kill/pause/status by subagent_id); None for test
         # doubles without a stable id. Unregistered in the finally block.
         _subagent_id = _register_child(
@@ -648,7 +638,7 @@ def delegate_task(
             f"multiplies API cost)."
         )
 
-    cfg = _load_config()
+    cfg = delegate_tool_config._load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Caller-supplied max_iterations is ignored: the config value is authoritative
     # so budgets stay predictable (kwarg kept for internal callers/tests).
@@ -827,7 +817,7 @@ def _build_dynamic_schema_overrides() -> dict:
     # The active delegation provider's per-task parameters and guidance (delegation.backend; none for the
     # built-in default). Built from config with the rest of the definition, never per turn.
     from tools.delegate_tool_routes import schema_extension
-    extra_params, addendum = schema_extension(_load_config())
+    extra_params, addendum = schema_extension(delegate_tool_config._load_config())
     if extra_params:
         tasks = overrides_params["properties"]["tasks"]
         tasks["items"] = {**tasks["items"], "properties": {**tasks["items"]["properties"], **extra_params}}

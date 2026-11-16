@@ -101,7 +101,7 @@ def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Pat
         normalized["base_url"] = _cron_optional_text(normalized["base_url"], strip_trailing_slash=True)
     # The tool path's canonicalizer: a JSON list joins to "a,b" instead of a
     # Python list repr that the bot-chat guard and the scheduler cannot parse.
-    from tools.cronjob_job_args import _normalize_deliver_param
+    from cron.job_args import _normalize_deliver_param
     if "deliver" in normalized:
         normalized["deliver"] = _normalize_deliver_param(normalized["deliver"]) or "local"
     if "failure_deliver" in normalized:

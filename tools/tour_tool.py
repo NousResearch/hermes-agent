@@ -7,7 +7,6 @@ selector matched. Registered in ``desktop_ui`` and hidden from the model when to
 tour covers the whole screen, so "off" must mean the model is never told the tool exists rather
 than offered a call that fails."""
 
-import json
 from typing import Callable, Optional
 
 from tools import desktop_ui
@@ -64,11 +63,7 @@ def tour_tool(action: str = "", surface: Optional[str] = None, selector: Optiona
     if not raw:
         return tool_error("The tour request timed out, or no GUI window answered. "
                           "For surface='preview' open a page in the preview pane first.")
-    # The renderer answers with a JSON object; pass it through, else wrap it.
-    try:
-        return json.dumps(json.loads(raw), ensure_ascii=False)
-    except (TypeError, ValueError):
-        return json.dumps({"text": str(raw)}, ensure_ascii=False)
+    return desktop_ui.passthrough_json(raw)
 
 
 _STEP_SCHEMA = {

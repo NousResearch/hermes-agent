@@ -16080,7 +16080,7 @@
       },
       "CronJobRow": {
         "additionalProperties": true,
-        "description": "``tools/cronjob_job_args.py::_format_job``.",
+        "description": "``cron/job_args.py::_format_job``.",
         "properties": {
           "job_id": {
             "title": "Job Id",
@@ -29945,7 +29945,7 @@
       },
       "PreviewClosePayload": {
         "additionalProperties": false,
-        "description": "``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab.",
+        "description": "``tools/preview_tool.py``; ``url`` '' closes every tab.",
         "properties": {
           "url": {
             "default": "",

@@ -2308,7 +2308,7 @@ def _prepare_job_prompt(
             "Edit the job prompt, or audit the skill(s) attached to this job, for "
             "the pattern named above or invisible-unicode markers. If the content is "
             "legitimate and the match is a false positive, rephrase it to avoid the "
-            "threat pattern (`tools/cronjob_prompt_scan.py`)."
+            "threat pattern (`cron/prompt_scan.py`)."
         )
         return (False, blocked_doc, "", str(block_exc)), None
     if prompt is None:

@@ -414,14 +414,14 @@ def test_timeout_continue_waits_for_worker_close_and_resource_cleanup(monkeypatc
             cleanup_done.set()
 
     # Force the existing inactivity-timeout path only after the worker reaches its barrier.
-    def timeout_first(run, settled, future, timeout):
+    def timeout_first(run, settled, timeout):
         if len(model.builds) == 1:
             assert worker_started.wait(10)
             raise TimeoutError()
         assert settled.wait(30)
 
     monkeypatch.setattr("tools.delegate_tool_child_run._ChildRun.wait_liveness_aware", timeout_first)
-    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 1)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: 1)
     monkeypatch.setattr("tools.code_kernel.shutdown_kernels_for_delegated_child", shutdown_kernels)
 
     def follow_up(sid):

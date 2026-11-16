@@ -389,6 +389,8 @@ export const jaOverrides = {
       mcp: 'MCP',
       archivedChats: 'アーカイブ済みチャット',
       sessions: 'セッション',
+      backup: 'バックアップと移行',
+      backupOnly: 'バックアップ',
       about: '情報',
       billing: '請求',
       notifications: '通知',

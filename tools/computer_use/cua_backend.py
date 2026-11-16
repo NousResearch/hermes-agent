@@ -372,20 +372,6 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
-    def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
-                   urls: Optional[list[str]] = None, additional_arguments: Optional[list[str]] = None,
-                   creates_new_application_instance: bool = False) -> dict[str, Any]:
-        """Idempotent launch returning ``{pid, bundle_id, name, windows[]}``. ``creates_new_application_instance=True``
-        forces a fresh instance so concurrent runs touching the same app get isolated windows."""
-        if not bundle_id and not name:
-            raise ValueError("launch_app requires either bundle_id or name")
-        args: dict[str, Any] = {"session": self._session_id, **{k: v for k, v in (
-            ("bundle_id", bundle_id), ("name", name), ("urls", urls and list(urls)),
-            ("additional_arguments", additional_arguments and list(additional_arguments)),
-            ("creates_new_application_instance", creates_new_application_instance or None)) if v}}
-        out = self._session.call_tool("launch_app", args)
-        return out["structuredContent"] or {"data": out["data"]}
-
     def bring_to_front(self, *, pid: int, window_id: Optional[int] = None) -> ActionResult:
         """Activate a window so subsequent foreground-dispatched input lands on it."""
         args: dict[str, Any] = {"pid": int(pid), **({} if window_id is None else {"window_id": int(window_id)})}

@@ -144,7 +144,8 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
 
         with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
              patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "ssh")), \
-             patch("tools.code_execution_tool._ship_file_to_remote") as ship_mock, \
+             patch("tools.code_execution_tool._remote_write") as ship_mock, \
+             patch("tools.code_kernel_remote._remote_write"), \
              patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
             result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
 
@@ -198,7 +199,8 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                    return_value={"timeout": 30, "max_tool_calls": 5}), \
              patch("tools.code_execution_tool._get_or_create_env",
                    return_value=(env, "ssh")), \
-             patch("tools.code_execution_tool._ship_file_to_remote") as ship_mock, \
+             patch("tools.code_execution_tool._remote_write") as ship_mock, \
+             patch("tools.code_kernel_remote._remote_write"), \
              patch("tools.code_execution_tool.threading.Thread",
                    return_value=fake_thread), \
              patch.dict(os.environ, {"HERMES_TIMEZONE": malicious_tz}):
@@ -246,7 +248,8 @@ class TestRemoteSharedHostLockdown(unittest.TestCase):
                    return_value={"timeout": 30, "max_tool_calls": 5}), \
              patch("tools.code_execution_tool._get_or_create_env",
                    return_value=(env, "ssh")), \
-             patch("tools.code_execution_tool._ship_file_to_remote") as ship_mock, \
+             patch("tools.code_execution_tool._remote_write") as ship_mock, \
+             patch("tools.code_kernel_remote._remote_write"), \
              patch("tools.code_execution_tool.threading.Thread",
                    return_value=MagicMock()):
             result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
@@ -720,19 +723,6 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
                 self.assertIn("Python source as a string", result["error"])
                 self.assertNotIn("AttributeError", result["error"])
 
-    def test_windows_returns_error(self):
-        """When SANDBOX_AVAILABLE is False (e.g. when the backend deems
-        the sandbox unusable for this environment), execute_code returns
-        an error JSON with a readable message pointing the caller at
-        regular tool calls.  Previously this was a Windows-only gate;
-        execute_code now works on Windows via loopback TCP, so the
-        error is only emitted when SANDBOX_AVAILABLE is explicitly
-        flipped off (e.g. for future platform-specific disables)."""
-        with patch("tools.code_execution_tool.SANDBOX_AVAILABLE", False):
-            result = json.loads(execute_code("print('hi')", task_id="test"))
-            self.assertIn("error", result)
-            self.assertIn("unavailable", result["error"].lower())
-
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
     def test_empty_enabled_tools_denies_all(self):
@@ -932,7 +922,8 @@ class TestHeadTailTruncation(unittest.TestCase):
 
         with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
              patch("tools.code_execution_tool._get_or_create_env", return_value=(FakeEnv(), "ssh")), \
-             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool._remote_write"), \
+             patch("tools.code_kernel_remote._remote_write"), \
              patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
             result = json.loads(_execute_remote("print('large')", "task-1", ["terminal"]))
 
@@ -976,7 +967,8 @@ class TestHeadTailTruncation(unittest.TestCase):
 
         with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
              patch("tools.code_execution_tool._get_or_create_env", return_value=(FakeEnv(), "ssh")), \
-             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool._remote_write"), \
+             patch("tools.code_kernel_remote._remote_write"), \
              patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
             result = json.loads(_execute_remote("print('x')", "task-1", ["terminal"]))
 

@@ -42,8 +42,8 @@ from cron.jobs import (
     resume_job,
     trigger_job,
     update_job)
-from tools.cronjob_prompt_scan import _scan_cron_prompt
-from tools.cronjob_job_args import (
+from cron.prompt_scan import _scan_cron_prompt
+from cron.job_args import (
     _apply_continuity,
     _canonical_skills,
     _clean_str_list,
@@ -61,6 +61,7 @@ from tools.cronjob_job_args import (
     _validate_context_from_refs,
     _validate_cron_base_url,
     _validate_cron_script_path)
+from tools.delegate_tool_config import _get_max_async_children
 from tools.registry import registry, tool_error
 
 
@@ -624,7 +625,6 @@ def _try_dispatch_background_run(
         return result
 
     try:
-        from tools.delegate_tool import _get_max_async_children
         max_async = _get_max_async_children()
     except Exception:
         max_async = 3
@@ -1088,7 +1088,6 @@ def cronjob(
     failure_deliver: Optional[str | list[str]] = None,
     catch_up: Optional[bool] = None,
     wrap_response: Optional[bool | str] = None,  # bool, or the tool's on / off / inherit
-    task_id: str | None = None,
     session_id: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
@@ -1098,7 +1097,6 @@ def cronjob(
     grace_minutes: Optional[int | str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
-    del a["task_id"]  # unused but kept for handler signature compatibility
     try:
         normalized = (action or "").strip().lower()
         handler = _JOBLESS_ACTIONS.get(normalized)
@@ -1274,7 +1272,6 @@ def _cronjob_handler(args, **kw):
         include_disabled=args.get("include_disabled", True),
         monitor_script=_mon_script,
         monitor_url=_mon_url,
-        task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
         paused=args.get("paused", False),
         **{key: args.get(key) for key in _HANDLER_FORWARDED_ARGS},

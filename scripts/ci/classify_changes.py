@@ -425,7 +425,7 @@ _UPDATE_DEPENDENCIES = (
 # General-purpose modules an entry point imports but that half the product
 # imports too (>= HUB_MIN_IMPORTERS product modules, checked by the test). The
 # unit lanes cover them on every PR and the update suites on every push to main;
-# routing each config.py / utils.py edit through the update suites would make
+# routing each config.py / utils edit through the update suites would make
 # them run on most PRs. Never an update-specific module: own those above.
 HUB_MIN_IMPORTERS = 25
 _SHARED_HUBS = frozenset({
@@ -433,7 +433,7 @@ _SHARED_HUBS = frozenset({
     "hermes_cli/config.py",
     "hermes_cli/profiles.py",
     "hermes_cli/version_info.py",
-    "utils.py",
+    "utils/__init__.py",
     "hermes_state.py",
     "agent/__init__.py",
     "cron/jobs.py",

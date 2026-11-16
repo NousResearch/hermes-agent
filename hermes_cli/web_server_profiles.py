@@ -206,44 +206,22 @@ _SKILLS_PROFILE_LOCK = threading.RLock()
 
 @contextmanager
 def _profile_scope(profile: Optional[str]):
-    """Scope config + skill-directory resolution to ``profile`` for one request.
+    """``_config_profile_scope(profile)`` held under ``_SKILLS_PROFILE_LOCK``. Yields the profile dir
+    for a named profile, None for the current one.
 
-    Two seams: (1) ``load_config``/``save_config`` resolve ``get_hermes_home()`` at call
-    time, so the contextvar override reaches them; (2) ``tools.skills_tool`` /
-    ``tools.skill_manager_tool`` bind ``SKILLS_DIR`` at import time, so both are retargeted
-    under a lock and restored after. For the dashboard's own profile config resolution is
-    untouched, but the skill-module globals are still retargeted to the *current*
-    ``get_hermes_home()`` so writes land in the live home even when the import-time binding
-    is stale (test isolation, late HERMES_HOME override). Yields the profile dir for a named
-    profile, None for the current one.
-
-    ``tools.skills_sync`` (reset/diff/list-modified/opt-in/opt-out/ repair-official) needs NO retargeting:
-    since #65828 its directory lookups resolve at call time through the same contextvar override set in step
-    1.
+    The lock serializes every scoped request in this process. Several bodies still do a bare
+    ``load_config``/``save_config`` read-modify-write without ``CONFIG_MUTATION_LOCK`` (MCP catalog
+    install, platform toggles, the raw config editor, credential mirror scrubs), and the lock is
+    what keeps them from losing a concurrent ``config_write_scope`` update.
     """
-    from hermes_constants import get_hermes_home
-    from tools import skills_tool as _skills_tool
-    from tools import skill_manager_tool as _skill_mgr
-    with _config_profile_scope(profile) as scoped:
-        profile_dir = get_hermes_home() if scoped is None else scoped
-        modules = (_skills_tool, _skill_mgr)
-        with _SKILLS_PROFILE_LOCK:
-            saved = [(m.HERMES_HOME, m.SKILLS_DIR) for m in modules]
-            for m in modules:
-                m.HERMES_HOME, m.SKILLS_DIR = profile_dir, profile_dir / "skills"
-            try:
-                yield scoped
-            finally:
-                for m, (home, skills_dir) in zip(modules, saved):
-                    m.HERMES_HOME, m.SKILLS_DIR = home, skills_dir
+    with _config_profile_scope(profile) as scoped, _SKILLS_PROFILE_LOCK:
+        yield scoped
 
 
 @contextmanager
 def _config_profile_scope(profile: Optional[str]):
     """Await-safe profile scope: the task-local HERMES_HOME contextvar PLUS the profile's secret
-    scope, never the process-global skills-module attributes ``_profile_scope`` swaps (holding
-    those across an ``await`` lets a concurrent request restore THIS request's dir on its
-    ``finally``). None/""/"current" = no override.
+    scope, without the process-wide lock ``_profile_scope`` adds. None/""/"current" = no override.
 
     Home alone left ``get_secret`` on the dashboard process's ``os.environ`` - the DEFAULT
     profile's values - so ``GET /api/config?profile=B`` expanded B's ``${VAR}`` refs to the default

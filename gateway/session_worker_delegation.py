@@ -92,7 +92,7 @@ def _complete(db, conn, session_id, payload, *, execution_id):
     event, delivery = payload['event'], payload.get('delivery', 'pending')
     if (delivery not in ('pending', 'delivered') or not isinstance(event, dict) or set(event) - _EVENT_KEYS
             or not isinstance(payload['result'], dict) or event.get('type') != 'async_delegation'
-            or event.get('status') not in ('completed', 'success', 'error', 'interrupted', 'stalled', 'unknown')):
+            or event.get('status') not in ('completed', 'error', 'interrupted', 'stalled', 'unknown')):
         raise RuntimeStoreError('invalid_params')
     row = _owned(conn, session_id, execution_id, event.get('delegation_id'))
     if any(event.get(key, '') != (row[column] or '') for key, column in _ROUTE.items()):
@@ -135,7 +135,7 @@ def _claim(db, conn, session_id, payload, *, execution_id):
     row = _owned(conn, session_id, execution_id, payload['delegation_id'])
     _text(payload['claim_id'])
     now = time.time()
-    if row['state'] in ('running', 'finalizing'):
+    if row['state'] == 'running':
         return {'value': False}
     changed = conn.execute('''UPDATE async_delegations SET delivery_claim=?,delivery_claimed_at=?,
         delivery_attempts=delivery_attempts+1,updated_at=? WHERE delegation_id=? AND delivery_state='pending'

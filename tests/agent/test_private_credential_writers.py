@@ -25,7 +25,7 @@ _PRIVATE = stat.S_IRUSR | stat.S_IWUSR
 @pytest.fixture
 def opens_spy(monkeypatch):
     """Record every ``os.open`` create (path, flags, mode) issued through ``utils``."""
-    import utils
+    import utils.files
 
     observed: list[tuple[str, int, int]] = []
     real_open = os.open
@@ -36,7 +36,7 @@ def opens_spy(monkeypatch):
         return real_open(path, flags, mode, *args, **kwargs)
 
     # mkstemp resolves ``os.open`` at call time from the ``tempfile`` module namespace.
-    monkeypatch.setattr(utils.tempfile._os, "open", spying)
+    monkeypatch.setattr(utils.files.tempfile._os, "open", spying)
     return observed
 
 

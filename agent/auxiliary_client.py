@@ -141,7 +141,7 @@ from agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
     nous_credential_failure_detail, record_nous_credential_failure)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
-from utils import base_url_host_matches, base_url_hostname, base_url_origin, base_url_path, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, base_url_origin, base_url_path, env_float, is_truthy_value, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -5529,7 +5529,7 @@ def resolve_vision_provider_client(
 def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:
     """Max-tokens kwarg for the auxiliary provider: direct OpenAI, a custom endpoint whose profile declares
     it, and newer OpenAI-family models (by ``model`` name: custom endpoints fronting gpt-5.x) need max_completion_tokens."""
-    from agent.provider_route_hooks import route_answer
+    from agent.provider_route_hooks import model_forces_max_completion_tokens, route_answer
     _custom_base = _current_custom_base_url()
     direct_openai_family = not _scoped_key_env("OPENROUTER_API_KEY") and _read_nous_auth() is None and (
         base_url_hostname(_custom_base) == "api.openai.com"

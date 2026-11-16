@@ -21,14 +21,14 @@ from typing import Any, Dict, Optional
 from unittest.mock import patch
 
 import pytest
+from tests.computer_use_fakes import NoopBackend, reset_backend
 
 
 @pytest.fixture(autouse=True)
 def _reset():
-    from tools.computer_use.tool import reset_backend_for_tests
-    reset_backend_for_tests()
+    reset_backend()
     yield
-    reset_backend_for_tests()
+    reset_backend()
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +213,8 @@ def test_foreground_refused_on_old_driver():
 def test_dispatcher_threads_delivery_mode_to_backend(grant_computer_use_approvals):
     """End-to-end through the tool dispatcher with the noop backend."""
     from tools.computer_use import tool as cu
-    with patch.object(cu, "_new_backend", lambda mode: cu._NoopBackend()):
-        cu.reset_backend_for_tests()
+    with patch.object(cu, "_new_backend", lambda mode: NoopBackend()):
+        reset_backend()
         be = cu._get_backend()
         cu.handle_computer_use({"action": "click", "element": 5,
                                 "delivery_mode": "foreground"})

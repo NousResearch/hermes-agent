@@ -14,6 +14,7 @@ import {
   type ComposerDraftSyncMode,
   freshDraftScope,
   isFreshDraftScope,
+  newSessionDraftAnnouncedFor,
   onComposerDraftSyncRequest,
   reloadPersistedDrafts,
   savedDraftAt,
@@ -181,6 +182,8 @@ export function useComposerDraft({
   // session switch mid-flight files one session's draft under another's key
   // (#54527).
   const draftScopeRef = useRef(activeQueueSessionKey)
+  // Latch for the swap effect's first run (mount); see the remount handoff there.
+  const scopeSwapRanRef = useRef(false)
   // The draft (text + attachment occurrences) this window last loaded from or
   // stashed for draftScopeRef's scope. Another window can send (clear) or
   // rewrite that draft while this editor still shows it, so every save path
@@ -710,8 +713,21 @@ export function useComposerDraft({
     // is restored — so the text the user kept typing follows the chat instead
     // of vanishing. Keyed on the scope alone: the runtime id can land a resume
     // later than the route flips the scope, so it is not a usable signal here.
-    if ((isFreshDraftScope(draftScopeRef.current) || !draftScopeRef.current) && activeQueueSessionKey) {
-      const freshKey = draftScopeRef.current || freshDraftScope()
+    //
+    // The handoff can also span a remount: the cold-start resume navigates to
+    // a session whose loading view mounts no composer, so the fresh chat's
+    // composer unmounts (stashing the typed text under the fresh key) and a
+    // new one mounts already scoped to the restored id. That first run has no
+    // fresh previous scope, yet the announcement names its key; without this
+    // the text typed while the app was booting vanished from the composer.
+    const firstScopeRun = !scopeSwapRanRef.current
+    scopeSwapRanRef.current = true
+    const fromFresh = isFreshDraftScope(draftScopeRef.current) || !draftScopeRef.current
+
+    // A first run on any other session (a split pane, a preview tile) must not
+    // consume an announcement meant for the restored chat's composer.
+    if ((fromFresh || (firstScopeRun && newSessionDraftAnnouncedFor(activeQueueSessionKey))) && activeQueueSessionKey) {
+      const freshKey = fromFresh ? draftScopeRef.current || freshDraftScope() : freshDraftScope()
 
       // A follow-up queued while session.create was in flight sits under the
       // fresh key; it belongs to this chat too. The queue re-key never moves

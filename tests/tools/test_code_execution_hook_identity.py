@@ -92,7 +92,8 @@ def test_both_remote_routes_hand_the_outer_identity_to_the_rpc_dispatch(route, m
         stack.callback(shutdown_all_remote_kernels)
         stack.enter_context(patch("tools.code_execution_tool._get_or_create_env",
                                   return_value=(ScriptedEnv(handlers), "ssh")))
-        stack.enter_context(patch("tools.code_execution_tool._ship_file_to_remote"))
+        stack.enter_context(patch("tools.code_execution_tool._remote_write"))
+        stack.enter_context(patch("tools.code_kernel_remote._remote_write"))
         stack.enter_context(patch.object(code_execution_rpc, "_default_dispatch", side_effect=_recording))
         if route == "per_call":
             stack.enter_context(patch("tools.code_kernel_remote.execute_in_remote_kernel", return_value=None))

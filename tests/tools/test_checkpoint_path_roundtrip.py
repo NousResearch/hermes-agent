@@ -18,7 +18,6 @@ def test_safe_restore_preserves_posix_byte_paths(tmp_path, monkeypatch):
 
 def _assert_safe_restore(tmp_path, monkeypatch, names):
     names = [os.fsdecode(name) for name in names]
-    monkeypatch.setattr(checkpoints, "CHECKPOINT_BASE", tmp_path / "checkpoints")
     work = tmp_path / "project"
     work.mkdir()
     (work / "AGENTS.md").write_text("Project instructions\n", encoding="utf-8")
@@ -58,7 +57,6 @@ def test_size_cap_applies_to_posix_byte_paths(tmp_path, monkeypatch):
 
 def _assert_size_cap(tmp_path, monkeypatch, name):
     name = os.fsdecode(name)
-    monkeypatch.setattr(checkpoints, "CHECKPOINT_BASE", tmp_path / "checkpoints")
     work = tmp_path / "project"
     work.mkdir()
     (work / "small.txt").write_text("keep\n", encoding="utf-8")

@@ -4102,7 +4102,7 @@ export interface CronManageResult {
   removed_job?: CronRemovedJob | null
   [key: string]: unknown
 }
-/** ``tools/cronjob_job_args.py::_format_job``. */
+/** ``cron/job_args.py::_format_job``. */
 export interface CronJobRow {
   job_id: string
   name?: string
@@ -6262,7 +6262,7 @@ export interface PreviewOpenPayload {
   url: string
   label?: string
 }
-/** ``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab. */
+/** ``tools/preview_tool.py``; ``url`` '' closes every tab. */
 export interface PreviewClosePayload {
   url?: string
 }

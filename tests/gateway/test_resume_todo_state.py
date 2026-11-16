@@ -11,6 +11,8 @@ import pytest
 
 from tests.gateway.test_resume_display_history import _local_session, _resume
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 TODOS = [{'id': '1', 'content': 'write the fix', 'status': 'completed'},
          {'id': '2', 'content': 'ship it', 'status': 'in_progress'}]
 

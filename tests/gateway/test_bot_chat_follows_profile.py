@@ -21,6 +21,8 @@ import pytest
 from tests.gateway.test_follow_profile_followups import _create_bot_chat, _profile
 from tests.gateway.test_session_follow_profile_config import _owner, _route
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 
 @pytest.fixture
 def home(monkeypatch):

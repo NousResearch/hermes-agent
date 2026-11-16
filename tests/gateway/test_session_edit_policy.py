@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 
 def _runner(store):
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,

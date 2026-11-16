@@ -11,6 +11,8 @@ import pytest
 
 from tests.gateway.test_owner_loop_writes_class import _owner
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 
 async def _create(authority, owner, tmp_path, api):
     reply = await owner.dispatch({'id': 1, 'method': 'session.create', 'params': {

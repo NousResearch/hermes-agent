@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 
 async def _owner(tmp_path, monkeypatch):
     from gateway import run

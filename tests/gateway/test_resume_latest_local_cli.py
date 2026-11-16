@@ -13,6 +13,8 @@ import pytest
 
 from gateway.session_policy import SURFACES
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 
 def _owner(home, monkeypatch):
     from gateway import run

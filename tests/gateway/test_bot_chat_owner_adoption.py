@@ -8,6 +8,8 @@ from tests.gateway import test_peer_dm_bot_chat_headless as peer
 from tests.gateway.test_bot_chat_unadoptable_local_title import _deliver
 from tests.waiting import async_wait_until
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 headless = peer.headless
 
 

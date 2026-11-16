@@ -34,8 +34,14 @@ _CONTINUATIONS = (_PROBE, "." + _PROBE, ":" + _PROBE, "-" + _PROBE, "_" + _PROBE
 # Literal starts of secrets the prefix list does not carry (JWT, base64 PEM, age, Discord mfa).
 # Hold mfa. from its first byte: its 84-char secret body can otherwise be streamed
 # almost in full before the complete-token redactor recognizes it.
-_LITERALS = tuple(lit for lit in (*_PREFIX_SUBSTRINGS, "eyJ", "LS0tLS1CRUdJTi", "AGE-SECRET-KEY-1", "mfa.") if lit)
+_UNANCHORED_LITERALS = ("eyJ", "LS0tLS1CRUdJTi", "AGE-SECRET-KEY-1", "mfa.")
+_LITERALS = tuple(lit for lit in (*_PREFIX_SUBSTRINGS, *_UNANCHORED_LITERALS) if lit)
 _LITERAL_MAX = max(map(len, _LITERALS))
+# The prefix patterns only match a literal that does not follow a letter or digit (agent.redact's
+# prefix matchers), so ``am_`` inside ``stream_accepted`` can never become a key. Only the
+# extra literals above have rules that match glued to a word.
+_ANCHORED_LITERAL_RE = re.compile(r"(?<![A-Za-z0-9])(?:" + "|".join(
+    re.escape(lit) for lit in sorted({lit for lit in _PREFIX_SUBSTRINGS if lit}, key=len, reverse=True)) + r")")
 _NON_KEY_CHAR_RE = re.compile(r"[^A-Za-z0-9_\-]")
 # A Zhipu key's 32-hex id still arriving: no probe completes it until its ``.secret`` part does.
 _HEX_ID_TAIL_RE = re.compile(r"(?<![A-Za-z0-9_.-])[0-9a-f]{8,32}\Z")
@@ -76,7 +82,8 @@ def _token_may_be_secret(context: str, token: str) -> bool:
     """True when the trailing, still-arriving ``token`` is, or could grow into, a secret: it
     holds a secret's literal start or ends in the beginning of one, is masked already, or is
     masked once a continuation is appended."""
-    if any(lit in token for lit in _LITERALS) or _HEX_ID_TAIL_RE.search(token):
+    if (_ANCHORED_LITERAL_RE.search(token) or any(lit in token for lit in _UNANCHORED_LITERALS)
+            or _HEX_ID_TAIL_RE.search(token)):
         return True
     # A bare number may start ``1//0`` (#39654), but the refresh-token mask keeps ``1//0gL``
     # visible, so showing the digits first leaks nothing and the frames stay prefix-stable.

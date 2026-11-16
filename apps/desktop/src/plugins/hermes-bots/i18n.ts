@@ -23,15 +23,16 @@
  *    English where it is WRITTEN (`group-chat-parts.tsx`, `group-rounds.ts`);
  *    the places that RENDER the reader's own lines use `group.you` instead.
  *
- * Legacy Bot Mode copy covers `en` / `ja` / `zh` / `zh-hant`; the group locale
- * tables cover all nine registered locales. Missing legacy keys still
- * resolve through this plugin's English bundle. Nouns match core: ボット /
+ * Legacy Bot Mode copy covers `en` / `ja` / `zh` / `zh-hant` / `ru` (`./bots-ru.ts`);
+ * the group locale tables cover all nine registered locales. Missing legacy keys
+ * still resolve through this plugin's English bundle. Nouns match core: ボット /
  * 机器人 / 機器人, プロファイル / 配置档案 / 設定檔, ゲートウェイ / 网关 / 閘道.
  */
 
 import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
+import { BOTS_RU } from './bots-ru'
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { CROSS_GATEWAY_GROUP_LOCALES } from './cross-gateway-locales'
 import { GROUP_CHAT_LOCALES } from './group-chat-locales'
@@ -39,7 +40,6 @@ import { GROUP_SURFACE_AR } from './group-surface-ar'
 import { GROUP_SURFACE_DE } from './group-surface-de'
 import { GROUP_SURFACE_ES } from './group-surface-es'
 import { GROUP_SURFACE_FR } from './group-surface-fr'
-import { GROUP_SURFACE_RU } from './group-surface-ru'
 import { bind, type Bound } from './i18n-bind'
 import { type BotsMessages } from './i18n-messages'
 import { ROSTER_CHROME } from './roster-chrome-locales'
@@ -1786,7 +1786,7 @@ export const BOTS_LOCALES: PluginLocaleBundles = {
   zh,
   'zh-hant': zhHant,
   ar: { canonical: CANONICAL_GROUP_LOCALES.ar, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ar, ...GROUP_SURFACE_AR },
-  ru: { canonical: CANONICAL_GROUP_LOCALES.ru, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ru, ...GROUP_SURFACE_RU },
+  ru: BOTS_RU,
   fr: { canonical: CANONICAL_GROUP_LOCALES.fr, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.fr, ...GROUP_SURFACE_FR },
   de: { canonical: CANONICAL_GROUP_LOCALES.de, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.de, ...GROUP_SURFACE_DE },
   es: { canonical: CANONICAL_GROUP_LOCALES.es, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.es, ...GROUP_SURFACE_ES }

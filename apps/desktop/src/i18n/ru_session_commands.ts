@@ -2,8 +2,8 @@
 export const ruSessionCommands = {
   undoUsage: 'использование: /undo [N]',
   undoNothing: 'нечего отменять',
-  undidOne: (count: string) => `отменено сообщений: ${count} — удалённое сообщение в поле ввода`,
-  undidOther: (count: string) => `отменено сообщений: ${count} — удалённое сообщение в поле ввода`,
+  undidOne: (count: string) => `отменено сообщений: ${count} — удалённое сообщение в композере`,
+  undidOther: (count: string) => `отменено сообщений: ${count} — удалённое сообщение в композере`,
   retryNothing: 'нечего повторять',
   retryUnsupported: '/retry: нельзя повторить медиа или неизвестные части содержимого',
   busy: (command: string) =>
@@ -19,7 +19,7 @@ export const ruSessionCommands = {
   countOne: (count: string) => `сообщений в очереди: ${count}`,
   countOther: (count: string) => `сообщений в очереди: ${count}`,
   queueEditKeptTitle: 'Сообщение в очереди не изменено',
-  queueEditKept: 'Оно началось или было отклонено до сохранения правки. Отредактированный текст остался в поле ввода.',
+  queueEditKept: 'Оно началось или было отклонено до сохранения правки. Отредактированный текст остался в композере.',
   queueEditUnconfirmedTitle: 'Правка не подтверждена',
   queueEditUnconfirmed:
     'Hermes не смог подтвердить правку. Сохраните ещё раз, чтобы повторить ту же правку; дважды в очередь она не попадёт.'

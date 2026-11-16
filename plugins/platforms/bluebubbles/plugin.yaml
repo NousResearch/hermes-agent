@@ -55,6 +55,10 @@ optional_env:
     description: "Require a wake word in group chats (default false)"
     prompt: "Require mention in groups? (true/false)"
     password: false
+  - name: BLUEBUBBLES_PLAIN_TEXT_STYLE
+    description: "How replies keep formatting in iMessage: strip (default), plain, caps, unicode, emoji; combine with commas (caps,emoji) or use all"
+    prompt: "Plain-text style (strip/plain/caps/unicode/emoji/all)"
+    password: false
   - name: BLUEBUBBLES_MENTION_PATTERNS
     description: "Group wake-word regexes (JSON list or comma/newline-separated); default Hermes wake words"
     prompt: "Mention patterns"

@@ -28,12 +28,13 @@ def _entry(entry_id, priority):
 
 
 class _RateLimited(Exception):
-    def __init__(self, retry_after):
-        super().__init__(f"HTTP 429: {_MSG}")
+    def __init__(self, retry_after, message=_MSG):
+        super().__init__(f"HTTP 429: {message}")
         self.status_code = 429
-        self.message = _MSG
-        self.body = {"type": "error", "error": {"type": "rate_limit_error", "message": _MSG}}
-        self.response = SimpleNamespace(headers={"retry-after": str(retry_after)})
+        self.message = message
+        self.body = {"type": "error", "error": {"type": "rate_limit_error", "message": message}}
+        headers = {"retry-after": str(retry_after)} if retry_after is not None else {}
+        self.response = SimpleNamespace(headers=headers)
 
 
 class _Agent:
@@ -65,12 +66,12 @@ class _Agent:
         return lambda *args, **kwargs: None
 
 
-def _hit(agent, retry_after):
-    err = _RateLimited(retry_after)
+def _hit(agent, retry_after, message=_MSG):
+    err = _RateLimited(retry_after, message)
     classified = classify_api_error(err, provider=agent.provider, model=agent.model)
     return recover_after_classification(
         agent, err, classified, TurnRetryState(), status_code=429,
-        error_context={"message": _MSG}, messages=[], api_messages=[],
+        error_context={"message": message}, messages=[], api_messages=[],
     )
 
 
@@ -90,3 +91,21 @@ def test_short_retry_after_still_retries_same_credential_first():
     _, rotated = _hit(agent, 5)
     assert not rotated
     assert agent._credential_pool_entry_id == "acct1"
+
+
+def test_message_only_long_reset_rotates_on_first_429():
+    """Rotate on a long text-only reset; short waits and explicit headers still win."""
+    agent = _Agent(_pool())
+    retry_now, rotated = _hit(agent, None, "Rate limit reached. Resets in 3 minutes.")
+    assert retry_now and rotated
+    assert agent._credential_pool_entry_id == "acct2"
+
+    short_agent = _Agent(_pool())
+    _, rotated = _hit(short_agent, None, "Rate limit reached. Retry after 5 seconds.")
+    assert not rotated
+    assert short_agent._credential_pool_entry_id == "acct1"
+
+    header_agent = _Agent(_pool())
+    _, rotated = _hit(header_agent, 5, "Rate limit reached. Resets in 3 minutes.")
+    assert not rotated
+    assert header_agent._credential_pool_entry_id == "acct1"

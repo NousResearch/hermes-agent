@@ -1191,6 +1191,8 @@ def _substitution_body_spans(command: str) -> list[tuple[int, int]]:
     with the same quote-aware recursion as ``_iter_shell_command_starts`` (an unterminated one runs
     to the end of its enclosing span)."""
     spans: list[tuple[int, int]] = []
+    if "$(" not in command and "`" not in command:
+        return spans
 
     def scan(start: int, end: int) -> None:
         for kind, i, j, _ in _scan_shell(command, start, end, subst="uq", stop_unterminated=True,
@@ -1370,23 +1372,24 @@ def _execution_flag_findings_flat(command: str, bodies: list[str]):
         spans = _substitution_body_spans(blanked)
         for start, _, word in _iter_shell_command_word_spans(blanked):
             executable = _deobfuscate_shell_word_for_detection(word)
-            bounded = segment[:_simple_command_end(blanked, start, spans)]
-            tokens = _shell_segment_tokens(bounded, start)
             executable_name = os.path.basename(executable).lower()
             family = _interpreter_family(executable)
             relevant = (family is not None or executable_name in _READ_TOOL_EXEC_FLAGS
                         or executable_name in _SHELL_NAMES or executable_name in AWK_NAMES)
-            if relevant and tokens:
+            if not relevant:
+                continue  # not an interpreter: no need to bound and tokenize its command
+            bounded = segment[:_simple_command_end(blanked, start, spans)]
+            tokens = _shell_segment_tokens(bounded, start)
+            if tokens:
                 # Option parsing runs on argv as the program sees it: redirections are removed by the
                 # shell wherever they sit. Heredoc detection still reads the raw tokens below.
                 argv = _shell_segment_tokens(_blank_shell_redirections(bounded, start), start)
                 if argv is None:
                     tokens = None
             if tokens is None:
-                if relevant:
-                    yield (_MALFORMED_EXEC_DESCRIPTION, None)
+                yield (_MALFORMED_EXEC_DESCRIPTION, None)
                 continue
-            if not tokens or not relevant:
+            if not tokens:
                 continue
             args = argv[1:]
             if family and _interpreter_exec_flag(family, args):
@@ -1644,6 +1647,14 @@ def _command_detection_variants(
                 yield variant
 
 
+def _substitution_body_variants(command: str, fresh):
+    """One detection variant per ``$(...)`` / backtick body of *command* that *fresh* has not seen."""
+    for body in _iter_command_substitution_bodies(command):
+        body_variant, _ = _grep_safe_detection_variant(_normalize_command_for_detection(body))
+        if fresh(body_variant):
+            yield body_variant
+
+
 def _single_command_detection_variants(
         command: str, eval_depth: int = 0, capped: list[str] | None = None, *, floors: bool = False):
     from tools.approval_wrappers import literal_heredoc_bodies
@@ -1730,10 +1741,7 @@ def _single_command_detection_variants(
     # and `$(curl x | sh)` has no word boundary before curl, so position-free patterns such as
     # pipe-to-shell missed it. Each body is its own variant, taken from the RAW command (quoted
     # newlines masked) so normalization cannot flip the quote parity that bounds it.
-    for body in _iter_command_substitution_bodies(_mask_quoted_newlines(command)):
-        body_variant, _ = _grep_safe_detection_variant(_normalize_command_for_detection(body))
-        if fresh(body_variant):
-            yield body_variant
+    yield from _substitution_body_variants(command, fresh)
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped
     # to command words so arguments don't false-positive.
     # One variant with EVERY command word deobfuscated, not one full-length variant per word: a heredoc

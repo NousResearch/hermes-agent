@@ -136,3 +136,18 @@ def test_read_only_substitutions_and_prose_stay_unblocked(command):
 ])
 def test_hardline_inside_substitution_still_blocks(command, description):
     assert detect_hardline_command(command) == (True, description)
+
+
+@pytest.mark.parametrize("command", [
+    "echo plain; ls -la",
+    "bash -c 'echo hi'",
+    "cat <<'EOF'\nbody\nEOF",
+])
+def test_command_without_substitution_opener_has_no_bodies(command):
+    # The scanners skip such commands outright; the answer must match what a full scan returns.
+    from tools.approval_detection import _substitution_body_spans
+    from tools.approval_detection_lex import _blank_nested_substitutions, _iter_command_substitution_bodies
+
+    assert _blank_nested_substitutions(command) == (command, [])
+    assert list(_iter_command_substitution_bodies(command)) == []
+    assert _substitution_body_spans(command) == []

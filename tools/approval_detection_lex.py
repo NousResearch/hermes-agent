@@ -5,6 +5,7 @@ import shlex
 
 from tools import approval_parser_budget as _parser_budget
 from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_end, _scan_shell
+from tools.approval_quoted_newlines import _mask_quoted_newlines
 
 _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")
 _PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
@@ -157,6 +158,8 @@ def _blank_nested_substitutions(text: str) -> tuple[str, list[str]]:
     substitution (``$(echo bash)``) stays so command-word deobfuscation still resolves it. Callers
     scan each body separately, so every nesting level is walked once instead of once per ancestor.
     Substitutions inside a quoted heredoc body never run and are left as text."""
+    if "$(" not in text and "`" not in text:
+        return text, []
     literal = _quoted_heredoc_body_spans(text) if "<<" in text else []
     scanned = _splice(text, [(s, e, re.sub(r"[^\n]", " ", text[s:e])) for s, e in literal])
     parts, bodies = [], []
@@ -173,8 +176,11 @@ def _blank_nested_substitutions(text: str) -> tuple[str, list[str]]:
 
 def _iter_command_substitution_bodies(command: str):
     """Yield every non-literal ``$(...)`` / backtick body at any nesting depth, each with its own
-    nested substitutions blanked (they are yielded separately)."""
-    pending = [command]
+    nested substitutions blanked (they are yielded separately). Quoted newlines are masked first
+    so the quote context that bounds a body is the one the raw command has."""
+    if "$(" not in command and "`" not in command:
+        return
+    pending = [_mask_quoted_newlines(command)]
     while pending:
         _, bodies = _blank_nested_substitutions(pending.pop())
         for body in bodies:

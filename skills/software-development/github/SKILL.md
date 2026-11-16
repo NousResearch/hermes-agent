@@ -16,9 +16,8 @@ metadata:
 
 Work GitHub end to end with the `gh` CLI (REST fallback where noted): auth,
 issues, the PR lifecycle, issue-to-PR delivery, code review, and repo
-management. This skill consolidates six former skills; each workflow lives
-complete in its reference file — ALWAYS read the matching reference before
-starting that workflow, the body below only routes.
+management. Each workflow remains complete in its own reference. ALWAYS read
+the matching reference before starting that workflow; the body below only routes.
 
 ## Routing
 
@@ -31,15 +30,25 @@ starting that workflow, the body below only routes.
 | Review someone's PR: diffs, inline comments, verdict | `references/code-review.md` |
 | Clone/create/fork repos, remotes, releases | `references/repo-management.md` |
 
-Supporting assets: `scripts/gh-env.sh` + `scripts/git-credential-token.py`
-(auth helpers), `templates/` (PR bodies, bug report, feature request),
+Supporting assets: [`scripts/gh-env.sh`](scripts/gh-env.sh) is the safe bundled
+authentication detector. Use the helper shipped with this skill; older standalone
+copies may still extract credentials and are not an authentication fallback.
+Git-store detection is presence-only: it never supplies a PAT for API calls.
+[`scripts/git-credential-token.py`](scripts/git-credential-token.py) is a legacy,
+operator-only extraction utility, not an agent route; agents must never invoke
+it or read credential-store values. Keep it for explicit human maintenance only.
+`templates/` (PR bodies, bug report, feature request),
 `references/ci-troubleshooting.md`, `references/conventional-commits.md`,
 `references/github-api-cheatsheet.md`, `references/review-output-template.md`.
 
 ## Core discipline (applies to every workflow)
 
-- Preflight once per session: `gh auth status` — if it fails, go to
-  `references/auth.md` before anything else.
+- Authentication and secret entry are user-only interactive steps. Never
+  receive or print credentials, embed them in URLs/command text, extract them
+  from Git's store, or write raw gh credential files. Use existing `gh` auth or
+  a preconfigured environment token; see `references/auth.md` for setup.
+- For API operations, preflight `gh auth status` or use a preconfigured token;
+  see `references/auth.md` if neither is available. Pure Git needs no API preflight.
 - Prefer `gh` over raw REST; drop to `gh api` only for endpoints the
   porcelain lacks (the cheatsheet lists them).
 - Never report CI green without checking `gh pr checks` yourself; never

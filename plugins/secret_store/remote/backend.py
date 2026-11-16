@@ -311,11 +311,9 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
         def attempt() -> _HomeState:
             # Before anything is staged, refreshed, written or sent: an import that would change a
             # kept-local line stops the boot here, files untouched (no fallback to the local store).
-            if names := importer.refusal_names(home, self):
-                raise SecretStoreUnavailable(importer.refusal_text(profile, names))
-            # Staged before the credential resolves: a token refresh saves auth.json, and that save
-            # keeps only the bootstrap records.
-            importer.stage(home, self)
+            # Staged (from the bytes the check read) before the credential resolves: a token refresh
+            # saves auth.json, and that save keeps only the bootstrap records.
+            importer.check_and_stage(home, self, profile)
             entries = importer.prepared_entries(home)
             token = self._bearer(home)  # resolved holding no lock of this store
             with self._serialized(home):

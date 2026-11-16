@@ -14,7 +14,9 @@ On boot, the local ``.env`` and ``auth.json`` entries outside the bootstrap set 
   files keep their bootstrap entries, and ``hermes doctor`` warns.
 
 Before any of it, first thing at each boot, :func:`refusal_names` (local files only, nothing
-written) names the kept-local lines an import would change; any name stops the boot there.
+written) names the kept-local lines an import would change; any name stops the boot there. The
+check and the staging read one capture of the files' bytes (:func:`check_and_stage`); a file that
+changed before the staging completed is checked again on its new bytes.
 
 Each step is idempotent: a crash anywhere leaves the staging file, and the next boot redoes the
 step it stopped in. Nothing here logs or raises with a value.
@@ -27,6 +29,7 @@ import json
 import logging
 import os
 import stat
+from typing import NamedTuple
 
 from dotenv.parser import parse_stream
 from agent.secret_scope import _is_global_env, _parse_env_text, invalidate_env_file_cache
@@ -39,6 +42,27 @@ logger = logging.getLogger(__name__)
 STAGING = ".secrets-import.json"
 UNIMPORTED_ENV = ".env.unimported"
 UNIMPORTED_AUTH = "auth.unimported.json"
+#: Check-and-stage rounds before a ``.env`` / ``auth.json`` that keeps changing fails the boot closed.
+STAGE_ROUNDS = 3
+
+
+class Sources(NamedTuple):
+    """One capture of a home's import inputs: the ``.env``, ``auth.json`` and staging bytes (None:
+    absent or unreadable)."""
+    env: bytes | None
+    auth: bytes | None
+    staging: bytes | None
+
+
+def capture(home: Path) -> Sources:
+    """*home*'s import inputs, each read once. An unreadable ``.env`` / ``auth.json`` reads as absent
+    here (the loader and the auth store report it); an unreadable staging file raises."""
+    def read(name, missing=OSError):
+        try:
+            return (Path(home) / name).read_bytes()
+        except missing:
+            return None
+    return Sources(read(".env"), read("auth.json"), read(STAGING, FileNotFoundError))
 
 
 def unimported_paths(home: Path) -> tuple[Path, Path]:
@@ -60,24 +84,31 @@ def _dotenv_file(path: Path) -> tuple[bytes, str, list]:
     return bom, codec, list(parse_stream(io.StringIO(text)))
 
 
-def _dotenv_values(path: Path, *, sanitize: bool = True) -> dict[str, str]:
-    """Each name's value as the launch load leaves it for *path*, stored literally from then on:
-    the loader's own steps (file sanitizing, parser, resolver with order, duplicates and every
+def _env_path(home: Path) -> Path:
+    return Path(home) / ".env"
+
+
+def _env_text(raw: bytes | None, path: Path) -> str | None:
+    """The ``.env`` text the launch load reads for a file of *raw* bytes: the loader's own sanitizing
+    (``_sanitize_env_file_if_needed``) applied in memory, then its decoding. None for no file."""
+    from hermes_cli.env_loader import decode_dotenv_bytes, sanitized_env_lines
+    if raw is None:
+        return None
+    lines = sanitized_env_lines(raw, path)
+    return "".join(lines) if lines is not None else decode_dotenv_bytes(raw)
+
+
+def _dotenv_values(text: str | None, path: Path) -> dict[str, str]:
+    """Each name's value as the launch load leaves it for *path* holding *text*, stored literally
+    from then on: the loader's own steps (parser, resolver with order, duplicates and every
     reference, credential sanitizing). References see the launch environment for the process
     home; for any other home the process-global names as they are now (the original satellite
     builder's lookup: after the launch load), never a launch credential."""
-    from hermes_cli.env_loader import (
-        _parse_local_dotenv_file, _resolve_dotenv_assignments, _sanitize_env_file_if_needed,
-        _sanitize_loaded_credentials,
-    )
+    from hermes_cli.env_loader import _resolve_dotenv_assignments, _sanitize_loaded_credentials, parse_dotenv_text
 
-    if sanitize:   # the loader's own rewrite of the file
-        _sanitize_env_file_if_needed(path)
-    try:
-        assignments = _parse_local_dotenv_file(path)
-    except OSError:
+    if text is None:
         return {}
-    resolved = _resolve_dotenv_assignments(assignments, _reference_env(path), override=True)
+    resolved = _resolve_dotenv_assignments(parse_dotenv_text(text), _reference_env(path), override=True)
     values = {name: value for name, value in resolved.items() if value is not None}
     _sanitize_loaded_credentials(values)
     return values
@@ -95,11 +126,11 @@ def _reference_env(path: Path) -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if _is_global_env(k)}
 
 
-def _local_entries(home: Path, provider, *, sanitize: bool = True) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
-    """The local files' entries outside the bootstrap set, read from the files themselves."""
+def _local_entries(home: Path, provider, text: str | None) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
+    """The local entries outside the bootstrap set: the ``.env`` *text*, ``auth.json`` from the file."""
     from hermes_cli import auth
     from hermes_secret_routing import auth_records, stays_local
-    env = {k: v for k, v in _dotenv_values(Path(home) / ".env", sanitize=sanitize).items() if not stays_local(provider, k)}
+    env = {k: v for k, v in _dotenv_values(text, _env_path(home)).items() if not stays_local(provider, k)}
     raw = auth._load_auth_store.__wrapped__(Path(home) / "auth.json")  # the file, not the store's view
     records = {rid: r for rid, r in auth_records(raw).items() if rid not in provider.bootstrap_auth_records()}
     return env, records
@@ -120,17 +151,70 @@ def _read_json(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def stage(home: Path, provider) -> None:
-    """Stage the local entries to import (merged over an earlier, unfinished staging)."""
-    env, records = _local_entries(home, provider)
+def check_and_stage(home: Path, provider, profile: str) -> None:
+    """Check, then stage, one capture of *home*'s files (:class:`Sources`): the check and the
+    staging read the same bytes. When ``.env`` or ``auth.json`` changed before the staging
+    completed, the staging is undone and the new bytes are checked again; after
+    :data:`STAGE_ROUNDS` such rounds the boot fails closed. A refusal leaves every file, an
+    earlier unfinished staging included, as it was."""
+    from hermes_cli.env_loader import _sanitize_env_file_if_needed
+    from hermes_secret_routing import SecretStoreUnavailable
+    home = Path(home)
+    earlier = None
+    for attempt in range(STAGE_ROUNDS):
+        sources = capture(home)
+        if attempt == 0:
+            earlier = sources.staging
+        else:
+            _restore(home / STAGING, earlier)   # this round stages the new bytes over the earlier staging
+            sources = sources._replace(staging=earlier)
+        if names := refusal_names(home, provider, sources):
+            raise SecretStoreUnavailable(refusal_text(profile, names))
+        stage(home, provider, sources)
+        if capture(home)[:2] == sources[:2]:
+            # The loader's own rewrite, before the cleanup reads the file (the check read it sanitized).
+            _sanitize_env_file_if_needed(_env_path(home))
+            return
+    _restore(home / STAGING, earlier)
+    raise SecretStoreUnavailable(
+        f"Remote secrets: the .env or auth.json of profile {profile!r} kept changing while its one-time "
+        "import into the secrets plane was being prepared. Hermes does not start (nothing was sent; there "
+        "is no fallback to the local store). Restart Hermes once nothing else is editing them.")
+
+
+def stage(home: Path, provider, sources: Sources | None = None) -> None:
+    """Stage the local entries of *sources* (a fresh capture by default) to import, merged over the
+    staging they captured (an earlier, unfinished one)."""
+    sources = capture(home) if sources is None else sources
+    env, records = _local_entries(home, provider, _env_text(sources.env, _env_path(home)))
     if not env and not records:
         return
-    path = Path(home) / STAGING
-    staged = _read_json(path)
-    merged_env = {**(staged.get("env") or {}), **env}
-    merged_auth = {**(staged.get("auth") or {}), **records}
-    _write_private_json(path, {"env": merged_env, "auth": merged_auth})
-    merged_env = merged_auth = env = records = staged = None
+    staged_env, staged_auth = _staged(sources.staging)
+    merged_env = {**staged_env, **env}
+    merged_auth = {**staged_auth, **records}
+    _write_private_json(Path(home) / STAGING, {"env": merged_env, "auth": merged_auth})
+    merged_env = merged_auth = env = records = staged_env = staged_auth = None
+
+
+def _staged(raw: bytes | None) -> tuple[dict[str, str], dict[str, Any]]:
+    """The entries of a staging file's *raw* bytes (``prepared_entries`` without the read)."""
+    if raw is None:
+        return {}, {}
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except ValueError:
+        logger.warning("Remote secrets: %s is unreadable; leaving it in place", STAGING)
+        raise
+    data = data if isinstance(data, dict) else {}
+    return dict(data.get("env") or {}), dict(data.get("auth") or {})
+
+
+def _restore(path: Path, raw: bytes | None) -> None:
+    """Put *path* back to *raw* (absent for None)."""
+    if raw is None:
+        _remove(path)
+    elif not (path.exists() and path.read_bytes() == raw):
+        _write_bytes(path, raw, 0o600)
 
 
 def prepared_entries(home: Path) -> tuple[dict[str, str], dict[str, Any]]:
@@ -155,14 +239,19 @@ def finish(home: Path, profile: str, view, provider, entries, imported: bool) ->
                     len(env), len(records), profile)
 
 
-def refusal_names(home: Path, provider) -> list[str]:
+def refusal_names(home: Path, provider, sources: Sources | None = None) -> list[str]:
     """The kept-local names an import of *home* would change (:func:`unmatched_kept_names`), from
-    the local files (and an unfinished staging) alone: nothing is written, the ``.env`` is not even
-    sanitized. Empty when there is nothing to import."""
-    env, records = _local_entries(home, provider, sanitize=False)
-    staged_env, staged_auth = prepared_entries(home)
+    *sources* (a fresh capture of the local files and an unfinished staging by default) alone:
+    nothing is written, the ``.env`` is sanitized in memory only. Empty when there is nothing to
+    import."""
+    sources = capture(home) if sources is None else sources
+    text = _env_text(sources.env, _env_path(home))
+    env, records = _local_entries(home, provider, text)
+    staged_env, staged_auth = _staged(sources.staging)
     stored = {**staged_env, **env}
-    return unmatched_kept_names(home, provider, stored) if stored or records or staged_auth else []
+    if text is None or not (stored or records or staged_auth):
+        return []   # no kept line, or nothing to import
+    return unmatched_kept_names(home, provider, stored, text)
 
 
 def refusal_text(profile: str, names: list[str]) -> str:
@@ -286,7 +375,7 @@ def _kept_text(bindings: list, lookup: dict[str, str], keeps) -> tuple[str, bool
     return "".join(kept), changed
 
 
-def unmatched_kept_names(home: Path, provider, stored: dict[str, str]) -> list[str]:
+def unmatched_kept_names(home: Path, provider, stored: dict[str, str], text: str) -> list[str]:
     """The kept-local names of *home*'s ``.env`` whose value would change if the import ran: each
     one's value now (the local file, as each reader reads it) against its value afterwards (the
     *stored* entries the import sends, then the file the import leaves), through both reader
@@ -294,13 +383,11 @@ def unmatched_kept_names(home: Path, provider, stored: dict[str, str]) -> list[s
     profile scope's (its one-line tokenizer, a template resolved by the loader's resolver). The
     import runs only when this is empty: a kept line no written form keeps equal (a line break in
     a value that also depends on a name the import collapses to its last assignment) is never
-    silently given another value. Names only; never a value."""
+    silently given another value. *text*: the ``.env`` as the loader reads it. Names only; never a
+    value."""
     from hermes_secret_routing import stays_local
     env_path = Path(home) / ".env"
-    try:
-        _bom, _codec, bindings = _dotenv_file(env_path)
-    except OSError:
-        return []
+    bindings = list(parse_stream(io.StringIO(text)))
     def keeps(name):
         return stays_local(provider, name)
     lookup = _reference_env(env_path)

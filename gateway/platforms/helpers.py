@@ -1392,3 +1392,11 @@ async def hand_off_split(adapter: Any, chat_id: str, content: str, messages: Any
             if not await adapter.delete_message(chat_id, str(message_id)):
                 logger.warning("Long reply: could not delete earlier part %s", message_id)
     return result
+
+
+def plane_outage(exc: BaseException) -> bool:
+    """Whether *exc* is a plane outage (``ConfigBackendUnavailable`` / ``SecretStoreUnavailable``):
+    a ``SystemExit`` by design for readers, but it fails the turn that hit it, never the gateway loop."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_secret_routing import SecretStoreUnavailable
+    return isinstance(exc, (ConfigBackendUnavailable, SecretStoreUnavailable))

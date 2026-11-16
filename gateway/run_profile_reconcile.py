@@ -28,6 +28,7 @@ from typing import Any, Dict, Optional
 
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config_backend import ConfigBackendUnavailable
+from hermes_secret_routing import SecretStoreUnavailable
 from utils import file_cache_version
 
 logger = logging.getLogger(__name__)
@@ -128,7 +129,7 @@ class GatewayProfileReconcileMixin:
                     await self.reconcile_served_profiles(reason="watcher")
             except asyncio.CancelledError:
                 raise
-            except (Exception, ConfigBackendUnavailable):  # a config outage is a SystemExit by design
+            except (Exception, ConfigBackendUnavailable, SecretStoreUnavailable):  # plane outages: SystemExit by design
                 logger.warning("Served-profile reconcile failed; retrying next cycle", exc_info=True)
 
     async def _sync_hooks_on_consent_change(self) -> None:
@@ -432,7 +433,7 @@ class GatewayProfileReconcileMixin:
             return None
         try:
             await serve_profile_runtime(self, name, home)
-        except (Exception, ConfigBackendUnavailable) as exc:  # unservable now: parked, retried by rescan
+        except (Exception, ConfigBackendUnavailable, SecretStoreUnavailable) as exc:  # parked, retried by rescan
             if self.session_authorities.for_home(home) is not None:
                 # Retirement of the failed attempt missed its deadline: its writer may still use
                 # this home, so the reservation and authority stay; the profile is parked (no

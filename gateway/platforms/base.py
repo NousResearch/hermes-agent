@@ -436,7 +436,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
+from gateway.platforms.helpers import fence_state_after, plane_outage, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
@@ -4443,8 +4443,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             await self._notify_turn_error(event, e)
-            from hermes_cli.config_backend import ConfigBackendUnavailable as _outage  # this turn only
-            if isinstance(e, (SystemExit, KeyboardInterrupt)) and not isinstance(e, _outage):  # rest contained
+            if isinstance(e, (SystemExit, KeyboardInterrupt)) and not plane_outage(e):  # an outage: this turn only
                 raise
         finally:
             await self._release_turn_marker(event)

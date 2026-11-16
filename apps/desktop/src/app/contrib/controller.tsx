@@ -38,8 +38,8 @@ import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
-import { LocalizedTabTitle, translateNow } from '@/i18n'
-import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
+import { LocalizedTabTitle, subscribeRuntimeI18nLocale, translateNow } from '@/i18n'
+import { newSessionTitle, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import {
   Download,
   FileText,
@@ -222,12 +222,14 @@ registry.registerMany([
     id: 'workspace',
     area: 'panes',
     // Live-retitled to the loaded session by syncWorkspaceTitle below.
-    title: NEW_SESSION_TITLE,
+    title: newSessionTitle(),
     data: {
       placement: 'main',
       minWidth: '22vw',
       tabDrag: workspaceTabDrag,
       tabActions: workspaceTabActions,
+      tabTitle: () => <SessionDraftTitle scope={null} />,
+      tabTitleText: () => newSessionTitle(),
       tabWrap: wrapWorkspaceTab,
       uncloseable: true
     },
@@ -504,7 +506,7 @@ const syncWorkspaceTitle = () => {
     // A bot chat reads as its BOT: every canonical Bot Chat is stored under
     // the same name, which told two open bots apart by nothing (#99152).
     title: workspaceOwnerTitle(
-      stored ? storedSessionTitle(stored) : NEW_SESSION_TITLE,
+      stored ? storedSessionTitle(stored) : newSessionTitle(),
       selected ? $botChatScopes.get()[selected] : undefined
     ),
     data: {
@@ -547,6 +549,7 @@ $messagingSessions.listen(syncWorkspaceTitle)
 $botChatScopes.listen(syncWorkspaceTitle)
 $workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
+subscribeRuntimeI18nLocale(syncWorkspaceTitle)
 registry.subscribeArea(WORKSPACE_PAGE_HEADER_AREA, syncWorkspaceTitle)
 
 // Layout reset collapses every session tile into main as a tab (after the

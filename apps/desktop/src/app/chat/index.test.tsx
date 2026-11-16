@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider, setRuntimeI18nLocale, TRANSLATIONS, useI18n } from '@/i18n'
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
 import {
   $activeSessionId,
@@ -161,5 +162,75 @@ describe('ChatView render isolation', () => {
     // memo(ChatView) with stable props must absorb the parent's idle tick —
     // the transcript (Thread) must not re-render. This is PR #38470's contract.
     expect(threadRenderCount.current).toBe(1)
+  })
+
+  it('re-renders ChatHeader placeholder titles live when the locale changes', async () => {
+    $sessions.set([{ id: 'stored-1', message_count: 1, preview: null, title: null } as never])
+
+    const props = {
+      gateway: null,
+      maxVoiceRecordingSeconds: 120,
+      onAddContextRef: vi.fn(),
+      onAddUrl: vi.fn(),
+      onAttachDroppedItems: vi.fn(),
+      onAttachImageBlob: vi.fn(),
+      onBranchInNewChat: vi.fn(),
+      onCancel: vi.fn(),
+      onDeleteSelectedSession: vi.fn(),
+      onEdit: vi.fn(),
+      onPasteClipboardImage: vi.fn(),
+      onPickFiles: vi.fn(),
+      onPickFolders: vi.fn(),
+      onPickImages: vi.fn(),
+      onReload: vi.fn(),
+      onRemoveAttachment: vi.fn(),
+      onRetryResume: vi.fn(),
+      onSteer: vi.fn(),
+      onSubmit: vi.fn(),
+      onThreadMessagesChange: vi.fn(),
+      onToggleSelectedPin: vi.fn(),
+      onTranscribeAudio: vi.fn()
+    }
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } }
+    })
+
+    function LocaleToggle() {
+      const { locale, setLocale } = useI18n()
+
+      return (
+        <button onClick={() => void setLocale(locale === 'es' ? 'en' : 'es')} type="button">
+          toggle-locale
+        </button>
+      )
+    }
+
+    try {
+      render(
+        <I18nProvider configClient={null} initialLocale="en">
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={['/stored-1']}>
+              <LocaleToggle />
+              <ChatView {...props} />
+            </MemoryRouter>
+          </QueryClientProvider>
+        </I18nProvider>
+      )
+
+      expect(screen.getByTestId('session-actions-menu').textContent).toContain(
+        TRANSLATIONS.en.sidebar.row.untitledPlaceholder
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: 'toggle-locale' }))
+
+      await waitFor(() =>
+        expect(screen.getByTestId('session-actions-menu').textContent).toContain(
+          TRANSLATIONS.es.sidebar.row.untitledPlaceholder
+        )
+      )
+    } finally {
+      setRuntimeI18nLocale('en')
+    }
   })
 })

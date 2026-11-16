@@ -204,6 +204,12 @@ const LOCALE_ALIASES: Record<string, BundledLocale> = {
   es_ar: 'es',
   'es-419': 'es',
   es_419: 'es',
+  'es-co': 'es',
+  es_co: 'es',
+  'es-cl': 'es',
+  es_cl: 'es',
+  'es-ve': 'es',
+  es_ve: 'es',
   spanish: 'es',
   español: 'es',
   espanol: 'es'

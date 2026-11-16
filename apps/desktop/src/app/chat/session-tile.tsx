@@ -38,9 +38,9 @@ import {
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { type ResolvedOwner, transcribeAudio } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { $runtimeLocale, subscribeRuntimeI18nLocale, useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
+import { newSessionTitle, sessionTitle } from '@/lib/chat-runtime'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { createComposerAttachmentScope, draftTitleFor, takeSessionDraft } from '@/store/composer'
 import { $gatewaySwitching } from '@/store/gateway-switch'
@@ -746,7 +746,7 @@ function tileTitle(storedSessionId: string): string {
   const stored = tileStoredRow(storedSessionId)
   const explicit = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.workspaceTabTitle
 
-  return stored ? sessionTitle(stored) : explicit || NEW_SESSION_TITLE
+  return stored ? sessionTitle(stored) : explicit || newSessionTitle()
 }
 
 /** The tile's workspace scope — the same fields `workspaceOwnerTitle` reads,
@@ -776,7 +776,7 @@ function tileDragPayload(storedSessionId: string): SessionDragPayload {
 
   const title = stored
     ? sessionTitle(stored)
-    : tile?.workspaceTabTitle || draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
+    : tile?.workspaceTabTitle || draftTitleFor(storedSessionId) || newSessionTitle()
 
   return { id: storedSessionId, profile: stored?.profile ?? '', title: workspaceOwnerTitle(title, tile) }
 }
@@ -865,11 +865,13 @@ function useTileMenuRow(storedSessionId: string): {
     const offSessions = $sessions.listen(onChange)
     const offTree = $projectTree.listen(onChange)
     const offTiles = $sessionTiles.listen(onChange)
+    const offLocale = subscribeRuntimeI18nLocale(onChange)
 
     return () => {
       offSessions()
       offTree()
       offTiles()
+      offLocale()
     }
   }, [])
 
@@ -1007,7 +1009,7 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   // and without it the tab stays stuck on its "New session" placeholder.
   // (The tab's status dot subscribes to color/state itself, so it needs no
   // `also` entry.)
-  also: [$sessions, $cronSessions, $messagingSessions, $projectTree, $workspaceOwnerLabels],
+  also: [$sessions, $cronSessions, $messagingSessions, $projectTree, $workspaceOwnerLabels, $runtimeLocale],
   key: t => t.storedSessionId,
   prefix: 'session-tile',
   dir: t => t.dir,

@@ -69,7 +69,7 @@ class TestSessionChildrenCap(unittest.TestCase):
         parent.session_id = "session-cap-test"
 
         with patch(
-            "tools.delegate_tool._load_config",
+            "tools.delegate_tool_config._load_config",
             return_value={"max_children_per_session": 3},
         ):
             for i in range(3):
@@ -97,7 +97,7 @@ class TestSessionChildrenCap(unittest.TestCase):
         parent.session_id = "session-oneshot-refusal"
         parent._oneshot_children_spawned = 0
         config = {"max_children_per_session": 1, "oneshot_max_children": 3}
-        with patch("tools.delegate_tool._load_config", return_value=config):
+        with patch("tools.delegate_tool_config._load_config", return_value=config):
             first = json.loads(delegate_task(goal="First task", parent_agent=parent))
             root = live_transcript_root()
             before = set(root.iterdir())
@@ -117,7 +117,7 @@ class TestSessionChildrenCap(unittest.TestCase):
         parent.session_id = "session-oneshot-release"
         parent._oneshot_children_spawned = 1
         config = {"max_children_per_session": 1, "oneshot_max_children": 1}
-        with patch("tools.delegate_tool._load_config", return_value=config):
+        with patch("tools.delegate_tool_config._load_config", return_value=config):
             rejected = json.loads(delegate_task(goal="Rejected task", parent_agent=parent))
             config["oneshot_max_children"] = 2
             accepted = json.loads(delegate_task(goal="Accepted task", parent_agent=parent))
@@ -132,7 +132,7 @@ class TestSessionChildrenCap(unittest.TestCase):
         parent = _make_mock_parent()
         parent.session_id = "session-disabled-cap"
         config = {"max_children_per_session": 1}
-        with patch("tools.delegate_tool._load_config", return_value=config):
+        with patch("tools.delegate_tool_config._load_config", return_value=config):
             self.assertIn("results", json.loads(delegate_task(goal="First task", parent_agent=parent)))
             config["max_children_per_session"] = 0
             with patch("tools.delegate_tool._build_children", side_effect=RuntimeError("build failed")):
@@ -150,7 +150,7 @@ class TestSessionChildrenCap(unittest.TestCase):
         parent.session_id = "session-total-test"
 
         with patch(
-            "tools.delegate_tool._load_config",
+            "tools.delegate_tool_config._load_config",
             return_value={"max_children_per_session": 2},
         ):
             for i in range(2):
@@ -175,7 +175,7 @@ class TestSessionChildrenCap(unittest.TestCase):
         parent.session_id = "session-batch-test"
 
         with patch(
-            "tools.delegate_tool._load_config",
+            "tools.delegate_tool_config._load_config",
             return_value={"max_children_per_session": 3},
         ):
             batch = json.loads(
@@ -202,7 +202,7 @@ class TestSessionChildrenCap(unittest.TestCase):
         parent.session_id = "session-refused-route-test"
 
         with patch(
-            "tools.delegate_tool._load_config",
+            "tools.delegate_tool_config._load_config",
             return_value={"max_children_per_session": 2},
         ):
             batch = json.loads(delegate_task(
@@ -232,7 +232,7 @@ class TestSessionChildrenCap(unittest.TestCase):
         parent.session_id = "session-build-fail-test"
 
         with patch(
-            "tools.delegate_tool._load_config",
+            "tools.delegate_tool_config._load_config",
             return_value={"max_children_per_session": 2},
         ):
             with self.assertRaises(RuntimeError):
@@ -266,7 +266,7 @@ class TestSessionChildrenCap(unittest.TestCase):
         parent.session_id = "session-cleanup-test"
 
         with patch(
-            "tools.delegate_tool._load_config",
+            "tools.delegate_tool_config._load_config",
             return_value={"max_children_per_session": 5},
         ):
             result = json.loads(delegate_task(goal="Task", parent_agent=parent))

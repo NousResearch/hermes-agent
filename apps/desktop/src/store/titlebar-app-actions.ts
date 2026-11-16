@@ -63,7 +63,9 @@ export function titlebarAppActionsClusterCounts(
     id => shown(TITLEBAR_FIXED_TOOLS[id]) && !(portal && (id === 'settings' || (id === 'layout' && mode === 'simple')))
   ).length
 
-  const rightFixed = RIGHT_FIXED_IDS.filter(id => shown(TITLEBAR_FIXED_TOOLS[id])).length
+  // The redesign's band ends with the chat's Agent settings (PortalBandAgentSettings) in every mode.
+  // Uncounted, the session tab's window-drag span runs under it and macOS drags instead of clicking.
+  const rightFixed = RIGHT_FIXED_IDS.filter(id => shown(TITLEBAR_FIXED_TOOLS[id])).length + (portal ? 1 : 0)
 
   if (side === 'left') {
     return { left: sidebar + appActions + leftExtras, right: rightFixed + rightExtras }

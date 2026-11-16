@@ -1153,19 +1153,48 @@ class TestGetModelContextLength:
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
-    def test_custom_endpoint_metadata_beats_fuzzy_default(self, mock_endpoint_fetch, mock_fetch):
+    def test_local_catalog_beats_custom_endpoint_metadata_for_a_known_id(self, mock_endpoint_fetch, mock_fetch):
+        """A known model id answers from the local catalog before the endpoint is probed.
+
+        session.create must not pay a network probe for a window the catalog already carries; a
+        proxy that advertises a smaller window than the catalog is the accepted trade-off.
+        """
         mock_fetch.return_value = {}
         mock_endpoint_fetch.return_value = {
             "zai-org/GLM-5-TEE": {"context_length": 65536}
         }
+        from agent.model_metadata import _longest_key_match
+        hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, "zai-org/glm-5-tee")
+        assert hit is not None
+        expected = hit[1]
 
-        result = get_model_context_length(
-            "zai-org/GLM-5-TEE",
-            base_url="https://llm.chutes.ai/v1",
-            api_key="test-key",
-        )
+        with patch("agent.model_metadata._answers_as_local_inference_server", return_value=False):
+            result = get_model_context_length(
+                "zai-org/GLM-5-TEE",
+                base_url="https://llm.chutes.ai/v1",
+                api_key="test-key",
+            )
 
-        assert result == 65536
+        assert result == expected
+        mock_endpoint_fetch.assert_not_called()
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_metadata_wins_for_an_unknown_model(self, mock_endpoint_fetch, mock_fetch):
+        """With no local catalog answer the live /models value is still authoritative."""
+        mock_fetch.return_value = {}
+        mock_endpoint_fetch.return_value = {
+            "acme/widget-7b": {"context_length": 40000}
+        }
+        with patch("agent.model_metadata._answers_as_local_inference_server", return_value=False), \
+             patch("agent.model_metadata._local_catalog_context_length", return_value=None):
+            result = get_model_context_length(
+                "acme/widget-7b",
+                base_url="https://llm.example.com/v1",
+                api_key="test-key",
+            )
+
+        assert result == 40000
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
@@ -1445,7 +1474,8 @@ class TestStripProviderPrefix:
         """
         mock_fetch.return_value = {}
         with patch("agent.model_metadata.fetch_endpoint_model_metadata") as mock_ep, \
-             patch("agent.model_metadata._is_custom_endpoint", return_value=True):
+             patch("agent.model_metadata._is_custom_endpoint", return_value=True), \
+             patch("agent.model_metadata._answers_as_local_inference_server", return_value=True):
             mock_ep.return_value = {"qwen3.5:27b": {"context_length": 32768}}
             result = get_model_context_length(
                 "qwen3.5:27b",

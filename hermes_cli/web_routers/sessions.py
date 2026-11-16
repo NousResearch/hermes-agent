@@ -7,6 +7,7 @@ helpers are reached via the late-binding seam so monkeypatching keeps working.
 """
 
 import asyncio
+import hashlib
 import json
 import re
 import sqlite3
@@ -14,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
@@ -135,6 +136,44 @@ def _is_active(row: dict, now: float) -> bool:
         and (now - row.get("last_active", row.get("started_at", 0))) < _ACTIVE_WINDOW_S)
 
 
+def _conditional_list_response(request: Optional[Request], payload: dict) -> Response:
+    """Serialize a list payload with a content ETag; honor If-None-Match.
+
+    #C3 (t_406dbcb3): a reconnect refreshes the session list even when nothing
+    moved. The ETag covers the EXACT response bytes — every volatile field
+    (rows, total, ``is_active``, storage flags) is inside the hashed body, so a
+    304 can never hide a change — and a matching conditional GET answers 304
+    with no body: zero JSON crosses the wire and the client keeps its list.
+
+    ``no-cache`` (store, but always revalidate) is the deliberate pairing: this
+    is private per-profile state that any session mutation can change, so a
+    heuristic browser freshness window is wrong for it — while revalidation
+    with the saved ETag is exactly the cheap path this route now offers.
+    """
+    body = json.dumps(payload)
+    etag = f'"{hashlib.sha256(body.encode("utf-8")).hexdigest()}"'
+    headers = {"ETag": etag, "Cache-Control": "no-cache"}
+
+    if _if_none_match_hits(request, etag):
+        return Response(status_code=304, headers=headers)
+
+    return Response(content=body, media_type="application/json", headers=headers)
+
+
+def _if_none_match_hits(request: Optional[Request], etag: str) -> bool:
+    """RFC 9110 If-None-Match: ``*`` always hits; otherwise any listed
+    entity-tag matching our current one hits (weakness is ignored for GET)."""
+    header = request.headers.get("if-none-match") if request is not None else None
+
+    if not header:
+        return False
+
+    if header.strip() == "*":
+        return True
+
+    return any(token.strip().removeprefix("W/") == etag for token in header.split(","))
+
+
 def _with_db(profile: Optional[str], fn: Callable, *, read_only: bool):
     """Open the profile's session DB, run ``fn(db)``, always close."""
     def run():
@@ -181,6 +220,7 @@ def _resolve_session_id(db, session_id: str) -> Optional[str]:
 # row (plus correlated-subquery preview work) out of SQLite in a single hit.
 @list_router.get("/api/sessions")
 def get_sessions(
+    request: Request,
     limit: int = Query(20, ge=0, le=100), offset: int = Query(0, ge=0), min_messages: int = 0,
     archived: str = "exclude", order: str = "created", source: str | None = None, sources: str | None = None,
     exclude_sources: str | None = None, cwd_prefix: str | None = None, full: bool = False,
@@ -238,8 +278,10 @@ def get_sessions(
             # ``storage`` tells an empty page apart from an unreadable store (#72046); same
             # ``{profile: "corrupt"}`` shape as the /api/profiles/sessions* lists.
             storage = {row_profile: STORAGE_CORRUPT} if storage_state(db.db_path) == STORAGE_CORRUPT else {}
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset,
-                    "storage": storage}
+            return _conditional_list_response(
+                request,
+                {"sessions": sessions, "total": total, "limit": limit, "offset": offset,
+                 "storage": storage})
         finally:
             db.close()
     except HTTPException:

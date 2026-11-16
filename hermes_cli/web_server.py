@@ -1042,6 +1042,8 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
     """
     import uvicorn
 
+    from hermes_cli.web_server_keepalive import strike_keepalive_protocol
+
     # WS keepalive ping runs ON the agent event loop; a GIL-holding worker call
     # can starve it for minutes, so uvicorn misses the pong and drops a healthy
     # local socket (#53773/#48445/#50005). The ping only detects half-open
@@ -1049,7 +1051,9 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
     # dead client sends a real FIN/RST -> WebSocketDisconnect. So: no ping on
     # loopback; non-loopback sits behind a Cloudflare Tunnel (~100s idle) and
     # keeps a config-driven cadence (dashboard.ws_ping_interval/_timeout,
-    # #79635) defaulting to 20/20.
+    # #79635) defaulting to 20/20, failed only after two consecutive missed
+    # pongs while that detection still lands under the tunnel idle cap
+    # (web_server_keepalive, C2a t_e15288d4).
     _is_loopback = host in _LOOPBACK_HOST_VALUES
     try:
         _dash_cfg = load_config().get("dashboard") or {}
@@ -1086,6 +1090,10 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         # Loopback-only unless the operator trusts a bounded upstream proxy, so
         # spoofed X-Forwarded-* from arbitrary callers is never honoured.
         forwarded_allow_ips=_dashboard_forwarded_allow_ips(_dash_cfg),
+        # C2a strike policy (web_server_keepalive): fails a non-ponging peer only after two
+        # consecutive missed cycles when that still detects inside the tunnel idle cap; "auto"
+        # otherwise (loopback pings off; the SSH-tunnel 60/600 cycle already owns its budget).
+        ws=strike_keepalive_protocol((ping_interval, ping_timeout)),
         ws_ping_interval=ping_interval,
         ws_ping_timeout=ping_timeout,
         # Per-frame zlib on the loop buys nothing for a local client (build_listener_server); a peer

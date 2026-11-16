@@ -1622,13 +1622,13 @@ def test_resolve_hermes_argv_module_actually_runs():
 def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monkeypatch):
     """The dispatcher's worker must carry the import context of the install that spawned it.
 
-    The worker is always ``sys.executable -m hermes_cli.kanban_worker_client`` (it only submits
+    The worker is always ``sys.executable -P -m hermes_cli.kanban_worker_client`` (it only submits
     the claim to the profile owner), and the worker env scrub strips Hermes-owned PYTHONPATH
     entries, so a bare module child died on import and the board auto-blocked (#122299,
     #122487, #122500). The spawned env must put the running install's root first on
-    PYTHONPATH. Main's carve-out for a resolved ``hermes`` shim path does not apply here: the
-    worker never runs the resolved CLI argv, so a ``$HERMES_BIN``/PATH shim can neither replace
-    the module child nor drop the pin.
+    PYTHONPATH, and ``-P`` must keep the child's cwd (a worktree workspace is Hermes source)
+    out of ``sys.path`` ahead of the pin (regression: test_kanban_worker_workspace_shadow).
+    Main's resolved-shim carve-out does not apply: the worker never runs the resolved CLI argv.
     """
     import os
     import sys
@@ -1665,7 +1665,7 @@ def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monk
     for resolved in ([sys.executable, "-m", "hermes_cli.main"], ["/opt/hermes/bin/hermes"]):
         monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda resolved=resolved: resolved)
         kbd._default_spawn(task, str(tmp_path / "ws"))
-        assert captured["cmd"][-3:] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+        assert captured["cmd"][-4:] == [sys.executable, "-P", "-m", "hermes_cli.kanban_worker_client"]
         assert captured["env"]["PYTHONPATH"].split(os.pathsep)[0] == root
 
 

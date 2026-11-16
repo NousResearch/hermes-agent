@@ -4,7 +4,9 @@ rebound onto server.py's globals at install time (method_ctx.bind_module)."""
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
 from pathlib import Path
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -34,6 +36,45 @@ def skin_payload(config: dict) -> dict:
             "customCSS": skin.custom_css}
     except Exception:  # health: allow BLE001 -- moved unchanged from resolve_skin (main keeps the same handler): a broken skin file boots the default theme
         return {}
+
+
+def skin_etag(payload: dict) -> str:
+    """Content etag of a resolved skin payload (``""`` for an empty/failed resolution).
+
+    The etag is what lets a client answer "same palette" without the body being shipped again:
+    ``gateway.ready.skin_etag`` and the folded handshake's ``skin_etag`` carry it, and a client that
+    already holds this skin re-applies nothing (it re-fetches only on a mismatch).
+    """
+    if not payload:
+        return ""
+    try:
+        blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    except (TypeError, ValueError):
+        return ""
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+#: ``(home, skin signature)`` → ``(payload, etag)`` of one resolution. ``resolve_skin()`` is config
+#: I/O plus the skin engine's parse, and EVERY connect asked for it; the signature is the same one
+#: the watcher broadcasts on, so a name switch or a live colour edit still resolves. Bounded: the key
+#: space is (homes × skin states), and a stale entry is never served (the key includes the
+#: signature). The payload is shared and read-only by convention — consumers serialise it.
+_skin_resolution: dict[tuple[str, tuple], tuple[dict, str]] = {}
+_SKIN_RESOLUTION_MAX = 8
+
+
+def resolve_skin_with_etag() -> tuple[dict, str]:
+    """``(skin, etag)`` for the active skin, resolved at most once per signature."""
+    key = (str(_watcher_home()), _skin_sig())
+    hit = _skin_resolution.get(key)
+    if hit is not None:
+        return hit
+    payload = resolve_skin()
+    resolved = (payload, skin_etag(payload))
+    if len(_skin_resolution) >= _SKIN_RESOLUTION_MAX:
+        _skin_resolution.clear()  # homes/skins that moved away never come back to this exact sig
+    _skin_resolution[key] = resolved
+    return resolved
 
 
 # (name, user-file mtime) of the last skin broadcast: ``skin.changed`` fires on a name

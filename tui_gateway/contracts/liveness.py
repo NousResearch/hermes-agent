@@ -20,6 +20,12 @@ method("ping", params=PingParams, result=PingResult,
 
 class GatewayCapabilitiesResult(Result):
     per_session_exclusive_submit: bool
+    #: THIS CONNECTION serves ``client.hello`` (``gateway/session_hello.py`` — the fold of capabilities
+    #: + every session's replay + ``open_requests`` into one round trip). The same flag rides the ready
+    #: a client has already read by the time it could ask; sourced from the connection's own
+    #: transport, never from a build-level constant, so a socket without a session authority says
+    #: False rather than advertising a fold that would answer -32601.
+    resumed_handshake: bool = False
 
 
 method("gateway.capabilities", params=PingParams, result=GatewayCapabilitiesResult,

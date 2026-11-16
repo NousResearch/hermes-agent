@@ -553,7 +553,7 @@ def _uvicorn_console_logging() -> None:
 
 
 def build_listener_server(served_app, host: str, port: int, *, auth_required: bool,
-                          ws_ping: Optional[tuple[float, float]] = None,
+                          ws_ping: Optional[tuple[Optional[float], Optional[float]]] = None,
                           timeout_graceful_shutdown: Optional[float] = 3, lifespan: str = "auto"):
     """uvicorn ``Config`` + ``Server`` for a dashboard or gateway-session listener (FastAPI-free, so
     the gateway can build its session listener without importing the dashboard app).
@@ -563,12 +563,15 @@ def build_listener_server(served_app, host: str, port: int, *, auth_required: bo
     The ping only detects half-open connections (proxy 524, dropped tunnels), impossible on
     loopback where a dead client sends a real FIN/RST -> WebSocketDisconnect. So: no ping on
     loopback; non-loopback sits behind a Cloudflare Tunnel (~100s idle) and keeps a config-driven
-    cadence (dashboard.ws_ping_interval/_timeout, #79635) defaulting to 20/20. *ws_ping* overrides
-    both (SSH-isolated Desktop backends).
+    cadence (dashboard.ws_ping_interval/_timeout, #79635) defaulting to 20/20, failed only after
+    two consecutive missed pongs while the detection budget stays under that idle cap
+    (web_server_keepalive, C2a t_e15288d4: one miss is a suspended renderer, not a gone peer).
+    *ws_ping* overrides both (SSH-isolated Desktop backends).
     """
     import uvicorn
     from hermes_cli.config import load_config
     from hermes_cli.web_server_boundary import _DESKTOP_ATTACHMENT_WS_MAX_BYTES, _LOOPBACK_HOST_VALUES
+    from hermes_cli.web_server_keepalive import strike_keepalive_protocol
 
     try:
         dash_cfg = load_config().get("dashboard") or {}
@@ -599,6 +602,10 @@ def build_listener_server(served_app, host: str, port: int, *, auth_required: bo
         # Loopback-only unless the operator trusts a bounded upstream proxy, so
         # spoofed X-Forwarded-* from arbitrary callers is never honoured.
         forwarded_allow_ips=_dashboard_forwarded_allow_ips(dash_cfg),
+        # C2a strike policy: extends the transport's own failure path when the cadence fits the
+        # tunnel idle cap; otherwise returns "auto" (pings off / one cycle already owns the
+        # budget / no sansio) and the auto-resolved transport stays untouched.
+        ws=strike_keepalive_protocol(ws_ping),
         ws_ping_interval=ws_ping[0],
         ws_ping_timeout=ws_ping[1],
         ws_per_message_deflate=per_message_deflate,

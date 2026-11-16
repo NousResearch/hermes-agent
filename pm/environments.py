@@ -447,6 +447,49 @@ class NoCommittedEnvironment(RuntimeError):
     """PM's store Python with no committed generation: no retry fixes it, only `hermes pm repair`."""
 
 
+def _linked_worktree_main_root(project_root: Path) -> Path | None:
+    """The checkout a linked git worktree shares its object store with, else ``None``.
+
+    A pure-file probe (the ``.git`` pointer file and the linked dir's ``commondir``):
+    this answers on a boot that is already failing, possibly with no git on PATH.
+    """
+    try:
+        pointer = (project_root / ".git").read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None  # no .git at all, or .git is a directory (a regular checkout)
+    if not pointer.startswith("gitdir:"):
+        return None
+    gitdir = Path(pointer.split(":", 1)[1].strip())
+    if not gitdir.is_absolute():
+        gitdir = project_root / gitdir
+    try:
+        common = (gitdir / "commondir").read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    main_git = (gitdir / common).resolve()
+    return main_git.parent if main_git.name == ".git" else None
+
+
+def _no_committed_environment_message(project_root: Path) -> str:
+    """Name the refusing install and the missing record in the boot's own terms.
+
+    A dispatched worktree worker died with the bare clause below and the operator had
+    nothing to act on: which root refused, which environment was missing, and why the
+    host install that clearly works said it didn't. A linked git worktree is a separate
+    project root — its own install key, its own (empty) state — while the store it
+    resolves through is shared with the main checkout, so the refusal must say so.
+    """
+    root = Path(project_root).resolve()
+    message = (f"no dependency environment is committed for this install "
+               f"(root: {root}; missing record: {runtime_facts_path(root)})")
+    main = _linked_worktree_main_root(root)
+    if main is not None:
+        message += f"; {root} is a linked git worktree of {main}"
+        if runtime_facts_path(main).is_file():
+            message += f", whose install does have a committed environment ({runtime_facts_path(main)})"
+    return message
+
+
 def _require_own_dependencies(project_root: Path) -> None:
     """With nothing committed, an interpreter keeps the packages it booted with.
 
@@ -458,7 +501,7 @@ def _require_own_dependencies(project_root: Path) -> None:
     if sys.prefix != sys.base_prefix:
         return  # a venv interpreter (developer .venv, test env) carries its own packages
     if Path(sys.base_prefix).resolve().is_relative_to(store_root(project_root).resolve()):
-        raise NoCommittedEnvironment("no dependency environment is committed for this install")
+        raise NoCommittedEnvironment(_no_committed_environment_message(project_root))
 
 
 def activate_dependencies(project_root: Path) -> None:

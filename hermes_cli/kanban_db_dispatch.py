@@ -26,6 +26,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli.kanban_db_failure_text import blocks_respawn
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 from hermes_cli._startup_fast import project_root_str
 
@@ -51,22 +52,6 @@ TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 # ---------------------------------------------------------------------------
 # Respawn guard constants
 # ---------------------------------------------------------------------------
-
-# Patterns in last_failure_error that indicate a quota / auth blocker.
-# These errors won't resolve by retrying immediately — auto-block instead.
-# The auth family is a curated list, not an open `auth\w*` stem: that stem
-# also matched ordinary English words like "author"/"authored"/"authoring"/
-# "authoritative" in worker progress prose, parking a healthy card forever
-# (#117009).
-_RESPAWN_BLOCKER_RE = re.compile(
-    r"\b(quota|rate[\s_\-]?limit|429|403|"
-    r"auth|authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing|ation)|"
-    r"authoris(?:e|es|ed|ing|ation)|authz|"
-    r"unauthorized|forbidden|billing|subscription|"
-    r"access[\s_]denied|permission[\s_]denied|"
-    r"invalid[\s_]api[\s_]key)\b",
-    re.IGNORECASE,
-)
 
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
@@ -814,10 +799,11 @@ def detect_stale_running(
             if owner_reclaim_blocked_after_kill(conn, tid, signalled=bool(termination.get("termination_attempted"))):
                 continue
             retry_status = _kb._retry_status_for_run(conn, tid)
+            # Books no error of its own: retire the failure text it did not write (t_f7f7eef4).
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
-                "last_heartbeat_at = NULL "
+                "last_heartbeat_at = NULL, last_failure_error = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ?",
                 (retry_status, tid, row["claim_lock"]),
@@ -884,10 +870,11 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
         with _kb.write_txn(conn):
             if owner_reclaim_blocked(conn, tid):
                 continue
+            # Books no error of its own: retire the failure text it did not write (t_f7f7eef4).
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
-                "last_heartbeat_at = NULL "
+                "last_heartbeat_at = NULL, last_failure_error = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ? AND claim_expires IS ?",
                 (tid, row["claim_lock"], row["claim_expires"]),
@@ -1566,14 +1553,13 @@ def check_respawn_guard(
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
     path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
-    ready lane only ``"recent_success"`` (completed run within the window, unless
-    a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
-    handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
-    passes own those.
+    (quota/auth text the latest ended run still owns; a successful handoff or
+    reclaim close supersedes it), then for the ready lane only ``"recent_success"``
+    (completed run within the window, unless a re-queue event arrived after it — a
+    deliberate re-run) and ``"active_pr"`` (PR URL in a recent comment; unless a
+    handoff event followed it: the named profile must work on that PR). The
+    review lane skips the last two — they are the *inputs* to a review handoff.
+    Stale / dead claim locks are NOT a guard reason: the reclaim passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1587,8 +1573,7 @@ def check_respawn_guard(
     # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
     #    An infrastructure spawn refusal (#114720) shares the cooldown: the host
-    #    condition is not the card's, so it retries forever, spaced, and never
-    #    reaches the breaker.
+    #    condition is not the card's — retries forever, spaced, never reaching the breaker.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
         "SELECT outcome, ended_at, metadata FROM task_runs "
@@ -1609,18 +1594,17 @@ def check_respawn_guard(
         ended_at = _kb._to_epoch(latest_run["ended_at"])
         if ended_at is not None and (now - ended_at) < rl_cooldown:
             return "rate_limit_cooldown"
-        # Cooldown elapsed — return early so blocker_auth doesn't catch the
-        # stamped rate-limit text; this path intentionally retries forever
-        # (spaced by the cooldown) until quota returns or a real run supersedes it.
+        # Cooldown elapsed — return early so blocker_auth doesn't catch the stamped
+        # rate-limit text; retries forever until quota returns or a real run supersedes it.
         return None
 
-    # 2. Quota / auth blocker: retrying immediately will not help.  A plain
-    # crash is different: its persisted error includes the worker's last
-    # captured output, which is context rather than a diagnosis and may contain
-    # benign commands such as ``claude auth status`` (#117097).
+    # 2. Quota / auth blocker: retrying immediately will not help. The text is
+    #    only a blocker while the latest ended run still owns it — a successful
+    #    handoff or reclaim close supersedes it — and a crash's captured output is
+    #    context, not a diagnosis. Both live in kanban_db_failure_text.blocks_respawn.
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    if blocks_respawn(err, latest_outcome):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
@@ -2639,7 +2623,15 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
     """The profile owner executes; this subprocess only waits for its receipt."""
     import sys
-    return [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    # ``-P`` (safe path) is the load-bearing flag: without it ``-m`` prepends the child's
+    # cwd — the task workspace — ahead of the PYTHONPATH pin below, and a worktree
+    # workspace of the Hermes checkout shadows the launcher's own tree. The child then
+    # boots the WORKTREE's hermes_bootstrap: a fresh project root whose install has no
+    # committed dependency environment, so a PM store interpreter dies at
+    # ``pm/environments.py`` before the claim is ever submitted (every dispatcher worktree
+    # spawn crashed exactly this way). The pin is the whole import contract;
+    # ``harden_import_path`` drops the same cwd entry for the modules that follow.
+    return [sys.executable, "-P", "-m", "hermes_cli.kanban_worker_client"]
 
 
 def _open_worker_log(task: Task, board: Optional[str]):

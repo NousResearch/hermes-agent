@@ -50,4 +50,14 @@ export interface RegistryConfig {
    * `activeRequests` is 0 during most of a turn.
    */
   liveScopes?: () => ReadonlySet<string>
+  /**
+   * True while this window is PARKED — hidden, with its redial ladders standing
+   * down (#C2a, store/gateway-park). A getter, like the rest of the host state
+   * above: the hook owns the park moment (a visibility change), the registry
+   * consults it at the two points that could otherwise spawn a background dial
+   * (`scheduleReconnect`'s arm, and `openSecondary`'s dial — which every
+   * ladder AND every demand-driven open goes through). Absent = never parked,
+   * which is what every non-window caller and every unit test wants.
+   */
+  routesParked?: () => boolean
 }

@@ -179,18 +179,56 @@ describe('revalidateRemoteConnection', () => {
     }
   }
 
-  it('probes the normalized status URL with the production timeout', async () => {
+  // #C3 (t_406dbcb3): the reconnect critical path probes the CHEAP endpoint.
+  // /api/status costs 0.18-1.9s to answer (gateway probe + topology + session count);
+  // /api/health is p50 6 ms. The failure-streak policy is untouched: same timeout,
+  // same tracker, same log lines — only the probe target moved, as the pooled-dispatch
+  // gate did first (see POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS).
+  it('probes the cheap health URL with the production timeout', async () => {
     const test = harness()
 
     await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: false })
     expect(test.probe).toHaveBeenCalledWith(
       expect.objectContaining({ baseUrl: 'https://gateway.example.com/' }),
-      '/api/status',
+      '/api/health',
       {
         timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
       }
     )
+    expect(test.probe).not.toHaveBeenCalledWith(
+      expect.anything(),
+      '/api/status',
+      expect.anything()
+    )
     expect(test.resetConnection).not.toHaveBeenCalled()
+  })
+
+  it('falls back to /api/status when the remote predates /api/health (404)', async () => {
+    const test = harness()
+
+    test.probe.mockImplementationOnce(async (_connection: unknown, path: string) => {
+      if (path === '/api/health') {
+        throw new Error('404: Not Found')
+      }
+      return { ok: true }
+    })
+
+    await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: false })
+    expect(test.probe).toHaveBeenNthCalledWith(1, expect.anything(), '/api/health', expect.anything())
+    expect(test.probe).toHaveBeenNthCalledWith(2, expect.anything(), '/api/status', expect.anything())
+    // A pre-health remote is REACHABLE — the streak must not burn.
+    expect(test.resetConnection).not.toHaveBeenCalled()
+    expect(test.log).not.toHaveBeenCalled()
+  })
+
+  it('counts a transient health failure against the streak without probing status', async () => {
+    const test = harness()
+
+    test.probe.mockRejectedValueOnce(new Error('offline'))
+
+    await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: false })
+    expect(test.probe).toHaveBeenCalledTimes(1)
+    expect(test.log).toHaveBeenCalledWith(expect.stringContaining('(1/3)'))
   })
 
   it('keeps failures one and two, then resets on the third failure', async () => {

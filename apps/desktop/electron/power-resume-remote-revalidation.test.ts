@@ -250,4 +250,44 @@ describe('attachPowerResumeRemoteRevalidation (#93910)', () => {
     powerMonitor.emit('resume')
     expect(revalidate).toHaveBeenCalledTimes(2)
   })
+
+  // #C2a: the holdoff exists to stop a burst of wake signals from tearing every
+  // pooled tunnel down again and again. The cheap, idempotent probe half forces
+  // nothing down, so holding IT back only taxes the first wake — it runs on
+  // every signal.
+  it('runs the cheap probe on every signal and holds back only the destructive sweep', async () => {
+    const powerMonitor = fakePowerMonitor()
+    const probe = vi.fn(async () => undefined)
+    const revalidate = vi.fn(async () => undefined)
+
+    let now = 9_000_000
+
+    attachPowerResumeRemoteRevalidation({
+      log: vi.fn(),
+      now: () => now,
+      powerMonitor,
+      probe,
+      revalidate
+    })
+
+    // macOS wake: resume + unlock-screen together, then a second resume a few
+    // seconds later (a flapping Wi-Fi association).
+    powerMonitor.emit('resume')
+    powerMonitor.emit('unlock-screen')
+    await Promise.resolve()
+    now += 3_000
+    powerMonitor.emit('resume')
+    await Promise.resolve()
+
+    expect(probe).toHaveBeenCalledTimes(3)
+    // The destructive half is still one sweep per window.
+    expect(revalidate).toHaveBeenCalledTimes(1)
+
+    now += POWER_RESUME_REVALIDATION_HOLDOFF_MS
+    powerMonitor.emit('resume')
+    await Promise.resolve()
+
+    expect(probe).toHaveBeenCalledTimes(4)
+    expect(revalidate).toHaveBeenCalledTimes(2)
+  })
 })

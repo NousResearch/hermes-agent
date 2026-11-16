@@ -202,16 +202,6 @@ def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None
                        issuer=identity.get("issuer", ""), extra=extra)
 
 
-def _socket_ticket_response(request: Request, identity: dict, socket: str, session_token: str | None,
-                            profile_home: str | None = None) -> JSONResponse:
-    from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS
-    from hermes_cli.webapp_sign_in import sign_in_of
-
-    ticket = mint_socket_ticket(identity, socket, session_token=session_token, sign_in=sign_in_of(request),
-                                profile_home=profile_home)
-    return JSONResponse({"ticket": ticket, "ttl_seconds": TTL_SECONDS}, headers={"Cache-Control": "no-store"})
-
-
 #: Every socket a Webapp page dials with a one-use ticket from ``POST /api/webapp/socket-ticket``, by
 #: its ``web_session_sockets`` name: the ``web_server_surface.SurfacePolicy`` field that lets a surface
 #: mint it, and whether the mint checks the profile the page will dial (400/404), so a stale tab learns
@@ -225,6 +215,97 @@ SOCKET_TICKETS: dict[str, tuple[str, bool]] = {
 }
 
 
+def _socket_ticket_response(request: Request, identity: dict, socket: str, session_token: str | None,
+                            profile_home: str | None = None) -> JSONResponse:
+    """The single-ticket answer: one dial, one ticket, in the shape clients already parse."""
+    minted = _mint_socket_tickets(request, identity, session_token, [socket], lambda _name: profile_home)
+    return JSONResponse({"ticket": minted[0]["ticket"], "ttl_seconds": minted[0]["ttl_seconds"]},
+                        headers={"Cache-Control": "no-store"})
+
+
+#: One dial, one ticket — but a reconnect burst dials one socket per session, so the ROUND TRIP is
+#: worth batching. 64 is well past the largest burst measured on a real wake (9) and bounds one
+#: request's mint work.
+MAX_BATCH_TICKETS = 64
+
+
+def _mint_socket_tickets(request: Request, identity: dict, session_token: str | None,
+                         names: list[str], profile_home_for) -> list[dict]:
+    """One ``mint_socket_ticket`` per named socket, in order.
+
+    Batching is the round trip, never the credential: every ticket is still minted by the same
+    single-use ``mint_ticket`` (its own grant, its own 30 s TTL and its own audit line when the
+    upgrade gate redeems it), and the caller has already checked every name against the surface's
+    policy. ``profile_home_for(name)`` names the profile a ``gateway`` ticket answers for.
+    """
+    from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS
+    from hermes_cli.webapp_sign_in import sign_in_of
+
+    minted = []
+    for name in names:
+        ticket = mint_socket_ticket(identity, name, session_token=session_token,
+                                    sign_in=sign_in_of(request), profile_home=profile_home_for(name))
+        minted.append({"socket": name, "ticket": ticket, "ttl_seconds": TTL_SECONDS})
+    return minted
+
+
+def _socket_profile_home(name: str, profile: str | None) -> str | None:
+    """The profile home a ticket for *name* answers for: the named profile for a ``gateway`` ticket
+    (400/404 for a name that no longer exists, so a stale tab learns it here rather than from a
+    socket that keeps closing), else None (the launch profile)."""
+    from hermes_cli.web_server_cron import _cron_profile_home
+
+    if not SOCKET_TICKETS.get(name, (None, False))[1]:
+        return None
+    _name, home = _cron_profile_home(profile)
+    return str(home) if name == GATEWAY_SOCKET and profile else None
+
+
+def _refuse_oversized_batch(asked: int) -> None:
+    """429 for a batch the REQUEST asks for, before a list of that size is built for it.
+
+    ``asked`` is a number out of the body, never the length of a list built from the body:
+    ``[socket] * count`` is a count-sized allocation this process pays before any cap could refuse
+    it, for a body of ~50 bytes.
+    """
+    if asked > MAX_BATCH_TICKETS:
+        raise HTTPException(429, f"at most {MAX_BATCH_TICKETS} tickets per request")
+
+
+async def _batch_socket_names(request: Request, socket: str) -> list[str] | None:
+    """The sockets one POST asks for, in order — None for the body-less single-ticket query form.
+
+    Body: ``{"sockets": [name, ...]}`` (one ticket per entry) or ``{"socket": name, "count": n}``
+    (n dials of that socket). Nothing else is accepted: a batch names sockets explicitly, so a typo
+    is a 400 rather than a silence.
+
+    ``count`` is bounded from the number itself, **before** it is materialised: any caller holding
+    the dashboard session token (every signed-in tab) reaches this route, and the body has no size
+    limit, so a list built first would let ``{"socket": "gateway", "count": 1000000000}`` ask the
+    serving process for ~8 GB before the 429.
+    """
+    raw = await request.body()
+    if not raw:
+        return None
+    try:
+        body = json.loads(raw)
+    except ValueError as exc:
+        raise HTTPException(400, f"Batch ticket body is not JSON: {exc}") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Batch ticket body must be an object")
+    count = body.get("count")
+    names = body.get("sockets")
+    if count is not None:
+        if type(count) is not int or count < 1:
+            raise HTTPException(400, "count must be a positive integer")
+        _refuse_oversized_batch(count)
+        names = [body.get("socket") or socket] * count
+    if not isinstance(names, list) or not names:
+        raise HTTPException(400, "Batch ticket needs {sockets: [...]} or {socket, count}")
+    _refuse_oversized_batch(len(names))
+    return [name if isinstance(name, str) and name else socket for name in names]
+
+
 @router.post("/api/webapp/socket-ticket")
 async def issue_socket_ticket(request: Request, socket: str = "", profile: str | None = None):
     """The browser's one-use ticket for one dial of *socket* on this same origin: ``gateway`` for
@@ -234,23 +315,33 @@ async def issue_socket_ticket(request: Request, socket: str = "", profile: str |
     that socket and nothing else, so the browser mints one per dial. Minted locally: the server that
     serves this page runs the socket's sessions. A ``gateway`` ticket minted with *profile* names
     it: that socket answers a request that names no profile for *profile*, as a native ticket does
-    (``chat_ws.gateway_ws``), never for the gateway's launch profile."""
-    from hermes_cli.web_server_cron import _cron_profile_home
+    (``chat_ws.gateway_ws``), never for the gateway's launch profile.
 
-    if socket not in SOCKET_TICKETS:
-        raise HTTPException(400, "Unknown socket")
-    surface, checks_profile = SOCKET_TICKETS[socket]
-    if not getattr(policy(request.app.state), surface):
-        raise HTTPException(404, f"Webapp {socket} tickets are unavailable on this surface")
+    A reconnect burst can mint all of its tickets in ONE request: post ``{"sockets": [name, ...]}``
+    or ``{"socket": name, "count": n}`` and read ``{"tickets": [{socket, ticket, ttl_seconds}, ...]}``
+    back in the order asked. Every ticket keeps every property of the single form — single use, 30 s
+    TTL, this caller's identity, this surface's policy, its own audit line at redemption — because
+    the batch changes the round trip, not the grant. A body-less request keeps the original
+    ``{"ticket", "ttl_seconds"}`` answer.
+    """
+    names = await _batch_socket_names(request, socket)
+    single = names is None
+    for name in names or [socket]:
+        if name not in SOCKET_TICKETS:
+            raise HTTPException(400, "Unknown socket")
+        if not getattr(policy(request.app.state), SOCKET_TICKETS[name][0]):
+            raise HTTPException(404, f"Webapp {name} tickets are unavailable on this surface")
     identity, session_token = _ticket_principal(request)
-    profile_home = None
-    if checks_profile:
-        _name, home = _cron_profile_home(profile)
-        if socket == GATEWAY_SOCKET and profile:
-            profile_home = str(home)
-    return _socket_ticket_response(request, identity, socket, session_token, profile_home=profile_home)
+    if single:
+        return _socket_ticket_response(request, identity, socket, session_token,
+                                       profile_home=_socket_profile_home(socket, profile))
+    minted = _mint_socket_tickets(request, identity, session_token, names,
+                                 lambda name: _socket_profile_home(name, profile))
+    return JSONResponse({"tickets": minted, "ttl_seconds": minted[0]["ttl_seconds"]},
+                        headers={"Cache-Control": "no-store"})
 
 
+#: Routes below: the handoff tickets a private Webapp window exchanges for its session token.
 @router.post("/webapp/window-session")
 async def redeem_window_ticket(request: Request):
     from hermes_cli import browser_credential

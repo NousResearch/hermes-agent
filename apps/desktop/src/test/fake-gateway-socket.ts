@@ -15,6 +15,10 @@ export class FakeWebSocket {
   // the JSON-RPC error a PRE-ping backend returns (a healthy, version-skewed
   // response that must NOT trigger a reconnect).
   static pingMode: 'pong' | 'silent' | 'method-not-found' = 'pong'
+  // Payload of the frame every accepted socket sends. Empty by default (a legacy
+  // peer, which arms no client keepalive); a test that needs the C1 `usable`
+  // stamp from a heartbeat round trip turns `heartbeat` on.
+  static readyPayload: Record<string, unknown> = {}
 
   readyState = 0
   private listeners: Record<string, Set<Listener>> = {}
@@ -30,7 +34,7 @@ export class FakeWebSocket {
         this.emit('open', {})
         // A real gateway's first frame after accept; empty = a legacy (non-authority) peer.
         this.emit('message', {
-          data: JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
+          data: JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: FakeWebSocket.readyPayload } })
         })
       } else {
         this.readyState = FakeWebSocket.CLOSED

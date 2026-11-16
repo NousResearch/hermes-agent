@@ -45,11 +45,11 @@ const HTTPS_JSON_AGENT = new https.Agent({ keepAlive: true, maxSockets: 50 })
 const HTTP_DOWNLOAD_AGENT = new http.Agent({ keepAlive: true, maxSockets: 8 })
 const HTTPS_DOWNLOAD_AGENT = new https.Agent({ keepAlive: true, maxSockets: 8 })
 
-function jsonAgentFor(protocol) {
+function jsonAgentFor(protocol: string) {
   return protocol === 'https:' ? HTTPS_JSON_AGENT : HTTP_JSON_AGENT
 }
 
-function downloadAgentFor(protocol) {
+function downloadAgentFor(protocol: string) {
   return protocol === 'https:' ? HTTPS_DOWNLOAD_AGENT : HTTP_DOWNLOAD_AGENT
 }
 
@@ -79,20 +79,22 @@ const NEVER_SENT_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHO
 
 const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
-function isIdempotentMethod(method) {
+function isIdempotentMethod(method: unknown) {
   return IDEMPOTENT_METHODS.has(String(method || 'GET').toUpperCase())
 }
 
-function isTransientTransportError(error) {
-  if (!error) {
+function isTransientTransportError(error: unknown) {
+  if (!error || typeof error !== 'object') {
     return false
   }
 
-  if (TRANSIENT_CODES.has(error.code)) {
+  const code = (error as { code?: unknown }).code
+
+  if (typeof code === 'string' && TRANSIENT_CODES.has(code)) {
     return true
   }
 
-  const msg = String(error.message || '')
+  const msg = String((error as { message?: unknown }).message || '')
 
   return msg.includes('socket hang up') || msg.includes('read ECONNRESET')
 }
@@ -106,7 +108,7 @@ function isTransientTransportError(error) {
  *                     the caller just BEFORE the first byte of the request is
  *                     flushed, so a `false` here proves nothing went out.
  */
-function shouldRetryRequest(error, method, requestState: any = {}) {
+function shouldRetryRequest(error: unknown, method: unknown, requestState: { bodySent?: boolean } = {}) {
   if (!isTransientTransportError(error)) {
     return false
   }
@@ -116,7 +118,9 @@ function shouldRetryRequest(error, method, requestState: any = {}) {
   }
 
   // Non-idempotent: only when the request provably never reached the server.
-  if (NEVER_SENT_CODES.has(error && error.code)) {
+  const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
+
+  if (typeof code === 'string' && NEVER_SENT_CODES.has(code)) {
     return true
   }
 
@@ -129,6 +133,12 @@ function shouldRetryRequest(error, method, requestState: any = {}) {
   return false
 }
 
+interface WithRetryOptions {
+  method?: string
+  maxRetries?: number
+  delayFn?: (attempt: number) => Promise<void>
+}
+
 /**
  * Run `makeAttempt` with bounded retries under the policy above.
  *
@@ -137,17 +147,22 @@ function shouldRetryRequest(error, method, requestState: any = {}) {
  * (before the first req.write()/req.end()). Each attempt gets a fresh state
  * object initialized to { bodySent: false }.
  */
-async function withRetry(makeAttempt, options: any = {}) {
+async function withRetry<T>(
+  makeAttempt: (requestState: { bodySent: boolean }) => Promise<T>,
+  options: WithRetryOptions = {}
+): Promise<T> {
   const method = String(options.method || 'GET').toUpperCase()
-  const maxRetries = Number.isInteger(options.maxRetries) ? options.maxRetries : 2
 
   const delayFn =
-    options.delayFn || (attempt => new Promise(r => setTimeout(r, Math.min(200 * Math.pow(2, attempt), 2000))))
+    options.delayFn || ((attempt: number) => new Promise<void>(r => setTimeout(r, Math.min(200 * Math.pow(2, attempt), 2000))))
 
-  let lastError
+  const configuredMaxRetries = options.maxRetries
+  const maxRetries = typeof configuredMaxRetries === 'number' && Number.isInteger(configuredMaxRetries) ? configuredMaxRetries : 2
+
+  let lastError: unknown
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const requestState = { bodySent: false }
+    const requestState: { bodySent: boolean } = { bodySent: false }
 
     try {
       return await makeAttempt(requestState)
@@ -180,8 +195,8 @@ async function withRetry(makeAttempt, options: any = {}) {
  * the Sign in overlay away (#95701). Shared by fetchJson, fetchPublicJson and
  * the OAuth-session fetch so the three paths cannot drift apart again.
  */
-function httpStatusError(statusCode, text, statusMessage?) {
-  const status = Number.isInteger(statusCode) && statusCode > 0 ? statusCode : 500
+function httpStatusError(statusCode: unknown, text: unknown, statusMessage?: unknown) {
+  const status = typeof statusCode === 'number' && Number.isInteger(statusCode) && statusCode > 0 ? statusCode : 500
   const detail = String(text || statusMessage || '')
   const error: any = new Error(`${status}: ${detail}`)
   error.statusCode = status

@@ -399,3 +399,85 @@ def test_gateway_listener_compresses_only_for_remote_peers(host, auth_required, 
     config, _server = build_listener_server(lambda scope, receive, send: None, host, 0,
                                             auth_required=auth_required)
     assert config.ws_per_message_deflate is deflate
+
+
+# --------------------------------------------------------------------------------------
+# C2a (t_e15288d4) wiring: the strike policy reaches uvicorn through each builder's ``ws=``.
+#
+# The strike behaviour lives in web_server_keepalive and is tested on the real transport there;
+# these two tests own only the question the rest of the suite cannot answer — does a listener
+# built by PRODUCTION code actually get the policy, or does it get uvicorn's single-strike
+# default? Both arms pin that per builder, so deleting the ``ws=`` argument from either builder
+# is red. The gate's own base resolution is forced so the verdict does not depend on which
+# uvicorn the test runner happens to have installed.
+# --------------------------------------------------------------------------------------
+
+_DEFAULT_PING = {"dashboard": {"ws_ping_interval": 20.0, "ws_ping_timeout": 20.0}}
+_TUNNEL_PING = {"dashboard": {"ws_ping_interval": 60.0, "ws_ping_timeout": 600.0}}
+
+
+class _FakeSansioBase:
+    """A sansio transport shaped like the one the strike policy extends (hooks present)."""
+
+    def send_keepalive_ping(self): pass
+
+    def keepalive_timeout(self): pass
+
+    def handle_pong(self, event): pass
+
+
+@contextlib.contextmanager
+def _sansio_transport_available(monkeypatch):
+    """Force the version gate open: a 20/20 bind must produce the strike class, whatever uvicorn
+    this runner installed (the pyproject floor's sansio has no keepalive to extend)."""
+    from hermes_cli import web_server_keepalive as keepalive
+
+    monkeypatch.setattr(keepalive, "_sansio_strike_base", lambda: _FakeSansioBase)
+    monkeypatch.setattr(keepalive, "_STRIKE_PROTOCOLS", {})
+    yield _FakeSansioBase
+
+
+def test_dashboard_builder_passes_the_strike_policy_to_uvicorn(monkeypatch):
+    """``web_server._build_uvicorn_server`` is the dashboard listener. Non-loopback 20/20 must
+    hand uvicorn the strike class; loopback (pings off) and the SSH-tunnel 60/600 cadence (one
+    cycle already owns the detection budget) must hand it ``"auto"``, the untouched transport."""
+    from hermes_cli import web_server as ws_mod
+
+    monkeypatch.setattr(ws_mod.app.state, "auth_required", False, raising=False)
+    monkeypatch.setattr(ws_mod, "load_config", lambda: dict(_DEFAULT_PING))
+    with _sansio_transport_available(monkeypatch) as base:
+        remote, _ = ws_mod._build_uvicorn_server("0.0.0.0", 0)
+        assert issubclass(remote.ws, base), "a non-loopback dashboard listener is missing the strike policy"
+
+        local, _ = ws_mod._build_uvicorn_server("127.0.0.1", 0)
+        assert local.ws == "auto" and local.ws_ping_interval is None
+
+        try:
+            tunnel, _ = ws_mod._build_uvicorn_server("127.0.0.1", 0, ssh_isolated=True)
+            assert tunnel.ws == "auto", "the SSH-tunnel cadence keeps the transport's own single cycle"
+            assert (tunnel.ws_ping_interval, tunnel.ws_ping_timeout) == (60.0, 600.0)
+        finally:
+            ws_mod.app.state._state.pop("ssh_isolated_clients", None)  # process-global app: never leak
+
+
+def test_gateway_listener_builder_passes_the_strike_policy_to_uvicorn(monkeypatch):
+    """Same contract for ``web_server_lifecycle.build_listener_server``, the builder the gateway's
+    session listener (and every Desktop socket) is built by."""
+    from hermes_cli import config as config_mod
+    from hermes_cli.web_server_lifecycle import build_listener_server
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: dict(_DEFAULT_PING))
+    with _sansio_transport_available(monkeypatch) as base:
+        remote, _ = build_listener_server(lambda scope, receive, send: None, "0.0.0.0", 0,
+                                          auth_required=True)
+        assert issubclass(remote.ws, base), "a non-loopback gateway listener is missing the strike policy"
+
+        local, _ = build_listener_server(lambda scope, receive, send: None, "127.0.0.1", 0,
+                                         auth_required=False)
+        assert local.ws == "auto" and local.ws_ping_interval is None
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: dict(_TUNNEL_PING))
+    with _sansio_transport_available(monkeypatch):
+        slow, _ = build_listener_server(lambda scope, receive, send: None, "0.0.0.0", 0,
+                                        auth_required=True)
+        assert slow.ws == "auto", "a cadence that cannot fit two cycles under the cap keeps the transport"

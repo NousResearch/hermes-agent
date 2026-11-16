@@ -4,6 +4,14 @@ import {
   type ModelOptionsResult,
 } from "@hermes/shared";
 import { createDashboardSessionMutations } from "./session-mutations";
+import { createConditionalGet, HTTP_NOT_MODIFIED } from "./api-conditional";
+import {
+  appendProfileParam,
+  appendQueryParam,
+  appendSessionFilters,
+  normalizeSessionQueryOptions,
+  type SessionQueryOptions,
+} from "./api-session-query";
 
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
@@ -165,6 +173,9 @@ export async function fetchJSON<T>(
   if (token) {
     setSessionHeader(headers, token);
   }
+  if (options?.ifNoneMatch) {
+    headers.set("If-None-Match", options.ifNoneMatch);
+  }
   let res: Response;
   try {
     res = await fetch(target, {
@@ -188,6 +199,13 @@ export async function fetchJSON<T>(
     // The toast shows only the sentence; keep status/path/body in the console for bug reports.
     console.warn("[api]", err.details);
     throw err;
+  }
+  if (res.status === 304) {
+    // Only a conditional GET (the ifNoneMatch option above) can reach here:
+    // the server confirmed the caller's saved ETag still describes the
+    // resource. 304 carries no body — hand back the sentinel, never try to
+    // parse one, and do NOT treat it as an error (it is not a failure).
+    return HTTP_NOT_MODIFIED as unknown as T;
   }
   if (res.status === 401) {
     // Phase 6: the gated middleware emits a structured envelope so the
@@ -243,6 +261,9 @@ export async function fetchJSON<T>(
     // current ``window.__HERMES_SESSION_TOKEN__`` is valid, so the next
     // 401 — if any — should be allowed to trigger its own reload cycle.
     clearDashboardTokenReloadAttempt();
+    if (options?.onEtag) {
+      options.onEtag(res.headers.get("etag"));
+    }
   }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
@@ -252,6 +273,16 @@ export async function fetchJSON<T>(
   }
   return res.json();
 }
+
+// #C3 (t_406dbcb3): conditional-GET list reads — ETag revalidation, cache and
+// 304 handling live in ./api-conditional; fetchJSON provides the plumbing.
+const conditionalGet = createConditionalGet(<T,>(
+  url: string,
+  options: { ifNoneMatch?: string; onEtag: (etag: string | null) => void },
+) => fetchJSON<T>(url, undefined, options));
+
+/** Test seam: drop every stored conditional-GET validator. */
+export const __resetConditionalCacheForTests = conditionalGet.reset;
 
 /** Encode a plugin registry key for URL paths (preserves `/` segment separators). */
 function pluginPath(name: string): string {
@@ -365,50 +396,6 @@ function profileQuery(profile?: string): string {
   return profile ? `?profile=${encodeURIComponent(profile)}` : "";
 }
 
-function appendProfileParam(url: string, profile?: string): string {
-  if (!profile || url.includes("profile=")) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}profile=${encodeURIComponent(profile)}`;
-}
-
-function appendQueryParam(url: string, key: string, value?: string): string {
-  if (!value) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(value)}`;
-}
-
-export interface SessionQueryOptions {
-  profile?: string;
-  order?: "created" | "recent";
-  source?: string | null;
-  sources?: string[];
-  excludeSources?: string[];
-}
-
-function normalizeSessionQueryOptions(
-  profileOrOptions?: string | SessionQueryOptions,
-  order: "created" | "recent" = "created",
-): SessionQueryOptions {
-  if (typeof profileOrOptions === "string") {
-    return { profile: profileOrOptions, order };
-  }
-  return {
-    profile: getManagementProfile(),
-    order,
-    ...(profileOrOptions ?? {}),
-  };
-}
-
-function appendSessionFilters(url: string, options: SessionQueryOptions): string {
-  let next = url;
-  next = appendQueryParam(next, "source", options.source ?? undefined);
-  if (options.sources && options.sources.length > 0) {
-    next = appendQueryParam(next, "sources", options.sources.join(","));
-  }
-  if (options.excludeSources && options.excludeSources.length > 0) {
-    next = appendQueryParam(next, "exclude_sources", options.excludeSources.join(","));
-  }
-  return appendProfileParam(next, options.profile);
-}
-
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
@@ -445,8 +432,8 @@ export const api = {
     profileOrOptions: string | SessionQueryOptions = getManagementProfile(),
     order: "created" | "recent" = "created",
   ) => {
-    const options = normalizeSessionQueryOptions(profileOrOptions, order);
-    return fetchJSON<PaginatedSessions>(
+    const options = normalizeSessionQueryOptions(profileOrOptions, order, getManagementProfile());
+    return conditionalGet.get<PaginatedSessions>(
       appendSessionFilters(
         `/api/sessions?limit=${limit}&offset=${offset}&order=${options.order ?? order}`,
         options,
@@ -894,7 +881,7 @@ export const api = {
     q: string,
     profileOrOptions: string | SessionQueryOptions = getManagementProfile(),
   ) => {
-    const options = normalizeSessionQueryOptions(profileOrOptions);
+    const options = normalizeSessionQueryOptions(profileOrOptions, "created", getManagementProfile());
     return fetchJSON<SessionSearchResponse>(
       appendSessionFilters(
         `/api/sessions/search?q=${encodeURIComponent(q)}`,
@@ -1895,7 +1882,18 @@ interface FetchJSONOptions {
    *  whose 401 is an expected signal (e.g. /api/auth/me in non-gated mode)
    *  rather than evidence of a rotated session token. */
   allowUnauthorized?: boolean;
+  /** Conditional GET: sent as If-None-Match. When the server answers 304,
+   *  {@link fetchJSON} resolves with {@link HTTP_NOT_MODIFIED} instead of a
+   *  body — the caller keeps the value it cached under the sent ETag. */
+  ifNoneMatch?: string;
+  /** Receives the response's ETag header on every 2xx, so a conditional
+   *  caller can store the ETag alongside the value it just parsed. */
+  onEtag?: (etag: string | null) => void;
 }
+
+/** Sentinel returned by {@link fetchJSON} when an ``ifNoneMatch`` conditional
+ *  GET hit: the caller's cached value still describes the resource. */
+export { HTTP_NOT_MODIFIED };
 
 export interface ActionStatusResponse {
   exit_code: number | null;

@@ -518,31 +518,22 @@ def _wake_detect_handler(transport, sid: str, phrase: str, new_session: bool):
 @method("gateway.capabilities")
 def _(rid, params: dict) -> dict:
     """What THIS BUILD enforces (a client withholds unless advertised), sourced from the enforcing
-    module, never config: a believed-but-absent capability is worse."""
+    module, never config: a believed-but-absent capability is worse. ``resumed_handshake`` is read
+    from the CONNECTION's own transport — the authority answers ``client.hello``, so a socket
+    without one says False rather than advertising a fold that would answer -32601."""
     from hermes_cli.active_sessions import PER_SESSION_EXCLUSIVE_SUBMIT
-    return _ok(rid, {"per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT)})
+    return _ok(rid, {"per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT),
+                     "resumed_handshake": bool(getattr(_caller_transport(), "has_session_authority", False))})
 
 
 @method("client.capabilities")
 def _(rid, params: dict) -> dict:
     """What the calling client handles. ``server_requests: true`` marks this connection as one that answers
     server→client requests; a WebSocket client that never sends it gets every such request failed fast
-    instead of stalling the agent for the deadline (#112548)."""
-    from hermes_cli.process_identity import local_desktop_client
-    from tui_gateway import server_requests
-    from tui_gateway.contracts import registry as contracts
-    transport = _caller_transport()
-    # Each call updates what it names: the Desktop sends ``desktop_local`` on its own, so a backend older
-    # than the field refuses only that call and keeps the ``server_requests`` it already accepted.
-    if "server_requests" in params:
-        server_requests.advertise(transport, bool(params.get("server_requests")))
-    if "desktop_local" in params and hasattr(transport, "auth_identity"):
-        transport.desktop_local = local_desktop_client(transport.auth_identity, params.get("desktop_local"))
-        if transport.desktop_local:
-            from tui_gateway import server
-            server.begin_local_desktop_boot()
-    return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS), "declines_not_shown": True,
-                     "canonical_clarify_batch": True})
+    instead of stalling the agent for the deadline (#112548). The application (and its answer) is the
+    shared ``connection_capabilities`` seam — ``client.hello`` applies the same declaration on its fold."""
+    from tui_gateway.connection_capabilities import apply_client_capabilities
+    return _ok(rid, apply_client_capabilities(_caller_transport(), params))
 
 
 @method("ping")

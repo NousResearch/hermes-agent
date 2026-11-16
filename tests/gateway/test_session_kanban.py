@@ -54,7 +54,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
         build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
 
 
-@pytest.mark.parametrize('mode', ['complete', 'timeout', 'rate_limit', 'billing', 'crash'])
+@pytest.mark.parametrize('mode', ['complete', 'worktree', 'timeout', 'rate_limit', 'billing', 'crash'])
 def test_real_dispatcher_lifecycle(tmp_path, mode):
     import os
     import subprocess
@@ -68,8 +68,14 @@ def test_real_dispatcher_lifecycle(tmp_path, mode):
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads((tmp_path / 'state' / 'receipt.json').read_text())
     print(json.dumps(receipt))
-    if mode != 'complete':
+    if mode not in {'complete', 'worktree'}:
         assert receipt['task_status'] == 'ready'
+        return
+    if mode == 'worktree':
+        # A worktree workspace whose tree is a decoy Hermes: the dispatched client booted the
+        # pinned install, was admitted, heartbeated, and finished (regression: the spawn's
+        # bare `-m` put the worktree ahead of the pin and the boot died at pm/environments).
+        assert receipt['task_status'] == 'done' and receipt['heartbeat'] is True, receipt
         return
     assert receipt['task_status'] == 'done' and receipt['source'] == 'kanban'
     assert receipt['tools'] and receipt['task_context'] and receipt['skill_context'] and receipt['hook_effect']

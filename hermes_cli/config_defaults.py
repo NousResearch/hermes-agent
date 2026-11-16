@@ -997,8 +997,8 @@ DEFAULT_CONFIG = {
         # IPs / bounded CIDRs of reverse proxies trusted to supply X-Forwarded-Proto/-For. Loopback
         # always trusted; wildcards and /0 rejected (spoofing guard).
         "trusted_proxies": [],
-        # WebSocket keepalive (seconds), NON-loopback binds only: loopback always disables the
-        # protocol ping so an event-loop stall never kills a healthy local connection.
+        # WebSocket keepalive (seconds), NON-loopback binds only; a peer must miss TWO consecutive
+        # pongs to fail, inside the ~100 s tunnel cap (web_server_keepalive). Remote: 60 / 40.
         "ws_ping_interval": 20.0,
         "ws_ping_timeout": 20.0,
         # Grace (seconds) before a WS-orphaned gateway session is interrupted/reaped after its

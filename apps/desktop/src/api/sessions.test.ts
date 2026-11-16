@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { buildConditionalEnvelope } from '../../electron/api-conditional'
+
 import type { SidebarSessionsResponse } from './sessions'
 
 vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
@@ -21,7 +23,9 @@ const {
   deleteSession,
   getSession,
   getLatestSessionMessages,
+  listSessions,
   renameSession,
+  resetSessionListRevalidation,
   searchSessions,
   setSessionArchived,
   setSessionPinnedRemote,
@@ -351,5 +355,74 @@ describe('searchSessions profile scope', () => {
       path: '/api/sessions/search?q=zebra&profile=research',
       profile: 'research'
     })
+  })
+})
+
+// Conditional list revalidation (C3 desktop half, t_5c4b52bf): listSessions
+// stores the response ETag per (descriptor, path) and revalidates the next
+// read; a 304 serves the cached derived page (same reference, zero
+// re-derivation), a changed 200 returns the fresh body.
+describe('listSessions conditional revalidation', () => {
+  beforeEach(() => {
+    resetSessionListRevalidation()
+    vi.mocked(client.profileScoped).mockReturnValue({})
+  })
+
+  it('stores the validator on 200, revalidates, and serves the cached page on 304', async () => {
+    const body = { sessions: [{ id: 'a' }, { id: 'b' }], total: 2, limit: 40, offset: 0 }
+
+    hermesApi
+      .mockResolvedValueOnce(buildConditionalEnvelope({ status: 200, etag: '"v1"', data: body }))
+      .mockResolvedValueOnce(buildConditionalEnvelope({ status: 304, etag: '"v1"', data: null }))
+
+    const first = await listSessions()
+    const second = await listSessions()
+
+    // First read opts in without a validator; the second sends the stored one.
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({ conditional: true, path: expect.stringContaining('/api/sessions?') })
+    expect(hermesApi.mock.calls[0][0]).not.toHaveProperty('ifNoneMatch')
+    expect(hermesApi.mock.calls[1][0]).toMatchObject({ conditional: true, ifNoneMatch: '"v1"' })
+
+    // 304: the SAME derived object comes back — zero re-parse, zero re-derive,
+    // and the store's no-op referential identity holds downstream.
+    expect(second).toBe(first)
+    expect(second.sessions.map(session => session.id)).toEqual(['a', 'b'])
+  })
+
+  it('returns the fresh body when the list changed', async () => {
+    const bodyV1 = { sessions: [{ id: 'a' }], total: 1, limit: 40, offset: 0 }
+    const bodyV2 = { sessions: [{ id: 'a' }, { id: 'c' }], total: 2, limit: 40, offset: 0 }
+
+    hermesApi
+      .mockResolvedValueOnce(buildConditionalEnvelope({ status: 200, etag: '"v1"', data: bodyV1 }))
+      .mockResolvedValueOnce(buildConditionalEnvelope({ status: 200, etag: '"v2"', data: bodyV2 }))
+      .mockResolvedValueOnce(buildConditionalEnvelope({ status: 304, etag: '"v2"', data: null }))
+
+    const first = await listSessions()
+    const second = await listSessions()
+    const third = await listSessions()
+
+    expect(second).not.toBe(first)
+    expect(second.sessions.map(session => session.id)).toEqual(['a', 'c'])
+    // The fresh validator replaces the stale one: the next read sends "v2".
+    expect(hermesApi.mock.calls[2][0]).toMatchObject({ ifNoneMatch: '"v2"' })
+    expect(third).toBe(second)
+  })
+
+  it('keeps today behavior when main predates the seam (plain body, no brand)', async () => {
+    const body = { sessions: [{ id: 'a' }], total: 1, limit: 40, offset: 0 }
+
+    hermesApi.mockResolvedValue(body)
+
+    const first = await listSessions()
+    await listSessions()
+
+    // The rows still render; but no validator was ever stored, so the second
+    // read sends no If-None-Match (the opt-in flag itself is harmless — an
+    // older main ignores it).
+    expect(first.sessions.map(session => session.id)).toEqual(['a'])
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({ conditional: true })
+    expect(hermesApi.mock.calls[0][0]).not.toHaveProperty('ifNoneMatch')
+    expect(hermesApi.mock.calls[1][0]).not.toHaveProperty('ifNoneMatch')
   })
 })

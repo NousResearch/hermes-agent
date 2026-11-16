@@ -1,4 +1,4 @@
-import { act, cleanup, render } from '@testing-library/react'
+import { act, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopBootstrapState, DesktopConnectionsRegistry } from '@/global'
@@ -7,13 +7,11 @@ import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
 import { $desktopBoot } from '@/store/boot'
 import {
   $connectionsRegistry,
-  _resetConnectionsForTests,
   selectConnection,
   setConnectionsRegistry
 } from '@/store/connections'
 import {
   activeGateway,
-  closeSecondaryGateways,
   disposeSecondariesForConnection,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
@@ -28,7 +26,7 @@ import {
   endGatewaySwitch,
   recoverActiveSourceAfterFailedGatewaySwitch
 } from '@/store/gateway-switch'
-import { $notifications, clearNotifications, notifyError } from '@/store/notifications'
+import { $notifications, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
 import { $backendRestartRequest } from '@/store/recovery-requests'
 import {
@@ -55,9 +53,22 @@ import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warni
 
 import { deferred } from '../../../test/deferred'
 import { FakeWebSocket } from '../../../test/fake-gateway-socket'
+import {
+  advanceBackoff,
+  backendExit,
+  coderConn,
+  connectionApplied,
+  fakeDesktop,
+  flushAsync,
+  Harness,
+  powerResume,
+  primaryConn,
+  remotePrimaryConn,
+  resetGatewayBootHarness,
+  teardownGatewayBootHarness
+} from '../../../test/gateway-boot-harness'
 
-import { takeGatewaySurvivor } from './gateway-hmr-survivor'
-import { primaryRuntimeConnectionId, useGatewayBoot } from './use-gateway-boot'
+import { primaryRuntimeConnectionId } from './use-gateway-boot'
 
 vi.mock(import('@/store/notifications'), async importOriginal => ({
   ...(await importOriginal()),
@@ -67,21 +78,6 @@ vi.mock(import('@/store/notifications'), async importOriginal => ({
 vi.mock(import('@/store/terminal-backend-warning'), () => ({
   warnIfTerminalBackendUnavailable: vi.fn(async () => false)
 }))
-
-// End-to-end-ish repro of the "remote VPS → stuck on CONNECTING, no Settings"
-// bug that drives the REAL useGatewayBoot hook + REAL HermesGateway through a
-// fake WebSocket we fully control. No Docker / no real port: from the desktop's
-// point of view a "remote VPS" is just a WebSocket that opens once and later
-// refuses to reopen, so that is exactly (and only) what we fake.
-//
-// The previous test (gateway-connecting-overlay.test.tsx) hand-set the stores
-// and asserted the overlays; this one proves the HOOK actually PRODUCES that
-// stuck store combo — closing the "inferred by reading code" gap on the
-// post-boot reconnect loop.
-
-let connectionApplied: null | (() => void) = null
-let powerResume: null | (() => void) = null
-let backendExit: null | ((payload?: unknown) => void) = null
 
 describe('primaryRuntimeConnectionId', () => {
   it('uses the registry identity when the primary connection has one', () => {
@@ -97,192 +93,9 @@ describe('primaryRuntimeConnectionId', () => {
   })
 })
 
-const primaryConn = {
-  authMode: 'token' as 'oauth' | 'token',
-  baseUrl: 'https://vps.example.com',
-  connectionId: 'primary-vps',
-  profile: 'default',
-  token: 't',
-  wsUrl: 'wss://vps.example.com/api/ws?token=t'
-}
+beforeEach(resetGatewayBootHarness)
 
-const remotePrimaryConn = { ...primaryConn, mode: 'remote' as const }
-
-const coderConn = {
-  authMode: 'token' as const,
-  baseUrl: 'https://coder.example.com',
-  connectionId: 'coder-remote',
-  profile: 'coder',
-  token: 'c',
-  wsUrl: 'wss://coder.example.com/api/ws?token=c'
-}
-
-function fakeDesktop() {
-  let bootProgressHandler: ((payload: Record<string, unknown>) => void) | null = null
-
-  return {
-    getConnection: vi.fn(async (profile?: null | string) => {
-      const key = (profile ?? '').trim()
-
-      return !key || key === 'default' ? primaryConn : coderConn
-    }),
-    getGatewayWsUrl: vi.fn(async (conn?: { wsUrl?: string }) => conn?.wsUrl ?? primaryConn.wsUrl),
-    getBootProgress: vi.fn(async () => ({
-      error: null as null | string,
-      fakeMode: false,
-      message: '',
-      phase: 'init',
-      progress: 0,
-      retryable: false as boolean,
-      running: true as boolean,
-      timestamp: Date.now()
-    })),
-    onBootProgress: vi.fn(callback => {
-      bootProgressHandler = callback
-
-      return () => {
-        bootProgressHandler = null
-      }
-    }),
-    // Test helper: fire a post-boot progress event through the real subscription.
-    emitBootProgress(payload: Record<string, unknown>) {
-      bootProgressHandler?.(payload)
-    },
-    onBackendExit: vi.fn(callback => {
-      backendExit = callback
-
-      return () => {
-        backendExit = null
-      }
-    }),
-    onConnectionApplied: vi.fn(callback => {
-      connectionApplied = callback
-
-      return () => {
-        connectionApplied = null
-      }
-    }),
-    onPowerResume: vi.fn(callback => {
-      powerResume = callback
-
-      return () => {
-        powerResume = null
-      }
-    }),
-    revalidateConnection: vi.fn(async () => ({ ok: true, rebuilt: false })),
-    onWindowStateChanged: vi.fn(() => () => undefined),
-    profile: { get: vi.fn(async () => ({ profile: 'default' })) }
-  }
-}
-
-function Harness({
-  beforeConnectionSwitch = () => undefined,
-  refreshHermesConfig = async () => undefined,
-  refreshSessions
-}: {
-  beforeConnectionSwitch?: () => void
-  refreshHermesConfig?: (force?: boolean, shouldPublish?: () => boolean) => Promise<void>
-  refreshSessions?: (shouldPublish?: () => boolean) => Promise<void>
-} = {}) {
-  useGatewayBoot({
-    beforeConnectionSwitch,
-    handleGatewayEvent: () => undefined,
-    handleServerRequest: () => false,
-    onConnectionReady: () => undefined,
-    onGatewayReady: () => undefined,
-    refreshHermesConfig,
-    refreshSessions: refreshSessions ?? (async () => undefined)
-  })
-
-  return null
-}
-
-const originalWebSocket = globalThis.WebSocket
-
-beforeEach(() => {
-  // Drop any parked gateway left by a prior file/case (globalThis slot).
-  const leftover = takeGatewaySurvivor()
-
-  if (leftover) {
-    try {
-      leftover.gateway.close()
-    } catch {
-      // ignore
-    }
-  }
-
-  closeSecondaryGateways()
-  $activeGatewayProfile.set('default')
-  $connection.set(null)
-  $profiles.set([])
-  $sessionTiles.set([])
-  vi.useFakeTimers()
-  FakeWebSocket.mode = 'open'
-  FakeWebSocket.instances = []
-  FakeWebSocket.pingMode = 'pong'
-  connectionApplied = null
-  powerResume = null
-  backendExit = null
-  clearNotifications()
-  vi.mocked(notifyError).mockReset()
-  vi.mocked(warnIfTerminalBackendUnavailable).mockClear()
-  ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
-  ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
-  $gatewayState.set('idle')
-  $busy.set(false)
-  $awaitingResponse.set(false)
-  $desktopBoot.set({
-    error: null,
-    fakeMode: false,
-    message: '',
-    phase: 'init',
-    progress: 0,
-    running: true,
-    timestamp: Date.now(),
-    visible: true
-  })
-})
-
-afterEach(() => {
-  cleanup()
-  // Vitest keeps import.meta.hot truthy, so the boot effect's cleanup parks an
-  // open gateway instead of tearing it down (the real HMR path). Drain + close
-  // that survivor so the next test boots a fresh socket instead of adoptBoot().
-  const survivor = takeGatewaySurvivor()
-
-  if (survivor) {
-    try {
-      survivor.gateway.close()
-    } catch {
-      // ignore
-    }
-  }
-
-  closeSecondaryGateways()
-  $activeGatewayProfile.set('default')
-  $connection.set(null)
-  $profiles.set([])
-  $sessionTiles.set([])
-  _resetConnectionsForTests()
-  $connectionsRegistry.set(null)
-  setActiveSessionId(null)
-  setSelectedStoredSessionId(null)
-  endGatewaySwitch()
-  vi.useRealTimers()
-  ;(globalThis as { WebSocket: unknown }).WebSocket = originalWebSocket
-  delete (window as { hermesDesktop?: unknown }).hermesDesktop
-  window.localStorage.removeItem('hermes.desktop.workspace-cwd')
-  $currentCwd.set('')
-  $busy.set(false)
-  $awaitingResponse.set(false)
-})
-
-// Let pending microtasks (awaits) AND the queued 0ms socket open/error fire.
-async function flushAsync() {
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(0)
-  })
-}
+afterEach(teardownGatewayBootHarness)
 
 it('loads and tracks saved gateways without mounting the statusbar or Settings', async () => {
   const desktop = fakeDesktop()
@@ -354,15 +167,6 @@ it('loads and tracks saved gateways without mounting the statusbar or Settings',
   view.unmount()
   expect(listeners.size).toBe(0)
 })
-
-// Drive the exponential backoff forward by its full cap so the next scheduled
-// reconnect attempt actually runs (1s,2s,4s,8s,15s,15s…). Returns after the
-// attempt's async work settles.
-async function advanceBackoff() {
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(15_000)
-  })
-}
 
 describe('default-route profile adoption', () => {
   it.each(['peer=1', 'win=secondary&watch=1'])(
@@ -2440,36 +2244,21 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).toBe('open')
   })
 
-  it('wake probe: a healthy socket answers the ping and stays untouched', async () => {
-    render(<Harness />)
-    await flushAsync()
-    expect($gatewayState.get()).toBe('open')
-    const socketCountBefore = FakeWebSocket.instances.length
-
-    // Default FakeWebSocket behavior: answer pings with a pong frame.
-    act(() => window.dispatchEvent(new Event('online')))
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_100)
-    })
-
-    // Probe succeeded → no forced close, no reconnect, connection untouched.
-    expect(FakeWebSocket.instances.length).toBe(socketCountBefore)
-    expect($gatewayState.get()).toBe('open')
-  })
-
-  it('wake probe: a pre-ping backend (-32601) is healthy, not reconnected', async () => {
+  it('restart-followthrough: a pre-ping backend (-32601) is healthy, not reconnected', async () => {
     render(<Harness />)
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
     const socketCountBefore = FakeWebSocket.instances.length
 
     // Version skew: this gateway predates the ping method. The error response
-    // proves the socket is alive; forcing a reconnect would loop forever.
+    // proves the socket is alive; force-closing it would loop forever. The wake
+    // path sends no ping at all any more — this carve-out now belongs to the
+    // restart-followthrough probe, which still decides whether to touch a
+    // healthy socket.
     FakeWebSocket.pingMode = 'method-not-found'
 
-    act(() => window.dispatchEvent(new Event('online')))
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_100)
+      await expect(reconnectGateway({ source: 'restart-followthrough' })).resolves.toBeUndefined()
     })
 
     expect(FakeWebSocket.instances.length).toBe(socketCountBefore)

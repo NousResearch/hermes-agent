@@ -11,8 +11,8 @@ import {
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { replayPendingApproval } from '@/store/prompts'
 import { setSessionProviderWait } from '@/store/provider-wait'
+import { replayPendingApprovalAfterReconnectResume } from '@/store/reconnect-resume'
 import { isSessionGone } from '@/store/session-gone-latch'
 import { noteSessionEvent } from '@/store/session-states'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -269,7 +269,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       })
 
       if (replaySessionId) {
-        void replayPendingApproval($gateway.get(), replaySessionId).catch(() => undefined)
+        // Ordered behind this reconnect's re-resumes (#C6): a runtime id rotates on every resume, so a
+        // re-pull naming the id held BEFORE the re-resume lands is the 4001 this epoch exists to stop.
+        void replayPendingApprovalAfterReconnectResume($gateway.get(), replaySessionId).catch(() => undefined)
       }
 
       // Mid-turn compaction does not emit another message.start. The first

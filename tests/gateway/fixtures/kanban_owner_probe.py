@@ -73,6 +73,28 @@ def main():
     os.environ.update(OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
     workspace = home / 'workspace'
     workspace.mkdir(exist_ok=True)
+    ws_kind, ws_path = 'dir', str(workspace)
+    if peer.mode == 'worktree':
+        # A repo whose tree IS a decoy Hermes. Dispatch materializes a real linked git
+        # worktree of it (the production workspace shape: <repo>/.worktrees/<task-id>),
+        # and any import resolving from that tree writes the sentinel instead of booting:
+        # before the fix, the child's cwd entry outranked the PYTHONPATH pin, booted the
+        # decoy, and the run never reached the owner.
+        decoy_repo = home / 'decoy-hermes'
+        decoy_repo.mkdir()
+        decoy = ('import pathlib\n'
+                 f"pathlib.Path({str(home / 'decoy-booted')!r}).write_text('worker imported Hermes from the worktree workspace')\n"
+                 'raise SystemExit(9)\n')
+        (decoy_repo / 'hermes_cli').mkdir()
+        (decoy_repo / 'hermes_bootstrap.py').write_text(decoy, encoding='utf-8')
+        (decoy_repo / 'hermes_cli' / '__init__.py').write_text(decoy, encoding='utf-8')
+        (decoy_repo / 'hermes_cli' / 'kanban_worker_client.py').write_text(decoy, encoding='utf-8')
+        for git_args in (['init', '-q'], ['add', '-A'],
+                         ['-c', 'user.email=probe@invalid', '-c', 'user.name=probe',
+                          'commit', '-qm', 'decoy tree']):
+            subprocess.run(['git', *git_args], cwd=str(decoy_repo), check=True, timeout=60,
+                           capture_output=True)
+        ws_kind, ws_path = 'worktree', str(decoy_repo)
     skill = home / 'skills' / 'owned-skill'
     skill.mkdir(parents=True)
     (skill / 'SKILL.md').write_text('---\nname: owned-skill\ndescription: Owned fixture\n---\nKANBAN_SKILL_SENTINEL\n', encoding='utf-8')
@@ -92,7 +114,7 @@ def main():
     kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)
     with closing(connect(board='owned')) as conn:
         tid = kb.create_task(conn, title='KANBAN_TASK_SENTINEL', body='Acceptance: finish owned card', assignee='default',
-            workspace_kind='dir', workspace_path=str(workspace), skills=['owned-skill'],
+            workspace_kind=ws_kind, workspace_path=ws_path, skills=['owned-skill'],
             goal_mode=peer.mode == 'complete', goal_max_turns=2,
             max_runtime_seconds=3600 if peer.mode == 'timeout' else None)
     env = dict(os.environ)
@@ -169,9 +191,21 @@ def main():
                         assert task.status == 'ready' and task.consecutive_failures == 1 and run['outcome'] == 'timed_out', receipt
             finally:
                 subprocess.Popen = original_popen
-            if peer.mode != 'complete':
+            if peer.mode not in {'complete', 'worktree'}:
                 return
             assert receipt['client_exit'] == ('clean_exit', 0), receipt
+            if peer.mode == 'worktree':
+                # The run proved the whole crash class end to end: the client booted from the
+                # pinned tree (the model request above is unreachable from a decoy boot), the
+                # owner admitted the claim, and the owner's activity bridge beat the board
+                # while the session worked — the exact production liveness path.
+                assert not (home / 'decoy-booted').exists(), 'worker client imported Hermes from the task worktree'
+                with closing(connect(board='owned')) as beats:
+                    receipt['heartbeat'] = bool(beats.execute(
+                        "SELECT 1 FROM task_events WHERE task_id=? AND kind='heartbeat'", (tid,)).fetchone())
+                assert receipt['heartbeat'], receipt
+                assert receipt['task_status'] == 'done', receipt
+                return
             async def retry():
                 async with websocket(home, desc) as ws:
                     first = await rpc(ws, 'kanban.run', **params)

@@ -1,3 +1,5 @@
+import type { ConditionalReadCache, PageRead } from './session-conditional-reads'
+
 interface SessionListResponse {
   sessions: unknown[]
   total: number
@@ -23,7 +25,7 @@ export interface ProfileSessionsResponse extends SessionListResponse {
   profile_totals: Record<string, number>
 }
 
-type FetchJsonForProfile = (profile: string | null, path: string) => Promise<unknown>
+type FetchJsonForProfile = (profile: string | null, path: string, ifNoneMatch?: string) => Promise<unknown>
 
 const REMOTE_SESSION_PAGE_LIMIT = 100
 
@@ -423,21 +425,46 @@ export function shouldIncludeLocalRegistrySessionSource(
   return Boolean(String(connectionId ?? '').trim()) || !baseCoversLocal
 }
 
-type GetJsonForDescriptor = (descriptor: unknown, path: string) => Promise<unknown>
+type GetJsonForDescriptor = (descriptor: unknown, path: string, ifNoneMatch?: string) => Promise<unknown>
 
 /** One registry source's rows plus its first page (which carries the totals), or null
- *  when any page failed: a partial read must not contribute rows or a stale total. */
+ *  when any page failed: a partial read must not contribute rows or a stale total.
+ *  `notModified` reports a full conditional revalidation (every page 304'd). */
 interface PagedSessionRows {
   rows: unknown[]
   first: unknown
+  notModified?: boolean
 }
 
-/** Read one registry source without sending a page larger than the backend cap. */
+/** The revalidation source for a paged read: the cache holding the page
+ *  validators plus the descriptor identity that scopes them (one validator
+ *  must never be sent to another backend). */
+export interface ConditionalPageSource {
+  descriptorKey: string
+  cache: ConditionalReadCache
+}
+
+/** Read one registry source without sending a page larger than the backend cap.
+ *
+ * With a conditional source each page revalidates against its stored ETag —
+ * an unchanged page is a 304 with no body, so nothing transfers and nothing
+ * parses. When EVERY page confirms unchanged, the previously derived join is
+ * returned as-is (same rows array reference: zero re-derivation); any fresh
+ * page recomputes the join from the pages it holds. */
 async function fetchSessionRowsInPages(
   basePath: string,
   searchParams: URLSearchParams,
-  getPage: (path: string) => Promise<unknown>
+  getPage: (path: string, ifNoneMatch?: string) => Promise<unknown>,
+  conditional?: ConditionalPageSource
 ): Promise<PagedSessionRows | null> {
+  const readPage = async (path: string): Promise<PageRead> => {
+    if (!conditional) {
+      return { data: await getPage(path), notModified: false, etag: null }
+    }
+
+    return conditional.cache.readPage(conditional.descriptorKey, path, ifNoneMatch => getPage(path, ifNoneMatch))
+  }
+
   const requestedLimit = Number(searchParams.get('limit'))
   const requestedOffset = Number(searchParams.get('offset') || '0')
 
@@ -448,16 +475,38 @@ async function fetchSessionRowsInPages(
     requestedOffset >= 0
 
   try {
-    if (!needsPaging) {
-      const page = await getPage(`${basePath}?${searchParams}`)
+    const query = searchParams.toString()
 
-      return { rows: rowsOf(page), first: page }
+    const derivedFor = (value: { first: unknown; rows: unknown[] }, etagged: boolean) => {
+      if (conditional && etagged) {
+        conditional.cache.derivedSet(conditional.descriptorKey, basePath, query, value)
+      }
+
+      return value
     }
 
-    const sessions: unknown[] = []
-    const backfilled: unknown[] = []
-    const seenIds = new Set<string>()
-    const backfilledIds = new Set<string>()
+    if (!needsPaging) {
+      const read = await readPage(`${basePath}?${query}`)
+
+      if (read.notModified && conditional) {
+        const cached = conditional.cache.derivedGet<{ first: unknown; rows: unknown[] }>(conditional.descriptorKey, basePath, query)
+
+        if (cached) {
+          return { ...cached, notModified: true }
+        }
+      }
+
+      return {
+        ...derivedFor({ rows: rowsOf(read.data), first: read.data }, read.etag !== null),
+        notModified: read.notModified
+      }
+    }
+
+    // Revalidate first, derive second: a page's `total` still bounds the next
+    // offset, but the join only runs once every page has settled — so an
+    // all-304 read can skip the derivation entirely.
+    const pages: Array<{ data: unknown; pageLimit: number }> = []
+    const reads: PageRead[] = []
     let first: unknown
     let pageOffset = requestedOffset
     let targetOffset = requestedOffset + requestedLimit
@@ -468,14 +517,46 @@ async function fetchSessionRowsInPages(
       pageParams.set('limit', String(pageLimit))
       pageParams.set('offset', String(pageOffset))
 
-      const page = await getPage(`${basePath}?${pageParams}`)
-      first ??= page
-      const pageRows = rowsOf(page)
+      const read = await readPage(`${basePath}?${pageParams}`)
 
+      pages.push({ data: read.data, pageLimit })
+      reads.push(read)
+      first ??= read.data
+
+      const total = nonNegativeNumber(read.data && typeof read.data === 'object' ? (read.data as { total?: unknown }).total : null)
+
+      if (total !== null) {
+        targetOffset = Math.min(targetOffset, total)
+      }
+
+      pageOffset += pageLimit
+    }
+
+    const allNotModified = reads.every(read => read.notModified)
+
+    if (allNotModified && conditional) {
+      const cached = conditional.cache.derivedGet<{ first: unknown; rows: unknown[] }>(conditional.descriptorKey, basePath, query)
+
+      if (cached) {
+        return { ...cached, notModified: true }
+      }
+    }
+
+    const sessions: unknown[] = []
+    const backfilled: unknown[] = []
+    const seenIds = new Set<string>()
+    const backfilledIds = new Set<string>()
+
+    // Running page start: the window bound for page i is its own offset, so
+    // accumulate instead of re-summing every earlier page per iteration.
+    let pageStart = requestedOffset
+
+    pages.forEach(({ data: page, pageLimit }) => {
+      const pageRows = rowsOf(page)
       const total = nonNegativeNumber(page && typeof page === 'object' ? (page as { total?: unknown }).total : null)
 
       const windowedCount =
-        total !== null ? Math.min(pageLimit, Math.max(0, total - pageOffset)) : Math.min(pageLimit, pageRows.length)
+        total !== null ? Math.min(pageLimit, Math.max(0, total - pageStart)) : Math.min(pageLimit, pageRows.length)
 
       for (const row of pageRows.slice(0, windowedCount)) {
         const id = profileSessionId(row)
@@ -506,12 +587,8 @@ async function fetchSessionRowsInPages(
         backfilled.push(row)
       }
 
-      if (total !== null) {
-        targetOffset = Math.min(targetOffset, total)
-      }
-
-      pageOffset += pageLimit
-    }
+      pageStart += pageLimit
+    })
 
     for (const row of backfilled) {
       const id = profileSessionId(row)
@@ -527,10 +604,20 @@ async function fetchSessionRowsInPages(
       sessions.push(row)
     }
 
-    return { rows: sessions, first }
+    return {
+      ...derivedFor({ rows: sessions, first }, reads.every(read => read.etag !== null)),
+      notModified: false
+    }
   } catch {
     return null
   }
+}
+
+/** Revalidation source for a registry scan: one cache, and the descriptor
+ *  identity each source's pages are scoped under. */
+export interface ConditionalRegistryReads {
+  cache: ConditionalReadCache
+  keyOf: (descriptor: unknown) => string
 }
 
 /**
@@ -551,7 +638,8 @@ export async function fetchRegistrySessionRows(
   sources: RegistrySessionSource[],
   searchParams: URLSearchParams,
   getJson: GetJsonForDescriptor,
-  reportedTotals?: Map<string, number>
+  reportedTotals?: Map<string, number>,
+  conditional?: ConditionalRegistryReads
 ): Promise<unknown[]> {
   const rows: unknown[] = []
 
@@ -612,7 +700,13 @@ export async function fetchRegistrySessionRows(
       source.backends.map(async ({ descriptor, profileLabel }) => {
         const params = new URLSearchParams(searchParams)
         params.delete('profile')
-        const read = await fetchSessionRowsInPages('/api/sessions', params, path => getJson(descriptor, path))
+
+        const read = await fetchSessionRowsInPages(
+          '/api/sessions',
+          params,
+          (path, ifNoneMatch) => getJson(descriptor, path, ifNoneMatch),
+          conditional ? { descriptorKey: conditional.keyOf(descriptor), cache: conditional.cache } : undefined
+        )
 
         if (read) {
           recordTotals(read.first, source.connectionId, profileLabel || 'default')
@@ -642,8 +736,9 @@ export async function fetchRegistrySessionRows(
 
       const params = new URLSearchParams(searchParams)
       params.set('profile', 'all')
-      const getShared = (path: string) => getJson(shared.descriptor, path)
-      const aggregate = await fetchSessionRowsInPages('/api/profiles/sessions', params, getShared)
+      const getShared = (path: string, ifNoneMatch?: string) => getJson(shared.descriptor, path, ifNoneMatch)
+      const sharedConditional = conditional ? { descriptorKey: conditional.keyOf(shared.descriptor), cache: conditional.cache } : undefined
+      const aggregate = await fetchSessionRowsInPages('/api/profiles/sessions', params, getShared, sharedConditional)
 
       if (aggregate) {
         recordTotals(aggregate.first, source.connectionId, null)
@@ -663,7 +758,7 @@ export async function fetchRegistrySessionRows(
       // Older remote without the aggregator: its own default-profile list.
       const flat = new URLSearchParams(searchParams)
       flat.delete('profile')
-      const read = await fetchSessionRowsInPages('/api/sessions', flat, getShared)
+      const read = await fetchSessionRowsInPages('/api/sessions', flat, getShared, sharedConditional)
 
       if (read) {
         recordTotals(read.first, source.connectionId, 'default')
@@ -845,10 +940,11 @@ export async function mergeRegistrySessionRows(
   getJson: GetJsonForDescriptor,
   merged: unknown[],
   profileTotals: Record<string, number>,
-  identity: Omit<RegistryBackendIdentity, 'backendIds'> = {}
+  identity: Omit<RegistryBackendIdentity, 'backendIds'> = {},
+  conditional?: ConditionalRegistryReads
 ): Promise<number> {
   const reportedTotals = new Map<string, number>()
-  const registryRows = await fetchRegistrySessionRows(sources, searchParams, getJson, reportedTotals)
+  const registryRows = await fetchRegistrySessionRows(sources, searchParams, getJson, reportedTotals, conditional)
   const before = merged.length
   spliceRegistrySessionRows(merged, registryRows, profileTotals)
 
@@ -891,6 +987,10 @@ export interface RemoteProfileSessionsOptions {
   /** Managed-SSH `remoteProfile` mapping, when the remote knows the profile
    * under a different name than the Desktop label. */
   remoteProfileAlias?: null | string
+  /** Revalidate each page against its stored ETag (the read hits /api/sessions,
+   * the one route that stamps content ETags); an all-304 read returns the
+   * previously derived list unchanged. */
+  conditional?: { cache: ConditionalReadCache }
 }
 
 /**
@@ -968,15 +1068,30 @@ export async function fetchRemoteProfileSessions(
   // scope so the rows provably belong to it; the remote's own stamps then
   // carry the authoritative identity (main.ts no longer relabels).
   const scope = remoteProfileQueryScope(profile, options.remoteProfileAlias)
+  const conditional = options.conditional
+  // A scope fallback means the page paths diverged from the deterministic
+  // scoped shape: the derived list is only cacheable while that shape held.
+  let scopeFallback = false
 
-  const fetchPage = async (pageParams: URLSearchParams): Promise<SessionListResponse> => {
+  const readPage = async (pageParams: URLSearchParams, withScope: boolean): Promise<PageRead> => {
+    const path = `/api/sessions?${pageParams}`
+    const key = `${profile}\u0000${withScope ? 'scoped' : 'unscoped'}`
+
+    if (!conditional) {
+      return { data: await fetchJsonForProfile(profile, path), notModified: false, etag: null }
+    }
+
+    return conditional.cache.readPage(key, path, ifNoneMatch => fetchJsonForProfile(profile, path, ifNoneMatch))
+  }
+
+  const fetchPage = async (pageParams: URLSearchParams): Promise<PageRead> => {
     pageParams.delete('profile')
 
     if (scope) {
       pageParams.set('profile', scope)
 
       try {
-        return (await fetchJsonForProfile(profile, `/api/sessions?${pageParams}`)) as SessionListResponse
+        return await readPage(pageParams, true)
       } catch (error) {
         // A remote that rejects the scope (400 unknown profile / 404 profile
         // does not exist) proves it serves a single launch profile natively —
@@ -988,10 +1103,11 @@ export async function fetchRemoteProfileSessions(
         }
 
         pageParams.delete('profile')
+        scopeFallback = true
       }
     }
 
-    return (await fetchJsonForProfile(profile, `/api/sessions?${pageParams}`)) as SessionListResponse
+    return readPage(pageParams, false)
   }
 
   const requestedLimit = Number(params.get('limit'))
@@ -1003,14 +1119,32 @@ export async function fetchRemoteProfileSessions(
     Number.isInteger(requestedOffset) &&
     requestedOffset >= 0
 
+  const derivedKey = `${profile}\u0000${scope || 'unscoped'}\u0000${searchParams.toString()}`
+
+  const derivedGet = () =>
+    conditional && !scopeFallback ? conditional.cache.derivedGet('remote', '/api/sessions', derivedKey) : undefined
+
   if (!needsPaging) {
-    return fetchPage(params)
+    const read = await fetchPage(params)
+
+    if (read.notModified) {
+      const cached = derivedGet()
+
+      if (cached) {
+        return cached as SessionListResponse
+      }
+    }
+
+    const data = read.data as SessionListResponse
+
+    if (read.etag !== null) {
+      conditional?.cache.derivedSet('remote', '/api/sessions', derivedKey, data)
+    }
+
+    return data
   }
 
-  const sessions: unknown[] = []
-  const backfilled: unknown[] = []
-  const seenIds = new Set<string>()
-  const backfilledIds = new Set<string>()
+  const pages: Array<{ data: SessionListResponse; pageLimit: number; notModified: boolean; etag: string | null }> = []
   let firstPage: SessionListResponse | null = null
   let pageOffset = requestedOffset
   let targetOffset = requestedOffset + requestedLimit
@@ -1021,14 +1155,44 @@ export async function fetchRemoteProfileSessions(
     pageParams.set('limit', String(pageLimit))
     pageParams.set('offset', String(pageOffset))
 
-    const page = await fetchPage(pageParams)
+    const read = await fetchPage(pageParams)
+    const page = read.data as SessionListResponse
+
+    pages.push({ data: page, pageLimit, notModified: read.notModified, etag: read.etag })
     firstPage ??= page
 
+    const total = nonNegativeNumber(page.total)
+
+    if (total !== null) {
+      targetOffset = Math.min(targetOffset, total)
+    }
+
+    pageOffset += pageLimit
+  }
+
+  if (pages.every(page => page.notModified)) {
+    const cached = derivedGet()
+
+    if (cached) {
+      return cached as SessionListResponse
+    }
+  }
+
+  const sessions: unknown[] = []
+  const backfilled: unknown[] = []
+  const seenIds = new Set<string>()
+  const backfilledIds = new Set<string>()
+
+  // Running page start: see the registry fan-out above — the window bound is
+  // each page's own offset, accumulated, not re-summed per iteration.
+  let pageStart = requestedOffset
+
+  pages.forEach(({ data: page, pageLimit }) => {
     const total = nonNegativeNumber(page.total)
     const pageRows = rowsOf(page)
 
     const windowedCount =
-      total !== null ? Math.min(pageLimit, Math.max(0, total - pageOffset)) : Math.min(pageLimit, pageRows.length)
+      total !== null ? Math.min(pageLimit, Math.max(0, total - pageStart)) : Math.min(pageLimit, pageRows.length)
 
     // /api/sessions appends pinned rows that fall outside the requested
     // window. Keep those aside until all ordinary pages have been joined so
@@ -1062,12 +1226,8 @@ export async function fetchRemoteProfileSessions(
       backfilled.push(row)
     }
 
-    if (total !== null) {
-      targetOffset = Math.min(targetOffset, total)
-    }
-
-    pageOffset += pageLimit
-  }
+    pageStart += pageLimit
+  })
 
   for (const row of backfilled) {
     const id = sessionId(row)
@@ -1079,13 +1239,19 @@ export async function fetchRemoteProfileSessions(
 
   const total = nonNegativeNumber(firstPage?.total)
 
-  return {
+  const value: SessionListResponse = {
     ...(firstPage || {}),
     sessions,
     total: total ?? sessions.length,
     limit: requestedLimit,
     offset: requestedOffset
   }
+
+  if (pages.every(page => page.etag !== null)) {
+    conditional?.cache.derivedSet('remote', '/api/sessions', derivedKey, value)
+  }
+
+  return value
 }
 
 /** Per-profile budget for one remote's session read inside a sidebar aggregate.

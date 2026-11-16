@@ -102,6 +102,7 @@ export {
   type ConnectionState,
   type GatewayClientOptions,
   GatewayEventHub,
+  type GatewaySocketPhases,
   isGatewayWebSocketUrl,
   JsonRpcGatewayClient,
   type WebSocketLike

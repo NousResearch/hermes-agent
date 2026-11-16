@@ -101,3 +101,27 @@ export function decideLivenessForceClose(input: LivenessForceCloseInput): Livene
     ? { close: true, reason: 'failure-streak-exhausted' }
     : { close: true, reason: 'no-in-flight-work' }
 }
+
+/**
+ * Decide whether a REPLACED socket generation may be retired now.
+ *
+ * The wake path (#C2a) dials a replacement instead of probing, then has to
+ * decide when the OLD generation may be torn down. This is the same
+ * in-flight-work question `decideLivenessForceClose` answers above, minus the
+ * failure streak — nothing failed, so the only reason to keep the old socket
+ * is that a turn still rides it:
+ *
+ * - No work in flight → retire the old generation immediately (it holds
+ *   nothing, and the replacement already proved the route live).
+ * - Work in flight    → keep it. This is #95327's protection with the probe
+ *   removed from the wake path: a busy backend must never have a socket torn
+ *   out from under a running turn by a wake signal. The caller retires it in a
+ *   later tick, once `workingSessionCount` drains.
+ *
+ * The signal is deliberately the same one the probe policy used
+ * (`$workingSessionIds` length), so the wake path's keep/retire boundary is
+ * byte-identical to the probe path's defer/close boundary.
+ */
+export function shouldRetireReplacedSocket(workingSessionCount: number): boolean {
+  return Math.max(0, Math.floor(workingSessionCount)) === 0
+}

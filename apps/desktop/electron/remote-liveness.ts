@@ -364,6 +364,13 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
 // remote entry, and the renderer's revalidate IPC covers anything that dies
 // later. Keep this comfortably above the dispatch probe timeout so overlapping
 // signals can never queue back-to-back sweeps into a hot loop.
+//
+// It coalesces the DESTRUCTIVE half only (#C2a): `revalidate` ends by retiring
+// and rebuilding dead tunnels, which is why it needs the window. The cheap,
+// idempotent half (`probe`) runs on every signal and is never held back — a
+// holdoff on work that tears nothing down is just a 0-15 s tax on the first
+// wake, the same tax the renderer's WAKE_RECONNECT_HOLDOFF_MS used to charge
+// the primary dial.
 export const POWER_RESUME_REVALIDATION_HOLDOFF_MS = 15_000
 
 export interface AttachPowerResumeRemoteRevalidationOptions {
@@ -372,6 +379,20 @@ export interface AttachPowerResumeRemoteRevalidationOptions {
   // Method syntax (bivariant) so Electron's overloaded PowerMonitor.on
   // satisfies this structural seam while tests can pass a tiny fake.
   powerMonitor: { on(event: 'resume' | 'unlock-screen', listener: () => void): unknown }
+  /**
+   * Cheap, idempotent pass: runs on EVERY resume / unlock-screen signal, with no
+   * holdoff. Probing cached pooled descriptors costs one bounded request per
+   * remote and forces nothing down (the background policy tolerates a failure
+   * streak), so re-running it is safe — and it is the half that keeps a pooled
+   * route's liveness current for a client that came back without touching the
+   * pool.
+   */
+  probe?: () => Promise<unknown>
+  /**
+   * The DESTRUCTIVE pass: a suspect entry that fails its post-resume probe is
+   * retired (pool entry + SSH tunnel/master) and rebuilt. That teardown is why
+   * this half is coalesced to one sweep per holdoff window.
+   */
   revalidate: () => Promise<unknown>
 }
 
@@ -380,20 +401,29 @@ export interface AttachPowerResumeRemoteRevalidationOptions {
  *
  * Returns the trigger so tests (and the network-restore nudge, if main ever
  * wants one) can drive the exact code path the events run. The trigger is a
- * plain function: holdoff first (one sweep per wake window, never a hot
- * loop), then a fire-and-forget revalidation whose rejection is logged and
- * swallowed — a broken sweep must never take down the resume handler or wedge
- * future wakes.
+ * plain function: cheap probe on every signal, then the destructive sweep at
+ * most once per wake window; both are fire-and-forget with rejections logged
+ * and swallowed — a broken sweep must never take down the resume handler or
+ * wedge future wakes.
  */
 export function attachPowerResumeRemoteRevalidation({
   log,
   now = Date.now,
   powerMonitor,
+  probe,
   revalidate
 }: AttachPowerResumeRemoteRevalidationOptions): () => Promise<void> {
   let lastKickAt: null | number = null
 
   const trigger = async (): Promise<void> => {
+    if (probe) {
+      try {
+        await probe()
+      } catch (error) {
+        log(`Post-resume pool revalidation failed (${error instanceof Error ? error.message : String(error)}).`)
+      }
+    }
+
     const at = now()
 
     if (lastKickAt !== null && at - lastKickAt < POWER_RESUME_REVALIDATION_HOLDOFF_MS) {
@@ -415,6 +445,36 @@ export function attachPowerResumeRemoteRevalidation({
   powerMonitor.on('unlock-screen', () => void trigger())
 
   return trigger
+}
+
+/**
+ * Reachability probe for the reconnect-path revalidations.
+ *
+ * Probe the cheap `/api/health` first: p50 6 ms / p90 8 ms against 0.18-1.9 s
+ * for `/api/status` on the same host (its payload resolves a gateway probe,
+ * topology, and a state.db session count on every call). This is why the
+ * pooled-dispatch gate switched first — see POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS.
+ *
+ * The `/api/status` fallback is kept for remotes that predate `/api/health`:
+ * without it every probe 404s, the failure streak burns, and a REACHABLE old
+ * backend is dropped on the floor and re-dialed forever. The dispatch gate and
+ * the boot probe (backend-health.ts) fall back the same way. The failure
+ * streak policy itself is the caller's and does not change here.
+ */
+async function probeRemoteLiveness<TConnection extends RemoteConnectionDescriptor>(
+  probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>,
+  connection: TConnection,
+  timeoutMs: number
+): Promise<void> {
+  try {
+    await probe(connection, '/api/health', { timeoutMs })
+  } catch (healthError) {
+    if (!isMissingHealthEndpointError(healthError)) {
+      throw healthError
+    }
+
+    await probe(connection, '/api/status', { timeoutMs })
+  }
 }
 
 /**
@@ -450,7 +510,7 @@ export async function revalidateRemoteConnection<TConnection extends RemoteConne
   const baseUrl = connection.baseUrl.replace(/\/+$/, '')
 
   try {
-    await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+    await probeRemoteLiveness(probe, connection, REMOTE_LIVENESS_TIMEOUT_MS)
 
     if (currentConnectionPromise() !== connectionPromise) {
       return { ok: true, rebuilt: false }

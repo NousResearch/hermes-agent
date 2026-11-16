@@ -1858,13 +1858,12 @@ def _end_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None, status: Optional[str] = None,
 ) -> Optional[int]:
-    """Close the active run (``status`` defaults to ``outcome``) and clear
-    ``current_run_id``; None when no run was active (never-claimed task).
-
-    ``worker_pid`` / ``worker_started_at`` / ``claim_lock`` stay on the closed
-    row: they are the only evidence left of the OS process once the task row
-    is wiped, and :func:`kanban_db_dispatch.reap_terminal_workers` needs them
-    to end a worker that survived its own terminal transition."""
+    """Close the active run (``status`` defaults to ``outcome``); clears
+    ``current_run_id`` and, on a successful handoff, the failure text that
+    handoff superseded (:func:`kanban_db_failure_text.retire_superseded_failure`).
+    None when no run was active. ``worker_pid``/``worker_started_at``/``claim_lock``
+    stay on the closed row: the only evidence of the OS process once the task row
+    is wiped, and what :func:`~kanban_db_dispatch.reap_terminal_workers` reaps by."""
     now = int(time.time())
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
@@ -1884,7 +1883,7 @@ def _end_run(
         """,
         (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
     )
-    conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
+    retire_superseded_failure(conn, task_id, outcome)
     return run_id
 
 
@@ -2331,13 +2330,11 @@ def release_stale_claims(
     ``DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS`` (wedged; ``_touch_activity``
     keeps any genuinely active worker fresh). Safe to call often.
 
-    Reclaiming a live worker mid-flight produces the spawn- then-immediately-reclaim loop seen on slow
-    models that spend longer than ``DEFAULT_CLAIM_TTL_SECONDS`` inside a single tool-free LLM call (#23025):
-    no tool calls means no ``kanban_heartbeat``, even though the subprocess is healthy.
+    Reclaiming a live worker mid-flight produces the spawn-then-immediately-reclaim loop on slow models
+    inside one tool-free call over ``DEFAULT_CLAIM_TTL_SECONDS`` (#23025): no heartbeat, healthy process.
     Backstop (#29747 gap 3): if the worker's PID is still alive but its ``last_heartbeat_at`` is stale by
-    more than ``DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS`` (1h), the worker has been making no observable
-    progress and we reclaim anyway — even if ``_pid_alive`` is still true. This catches the
-    wedged-in-a-logic-loop case where the process is technically running but accomplishing nothing.
+    more than ``DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS`` (1h), it has made no observable progress —
+    wedged in a logic loop, technically running, accomplishing nothing — and we reclaim anyway.
     ``_touch_activity`` (run_agent.py) bridges chunk-level liveness into ``last_heartbeat_at`` via #31752,
     so any genuinely active worker keeps its heartbeat fresh as a side effect of normal API traffic.
     ``enforce_max_runtime`` and ``detect_crashed_workers`` remain the upper bounds for genuinely wedged or
@@ -4229,3 +4226,4 @@ from hermes_cli.kanban_db_dispatch import (
     _worker_survived_termination,
     _worker_terminal_timeout_env,
 )
+from hermes_cli.kanban_db_failure_text import retire_superseded_failure

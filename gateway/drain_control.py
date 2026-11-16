@@ -82,6 +82,9 @@ RESTART_WAIT_WS_METHODS = frozenset({
     "ping", "runtime.describe", "session.resume", "session.detach", "session.events.since",
     "session.info", "session.list", "prompt.submit", "prompt.receipt", "session.interrupt",
     "approval.pending", "approval.received", "approval.respond", "clarify.respond", "clarify.lock",
+    # The folded handshake a reconnecting interactive client opens with: it reads replay and applies
+    # capabilities, exactly what its own two verbs above may still do during the wait.
+    "client.hello",
 })
 
 

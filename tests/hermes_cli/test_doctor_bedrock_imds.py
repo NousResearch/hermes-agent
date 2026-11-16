@@ -1,8 +1,9 @@
 """``hermes doctor`` on an EC2 host whose Bedrock credential is the instance role (#153434).
 
 Doctor disables boto3's instance-metadata lookup so non-AWS users don't wait on 169.254.169.254. When
-Bedrock is the configured provider, that lookup is how an instance-role host finds its credential: with it
-disabled, a working host reported ``NoCredentialsError`` and was told to check its IAM permissions.
+Bedrock is the configured provider or a fallback, that lookup is how an instance-role host finds its
+credential: with it disabled, a working host reported ``NoCredentialsError`` and was told to check its IAM
+permissions.
 """
 
 from __future__ import annotations
@@ -10,6 +11,8 @@ from __future__ import annotations
 import os
 import sys
 import types
+
+import pytest
 
 from hermes_cli import doctor
 from hermes_cli import doctor_connectivity as dc
@@ -36,19 +39,23 @@ def _install_fake_boto3(monkeypatch):
     monkeypatch.setitem(sys.modules, "botocore.config", botocore_config)
 
 
-def _instance_role_host(monkeypatch, provider: str):
+def _instance_role_host(monkeypatch, provider: str, fallback: str = ""):
     # The issue's setup: AWS_PROFILE names a region-only profile; the credential itself comes from IMDS.
     monkeypatch.setenv("AWS_PROFILE", "x")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     for var in ("AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_EC2_METADATA_DISABLED"):
         monkeypatch.delenv(var, raising=False)  # conftest disables IMDS for the whole suite; a real shell doesn't
-    (get_hermes_home() / "config.yaml").write_text(  # the suite's temp HERMES_HOME
-        f"model:\n  provider: {provider}\n  default: anthropic.claude-sonnet-5\n", encoding="utf-8")
+    config = f"model:\n  provider: {provider}\n  default: anthropic.claude-sonnet-5\n"
+    if fallback:
+        config += f"fallback_providers:\n  - provider: {fallback}\n    model: anthropic.claude-sonnet-5\n"
+    (get_hermes_home() / "config.yaml").write_text(config, encoding="utf-8")  # the suite's temp HERMES_HOME
 
 
-def test_doctor_reports_bedrock_healthy_on_an_instance_role_host(monkeypatch, capsys):
+# "aws" is an alias of bedrock; the fallback row is a host whose primary is elsewhere but whose fallback is Bedrock.
+@pytest.mark.parametrize(("provider", "fallback"), [("aws", ""), ("openrouter", "aws")], ids=["primary", "fallback"])
+def test_doctor_reports_bedrock_healthy_on_an_instance_role_host(monkeypatch, capsys, provider, fallback):
     _install_fake_boto3(monkeypatch)
-    _instance_role_host(monkeypatch, provider="aws")  # an alias of bedrock
+    _instance_role_host(monkeypatch, provider=provider, fallback=fallback)
     monkeypatch.setattr(doctor, "build_probes", lambda: [("AWS Bedrock", dc._probe_bedrock)])
 
     finding = doctor._check_api_connectivity(False)

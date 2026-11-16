@@ -103,8 +103,8 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
     probes = build_probes()
     # Single status line so users see something happening; ``\r`` clears it once results land.
     print(f"  {color(f'Running {len(probes)} connectivity checks in parallel…', Colors.DIM)}", end="", flush=True)
-    # IMDS stays off (a multi-second timeout off EC2) unless Bedrock is the provider: an EC2 instance role is
-    # then the credential, and a credential from env or a profile is found before boto3 ever asks IMDS.
+    # IMDS stays off (a multi-second timeout off EC2) unless Bedrock is the provider or a fallback: an EC2 instance
+    # role is then the credential, and a credential from env or a profile is found before boto3 ever asks IMDS.
     results = run_probes(probes, aws_imds=bedrock_is_configured_provider())
     print("\r" + " " * 70 + "\r", end="")
     for r in results:

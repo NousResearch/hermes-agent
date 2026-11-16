@@ -5,6 +5,7 @@ import math
 import time
 
 from agent.error_classifier import FailoverReason
+from agent.fallback_session_route import mark_fallback_route  # re-exported for the fallback walk
 
 logger = logging.getLogger(__name__)
 

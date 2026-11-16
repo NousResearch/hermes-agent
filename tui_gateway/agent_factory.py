@@ -127,6 +127,8 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     composer pick while the profile model it diverged from remains unchanged."""
     if not row:
         return {}
+    from agent.fallback_session_route import fallback_restored_row
+    row = fallback_restored_row(row) or {}  # a fallback's route is turn-scoped, also across a reload (#152333)
     model_config = _parse_model_config(row.get("model_config"), quiet=True)
     _row_title = str(row.get("title") or "").strip()
     room_plumbing = model_config.get("room_plumbing") or (row.get("hidden") and _row_title.startswith("Group:"))
@@ -223,6 +225,9 @@ def _persist_live_session_runtime(session: dict | None) -> None:
     try:
         row = db.get_session(session_key) or {}
         model_config = _runtime_model_config(agent, _parse_model_config(row.get("model_config")))
+        if not getattr(agent, "_provider_fallback_active", False):
+            # The live route is the session's own (a pick, or the restored primary), not a fallback's.
+            model_config.pop("_fallback_route", None)
         if isinstance(composer_profile := session.get("composer_override_profile"), dict):
             model_config["composer_override_profile"] = composer_profile
         elif "composer_override_profile" in session:

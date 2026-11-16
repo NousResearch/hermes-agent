@@ -107,11 +107,12 @@ function extendsBetweenWords(stored: string, said: string): boolean {
   return !next || !WORD_CHAR.test(next) || !WORD_CHAR.test(said.charAt(said.length - 1))
 }
 
-const textAfterLastTool = (parts: ChatMessage['parts']) =>
-  parts
-    .slice(parts.findLastIndex(part => part.type === 'tool-call') + 1)
-    .flatMap(part => (part.type === 'text' ? [part.text] : []))
-    .join('')
+// Raw text, as the stream sent it: a rendered MEDIA card keeps its tag in `mediaSource`.
+const rawText = (parts: ChatMessage['parts']) =>
+  parts.flatMap(part => (part.type === 'text' ? [part.mediaSource ?? part.text] : [])).join('')
+
+const rawTextAfterLastTool = (parts: ChatMessage['parts']) =>
+  rawText(parts.slice(parts.findLastIndex(part => part.type === 'tool-call') + 1))
 
 /** What the stored reply already shows past the text the live row streamed, '' when unknown. */
 function storedTailPast(stored: string, streamed: string): string {
@@ -133,16 +134,21 @@ function storedTailPast(stored: string, streamed: string): string {
  * that body holds past the live text: those deltas (queued, or still on the
  * wire past the segment cursor) would append it a second time, and the
  * completion that repairs the bubble may be lost to the same reconnect. The
- * tail part records that text, and appendAssistantTextPart drops deltas that
- * repeat it.
+ * tail part records that text in the stream's raw form and the segment offset
+ * it reaches, and appendAssistantTextPart drops deltas that repeat it.
  */
 function adoptStoredReply(live: ChatMessage, stored: ChatMessage): ChatMessage {
   const parts = [...stored.parts]
   const tail = parts.at(-1)
-  const covered = tail?.type === 'text' ? storedTailPast(tail.text, textAfterLastTool(live.parts)) : ''
+  const covered = tail?.type === 'text' ? storedTailPast(rawText([tail]), rawTextAfterLastTool(live.parts)) : ''
 
+  // The live row's raw text is what the stream sent of this segment, so the
+  // covered tail ends at that offset plus its own length.
   if (tail && covered) {
-    parts[parts.length - 1] = { ...tail, storedTail: covered }
+    parts[parts.length - 1] = {
+      ...tail,
+      storedTail: { end: rawText(live.parts).length + covered.length, text: covered }
+    }
   }
 
   return { ...live, parts }

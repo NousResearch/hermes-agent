@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { atom, computed, onMount } from 'nanostores'
 import type { ReactNode } from 'react'
-import { useNavigate } from 'react-router'
 
 import { bandPillReplacesStrip } from '@/app/redesign/portal-conversation-header'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
@@ -9,6 +8,7 @@ import {
   $hiddenTreePanes,
   $layoutTree,
   $narrowViewport,
+  $newSessionTabAction,
   shownPanesInGroup,
   tabStripVisibleForGroup
 } from '@/components/pane-shell/tree/store'
@@ -19,10 +19,9 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { useI18n } from '@/i18n'
 import { recordAction } from '@/store/desktop-metrics'
-import { requestSimplifiedNewSession } from '@/store/simplified-new-session'
 import { $tabStripDefault } from '@/store/tabstrip-prefs'
 
-import { $workspaceIsPage, NEW_CHAT_ROUTE } from '../routes'
+import { $workspaceIsPage } from '../routes'
 
 import { TitlebarIcon } from './titlebar-icon'
 
@@ -63,14 +62,16 @@ export const $bandPillPane = computed(
 )
 
 /** The redesigned band's session tab (Figma 906:19481 + 906:19483): the front chat's title as a
- *  pill at the stage's leading edge, then "+" for a new session. Each pane already publishes its
- *  live title (stored title, or the draft's) — the same one its tab shows in a strip. */
+ *  pill at the stage's leading edge, then "+", which opens a new chat as a tab beside it: the tab
+ *  strip's own "+" and the New tab shortcut, one action (chat/new-session-tab.ts). The sidebar's
+ *  New chat is what replaces the chat in front. Each pane already publishes its live title (stored
+ *  title, or the draft's) — the same one its tab shows in a strip. */
 export function PortalSessionTab() {
   const { t } = useI18n()
-  const navigate = useNavigate()
   const panes = useContributions('panes')
   const page = useStore($workspaceIsPage)
   const paneId = useStore($bandPillPane)
+  const openTab = useStore($newSessionTabAction)
   const pane = panes.find(candidate => candidate.id === paneId)
 
   if (!pane || page) {
@@ -78,23 +79,21 @@ export function PortalSessionTab() {
   }
 
   const title = (pane.data as undefined | WorkspaceTabChrome)?.tabTitle?.() ?? pane.title
-  const label = t.sidebar.nav['new-session']
+  const label = t.zones.newSessionTab
 
   return (
     <div className="portal-session-tab" data-slot="portal-session-tab">
       {/* The widest thing mid-band and not interactive, so it drags the window like the band
           around it (its cluster is no-drag for the "+"). No tooltip: a drag region gets no hover. */}
       <span className="portal-session-tab-title [-webkit-app-region:drag]">{title}</span>
-      <Tip label={<TipKeybindLabel actionId="session.new" text={label} />} placement="toolbar">
+      <Tip label={<TipKeybindLabel actionId="session.newTab" text={label} />} placement="toolbar">
         <Button
           aria-label={label}
           className="portal-chrome-button"
+          disabled={!openTab}
           onClick={() => {
-            recordAction('session.new', 'click')
-
-            if (!requestSimplifiedNewSession()) {
-              navigate(NEW_CHAT_ROUTE)
-            }
+            recordAction('session.newTab', 'click')
+            openTab?.()
           }}
           onPointerDown={event => event.stopPropagation()}
           size="icon"

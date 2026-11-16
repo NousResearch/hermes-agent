@@ -1,10 +1,10 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $workspaceIsPage } from '@/app/routes'
 import { group } from '@/components/pane-shell/tree/model'
-import { $layoutTree } from '@/components/pane-shell/tree/store'
+import { $layoutTree, $newSessionTabAction } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { setTabStripDefault } from '@/store/tabstrip-prefs'
 
@@ -29,6 +29,7 @@ afterEach(() => {
     disposers.splice(0).forEach(dispose => dispose())
     setTabStripDefault('auto')
     $layoutTree.set(null)
+    $newSessionTabAction.set(null)
   })
 })
 
@@ -82,4 +83,17 @@ it('follows the Tab Strip setting: hidden strips leave the pill naming the front
     )
   )
   expect($bandPillPane.get()).toBeNull()
+})
+
+it('opens a new chat as a tab from "+", the action the tab strip and the New tab shortcut share', () => {
+  const openTab = vi.fn()
+
+  act(() => {
+    $newSessionTabAction.set(openTab)
+    $layoutTree.set(group(['workspace'], { id: 'main', active: 'workspace' }))
+  })
+  band()
+  fireEvent.click(screen.getByRole('button'))
+
+  expect(openTab).toHaveBeenCalledOnce()
 })

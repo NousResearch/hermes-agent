@@ -193,8 +193,20 @@ class TestExaTextParsing:
 
 
 class TestKeylessCalls:
+    @staticmethod
+    def _parallel_response(payload):
+        import requests
+
+        result = {"content": [{"type": "text", "text": json.dumps(payload)}]}
+        envelope = {"jsonrpc": "2.0", "id": 1, "result": result}
+        response = requests.Response()
+        response.status_code = 200
+        response.headers["Content-Type"] = "text/event-stream"
+        response._content = f"event: message\ndata: {json.dumps(envelope)}\n\n".encode()
+        return response
+
     def test_parallel_search_shapes_results(self):
-        payload = json.dumps(
+        response = self._parallel_response(
             {
                 "results": [
                     {"url": "https://a", "title": "A", "excerpts": ["x", "y"]},
@@ -202,16 +214,18 @@ class TestKeylessCalls:
                 ]
             }
         )
-        with patch.object(keyless_mcp, "mcp_call", return_value=payload) as call:
+        with patch("requests.post", return_value=response) as call:
             out = keyless_mcp.parallel_search_keyless("query", limit=5)
         assert out["success"] is True
         assert out["data"]["web"][0] == {
             "url": "https://a", "title": "A", "description": "x y", "position": 1,
         }
-        args = call.call_args[0]
-        assert args[0] == keyless_mcp.PARALLEL_MCP_URL
-        assert args[1] == "web_search"
-        assert "model_name" not in args[2]  # analytics field deliberately omitted
+        assert call.call_args.args == ("https://mcp.parallel.ai/mcp",)
+        assert call.call_args.kwargs["json"]["params"] == {
+            "name": "web_search",
+            "arguments": {"objective": "query", "search_queries": ["query"]},
+        }
+        assert call.call_args.kwargs["headers"]["User-Agent"] == "hermes-agent"
 
     def test_parallel_search_failure_mentions_key_setup(self):
         with patch.object(
@@ -222,12 +236,18 @@ class TestKeylessCalls:
         assert "PARALLEL_API_KEY" in out["error"]
 
     def test_parallel_extract_covers_missing_urls(self):
-        payload = json.dumps({"results": [{"url": "https://a", "title": "A", "excerpts": ["c"]}]})
-        with patch.object(keyless_mcp, "mcp_call", return_value=payload):
-            out = keyless_mcp.parallel_extract_keyless(["https://a", "https://gone"])
+        urls = ["https://a", "https://gone"]
+        response = self._parallel_response({"results": [{"url": "https://a", "title": "A", "excerpts": ["c"]}]})
+        with patch("requests.post", return_value=response) as call:
+            out = keyless_mcp.parallel_extract_keyless(urls)
         assert out[0]["content"] == "c"
         assert out[1]["url"] == "https://gone"
         assert "error" in out[1]
+        assert call.call_args.args == ("https://mcp.parallel.ai/mcp",)
+        assert call.call_args.kwargs["json"]["params"] == {
+            "name": "web_fetch",
+            "arguments": {"urls": urls, "objective": "Full page content"},
+        }
 
     def test_exa_search_rate_limit_is_soft_error(self):
         with patch.object(

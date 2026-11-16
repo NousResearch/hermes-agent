@@ -1,8 +1,8 @@
 """Keyless web search/extract via public free-tier endpoints (Exa, Parallel, Firecrawl, Keenable).
 Resolved strictly LAST — after every keyed backend, the managed gateway, ddgs and custom plugin
 providers — so it never pre-empts a deliberate setup. Privacy: no user identifiers are sent;
-Parallel gets a random per-process ``session_id`` (rate limiting only) and its optional
-``model_name`` analytics field is deliberately omitted. Disable with ``web.keyless_fallback: false``.
+Parallel's optional model analytics field is deliberately omitted.
+Disable with ``web.keyless_fallback: false``.
 """
 
 from __future__ import annotations
@@ -22,12 +22,9 @@ from plugins.web._common import (
 logger = logging.getLogger(__name__)
 
 EXA_MCP_URL = "https://mcp.exa.ai/mcp"
-PARALLEL_MCP_URL = "https://search.parallel.ai/mcp"
+PARALLEL_MCP_URL = "https://mcp.parallel.ai/mcp"
 KEENABLE_API_URL = "https://api.keenable.ai"
 _KEENABLE_TITLE = "hermes-agent"
-
-# Parallel free-tier rate-limit correlation id — random per process, never persisted.
-_SESSION_ID = uuid.uuid4().hex
 
 _TIMEOUT_SECONDS = 30
 
@@ -145,7 +142,7 @@ def use_keyless(name: str, api_key: str) -> bool:
 # --- MCP transport ------------------------------------------------------------
 def _parse_mcp_body(body: str) -> str:
     """First text content item from an MCP tools/call response — plain-JSON bodies
-    (Parallel) or SSE ``data: {...}`` lines (Exa). Raises :class:`KeylessMCPError` for
+    or SSE ``data: {...}`` lines. Raises :class:`KeylessMCPError` for
     JSON-RPC errors and ``isError`` tool results (e.g. Exa's free-tier rate limit).
 
     SSE frames are split on the SSE line terminators (CRLF, CR, LF) only:
@@ -208,10 +205,11 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any], timeout: int = _TIM
     return _parse_mcp_body(_response_text(response))
 
 
-# --- Parallel (search.parallel.ai) — JSON text payloads -----------------------
+# --- Parallel (mcp.parallel.ai) — JSON text payloads --------------------------
+# Calls are independent here, so omit the optional conversation-scoped session ID.
 def parallel_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
     def _rows() -> list[dict[str, Any]]:
-        text = mcp_call(PARALLEL_MCP_URL, "web_search", {"objective": query, "search_queries": [query], "session_id": _SESSION_ID})
+        text = mcp_call(PARALLEL_MCP_URL, "web_search", {"objective": query, "search_queries": [query]})
         results = json.loads(text).get("results") or []
         return [
             _row(r.get("url") or "", r.get("title") or "", " ".join(r.get("excerpts") or []), i + 1)
@@ -223,7 +221,7 @@ def parallel_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
 
 def parallel_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     try:
-        data = json.loads(mcp_call(PARALLEL_MCP_URL, "web_fetch", {"urls": list(urls), "objective": "Full page content", "session_id": _SESSION_ID}))
+        data = json.loads(mcp_call(PARALLEL_MCP_URL, "web_fetch", {"urls": list(urls), "objective": "Full page content"}))
     except (KeylessMCPError, json.JSONDecodeError, TypeError) as exc:
         message = _fail_msg("parallel", "extract", exc)
         return [_page_error(u, message) for u in urls]
@@ -365,10 +363,10 @@ _KEYLESS_RING = ("exa", "parallel", "firecrawl", "keenable")
 _KEYLESS_SEARCHERS: dict[str, Callable[[str, int], dict[str, Any]]] = {v: (lambda query, limit, _v=v: globals()[f"{_v}_search_keyless"](query, limit)) for v in _KEYLESS_RING}
 _KEYLESS_EXTRACTORS: dict[str, Callable[[list[str]], list[dict[str, Any]]]] = {v: (lambda urls, _v=v: globals()[f"{_v}_extract_keyless"](urls)) for v in _KEYLESS_RING}
 
-# Per-process round-robin cursor, seeded by the random session id so the fleet
-# spreads across vendors; advances once per unpinned keyless request.
+# Random per-process starting point spreads requests across vendors; the
+# cursor advances once per unpinned keyless request.
 _ring_lock = threading.Lock()
-_ring_cursor = int(_SESSION_ID, 16) % len(_KEYLESS_RING)
+_ring_cursor = uuid.uuid4().int % len(_KEYLESS_RING)
 
 
 def _vendor_pinned(name: str) -> bool:

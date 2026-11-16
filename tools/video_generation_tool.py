@@ -166,6 +166,18 @@ def _handle_video_generate(args: dict[str, Any], **_kw: Any) -> str:
         image_url, reference_image_urls, task_id)
     if confine_error is not None:
         return confine_error
+    # Every video API fetches URLs itself and none reads our disk, so local paths become data: URLs
+    # (guarded read, downscaled to the managed FAL gateway's body budget) for every backend.
+    from tools.image_generation_tool import _inline_fal_sources
+    sources = ([image_url] if image_url else []) + (reference_image_urls or [])
+    if sources:
+        try:
+            inlined = _inline_fal_sources(sources)
+        except ValueError as exc:
+            return tool_error(str(exc))
+        if image_url:
+            image_url, inlined = inlined[0], inlined[1:]
+        reference_image_urls = inlined or None
     # Coerced BEFORE validation (ordering parity: a bad value raises before a missing prompt).
     optional = {
         "duration": _coerce_int(args.get("duration")),
@@ -325,8 +337,8 @@ def _build_dynamic_video_schema() -> dict[str, Any]:
         properties["image_url"] = {
             "type": "string",
             "description": (
-                "Public HTTPS URL of a still image to animate "
-                "(image-to-video). Omit for text-to-video.")}
+                "Still image to animate (image-to-video): a public HTTPS URL "
+                "or a local file path. Omit for text-to-video.")}
         max_refs = int(caps.get("max_reference_images") or 0)
         if max_refs > 0:
             properties["reference_image_urls"] = {
@@ -334,8 +346,8 @@ def _build_dynamic_video_schema() -> dict[str, Any]:
                 "items": {"type": "string"},
                 "maxItems": max_refs,
                 "description": (
-                    f"Up to {max_refs} public HTTPS reference image URLs "
-                    "(style or character refs).")}
+                    f"Up to {max_refs} reference images, as public HTTPS URLs "
+                    "or local file paths (style or character refs).")}
     min_duration = model_meta.get("min_duration", caps.get("min_duration"))
     max_duration = model_meta.get("max_duration", caps.get("max_duration"))
     duration_param = dict(static_props["duration"])

@@ -103,3 +103,16 @@ class TestUnifiedDispatch:
 
         self._run({"prompt": "a dog"}, configured="fake")
         assert "upscale" not in provider.last_kwargs
+
+    def test_local_image_path_reaches_provider_as_data_url(self, tmp_path):
+        """Video APIs fetch sources themselves, so a local path must arrive inlined, not as a path."""
+        from PIL import Image
+        src = tmp_path / "still.png"
+        Image.new("RGB", (8, 8), "red").save(src)
+        provider = _RecordingProvider()
+        video_gen_registry.register_provider(provider)
+        result = self._run({"prompt": "a dog", "image_url": str(src),
+                            "reference_image_urls": ["https://example.com/ref.png"]}, configured="fake")
+        assert result["success"] is True
+        assert provider.last_kwargs["image_url"].startswith("data:image/png;base64,")
+        assert provider.last_kwargs["reference_image_urls"] == ["https://example.com/ref.png"]

@@ -192,13 +192,13 @@ function isTypableElement(el: Element | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el as HTMLElement).isContentEditable
 }
 
-function fileEditScopeKey() {
+export function fileEditScopeKey() {
   // The REST wrapper has its own routing authority. Include it while the
   // resolved connection descriptor is catching up with an activation.
   return JSON.stringify([desktopFsCacheKey(), getApiRequestConnection()])
 }
 
-function filePathForTarget(target: PreviewTarget) {
+export function filePathForTarget(target: PreviewTarget) {
   if (target.path) {
     return target.path
   }

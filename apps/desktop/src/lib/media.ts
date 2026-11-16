@@ -41,7 +41,7 @@ const MEDIA_BY_EXT: Record<string, MediaInfo> = {
 // A native path may contain a literal `#` or `?` (`C:\Music\track #07.mp3`).
 // Cutting the path there drops the extension, so a playable file is typed as
 // a plain file. A real URL still loses its query and fragment first.
-function pathExtension(path: string, known: (ext: string) => boolean): string | undefined {
+export function pathExtension(path: string, known: (ext: string) => boolean): string | undefined {
   const extOf = (value: string): string | undefined => {
     const base = value.split(/[\\/]/).pop() ?? ''
     const dot = base.lastIndexOf('.')

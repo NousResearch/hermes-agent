@@ -109,6 +109,15 @@ describe('acceptsTriggerCompletion', () => {
   it('keeps Tab as the explicit accept even over free text', () => {
     expect(press('Tab', { freeTextArgStage: true, query: 'goal stat' })).toBe(true)
   })
+
+  it('types a literal space for a bare-valid command instead of taking a highlighted row', () => {
+    // /profile is complete on its own. Whichever row the popover highlights —
+    // the command row or a profile option — Space must just open the arg stage.
+    expect(press(' ', { query: 'profile', keepBareEditable: true })).toBe(false)
+    expect(press(' ', { query: 'profile c', keepBareEditable: true })).toBe(false)
+    expect(press('Tab', { query: 'profile', keepBareEditable: true })).toBe(true)
+    expect(press(' ', { query: 'personality' })).toBe(true)
+  })
 })
 
 describe('implicitSlashAcceptIndex', () => {

@@ -173,6 +173,13 @@ export interface TriggerAcceptInput {
   key: string
   kind: TriggerState['kind']
   query: string
+  /**
+   * Bare invocation is itself complete (`/profile`). Space must stay a literal
+   * space instead of taking whichever row is highlighted — with an option list
+   * already open, that row may be an argument, and accepting it would chip the
+   * command before the user typed a name. Tab/click remain explicit accepts.
+   */
+  keepBareEditable?: boolean
 }
 
 /**
@@ -190,6 +197,7 @@ export function acceptsTriggerCompletion({
   activeExplicit,
   freeTextArgStage,
   key,
+  keepBareEditable = false,
   kind,
   query
 }: TriggerAcceptInput): boolean {
@@ -202,7 +210,13 @@ export function acceptsTriggerCompletion({
   }
 
   // Space is slash-only (an `@` mention takes a literal space) and gated to a
-  // non-empty query so a bare `/ ` still types a space.
+  // non-empty query so a bare `/ ` still types a space. For keep-bare commands
+  // it is ALWAYS literal — the popover may be showing options already, and
+  // accepting the pre-highlighted row would chip `/profile` before a name.
+  if (keepBareEditable && key === ' ') {
+    return false
+  }
+
   return key === ' ' && kind === '/' && Boolean(query.trim()) && !freeTextArgStage
 }
 

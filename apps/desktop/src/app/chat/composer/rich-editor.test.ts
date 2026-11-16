@@ -70,6 +70,18 @@ describe('renderComposerContents', () => {
     expect(composerPlainText(editor)).toBe('/some-skil')
   })
 
+  it('never hydrates a bare /profile into a chip', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+
+    // A pasted or restored `/profile ` is a complete no-arg invocation, not a
+    // committed command chip — the same rule the live composer uses.
+    renderComposerContents(editor, '/profile ', { trailingCommitted: true })
+
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+    expect(composerPlainText(editor)).toBe('/profile ')
+  })
+
   it('keeps an arg-taking command as text — its tail may be uncommitted prose', () => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT

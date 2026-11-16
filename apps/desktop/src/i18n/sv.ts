@@ -2061,7 +2061,34 @@ export const svOverrides: TranslationOverrides = {
         revokeFailed: 'Kunde inte återkalla mappåtkomsten',
         revoked: 'Mappåtkomsten återkallades.',
         refusedProtected: 'Den här skyddade platsen kan inte väljas.'
-      }
+      },
+      previewScriptPromptTitle: plugin => `Tillåta att ${plugin} kör skript på den här sidan?`,
+      previewScriptPromptBody: (plugin, origin) =>
+        `${plugin} vill köra JavaScript i förhandsvisningens webbläsare på ${origin}.`,
+      previewScriptPromptRisk:
+        'Skript kan läsa och ändra allt på webbplatsen, även sidor för konton som du är inloggad på där.',
+      previewScriptPromptRevokeHint:
+        'Gäller endast den här webbplatsen. Du kan återkalla åtkomsten under Funktioner › Insticksprogram.',
+      previewScriptAllow: 'Tillåt på denna webbplats',
+      previewScriptDeny: 'Tillåt inte',
+      previewScriptAccessLabel: 'Sidskript',
+      previewScriptAccessNone: 'Frågar innan skript körs på en sida',
+      previewScriptRevoke: origin => `Återkalla åtkomst till ${origin}`,
+      previewScriptRevoked: (plugin, origin) => `${plugin} kan inte längre köra skript på ${origin}.`,
+      previewScriptRevokeUnsaved: (plugin, origin) =>
+        `Kunde inte spara ändringen, så den gäller bara tills Hermes startas om. ${plugin} är tills vidare blockerad på ${origin}.`,
+      updateConsentTitle: name => `${name} begär mer åtkomst`,
+      updateConsentBody: (name, sha) =>
+        `Den nya låsta katalogincheckningen för ${name} (${sha}) lägger till funktioner som den installerade versionen saknar. Tillämpa den bara om du litar på dem:`,
+      updateConsentConfirm: 'Tillämpa uppdatering',
+      updateScanTitle: name => `Säkerhetsskanningen flaggade ${name}`,
+      updateScanBody: (name, count) =>
+        `Uppdateringen av ${name} fick bedömningen Var försiktig (${count} ${count === 1 ? 'resultat' : 'resultat'}). Varje uppdatering skannas. Tillämpa den bara om du litar på källan:`,
+      updateScanMore: count => `+ ${count} till`,
+      updateScanConfirm: 'Uppdatera ändå',
+      updateScanBlocked: name =>
+        `Säkerhetsskanningen blockerade uppdateringen av ${name} (riskabel bedömning). Den kan inte åsidosättas.`,
+      updatedGit: name => `${name} uppdaterades till den senaste incheckningen.`
     }
   },
   updates: {

@@ -183,6 +183,14 @@ _PROPERTIES: dict[str, Any] = {
             "Saves a round-trip when you need to verify an action's effect."
         ),
     },
+    "note": {
+        "type": "string",
+        "description": (
+            "Optional. One short paragraph: what you are about to do on the screen and why. "
+            "Shown verbatim on the human approval prompt so the person approving can see intent "
+            "without opening the window. Display-only — it is not sent to the driver."
+        ),
+    },
 }
 
 COMPUTER_USE_SCHEMA: dict[str, Any] = {

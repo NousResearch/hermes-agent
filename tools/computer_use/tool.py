@@ -389,9 +389,13 @@ def _request_approval(action: str, args: dict[str, Any]) -> Optional[str]:
 
     mode = "foreground" if args.get("delivery_mode") == "foreground" else "background"
     description = f"Allow computer_use to perform `{action}`?"
+    # The agent's own note rides on the approval prompt: the synthesized action alone ("click element
+    # #67") tells the person approving nothing about intent. Display-only — never dispatched.
+    note = str(args.get("note") or "").strip()
+    display_target = f"computer_use: {_summarize_action(action, args)}" + (f"\n{note}" if note else "")
     result = _run_approval_gate(
         pattern_key=f"cua:{action}:{mode}", description=description,
-        display_target=f"computer_use: {_summarize_action(action, args)}", approval_callback=_approval_callback,
+        display_target=display_target, approval_callback=_approval_callback,
         subject=f"computer_use `{action}` requires approval", noun="desktop actions",
         advice="Find an alternative approach that avoids driving the desktop.",
         autoapprove_log_prefix="computer_use action in non-interactive non-gateway context",

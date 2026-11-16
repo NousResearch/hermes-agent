@@ -2,7 +2,7 @@ import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-u
 import { type MutableRefObject, type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
-import { desktopSlashCommandArgumentMode } from '@/lib/desktop-slash-commands'
+import { desktopSlashCommandArgumentMode, desktopSlashKeepBareEditable } from '@/lib/desktop-slash-commands'
 
 import {
   COMPLETION_ACTIONS,
@@ -269,6 +269,16 @@ export function useComposerTrigger({
       return false
     }
 
+    // A bare command token is not a "fully-typed argument" — it is a complete
+    // invocation in its own right (`/profile` prints the active profile). The
+    // Space fallback exists for `/personality creative`, where the completer
+    // dropped the exact match; chipping bare `/profile ` here would turn the
+    // command into a terminal-prompt pill and close the option list before a
+    // profile name could be typed. Require a real argument token.
+    if (!/\s+\S/.test(trigger.query) || desktopSlashKeepBareEditable(slashCommandToken(trigger.query))) {
+      return false
+    }
+
     // Free prose must stay ordinary contentEditable text. This guard also
     // protects against a stale completion result reaching the keydown path
     // before refreshTrigger has caught up with the latest DOM input.
@@ -374,14 +384,19 @@ export function useComposerTrigger({
     const command = (item.metadata as { command?: string } | undefined)?.command ?? ''
 
     const argumentMode = desktopSlashCommandArgumentMode(command)
-    const expandsToArgs = trigger.kind === '/' && !trigger.inline && !serialized.includes(' ') && argumentMode !== null
+    const bareKeepEditable =
+      trigger.kind === '/' && !trigger.inline && !serialized.includes(' ') && desktopSlashKeepBareEditable(command)
+    const expandsToArgs =
+      bareKeepEditable || (trigger.kind === '/' && !trigger.inline && !serialized.includes(' ') && argumentMode !== null)
 
     const text = starter || serialized.endsWith(' ') ? serialized : `${serialized} `
     const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)
     // No pill while expanding — the bare command stays plain text until an arg
     // is picked, at which point a single pill is emitted for the full command.
     const slashKind = !expandsToArgs && trigger.kind === '/' ? slashChipKindForItem(item) : null
-    const keepTriggerOpen = starter || (expandsToArgs && argumentMode !== 'text')
+    // Stale catalogs can report no argument mode; the local spec's bare rule
+    // still wins so Tab / a mouse click on `/profile` cannot chip it.
+    const keepTriggerOpen = starter || bareKeepEditable || (expandsToArgs && argumentMode !== 'text')
 
     const chip = slashKind
       ? slashChipElement(serialized, slashKind)

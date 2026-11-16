@@ -164,6 +164,13 @@ export interface DesktopCommandSpec {
   /** Composer behavior for text following the command token. */
   argumentMode?: DesktopSlashArgumentMode
   /**
+   * The bare command is itself a complete invocation (e.g. `/profile` prints
+   * the active profile). Accepting its command-row completion must expand to
+   * the editable argument stage, never commit a terminal-prompt chip — even
+   * when a stale catalog reports no argument mode.
+   */
+  keepBareEditable?: boolean
+  /**
    * Subcommands (first argument token) the desktop may forward when the
    * command is exec-routed. Absent = the whole family is allowed. Registry
    * commands declare this as `desktop_subcommands` so a desktop-relevant
@@ -241,7 +248,8 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     // round-trip, so the arg stage must not wait for commands.catalog either.
     description: 'Choose the profile new chats open in',
     surface: action('profile'),
-    argumentMode: 'options'
+    argumentMode: 'options',
+    keepBareEditable: true
   },
   {
     name: '/skin',
@@ -885,6 +893,11 @@ export function desktopSlashDescription(command: string, fallback = ''): string 
 
 export function desktopSlashCommandArgumentMode(command: string): DesktopSlashArgumentMode | null {
   return resolveDesktopCommand(command)?.argumentMode ?? asArgumentMode(catalogMeta(command)?.argument_mode) ?? null
+}
+
+/** Commands whose bare invocation must stay editable text, never a chip. */
+export function desktopSlashKeepBareEditable(command: string): boolean {
+  return resolveDesktopCommand(command)?.keepBareEditable === true
 }
 
 export function desktopSkinSlashCompletions(

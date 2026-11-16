@@ -3,7 +3,7 @@ import { act, renderHook } from '@testing-library/react'
 import { createRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import { desktopSlashKeepBareEditable, rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { composerPlainText, renderComposerContents, RICH_INPUT_SLOT } from '../rich-editor'
 
@@ -74,6 +74,13 @@ function mountTrigger(editor: HTMLDivElement, items: Unstable_TriggerItem[], sla
 
   return { draftRef, hook, setComposerText }
 }
+
+describe('useComposerTrigger — bare invocations', () => {
+  it('pins /profile as a keep-bare-editable command', () => {
+    expect(desktopSlashKeepBareEditable('/profile')).toBe(true)
+    expect(desktopSlashKeepBareEditable('/personality')).toBe(false)
+  })
+})
 
 describe('useComposerTrigger — the onboarding chat before setup ends', () => {
   it('opens no slash menu, and still opens the @ menu', () => {
@@ -251,6 +258,46 @@ describe('useComposerTrigger — free-text slash arguments', () => {
     })
     expect(composerPlainText(editor)).toBe('/personality creative ')
     expect(editor.querySelector('[data-slash-kind]')?.getAttribute('data-ref-text')).toBe('/personality creative')
+  })
+
+  it('never chips a bare /profile — the no-arg command is complete, not a typed option', () => {
+    // With an empty option list the Space fallback used to commit "/profile"
+    // as a terminal-prompt pill. That closes the popover and turns the text
+    // green/monospace, so a profile name can never be typed.
+    const editor = mountEditor('/profile ')
+    const { hook } = mountTrigger(editor, [])
+
+    act(() => hook.result.current.refreshTrigger())
+
+    expect(hook.result.current.trigger).not.toBeNull()
+    expect(hook.result.current.commitTypedSlashDirective()).toBe(false)
+    expect(composerPlainText(editor)).toBe('/profile ')
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+  })
+
+  it('expands a picked bare /profile to the arg stage instead of chipping it', () => {
+    // Tab and a mouse click both go through replaceTriggerWithChip, not the
+    // Space fallback above. They must agree with typing the trailing space.
+    const editor = mountEditor('/profile')
+    const { hook } = mountTrigger(editor, [item('/profile', 'Commands')])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(item('/profile', 'Commands')))
+
+    expect(composerPlainText(editor)).toBe('/profile ')
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+  })
+
+  it('keeps bare /profile editable even when the catalog has no argument mode', () => {
+    rememberDesktopCommandsCatalog({ commands: { '/profile': { argument_mode: null, desktop: null } } })
+    const editor = mountEditor('/profile')
+    const { hook } = mountTrigger(editor, [item('/profile', 'Commands')])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(item('/profile', 'Commands')))
+
+    expect(composerPlainText(editor)).toBe('/profile ')
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
   })
 })
 

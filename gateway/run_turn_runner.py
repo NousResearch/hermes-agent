@@ -297,7 +297,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # no drafts, edits, native stream or commentary bubbles; the rewrite goes out as one plain
         # final while the typing indicator runs (the agent also withholds every delta).
         held = stream_held()
-        want_stream_deltas = not held and not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
+        # show_reasoning keeps the 💭 block ABOVE the answer by sending them as one message: suppress
+        # the final answer's live deltas so the normal combined send fires (reasoning prepended) rather
+        # than streaming the answer and trailing the reasoning after it. Interim tool-progress
+        # commentary is unaffected. LOCAL viewers stream normally (they read reasoning off their event
+        # stream, never the projected block).
+        _reasoning_leads = self._runner._show_reasoning_for_source(ctx.source)
+        want_stream_deltas = (not held and not ctx.scheduled_heartbeat and not _reasoning_leads
+                              and scfg.enabled_for(plat_streaming))
         # A finite (`-z`, `chat -q`) viewer prints only the terminal reply, like the classic quiet
         # CLI that never wired commentary. Commentary it cannot see must not be recorded as a
         # delivery, or a final that arrives as commentary (codex app-server) suppresses the reply.

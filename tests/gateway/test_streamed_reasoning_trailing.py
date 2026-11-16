@@ -1,9 +1,11 @@
-"""show_reasoning on a streamed reply (#7251).
+"""show_reasoning on a streamed reply (#7251, revised).
 
-With streaming on, the answer reaches the chat through the stream consumer, and the gateway's own
-final send is skipped (``already_sent``). The reasoning block that ``show_reasoning`` prepends to
-the final response only ever rode that skipped send, so a streamed reply never showed it. It now
-follows the streamed answer as its own message.
+Originally (#7251) a streamed reply showed its reasoning as a trailing message *after* the answer,
+because the answer streamed live and the reasoning block was only known at turn end. That put the
+reasoning below the answer in the chat. The behaviour now: when show_reasoning is on for a
+messaging platform, the final answer is NOT streamed live, so the gateway's normal final send
+delivers reasoning and answer as ONE message with the 💭 block on top (``_hmwa_prepend_reasoning``).
+Local viewers are unaffected (they read reasoning off their event stream).
 """
 
 import pytest
@@ -14,25 +16,17 @@ from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter, _make
 
 
 async def _deliver(monkeypatch, *, show_reasoning: bool, already_sent: bool, is_bot: bool = False,
-                   uncertain: bool = False, ledger=None, saved: bool = True):
+                   platform: Platform = Platform.TELEGRAM):
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_load_gateway_config",
                         lambda: {"display": {"show_reasoning": show_reasoning}})
-    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
-    if ledger is not None:
-        async def _ledger(event, session_key, response, *, error=None, **_kw):
-            ledger.append(response)
-            return saved
-
-        adapter.ledger_attempted_final = _ledger
+    adapter = ProgressCaptureAdapter(platform=platform)
     runner = _make_runner(adapter)
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", is_bot=is_bot)
+    source = SessionSource(platform=platform, chat_id="42", chat_type="dm", is_bot=is_bot)
     event = MessageEvent(text="hi", message_type=MessageType.TEXT, source=source, message_id="1")
     result = {"final_response": "the answer is 42", "last_reasoning": "thinking hard about it",
               "already_sent": already_sent}
-    if uncertain:
-        result["delivery_uncertain"] = True
     response = runner._hmwa_prepend_reasoning(result, "the answer is 42", source, False)
 
     class _Entry:
@@ -40,75 +34,56 @@ async def _deliver(monkeypatch, *, show_reasoning: bool, already_sent: bool, is_
 
     returned = await runner._hmwa_deliver_turn_response(
         event, source, _Entry(), "agent:main:telegram:dm:42", None, result, [], response, None, False)
-    return adapter, returned
+    return runner, adapter, returned
 
 
 @pytest.mark.asyncio
-async def test_streamed_reply_is_followed_by_its_reasoning(monkeypatch):
-    adapter, returned = await _deliver(monkeypatch, show_reasoning=True, already_sent=True)
+async def test_reasoning_leads_the_answer_in_one_message(monkeypatch):
+    """show_reasoning on + not streamed: the normal send carries reasoning ABOVE the answer, as one
+    message. Nothing trails."""
+    _runner, adapter, returned = await _deliver(monkeypatch, show_reasoning=True, already_sent=False)
 
-    assert returned is None  # the streamed answer is not sent again
-    sent = [call["content"] for call in adapter.sent]
-    assert len(sent) == 1 and "thinking hard about it" in sent[0]
-    assert "the answer is 42" not in sent[0]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("show_reasoning, already_sent", [(False, True), (True, False)])
-async def test_no_trailing_reasoning_when_hidden_or_not_streamed(monkeypatch, show_reasoning, already_sent):
-    adapter, returned = await _deliver(monkeypatch, show_reasoning=show_reasoning, already_sent=already_sent)
-
+    # The gateway's own final send carries the combined message; nothing is sent separately here.
     assert adapter.sent == []
-    if not already_sent:  # the caller's normal send carries the reasoning above the answer
-        assert returned.startswith("💭") and returned.endswith("the answer is 42")
+    assert returned.startswith("💭") and "thinking hard about it" in returned
+    assert returned.endswith("the answer is 42")
 
 
 @pytest.mark.asyncio
-async def test_a_bot_peer_gets_no_trailing_reasoning_message(monkeypatch):
-    """A second message to a bot peer is fresh input that can start another paid turn."""
-    adapter, returned = await _deliver(monkeypatch, show_reasoning=True, already_sent=True, is_bot=True)
+async def test_show_reasoning_suppresses_live_answer_streaming(monkeypatch):
+    """The gate that keeps reasoning on top: a messaging platform with show_reasoning on must not
+    stream the final answer's deltas, so the combined send fires instead of a trailing block."""
+    import gateway.run as gateway_run
 
-    assert returned is None
-    assert adapter.sent == []
-
-
-@pytest.mark.asyncio
-async def test_an_uncertain_streamed_final_carries_its_reasoning_only_once(monkeypatch):
-    """The ledgered redelivery of an uncertain streamed final already holds the reasoning block."""
-    ledger: list[str] = []
-    adapter, returned = await _deliver(monkeypatch, show_reasoning=True, already_sent=True,
-                                       uncertain=True, ledger=ledger)
-
-    assert returned is None
-    assert adapter.sent == []
-    assert len(ledger) == 1 and "thinking hard about it" in ledger[0] and ledger[0].endswith("the answer is 42")
-
-
-@pytest.mark.asyncio
-async def test_an_uncertain_streamed_final_with_the_ledger_off_still_shows_its_reasoning(monkeypatch):
-    """``gateway.delivery_ledger: false`` saves no redelivery row, so nothing else will carry the reasoning."""
-    ledger: list[str] = []
-    adapter, returned = await _deliver(monkeypatch, show_reasoning=True, already_sent=True,
-                                       uncertain=True, ledger=ledger, saved=False)
-
-    assert returned is None
-    sent = [call["content"] for call in adapter.sent]
-    assert len(sent) == 1 and "thinking hard about it" in sent[0]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("enabled", [True, False])
-async def test_the_base_ledger_reports_whether_it_saved_a_redelivery(monkeypatch, tmp_path, enabled):
-    """The real adapter seam: with ``gateway.delivery_ledger`` off nothing is saved, and it says so."""
-    from gateway import delivery_ledger as dl
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(dl, "ledger_enabled", lambda config=None: enabled)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config",
+                        lambda: {"display": {"show_reasoning": True}})
     adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm")
-    event = MessageEvent(text="hi", message_type=MessageType.TEXT, source=source, message_id="1")
+    runner = _make_runner(adapter)
+    tg = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm")
+    local = SessionSource(platform=Platform.LOCAL, chat_id="42", chat_type="dm")
 
-    saved = await adapter.ledger_attempted_final(event, "agent:main:telegram:dm:42", "the answer is 42",
-                                                 error="Timed out")
+    assert runner._show_reasoning_for_source(tg) is True
+    # Local viewers read reasoning off their event stream, never the projected block: never gated.
+    assert runner._show_reasoning_for_source(local) is False
 
-    assert saved is enabled
+
+@pytest.mark.asyncio
+async def test_no_reasoning_block_when_hidden(monkeypatch):
+    """show_reasoning off: the normal send carries the bare answer, no 💭 block."""
+    _runner, adapter, returned = await _deliver(monkeypatch, show_reasoning=False, already_sent=False)
+
+    assert adapter.sent == []
+    assert returned == "the answer is 42"
+
+
+@pytest.mark.asyncio
+async def test_bot_peer_reasoning_matches_the_non_streamed_path(monkeypatch):
+    """Streamed and non-streamed turns now behave the same: the normal combined send carries
+    whatever ``_hmwa_prepend_reasoning`` produced for this source, with nothing sent separately."""
+    runner, adapter, returned = await _deliver(monkeypatch, show_reasoning=True, already_sent=False,
+                                               is_bot=True)
+    assert adapter.sent == []
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", is_bot=True)
+    expected = runner._hmwa_prepend_reasoning(
+        {"last_reasoning": "thinking hard about it"}, "the answer is 42", source, False)
+    assert returned == expected

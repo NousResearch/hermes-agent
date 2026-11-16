@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const ja: Translations = {
+export const ja = defineLocale({
   common: {
     save: "保存",
     saving: "保存中...",
@@ -798,4 +798,4 @@ export const ja: Translations = {
     logTruncated: "（最後の 100 KB を表示中 — 完全なログは ",
     logAt: "）",
   },
-};
+});

@@ -240,30 +240,47 @@ def test_a_reset_never_lands_between_the_epoch_check_and_the_add(tmp_path):
     with _endpoint() as (client, _srv):
         agent, warmer, run, db = _armed(tmp_path, client)
         agent._transition_context_engine_session = lambda **kw: None
-        paused, resume = threading.Event(), threading.Event()
+        paused, resume, reached, inside = (threading.Event() for _ in range(4))
+        order: list[str] = []
 
-        def barrier(frame, event, arg):  # a scheduler pause only: no return value or branch is patched
-            if event == "call" and frame.f_code is pcw.PromptCacheWarmer._add_to_session_totals.__code__:
-                paused.set()
-                assert resume.wait(10)
+        def worker_trace(frame, event, arg):  # a scheduler pause only: no return value or branch is patched
+            if frame.f_code is pcw.PromptCacheWarmer._add_to_session_totals.__code__:
+                if event == "call":
+                    paused.set()
+                    assert resume.wait(10)
+                elif event == "return":
+                    order.append("add")
+            return worker_trace
 
-        def timer_thread():
-            sys.settrace(barrier)
+        def reset_trace(frame, event, arg):
+            if frame.f_code is pcw.session_totals_lock.__code__ and event == "return":
+                reached.set()  # the reset holds the lock object and is entering it
+            elif frame.f_code is AIAgent.reset_session_state.__code__ and event == "line" and reached.is_set():
+                if not inside.is_set():  # the first statement past the ``with``: the lock was acquired
+                    order.append("reset")
+                    inside.set()
+            return reset_trace
+
+        def traced(target, trace, *args):
+            sys.settrace(trace)
             try:
-                warmer._refresh(run)
+                target(*args)
             finally:
                 sys.settrace(None)
 
-        worker = threading.Thread(target=timer_thread)
+        worker = threading.Thread(target=traced, args=(warmer._refresh, worker_trace, run))
         worker.start()
         assert paused.wait(5)
-        reset = threading.Thread(target=AIAgent.reset_session_state, args=(agent,))
+        reset = threading.Thread(target=traced, args=(AIAgent.reset_session_state, reset_trace, agent))
         reset.start()
-        reset.join(0.3)  # without the shared lock the reset has finished by now
+        assert reached.wait(5)  # the reset reached the contested lock while the add is paused inside it
+        # Without the shared lock the reset's body runs now; with it, it cannot until the add returns.
+        assert not inside.wait(2.0)
         resume.set()
         worker.join(10)
         reset.join(10)
         assert not worker.is_alive() and not reset.is_alive()
+        assert order == ["add", "reset"]
         assert agent.session_cache_read_tokens == 0 and agent.session_estimated_cost_usd == 0.0
         assert agent.session_cache_warm_calls == 0
         db.close()

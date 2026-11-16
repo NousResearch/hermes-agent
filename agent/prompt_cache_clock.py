@@ -492,8 +492,25 @@ def declared_write_tier(event: CacheEvent) -> Optional[str]:
     request's TTL under the route rule. ``event.tier`` is the earliest deadline over the whole
     prefix, so a 1h write on top of an older 5m prefix would read as 5m."""
     provider, base_url = event.destination[0], event.destination[1]
-    verdict = _RULES[event.route_class](_Ctx(event.route_class, event.requested_ttl, None, {}, event.write_tokens,
-                                             route_ttl_ceiling(provider, base_url)))
+    return _declared_tier(event.route_class, event.requested_ttl, event.write_tokens, provider, base_url)
+
+
+def request_write_tier(api_kwargs: Any, usage: Any, *, provider: str, base_url: str, api_mode: str,
+                       model: str) -> Optional[str]:
+    """:func:`declared_write_tier` for a request sent outside the loop (a keep-alive or priming write),
+    read from its own payload: its reply may not be folded into the clock (the context moved on), but
+    its writes still went to the tier it asked for."""
+    attempt = attempt_facts(api_kwargs) or {}
+    route_class = classify_route(provider=provider, base_url=base_url, api_mode=api_mode, model=model,
+                                 has_markers=attempt.get("marker_ttl") is not None, retention=attempt.get("retention"))
+    requested = attempt.get("marker_ttl") or attempt.get("openai_ttl")
+    return _declared_tier(route_class, requested, int(getattr(usage, "cache_write_tokens", 0) or 0), provider, base_url)
+
+
+def _declared_tier(route_class: str, requested_ttl: Optional[str], write_tokens: int, provider: str,
+                   base_url: str) -> Optional[str]:
+    verdict = _RULES[route_class](_Ctx(route_class, requested_ttl, None, {}, write_tokens,
+                                       route_ttl_ceiling(provider, base_url)))
     return verdict.tiers[-1] if verdict.confidence == DECLARED and verdict.tiers else None
 
 

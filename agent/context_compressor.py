@@ -5083,8 +5083,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             messages, compress_start, fresh=bool(force or focus_topic or bypass_cooldown),
             provider_context=bool(memory_context.strip()),
         )
-        if prepared:
-            compress_end = prepared.compress_end
+        messages, pruned_count, compress_start, compress_end = self._admit_window(  # planning wrote nothing
+            canonical_messages, messages, pruned_count, compress_start, compress_end, prepared)
         turns_to_summarize = messages[compress_start:compress_end]
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
@@ -5137,7 +5137,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 telemetry, turns_to_summarize, compress_end - compress_start, feasibility_skip,
             )
         # Phase 4: Assemble compressed message list
-        compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
+        compressed = self._assemble_with_archive_list(messages, compress_start, compress_end, scan, summary, prepared)
         return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images, pruned_count)
 
     def _assemble_compressed(

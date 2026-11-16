@@ -4,7 +4,7 @@ summary into that window."""
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Container, Optional
 
 from agent.context_compressor_tail import tail_cut_progress_floor
 from agent.prepared_compaction import PreparedCompaction, PreparedSummary
@@ -78,30 +78,70 @@ class CompactionWindowMixin:
 
     def _plan_compaction_window(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int, int, int]:
         """Phases 1-2 of compress(): ``(working, pruned_count, compress_start, compress_end)``.
-        ``working`` is a pruned copy without blank echoes; the boundaries index into it."""
+        ``working`` is a pruned copy without blank echoes; the boundaries index into it. Write-free: callers
+        plan to decide whether work can start, so nothing is archived here; the admitted compaction (or
+        prepared pass) archives once through :meth:`_archive_compaction_window`."""
         working, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
         )
         plan = self._drop_blank_echoes(working)
         compress_start, compress_end = self._compress_window(plan)
-        if pruned_count and compress_start < compress_end:
-            # Every result this compaction shortens is saved first and its stub (what the summarizer reads)
-            # names the file. Only a window that will summarize writes: a no-window plan repeats each batch.
-            from agent.context_compressor_prune_archive import archive_compaction_drops
-
-            working, _, kept = archive_compaction_drops(messages, working, getattr(self, "_session_id", "") or "")
-            pruned_count -= kept
-            plan = self._drop_blank_echoes(working)  # blank echoes are non-tool rows: same indices
-            if kept:  # a kept original is larger: the tail cut can move
-                compress_start, compress_end = self._compress_window(plan)
-        if compress_start < compress_end:
-            plan, offloaded = self._offload_window_results(plan, compress_start, compress_end)
-            pruned_count += offloaded
         return plan, pruned_count, compress_start, compress_end
 
+    def _archive_compaction_window(
+        self, originals: list[dict[str, Any]], plan: list[dict[str, Any]], pruned_count: int, start: int, end: int,
+        *, skip: Container[int] = frozenset(), fixed: bool = False,
+    ) -> tuple[list[dict[str, Any]], int, int, int, list[str]]:
+        """Save, byte-exact, every result *plan* shortens and every whole result the summary is about to replace,
+        each stub naming its file, so the summarizer reads pointers; returns ``(plan, pruned_count, start, end,
+        written host paths)``. Runs once per admitted compaction (never while planning). *originals* is the
+        unpruned transcript without blank echoes (index-aligned with *plan*). Rows at *skip* are left alone (a
+        prepared pass already archived the window its summary replaces, or lies outside the pass's window);
+        ``fixed`` keeps the boundaries even when a failed write leaves a larger original in place."""
+        from agent.context_compressor_prune_archive import archive_compaction_drops
+
+        session_id = getattr(self, "_session_id", "") or ""
+        written: list[str] = []
+        if pruned_count:
+            plan, written, kept = archive_compaction_drops(originals, plan, session_id, skip=skip)
+            pruned_count -= kept
+            if kept and not fixed:  # a kept original is larger: the tail cut can move (never to an empty window)
+                recut = self._compress_window(plan)
+                start, end = recut if recut[0] < recut[1] else (start, end)
+        if start < end:
+            plan, offloaded, offload_written = self._offload_window_results(plan, start, end, skip)
+            pruned_count += offloaded
+            written += offload_written
+        return plan, pruned_count, start, end, written
+
+    def _admit_window(
+        self, originals: list[dict[str, Any]], plan: list[dict[str, Any]], pruned_count: int, start: int, end: int,
+        prepared: Optional[PreparedSummary],
+    ) -> tuple[list[dict[str, Any]], int, int, int]:
+        """compress() past its no-op checks: archive once. A prepared summary already replaced (and its pass
+        archived) ``[start, prepared.compress_end)``, so only the rows outside it are written here."""
+        if prepared is None:
+            return self._archive_compaction_window(originals, plan, pruned_count, start, end)[:4]
+        skip = range(start, prepared.compress_end)
+        return self._archive_compaction_window(
+            originals, plan, pruned_count, start, prepared.compress_end, skip=skip, fixed=True)[:4]
+
+    def _assemble_with_archive_list(
+        self, messages: list[dict[str, Any]], start: int, end: int, scan: Any, summary: str,
+        prepared: Optional[PreparedSummary],
+    ) -> list[dict[str, Any]]:
+        """``_assemble_compressed`` with every archive a replaced row named, that neither the kept head and tail
+        nor the generated summary still name, listed in the summary row: the summarizer may drop a pointer, and
+        the list keeps the model's path back and the reference the retention sweep keeps the file for."""
+        from agent.context_compressor_prune_archive import archive_list_for_summary, pruned_archive_refs
+
+        named = pruned_archive_refs(messages) | (prepared.archives if prepared is not None else frozenset())
+        kept = [*messages[:start], *messages[max(end, scan.tail_start):], {"content": summary}]
+        return self._assemble_compressed(messages, start, end, scan, summary + archive_list_for_summary(named, kept))
+
     def _offload_window_results(
-        self, plan: list[dict[str, Any]], start: int, end: int,
-    ) -> tuple[list[dict[str, Any]], int]:
+        self, plan: list[dict[str, Any]], start: int, end: int, skip: Container[int] = frozenset(),
+    ) -> tuple[list[dict[str, Any]], int, list[str]]:
         """The tool results the summary is about to replace, saved first: each one the prune left whole
         inside ``plan[start:end]`` becomes its one-line stub naming the byte-exact file, so the summarizer
         reads the pointer and the model can still open the exact output. Local backend only (elsewhere the
@@ -111,13 +151,14 @@ class CompactionWindowMixin:
         from tools.tool_result_storage import _backend_reads_host_files
 
         if not _backend_reads_host_files():
-            return plan, 0
+            return plan, 0, []
         demoted, calls = list(plan), _tool_calls_by_id(plan)
-        changed = sum(self._demote_tool_result_at(demoted, i, calls, _PRUNE_MIN_CHARS) for i in range(start, end))
+        changed = sum(self._demote_tool_result_at(demoted, i, calls, _PRUNE_MIN_CHARS)
+                      for i in range(start, end) if i not in skip)
         if not changed:
-            return plan, 0
-        rows, _written, kept = archive_pruned_originals(plan, demoted, getattr(self, "_session_id", "") or "")
-        return rows, changed - kept
+            return plan, 0, []
+        rows, written, kept = archive_pruned_originals(plan, demoted, getattr(self, "_session_id", "") or "")
+        return rows, changed - kept, written
 
     def _take_prepared_summary(
         self, messages: list[dict[str, Any]], compress_start: int, *, fresh: bool, provider_context: bool,

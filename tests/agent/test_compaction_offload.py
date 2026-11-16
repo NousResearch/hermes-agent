@@ -180,7 +180,9 @@ def test_a_failed_archive_write_keeps_that_result_whole_and_compaction_still_com
 
     c = _compressor()
     with patch("tools.tool_result_storage._write_to_spillover", side_effect=flaky):
-        working, _, _, _ = c._plan_compaction_window(msgs)
+        plan, pruned, start, end = c._plan_compaction_window(msgs)
+        assert not _archived(home)  # planning is write-free; the admitted compaction archives
+        working = c._archive_compaction_window(c._drop_blank_echoes(msgs), plan, pruned, start, end)[0]
         kept_id = next(cid for cid, body in originals.items() if body == failed[0])
         assert next(m for m in working if m.get("tool_call_id") == kept_id)["content"] == failed[0]
         assert _assert_pointers_name_byte_exact_originals(home, originals, working)

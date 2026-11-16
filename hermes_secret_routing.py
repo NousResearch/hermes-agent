@@ -432,6 +432,14 @@ def read_auth_json(auth_file: Path) -> Any:
     return _load_auth_store(Path(auth_file))
 
 
+def auth_view_version(auth_file: Path) -> Optional[str]:
+    """For caches of a parsed ``auth.json``: None with the local store (the file's own metadata
+    is the cache key, as today); with any other store, the store's version of the profile's view
+    (``view_version``), which changes whenever a record does where the file never moves."""
+    provider, home = _routed_auth_home(auth_file)
+    return None if provider is None else provider.view_version(home)
+
+
 def auth_json_exists(auth_file: Path) -> bool:
     """``auth_file.exists()`` with the local store; with any other store, True (the store always
     has a view: an empty one reads as a store with no records)."""

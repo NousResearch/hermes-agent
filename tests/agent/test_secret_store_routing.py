@@ -284,3 +284,37 @@ def test_a_view_change_reaches_a_bound_profile_scope(store, monkeypatch):
         provider.refresh(home)
         assert get_secret("ROTATING_KEY") == MARK
 
+
+def test_the_global_auth_fallback_follows_the_stores_view_not_the_local_file(store, tmp_path, monkeypatch):
+    provider, _home = store
+    from hermes_cli import auth
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setattr(auth, "_global_auth_file_path", lambda: root / "auth.json")
+    monkeypatch.setattr(auth, "_global_auth_store_cache", None)
+    provider._remote(root)["auth"]["openai-codex"] = {"tokens": {"access_token": "first"}}
+    provider.refresh(root)
+    # No local bootstrap file at the root: the store's records are still the root's.
+    assert not (root / "auth.json").exists()
+    assert auth._load_global_auth_store()["providers"]["openai-codex"]["tokens"]["access_token"] == "first"
+    provider._remote(root)["auth"]["openai-codex"] = {"tokens": {"access_token": MARK}}
+    provider._remote(root)["version"] += 1
+    provider.refresh(root)
+    assert auth._load_global_auth_store()["providers"]["openai-codex"]["tokens"]["access_token"] == MARK
+    del provider._remote(root)["auth"]["openai-codex"]
+    provider._remote(root)["version"] += 1
+    provider.refresh(root)
+    assert "openai-codex" not in auth._load_global_auth_store().get("providers", {})
+
+
+def test_the_global_auth_fallback_with_the_local_store_still_keys_on_the_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_SECRET_STORE", raising=False)
+    from hermes_cli import auth
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setattr(auth, "_global_auth_file_path", lambda: root / "auth.json")
+    monkeypatch.setattr(auth, "_global_auth_store_cache", None)
+    assert auth._load_global_auth_store() == {}
+    (root / "auth.json").write_text(json.dumps({"providers": {"x": {"k": 1}}}), encoding="utf-8")
+    assert auth._load_global_auth_store()["providers"] == {"x": {"k": 1}}
+    assert auth._global_auth_store_cache[1] == __import__("utils").file_cache_version(root / "auth.json")

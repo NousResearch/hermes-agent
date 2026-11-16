@@ -642,6 +642,29 @@ export const svOverrides: TranslationOverrides = {
         save: 'Spara',
         saving: 'Sparar…',
         cancel: 'Avbryt'
+      },
+      title: 'Fakturering',
+      preview: 'förhandsvisning',
+      summary: {
+        balance: 'Saldo',
+        plan: 'Plan',
+        autoRefill: 'Automatisk påfyllning'
+      },
+      sections: {
+        invoices: 'Fakturor',
+        plan: 'Plan',
+        paymentAndCredits: 'Betalning och krediter',
+        usage: 'Användning'
+      },
+      usage: { title: 'Användning' },
+      buyCredits: {
+        customAmount: 'Eget kreditbelopp',
+        title: 'Köp krediter nu',
+        buyButton: 'Köp',
+        processing: 'Bearbetar … kontrollerar betalningen',
+        added: amount => `${amount} tillagt. Saldo uppdateras.`,
+        retry: 'Försök igen',
+        openPortal: 'Öppna portalen'
       }
     },
     hudModifier: {

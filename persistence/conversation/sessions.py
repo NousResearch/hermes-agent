@@ -160,7 +160,7 @@ SESSION_ROW_COLUMNS: tuple[str, ...] = (
     "compression_failure_cooldown_until", "compression_failure_error", "compression_fallback_streak",
     "compression_ineffective_count", "compression_recovery_deadline", "compression_overload_streak", "profile_name",
     "transport_profile", "rewind_count", "archived", "auto_archived", "pinned", "hidden", "last_read_at",
-    "tool_names", "transcript_revision",
+    "tool_names", "transcript_revision", "prompt_cache_clock",
 )
 
 #: The columns a ``compact_rows`` listing does not read.
@@ -464,6 +464,8 @@ class SessionRecord:
     model_config_json: Optional[str] = None
     origin_json: Optional[str] = None
     tool_names: Optional[str] = None
+    #: The stored prompt-cache clock, the JSON text of the last applied usage delta that carried one (``None`` when none did).
+    prompt_cache_clock: Optional[str] = None
 
     def as_session_row(self) -> dict[str, JsonValue]:
         return {**self._row_cells(), **self._marker_cells()}

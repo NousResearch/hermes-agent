@@ -1,6 +1,6 @@
 """In-memory reference ``UsageRepository`` test fixture.
 
-Session rows (message counts, parent links, archived flags) are created by the sessions capability, so ``seed_session`` and ``set_session_archived`` provide this fixture's totals-filter state. Usage lives under the scope-store key ``usage``: ``sessions`` maps a session id to its :class:`_SessionRow` (counters, cost fields and stored billing route, which the sessions reference reads into ``SessionRecord``), and ``routes``, ``route_usage``, ``route_costs`` (summed actual cost, cost status and cost source) and ``route_last_write`` hold the attribution rows keyed by ``(session_id, (task or None, model, provider, base_url, mode))``. The workers reference writes the same tables.
+Session rows (message counts, parent links, archived flags) are created by the sessions capability, so ``seed_session`` and ``set_session_archived`` provide this fixture's totals-filter state. Usage lives under the scope-store key ``usage``: ``sessions`` maps a session id to its :class:`_SessionRow` (counters, cost fields and stored billing route, which the sessions reference reads into ``SessionRecord``), and ``routes``, ``route_usage``, ``route_costs`` (summed actual cost, cost status and cost source) and ``route_last_write`` hold the attribution rows keyed by ``(session_id, (task or None, model, provider, base_url, mode))``. The workers reference writes the same tables. The prompt-cache clock is a cell of the ``_SessionRow``; its resume fallback and generation read the messages reference's transcript of the session.
 
 The usage queue has no writer thread here: ``queue_usage`` applies the delta at once under the backend lock, as a writer that ran before any later read, and logs and drops an apply error. Every read barrier is therefore already met and ``flush_usage`` returns ``True``; merging adjacent deltas is not modelled, since it never changes a stored value.
 """
@@ -12,11 +12,12 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Optional
 
-from persistence import SessionId, ProfileScope
+from persistence import ProfileScope, RowVisibility, SessionId
 from persistence.conversation.sessions import SessionLineageKind
 from persistence.conversation.usage import (
     AuxiliaryTaskUsage,
     BillingRoute,
+    PromptCacheClockRecord,
     RouteUsage,
     TokenCounts,
     UsageDelta,
@@ -25,6 +26,7 @@ from persistence.conversation.usage import (
 )
 
 from ..backend import InMemoryBackend, register_repository
+from .transcript_store import transcripts_of
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,8 @@ class _SessionRow:
         default_factory=lambda: SessionBillingRoute(None, None, None)
     )
     route_model: Optional[str] = None
+    # The JSON text of the last applied prompt-cache event.
+    prompt_cache_clock: Optional[str] = None
 
 
 def _empty_usage() -> SessionUsage:
@@ -102,6 +106,12 @@ def _add_cost(stored: Optional[float], delta: Optional[float]) -> Optional[float
 def _has_usage(delta: UsageDelta) -> bool:
     """The attribution gate: a counter, a call or a truthy estimate (an actual cost alone is not usage)."""
     return delta.api_call_count > 0 or delta.tokens != TokenCounts() or bool(delta.estimated_cost_usd)
+
+
+def archived_row_count(store: Any, scope: ProfileScope, session_id: str) -> int:
+    """The durable context generation: the session's compaction-archived rows (inactive and compacted), 0 without a transcript."""
+    transcript = transcripts_of(store, scope).get(session_id)
+    return sum(r.visibility is RowVisibility.COMPACTION_ARCHIVED for r in transcript.rows) if transcript is not None else 0
 
 
 def _route_key(task: Optional[str], route: BillingRoute) -> _RouteKey:
@@ -240,6 +250,27 @@ class InMemoryUsageRepository:
             )
         return {task: sums[task] for task in sorted(sums)}
 
+    def prompt_cache_clock(self, session_id: SessionId) -> Optional[PromptCacheClockRecord]:
+        scope = self._backend.scope
+        with self._backend._lock:
+            if session_id not in self._backend.scope_store(scope).get("sessions", {}):
+                return None
+            row = self._known_row(scope, session_id)
+            tokens = row.usage.tokens if row is not None else TokenCounts()
+            last_assistant_at = None
+            if tokens.cache_read_tokens + tokens.cache_write_tokens > 0:
+                transcript = transcripts_of(self._backend, scope).get(session_id)
+                times = [r.epoch for r in transcript.active() if r.message.role == "assistant"] if transcript is not None else []
+                last_assistant_at = max(times, default=None)
+            return PromptCacheClockRecord(
+                clock=row.prompt_cache_clock if row is not None else None,
+                last_assistant_at=last_assistant_at,
+                generation=self.prompt_cache_generation(session_id),
+            )
+
+    def prompt_cache_generation(self, session_id: SessionId) -> int:
+        return archived_row_count(self._backend, self._backend.scope, session_id)
+
     # ── queue and barrier ─────────────────────────────────────────────────────
 
     def queue_usage(self, session_id: SessionId, delta: UsageDelta) -> None:
@@ -267,6 +298,8 @@ class InMemoryUsageRepository:
             row.route_model = session["model"]
             prior_calls = row.usage.api_call_count
             row.usage = self._staged_delta(row, delta)
+            if delta.prompt_cache_clock is not None:
+                row.prompt_cache_clock = delta.prompt_cache_clock
             self._fill_stored_route(row, delta, prior_calls)
             staged_tables = {
                 **tables,

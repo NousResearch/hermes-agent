@@ -10,7 +10,9 @@ description: "Record Hermes model and tool calls, export traces, and configure N
 
 Hermes supports Relay directly. Start Hermes normally; you do not need a separate Relay daemon, the `nemo-relay run` command, or a Hermes observability plugin.
 
-Start with a local trace file, then choose whether to keep files, send traces to a dashboard, or save completed trajectories for analysis. Relay plugins can also redact exported data, add cost and resource measurements, or change live model and tool calls.
+Start with a local trace file, then choose whether to keep files, send traces to a dashboard, or save completed trajectories for analysis. Relay plugins can also redact exported data and add cost and resource measurements.
+
+Beyond observability, Hermes also runs model and tool calls through Relay's [middleware](https://docs.nvidia.com/nemo/relay/v0.11.1/about-nemo-relay/concepts/middleware), including asynchronous middleware. Configured plugins can inspect or modify requests and results, apply policy checks, and serve cached responses. Observability redaction is separate: it changes exported copies without changing the live model or tool payload.
 
 :::note Different from Hermes Relay
 NeMo Relay handles agent observability and middleware. [Hermes Relay](../user-guide/messaging/relay.md) connects a Hermes gateway to messaging platforms.

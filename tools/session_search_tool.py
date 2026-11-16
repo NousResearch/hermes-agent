@@ -520,6 +520,14 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
             continue
         seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
+    # The asking session's own rows (its prompt, the query it just wrote) often hold the only
+    # all-terms match. They are skipped above, but their presence kept SessionDB's any-term
+    # (OR-relaxed) retry from firing, so a fresh question found nothing. Retry here; it runs at
+    # most once because _or_relaxed_query returns None for a query that already contains OR.
+    if not seen_sessions and not title_result and (
+            relaxed := db._or_relaxed_query(db._sanitize_fts5_query(query))):
+        return _discover(db, relaxed, role_filter, limit, sort, detail, current_session_id,
+                         link_profile, after_ts, before_ts, exclude_session_ids)
     for lineage_root, match_info in seen_sessions.items():
         if match_info.get("_title_only"):
             continue

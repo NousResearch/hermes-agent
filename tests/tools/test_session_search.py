@@ -290,6 +290,19 @@ class TestDiscoveryShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+    def test_own_echo_does_not_block_or_relaxed_retry(self, db):
+        # The asking session's own rows (its prompt, the query it just wrote) are often the
+        # only rows that contain EVERY query word. They are skipped as live context, so the
+        # search must still fall back to any-word matching instead of returning nothing.
+        _seed_modpack_sessions(db)
+        db.create_session("s_live", source="cli")
+        db.append_message("s_live", role="user", content="recall the neoforge spawning pipeline decision")
+        result = json.loads(session_search(query="neoforge spawning pipeline decision", db=db,
+                                           current_session_id="s_live"))
+        sids = {r["session_id"] for r in result["results"]}
+        assert "s_live" not in sids
+        assert sids & {"s_oldest", "s_newest"}, result
+
 
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):

@@ -51,6 +51,18 @@ interface ModelSwitchResponse {
   deferred?: boolean
 }
 
+/** Optimistically write a pick into the primary session's slice (what the model pill reads once the session
+ *  exists). No-op without a slice (a draft chat reads the composer atoms) or when nothing changes. */
+function patchPrimarySliceRoute(runtimeId: null | string, model: string, provider: string, reasoningEffortWire: string) {
+  const state = runtimeId ? $sessionStates.get()[runtimeId] : undefined
+
+  if (!runtimeId || !state || (state.model === model && state.provider === provider)) {
+    return
+  }
+
+  $sessionStates.set({ ...$sessionStates.get(), [runtimeId]: { ...state, model, provider, reasoningEffortWire } })
+}
+
 export function useModelControls({
   cacheOwnerConnectionId,
   cacheProfile,
@@ -287,6 +299,10 @@ export function useModelControls({
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
+          // Once a session exists the pill reads that session's own slice, not the composer atoms above, so
+          // the pick only showed after the next gateway session.info. Repaint the slice too; a failed pick
+          // restores it, and session.info stays the authority.
+          patchPrimarySliceRoute(liveSessionId, selection.model, selection.provider, '')
         } else if (liveSessionId) {
           // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
           // belongs to the old route, so it is withdrawn until session.info re-stamps it.
@@ -311,6 +327,7 @@ export function useModelControls({
           // Restore runtime paint/stamp separately; neither is sticky launch intent.
           setCurrentModelTransient(snapshot.model)
           setCurrentProviderTransient(snapshot.provider)
+          patchPrimarySliceRoute(liveSessionId, snapshot.model, snapshot.provider, snapshot.reasoningEffortWire)
           setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
         } else if (liveSessionId) {
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({

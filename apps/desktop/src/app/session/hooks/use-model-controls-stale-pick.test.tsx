@@ -101,6 +101,32 @@ describe('useModelControls stale pick ordering', () => {
     resetStores()
   })
 
+  it('repaints the open session slice (what the pill reads) as soon as a model is picked', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('fable-5')
+    setCurrentProvider('nous')
+
+    const baseState = { model: 'fable-5', provider: 'nous', reasoningEffortWire: 'x' } as never
+    SessionStates.$sessionStates.set({ 'session-1': baseState })
+
+    const pending = deferred<never>()
+    const requestGateway = vi.fn(() => pending.promise)
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    const pick = controls.selectModel({ model: 'grok-4.5', provider: 'xai' })
+
+    // Before the gateway answers: the pill must already show the pick, not the old model.
+    expect(SessionStates.$sessionStates.get()['session-1']).toMatchObject({ model: 'grok-4.5', provider: 'xai' })
+
+    pending.reject(new Error('timeout'))
+    await expect(pick).resolves.toBe(false)
+
+    // A failed pick puts the old model back on the pill.
+    expect(SessionStates.$sessionStates.get()['session-1']).toMatchObject({ model: 'fable-5', provider: 'nous' })
+  })
+
   it('does not roll a failed older pick back over a newer one that applied', async () => {
     $activeSessionId.set('session-1')
     setCurrentModel('fable-5')

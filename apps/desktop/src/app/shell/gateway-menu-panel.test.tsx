@@ -133,4 +133,18 @@ describe('GatewayMenuPanel recent activity source', () => {
     expect(logs).toHaveBeenCalledWith({ file: 'gateway', lines: 120 })
     expect(screen.queryByText(/gui stale line/)).toBeNull()
   })
+
+  it('keeps the age of old gateway lines while removing display noise', async () => {
+    logs.mockResolvedValue({
+      file: 'gateway',
+      lines: ['2026-11-06 08:14:02,871 [runtime-1] WARNING gateway from a previous run']
+    })
+
+    renderPanel('open')
+
+    const line = await screen.findByText(/11-06 08:14\s+WARNING gateway from a previous run/)
+    expect(line).toBeTruthy()
+    expect(screen.queryByText(/,871/)).toBeNull()
+    expect(screen.queryByText(/\[runtime-1\]/)).toBeNull()
+  })
 })

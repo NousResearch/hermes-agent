@@ -29,6 +29,9 @@ def f():
 def g():
     # health: allow HX018 -- the waiver form keeps a real exception possible
     from hermes_cli import config
+
+
+import run_agent
 """
 
 
@@ -36,14 +39,14 @@ def test_utils_product_reach_blocks_and_honours_waiver(tmp_path, capsys):
     repo, base = _repo(tmp_path)
     tree: dict[str, str | None] = {
         "agent/__init__.py": "", "agent/redact.py": "", "gateway/__init__.py": "",
-        "hermes_cli/__init__.py": "", "hermes_constants.py": "",
+        "hermes_cli/__init__.py": "", "hermes_constants.py": "", "run_agent.py": "",
         "utils/__init__.py": "", "utils/sib.py": "", "utils/x.py": _UTILS_X,
         "pkg/b.py": "import agent\n",  # outside utils: not this rule's business
     }
     code, out = _verdict(repo, base, tree, capsys)
     flagged = {(m[1], int(m[2])) for m in re.finditer(r"^(\S+):(\d+)  HX018", out, re.MULTILINE)}
     assert code == 1
-    assert flagged == {("utils/x.py", 2), ("utils/x.py", 11), ("utils/x.py", 12)}
+    assert flagged == {("utils/x.py", 2), ("utils/x.py", 11), ("utils/x.py", 12), ("utils/x.py", 20)}
     assert "utils/x.py:17  HX018" in out.split("Allowed by comment")[1]
 
 
@@ -53,6 +56,8 @@ def test_utils_product_reach_blocks_and_honours_waiver(tmp_path, capsys):
     ("m = __import__('gateway')\n", True),
     ("import sys as s\nm = s.modules['agent']\n", True),
     ("import sys\nok = 'agent' in sys.modules\n", True),
+    ("import sys\nok = 'agent' not in sys.modules\n", True),
+    ("from .gateway import x\n", False),
     ("import importlib\nimportlib.import_module('hermes_platform')\n", False),
     ("import sys\nm = sys.modules.get('json')\n", False),
     ("import importlib\ndef f(name):\n    return importlib.import_module(name)\n", False),

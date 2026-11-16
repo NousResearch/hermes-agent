@@ -12,8 +12,9 @@ from collections.abc import Iterable, Iterator
 
 from scripts.code_health.py_ast import Ctx, _call_name, _dotted
 
-# First-party modules that are themselves product-free, so ``utils`` may build on them.
-ALLOWED = frozenset({"utils", "hermes_constants", "hermes_platform", "hermes_yaml", "pm"})
+# First-party modules ``utils`` may build on. ``hermes_constants`` reaches ``agent`` and ``hermes_cli``
+# inside a few functions; ``utils`` calls only its home helpers.
+ALLOWED = frozenset({"utils", "hermes_constants", "hermes_platform", "hermes_yaml"})
 _IMPORT_CALLS = {"importlib.import_module", "__import__"}
 
 

@@ -21,7 +21,9 @@ and it is never the fix for an import cycle.
    names: `misc`, `common`, `helpers`, `shared`, `base`, `core`, `compat`.
 3. **Product.** The code reads no config, no secret and no Hermes home, and its names and
    parameters mention no profile, session, agent, tool, gateway or plugin. The caller passes in
-   the path, the value or the timeout.
+   the path, the value or the timeout. The one standing exception: the atomic writers in
+   `files.py` call `hermes_constants.mkdir_under_hermes_home`, so a write never resurrects a
+   deleted profile.
 
 Code that fails a test has an owner elsewhere:
 
@@ -31,7 +33,7 @@ Code that fails a test has an owner elsewhere:
 | Hermes home and paths | `hermes_constants.py` |
 | Host facts, executable lookup | `hermes_platform/` |
 | Secrets and credentials | `agent/secret_scope.py` |
-| Config reads and writes | `hermes_cli/config.py`, `config_backend.py` |
+| Config reads and writes | `hermes_cli/config.py`, `hermes_cli/config_backend.py` |
 | YAML parsing policy | `hermes_yaml.py` |
 
 Before writing a helper anywhere, search here first: private copies of `read_json_or_empty`,
@@ -40,7 +42,7 @@ Before writing a helper anywhere, search here first: private copies of `read_jso
 ## Imports (HX018, blocking)
 
 A module under `utils/` imports the standard library, third-party core dependencies, other `utils`
-modules, `hermes_constants`, `hermes_platform`, `hermes_yaml` and `pm`. It reaches no other
+modules, `hermes_constants`, `hermes_platform` and `hermes_yaml`. It reaches no other
 first-party module: not at module top, not inside a function, not under `TYPE_CHECKING`, not through
 `importlib` and not through `sys.modules`, which reaches a module with no import statement at all.
 Take the value or a callable as a parameter instead, or keep the helper in the package that owns
@@ -56,9 +58,10 @@ packages, or pass the value in.
 
 - One subject per module. Functions and small frozen dataclasses: no registry, no singleton, no
   background thread, no work at import time, no module-level mutable state.
-- Callers import from the module: `from utils.files import atomic_replace`. `utils/__init__.py` is
-  a docstring plus re-exports for callers written as `from utils import name` and for the names
-  published as `utils:<name>` in `hermes_cli/data/plugin_api.json`. Add no re-export for a new helper.
+- New callers import from the module: `from utils.files import atomic_replace`. `utils/__init__.py`
+  is a docstring plus re-exports that keep the existing `from utils import name` callers and the
+  names published as `utils:<name>` in `hermes_cli/data/plugin_api.json` working. Add no re-export
+  for a new helper.
 - `files.py` imports `hermes_yaml` (ruamel) at module top, so importing anything from `utils` loads
   it. Code that must run on the standard library alone (the updater takeover, `pm`) does not import
   `utils`.

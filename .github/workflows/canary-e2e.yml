@@ -3,8 +3,9 @@ name: Canary E2E
 # Pull requests and pushes to main run no E2E suite (ci.yaml's detect gate).
 # This runs a stable claim's E2E calls (stable-release.yml's ci, install-e2e and
 # windows-live, same inputs) on each successful canary's commit, so a regression
-# shows up the day after it lands instead of at the next claim. It only
-# reports: the canary never waits on it.
+# shows up the day after it lands instead of at the next claim. It only reports:
+# the canary never waits on it, and install-e2e-red.yml keeps one issue in step
+# with the latest automatic run.
 #
 # A workflow_run run's github.sha is main's tip when it started, not the canary
 # commit, so every call is handed the canary run's head_sha.

@@ -48,6 +48,7 @@ schedule daily 06:41 UTC → canary-release.yml → (release.py dispatches) desk
 Canary Release succeeded → canary-e2e.yml ─┬─ ci.yaml (release: true)
  (on the canary commit)                    ├─ install-e2e.yml
                                            └─ windows-venv-e2e.yml
+Canary E2E completed     → install-e2e-red.yml (one tracker issue)
 
 release.py release       → stable-release.yml ─┬─ ci.yaml (release: true, strict gate)
  (pushes rc.N-vX.Y.Z,                          ├─ docker.yml (release-phase test → publish)
@@ -418,7 +419,8 @@ Long-form reference: `website/docs/developer-guide/stable-releases.md`.
   `github.sha` is `main`'s tip when the event fired, so the commit comes from
   the canary run's `head_sha` and is passed down explicitly.
 - **Effect:** reporting only. The canary never waits on it and nothing is
-  published.
+  published. `install-e2e-red.yml` keeps one `install-e2e-red` issue in step
+  with the latest automatic run.
 - **Concurrency:** group `canary-e2e`, queued. About 1,400 job-minutes and 45
   minutes wall clock per run.
 - **Manual:** `gh workflow run canary-e2e.yml -f commit=<sha>`.
@@ -532,7 +534,7 @@ gh workflow run desktop-bundle-smoke.yml --ref <test-branch> \
 | `install-e2e-run.yml` | `workflow_call` | Linux/OS-agnostic leg: real `curl \| bash` install, then update. Unsupported method pairs skip (grey). |
 | `install-e2e-windows-run.yml` | `workflow_call` | Windows leg (Hermes-Setup.exe via AutoHotkey, `install.ps1`, app "Update now" under Playwright). Packaged-bundle arm only with `install-method=packaged-app`. Also called by stable for signed acceptance. |
 | `install-e2e-macos-run.yml` | `workflow_call` | macOS leg (script installs, Hermes-Setup.dmg, packaged-bundle arm). Also called by stable. |
-| `install-e2e-red.yml`, **Install & Update E2E red tracker** | `workflow_run` of Install & Update E2E; `workflow_dispatch` (`run-id`, `dry-run` default true) | Keeps one `install-e2e-red` issue in sync. The automatic path runs only when the watched run was a `schedule` event (see [dormant paths](#known-dormant-or-inert-paths)). |
+| `install-e2e-red.yml`, **Canary E2E red tracker** | `workflow_run` of Canary E2E; `workflow_dispatch` (`run-id`, `dry-run` default true) | Keeps one `install-e2e-red` issue in sync with the latest Canary E2E run a canary started: a red run opens or rewrites it, a green run closes it. Dispatched and skipped Canary E2E runs leave it alone. |
 
 ```sh
 gh workflow run install-e2e.yml --ref main -f route=all
@@ -592,7 +594,7 @@ gh workflow run windows-install-update-e2e.yml --ref <branch> -f strict_acceptan
 | `e2e-desktop-update.yml` | E2E Desktop update | R | ci |
 | `e2e-desktop.yml` | E2E Desktop | R | ci (disabled) |
 | `install-e2e-macos-run.yml` | install-e2e macos leg | R | install-e2e, stable |
-| `install-e2e-red.yml` | Install & Update E2E red tracker | workflow_run(Install & Update E2E), dispatch | none |
+| `install-e2e-red.yml` | Canary E2E red tracker | workflow_run(Canary E2E), dispatch | none |
 | `install-e2e-run.yml` | Install & Update E2E (reusable) | R | install-e2e, macos leg |
 | `install-e2e-windows-run.yml` | install-e2e windows leg | R | install-e2e, stable |
 | `install-e2e.yml` | Install & Update E2E | dispatch, call | stable, canary-e2e |
@@ -634,9 +636,6 @@ coverage:
 - **Linux desktop bundles** (`build-linux-x64/arm64` in
   `desktop-bundled-release.yml`) and the Linux targets of `pm-bundle.yml` are
   disabled.
-- **`install-e2e-red.yml`** updates its issue automatically only when the
-  watched run came from a `schedule` event, and `install-e2e.yml` has no
-  schedule. Today only a manual dispatch does anything.
 - **`archive-inputs.yml`** declares `workflow_call`, but nothing in this
   directory calls it.
 - Some file header comments are older than the "E2E only on release or

@@ -41,7 +41,8 @@ def archive_pruned_originals(
     """Write the original of every tool row *pruned* changed; returns ``(rows, written host paths, reverted)``.
 
     A changed row whose archive write fails is put back to its original (``reverted`` counts them),
-    so the caller re-checks its reclaim gate and never commits a stub without a file behind it.
+    so the caller re-checks its reclaim gate and never commits a stub without a file behind it. A row
+    that already names its archive is left as the prune made it: its original is on disk.
     """
     from agent.context_compressor import _tool_calls_by_id
     from tools.tool_result_storage import write_pruned_original
@@ -53,6 +54,8 @@ def archive_pruned_originals(
                 or replacement.get("content") == original.get("content")):
             continue
         body = original.get("content")
+        if isinstance(body, str) and has_archive_pointer(body):
+            continue
         text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
         call_id = str(original.get("tool_call_id") or "")
         tool_name = call_id_to_tool.get(call_id, ("unknown", ""))[0]
@@ -63,6 +66,22 @@ def archive_pruned_originals(
         written.append(archived[0])
         rows[i] = {**replacement, "content": _with_pointer(replacement.get("content"), archived[1])}
     return rows, written, reverted
+
+
+def archive_compaction_drops(
+    messages: list[dict[str, Any]], dropped: list[dict[str, Any]], session_id: str,
+) -> tuple[list[dict[str, Any]], list[str], int]:
+    """:func:`archive_pruned_originals` for a compaction's tool-result drops (window prune, lean tail).
+
+    A compaction must still reclaim where ``read_file`` cannot open host paths (sandboxed backends), so
+    there the plain stubs stand and nothing is written; on the local backend a result whose write fails
+    keeps its original, and the compaction proceeds with the rest.
+    """
+    from tools.tool_result_storage import _backend_reads_host_files
+
+    if not _backend_reads_host_files():
+        return dropped, [], 0
+    return archive_pruned_originals(messages, dropped, session_id)
 
 
 def discard_archives(paths: list[str]) -> None:

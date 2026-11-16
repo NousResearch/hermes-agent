@@ -75,8 +75,9 @@ def demote_stale_tail_tools(
 ) -> tuple[list[dict[str, Any]], int]:
     """Demote tail tool results older than the newest ``_LEAN_TAIL_KEEP_TOOL_ROUNDS`` rounds to recovery stubs;
     skill-marker rows untouched. A demoted ``skill_view`` body carries the canonical reload marker, as its
-    Phase-1 stub does, so the model does not act on instructions it no longer has (#32106). Returns a new list
-    (untouched rows shared, demoted copied) and the number of rows demoted."""
+    Phase-1 stub does, so the model does not act on instructions it no longer has (#32106). On the local backend
+    each demoted original is archived and its stub names the file (a failed write keeps that row whole). Returns
+    a new list (untouched rows shared, demoted copied) and the number of rows demoted."""
     from agent.context_compressor import (
         SKILL_PRUNED_MARKER_PREFIX, _is_summary_stub, _result_failure_suffix, _rewritten, _skill_pruned_marker,
     )
@@ -106,6 +107,11 @@ def demote_stale_tail_tools(
             stub += " " + _skill_pruned_marker(skill)
         result[i] = _rewritten(msg, stub)
         demoted += 1
+    if demoted:  # the demoted originals are saved and named like the window's prune stubs
+        from agent.context_compressor_prune_archive import archive_compaction_drops
+
+        result, _, kept = archive_compaction_drops(messages, result, session_id)
+        demoted -= kept
     return result, demoted
 
 

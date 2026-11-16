@@ -82,9 +82,19 @@ class CompactionWindowMixin:
         working, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
         )
-        working = self._drop_blank_echoes(working)
-        compress_start, compress_end = self._compress_window(working)
-        return working, pruned_count, compress_start, compress_end
+        plan = self._drop_blank_echoes(working)
+        compress_start, compress_end = self._compress_window(plan)
+        if pruned_count and compress_start < compress_end:
+            # Every result this compaction shortens is saved first and its stub (what the summarizer reads)
+            # names the file. Only a window that will summarize writes: a no-window plan repeats each batch.
+            from agent.context_compressor_prune_archive import archive_compaction_drops
+
+            working, _, kept = archive_compaction_drops(messages, working, getattr(self, "_session_id", "") or "")
+            pruned_count -= kept
+            plan = self._drop_blank_echoes(working)  # blank echoes are non-tool rows: same indices
+            if kept:  # a kept original is larger: the tail cut can move
+                compress_start, compress_end = self._compress_window(plan)
+        return plan, pruned_count, compress_start, compress_end
 
     def _take_prepared_summary(
         self, messages: list[dict[str, Any]], compress_start: int, *, fresh: bool, provider_context: bool,

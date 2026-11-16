@@ -283,6 +283,16 @@ def _run_identified(run_job, job, execution_id, **kwargs):
         exit_cron_execution(token)
 
 
+def _end_unfinished_fire(db, session_id, succeeded):
+    """Blocking: end a fire's session that run_job left open. Each fire has its own session, which
+    run_job ends only once the agent ran; a wake-gate skip, an empty script or a refused setup
+    returns before that, and the row stayed open for good (every boot restored it). A row run_job
+    already ended keeps its reason and costs no write."""
+    row = db.get_session(session_id)
+    if row is not None and row['ended_at'] is None:
+        db.end_session(session_id, 'cron_complete' if succeeded else 'cron_incomplete_no_output')
+
+
 async def execute(authority, ref, row, policy):
     from cron.scheduler import run_job
     from gateway.run import _profile_runtime_scope
@@ -322,6 +332,7 @@ async def execute(authority, ref, row, policy):
         authority.pending_results[row['admission_id']] = {
             'result': {'final_response': result[2], 'cron_result': list(result), 'cron_job_flags': flags,
                        'failed': not result[0], 'completed': result[0]}, 'usage': {}}
+        await asyncio.to_thread(_end_unfinished_fire, authority.db, ref.session_id, result[0])
         if not result[0]:
             raise RuntimeError(result[3] or 'cron execution failed')
         return result[2]

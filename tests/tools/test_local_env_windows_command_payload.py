@@ -88,6 +88,45 @@ def test_real_git_bash_executes_payload_larger_than_cmd_limit(local_env, tmp_pat
 
 
 @pytest.mark.windows_only
+def test_real_git_bash_preserves_literal_heredoc(local_env, tmp_path):
+    destination = tmp_path / "literal-heredoc.txt"
+    payload = "literal $HOME $(printf expanded) `printf expanded`\nC:\\path\\file\n引号 ' \" Ω\n"
+    before = _staged_files(local_env)
+    command = (
+        f"cat > {shlex.quote(_bash_safe_path(str(destination)))} <<'LITERAL_PAYLOAD'\n"
+        f"{payload}"
+        "LITERAL_PAYLOAD"
+    )
+
+    result = local_env.execute(command, timeout=20)
+
+    assert result["returncode"] == 0, result
+    assert destination.read_bytes() == payload.encode("utf-8")
+    assert _staged_files(local_env) == before
+
+
+@pytest.mark.windows_only
+def test_real_git_bash_starts_after_deleted_cwd_recovery(local_env, tmp_path):
+    vanished = tmp_path / "vanished"
+    vanished.mkdir()
+    local_env.cwd = str(vanished)
+    vanished.rmdir()
+    destination = tmp_path / "recovered.txt"
+    before = _staged_files(local_env)
+
+    # Exercise the real recovery and Popen path, without patching either one.
+    proc = local_env._run_bash(
+        f"printf recovered > {shlex.quote(_bash_safe_path(str(destination)))}"
+    )
+    result = local_env._wait_for_process(proc, timeout=20)
+
+    assert result["returncode"] == 0, result
+    assert Path(local_env.cwd) == tmp_path
+    assert destination.read_bytes() == b"recovered"
+    assert _staged_files(local_env) == before
+
+
+@pytest.mark.windows_only
 def test_stdin_remains_byte_exact_and_closes_with_large_staged_program(
     local_env, tmp_path
 ):
@@ -125,6 +164,24 @@ def test_process_start_failure_removes_staged_script(local_env, monkeypatch):
         local_env._run_bash("printf start")
 
     assert _staged_files(local_env) == before
+
+
+@pytest.mark.windows_only
+def test_cwd_recovery_failure_does_not_leave_staged_script(local_env, monkeypatch):
+    before = _staged_files(local_env)
+    owned_before = set(local_env._staged_command_scripts)
+
+    def fail_recovery():
+        raise OSError("synthetic cwd recovery failure")
+
+    monkeypatch.setattr(local_env, "_recover_cwd", fail_recovery)
+
+    with pytest.raises(OSError, match="synthetic cwd recovery failure"):
+        local_env._run_bash("printf sensitive-payload")
+
+    # Assert before fixture teardown: deferred environment cleanup is too late.
+    assert _staged_files(local_env) == before
+    assert local_env._staged_command_scripts == owned_before
 
 
 @pytest.mark.windows_only

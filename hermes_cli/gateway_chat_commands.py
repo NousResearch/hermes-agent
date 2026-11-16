@@ -18,7 +18,7 @@ import contextlib
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.gateway_client import SESSION_CREATE_TIMEOUT, GatewayClientError
 
 PARITY_DOC = "https://hermes-agent.nousresearch.com/docs/developer-guide/gateway-command-parity"
 
@@ -142,7 +142,8 @@ async def _new(view, rest):
         request["api_key"] = view.launch_api_key
     from hermes_cli.gateway_chat import client_env_policy
     request.update(client_env_policy(accepted))  # never in launch_request: this shell's, sent afresh
-    snapshot = await view.client.rpc("session.create", request_id=uuid.uuid4().hex, **request)
+    snapshot = await view.client.rpc("session.create", request_id=uuid.uuid4().hex,
+                                     _timeout=SESSION_CREATE_TIMEOUT, **request)
     await view.adopt(snapshot)
     print(t("cli.session.new_session"))
     print(f"Session: {view.session_id}", file=sys.stderr, flush=True)

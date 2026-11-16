@@ -597,6 +597,67 @@ migration prints a hint naming `hermes costs --reprice --dry-run` (a write-open 
 migrates but changes no cost) and exits 1. Design:
 [docs/superpowers/specs/2026-09-17-cost-attribution-design.md](docs/superpowers/specs/2026-09-17-cost-attribution-design.md).
 
+### Cost budget + alerts — [agent/cost_budget.py](agent/cost_budget.py)
+
+Opt-in per profile through a top-level `cost_budget:` block in that profile's
+`config.yaml`. **Without the block nothing changes**: every entry point
+returns after a cached config read — no store opened, no state file, no ledger
+difference.
+
+```yaml
+cost_budget:
+  daily_usd: 5                    # any of daily/monthly/per_run activates the block
+  monthly_usd: 100
+  alert_at: [0.5, 0.8, 1.0]       # default; fractions of each budget
+  per_run_usd: 1.5                # cron runs only (a cron root + its lineage)
+  alert_channel: slack:C0123ABCD  # deliver-target syntax; a bare C… id means slack:
+  alert_mention: "<!subteam^S123>"  # optional, prefixed to LOUD alerts only
+  discretionary_jobs: [explore]   # job ids or names; or `discretionary: true` on the job
+  cache_seconds: 300              # spend snapshot TTL (min 30)
+```
+
+- **Spend** is the `hermes costs` query layer (`attribute_sessions`) over the
+  owning profile's `state.db`, opened read-only and resolved through
+  `get_hermes_home()` **per call** (one multiplexed gateway ticks several
+  homes), cached per home. Days/months use `hermes_time.now()` (the configured
+  timezone). Unpriced tokens are never $0: they raise a daily alert, and every
+  surface marks spend as a lower bound. **Prerequisite:** a
+  `pricing.overrides` entry for the profile's model.
+- **Enforcement** — `preflight_cron_job`, called from `_run_one_job_body`
+  ([cron/scheduler.py](cron/scheduler.py)) after the secret scope is set and
+  before `run_job`, so before the job's script *or* agent. A discretionary job
+  over its daily or monthly budget is skipped: `last_status = skipped_budget`,
+  and the executions ledger row is `completed` with `error = "skipped: over
+  budget (daily $X of $Y)"` (`finish_execution(note=…)`,
+  [cron/executions.py](cron/executions.py)). A non-discretionary job runs
+  anyway and sends one **loud** alert per job per period. No bypass for
+  manual runs: the agent could otherwise `cronjob(action='run')` around its
+  own budget.
+- **Alerts** — `watch()`, called from `tick()` after the dispatch gate. `tick`
+  already runs inside each profile's home override with **that profile's own
+  adapters** (the multiplex ticker), so alerts leave through the owning
+  profile's bot. Sent through `cron.scheduler._deliver_result` with a pseudo
+  job (`id: cost_budget`, so the bold header reads "Cost budget"). One alert
+  per key, recorded in `${HERMES_HOME}/cost_budget/alerts.json` **only after
+  a successful send** (an adapter that is down retries on the next watch):
+  `daily:<day>:<t>` / `monthly:<month>:<t>` (a jump past several thresholds
+  sends only the highest; t ≥ 1.0 is loud and says discretionary jobs are now
+  skipped), `run:<root_session>`, `unpriced:<day>`, `overrun:<period>:<job>`.
+  No `alert_channel` → the alert is logged once per process and not recorded.
+  Throttled to `cache_seconds`; fail-open everywhere.
+- **`cost_budget_status` tool (`cost_budget` toolset, NOT a floor)** —
+  [tools/cost_budget_tool.py](tools/cost_budget_tool.py): today/month spent,
+  budget, remaining, over-budget, skip state, unpriced tokens, the month's
+  five costliest cron runs. No parameters. Reports spend even without a
+  block (`configured: false`). **Deployment:** grant `cost_budget` to the
+  role, list it in `platform_toolsets.slack`, and for cron use give the job
+  an owner whose role grants it (the cron RBAC ceiling).
+
+Design: "Dependencies → 3. Cost budget + alerts" in
+[docs/superpowers/specs/2026-11-16-product-education-teammate-design.md](docs/superpowers/specs/2026-11-16-product-education-teammate-design.md)
+Plan:
+[docs/superpowers/plans/2026-11-16-cost-budget-alerts.md](docs/superpowers/plans/2026-11-16-cost-budget-alerts.md).
+
 ### Slack quiet channels + `slack_react`
 
 For low-noise "hidden assistant" channels. Config under the top-level `slack:`

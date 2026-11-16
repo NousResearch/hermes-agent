@@ -133,7 +133,7 @@ Hook in `_run_one_job_body`, right after the secret scope is set and before `run
 
 **Files:**
 - Modify: `CLAUDE.md` (new "Cost budget + alerts" subsection after "Cost attribution"; deployment notes: grant `cost_budget` to the role, list it in `platform_toolsets.slack`, needs a `pricing.overrides` entry for the model, `alert_channel` must be reachable by the profile's own bot)
-- Modify: `tests/test_fork_feature_inventory.py` (entries for `preflight_cron_job(` in `cron/scheduler.py`, `cost_budget_watch(` in `tick`, `toolset="cost_budget"`, `note=` in `finish_execution`)
+- Modify: `tests/test_fork_feature_inventory.py` (entries for `_cost_budget.preflight_cron_job(` and `_cost_budget.watch(` in `cron/scheduler.py`, `toolset="cost_budget"`, `note:` in `finish_execution`)
 
 - [ ] Add entries; run `scripts/run_tests.sh tests/test_fork_feature_inventory.py` → pass. Commit `docs: cost budget + alerts`.
 - [ ] Push branch, open PR against main.

@@ -29,7 +29,7 @@ from typing import Dict, List, Optional
 from agent.secret_sources.base import run_cli, scrub_ansi
 from agent.vault_backends import unlock as _unlock
 from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_secret_env
-from agent.vault_store import VaultItemMeta, normalize_origin
+from agent.vault_store import VaultError, VaultItemMeta, normalize_origin
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ class BitwardenLoginBackend(LoginBackend):
                 self._run("sync")
             except UnlockRequired:
                 raise
-            except Exception as exc:
+            except RuntimeError as exc:
                 logger.warning("Bitwarden sync failed; using cached vault items (%s)", type(exc).__name__)
                 return False
             _LAST_SYNC[key] = time.monotonic()
@@ -156,7 +156,7 @@ class BitwardenLoginBackend(LoginBackend):
                     continue
                 try:
                     origin = normalize_origin(str(uri.get("uri") or ""))
-                except Exception:
+                except (VaultError, ValueError):
                     continue
                 if origin and origin not in origins:
                     origins.append(origin)

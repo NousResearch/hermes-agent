@@ -48,7 +48,14 @@ type Phase =
   | { kind: 'agents' }
   | { kind: 'confirm'; agent: DesktopCloudAgent }
   | { kind: 'working'; agent: DesktopCloudAgent; progress: TransferProgress }
-  | { kind: 'done'; agent: DesktopCloudAgent; botsOff: string[]; target: TransferEndpoint; undoArchive: string }
+  | {
+      kind: 'done'
+      agent: DesktopCloudAgent
+      botsOff: string[]
+      gatewayDown: boolean
+      target: TransferEndpoint
+      undoArchive: string
+    }
   | { kind: 'undoing'; agent: DesktopCloudAgent; line?: string }
   | { kind: 'undone'; agent: DesktopCloudAgent }
   | { kind: 'error'; message: string; retry: () => void; undo?: () => void }
@@ -135,15 +142,18 @@ interface TransferCardProps {
   owner: TransferEndpoint
 }
 
-/** The done line, plus which bots came over switched off (when any did). */
-function doneBody(copy: Copy, agent: string, botsOff: string[], locale: string): string {
+/** The done line, plus which bots came over switched off (when any did); a gateway that did not
+ *  start again replaces the done line: the files arrived but the agent is not running. */
+function doneBody(copy: Copy, agent: string, botsOff: string[], gatewayDown: boolean, locale: string): string {
+  const done = gatewayDown ? copy.gatewayDown(agent) : copy.doneHelp(agent)
+
   if (!botsOff.length) {
-    return copy.doneHelp(agent)
+    return done
   }
 
   const bots = new Intl.ListFormat(locale, { style: 'long', type: 'conjunction' }).format(botsOff)
 
-  return `${copy.doneHelp(agent)} ${copy.botsOff(bots, agent)}`
+  return `${done} ${copy.botsOff(bots, agent)}`
 }
 
 function TransferCard({ copy, hint, owner }: TransferCardProps) {
@@ -181,7 +191,14 @@ function TransferCard({ copy, hint, owner }: TransferCardProps) {
       })
 
       const point = undoPoints.current.get(agent.id) ?? { archive: result.undoArchive, target: connected }
-      setPhase({ agent, botsOff: result.messagingOff, kind: 'done', target: point.target, undoArchive: point.archive })
+      setPhase({
+        agent,
+        botsOff: result.messagingOff,
+        gatewayDown: result.gatewayDown,
+        kind: 'done',
+        target: point.target,
+        undoArchive: point.archive
+      })
     } catch (error) {
       if (controller.signal.aborted) {
         return
@@ -286,7 +303,7 @@ function TransferCard({ copy, hint, owner }: TransferCardProps) {
               primary: true
             }
           ]}
-          body={doneBody(copy, phase.agent.name, phase.botsOff, locale)}
+          body={doneBody(copy, phase.agent.name, phase.botsOff, phase.gatewayDown, locale)}
           title={copy.doneTitle}
         />
       ),

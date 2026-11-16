@@ -25,6 +25,8 @@ export interface ActionStatus {
   undo_archive?: null | string
   /** The messaging platforms a transfer's restore switched off (`hermes import --messaging-off`). */
   messaging_off?: string[]
+  /** Set when the restore finished but the agent's gateway did not start again. */
+  gateway_down?: string
 }
 
 export type TransferPhase = 'backup' | 'restore' | 'upload'
@@ -41,6 +43,8 @@ export interface TransferResult {
   undoArchive: string
   /** The messaging bots that came over switched off on the cloud agent (their names). */
   messagingOff: string[]
+  /** The files arrived but the cloud agent's gateway did not start again: it needs a restart. */
+  gatewayDown: boolean
 }
 
 /** The restore failed after it was requested. With `undoArchive` set the cloud agent had already
@@ -422,7 +426,7 @@ export async function transferAgent(
     throw new TransferRestoreError('The cloud agent did not report its undo point.', null)
   }
 
-  return { messagingOff: finished.messaging_off ?? [], undoArchive }
+  return { gatewayDown: Boolean(finished.gateway_down), messagingOff: finished.messaging_off ?? [], undoArchive }
 }
 
 export interface UndoPoint {

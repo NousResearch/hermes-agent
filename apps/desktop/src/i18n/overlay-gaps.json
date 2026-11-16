@@ -1127,6 +1127,7 @@
   "settings.backup.doneTitle": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "settings.backup.down": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "settings.backup.errorTitle": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
+  "settings.backup.gatewayDown": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "settings.backup.intro": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "settings.backup.keeps": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "settings.backup.keepsTitle": ["ar","de","es","fr","ja","ru","zh","zh-hant"],

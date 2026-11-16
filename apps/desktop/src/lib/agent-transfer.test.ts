@@ -165,7 +165,11 @@ describe('transferAgent', () => {
 
     const result = await transferAgent(request, SOURCE, TARGET, p => progress.push(p), { timing: instant })
 
-    expect(result).toEqual({ messagingOff: ['Telegram', 'Discord'], undoArchive: '/cloud/pre-transfer.zip' })
+    expect(result).toEqual({
+      gatewayDown: false,
+      messagingOff: ['Telegram', 'Discord'],
+      undoArchive: '/cloud/pre-transfer.zip'
+    })
     expect(progress[0].phase).toBe('backup')
     expect(progress.at(-1)?.phase).toBe('restore')
     expect(progress.filter(p => p.phase === 'upload').map(p => p.fraction)).toEqual([0, 0.3, 0.6, 0.9, 1])
@@ -273,7 +277,7 @@ describe('transferAgent', () => {
       transferAgent(fakeBackends(new Uint8Array([1]), { flaky: 10 }).request, SOURCE, TARGET, () => undefined, {
         timing: instant
       })
-    ).resolves.toEqual({ messagingOff: [], undoArchive: '/cloud/pre-transfer.zip' })
+    ).resolves.toEqual({ gatewayDown: false, messagingOff: [], undoArchive: '/cloud/pre-transfer.zip' })
 
     const { calls, request } = fakeBackends(new Uint8Array([1]), { flaky: 11 })
 

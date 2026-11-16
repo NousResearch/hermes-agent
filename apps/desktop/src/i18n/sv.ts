@@ -4786,12 +4786,16 @@ export const svOverrides: TranslationOverrides = {
     retryAfterRun: 'Jag har kört det – försök igen',
     setupChoiceTitle: 'Konfigurera Hermes Desktop',
     setupChoiceDesc: 'Anslut appen till en Hermes-gateway som redan körs, eller installera Hermes lokalt på datorn.',
+    setupChoiceDescLocal: 'Installera Hermes på den här datorn eller anslut till en Hermes-gateway som redan körs.',
     connectExistingTitle: 'Anslut till befintlig Hermes',
     connectExistingShort: 'Anslut befintlig',
     connectExistingDesc:
       'Använd en fjärrserverdel med sessionstoken eller webbläsarinloggning. Ingen lokal installation startas.',
     installLocalTitle: 'Installera Hermes lokalt',
     installLocalDesc: 'Hämta Hermes, skapa dess Python-miljö och kör serverdelen på datorn.',
+    useLocalTitle: 'Använd Hermes på den här datorn',
+    useLocalDesc: 'En Hermes-körmiljö är redan installerad här — starta den med ett klick. Inget hämtas.',
+    bundledLocalDesc: 'Använd Hermes-körmiljön som följer med appen — den medföljande serverdelen är den lokala installationen.',
     localStartUnavailable:
       'Det gick inte att starta den lokala installationen. Starta om Hermes Desktop och försök igen.',
     remoteSetupTitle: 'Anslut till befintlig Hermes',
@@ -4800,6 +4804,7 @@ export const svOverrides: TranslationOverrides = {
     remoteUrlDesc: 'Använd bas-URL:en för Hermes-gatewayen, inklusive https:// för fjärranslutning.',
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
     probing: 'Identifierar gateway-autentisering…',
+    probeErrorDetails: 'Detaljer',
     identityProvider: 'din identitetsleverantör',
     authTitle: 'Autentisering',
     authNeedsOauth: provider => `Logga in med ${provider} innan du testar gatewayen.`,
@@ -4839,7 +4844,8 @@ export const svOverrides: TranslationOverrides = {
     copiedOutput: 'Kopierat!',
     copyOutput: 'Kopiera utdata',
     reloadRetry: 'Läs om och försök igen',
-    probeError: 'Det gick inte att nå Hermes-gatewayen.'
+    probeError: 'Det gick inte att nå Hermes-gatewayen.',
+    openLogs: 'Öppna loggar'
   },
   onboarding: {
     headerTitle: 'Kom igång med Hermes Agent',

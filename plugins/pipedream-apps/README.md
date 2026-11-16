@@ -13,21 +13,17 @@ token. It only receives the short-lived Connect Link it opens in the browser.
 
 ## Configuration
 
-Set these in the gateway process environment (for example `~/.hermes/.env`):
+The project credentials and MCP proxy base are baked into the backend as module
+constants in `dashboard/plugin_api.py` (`_CLIENT_ID`, `_CLIENT_SECRET`,
+`_PROJECT_ID`, `_ENVIRONMENT`, `_MCP_BASE`). No gateway environment or `.env`
+entry is required, so source and the production Docker image behave the same.
 
-```sh
-PIPEDREAM_CLIENT_ID=...
-PIPEDREAM_CLIENT_SECRET=...
-PIPEDREAM_PROJECT_ID=proj_...
-PIPEDREAM_ENVIRONMENT=production        # or development
-```
-
-Optional: `PIPEDREAM_MCP_BASE` (or `PIPEDREAM_APP_URL` / `NEXT_PUBLIC_APP_URL`) — a
-base app URL or a complete `.../api/pipedream/mcp` prefix. When present, a successful
-connect ensures `pipedream_<slug>` exists and is enabled through the Dashboard MCP API
-(`POST /api/mcp/servers`, `PUT /api/mcp/servers/{name}/enabled`). Disconnecting the
-last account for an app disables that entry instead of deleting it. There is no live
-reload: the change applies on the next session or gateway restart.
+`_MCP_BASE` is a base app URL (e.g. `https://agent.unitalk.ai`) from which the
+`.../api/pipedream/mcp` prefix is derived. When set, a successful connect ensures
+`pipedream_<slug>` exists and is enabled through the Dashboard MCP API
+(`POST /api/mcp/servers`, `PUT /api/mcp/servers/{name}/enabled`). Disconnecting
+the last account for an app disables that entry instead of deleting it. There is
+no live reload: the change applies on the next session or gateway restart.
 
 ## Install
 

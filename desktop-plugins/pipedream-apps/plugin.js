@@ -71,7 +71,7 @@ export const LOCALES = {
     accountsUnavailable: 'Connected accounts are temporarily unavailable.',
     unconfiguredTitle: 'Pipedream is not configured',
     unconfiguredHint:
-      'Set PIPEDREAM_CLIENT_ID, PIPEDREAM_CLIENT_SECRET and PIPEDREAM_PROJECT_ID in the gateway environment, then restart the gateway.',
+      'The Pipedream backend is missing its baked-in project credentials. Reinstall the pipedream-apps plugin package, then restart the gateway.',
     backendTitle: 'Pipedream backend unavailable',
     backendHint: 'Install the pipedream-apps plugin package and restart the gateway.',
     previous: 'Previous',

@@ -6,16 +6,14 @@ is made here, server-side, with the project's client-credentials token. The only
 credential the renderer receives is the short-lived Connect Link it opens in the
 browser.
 
-Configuration (gateway process environment):
-  PIPEDREAM_CLIENT_ID, PIPEDREAM_CLIENT_SECRET, PIPEDREAM_PROJECT_ID
-  PIPEDREAM_ENVIRONMENT (or PIPEDREAM_PROJECT_ENVIRONMENT): development | production
-  PIPEDREAM_MCP_BASE / PIPEDREAM_APP_URL / NEXT_PUBLIC_APP_URL: optional MCP proxy base
+Configuration is baked into the module constants below, so the plugin works the
+same in a source checkout and inside the production Docker image (no gateway
+environment or ``.env`` file is required).
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import re
 import time
 from typing import Any
@@ -29,6 +27,12 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 _API_BASE = "https://api.pipedream.com"
+# Baked-in project configuration (shared by source and the production Docker image).
+_CLIENT_ID = "e-Z0DaSW794F-dO1Mprd7lXSbNWmKpG8joXKd8p4V5E"
+_CLIENT_SECRET = "rimYTA12SVExkWOe9N1YopDoANfmIFt9S60jKQlieKo"
+_PROJECT_ID = "proj_XZsbovO"
+_ENVIRONMENT = "production"
+_MCP_BASE = "https://agent.unitalk.ai"
 # Server-side OAuth token: covers the catalog/accounts proxy and token minting.
 _OAUTH_SCOPE = (
     "connect:apps:* connect:accounts:read connect:accounts:write connect:tokens:create"
@@ -77,28 +81,8 @@ _transport: httpx.AsyncBaseTransport | None = None
 _TOKEN: dict[str, Any] = {"access_token": "", "expires_at": 0.0}
 
 
-def _env(name: str) -> str:
-    """Hermes-managed credential/config read (``.env`` + active profile scope).
-
-    The import is lazy so the router stays importable in an isolated test
-    process; a host without the Hermes config module falls back to the plain
-    process environment.
-    """
-    try:
-        from hermes_cli.config import get_env_value
-    except Exception:  # health: allow BLE001 -- isolated router import (tests)
-        value = os.getenv(name)
-    else:
-        value = get_env_value(name)
-    return (value or "").strip()
-
-
 def _config() -> tuple[str, str, str]:
-    return (
-        _env("PIPEDREAM_CLIENT_ID"),
-        _env("PIPEDREAM_CLIENT_SECRET"),
-        _env("PIPEDREAM_PROJECT_ID"),
-    )
+    return (_CLIENT_ID, _CLIENT_SECRET, _PROJECT_ID)
 
 
 def _configured() -> bool:
@@ -117,11 +101,7 @@ def _project_id() -> str:
 
 
 def _environment() -> str:
-    value = (
-        _env("PIPEDREAM_ENVIRONMENT")
-        or _env("PIPEDREAM_PROJECT_ENVIRONMENT")
-        or "production"
-    ).lower()
+    value = _ENVIRONMENT.lower()
     return value if value in ("development", "production") else "production"
 
 
@@ -129,16 +109,12 @@ def _mcp_base() -> str | None:
     """Full MCP proxy prefix (``…/api/pipedream/mcp``) the Desktop plugin appends
     ``/<external_user_id>/<app_slug>`` to. Both a bare app URL and an already
     complete prefix are accepted."""
-    for key in ("PIPEDREAM_MCP_BASE", "PIPEDREAM_APP_URL", "NEXT_PUBLIC_APP_URL"):
-        value = _env(key).rstrip("/")
-        if not value:
-            continue
-        return (
-            value
-            if value.endswith("/api/pipedream/mcp")
-            else f"{value}/api/pipedream/mcp"
-        )
-    return None
+    value = _MCP_BASE.rstrip("/")
+    if not value:
+        return None
+    return (
+        value if value.endswith("/api/pipedream/mcp") else f"{value}/api/pipedream/mcp"
+    )
 
 
 def _mcp_server_name(app_slug: str) -> str:
@@ -308,7 +284,7 @@ async def _disable_pipedream_mcp_after_disconnect(
 
 
 def _api_base() -> str:
-    return (_env("PIPEDREAM_API_BASE") or _API_BASE).rstrip("/")
+    return _API_BASE.rstrip("/")
 
 
 def _make_client() -> httpx.AsyncClient:

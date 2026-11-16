@@ -177,12 +177,6 @@ class RecordedTransport:
 @pytest.fixture
 def plugin(monkeypatch):
     module = _load_plugin()
-    monkeypatch.setenv("PIPEDREAM_CLIENT_ID", "cid")
-    monkeypatch.setenv("PIPEDREAM_CLIENT_SECRET", "csecret")
-    monkeypatch.setenv("PIPEDREAM_PROJECT_ID", "proj_test")
-    monkeypatch.setenv("PIPEDREAM_ENVIRONMENT", "production")
-    for key in ("PIPEDREAM_MCP_BASE", "PIPEDREAM_APP_URL", "NEXT_PUBLIC_APP_URL"):
-        monkeypatch.delenv(key, raising=False)
     module._TOKEN.update({"access_token": "", "expires_at": 0.0})
     yield module
     module._transport = None
@@ -208,16 +202,12 @@ def test_config_reports_readiness_without_secrets(plugin, client):
 
     assert body["configured"] is True
     assert body["environment"] == "production"
-    assert body["mcpBaseUrl"] is None
+    assert body["mcpBaseUrl"] == "https://agent.unitalk.ai/api/pipedream/mcp"
 
 
 def test_config_unconfigured_blocks_api(plugin, client, monkeypatch):
-    for key in (
-        "PIPEDREAM_CLIENT_ID",
-        "PIPEDREAM_CLIENT_SECRET",
-        "PIPEDREAM_PROJECT_ID",
-    ):
-        monkeypatch.delenv(key, raising=False)
+    for key in ("_CLIENT_ID", "_CLIENT_SECRET", "_PROJECT_ID"):
+        monkeypatch.setattr(plugin, key, "")
 
     body = client.get(f"{PREFIX}/config").json()
     assert body["configured"] is False
@@ -226,7 +216,7 @@ def test_config_unconfigured_blocks_api(plugin, client, monkeypatch):
 
 
 def test_config_builds_the_mcp_proxy_prefix(plugin, client, monkeypatch):
-    monkeypatch.setenv("PIPEDREAM_APP_URL", "https://app.example")
+    monkeypatch.setattr(plugin, "_MCP_BASE", "https://app.example")
 
     assert (
         client.get(f"{PREFIX}/config").json()["mcpBaseUrl"]
@@ -383,8 +373,8 @@ def test_upstream_credential_failure_is_reported_without_leaking(plugin, client)
     assert "credentials" in response.json()["detail"].lower()
 
 
-def _set_mcp_base(monkeypatch, base: str = "https://app.example") -> str:
-    monkeypatch.setenv("PIPEDREAM_MCP_BASE", base)
+def _set_mcp_base(plugin, monkeypatch, base: str = "https://app.example") -> str:
+    monkeypatch.setattr(plugin, "_MCP_BASE", base)
     return f"{base}/api/pipedream/mcp"
 
 
@@ -413,7 +403,8 @@ def _account(account_id: str, app_slug: str = "slack") -> dict:
     }
 
 
-def test_mcp_enable_requires_the_proxy_base(plugin, client):
+def test_mcp_enable_requires_the_proxy_base(plugin, client, monkeypatch):
+    monkeypatch.setattr(plugin, "_MCP_BASE", "")
     response = client.post(
         f"{PREFIX}/mcp/enable",
         json={"externalUserId": "user-1", "appSlug": "slack"},
@@ -424,7 +415,7 @@ def test_mcp_enable_requires_the_proxy_base(plugin, client):
 
 
 def test_mcp_enable_adds_an_enabled_server(plugin, client, monkeypatch):
-    base = _set_mcp_base(monkeypatch)
+    base = _set_mcp_base(plugin, monkeypatch)
 
     response = client.post(
         f"{PREFIX}/mcp/enable",
@@ -439,7 +430,7 @@ def test_mcp_enable_adds_an_enabled_server(plugin, client, monkeypatch):
 
 
 def test_mcp_enable_is_idempotent_and_reenables(plugin, client, monkeypatch):
-    base = _set_mcp_base(monkeypatch)
+    base = _set_mcp_base(plugin, monkeypatch)
     url = f"{base}/user-1/slack"
     _seed_mcp_server("pipedream_slack", url, enabled=False)
 
@@ -460,7 +451,7 @@ def test_mcp_enable_is_idempotent_and_reenables(plugin, client, monkeypatch):
 
 
 def test_mcp_enable_replaces_a_stale_owned_url(plugin, client, monkeypatch):
-    base = _set_mcp_base(monkeypatch)
+    base = _set_mcp_base(plugin, monkeypatch)
     _seed_mcp_server("pipedream_slack", f"{base}/old-user/slack", enabled=True)
 
     response = client.post(
@@ -474,7 +465,7 @@ def test_mcp_enable_replaces_a_stale_owned_url(plugin, client, monkeypatch):
 
 
 def test_mcp_enable_leaves_a_foreign_url_untouched(plugin, client, monkeypatch):
-    _set_mcp_base(monkeypatch)
+    _set_mcp_base(plugin, monkeypatch)
     foreign = "https://elsewhere.example/mcp"
     _seed_mcp_server("pipedream_slack", foreign, enabled=True)
 
@@ -491,7 +482,7 @@ def test_mcp_enable_leaves_a_foreign_url_untouched(plugin, client, monkeypatch):
 def test_disconnect_disables_the_mcp_server_when_last_account_leaves(
     plugin, client, monkeypatch
 ):
-    base = _set_mcp_base(monkeypatch)
+    base = _set_mcp_base(plugin, monkeypatch)
     _seed_mcp_server("pipedream_slack", f"{base}/user-1/slack", enabled=True)
     _install(plugin, AccountTransport([_account("apn_1")]))
 
@@ -506,7 +497,7 @@ def test_disconnect_disables_the_mcp_server_when_last_account_leaves(
 def test_disconnect_keeps_the_mcp_server_while_another_account_remains(
     plugin, client, monkeypatch
 ):
-    base = _set_mcp_base(monkeypatch)
+    base = _set_mcp_base(plugin, monkeypatch)
     _seed_mcp_server("pipedream_slack", f"{base}/user-1/slack", enabled=True)
     _install(plugin, AccountTransport([_account("apn_1"), _account("apn_2")]))
 
@@ -519,7 +510,7 @@ def test_disconnect_keeps_the_mcp_server_while_another_account_remains(
 
 
 def test_disconnect_never_disables_a_foreign_entry(plugin, client, monkeypatch):
-    _set_mcp_base(monkeypatch)
+    _set_mcp_base(plugin, monkeypatch)
     foreign = "https://elsewhere.example/mcp"
     _seed_mcp_server("pipedream_slack", foreign, enabled=True)
     _install(plugin, AccountTransport([_account("apn_1")]))

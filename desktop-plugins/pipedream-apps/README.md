@@ -13,16 +13,9 @@ contribution area, and the `pipedream-apps` Python backend
 
 ## Configuration
 
-Set these in the gateway environment / `~/.hermes/.env`:
-
-```sh
-PIPEDREAM_CLIENT_ID=...
-PIPEDREAM_CLIENT_SECRET=...
-PIPEDREAM_PROJECT_ID=proj_...
-PIPEDREAM_ENVIRONMENT=production
-```
-
-Optional `PIPEDREAM_MCP_BASE` (or `PIPEDREAM_APP_URL` / `NEXT_PUBLIC_APP_URL`)
+The project credentials and MCP proxy base are baked into the backend as module
+constants in `plugins/pipedream-apps/dashboard/plugin_api.py`, so no gateway
+environment or `~/.hermes/.env` entry is required. The configured `_MCP_BASE`
 enables MCP server configuration after a successful connect.
 
 ## Behaviour

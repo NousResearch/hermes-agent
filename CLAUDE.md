@@ -150,8 +150,11 @@ demoting/deleting removes them.
 ### Fork-added toolsets — Notion, Jira, Slack thread posting, Webflow assets, video frames
 
 Five fork-only integrations, each registered as its **own** registry toolset so RBAC
-gates them independently. The four API-backed ones self-heal `~/.hermes/.env` for
-cron/delegation runs that never loaded it (the same pattern), so they work headless.
+gates them independently. The four API-backed ones read credentials through
+[agent/fork_secrets.py](agent/fork_secrets.py) `read_secret` and, **single-profile
+only**, self-heal `~/.hermes/.env` (`heal_dotenv`) for cron/delegation runs that never
+loaded it, so they work headless. Under multiplex they read only the owning profile's
+secret scope and never self-heal (see "Multiplex" below).
 
 - **`notion_api` (`notion` toolset)** — [tools/notion_api_tool.py](tools/notion_api_tool.py).
   Wraps the `ntn` CLI (`ntn api <v1/...> -X <METHOD>`, JSON body via **stdin**,
@@ -441,6 +444,44 @@ edit) escalate to `terminal`/host-shell. Design:
   with a shell** — RBAC + the `file`-toolset grant remain the real boundary for the
   `jobs.json`-edit path; this closes the toolset-driven escalation and makes the
   residual visible.
+
+### Multiplex — one gateway, several bots ([design](docs/superpowers/specs/2026-11-16-multiplex-fork-hardening-design.md))
+
+Under `gateway.multiplex_profiles: true` one process serves several profiles
+(the default + e.g. `educator`, each its own Slack app). Upstream's
+`_profile_runtime_scope` gives each turn its profile's home and secret scope,
+but **`os.environ` stays the default profile's** — so any fork code that reads
+`os.getenv`, `self.adapters[...]` or a path-less cache acts as the default bot.
+Rules for fork code that reads credentials or platform settings:
+
+- Credentials: `agent.fork_secrets.read_secret(name, tool=...)` (or
+  `agent.secret_scope.get_secret`), never `os.getenv`. A scoped miss is a miss;
+  `UnscopedSecretError` → WARNING + "not configured". No `.env` self-heal under
+  multiplex (`heal_dotenv`). Child processes: `scoped_subprocess_env()`.
+- Platform settings: the adapter's own `extra` / `_slack_setting`, or
+  `gateway.authz_mixin._platform_gate_env` — never `os.getenv`. The Slack
+  plugin's `_apply_yaml_config` returns the profile's `slack:` block as
+  `extra["profile_settings"]` and skips its `os.environ` writes under multiplex.
+- The adapter for an inbound source: `self._adapter_for_source(source)` /
+  `_multiplex_adapter_for`, never `self.adapters[...]`; per-source config:
+  `_gateway_config_for_source` (slash admins, ignored channels).
+- Caches of per-profile data are keyed by path/home (`_load_config_cached`,
+  Drive credentials), and module-level `get_hermes_home()` captures resolve per
+  call (cron notepad/suggestions, auxiliary `auth.json`).
+- Guards ([gateway/multiplex_guard.py](gateway/multiplex_guard.py),
+  [agent/multiplex_file_guard.py](agent/multiplex_file_guard.py)): a secondary
+  profile never gets the default's MCP toolsets unless its own `config.yaml`
+  declares the server (resolver + cron + fail-closed dispatch backstop); file
+  tools deny paths in another **served** profile's home. Opt-in
+  `agent_write_guard: true` ([agent/profile_write_guard.py](agent/profile_write_guard.py))
+  stops a profile's agent writing its own config/SOUL/cron/scripts/.env*/external
+  skill dirs.
+- Every multiplex branch is gated on `is_multiplex_active()`; with it off the
+  legacy code path runs unchanged (`.env` still beats `config.yaml` for the
+  Slack keys that were env-only). Acceptance test:
+  [tests/gateway/test_multiplex_fork_features.py](tests/gateway/test_multiplex_fork_features.py);
+  cron: [tests/cron/test_multiplex_cron_per_profile.py](tests/cron/test_multiplex_cron_per_profile.py).
+- Known limitation: `terminal.cwd` is bridged once from the default's config.
 
 ### Cron delivery format — [cron/scheduler.py](cron/scheduler.py) `_deliver_result`
 

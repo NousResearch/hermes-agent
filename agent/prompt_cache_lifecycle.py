@@ -145,6 +145,50 @@ def replay_output_cap(model: str) -> int:
     return 16 if _OPENAI_REASONING_MODEL.search((model or "").lower()) else 1
 
 
+#: ``extra_body`` keys that raise the output cap past ``max_tokens`` (Gemini's long-decode budget, or a
+#: gateway's own cap field merged into the body): output-only, so the replay drops them.
+_EXTRA_BODY_OUTPUT_CAPS = ("max_tokens", "max_completion_tokens", "max_output_tokens")
+
+
+def bounded_chat_replay(api_kwargs: dict[str, Any], model: str) -> dict[str, Any]:
+    """The Chat Completions keep-alive: the same prompt with the smallest output cap ``model`` accepts
+    (:func:`replay_output_cap`), not streamed, and no ``extra_body`` field that could lift that cap."""
+    kwargs = {k: v for k, v in api_kwargs.items() if k not in ("stream", "stream_options")}
+    kwargs["max_completion_tokens" if "max_completion_tokens" in kwargs else "max_tokens"] = replay_output_cap(model)
+    extra = kwargs.get("extra_body")
+    if isinstance(extra, dict) and any(k in extra for k in _EXTRA_BODY_OUTPUT_CAPS):
+        kwargs["extra_body"] = {k: v for k, v in extra.items() if k not in _EXTRA_BODY_OUTPUT_CAPS}
+    return kwargs
+
+
+def _sdk_client_types(api_mode: str) -> tuple[type, ...]:
+    """The SDK clients that send a request's kwargs as given on ``api_mode``'s wire."""
+    if api_mode == "chat_completions":
+        from openai import OpenAI
+
+        return (OpenAI,)
+    try:
+        import anthropic
+    except ImportError:  # no SDK installed: no Anthropic client can exist either
+        return ()
+    return (anthropic.Anthropic, anthropic.AnthropicBedrock, anthropic.AnthropicVertex)
+
+
+def replay_cap_honoured(client: Any, api_kwargs: dict[str, Any], model: str, api_mode: str) -> bool:
+    """Whether ``client`` sends the bounded replay's output cap as given, so a keep-alive costs at most
+    that many output tokens. The OpenAI and Anthropic SDKs send the kwargs as they are. Any other client
+    must report the cap it would really send through ``effective_output_cap(**kwargs)``: the native
+    Gemini clients translate to another wire and lift the cap to 65,535 tokens when thinking is on. A
+    client that reports nothing (ACP subprocess clients, an unknown plugin client) or would raise the
+    cap is never warmed."""
+    replay = bounded_chat_replay(api_kwargs, model) if api_mode == "chat_completions" else {**api_kwargs, "max_tokens": 1}
+    cap = replay.get("max_completion_tokens", replay.get("max_tokens"))
+    effective = getattr(client, "effective_output_cap", None)
+    if callable(effective):
+        return effective(**replay) <= cap
+    return isinstance(client, _sdk_client_types(api_mode))
+
+
 @dataclass(frozen=True)
 class CacheWarmingDecision:
     """Inputs and outcome of one warm-or-stop decision."""
@@ -227,15 +271,33 @@ class _Run:
     #: Set under the warmer lock when the run is cleared; checked under the same lock right
     #: before a request is admitted, so a cancel that returned never sees a later send.
     cancelled: bool = False
-    warm_count: int = 0
-    spent_usd: float = 0.0
-    last_warm_usd: float = 0.0
+    #: The user turn's budget this run draws on; a run that replaced it (the next tool round) shares it.
+    budget: _Budget = field(default_factory=lambda: _Budget(None))
     #: The session and billing route that sent the request: a refresh still in flight when
     #: compression rotates the session is booked in state.db where it was sent.
     billing: dict[str, Any] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
     #: A chat a person types into keeps warming after its turn ends; a machine session does not.
     idle_ok: bool = False
+
+    @property
+    def warm_count(self) -> int:
+        return self.budget.used
+
+
+@dataclass
+class _Budget:
+    """One USER message's keep-alives. Every run its tool rounds arm draws on the same object, so a run
+    replaced mid-flight still books its keep-alive here: each is reserved (count and estimated cost) at
+    admission and reconciled with its billed cost when its reply lands, whichever run is current then.
+    Changed only under the warmer lock."""
+
+    turn: Any
+    used: int = 0
+    spent_usd: float = 0.0
+    last_warm_usd: float = 0.0
+    #: Set when the budget ended (keep-alives spent, or a miss): no more keep-alives this user turn.
+    ended: bool = False
 
 
 @dataclass(frozen=True)
@@ -261,16 +323,15 @@ class PromptCacheWarmer:
         self._inactive_reason = "waiting for first request"
         self._logged_reason: Optional[str] = None
         self._last_decision: Optional[CacheWarmingDecision] = None
-        #: Set when a budget ended (keep-alives spent, or a miss); cleared by a new user message or a
-        #: claim. At most one compaction (``_compacted``) and one offload (``_offloaded``) per stretch.
+        #: Set when a budget ended (keep-alives spent, or a miss) and carried to each later prompt of the
+        #: same user turn; cleared by a new user message or a claim, never by a run ending. At most one
+        #: compaction (``_compacted``) and one offload (``_offloaded``) per stretch.
         self._spent: Optional[_Spent] = None
         self._compacted = False
         self._offloaded = False
-        #: The user message (``_user_turn_count``) the current budget belongs to and what it used so far:
-        #: tool-round requests inside one turn continue it, only a new user message restarts it.
-        self._budget_turn: Optional[int] = None
-        self._budget_used = 0
-        self._budget_spent_usd = 0.0
+        #: The current user message's budget: tool-round requests inside one turn continue it, only a new
+        #: user message (``_user_turn_count``) restarts it.
+        self._budget: Optional[_Budget] = None
         #: Whether the armed request carries ``cache_control`` markers (Anthropic spec: a miss is a priced
         #: write) or not (OpenAI spec: a miss re-reads the prefix at the input rate).
         self._marked = True
@@ -299,13 +360,14 @@ class PromptCacheWarmer:
         agent = self.agent
         turn = getattr(agent, "_user_turn_count", None)
         with self._lock:
+            budget = self._budget
+            if budget is None or budget.turn != turn:
+                budget = self._budget = _Budget(turn)
+                self._spent, self._compacted, self._offloaded = None, False, False
+            if budget.ended or budget.used >= WARM_BUDGET:
+                self._carry_ended_budget()
+                return self._stop("warm budget spent this turn")
             self._spent = None
-            if turn != self._budget_turn:
-                self._budget_turn, self._budget_used, self._budget_spent_usd = turn, 0, 0.0
-                self._compacted = self._offloaded = False
-            used = self._budget_used
-        if used >= WARM_BUDGET:
-            return self._stop("warm budget spent this turn")
         if getattr(agent, "_skip_prompt_cache_warming", False):
             return self._stop("the parent agent keeps this prefix warm")
         api_mode = getattr(agent, "api_mode", None)
@@ -335,8 +397,11 @@ class PromptCacheWarmer:
         client = getattr(agent, "_anthropic_client" if api_mode == "anthropic_messages" else "client", None)
         if client is None:
             return self._stop("no provider client")
+        if not replay_cap_honoured(client, api_kwargs, getattr(agent, "model", ""), api_mode):
+            return self._stop("the client cannot bound the replay's output cap")
         # Economics before the deep copy: an unpriced/cheap model never pays for the copy either.
-        decision = self._decide(cached_tokens, uncached_tokens, spent_usd=self._budget_spent_usd)
+        decision = self._decide(cached_tokens, uncached_tokens, spent_usd=budget.spent_usd,
+                                observed_warm_usd=budget.last_warm_usd)
         self._last_decision = decision
         if decision.action != "warm":
             return self._stop(decision.stop_reason)
@@ -363,7 +428,7 @@ class PromptCacheWarmer:
             cached_tokens=cached_tokens, uncached_tokens=uncached_tokens, ttl_s=window[1],
             deadline_at=window[0], is_current=_is_current, started_at=time.time(), api_mode=api_mode,
             witness=context_witness(agent), billing=self._billing_snapshot(),
-            idle_ok=human_paced(agent), warm_count=used, spent_usd=self._budget_spent_usd,
+            idle_ok=human_paced(agent), budget=budget,
         )
         with self._lock:
             self._run = run
@@ -372,15 +437,27 @@ class PromptCacheWarmer:
 
     def end_turn(self) -> None:
         """The turn settled: a machine session stops warming (its next request is a guess nobody
-        is about to make); a chat a person types into keeps its budget and warms while idle."""
+        is about to make); a chat a person types into keeps its budget and warms while idle. An ended
+        budget stays ended: step 2/3 still decides on it."""
         run = self._run
         if run is None or not run.idle_ok:
             self.cancel("agent run settled")
 
     def cancel(self, reason: str = "inactive") -> None:
-        with self._lock:
-            self._spent = None  # a real request, a turn end or a close: no step 2 on this budget
         self._stop(reason, lifecycle=True)
+
+    def _carry_ended_budget(self) -> None:
+        """The budget ended earlier in this user turn and a later reply moved the prompt on: step 2/3
+        decides on the prompt the turn now holds, when its next keep-alive would have gone out.
+        Caller holds ``self._lock``."""
+        from agent.prompt_cache_clock import context_witness
+
+        window = guaranteed_window(self.agent)
+        delay = cache_warming_delay_s(window[1]) if window is not None else None
+        if window is None or delay is None:
+            return
+        deadline, tier = window
+        self._spent = _Spent(deadline - (tier - delay), deadline, tier, context_witness(self.agent))
 
     # -- internals ------------------------------------------------------------------------------
     def _clear_run(self) -> Optional[_Run]:
@@ -406,7 +483,7 @@ class PromptCacheWarmer:
             routine = lifecycle and not sent
             if not routine and reason != self._logged_reason:
                 logger.info("%sprompt cache warming stopped: %s (refreshes=%d, spent=$%.4f)",
-                            self._prefix(), reason, sent, run.spent_usd if run else 0.0)
+                            self._prefix(), reason, sent, run.budget.spent_usd if run else 0.0)
                 self._logged_reason = reason
             elif routine:
                 logger.debug("%sprompt cache warming ended: %s", self._prefix(), reason)
@@ -429,7 +506,7 @@ class PromptCacheWarmer:
         # A timer can fire late after sleep or a blocked interpreter. Keep half of the planned
         # pre-expiry margin for that: a late refresh is a full-price write, not a warm.
         run.refresh_deadline_at = run.next_warm_at + margin / 2
-        if run.warm_count >= WARM_BUDGET:
+        if run.budget.ended or run.budget.used >= WARM_BUDGET:
             # Step 2 decides at the moment the next keep-alive would have gone out.
             self._end_budget(run, "warm budget spent", due_at=run.next_warm_at)
             return
@@ -445,8 +522,10 @@ class PromptCacheWarmer:
 
     def _end_budget(self, run: _Run, reason: str, *, due_at: float) -> None:
         """The budget is over (keep-alives spent, or one missed): stop, and hand step 2/3 the moment it
-        decides at. Caller holds ``self._lock`` or owns ``run`` on the timer thread."""
+        decides at. The user turn's budget ends even when ``run`` was replaced meanwhile (its successor
+        is refused at admission). Caller holds ``self._lock`` or owns ``run`` on the timer thread."""
         with self._lock:
+            run.budget.ended = True
             if self._run is not run:
                 return
             spent = _Spent(due_at, run.deadline_at, run.ttl_s, run.witness)
@@ -461,21 +540,31 @@ class PromptCacheWarmer:
             return "conversation context changed"
         return None
 
-    def _admit(self, run: _Run) -> bool:
-        """The one send admission: ownership, cancellation, currency and deadline checked, and
-        the run marked in flight, in one step under the lock ``cancel`` takes. The network request
-        itself runs outside the lock."""
+    def _admit(self, run: _Run, decision: CacheWarmingDecision) -> Optional[float]:
+        """The one send admission: ownership, cancellation, currency, deadline and the user turn's
+        budget checked, the keep-alive reserved against that budget (count and estimated cost), and the
+        run marked in flight, in one step under the lock ``cancel`` takes. Returns the reserved cost,
+        ``None`` when refused. The network request itself runs outside the lock."""
         with self._lock:
             if self._run is not run or run.cancelled:
-                return False
+                return None
             reason = self._stale_reason(run)
             if reason is None and time.time() > run.refresh_deadline_at:
                 reason = "cache refresh deadline missed"
             if reason is not None:
                 self._stop(reason)
-                return False
+                return None
+            budget = run.budget
+            if budget.ended or budget.used >= WARM_BUDGET:
+                self._end_budget(run, "warm budget spent", due_at=run.next_warm_at)
+                return None
+            if budget.spent_usd + decision.warm_cost > decision.miss_cost:
+                self._stop("refreshes would cost more than the cache write they prevent")
+                return None
+            budget.used += 1
+            budget.spent_usd += decision.warm_cost
             run.refreshing = True
-            return True
+            return decision.warm_cost
 
     def _refresh(self, run: _Run) -> None:
         with run.lock:
@@ -486,7 +575,8 @@ class PromptCacheWarmer:
         if decision.action != "warm":
             self._stop_if_current(run, decision.stop_reason)
             return
-        if not self._admit(run):
+        reserved = self._admit(run, decision)
+        if reserved is None:
             return
         sent_at = time.time()
         try:
@@ -497,11 +587,7 @@ class PromptCacheWarmer:
             return
         finally:
             run.refreshing = False
-        run.warm_count += 1
-        with self._lock:
-            if self._run is run:
-                self._budget_used, self._budget_spent_usd = run.warm_count, run.spent_usd
-        miss = self._record(run, message, decision, sent_at)
+        miss = self._record(run, message, decision, sent_at, reserved)
         if miss is not None:
             if miss.startswith("cache refresh missed"):
                 # The entry was gone and this send re-wrote it: no more keep-alives, but the budget is
@@ -536,9 +622,7 @@ class PromptCacheWarmer:
         kwargs.pop("stream", None)
         kwargs.pop("timeout", None)  # the warm request keeps its own short timeout
         if run.api_mode == "chat_completions":
-            kwargs.pop("stream_options", None)
-            kwargs["max_completion_tokens" if "max_completion_tokens" in kwargs else "max_tokens"] = (
-                replay_output_cap(run.model))
+            kwargs = bounded_chat_replay(kwargs, run.model)
             # A byte-identical replay inside OpenRouter's response-cache TTL would be answered
             # from that cache and never reach (or refresh) the prompt cache upstream.
             kwargs["extra_headers"] = {**(kwargs.get("extra_headers") or {}), "X-OpenRouter-Cache": "false"}
@@ -587,10 +671,12 @@ class PromptCacheWarmer:
             usage.update(prompt_tokens=cu.prompt_tokens, total_tokens=cu.total_tokens)
         return getattr(choice, "message", None), finish, usage
 
-    def _record(self, run: _Run, message: Any, decision: CacheWarmingDecision, sent_at: float) -> Optional[str]:
+    def _record(self, run: _Run, message: Any, decision: CacheWarmingDecision, sent_at: float,
+                reserved: float = 0.0) -> Optional[str]:
         """Fold the refresh's tokens and dollars into the session totals (never into the
-        compressor or usage anchors: a one-token replay is not a conversation turn), into the
-        run's spend, and into the prompt-cache clock (a read restarts the window). Returns why warming must stop when the refresh did not prove a cache hit at
+        compressor or usage anchors: a one-token replay is not a conversation turn), into the user
+        turn's budget (its ``reserved`` estimate replaced by the billed cost, even if ``run`` was
+        replaced meanwhile), and into the prompt-cache clock (a read restarts the window). Returns why warming must stop when the refresh did not prove a cache hit at
         a known price, ``None`` when it did."""
         agent, b = self.agent, run.billing
         usage = getattr(message, "usage", None)
@@ -611,11 +697,9 @@ class PromptCacheWarmer:
             )
             amount = float(cost.amount_usd) if cost.amount_usd is not None else None
             if amount is not None:
-                run.spent_usd += amount
-                run.last_warm_usd = amount
                 with self._lock:
-                    if self._run is run:
-                        self._budget_spent_usd = run.spent_usd
+                    run.budget.spent_usd += amount - reserved
+                    run.budget.last_warm_usd = amount
             # Compression keeps the running counters (a refresh still adds to them); only
             # ``reset_session_state`` zeroes them, and it advances the reset epoch with them under
             # this same lock, so a reset never lands between the epoch check and the add.
@@ -692,7 +776,7 @@ class PromptCacheWarmer:
 
     def _evaluate(self, run: _Run) -> CacheWarmingDecision:
         return self._decide(run.cached_tokens, run.uncached_tokens,
-                            spent_usd=run.spent_usd, observed_warm_usd=run.last_warm_usd)
+                            spent_usd=run.budget.spent_usd, observed_warm_usd=run.budget.last_warm_usd)
 
     def _decide(self, cached_tokens: int, uncached_tokens: int, **spend: float) -> CacheWarmingDecision:
         """``evaluate_economics``, refused outright when the estimator that bills a refresh
@@ -931,7 +1015,7 @@ def claim_compaction_at_release(agent: Any, *, now: Optional[float] = None) -> b
         warmer = agent._prompt_cache_warmer
         warmer.cancel("owner releasing the agent: compacting first")
         with warmer._lock:
-            warmer._compacted = True
+            warmer._spent, warmer._compacted = None, True
     return due
 
 

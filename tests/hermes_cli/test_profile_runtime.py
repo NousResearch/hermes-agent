@@ -18,7 +18,7 @@ from hermes_cli.profile_runtime import RUNTIME_VALUES, resolve_profile_runtime
 def home(tmp_path, monkeypatch):
     """An isolated HERMES_HOME with no config on disk, so `profiles.runtime` defaults."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
     return tmp_path
 
 

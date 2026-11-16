@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional
 
 RuntimeKind = Literal["container", "native"]
 
@@ -33,7 +33,7 @@ def _declared_runtime_kind(home: Path) -> Optional[str]:
     return kind if kind in ("container", "native") else None
 
 
-def resolve_profile_runtime(explicit: Optional[str] = None) -> Tuple[RuntimeKind, str]:
+def resolve_profile_runtime(explicit: Optional[str] = None) -> tuple[RuntimeKind, str]:
     """``("container"|"native", human reason)``: the ``--runtime`` flag, then ``profiles.runtime``,
     then the serving gateway's declaration; ``auto`` is ``native`` unless a container stamped the
     home. An unrecognised value raises naming the three choices: a typo must not pick a runtime."""

@@ -17,7 +17,7 @@ def profile_env(tmp_path, monkeypatch):
     default_home = tmp_path / ".hermes"
     default_home.mkdir(exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(default_home))
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
     return default_home
 
 

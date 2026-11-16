@@ -280,6 +280,30 @@ def test_a_transfer_brings_the_bots_switched_off_and_its_undo_brings_the_cloud_b
     assert after == before and _yaml(dst / "config.yaml")["platforms"] == {"discord": {"enabled": True}}
 
 
+def test_a_transfer_leaves_what_no_backup_carries_when_home_is_the_hermes_home(homes, monkeypatch):
+    """Hermes Cloud runs with HOME set to the Hermes home: the agent's workspace and the container's
+    dotfiles sit beside the agent's files, and a backup from another machine never carries them."""
+    src, dst, tmp = homes
+    monkeypatch.setattr(Path, "home", lambda: dst)
+    kept = {"workspace/app/main.py": "print('cloud')\n", ".ssh/id_ed25519": "KEY\n",
+            ".config/gh/hosts.yml": "github.com: {}\n", "home/notes.txt": "notes\n"}
+    for rel, text in kept.items():
+        _write(dst, rel, text)
+    _write(dst, "sessions/cloud.json", "{}\n")
+    _write(dst, "skills/cloud-only/.hidden", "x\n")  # only the root's dot-entries are HOME's
+    for hermes_dotfile in (".op.env", ".anthropic_oauth.json"):  # Hermes' own: replaced as usual
+        _write(dst, hermes_dotfile, "stale login\n")
+    _write(src, "plugins/mine/plugin.yaml", "name: mine\n")
+
+    _import(monkeypatch, dst, _backup(monkeypatch, src, tmp / "src.zip"), keep_host=True)
+
+    assert {rel: (dst / rel).read_text() for rel in kept} == kept
+    assert not (dst / "skills/cloud-only").exists() and not (dst / "sessions/cloud.json").exists()
+    assert not (dst / ".op.env").exists() and not (dst / ".anthropic_oauth.json").exists()
+    _import(monkeypatch, dst, _undo_point(dst), keep_host=True)
+    assert not (dst / "plugins/mine").exists() and {rel: (dst / rel).read_text() for rel in kept} == kept
+
+
 def test_undo_point_holds_the_memory_provider_files_outside_the_home(homes, monkeypatch):
     """A source's external memory file must not irreversibly replace the cloud copy."""
     src, dst, tmp = homes

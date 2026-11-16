@@ -138,9 +138,13 @@ def is_skipped_plugin_dir(name: str) -> bool:
     """True for directory names discovery never treats as plugins. Cache/dunder dirs (__pycache__,
     __MACOSX__, …) can raise PermissionError when walked and take down every later tool call
     (#86996); foreign-harness dirs hold another tool's manifest convention; staging dirs hold an
-    unpublished install/update clone that carries the live plugin's manifest and would collide with it."""
-    return ((name.startswith("__") and name.endswith("__")) or name in _FOREIGN_HARNESS_MANIFEST_DIRS
-            or name.startswith(_STAGING_DIR_PREFIXES))
+    unpublished install/update/remove clone that carries the live plugin's manifest and would collide with it."""
+    return (
+        (name.startswith("__") and name.endswith("__"))
+        or name in _FOREIGN_HARNESS_MANIFEST_DIRS
+        or name.startswith(_STAGING_DIR_PREFIXES)
+        or (name.startswith(".") and ".remove-" in name[1:])
+    )
 
 
 def scan_directory(

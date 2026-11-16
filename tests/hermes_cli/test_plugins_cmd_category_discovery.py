@@ -309,3 +309,17 @@ def test_staging_is_invisible_to_runtime_and_cli_discovery(tmp_path):
     _scan_level(tmp_path, "user", set(), "", 0, listing)
     assert {m.key for m in runtime} == {"live", "category/visible"}
     assert set(listing) == {"live", "category/visible"}
+
+
+def test_remove_staging_is_invisible_to_runtime_and_cli_discovery(tmp_path):
+    """The remover temporarily parks <plugins>/.<name>.remove-*/plugin."""
+    from hermes_cli.plugins_discovery import scan_directory
+    from hermes_cli.plugins_cmd import _scan_level
+
+    _make_plugin_dir(tmp_path, "live", {"name": "live"})
+    _make_category_plugin(tmp_path, ".live.remove-fixture", "plugin", {"name": "live"})
+
+    assert {manifest.key for manifest in scan_directory(tmp_path, "user")} == {"live"}
+    seen = {}
+    _scan_level(tmp_path, "user", set(), "", 0, seen)
+    assert set(seen) == {"live"}

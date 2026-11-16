@@ -491,3 +491,29 @@ class TestWeixinHeldOutboundLedgerCoordination:
 
         exc = weixin._session_not_ready_error(-2, None, "prepare failed")
         assert classify_send_error(exc) not in ("rate_limited", "transient")
+
+
+@pytest.mark.asyncio
+async def test_standalone_refusal_without_live_gateway_is_not_reported_as_queued(tmp_path):
+    """One-shot send with no live poller must not claim it queued a lost reply."""
+    class _EphemeralSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    bridge = _FakeILinkBridge(window_open=False)
+    with patch.object(weixin, "get_hermes_home", return_value=tmp_path), \
+         patch.object(weixin, "_new_session", return_value=_EphemeralSession()), \
+         patch.dict(weixin._LIVE_ADAPTERS, {}, clear=True), \
+         patch.object(weixin, "_send_message", new=bridge):
+        result = await weixin.send_weixin_direct(
+            extra={"account_id": "test-account"}, token="test-token",
+            chat_id="wxid_test123", message="report due",
+        )
+
+    assert not result.get("success")
+    assert not result.get("queued")
+    assert "no live gateway adapter" in result["error"]
+    assert bridge.attempts == 1

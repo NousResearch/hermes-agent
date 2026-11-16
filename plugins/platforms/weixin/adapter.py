@@ -1447,7 +1447,12 @@ async def send_weixin_direct(
         adapter = WeixinAdapter(PlatformConfig(enabled=True, token=resolved_token, extra=merged))
         adapter._send_session = adapter._session = session
         adapter._token_store = token_store
-        return await _deliver_direct(adapter, chat_id, message, media_files, context_token)
+        result = await _deliver_direct(adapter, chat_id, message, media_files, context_token)
+        if result.get("queued") and adapter._held_outbound:
+            # Only the live gateway's inbound poller can flush held text. A temporary
+            # adapter returning here would discard its hold while claiming acceptance.
+            return {"error": "Weixin peer session not ready; no live gateway adapter to defer delivery"}
+        return result
 
 
 # ---------------------------------------------------------------------------

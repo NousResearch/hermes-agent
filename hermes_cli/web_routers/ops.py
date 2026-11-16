@@ -6,6 +6,7 @@ reached through the late-binding seam (cycle-safe).
 """
 
 import asyncio
+import base64
 import contextlib
 import logging
 import os
@@ -617,8 +618,14 @@ async def run_backup(body: BackupRequest, profile: Optional[str] = None):
     return response
 
 
-@router.get("/api/ops/backup/download")
-async def download_dashboard_backup(archive: str, profile: Optional[str] = None):
+# A backup archive can be many GB (state.db, media): the import upload gets its own bound instead of
+# the 100 MB managed-file cap. Chunks stay small enough for one JSON answer.
+_IMPORT_UPLOAD_MAX_BYTES = 32 * 1024 ** 3
+_BACKUP_CHUNK_MAX = 8 * 1024 * 1024
+
+
+def _dashboard_backup_path(archive: str, profile: Optional[str]) -> Path:
+    """``archive`` resolved, when it is a file in this profile's backups directory (403/404 else)."""
     try:
         backup_dir = _dashboard_backup_dir(profile).expanduser().resolve(strict=False)
         target = Path(archive).expanduser().resolve(strict=True)
@@ -626,22 +633,33 @@ async def download_dashboard_backup(archive: str, profile: Optional[str] = None)
         raise HTTPException(status_code=404, detail="Backup not found")
     except (OSError, RuntimeError):
         raise HTTPException(status_code=400, detail="Invalid backup path")
-
     if not _path_is_under(backup_dir, target):
         raise HTTPException(status_code=403, detail="Backup is outside the dashboard backup directory")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="Backup not found")
+    return target
+
+
+@router.get("/api/ops/backup/download")
+async def download_dashboard_backup(archive: str, profile: Optional[str] = None):
+    target = _dashboard_backup_path(archive, profile)
     return FileResponse(
         path=str(target), media_type="application/zip", filename=target.name, content_disposition_type="attachment",
     )
 
 
-def _spawn_import(archive: str, force: bool, profile: Optional[str] = None) -> dict:
-    args = ["import", archive]
-    if force:
-        args.append("--force")
-    return _spawn_action(args, "import", log_msg="Failed to spawn import",
-                         prefix="Failed to run import", profile=profile)
+def _spawn_import(archive: str, force: bool, profile: Optional[str] = None, *, keep_host: bool = False) -> dict:
+    """``hermes import``; with ``keep_host`` the undo point's path is chosen here so the caller
+    gets it back at once (the restore writes it before touching anything)."""
+    args = ["import", archive] + ["--force"] * (force or keep_host)
+    undo = None
+    if keep_host:
+        stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        undo = _dashboard_backup_dir(profile) / f"pre-transfer-{stamp}-{secrets.token_hex(4)}.zip"
+        args += ["--keep-host", "--undo-point", str(undo)]
+    response = _spawn_action(args, "import", log_msg="Failed to spawn import",
+                             prefix="Failed to run import", profile=profile)
+    return {**response, "undo_archive": str(undo)} if undo else response
 
 
 @router.post("/api/ops/import")
@@ -652,7 +670,7 @@ async def run_import(body: ImportRequest, profile: Optional[str] = None):
         raise HTTPException(status_code=400, detail="archive path is required")
     if not os.path.isfile(archive):
         raise HTTPException(status_code=404, detail=f"Archive not found: {archive}")
-    return _spawn_import(archive, body.force, profile)
+    return _spawn_import(archive, body.force, profile, keep_host=body.keep_host)
 
 
 def _safe_backup_upload_name(filename: str | None) -> str:
@@ -667,8 +685,12 @@ def _safe_backup_upload_name(filename: str | None) -> str:
 async def run_import_upload(
     file: UploadFile = File(...),
     force: bool = Form(False),
+    keep_host_form: bool = Form(False, alias="keep_host"),
+    keep_host: bool = False,
     profile: Optional[str] = None,
 ):
+    """Upload a backup and restore it. ``keep_host`` (form field or query) is the Hermes Cloud
+    transfer: the agent keeps its host setup and the answer names the undo point."""
     profile = destructive_profile(profile, "POST /api/ops/import-upload")
     staging_dir = _dashboard_backup_dir(profile)
     try:
@@ -681,11 +703,29 @@ async def run_import_upload(
     total = await stream_upload_to_path(
         file, target, too_large="Archive is too large",
         not_writable="Import staging directory is not writable", write_failed="Could not write uploaded archive",
+        max_bytes=_IMPORT_UPLOAD_MAX_BYTES,
     )
     if not zipfile.is_zipfile(target):
         target.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Uploaded archive is not a valid zip file")
-    return {**_spawn_import(str(target), force, profile), "archive": str(target), "uploaded_bytes": total}
+    started = _spawn_import(str(target), force, profile, keep_host=keep_host or keep_host_form)
+    return {**started, "archive": str(target), "uploaded_bytes": total}
+
+
+@router.get("/api/ops/backup/chunk")
+async def read_dashboard_backup_chunk(archive: str, offset: int = 0, length: int = _BACKUP_CHUNK_MAX,
+                                      profile: Optional[str] = None):
+    """One base64 slice of a backup this dashboard wrote: how a client with JSON-only transport
+    (the Desktop's OAuth connections) carries a backup to another agent without a save dialog."""
+    target = _dashboard_backup_path(archive, profile)
+    if offset < 0 or not 0 < length <= _BACKUP_CHUNK_MAX:
+        raise HTTPException(status_code=400, detail="offset/length out of range")
+    size = target.stat().st_size
+    with target.open("rb") as handle:
+        handle.seek(offset)
+        data = handle.read(length)
+    return {"data": base64.b64encode(data).decode("ascii"), "offset": offset, "size": size,
+            "done": offset + len(data) >= size}
 
 
 @router.get("/api/ops/hooks")

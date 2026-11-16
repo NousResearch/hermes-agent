@@ -391,6 +391,7 @@ def _bot_sessions(authority, actor):
 
 
 def _read_bot_sessions(db, subject, operator):
+    from hermes_state_local import reset_segment_activity
     from hermes_state_local_migration import LEGACY_PREFIX
     from hermes_state_sessions import INTERNAL_LISTING_SOURCES
     hidden_sources = ','.join('?' * len(INTERNAL_LISTING_SOURCES))
@@ -398,19 +399,21 @@ def _read_bot_sessions(db, subject, operator):
     # One read connection for the whole row. A store closed meanwhile (its profile unserved
     # mid-poll) refuses rather than reopening a writer into a home that is being deleted.
     with db._read_ctx(reopen=False) as conn:
-        def summary(root):
+        def summary(root, past_resets=False):
             tip = db._compression_tip_on(conn, root['id'])
             target = conn.execute('SELECT * FROM sessions WHERE id=?', (tip,)).fetchone() or root
             message = conn.execute(
                 "SELECT content FROM messages WHERE session_id=? AND active=1 "
                 "AND role IN ('user','assistant') AND TRIM(COALESCE(content,''))!='' "
                 "ORDER BY id DESC LIMIT 1", (tip,)).fetchone()
-            text = ' '.join(str(message[0] or '').split()) if message else ''
+            # A reset keeps the Bot Chat's id and continues in lineage children the tip never reaches.
+            later, active = reset_segment_activity(conn, root['id'], tip) if past_resets else (None, 0)
+            text = ' '.join(str(later or (message[0] if message else '') or '').split())
             return {'id': root['id'], 'resolved_id': tip, 'title': target['title'] or '',
                     'root_title': root['title'] or '',
                     'preview': text[:80] + '...' if len(text) > 80 else text,
                     'started_at': target['started_at'] or 0,
-                    'last_active': target['last_activity_at'] or target['started_at'] or 0,
+                    'last_active': max(target['last_activity_at'] or target['started_at'] or 0, active),
                     'message_count': target['message_count'] or 0}
 
         fields: dict = {'last_session': None, 'worker_session': None, 'canonical_session': None}
@@ -419,7 +422,7 @@ def _read_bot_sessions(db, subject, operator):
                                  ('Bot Chat', LEGACY_PREFIX)).fetchone()
         from gateway.owner_identity import same_owner
         if canonical and (same_owner(canonical['user_id'], subject) or operator) and not canonical['archived']:
-            fields['canonical_session'] = summary(canonical)
+            fields['canonical_session'] = summary(canonical, past_resets=True)
         # The newest conversation a picker shows: a hidden row (a Bot Chat, group member plumbing)
         # never wins, as in the pre-unified roster's listing.
         latest = conn.execute(

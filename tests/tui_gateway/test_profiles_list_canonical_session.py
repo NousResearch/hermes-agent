@@ -182,6 +182,37 @@ def test_canonical_session_resolves_compression_tip(home):
     assert "post-compression content" in canonical["preview"]
 
 
+def test_canonical_session_previews_newest_local_reset_segment(home):
+    # A compression-exhaustion auto-reset keeps the Bot Chat's logical id and
+    # moves the transcript to reset children named in the local receipt's
+    # lineage. The roster must preview the conversation's newest message (in
+    # a child), not the last message before the reset; an empty newest child
+    # (just reset, nothing said yet) falls back to the previous segment.
+    db = _db(home)
+    _add_session(db, "local-root", title="Bot Chat", ts=1000,
+                 text="before the reset", end_reason="session_reset")
+    _add_session(db, "seg1", title="Generated title", ts=2000,
+                 text="after the reset", parent="local-root",
+                 end_reason="session_reset")
+    db.create_session("seg2", "gui", parent_session_id="seg1")
+    with db._lock:
+        db._conn.execute("UPDATE sessions SET started_at = 3000 WHERE id = 'seg2'")
+        db._conn.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?)",
+            ("gateway.local_policy.v1:local-root",
+             json.dumps({"session_id": "local-root",
+                         "lineage": ["local-root", "seg1", "seg2"]})))
+        db._conn.commit()
+    db.close()
+
+    canonical = _row(_profiles({}), "default")["canonical_session"]
+
+    assert canonical["id"] == "local-root"
+    assert canonical["resolved_id"] == "local-root"
+    assert "after the reset" in canonical["preview"]
+    assert canonical["last_active"] >= 3000
+
+
 def test_canonical_session_ignores_unmarked_normal_child(home):
     db = _db(home)
     _add_session(db, "root1", title="Bot Chat", ts=1000,

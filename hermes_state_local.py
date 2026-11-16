@@ -305,6 +305,26 @@ def local_conversation_ids(conn, session_id):
     return list(dict.fromkeys([owner, *(sid for sid in lineage if isinstance(sid, str))]))
 
 
+def reset_segment_activity(conn, session_id, tip):
+    """``(newest non-empty message content, freshest activity time)`` over the receipt lineage
+    segments that follow compression *tip* of local chat *session_id*; ``(None, 0)`` when there are
+    none. A canonical reset keeps the chat's id and moves the transcript to a lineage child the
+    compression tip never reaches, so a row summarized at the tip stops at the reset."""
+    ids = local_conversation_ids(conn, session_id)
+    later = ids[ids.index(tip if tip in ids else session_id) + 1:]
+    content, active = None, 0
+    for sid in reversed(later):
+        row = conn.execute('SELECT last_activity_at, started_at FROM sessions WHERE id=?', (sid,)).fetchone()
+        active = max(active, (row[0] or row[1] or 0) if row else 0)
+        if content is None:
+            message = conn.execute(
+                "SELECT content FROM messages WHERE session_id=? AND active=1 "
+                "AND role IN ('user','assistant') AND TRIM(COALESCE(content,''))!='' "
+                "ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
+            content = message[0] if message else None
+    return content, active
+
+
 def local_lineage_index(conn):
     """``(superseded, heads)`` for listing a local conversation as one row, as
     ``acp_adapter.catalog`` does: a canonical reset keeps the creation id as the owner and moves the

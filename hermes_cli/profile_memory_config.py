@@ -170,7 +170,8 @@ def read_memory_provider_values(name: str) -> dict[str, Any]:
 
     try:
         cfg = load_config()
-    except Exception:
+    except Exception:  # best effort: a broken config.yaml leaves the form on the stores above
+        logger.debug("memory provider %r: config.yaml unreadable for its saved settings", name, exc_info=True)
         cfg = {}
     if not isinstance(cfg, dict):
         cfg = {}

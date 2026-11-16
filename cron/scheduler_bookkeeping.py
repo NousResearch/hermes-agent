@@ -70,6 +70,10 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
         # Never-reached-the-model failure: schedule the Cowork-style bounded re-run
         # (cron/unreachable_retry.py) inside the same fenced store write.
         mark_kwargs["model_unreachable"] = True
+    if not d.success and job.pop("_gateway_unavailable", False):
+        # The gateway refused the fire (draining/starting/absent) before the agent ran:
+        # one automatic re-run a couple of minutes out (cron/unreachable_retry.py).
+        mark_kwargs["gateway_unavailable"] = True
     from cron.unreachable_retry import is_retry_run
     if is_retry_run(job):
         # A re-run of an occurrence that already counted: must not spend another repeat slot.

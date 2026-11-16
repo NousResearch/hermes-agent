@@ -2458,6 +2458,7 @@ def mark_job_run(
     expected_fire_owner: Optional[str] = None,
     execution_id: Optional[str] = None,
     model_unreachable: bool = False,
+    gateway_unavailable: bool = False,
     ladder_rung: bool = False,
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
@@ -2474,9 +2475,11 @@ def mark_job_run(
     ``model_unreachable``: this failed run never reached the model (transient network/DNS error,
     zero API calls). Recurring jobs then get a bounded automatic re-run — ``next_run_at`` is pulled
     earlier per ``cron.unreachable_retry.RETRY_DELAYS_SECONDS`` — instead of waiting a full period
-    (Cowork-style; see cron/unreachable_retry.py). ``ladder_rung``: this run IS one of those
-    re-runs (``is_retry_run``); its occurrence already counted, so ``repeat.completed`` is not
-    bumped again.
+    (Cowork-style; see cron/unreachable_retry.py). ``gateway_unavailable``: the gateway refused the
+    fire (draining for an update, starting, or absent) before the agent ran; same zero-spend
+    guarantee, but exactly ONE re-run, ``GATEWAY_RETRY_DELAYS_SECONDS`` out. ``ladder_rung``: this
+    run IS one of those re-runs (``is_retry_run``); its occurrence already counted, so
+    ``repeat.completed`` is not bumped again.
 
     ``quota_hold_seconds``: the provider said it stays closed for this long (a quota 429 with
     ``retry after <N>s``). Recurring jobs are parked through the window instead of re-firing into
@@ -2509,8 +2512,8 @@ def mark_job_run(
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 
-        if not success and model_unreachable and not is_terminal_job(job):
-            plan_retry(job)
+        if not success and (model_unreachable or gateway_unavailable) and not is_terminal_job(job):
+            plan_retry(job, gateway=gateway_unavailable and not model_unreachable)
         else:
             # Any run that reached the model (either outcome) resets the re-run ladder.
             clear_state(job)

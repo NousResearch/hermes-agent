@@ -566,6 +566,23 @@ cron:
   retry_unreachable: false   # default true; disables the automatic re-runs
 ```
 
+### One re-run when the gateway refused the fire
+
+An unattended `hermes update`, a restart, or a gateway that is still starting can
+refuse a cron fire with `GatewayUnavailableError` before the agent runs. Nothing was
+executed and nothing was spent, so the scheduler gives that fire exactly **one**
+automatic re-run **2 minutes** later (the owner is normally back well inside that
+window), then leaves the schedule alone: a second refusal waits for the job's own next
+occurrence instead of retrying forever. Re-runs do not count toward `repeat`, the
+interim failure notice is suppressed while the re-run is pending, and any run that
+reaches the model resets the cycle. A job whose schedule fires sooner than the 2-minute
+rung keeps its natural occurrence. One-shot jobs are excluded here too.
+
+```yaml
+cron:
+  retry_gateway_unavailable: false   # default true; disables the single gateway re-run
+```
+
 ### Holding a job through a closed provider usage window
 
 The mirror case: the provider says exactly how long it will stay closed. When

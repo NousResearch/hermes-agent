@@ -2635,9 +2635,15 @@ def run_job(
         # the model was never reached (transient network/DNS, zero API calls) so the bookkeeping
         # tail can schedule a bounded automatic re-run instead of waiting a full period.
         try:
-            from cron.unreachable_retry import is_model_unreachable_failure
+            from cron.unreachable_retry import (
+                is_gateway_unavailable_failure, is_model_unreachable_failure)
             if is_model_unreachable_failure(e, agent):
                 job["_model_unreachable"] = True
+            # The owner refused the run (draining for an update/restart, still starting, or
+            # absent): nothing executed, and the owner is back within a minute, so the
+            # bookkeeping tail arms ONE automatic re-run (cron/unreachable_retry.py).
+            elif is_gateway_unavailable_failure(e, agent):
+                job["_gateway_unavailable"] = True
             # Provider usage window closed for a known duration (cron/quota_hold.py): flag it so the
             # bookkeeping tail parks the job past the window instead of re-firing into it (#89376).
             from cron.quota_hold import hold_seconds_from_failure
@@ -3088,13 +3094,15 @@ def _save_compose_deliver(
         output_file=output_file, agent_declared=d.agent_declared)
     # Whitespace-only == empty: skip delivery; the guard below marks it a soft failure.
     d.should_deliver = bool(deliver_content.strip()) and not _silent_alert
-    if d.should_deliver and not d.success and job.get("_model_unreachable"):
-        # The model was never reached and a bounded automatic re-run will be scheduled
-        # (cron/unreachable_retry.py): hold the failure notice — the re-run either
-        # delivers the real result or, once the ladder is exhausted, the next failure
-        # alerts normally. Mirrors Cowork's silent 5/15/30-minute re-runs.
+    if d.should_deliver and not d.success and (
+            job.get("_model_unreachable") or job.get("_gateway_unavailable")):
+        # The model was never reached (or the gateway refused the fire) and an automatic
+        # re-run will be scheduled (cron/unreachable_retry.py): hold the failure notice —
+        # the re-run either delivers the real result or, once the ladder is exhausted, the
+        # next failure alerts normally. Mirrors Cowork's silent 5/15/30-minute re-runs.
         from cron.unreachable_retry import will_retry
-        if will_retry(job):
+        gateway = bool(job.get("_gateway_unavailable"))
+        if will_retry(job, gateway=gateway):
             d.should_deliver = False
             logger.info(
                 "Job '%s': suppressing failure notice — automatic re-run pending", job["id"])

@@ -10,8 +10,10 @@ function contribution(id: string, data: FileOpenerContribution, order = 0): Cont
   return { id, area: FILE_OPENER_AREA, data, order }
 }
 
+const disposers: Array<() => void> = []
+
 afterEach(() => {
-  registry.getArea(FILE_OPENER_AREA).forEach(entry => registry.remove(entry.area, entry.id))
+  disposers.splice(0).forEach(dispose => dispose())
   closeRightRail()
   window.localStorage.clear()
 })
@@ -25,8 +27,8 @@ describe('local file opener contributions', () => {
     tryOpenFileWithPlugin(
       '/vault/note.md',
       [
-        contribution('later', { claims: () => true, open: openSecond }, 10),
-        contribution('first', { claims: () => true, open: openFirst }, 0)
+        contribution('first', { claims: () => true, open: openFirst }, 0),
+        contribution('later', { claims: () => true, open: openSecond }, 10)
       ],
       fallback
     )
@@ -61,16 +63,17 @@ describe('local file opener contributions', () => {
 
   it('routes openPreview through the registered file opener before creating a built-in tab', () => {
     const open = vi.fn()
-    const dispose = registry.register({
-      ...contribution('vault-reader', { claims: path => path.endsWith('.md'), open }),
-      source: 'plugin:hermes-vault'
-    })
+
+    disposers.push(
+      registry.register({
+        ...contribution('vault-reader', { claims: path => path.endsWith('.md'), open }),
+        source: 'plugin:hermes-vault'
+      })
+    )
 
     openPreview({ kind: 'file', label: 'note.md', path: '/vault/note.md', source: '/vault/note.md', url: 'file:///vault/note.md' })
 
     expect(open).toHaveBeenCalledWith('/vault/note.md')
     expect($previewTabs.get()).toHaveLength(0)
-
-    dispose()
   })
 })

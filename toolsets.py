@@ -371,6 +371,22 @@ TOOLSETS = {
         "includes": [],
     },
 
+    # Fork GitHub tool for secondary profiles that must not reach the default
+    # profile's GitHub MCP. The profile's per-repo action allowlist
+    # (`github_pr.repos`) is the boundary; reads and writes are separate
+    # toolsets so granting reads never implies opening PRs.
+    "github_pr": {
+        "description": "GitHub PR + commit-log reads on allowlisted repos (REST, no shell)",
+        "tools": ["github_pr_read"],
+        "includes": [],
+    },
+
+    "github_pr_write": {
+        "description": "GitHub: create a branch, commit files, open a PR on allowlisted repos — never merge",
+        "tools": ["github_pr_write"],
+        "includes": [],
+    },
+
     # Separate from the MCP server's `mcp-webflow` toolset on purpose: the MCP
     # package has NO asset-creation tool, and publishing bytes to a public CDN
     # is a different privilege from reading collections, so it is granted on

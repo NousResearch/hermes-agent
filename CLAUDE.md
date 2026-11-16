@@ -250,6 +250,52 @@ cron/delegation runs that never loaded it (the same pattern), so they work headl
   **the host needs `apt-get install -y poppler-utils`** (present on the VM).
   Own toolset for the `video_frames` reason; granted to `builder` (2026-09-16).
   **Deployment:** must be listed in `platform_toolsets.slack`. No design doc.
+- **`github_pr_read` (`github_pr` toolset) + `github_pr_write` (`github_pr_write`
+  toolset)** — [tools/github_pr_tool.py](tools/github_pr_tool.py). A narrow,
+  shell-free GitHub REST tool (aiohttp, proxy-aware) for secondary profiles
+  — built for the Product Education teammate, which improves shared skills
+  only by PRs that humans merge and reads the monorepo's PRs to learn what
+  shipped. It exists because the default profile's GitHub MCP is kept away
+  from secondary profiles, and `terminal` is super-admin only; it does
+  **not** depend on any MCP. Reads: `list_prs`, `get_pr`, `pr_files`,
+  `pr_diff` (truncated at 60k chars), `pr_comments` (conversation + inline
+  review comments + reviews), `pr_status` (combined status + check runs),
+  `commits`. Writes: `create_branch`, `commit_files` (one commit of full-file
+  contents onto an existing branch via the git-data API, `force: false`),
+  `open_pr`. **There is no merge op, no settings/admin endpoint, and the
+  default branch is never written** — it is looked up live
+  (`GET repos/<repo>`) before every write and a failed lookup refuses.
+  Paths under `.github/` (a workflow on any branch runs with repo secrets)
+  and `.git` are refused, as are traversal/ref-syntax branch names. **The
+  boundary is the profile's per-repo action allowlist**, read per call
+  (mtime-cached) from `config.yaml`:
+  ```yaml
+  github_pr:
+    repos:
+      everafterai/product-skills:
+        actions: [read_pr, read_commits, create_branch, commit_files, open_pr]
+        branch_prefix: educator/   # optional: writes only touch these branches
+      everafterai/ea-monorepo:
+        actions: [read_pr, read_commits]
+  ```
+  An unlisted repo or ungranted action is refused before any request. An
+  unknown action name — any `merge*` especially — or
+  `autonomy.actions.merge_skill_pr` above `off` poisons the whole block
+  (every call refused, naming the problem): merging is not built in v1.
+  Token **only** via `get_secret("GITHUB_PR_TOKEN")` (no `os.getenv`, no
+  dotenv self-heal — under multiplex `os.environ` is another profile's);
+  `UnscopedSecretError` reads as "not configured". Use a fine-grained token
+  whose repo list matches the allowlist: product-skills contents + pull
+  requests read/write, ea-monorepo contents + pull requests read-only
+  (add Checks/Commit statuses read for `pr_status`; check runs degrade to a
+  `check_runs_error` field without it). `check_fn` shows each tool only
+  when the token resolves and some repo grants one of its actions (a config
+  error keeps it visible so the refusal explains itself). Separate toolsets
+  so granting reads never implies writes. **Not in any built-in role** —
+  grant explicitly. **Deployment:** both must be listed in
+  `platform_toolsets.slack` (an explicit list shadows defaults) or the tools
+  are silently missing. Plan:
+  [docs/superpowers/plans/2026-11-16-github-pr-toolset.md](docs/superpowers/plans/2026-11-16-github-pr-toolset.md).
 - **Google Drive per-user access check** — [plugins/google_drive_sa/access.py](plugins/google_drive_sa/access.py).
   The Drive/Sheets/Docs plugin acts as ONE service account, so "shared with the
   SA" would otherwise be "readable by every user whose role grants the toolset".

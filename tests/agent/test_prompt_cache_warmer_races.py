@@ -64,7 +64,7 @@ def _endpoint():
         srv.server_close()
 
 
-def _armed(tmp_path, client, sid="s1"):
+def _armed(tmp_path, client, sid="s1", *, expect=None):
     """An agent whose first response (a 120k-token cache write) is folded into the clock and armed."""
     from hermes_state import SessionDB
 
@@ -87,9 +87,10 @@ def _armed(tmp_path, client, sid="s1"):
                           model=agent.model, provider=agent.provider, base_url=agent.base_url,
                           api_mode=agent.api_mode, attempt=attempt_facts(request))
     warmer = pcw.get_prompt_cache_warmer(agent)
-    assert warmer.start(request, SimpleNamespace(usage=usage)) is None
+    assert warmer.start(request, SimpleNamespace(usage=usage)) == expect
     run = warmer._run
-    run.timer.cancel()
+    if run is not None:
+        run.timer.cancel()
     return agent, warmer, run, db
 
 
@@ -185,4 +186,84 @@ def test_a_refresh_from_before_a_reset_stays_out_of_the_new_sessions_totals(tmp_
         assert agent.session_cache_warm_calls == 0
         assert db.get_session("old")["cache_read_tokens"] == _READ
         assert db.get_session("new")["cache_read_tokens"] == 0
+        db.close()
+
+
+def test_every_keep_alive_is_bracketed_by_the_auxiliary_call_events(tmp_path, monkeypatch):
+    """Plugins that meter auxiliary spend see each refresh: ``pre_auxiliary_call`` carries the one-token
+    request actually posted, ``post_auxiliary_call`` its cache read, both ``aux_task="cache_warm"``."""
+    from hermes_cli import plugins as plugins_mod
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    mgr = PluginManager()
+    monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+    monkeypatch.setattr(plugins_mod, "_plugin_managers_by_home", {})
+    ctx = PluginContext(PluginManifest(name="spend-meter", source="user"), mgr)
+    fired = []
+    for name in ("pre_auxiliary_call", "post_auxiliary_call", "pre_api_request", "post_api_request"):
+        ctx.register_hook(name, lambda _name=name, **kw: fired.append((_name, kw)))
+    with _endpoint() as (client, srv):
+        _agent, warmer, run, db = _armed(tmp_path, client)
+        warmer._refresh(run)
+        (posted,) = srv.requests
+        db.close()
+    assert [name for name, _ in fired] == ["pre_auxiliary_call", "post_auxiliary_call"]
+    pre, post = fired[0][1], fired[1][1]
+    assert pre["aux_task"] == post["aux_task"] == "cache_warm" and pre["api_request_id"] == post["api_request_id"]
+    assert pre["request"]["body"]["max_tokens"] == posted["max_tokens"] == 1
+    assert post["error"] is None and post["usage"]["cache_read_tokens"] == _READ
+
+
+def test_a_route_without_cache_prices_is_never_warmed(tmp_path, monkeypatch):
+    """Input and output priced, cache read and write not: the refresh's cost and the saving are
+    unknown, so nothing is armed and no request is sent (missing rates are not free)."""
+    from decimal import Decimal
+
+    from agent.usage_pricing import PricingEntry
+
+    partial = PricingEntry(input_cost_per_million=Decimal(5), output_cost_per_million=Decimal(25),
+                           source="provider_models_api")
+    monkeypatch.setattr(pcw.PromptCacheWarmer, "_pricing", lambda self: partial)
+    monkeypatch.setattr("agent.usage_pricing.get_pricing_entry", lambda *a, **k: partial)
+    with _endpoint() as (client, srv):
+        _agent, _warmer, run, db = _armed(tmp_path, client, expect="cache economics unavailable")
+        assert run is None and srv.requests == []
+        db.close()
+
+
+def test_a_reset_never_lands_between_the_epoch_check_and_the_add(tmp_path):
+    """Pause the timer thread after its reply passed the reset-epoch check and before it adds to the
+    running totals; run ``/new`` meanwhile. The reset waits for the add and then zeroes it, so the
+    fresh session's totals never carry the old refresh."""
+    from run_agent import AIAgent
+
+    with _endpoint() as (client, _srv):
+        agent, warmer, run, db = _armed(tmp_path, client)
+        agent._transition_context_engine_session = lambda **kw: None
+        paused, resume = threading.Event(), threading.Event()
+
+        def barrier(frame, event, arg):  # a scheduler pause only: no return value or branch is patched
+            if event == "call" and frame.f_code is pcw.PromptCacheWarmer._add_to_session_totals.__code__:
+                paused.set()
+                assert resume.wait(10)
+
+        def timer_thread():
+            sys.settrace(barrier)
+            try:
+                warmer._refresh(run)
+            finally:
+                sys.settrace(None)
+
+        worker = threading.Thread(target=timer_thread)
+        worker.start()
+        assert paused.wait(5)
+        reset = threading.Thread(target=AIAgent.reset_session_state, args=(agent,))
+        reset.start()
+        reset.join(0.3)  # without the shared lock the reset has finished by now
+        resume.set()
+        worker.join(10)
+        reset.join(10)
+        assert not worker.is_alive() and not reset.is_alive()
+        assert agent.session_cache_read_tokens == 0 and agent.session_estimated_cost_usd == 0.0
+        assert agent.session_cache_warm_calls == 0
         db.close()

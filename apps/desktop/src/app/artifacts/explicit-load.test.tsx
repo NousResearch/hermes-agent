@@ -1,8 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { __resetLinkTitleCache } from '@/lib/external-link'
+import { setRemoteMediaMode } from '@/store/remote-media'
 
 import { ArtifactsView } from './index'
 
@@ -17,7 +18,10 @@ vi.mock('@/hermes', async () => ({
   })
 }))
 
+beforeEach(() => setRemoteMediaMode('ask'))
+
 afterEach(() => {
+  setRemoteMediaMode('always')
   cleanup()
   __resetLinkTitleCache()
   vi.unstubAllGlobals()
@@ -90,4 +94,13 @@ it('retains automatic local file previews through the existing bridge', async ()
   await waitFor(() => expect(readFileDataUrl).toHaveBeenCalledWith('/tmp/generated/local.png'))
   await waitFor(() => expect(container.querySelector('img[src^="data:image/png"]')).not.toBeNull())
   expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull()
+})
+
+it('keeps automatic remote titles in the default mode', async () => {
+  setRemoteMediaMode('always')
+  fixture.content = 'https://example.com/private-page'
+  const fetchLinkTitle = vi.fn().mockResolvedValue('Remote title')
+  vi.stubGlobal('hermesDesktop', { fetchLinkTitle })
+  gallery()
+  await waitFor(() => expect(fetchLinkTitle).toHaveBeenCalledWith('https://example.com/private-page'))
 })

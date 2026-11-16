@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
+import { setRemoteMediaMode } from '@/store/remote-media'
 import { $connection } from '@/store/session'
 
 import { MarkdownImage, MarkdownTextContent, MessageTextContent } from './markdown-text'
@@ -138,16 +139,27 @@ describe('MarkdownImage media routing', () => {
   afterEach(cleanup)
 
   it.each([
-    ['image', 'https://evil.example/beacon.png'],
-    ['video', 'https://evil.example/beacon.mp4'],
-    ['audio', 'https://evil.example/beacon.mp3']
-  ] as const)('does not mount a %s element for a remote source', (_label: string, src: string) => {
-    const { container } = render(<MarkdownImage alt="remote media" src={src} />)
+    ['image', 'https://evil.example/beacon.png', 'img'],
+    ['video', 'https://evil.example/beacon.mp4', 'video'],
+    ['audio', 'https://evil.example/beacon.mp3', 'audio']
+  ] as const)('under "ask", a remote %s waits for a click before mounting', async (_label, src, tag) => {
+    setRemoteMediaMode('ask')
 
-    expect(container.querySelector('img')).toBeNull()
-    expect(container.querySelector('video')).toBeNull()
-    expect(container.querySelector('audio')).toBeNull()
-    expect(container.querySelector(`a[href="${src}"]`)).not.toBeNull()
+    try {
+      const { container } = render(<MarkdownImage alt="remote media" src={src} />)
+
+      expect(container.querySelector('img, video, audio')).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Load from evil.example' }))
+      await waitFor(() => expect(container.querySelector(tag)).not.toBeNull())
+    } finally {
+      setRemoteMediaMode('always')
+    }
+  })
+
+  it('loads a remote image at once in the default mode', () => {
+    const { container } = render(<MarkdownImage alt="remote media" src="https://example.com/chart.png" />)
+
+    expect(container.querySelector('[data-slot="aui_remote-media-gate"]')).toBeNull()
   })
 
   it('renders a <video> (not a broken <img>) for a video source', async () => {

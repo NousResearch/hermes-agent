@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
@@ -35,6 +36,7 @@ import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { $remoteMediaMode, isRemoteMediaUrl } from '@/store/remote-media'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -477,13 +479,14 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
   const kindLabel = artifact.kind === 'image' ? a.kindImage : artifact.kind === 'file' ? a.kindFile : a.kindLink
   const [src, setSrc] = useState('')
   const [previewValue, setPreviewValue] = useState<string | null>(null)
-  const remoteImage = /^https?:\/\//i.test(artifact.value.trim())
-  const previewAllowed = !remoteImage || previewValue === artifact.value
+  const askRemote = useStore($remoteMediaMode) === 'ask'
+  const previewAllowed = !askRemote || !isRemoteMediaUrl(artifact.value) || previewValue === artifact.value
 
   useEffect(() => {
     let active = true
 
     setSrc('')
+
     if (!previewAllowed) {
       return
     }
@@ -603,11 +606,13 @@ function ArtifactCellAction({
 const PrimaryCell = memo(function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   const isLink = artifact.kind === 'link'
   const [openedHref, setOpenedHref] = useState<string | null>(null)
+  const askRemote = useStore($remoteMediaMode) === 'ask'
   const brand = isLink ? resolveBrandIcon(shortHostLabel(artifact.href)) : null
   const Icon = brand ?? (isLink ? Link2 : FileText)
-  // History indexing is not consent to contact a URL from assistant text.
-  // Resolve its title only after the user opens this exact link.
-  const fetchedTitle = useLinkTitle(isLink && openedHref === artifact.href ? artifact.href : null)
+  // Under "ask", history indexing is not consent to contact a URL from
+  // assistant text: resolve its title only after the user opens this link.
+  const titleAllowed = !askRemote || openedHref === artifact.href
+  const fetchedTitle = useLinkTitle(isLink && titleAllowed ? artifact.href : null)
   const label = isLink ? fetchedTitle || urlSlugTitleLabel(artifact.href) : artifact.label
 
   return (

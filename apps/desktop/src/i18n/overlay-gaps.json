@@ -157,6 +157,7 @@
   "assistant.thread.expandMessage": ["ar","ja","zh-hant"],
   "assistant.thread.loadingLocalModel": ["ar","ja","ru","zh-hant"],
   "assistant.thread.processingPrompt": ["ar","ja","ru","zh-hant"],
+  "assistant.thread.responseContinuing": ["ar","ja","ru","zh","zh-hant"],
   "assistant.thread.responseStopped": ["ar","ja","ru","zh","zh-hant"],
   "assistant.thread.scrollToBottom": ["ja","zh-hant"],
   "assistant.tool.actions.failedToOpen": ["ar"],

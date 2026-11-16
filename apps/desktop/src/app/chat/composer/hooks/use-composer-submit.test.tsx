@@ -16,6 +16,7 @@ import { $gateway } from '@/store/gateway'
 import { $notifications } from '@/store/notifications'
 import { $onboardingPhase } from '@/store/onboarding-phase'
 import { $onboardingSession } from '@/store/onboarding-session'
+import { endReplyPause, markReplyPaused } from '@/store/paused-replies'
 import {
   clearAllPrompts,
   hasBlockingPromptRequest,
@@ -36,6 +37,7 @@ interface SubmitHarnessOptions {
   attachments?: ComposerAttachment[]
   busy?: boolean
   busyInputMode?: 'interrupt' | 'queue' | 'steer' | null
+  disabled?: boolean
   inputDisabled?: boolean
   scopeTarget?: ComposerTarget
   sessionKey?: string | null
@@ -51,6 +53,7 @@ function renderSubmitHook({
   attachments = [],
   busy = false,
   busyInputMode = 'interrupt',
+  disabled = false,
   inputDisabled = false,
   scopeTarget = 'main',
   sessionKey = 'stored-session',
@@ -117,7 +120,7 @@ function renderSubmitHook({
         busy,
         busyInputMode,
         clearDraft,
-        disabled: false,
+        disabled,
         draftScopeRef,
         draftRef,
         drainNextQueued: vi.fn(async () => false),
@@ -672,6 +675,91 @@ describe('useComposerSubmit busy-turn routing', () => {
 
     expect(onSteer).not.toHaveBeenCalled()
     expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+})
+
+describe('useComposerSubmit while the reply is paused for an automatic continuation', () => {
+  afterEach(() => {
+    cleanup()
+    endReplyPause('stored-session')
+    clearQueuedPrompts('stored-session')
+    vi.restoreAllMocks()
+  })
+
+  // A host plugin stopped the turn to apply a grant and continues it by itself
+  // (store/paused-replies.ts). Sent now, the message would barge into that
+  // continuation: the gateway interrupts a running turn for a plain send. Queued,
+  // it goes after it.
+  it('queues the message instead of sending it into the continuation', () => {
+    markReplyPaused('stored-session')
+    const { hook, onSubmit, queueCurrentDraft } = renderSubmitHook({ text: 'and now read it' })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('sends at once when no reply is paused', () => {
+    const { hook, onSubmit, queueCurrentDraft } = renderSubmitHook({ text: 'and now read it' })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
+  // A folder grant restarts the backend: the composer is disabled while the
+  // connection is down, which is most of the pause. Enter still takes the message.
+  it('takes a message typed while the backend is away, into the queue', () => {
+    markReplyPaused('stored-session')
+
+    const { clearDraft, hook, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      disabled: true,
+      text: 'and now read it'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(clearDraft).not.toHaveBeenCalled() // the queue clears it once it holds the words
+  })
+
+  it('still does nothing while the backend is away and no reply is paused', () => {
+    const { hook, onSubmit, queueCurrentDraft } = renderSubmitHook({ disabled: true, text: 'and now read it' })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  // The continuation runs as a turn of its own: a message sent then is queued
+  // behind it, never steered into it or sent as an interrupt.
+  it('queues a message sent while the continuation runs instead of steering it into that turn', () => {
+    markReplyPaused('stored-session')
+
+    const { hook, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'interrupt',
+      text: 'and now read it'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('queues with Ctrl+Enter while the reply is paused and no turn runs', () => {
+    markReplyPaused('stored-session')
+    const { hook, queueCurrentDraft } = renderSubmitHook({ text: 'and now read it' })
+
+    act(() => hook.result.current.queueDraft())
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
   })
 })
 

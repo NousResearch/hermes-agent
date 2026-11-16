@@ -23,6 +23,7 @@ import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-
 import { notify } from '@/store/notifications'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
+import { useReplyPaused } from '@/store/paused-replies'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -122,6 +123,7 @@ export function useComposerSubmit({
   const surfaceId = useComposerSurfaceId()
   const { t } = useI18n()
   const copy = t.desktop
+  const replyPaused = useReplyPaused(activeQueueSessionKey, sessionId)
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-stash the draft so the words survive. Repaint it
@@ -472,8 +474,27 @@ export function useComposerSubmit({
     return true
   }
 
+  // The reply is paused for an automatic continuation (store/paused-replies.ts), which may already be
+  // running as a turn of its own: a message waits in the chat's queue and goes once the continuation has
+  // completed, never into it (a steer, or the gateway's interrupt for a plain send). Also while a restart
+  // has the backend away and the composer is otherwise disabled: Enter keeps the words.
+  const holdsForContinuation = (text: string, payloadPresent: boolean) =>
+    replyPaused && !queueEdit && payloadPresent && !isSlashCommandText(text)
+
+  const holdForContinuation = (text: string, editorHadFocus: boolean) => {
+    const retry = takeDraftRetry?.(text, cloneAttachments(attachments))
+
+    if (retry) {
+      queueRetry(retry)
+    } else {
+      queueCurrentDraft()
+    }
+
+    refocusAfterSend(editorHadFocus)
+  }
+
   const submitDraft = () => {
-    if (disabled) {
+    if (disabled && !replyPaused) {
       return
     }
 
@@ -508,10 +529,24 @@ export function useComposerSubmit({
       return
     }
 
+    const hold = holdsForContinuation(text, payloadPresent)
+
+    if (disabled && !hold) {
+      return
+    }
+
+    // A card parked on the session still takes typed text as its answer.
     const parked = answerParkedCardWithDraft(text, payloadPresent)
 
     if (parked === 'answered') {
       refocusAfterSend(editorHadFocus)
+
+      return
+    }
+
+    // Ahead of `busy`, which would route the message into the running continuation.
+    if (hold) {
+      holdForContinuation(text, editorHadFocus)
 
       return
     }
@@ -629,7 +664,8 @@ export function useComposerSubmit({
   }
 
   const queueDraft = () => {
-    if (disabled || !busy || refusedDuringSetup(draftRef.current)) {
+    // A paused reply's chat queues like a busy one (see submitDraft).
+    if ((disabled && !replyPaused) || !(busy || replyPaused) || refusedDuringSetup(draftRef.current)) {
       return
     }
 

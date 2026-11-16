@@ -300,6 +300,8 @@ class MessageCompletePayload(Payload):
     error_surface: ErrorSurface | None = None
     partial: bool | None = None
     persisted_turn: PersistedTurn | None = None
+    #: An interrupted turn its interrupter will continue (``session.interrupt`` ``resume``): not stopped for good.
+    paused: bool | None = None
 
 
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")

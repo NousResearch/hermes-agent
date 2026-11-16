@@ -15,6 +15,7 @@ import {
   resetFrozenQueuedTransportsForTests
 } from '@/store/composer-queue'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { endReplyPause, markReplyPaused } from '@/store/paused-replies'
 import {
   $sessions,
   _resetSessionOwnerHintsForTests,
@@ -273,6 +274,30 @@ describe('useBackgroundQueueDrain', () => {
 
     expect(submitText).not.toHaveBeenCalled()
     expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+  })
+
+  // A send held for a paused reply (store/paused-replies.ts) waits for the
+  // continuation to complete even when the user switched to another chat.
+  it('holds a background queue while its reply is paused, then drains it', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'after the continuation', attachments: [] })
+    clearAllSessionStates()
+    markReplyPaused('stored-session-a')
+
+    try {
+      render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      expect(submitText).not.toHaveBeenCalled()
+
+      act(() => endReplyPause('stored-session-a'))
+
+      await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+    } finally {
+      endReplyPause('stored-session-a')
+    }
   })
 
   it('passes a null runtime id so submitText can resume stale background sessions by stored id', async () => {

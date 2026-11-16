@@ -34,6 +34,7 @@ import { parkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
+import { useReplyPaused } from '@/store/paused-replies'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -88,6 +89,7 @@ import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
+import { enterLocked, pausedReplyControls } from './paused-reply'
 import { PreparedImageRecovery } from './prepared-image-recovery'
 import { renderComposerQueueSlot, useComposerQueueScopeKey } from './queue-slot'
 import { RestoredDraftNotice } from './restored-draft-notice'
@@ -412,6 +414,7 @@ export function ChatBar({
 
   const hasComposerPayload = hasText || attachments.length > 0
   const { cardWaiting } = useCardWaitingSubmit(sessionId ?? null, busy, hasComposerPayload)
+  const replyPaused = useReplyPaused(activeQueueSessionKey, sessionId)
 
   const { busyAction, canSteer, canSubmit } = deriveBusySubmitState({
     attachmentCount: attachments.length,
@@ -1001,7 +1004,7 @@ export function ChatBar({
       const editorText = liveComposerDraft(editorRef.current, draftRef.current)
       const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
 
-      if (disabled) {
+      if (enterLocked(disabled, replyPaused)) {
         return
       }
 
@@ -1129,7 +1132,7 @@ export function ChatBar({
     <ComposerControls
       autoSpeak={autoSpeak}
       busy={busy}
-      busyAction={busyAction}
+      {...pausedReplyControls(replyPaused, busyAction, canSteer ? () => steerDraft('steer') : undefined)}
       canSubmit={canSubmit}
       cardWaiting={cardWaiting}
       compactModelPill={poppedOut || compactPill}
@@ -1154,7 +1157,6 @@ export function ChatBar({
         closeTrigger()
         queueDraft()
       }}
-      onSteer={canSteer ? () => steerDraft('steer') : undefined}
       onToggleAutoSpeak={handleToggleAutoSpeak}
       state={state}
       voiceStatus={voiceStatus}

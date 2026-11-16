@@ -4924,6 +4924,7 @@ export const deOverrides = {
       branchNewChat: 'In neuem Chat abzweigen',
       react: 'Reagieren',
       dismissError: 'Fehler schließen',
+      responseContinuing: 'Wird fortgesetzt…',
       responseStopped: 'Antwort gestoppt',
       ...deErrorLayers,
       errorCodes: {

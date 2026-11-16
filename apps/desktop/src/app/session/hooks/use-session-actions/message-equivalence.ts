@@ -43,6 +43,8 @@ const COMPARED_FIELDS = [
   'branchGroupId',
   'interim',
   'interrupted',
+  // Hides the stopped mark of a reply the next turn went on with.
+  'continued',
   // Not painted, but the view's copy can seed session state again (resume
   // reads $messages), so a started queued turn must reach it.
   'queuedTurnStarted',

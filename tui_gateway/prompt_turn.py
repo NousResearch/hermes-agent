@@ -916,6 +916,14 @@ def _persisted_turn_receipt(st: _TurnRun, raw: Any, status: str) -> dict | None:
             committed_row_id(before) is not None and committed_row_id(before) == committed_row_id(after)))
 
 
+def _pause_mark(session: dict, status: str) -> dict:
+    """``{"paused": True}`` for an interrupted turn its interrupter continues itself (``session.interrupt``
+    ``resume``: ``methods_session_interrupt._note_turn_pause``). Consumes the turn's mark either way."""
+    pause = session.pop("_turn_pause", None)
+    paused = status == "interrupted" and bool(pause) and pause[1] and pause[0] is session.get("inflight_turn")
+    return {"paused": True} if paused else {}
+
+
 def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
@@ -949,7 +957,7 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     receipt = _persisted_turn_receipt(st, raw, status)
     if _is_bot_mode_session(session):
         raw = _bot_mode_delivery_text(raw, successful=status == "complete")
-    payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+    payload = {"text": raw, "usage": _get_usage(agent), "status": status, **_pause_mark(session, status)}
     if receipt:
         payload["persisted_turn"] = receipt
     if last_reasoning:

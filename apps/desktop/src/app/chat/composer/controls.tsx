@@ -15,6 +15,7 @@ import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
+import { sendButtonDisabled } from './paused-reply'
 import { ReasoningPill } from './reasoning-pill'
 import { StartVoiceButton } from './start-voice-button'
 import type { ChatBarState, VoiceStatus } from './types'
@@ -59,6 +60,7 @@ export function ComposerControls({
   hasComposerPayload,
   hideModelPill = false,
   minimal = false,
+  sendWhileDisabled,
   state,
   voiceStatus,
   onDictate,
@@ -79,6 +81,8 @@ export function ComposerControls({
   hasComposerPayload: boolean
   hideModelPill?: boolean
   minimal?: boolean
+  /** Send stays usable while `disabled`: a send now is held in the queue (a reply paused for its continuation). */
+  sendWhileDisabled?: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
@@ -187,7 +191,7 @@ export function ComposerControls({
           <Button
             aria-label={showStop ? c.stop : sendLabel}
             className={PRIMARY_ICON_BTN}
-            disabled={disabled || !canSubmit}
+            disabled={sendButtonDisabled(disabled, canSubmit, sendWhileDisabled)}
             onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
             onMouseDown={keepEditorFocus}
             type="submit"

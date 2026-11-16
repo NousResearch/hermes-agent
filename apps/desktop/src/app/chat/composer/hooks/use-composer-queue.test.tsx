@@ -16,6 +16,7 @@ import {
   simulateComposerQueueReloadForTests
 } from '@/store/composer-queue'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { endReplyPause, markReplyPaused } from '@/store/paused-replies'
 import { reconcilePendingSubmissions } from '@/store/pending-submissions'
 import { $connection, setSessionsLoading } from '@/store/session'
 
@@ -247,6 +248,84 @@ describe('useComposerQueue park integration', () => {
 
     expect(onSubmit).not.toHaveBeenCalled()
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('holds the queue while the reply is paused for an automatic continuation, then drains it', async () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })
+    markReplyPaused(SESSION_KEY)
+
+    try {
+      const { onSubmit } = renderQueueHook()
+
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(onSubmit).not.toHaveBeenCalled()
+
+      act(() => endReplyPause(SESSION_KEY))
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    } finally {
+      endReplyPause(SESSION_KEY)
+    }
+  })
+
+  // A gateway-owned queue would admit the send into the owner's FIFO at once and
+  // draw it in the thread as the next turn's prompt: a visible row between the
+  // paused reply and its continuation, so the reply read "Response stopped".
+  it('keeps a send made while the reply is paused in the local queue, then sends it after the pause', async () => {
+    $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as HermesConnection)
+    markReplyPaused(SESSION_KEY)
+
+    try {
+      const { draftRef, hook, onSubmit } = renderQueueHook({ draft: 'after the continuation' })
+
+      await act(async () => {
+        await hook.result.current.queueCurrentDraft()
+      })
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY).map(entry => [entry.text, entry.serverStatus])).toEqual([
+        ['after the continuation', undefined]
+      ])
+      expect(draftRef.current).toBe('')
+
+      act(() => endReplyPause(SESSION_KEY))
+
+      await waitFor(() =>
+        expect(onSubmit).toHaveBeenCalledWith(
+          'after the continuation',
+          expect.objectContaining({ fromQueue: true, storedSessionId: SESSION_KEY })
+        )
+      )
+    } finally {
+      endReplyPause(SESSION_KEY)
+      $connection.set(null)
+    }
+  })
+
+  it('does not deliver a held message into the running continuation on a second Enter', async () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'after the continuation' })
+    markReplyPaused(SESSION_KEY)
+    const onSteer = vi.fn(async () => true)
+    const onCancel = vi.fn()
+
+    try {
+      const { hook, onSubmit } = renderQueueHook({ busy: true, onCancel, onSteer })
+      const [head] = getQueuedPrompts(SESSION_KEY)
+
+      await act(async () => {
+        await hook.result.current.deliverQueuedNow(head.id)
+        await hook.result.current.drainNextQueued()
+      })
+
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(onCancel).not.toHaveBeenCalled()
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+    } finally {
+      endReplyPause(SESSION_KEY)
+    }
   })
 
   it('drainNextQueued sends a parked entry and lifts the park (manual resume)', async () => {

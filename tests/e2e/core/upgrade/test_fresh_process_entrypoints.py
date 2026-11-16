@@ -45,6 +45,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_agent.compat.paths import current_module
 from tests.e2e.core.upgrade._helpers import (
     WORKTREE,
     describe,
@@ -203,10 +204,6 @@ def _shipped_modules() -> tuple[list[dict], set[str]]:
         for f in sorted(pdir.glob("*.py")):
             rel = f.relative_to(WORKTREE).as_posix()
             if f.name.startswith("test_") or f.name == "conftest.py" or f.stem == "__main__":
-                continue
-            # This frozen old-updater shim exits at import time to force a relaunch.
-            # Importing it is neither safe nor an import-graph smoke test.
-            if rel == "hermes_cli/psutil_android.py":
                 continue
             if tracked is not None and rel not in tracked:
                 continue
@@ -460,15 +457,6 @@ def _sandbox_or_skip() -> None:
 # --------------------------------------------------------------------------- (a) import smoke
 
 
-def test_relaunch_shim_is_excluded_only_while_it_exits_on_import():
-    shim = WORKTREE / "hermes_cli" / "psutil_android.py"
-    top_level = ast.parse(shim.read_text(encoding="utf-8")).body
-    assert any(isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-               and isinstance(node.value.func, ast.Name) and node.value.func.id == "stop_for_relaunch"
-               for node in top_level)
-    entries, _ = _shipped_modules()
-    assert "hermes_cli.psutil_android" not in {entry["id"] for entry in entries}
-
 def test_optional_import_table_only_names_optional_or_platform_deps():
     """The tolerance table cannot launder a missing CORE dependency into a skip."""
     core, extras = _requirements()
@@ -492,7 +480,8 @@ def test_every_shipped_module_imports_from_a_clean_first_party_graph(tmp_path):
     ids = [e["id"] for e in entries]
     # Non-vacuous: the list really is the packaging config (every root module, every package).
     assert len(ids) == len(set(ids)), "duplicate module ids in the enumeration"
-    assert {"hermes_cli.main", "run_agent", "gateway.run", "tui_gateway.entry", "acp_adapter.entry"} <= set(ids)
+    entry_points = ("hermes_cli.main", "run_agent", "gateway.run", "tui_gateway.entry", "acp_adapter.entry")
+    assert {current_module(name) for name in entry_points} <= set(ids)
     find_tops = {p.split(".")[0] for p in PYPROJECT["tool"]["setuptools"]["packages"]["find"]["include"]}
     covered_tops = {i.split(".")[0] if not i.endswith(".py") else i.split("/")[0] for i in ids}
     assert find_tops <= covered_tops, f"packages.find tops with no module enumerated: {find_tops - covered_tops}"

@@ -147,6 +147,15 @@ class MessageEvent:
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 
+    def accept_interrupt(self) -> None:
+        """The runner's stop/reset handler ran (past admission and slash access): the receiving adapter
+        may cancel the session's turn. Marks every event this one was rewritten from, since the adapter
+        checks the event it dispatched, not a ``pre_gateway_dispatch`` rewrite's copy."""
+        event: Optional[MessageEvent] = self
+        while event is not None:
+            event._interrupt_accepted = True
+            event = getattr(event, "_rewritten_from", None)
+
     def absorb_reply_expected(self, other: "MessageEvent") -> None:
         """One turn now answers *other* too: an addressed message wins, then an unknown one."""
         if self.reply_expected is not True and other.reply_expected is not False:

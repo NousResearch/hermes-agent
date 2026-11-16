@@ -5,10 +5,10 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import stat
-import sys
 import tempfile
 import threading
 import time
@@ -67,15 +67,6 @@ def content_digest(data: bytes) -> str:
     return hashlib.blake2b(data, digest_size=16).hexdigest()
 
 
-def _frozen_config_worker(path: str | Path) -> bool:
-    """True for a ``config.yaml`` read inside a worker whose config is a frozen snapshot: such a
-    worker never opens a profile config file, so a cache key there stays stat-only."""
-    if Path(path).name != "config.yaml":
-        return False
-    policy = sys.modules.get("agent.safe_worker_policy")  # binding a snapshot imports it first
-    return policy is not None and policy.worker_config_snapshot() is not None
-
-
 def _file_digest(path: str | Path) -> str:
     """:func:`content_digest` of the file's bytes. A file that stats but cannot be read here
     (permission, removed since the stat, a directory) gets ``<ErrorName>``, which no hex digest
@@ -96,7 +87,7 @@ def racy_content_digest(path: str | Path, sig: tuple[int, int, int, int]) -> str
     can restore an older mtime after a write (``cp -p``, ``rsync --inplace -t``), never ctime. Read
     before the parse it guards: a write in between then costs one re-parse instead of pinning the
     older content."""
-    if not mtime_is_racy(max(sig[0], sig[3])) or _frozen_config_worker(path):
+    if not mtime_is_racy(max(sig[0], sig[3])):
         return ""
     return _file_digest(path)
 
@@ -109,17 +100,16 @@ def file_cache_version(path: str | Path, st: os.stat_result | None = None, *,
     re-validated on every read: a racily-stored entry costs one re-parse when the file settles.
     ``always_digest`` hashes on every call, for a signature stored and compared much later (a
     change detector whose false "changed" restarts something, or a "still the broken file" record),
-    where the racy digest turning empty would read as a change. A worker with a frozen config
-    snapshot never hashes a ``config.yaml`` (the key is stat-only there, as before). Raises
-    ``OSError`` only from the stat (none given ``st``): a file that cannot be read gets the error's
-    name as its digest (:func:`_file_digest`)."""
+    where the racy digest turning empty would read as a change. Raises ``OSError`` only from the
+    stat (none given ``st``): a file that cannot be read gets the error's name as its digest
+    (:func:`_file_digest`)."""
     sig = file_signature(Path(path).stat() if st is None else st)
-    if always_digest and not _frozen_config_worker(path):
+    if always_digest:
         return (*sig, _file_digest(path))
     return (*sig, racy_content_digest(path, sig))
 
 
-def _preserve_file_mode(path: Path) -> int | None:
+def preserve_file_mode(path: Path) -> int | None:
     """Permission bits of *path* if it exists, else ``None``."""
     try:
         return stat.S_IMODE(path.stat().st_mode) if path.exists() else None
@@ -127,7 +117,7 @@ def _preserve_file_mode(path: Path) -> int | None:
         return None
 
 
-def _preserve_file_owner(path: Path) -> tuple[int, int] | None:
+def preserve_file_owner(path: Path) -> tuple[int, int] | None:
     """Owning ``(uid, gid)`` of *path* on POSIX, else ``None``."""
     try:
         st = path.stat() if os.name == "posix" else None
@@ -171,11 +161,11 @@ def default_new_file_mode() -> int | None:
     return 0o666 & ~current
 
 
-def _restore_file_owner(path: Path, owner: tuple[int, int] | None) -> None:
+def restore_file_owner(path: Path, owner: tuple[int, int] | None) -> None:
     _restore_file_metadata(path, owner, None)
 
 
-def _restore_file_mode(path: Path, mode: int | None) -> None:
+def restore_file_mode(path: Path, mode: int | None) -> None:
     _restore_file_metadata(path, None, mode)
 
 
@@ -201,6 +191,17 @@ _CROSS_DEVICE_ERRNOS = (errno.EXDEV, errno.EBUSY)
 def _is_contended_windows_replace_error(exc: OSError) -> bool:
     """Candidate-only: winerror 5 also covers a genuine ACL denial."""
     return _IS_WINDOWS and getattr(exc, "winerror", None) in _WINDOWS_CONTENDED_REPLACE_ERRORS
+
+
+def _replace_retry_delay(attempt: int) -> float:
+    """Seconds to wait before contended-rename retry *attempt* (1-based).
+
+    Exponential from the base, capped at the max, plus up to 50% jitter. ``SystemRandom`` draws
+    from the OS, so concurrent writers (forked ones included) decorrelate without touching the
+    global ``random`` state.
+    """
+    delay = min(_REPLACE_RETRY_BASE_DELAY_S * 2 ** (attempt - 1), _REPLACE_RETRY_MAX_DELAY_S)
+    return delay + random.SystemRandom().uniform(0, 0.5 * delay)
 
 
 def _rewrite_in_place(tmp_str: str, real_path: str) -> None:
@@ -255,10 +256,8 @@ def atomic_replace(tmp_path: str | Path, target: str | Path) -> str:
         if exc.errno not in _CROSS_DEVICE_ERRNOS and not contended:
             raise
         if contended:
-            # Lazy: keeps ``utils`` free of a package-level dependency on ``agent``.
-            from agent.retry_utils import jittered_backoff
             for attempt in range(1, _REPLACE_RETRY_ATTEMPTS + 1):
-                time.sleep(jittered_backoff(attempt, base_delay=_REPLACE_RETRY_BASE_DELAY_S, max_delay=_REPLACE_RETRY_MAX_DELAY_S))
+                time.sleep(_replace_retry_delay(attempt))
                 try:
                     os.replace(tmp_str, real_path)
                     return real_path
@@ -400,7 +399,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     mkdir_under_hermes_home(path.parent)
     if mode is None and not path.exists():
         mode = default_new_file_mode()
-    original_owner = _preserve_file_owner(path) if preserve_owner else None
+    original_owner = preserve_file_owner(path) if preserve_owner else None
     fd, tmp_path = mkstemp_beside(path, prefix=prefix, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
@@ -421,7 +420,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
 
 def _mode_for_write(path: Path, create_mode: int | None, preserve: bool = True) -> int | None:
     """Existing permission bits of *path* (when *preserve*), else *create_mode* for a new file."""
-    mode = _preserve_file_mode(path) if preserve else None
+    mode = preserve_file_mode(path) if preserve else None
     return mode if mode is not None or path.exists() else create_mode
 
 
@@ -446,7 +445,7 @@ def atomic_write_bytes(path: str | Path, content: bytes, *, tmp_prefix: str = ".
     """Bytes variant of :func:`atomic_write_text` (encrypted blobs, key material)."""
     path = Path(path)
     _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, binary=True, preserve_owner=False,
-                  mode=mode if mode is not None else _preserve_file_mode(path), fsync_dir=fsync_dir)
+                  mode=mode if mode is not None else preserve_file_mode(path), fsync_dir=fsync_dir)
 
 
 def _dump_json(data: Any, f, *, indent: int | None, ensure_ascii: bool, dump_kwargs: dict) -> None:
@@ -479,7 +478,7 @@ def atomic_json_write(
     """
     path = Path(path)
     _atomic_write(path, lambda f: _dump_json(data, f, indent=indent, ensure_ascii=ensure_ascii, dump_kwargs=dump_kwargs),
-                  prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path),
+                  prefix=f".{path.stem}_", mode=mode if mode is not None else preserve_file_mode(path),
                   fsync_dir=fsync_dir)
 
 
@@ -544,7 +543,7 @@ def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: str | None = 
         if extra_content:
             f.write(extra_content)
 
-    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
+    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=preserve_file_mode(path))
 
 
 def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) -> None:
@@ -832,12 +831,6 @@ def base_url_path(base_url: str) -> str:
     return (parsed.path if parsed else "").lower().rstrip("/")
 
 
-def model_forces_max_completion_tokens(model: str) -> bool:
-    """True for OpenAI families that reject ``max_tokens`` (HTTP 400 ``unsupported_parameter``)."""
-    m = (model or "").strip().lower().rsplit("/", 1)[-1]
-    return m.startswith(("gpt-4o", "gpt-4.1", "gpt-5", "o1", "o3", "o4"))
-
-
 def base_url_origin(base_url: str) -> tuple[str, str, int]:
     """``(scheme, hostname, effective_port)`` for a base URL; ``("", "", 0)`` on no host/bad port.
 
@@ -856,6 +849,15 @@ def base_url_origin(base_url: str) -> tuple[str, str, int]:
     except ValueError:  # out-of-range or non-numeric port — not a usable origin
         return ("", "", 0)
     return (scheme, hostname, {"https": 443, "http": 80}.get(scheme, 0) if port is None else port)
+
+
+def same_base_url_origin(a: str, b: str) -> bool:
+    """True when both URLs parse to one origin, so a credential stored for *a* may go to *b*.
+
+    Hostnames are compared literally: ``localhost`` and ``127.0.0.1`` are different origins.
+    """
+    origin = base_url_origin(a)
+    return bool(origin[1]) and origin == base_url_origin(b)
 
 
 def base_url_host_matches(base_url: str, domain: str) -> bool:

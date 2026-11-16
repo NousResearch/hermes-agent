@@ -341,7 +341,8 @@ function TileChat({
       target: scope.target,
       update: attachments.update,
       updateIfCurrent: attachments.updateIfCurrent
-    }
+    },
+    storedSessionId
   })
 
   // ChatView is memo()d — every callback prop must be referentially stable or

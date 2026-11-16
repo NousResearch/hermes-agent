@@ -205,7 +205,7 @@ def test_atomic_yaml_write_restores_owner_on_real_symlink_target(
     link.symlink_to(real)
 
     chown_calls: list[tuple[Path, int, int]] = []
-    monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (123, 456))
+    monkeypatch.setattr("utils.preserve_file_owner", lambda _path: (123, 456))
     monkeypatch.setattr(
         "utils.os.chown",
         lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
@@ -230,7 +230,7 @@ def test_atomic_roundtrip_yaml_save_restores_owner(
     target.write_text("model:\n  provider: openrouter\n", encoding="utf-8")
 
     chown_calls: list[tuple[Path, int, int]] = []
-    monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (345, 678))
+    monkeypatch.setattr("utils.preserve_file_owner", lambda _path: (345, 678))
     monkeypatch.setattr(
         "utils.os.chown",
         lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),

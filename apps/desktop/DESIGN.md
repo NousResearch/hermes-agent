@@ -487,6 +487,14 @@ Review, Browser) has one user-resizable width shared by every tool, never under 
 The rail's Settings menu lists the Settings page's destinations, in its order and under its names
 (`settings/redesign-navigation.ts`), with Interface mode and Documentation below a separator.
 
+The redesign has no statusbar strip. With developer chrome, the readouts that describe the chat being
+worked in (workspace, turn timer, context, cache hit rate, tokens per second, focus timer, approvals)
+sit on one mono caption line in the 30px floor under that chat's composer, the workspace at its start;
+a readout with nothing to report stays off it. The rest of the bar's items are rows in the rail's
+System popover, whose switch hides the line (the chat's readouts then join those rows). No Figma frame
+covers this yet: it is inferred from the sidebar's captions and lives in
+`app/redesign/portal-chat-status.*` and `store/portal-chat-status.ts`.
+
 ## Portal design language (the redesign)
 
 The redesign (`<html data-shell="portal">`) is one small design language. Its

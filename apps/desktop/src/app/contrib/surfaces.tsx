@@ -13,7 +13,6 @@ import { Navigate, Route, Routes, useParams } from 'react-router'
 
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
-import { useI18n } from '@/i18n'
 import { $activeConnectionId } from '@/store/connections'
 import { $gateway, requestGatewayForAgent } from '@/store/gateway'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
@@ -30,6 +29,7 @@ import { ChatSidebar } from '../chat/sidebar'
 import { PortalSidebar } from '../chat/sidebar/portal/portal-sidebar'
 import { type PageFrameKind, WorkspacePageFallback } from '../overlays/page-header-skeleton'
 import { ArtifactsView, CapabilitiesView, MessagingView } from '../page-views'
+import { PortalChatStatus, PortalSystemStatus } from '../redesign/portal-chat-status'
 import { PortalGatewayMenuPanel } from '../redesign/portal-gateway-menu-panel'
 import { TerminalPaneChrome } from '../right-sidebar/terminal/chrome'
 import { contributedRoutes, isOverlayView, NEW_CHAT_ROUTE, ROUTES_AREA, sessionRoute } from '../routes'
@@ -90,17 +90,19 @@ export const StatusbarSurface = memo(function StatusbarSurface({
   actions,
   agentsOpen,
   chatOpen,
+  chatStatus,
   commandCenterOpen,
   onClose
 }: {
   actions: WiringActions
   agentsOpen: boolean
   chatOpen: boolean
+  /** The redesign's line under the focused composer, in place of a bar. */
+  chatStatus?: boolean
   commandCenterOpen: boolean
   onClose?: () => void
 }) {
   const portal = usePortalShell()
-  const { t } = useI18n()
   const advanced = useStore($showsAdvancedChrome)
   // The mode-resolved bar visibility: in Simple it is up exactly when the bar carries something
   // that must stay reachable (the free tier's Sign in, onboarding progress).
@@ -146,6 +148,10 @@ export const StatusbarSurface = memo(function StatusbarSurface({
     return null
   }
 
+  if (chatStatus) {
+    return <PortalChatStatus items={[...leftStatusbarItems, ...statusbarItems]} />
+  }
+
   if (onClose) {
     return (
       <>
@@ -158,16 +164,7 @@ export const StatusbarSurface = memo(function StatusbarSurface({
           statusSnapshot={statusSnapshot}
         />
         {(advanced || statusbarVisible) && (
-          <details className="px-3 pb-3">
-            <summary className="cursor-pointer text-xs text-muted-foreground">
-              {t.commandCenter.sections.system}
-            </summary>
-            <StatusbarControls
-              items={statusbarItems.filter(item => item.id !== 'gateway-health')}
-              leftItems={leftStatusbarItems}
-              sidebar
-            />
-          </details>
+          <PortalSystemStatus advanced={advanced} items={[...leftStatusbarItems, ...statusbarItems]} />
         )}
       </>
     )

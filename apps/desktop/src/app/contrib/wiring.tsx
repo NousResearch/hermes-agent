@@ -51,6 +51,7 @@ import {
   type OnboardingRequest,
   type OnboardingResume
 } from '@/store/onboarding-run'
+import { $portalChatStatusShown } from '@/store/portal-chat-status'
 import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
@@ -258,6 +259,17 @@ function useFirstRunOnboarding(request: OnboardingRequest, open: OnboardingResum
   }, [open])
 }
 
+/** The redesign's chat status line: the statusbar's data, mounted only while the line is shown (its
+ *  status poll goes with it) and drawn under the focused composer. */
+function PortalChatStatusSource(props: {
+  actions: WiringActions
+  agentsOpen: boolean
+  chatOpen: boolean
+  commandCenterOpen: boolean
+}) {
+  return useStore($portalChatStatusShown) ? <StatusbarSurface {...props} chatStatus /> : null
+}
+
 function useStatusbarSurfaces(
   actions: WiringActions,
   agentsOpen: boolean,
@@ -286,13 +298,19 @@ function useStatusbarSurfaces(
             <>
               <PortalFreeTierSignIn />
               <PortalStatusMenu>{renderStatusbar}</PortalStatusMenu>
+              <PortalChatStatusSource
+                actions={actions}
+                agentsOpen={agentsOpen}
+                chatOpen={chatOpen}
+                commandCenterOpen={commandCenterOpen}
+              />
             </>
           }
           onNavigate={item => actions.onNavigate(item)}
         />
       )
     }),
-    [actions, renderStatusbar]
+    [actions, agentsOpen, chatOpen, commandCenterOpen, renderStatusbar]
   )
 }
 

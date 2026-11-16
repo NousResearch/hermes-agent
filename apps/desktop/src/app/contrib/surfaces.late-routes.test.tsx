@@ -23,7 +23,10 @@ vi.mock('@/store/gateway', () => ({ $gateway: atom<unknown>(null) }))
 vi.mock('@/store/profile', () => ({ $activeGatewayProfile: atom('default') }))
 // The sidebar surface reads whether a chat tile has focus (store/session-focus derives it from the
 // session store mocked below).
-vi.mock('@/store/session-focus', () => ({ $focusedSessionIsTile: atom(false) }))
+vi.mock('@/store/session-focus', () => ({
+  $focusedSessionIsTile: atom(false),
+  $focusedStoredSessionId: atom(null)
+}))
 vi.mock('@/store/session', () => ({
   $freshDraftReady: atom(false),
   $gatewayState: atom('open')

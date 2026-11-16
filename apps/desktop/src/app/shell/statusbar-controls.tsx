@@ -42,6 +42,9 @@ function renderMenuContent(content: NonNullable<StatusbarItem['menuContent']>, c
   return <StatusbarMenuCloseContext.Provider value={close}>{content}</StatusbarMenuCloseContext.Provider>
 }
 
+/** What an opted-in readout shows until its first value arrives. */
+export const STATUSBAR_WAITING = '—'
+
 export interface StatusbarMenuItem {
   id: string
   icon?: ReactNode
@@ -258,7 +261,7 @@ function StatusbarHideHint() {
  *  re-rendered every other item in the bar — measured at 1,446 wasted renders
  *  of 2,174 during a five-tab streaming run. `navigate` is stable for the
  *  router's lifetime, so item identity is the only real input. */
-const StatusbarItemView = memo(function StatusbarItemView({
+export const StatusbarItemView = memo(function StatusbarItemView({
   item,
   navigate
 }: {

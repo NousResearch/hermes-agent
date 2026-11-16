@@ -1,0 +1,103 @@
+/* The chat status line (no Figma frame yet; inferred from the sidebar's captions, 16292:15526): one
+   mono caption line in the 30px floor under the focused chat's composer, the workspace at its start
+   and the turn's readouts at its end. Developer chrome only; the System popover's switch hides it. */
+:root[data-shell='portal'] [data-slot='portal-chat-status'] {
+  position: absolute;
+  inset-inline: 5px;
+  bottom: 0;
+  display: flex;
+  height: var(--portal-composer-dock-floor);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--portal-space-tight);
+  overflow-x: clip;
+}
+
+/* The landing's composer is centred with no floor of its own: the line hangs under it instead. */
+@container chat-stage (min-height: 34rem) {
+  :root[data-shell='portal'] [data-chat-landing='true'] [data-slot='portal-chat-status'] {
+    top: 100%;
+    bottom: auto;
+  }
+}
+
+:root[data-shell='portal'] [data-popped-out] [data-slot='portal-chat-status'] {
+  display: none;
+}
+
+:root[data-shell='portal'] [data-slot='portal-chat-status'] > div {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  align-items: center;
+  overflow-x: clip;
+}
+
+:root[data-shell='portal'] [data-slot='portal-chat-status-lead'] {
+  flex: 0 1 auto;
+}
+
+:root[data-shell='portal'] [data-slot='portal-chat-status-readouts'] {
+  flex: 0 0 auto;
+}
+
+/* Every item, whatever element the bar gave it, reads as one caption. */
+:root[data-shell='portal'] [data-slot='portal-chat-status'] :is(button, a, div > div) {
+  height: 1.25rem;
+  border-radius: var(--portal-radius-control);
+  color: var(--ui-text-quaternary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  text-transform: uppercase;
+}
+
+:root[data-shell='portal'] [data-slot='portal-chat-status'] :is(button, a):is(:hover, [data-state='open']) {
+  background: var(--portal-raw-ink-4);
+  color: var(--ui-text-primary);
+}
+
+/* A phone has no room under the composer, and its floor is 16px. */
+@media (max-width: 639.98px), (max-height: 30rem) {
+  :root[data-shell='portal'] [data-slot='portal-chat-status'] {
+    display: none;
+  }
+}
+
+/* ── The System popover's rows, under the machine card ──────────────────────────────────────── */
+
+:root[data-shell='portal'] [data-slot='portal-system-status'] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--portal-space-tight);
+  padding: 0 0.75rem 0.75rem;
+}
+
+:root[data-shell='portal'] [data-slot='portal-system-status'] [data-slot='sidebar-status'] {
+  gap: 0;
+}
+
+:root[data-shell='portal'] [data-slot='portal-system-status'] [data-slot='sidebar-status'] :is(button, a, div > div) {
+  border-radius: var(--portal-radius-control);
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-meta-size);
+}
+
+:root[data-shell='portal'] [data-slot='portal-system-status'] [data-slot='sidebar-status'] :is(button, a):hover {
+  background: var(--portal-raw-ink-4);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal'] [data-slot='portal-chat-status-switch'] {
+  display: flex;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-inline: 0.5rem;
+  border-top: 1px solid var(--ui-stroke-secondary);
+  padding-top: var(--portal-space-tight);
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-meta-size);
+  cursor: pointer;
+}

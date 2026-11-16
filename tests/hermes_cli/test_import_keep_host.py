@@ -392,3 +392,32 @@ def test_a_repeated_host_key_in_the_backup_never_replaces_the_cloud_key():
     merged = merge_env("API_SERVER_KEY=cloud\nOPENAI_API_KEY=mine\nAPI_SERVER_KEY=laptop\n", "API_SERVER_KEY=cloud\n")
     assert [line for line in merged.splitlines() if line.startswith("API_SERVER_KEY=")][-1] == "API_SERVER_KEY=cloud"
     assert "OPENAI_API_KEY=mine" in merged
+
+
+def test_a_gateway_that_does_not_start_again_after_the_restore_reaches_the_action_status(tmp_path, monkeypatch, capsys):
+    """The files arrived but the agent's bots and jobs are down: the status says so, not plain success."""
+    from gateway import control_socket
+    from hermes_cli import backup_keep_host as keep_host
+    from hermes_cli import profiles_remove
+    from hermes_cli import service_manager
+    from hermes_cli.web_routers.actions import _import_report
+    from hermes_cli.web_server_gateway import _ACTION_LOG_STARTS
+
+    class Manager:
+        def _run_svc(self, *args):
+            pass
+
+        def start(self, slot):
+            raise service_manager.S6Error(f"s6-svc -u {slot}: timed out")
+
+    monkeypatch.setattr(keep_host, "_s6_slot", lambda home: "gateway-default")
+    monkeypatch.setattr(service_manager, "S6ServiceManager", Manager)
+    monkeypatch.setattr(control_socket, "pause_gateway_for_update", lambda home, timeout: {"pausing": True})
+    monkeypatch.setattr(profiles_remove, "wait_profile_unowned", lambda home, timeout: True)
+    with keep_host.gateway_paused(tmp_path):
+        print("Import complete: 3 files restored")
+    log = tmp_path / "import.log"
+    log.write_text(capsys.readouterr().out)
+    monkeypatch.setitem(_ACTION_LOG_STARTS, "import", (4242, 0))
+
+    assert _import_report(log, 4242)["gateway_down"] == "gateway-default: s6-svc -u gateway-default: timed out"

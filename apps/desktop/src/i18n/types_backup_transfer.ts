@@ -45,6 +45,8 @@ export interface BackupTransferTranslations {
   doneHelp: (agent: string) => string
   /** `bots`: the platforms the transfer switched off, already joined for the locale ("Telegram and Discord"). */
   botsOff: (bots: string, agent: string) => string
+  /** The restore finished but the cloud agent's gateway did not start again. */
+  gatewayDown: (agent: string) => string
   undo: string
   undoing: string
   openAgent: string

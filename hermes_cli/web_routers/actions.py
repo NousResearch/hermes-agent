@@ -384,9 +384,9 @@ def _completed_exit_code(
 
 def _import_report(log_path: Path, pid: Optional[int]) -> dict[str, Any]:
     """What a keep-host import reported in its own section of the action log (the one this dashboard
-    spawned as *pid*): its undo point as soon as it exists (also when the import fails), and the
-    messaging platforms ``--messaging-off`` switched off."""
-    from hermes_cli.backup_keep_host import MESSAGING_OFF_LINE, UNDO_POINT_LINE
+    spawned as *pid*): its undo point as soon as it exists (also when the import fails), the
+    messaging platforms ``--messaging-off`` switched off, and a gateway that did not start again."""
+    from hermes_cli.backup_keep_host import GATEWAY_DOWN_LINE, MESSAGING_OFF_LINE, UNDO_POINT_LINE
     from hermes_cli.web_server_gateway import _ACTION_LOG_STARTS
     report: dict[str, Any] = {"undo_archive": None}
     start = _ACTION_LOG_STARTS.get("import")
@@ -404,6 +404,9 @@ def _import_report(log_path: Path, pid: Optional[int]) -> dict[str, Any]:
     off = next((line[len(MESSAGING_OFF_LINE):] for line in lines if line.startswith(MESSAGING_OFF_LINE)), None)
     if off is not None:
         report["messaging_off"] = [name.strip() for name in off.split(",") if name.strip()]
+    down = next((line[len(GATEWAY_DOWN_LINE):].strip() for line in lines if line.startswith(GATEWAY_DOWN_LINE)), None)
+    if down is not None:
+        report["gateway_down"] = down
     return report
 
 

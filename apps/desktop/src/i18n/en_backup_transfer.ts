@@ -47,6 +47,8 @@ export const enBackupTransfer: BackupTransferTranslations = {
   doneHelp: agent => `${agent} is now this agent.`,
   botsOff: (bots, agent) =>
     `${bots} came over switched off on ${agent}. When you're ready, switch them over on the Messaging page: off here, on there.`,
+  gatewayDown: agent =>
+    `The files arrived, but ${agent} did not start again, so its bots and scheduled jobs are not running. Restart it from the Hermes Cloud portal, or run \`hermes gateway start\` on it.`,
   undo: 'Undo',
   undoing: 'Undoing…',
   openAgent: 'Open agent',

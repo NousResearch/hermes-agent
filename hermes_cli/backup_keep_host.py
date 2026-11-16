@@ -112,6 +112,9 @@ _PROFILES_MANIFEST = ".keep-host-profiles.json"
 UNDO_POINT_LINE = "Undo point: "
 # The line it reads the messaging platforms ``--messaging-off`` switched off from (card names, ", ").
 MESSAGING_OFF_LINE = "Messaging switched off: "
+# The line it reads a gateway that did not start again after the restore from: the files arrived,
+# but the agent's bots and scheduled jobs are not running until it does.
+GATEWAY_DOWN_LINE = "Gateway did not start again: "
 # Inbound HTTP endpoints, not bots: two agents can serve them at once, and the API server is the host's.
 _NOT_BOTS = frozenset({"api_server", "webhook", "msgraph_webhook", "local"})
 _EXTERNAL = "_external/"
@@ -720,7 +723,7 @@ def gateway_paused(home: Path):
             manager.start(slot)
             print(f"Started the gateway ({slot}) again.")
         except (S6Error, OSError) as exc:
-            print(f"Warning: the gateway ({slot}) did not start again: {exc}\n  Start it with: hermes gateway start")
+            print(f"{GATEWAY_DOWN_LINE}{slot}: {exc}\n  Start it with: hermes gateway start")
 
 
 def _had_profiles(zf: zipfile.ZipFile, prefix: str) -> Optional[set[str]]:

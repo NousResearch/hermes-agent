@@ -43,7 +43,7 @@ export function applyProcessSnapshot(sid: string | null, processes: ProcessEntry
   }
 }
 
-const REASON_STATUS: Record<string, ProcessRow['status']> = { failed_start: 'failed', killed: 'killed', lost: 'lost' }
+const REASON_STATUS: Record<string, ProcessRow['status']> = { killed: 'killed', lost: 'lost' }
 
 export const processStatus = (entry: ProcessEntry): ProcessRow['status'] => {
   if (entry.status !== 'exited') {

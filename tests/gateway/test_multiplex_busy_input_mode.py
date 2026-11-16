@@ -33,6 +33,12 @@ class _ProfileAdapter(BasePlatformAdapter):
 
 
 def _runner(*, default_mode: str = "interrupt") -> GatewayRunner:
+    from hermes_constants import get_hermes_home
+    # The routed profile must really exist: a missing one is refused, never served by the launch home.
+    research = get_hermes_home() / "profiles" / "research"
+    research.mkdir(parents=True, exist_ok=True)
+    if not (research / "config.yaml").exists():
+        (research / "config.yaml").write_text("{}\n", encoding="utf-8")
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
     runner._busy_input_mode = default_mode

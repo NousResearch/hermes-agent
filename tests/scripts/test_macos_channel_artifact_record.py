@@ -80,11 +80,12 @@ OWNER_WRITABLE = [
 ]
 
 
-def record_mac_update(tmp_path, monkeypatch, extra=()):
-    """record() a tagged arm64 update ZIP: a valid app plus OWNER_WRITABLE plus `extra`."""
+def record_mac_update(tmp_path, monkeypatch, extra=(), size=None):
+    """record() a tagged arm64 update ZIP: a valid app plus OWNER_WRITABLE plus `extra`, grown to `size`."""
     commit, root = "a" * 40, tmp_path / "release"
     (root / "mac" / "Product.app").mkdir(parents=True)
-    with zipfile.ZipFile(root / "Product-1.2.3-mac-arm64.zip", "w") as archive:
+    package = root / "Product-1.2.3-mac-arm64.zip"
+    with zipfile.ZipFile(package, "w") as archive:
         archive.writestr("Product.app/Contents/Info.plist", plistlib.dumps({
             "CFBundleIdentifier": "ai.hermes.test", "CFBundleShortVersionString": "1.2.3",
         }))
@@ -94,6 +95,13 @@ def record_mac_update(tmp_path, monkeypatch, extra=()):
             entry = zipfile.ZipInfo(name)
             entry.external_attr = external_attr
             archive.writestr(entry, data)
+    if size is not None:
+        # Sparse padding ahead of the archive: ZIP offsets count from the end, so it still opens.
+        data = package.read_bytes()
+        with package.open("wb") as grown:
+            grown.truncate(size - len(data))
+            grown.seek(size - len(data))
+            grown.write(data)
     monkeypatch.setattr(release_artifacts.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(
         argv, 0, stderr="TeamIdentifier=ABCDEFGHIJ\n"))
     out = root / "metadata.json"
@@ -121,3 +129,16 @@ def test_macos_record_refuses_an_update_zip_entry_without_owner_write(tmp_path, 
     assert all(name in str(refused.value) for name in named[:3])
     assert not any(name in str(refused.value) for name in named[3:])
     assert not (tmp_path / "release" / "metadata.json").exists()
+
+
+def test_macos_record_refuses_an_update_zip_squirrel_cannot_download(tmp_path, monkeypatch):
+    """v0.22.0's Squirrel.Mac (Electron 40) dies downloading an update ZIP of 1 GiB or more; a release
+    that published one would crash every v0.22.0 Mac that clicks Update now."""
+    with pytest.raises(ValueError, match="1,073,741,824 bytes"):
+        record_mac_update(tmp_path, monkeypatch, size=release_artifacts.SQUIRREL_ZIP_LIMIT)
+    assert not (tmp_path / "release" / "metadata.json").exists()
+
+
+def test_macos_record_accepts_an_update_zip_just_under_one_gib(tmp_path, monkeypatch):
+    out = record_mac_update(tmp_path, monkeypatch, size=release_artifacts.SQUIRREL_ZIP_LIMIT - 1)
+    assert json.loads(out.read_text(encoding="utf-8"))["version"] == "1.2.3"

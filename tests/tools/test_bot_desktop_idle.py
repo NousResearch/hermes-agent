@@ -13,6 +13,7 @@ import time
 import pytest
 
 from tools.bot_desktop import lease, runtime
+from tests.bot_desktop_lease import reset_lease
 
 
 def _running(monkeypatch, tmp_path):
@@ -72,7 +73,7 @@ def test_the_idle_stop_hands_back_only_the_abandoned_human_lease(tmp_path, monke
     """The lapse stops the screen, but a lease that still names the human fences the agent out of the next
     one ("a human has control"), so the next use never brings the screen back. Only the generation judged
     abandoned is released: a takeover made while the screen was being stopped is kept."""
-    lease._reset_for_tests()
+    reset_lease()
     sd, _ = _running(monkeypatch, tmp_path)
     path = lease._path(None)
     path.parent.mkdir(parents=True, exist_ok=True)

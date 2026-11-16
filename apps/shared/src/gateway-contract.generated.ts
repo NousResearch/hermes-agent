@@ -1129,6 +1129,7 @@ export interface ConnectionOperationTarget {
   missing_env?: string[] | null
   server_errors?: CatalogServerError[] | null
   already_installed?: boolean | null
+  upstream_repo?: string | null
 }
 export type ConnectionTargetKind = 'connector' | 'mcp' | 'plugin' | 'skill'
 export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
@@ -3629,6 +3630,7 @@ export interface SessionUsageResult {
   plan_gauge?: PlanGauge | null
   credits_lines?: string[] | null
   credits_usage_window?: boolean | null
+  nous_route?: boolean | null
   [key: string]: unknown
 }
 export interface SessionContextBreakdownParams {
@@ -3646,6 +3648,7 @@ export interface SessionContextBreakdownResult {
   context_source: string
   model: string
   context_files?: ContextFileSource[]
+  prompt_cache?: PromptCacheWindow | null
 }
 export interface ContextCategory {
   color: string
@@ -3661,6 +3664,16 @@ export interface ContextFileSource {
   est_tokens: number
   loaded: boolean
   status: string
+}
+/** ``agent.prompt_cache_clock.cache_window``: until when the session's cached prompt prefix is warm. ``guaranteed_until``: the whole prefix is warm before it (a documented minimum or a proven tier); ``estimated_until``: certainly gone after it; between the two it may still be warm. ``coverage`` maps each cached tier to its deadline. ``confidence`` is ``proven`` | ``declared`` | ``assumed`` | ``unknown``; times are epoch seconds. */
+export interface PromptCacheWindow {
+  guaranteed_until: number | null
+  estimated_until: number | null
+  tier: string | null
+  confidence: string
+  reason: string
+  refreshed_at?: number | null
+  coverage?: Record<string, number>
 }
 export interface SessionCompressParams {
   session_id: string
@@ -4089,7 +4102,7 @@ export interface CronManageResult {
   removed_job?: CronRemovedJob | null
   [key: string]: unknown
 }
-/** ``tools/cronjob_job_args.py::_format_job``. */
+/** ``cron/job_args.py::_format_job``. */
 export interface CronJobRow {
   job_id: string
   name?: string
@@ -4623,7 +4636,7 @@ export interface PluginSettingField {
   has_value?: boolean | null
 }
 export type PluginSettingFieldType = 'string' | 'number' | 'boolean' | 'enum' | 'secret' | 'json'
-/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>`` language-pack layers), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a running process cannot import (installed after it booted, or never); ``missing_in`` names which processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them. */
+/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>`` language-pack layers), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a running process cannot import (installed after it booted, or never); ``missing_in`` names which processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them. ``activated_now.provider``: a model-provider plugin whose current tree serves new sessions. ``load_error``: a model-provider plugin's updated tree failed to import (the previous version keeps serving). */
 export interface PluginActivation {
   name: string
   key: string
@@ -4632,6 +4645,7 @@ export interface PluginActivation {
   deferred?: Record<string, string[]>
   missing_dependencies?: string[]
   missing_in?: PluginRestartTarget[]
+  load_error?: string | null
 }
 export interface PluginLiveNow {
   mcp_servers?: PluginLiveServer[]
@@ -4920,6 +4934,36 @@ export interface SessionStats {
   provider: string
   fallback_model?: string | null
   plan_gauge?: PlanGauge | null
+}
+export interface SessionAccountUsageParams {
+  session_id: string
+}
+/** ``gateway/session_usage.py::account_usage``: the account blocks of ``/usage``. ``lines``: the route's provider plan limits. ``nous_lines``: the Nous balance whenever Nous is signed in on the profile, after them (headed as a separate account off a Nous route). ``nous_route``: the route is Nous inference, so the ``/topup`` CTA applies. ``nous_usage``: on a Nous route, the same account read's dollar model, so the CLI draws its two bars without reading the account again. */
+export interface SessionAccountUsage {
+  lines: string[]
+  nous_lines?: string[]
+  nous_route: boolean
+  nous_usage?: NousUsageDollars | null
+}
+/** ``agent.billing_usage.UsageModel`` in numbers: the classic CLI's two-bar Nous balance block. */
+export interface NousUsageDollars {
+  available: boolean
+  status?: string
+  plan_name?: string | null
+  renews_at?: string | null
+  renews_display?: string | null
+  subscription_remaining_usd?: number | null
+  topup_remaining_usd?: number | null
+  total_spendable_usd?: number | null
+  plan_bar?: NousUsageBar | null
+  topup_bar?: NousUsageBar | null
+}
+/** ``agent.billing_usage.UsageBar``: one dollar bar (``topup`` has no cap, so total == remaining). */
+export interface NousUsageBar {
+  kind: 'plan' | 'topup'
+  remaining_usd: number
+  total_usd: number
+  spent_usd?: number
 }
 export interface RollbackSessionDiffParams {
   session_id: string
@@ -5278,10 +5322,13 @@ export interface CanonicalListParams {
   include_hidden?: boolean
   workspace?: string | null
   picker?: boolean
+  query?: string | null
+  cursor?: string | null
 }
 export interface CanonicalListResult {
   sessions: CanonicalSessionListRow[]
   scope: 'stored' | 'live'
+  next_cursor?: string | null
 }
 export interface CanonicalSessionListRow {
   session_id: string
@@ -6215,7 +6262,7 @@ export interface PreviewOpenPayload {
   url: string
   label?: string
 }
-/** ``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab. */
+/** ``tools/preview_tool.py``; ``url`` '' closes every tab. */
 export interface PreviewClosePayload {
   url?: string
 }
@@ -7151,6 +7198,8 @@ export interface CanonicalRpcMethods {
   'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
   /** Owner identity and the canonical capabilities a client may rely on. */
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
+  /** The /usage account blocks for this session's route: provider plan limits, then the Nous balance. */
+  'session.account_usage': { params: SessionAccountUsageParams; result: SessionAccountUsage }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
   'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }
   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
@@ -7219,6 +7268,7 @@ export const CANONICAL_RPC_METHODS = [
   'prompt.submit',
   'rollback.session_diff',
   'runtime.describe',
+  'session.account_usage',
   'session.automation',
   'session.create',
   'session.detach',

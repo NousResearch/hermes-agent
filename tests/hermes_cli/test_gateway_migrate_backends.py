@@ -428,7 +428,10 @@ def _fresh_hermes(tmp_path, name, *cli):
            if not k.startswith(("HERMES_", "TERMUX_")) and k not in {"TMPDIR", "TMP", "TEMP"}}
     env.update({"HERMES_HOME": str(homes["hermes_home"]), "HOME": str(homes["home"]), "PYTHONPATH": _REPO,
                 "PATH": f"{shims}{os.pathsep}{env.get('PATH', '/usr/bin:/bin')}", "SHIM_LOG": str(log),
-                "PYTHONDONTWRITEBYTECODE": "1"})
+                "PYTHONDONTWRITEBYTECODE": "1",
+                # The suite's no-fetch rule (conftest): without it the boot spawns the detached
+                # default-plugin installer, which fetches the live catalog after the command exits.
+                "HERMES_DISABLE_LAZY_INSTALLS": "1"})
     proc = subprocess.run([sys.executable, "-m", "hermes_cli.main", *cli], cwd=_REPO, env=env,
                           capture_output=True, text=True, timeout=180, check=False)
     _wait_for_detached_prune(homes["hermes_home"] / "cache" / "scratch")

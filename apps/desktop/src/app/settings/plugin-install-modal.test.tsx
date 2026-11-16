@@ -151,6 +151,13 @@ describe('A reviewed catalog pick', () => {
     expect(installCalls()[0]?.[1]).toMatchObject({ catalog_name: 'blender', enable: true, force: false })
   })
 
+  it('reads the repository at its reviewed pin, not the default branch', async () => {
+    renderFlow()
+    act(() => openPluginInstallRequest(BLENDER))
+
+    await waitFor(() => expect(probePluginRepo).toHaveBeenCalledWith({ identifier: BLENDER.repo, ref: BLENDER.sha }))
+  })
+
   it('waits under the loader for an inspection still running, then installs once', async () => {
     const probe = deferred<unknown>()
     probePluginRepo.mockReturnValue(probe.promise)

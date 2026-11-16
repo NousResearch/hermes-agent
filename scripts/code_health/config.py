@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fnmatch import fnmatch
 
+from hermes_agent.compat.paths import original_path
+
 # Master switch, honoured everywhere the ratchet runs (CI, `scripts/check`, the git hooks). It is
 # read from main, never from the branch under test, so a PR cannot relax its own check: CI reads
 # the merge commit's first parent; local runs read `origin/main` (falling back to the merge-base).
@@ -27,13 +29,19 @@ TARGETS = {
 }
 
 METRIC_FIX = {
-    "CC": "split it: extract phases into a topical sibling (`<stem>_<topic>.py`), or replace a"
-    " branch ladder with a dict/table -> handler",
-    "FUNC_LINES": "extract phases into named helpers or a topical sibling module",
+    "CC": "split it: extract phases into a topic module (in the `<stem>/` folder, see"
+    " FILE_LINES), or replace a branch ladder with a dict/table -> handler",
+    "FUNC_LINES": "extract phases into named helpers or a topic module in the `<stem>/` folder",
     "NESTING": "return early, or extract the inner block into a helper",
-    "FILE_LINES": "offset the growth in the same PR: move an existing function or class into a"
-    " topical sibling `<stem>_<topic>.py` (moved code keeps its cap; see root AGENTS.md), or put"
-    " new tests in a new `test_<stem>_<topic>.py`; new behaviour never goes into a facade",
+    "FILE_LINES": "offset the growth in the same PR by making a folder: turn `<stem>.py` into a"
+    " `<stem>/` package (with `__init__.py`) and move an existing function or class into a topic"
+    " module there (moved code keeps its cap); never a new flat `<stem>_<topic>.py`. A model tool"
+    " in a folder registers from `tools/<stem>/tool.py`, the only file tool discovery imports"
+    " there. A root module or an `acp_adapter/` one also lists its new package in pyproject's"
+    " `[tool.setuptools.packages.find] include`, or the wheel drops it. New tests go in"
+    " `tests/<area>/<stem>/test_<topic>.py` (with `__init__.py`);"
+    " new behaviour never goes into a facade. Folder shape: root AGENTS.md § Packages and"
+    " Python shape",
     "MEASURE": "the file must parse and measure (a file that cannot be measured cannot be"
     " judged); fix the syntax, or report the measurer bug",
 }
@@ -166,6 +174,12 @@ RULES: tuple[Rule, ...] = (
     Rule("HX014", "private API-error predicate", "use `classify_api_error` (`agent.auxiliary_error_policy`"
          " on the aux path); add the phrasing to its pattern tables", "ast",
          include=("agent/auxiliary*.py", "agent/context_compressor*.py", "agent/turn_*.py")),
+    # Logs reach `hermes debug share` and bug reports: user content and identities stay out of INFO+.
+    Rule("HX017", "user content or identity logged at INFO+", "log the metadata, not the value:"
+         " `len(text)`, an id or a short hash (`gateway.platforms.helpers.hash_for_log`), or a"
+         " redacted form (`redact_phone`); the verbatim value goes to `logger.debug`. A content-named"
+         " value that holds no user data (a config string) takes `# health: allow HX017 -- <why>`",
+         "ast", include=("gateway/*", "plugins/platforms/*")),
 )
 
 RULES_BY_ID = {rule.id: rule for rule in RULES}
@@ -174,6 +188,7 @@ ALLOW_SYNTAX = "# health: allow <RULE> -- <why>"
 
 
 def _matches(path: str, globs: tuple[str, ...]) -> bool:
+    path = original_path(path)
     return any(fnmatch(path, glob) for glob in globs)
 
 

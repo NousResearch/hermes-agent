@@ -16,7 +16,8 @@ from agent.compression_marker import elide
 from agent.interrupt_compat import request_hard_interrupt
 from dataclasses import dataclass, field
 from tools import file_state
-from tools.delegate_tool_progress import _quiet, _safe_progress
+from tools.delegate_tool_config import _get_child_timeout, _get_subagent_approval_callback, _get_worktree_isolation
+from tools.delegate_tool_progress import _quiet, _resolve_workspace_hint, _safe_progress
 from tools.delegate_tool_registry import (
     _capture_gateway_steer_authority, _close_subagent_steering, _mark_subagent_resumable, _register_subagent,
     _unregister_subagent,
@@ -24,8 +25,21 @@ from tools.delegate_tool_registry import (
 from tools.delegate_tool_results import (
     _extract_output_tail, _looks_like_error_output, _stringify_tool_content, _summarize_tool_arguments,
 )
+from tools.terminal_tool import set_approval_callback
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+
+_HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
+# Stale-heartbeat thresholds (cycles of _HEARTBEAT_INTERVAL with no progress). Progress = iteration, current_tool OR
+# last_activity_ts advancing; an in-flight model wait refreshes last_activity_ts, so slow models are not "idle". Idle
+# stays tight so a truly wedged child doesn't mask the gateway timeout; in-tool is much higher so legitimately long
+# tools can finish.
+_HEARTBEAT_STALE_CYCLES_IDLE = 15  # 450s idle between turns → stale
+_HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 1200s stuck on same tool → stale
+# After the stale verdict ends the wait, keep polling the worker this long for its real
+# result (#113222): a child that already wrote its final answer often finishes unwinding a
+# moment later, and that recorded result must be collected instead of a synthesized timeout.
+_STALE_RESULT_GRACE_SECONDS = 2.0
 
 def _reserve_child_transcript(child: Any) -> None:
     """Make a queued child readable without completing its first-turn persistence."""
@@ -352,7 +366,6 @@ class _Heartbeat:
 
     def start(self) -> None:
         from agent.periodic_scheduler import schedule
-        from tools.delegate_tool import _HEARTBEAT_INTERVAL
         self.handle = schedule(self.tick, _HEARTBEAT_INTERVAL)
 
     def stop(self) -> None:
@@ -362,7 +375,6 @@ class _Heartbeat:
 
     def tick(self):
         """Returning False stops the periodic callback."""
-        from tools.delegate_tool import _HEARTBEAT_INTERVAL, _HEARTBEAT_STALE_CYCLES_IDLE, _HEARTBEAT_STALE_CYCLES_IN_TOOL
         child, parent_agent, task_index, last_seen = self.child, self.parent_agent, self.task_index, self.last_seen
         if self.checkpoint is not None:
             with _quiet("Durable subagent checkpoint failed: %s"):
@@ -409,10 +421,6 @@ class _Heartbeat:
         return None
 
 
-def _start_heartbeat(child: Any, parent_agent: Any, task_index: int) -> _Heartbeat:
-    """Build (not start) one child's heartbeat; see ``_Heartbeat``."""
-    return _Heartbeat(child, parent_agent, task_index)
-
 def _register_child(
     child: Any, parent_agent: Any, goal: str, *, owner_session_id: Optional[str], owner_transport: Any,
     owner_session_record: Any,
@@ -455,7 +463,6 @@ def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_i
     """Opt-in worktree isolation: own git worktree off the parent's HEAD (the
     child's terminal starts there). Git-only, local-backend-only; failures
     degrade silently to the shared workspace. Returns the worktree info or None."""
-    from tools.delegate_tool import _get_worktree_isolation, _resolve_workspace_hint
     if not _get_worktree_isolation():
         return None
     with _quiet("worktree isolation setup failed: %s"):
@@ -931,7 +938,7 @@ class _ChildRun:
         """Close steer acceptance (see ``_merge_late_steer``); returns late steer text, if any."""
         return _close_subagent_steering(self.subagent_id, self.child) if self.subagent_id else None
 
-    def wait_liveness_aware(self, settled: threading.Event, child_future: Any, child_timeout: Optional[float]) -> None:
+    def wait_liveness_aware(self, settled: threading.Event, child_timeout: Optional[float]) -> None:
         """Wait for the worker or the stale verdict, where ``child_timeout`` bounds INACTIVITY, not total runtime.
 
         A configured cap used to be a dispatch-to-death stopwatch, so it only ever killed children the runtime had
@@ -982,14 +989,11 @@ class _ChildRun:
         via a Future done-callback (``close_deferred=True``) — closing here would race its still-unwinding finally
         path.
         """
-        from tools.delegate_tool import (
-            _STALE_RESULT_GRACE_SECONDS, _get_child_timeout, _get_subagent_approval_callback, _set_subagent_approval_cb,
-        )
         from tools.daemon_pool import DaemonThreadPoolExecutor
         child, task_index = self.child, self.task_index
         child_timeout = _get_child_timeout()
         executor = DaemonThreadPoolExecutor(
-            max_workers=1, initializer=_set_subagent_approval_cb, initargs=(_get_subagent_approval_callback(),),
+            max_workers=1, initializer=set_approval_callback, initargs=(_get_subagent_approval_callback(),),
         )
         # Worker thread handle so the timeout diagnostic can dump its stack.
         worker_thread_holder: dict[str, Optional[threading.Thread]] = {"t": None}
@@ -1025,7 +1029,7 @@ class _ChildRun:
         # Set when the stale verdict — not the configured cap — ended the wait; the entry must name that cause.
         stale_after: Optional[float] = None
         try:
-            self.wait_liveness_aware(settled, future, child_timeout)
+            self.wait_liveness_aware(settled, child_timeout)
             if not future.done():
                 stale_after = getattr(self.heartbeat, "stale_threshold_seconds", None)
                 if stale_after is None:

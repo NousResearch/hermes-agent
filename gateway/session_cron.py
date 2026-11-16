@@ -174,7 +174,7 @@ async def operation(authority, name, params, actor=None):
         request_id = cron_request_id(params['job_id'], params['request_id'])
         sid = local_identity(authority.profile_id, actor.subject, request_id)
         from hermes_state_runtime import list_session_admissions
-        rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid, pending_only=False)
         from gateway.owner_identity import same_owner
         row = next((r for r in rows if r['request_id'] == request_id and same_owner(r['principal_id'], actor.subject)), None)
         if row is None:
@@ -216,7 +216,9 @@ async def operation(authority, name, params, actor=None):
         raise RuntimeStoreError('invalid_params')
     ref = SessionRef(authority.profile_id, params['session_id'])
     authority.authorize(actor, ref, 'session:submit')
-    row = get_session_admission(authority.db, admission_id=params['admission_id'])
+    # The firer polls this every <= 2 s per running job: one worker hop reads the row (and a terminal
+    # row's saved result), so slow storage delays the poll, never the owner loop.
+    row, saved = await asyncio.to_thread(_read_admission, authority.db, params['admission_id'], name == 'status')
     from gateway.owner_identity import same_owner
     if row is None or row['target_session_id'] != ref.session_id or not same_owner(row['principal_id'], actor.subject):
         raise RuntimeStoreError('permission_denied')
@@ -230,8 +232,6 @@ async def operation(authority, name, params, actor=None):
         return {'ok': True}
     result, flags = None, {}
     if row['status'] == 'terminal':
-        from gateway.session_results import admission_result
-        saved = admission_result(authority.db, row['admission_id'])
         result = saved['result'].get('cron_result') if saved else None
         flags = (saved['result'].get('cron_job_flags') or {}) if saved else {}
         if result is None:
@@ -239,6 +239,16 @@ async def operation(authority, name, params, actor=None):
     from cron.scheduler_liveness import owner_progress
     return {'status': row['status'], 'result': result, 'job_flags': flags,
             'progress_at': owner_progress.get(row['request_id'].rsplit(':', 1)[-1])}
+
+
+def _read_admission(db, admission_id, with_result):
+    """``(row, saved result)`` of a cron admission, read in a worker thread; the result only for a
+    terminal row a ``status`` poll asked about (``cancel`` never reads it)."""
+    row = get_session_admission(db, admission_id=admission_id)
+    if not with_result or row is None or row['status'] != 'terminal':
+        return row, None
+    from gateway.session_results import admission_result
+    return row, admission_result(db, admission_id)
 
 
 def _cancellations(authority):

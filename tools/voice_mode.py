@@ -1138,8 +1138,8 @@ def _play_audio_file_impl(file_path: str) -> bool:
 
 
 # ── Barge-in — detect the user speaking over TTS playback ──
-# Public API kept from main: the per-playback barge monitor (rolling-floor VAD). No in-tree
-# caller since full_duplex_listen took over the voice path, but plugins may import it.
+# Public API: plugins may import it (restored on purpose in 057681739f); not dead code.
+# The per-playback barge monitor (rolling-floor VAD); full_duplex_listen drives the in-tree voice path.
 def listen_for_speech(
     should_stop: Callable[[], bool],
     threshold: Optional[int] = None,

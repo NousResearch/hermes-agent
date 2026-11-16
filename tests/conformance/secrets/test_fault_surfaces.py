@@ -58,7 +58,7 @@ SEAMS = ("merge", "note", "save", "json-write", "serialization", "full-disk",
 def _break_the_seam(monkeypatch, seam, reached):
     """Make today's auth write fail at *seam*, naming the record in the failure it raises
     (the failure is today's code raising it, so nothing vouches its text)."""
-    import utils
+    from utils import files as utils  # the module whose globals the writers resolve
     from hermes_cli import auth
 
     def fail(*args, **kwargs):

@@ -99,7 +99,7 @@ def local_backend(tmp_path, monkeypatch):
                 for path in broken:
                     path.rmdir()
             return
-        import utils
+        from utils import files as utils  # the module whose globals the writers resolve
         from hermes_cli import config as env_writer
         if kind == "encode":
             def quoted(value: str):
@@ -519,7 +519,7 @@ def test_each_failure_point_breaks_a_real_writer_seam(tmp_path, monkeypatch, kin
     env-line quoter or JSON dumper, the atomic replace in today's rename — so the
     no-plaintext tests exercise the write path where it actually works, never a stand-in a
     broken backend could satisfy."""
-    import utils
+    from utils import files as utils  # the module whose globals the writers resolve
     from hermes_cli import auth, config
     backend, _homes, _provider = local_backend(tmp_path, monkeypatch)
     store = backend.open("a")
@@ -559,7 +559,7 @@ def test_the_prepare_failure_point_fails_the_write_before_the_serialization(tmp_
     serialization would pass a suite that believed it had tested the preparation). The
     serialization is watched through whatever the fixture installed on the seam, so a
     fixture that breaks the write there instead of the store is caught in the act."""
-    import utils
+    from utils import files as utils  # the module whose globals the writers resolve
     from hermes_cli import config
     backend, _homes, _provider = local_backend(tmp_path, monkeypatch)
     store = backend.open("a")

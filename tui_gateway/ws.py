@@ -11,6 +11,7 @@ import contextlib
 import concurrent.futures
 import json
 import logging
+import os
 import socket
 import threading
 import time
@@ -97,14 +98,36 @@ _WS_LOG_PAYLOAD_PREVIEW = 240
 # by a long compaction, a GIL-heavy turn): the client's heartbeat deadline measures the transport, not
 # handler latency (#108325). A full queue parks the reader — the old serial behaviour.
 _WS_DISPATCH_QUEUE_MAX = 256
-# These handlers only project already-owned state.  They may take seconds for a large stored
-# transcript, so running them through the serial control lane turns an inexpensive interrupt or
-# control read behind them into a client timeout.  Keep the exception deliberately narrow: mutating
-# RPCs still retain arrival order, and no more than two expensive reads consume a connection.
-_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.transcript"})
-_WS_CONCURRENT_READ_LIMIT = 2
+# These handlers only project already-owned state.  Stored transcript/context reads can take
+# seconds, and the read-only status projections below are polled on every Desktop roster/focus
+# tick; running either through the serial control lane queues an inexpensive interrupt or control
+# read behind them into a client timeout (#147666).  Keep the exception deliberately narrow:
+# mutating RPCs still retain arrival order on the serial lane, and the read lane stays bounded.
+def _bounded_env_int(name: str, default: int, *, floor: int = 1, ceiling: int = 256) -> int:
+    """A bounded, validated integer override; a bad or extreme env value falls back / clamps."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return max(floor, min(ceiling, value))
+
+
+_WS_CONCURRENT_READ_METHODS = frozenset({
+    "session.context_breakdown",
+    "session.transcript",
+    "subagent.list",
+    "process.list",
+    "session.control.read",
+    "session.info",
+    "session.list",
+    "profiles.list",
+})
+_WS_CONCURRENT_READ_LIMIT = _bounded_env_int("HERMES_WS_CONCURRENT_READ_LIMIT", 32)
 # Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
-_WS_WAITING_READ_LIMIT = 8
+_WS_WAITING_READ_LIMIT = _bounded_env_int("HERMES_WS_WAITING_READ_LIMIT", 64)
 # A shared socket's frame naming a profile hot-serve is still starting (a chat opened on a profile
 # created a moment ago) waits for that start in a lane of its own: on the serial lane every later
 # control on the socket, other profiles' prompts and interrupts included, would queue behind it.

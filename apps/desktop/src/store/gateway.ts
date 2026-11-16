@@ -8,7 +8,7 @@ import {
   resolveGatewayWsUrl,
   type ServerRequest
 } from '@hermes/shared'
-import { atom, batch } from 'nanostores'
+import { batch } from 'nanostores'
 
 import { canonicalOwnerProfile } from '@/api/canonical-protocol'
 import type { HermesConnection } from '@/global'
@@ -23,7 +23,6 @@ import {
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { isPermanentLocalGatewayEnsureError } from '@/lib/local-gateway-ensure-failure'
-import { initialGatewayProfile } from '@/lib/platform'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, SOURCE_SWITCH_DIAL_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { recordSecondaryWire } from '@/store/connection-wire'
 import { $gatewayActivationEpoch } from '@/store/gateway-activation-epoch'
@@ -31,11 +30,13 @@ import { isMissingConnectionError, isMissingProfileError, isStalledDialError } f
 import { isKeptRoute, keptRouteOpened } from '@/store/gateway-kept-routes'
 import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
 import type { RegistryConfig } from '@/store/gateway-registry-config'
+import { gatewayState } from '@/store/gateway-registry-state'
 import { publishRequestConnection } from '@/store/gateway-request-scope'
 import {
   isPrimaryRider,
   notePrimaryRider,
   type PrimaryIdentity,
+  sharedPrimaryConnection,
   sharedPrimaryRoute
 } from '@/store/gateway-shared-route'
 import type { Secondary } from '@/store/gateway-socket-entry'
@@ -83,93 +84,7 @@ const isOpen = (gateway: HermesGateway | null): boolean => gateway?.connectionSt
 // entry.
 const ACTIVATION_LEASE_MS = SOURCE_SWITCH_DIAL_TIMEOUT_MS + 15_000
 
-// ── HMR-stable module state ─────────────────────────────────────────────────
-// All mutable singletons (live sockets, active-profile routing, the event
-// registry) live in ONE container parked on globalThis, NOT in module-level
-// `let`/`const` bindings. Reason: this module is imported widely without an HMR
-// boundary that accepts it, so editing it (or anything that fans out to it)
-// makes Vite issue a FULL PAGE RELOAD — which would kill every live socket and
-// drop the agent session on an unrelated edit. Persisting the state on
-// globalThis + self-accepting HMR (bottom of file) turns that full reload into
-// an in-place hot update that preserves the sockets. Production strips
-// import.meta.hot, and a fresh page realm starts with an empty container, so the
-// runtime behavior is identical to plain module state.
-interface GatewayRegistryState {
-  config: RegistryConfig | null
-  primaryGateway: HermesGateway | null
-  primaryProfile: string
-  activeKey: string
-  secondaries: Map<string, Secondary>
-  // Auth rejection outlives the disposable socket, including background request leases.
-  reauthFailures: Map<string, { connectionId: string | null; error: Error }>
-  // Dial failures outlive the disposable socket too: a background request lease disposes its
-  // entry on failure, so history kept on the entry reset on every poll (#121865).
-  dialFailures: Map<string, { at: number; streak: number; connectionId: string | null }>
-  /** Scopes that opened in this renderer generation, even if later pruned. */
-  openedSecondaryScopes?: Set<string>
-  /** Scopes whose re-activation after a connection redial has not landed yet. */
-  reactivatingScopes?: Set<string>
-  /** Routed prompt sockets held until their terminal turn event arrives. */
-  turnLeases: Map<string, () => void>
-  /** Debounced releases so an immediate chained turn can reuse its lease. */
-  turnLeaseReleaseTimers: Map<string, ReturnType<typeof setTimeout>>
-  $gateway: ReturnType<typeof atom<HermesGateway | null>>
-  $activeProfile: ReturnType<typeof atom<string>>
-}
-
-const STATE_KEY = Symbol.for('hermes.desktop.gatewayRegistryState')
-
-function createRegistryState(): GatewayRegistryState {
-  return {
-    config: null,
-    primaryGateway: null,
-    primaryProfile: initialGatewayProfile(),
-    activeKey: initialGatewayProfile(),
-    secondaries: new Map<string, Secondary>(),
-    reauthFailures: new Map(),
-    dialFailures: new Map(),
-    openedSecondaryScopes: new Set<string>(),
-    reactivatingScopes: new Set<string>(),
-    turnLeases: new Map<string, () => void>(),
-    turnLeaseReleaseTimers: new Map<string, ReturnType<typeof setTimeout>>(),
-    // The active gateway instance, exposed for inline message-stream
-    // components (inline ClarifyTool, model overlays) that call gateway
-    // methods without the instance threaded down through props.
-    $gateway: atom<HermesGateway | null>(null),
-    // The PROFILE the active gateway is routed to (bare profile name, never a
-    // composite registry scope). Owned exclusively by applyActive() so the
-    // published profile can never diverge from the socket actually selected —
-    // the split-brain where an eviction re-pointed activeKey at the primary
-    // while the profile atom kept naming the evicted bot routed every
-    // "loki" session.resume to the default backend (#89206 wake failures).
-    $activeProfile: atom<string>(initialGatewayProfile())
-  }
-}
-
-// Dev only: park the singletons on globalThis so an HMR re-eval of this module
-// (self-accepted at the bottom) hands back the SAME live sockets/atoms instead
-// of resetting them — that's what keeps the agent session alive across UI edits.
-// `import.meta.hot` is undefined in production, so Vite dead-code-eliminates the
-// entire globalThis branch and prod uses a plain module-local singleton — no
-// globalThis, no Symbol.for. Both realms load the module once, so the container's
-// shape and lifetime are identical either way.
-function gatewayState(): GatewayRegistryState {
-  if (import.meta.hot) {
-    const store = globalThis as unknown as { [STATE_KEY]?: GatewayRegistryState }
-    store[STATE_KEY] ??= createRegistryState()
-
-    // Existing dev-HMR containers predate whole-turn leases.
-    store[STATE_KEY].reauthFailures ??= new Map()
-    store[STATE_KEY].dialFailures ??= new Map()
-    store[STATE_KEY].turnLeases ??= new Map()
-    store[STATE_KEY].turnLeaseReleaseTimers ??= new Map()
-
-    return store[STATE_KEY]
-  }
-
-  return createRegistryState()
-}
-
+// All mutable singletons live in one HMR-stable container (gateway-registry-state.ts).
 const g = gatewayState()
 
 // Dev HMR can hand a newer module an older state-container shape. Keep the
@@ -430,6 +345,11 @@ export function isActivePrimary(): boolean {
   return g.activeKey === g.primaryProfile
 }
 
+/** The profile this window's primary socket serves (its own record, not main's). */
+export function primaryGatewayProfile(): string {
+  return g.primaryProfile
+}
+
 /** Changes on every active route selection, including same-profile source swaps. */
 export function gatewayActivationEpoch(): number {
   return Number.isFinite($gatewayActivationEpoch.get()) ? $gatewayActivationEpoch.get() : 0
@@ -557,7 +477,10 @@ function beginGatewayActivation(): number {
   return $gatewayActivationEpoch.get()
 }
 
-function applyActive(profile: string, activationEpoch: number): boolean {
+// `shownProfile`: the profile the window keeps showing while the route is the
+// shared primary socket (the mirror would otherwise publish the primary's).
+// Requests name it too, so pages and session lists keep asking for it.
+function applyActive(profile: string, activationEpoch: number, shownProfile?: string): boolean {
   if (gatewayActivationEpoch() !== activationEpoch) {
     return false
   }
@@ -572,6 +495,7 @@ function applyActive(profile: string, activationEpoch: number): boolean {
   // fallback path funnels through applyActive, so the published profile can
   // never linger on a backend that is no longer selected (#89206).
   const routeProfile = activeRouteProfile()
+  const shown = shownProfile ?? routeProfile
 
   // One notification frame for the whole route: a $gateway listener (the
   // display-toggle auto-push) notified before the profile half was published
@@ -582,15 +506,15 @@ function applyActive(profile: string, activationEpoch: number): boolean {
     g.$gateway.set(gateway)
     setGatewayState(gateway?.connectionState ?? 'closed')
     // The registry connection (null: local pool) moves with the profile it serves.
-    publishRequestConnection(activeGatewayConnectionId(), routeProfile)
+    publishRequestConnection(activeGatewayConnectionId(), shown)
     g.$activeProfile.set(routeProfile)
-    g.config?.onActiveRouteChanged?.(routeProfile)
+    g.config?.onActiveRouteChanged?.(shown)
   })
 
   traceIdentityChange(
     'gateway-route',
     'active',
-    `key=${g.activeKey} via=${g.activeKey === g.primaryProfile ? 'primary' : 'secondary'} conn=${activeGatewayConnectionId() ?? '-'} profile=${routeProfile}`
+    `key=${g.activeKey} via=${g.activeKey === g.primaryProfile ? 'primary' : 'secondary'} conn=${activeGatewayConnectionId() ?? '-'} profile=${routeProfile}${shown === routeProfile ? '' : ` shown=${shown}`}`
   )
 
   return true
@@ -1788,7 +1712,9 @@ export async function ensureGatewayForAgent(
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
+// `keepShown`: the window already shows `profile` and stays on it even when its
+// route is the shared primary socket (redialProfileGateway).
+export async function ensureGatewayForProfile(profile: string, { keepShown = false } = {}): Promise<void> {
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
@@ -1803,8 +1729,12 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   // primary instead of dialing a doomed duplicate socket at the same
   // descriptor — $activeGatewayProfile still moves to `key`, so request
   // scoping and profile-aware surfaces behave identically.
-  if (await sharedPrimaryRoute(key)) {
-    applyActive(g.primaryProfile, activationEpoch)
+  const shared = await sharedPrimaryConnection(key)
+
+  if (shared) {
+    if (applyActive(g.primaryProfile, activationEpoch, keepShown ? key : undefined) && keepShown) {
+      publishActiveConnection(shared)
+    }
 
     return
   }
@@ -2225,6 +2155,46 @@ export function closeLegacySecondaryGateways(): void {
   }
 
   closeSecondariesWhere(isLegacySecondary)
+}
+
+/**
+ * A plugin moved one profile's backend (host.setProfileBackend /
+ * clearProfileBackend): retire that profile's legacy socket and, when it was
+ * the active route, dial the new one at once. The window stays on the profile
+ * (no hop to the primary, no session-list wipe), unlike a connection apply.
+ *
+ * `shown`: the window shows this profile. It may ride the shared primary
+ * socket: moved to a plugin's backend it must leave that socket now, or the
+ * host backend gets its requests; moved back, it rides it again and stays shown.
+ */
+export async function redialProfileGateway(profile: string, { shown = false } = {}): Promise<void> {
+  const key = normKey(profile)
+  const entry = g.secondaries.get(key)
+
+  if (!entry || !isLegacySecondary(entry)) {
+    // Not dialed: its next dial reads the new route.
+    if (shown && key !== g.primaryProfile && g.activeKey === g.primaryProfile) {
+      await ensureGatewayForProfile(key, { keepShown: true })
+    }
+
+    return
+  }
+
+  const wasActive = key === g.activeKey
+  g.reauthFailures.delete(key)
+  g.dialFailures.delete(key)
+  reactivatingScopes().add(key)
+  disposeSecondary(entry)
+  g.secondaries.delete(key)
+
+  try {
+    if (wasActive) {
+      await ensureGatewayForProfile(key, { keepShown: shown })
+    }
+  } finally {
+    reactivatingScopes().delete(key)
+    restoreActiveToPrimaryIfEvicted()
+  }
 }
 
 export function closeSecondaryGateways(): void {

@@ -221,6 +221,8 @@ export function ProfileRail() {
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
   const remoteOverrides = useStore($profileRemoteOverrides)
+  // A desktop plugin runs this profile's backend in a sandbox on this computer.
+  const isSandboxed = (name: string) => Boolean(remoteOverrides[normalizeProfileKey(name)]?.launcher)
   const multipleConnections = useStore($hasMultipleConnections)
   const registry = useStore($connectionsRegistry)
   const activeConnectionId = useStore($activeConnectionId)
@@ -463,7 +465,12 @@ export function ProfileRail() {
   const profileNamesKey = profileNames.join('\u0000')
 
   useEffect(() => {
-    void refreshProfileRemoteOverrides(profileNamesKey ? profileNamesKey.split('\u0000') : [])
+    const names = profileNamesKey ? profileNamesKey.split('\u0000') : []
+
+    void refreshProfileRemoteOverrides(names)
+
+    // A plugin (or Settings) can move a profile's backend without changing the list.
+    return window.hermesDesktop?.onConnectionApplied?.(() => void refreshProfileRemoteOverrides(names))
   }, [profileNamesKey])
 
   // Open the create dialog when the `profile.create` hotkey fires (the dialog
@@ -511,13 +518,19 @@ export function ProfileRail() {
                   // gateway registry; once the rail shows machines directly
                   // it only confuses, so it is offered on single-gateway
                   // setups only.
-                  onConnectRemote={multipleConnections ? undefined : () => openRemoteOverrideDialog(profile.name)}
+                  // A plugin's sandbox owns its profile's backend.
+                  onConnectRemote={
+                    multipleConnections || isSandboxed(profile.name)
+                      ? undefined
+                      : () => openRemoteOverrideDialog(profile.name)
+                  }
                   onDelete={() => setPendingDelete(profile)}
                   onEditSoul={() => setPendingSoul(profile.name)}
                   onRecolor={color => setProfileColor(profile.name, color)}
                   onRename={() => setPendingRename(profile)}
                   onSelect={() => selectProfile(profile.name)}
                   remoteHost={remoteOverrides[normalizeProfileKey(profile.name)]?.host ?? null}
+                  sandboxed={isSandboxed(profile.name)}
                 />
               ))}
             </div>
@@ -1422,6 +1435,32 @@ interface ProfileSquareProps {
   // hostname[:port] of this profile's remote override, or null when the
   // profile runs locally. Drives the "remote" badge on the square.
   remoteHost: null | string
+  // A desktop plugin runs this profile in a sandbox on this computer: badged
+  // as sandboxed, not as a remote host.
+  sandboxed?: boolean
+}
+
+// Where a profile runs when not on this computer's own backend, or null.
+function profileRunsWhere(p: Translations['profiles'], remoteHost: null | string, sandboxed: boolean): null | string {
+  if (sandboxed) {
+    return p.remoteOverride.sandboxed
+  }
+
+  return remoteHost ? p.remoteOverride.badge(remoteHost) : null
+}
+
+// The corner badge of a profile that does not run on this computer's own
+// backend, so which profiles run elsewhere is visible at a glance (#91349).
+function RunsElsewhereBadge({ sandboxed }: { sandboxed: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="absolute -right-0.5 -top-0.5 grid size-2 place-items-center rounded-full bg-(--ui-panel-background)"
+      data-slot={sandboxed ? 'profile-sandboxed-badge' : 'profile-remote-badge'}
+    >
+      <Codicon name={sandboxed ? 'shield' : 'globe'} size="0.5rem" />
+    </span>
+  )
 }
 
 // Hold this long without moving (a drag would have started first) to open the
@@ -1447,10 +1486,12 @@ function ProfileSquare({
   onRecolor,
   onRename,
   onSelect,
-  remoteHost
+  remoteHost,
+  sandboxed = false
 }: ProfileSquareProps) {
   const { t } = useI18n()
   const p = t.profiles
+  const runsWhere = profileRunsWhere(p, remoteHost, sandboxed)
   const hue = color ?? 'var(--ui-text-quaternary)'
   const [pickerOpen, setPickerOpen] = useState(false)
   const pressTimer = useRef<null | number>(null)
@@ -1524,9 +1565,7 @@ function ProfileSquare({
                     {...attributes}
                     {...listeners}
                     aria-label={
-                      [remoteHost ? `${label} — ${p.remoteOverride.badge(remoteHost)}` : label, statusText]
-                        .filter(Boolean)
-                        .join(', ') || label
+                      [runsWhere ? `${label} — ${runsWhere}` : label, statusText].filter(Boolean).join(', ') || label
                     }
                     aria-pressed={active}
                     // Hold-to-recolor rides alongside the dnd pointer listener (call
@@ -1566,18 +1605,7 @@ function ProfileSquare({
                     onPointerUp={clearPress}
                   >
                     {profileShortLabel(label)}
-                    {/* The "remote" badge: a tiny globe pinned to the corner of an
-                        overridden profile's square, so which profiles leave this
-                        machine is visible at a glance (#91349). */}
-                    {remoteHost && (
-                      <span
-                        aria-hidden="true"
-                        className="absolute -right-0.5 -top-0.5 grid size-2 place-items-center rounded-full bg-(--ui-panel-background)"
-                        data-slot="profile-remote-badge"
-                      >
-                        <Codicon name="globe" size="0.5rem" />
-                      </span>
-                    )}
+                    {runsWhere && <RunsElsewhereBadge sandboxed={sandboxed} />}
                     {/* The profile's session rollup (#91710): bottom-right so it
                         never fights the remote globe. */}
                     {!active && summary && (
@@ -1590,9 +1618,7 @@ function ProfileSquare({
               </ContextMenuTrigger>
             </PopoverAnchor>
             <TooltipContent>
-              {[remoteHost ? `${label} · ${p.remoteOverride.badge(remoteHost)}` : label, statusText]
-                .filter(Boolean)
-                .join(' · ')}
+              {[runsWhere ? `${label} · ${runsWhere}` : label, statusText].filter(Boolean).join(' · ')}
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>

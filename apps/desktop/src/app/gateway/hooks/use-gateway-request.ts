@@ -6,6 +6,11 @@ import type { HermesGateway } from '@/hermes'
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
+  BACKEND_TRANSITION_MAX_MS,
+  backendTransitionFor,
+  waitForBackendTransitionEnd
+} from '@/store/backend-transition'
+import {
   $gateway,
   activeGateway,
   activeGatewayConnectionId,
@@ -14,6 +19,7 @@ import {
   gatewayActivationEpoch,
   isActivePrimary
 } from '@/store/gateway'
+import { probeLauncherTransition } from '@/store/launcher-transition'
 import { $gatewayState, setConnection } from '@/store/session'
 
 export function useGatewayRequest() {
@@ -181,6 +187,18 @@ export function useGatewayRequest() {
           throw error
         }
 
+        // A plugin-run profile whose sandbox is restarting (or switching) on
+        // purpose: wait for its backend to come back, then send this request
+        // on the new socket, instead of failing it ("WebSocket heartbeat
+        // acknowledgement timed out", "Restore failed"). An unplanned drop, or a
+        // transition that does not end as planned, takes the path below.
+        if (
+          (backendTransitionFor(profile) || (await probeLauncherTransition(profile))) &&
+          !(await waitForBackendTransitionEnd(profile, BACKEND_TRANSITION_MAX_MS))
+        ) {
+          throw error
+        }
+
         // Primary keeps the OAuth-aware reconnect (remote gateways re-mint a
         // single-use ticket). Background profiles stay on the registry's
         // connection-owned reconnect path, including composite remote/SSH
@@ -242,7 +260,10 @@ function errorCode(value: unknown): string | null {
 function isGatewayTransportError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
 
-  if (/not connected|connection closed|connection reset|ECONNRESET/i.test(message)) {
+  // A heartbeat timeout invalidated the socket: the same transport loss as a close.
+  if (
+    /not connected|connection closed|connection reset|ECONNRESET|heartbeat acknowledgement timed out/i.test(message)
+  ) {
     return true
   }
 

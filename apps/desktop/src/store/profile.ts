@@ -70,13 +70,23 @@ export const $profilesByConnection = atom<ReadonlyMap<string, ProfileInfo[]>>(ne
 
 // Registry descriptors carry their connection id (a slug, so it never contains
 // ':'); legacy primaries are keyed by endpoint. Null is a reconnect blip (see
-// setConnection), not a source.
+// setConnection), not a source. Every local backend is this computer, and so
+// is a plugin-run profile's backend (this host answers its profile list): one
+// source, so switching between them never blanks the rail.
 function profileListSource(connection: HermesConnection | null): null | string {
   if (!connection) {
     return null
   }
 
-  return connection.connectionId ?? `${connection.mode ?? 'local'}:${connection.baseUrl}`
+  if (connection.connectionId) {
+    return connection.connectionId
+  }
+
+  if (connection.launcher || (connection.mode ?? 'local') === 'local') {
+    return LOCAL_CONNECTION_ID
+  }
+
+  return `${connection.mode}:${connection.baseUrl}`
 }
 
 export function setActiveProfile(name: string): void {

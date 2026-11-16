@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { $backendTransitions, transitionProfileKey } from '@/store/backend-transition'
 import { isFreshDraftScope } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
@@ -27,6 +28,7 @@ import {
   sessionMatchesStoredId
 } from '@/store/session'
 import { $workingSessionIds } from '@/store/session-states'
+import type { SessionInfo } from '@/types/hermes'
 
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
 
@@ -40,6 +42,14 @@ interface BackgroundQueueDrainOptions {
 }
 
 const BACKGROUND_DRAIN_RETRY_MS = 750
+
+// The profile a queued chat belongs to: its sidebar row's (a row without one is the default profile's), else its
+// owner route's. Unknown means no profile's switch holds it.
+function queuedChatProfile(sessionKey: string, sessions: SessionInfo[]): null | string {
+  const row = sessions.find(session => sessionMatchesStoredId(session, sessionKey))
+
+  return row ? (row.profile ?? 'default') : (getSessionOwnerHints(sessionKey)[0]?.profile ?? null)
+}
 
 /**
  * Drain queued prompts for sessions that are not currently rendered by ChatBar.
@@ -56,6 +66,7 @@ export function useBackgroundQueueDrain({
   submitText
 }: BackgroundQueueDrainOptions) {
   const { t } = useI18n()
+  const backendTransitions = useStore($backendTransitions)
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const parkedQueueSessions = useStore($parkedQueueSessions)
   const sessionsLoading = useStore($sessionsLoading)
@@ -247,6 +258,13 @@ export function useBackgroundQueueDrain({
         continue
       }
 
+      // Its profile's backend is switching (store/backend-transition.ts): the queue waits for the new backend.
+      const profile = queuedChatProfile(sessionKey, sessions)
+
+      if (profile !== null && backendTransitions[transitionProfileKey(profile)]) {
+        continue
+      }
+
       const isSelected =
         Boolean(selectedStoredSessionId) && idsShareLineage(sessionKey, selectedStoredSessionId!, sessions)
 
@@ -273,6 +291,7 @@ export function useBackgroundQueueDrain({
       drainSessionQueue(sessionKey, entry)
     }
   }, [
+    backendTransitions,
     drainSessionQueue,
     enabled,
     parkedQueueSessions,

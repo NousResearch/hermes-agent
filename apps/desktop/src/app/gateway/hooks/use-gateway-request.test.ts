@@ -58,6 +58,13 @@ import '@/store/session-states'
 import type * as HermesModule from '@/hermes'
 import type { HermesGateway } from '@/hermes'
 import {
+  backendTransitionFor,
+  beginBackendTransition,
+  endBackendTransition,
+  resetBackendTransitionsForTests
+} from '@/store/backend-transition'
+import {
+  $activeGatewayRoute,
   $gateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
@@ -65,6 +72,7 @@ import {
   setPrimaryGateway
 } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $profileRemoteOverrides } from '@/store/profile-remote-override'
 import { $connection, $gatewayState } from '@/store/session'
 
 import { useGatewayRequest } from './use-gateway-request'
@@ -227,6 +235,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  resetBackendTransitionsForTests()
+  $profileRemoteOverrides.set({})
   closeSecondaryGateways()
   setPrimaryGateway(null)
   $gateway.set(null)
@@ -299,7 +309,8 @@ describe('useGatewayRequest', () => {
     { error: new Error('connection closed'), label: 'closed message' },
     { error: new Error('ECONNRESET'), label: 'reset message' },
     { error: Object.assign(new Error('socket failed'), { code: 'ECONNRESET' }), label: 'error code' },
-    { error: Object.assign(new Error('socket failed'), { cause: { code: 'ECONNRESET' } }), label: 'cause code' }
+    { error: Object.assign(new Error('socket failed'), { cause: { code: 'ECONNRESET' } }), label: 'cause code' },
+    { error: new Error('WebSocket heartbeat acknowledgement timed out'), label: 'heartbeat timeout' }
   ])('recovers the registered remote source after a $label failure', async ({ error }) => {
     const { desktop, gateway } = await activateRemoteGateway()
     gateway.request.mockResolvedValueOnce({ turn: 1 }).mockRejectedValueOnce(error).mockResolvedValueOnce({ turn: 2 })
@@ -610,5 +621,68 @@ describe('useGatewayRequest', () => {
     // settling.
     await vi.advanceTimersByTimeAsync(20_000)
     await pending
+  })
+})
+
+describe('a planned sandbox restart of a plugin-run profile', () => {
+  afterEach(() => $activeGatewayRoute.set('default'))
+
+  function launchedPrimary() {
+    const primary = makePrimaryGateway()
+
+    $profileRemoteOverrides.set({
+      work: { host: '127.0.0.1:47972', launcher: { plugin: 'openshell' }, url: 'http://127.0.0.1:47972' }
+    })
+    setPrimaryGateway(primary as unknown as HermesGateway, 'work')
+    $activeGatewayRoute.set('work')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('open')
+
+    return primary
+  }
+
+  it('holds a request the restart cut off and sends it once the backend is back', async () => {
+    const primary = launchedPrimary()
+    primary.request
+      .mockRejectedValueOnce(new Error('WebSocket heartbeat acknowledgement timed out'))
+      .mockResolvedValueOnce({ status: 'started' })
+    beginBackendTransition('work', 'restarting', { source: 'launcher' })
+
+    const { result } = renderHook(() => useGatewayRequest())
+    let settled: unknown = 'pending'
+    const sent = result.current.requestGateway('prompt.submit', { text: 'try again' }).then(value => (settled = value))
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(settled).toBe('pending')
+    expect(primary.request).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      endBackendTransition('work', { source: 'launcher' })
+      await sent
+    })
+    expect(settled).toEqual({ status: 'started' })
+    expect(primary.request).toHaveBeenCalledTimes(2)
+    expect(primary.request).toHaveBeenLastCalledWith('prompt.submit', { text: 'try again' }, undefined, undefined)
+  })
+
+  it('a restart that does not come back fails the request with its real error', async () => {
+    const primary = launchedPrimary()
+    const cut = new Error('WebSocket heartbeat acknowledgement timed out')
+    primary.request.mockRejectedValueOnce(cut)
+    beginBackendTransition('work', 'restarting', { source: 'launcher' })
+
+    const { result } = renderHook(() => useGatewayRequest())
+    const sent = result.current.requestGateway('prompt.submit', { text: 'try again' }).catch(error => error)
+
+    await act(async () => {
+      await Promise.resolve()
+      endBackendTransition('work', { ok: false, source: 'launcher' })
+    })
+    await expect(sent).resolves.toBe(cut)
+    expect(primary.request).toHaveBeenCalledTimes(1)
+    expect(backendTransitionFor('work')).toBeNull()
   })
 })

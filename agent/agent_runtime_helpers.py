@@ -37,6 +37,7 @@ from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
+from agent.replay_cleanup import recover_unanswered_side_effect_calls
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
@@ -621,21 +622,13 @@ def _drop_stray_tool_results(messages: list[dict]) -> tuple[list[dict], int]:
 def _prune_unanswered_tool_calls(messages: list[dict]) -> tuple[list[dict], int]:
     """Pass 2: prune tool_calls not answered in the IMMEDIATELY following tool run (a displaced
     result masks the per-call stub pass and strict providers 400). Payload-empty turns are
-    dropped; codex interims exempt.
-
-    A call that may have had a side effect is answered with an UNKNOWN-effect result instead:
-    a killed turn leaves exactly this shape (the call row is persisted before the tool runs), and
-    erasing it lets the resumed model repeat an action that already happened (#49201). The result
-    is a projection of the durable rows, regenerated on every load, so it is never flushed."""
+    dropped; codex interims exempt."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.replay_cleanup import unanswered_call_results
 
     repairs = 0
     pruned: list[dict] = []
     leading: list[dict] = []
-    recovered_after: dict[int, list[dict]] = {}
     for i, msg in enumerate(messages):
-        pruned.extend(recovered_after.pop(i, ()))
         if not (
             isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("tool_calls")
             and not _is_codex_interim(msg)
@@ -643,25 +636,12 @@ def _prune_unanswered_tool_calls(messages: list[dict]) -> tuple[list[dict], int]
             pruned.append(msg)
             continue
         answered: set = set()
-        run_end = i + 1
         for follower in messages[i + 1:]:
             if not (isinstance(follower, dict) and follower.get("role") == "tool"):
                 break
-            run_end += 1
             tid = (follower.get("tool_call_id") or "").strip()
             if tid:
                 answered.update(tool_result_id_variants(tid))
-        unanswered = [
-            tc for tc in msg["tool_calls"]
-            if isinstance(tc, dict) and not tool_call_id_variants(tc) & answered and coalesce_tool_call_id(tc)
-        ]
-        results = unanswered_call_results(unanswered) if unanswered else None
-        if results:
-            for result in results:
-                result[_DB_PERSISTED_MARKER] = True
-            recovered_after[run_end] = results
-            answered.update(v for tc in unanswered for v in tool_call_id_variants(tc))
-            repairs += 1
         kept_calls = [tc for tc in msg["tool_calls"] if tool_call_id_variants(tc) & answered]
         if len(kept_calls) != len(msg["tool_calls"]):
             repairs += 1
@@ -677,7 +657,6 @@ def _prune_unanswered_tool_calls(messages: list[dict]) -> tuple[list[dict], int]
             # marker, so pop it or the flush scan skips the dict and the DB keeps the old calls.
             msg.pop(_DB_PERSISTED_MARKER, None)
         pruned.append(msg)
-    pruned.extend(recovered_after.pop(len(messages), ()))
     _retire_leading_drops(pruned, leading)
     return pruned, repairs
 
@@ -763,8 +742,8 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
 
 
 _SEQUENCE_REPAIR_PASSES = (
-    _merge_consecutive_assistants, _drop_stray_tool_results, _prune_unanswered_tool_calls,
-    _merge_consecutive_users,
+    _merge_consecutive_assistants, _drop_stray_tool_results, recover_unanswered_side_effect_calls,
+    _prune_unanswered_tool_calls, _merge_consecutive_users,
 )
 
 def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:
@@ -789,11 +768,10 @@ def repair_message_sequence(agent, messages: list[dict]) -> int:
     """Collapse malformed role-alternation left in the live history; returns repair count.
     Providers require strict alternation after the system message (violations: silent empty
     responses or 400s); this is the pre-call belt for host-fed, resumed or replayed histories.
-    Passes in order: decode any sentinel-encoded multimodal rows (so an image is not merged as text);
-    merge consecutive assistant turns (BEFORE orphan detection so the merged tool_call-id union is
-    known); drop stray tool results; prune unanswered tool_calls; merge consecutive user turns. A user
-    turn directly after an assistant turn is valid and left alone.
-    """
+    Passes in order: decode sentinel-encoded multimodal rows (an image is not merged as text); merge
+    consecutive assistant turns (BEFORE orphan detection, so the merged tool_call-id union is known); drop
+    stray tool results; answer an unanswered side-effecting call as UNKNOWN; prune the remaining unanswered
+    tool_calls; merge consecutive user turns. A user turn right after an assistant turn is left alone."""
     if not messages:
         return 0
     _normalize_sentinel_encoded_content(messages)

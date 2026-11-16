@@ -155,6 +155,48 @@ def unanswered_call_results(calls: list[dict[str, Any]]) -> Optional[list[dict[s
     return results
 
 
+def recover_unanswered_side_effect_calls(messages: list[dict]) -> tuple[list[dict], int]:
+    """Repair pass before unanswered tool_calls are pruned: a call that may have had a side effect and
+    got no result in its immediately following tool run is answered with an UNKNOWN-effect result
+    after that run. A killed turn leaves exactly this shape (the call row is persisted before the tool
+    runs), and erasing it lets the resumed model repeat an action that already happened (#49201). The
+    result is a projection of the durable rows, regenerated on every load, so it is never flushed.
+    Codex interims are exempt, as from the prune."""
+    from agent.agent_runtime_helpers import _is_codex_interim
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    recovered_after: dict[int, list[dict]] = {}
+    for i, msg in enumerate(messages):
+        if not (isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("tool_calls")
+                and not _is_codex_interim(msg)):
+            continue
+        answered: set = set()
+        run_end = i + 1
+        while run_end < len(messages) and isinstance(messages[run_end], dict) and messages[run_end].get("role") == "tool":
+            tid = (messages[run_end].get("tool_call_id") or "").strip()
+            if tid:
+                answered.update(tool_result_id_variants(tid))
+            run_end += 1
+        unanswered = [
+            tc for tc in msg["tool_calls"]
+            if isinstance(tc, dict) and not tool_call_id_variants(tc) & answered and coalesce_tool_call_id(tc)
+        ]
+        results = unanswered_call_results(unanswered) if unanswered else None
+        if results:
+            for result in results:
+                result[_DB_PERSISTED_MARKER] = True
+            recovered_after[run_end] = results
+    repairs = len(recovered_after)
+    if not repairs:
+        return messages, 0
+    repaired: list[dict] = []
+    for i, msg in enumerate(messages):
+        repaired.extend(recovered_after.pop(i, ()))
+        repaired.append(msg)
+    repaired.extend(recovered_after.pop(len(messages), ()))
+    return repaired, repairs
+
+
 def sanitize_replay_history(agent_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Both strippers in canonical order (interrupted blocks, then dangling tail); same list object when nothing strips."""
     if not agent_history:

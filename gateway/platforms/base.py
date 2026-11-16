@@ -4067,12 +4067,6 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         record_delivery(tts_result)
         return bool(caption and getattr(tts_result, "success", False))
 
-    def reply_is_private(self, event: MessageEvent) -> bool:
-        """True when *event*'s replies reach only its sender through a lane this process holds
-        (Slack's native slash response_url). The delivery ledger and restart auto-resume deliver
-        through the public lane, so both skip such a turn. Default: never."""
-        return False
-
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
         delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:

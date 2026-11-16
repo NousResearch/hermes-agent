@@ -22,7 +22,7 @@ from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.inbound_reply_context import reply_pointer
-from gateway.platforms.base import BasePlatformAdapter, EphemeralReply
+from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
 from gateway.run_busy import approval_input_words
 from gateway.run_inbound_media import rehome_inbound_media
@@ -1837,8 +1837,12 @@ class GatewayInboundMixin(
     def _reply_is_private(self, event: Optional[MessageEvent]) -> bool:
         """True when the adapter answering *event* says its reply has a private lane only this
         process holds; restart recovery would re-run the turn into the public lane."""
-        adapter = self._delivery_adapter_for(getattr(event, "source", None))
-        return isinstance(adapter, BasePlatformAdapter) and adapter.reply_is_private(event)
+        from gateway.platforms.base_delivery_ledger import reply_is_private
+        return reply_is_private(self._delivery_adapter_for(getattr(event, "source", None)), event)
+
+    def _running_turn_reply_is_private(self, session_key: str) -> bool:
+        state = self._peek_session_state(session_key)
+        return state is not None and self._reply_is_private(state.turn.event)
 
     async def _mark_durable_active_turn(self, event: MessageEvent, session_key: str) -> bool:
         """Persist the exact resolved routing key for this running turn."""

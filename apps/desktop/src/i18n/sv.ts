@@ -4903,7 +4903,13 @@ export const svOverrides: TranslationOverrides = {
     free: 'Gratis',
     freeTier: 'Gratisnivå',
     priceTitle: 'In-/utpris per miljon token',
-    wasPrice: 'tidigare'
+    wasPrice: 'tidigare',
+    limitNames: {
+      day: 'daglig',
+      month: 'månatlig',
+      top_tier: 'månatlig för stora modeller',
+      week: 'veckovis'
+    }
   },
   rightSidebar: {
     aria: 'Högra sidofältet',

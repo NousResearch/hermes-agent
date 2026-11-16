@@ -6,6 +6,17 @@ import { svUpdateChannel } from './sv_update_channel'
 // Swedish desktop translation. Keep the English fallback for keys introduced
 // between translation updates.
 export const svOverrides: TranslationOverrides = {
+  skillDeepLink: {
+    installTitle: name => `Installera ”${name}”?`,
+    installDescription: 'Den här skillen blir tillgänglig i nya sessioner. Installera bara källor som du litar på.',
+    installTo: 'Installera på',
+    thisComputer: 'Den här datorn',
+    installing: 'Installerar…',
+    installComplete: name => `”${name}” är installerad`,
+    destinationChanged: 'Målet ändrades. Stäng dialogrutan och öppna installationslänken igen.',
+    installed: 'Installerad',
+    source: 'Källa'
+  },
   sharedMetrics: {
     consentTitle: 'Dela användningsstatistik?',
     dialogTitle: 'Användningsstatistik',

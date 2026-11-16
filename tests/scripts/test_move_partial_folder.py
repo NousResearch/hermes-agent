@@ -37,12 +37,14 @@ def test_path_strings_name_a_moved_folder_only_when_the_move_emptied_it():
     assert partial.find_path("tools/environments/") == ("tools/environments/", "sandboxes/")
     # Path arithmetic is flagged by the outermost name the move took away, never by the folder that stays.
     assert partial.folders == {"cronjob_job_args.py", "blueprints.py", "environments", "test_blueprints.py"}
+    assert partial.departed_files == {"cronjob_job_args.py", "blueprints.py", "test_blueprints.py"}
 
     whole = renames.MovedPaths(tuple(WHOLE), renames.emptied_folders(TREE, WHOLE))
     assert whole.find_path("tools/") == ("tools/", "hermes_agent/tools/")
     assert whole.find_path("tools/registry.py") == ("tools/registry.py", "hermes_agent/tools/registry.py")
     assert whole.find_path("tools/environments/") == ("tools/environments/", "hermes_agent/tools/environments/")
     assert whole.folders == {"tools"}
+    assert whole.departed_files == frozenset()
 
 
 def test_docs_glob_follows_a_move_only_when_every_file_it_matches_moved_together():

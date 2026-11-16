@@ -80,6 +80,14 @@ class MovedPaths:
                          if "/".join(parts[:size]) in self.old_tree))
         return frozenset(out)
 
+    @functools.cached_property
+    def departed_files(self) -> frozenset[str]:
+        """Names of the files that left a folder that stays. The folder's own name names nothing that moved, so a
+        path join that ends in one of these is the only trace of the old place, whatever holds the folder."""
+        return frozenset(PurePosixPath(old).name for old, _ in self.paths
+                         if PurePosixPath(old).parent != PurePosixPath(".")
+                         and str(PurePosixPath(old).parent) not in self.emptied)
+
     def old_paths(self) -> list[tuple[str, str]]:
         """Old -> new path text a by-path literal can carry: each moved file and each moved directory."""
         pairs = {old: new for old, new in self.paths if old.endswith(".py")}

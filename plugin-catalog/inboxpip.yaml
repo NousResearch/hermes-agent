@@ -1,0 +1,23 @@
+name: inboxpip
+title: InboxPip
+repo: https://github.com/gambadio/inboxpip-integrations
+sha: 6b163e3856af55c840305197c31b6c22c283c52d
+subdir: plugins/applemail-relay
+description: Brief selected inboxes and prepare reply drafts through a user-authorized InboxPip connection.
+maintainer: gambadio
+tier: community
+category: tools
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/gambadio/inboxpip-integrations/tree/6b163e3856af55c840305197c31b6c22c283c52d/plugins/applemail-relay
+version: "0.1.0"
+readme: true
+platforms: []
+known_issues:
+  - Requires an existing paid InboxPip account and supported connected mailbox.
+  - Configure the native applemailmcp connection with auth oauth before enabling the package; the portable declaration alone does not enable OAuth in Hermes v0.23.2.
+  - Package validation passed; interactive InboxPip OAuth and mail operations inside Hermes are not yet verified.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

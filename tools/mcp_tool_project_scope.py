@@ -257,11 +257,63 @@ def _server_for_call(server_name: str, key: Any, baseline: Any, *, connect: bool
     return clone
 
 
+def _rerender_project_sensitive(config: dict, cwd: str) -> dict:
+    """Re-render the clone config's project-sensitive values from their carried templates
+    (#151827 port, #140205): ``${workspaceFolder}`` and ``${PWD}`` resolved at config-load time
+    on the MCP loop thread, in the launch dir — a project-rooted dev server (Laravel Boost)
+    would run against the launch dir's project even with the clone's correct cwd. The project
+    refs bind to the clone's *cwd* directly (the workspace-folder resolver reads the
+    terminal-tool session record, not the runtime-cwd ContextVar, and a ``PWD`` env ref answers
+    with the parent's PWD — both the launch dir again); any remaining refs resolve through the
+    ordinary interpolator. Only project-sensitive templates re-render: a value carrying no such
+    template keeps the baseline's resolved form — re-rendering a credential ref would silently
+    rotate what the baseline child runs with. The clone's env also gets ``PWD`` = the clone cwd
+    when the config does not define it, so a server reading env ``PWD`` (instead of
+    ``process.cwd()``) still lands in the right project. Returns the config."""
+    import re
+
+    from tools.mcp_tool_config import _interpolate_env_vars
+
+    pwd_template = re.compile(r"\$\{(?:env:)?PWD\}")
+    project_template = re.compile(r"\$\{(?:workspaceFolder|workspaceFolderBasename|(?:env:)?PWD)\}")
+
+    def _value(value):
+        template = getattr(value, "template", None)
+        if not (isinstance(template, str) and project_template.search(template)):
+            return value  # plain or session-invariant: keep the baseline's resolved form
+        # The project refs bind to the clone's cwd directly: the workspace-folder resolver reads
+        # the terminal-tool session record, not the runtime-cwd ContextVar this thread carries,
+        # and an env ref would answer with the parent's PWD — both the launch dir again.
+        template = pwd_template.sub(lambda _m: cwd, template)
+        template = re.sub(r"\$\{workspaceFolderBasename\}", lambda _m: os.path.basename(cwd), template)
+        template = re.sub(r"\$\{workspaceFolder\}", lambda _m: cwd, template)
+        try:
+            return _interpolate_env_vars(str(template))
+        # health: allow BLE001 -- the baseline's resolved form is always usable; one render
+        # failure (an unscoped secret ref under multiplex) must not fail the call
+        except Exception:
+            logger.warning("MCP server '%s': could not re-render a project template for the "
+                           "per-project transport; keeping the baseline's resolved value",
+                           config.get("cwd"), exc_info=True)
+            return value
+
+    env = config.get("env")
+    if isinstance(env, dict):
+        rendered = {key: _value(value) for key, value in env.items()}
+        rendered.setdefault("PWD", cwd)
+        config["env"] = rendered
+    if isinstance(config.get("args"), list):
+        config["args"] = [_value(arg) for arg in config["args"]]
+    if isinstance(config.get("command"), str):
+        config["command"] = _value(config["command"])
+    return config
+
+
 def _connect_clone(server_name: str, baseline: Any, cwd: str) -> Any:
     from tools import mcp_tool_discovery as _discovery  # lazy: discovery imports this module
     # The baseline's rendered config, not a config.yaml re-read: an edit mid-conversation must not
     # give one project a different server than the tools were discovered from.
-    config = dict(baseline._config, cwd=cwd)
+    config = _rerender_project_sensitive(dict(baseline._config, cwd=cwd), cwd)
     timeout = float(config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
     try:
         clone = _loop._run_on_mcp_loop(
@@ -319,6 +371,15 @@ def _evict_idle_overflow(key: Any, *, keep: tuple) -> None:
             victims.append(clone)
             _scoped_servers.pop(clone_key)
             _scoped_connect_locks.pop(clone_key, None)
+            # The victim's keyed ledgers go with it, like pop_clones: a stale breaker strike or
+            # connect cooldown would resurrect when the project reconnects — opening the fresh
+            # child's breaker early or pausing its first connect (design §5A "pop the clone from
+            # every keyed ledger"; T00020 item 1).
+            _scoped_connect_failures.pop(clone_key, None)
+            _scoped_connect_retry_after.pop(clone_key, None)
+            _core._server_error_counts.pop(clone_key, None)
+            _core._server_breaker_opened_at.pop(clone_key, None)
+            _core._server_errors_all_application.pop(clone_key, None)
     from agent.async_utils import safe_schedule_threadsafe
     for clone in victims:  # never await under _core._lock: shutdown closes the anyio transport
         # Fire-and-forget ON THE MCP LOOP, never the caller's thread: the first call from a 9th

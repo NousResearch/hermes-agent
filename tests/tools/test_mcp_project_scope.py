@@ -205,6 +205,82 @@ def test_a_clone_in_use_is_never_evicted(probe, monkeypatch):
     assert busy._scoped_leases == 0, "the handler's lease was never released"
 
 
+def test_an_evicted_clones_keyed_ledgers_go_with_it(root, monkeypatch):
+    """Eviction pops the victim from every keyed ledger, not just the registry: a stale breaker
+    strike or connect cooldown on the evicted (key, cwd) would resurrect when the project
+    reconnects — opening a fresh child's breaker early or pausing its first connect (design §5A
+    "pop the clone from every keyed ledger"; kvnloo's eviction shape; T00020 item 1)."""
+    from tools import mcp_tool, mcp_tool_project_scope as scope
+    monkeypatch.setattr(scope, "_MAX_SCOPED_TRANSPORTS_PER_SERVER", 1)
+    # Fresh dirs: earlier tests leave live clones behind, and a fast-path hit would never reach
+    # the eviction this test exercises.
+    ev1, ev2 = root / "ev1", root / "ev2"
+    ev1.mkdir(exist_ok=True)
+    ev2.mkdir(exist_ok=True)
+    _call(cwd=str(ev1))
+    victim_key = ("cwdprobe", os.path.realpath(str(ev1)))
+    assert victim_key in scope._scoped_servers
+    # Strikes and an armed cooldown on the victim's clone key, exactly as a failing project leaves them.
+    with mcp_tool._lock:
+        mcp_tool._server_error_counts[victim_key] = 3
+        mcp_tool._server_breaker_opened_at[victim_key] = time.monotonic()
+        mcp_tool._server_errors_all_application[victim_key] = False
+        scope._scoped_connect_failures[victim_key] = 2
+        scope._scoped_connect_retry_after[victim_key] = time.monotonic() + 999
+
+    assert _call(cwd=str(ev2))[0] == str(ev2)  # over the cap: project ev1 holds the oldest _last_tool_call_at
+
+    try:
+        with mcp_tool._lock:
+            assert victim_key not in mcp_tool._server_error_counts, "a stale breaker strike survived eviction"
+            assert victim_key not in mcp_tool._server_breaker_opened_at
+            assert victim_key not in mcp_tool._server_errors_all_application
+        assert victim_key not in scope._scoped_connect_failures, "a stale connect cooldown survived eviction"
+        assert victim_key not in scope._scoped_connect_retry_after
+    finally:
+        # A failed assert above must not leave its planted breaker open for the later tests.
+        with mcp_tool._lock:
+            for ledger in (mcp_tool._server_error_counts, mcp_tool._server_breaker_opened_at,
+                           mcp_tool._server_errors_all_application):
+                ledger.pop(victim_key, None)
+        scope._scoped_connect_failures.pop(victim_key, None)
+        scope._scoped_connect_retry_after.pop(victim_key, None)
+
+
+def test_a_clones_project_sensitive_config_follows_the_project(root, probe):
+    """A clone re-renders the project-sensitive config values (``${workspaceFolder}``,
+    ``${PWD}``) from their carried templates in the CALLING session's context, and its env
+    carries ``PWD`` = its own cwd: the baseline rendered them on the MCP loop thread in the
+    launch dir, so a project-rooted dev server (Laravel Boost, #140205) would run against the
+    launch dir's project even with the clone's correct cwd. Values without a project-sensitive
+    template keep the baseline's resolved form — re-rendering a credential ref would silently
+    rotate what the baseline child runs with."""
+    import os as _os
+    from tools.mcp_tool_discovery import register_mcp_servers
+    env_probe = root / "envprobe.py"
+    env_probe.write_text(_PROBE.replace(
+        'result = {"content": [{"type": "text", "text": f"{START}|{os.getpid()}"}]}',
+        'result = {"content": [{"type": "text", "text": f"{os.environ.get(\'PROBE_CWD\', \'-\')}|'
+        '{os.environ.get(\'PROBE_PWD\', \'-\')}|{os.environ.get(\'PROBE_STATIC\', \'-\')}"}]}'),
+        encoding="utf-8")
+    register_mcp_servers({"cwdprobe_env": {
+        "command": sys.executable, "args": [str(env_probe)], "connect_timeout": 30, "timeout": 30,
+        "env": {"PROBE_CWD": "${workspaceFolder}/data", "PROBE_PWD": "${PWD}",
+                "PROBE_STATIC": "${pathSeparator}"}}})
+    set_session_cwd(probe.a)
+    try:
+        from tools.mcp_tool_handlers import _make_tool_handler
+        payload = _make_tool_handler("cwdprobe_env", "whereami", 30)({})
+    finally:
+        clear_session_cwd()
+    cwd_val, pwd_val, static_val = str(json.loads(payload)["result"]).split("|")
+
+    assert cwd_val == f"{probe.a}/data", \
+        f"${{workspaceFolder}} stayed frozen at the baseline's rendering: {cwd_val!r}"
+    assert pwd_val == probe.a, f"the clone's env PWD does not name the clone's project: {pwd_val!r}"
+    assert static_val == "/", "a session-invariant template changed across the clone"
+
+
 def test_reload_tears_down_a_servers_clones(root, probe):
     """Self-contained: the test creates BOTH servers' clones itself (an earlier version relied on
     clones earlier tests had left behind and failed standalone)."""

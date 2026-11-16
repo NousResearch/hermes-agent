@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Hermes · ARC69 NFT</title></head>
+<body>
+<header><a class="brand" href="#">H / HERMES</a><span class="version">NFT WORKSPACE / ARC69</span></header>
+<main>
+ <div class="eyebrow">CONFIGURE / ARC69</div>
+ <h1>Metadata on-chain.<br><span>Media stays yours.</span></h1>
+ <p class="lead">Algorand MainNet • ARC69 preparation and explicit NFT minting</p>
+ <div class="notice">Locally tested, not live-tested. Prepare, Sign, Broadcast and Confirm are separate actions. No automatic wallet connection, network queries, uploads or spend.</div>
+ <section aria-labelledby="wallet-heading">
+  <div class="section-top"><span class="step">01</span><h2 id="wallet-heading">Wallet</h2></div>
+  <p>Connect when ready to mint. Connection requests MainNet; preparation independently checks node identity. Connection is not spending approval.</p>
+  <div class="actions"><button id="connect" type="button">Connect Pera (MainNet)</button><button id="disconnect" class="secondary" type="button" disabled>Disconnect</button></div>
+  <label for="account">Shared public address</label><select id="account" disabled></select>
+  <p id="wallet-status" class="status" role="status">Not connected.</p>
+  <p class="hint">No automatic session restore. Never enter seed phrases, private keys, JWKs or tokens here. Pera handles wallet approval.</p>
+ </section>
+ <section aria-labelledby="storage-heading">
+  <div class="section-top"><span class="step">02</span><h2 id="storage-heading">Media → ArDrive</h2></div>
+  <p>Upload only your media to a Public Drive, or reuse an existing direct media URL. ArDrive handles authentication and storage payment. This app never uploads or fetches media.</p>
+  <p class="hint">Public publication is intended to be permanent and costs money. Upload only content you may distribute; never publish secrets. Copy the raw File Data Tx ID, not a share page or ArFS metadata record. IDs and URLs are validated locally, not checked for availability.</p>
+  <a id="ardrive" class="button secondary" href="https://app.ardrive.io" target="_blank" rel="noopener noreferrer">Open ArDrive ↗</a>
+ </section>
+ <section aria-labelledby="metadata-heading">
+  <div class="section-top"><span class="step">03</span><h2 id="metadata-heading">ARC69 JSON</h2></div>
+  <p>Generate compact JSON for the asset creation transaction's note. Required: <code>standard: "arc69"</code>. All fields below are optional; name and unit belong in the ASA settings.</p>
+  <p class="notice">The note is public transaction history, not encrypted or private storage. No metadata.json upload, media hash or metadata digest is needed. This app caps the note at 1024 UTF-8 bytes for standard-fee compatibility; this is an application cap, not an absolute protocol limit.</p>
+  <form id="metadata-form">
+   <label for="description">Description</label><textarea id="description" rows="3">Hermes</textarea>
+   <label for="media_url">Optional media_url (direct HTTPS or ipfs URL)</label><input id="media_url" spellcheck="false" value="https://arweave.net/wmocohO4PYO5wxtwPOOEfPBwwTBZP8GgIzqCz1qWtF4#i">
+   <label for="external_url">Optional external_url (HTTPS or ipfs)</label><input id="external_url" spellcheck="false">
+   <label for="mime_type">Optional mime_type</label><input id="mime_type" value="image/png" placeholder="image/png">
+   <label for="properties">Optional properties object</label><textarea id="properties" rows="4" spellcheck="false">{}</textarea>
+   <button id="apply-form" type="button">Generate ARC69 JSON</button>
+  </form>
+  <label for="raw">Exact generated note JSON</label><textarea id="raw" rows="9" spellcheck="false" readonly></textarea>
+  <pre id="note-size" class="inspect" aria-live="polite">No note generated.</pre>
+  <p class="hint">Editing any form field clears the generated note and prepared signature. Generate again before preparing. These exact UTF-8 JSON bytes go into the transaction note.</p>
+ </section>
+ <section aria-labelledby="asset-heading">
+  <div class="section-top"><span class="step">04</span><h2 id="asset-heading">ASA settings</h2></div>
+  <label for="asset-name">On-chain name (1–32 UTF-8 bytes)</label><input id="asset-name" value="Hermes" autocomplete="off">
+  <label for="asset-unit">On-chain unit (1–8 UTF-8 bytes)</label><input id="asset-unit" value="HRMS01" autocomplete="off">
+  <label for="asset-url">Direct media URL or raw File Data Tx ID (URL ≤96 UTF-8 bytes)</label><input id="asset-url" value="https://arweave.net/wmocohO4PYO5wxtwPOOEfPBwwTBZP8GgIzqCz1qWtF4#i" spellcheck="false">
+  <p class="hint">The ASA URL points to media, not JSON. Optional type fragments: #i image, #v video, #a audio, #p PDF, #h HTML. No assetMetadataHash is set.</p>
+  <label for="admin-policy">Administrative policy</label><select id="admin-policy"><option value="immutable" selected>Immutable — all administrative roles absent</option><option value="creator">Creator is manager — other roles absent</option></select>
+  <p class="hint">Immutable: no later manager metadata updates or destruction to reclaim the asset minimum balance. Creator-manager: later ARC69 updates need a new asset configuration transaction; existing history and ASA name/unit/URL do not change. This workspace implements creation only.</p>
+ </section>
+ <section aria-labelledby="mint-heading">
+  <div class="section-top"><span class="step">05</span><h2 id="mint-heading">Mint on MainNet</h2></div>
+  <p>One ASA: total 1, decimals 0, default frozen false. Ordinary unrekeyed single-Ed25519 Pera accounts only. No payment, rekey, close, group, lease, reserve, freeze or clawback. Optional manager is the creator only.</p>
+  <button id="prepare-mint" type="button" disabled>Prepare / review (read-only)</button>
+  <p class="hint">Reads suggested parameters and your public account from mainnet-api.algonode.cloud; no media or remote JSON call. Checks pinned MainNet identity, account, balance and SDK fee (1,000–10,000 microALGO). Separate asset minimum-balance commitment: 100,000 microALGO (0.1 ALGO), not a fee. Review expires after two minutes or a relevant edit.</p>
+  <pre id="mint-review" class="inspect">No transaction prepared.</pre>
+  <button id="sign-mint" type="button" disabled>Sign reviewed mint in Pera</button>
+  <p class="hint">Review sender, exact note, direct URL, roles, fee, validity and unsigned bytes. Signing requests exactly this payload; it does not submit it.</p>
+  <button id="broadcast-mint" type="button" disabled>Broadcast signed mint once</button>
+  <p class="hint">This button authorizes submission. Rechecks node/account and signature, then stores and reads back a public recovery receipt in this origin's localStorage before one POST. Receipt includes public sender, txid and unsigned bytes, never signed bytes or secrets. Do not delete it while outcome is unknown.</p>
+  <p id="mint-status" class="status" role="status">Not submitted.</p>
+  <pre id="mint-recovery" class="inspect">No recovery receipt.</pre>
+  <button id="check-confirmation" class="secondary" type="button" disabled>Confirm saved transaction (read-only)</button>
+  <p class="hint">Submission is not confirmation. A timeout means OUTCOME UNKNOWN: never resend or mint a replacement. Confirm checks the exact saved creation including note and reads back ASA parameters. No polling or automatic retry. Corrupt or legacy receipts block new mints; preserve the original storage and public txid for manual recovery.</p>
+  <button id="start-another" class="secondary" type="button" disabled>Start another NFT — may create a duplicate</button>
+  <p class="hint">Only available after fresh verified confirmation. This explicitly clears the confirmed receipt. Retain your public receipt first. Use one workspace tab; deleted storage or other browsers/tabs can bypass local duplicate prevention.</p>
+ </section>
+ <p id="error" role="alert" class="error"></p>
+ <footer>No automatic spend. Every MainNet action stays yours.</footer>
+</main><script type="module" src="/src/main.js"></script>
+</body></html>

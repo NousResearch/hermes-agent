@@ -108,6 +108,15 @@ class TestSmartApproveVerboseAnswers(unittest.TestCase):
         assert _smart_approve("rm -rf /data", "recursive delete") == "deny"
 
     @patch("agent.auxiliary_client.call_llm")
+    def test_interior_conflicting_verdict_escalates(self, mock_call_llm):
+        # The first line must not grant approval when a bare DENY follows,
+        # even if the final line is just the guardian's explanation.
+        mock_call_llm.return_value = self._make_response(
+            "APPROVE\nDENY\nThe command deletes /data."
+        )
+        assert _smart_approve("rm -rf /data", "recursive delete") == "escalate"
+
+    @patch("agent.auxiliary_client.call_llm")
     def test_unrecognized_verbose_answer_escalates(self, mock_call_llm):
         mock_call_llm.return_value = self._make_response(
             "This looks fine for a development machine."

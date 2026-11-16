@@ -104,7 +104,8 @@ def _verdict_from_answer(answer: str) -> str | None:
     after it, often cut off at ``max_tokens`` (#148382). Only the first and the last non-empty line
     can carry the verdict, and only when the whole line is the word; a verdict word mid-prose is
     never honoured, so verdict-shaped text quoted from the command cannot ride in. When the first
-    and last line both carry a verdict and disagree, the answer has no verdict (fail closed).
+    and last line both carry a verdict and disagree, or an interior standalone verdict
+    contradicts the boundary verdict, the answer has no verdict (fail closed).
     """
     lines = [line.strip() for line in answer.splitlines() if line.strip()]
     if not lines:
@@ -113,6 +114,12 @@ def _verdict_from_answer(answer: str) -> str | None:
     if first and last and first != last:
         return None
     verdict = first or last
+    # An explicit conflicting verdict inside the explanation must also veto approval.
+    if verdict:
+        for line in lines[1:-1]:
+            interior = _verdict_word(line)
+            if interior is not None and interior != verdict:
+                return None
     if verdict and len(lines) > 1:
         logger.info("Smart approvals: guardian added text around its verdict; judged on the %s line",
                     "first" if first else "last")

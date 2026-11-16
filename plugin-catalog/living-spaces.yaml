@@ -1,21 +1,21 @@
 name: living-spaces
 title: Living Spaces
 repo: https://github.com/akinduroifedayo/living-spaces
-sha: 4aea12db5375b30e90b5e0fa8f7d12ad7e0fdf98
+sha: 48c8709e340f655c771d764e852b353671eca2cd
 subdir: src/living-spaces
-version: "0.1.1"
+version: "0.1.2"
 description: "An open canvas for your bots in Hermes Desktop. Ask in chat and your bot builds dashboards, trackers, mini-apps and visual pieces in a Spaces tab. Each Space keeps its data, and you change it by asking. Disclosure — Spaces can fetch public HTTPS URLs through the plugin's mediated network path (Internet access is on by default per Space and can be turned off), forwarding the Space's own saved Cookie/Authorization headers; agent upkeep creates Hermes cron jobs that run model calls on their schedule; data saved in a Space, including any API keys you put there, is stored in its revisions and can enter model context."
 maintainer: akinduroifedayo
 tier: community
 category: desktop
 requires_hermes: ">=0.23.1"
-docs_url: https://github.com/akinduroifedayo/living-spaces/blob/4aea12db5375b30e90b5e0fa8f7d12ad7e0fdf98/src/living-spaces/README.md
+docs_url: https://github.com/akinduroifedayo/living-spaces/blob/48c8709e340f655c771d764e852b353671eca2cd/src/living-spaces/README.md
 platforms:
   - macos
 screenshots:
-  - https://raw.githubusercontent.com/akinduroifedayo/living-spaces/4aea12db5375b30e90b5e0fa8f7d12ad7e0fdf98/docs/design/premium-pass/regeneration/astra-run/shots/research-desktop-overview.png
-  - https://raw.githubusercontent.com/akinduroifedayo/living-spaces/4aea12db5375b30e90b5e0fa8f7d12ad7e0fdf98/docs/design/premium-pass/regeneration/astra-run/shots/sky-desktop-today.png
-  - https://raw.githubusercontent.com/akinduroifedayo/living-spaces/4aea12db5375b30e90b5e0fa8f7d12ad7e0fdf98/docs/design/premium-pass/regeneration/astra-run/shots/pair-desktop-progress.png
+  - https://raw.githubusercontent.com/akinduroifedayo/living-spaces/48c8709e340f655c771d764e852b353671eca2cd/docs/design/premium-pass/regeneration/astra-run/shots/research-desktop-overview.png
+  - https://raw.githubusercontent.com/akinduroifedayo/living-spaces/48c8709e340f655c771d764e852b353671eca2cd/docs/design/premium-pass/regeneration/astra-run/shots/sky-desktop-today.png
+  - https://raw.githubusercontent.com/akinduroifedayo/living-spaces/48c8709e340f655c771d764e852b353671eca2cd/docs/design/premium-pass/regeneration/astra-run/shots/pair-desktop-progress.png
 capabilities:
   provides_tools:
     - spaces_list
@@ -28,6 +28,7 @@ capabilities:
     - spaces_query
     - spaces_write_records
     - spaces_read_logs
+    - spaces_inspect
     - spaces_revisions
     - spaces_restore
     - spaces_refresh

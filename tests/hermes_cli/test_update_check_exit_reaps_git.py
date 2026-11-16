@@ -39,7 +39,7 @@ _CHILD = textwrap.dedent('''
     answers = {
         "https://api.github.com/repos/o/r/releases/latest":
             {"draft": False, "prerelease": False, "tag_name": "v1.2.3"},
-        "https://api.github.com/repos/o/r/commits/v1.2.3": {"sha": "%s"},
+        "https://api.github.com/repos/o/r/commits/v1.2.3": {"sha": "@SHA@"},
     }
     source_releases._json = answers.__getitem__  # GitHub's answers; only git is left to wait on
 
@@ -50,7 +50,7 @@ _CHILD = textwrap.dedent('''
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline and len(pathlib.Path(marker).read_text().split()) < 2:
         time.sleep(0.05)
-''' % SHA)
+''').replace("@SHA@", SHA)
 
 
 def _alive(pid: int) -> bool:

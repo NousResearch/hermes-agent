@@ -7,7 +7,6 @@ protocol peers, real staging I/O."""
 import asyncio
 import base64
 
-import acp
 import pytest
 from acp.schema import ImageContentBlock
 
@@ -15,6 +14,7 @@ from acp_adapter.gateway_commands import run_command
 from acp_adapter.gateway_server import GatewayACPAgent
 from hermes_cli.gateway_client import GatewayClientError
 from tests.acp_adapter.test_acp_image_staging_boundary import PNG
+from acp_adapter import wire as acp_wire
 
 
 class Peer:
@@ -80,7 +80,7 @@ async def test_paused_image_refusal_does_not_stage_image(tmp_path):
     agent._snapshots['s'] = dict(unknown)
     agent._gateway = Peer([dict(unknown)])
     agent._unacked['s'] = ('prior-retry', 'prior-id', ('prior-content', []))
-    prompt = [acp.text_block('explain image'), ImageContentBlock(type='image',
+    prompt = [acp_wire.text_block('explain image'), ImageContentBlock(type='image',
               data=base64.b64encode(PNG).decode(), mime_type='image/png')]
     with pytest.raises(GatewayClientError, match='unknown_execution'):
         await agent.prompt(prompt, 's')

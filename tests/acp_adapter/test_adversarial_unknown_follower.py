@@ -2,10 +2,10 @@
 import asyncio
 from unittest.mock import AsyncMock
 
-import acp
 import pytest
 
 from acp_adapter.gateway_server import GatewayACPAgent
+from acp_adapter import wire as acp_wire
 
 
 @pytest.mark.asyncio
@@ -30,7 +30,7 @@ async def test_successor_unknown_does_not_overwrite_completed_editor_prompt(befo
         return {'admission_id': 'ours'}
 
     agent._gateway.rpc.side_effect = submit
-    submitted = asyncio.create_task(agent.prompt([acp.text_block('our work')], 's'))
+    submitted = asyncio.create_task(agent.prompt([acp_wire.text_block('our work')], 's'))
     if not before_ack:
         await asyncio.sleep(0)
         assert agent._admissions['s'] == 'ours'

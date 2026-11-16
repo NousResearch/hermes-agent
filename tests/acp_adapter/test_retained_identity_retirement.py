@@ -8,13 +8,13 @@ One row per sweep site (SWEEP_retained-identity-retirement.md), each over a real
 import asyncio
 from types import SimpleNamespace
 
-import acp
 import pytest
 import pytest_asyncio
 
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
+from acp_adapter import wire as acp_wire
 
 pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
 
@@ -108,10 +108,10 @@ def _surface(name, owner):
         await asyncio.wait_for(agent.set_config_option(config_id="model", value=model, session_id=owner.sid), 5)
 
     async def acp_slash(agent, model):
-        await asyncio.wait_for(agent.prompt([acp.text_block(f'/model {model}')], owner.sid), 5)
+        await asyncio.wait_for(agent.prompt([acp_wire.text_block(f'/model {model}')], owner.sid), 5)
 
     async def acp_prompt(agent, text):
-        await asyncio.wait_for(agent.prompt([acp.text_block(text)], owner.sid), 5)
+        await asyncio.wait_for(agent.prompt([acp_wire.text_block(text)], owner.sid), 5)
 
     async def cli_model(view, model):
         await view.command(f'/model {model}')
@@ -167,13 +167,13 @@ async def test_a_repeated_prompt_after_a_control_is_new_work(owner, tmp_path, be
     try:
         owner.wire.lose = ('prompt.submit', lambda params: True, 'after')
         with pytest.raises(GatewayClientError, match='outcome is unknown'):
-            await agent.prompt([acp.text_block('yes')], owner.sid)
+            await agent.prompt([acp_wire.text_block('yes')], owner.sid)
         await _settled(owner, 1)
         if between == 'set-model':
             await asyncio.wait_for(agent.set_config_option(config_id='model', value='model-b', session_id=owner.sid), 5)
         else:
             await asyncio.wait_for(agent.fork_session(cwd=str(tmp_path), session_id=owner.sid), 5)
-        response = await asyncio.wait_for(agent.prompt([acp.text_block('yes')], owner.sid), 5)
+        response = await asyncio.wait_for(agent.prompt([acp_wire.text_block('yes')], owner.sid), 5)
         assert response.stop_reason == 'end_turn'
         assert owner.executed == ['yes', 'yes']
         assert len(list_session_admissions(owner.authority.db, session_id=owner.sid, pending_only=False)) == 2

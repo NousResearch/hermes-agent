@@ -214,7 +214,8 @@ class Agent:
             "session/new": schema.NewSessionRequest,
             "session/load": schema.LoadSessionRequest,
             "session/prompt": schema.PromptRequest,
-            "session/set_model": schema.SetSessionModelRequest,
+            # Removed from the SDK at 1.0; Hermes still speaks it to pre-stabilization agents.
+            "session/set_model": getattr(schema, "SetSessionModelRequest", None),
             "session/set_config_option": schema.SetSessionConfigOptionSelectRequest,
             "session/cancel": schema.CancelNotification,
         }

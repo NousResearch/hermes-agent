@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from websockets.protocol import State
+from acp_adapter import wire as acp_wire
 
 
 def event(kind, seq=1, sid='s', admission=None):
@@ -113,7 +114,6 @@ class PostAckWire:
 @pytest.mark.asyncio
 async def test_a_full_queue_never_drops_a_post_ack_recovery():
     """Session t fills the queue while session s's ack lands after a gap re-attach covering it."""
-    import acp
     from acp_adapter.gateway_server import GatewayACPAgent
     from hermes_cli.gateway_client import GatewayClient
     from tests.waiting import async_wait_until
@@ -132,7 +132,7 @@ async def test_a_full_queue_never_drops_a_post_ack_recovery():
 
         agent._conn.session_update.side_effect = deliver
         pump = agent._event_task = asyncio.create_task(agent._events())
-        prompt = asyncio.create_task(agent.prompt([acp.text_block('q')], 's'))
+        prompt = asyncio.create_task(agent.prompt([acp_wire.text_block('q')], 's'))
         try:
             await async_wait_until(lambda: entered.is_set() or prompt.done() or agent._failure is not None, timeout=5)
             assert entered.is_set(), f'recovery failed before the post-ack race: {agent._failure}'

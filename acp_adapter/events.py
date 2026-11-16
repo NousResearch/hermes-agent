@@ -10,7 +10,7 @@ import asyncio
 import logging
 import uuid
 from collections import deque
-from typing import Any, Callable, Deque, Dict
+from typing import Any, Callable
 
 import acp
 from acp.schema import AgentPlanUpdate, PlanEntry
@@ -19,6 +19,7 @@ from .tools import (
     _json_loads_maybe, build_tool_abandoned, build_tool_complete, build_tool_start, coerce_tool_args,
     make_tool_call_id,
 )
+from acp_adapter import wire as acp_wire
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +242,7 @@ def make_thinking_cb(
     message_ids: AssistantMessageIdAllocator | None = None,
 ) -> Callable:
     """Create a ``thinking_callback`` for AIAgent."""
-    return _make_text_cb(conn, session_id, loop, acp.update_agent_thought_text, message_ids)
+    return _make_text_cb(conn, session_id, loop, acp_wire.update_agent_thought_text, message_ids)
 
 
 def make_message_cb(
@@ -249,7 +250,7 @@ def make_message_cb(
     message_ids: AssistantMessageIdAllocator | None = None,
 ) -> Callable:
     """Create a callback that streams agent response text to the editor."""
-    return _make_text_cb(conn, session_id, loop, acp.update_agent_message_text, message_ids)
+    return _make_text_cb(conn, session_id, loop, acp_wire.update_agent_message_text, message_ids)
 
 
 def make_step_cb(

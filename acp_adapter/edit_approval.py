@@ -233,15 +233,15 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
 
 def build_acp_edit_tool_call(proposal: EditProposal):
     """Build the ToolCallUpdate payload for ACP request_permission."""
-    import acp
+    from acp_adapter import wire as acp_wire
     from agent.redact import redact_approval_display
 
     # The title is display text; the diff keeps the raw path the client opens.
-    return acp.update_tool_call(
+    return acp_wire.update_tool_call(
         f"edit-approval-{next(_PERMISSION_REQUEST_IDS)}", title=f"Approve edit: {redact_approval_display(proposal.path)}",
         kind="edit",
         status="pending",
-        content=[acp.tool_diff_content(path=proposal.path, old_text=proposal.old_text, new_text=proposal.new_text)],
+        content=[acp_wire.tool_diff_content(path=proposal.path, old_text=proposal.old_text, new_text=proposal.new_text)],
         raw_input={"tool": proposal.tool_name, "arguments": proposal.arguments},
     )
 

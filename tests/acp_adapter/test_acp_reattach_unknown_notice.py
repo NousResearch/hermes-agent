@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 import json
 from unittest.mock import AsyncMock
 
-import acp
 import pytest
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
@@ -14,6 +13,7 @@ from websockets.asyncio.server import serve
 import acp_adapter.gateway_server as server
 from acp_adapter.gateway_server import GatewayACPAgent
 from hermes_cli.gateway_client import GatewayClient
+from acp_adapter import wire as acp_wire
 
 
 def _owner(profile_id, epoch, pending, calls=None):
@@ -89,7 +89,7 @@ async def test_next_prompt_reconnects_after_the_lost_turn_was_discarded_while_of
         first.close()
         await first.wait_closed()
         await asyncio.wait_for(agent._event_task, 5)
-        response = await asyncio.wait_for(agent.prompt([acp.text_block("next")], "s"), 5)
+        response = await asyncio.wait_for(agent.prompt([acp_wire.text_block("next")], "s"), 5)
         assert response.stop_reason == "end_turn"
         assert calls == ["runtime.describe", "session.resume", "config.set", "prompt.submit"]
     finally:

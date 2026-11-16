@@ -4,7 +4,6 @@ from contextlib import asynccontextmanager
 import json
 from unittest.mock import AsyncMock
 
-import acp
 import pytest
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
@@ -12,6 +11,7 @@ from websockets.asyncio.server import serve
 import acp_adapter.gateway_server as server
 from acp_adapter.gateway_server import GatewayACPAgent
 from hermes_cli.gateway_client import GatewayClient
+from acp_adapter import wire as acp_wire
 
 
 class Owner:
@@ -75,8 +75,8 @@ async def test_editor_reconnects_to_a_restarted_gateway_without_resending(monkey
         await agent.load_session(cwd="/", session_id="s")
         # The in-flight turn's outcome is unknown: reported, never silently resubmitted.
         with pytest.raises(Exception, match="outcome is unknown"):
-            await asyncio.wait_for(agent.prompt([acp.text_block("in flight")], "s"), 5)
-        response = await asyncio.wait_for(agent.prompt([acp.text_block("after restart")], "s"), 5)
+            await asyncio.wait_for(agent.prompt([acp_wire.text_block("in flight")], "s"), 5)
+        response = await asyncio.wait_for(agent.prompt([acp_wire.text_block("after restart")], "s"), 5)
         assert response.stop_reason == "end_turn"
         assert agent._failure is None
         # The replacement was re-verified and re-subscribed before the new submit, and asked again

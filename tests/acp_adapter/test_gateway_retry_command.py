@@ -8,7 +8,6 @@ import asyncio
 import contextlib
 from types import SimpleNamespace
 
-import acp
 import pytest
 
 from acp_adapter.gateway_server import GatewayACPAgent
@@ -18,6 +17,7 @@ from gateway.session_authority import initialize_session_authority
 from gateway.session_controls import AuthorityConnection
 from hermes_cli.gateway_client import GatewayClientError
 from tests.acp_adapter.test_gateway_unacked_slash import SlashWire
+from acp_adapter import wire as acp_wire
 
 IMAGE = {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AA=='}}
 
@@ -90,7 +90,7 @@ async def test_retry_of_an_image_turn_is_the_commands_reply_and_keeps_history(tm
     async with _editor(tmp_path, monkeypatch) as e:
         e.db.append_message(e.sid, 'user', [{'type': 'text', 'text': 'what is this?'}, IMAGE])
         e.db.append_message(e.sid, 'assistant', 'a picture')
-        response = await asyncio.wait_for(e.agent.prompt([acp.text_block('/retry')], e.sid), 5)
+        response = await asyncio.wait_for(e.agent.prompt([acp_wire.text_block('/retry')], e.sid), 5)
         assert response.stop_reason == 'end_turn'
         assert any(u.startswith('/retry: retry does not support media') for u in e.updates), e.updates
         assert len(e.db.get_messages(e.sid)) == 2 and not e.executed
@@ -103,9 +103,9 @@ async def test_retry_after_a_lost_snapshot_refresh_replays_the_same_rewind(tmp_p
             e.db.append_message(e.sid, 'user', ask)
             e.db.append_message(e.sid, 'assistant', reply)
         with pytest.raises(GatewayClientError, match='disconnected'):
-            await asyncio.wait_for(e.agent.prompt([acp.text_block('/retry')], e.sid), 5)
+            await asyncio.wait_for(e.agent.prompt([acp_wire.text_block('/retry')], e.sid), 5)
         assert _users(e.db, e.sid) == ['first ask']  # the rewind committed before the refresh failed
-        response = await asyncio.wait_for(e.agent.prompt([acp.text_block('/retry')], e.sid), 5)
+        response = await asyncio.wait_for(e.agent.prompt([acp_wire.text_block('/retry')], e.sid), 5)
         assert response.stop_reason == 'end_turn'
         # The repeat replays the original rewind: the earlier turn stays, the retried text is the same.
         assert e.executed == ['second ask'], e.executed

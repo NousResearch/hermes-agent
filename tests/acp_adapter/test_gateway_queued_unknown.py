@@ -3,12 +3,12 @@ import asyncio
 from contextlib import suppress
 from unittest.mock import AsyncMock, call
 
-import acp
 import pytest
 
 from acp_adapter.gateway_server import GatewayACPAgent
 from hermes_cli.gateway_client import GatewayClientError
 from tests.waiting import async_wait_until
+from acp_adapter import wire as acp_wire
 
 
 @pytest.mark.asyncio
@@ -32,7 +32,7 @@ async def test_editor_follower_reports_unknown_without_poisoning_other_sessions(
         return {'admission_id': 'ours'}
 
     agent._gateway.rpc.side_effect = submit
-    submitted = asyncio.create_task(agent.prompt([acp.text_block('queued')], 's'))
+    submitted = asyncio.create_task(agent.prompt([acp_wire.text_block('queued')], 's'))
     if not before_ack:
         await asyncio.sleep(0)
         await agent._project(unknown)
@@ -40,7 +40,7 @@ async def test_editor_follower_reports_unknown_without_poisoning_other_sessions(
         await asyncio.wait_for(submitted, 5)
     agent._gateway.rpc.assert_awaited_once()
     assert agent._failure is None
-    assert (await agent.prompt([acp.text_block('independent')], 'other')).stop_reason == 'end_turn'
+    assert (await agent.prompt([acp_wire.text_block('independent')], 'other')).stop_reason == 'end_turn'
 
 
 @pytest.mark.asyncio
@@ -50,7 +50,7 @@ async def test_editor_refuses_new_prompt_until_lost_turn_is_resolved():
     agent._snapshots['s'] = {'pending': [{'admission_id': 'lost', 'status': 'unknown'}]}
     agent._gateway.rpc.return_value = {'pending': [{'admission_id': 'lost', 'status': 'unknown'}]}
     with pytest.raises(GatewayClientError, match='unknown_execution'):
-        await asyncio.wait_for(agent.prompt([acp.text_block('new input')], 's'), 5)
+        await asyncio.wait_for(agent.prompt([acp_wire.text_block('new input')], 's'), 5)
     agent._gateway.rpc.assert_awaited_once_with('session.resume', session_id='s')
 
 
@@ -74,11 +74,11 @@ async def test_editor_rechecks_lost_turn_after_discard_in_another_viewer():
 
     agent._gateway.rpc.side_effect = rpc
     with pytest.raises(GatewayClientError, match='unknown_execution'):
-        await agent.prompt([acp.text_block('still blocked')], 's')
+        await agent.prompt([acp_wire.text_block('still blocked')], 's')
     assert 'prompt.submit' not in calls
 
     owner_pending.clear()  # The classic chat acknowledged the lost turn with /discard.
-    response = await asyncio.wait_for(agent.prompt([acp.text_block('next prompt')], 's'), 5)
+    response = await asyncio.wait_for(agent.prompt([acp_wire.text_block('next prompt')], 's'), 5)
     assert response.stop_reason == 'end_turn'
     assert calls.count('prompt.submit') == 1
 
@@ -151,7 +151,7 @@ async def test_unknown_refresh_orders_pending_state_independently_of_reply_event
 
     agent._gateway.rpc.side_effect = rpc
     pump = asyncio.create_task(agent._events())
-    prompt = asyncio.create_task(agent.prompt([acp.text_block('next prompt')], 's'))
+    prompt = asyncio.create_task(agent.prompt([acp_wire.text_block('next prompt')], 's'))
     try:
         await asyncio.wait_for(entered.wait(), 5)
         # While the resume reply is assembled, the pump drains old pending state and a
@@ -204,7 +204,7 @@ async def test_stop_during_unknown_refresh_cancels_the_unsent_prompt():
         return {'admission_id': 'next'}
 
     agent._gateway.rpc.side_effect = rpc
-    prompt = asyncio.create_task(agent.prompt([acp.text_block('new input')], 's'))
+    prompt = asyncio.create_task(agent.prompt([acp_wire.text_block('new input')], 's'))
     await asyncio.wait_for(entered.wait(), 5)
     await agent.cancel('s')
     release.set()
@@ -228,7 +228,7 @@ async def test_resumed_unknown_turn_names_the_existing_discard_recovery():
     await agent.load_session(cwd='/', session_id='s')
     notice = agent._conn.session_update.await_args.kwargs['update'].content.text
     with pytest.raises(GatewayClientError) as refused:
-        await agent.prompt([acp.text_block('new input')], 's')
+        await agent.prompt([acp_wire.text_block('new input')], 's')
     for text in (notice, str(refused.value)):
         assert 'sessions discard s' in text and f'/discard {lost}' in text, text
         assert 'do not resend' in text
@@ -258,7 +258,7 @@ async def test_resumed_unknown_turn_can_be_discarded_without_leaving_the_editor(
         return cleared if resolved else unknown
     agent._gateway.rpc.side_effect = rpc
 
-    response = await agent.prompt([acp.text_block(f'/discard {lost}')], 's')
+    response = await agent.prompt([acp_wire.text_block(f'/discard {lost}')], 's')
 
     assert response.stop_reason == 'end_turn'
     assert agent._snapshots['s']['pending'] == []
@@ -290,7 +290,7 @@ async def test_editor_own_lost_turn_reports_unknown_not_end_turn(yield_between):
                               'payload': {'outcome': 'unknown', 'text': 'Worker execution is unknown.'}})
 
     agent._gateway.rpc.return_value = {'admission_id': 'ours'}
-    submitted = asyncio.create_task(agent.prompt([acp.text_block('work')], 's'))
+    submitted = asyncio.create_task(agent.prompt([acp_wire.text_block('work')], 's'))
     await asyncio.sleep(0)
     await lose_worker()
     with pytest.raises(GatewayClientError, match='unknown_execution'):

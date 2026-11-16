@@ -2,7 +2,6 @@
 import asyncio
 from types import SimpleNamespace
 
-import acp
 import pytest
 
 from acp_adapter.gateway_server import GatewayACPAgent
@@ -13,6 +12,7 @@ from gateway.session_controls import AuthorityConnection
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
+from acp_adapter import wire as acp_wire
 
 
 class Wire:
@@ -70,18 +70,18 @@ async def test_retry_after_lost_submit_ack_is_one_admission(tmp_path, monkeypatc
         if not settled_before_retry:
             authority._schedule = lambda ref: None  # the lost turn is still queued at retry time
         with pytest.raises(GatewayClientError, match='outcome is unknown'):
-            await agent.prompt([acp.text_block('same words')], 's')
+            await agent.prompt([acp_wire.text_block('same words')], 's')
         authority._schedule = schedule
         if settled_before_retry:
             await async_wait_until(lambda: 'ACK_same words' in agent._conn.updates, timeout=5,
                                    what='the lost turn settled before the retry')
-        response = await asyncio.wait_for(agent.prompt([acp.text_block('same words')], 's'), 5)
+        response = await asyncio.wait_for(agent.prompt([acp_wire.text_block('same words')], 's'), 5)
         assert response.stop_reason == 'end_turn'
         rows = list_session_admissions(authority.db, session_id='s', pending_only=False)
         assert len(rows) == 1 and executed == ['same words']
         assert agent._conn.updates.count('ACK_same words') == 1
         # A different prompt is new work with a fresh identity.
-        await asyncio.wait_for(agent.prompt([acp.text_block('other words')], 's'), 5)
+        await asyncio.wait_for(agent.prompt([acp_wire.text_block('other words')], 's'), 5)
         assert len(list_session_admissions(authority.db, session_id='s', pending_only=False)) == 2
     finally:
         agent._event_task.cancel()
@@ -117,9 +117,9 @@ async def test_repeated_prompt_after_other_work_is_new_work(tmp_path, monkeypatc
     agent._event_task = asyncio.create_task(agent._events())
     try:
         with pytest.raises(GatewayClientError, match='outcome is unknown'):
-            await agent.prompt([acp.text_block('yes')], 's')
+            await agent.prompt([acp_wire.text_block('yes')], 's')
         for words in ('other words', 'yes'):
-            response = await asyncio.wait_for(agent.prompt([acp.text_block(words)], 's'), 5)
+            response = await asyncio.wait_for(agent.prompt([acp_wire.text_block(words)], 's'), 5)
             assert response.stop_reason == 'end_turn'
         assert executed == ['yes', 'other words', 'yes']
         assert len(list_session_admissions(authority.db, session_id='s', pending_only=False)) == 3

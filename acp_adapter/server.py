@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone, UTC
+from datetime import datetime, UTC
 import contextlib
 import contextvars
 import json
@@ -13,7 +13,7 @@ import threading
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Callable, Deque, Optional
+from typing import Any, Callable, Optional
 
 import acp
 from acp.schema import (
@@ -44,6 +44,7 @@ from agent.turn_failure_copy import (
     CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY, CONTENT_REFUSED_NOTICE)
 from agent.interrupt_compat import request_hard_interrupt
 from tools.approval_context import reset_hermes_interactive_context, set_hermes_interactive_context
+from acp_adapter import wire as acp_wire
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,7 @@ def _user_history_updates(message: dict[str, Any]):
                 content=TextContentBlock(type="text", text=text),
                 field_meta={"hermes": {"contentRefused": True}},
             )
-        yield acp.update_agent_message_text(notice)
+        yield acp_wire.update_agent_message_text(notice)
         return
     if (chunk := _history_message_chunk("user", message)) is not None:
         yield chunk
@@ -176,7 +177,7 @@ def _history_replay_updates(history: list[dict[str, Any]]):
         elif role == "assistant":
             thought = _history_reasoning_text(message)
             if thought:
-                yield acp.update_agent_thought_text(thought)
+                yield acp_wire.update_agent_thought_text(thought)
             if (chunk := _history_message_chunk(role, message)) is not None:
                 yield chunk
             tool_calls = message.get("tool_calls")
@@ -929,7 +930,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             response_text = await asyncio.to_thread(self._handle_slash_command, user_text, state)
             if response_text is not None:
                 if self._conn:
-                    await self._conn.session_update(session_id, acp.update_agent_message_text(response_text))
+                    await self._conn.session_update(session_id, acp_wire.update_agent_message_text(response_text))
                     if previous_route != (state.model, getattr(state.agent, "provider", None)):
                         # Editors replace the selector list, including the retained approval policy.
                         options = await asyncio.to_thread(self._session_config_options, state)
@@ -943,7 +944,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         absorbed = self._claim_turn_or_queue(state, session_id, user_text, user_content, text_only_prompt)
         if absorbed is not None:
             if self._conn:
-                await self._conn.session_update(session_id, acp.update_agent_message_text(absorbed))
+                await self._conn.session_update(session_id, acp_wire.update_agent_message_text(absorbed))
             return PromptResponse(stop_reason="end_turn")
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
@@ -1092,7 +1093,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             suppress = interrupted and final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
             # Send the final text unless already streamed — or if a plugin hook transformed it after.
             if final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
-                update = acp.update_agent_message_text(final_response)
+                update = acp_wire.update_agent_message_text(final_response)
                 if state.message_ids is not None:
                     # A plugin-rewritten reply replaces the streamed bubble (same id); an
                     # unstreamed final response opens its own.
@@ -1129,7 +1130,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                     return
                 next_prompt = state.queued_prompts.pop(0)
             if conn:
-                await conn.session_update(session_id, acp.update_user_message_text(next_prompt))
+                await conn.session_update(session_id, acp_wire.update_user_message_text(next_prompt))
             await self.prompt(prompt=[TextContentBlock(type="text", text=next_prompt)], session_id=session_id)
 
     # ---- Session settings (ACP protocol methods) -----------------------------

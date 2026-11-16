@@ -7,6 +7,7 @@ import {
   CHUNK_BYTES,
   cloudEndpoint,
   createUndoLedger,
+  failureText,
   runBackup,
   transferAgent,
   type TransferEndpoint,
@@ -295,6 +296,23 @@ describe('base64Bytes', () => {
     for (const length of [0, 1, 2, 3, 4, 5]) {
       expect(base64Bytes(b64(new Uint8Array(length)))).toBe(length)
     }
+  })
+})
+
+describe('failureText', () => {
+  it("names the files the import could not restore, not the log's last lines", () => {
+    const lines = [
+      'Import incomplete: 355 files restored in 3.2s',
+      '  Target: ~/.',
+      '',
+      '  Warnings (1 files skipped):',
+      '  memories/MEMORY.md: [Errno 13] Permission denied',
+      'Running in Docker: start the gateway with hermes gateway run',
+      'Import incomplete: 1 file(s) were not restored (see Warnings above). Fix the cause and re-run the import.'
+    ]
+
+    expect(failureText(lines)).toBe('Warnings (1 files skipped):\nmemories/MEMORY.md: [Errno 13] Permission denied')
+    expect(failureText(['a', 'b', 'c', 'Error: bad archive'])).toBe('b\nc\nError: bad archive')
   })
 })
 

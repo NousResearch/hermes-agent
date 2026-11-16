@@ -3259,6 +3259,8 @@ delegation:
   max_resumable: 32                         # Per profile, how many such children keep their worktree pinned; the oldest beyond it loses its pin (the record stays).
   auto_resume: false                        # Opt-in: the gateway resumes children stopped by a limit (at its reset) or a restart/crash, at most twice each, silently (no completion while it waits; see delegate_task list), until you stop it, /stop or /new. Spends tokens unattended. Off = you continue them.
   auto_resume_deadline_minutes: 360         # With auto_resume: give up this long after a child's first stop and send the parent one failure.
+  memory_read: false                        # Opt-in: children may SEARCH the external memory provider (read-only; no writes, no auto-retain, no MEMORY.md). See Subagent Delegation → Read-only memory lookups.
+  memory_read_tools: []                     # With memory_read: allowed tools; [] = those the provider marks read-only. Can narrow a provider's list, never widen it.
   gateway_mode: auto                        # Gateway sessions: auto | inline | background. auto = join children inside the turn (one answer) on a messaging chat whose display.interim_assistant_messages is off. See Subagent Delegation → Messaging chats without interim messages.
 ```
 

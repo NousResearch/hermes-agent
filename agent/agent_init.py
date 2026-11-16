@@ -1152,6 +1152,7 @@ def _apply_display_config(agent, _agent_cfg, platform):
 
 
 def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
+    from agent.memory_read_policy import apply_memory_read_policy, initialize_memory_provider
     # Persistent memory (MEMORY.md + USER.md) — loaded from disk
     agent._memory_store = None
     agent._memory_enabled = False
@@ -1207,6 +1208,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
         # already-initialized manager: providers keep their prefetch/retain state across turns instead
         # of being re-initialized (#120116). No initialize_all — the providers are already bound.
         agent._memory_manager = memory_manager
+        apply_memory_read_policy(agent, memory_manager)
     elif not skip_memory:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
@@ -1214,10 +1216,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 agent._memory_manager = _MemoryManager()
                 _mp = resolve_memory_provider(_mem_provider_name, say=agent._emit_startup_warning)
-                if _mp is not None:
-                    agent._memory_manager.add_provider(_mp)
-                if agent._memory_manager.providers and agent._memory_manager.initialize_for_agent(
-                        say=agent._emit_startup_warning, **_memory_provider_init_kwargs(agent, platform)):
+                if initialize_memory_provider(agent, _mp, **_memory_provider_init_kwargs(agent, platform)):
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
@@ -2090,6 +2089,7 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None, memory_agent_context: str | None = None,
+    memory_read_tools: list[str] | None = None, memory_read_grant: bool = False,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
 ):
     from agent.safe_worker_policy import safe_worker_enabled

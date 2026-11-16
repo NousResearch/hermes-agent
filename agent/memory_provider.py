@@ -125,6 +125,8 @@ class MemoryProvider(ABC):
         ``~/.hermes``) and ``platform``; may include ``agent_context`` ("primary" |
         "subagent" | "cron" | "flush" — skip writes for non-primary contexts),
         ``agent_identity``, ``agent_workspace``, ``parent_session_id``, ``user_id``, ``user_id_alt``.
+        Read-only agents pass ``read_only=True`` BEFORE startup: skip all writes, including
+        pending-queue replay, identity seeding and background write workers.
         Agent builds also pass ``resumed`` (bool: an earlier turn of this session id ran) and
         ``message_count`` (int: messages already stored for it, which on TUI/Desktop can include the
         prompt being submitted). A new session id (subagent, cron run, fresh chat) or no session
@@ -165,6 +167,14 @@ class MemoryProvider(ABC):
     @abstractmethod
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         """OpenAI function-calling schemas ({"name", "description", "parameters"}); [] if none."""
+
+    def read_only_tool_names(self) -> list[str]:
+        """Names from :meth:`get_tool_schemas` that only READ memory, offered to read-only agents
+        (subagents under ``delegation.memory_read``). List a tool only if no call to it can store,
+        edit, delete or consolidate anything, client- or server-side. Default ``[]`` offers nothing.
+        Configuration can only narrow a valid declaration, never replace it; an empty, failed
+        or malformed declaration grants no memory access."""
+        return []
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
         """Handle one of this provider's tools; must return a JSON string."""

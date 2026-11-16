@@ -50,6 +50,8 @@ def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
             from agent.oneshot_footprint import agent_is_oneshot
             from toolsets import session_disabled_toolsets
             agent._configured_disabled_toolsets = disabled_override
+            if "memory" in disabled_override:
+                agent.memory_read_grant = False
             disabled = session_disabled_toolsets(
                 disabled_override, getattr(agent, "platform", None), oneshot=agent_is_oneshot(agent))
         agent.enabled_toolsets, agent.disabled_toolsets = enabled, disabled
@@ -435,9 +437,8 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     try:
         get_mem_schemas = _schema_getter("_memory_manager", "get_all_tool_schemas")
         if get_mem_schemas is not None:
-            from agent.memory_manager_tools import memory_provider_tools_enabled  # same gate inject_memory_provider_tools uses
-            if memory_provider_tools_enabled(
-                    enabled, getattr(agent, "disabled_toolsets", None), memory_tool_present="memory" in name_set):
+            from agent.memory_manager_tools import memory_provider_tools_exposed
+            if memory_provider_tools_exposed(agent, memory_tool_present="memory" in name_set):
                 for schema in get_mem_schemas():
                     _add(schema)
     except Exception:

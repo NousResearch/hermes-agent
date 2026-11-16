@@ -10,13 +10,13 @@ from __future__ import annotations
 import argparse
 
 
-def cmd_sandbox_run(args) -> int:  # noqa: ANN001
+def cmd_sandbox_run(args) -> int:
     from hermes_cli.sandbox_cmd import run_sandbox
 
     return run_sandbox(args)
 
 
-def cmd_sandbox(args) -> int:  # noqa: ANN001
+def cmd_sandbox(args) -> int:
     sub = getattr(args, "sandbox_command", None)
     if sub in ("run",):
         return cmd_sandbox_run(args)
@@ -69,8 +69,8 @@ def build_sandbox_parser(subparsers) -> None:
     run.add_argument("--setup", metavar="CMD",
                      help="Shell command run first in its own container (no credentials), e.g. dependency installs")
     run.add_argument("--setup-network", choices=("none", "open"), default="none",
-                     help="Network for --setup: none (default) or open (the runtime's default network: install "
-                          "scripts can then reach services on this host, the local network and the internet). "
+                     help="Network for --setup: none (default), or open for the runtime's default network: install "
+                          "scripts can then reach services on this host, the local network and the internet. "
                           "The run step never has a network")
     run.add_argument("--image", metavar="IMAGE",
                      help="Container image (default: terminal.docker_image)")

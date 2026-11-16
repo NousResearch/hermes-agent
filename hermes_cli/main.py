@@ -3109,9 +3109,8 @@ def _build_cli_parser():
     chat_parser.set_defaults(func=cmd_chat)
 
     build_model_parser(subparsers, cmd_model=cmd_model)
-    build_moa_parser(subparsers)
-    build_fallback_parser(subparsers)
-    build_worktree_parser(subparsers)
+    for _build in (build_moa_parser, build_fallback_parser, build_worktree_parser, build_sandbox_parser):
+        _build(subparsers)
     build_browser_parser(subparsers)
     build_secrets_parser(subparsers)
     # OUTBOUND egress firewall; ``hermes proxy`` (gateway group) is the INBOUND one.
@@ -3165,7 +3164,6 @@ def _build_cli_parser():
     build_dump_parser(subparsers, cmd_dump=cmd_dump)
     build_debug_parser(subparsers, cmd_debug=cmd_debug)
     build_backup_parser(subparsers, cmd_backup=cmd_backup)
-    build_sandbox_parser(subparsers)
     build_checkpoints_parser(subparsers)
     build_import_cmd_parser(subparsers, cmd_import=cmd_import)
     build_config_parser(subparsers, cmd_config=cmd_config)

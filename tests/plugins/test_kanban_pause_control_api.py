@@ -70,12 +70,19 @@ def test_get_is_read_only_and_post_returns_idempotent_readback(client):
 def test_invalid_board_reason_and_unknown_state_have_stable_errors(client):
     missing = client.get("/api/plugins/kanban/control?board=missing")
     assert missing.status_code == 404
+    missing_mutation = client.post(
+        "/api/plugins/kanban/control/pause",
+        json={"board": "missing"},
+    )
+    assert missing_mutation.status_code == 404
 
-    malformed = client.post(
+    malformed_board = client.get("/api/plugins/kanban/control?board=../escape")
+    assert malformed_board.status_code == 400
+    malformed_reason = client.post(
         "/api/plugins/kanban/control/pause",
         json={"reason": "x" * 2001},
     )
-    assert malformed.status_code == 400
+    assert malformed_reason.status_code == 400
 
     with kbc.connect_closing(board="default") as conn:
         conn.execute("DROP TABLE kanban_dispatch_control")

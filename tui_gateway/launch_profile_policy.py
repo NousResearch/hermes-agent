@@ -234,20 +234,12 @@ def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     two values it sees. Env-only keys (systemd ``Environment=``, ``op run``, Compose) are unaffected:
     nothing in the files shadows them.
     """
-    from agent.secret_scope import _is_global_env, build_profile_secret_scope
-    from gateway.bridged_env import follow_bridged_env
-    scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
-    # The frozen env's config.yaml-bridged lists follow the live bridge, or a user removed from the
-    # launch profile's config.yaml stays admitted until a restart; operator values stay frozen.
-    follow_bridged_env(scope)
-    profile = build_profile_secret_scope(Path(launch_home))
     from agent.secret_scope import LiveSecretScope
     from hermes_secret_routing import routed_provider
     provider = routed_provider()
     if provider is not None:
         return LiveSecretScope.for_profile(Path(launch_home), provider, _build_launch_secret_scope)
-    scope.update(profile)
-    return scope
+    return _build_launch_secret_scope(Path(launch_home))
 
 
 def follow_launch_bridged_env() -> None:
@@ -267,9 +259,13 @@ def follow_launch_bridged_env() -> None:
 
 def _build_launch_secret_scope(home):
     from agent.secret_scope import _is_global_env, _build_profile_secret_scope
-    from hermes_secret_routing import published_env_names
-    owned = published_env_names(home)
+    from hermes_secret_routing import published_env_names, routed_provider
+    owned = published_env_names(home) if routed_provider() is not None else ()
+    from gateway.bridged_env import follow_bridged_env
     scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k) and k not in owned}
+    # The frozen env's config.yaml-bridged lists follow the live bridge, or a user removed from the
+    # launch profile's config.yaml stays admitted until a restart; operator values stay frozen.
+    follow_bridged_env(scope)
     scope.update(_build_profile_secret_scope(home))
     return scope
 

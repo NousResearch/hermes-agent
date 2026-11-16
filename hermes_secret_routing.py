@@ -102,6 +102,7 @@ def reset_for_tests() -> None:
     with _PROVIDERS_LOCK:
         _PROVIDERS.clear()
         _BOOTSTRAP_LAYERS.clear()
+        _BOOTSTRAP_GENERATIONS.clear()
     with _PUBLISH_LOCK:
         _PUBLISHED.clear()
         _PUBLISHED_VERSIONS.clear()
@@ -326,13 +327,12 @@ def load_profile_dotenv(loader, **kwargs):
         snapshot = provider.current_snapshot(home)
         with profile_snapshot(home, snapshot):
             result = loader(**kwargs)
-            if not is_multiplex_active():
-                raw = read_profile_env(home / ENV_FILENAME)
-                key = hermes_home_key(home)
-                _PUBLISHED[key] = {name: os.environ[name] for name in raw
-                                   if not stays_local(provider, name) and name in os.environ}
-                _PUBLISHED_VERSIONS[key] = snapshot.version
-                _PUBLISHED_NAMES.setdefault(key, set()).update(_PUBLISHED[key])
+            raw = read_profile_env(home / ENV_FILENAME)
+            key = hermes_home_key(home)
+            _PUBLISHED[key] = {name: os.environ[name] for name in raw
+                               if not stays_local(provider, name) and name in os.environ}
+            _PUBLISHED_VERSIONS[key] = snapshot.version
+            _PUBLISHED_NAMES.setdefault(key, set()).update(_PUBLISHED[key])
         return result
 
 

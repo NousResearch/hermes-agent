@@ -389,8 +389,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # The agent's own streaming may be feeding an execution observer rather than this
                 # adapter, so ``already_streamed`` alone does not mean the consumer saw the deltas.
                 # Deduplicate only against deltas this consumer actually accepted; otherwise the
-                # commentary would be dropped (``on_segment_break`` carries no text).
-                if already_streamed and stream_consumer.stream_deltas_enabled:
+                # commentary would be dropped (``on_segment_break`` carries no text). A local route's
+                # viewer is that adapter's only audience and already took the deltas through
+                # ``message.delta``: handing it the text again records the streamed answer as a sent
+                # commentary, so a final that repeats it is suppressed (message.complete "").
+                if already_streamed and (stream_consumer.stream_deltas_enabled or local_viewer_route):
                     stream_consumer.on_segment_break()
                 else:
                     stream_consumer.on_commentary(text)

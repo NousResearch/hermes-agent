@@ -34,6 +34,12 @@ def gateway_browser(cli, connection, word: str, rest: str) -> None:
         if normalized is None:
             return
         params["url"] = normalized[0]
+        # An explicit loopback URL can be an SSH tunnel, not this machine.
+        if not os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip():
+            from hermes_cli.browser_connect import DESKTOP_ENV_KEYS
+            desktop_env = {key: os.environ[key] for key in DESKTOP_ENV_KEYS if os.environ.get(key)}
+            if desktop_env:
+                params["desktop_env"] = desktop_env
         print(f"   {_t('browser.checking', url=params['url'])}")
     try:
         result = connection.call("browser.manage", **params) or {}

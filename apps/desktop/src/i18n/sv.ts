@@ -1045,10 +1045,12 @@ export const svOverrides: TranslationOverrides = {
       keysSettings: 'Inställningar',
       mcp: 'MCP',
       archivedChats: 'Arkiverade chattar',
+      sessions: 'Sessioner',
       about: 'Om',
       billing: 'Fakturering',
       notifications: 'Aviseringar',
-      vault: 'Lösenord och inloggningar'
+      vault: 'Lösenord och inloggningar',
+      plugins: 'Insticksprogram'
     },
     fieldLabels: {
       model: 'Standardmodell',

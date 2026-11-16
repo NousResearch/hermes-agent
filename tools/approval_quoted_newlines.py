@@ -23,7 +23,7 @@ def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
     data turned ``"$(grep x f\nreboot)"`` into ``... f reboot)``, which no later stage can tell from an
     operand; the pre-fix scanner only caught it by refusing the whole command as malformed."""
     out: list[str] = []
-    for kind, i, j, quote in _scan_shell(command, start, end, subst="q"):
+    for kind, i, j, quote in _scan_shell(command, start, end, subst="q", comments=True):
         if kind == "subst":
             # j is the index just past the closer; keep the opener and closer, recurse into the body.
             body_start = i + (2 if command.startswith("$(", i) else 1)

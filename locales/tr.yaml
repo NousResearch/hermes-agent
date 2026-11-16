@@ -873,6 +873,9 @@ gateway:
     action_restarting: "yeniden başlatılıyor"
     cron_interrupted: "⚠️ Zamanlanmış '{job}' işi Hermes {action} olduğu için yarıda kesildi; bu çalıştırmada sonuç yok. Zamanı geldiğinde yeniden çalışacak; Hermes geri geldiğinde `hermes cron run {job}` ile hemen de çalıştırabilirsiniz."
     notice_shutdown: "⚠️ Hermes kapanıyor — geçerli göreviniz yarıda kesilecek. Yeniden çevrimiçi olduğunda herhangi bir mesaj gönderin; kaldığımız yerden devam etmeyi deneyeceğim."
+    notice_shutdown_reason: "⚠️ Hermes kapanıyor ({reason}) — geçerli göreviniz yarıda kesilecek. Yeniden çevrimiçi olduğunda herhangi bir mesaj gönderin; kaldığımız yerden devam etmeyi deneyeceğim."
+    reason_external_systemd: "systemd tarafından harici durdurma"
+    reason_external: "harici durdurma"
     notice_restart: "⚠️ Hermes yeniden başlatılıyor — geçerli göreviniz yarıda kesilecek. Yeniden başlatmadan sonra herhangi bir mesaj gönderin; kaldığınız yerden sürdürmeyi deneyeceğim."
   startup:
     handoff_thread_title: "Hermes — {title}"

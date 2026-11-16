@@ -898,6 +898,9 @@ gateway:
     action_restarting: "restarting"
     cron_interrupted: "⚠️ Scheduled job '{job}' was cut short because Hermes is {action}; no result this run. It will run again on schedule, or run it now with `hermes cron run {job}` once Hermes is back."
     notice_shutdown: "⚠️ Hermes is shutting down — your current task will be interrupted. When it is back online, send any message and I'll try to pick up where we left off."
+    notice_shutdown_reason: "⚠️ Hermes is shutting down ({reason}) — your current task will be interrupted. When it is back online, send any message and I'll try to pick up where we left off."
+    reason_external_systemd: "external stop from systemd"
+    reason_external: "external stop"
     notice_restart: "⚠️ Hermes is restarting — your current task will be interrupted. Send any message after the restart and I'll try to resume where you left off."
 
   startup:

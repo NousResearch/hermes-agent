@@ -873,6 +873,9 @@ gateway:
     action_restarting: "sendo reiniciado"
     cron_interrupted: "⚠️ A tarefa agendada '{job}' foi interrompida porque o Hermes está {action}; sem resultado nesta execução. Ela rodará de novo conforme o agendamento, ou execute agora com `hermes cron run {job}` quando o Hermes voltar."
     notice_shutdown: "⚠️ O Hermes está sendo encerrado — sua tarefa atual será interrompida. Quando ele voltar a ficar online, envie qualquer mensagem e tentarei continuar de onde paramos."
+    notice_shutdown_reason: "⚠️ O Hermes está sendo encerrado ({reason}) — sua tarefa atual será interrompida. Quando ele voltar a ficar online, envie qualquer mensagem e tentarei continuar de onde paramos."
+    reason_external_systemd: "parada externa pelo systemd"
+    reason_external: "parada externa"
     notice_restart: "⚠️ O Hermes está sendo reiniciado — sua tarefa atual será interrompida. Envie qualquer mensagem após o reinício e tentarei retomar de onde você parou."
   startup:
     handoff_thread_title: "Hermes — {title}"

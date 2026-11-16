@@ -873,6 +873,9 @@ gateway:
     action_restarting: "قيد إعادة التشغيل"
     cron_interrupted: "⚠️ قُطعت المهمة المجدولة '{job}' لأن Hermes {action}؛ لا نتيجة لهذا التشغيل. ستعمل مجددًا في موعدها، أو شغّلها الآن بـ `hermes cron run {job}` بعد عودة Hermes."
     notice_shutdown: "⚠️ Hermes قيد إيقاف التشغيل — ستُقطع مهمتك الحالية. عند عودته إلى الاتصال، أرسل أي رسالة وسأحاول المتابعة من حيث توقفنا."
+    notice_shutdown_reason: "⚠️ Hermes قيد إيقاف التشغيل ({reason}) — ستُقطع مهمتك الحالية. عند عودته إلى الاتصال، أرسل أي رسالة وسأحاول المتابعة من حيث توقفنا."
+    reason_external_systemd: "إيقاف خارجي من systemd"
+    reason_external: "إيقاف خارجي"
     notice_restart: "⚠️ Hermes قيد إعادة التشغيل — ستُقطع مهمتك الحالية. أرسل أي رسالة بعد إعادة التشغيل وسأحاول الاستئناف من حيث توقفت."
   startup:
     handoff_thread_title: "Hermes — {title}"

@@ -885,6 +885,9 @@ gateway:
     action_restarting: "újraindul"
     cron_interrupted: "⚠️ A(z) '{job}' ütemezett feladat megszakadt, mert a Hermes {action}; ebben a futásban nincs eredmény. Ütemezés szerint újra lefut, vagy futtasd most a `hermes cron run {job}` paranccsal, amint a Hermes visszatért."
     notice_shutdown: "⚠️ A Hermes leáll — a jelenlegi feladatod megszakad. Amikor újra elérhető, küldj egy tetszőleges üzenetet, és megpróbálom onnan folytatni, ahol abbahagytuk."
+    notice_shutdown_reason: "⚠️ A Hermes leáll ({reason}) — a jelenlegi feladatod megszakad. Amikor újra elérhető, küldj egy tetszőleges üzenetet, és megpróbálom onnan folytatni, ahol abbahagytuk."
+    reason_external_systemd: "külső leállítás a systemd által"
+    reason_external: "külső leállítás"
     notice_restart: "⚠️ A Hermes újraindul — a jelenlegi feladatod megszakad. Az újraindítás után küldj egy tetszőleges üzenetet, és megpróbálom onnan folytatni, ahol abbahagytad."
   startup:
     handoff_thread_title: "Hermes — {title}"

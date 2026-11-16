@@ -94,7 +94,30 @@ class CompactionWindowMixin:
             plan = self._drop_blank_echoes(working)  # blank echoes are non-tool rows: same indices
             if kept:  # a kept original is larger: the tail cut can move
                 compress_start, compress_end = self._compress_window(plan)
+        if compress_start < compress_end:
+            plan, offloaded = self._offload_window_results(plan, compress_start, compress_end)
+            pruned_count += offloaded
         return plan, pruned_count, compress_start, compress_end
+
+    def _offload_window_results(
+        self, plan: list[dict[str, Any]], start: int, end: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """The tool results the summary is about to replace, saved first: each one the prune left whole
+        inside ``plan[start:end]`` becomes its one-line stub naming the byte-exact file, so the summarizer
+        reads the pointer and the model can still open the exact output. Local backend only (elsewhere the
+        summarizer reads the bodies as before); a result whose write fails stays whole."""
+        from agent.context_compressor import _PRUNE_MIN_CHARS, _tool_calls_by_id
+        from agent.context_compressor_prune_archive import archive_pruned_originals
+        from tools.tool_result_storage import _backend_reads_host_files
+
+        if not _backend_reads_host_files():
+            return plan, 0
+        demoted, calls = list(plan), _tool_calls_by_id(plan)
+        changed = sum(self._demote_tool_result_at(demoted, i, calls, _PRUNE_MIN_CHARS) for i in range(start, end))
+        if not changed:
+            return plan, 0
+        rows, _written, kept = archive_pruned_originals(plan, demoted, getattr(self, "_session_id", "") or "")
+        return rows, changed - kept
 
     def _take_prepared_summary(
         self, messages: list[dict[str, Any]], compress_start: int, *, fresh: bool, provider_context: bool,

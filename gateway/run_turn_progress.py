@@ -331,7 +331,9 @@ class GatewayTurnProgressMixin:
         ):
             return None, None
         cmd_full = args["command"].rstrip()
-        header = "" if self._ctx.last_was_terminal_block[0] else t("gateway.progress.tool_head", emoji=emoji, tool=tool_name) + "\n"
+        from agent.display import get_tool_label_override
+        label = get_tool_label_override(tool_name) or tool_name
+        header = "" if self._ctx.last_was_terminal_block[0] else t("gateway.progress.tool_head", emoji=emoji, tool=label) + "\n"
         cap = self._preview_cap()
         lines = cmd_full.splitlines()
         cmd_short = lines[0] if lines else cmd_full
@@ -369,11 +371,17 @@ class GatewayTurnProgressMixin:
             return None
         if code is not None:
             return code
+        from agent.display import (
+            get_tool_label_override, get_tool_verb, prepare_tool_preview, tool_verb_connector, verb_drops_preview,
+        )
+        # display.tool_labels: an operator label takes the tool-name slot and beats the curated verb.
+        label = get_tool_label_override(tool_name)
         if not preview:
-            return t("gateway.progress.tool_pending", emoji=emoji, tool=tool_name)
-        from agent.display import get_tool_verb, prepare_tool_preview, tool_verb_connector, verb_drops_preview
+            return t("gateway.progress.tool_pending", emoji=emoji, tool=label or tool_name)
         prepared = prepare_tool_preview(tool_name, args, fallback=preview, max_len=self._preview_cap())
         preview = adapter.format_tool_preview(prepared) if adapter is not None else prepared.text
+        if label:
+            return t("gateway.progress.tool_preview", emoji=emoji, tool=label, preview=preview)
         # Friendly labels: human-phrased line for built-in tools ("🔍 Searching the web for ...")
         # by prefixing the verb onto the computed preview, so the command/url/query is kept.
         verb = get_tool_verb(tool_name)

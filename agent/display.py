@@ -115,6 +115,10 @@ class LocalEditSnapshot:
 # Configurable tool preview length; set once at startup from display.tool_preview_length.
 _tool_preview_max_len: int = 0  # 0 = unlimited
 _friendly_tool_labels: bool = True
+# display.tool_labels: operator {raw tool name: label}; an entry wins over the curated verb.
+_tool_label_overrides: dict[str, str] = {}
+# display.trim_path_previews: False shows read_file's full path instead of its basename.
+_trim_path_previews: bool = True
 
 
 def set_tool_preview_max_len(n: int) -> None:
@@ -150,6 +154,24 @@ def set_friendly_tool_labels(enabled: bool) -> None:
     """Toggle friendly human-phrased tool labels (display.friendly_tool_labels)."""
     global _friendly_tool_labels
     _friendly_tool_labels = bool(enabled)
+
+
+def set_tool_label_overrides(mapping: Any) -> None:
+    """Set the ``display.tool_labels`` map; non-dict values and blank labels are ignored."""
+    global _tool_label_overrides
+    items = mapping.items() if isinstance(mapping, dict) else ()
+    _tool_label_overrides = {str(k): str(v).strip() for k, v in items if v is not None and str(v).strip()}
+
+
+def get_tool_label_override(tool_name: str) -> str | None:
+    """Operator label for *tool_name* from ``display.tool_labels``, or None."""
+    return _tool_label_overrides.get(tool_name) if tool_name else None
+
+
+def set_trim_path_previews(enabled: bool) -> None:
+    """Toggle basename-only file-path previews (display.trim_path_previews)."""
+    global _trim_path_previews
+    _trim_path_previews = bool(enabled)
 
 
 def get_skin_tool_prefix() -> str:
@@ -417,7 +439,9 @@ def _preview_shell(key: str):
 
 def _preview_read_file(args: dict, max_len: int) -> str | None:
     path = args.get("path") or args.get("file") or args.get("filepath")
-    label = (Path(str(path).replace("\\", "/")).name or str(path)) if path is not None else None
+    label = None if path is None else str(path)
+    if label is not None and _trim_path_previews:
+        label = Path(label.replace("\\", "/")).name or label
     return None if label is None else _tail_trunc(f"{label} {_read_file_line_label(args)}".strip(), max_len) or None
 
 
@@ -599,20 +623,29 @@ def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) ->
     ``args=None`` gives a verb-only phrase (``display.live_status: verb`` keeps previews out
     of shared channels). None for ``_thinking`` or disabled labels so callers use their
     static default. Default ``max_len`` stays under Slack's ~50-char status truncation.
+    A ``display.tool_labels`` entry is used as the verb even when friendly labels are off.
     """
-    if not tool_name or tool_name == "_thinking" or not _friendly_tool_labels:
+    if not tool_name or tool_name == "_thinking":
         return None
-    verb = _tool_verb(tool_name)
+    override = get_tool_label_override(tool_name)
+    if not override and not _friendly_tool_labels:
+        return None
+    verb = override or _tool_verb(tool_name)
     phrase = (t("display.status_phrase.verb", verb=f"{verb[0].lower()}{verb[1:]}") if verb
               else t("display.status_phrase.using_tool", tool=tool_name))
-    with_preview = args and verb and tool_name not in _TOOL_VERBS_NO_PREVIEW
+    with_preview = args and verb and (override or tool_name not in _TOOL_VERBS_NO_PREVIEW)
     preview = build_tool_preview(tool_name, args, max_len=None) if with_preview else None
     if preview:  # previews can contain newlines (terminal commands); keep the first line
-        phrase = f"{phrase}{tool_verb_connector(tool_name)}{preview.splitlines()[0].strip()}"
+        connector = ": " if override else tool_verb_connector(tool_name)
+        phrase = f"{phrase}{connector}{preview.splitlines()[0].strip()}"
     return phrase[: max_len - 2].rstrip() + "…" if len(phrase) > max_len - 1 else phrase + "…"
 
 
 def build_tool_label(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
+    override = get_tool_label_override(tool_name)  # display.tool_labels beats curated/bridge labels
+    if override:
+        preview = build_tool_preview(tool_name, args, max_len=max_len)
+        return f"{override}: {preview}" if preview else override
     labels = bridge_tool_labels(tool_name, args)
     if labels:
         label = labels[0]

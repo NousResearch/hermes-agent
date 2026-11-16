@@ -830,10 +830,13 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         if policy:
             enabled_toolsets = policy_turn_toolsets(active_authority(self), policy, user_config, source.chat_id)
         adapter = self._delivery_adapter_for(source)
-        # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
+        # Tool preview length (0 = no limit), friendly tool labels (default on), operator label
+        # overrides (default none) and basename-only path previews (default on), per-platform.
         for _setter, _setting, _default, _cast in (
             ("set_tool_preview_max_len", "tool_preview_length", 0, lambda v: int(v) if v else 0),
             ("set_friendly_tool_labels", "friendly_tool_labels", True, bool),
+            ("set_tool_label_overrides", "tool_labels", {}, lambda v: v),
+            ("set_trim_path_previews", "trim_path_previews", True, bool),
         ):
             with suppress(Exception):
                 from agent import display as _agent_display

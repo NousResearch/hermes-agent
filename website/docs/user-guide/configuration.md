@@ -2388,6 +2388,9 @@ display:
   timestamps: false       # When true, prefixes user and assistant labels with timestamps in the CLI / TUI transcript
   timestamp_format: "%H:%M"  # strftime format for those timestamps (e.g. "%b-%d %H:%M" for month-day)
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+  friendly_tool_labels: true  # Human-phrased labels for built-in tools ("Searching the web for …") in the CLI spinner and gateway tool progress
+  tool_labels: {}         # Per-tool label overrides {raw tool name: label}; an entry beats the curated label (see below)
+  trim_path_previews: true  # read_file previews show the file's basename; false shows the full path
   turn_summary: true      # CLI only: print a one-line post-turn accounting footer after each interactive turn
   spinner_token_flow: true # CLI only: append live cumulative turn tokens to the spinner timer
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
@@ -2399,6 +2402,36 @@ display:
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   cli_rebuild_scrollback_on_redraw: false  # Classic CLI: also wipe terminal scrollback (CSI 3J) on /redraw / Ctrl+L / width-change resize recovery. Enable when a terminal/tmux stack stamps stale prompt chrome into scrollback on maximize/restore.
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
+```
+
+### Tool labels and path previews
+
+With `display.friendly_tool_labels: true` (default), built-in tools render with a curated, human-phrased label in the CLI spinner, gateway tool-progress lines and the Slack live status (`🔍 Searching the web for weather in NYC`). Tools without a curated label (MCP, plugin and custom tools) show their raw name and argument preview (`⚙️ mcp_gbrain_query: "q3 revenue"`).
+
+`display.tool_labels` maps a raw tool name to a label of your choice. It is empty by default, so output is unchanged until you add entries:
+
+```yaml
+display:
+  tool_labels:
+    web_search: "Looking things up"          # replaces the curated "Searching the web for"
+    mcp_gbrain_query: "Searching information" # MCP/plugin tools have no curated label
+```
+
+- A mapped tool's label replaces both the raw name and the curated label; the preview is unchanged. Gateway progress shows `🔍 Looking things up: "weather in NYC"`, the CLI spinner `Looking things up: weather in NYC`, and the Slack live status `is looking things up: weather in NYC…`.
+- Unmapped tools keep their current rendering: the curated label when one exists, the raw name otherwise.
+- Entries apply even when `friendly_tool_labels` is `false`; that switch only controls the curated labels.
+- Keys are the tool name the model called (the name shown in raw progress lines). Blank labels are ignored.
+- `verbose` tool progress keeps raw tool names, since it is a debugging view.
+- Per platform: `display.platforms.<platform>.tool_labels` **replaces** the global map for that platform (the two are not merged).
+
+`display.trim_path_previews` (default `true`) controls file-path previews that are shortened to a file name: `read_file` shows `STATUS.md` rather than `/srv/app/docs/STATUS.md`. Set it to `false` to show the full path. Other path previews (`write_file`, `patch`) already show the path as given. `display.tool_preview_length` still caps the result, keeping the end of the path. Override per platform with `display.platforms.<platform>.trim_path_previews`:
+
+```yaml
+display:
+  trim_path_previews: true
+  platforms:
+    slack:
+      trim_path_previews: false   # developer channel: full paths
 ```
 
 ### Per-turn summary and spinner token flow

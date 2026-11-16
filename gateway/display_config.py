@@ -35,6 +35,11 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Working-state text on text-rendering indicators (Slack assistant status): "full"/true = verb +
     # argument preview, "verb" = verb only (keeps paths out of shared channels), "off"/false = static.
     "live_status": "full",
+    # Operator {raw tool name: label} for tool-progress lines; an entry beats the curated
+    # friendly label. A per-platform map replaces (does not merge with) the global one.
+    "tool_labels": {},
+    # True = file-path previews (read_file) show the basename; False = the full path.
+    "trim_path_previews": True,
 }
 
 # Tiers: HIGH = editing, personal/team use; MEDIUM = editing but customer-facing;
@@ -190,6 +195,13 @@ def _norm_choice(choices: tuple[str, ...]) -> Any:
     return norm
 
 
+def _norm_label_map(value: Any) -> dict[str, str] | None:
+    """A str->str map; anything else is unsupported (warned once, then inherited)."""
+    if not isinstance(value, dict):
+        return None
+    return {str(k): str(v).strip() for k, v in value.items() if v is not None and str(v).strip()}
+
+
 def _norm_int(value: Any) -> int:
     try:
         return int(value)
@@ -212,6 +224,8 @@ _NORMALISERS: dict[str, Any] = {
     "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
     "reasoning_style": _norm_choice(("code", "blockquote", "subtext")),
     "tool_preview_length": _norm_int,
+    "tool_labels": _norm_label_map,
+    "trim_path_previews": _norm_bool,
 }
 
 

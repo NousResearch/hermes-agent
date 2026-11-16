@@ -225,11 +225,19 @@ def test_fallback_chain_entry_resolves_fallback_providers_syntax():
         assert entry_out_of_bounds is None
 
 
-def test_fallback_destination_from_entry_model_precedence():
-    """_fallback_destination_from_entry prioritizes entry model over passed fb_model."""
-    entry = {"provider": "opencode-go", "model": "deepseek-v4.1-flash", "base_url": "https://api.opencode.ai/v1"}
-    dest = _fallback_destination_from_entry(entry, MagicMock(), fb_model="stale-primary-model")
-    assert dest.model == "stale-primary-model"
+def test_fallback_destination_from_entry_prefers_resolved_fb_model():
+    """_fallback_destination_from_entry prefers normalized fb_model over raw entry model."""
+    entry = {"provider": "opencode-go", "model": "raw-config-model", "base_url": "https://api.opencode.ai/v1"}
+    dest = _fallback_destination_from_entry(entry, MagicMock(), fb_model="normalized-candidate-model")
+    assert dest.model == "normalized-candidate-model"
+    assert dest.provider == "opencode-go"
+
+
+def test_fallback_destination_from_entry_falls_back_to_entry_model():
+    """_fallback_destination_from_entry uses entry model when fb_model is None."""
+    entry = {"provider": "opencode-go", "model": "configured-entry-model", "base_url": "https://api.opencode.ai/v1"}
+    dest = _fallback_destination_from_entry(entry, MagicMock(), fb_model=None)
+    assert dest.model == "configured-entry-model"
     assert dest.provider == "opencode-go"
 
 

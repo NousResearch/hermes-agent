@@ -18,12 +18,19 @@ written) names the kept-local lines an import would change; any name stops the b
 check and the staging read one capture of the files' bytes (:func:`check_and_stage`); a file that
 changed before the staging completed is checked again on its new bytes.
 
+The cleanup after the plane answers rewrites ``.env`` / ``auth.json`` only while each still holds
+the bytes the check and the staging read (:class:`Checked`, compared under the file's lock). A file
+another writer changed in between is left as it is: the next boot stages its entries again and the
+plane, which now holds the profile, wins (what it already holds is dropped, the rest is set aside
+in the ``*.unimported`` files and ``hermes doctor`` warns), so a line added there is never lost.
+
 Each step is idempotent: a crash anywhere leaves the staging file, and the next boot redoes the
 step it stopped in. Nothing here logs or raises with a value.
 """
 from __future__ import annotations
 
 import codecs
+import hashlib
 import io
 import json
 import logging
@@ -54,6 +61,18 @@ class Sources(NamedTuple):
     staging: bytes | None
 
 
+class Checked(NamedTuple):
+    """Digests of the ``.env`` and ``auth.json`` bytes the import checked and staged (None: absent),
+    the ``.env`` as it is once the loader's sanitizing was written: the only contents the cleanup
+    may rewrite."""
+    env: bytes | None
+    auth: bytes | None
+
+
+def _digest(raw: bytes | None) -> bytes | None:
+    return None if raw is None else hashlib.sha256(raw).digest()
+
+
 def capture(home: Path) -> Sources:
     """*home*'s import inputs, each read once. An unreadable ``.env`` / ``auth.json`` reads as absent
     here (the loader and the auth store report it); an unreadable staging file raises."""
@@ -69,12 +88,13 @@ def unimported_paths(home: Path) -> tuple[Path, Path]:
     return Path(home) / UNIMPORTED_ENV, Path(home) / UNIMPORTED_AUTH
 
 
-def _dotenv_file(path: Path) -> tuple[bytes, str, list]:
-    """*path* as the launch load reads it: ``(BOM, codec, bindings)``, the bindings from
-    python-dotenv's parser (``hermes_cli.env_loader._parse_dotenv_file``'s), so a quoted value
-    spans its lines and every binding carries its exact source text (``original.string``).
-    Invalid UTF-8 decodes as latin-1, as there. Raises ``OSError`` (absent, unreadable)."""
-    raw = path.read_bytes()
+def _dotenv_file(path: Path, raw: bytes | None = None) -> tuple[bytes, str, list]:
+    """*path* (or its *raw* bytes, already read) as the launch load reads it: ``(BOM, codec,
+    bindings)``, the bindings from python-dotenv's parser (``hermes_cli.env_loader._parse_dotenv_file``'s),
+    so a quoted value spans its lines and every binding carries its exact source text
+    (``original.string``). Invalid UTF-8 decodes as latin-1, as there. Raises ``OSError`` (absent,
+    unreadable)."""
+    raw = path.read_bytes() if raw is None else raw
     bom = codecs.BOM_UTF8 if raw.startswith(codecs.BOM_UTF8) else b""
     body = raw[len(bom):]
     try:
@@ -151,13 +171,12 @@ def _read_json(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def check_and_stage(home: Path, provider, profile: str) -> None:
+def check_and_stage(home: Path, provider, profile: str) -> Checked:
     """Check, then stage, one capture of *home*'s files (:class:`Sources`): the check and the
-    staging read the same bytes. When ``.env`` or ``auth.json`` changed before the staging
-    completed, the staging is undone and the new bytes are checked again; after
-    :data:`STAGE_ROUNDS` such rounds the boot fails closed. A refusal leaves every file, an
-    earlier unfinished staging included, as it was."""
-    from hermes_cli.env_loader import _sanitize_env_file_if_needed
+    staging read the same bytes, which the result names for the cleanup (:func:`finish`). When
+    ``.env`` or ``auth.json`` changed before the staging completed, the staging is undone and the
+    new bytes are checked again; after :data:`STAGE_ROUNDS` such rounds the boot fails closed. A
+    refusal leaves every file, an earlier unfinished staging included, as it was."""
     from hermes_secret_routing import SecretStoreUnavailable
     home = Path(home)
     earlier = None
@@ -171,15 +190,37 @@ def check_and_stage(home: Path, provider, profile: str) -> None:
         if names := refusal_names(home, provider, sources):
             raise SecretStoreUnavailable(refusal_text(profile, names))
         stage(home, provider, sources)
-        if capture(home)[:2] == sources[:2]:
-            # The loader's own rewrite, before the cleanup reads the file (the check read it sanitized).
-            _sanitize_env_file_if_needed(_env_path(home))
-            return
+        if (checked := _settle(home, sources)) is not None:
+            return checked
     _restore(home / STAGING, earlier)
     raise SecretStoreUnavailable(
         f"Remote secrets: the .env or auth.json of profile {profile!r} kept changing while its one-time "
         "import into the secrets plane was being prepared. Hermes does not start (nothing was sent; there "
         "is no fallback to the local store). Restart Hermes once nothing else is editing them.")
+
+
+def _settle(home: Path, sources: Sources) -> Checked | None:
+    """The :class:`Checked` digests of *sources*, or None when ``.env`` or ``auth.json`` no longer
+    holds their bytes. Under the ``.env`` lock, a ``.env`` the loader sanitizes is written
+    sanitized (the loader's own rewrite, which the check already read in memory), so the cleanup
+    compares against the bytes the file then holds."""
+    from hermes_cli.config import _env_write_lock
+    from hermes_cli.env_loader import sanitized_env_lines
+    path = _env_path(home)
+    with _env_write_lock(path):
+        if capture(home)[:2] != sources[:2]:
+            return None
+        env = sources.env
+        lines = None if env is None else sanitized_env_lines(env, path)
+        if lines is not None:
+            written = "".join(lines).encode("utf-8")
+            try:
+                _write_bytes(path, written, stat.S_IMODE(path.stat().st_mode))
+                env = written
+            except OSError:
+                pass   # best effort, as the loader's: the file keeps the checked bytes
+        lines = None
+        return Checked(_digest(env), _digest(sources.auth))
 
 
 def stage(home: Path, provider, sources: Sources | None = None) -> None:
@@ -223,16 +264,17 @@ def prepared_entries(home: Path) -> tuple[dict[str, str], dict[str, Any]]:
     return dict(staged.get("env") or {}), dict(staged.get("auth") or {})
 
 
-def finish(home: Path, profile: str, view, provider, entries, imported: bool) -> None:
+def finish(home: Path, profile: str, view, provider, entries, imported: bool, checked: Checked) -> None:
     """Publish local cleanup and diagnostics only after releasing the fetch lock.
 
     Staging survives a failed cleanup, so a later boot can finish it against the plane's view.
+    The files are rewritten only while they hold the *checked* bytes (:func:`_keep_bootstrap_only`).
     """
     env, records = entries
     if env or records:
         if not imported:
             _move_unimported(home, profile, view, env, records)
-        _keep_bootstrap_only(home, provider)
+        _keep_bootstrap_only(home, provider, checked)
     _remove(Path(home) / STAGING)
     if imported:
         logger.info("Remote secrets: imported %d env name(s) and %d auth record(s) of profile %r",
@@ -319,8 +361,10 @@ def _write_bytes(path: Path, data: bytes, mode: Any = None) -> None:
         raise
 
 
-def _keep_bootstrap_only(home: Path, provider) -> None:
-    """Rewrite *home*'s ``.env`` and ``auth.json`` to their bootstrap entries. In ``.env`` each
+def _keep_bootstrap_only(home: Path, provider, checked: Checked) -> None:
+    """Rewrite *home*'s ``.env`` and ``auth.json`` to their bootstrap entries, each only while it
+    holds the *checked* bytes (compared under its lock): a file another writer changed since the
+    check is left whole, and the next boot imports or sets aside what it holds. In ``.env`` each
     other assignment is removed whole (a quoted value with all its lines); comments, blank lines,
     lines the parser cannot read and the bootstrap assignments stay byte for byte, except a
     bootstrap assignment that references a name the import takes: it becomes the value the launch
@@ -334,15 +378,21 @@ def _keep_bootstrap_only(home: Path, provider) -> None:
     if env_path.exists():
         lookup = _reference_env(env_path)   # before the file lock: it takes the loader's lock
         with _env_write_lock(env_path):
-            bom, codec, bindings = _dotenv_file(env_path)
-            kept, changed = _kept_text(bindings, lookup, keeps)
-            if changed:
-                _write_bytes(env_path, bom + kept.encode(codec), stat.S_IMODE(env_path.stat().st_mode))
-            bindings = kept = lookup = None
+            raw = _read_if(env_path, checked.env)
+            if raw is not None:
+                bom, codec, bindings = _dotenv_file(env_path, raw)
+                kept, changed = _kept_text(bindings, lookup, keeps)
+                if changed:
+                    _write_bytes(env_path, bom + kept.encode(codec), stat.S_IMODE(env_path.stat().st_mode))
+            raw = bindings = kept = lookup = None
     auth_path = Path(home) / "auth.json"
     if auth_path.exists():
         with auth._auth_store_lock(target_path=auth_path):
-            raw = json.loads(auth_path.read_text(encoding="utf-8-sig"))
+            raw = _read_if(auth_path, checked.auth)
+            if raw is None:
+                invalidate_env_file_cache()
+                return
+            raw = json.loads(raw.decode("utf-8-sig"))
             keep = provider.bootstrap_auth_records()
             local = auth_store_from_records({rid: r for rid, r in auth_records(raw).items() if rid in keep})
             for k in ("version", "updated_at"):
@@ -351,6 +401,20 @@ def _keep_bootstrap_only(home: Path, provider) -> None:
             _write_bytes(auth_path, json.dumps(local).encode("utf-8"), 0o600)
             raw = local = None
     invalidate_env_file_cache()
+
+
+def _read_if(path: Path, digest: bytes | None) -> bytes | None:
+    """*path*'s bytes when they are the checked ones (*digest*), else None: the file changed after
+    the import read it (or did not exist then), so the cleanup leaves it whole."""
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    if digest is not None and _digest(raw) == digest:
+        return raw
+    logger.warning("Remote secrets: %s changed while its entries were being imported; it is left as it is "
+                   "and the next start imports or sets aside what it holds", path.name)
+    return None
 
 
 def _kept_text(bindings: list, lookup: dict[str, str], keeps) -> tuple[str, bool]:

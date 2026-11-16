@@ -297,7 +297,7 @@ class _BlockingFirstRPC(_PromptRecordingRPC):
         self.prompts.append((kwargs["profile"], kwargs["prompt"]))
         if len(self.prompts) == 1:
             self.first_started.set()
-            assert self.release_first.wait(timeout=2)
+            assert self.release_first.wait(timeout=30)
         kwargs["on_terminal"](
             {"status": "settled", "text": f"reply from {kwargs['profile']}"}
         )
@@ -308,7 +308,7 @@ def _server():
     return SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
 
 
-def _wait_for(predicate, timeout=2.0):
+def _wait_for(predicate, timeout=30.0):  # positive wait; 2 s ran out on a loaded runner
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -635,7 +635,7 @@ def test_active_same_thread_followup_waits_for_current_task(tmp_path: Path):
         event_id="user-1",
         payload={"text": "@ops start", "thread_id": "thread-1"},
     )
-    assert service.rpc.first_started.wait(timeout=2)
+    assert service.rpc.first_started.wait(timeout=30)
     service.send(
         room_id="room-1",
         event_id="user-2",

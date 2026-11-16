@@ -141,7 +141,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         "like '5h'/'2d'/'1w', or an ISO timestamp (bare prune with no filters "
         "defaults to 90 days; any filter matches all ages)")
     _flag(sessions_prune, "--include-archived",
-        help="Also delete archived sessions (excluded by default)")
+        help="Also delete archived sessions (excluded by default). With --never-active: also the never-active rows that sessions.auto_archive has already archived")
     _flag(sessions_prune, "--include-pinned",
         help="Also delete pinned sessions (excluded by default — pin is a keep flag)")
     _flag(sessions_prune, "--never-active",

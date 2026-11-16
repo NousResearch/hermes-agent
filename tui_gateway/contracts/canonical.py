@@ -115,10 +115,13 @@ canonical_method("session.mutate", params=SessionMutateParams, result=SessionMut
 
 class SessionPruneParams(Params):
     """Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as
-    ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``)."""
+    ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).
+    ``include_archived`` goes with ``never_active_days`` only (``--never-active --include-archived``):
+    archived never-active rows are swept too; with ``filters`` the archived filter is already inside them."""
 
     filters: dict[str, JsonValue] | None = None
     never_active_days: float | None = None
+    include_archived: bool | None = None
 
 
 class SessionPruneResult(Result):

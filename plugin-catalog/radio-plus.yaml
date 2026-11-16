@@ -1,0 +1,20 @@
+name: radio-plus
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: 365117e0f21c90e71deae501c81c0df235e8c4e1
+subdir: public/radio-plus
+description: "Live radio in the status bar with a station list you own: edit a station name and stream address, add any stream, search Radio Browser by name, country or genre, browse the Shoutcast directory, see the track each stream announces, and read a log line that explains why a stream will not play. Results load a page at a time as you scroll. Disclosure: searching and playing stations sends requests to Radio Browser, the Shoutcast directory, and the station being played, which is read for its track title."
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/radio-plus
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/365117e0f21c90e71deae501c81c0df235e8c4e1/public/radio-plus/docs/hero.png
+screenshots:
+  - https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/365117e0f21c90e71deae501c81c0df235e8c4e1/public/radio-plus/docs/screenshot-tags.png
+  - https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/365117e0f21c90e71deae501c81c0df235e8c4e1/public/radio-plus/docs/screenshot.png
+version: "1.5.2"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

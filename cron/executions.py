@@ -7,6 +7,7 @@ to match the claim-time fingerprint is not proof of death. Terminal states are i
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import os
@@ -44,6 +45,56 @@ FIRER_FINISHED_STATES = frozenset({"completed", "failed", "cancelled"})
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
+# Ledger contention bounds. The handoff path (post-handoff waiter, adopting worker, dashboard) all
+# write and read this file while the gateway keeps writing it. SQLite's default 5s busy timeout
+# expired under load on 2026-11-16 (loadavg 118) and the waiter booked a *transient* lock as
+# "Restart-safe cron worker failed after handoff: database is locked" — failing a job whose worker
+# had not even adopted its row. Widen the window and retry the rolled-back attempt.
+LEDGER_BUSY_TIMEOUT_MS = 15000
+# Delays between retries of a whole ledger operation. Each entry is a full re-attempt on a fresh
+# connection: a "database is locked" error means the transaction never committed, so re-running a
+# CAS update is safe (the failed attempt left no effect).
+LEDGER_LOCK_RETRY_DELAYS = (0.2, 0.5, 1.0, 2.0)
+
+
+def is_lock_contention(exc: BaseException) -> bool:
+    """True for SQLite's transient ``locked``/``busy`` errors (never corruption or schema errors)."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    text = str(exc).lower()
+    return (
+        "database is locked" in text
+        or "database table is locked" in text
+        or "database is busy" in text
+    )
+
+
+def retry_on_lock(fn, *args, **kwargs):
+    """Run ``fn`` re-attempting it while SQLite reports transient contention.
+
+    Callers use this for operations that must not be reported as job failures when the only problem
+    was another connection holding the write lock for longer than the busy timeout.
+    """
+    delays = (0.0, *LEDGER_LOCK_RETRY_DELAYS)
+    for index, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
+        try:
+            return fn(*args, **kwargs)
+        except sqlite3.OperationalError as exc:
+            if not is_lock_contention(exc) or index == len(delays) - 1:
+                raise
+
+
+def retries_on_lock(fn):
+    """Decorator form of :func:`retry_on_lock` for a self-contained ledger operation."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        return retry_on_lock(fn, *args, **kwargs)
+
+    return wrapper
+
 
 # --- executions ledger --------------------------------------------------------------------------
 
@@ -56,7 +107,13 @@ def _connect() -> sqlite3.Connection:
 
     path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
     _ensure_cron_dir(path.parent)
-    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
+    return open_db(
+        path,
+        db_label="cron/executions.db",
+        synchronous_full=True,
+        busy_timeout_ms=LEDGER_BUSY_TIMEOUT_MS,
+        initialize=_initialize_schema,
+    )
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
@@ -245,6 +302,7 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
     )
 
 
+@retries_on_lock
 def create_execution(
     job_id: str, *, source: str, scheduled_instant: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -282,6 +340,7 @@ def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
             raise RuntimeError("Cron occurrence could not be bound before dispatch")
 
 
+@retries_on_lock
 def mark_execution_handoff_pending(execution_id: str) -> Optional[dict[str, Any]]:
     """Fence restart recovery while an external worker is adopting a claim."""
     with _transaction() as conn:
@@ -299,6 +358,7 @@ def mark_execution_handoff_pending(execution_id: str) -> Optional[dict[str, Any]
     return record
 
 
+@retries_on_lock
 def adopt_claimed_execution(execution_id: str) -> Optional[dict[str, Any]]:
     """Atomically transfer and start an attempt in its worker process.
 
@@ -344,6 +404,7 @@ def mark_execution_running(execution_id: str) -> Optional[dict[str, Any]]:
     return record
 
 
+@retries_on_lock
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
     delivery_outcome: Optional[str] = None, cancelled: bool = False,
@@ -492,6 +553,7 @@ def settle_unstarted_execution(execution_id: str, job_id: str, error: str) -> No
                      job_id, execution_id, error, record_err)
 
 
+@retries_on_lock
 def recover_interrupted_executions() -> int:
     """Mark abandoned attempts unknown without scheduling retries: rows whose owner is provably
     dead, plus rows whose live owner holds a claim older than the derived stale bound (the
@@ -568,6 +630,7 @@ def recover_interrupted_executions() -> int:
     return changed
 
 
+@retries_on_lock
 def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
     """Record one attempt as ``unknown`` with a cause this process actually observed.
 
@@ -623,6 +686,7 @@ def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
     return True
 
 
+@retries_on_lock
 def give_up_execution(execution_id: str, *, reason: str) -> bool:
     """The firer itself gave up on its in-flight attempt (``CronExecutionUnknown``): record it
     ``unknown`` now, owner-fenced to this process, instead of leaving it ``running`` until a

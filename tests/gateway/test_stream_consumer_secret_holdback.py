@@ -322,8 +322,18 @@ async def test_a_word_holding_a_key_prefix_mid_word_is_shown_before_the_stream_e
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", ["am_" + _BODY, "x-" + _KEY, "backup_" + _KEY])
+@pytest.mark.parametrize("key", ["am_" + _BODY, "x-" + _KEY, "backup_" + _KEY, "\x1b[1;31mam_" + _BODY])
 async def test_a_key_prefix_at_a_word_start_or_after_a_separator_is_still_held(key):
     adapter = _adapter()
     await _stream(adapter, "Your key is ", *[key[i:i + 3] for i in range(0, len(key), 3)], " - keep it safe.")
     assert not _raw_runs([content for _op, _id, content in adapter.ops], _BODY, width=8)
+
+
+@pytest.mark.asyncio
+async def test_a_colored_key_start_is_held_like_the_redactor_sees_it():
+    # The redactor drops CSI sequences before matching, so ``\x1b[32mAKIA`` starts an AWS ID
+    # there although the raw char before ``AKIA`` is ``m``: the hold must judge the same text.
+    aws = "AKIA" + "QZ7XW3RT4KL8VB3N"
+    adapter = _adapter()
+    await _stream(adapter, "The id is \x1b[32m", *[aws[i:i + 4] for i in range(0, len(aws), 4)], "\x1b[0m ok.")
+    assert not _raw_runs([content for _op, _id, content in adapter.ops], aws, width=8)

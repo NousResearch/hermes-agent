@@ -768,6 +768,34 @@ def _load_user_dotenv(path: Path, *, load_pass: int) -> bool:
     return True
 
 
+def _boot_stores(home_path: Path, project_env_path: Path | None) -> dict[str, str] | None:
+    """Boot the config backend, then the secret store, for *home_path*; publish and return the
+    store's env view (None with the local store).
+
+    The config backend is selected here — after the .env files, before the first config.yaml read
+    (``_apply_external_secret_sources`` reads ``secrets:``) — so an unavailable backend stops the
+    process before any reader could fall back to defaults (config-config design §4.4, D11/D32). A
+    remote backend fetches this home's config here, failing closed; the file backend does nothing.
+
+    The administrator-managed .env is part of the deployment the backend boots from (it may be
+    where the selector, plane URL or instance id live). The override=True loads before this may have
+    replaced those names with the home's values, so re-publish the deployment names (only those)
+    with the bootstrap precedence -- managed last -- before the boot. The full managed overlay
+    still applies once, last, where it keeps its precedence over secret-source results.
+
+    The secret store boots next, before the first secret read: a store that keeps secrets off disk
+    fetches this home's view here (failing closed) and it is published like the .env was."""
+    from hermes_cli.config_backend import bootstrap_deployment, get_config_backend
+    from hermes_secret_routing import boot_secret_store
+
+    bootstrap_deployment(home_path, project_env_path)
+    get_config_backend().boot(home_path)
+    routed_view = boot_secret_store(home_path)
+    if routed_view is not None:
+        publish_routed_env(routed_view)
+    return routed_view
+
+
 def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
@@ -832,9 +860,14 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _sanitize_env_file_if_needed(project_env_path)
 
+    from hermes_secret_routing import routed_provider
+    routed = routed_provider() is not None  # the selector bootstrap_deployment just published
     if user_env.exists() and _load_user_dotenv(user_env, load_pass=load_pass):
         loaded.append(user_env)
         _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
+    # A store that keeps the profile's secrets off disk publishes its view HERE, where the local
+    # profile .env loads: .op.env and the project .env (its ${VAR} expansion too) see it the same way.
+    routed_view = _boot_stores(home_path, project_env_path) if routed else None
 
     # .op.env AFTER .env so .env wins, but the bootstrap OP_SERVICE_ACCOUNT_TOKEN reaches
     # apply_onepassword_secrets() even in cron with no shell state; gitignored so the token never enters
@@ -844,7 +877,8 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(op_env, override=False, load_pass=load_pass)
 
     if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not user_env.exists(), load_pass=load_pass)
+        _load_dotenv_with_fallback(project_env_path, override=not (user_env.exists() or routed_view),
+                                   load_pass=load_pass)
         loaded.append(project_env_path)
 
     # The override=True loads above wrote the raw .env line (``__BITWARDEN_MANAGED__`` placeholder, stale
@@ -856,26 +890,8 @@ def load_hermes_dotenv(
             if os.environ.get(name) != value:
                 os.environ[name] = value
 
-    # The config backend is selected here — after the .env files, before the first config.yaml read
-    # (``_apply_external_secret_sources`` reads ``secrets:``) — so an unavailable backend stops the
-    # process before any reader could fall back to defaults (config-config design §4.4, D11/D32). A
-    # remote backend fetches this home's config here, failing closed; the file backend does nothing.
-    from hermes_cli.config_backend import get_config_backend
-
-    # The administrator-managed .env is part of the deployment the backend boots from (it may be
-    # where the selector, plane URL or instance id live). The override=True loads above may have
-    # replaced those names with the home's values, so re-publish the deployment names (only those)
-    # with the bootstrap precedence -- managed last -- before the boot. The full managed overlay
-    # still applies once, last below, where it keeps its precedence over secret-source results.
-    bootstrap_deployment(home_path, project_env_path)
-    get_config_backend().boot(home_path)
-    # The secret store boots next, before the first secret read: a store that keeps secrets off
-    # disk fetches this home's view here (failing closed) and it is published like the .env was.
-    from hermes_secret_routing import boot_secret_store
-
-    routed_view = boot_secret_store(home_path)
-    if routed_view is not None:
-        publish_routed_env(routed_view)
+    if not routed:
+        _boot_stores(home_path, project_env_path)
 
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
     # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing

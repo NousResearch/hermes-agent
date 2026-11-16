@@ -318,3 +318,29 @@ def test_the_global_auth_fallback_with_the_local_store_still_keys_on_the_file(tm
     (root / "auth.json").write_text(json.dumps({"providers": {"x": {"k": 1}}}), encoding="utf-8")
     assert auth._load_global_auth_store()["providers"] == {"x": {"k": 1}}
     assert auth._global_auth_store_cache[1] == __import__("utils").file_cache_version(root / "auth.json")
+
+
+def test_the_project_env_sees_the_stores_view_where_it_saw_the_profile_env(store, tmp_path, monkeypatch):
+    provider, home = store
+    (home / ".env").write_text("VIEW_STORE_TOKEN=boot\n", encoding="utf-8")
+    provider.seed_external(home, {"ROUTED_API_KEY": MARK, "SHARED_NAME": "from-the-store"})
+    project = tmp_path / "project.env"
+    project.write_text("DERIVED=${ROUTED_API_KEY:-fallback}\nSHARED_NAME=from-the-project\n", encoding="utf-8")
+    for name in ("ROUTED_API_KEY", "SHARED_NAME", "DERIVED", "VIEW_STORE_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    from hermes_cli.env_loader import load_hermes_dotenv
+    load_hermes_dotenv(hermes_home=home, project_env=project)
+    assert os.environ["DERIVED"] == MARK
+    assert os.environ["SHARED_NAME"] == "from-the-store"  # the profile's value fills first, as its .env did
+
+
+def test_with_no_local_env_file_the_stores_view_still_outranks_the_project_env(store, tmp_path, monkeypatch):
+    provider, home = store
+    provider.seed_external(home, {"SHARED_NAME": "from-the-store"})
+    project = tmp_path / "project.env"
+    project.write_text("SHARED_NAME=from-the-project\nPROJECT_ONLY=filled\n", encoding="utf-8")
+    for name in ("SHARED_NAME", "PROJECT_ONLY"):
+        monkeypatch.delenv(name, raising=False)
+    from hermes_cli.env_loader import load_hermes_dotenv
+    load_hermes_dotenv(hermes_home=home, project_env=project)
+    assert os.environ["SHARED_NAME"] == "from-the-store" and os.environ["PROJECT_ONLY"] == "filled"

@@ -227,9 +227,8 @@ class BoundSecrets:
     """An installed secret mapping plus the home it was built for, when the binder declared one:
     the provenance ``serves_routed_profile`` needs when a binding skips the home override.
 
-    Immutable, and weakly referenceable (a plain tuple is not): ``agent.secret_scope`` keeps a
-    weak roster of installed scopes per home so a secret store's refresh reaches them without
-    keeping a finished activity's scope alive."""
+    The mapping retains its own layer provenance: non-file-backed stores are read through the
+    provider's current snapshot, without registering or retaining finished activities."""
 
     __slots__ = ("__weakref__", "mapping", "profile_home")
 

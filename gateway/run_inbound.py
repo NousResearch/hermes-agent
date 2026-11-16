@@ -732,6 +732,9 @@ class GatewayInboundMixin(
                 with suppress(RuntimeStoreError):
                     await authority.cancel_queued(actor, ref, row['admission_id'])
         handle = authority._handle(ref)
+        from gateway.completion_delivery.inbox import pause_completions
+        with suppress(RuntimeStoreError):
+            await pause_completions(authority, ref, handle.execution_generation)
         if handle.execution_state == 'running':
             # Settled meanwhile (stale_generation): there is no claimed turn left to stop.
             with suppress(RuntimeStoreError):

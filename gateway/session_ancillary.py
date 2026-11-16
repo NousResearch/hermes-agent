@@ -416,6 +416,8 @@ async def stop_processes(connection, ref, params):
         raise RuntimeStoreError('invalid_params')
     registry, targets = _owned_targets(connection, ref, params,
                                        select=lambda p: not p.exited or p._scope_stop_pending)
+    from gateway.completion_delivery.inbox import pause_completions
+    await pause_completions(connection.authority, ref, connection.authority._handle(ref).execution_generation)
 
     def kill():
         results = [registry.kill_process(pid, source='process.stop', consume_output=False) for pid in targets]

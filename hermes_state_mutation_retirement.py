@@ -114,6 +114,8 @@ def retire_terminal_receipts(conn, session_ids):
             row['lineage_json'] = '[]'
             row['retired_at'] = time.time()
             _compact_result(conn, row['admission_id'])
+            conn.execute('DELETE FROM state_meta WHERE key=?',
+                         ('gateway.completion_exposure.v1:' + row['admission_id'],))
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                          (ADMISSION_PREFIX + row['admission_id'], _json(row)))
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
@@ -161,6 +163,8 @@ def retire_sessions(conn, session_ids, *, expiring=()):
     retire_routes(conn, session_ids, expiring=expiring)
     from hermes_state_local import retire_local_receipts
     retire_local_receipts(conn, session_ids)
+    from hermes_cli.task_delivery.store import retire_sessions as retire_work_items
+    retire_work_items(conn, session_ids)
 
 
 # Mutation-receipt fields that copy user content: the rewound message, a compaction summary and
@@ -310,6 +314,7 @@ def retire_routes(conn, session_ids, *, expiring=()):
         _mark_retired(conn, RETIRED_PREFIX + sid, expires=sid in expiring, own=True)
         conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.api.settings.v1.' + sid,))
         conn.execute('DELETE FROM state_meta WHERE key=?', (VIEWER_CLOSE_PREFIX + sid,))
+        conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.completion_hold.v1:' + sid,))
     targets = set(session_ids)
     for row in conn.execute('SELECT scope,session_key,entry_json FROM gateway_routing').fetchall():
         if entry_session_id(row['entry_json']) in targets:

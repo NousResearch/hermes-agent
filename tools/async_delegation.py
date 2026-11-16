@@ -4,8 +4,8 @@
 The parent dispatches a subagent on a module-level daemon executor and returns a handle
 immediately. On completion a ``type="async_delegation"`` event (self-contained task-source
 block) is pushed onto the SHARED ``process_registry.completion_queue`` the CLI/gateway drain
-while idle, so results surface as a NEW turn (never mid-turn) and inherit its de-dup and
-crash-recovery wiring. Only the async lifecycle lives here; the child run is an injected ``runner``."""
+as durable input with de-duplication and crash recovery. Canonical local owners may expose
+an authenticated child result at a fresh tool boundary; other surfaces retain the idle FIFO path. Only the async lifecycle lives here; the child run is an injected ``runner``."""
 
 from __future__ import annotations
 

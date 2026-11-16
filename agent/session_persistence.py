@@ -9,6 +9,7 @@ from contextlib import nullcontext
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.completion_delivery import remember_exposure
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     _DB_PERSISTED_MARKER,
@@ -364,12 +365,21 @@ def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[di
     """One transaction for the turn's new rows: on failure nothing lands and no markers are stamped."""
     if not batch_rows:
         return
-    agent._session_db.append_messages_batch(
-        session_id=agent.session_id, messages=batch_rows,
+    options = dict(
         compression_lock_holder=getattr(agent, "_active_compression_lock_holder", None),
         turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
         turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
     )
+    inbox = (getattr(agent, "_completion_inbox", None)
+             if getattr(agent, "_completion_tool_boundary", False) else None)
+    if inbox is None:
+        agent._session_db.append_messages_batch(session_id=agent.session_id, messages=batch_rows, **options)
+    else:
+        for index, block in inbox.append_messages(agent, batch_rows, **options).items():
+            # The receipt and this new row committed together; mirror exactly the bytes the model will see.
+            batch_msgs[index]["content"] = batch_rows[index]["content"]
+            batch_msgs[index]["display_metadata"] = batch_rows[index]["display_metadata"]
+            remember_exposure(agent, batch_msgs[index], block)
     sync_flushed_message_markers(batch_msgs, batch_rows)
     _db_flush_store_uids(agent).update(uid for msg in batch_msgs if (uid := message_uid_or_none(msg)) is not None)
     if _newest_checkpoint_carrier(batch_msgs, "codex_reasoning_items") >= 0:

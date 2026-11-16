@@ -15,6 +15,9 @@ import threading
 from types import SimpleNamespace
 import uuid
 
+from gateway.completion_delivery.inbox import (
+    bind_inbox, completion_is_held, pause_completions, viewer_admission_guard,
+)
 from gateway.session_contract import (
     CANONICAL_GATEWAY_PROTOCOL, AdmissionReceipt, PendingAdmission, SessionActor, SessionHandle, SessionRef, Submission,
     SubscriptionSnapshot,
@@ -762,7 +765,8 @@ class SessionAuthority:
                 return admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                            session_id=request.ref.session_id, request_id=request.request_id,
                                            payload=payload, intent=request.intent, _replay_guard=_replay_guard,
-                                           _authorize_write=self._admission_gate(_authorize_write, queue_only=queue_only))
+                                           _authorize_write=viewer_admission_guard(
+                    self, request.ref, self._admission_gate(_authorize_write, queue_only=queue_only)))
             except Exception:
                 self._release_refused_capture(request, payload)
                 raise
@@ -949,6 +953,7 @@ class SessionAuthority:
             raise RuntimeStoreError('stale_generation')
         live, agent = self.sessions[ref.session_id], None
         if handle.execution_state == 'running':
+            await pause_completions(self, ref, generation)
             # Latches are written under the lock adopt_agent takes on the executor thread, BEFORE the
             # agent is called: an adoption racing the call consumes them. The agent is called outside it.
             with live.event_stream.lock:
@@ -1029,6 +1034,7 @@ class SessionAuthority:
         # The turn's executor thread runs this; the stream lock orders it against session.steer's latch.
         with live.event_stream.lock if live is not None else contextlib.nullcontext():
             self.adopted[session_id] = (generation, agent)
+            bind_inbox(self, session_id, generation, agent)
             clear = getattr(agent, 'clear_interrupt', None)
             if self.delivered_stops.pop(session_id, generation) != generation and clear is not None:
                 clear()
@@ -1101,6 +1107,8 @@ class SessionAuthority:
             if any(row['status'] == 'unknown' for row in pending):
                 raise RuntimeStoreError('unknown_execution')
             first = next((row for row in pending if row['status'] == 'queued'), None)
+            if await asyncio.to_thread(completion_is_held, self, first):
+                return 'completion_held', first
             from gateway.config import Platform
             if live.source.platform == Platform.LOCAL:
                 # A reasoning command or a model pick made while the previous turn ran lands here, at the
@@ -1284,6 +1292,8 @@ class SessionAuthority:
                 await asyncio.sleep(backoff)
                 continue
             backoff = 0.0
+            if row == 'completion_held':
+                return None
             if row != 'classic_busy':
                 return row, first
             if self._drain_stopping(ref, live):

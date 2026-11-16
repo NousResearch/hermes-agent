@@ -66,8 +66,8 @@ def _profile_scoped_rpc(
             try:
                 with scope:
                     return body(*args)
-            except ProfileUnavailableError:
-                raise  # a body that binds ``profile`` itself (_session_home_scope) reports 4064 via dispatch
+            except (ProfileUnavailableError, SessionNotOwned):
+                raise  # dispatch answers both: 4064 (a body binding ``profile`` itself), 4090 (chat taken)
             except Exception as e:
                 return _err(rid, fail_code, f"{prefix}{e}")
         handler.__doc__ = body.__doc__
@@ -179,6 +179,8 @@ def _rewind_or_err(rid, session, keep: int, value_err: tuple, fail_prefix: str, 
     other exceptions → 5008 ``fail_prefix`` + message."""
     try:
         return _rewind_active_session_history(session, keep, **kw), None
+    except SessionNotOwned as exc:
+        return None, _session_not_owned_err(rid, exc)
     except ValueError as exc:
         return None, _err(rid, value_err[0], f"{value_err[1]}{exc}")
     except Exception as exc:
@@ -701,6 +703,8 @@ def _cmd_moa(rid, params, session, name, arg):
                 "api_key": "moa-virtual-provider", "api_mode": "chat_completions"}
         notice = f"MoA one-shot queued with preset {preset}; previous model will be restored after this turn."
         return _ok(rid, {"type": "send", "notice": notice, "message": arg})
+    except SessionNotOwned as exc:
+        return _session_not_owned_err(rid, exc)
     except Exception as exc:
         return _err(rid, 5030, f"moa unavailable: {exc}")
 
@@ -886,6 +890,8 @@ def _cmd_compress(rid, params, session, name, arg):
         return _exec_out(rid, output)
     except CompressionBusy as exc:  # a turn won the race after the unlocked pre-check above
         return _err(rid, 4009, str(exc))
+    except SessionNotOwned as exc:
+        return _session_not_owned_err(rid, exc)
     except Exception as exc:
         _tools_mod("agent.conversation_compression").finalize_context_engine_compression_notification(
             session["agent"], committed=False)
@@ -997,6 +1003,30 @@ def _(rid, params: dict) -> dict:
     return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
 
 
+def _slash_worker_for(rid, sid: str, session: dict):
+    """(worker, None) — the session's slash worker, spawned on first use — or (None, 5030 error)."""
+    if worker := session.get("slash_worker"):
+        return worker, None
+    # slash.exec runs on the RPC pool: two concurrent commands could both see slash_worker=None
+    # and each fork a full MCP-fleet worker (the loser leaks). Serialize first-use spawn.
+    with _sessions_lock:
+        spawn_lock = session.setdefault("_slash_spawn_lock", threading.Lock())
+    with spawn_lock:
+        if worker := session.get("slash_worker"):
+            return worker, None
+        agent = session.get("agent")
+        try:
+            worker = _SlashWorker(
+                session["session_key"], getattr(agent, "model", _resolve_model()),
+                profile_home=session.get("profile_home"), provider=getattr(agent, "provider", None) or None,
+                base_url=getattr(agent, "base_url", None) or None)
+            _attach_worker(sid, session, worker)
+        except Exception as e:
+            logger.warning("slash worker start failed for %s", sid, exc_info=True)
+            return None, _err(rid, 5030, f"slash worker start failed: {e}")
+    return worker, None
+
+
 @method("slash.exec")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
@@ -1041,26 +1071,15 @@ def _(rid, params: dict) -> dict:
                 return _ok(rid, {"output": plugin_output or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
-    worker = session.get("slash_worker")
-    if not worker:
-        # slash.exec runs on the RPC pool: two concurrent commands could both see slash_worker=None
-        # and each fork a full MCP-fleet worker (the loser leaks). Serialize first-use spawn.
-        with _sessions_lock:
-            spawn_lock = session.setdefault("_slash_spawn_lock", threading.Lock())
-        with spawn_lock:
-            worker = session.get("slash_worker")
-            if not worker:
-                try:
-                    worker = _SlashWorker(
-                        session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
-                        profile_home=session.get("profile_home"),
-                        provider=getattr(session.get("agent"), "provider", None) or None,
-                        base_url=getattr(session.get("agent"), "base_url", None) or None)
-                    _attach_worker(sid, session, worker)
-                except Exception as e:
-                    return _err(rid, 5030, f"slash worker start failed: {e}")
+    worker, err = _slash_worker_for(rid, sid, session)
+    if err:
+        return err
+    # A transcript-writing slash (/model X, /compress) claims the chat BEFORE the worker runs: the worker's CLI
+    # writes the session row first, and the live mirror's gate would refuse only after that.
+    writes = base in {"compress", "compact"} or (base == "model" and bool(arg.strip()))
     try:
-        output = worker.run(cmd)
+        with _transcript_claim(session) if writes and session else contextlib.nullcontext():
+            output = worker.run(cmd)
         if seed := (worker.pop_seed() if hasattr(worker, "pop_seed") else ""):
             # /prompt//blueprint composed a next-turn prompt in the worker; route it as a
             # send dispatch (both Desktop and TUI clients already handle {type:"send"}).
@@ -1071,6 +1090,8 @@ def _(rid, params: dict) -> dict:
         if base in _SESSION_CONTROL_SLASHES:
             _publish_session_control_snapshot(sid, session)
         return _ok(rid, payload)
+    except SessionNotOwned as e:  # the live mirror (/model, /compress) refused: the worker is healthy
+        return _session_not_owned_err(rid, e)
     except Exception as e:
         if _worker_refused_skill(e):
             # Refused before process_command; the worker is still healthy.
@@ -1136,11 +1157,16 @@ def _(rid, params: dict, session) -> dict:
                 if _tools_mod("tools.checkpoint_undo_hint").rollback_rewinds_newest_turn(history, user_indices, taken):
                     try:
                         removed = _rewind_active_session_history(session, len(user_indices) - 1)[2]
+                    except SessionNotOwned:
+                        raise
                     except Exception as exc:
                         raise RuntimeError(f"checkpoint restored, but session history rewind failed: {exc}") from exc
             result["history_removed"] = removed
         return result
-    return _ok(rid, _with_checkpoints(session, go))
+    # A whole-tree restore may rewind the transcript, so it claims the chat BEFORE touching the workspace: a chat
+    # another surface took answers 4090 with neither files nor history changed (its turns may have just edited them).
+    with contextlib.nullcontext() if file_path else _transcript_claim(session):
+        return _ok(rid, _with_checkpoints(session, go))
 
 
 @_rpc("rollback.diff", live_session=True, fail_code=5022)
@@ -1202,7 +1228,7 @@ def _(rid, params: dict) -> dict:
         {"title": "Model", "rows": [
             ["Model", _resolve_model()], ["Base URL", base_url or "(default)"], ["API Key", masked]]},
         {"title": "Agent", "rows": [
-            ["Max Turns", str(_cfg_max_turns(cfg, 500))],
+            ["Max Turns", _tools_mod("hermes_cli.config_turn_limit").turn_limit_label(_cfg_max_turns(cfg))],
             ["Toolsets", ", ".join(cfg.get("enabled_toolsets", [])) or "all"],
             ["Verbose", str(cfg.get("verbose", False))]]},
         {"title": "Environment", "rows": [["Working Dir", os.getcwd()], ["Config File", str(_active_config_path())]]},

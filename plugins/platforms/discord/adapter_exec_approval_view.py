@@ -117,7 +117,7 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                     extra=self.approval_extra or {})
                 logger.info(
                     "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, self.session_key, choice, interaction.user.display_name,
+                    count, self.session_key, choice, getattr(interaction.user, "id", "?"),
                 )
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc, exc_info=True)

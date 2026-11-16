@@ -1,0 +1,23 @@
+name: vivarium
+repo: https://github.com/r3adaszer0/vivarium
+sha: 2fa71bb428bbf8590002598a6672797d42b183d4
+subdir: ""
+description: "A living artificial-life world inside Hermes. Real tool calls drop nutrients into a 48x48 cellular-automaton dish; creatures carry genomes, forage, reproduce, mutate and go extinct on their own; every skill the agent learns births a new species. Deterministic, mathematically grounded, private. Disclosure — Vivarium starts a background thread in every Hermes process that polls its own state about once per second to repaint the terminal, finds the controlling terminal by reading `/proc/<pid>/environ` and `/proc/<pid>/stat` of parent processes (terminal-type variables only, never stored), and `/vivarium serve` runs an unauthenticated read-only gallery on 127.0.0.1 that shows your installed skill names and the dish (`--keep` leaves it running until Hermes exits)."
+maintainer: r3adaszer0
+tier: community
+platforms: []
+capabilities:
+  provides_tools:
+    - vivarium_status
+    - vivarium_feed
+    - vivarium_render
+    - vivarium_release
+    - vivarium_export
+    - vivarium_codex
+  provides_hooks:
+    - post_tool_call
+    - pre_llm_call
+    - on_skill_lifecycle
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

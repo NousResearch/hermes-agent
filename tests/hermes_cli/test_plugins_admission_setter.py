@@ -68,6 +68,7 @@ def test_historical_writer_hands_off_without_mutating_config(plugin_world, monke
     def takeover():
         raise SystemExit(73)
     monkeypatch.setattr("hermes_cli._old_updater.stop_for_relaunch", takeover)
+    monkeypatch.setattr("hermes_cli._old_updater.in_historical_update", lambda: True)
     with pytest.raises(SystemExit) as exc:
         _save_enabled_set({"must-not-be-saved"})
     assert exc.value.code == 73

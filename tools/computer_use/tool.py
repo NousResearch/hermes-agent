@@ -975,7 +975,3 @@ def check_computer_use_requirements() -> bool:
         return get_active_provider().is_available()
     except LookupError:
         return True
-
-def get_computer_use_schema() -> dict[str, Any]:
-    from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-    return COMPUTER_USE_SCHEMA

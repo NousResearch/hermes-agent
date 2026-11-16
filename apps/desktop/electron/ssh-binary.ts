@@ -23,6 +23,16 @@ export interface WindowsSshEnv {
   systemRoot: string
 }
 
+/** The slice of a process environment the resolver reads, with Windows' stock defaults. */
+export function windowsSshEnv(env: Record<string, string | undefined>): WindowsSshEnv {
+  return {
+    systemRoot: env.SystemRoot || env.windir || 'C:\\Windows',
+    localAppData: env.LOCALAPPDATA || '',
+    programFiles: env['ProgramFiles'] || 'C:\\Program Files',
+    programFilesX86: env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+  }
+}
+
 export interface SshBinaryInputs {
   platform: string
   /** `desktop.ssh_path` from config.yaml; empty when unset. Windows only. */

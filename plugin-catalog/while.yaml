@@ -1,7 +1,7 @@
 name: while
 title: while.sh
 repo: https://github.com/while-sh/while
-sha: f2cd826ff89d9c9118a76ca90739a54c63b844b8
+sha: 511702d64fc598b97ea728aa8c257469f8ad3601
 description: >-
   Deploy apps on while.sh, a French PaaS built for AI agents, through its hosted MCP server (Streamable
   HTTP, OAuth 2.1 with dynamic client registration and PKCE): web services and workers, PostgreSQL

@@ -1,4 +1,4 @@
-"""Context demotions for plugin install-scan findings (``tools.plugin_guard``).
+"""Context demotions for plugin install-scan findings (``hermes_cli.plugins_install_scan``).
 
 The threat regexes in ``tools.skills_guard`` are written for a SKILL.md the agent will execute
 verbatim. A plugin repository is a codebase: the same text sits in READMEs, test fixtures, JSON

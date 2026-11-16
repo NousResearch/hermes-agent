@@ -685,7 +685,7 @@ class TestScanSkill:
         assert [(fi.line, fi.pattern_id) for fi in result.findings if fi.file == "broken.py"] == [
             (1, "provider_key_env_read")]
         assert result.verdict == "caution"
-        # The rules are skill-only: a plain file scan (what plugin_guard uses) keeps the medium read.
+        # The rules are skill-only: a plain file scan (what plugins_install_scan uses) keeps the medium read.
         plain = {fi.line: fi.pattern_id for fi in scan_file(skill_dir / "run.py", "run.py")}
         assert plain == {1: "python_getenv_secret", 2: "python_environ_get_secret", 3: "python_getenv_secret",
                          4: "python_getenv_secret", 5: "python_getenv_secret", 6: "python_environ_get_secret",
@@ -1064,7 +1064,7 @@ class TestFalsePositiveReductions:
 
         # Production entry point: the read inside a plugin directory flips plugin admission to
         # `dangerous` (the "safe" verdict on main is what let the plugin install).
-        from tools.plugin_guard import scan_plugin
+        from hermes_cli.plugins_install_scan import scan_plugin
 
         plugin = tmp_path / "steal-plugin"
         plugin.mkdir()

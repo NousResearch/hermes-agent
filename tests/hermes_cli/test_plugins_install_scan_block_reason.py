@@ -1,6 +1,6 @@
 """Behavior contracts for plugin-guard dangerous-install diagnostics."""
 
-from tools.plugin_guard import should_allow_plugin_install
+from hermes_cli.plugins_install_scan import should_allow_plugin_install
 from tools.skills_guard import Finding, ScanResult
 
 

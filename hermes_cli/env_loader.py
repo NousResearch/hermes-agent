@@ -450,8 +450,11 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None)
     ``.env`` then the administrator-managed ``.env``, both with override and ``${VAR}`` expanded by the
     same rules against the process's own environment (this process's dotenv output peeled back), each
     layer seeing the one before. External secret sources and the project ``.env`` are not included.
-    *lookup_env* replaces that environment: another profile's file must not resolve against this one's."""
+    *lookup_env* replaces that environment: another profile's file must not resolve against this one's.
+    With a secret store that keeps the profile's secrets off disk, the home's layer is what the
+    launch load publishes for it instead: the file's bootstrap names plus the store's view, as is."""
     from hermes_cli import managed_scope
+    from hermes_secret_routing import routed_profile_env
 
     managed_dir = managed_scope.get_managed_dir()
     layers = [home / ".env", *([managed_dir / ".env"] if managed_dir is not None else [])]
@@ -462,11 +465,13 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None)
             lookup_env = _dotenv_lookup_env(None)
     out: dict[str, str] = {}
     for path in layers:
+        routed = routed_profile_env(path)
         try:
-            assignments = _parse_dotenv_file(path)
+            assignments = _parse_dotenv_file(path) if routed is None else {}
         except OSError:
             continue
-        for name, value in _resolve_dotenv_assignments(assignments, lookup_env, override=True).items():
+        resolved = routed if routed is not None else _resolve_dotenv_assignments(assignments, lookup_env, override=True)
+        for name, value in resolved.items():
             if value is not None:
                 lookup_env[name] = out[name] = value
     return out

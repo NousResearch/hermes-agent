@@ -344,3 +344,14 @@ def test_with_no_local_env_file_the_stores_view_still_outranks_the_project_env(s
     from hermes_cli.env_loader import load_hermes_dotenv
     load_hermes_dotenv(hermes_home=home, project_env=project)
     assert os.environ["SHARED_NAME"] == "from-the-store" and os.environ["PROJECT_ONLY"] == "filled"
+
+
+def test_the_read_only_dotenv_resolution_reads_the_stores_view(store, monkeypatch):
+    provider, home = store
+    (home / ".env").write_text("VIEW_STORE_TOKEN=boot\nSTALE_ONLY_ON_DISK=stale\nTERMINAL_ENV=docker\n", encoding="utf-8")
+    provider.seed_external(home, {"ROUTED_API_KEY": MARK})
+    monkeypatch.delenv("STALE_ONLY_ON_DISK", raising=False)
+    from hermes_cli.env_loader import resolve_home_dotenv
+    resolved = resolve_home_dotenv(home)
+    assert resolved["ROUTED_API_KEY"] == MARK and resolved["VIEW_STORE_TOKEN"] == "boot"
+    assert resolved["TERMINAL_ENV"] == "docker" and "STALE_ONLY_ON_DISK" not in resolved

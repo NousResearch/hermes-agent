@@ -204,6 +204,13 @@ def read_env_text(env_path: Path, *, errors: Optional[str] = None) -> str:
     return "".join(f"{k}={_quote_env_value(v)}\n" for k, v in read_profile_env(env_path).items())
 
 
+def routed_profile_env(env_path: Path) -> Optional[dict[str, str]]:
+    """None with the local store (or a file that is not a profile ``.env``); with any other store,
+    :func:`read_profile_env`: for readers that parse the file themselves only when it is the store's."""
+    provider, home = _routed_env_home(env_path)
+    return None if provider is None or home is None else read_profile_env(env_path)
+
+
 def env_file_exists(env_path: Path) -> bool:
     """``env_path.exists()`` with the local store; with any other store, whether the profile has
     any secret at all (local bootstrap or the store's view)."""

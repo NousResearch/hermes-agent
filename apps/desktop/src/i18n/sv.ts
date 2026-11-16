@@ -45,6 +45,19 @@ export const svOverrides: TranslationOverrides = {
     accounts: {
       heading: 'Konton', count: count => `${count} ${count === 1 ? 'konto' : 'konton'}`, addAnother: 'Lägg till ett annat konto', aliasLabel: 'Kontonamn', aliasHint: 'Gemena bokstäver, siffror och bindestreck, högst 32 tecken. Till exempel arbete eller hemma.', aliasInvalid: 'Använd gemena bokstäver, siffror och bindestreck och börja med en bokstav eller siffra.', aliasTaken: 'Det namnet används redan.', add: 'Anslut', rename: 'Byt namn', renameLabel: name => `Nytt namn för ${name}`, renameGone: 'Det kontot finns inte längre. Det togs bort eller ersattes vid en återanslutning.', remove: 'Ta bort', removeTitle: (app, name) => `Ta bort kontot ${name} för ${app}?`, removeBody: 'Hermes slutar agera som det här kontot. Dina andra konton förblir anslutna.', retiredCount: count => `${count} ersatta`, status: { expired: 'Åtkomsten har upphört', failed: 'Det gick inte att ansluta', inactive: 'Inaktivt', pending: 'Väntar på inloggning', retired: 'Ersatt vid en återanslutning', revoked: 'Åtkomsten har återkallats' }
     },
+    vocabulary: {
+      facetRead: { label: 'Läser', long: 'Läser data från den här appen. Ändrar inget.' },
+      facetWrite: { label: 'Skriver', long: 'Skapar eller ändrar något i den här appen.' },
+      facetDestructive: { label: 'Förstörande', long: 'Kan ta bort något i den här appen permanent.' },
+      facetUnclassified: { label: 'Okänd effekt', long: 'Appen har inte angett vad verktyget gör.' },
+      hintReadOnly: { label: 'Endast läsning', long: 'Verktyget anger att det enbart läser.' },
+      hintCreate: { label: 'Skapar', long: 'Skapar något nytt.' },
+      hintUpdate: { label: 'Uppdaterar', long: 'Ändrar något som redan finns.' },
+      hintDelete: { label: 'Tar bort', long: 'Tar bort något.' },
+      hintDestructive: { label: 'Förstörande', long: 'Ändringen kan inte ångras här.' },
+      hintIdempotent: { label: 'Upprepningsbar', long: 'Att köra den två gånger ger samma resultat som att köra den en gång.' },
+      hintOpenWorld: { label: 'Extern', long: 'När något utanför den här appen.' }
+    },
     tools: {
       title: 'Verktyg',
       notInstalledBody: 'Installera den på den här datorn för att se vilka verktyg den ger.',

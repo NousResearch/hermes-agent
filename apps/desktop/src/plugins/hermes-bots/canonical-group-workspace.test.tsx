@@ -25,6 +25,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
 import { host } from '@hermes/plugin-sdk'
 
 import { CANONICAL_GROUP_CAPABILITIES, LEGACY_STANDALONE_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './canonical-group-contract-test-utils'
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
 import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
@@ -37,12 +38,14 @@ afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.h
 // What gateway/session_group_controls.py answers for groups.send.
 const receipt = (params: { event_id?: string }) => ({ event: {}, client_event_id: params.event_id, accepted: true, driver_started: true })
 
-it('preserves the unsent draft when only the room display name changes', async () => {
+it('preserves the draft and full hover name when only the room display name changes', async () => {
+  const name = 'A very long group chat name '.repeat(40).trim()
   request.mockImplementation(async (_route, method) => method === 'groups.state'
-    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
+    ? { room: { name }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
   const binding = { connectionId: 'local', profile: 'team', roomId: 'rename', roomName: 'Room' }
   const view = render(<CanonicalGroupWorkspace binding={binding} />)
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  expect(screen.getByTitle(name).textContent).toBe(name)
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep this draft' } })
   view.rerender(<CanonicalGroupWorkspace binding={{ ...binding, roomName: 'Renamed room' }} />)
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
@@ -241,7 +244,7 @@ it('renames the room and disbands it only through ConfirmDialog, which stays ope
   const onBack = vi.fn()
   let disbands = 0
   request.mockImplementation(async (_route, method) => roomReads()(method)
-    ?? (method === 'groups.disband' && ++disbands === 1 ? Promise.reject(new Error('disband failed')) : {}))
+    ?? (method === 'groups.disband' ? (++disbands === 1 ? Promise.reject(new Error('disband failed')) : { tombstone: { room_id: 'controls', disbanded_at: 1 } }) : {}))
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'controls' }} onBack={onBack} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Rename' }))
   fireEvent.change(screen.getByRole('textbox', { name: 'New name' }), { target: { value: ' Renamed ' } })
@@ -253,7 +256,7 @@ it('renames the room and disbands it only through ConfirmDialog, which stays ope
   expect(request.mock.calls.some(c => c[1] === 'groups.disband')).toBe(false)
   const dialog = await screen.findByRole('dialog')
   fireEvent.click(within(dialog).getByRole('button', { name: /disband/i }))
-  await within(dialog).findByText('disband failed')
+  await within(dialog).findByText(/The group chat has been kept/)
   expect(onBack).not.toHaveBeenCalled()
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /disband/i }))
   await waitFor(() => expect(onBack).toHaveBeenCalledOnce())
@@ -262,7 +265,7 @@ it('renames the room and disbands it only through ConfirmDialog, which stays ope
 })
 
 it('leaves the in-panel room after a disband even though no tab supplies onBack', async () => {
-  request.mockImplementation(async (_route, method) => roomReads()(method) ?? {})
+  request.mockImplementation(async (_route, method) => roomReads()(method) ?? (method === 'groups.disband' ? { tombstone: { room_id: 'panel', disbanded_at: 1 } } : {}))
   const group = registerCanonicalGroup({ connectionId: 'local', profile: 'default' }, { room_id: 'panel', name: 'Room', members: [] })
   $groupChatWorkspace.set(group)
   render(<GroupChatWorkspace group={group} members={[]} origin="key" />)
@@ -277,7 +280,7 @@ it('drops a disbanded room from the sidebar list and its bindings, with the disb
   vi.mocked(host.notify).mockClear()
   let disbanded = false
   const room = { room_id: 'gone', name: 'Doomed', members: [] }
-  request.mockImplementation(async (_route, method) => method === 'groups.disband' ? (disbanded = true, {})
+  request.mockImplementation(async (_route, method) => method === 'groups.disband' ? (disbanded = true, { tombstone: { room_id: 'gone', disbanded_at: 1 } })
     : method === 'groups.capabilities' ? { driver: true } : method === 'groups.list' ? { rooms: disbanded ? [] : [room], next_offset: null }
       : roomReads()(method) ?? {})
   renderGatewayRooms()
@@ -520,7 +523,7 @@ it('keeps Stop and Deny while the gateway\'s methods cannot be read, and holds b
   fireEvent.click(deny)
   await waitFor(() => expect(request.mock.calls.filter(c => c[1] === 'groups.approve').map(c => c[2].choice)).toEqual(['deny']))
   fireEvent.click(screen.getByRole('button', { name: 'Stop the group' }))
-  await screen.findByText('Stop requested')
+  await screen.findByText(CANONICAL_GROUP_LOCALES.en.stopped)
 })
 
 it('hides unadvertised header actions while working and ignores pasted files', async () => {
@@ -581,14 +584,15 @@ it('says what the room waits on beside the live work, never instead of it', asyn
   request.mockImplementation(async (_route, method) => method === 'groups.state'
     ? { room: { name: 'Room', members }, driver_status: driver } : method === 'groups.log' ? { events: [] } : {})
   const view = render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'waiting' }} />)
-  await screen.findByText('Blocked · 1 waiting for approval · Needs attention: 1')
+  const approvalLink = await screen.findByRole('button', { name: '1 waiting for approval' })
+  expect(approvalLink.parentElement?.textContent).toBe('Blocked · 1 waiting for approval · Needs attention: 1')
   expect(screen.getByRole('status').textContent).toBe('Working: Ops')
 
   view.unmount()
   // A gateway whose driver is down sends no driver status.
   driver = undefined
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'stopped' }} />)
-  await screen.findByText('Group driver unavailable. Update or reconnect the owning gateway.')
+  await screen.findByText('This group chat isn’t available. Update or reconnect the gateway that hosts it.')
 })
 
 it.each(['none', 'send', 'retry'] as const)('scopes a failed Stop intent across %s', async (next) => {
@@ -629,7 +633,7 @@ it.each(['none', 'send', 'retry'] as const)('scopes a failed Stop intent across 
 
   await waitFor(() => expect((stop as HTMLButtonElement).disabled).toBe(false))
   fireEvent.click(stop)
-  await screen.findByText('Stop requested')
+  await screen.findByText(CANONICAL_GROUP_LOCALES.en.stopped)
   const ids = request.mock.calls.filter(call => call[1] === 'groups.stop').map(call => call[2].cancel_id)
   expect(ids).toHaveLength(2)
   expect(ids[1] === ids[0]).toBe(next === 'none')
@@ -662,19 +666,19 @@ it('keeps one cancellation intent until Stop is confirmed, and fences again behi
   fireEvent.click(stop)
   await screen.findByText('request timed out: groups.stop')
   fireEvent.click(stop)
-  await screen.findByText('Stop requested')
+  await screen.findByText(CANONICAL_GROUP_LOCALES.en.stopped)
 
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Long task' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(true))
-  expect(screen.queryByText('Stop requested')).toBeNull()
+  expect(screen.queryByText(CANONICAL_GROUP_LOCALES.en.stopped)).toBeNull()
   expect(stop.disabled).toBe(false)
   fireEvent.click(stop)
   // The first fence leaves at once; the message on the wire may post after it, so Stop stays open.
   await waitFor(() => expect(stops).toBe(3))
   expect(stop.disabled).toBe(true)
   deliver(receipt(request.mock.calls.find(call => call[1] === 'groups.send')![2]))
-  await screen.findByText('No new replies were cancelled.')
+  await screen.findByText(CANONICAL_GROUP_LOCALES.en.stopped)
 
   const cancelIds = request.mock.calls.filter(call => call[1] === 'groups.stop').map(call => call[2].cancel_id)
   expect(cancelIds).toHaveLength(4)
@@ -706,7 +710,7 @@ it('follows a retried Stop that replayed its lost fence with a fresh one when th
   await screen.findByText('request timed out: groups.stop')
   await waitFor(() => expect(stop.disabled).toBe(false))
   fireEvent.click(stop)
-  await screen.findByText('Stop requested')
+  await screen.findByText(CANONICAL_GROUP_LOCALES.en.stopped)
   const ids = request.mock.calls.filter(call => call[1] === 'groups.stop').map(call => call[2].cancel_id)
   expect(ids).toHaveLength(3)
   expect(ids[1]).toBe(ids[0])
@@ -752,7 +756,7 @@ it('holds the next Send until a Stop still fencing behind the last one has finis
   // While Stop still has to fence behind A, B does not leave: that fence would cancel it.
   expect(order()).toEqual(['send:A', 'stop'])
   await act(async () => releaseFirstStop())
-  await screen.findByText('Stop requested')
+  await screen.findByText(CANONICAL_GROUP_LOCALES.en.stopped)
   expect(order()).toEqual(['send:A', 'stop', 'stop'])
   expect(box.value).toBe('B')
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
@@ -1061,7 +1065,7 @@ it('does not dispatch a Send still preparing when Stop is pressed, and keeps its
   await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.stop')).toBe(true))
   release()
   await within(scope).findByText('Stopped before sending. Your message is still here.')
-  await within(scope).findByText('No new replies were cancelled.')
+  await within(scope).findByText(CANONICAL_GROUP_LOCALES.en.stopped)
   // Nothing was sent, so the first fence covers it: no second Stop.
   expect(request.mock.calls.filter(call => call[1] === 'groups.stop')).toHaveLength(1)
   expect(sentIds()).toEqual([])
@@ -1083,7 +1087,7 @@ it('fences no second time behind a Send the gateway refused before admitting it'
   fireEvent.click(within(scope).getByRole('button', { name: 'Stop the group' }))
   await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.stop')).toBe(true))
   refuse()
-  await within(scope).findByText('No new replies were cancelled.')
+  await within(scope).findByText(CANONICAL_GROUP_LOCALES.en.stopped)
   expect(request.mock.calls.filter(call => call[1] === 'groups.stop')).toHaveLength(1)
 })
 
@@ -1166,7 +1170,7 @@ it('names the Bot behind each pending action and shows what an approval would al
   expect(within(vague).getByText('Action details are unavailable. Check again before allowing this.')).toBeTruthy()
   expect(within(vague).queryByRole('button', { name: 'Allow once' })).toBeNull()
   expect(within(vague).getByRole('button', { name: 'Deny' })).toBeTruthy()
-  expect(screen.getByText('QA Bot’s turn stopped before it finished. Retry it?')).toBeTruthy()
+  expect(screen.getByText('QA Bot’s turn has not finished. Retry it?')).toBeTruthy()
   expect(screen.queryByText('ops')).toBeNull()
 
   // As in the chat approval card, the plugin's words stand in for its tool label.
@@ -1189,4 +1193,46 @@ it('names the Bot behind each pending action and shows what an approval would al
       room_id: 'approvals', member_id: member, task_id: task, execution_generation: generation, request_id: requestId, choice: 'once', profile: 'team'
     })
   }
+})
+
+it('jumps from the approval count to the waiting card without answering it', async () => {
+  const approval = { kind: 'approval', member_id: 'ops', task_id: 'approval-jump', execution_generation: 1,
+    approval: { command: 'make release', choices: ['once', 'deny'] } }
+
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Team' }, driver_status: { pending_actions: [approval] } }
+    : method === 'groups.log' ? { events: [] } : {})
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'approval-jump' }} />)
+  const jump = await screen.findByRole('button', { name: '1 waiting for approval' })
+  const card = screen.getByText('make release').closest<HTMLElement>('[data-pending-action]')!
+  card.scrollIntoView = vi.fn()
+  fireEvent.click(jump)
+  expect(card.scrollIntoView).toHaveBeenCalledWith({ block: 'center' })
+  expect(window.document.activeElement).toBe(card)
+  expect(request.mock.calls.some(call => call[1] === 'groups.approve')).toBe(false)
+})
+
+it('clears the stop notice only once the gateway reports no work still stopping', async () => {
+  let working = true
+  let stopping = 1
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Team' }, driver_status: { working, counts: { stopping } } }}
+
+    if (method === 'groups.log') {return { events: [] }}
+
+    if (method === 'groups.stop') {working = false;
+
+ return { cancelled: 1 }}
+
+    return {}
+  })
+  const binding = { connectionId: 'local', profile: 'team', roomId: 'settled-stop' }
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop the group' }))
+  await screen.findByText(CANONICAL_GROUP_LOCALES.en.stopped)
+  stopping = 0
+  // Resuming the retained pane triggers the next authoritative read immediately.
+  view.rerender(<CanonicalGroupWorkspace binding={binding} visible={false} />)
+  view.rerender(<CanonicalGroupWorkspace binding={binding} visible />)
+  await waitFor(() => expect(screen.queryByText(CANONICAL_GROUP_LOCALES.en.stopped)).toBeNull())
 })

@@ -72,6 +72,12 @@ outputs:
   pnpm-version:
     description: Locked pnpm version.
     value: ${{ steps.prepare.outputs.pnpm-version }}
+  just-version:
+    description: Locked just version (empty when pm/lock.json pins no just).
+    value: ${{ steps.prepare.outputs.just-version }}
+  just-path:
+    description: The installed just binary (empty when pm/lock.json pins no just).
+    value: ${{ steps.install.outputs.just-path }}
   python-path:
     description: Interpreter for subsequent steps, including requested extras.
     value: ${{ steps.dependencies.outputs.python-path || steps.install.outputs.python-path }}

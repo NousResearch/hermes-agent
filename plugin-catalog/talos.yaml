@@ -1,0 +1,21 @@
+name: talos
+title: Talos
+repo: https://github.com/oma035/Talos
+sha: f1485e33c951b0b4e5fb63a8fe7d55d8b7e183da
+description: "Automatic, unskippable smart-contract security checks for code Hermes writes and deploys (EVM, Solana/Anchor, Sui/Move): scans every .sol/.rs/.move file Hermes writes, feeds open findings back so Hermes fixes its own bugs, and gates deploy commands (anchor/solana/sui/forge/hardhat, including inside scripts) — mainnet blocked on high/critical findings, escalated to Hermes's human approval on medium, allowed with a warning on devnet/testnet; plus a /talos report command and a talos_scan tool. Disclosure — its pre_tool_call hook can block terminal deploy commands (anchor/solana/sui/forge/hardhat, including inside scripts, package.json scripts and Makefiles it reads) or escalate them to Hermes approval; every non-deploy call passes through. Never runs repository code: Slither analyses each .sol file with plain solc from an empty temp directory (no Hardhat/Foundry builds, no repo slither config), with import remappings read from static files. Runs local CLIs when present (slither, sui move build --lint, solana config get, sui client active-env, cast chain-id), each with a minimal environment that excludes Hermes's API keys; cast chain-id contacts the RPC URL named in the deploy command and sui move build may fetch the package's git dependencies. Requests no capabilities. Stores findings and a file-hash scan cache in its plugin data directory. No telemetry, no third-party APIs, no credentials read or stored. Fails closed: unknown network counts as mainnet, and a missing, crashing or timed-out analyzer reports code as unchecked. Heuristic rule packs, not an audit."
+maintainer: oma035
+tier: community
+category: tools
+requires_hermes: ">=0.18.1"
+version: "0.1.1"
+docs_url: https://github.com/oma035/Talos#readme
+platforms: []
+capabilities:
+  provides_tools:
+    - talos_scan
+  provides_hooks:
+    - transform_tool_result
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

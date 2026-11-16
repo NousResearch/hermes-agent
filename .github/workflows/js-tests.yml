@@ -38,7 +38,10 @@ jobs:
 
       - name: Install zsh and a virtual display for Electron
         if: runner.os == 'Linux'
+        # Refresh the package index first, like every other apt step here: a
+        # runner image without a populated list can't resolve zsh/libnotify4.
         run: |
+          sudo apt-get update -qq
           sudo apt-get install -y zsh xvfb \
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
             xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
@@ -84,7 +87,7 @@ jobs:
       - uses: ./.github/actions/retry
         if: steps.node-modules-cache.outputs.cache-hit != 'true'
         with:
-          command: pnpm install --frozen-lockfile
+          command: just js-install
 
       # The cached tree is keyed on the lockfile alone, so an exact hit proves
       # nothing about the manifests. This checks the lockfile still matches
@@ -94,8 +97,14 @@ jobs:
         if: steps.node-modules-cache.outputs.cache-hit == 'true'
         run: pnpm install --frozen-lockfile --lockfile-only
 
+      # tests-js/pnpm-workspace-policy.test.mjs reads pnpm-workspace.yaml after the install above; an
+      # install that rewrites it (an exclude prune, say) would hide what was committed, and the
+      # clean-checkout step at the end only warns.
+      - name: Check the install kept pnpm-workspace.yaml as committed
+        run: git diff --exit-code -- pnpm-workspace.yaml
+
       - name: Prepare locked Electron runtime before parallel checks
-        run: node scripts/build/electron-runtime.mjs --source .
+        run: just electron-runtime
 
       # The WhatsApp bridge is a standalone npm package, outside the root
       # workspaces, so run-workspace-checks never sees it. Two of its suites
@@ -104,9 +113,9 @@ jobs:
       - name: Install WhatsApp bridge dependencies
         uses: ./.github/actions/retry
         with:
-          command: npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/whatsapp-bridge
+          command: just js-install-whatsapp-bridge
       - name: Run WhatsApp bridge node tests
-        run: node --test scripts/whatsapp-bridge/*.test.mjs
+        run: just test-whatsapp-bridge
 
       # Every check runs at the same time. The step fails only after all of
       # them finish. There are two reasons this is not ``pnpm -r run check``.
@@ -126,7 +135,7 @@ jobs:
       # not an empty run, because an empty run reports green after it checks
       # nothing.
       - name: Run all workspace checks
-        run: node .github/scripts/run-workspace-checks.mjs
+        run: just check-js-ci
       - name: Check the checkout is clean
         # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
         # leaves an untracked or modified file in the checkout is reported here. Runs only when

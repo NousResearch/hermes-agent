@@ -11,7 +11,8 @@ from hermes_cli.cli_output import (
     print_info as _print_info, print_success as _print_success, print_warning as _print_warning, prompt as _prompt,
 )
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import cfg_get, get_env_value, load_config, save_config, save_env_value
+from hermes_cli.config import (
+    cfg_get, clear_model_endpoint_credentials, get_env_value, load_config, save_config, save_env_value)
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
 from hermes_cli.nous_subscription import MANAGED_FEATURE_COVERAGE_CATEGORY, NousSubscriptionFeatures
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
@@ -977,8 +978,10 @@ def _configure_vision_backend() -> None:
 
     if idx == 0:
         # Auto: clear any pinned override so the resolver auto-detects.
-        for key in ("provider", "model", "base_url", "api_key", "api_mode"):
+        for key in ("provider", "model", "base_url"):
             vision_cfg.pop(key, None)
+        # key_env/api_key_env too: left in an auto block they go to the next provider set (#141832).
+        clear_model_endpoint_credentials(vision_cfg)
         save_config(config)
         _print_success("  Vision set to auto (main model / aggregator fallback)")
     elif idx == 1:
@@ -996,7 +999,12 @@ def _configure_vision_backend() -> None:
         save_env_value("OPENAI_API_KEY", api_key.strip())
         # Only base_url + model go to config.yaml; the key is the secret. Pin provider="custom" so the resolver
         # routes through this endpoint — at the "auto" default _resolve_task_provider_model ignores base_url
-        # unless paired with a config api_key.
+        # unless paired with a config api_key. Drop the block's api_key/key_env: they outrank OPENAI_API_KEY and
+        # belong to the old endpoint; a moved route's api_mode is the old endpoint's wire mode (#141832).
+        # OPENAI_API_KEY itself reaches only an OpenAI host or the paired OPENAI_BASE_URL (#153681).
+        from hermes_cli.config_route_guard import clear_aux_credentials_on_route_change
+        clear_aux_credentials_on_route_change(vision_cfg, "custom", base_url)
+        clear_model_endpoint_credentials(vision_cfg, clear_api_mode=False)
         vision_cfg["provider"] = "custom"
         vision_cfg["base_url"] = base_url
         if model:
@@ -1057,6 +1065,8 @@ def _configure_vision_provider_model(config: dict, vision_cfg: dict) -> None:
             _print_warning("  No model entered — cancelled")
             return
 
+    from hermes_cli.config_route_guard import clear_aux_credentials_on_route_change
+    clear_aux_credentials_on_route_change(vision_cfg, slug)
     vision_cfg["provider"] = slug
     vision_cfg["model"] = model
     # A provider selection supersedes any prior custom endpoint override.

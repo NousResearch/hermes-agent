@@ -124,11 +124,7 @@ def _make_runner(session_db=None):
         )
     runner.session_store.switch_session = MagicMock(side_effect=_switch_session)
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
-    runner._queued_events = {}
-    runner._busy_ack_ts = {}
     runner._session_model_overrides = {}
     runner._pending_model_notes = {}
     # Gateway holds the async facade; the slash handlers await it.
@@ -151,7 +147,6 @@ def _make_runner(session_db=None):
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
     runner._invalidate_session_run_generation = MagicMock()
     runner._begin_session_run_generation = MagicMock(return_value=1)
@@ -612,6 +607,137 @@ async def test_topic_binding_heal_switches_with_cas_on_snapshot_session(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_topic_binding_heal_drops_binding_whose_target_row_is_gone(tmp_path, caplog):
+    """A binding naming a session id with no ``sessions`` row is stale, not a resume target.
+
+    Regression for #139283. The heal used to switch the route onto the rowless id
+    unconditionally; the next peer refresh then re-created that row and the topic silently
+    re-adopted its old transcript. It must instead stay on the current session, rebind, and
+    leave a WARNING breadcrumb.
+    """
+    import logging
+    import sqlite3
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(session_id="dead-session", source="telegram", user_id="208214988")
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988", thread_id="17585", user_id="208214988",
+        session_key=topic_key, session_id="dead-session",
+    )
+    # Production precondition from #139283: the sessions row was removed by a connection
+    # running with foreign_keys OFF, so the binding's ON DELETE CASCADE never fired.
+    conn = sqlite3.connect(tmp_path / "state.db")
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("DELETE FROM sessions WHERE id = 'dead-session'")
+    conn.commit()
+    conn.close()
+
+    runner = _make_runner(session_db=session_db)
+    snapshot = runner.session_store.get_or_create_session(topic_source)
+    assert snapshot.session_id != "dead-session"
+    # The current session's row exists in production (the route lives on it) — mirror that
+    # so the rebind below satisfies the binding's foreign key.
+    session_db.create_session(
+        session_id=snapshot.session_id, source="telegram", user_id="208214988",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        healed = await runner._hmwa_heal_telegram_topic_binding(topic_source, snapshot, topic_key)
+
+    runner.session_store.switch_session.assert_not_called()
+    assert healed is snapshot
+    refreshed = session_db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+    assert refreshed is not None
+    assert refreshed["session_id"] == snapshot.session_id
+    assert "no sessions row" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_rowless_binding_repair_does_not_undo_concurrent_new(tmp_path):
+    """A /new that rebinds the topic while the heal awaits the rowless-target lookup wins:
+    the repair only replaces a binding still naming the stale id."""
+    import sqlite3
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(session_id="dead-session", source="telegram", user_id="208214988")
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988", thread_id="17585", user_id="208214988",
+        session_key=topic_key, session_id="dead-session",
+    )
+    conn = sqlite3.connect(tmp_path / "state.db")
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("DELETE FROM sessions WHERE id = 'dead-session'")
+    conn.commit()
+    conn.close()
+
+    runner = _make_runner(session_db=session_db)
+    snapshot = runner.session_store.get_or_create_session(topic_source)
+    session_db.create_session(session_id=snapshot.session_id, source="telegram", user_id="208214988")
+    session_db.create_session(session_id="fresh-after-new", source="telegram", user_id="208214988")
+    real_get_session = runner._session_db.get_session
+
+    async def _get_session_racing_new(session_id):
+        # /new lands during the lookup and rebinds the topic to its fresh session.
+        session_db.bind_telegram_topic(
+            chat_id="208214988", thread_id="17585", user_id="208214988",
+            session_key=topic_key, session_id="fresh-after-new",
+        )
+        return await real_get_session(session_id)
+
+    runner._session_db.get_session = _get_session_racing_new
+    await runner._hmwa_heal_telegram_topic_binding(topic_source, snapshot, topic_key)
+
+    refreshed = session_db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+    assert refreshed["session_id"] == "fresh-after-new"
+
+
+@pytest.mark.asyncio
+async def test_rowless_binding_repair_does_not_recreate_a_binding_cleared_mid_lookup(tmp_path):
+    """A /topic off that clears the chat's bindings while the heal awaits the rowless-target
+    lookup wins too: the CAS refuses a missing row instead of inserting a fresh binding."""
+    import sqlite3
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(session_id="dead-session", source="telegram", user_id="208214988")
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988", thread_id="17585", user_id="208214988",
+        session_key=topic_key, session_id="dead-session",
+    )
+    conn = sqlite3.connect(tmp_path / "state.db")
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("DELETE FROM sessions WHERE id = 'dead-session'")
+    conn.commit()
+    conn.close()
+
+    runner = _make_runner(session_db=session_db)
+    snapshot = runner.session_store.get_or_create_session(topic_source)
+    session_db.create_session(session_id=snapshot.session_id, source="telegram", user_id="208214988")
+    real_get_session = runner._session_db.get_session
+
+    async def _get_session_racing_topic_off(session_id):
+        session_db.disable_telegram_topic_mode(chat_id="208214988")
+        return await real_get_session(session_id)
+
+    runner._session_db.get_session = _get_session_racing_topic_off
+    await runner._hmwa_heal_telegram_topic_binding(topic_source, snapshot, topic_key)
+
+    assert session_db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585") is None
+    assert session_db.bind_telegram_topic(
+        chat_id="208214988", thread_id="17585", user_id="208214988", session_key=topic_key,
+        session_id=snapshot.session_id, expected_session_id="dead-session",
+    ) is False
+
+
+@pytest.mark.asyncio
 async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
@@ -658,6 +784,46 @@ async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, 
     assert "old-unlinked" in result
     assert "Already linked" not in result
     assert "other-user" not in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_topic_restore_renames_topic_to_restored_session_title(
+    tmp_path, monkeypatch
+):
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.set_session_title("old-session", "Quarterly Tax Planning")
+    session_db.append_message("old-session", "user", "help with taxes")
+    session_db.append_message("old-session", "assistant", "Sure, happy to help.")
+    runner = _make_runner(session_db=session_db)
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/topic restore must not enter the agent loop")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(
+        _make_event("/topic old-session", thread_id="17585")
+    )
+
+    # The restored topic must be renamed to the session title rather than
+    # keeping Telegram's default (the raw "/topic <id>" command text).
+    assert "Session restored: Quarterly Tax Planning" in result
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="17585",
+        name="Quarterly Tax Planning",
+    )
     runner._run_agent.assert_not_called()
 
 
@@ -721,6 +887,7 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
         return "handoff ok"
 
     runner._handle_message = AsyncMock(side_effect=fake_handle_message)
+    runner.session_store.peek_session_id.return_value = "cli-session"  # the route the handoff switched
 
     await runner._process_handoff({
         "id": "cli-session",
@@ -736,6 +903,36 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
     assert captured["source"].chat_type == "dm"
     assert captured["source"].user_id == "208214988"
     assert captured["source"].thread_id == "17585"
+
+
+@pytest.mark.asyncio
+async def test_handoff_into_bound_dm_topic_rebinds_the_topic(tmp_path):
+    """A handoff into an already-bound DM topic moves the topic binding to the handed-off session;
+    else the next message's binding heal switches the topic straight back to its old session."""
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    topic_key = build_session_key(_make_source(thread_id="42"))
+    session_db.create_session("old-topic-session", source="telegram", user_id="208214988")
+    session_db.create_session("cli-session", source="cli")
+    session_db.bind_telegram_topic(chat_id="208214988", thread_id="42", user_id="208214988",
+                                   session_key=topic_key, session_id="old-topic-session")
+    runner = _make_runner(session_db=session_db)
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="208214988", name="Tester DM", thread_id="42")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.create_handoff_thread = AsyncMock(return_value=None)
+    adapter.send.return_value = SimpleNamespace(success=True)
+    runner.session_store.switch_session.side_effect = lambda key, sid, **_kw: SessionEntry(
+        session_key=key, session_id=sid, created_at=datetime.now(), updated_at=datetime.now(),
+        platform=Platform.TELEGRAM, chat_type="dm")
+    runner.session_store.peek_session_id.return_value = "cli-session"  # the route the handoff switched
+    runner._handle_message = AsyncMock(return_value="handoff ok")
+
+    await runner._process_handoff({"id": "cli-session", "title": "CLI work", "handoff_platform": "telegram"})
+
+    binding = session_db.get_telegram_topic_binding(chat_id="208214988", thread_id="42")
+    assert binding["session_id"] == "cli-session"
+    assert binding["session_key"] == topic_key
 
 
 @pytest.mark.asyncio

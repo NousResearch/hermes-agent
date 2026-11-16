@@ -23,6 +23,7 @@ import {
   hostArgs,
   redactSecrets,
   REMOTE_PROBE_TIMEOUT_SECS,
+  resolveSshBudgetMs,
   runSsh,
   SSH_ERROR,
   SshConnection,
@@ -1646,4 +1647,64 @@ test('#103288: every spawn uses the injected sshBinary; the default stays bare s
   const plain = createSshProbeConnection({ host: 'box', user: 'me' }, { spawnFn })
   await plain.open()
   assert.deepEqual([...new Set(commands)], ['ssh'])
+})
+
+test('#132508: resolveSshBudgetMs takes whole seconds, caps at 120s and rejects everything else', () => {
+  assert.equal(resolveSshBudgetMs('45'), 45_000)
+  assert.equal(resolveSshBudgetMs(' 60 '), 60_000)
+  assert.equal(resolveSshBudgetMs(30), 30_000)
+  assert.equal(resolveSshBudgetMs('999999'), 120_000)
+
+  // A partly numeric value must not be read as its numeric prefix: `45s`
+  // taken as 45 of the wrong unit would make the boot loop worse, not better.
+  for (const bad of ['45s', '1.5', '0', '-5', 'nope', '', '1e3', undefined, null, 1.5, Number.NaN]) {
+    assert.equal(resolveSshBudgetMs(bad), undefined, `${String(bad)} must keep the default`)
+  }
+})
+
+test('#132508: a configured budget reaches ssh as ConnectTimeout and bounds the local child', async () => {
+  const seen: { args: string[] }[] = []
+
+  const spawnFn = (_cmd: string, args: string[]) => {
+    seen.push({ args })
+
+    return fakeChild({ code: 0 })
+  }
+
+  const slow = new SshConnection(
+    { host: 'box', user: 'me' },
+    {
+      spawnFn,
+      mux: false,
+      connectTimeoutMs: resolveSshBudgetMs('45'),
+      forwardTimeoutMs: resolveSshBudgetMs('60')
+    }
+  )
+
+  assert.equal(slow._connectTimeoutMs, 45_000)
+  assert.equal(slow._forwardTimeoutMs, 60_000)
+  await slow.open()
+  assert.ok(seen.length > 0, 'open must spawn ssh')
+  assert.ok(
+    seen.every(({ args }) => args.includes('ConnectTimeout=45')),
+    'every ssh spawn must carry the configured ConnectTimeout'
+  )
+
+  // An unusable value resolves to undefined, which keeps the 15s default.
+  seen.length = 0
+
+  const fallback = new SshConnection(
+    { host: 'box', user: 'me' },
+    {
+      spawnFn,
+      mux: false,
+      connectTimeoutMs: resolveSshBudgetMs('45s'),
+      forwardTimeoutMs: resolveSshBudgetMs('nope')
+    }
+  )
+
+  assert.equal(fallback._connectTimeoutMs, 15_000)
+  assert.equal(fallback._forwardTimeoutMs, 15_000)
+  await fallback.open()
+  assert.ok(seen.every(({ args }) => args.includes('ConnectTimeout=15')))
 })

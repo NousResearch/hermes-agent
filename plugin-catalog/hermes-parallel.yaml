@@ -1,0 +1,21 @@
+name: hermes-parallel
+repo: https://github.com/kOs-tile/hermes-parallel
+sha: "9f66c1c528fe98b44fb057c15991bf8d1a3ac931"
+description: "Run three isolated, verified file futures inside Hermes, compare, then choose one to apply. Disclosure — `/parallel apply` replaces the chosen workspace folder under your configured `root` with the selected future (the original is kept as a hidden backup sibling for `/parallel rollback`); snapshots of that folder are stored in the profile's `parallel-data` directory; when you set `ai_enabled`, `parallel_explore` makes three model calls with your filenames, and with `context_enabled` also the contents of the files you name."
+maintainer: kOs-tile
+tier: community
+category: tools
+version: "1.0.4"
+capabilities:
+  provides_tools:
+    - parallel_begin
+    - parallel_stage
+    - parallel_explore
+    - parallel_preview
+    - parallel_compare
+    - parallel_gallery
+    - parallel_review_worktrees
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.6"

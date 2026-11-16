@@ -1,6 +1,6 @@
+import { canonicalResult } from '@hermes/shared/gateway-canonical'
 import { expect, it } from 'vitest'
 
-import { canonicalResult } from '../canonicalGateway.js'
 import { toTranscriptMessages } from '../domain/messages.js'
 
 it('hydrates canonical persisted replies through the same transcript path as resumed sessions', () => {

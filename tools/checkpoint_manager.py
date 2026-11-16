@@ -62,10 +62,9 @@ import time
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
-from hermes_cli.gitlock import clear_stale_tmp_packs
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Optional, Sequence
 
-from utils import env_bool, env_int, rmtree_readonly
+from utils import env_int, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +86,8 @@ def _resolve_checkpoint_base() -> Path:
 # Single shared store directory under CHECKPOINT_BASE.
 _STORE_DIRNAME = "store"
 _REFS_PREFIX = "refs/hermes"
+# Commit-body line carrying a snapshot's exact take time (listings read only the subject).
+TAKEN_AT_TRAILER = "Hermes-Taken-At"
 _INDEXES_DIRNAME = "indexes"
 _PROJECTS_DIRNAME = "projects"
 _LEDGERS_DIRNAME = "ledgers"
@@ -551,11 +552,6 @@ def _ref_tip(store: Path, working_dir: str, ref: str) -> Optional[str]:
     return _git_out(["rev-parse", "--verify", ref + "^{commit}"], store, working_dir, {128}) or None
 
 
-def _list_project_refs(store: Path, working_dir: str) -> list[str]:
-    out = _git_out(["for-each-ref", "--format=%(refname)", _REFS_PREFIX], store, working_dir, {128})
-    return [r for r in out.splitlines() if r.strip()]
-
-
 def _unlink_quiet(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -581,7 +577,6 @@ def _migrate_legacy_store(base: Path) -> Optional[Path]:
     """
     if not base.exists():
         return None
-    store = _store_path(base)
     legacy_root: Optional[Path] = None
     # Reserved top-level entries managed by v2.
     reserved = {_STORE_DIRNAME, _PRUNE_MARKER_NAME}
@@ -604,8 +599,6 @@ def _migrate_legacy_store(base: Path) -> Optional[Path]:
             shutil.move(str(child), str(dest))
         except OSError as exc:
             logger.warning("Could not archive legacy checkpoint %s: %s", child, exc)
-    # If the store still hasn't been created, create it here.
-    _ = store
     if legacy_root is not None:
         logger.info(
             "Migrated pre-v2 checkpoint repos to %s. "
@@ -1099,9 +1092,11 @@ class CheckpointManager:
         """Take a checkpoint if enabled and not already done this turn.
 
         Returns True if a checkpoint was taken, False otherwise.
-        Never raises — all errors are silently logged.
+        Never raises — all errors are silently logged. Never in a hosted scope: the working
+        directory is the agent's sandbox's, not this host's.
         """
-        if not self.enabled:
+        from tools.hosted_tool_policy import host_feature_enabled
+        if not self.enabled or not host_feature_enabled("checkpoints"):
             return False
 
         abs_dir = str(_normalize_path(working_dir))
@@ -1318,6 +1313,9 @@ class CheckpointManager:
         ``failed_deletes`` listing paths that could not be removed.
         """
         from tools.checkpoint_pruning import PruneError, store_lock
+        from tools.hosted_tool_policy import host_feature_refusal
+        if refusal := host_feature_refusal("checkpoints", "Checkpoint restore"):
+            return {"success": False, "error": refusal}
 
         try:
             with store_lock(_resolve_checkpoint_base()):
@@ -1659,7 +1657,7 @@ class CheckpointManager:
                     index_file=index_file,
                     allowed_returncodes={1},
                 )
-                if not ok_same or not env_bool("HERMES_CHECKPOINT_SKIP_RESeed", False):
+                if not ok_same or not env_var_enabled("HERMES_CHECKPOINT_SKIP_RESeed"):
                     _run_git(
                         ["read-tree", ref_commit],
                         store, working_dir,
@@ -1745,10 +1743,12 @@ class CheckpointManager:
                 line.strip() for line in reason.splitlines() if line.strip()
             ) + _uncaptured_note(nested_repos)
 
-        # Build commit (parent = current ref tip, if any).
-        commit_args = ["commit-tree", tree_sha, "-m", reason, "--no-gpg-sign"]
+        # Build commit (parent = current ref tip, if any). The body's exact take time lets a whole-tree
+        # /rollback tell a turn after the snapshot from one before it in the same git second.
+        message = f"{reason}\n\n{TAKEN_AT_TRAILER}: {time.time():.6f}"
+        commit_args = ["commit-tree", tree_sha, "-m", message, "--no-gpg-sign"]
         if has_ref:
-            commit_args = ["commit-tree", tree_sha, "-p", ref_commit, "-m", reason, "--no-gpg-sign"]
+            commit_args = ["commit-tree", tree_sha, "-p", ref_commit, "-m", message, "--no-gpg-sign"]
         ok_commit, new_sha, err = _run_git(
             commit_args, store, working_dir,
             index_file=index_file,

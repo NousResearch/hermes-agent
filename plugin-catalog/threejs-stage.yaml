@@ -1,0 +1,29 @@
+name: threejs-stage
+repo: https://github.com/tuancookiez-hub/hermes-threejs-stage
+sha: 5dbee69884211aaa7c08fbef4c6cb177e2138546
+version: "0.1.0"
+title: Three.js Stage
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-threejs-stage/5dbee69884211aaa7c08fbef4c6cb177e2138546/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-threejs-stage/5dbee69884211aaa7c08fbef4c6cb177e2138546/assets/card.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-threejs-stage/5dbee69884211aaa7c08fbef4c6cb177e2138546/assets/model.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-threejs-stage/5dbee69884211aaa7c08fbef4c6cb177e2138546/assets/dryrun.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-threejs-stage/5dbee69884211aaa7c08fbef4c6cb177e2138546/assets/fullscreen.png
+description: "Live three.js r187 scenes and GLB, GLTF, STL and OBJ models in Hermes chat. Hermes calls one tool, three_scene, with scene code or a model file. Hermes Desktop draws the result as an interactive card with orbit, zoom, fullscreen, restart, screenshot and Ask Hermes to change this, and other surfaces get a standalone HTML file. With Desktop open, each scene is dry-run in a hidden frame before the tool returns, so a crash or a blank render reaches Hermes in the same turn. Disclosure — scene code written by the model runs in Desktop inside a sandboxed iframe (opaque origin, scripts only) whose content security policy blocks all network requests; three.js r187 is bundled (MIT). The exported HTML file loads three.js from cdn.jsdelivr.net when opened in a browser. Given a model path, the tool reads that file and the .bin, .mtl and image files it references in the same folder (50 MB limit) and copies them to plugin storage; scenes, screenshots and delivered files are stored under plugin-data/threejs-stage and cache/generated/threejs-stage on this machine. The dry run makes the tool wait up to 2.5 s for Desktop and up to 16 s for the result, and can be turned off (verify_scenes). Fix with Hermes and Ask Hermes to change this each send one ordinary chat message. No API keys, no telemetry, no background processes, no self-update."
+maintainer: tuancookiez-hub
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/tuancookiez-hub/hermes-threejs-stage/tree/5dbee69884211aaa7c08fbef4c6cb177e2138546
+platforms: []
+capabilities:
+  provides_tools:
+    - three_scene
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "The live card needs Hermes Desktop. On other surfaces the tool delivers a standalone HTML file and reports the scene as unverified."
+  - "Restart the gateway once after installing, so the plugin's backend routes are mounted."
+  - "The card runs three.js WebGPURenderer on its WebGL2 backend, because the sandboxed frame is not a secure context. WebGPU-only features such as storage textures are not available."
+  - "Draco, meshopt and KTX2/Basis compressed glTF files are refused. Export without compression."

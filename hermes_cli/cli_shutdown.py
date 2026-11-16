@@ -163,6 +163,12 @@ def _gateway_owns_session_end(agent) -> bool:
     return isinstance(agent, GatewayAgent)
 
 
+def _is_gateway_viewer(cli) -> bool:
+    """The CLI is a viewer of a gateway-owned session store (its ``end_session`` is a detach)."""
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    return isinstance(getattr(cli, "_session_db", None), GatewaySessionStore)
+
+
 def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
     if _gateway_owns_session_end(_cli()._active_agent_ref):
         return False

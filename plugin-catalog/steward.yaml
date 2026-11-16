@@ -1,0 +1,17 @@
+name: steward
+repo: https://github.com/imprint-hash/steward
+sha: "400dd9d4a3720d426c75ef0d86f9e1d3eb8a304a"
+version: "1.0.0"
+title: Steward
+description: "Your chief of staff in the team chat. Collects every department's weekly update in its own group (voice note in any language, text, photo or file), nudges only late teams, and gives the founder one weekly pack in their language with promised-vs-done, a stuck radar and a voice brief. Founder says \"send\" and all staff get the update. Disclosure — Steward reads every message in the department groups you configure and sends their weekly updates (text, voice-note transcripts, photos, documents) to your model and TTS providers; it creates Hermes cron jobs that post check-ins and nudges into those groups and deliver the founder pack, keeps reports and copies of attachments under HERMES_HOME/steward, and posts the staff pack to the all-staff group when the founder says \"send\"."
+maintainer: imprint-hash
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/imprint-hash/steward/blob/400dd9d4a3720d426c75ef0d86f9e1d3eb8a304a/README.md
+readme: true
+capabilities:
+  provides_tools: [steward_setup, steward_checkin, steward_read_file, steward_record_report, steward_status, steward_build_pack, steward_publish]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

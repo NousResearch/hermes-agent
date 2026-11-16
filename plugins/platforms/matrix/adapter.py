@@ -1196,7 +1196,14 @@ class MatrixAdapter(BasePlatformAdapter):
         self._client = client
         if not await self._connect_authenticate(client, api):
             return False
+        # Lock the resolved account, not the credential: a token profile and a password profile for
+        # the same user would otherwise run two sync loops and both answer every message.
+        account = self._user_id or self._access_token
+        if not self._acquire_platform_lock("matrix-account", f"{self._homeserver}|{account}",
+                                           f"Matrix account {self._user_id or 'for this access token'}"):
+            return await self._abort_connect(api)
         if self._encryption and not await self._connect_setup_e2ee(client, api, state_store):
+            self._release_platform_lock()
             return False
         from mautrix.client import InternalEventType as IntEvt
         from mautrix.client.dispatcher import MembershipEventDispatcher
@@ -1244,6 +1251,7 @@ class MatrixAdapter(BasePlatformAdapter):
             with suppress(Exception):
                 await self._client.api.session.close()
             self._client = None
+        self._release_platform_lock()
         logger.info("Matrix: disconnected")
 
     async def send(

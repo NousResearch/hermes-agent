@@ -1325,6 +1325,24 @@ def fetch_models(base_url, api_key):
         return response.read()
 ```
 
+### Read a Retry-After header the way Hermes does
+
+A rate-limited API (HTTP 429 or 503) often says how long to wait in a `Retry-After` header, as a
+number of seconds or as an HTTP date. `agent.retry_utils.parse_retry_after_seconds(value)` turns
+either form into seconds. Pass the header value or the whole headers mapping; with a mapping it
+tries `Retry-After` and then `retry-after`. It returns a float clamped at `0.0`, or `None` when the
+header is absent or cannot be parsed, so the caller picks its own fallback wait.
+
+```python
+import time
+
+from agent.retry_utils import parse_retry_after_seconds
+
+def wait_before_retry(response, fallback=5.0):
+    seconds = parse_retry_after_seconds(response.headers)
+    time.sleep(fallback if seconds is None else seconds)
+```
+
 ### Ship a language pack
 
 A plugin can add a UI language or override the wording of an existing one for every surface at once —

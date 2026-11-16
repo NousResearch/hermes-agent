@@ -324,11 +324,19 @@ def _is_supervised_gateway_process() -> bool:
     gated here must protect it too (#113667).
 
     The verdict is invariant for one process with one environment, and the probe behind it
-    does real filesystem and kernel-process work: on macOS a single ``open()`` in that chain
-    can wedge, and the terminal guard calls this on EVERY command, so each abandoned guard
-    thread parked in the same open() (#board-497). Cache the verdict, keyed on pid plus the
-    two marker variables so a re-exec or a test that changes them still re-probes, and never
-    cache a probe that raised: a failed probe must be retried, not frozen into "not supervised".
+    does real filesystem and kernel-process work that can wedge: on macOS a single ``open()``
+    in that chain can block, and the terminal guard calls this on EVERY command, so each
+    abandoned guard thread parked in the same open (#board-497). Running a positive answer
+    again bought nothing, so it is memoized.
+
+    Only a CONFIRMED True is memoized, on ``(pid, _HERMES_GATEWAY,
+    HERMES_SUPERVISED_CHILD)``. A negative answer is deliberately NOT cached: the gateway PID
+    file is written after the process starts and can briefly name the previous pid, so freezing
+    an early False would answer "not the gateway" for the rest of the process's life and
+    silently disable the self-kill/ownership guards that key on this identity (#113667). The
+    negative path stays cheap -- the marker test below returns before any probe for every
+    non-gateway caller. A probe that *raised* is never cached either, so a transient failure is
+    retried rather than frozen into a wrong "not the gateway" answer.
     """
     global _SUPERVISED_GATEWAY_VERDICT
 
@@ -342,7 +350,6 @@ def _is_supervised_gateway_process() -> bool:
         return cached[1]
 
     if os.environ.get("_HERMES_GATEWAY") != "1":
-        _SUPERVISED_GATEWAY_VERDICT = (key, False)
         return False
     try:
         from gateway.restart import is_supervised_gateway_launch
@@ -352,7 +359,14 @@ def _is_supervised_gateway_process() -> bool:
     except Exception as exc:
         logger.debug("Could not verify supervised gateway process identity: %s", exc)
         return False
-    _SUPERVISED_GATEWAY_VERDICT = (key, verdict)
+    # Only a CONFIRMED identity may be memoized. A probe that answered False is a transient
+    # read, not an invariant: the gateway PID file is written after the process starts and can
+    # still name the previous pid, so freezing that False would answer "not the gateway" for
+    # the rest of the process's life and silently disable the self-kill/ownership guards
+    # (#113667). The negative path stays cheap -- the marker test above short-circuits every
+    # non-gateway caller before any probe runs -- so re-probing it costs nothing per call.
+    if verdict:
+        _SUPERVISED_GATEWAY_VERDICT = (key, True)
     return verdict
 
 

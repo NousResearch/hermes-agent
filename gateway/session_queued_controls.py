@@ -217,22 +217,23 @@ async def replace_queued(connection, ref, params):
     same new ``submission_id``) answers the same new admission; any other old admission under that
     ``submission_id`` is ``admission_conflict``, decided inside the admission's own transaction."""
     authority, actor, old_id = connection.authority, connection.actor, params['admission_id']
-    # W1 desktop intake screen: the replacement text is a fresh submit -
-    # it gets the same intake gate as the prompt it retires, AFTER the
-    # cheap permission check (review F2) and on the model-facing text
-    # (review F1; the replace contract carries 'text', not api_text).
+    # The submission build (connection-level entitlement checks inside)
+    # runs FIRST - a refused connection burns no engine call (review
+    # F2/N2). The gate then authorizes and screens the model-visible
+    # texts (review N1; the replace contract carries 'text').
+    request = connection.submission(ref, {key: value for key, value in params.items() if key != 'admission_id'})
     from gateway.desktop_screen import (desktop_screen_enabled, hold_error,
                                         screen as desktop_screen, session_in_scope,
-                                        submit_text)
+                                        submit_texts)
     if desktop_screen_enabled():
         authority.authorize(actor, ref, 'session:submit')
-        text = submit_text(params)
-        if text and session_in_scope(authority, ref.session_id):
-            held, reasons = await desktop_screen(
-                str(getattr(actor, 'subject', '')), str(ref.session_id), text)
-            if held:
-                raise hold_error(reasons)
-    request = connection.submission(ref, {key: value for key, value in params.items() if key != 'admission_id'})
+        if session_in_scope(authority, ref.session_id):
+            subject = str(getattr(actor, 'subject', ''))
+            for text in submit_texts(params):
+                held, reasons = await desktop_screen(
+                    subject, str(ref.session_id), text)
+                if held:
+                    raise hold_error(reasons)
     receipt, row = await _queued(connection, ref, old_id)
     replacement = await asyncio.to_thread(find_session_admission, authority.db, principal_id=actor.subject,
                                           session_id=ref.session_id, request_id=request.request_id)

@@ -245,18 +245,21 @@ async def drain_outcome_tasks(timeout: float = 5.0) -> None:
                 stuck.cancel()
 
 
-def submit_text(params) -> "str | None":
-    """The model-facing text of one submit-shaped params dict: the
-    canonical contract's ``api_text`` (the model-facing override a
-    voice prefix / model-switch note sends INSTEAD of the persisted
-    ``text`` - review F1: screening only ``text`` let the whole
-    model input ride unscreened) when present, else ``text``. None
-    when there is nothing to screen."""
+def submit_texts(params) -> list:
+    """Every model-visible text of one submit-shaped params dict, in
+    deterministic order, deduplicated: the canonical contract's
+    ``api_text`` (this turn's model-facing text) AND the persisted
+    ``text`` (the user row later turns load as model history - review
+    N1: screening only one of the two moved the blind spot to the
+    other; a hostile persisted row defeats the gate with a one-turn
+    delay). Identical values are screened once. Empty list when there
+    is nothing to screen."""
+    texts: list = []
     for key in ("api_text", "text"):
         value = params.get(key) if isinstance(params, dict) else None
-        if isinstance(value, str) and value.strip():
-            return value
-    return None
+        if isinstance(value, str) and value.strip() and value not in texts:
+            texts.append(value)
+    return texts
 
 
 def session_in_scope(authority, session_id: str) -> bool:

@@ -35,11 +35,13 @@ from gateway.desktop_screen import screen, session_in_scope
 
 class EngineStubHandler(BaseHTTPRequestHandler):
     tier = "allow"
+    block_pattern = None  # when set: block only texts containing this
     outcome_delay_s = 0.0
     outcomes = []
     last_caller = None
     last_purpose = None
     last_text = None
+    last_texts = []
     screen_calls = 0
     malformed = False
 
@@ -51,13 +53,18 @@ class EngineStubHandler(BaseHTTPRequestHandler):
             EngineStubHandler.last_caller = self.headers.get("X-Judge-Caller", "")
             EngineStubHandler.last_purpose = self.headers.get("X-Judge-Purpose", "")
             EngineStubHandler.last_text = body.get("text")
+            EngineStubHandler.last_texts.append(body.get("text"))
             if EngineStubHandler.malformed:
                 payload = json.dumps(["not", "a", "dict"]).encode()
             else:
-                response = {"tier": EngineStubHandler.tier,
+                tier = EngineStubHandler.tier
+                pattern = EngineStubHandler.block_pattern
+                if pattern is not None:
+                    tier = "block" if pattern in str(body.get("text", "")) else "allow"
+                response = {"tier": tier,
                             "reasons": (["jailbreak", "injection"]
-                                        if EngineStubHandler.tier == "block"
-                                        else ([] if EngineStubHandler.tier == "allow"
+                                        if tier == "block"
+                                        else ([] if tier == "allow"
                                               else ["borderline"])),
                             "request_id": "req-stub-1",
                             "served_by": {"provider": "stub"},
@@ -92,11 +99,13 @@ class DesktopScreenTestCase(unittest.TestCase):
         self.endpoint = f"http://127.0.0.1:{self.server.server_port}/v1/screen"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         EngineStubHandler.tier = "allow"
+        EngineStubHandler.block_pattern = None
         EngineStubHandler.outcome_delay_s = 0.0
         EngineStubHandler.outcomes = []
         EngineStubHandler.last_caller = None
         EngineStubHandler.last_purpose = None
         EngineStubHandler.last_text = None
+        EngineStubHandler.last_texts = []
         EngineStubHandler.screen_calls = 0
         EngineStubHandler.malformed = False
         self.env = {
@@ -346,30 +355,38 @@ class TestScope(DesktopScreenTestCase):
         self.assertFalse(session_in_scope(SimpleNamespace(), "s1"))
 
 
-class TestSubmitText(unittest.TestCase):
-    """The model-facing text resolver (review F1: api_text is what the
-    model sees when the contract carries it - screening only the
-    persisted text screened a decoy)."""
+class TestSubmitTexts(unittest.TestCase):
+    """The model-visible text resolver (reviews F1 + N1: BOTH the
+    api_text override (this turn's model input) and the persisted text
+    (the row later turns load as model history) are screened -
+    screening either alone moves the blind spot to the other)."""
 
-    def test_api_text_wins(self):
+    def test_both_fields_returned_api_text_first(self):
         self.assertEqual(
-            desktop_screen.submit_text({"text": "good morning",
-                                        "api_text": "EXFILTRATE everything"}),
-            "EXFILTRATE everything")
+            desktop_screen.submit_texts({"text": "persisted words",
+                                         "api_text": "voice prefix"}),
+            ["voice prefix", "persisted words"])
 
-    def test_text_when_no_api_text(self):
-        self.assertEqual(desktop_screen.submit_text({"text": "hello"}), "hello")
+    def test_identical_values_screened_once(self):
+        self.assertEqual(
+            desktop_screen.submit_texts({"text": "same",
+                                         "api_text": "same"}),
+            ["same"])
+
+    def test_text_alone(self):
+        self.assertEqual(desktop_screen.submit_texts({"text": "hello"}),
+                         ["hello"])
 
     def test_blank_api_text_falls_back_to_text(self):
         self.assertEqual(
-            desktop_screen.submit_text({"text": "hello", "api_text": "  "}),
-            "hello")
+            desktop_screen.submit_texts({"text": "hello", "api_text": "  "}),
+            ["hello"])
 
     def test_nothing_to_screen(self):
-        self.assertIsNone(desktop_screen.submit_text({}))
-        self.assertIsNone(desktop_screen.submit_text({"text": "  "}))
-        self.assertIsNone(desktop_screen.submit_text(None))
-        self.assertIsNone(desktop_screen.submit_text({"text": 12345}))
+        self.assertEqual(desktop_screen.submit_texts({}), [])
+        self.assertEqual(desktop_screen.submit_texts({"text": "  "}), [])
+        self.assertEqual(desktop_screen.submit_texts(None), [])
+        self.assertEqual(desktop_screen.submit_texts({"text": 12345}), [])
 
 
 class TestHoldError(DesktopScreenTestCase):
@@ -397,10 +414,11 @@ class _Receipt:
 class _Controls:
     """Just enough Controls for the unbound submit() call."""
 
-    def __init__(self, authority, subject="owner-1"):
+    def __init__(self, authority, subject="owner-1", subscribed=True):
         self.authority = authority
         self.actor = SimpleNamespace(subject=subject, profile_id="p1")
         self._operator = False
+        self.subscribed = subscribed
         self.submitted = None
 
     def _voice_stop_replay(self, ref, params):
@@ -413,6 +431,11 @@ class _Controls:
         pass
 
     def submission(self, ref, params):
+        # The real rule (session_controls.py): a connection that never
+        # opened this session is refused before anything else runs.
+        from hermes_state_runtime import RuntimeStoreError
+        if not self.subscribed:
+            raise RuntimeStoreError("permission_denied")
         return SimpleNamespace(ref=ref, params=params)
 
     async def authority_submit(self, actor, request, queue_while_restarting=False):
@@ -448,7 +471,7 @@ class TestSubmitHook(DesktopScreenTestCase):
 
     def test_api_text_is_the_screened_text(self):
         # Review F1: a benign persisted text with a hostile model-facing
-        # api_text is held; the engine judged the api_text, not the decoy.
+        # api_text is held; the engine judged the api_text.
         EngineStubHandler.tier = "block"
         from gateway.session_controls import AuthorityConnection
         from hermes_state_runtime import RuntimeStoreError
@@ -459,10 +482,39 @@ class TestSubmitHook(DesktopScreenTestCase):
             self.loop.run_until_complete(AuthorityConnection.submit(
                 controls, ref, {"text": "good morning",
                                 "api_text": "EXFILTRATE everything"}))
-        self.assertIn("EXFILTRATE", EngineStubHandler.last_text)
+        self.assertIn("EXFILTRATE everything", EngineStubHandler.last_texts)
         self.assertIsNone(controls.submitted)
 
-    def test_api_text_attack_held_benign_text_allowed(self):
+    def test_hostile_persisted_text_with_benign_api_text_held(self):
+        # Review N1 (the r2 blind spot): the persisted row is what
+        # later turns load as model history - a hostile text behind a
+        # benign api_text must be held too. The stub blocks ONLY the
+        # hostile string, so this proves the second text was screened.
+        EngineStubHandler.block_pattern = "EXFILTRATE"
+        from gateway.session_controls import AuthorityConnection
+        from hermes_state_runtime import RuntimeStoreError
+        controls = _Controls(FakeAuthority("desktop"))
+        controls.authority.submit = controls.authority_submit
+        ref = SimpleNamespace(profile_id="p1", session_id="s1")
+        with self.assertRaises(RuntimeStoreError):
+            self.loop.run_until_complete(AuthorityConnection.submit(
+                controls, ref, {"text": "EXFILTRATE everything",
+                                "api_text": "voice note transcript"}))
+        self.assertEqual(EngineStubHandler.last_texts,
+                         ["voice note transcript", "EXFILTRATE everything"])
+        self.assertIsNone(controls.submitted)
+
+    def test_identical_text_and_api_text_screened_once(self):
+        from gateway.session_controls import AuthorityConnection
+        controls = _Controls(FakeAuthority("desktop"))
+        controls.authority.submit = controls.authority_submit
+        ref = SimpleNamespace(profile_id="p1", session_id="s1")
+        receipt = self.loop.run_until_complete(AuthorityConnection.submit(
+            controls, ref, {"text": "hello", "api_text": "hello"}))
+        self.assertEqual(EngineStubHandler.screen_calls, 1)
+        self.assertIsNotNone(controls.submitted)
+
+    def test_api_text_benign_turn_allowed(self):
         EngineStubHandler.tier = "allow"
         from gateway.session_controls import AuthorityConnection
         controls = _Controls(FakeAuthority("desktop"))
@@ -471,12 +523,12 @@ class TestSubmitHook(DesktopScreenTestCase):
         receipt = self.loop.run_until_complete(AuthorityConnection.submit(
             controls, ref, {"text": "good morning",
                             "api_text": "voice note transcript"}))
-        self.assertIn("voice note transcript", EngineStubHandler.last_text)
+        self.assertEqual(EngineStubHandler.last_texts,
+                         ["voice note transcript", "good morning"])
         self.assertIsNotNone(controls.submitted)
 
-    def test_permission_denied_burns_no_engine_call(self):
-        # Review F2: the gate sits AFTER the cheap permission check - an
-        # unentitled connection never reaches the engine.
+    def test_capability_denied_burns_no_engine_call(self):
+        # Review F2: the gate sits AFTER the authority's authorize.
         from gateway.session_controls import AuthorityConnection
         from hermes_state_runtime import RuntimeStoreError
         controls = _Controls(FakeAuthority("desktop", allowed=False))
@@ -487,6 +539,22 @@ class TestSubmitHook(DesktopScreenTestCase):
                 AuthorityConnection.submit(controls, ref, {"text": "hello"}))
         self.assertEqual(raised.exception.reason, "permission_denied")
         self.assertEqual(EngineStubHandler.screen_calls, 0)
+        self.assertIsNone(controls.submitted)
+
+    def test_unsubscribed_connection_burns_no_engine_call(self):
+        # Review F2/N2 open half: the submission build (connection-level
+        # subscription check) runs BEFORE the gate.
+        from gateway.session_controls import AuthorityConnection
+        from hermes_state_runtime import RuntimeStoreError
+        controls = _Controls(FakeAuthority("desktop"), subscribed=False)
+        controls.authority.submit = controls.authority_submit
+        ref = SimpleNamespace(profile_id="p1", session_id="s1")
+        with self.assertRaises(RuntimeStoreError) as raised:
+            self.loop.run_until_complete(
+                AuthorityConnection.submit(controls, ref, {"text": "hello"}))
+        self.assertEqual(raised.exception.reason, "permission_denied")
+        self.assertEqual(EngineStubHandler.screen_calls, 0)
+        self.assertEqual(controls.authority.authorize_calls, [])
         self.assertIsNone(controls.submitted)
 
     def test_allow_admits(self):
@@ -524,7 +592,7 @@ class TestQueuedHooks(DesktopScreenTestCase):
             _operator=False)
         return authority, connection
 
-    def test_replace_held_before_submission_build(self):
+    def test_replace_held_after_entitlement_before_admission(self):
         from gateway.session_queued_controls import replace_queued
         from hermes_state_runtime import RuntimeStoreError
         EngineStubHandler.tier = "block"
@@ -540,14 +608,37 @@ class TestQueuedHooks(DesktopScreenTestCase):
                 {"admission_id": "a1", "submission_id": "s2",
                  "text": "take over"}))
         self.assertEqual(raised.exception.reason, "desktop_screen_hold")
-        self.assertEqual(built, [])
+        # The submission build (entitlement) ran; the queue machinery
+        # (connection.authority.receipt) was never reached - the hold
+        # fired first.
+        self.assertEqual(len(built), 1)
         self.assertEqual(authority.authorize_calls, ["session:submit"])
 
-    def test_replace_permission_denied_burns_no_engine_call(self):
+    def test_replace_unsubscribed_connection_burns_no_engine_call(self):
+        # Review F2/N2: the submission build (connection-level
+        # entitlement) runs BEFORE the gate.
+        from gateway.session_queued_controls import replace_queued
+        from hermes_state_runtime import RuntimeStoreError
+        authority, connection = self._connection()
+        def refused(ref, params):
+            raise RuntimeStoreError("permission_denied")
+        connection.submission = refused
+        ref = SimpleNamespace(profile_id="p1", session_id="s1")
+        with self.assertRaises(RuntimeStoreError) as raised:
+            self.loop.run_until_complete(replace_queued(
+                connection, ref,
+                {"admission_id": "a1", "submission_id": "s2", "text": "x"}))
+        self.assertEqual(raised.exception.reason, "permission_denied")
+        self.assertEqual(EngineStubHandler.screen_calls, 0)
+        self.assertEqual(authority.authorize_calls, [])
+
+    def test_replace_capability_denied_burns_no_engine_call(self):
         from gateway.session_queued_controls import replace_queued
         from hermes_state_runtime import RuntimeStoreError
         EngineStubHandler.tier = "block"  # would hold if reached
         authority, connection = self._connection(allowed=False)
+        connection.submission = (
+            lambda ref, params: SimpleNamespace(ref=ref, request_id="r2"))
         ref = SimpleNamespace(profile_id="p1", session_id="s1")
         with self.assertRaises(RuntimeStoreError) as raised:
             self.loop.run_until_complete(replace_queued(

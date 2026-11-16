@@ -16,7 +16,7 @@ Multimodal data tables with auto-computed AI columns.
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/pixeltable` |
 | Path | `optional-skills/mlops/pixeltable` |
-| Version | `1.3.0` |
+| Version | `1.3.1` |
 | Author | Pierre Brunelle (@pierrebrunelle), Pixeltable (pixeltable.com) |
 | License | Apache-2.0 |
 | Platforms | linux, macos |
@@ -75,6 +75,8 @@ python3 -c "import pixeltable as pxt; print(f'Pixeltable {pxt.__version__} ready
 The first import starts an embedded PostgreSQL. On Linux and macOS it listens on a local socket, so a busy TCP port 5432 is not the failure mode. No external database setup is required.
 
 **Provider keys.** Pixeltable reads them from the process environment or `~/.pixeltable/config.toml` (override the file with `PIXELTABLE_CONFIG`). Putting a key only in `~/.hermes/.env` is not enough unless that process exports it. The `pxt` daemon reads config and the environment once, at startup. After either changes, `pxt daemon restart`, then `pxt service restart NAME` for a running service. Until the restart, commands answer 409.
+
+The daemon identity also fingerprints installed package metadata, so after `python3 -m pip install` or uninstall that changes site-packages the client replaces the daemon without a manual `pxt daemon restart` (still restart after env or `config.toml` edits).
 
 Common names: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `TOGETHER_API_KEY`. Gemini accepts `GOOGLE_API_KEY` or `GEMINI_API_KEY` (or `api_key` under `[gemini]`). An OpenAI-compatible proxy uses `OPENAI_BASE_URL` or `[openai] base_url`. DeepSeek uses `DEEPSEEK_BASE_URL` or `[deepseek] base_url`. Ollama uses `OLLAMA_HOST` or `[ollama] host`, not `base_url`. Other providers do not read a Pixeltable base URL. Never pass `api_key=` into the call.
 
@@ -312,12 +314,13 @@ Cloud sign-in, secrets, and the hosted wait: `references/apps-and-cloud.md`. Ask
 | `t.col.select()` / `t.col.count()` | Those ColumnRef helpers do not exist. Use `t.select(t.col)...` and `t.count()`. `t.show()` and `t.head()` still exist on the table |
 | `t.where(a).where(b)` | One `.where()`. Combine with `&` and `\|` |
 | `chat_completions(..., temperature=0)` | `model_kwargs={'temperature': 0}` |
+| `generate_videos(...)` | `generate_video(prompt, model='gemini-omni-1.1-flash')` from `pixeltable.functions.gemini`. `model` is keyword-only. Extra fields go in `config=` |
 | `pxt.Table(...)` or `pxt.connect(...)` | `pxt.create_table(...)` and `pxt.get_table(...)` |
 | `for row in data: model.predict(row)` | A computed column, which runs on insert |
 
 ## Troubleshooting
 
-- After API keys or `config.toml` change, run `pxt daemon restart`, then `pxt service restart NAME` for a running service. The daemon reads the environment and config once, at startup.
+- After API keys or `config.toml` change, run `pxt daemon restart`, then `pxt service restart NAME` for a running service. The daemon reads the environment and config once, at startup. After `python3 -m pip install` or uninstall that changes site-packages, the client replaces the daemon without that restart.
 - Define `@pxt.udf` and `@pxt.query` in a module that `pxt schema update` imports. A script run as `__main__` is not that module.
 - `order_by` on a Python UDF expression has no SQL translation. Descending (`asc=False`) raises `AttributeError`. Ascending does not sort by that expression. Order by a stored column.
 

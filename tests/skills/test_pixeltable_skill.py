@@ -343,3 +343,20 @@ class TestApiCorrectness:
         assert 'literal `limit(1)`' in apps
         assert 'Only the OpenAI client' not in skill_text
         assert 'Only the OpenAI client' not in apps
+
+    def test_daemon_package_fingerprint_and_gemini_video(self, skill_text: str) -> None:
+        apps = APPS_REF.read_text()
+        fingerprint = (
+            'fingerprints installed package metadata, so after `python3 -m pip install` '
+            'or uninstall that changes site-packages the client replaces the daemon '
+            'without a manual `pxt daemon restart`'
+        )
+        call = "generate_video(prompt, model='gemini-omni-1.1-flash')"
+        assert fingerprint in skill_text
+        assert fingerprint in apps
+        assert call in skill_text
+        assert call in apps
+        assert 'There is no `generate_videos`' in apps
+        assert 'Gemini video.' in apps
+        for text in (skill_text, apps):
+            assert '\u2014' not in text

@@ -50,6 +50,8 @@ The first catalog command starts a daemon at `127.0.0.1:22089` unless `PXT_PORT`
 
 The daemon reads `config.toml` and the environment once. Local services inherit that copy. After a new key is exported or `config.toml` changes, every command answers 409 until `pxt daemon restart`, then `pxt service restart NAME`.
 
+The daemon identity also fingerprints installed package metadata, so after `python3 -m pip install` or uninstall that changes site-packages the client replaces the daemon without a manual `pxt daemon restart` (still restart after env or `config.toml` edits).
+
 Home is `PIXELTABLE_HOME` (default `~/.pixeltable`). Config file is `PIXELTABLE_CONFIG` or `PIXELTABLE_HOME/config.toml`. Postgres data is `PIXELTABLE_PGDATA` or `PIXELTABLE_HOME/pgdata`. Media is `PIXELTABLE_HOME/media`. `PXT_HOME` is not read.
 
 On Linux and macOS the embedded Postgres uses a Unix socket, chosen so it does not collide with TCP 5432. Windows picks a free TCP port. Do not aim users at port 5432.
@@ -144,6 +146,7 @@ A computed column that raises during an insert or update route fails the request
 | `transcriptions(..., language='en')` | The signature is `(audio, *, model, model_kwargs=None)`. Put `language` in `model_kwargs`. The docstring example that passes `language=` is stale |
 | `messages(..., max_tokens=...)` omitted | Anthropic `messages` requires top-level `max_tokens=` |
 | `chat_completions(..., temperature=0)` | `model_kwargs={'temperature': 0}` on OpenAI and the other OpenAI-compatible providers. Gemini uses `config=`. Bedrock `converse` uses `inference_config=`. Ollama uses `options=`. vLLM uses `sampling_params=` |
+| `generate_videos(...)` | `generate_video(prompt, model='gemini-omni-1.1-flash')` from `pixeltable.functions.gemini`. `model` is keyword-only. Extra fields go in `config=` |
 | `similarity('query')` | `similarity(string='query')`. Also `image=`, `audio=`, `video=`, `document=`, `vector=`. `idx=` selects among indexes on one column |
 | `EmbeddingIndex(col, image_embed=clip)` for text queries | `embedding=` when the function covers text and image, or both `string_embed=` and `image_embed=` |
 | `add_embedding_index(..., name=)` | Notebook: `idx_name=`. Model DSL: `EmbeddingIndex(..., name=)` |
@@ -162,3 +165,5 @@ Extract the text field before embedding or concatenating: `.choices[0].message.c
 `frame_iterator` output columns are `frame` and `frame_attrs` (`index`, `time`, `key_frame`, and the other pyav fields). `fps` is a float (`fps=1.0`). `document_splitter(..., separators='token_limit')` needs `tiktoken`. `separators='sentence'` needs spaCy.
 
 Model ids in any example are illustrations. Confirm the provider's current id. `sentence_transformer` takes `model_id=`. Most chat functions take `model=`.
+
+Gemini video. Video generation uses Omni models via `generate_video` (e.g. `model='gemini-omni-1.1-flash'`). The call is `generate_video(prompt, model='gemini-omni-1.1-flash')` from `pixeltable.functions.gemini`. `model` is keyword-only. There is no `generate_videos`.

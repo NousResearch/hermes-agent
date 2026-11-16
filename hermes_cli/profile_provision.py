@@ -278,7 +278,8 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
     if result.mirrored["auth"] is not True:
         # From the outcome, not the flags: a profile with no auth.json of its own reads the root's
         # (``--clone-all`` brings its own copy; ``mirror_credentials=False`` still reads the root's).
-        result.mirrored["auth"] = "shared" if not (path / "auth.json").exists() else False
+        from hermes_secret_routing import auth_json_exists  # a store's view counts as the profile's own
+        result.mirrored["auth"] = "shared" if not auth_json_exists(path / "auth.json") else False
     return result
 
 

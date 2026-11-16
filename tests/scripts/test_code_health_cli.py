@@ -101,6 +101,10 @@ def _add_engine(repo: Path, checker: bool = True) -> list[str]:
     for rel in _SUPPORT:
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO / current_path(rel), repo / rel)
+    # The secret-file guard scans top-level modules: carry the real allowlist's lines for the copied ones.
+    allow = json.loads((REPO / "scripts/secret_file_access_allowlist.json").read_text(encoding="utf-8"))
+    _write(repo, {"scripts/secret_file_access_allowlist.json":
+                  json.dumps({k: v for k, v in allow.items() if k in _SUPPORT}, indent=1) + "\n"})
     (repo / "hermes_agent").mkdir(exist_ok=True)
     shutil.copy2(REPO / "hermes_agent/__init__.py", repo / "hermes_agent/__init__.py")
     shutil.copytree(REPO / "hermes_agent/compat", repo / "hermes_agent/compat",

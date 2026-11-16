@@ -40,7 +40,7 @@ def _launch_bot_token_names() -> set[str]:
     any dotenv this process loaded, its secret sources. Those are the root bot's identity and must not
     follow a sibling (#135792). A provider key, a proxy, or a token the user's SHELL exported is not
     the launch profile's: a manual ``hermes -p X gateway run`` from that shell has it too, so it stays."""
-    from agent.secret_scope import load_env_file
+    from hermes_secret_routing import read_profile_env  # the selected secret store's view
     from hermes_cli.env_loader import launch_dotenv_keys, source_supplied_names
     from hermes_constants import get_routing_process_hermes_home
     from tools.environments.local_env_policy import _ADAPTER_SECRET_ENV, _home_adapter_secret_env
@@ -50,7 +50,7 @@ def _launch_bot_token_names() -> set[str]:
         # Under systemd/launchd (``/update`` sent to a service gateway) there is no user shell: an
         # ``Environment=`` token is the unit's own profile's, never recorded in any .env.
         return set(adapter_secrets)
-    supplied = (set(load_env_file(get_routing_process_hermes_home() / ".env")) | set(launch_dotenv_keys())
+    supplied = (set(read_profile_env(get_routing_process_hermes_home() / ".env")) | set(launch_dotenv_keys())
                 | set(source_supplied_names()))
     return {name.upper() for name in supplied if name.upper() in adapter_secrets}
 

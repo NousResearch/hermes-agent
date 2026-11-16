@@ -622,12 +622,13 @@ def refresh_installed_secret_scope(hermes_home: Path) -> bool:
     bound = _bound_secrets()
     scope = bound.mapping if bound is not None else None
     if isinstance(scope, LiveSecretScope):
+        from hermes_constants import hermes_home_key
         # Source discovery may change the non-store layers. Preserve the caller overlay,
         # replacing only the profile composition, never the dereferenced store values.
         def refresh(layer):
             if not isinstance(layer, LiveSecretScope):
                 return
-            if layer.profile_home == hermes_home:
+            if layer.profile_home is not None and hermes_home_key(layer.profile_home) == hermes_home_key(hermes_home):
                 from hermes_secret_routing import live_bootstrap_env
                 live_bootstrap_env(hermes_home, layer.provider)
                 layer.refresh()

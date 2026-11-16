@@ -101,6 +101,8 @@ def reset_for_tests() -> None:
         _PROVIDERS.clear()
     with _PUBLISH_LOCK:
         _PUBLISHED.clear()
+        _PUBLISHED_VERSIONS.clear()
+        _PUBLISHED_NAMES.clear()
 
 
 # --- bootstrap and deployment ------------------------------------------------------------------
@@ -181,6 +183,12 @@ def _routed_env_home(env_path: Path) -> tuple[Optional[SecretStoreProvider], Opt
     home = _profile_home_of(env_path, ENV_FILENAME)
     return (provider, home) if home is not None else (None, None)
 
+def local_bootstrap_env(home: Path, provider: SecretStoreProvider) -> dict[str, str]:
+    """Only the file-backed deployment layer of a non-file-backed profile scope."""
+    from agent.secret_scope import load_env_file
+    return {k: v for k, v in load_env_file(Path(home) / ENV_FILENAME).items() if stays_local(provider, k)}
+
+
 def read_profile_env(env_path: Path) -> dict[str, str]:
     """A profile ``.env``'s assignments: ``load_env_file(env_path)`` with the local store; with any
     other store, the local file's bootstrap names plus the store's view of the profile."""
@@ -232,6 +240,16 @@ def routed_bootstrap_env(env_path: Path) -> Optional[dict[str, str]]:
 
 
 _PUBLISHED: dict[str, dict[str, str]] = {}   # home key -> the view boot published into os.environ
+_PUBLISHED_VERSIONS: dict[str, int] = {}
+_PUBLISHED_NAMES: dict[str, set[str]] = {}
+
+
+def published_env_names(home):
+    """Store-owned launch names, including revoked ones: never a frozen-env fallback."""
+    from hermes_constants import hermes_home_key
+    with _PUBLISH_LOCK:
+        return set(_PUBLISHED_NAMES.get(hermes_home_key(home), ()))
+
 _PUBLISH_LOCK = threading.Lock()
 
 
@@ -242,56 +260,50 @@ def boot_secret_store(home: Path) -> Optional[dict[str, str]]:
     if provider is None or _profile_home_of(Path(home) / ENV_FILENAME, ENV_FILENAME) is None:
         return None
     provider.boot(Path(home))
-    view = {k: v for k, v in provider.env_view(Path(home)).items() if not stays_local(provider, k)}
     from hermes_constants import hermes_home_key
-    with _PUBLISH_LOCK:
-        _PUBLISHED[hermes_home_key(home)] = dict(view)
-    return view
-
-
-def view_changed(home: Path, old_env: Mapping[str, str], new_env: Mapping[str, str]) -> None:
-    """A store's refresh moved *home*'s env view from *old_env* to *new_env*. Drops every env
-    cache and carries the change, name by name, into every secret scope already installed for
-    *home* (on any thread: ``agent.secret_scope.update_installed_scopes``). When this process
-    published *home*'s view into ``os.environ`` (its own profile) the changed and removed names
-    move there too, only where ``os.environ`` still holds what was published, so a value another
-    owner set since (shell, managed ``.env``) stays theirs. Under multiplexing ``os.environ`` is
-    never written (it is no profile's); the frozen launch environment the launch profile's scopes
-    are built from moves instead, by the same rule."""
-    from agent.secret_scope import invalidate_env_file_cache, is_multiplex_active, update_installed_scopes
-    from hermes_constants import hermes_home_key
-    provider = routed_provider()
-    keep = (lambda name: stays_local(provider, name)) if provider is not None else (lambda name: False)
-    old = {k: v for k, v in old_env.items() if not keep(k)}
-    new = {k: v for k, v in new_env.items() if not keep(k)}
-    invalidate_env_file_cache()
     key = hermes_home_key(home)
-    if is_multiplex_active():
-        with _PUBLISH_LOCK:
-            published = key in _PUBLISHED
-        if published:
-            from tui_gateway.launch_profile_policy import move_launch_env
-            move_launch_env(old, new)
-        update_installed_scopes(Path(home), old, new)
-        return
     with _PUBLISH_LOCK:
-        published_view = _PUBLISHED.get(key)
-        if published_view is not None:
-            _PUBLISHED[key] = dict(new)
-    if published_view is None:
-        update_installed_scopes(Path(home), old, new)
+        _PUBLISHED.setdefault(key, {})
+    view_changed(home)
+    return dict(provider.current_snapshot(home).env)
+
+
+def view_changed(home: Path, old_env=None, new_env=None) -> None:
+    """Publish only the currently installed snapshot, never a notification's obsolete payload.
+
+    Live scopes need no notifications. The process-env mirror is serialized and version fenced;
+    multiplexing moves only the frozen launch view, never the shared process environment.
+    """
+    from agent.secret_scope import invalidate_env_file_cache, is_multiplex_active
+    from hermes_constants import hermes_home_key
+    from hermes_cli.env_loader import _LOADED_DOTENV_KEYS
+    from tui_gateway.launch_profile_policy import move_launch_env
+    provider = routed_provider()
+    if provider is None:
         return
-    for name, value in published_view.items():
-        if name not in new and os.environ.get(name) == value:
-            os.environ.pop(name, None)
-    changed = {}
-    for name, value in new.items():
-        if published_view.get(name) != value and os.environ.get(name) in (None, published_view.get(name)):
-            changed[name] = value
-    if changed:
-        from hermes_cli.env_loader import publish_routed_env
-        publish_routed_env(changed)
-    update_installed_scopes(Path(home), old, new)
+    snapshot = provider.current_snapshot(home)
+    new = {k: v for k, v in snapshot.env.items() if not stays_local(provider, k)}
+    key = hermes_home_key(home)
+    multiplex = is_multiplex_active()
+    invalidate_env_file_cache()
+    with _PUBLISH_LOCK:
+        old = _PUBLISHED.get(key)
+        if old is None or snapshot.version <= _PUBLISHED_VERSIONS.get(key, 0):
+            return
+        if multiplex:
+            move_launch_env(old, new)
+        else:
+            for name, value in old.items():
+                if name not in new and os.environ.get(name) == value:
+                    os.environ.pop(name, None)
+            changed = {name: value for name, value in new.items()
+                       if old.get(name) != value and os.environ.get(name) in (None, old.get(name))}
+            for name, value in changed.items():
+                os.environ[name] = value
+            _LOADED_DOTENV_KEYS.update(changed)
+        _PUBLISHED[key] = new
+        _PUBLISHED_VERSIONS[key] = snapshot.version
+        _PUBLISHED_NAMES.setdefault(key, set()).update(new)
 
 
 def route_env_write(env_path: Path, key: str, value: Optional[str]) -> Optional[bool]:

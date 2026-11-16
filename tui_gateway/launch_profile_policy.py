@@ -240,7 +240,17 @@ def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     # The frozen env's config.yaml-bridged lists follow the live bridge, or a user removed from the
     # launch profile's config.yaml stays admitted until a restart; operator values stay frozen.
     follow_bridged_env(scope)
-    scope.update(build_profile_secret_scope(Path(launch_home)))
+    profile = build_profile_secret_scope(Path(launch_home))
+    from agent.secret_scope import LiveSecretScope
+    from hermes_secret_routing import routed_provider
+    provider = routed_provider()
+    if provider is not None:
+        # Store-owned launch entries must not survive revocation in the fallback layer.
+        from hermes_secret_routing import published_env_names
+        for name in published_env_names(launch_home) | set(provider.current_snapshot(launch_home).env):
+            scope.pop(name, None)
+        return LiveSecretScope((profile, scope))
+    scope.update(profile)
     return scope
 
 

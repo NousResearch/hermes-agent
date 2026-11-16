@@ -1,7 +1,7 @@
 """Caller-owned setup values survive store registration and later revocations."""
 
 from agent.runtime_scope import bind_state, scope_for_profile
-from agent.secret_scope import build_profile_secret_scope, get_secret
+from agent.secret_scope import build_profile_secret_scope, get_secret, overlay_secret_scope
 
 pytest_plugins = ["tests.agent.test_secret_store_routing"]
 
@@ -24,7 +24,8 @@ def test_revocation_rebuilds_the_store_base_and_keeps_the_explicit_overlay(store
     provider, home = store
     provider.seed_external(home, {"REVOKED_KEY": "saved-marker", "OVERRIDE_KEY": "saved-marker"})
     provider.refresh(home)
-    explicit = {**build_profile_secret_scope(home), "OVERRIDE_KEY": "setup-marker", "UNSAVED_KEY": "temporary-marker"}
+    explicit = overlay_secret_scope(build_profile_secret_scope(home),
+                                    {"OVERRIDE_KEY": "setup-marker", "UNSAVED_KEY": "temporary-marker"})
     with bind_state(scope_for_profile(home), secrets=explicit, terminal=False):
         assert get_secret("OVERRIDE_KEY") == "setup-marker"
         provider.remote[provider._key(home)]["env"] = {}

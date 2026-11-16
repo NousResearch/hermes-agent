@@ -25,6 +25,7 @@ class MemoryViewProvider(SecretStoreProvider):
 
     def __init__(self) -> None:
         self.remote: dict[str, dict[str, Any]] = {}   # home key -> {"env": {}, "auth": {}, "version": int}
+        self.cells = {}
         self.seen: dict[str, dict[str, Any]] = {}     # home key -> the snapshot the process reads
         self.homes: dict[str, Path] = {}              # home key -> the home path it was read for
         self.booted: list[str] = []
@@ -62,21 +63,27 @@ class MemoryViewProvider(SecretStoreProvider):
 
     def refresh(self, home: Any = None) -> None:
         """Re-read the remote snapshot and notify after releasing publication locks."""
-        from agent.secret_scope import _INSTALLED_SCOPES_LOCK, mark_installed_scope_view_changed
+        from hermes_secret_port import SecretSnapshot, SecretSnapshotCell
         from hermes_secret_routing import view_changed
         keys = [self._key(home)] if home is not None else list(self.remote)
         moved = []
-        with _INSTALLED_SCOPES_LOCK, self._lock:
+        with self._lock:
             if home is not None:
                 self.homes[keys[0]] = Path(home)
             for key in keys:
-                before = self.seen.get(key)
-                mark_installed_scope_view_changed(key)
-                self.seen[key] = copy.deepcopy(self.remote.get(key) or {"env": {}, "auth": {}, "version": 1})
-                if before is not None and before["env"] != self.seen[key]["env"] and key in self.homes:
-                    moved.append((self.homes[key], dict(before["env"]), dict(self.seen[key]["env"])))
-        for path, old_env, new_env in moved:
-            view_changed(path, old_env, new_env)
+                view = copy.deepcopy(self.remote.get(key) or {"env": {}, "auth": {}, "version": 1})
+                self.seen[key] = view
+                cell = self.cells.setdefault(key, SecretSnapshotCell())
+                snapshot = SecretSnapshot(cell.current.version + 1, view["env"], view["auth"])
+                cell.install(snapshot)
+                if key in self.homes:
+                    moved.append(self.homes[key])
+        for path in moved:
+            view_changed(path)
+
+    def current_snapshot(self, home):
+        self._seen(home)
+        return self.cells[self._key(home)].current
 
     def _seen(self, home: Any) -> dict[str, Any]:
         key = self._key(home)

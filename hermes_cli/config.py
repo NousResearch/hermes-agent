@@ -2516,7 +2516,7 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
     # dashboard launch scope), so a same-request read after the write must see it there too; a
     # routed profile's value never reaches the shared process env.
     targets = [scope] if isinstance(scope, dict) else []
-    if not routed and not is_launch_only_env_key(key) and (scope is None or isinstance(scope, dict)):
+    if not routed and not is_launch_only_env_key(key):
         targets.append(os.environ)
     for target in targets:
         if value is None:

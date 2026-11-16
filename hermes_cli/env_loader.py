@@ -796,8 +796,6 @@ def _boot_stores(home_path: Path, project_env_path: Path | None) -> dict[str, st
     bootstrap_deployment(home_path, project_env_path)
     get_config_backend().boot(home_path)
     routed_view = boot_secret_store(home_path)
-    if routed_view is not None:
-        publish_routed_env(routed_view)
     return routed_view
 
 

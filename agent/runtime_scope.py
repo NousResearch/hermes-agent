@@ -119,9 +119,7 @@ def bind_state(
     from tools.terminal_scope import prepare_profile_terminal_scope
     from tui_gateway.launch_profile_policy import owner_secret_scope
 
-    from agent.secret_scope import installed_scope_view_version, track_installed_scope
-    view_version = installed_scope_view_version(home) if secrets is None else None
-    builder = lambda: owner_secret_scope(Path(home))
+    from agent.secret_scope import prepare_secret_scope
     if secrets is None:
         # Built under the target's home, as main's per-turn loader did: hydration reads the
         # profile's ``secrets:`` config through ``get_hermes_home()``, which would otherwise still
@@ -132,8 +130,7 @@ def bind_state(
                 hydrate_profile_secret_sources(Path(home))
             secrets = owner_secret_scope(Path(home))
     kept = current_state()
-    bound_secrets = BoundSecrets(secrets, home if stamp_home else None)
-    track_installed_scope(bound_secrets, home, builder=builder, view_version=view_version)
+    bound_secrets = BoundSecrets(prepare_secret_scope(secrets, home), home if stamp_home else None)
     if terminal_policy is not None:
         policy = terminal_policy
     elif terminal and defer_terminal:

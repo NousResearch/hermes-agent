@@ -172,9 +172,10 @@ def set_secret_scope(secrets: Optional[Mapping[str, str]], *, profile_home: Opti
         switched = legacy_switch(profile_home or get_routing_process_hermes_home(), secrets=secrets)
         if switched is not None:
             return switched
+    if secrets is not None:
+        from hermes_constants import get_routing_process_hermes_home
+        secrets = prepare_secret_scope(secrets, profile_home or get_routing_process_hermes_home())
     bound = None if secrets is None else BoundSecrets(secrets, str(profile_home) if profile_home else None)
-    if bound is not None:
-        track_installed_scope(bound, profile_home)
     return push_state(secrets=bound)
 
 
@@ -425,12 +426,19 @@ def load_env_file(env_path: Path) -> dict[str, str]:
     return secrets
 
 
-def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
+def build_profile_secret_scope(hermes_home: Path) -> Mapping[str, str]:
     """Build a profile's secret mapping from ``<home>/.env`` plus its external
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
     from ``os.environ`` — so the scope holds only profile secrets."""
     from hermes_secret_routing import read_profile_env  # the selected secret store's view of the profile
-    secrets = read_profile_env(Path(hermes_home) / ".env")
+    from hermes_secret_routing import local_bootstrap_env, routed_provider
+    provider = routed_provider()
+    if provider is not None:
+        provider.current_snapshot(hermes_home)
+        secrets = local_bootstrap_env(hermes_home, provider)
+        store_layer = lambda: provider.current_snapshot(hermes_home).env
+    else:
+        secrets = read_profile_env(Path(hermes_home) / ".env")
     # Launch-only keys are never profile secrets (#135200): get_secret consults
     # _is_global_env first, but direct scope.get readers (e.g. platform_gate_env
     # under multiplexing) do not — a planted .env entry would otherwise survive
@@ -464,6 +472,8 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     managed = {k: v for k, v in load_managed_env().items() if not _is_global_env(k)}
     secrets.update(managed)
     _expand_dotenv_templates(secrets, hermes_home, {**dotenv, **managed})
+    if provider is not None:
+        return LiveSecretScope((secrets, store_layer), profile_home=hermes_home)
     return secrets
 
 
@@ -496,129 +506,49 @@ def _is_process_home(hermes_home: Path) -> bool:
         return False
 
 
-# Every installed scope, per profile home, held weakly: a secret store's refresh
-# (``hermes_secret_routing.view_changed``) moves the names it changed in each of them, in place.
-# Installed scopes live in other tasks' and threads' contexts, where nothing else could reach them;
-# a finished activity's scope is dropped from here when the last context holding it goes.
-_INSTALLED_SCOPES: dict[str, list] = {}
-_INSTALLED_SCOPES_LOCK = threading.RLock()
-_INSTALLED_SCOPE_GENERATIONS: dict[str, int] = {}
-_SCOPE_REBUILD_ATTEMPTS = 8
+class LiveSecretScope(Mapping[str, str]):
+    """Read-through composition: the store is never copied into an installed scope."""
+
+    def __init__(self, layers, *, profile_home=None):
+        self.profile_home = profile_home
+        self.layers = tuple(layers)  # highest precedence first; callables are live layers
+
+    def _maps(self):
+        return tuple(layer() if callable(layer) else layer for layer in self.layers)
+
+    def __getitem__(self, name):
+        for layer in self._maps():
+            if name in layer:
+                return layer[name]
+        raise KeyError(name)
+
+    def __iter__(self):
+        return iter(dict.fromkeys(name for layer in reversed(self._maps()) for name in layer))
+
+    def __len__(self):
+        return len(set(iter(self)))
+
+    def copy(self):
+        """Materialise once at a child-process or serialization boundary."""
+        result = {}
+        for layer in reversed(self._maps()):
+            result.update(layer)
+        return result
 
 
-def installed_scope_view_version(home):
-    """The selected store's per-home snapshot identity, or None for local files."""
+def overlay_secret_scope(base, overlay):
+    """Compose caller-owned values structurally; local stores retain their exact dict behavior."""
+    if isinstance(base, LiveSecretScope):
+        return LiveSecretScope((dict(overlay), base))
+    return {**base, **overlay}
+
+
+def prepare_secret_scope(secrets, home):
+    """Explicit mappings are caller overlays, never guessed copies of store values."""
     from hermes_secret_routing import routed_provider
-    provider = routed_provider()
-    return None if provider is None else provider.view_version(Path(home))
-
-
-def track_installed_scope(bound, profile_home, *, builder=None, view_version=None) -> None:
-    """Record *bound* (a ``hermes_scope.BoundSecrets`` about to be installed) under the home it was
-    built for: *profile_home*, or the launch profile when unstamped."""
-    import weakref
-
-    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
-    home = Path(profile_home) if profile_home else get_routing_process_hermes_home()
-    key = hermes_home_key(home)
-    if builder is None:
-        builder = lambda: build_profile_secret_scope(home)
-
-    def _forget(ref, key=key):
-        with _INSTALLED_SCOPES_LOCK:
-            refs = _INSTALLED_SCOPES.get(key)
-            if refs is not None:
-                refs[:] = [entry for entry in refs if entry[0] is not ref]
-                if not refs:
-                    _INSTALLED_SCOPES.pop(key, None)
-
-    overlay = {}
-    if view_version is None:
-        from hermes_secret_routing import routed_provider
-        provider = routed_provider()
-        if provider is None:
-            return
-        view_version = provider.view_version(home)
-        base = provider.env_view(home)
-        inherited = {name for name, value in bound.mapping.items() if name in base and base[name] == value}
-        if not inherited:
-            return
-        overlay = {name: value for name, value in bound.mapping.items() if name not in inherited}
-        owner_builder = builder
-        builder = lambda: {**owner_builder(), **overlay}
-
-    ref = weakref.ref(bound, _forget)
-    from hermes_scope import push_state
-    for _attempt in range(_SCOPE_REBUILD_ATTEMPTS):
-        with _INSTALLED_SCOPES_LOCK:
-            generation = _INSTALLED_SCOPE_GENERATIONS.get(key, 0)
-        current = installed_scope_view_version(home)
-        if current != view_version:
-            with push_state(home=str(home)):
-                rebuilt = builder()
-        else:
-            rebuilt = dict(bound.mapping)
-        with _INSTALLED_SCOPES_LOCK:
-            if _INSTALLED_SCOPE_GENERATIONS.get(key, 0) != generation:
-                continue
-            _replace_scope_mapping(bound.mapping, rebuilt)
-            _INSTALLED_SCOPES.setdefault(key, []).append((ref, builder, current))
-            return
-    with _INSTALLED_SCOPES_LOCK:
-        _INSTALLED_SCOPES.setdefault(key, []).append((ref, builder, view_version))
-    _warn_scope_rebuild_deferred()
-
-
-def _replace_scope_mapping(scope, rebuilt):
-    scope.update(rebuilt)
-    for name in [name for name in scope if name not in rebuilt]:
-        scope.pop(name, None)
-
-
-def mark_installed_scope_view_changed(key: str) -> None:
-    """Advance publication's fence under the install lock, before replacing the store view."""
-    _INSTALLED_SCOPE_GENERATIONS[key] = _INSTALLED_SCOPE_GENERATIONS.get(key, 0) + 1
-
-
-def _warn_scope_rebuild_deferred() -> None:
-    import logging
-    logging.getLogger(__name__).warning("Secret scope rebuild deferred after concurrent view changes")
-
-
-def update_installed_scopes(hermes_home: Path, old: Mapping[str, str], new: Mapping[str, str]) -> int:
-    """Snapshot under the publication fence; build without locks and publish only if still current."""
-    from hermes_constants import hermes_home_key
-    from hermes_scope import push_state
-    key = hermes_home_key(hermes_home)
-    for _attempt in range(_SCOPE_REBUILD_ATTEMPTS):
-        with _INSTALLED_SCOPES_LOCK:
-            generation = _INSTALLED_SCOPE_GENERATIONS.get(key, 0)
-            entries = list(_INSTALLED_SCOPES.get(key, ()))
-        version = installed_scope_view_version(hermes_home)
-        candidates = []
-        for entry in entries:
-            ref, builder, _version = entry
-            bound = ref()
-            if bound is None or not isinstance(bound.mapping, dict):
-                continue
-            with push_state(home=str(hermes_home)):
-                rebuilt = builder()
-            candidates.append((entry, bound, rebuilt))
-        with _INSTALLED_SCOPES_LOCK:
-            if _INSTALLED_SCOPE_GENERATIONS.get(key, 0) != generation:
-                continue
-            updated = 0
-            live = _INSTALLED_SCOPES.get(key, [])
-            for entry, bound, rebuilt in candidates:
-                index = next((i for i, candidate in enumerate(live) if candidate is entry), None)
-                if index is None:
-                    continue
-                updated += bound.mapping != rebuilt
-                _replace_scope_mapping(bound.mapping, rebuilt)
-                live[index] = (entry[0], entry[1], version)
-            return updated
-    _warn_scope_rebuild_deferred()
-    return 0
+    if isinstance(secrets, LiveSecretScope) or routed_provider() is None:
+        return secrets
+    return overlay_secret_scope(build_profile_secret_scope(Path(home)), secrets)
 
 
 def refresh_installed_secret_scope(hermes_home: Path) -> bool:
@@ -632,6 +562,19 @@ def refresh_installed_secret_scope(hermes_home: Path) -> bool:
     unstamped means the process home): another home's secrets never replace it."""
     bound = _bound_secrets()
     scope = bound.mapping if bound is not None else None
+    if isinstance(scope, LiveSecretScope):
+        # Source discovery may change the non-store layers. Preserve the caller overlay,
+        # replacing only the profile composition, never the dereferenced store values.
+        def refresh(layer):
+            if not isinstance(layer, LiveSecretScope):
+                return
+            if layer.profile_home == hermes_home:
+                layer.layers = build_profile_secret_scope(hermes_home).layers
+            else:
+                for child in layer.layers:
+                    refresh(child)
+        refresh(scope)
+        return True
     if not isinstance(scope, dict):
         return False
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key

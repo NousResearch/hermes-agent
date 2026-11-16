@@ -172,7 +172,6 @@ def test_a_view_change_keeps_a_value_a_higher_layer_put_in_the_scope(store, monk
     provider.refresh(home)
     from agent.secret_scope import build_profile_secret_scope, current_secret_scope, reset_secret_scope, set_secret_scope
     scope = build_profile_secret_scope(home)
-    scope["POLICY_KEY"] = "managed-wins"  # a managed .env value composed over the store's
     token = set_secret_scope(scope, profile_home=str(home))
     try:
         provider.remote[provider._key(home)]["env"] = {"POLICY_KEY": "store-new"}
@@ -185,16 +184,18 @@ def test_a_view_change_keeps_a_value_a_higher_layer_put_in_the_scope(store, monk
         reset_secret_scope(token)
 
 
-def test_a_finished_scope_is_not_kept_alive_by_the_roster(store):
+def test_a_finished_scope_is_collectable_without_store_registration(store):
     import gc
+    import weakref
     _provider, home = store
     from agent import secret_scope
-    from hermes_constants import hermes_home_key
-    token = secret_scope.set_secret_scope({"K": "v"}, profile_home=str(home))
+    scope = secret_scope.build_profile_secret_scope(home)
+    ref = weakref.ref(scope)
+    token = secret_scope.set_secret_scope(scope, profile_home=str(home))
     secret_scope.reset_secret_scope(token)
-    del token
+    del token, scope
     gc.collect()
-    assert hermes_home_key(home) not in secret_scope._INSTALLED_SCOPES
+    assert ref() is None
 
 
 def test_under_multiplexing_a_view_change_never_writes_os_environ(store, monkeypatch):

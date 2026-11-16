@@ -85,7 +85,56 @@ never a fallback to the local files.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from types import MappingProxyType
+from collections.abc import Mapping
+import threading
 from typing import Any, Optional
+
+
+def _freeze_secret(value):
+    if isinstance(value, dict):
+        return MappingProxyType({k: _freeze_secret(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_secret(v) for v in value)
+    return value
+
+
+def thaw_secret(value):
+    """Return a JSON-compatible owned copy of an immutable secret record."""
+    if isinstance(value, Mapping):
+        return {k: thaw_secret(v) for k, v in value.items()}
+    if isinstance(value, tuple):
+        return [thaw_secret(v) for v in value]
+    return value
+
+
+@dataclass(frozen=True)
+class SecretSnapshot:
+    """An immutable resolved view; version is the backend's monotonic install sequence."""
+
+    version: int
+    env: Mapping[str, str]
+    auth: Mapping[str, Any]
+
+    def __post_init__(self):
+        object.__setattr__(self, "env", _freeze_secret(dict(self.env)))
+        object.__setattr__(self, "auth", _freeze_secret(dict(self.auth)))
+
+
+class SecretSnapshotCell:
+    """One reference per home. The install fence performs only in-memory work."""
+
+    def __init__(self):
+        self.current = SecretSnapshot(0, {}, {})
+        self.lock = threading.Lock()
+
+    def install(self, snapshot: SecretSnapshot) -> bool:
+        with self.lock:
+            if snapshot.version <= self.current.version:
+                return False
+            self.current = snapshot
+            return True
 
 #: The environment variable that selects the secret store for the whole process: read from the
 #: environment (and the launch and managed ``.env`` bootstrap) before any config, like the config
@@ -328,6 +377,10 @@ class SecretStoreProvider(ABC):
         any failure nothing changed, and the error is :class:`SecretWriteFailed` or a refusal,
         never one that carries a value."""
         raise NotImplementedError(f"secret store {self.name!r} does not serve process-wide writes")
+
+    def current_snapshot(self, home: Any) -> SecretSnapshot:
+        """The backend's installed immutable view (no credential resolution on a warm read)."""
+        raise NotImplementedError(f"secret store {self.name!r} does not expose its installed snapshot")
 
     def view_version(self, home: Any) -> str:
         """An opaque token that changes whenever *home*'s view does (caches key on it)."""

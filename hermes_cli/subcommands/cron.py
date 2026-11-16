@@ -50,6 +50,16 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Attach a skill. Repeat to add multiple skills.",
     )
     cron_create.add_argument(
+        "--post-script",
+        dest="post_script",
+        help=(
+            "Path to a script under ~/.hermes/scripts/ run after each successful "
+            "agent run to apply its output ($HERMES_CRON_RESPONSE_FILE holds the "
+            "agent's final response). Cron agents have no shell; this is how a "
+            "job runs code on the agent's decision."
+        ),
+    )
+    cron_create.add_argument(
         "--script",
         help=(
             "Path to a script under ~/.hermes/scripts/. Default mode: "
@@ -165,6 +175,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--clear-skills",
         action="store_true",
         help="Remove all attached skills from the job",
+    )
+    cron_edit.add_argument(
+        "--post-script",
+        dest="post_script",
+        help="Path to a post-run script under ~/.hermes/scripts/. Pass empty string to clear.",
     )
     cron_edit.add_argument(
         "--script",

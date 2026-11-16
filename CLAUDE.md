@@ -185,8 +185,10 @@ secret scope and never self-heal (see "Multiplex" below).
   creds and `check_fn` as the read tool. **Deployment:** must be listed in
   `platform_toolsets.slack` (an explicit list shadows defaults). No design doc.
 - **`slack_post_thread` (`slack_post` toolset)** — [tools/slack_post_thread_tool.py](tools/slack_post_thread_tool.py).
-  Posts to an explicit `chat_id`+`thread_ts` via `chat.postMessage` (takes them as args, no
-  session contextvars → cron/worker safe). **Deliberately a SEPARATE, NON-FLOOR toolset** —
+  Posts to an explicit `chat_id` (+ optional `thread_ts`; omit it for a new root
+  message) via `chat.postMessage` (takes them as args, no session contextvars →
+  cron/worker safe), and returns `message_ts` + a best-effort `permalink`
+  (`chat.getPermalink`) so a worker can cite the post as a receipt. **Deliberately a SEPARATE, NON-FLOOR toolset** —
   unlike the floor `slack` toolset (`slack_react`+`turn_end`), `slack_post` must be granted
   to a role, so a valid-role user does NOT get arbitrary thread-posting for free. It is how
   a cron/delegated sub-agent posts to Slack, since cron hard-disables the `messaging`
@@ -292,7 +294,16 @@ secret scope and never self-heal (see "Multiplex" below).
   when Drive returned one — the tool takes no `page_token` input, so a raw
   token can't be used to page and would only leak "more matches exist" for
   files filtered out of the response, an existence oracle over content the
-  requester can't see. `fetch_acl` treats an empty inline `permissions: []`
+  requester can't see. **`google_drive.folder_access`** (2026-09-24) is the
+  operator grant for files whose ACL the SA cannot read: a shared-drive folder
+  shared with the SA as a non-member *viewer* returns an empty permission list,
+  so the check denied everyone (Pazit on an order form, Shai on a sheet).
+  Adding the SA as a drive member would fix visibility but expose the whole
+  drive, so instead `{folder_id: {name, readers: [emails], writers: [emails]}}`
+  grants listed people access to everything under that folder, found by
+  walking `parents` (cached, no API call when unconfigured); additive only.
+  An unreadable ACL now denies with "can't read its sharing settings" (audit
+  `reason=acl_unreadable`) instead of blaming the user. `fetch_acl` treats an empty inline `permissions: []`
   the same as absent and falls back to `permissions.list` — an SA-visible
   file always has at least the SA's own entry, so `[]` can never be the real
   ACL. The Drive/Sheets/Docs `googleapiclient` service is built **per-thread**
@@ -445,6 +456,71 @@ edit) escalate to `terminal`/host-shell. Design:
   `jobs.json`-edit path; this closes the toolset-driven escalation and makes the
   residual visible.
 
+### Cron capability preflight + local-job failure alerts — [cron/capability_preflight.py](cron/capability_preflight.py)
+
+Every step between a job's `enabled_toolsets` and what its agent receives is
+silent: enabled MCP servers are merged in, `messaging`/`clarify` (usually
+`cronjob`) are stripped, the owner's role caps the rest. The Ready-for-Staging
+auto-merger (2026-09-16) was created as `[jira, messaging, file]` by a creator
+whose role had no write access, ran `ok` every 5 min for a week, and never
+merged or reported anything. Design:
+[docs/superpowers/specs/2026-09-23-cron-capability-preflight-design.md](docs/superpowers/specs/2026-09-23-cron-capability-preflight-design.md).
+
+- **Cron agents never get a shell (fork policy — `terminal` is super-admin
+  only).** `_resolve_cron_disabled_toolsets` strips `terminal` and
+  `code_execution` from every cron run unless `cron.allow_agent_shell: true`.
+  Deterministic work goes in scripts a super admin attaches (the create gate
+  requires a `terminal`/`code_execution` role for either): the pre-run
+  `script` collects, and the new **`post_script`** applies — it runs after
+  each successful agent run with the agent's final response in the file named
+  by `$HERMES_CRON_RESPONSE_FILE` (cwd = `workdir`), its stdout is appended to
+  the delivery (a `[SILENT]` agent + empty stdout stays silent), and a
+  non-zero exit fails the run. The pattern: agent writes a plan/summary with
+  the `file` tools → `post_script` validates and applies it. `hermes cron
+  create/edit --post-script`.
+- **One evaluation, four surfaces.** `evaluate_job_capabilities` computes the
+  effective toolsets (same resolver + ceiling as the scheduler) and checks the
+  *needed* ones: the job's new `required_toolsets` field, `requires_toolsets`
+  in the `automation.yaml` of the job's `workdir` (scaffolded by `hermes own
+  init`), and every explicitly listed `enabled_toolsets` name (measured on the
+  VM: flagged only the genuinely broken jobs). A requirement fails when it is unknown, stripped in
+  cron (hint: `messaging` → `slack_post`), outside the owner's role, not in the
+  job's list, or (create/update only) exposes no usable tool on this host.
+  MCP names fold `mcp-<server>` onto the bare server name.
+- **`cronjob` create/update REJECTS** an unmet requirement (the error tells
+  the agent to report who must grant it, never to drop it). Update evaluates
+  against the job's *owner*, and only enforces when it touches
+  toolsets/requirements/workdir/acks — an unrelated edit of a legacy job gets
+  `capabilities.warnings` instead. Results echo `capabilities.effective_toolsets`
+  and `blocked_unattended_tools` (approval-gated tools reachable but not acked,
+  which the headless approval gate will block — the existing ack check only saw
+  explicitly listed toolsets, not merged-in MCP servers).
+- **Runtime:** a 4th check in the scheduler's pre-dispatch preflight
+  (`_preflight_check_capabilities`) blocks a run as `blocked_config`
+  (alert-once, no LLM spend) when a needed toolset stops resolving —
+  demotion, transfer to a narrower role, config change.
+- **Script imports are checked against the gateway's Python.** Cron scripts
+  run under `sys.executable` (the service's `.venv`), not the Python the
+  author tested with — on the VM `hermes`/`python3` resolve elsewhere, so a
+  collector worked in testing and died on `ImportError` in cron (MRR,
+  2026-09-18..23). `script_import_problems` AST-parses `script`/`post_script`
+  (skipping `try`-guarded and sibling imports) and `find_spec`s each module:
+  `cronjob` create/update rejects, and `run_job` blocks BEFORE any script
+  executes (`_blocked_config_result`, alert-once) with the exact `uv pip
+  install --python <gateway python>` fix.
+- **`ownership transfer`** of a `cron:` item is REFUSED when the new owner's
+  role would strip what the job needs, unless `confirm_capability_loss=true`
+  (the 2026-09-14 MRR transfer silently removed `terminal`); the result also
+  echoes `capabilities` under the new owner.
+- **`[FAILED]` marker:** a cron response starting with `[FAILED]` marks the run
+  failed (`failure_streak`, incident, failure alert). The cron system hint
+  tells agents to use it when a required action was missing/refused/blocked.
+- **Local-only jobs DM their owner:** a failure alert for a job with no
+  delivery target (`deliver: local`, or an origin that no longer resolves) is
+  sent to the owner (ownership registry `cron:<id>`) as a DM, once per incident
+  signature (the incident is then `alerted`; a new error text alerts again).
+  `blocked_config`/drift alerts keep their own alert-once markers.
+
 ### Multiplex — one gateway, several bots ([design](docs/superpowers/specs/2026-11-16-multiplex-fork-hardening-design.md))
 
 Under `gateway.multiplex_profiles: true` one process serves several profiles
@@ -482,6 +558,7 @@ Rules for fork code that reads credentials or platform settings:
   [tests/gateway/test_multiplex_fork_features.py](tests/gateway/test_multiplex_fork_features.py);
   cron: [tests/cron/test_multiplex_cron_per_profile.py](tests/cron/test_multiplex_cron_per_profile.py).
 - Known limitation: `terminal.cwd` is bridged once from the default's config.
+||||||| 4e71360af5
 
 ### Cron delivery format — [cron/scheduler.py](cron/scheduler.py) `_deliver_result`
 

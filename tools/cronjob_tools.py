@@ -793,6 +793,10 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("unattended_approved_tools"):
         result["unattended_approved_tools"] = job["unattended_approved_tools"]
+    if job.get("required_toolsets"):
+        result["required_toolsets"] = job["required_toolsets"]
+    if job.get("post_script"):
+        result["post_script"] = job["post_script"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
     stored_refs = job.get("context_from") or []
@@ -893,6 +897,84 @@ def _rbac_creation_error(
         return None
     except Exception:
         return None  # fail-open — runtime ceiling remains the hard control
+def _capability_preflight(
+    job_like: Dict[str, Any], *, owner_grant, enforce: bool,
+) -> tuple:
+    """Run the cron capability preflight (cron/capability_preflight.py).
+
+    Returns ``(error, info)``: ``error`` is a rejection string when ``enforce``
+    and a required toolset would be unavailable at run time; ``info`` is the
+    ``capabilities`` block echoed in the create/update result (effective
+    toolsets, requirements, and — when not enforcing — the unmet ones as
+    warnings). Fails open: any internal error yields ``(None, {})``.
+    """
+    try:
+        from cron.capability_preflight import evaluate_job_capabilities, format_problems
+        from hermes_cli.config import load_config
+
+        report = evaluate_job_capabilities(
+            job_like, load_config() or {}, owner_grant,
+            include_enabled=True, check_availability=True,
+        )
+        info: Dict[str, Any] = {
+            "effective_toolsets": (
+                report.effective if report.effective is not None else "all default toolsets"
+            ),
+        }
+        if report.required:
+            info["required_toolsets"] = report.required
+        if report.gated_unacked:
+            info["blocked_unattended_tools"] = report.gated_unacked
+            info["blocked_unattended_note"] = (
+                "These approval-gated tools are reachable but NOT in "
+                "unattended_approved_tools, so every call is BLOCKED at run "
+                "time (no human to approve). If the workflow needs one, ask "
+                "the user to confirm unattended use and add it."
+            )
+        if report.problems and enforce:
+            return (
+                "This job would not get the toolsets it needs at run time: "
+                f"{format_problems(report)}. Fix the job, or — when access is "
+                "missing — tell the user exactly which toolset is missing and "
+                "who must grant it. Do NOT drop the requirement to get the job "
+                "created: a job that cannot do its work must not be scheduled.",
+                info,
+            )
+        if report.problems:
+            info["warnings"] = report.problems
+        return None, info
+    except Exception as err:
+        logger.debug("capability preflight failed (fail-open): %s", err)
+        return None, {}
+
+
+def _script_imports_error(*scripts) -> Optional[str]:
+    """Reject a script whose imports the gateway's Python cannot resolve —
+    cron runs scripts under the gateway interpreter, which is not
+    necessarily the Python the author tested with."""
+    try:
+        from cron.capability_preflight import script_import_problems
+
+        problems = [p for p in (script_import_problems(s) for s in scripts if s) if p]
+        return "; ".join(problems) or None
+    except Exception:
+        return None
+
+
+def _creator_grant():
+    """RBAC grant of the acting identity (the job's owner-to-be), or None."""
+    try:
+        from agent.automation_ownership import current_identity
+        from cron.capability_preflight import grant_for_identity
+        from gateway.session_context import get_session_env
+
+        return grant_for_identity(
+            current_identity(), get_session_env("HERMES_SESSION_CHAT_ID") or None
+        )
+    except Exception:
+        return None
+
+
 def _relay_fronted_delivery_platforms(job: Dict[str, Any]) -> set:
     """Delivery-platform names for this job that the relay connector fronts."""
     try:
@@ -1561,6 +1643,8 @@ def cronjob(
     continuity: Optional[bool] = None,
     enabled_toolsets: Optional[List[str]] = None,
     unattended_approved_tools: Optional[List[str]] = None,
+    required_toolsets: Optional[List[str]] = None,
+    post_script: Optional[str] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
@@ -1632,6 +1716,19 @@ def cronjob(
                 script_error = _validate_cron_script_path(script)
                 if script_error:
                     return tool_error(script_error, success=False)
+            if post_script:
+                if _no_agent:
+                    return tool_error(
+                        "post_script applies an agent's output; a no_agent job "
+                        "has no agent — put the work in its script.",
+                        success=False,
+                    )
+                post_error = _validate_cron_script_path(post_script)
+                if post_error:
+                    return tool_error(post_error, success=False)
+            _imp_err = _script_imports_error(script, post_script)
+            if _imp_err:
+                return tool_error(_imp_err, success=False)
 
             # Validate monitor source (same containment rules as script).
             if monitor_script:
@@ -1670,7 +1767,7 @@ def cronjob(
 
             _rbac_err = _rbac_creation_error(
                 enabled_toolsets=enabled_toolsets,
-                has_script=bool(script),
+                has_script=bool(script or post_script),
                 is_no_agent=bool(no_agent),
             )
             if _rbac_err:
@@ -1682,6 +1779,19 @@ def cronjob(
             )
             if _ack_err:
                 return tool_error(_ack_err, success=False)
+
+            _cap_err, _cap_info = _capability_preflight(
+                {
+                    "enabled_toolsets": enabled_toolsets or None,
+                    "required_toolsets": required_toolsets or None,
+                    "workdir": _normalize_optional_job_value(workdir),
+                    "unattended_approved_tools": unattended_approved_tools or None,
+                },
+                owner_grant=_creator_grant(),
+                enforce=not _no_agent,
+            )
+            if _cap_err:
+                return tool_error(_cap_err, success=False, capabilities=_cap_info)
 
             # continuity=True is sugar for context_from including "self":
             # the job wakes up with its own previous run's output injected.
@@ -1729,12 +1839,17 @@ def cronjob(
             _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
             if _local_notice:
                 _create_message = f"{_create_message} {_local_notice}"
+            _extra_fields: Dict[str, Any] = {}
             if unattended_approved_tools:
-                # create_job() has no dedicated param for this field; merge it
-                # onto the freshly-created record via the generic update path.
-                job = update_job(job["id"], {
-                    "unattended_approved_tools": list(unattended_approved_tools),
-                }) or job
+                _extra_fields["unattended_approved_tools"] = list(unattended_approved_tools)
+            if required_toolsets:
+                _extra_fields["required_toolsets"] = list(required_toolsets)
+            if post_script:
+                _extra_fields["post_script"] = _normalize_optional_job_value(post_script)
+            if _extra_fields:
+                # create_job() has no dedicated params for these fields; merge
+                # them onto the freshly-created record via the generic update path.
+                job = update_job(job["id"], _extra_fields) or job
             try:
                 from agent import automation_ownership as _ao
                 _ao.register_creator(_ao.artifact_key("cron", job["id"]), "cron",
@@ -1766,6 +1881,8 @@ def cronjob(
             _notes = _mode_guidance_notes(job, _normalize_deliver_param(deliver))
             if _notes:
                 _result["guidance"] = _notes
+            if _cap_info and not _no_agent:
+                _result["capabilities"] = _cap_info
             return json.dumps(_result, indent=2)
 
         if normalized == "list":
@@ -2059,6 +2176,15 @@ def cronjob(
                 updates["enabled_toolsets"] = enabled_toolsets or None
             if unattended_approved_tools is not None:
                 updates["unattended_approved_tools"] = unattended_approved_tools or None
+            if required_toolsets is not None:
+                updates["required_toolsets"] = required_toolsets or None
+            if post_script is not None:
+                # Pass empty string to clear an existing post_script
+                if post_script:
+                    post_error = _validate_cron_script_path(post_script)
+                    if post_error:
+                        return tool_error(post_error, success=False)
+                updates["post_script"] = _normalize_optional_job_value(post_script) if post_script else None
             if attach_to_session is not None:
                 updates["attach_to_session"] = bool(attach_to_session)
             if workdir is not None:
@@ -2104,6 +2230,14 @@ def cronjob(
                 else job.get("enabled_toolsets")
             )
             _eff_script = updates["script"] if "script" in updates else job.get("script")
+            _eff_post_script = (
+                updates["post_script"] if "post_script" in updates else job.get("post_script")
+            )
+            _imp_err = _script_imports_error(
+                updates.get("script"), updates.get("post_script")
+            )
+            if _imp_err:
+                return tool_error(_imp_err, success=False)
             _eff_no_agent = updates["no_agent"] if "no_agent" in updates else job.get("no_agent")
             _eff_unattended_approved_tools = (
                 updates["unattended_approved_tools"]
@@ -2112,7 +2246,7 @@ def cronjob(
             )
             _rbac_err = _rbac_creation_error(
                 enabled_toolsets=_eff_toolsets,
-                has_script=bool(_eff_script),
+                has_script=bool(_eff_script or _eff_post_script),
                 is_no_agent=bool(_eff_no_agent),
             )
             if _rbac_err:
@@ -2123,6 +2257,33 @@ def cronjob(
             )
             if _ack_err:
                 return tool_error(_ack_err, success=False)
+            # Capability preflight against the job's OWNER (the runtime
+            # ceiling's subject), not the editor. Enforced only when this
+            # update touches what the job can do — an unrelated edit (say, a
+            # schedule change) of a legacy job must not be refused for a
+            # pre-existing gap; that gap is echoed as a warning instead.
+            if _eff_no_agent and _eff_post_script:
+                return tool_error(
+                    "post_script applies an agent's output; a no_agent job has "
+                    "no agent — put the work in its script.",
+                    success=False,
+                )
+            _cap_touch = {
+                "enabled_toolsets", "required_toolsets", "workdir",
+                "unattended_approved_tools", "no_agent",
+            }.intersection(updates)
+            try:
+                from cron.rbac_ceiling import cron_owner_grant
+                _owner_grant = cron_owner_grant(job)
+            except Exception:
+                _owner_grant = None
+            _cap_err, _cap_info = _capability_preflight(
+                {**job, **updates},
+                owner_grant=_owner_grant,
+                enforce=bool(_cap_touch) and not _eff_no_agent,
+            )
+            if _cap_err:
+                return tool_error(_cap_err, success=False, capabilities=_cap_info)
             updated = update_job(job_id, updates)
             _notify_provider_jobs_changed_safe()
             if _pending:
@@ -2136,6 +2297,8 @@ def cronjob(
                 _upd_result["guidance"] = _upd_notes
             if _notice:
                 _upd_result["ownership_notice"] = _notice
+            if _cap_info and not _eff_no_agent:
+                _upd_result["capabilities"] = _cap_info
             return json.dumps(_upd_result, indent=2)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
@@ -2212,7 +2375,16 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "enabled_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\"]) — cuts token overhead. Infer from the prompt. Omit for all default tools. On update, [] clears."
+                "description": "Optional toolset names to restrict the job's agent to (e.g. [\"web\", \"file\"]) — cuts token overhead. Cron always removes messaging (use slack_post to post to Slack) and clarify. Each listed toolset must be one the job will really get, or create/update is rejected. Omit for all default tools. On update, [] clears."
+            },
+            "post_script": {
+                "type": "string",
+                "description": f"Optional script run after each successful agent run to APPLY the agent's decision deterministically (e.g. read a plan file the agent wrote with the file tools, validate it, write the sheet / post the report). Cron agents have no shell, so this — not terminal — is how a job runs code on the agent's output. The agent's final response is in the file named by $HERMES_CRON_RESPONSE_FILE; cwd is workdir when set; stdout is appended to the delivery; non-zero exit fails the run. Same path rules and role gate as script. On update, '' clears."
+            },
+            "required_toolsets": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Every toolset the job NEEDS to finish its work — map each action in the prompt to one, including writes (e.g. jira_write, github_rw, slack_post). Create/update is REJECTED if any would be unavailable at run time (removed in cron, outside the owner's role, not configured); later runs are blocked with an alert to the owner if one stops resolving. When one is missing, tell the user who must grant it — never drop it to get the job created. On update, [] clears."
             },
             "unattended_approved_tools": {
                 "type": "array",
@@ -2299,6 +2471,8 @@ def _cronjob_handler(args, **kw):
         continuity=args.get("continuity"),
         enabled_toolsets=args.get("enabled_toolsets"),
         unattended_approved_tools=args.get("unattended_approved_tools"),
+        required_toolsets=args.get("required_toolsets"),
+        post_script=args.get("post_script"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
         attach_to_session=args.get("attach_to_session"),

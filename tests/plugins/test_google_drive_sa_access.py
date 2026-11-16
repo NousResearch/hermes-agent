@@ -580,3 +580,82 @@ def test_share_with_requester_reports_failure(drive, monkeypatch):
     r = access.Requester(platform="slack", user_id="U1", email=ALICE)
     msg = access.share_with_requester("new1", r)
     assert msg and ALICE in msg and "quota" in msg
+
+
+# --------------------------------------------------------------------------- #
+# folder_access — operator grants for files whose ACL the SA cannot read
+# (a shared-drive folder shared with the SA as a non-member viewer shows an
+# empty permission list, which denied everyone — 2026-09-14/16).
+# --------------------------------------------------------------------------- #
+
+_TREE = {"pdf1": ["agreements"], "agreements": ["customer"], "customer": ["active"], "active": []}
+
+
+@pytest.fixture
+def tree(monkeypatch):
+    calls = []
+
+    def fetch(fid):
+        calls.append(fid)
+        return _TREE.get(fid, [])
+
+    monkeypatch.setattr(access, "_fetch_parents", fetch)
+    access.reset_cache()
+    return calls
+
+
+def test_load_access_config_parses_folder_access(monkeypatch):
+    monkeypatch.setattr(access, "_raw_config", lambda: {"google_drive": {"folder_access": {
+        "active": {"name": "Active Customers", "readers": ["Pazit@Base.ai"], "writers": ["tal@base.ai"]},
+        "bad": "not-a-dict",
+    }}})
+    cfg = access.load_access_config()
+    assert cfg.folder_access == {"active": {
+        access.READER: frozenset({"pazit@base.ai"}), access.WRITER: frozenset({"tal@base.ai"})}}
+
+
+def test_folder_grant_walks_ancestors(tree):
+    cfg = _cfg(folder_access={"active": {access.READER: frozenset({ALICE})}})
+    assert access.folder_grant("pdf1", ALICE, cfg) == access.READER
+    assert access.folder_grant("pdf1", "bob@everafter.ai", cfg) is None
+
+
+def test_folder_grant_writer_beats_reader(tree):
+    cfg = _cfg(folder_access={
+        "active": {access.READER: frozenset({ALICE})},
+        "customer": {access.WRITER: frozenset({ALICE})},
+    })
+    assert access.folder_grant("pdf1", ALICE, cfg) == access.WRITER
+
+
+def test_folder_grant_no_api_calls_when_unconfigured(tree):
+    assert access.folder_grant("pdf1", ALICE, _cfg()) is None
+    assert tree == []
+
+
+def test_require_access_folder_grant_rescues_unreadable_acl(drive, alice, tree, monkeypatch):
+    drive(_FakeDrive(get={"id": "pdf1", "name": "PO.pdf"}, perms=[]))
+    monkeypatch.setattr(access, "load_access_config", lambda: _cfg(
+        folder_access={"active": {access.READER: frozenset({ALICE})}}))
+    assert access.require_access("pdf1", access.READER).email == ALICE
+    with pytest.raises(access.DriveAccessDenied):
+        access.require_access("pdf1", access.WRITER)   # readers can't write
+
+
+def test_unreadable_acl_denial_names_the_real_cause(drive, alice, tree, monkeypatch):
+    drive(_FakeDrive(get={"id": "pdf1", "name": "PO.pdf"}, perms=[]))
+    monkeypatch.setattr(access, "load_access_config", lambda: _cfg())
+    with pytest.raises(access.DriveAccessDenied) as exc:
+        access.require_access("pdf1", access.READER)
+    assert "sharing settings" in str(exc.value)
+    assert "Ask the file's owner" not in str(exc.value)
+    assert alice[-1]["reason"] == "acl_unreadable"
+
+
+def test_filter_listing_honours_folder_grant(drive, alice, tree, monkeypatch):
+    drive(_FakeDrive(get={"id": "x"}, perms=[]))
+    monkeypatch.setattr(access, "load_access_config", lambda: _cfg(
+        folder_access={"agreements": {access.READER: frozenset({ALICE})}}))
+    files = [{"id": "pdf1", "name": "PO.pdf", "permissions": []},
+             {"id": "other", "name": "elsewhere.pdf", "permissions": []}]
+    assert [f["id"] for f in access.filter_listing(files)] == ["pdf1"]

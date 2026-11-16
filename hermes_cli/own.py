@@ -17,6 +17,11 @@ name: {name}
 owner: {owner}
 description: ""
 collaborators: []
+# Every toolset the automation's cron job needs to do its work (e.g.
+# jira_write, github_rw, slack_post). A job whose workdir is this bundle is
+# refused at create/update — and its runs are blocked with an alert to the
+# owner — while any of these would be unavailable to it.
+requires_toolsets: []
 links:
   skills: []
   cron_jobs: []

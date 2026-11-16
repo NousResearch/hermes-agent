@@ -73,6 +73,15 @@ OWNERSHIP_SCHEMA = {
                     "or name. On list (admins only): whose automations to list."
                 ),
             },
+            "confirm_capability_loss": {
+                "type": "boolean",
+                "description": (
+                    "transfer of a cron job only: a cron job runs with its OWNER's role, "
+                    "so a transfer to someone whose role lacks what the job needs is "
+                    "refused. Set true only after telling the user exactly what the job "
+                    "will lose and they confirm."
+                ),
+            },
         },
         "required": ["action"],
     },
@@ -266,6 +275,15 @@ def _do_transfer(args: dict, key: str, actor: ao.Identity, record: dict) -> str:
     if new_owner is None:
         return tool_error(err)
     previous = dict(record.get("owner") or {})
+    loss = _cron_capability_loss(key, new_owner)
+    if loss and not args.get("confirm_capability_loss"):
+        return tool_error(
+            f"{key} runs with its owner's role, and under {new_owner.display_name}'s "
+            f"role it cannot use what it needs: {loss}. The job would keep running but "
+            "fail at that step. Tell the user, and either have an admin extend "
+            f"{new_owner.display_name}'s role first, or re-run with "
+            "confirm_capability_loss=true once they accept the loss."
+        )
     try:
         updated = ao.transfer(key, new_owner, by=actor, by_is_admin=_is_admin(actor))
     except (KeyError, PermissionError) as exc:
@@ -279,12 +297,73 @@ def _do_transfer(args: dict, key: str, actor: ao.Identity, record: dict) -> str:
             f"{new_owner.display_name}. — via Hermes automation ownership"
         ),
     )
-    return tool_result({
+    result = {
         "ok": True,
         "key": key,
         "owner": updated["owner"]["display_name"],
         "message": f"{key} now belongs to {new_owner.display_name}.",
-    })
+    }
+    capabilities = _cron_capabilities_after_transfer(key, new_owner.display_name)
+    if capabilities:
+        result["capabilities"] = capabilities
+    return tool_result(result)
+
+
+def _cron_capability_loss(key: str, new_owner: ao.Identity) -> str:
+    """For a ``cron:`` key, what the job needs that ``new_owner``'s role would
+    strip ("" when nothing / not a cron key / not evaluable). On 2026-09-14 a
+    transfer silently removed ``terminal`` from the MRR automation's cron runs,
+    and its sheet writes stopped without any error."""
+    if not key.startswith("cron:"):
+        return ""
+    try:
+        from cron.capability_preflight import evaluate_job_capabilities, grant_for_identity
+        from cron.jobs import get_job
+        from hermes_cli.config import load_config
+
+        job = get_job(key.split(":", 1)[1])
+        if not job or job.get("no_agent"):
+            return ""
+        chat_id = (job.get("origin") or {}).get("chat_id")
+        report = evaluate_job_capabilities(
+            job, load_config() or {}, grant_for_identity(new_owner, chat_id),
+            include_enabled=True, check_availability=False,
+        )
+        return "; ".join(p for p in report.problems if "role" in p)
+    except Exception:
+        return ""
+
+
+def _cron_capabilities_after_transfer(key: str, owner_name: str) -> dict:
+    """For a ``cron:`` item, re-evaluate the job's toolsets under the NEW
+    owner's role (the runtime ceiling follows the owner). A narrower role can
+    silently strip what the job needs, and a wider one does not widen the
+    job's stored ``enabled_toolsets`` — both are worth saying at transfer
+    time. Best-effort: {} on any error or for non-cron keys."""
+    if not key.startswith("cron:"):
+        return {}
+    try:
+        from cron.capability_preflight import evaluate_job_capabilities
+        from cron.jobs import get_job
+        from cron.rbac_ceiling import cron_owner_grant
+        from hermes_cli.config import load_config
+
+        job = get_job(key.split(":", 1)[1])
+        if not job or job.get("no_agent"):
+            return {}
+        report = evaluate_job_capabilities(
+            job, load_config() or {}, cron_owner_grant(job),
+            include_enabled=True, check_availability=False,
+        )
+        out: dict = {"effective_toolsets": report.effective or "all default toolsets"}
+        if report.problems:
+            out["warning"] = (
+                f"Under {owner_name}'s role this job cannot use what it needs: "
+                + "; ".join(report.problems)
+            )
+        return out
+    except Exception:
+        return {}
 
 
 def _do_collab(action: str, args: dict, key: str, actor: ao.Identity, record: dict) -> str:

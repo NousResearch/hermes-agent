@@ -10,6 +10,13 @@ only when the operator has mapped it in config (``everyone_groups`` /
 ``group_members``); anything else fails closed and is reported to the audit
 log so the operator can see which group to map.
 
+``folder_access`` is the operator's escape hatch for files whose ACL the SA
+cannot read — e.g. a shared-drive folder shared with the SA as a viewer (a
+non-member viewer sees an empty permission list, so the ACL check would deny
+everyone). It grants listed people reader/writer on everything under a
+folder, found by walking the file's ``parents`` chain. Additive only: it can
+grant, never revoke.
+
 Design: docs/superpowers/specs/2026-09-14-drive-per-user-access-check-design.md
 """
 
@@ -54,10 +61,14 @@ class AccessConfig:
     cache_ttl: float = _DEFAULT_TTL
     everyone_groups: frozenset = frozenset()
     group_members: dict = None  # type: ignore[assignment]
+    # {folder_id: {"reader": frozenset(emails), "writer": frozenset(emails)}}
+    folder_access: dict = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.group_members is None:
             object.__setattr__(self, "group_members", {})
+        if self.folder_access is None:
+            object.__setattr__(self, "folder_access", {})
 
 
 def _raw_config() -> dict:
@@ -97,11 +108,24 @@ def load_access_config() -> AccessConfig:
                     members[key] = frozenset(
                         _lower_str(e) for e in emails if _lower_str(e)
                     )
+        folders: dict[str, dict] = {}
+        raw_folders = block.get("folder_access") or {}
+        if isinstance(raw_folders, dict):
+            for folder_id, spec in raw_folders.items():
+                if not isinstance(spec, dict) or not str(folder_id or "").strip():
+                    continue
+                grants = {}
+                for level, key in ((READER, "readers"), (WRITER, "writers")):
+                    emails = spec.get(key) or []
+                    if isinstance(emails, (list, tuple, set)):
+                        grants[level] = frozenset(_lower_str(e) for e in emails if _lower_str(e))
+                folders[str(folder_id).strip()] = grants
         return AccessConfig(
             enabled=enabled,
             cache_ttl=ttl,
             everyone_groups=everyone,
             group_members=members,
+            folder_access=folders,
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("google_drive access config unreadable (%s); using defaults", exc)
@@ -285,6 +309,7 @@ def _now() -> float:
 def reset_cache() -> None:
     with _cache_lock:
         _acl_cache.clear()
+        _parents_cache.clear()
 
 
 def _cache_put(file_id: str, name: str, acl: list) -> None:
@@ -351,6 +376,72 @@ def fetch_acl(file_id: str) -> tuple:
     return name, list(acl)
 
 
+_MAX_FOLDER_DEPTH = 25
+_parents_cache: dict[str, tuple] = {}
+
+
+def _fetch_parents(file_id: str) -> list:
+    """Seam: the file's parent folder ids as the SA sees them ([] at a
+    root, or when the SA cannot see further up). Tests monkeypatch this."""
+    from plugins.google_drive_sa import client
+
+    meta = client.get_service().files().get(
+        fileId=file_id, fields="parents", supportsAllDrives=True,
+    ).execute() or {}
+    return list(meta.get("parents") or [])
+
+
+def _parents(file_id: str, ttl: float) -> list:
+    with _cache_lock:
+        hit = _parents_cache.get(file_id)
+    if hit is not None and _now() - hit[0] <= ttl:
+        return list(hit[1])
+    try:
+        parents = _fetch_parents(file_id)
+    except Exception as exc:  # not visible above this point — stop the walk
+        logger.debug("parents lookup for %s failed (%s)", file_id, exc)
+        parents = []
+    with _cache_lock:
+        _parents_cache[file_id] = (_now(), list(parents))
+    return parents
+
+
+def folder_grant(file_id: str, email: str, cfg: AccessConfig) -> Optional[str]:
+    """Role ``folder_access`` grants *email* on *file_id* (itself or any
+    ancestor folder listed), or None. Makes no API call when nothing is
+    configured."""
+    if not cfg.folder_access or not email:
+        return None
+    e = _lower_str(email)
+    best: Optional[str] = None
+    seen: set = set()
+    frontier = [file_id]
+    for _ in range(_MAX_FOLDER_DEPTH):
+        if not frontier:
+            break
+        nxt: list = []
+        for fid in frontier:
+            if fid in seen:
+                continue
+            seen.add(fid)
+            grants = cfg.folder_access.get(fid)
+            if grants:
+                if e in grants.get(WRITER, frozenset()):
+                    return WRITER
+                if e in grants.get(READER, frozenset()):
+                    best = READER
+            nxt.extend(_parents(fid, cfg.cache_ttl))
+        frontier = nxt
+    return best
+
+
+def _folder_grant_satisfies(file_id: str, email: str, cfg: AccessConfig, level: str) -> bool:
+    role = folder_grant(file_id, email, cfg)
+    if role is None:
+        return False
+    return role == WRITER or level == READER
+
+
 # --------------------------------------------------------------------------- #
 # require_access
 # --------------------------------------------------------------------------- #
@@ -381,8 +472,18 @@ def _audit_denied(
         pass
 
 
-def _denial_text(email: str, level: str) -> str:
+def _denial_text(email: str, level: str, acl_visible: bool = True) -> str:
     verb = "edit" if level == WRITER else "access"
+    if not acl_visible:
+        # The SA can open the file but sees no permissions on it (a non-member
+        # viewer on a shared drive) — the user may well have access; we just
+        # cannot tell. Don't send them chasing the file's owner.
+        return (
+            f"Access denied: I can open this file but can't read its sharing "
+            f"settings, so I can't confirm that {email} may {verb} it. This is a "
+            "bot configuration gap, not necessarily a missing share — an "
+            "operator can grant access to its folder via google_drive.folder_access."
+        )
     return (
         f"Access denied: {email} does not have permission to {verb} this file. "
         "Ask the file's owner to share it with you (or with a group the "
@@ -423,15 +524,18 @@ def require_access(file_id: str, level: str) -> Optional[Requester]:
             f"file ({type(exc).__name__}). Check the file ID, or that the file "
             "is shared with the service account."
         ) from exc
-    decision = evaluate(acl, requester.email, load_access_config())
+    cfg = load_access_config()
+    decision = evaluate(acl, requester.email, cfg)
     if decision.satisfies(level):
+        return requester
+    if _folder_grant_satisfies(file_id, requester.email, cfg, level):
         return requester
     _audit_denied(
         file_id=file_id, name=name, level=level, requester=requester.email,
         granted_role=decision.granted_role, unmapped_groups=decision.unmapped_groups,
-        reason="denied",
+        reason="denied" if acl else "acl_unreadable",
     )
-    raise DriveAccessDenied(_denial_text(requester.email, level))
+    raise DriveAccessDenied(_denial_text(requester.email, level, acl_visible=bool(acl)))
 
 
 # --------------------------------------------------------------------------- #
@@ -516,7 +620,9 @@ def filter_listing(files: list, level: str = READER) -> list:
                 return False
         else:
             _cache_put(file_id, str(f.get("name") or ""), acl)
-        return evaluate(acl, requester.email, cfg).satisfies(level)
+        if evaluate(acl, requester.email, cfg).satisfies(level):
+            return True
+        return _folder_grant_satisfies(file_id, requester.email, cfg, level)
 
     inline = [(i, f) for i, f in enumerate(files) if isinstance(f, dict) and f.get("permissions") is not None]
     remote = [(i, f) for i, f in enumerate(files) if isinstance(f, dict) and f.get("permissions") is None]

@@ -30,17 +30,23 @@ class TestGateOffDefault:
     def test_empty_config_denies_cronjob(self):
         assert _resolve_cron_disabled_toolsets({}) == [
             "cronjob", "messaging", "clarify",
+            # fork: cron agents never get a shell (cron.allow_agent_shell)
+            "terminal", "code_execution",
         ]
 
     def test_none_config_denies_cronjob(self):
         assert _resolve_cron_disabled_toolsets(None) == [
             "cronjob", "messaging", "clarify",
+            # fork: cron agents never get a shell (cron.allow_agent_shell)
+            "terminal", "code_execution",
         ]
 
     def test_cron_section_present_but_gate_absent(self):
         cfg = {"cron": {"preflight": True}}
         assert _resolve_cron_disabled_toolsets(cfg) == [
             "cronjob", "messaging", "clarify",
+            # fork: cron agents never get a shell (cron.allow_agent_shell)
+            "terminal", "code_execution",
         ]
 
     def test_explicit_false_matches_default(self):

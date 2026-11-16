@@ -70,6 +70,13 @@ _RESPONSE = SimpleNamespace(usage=_Usage(50, 30, 0, 119_950))
 
 @pytest.fixture
 def priced(monkeypatch):
+    """The route is priced at ``_OPUS`` both for the decision and for the estimator that bills it."""
+    from decimal import Decimal
+
+    from agent.usage_pricing import PricingEntry
+
+    entry = PricingEntry(**{k: Decimal(str(v)) for k, v in vars(_OPUS).items()}, source="official_docs_snapshot")
+    monkeypatch.setattr("agent.usage_pricing.get_pricing_entry", lambda *a, **k: entry)
     monkeypatch.setattr(pcw.PromptCacheWarmer, "_pricing", lambda self: _OPUS)
 
 
@@ -220,7 +227,7 @@ def test_warming_needs_no_config_and_slow_responses_refresh_sooner(priced, tmp_p
     warmer = pcw.get_prompt_cache_warmer(agent)
     sent = _time.time() - 200
     assert _arm(agent, _request(), _RESPONSE, sent_at=sent) is None
-    assert warmer._run.next_warm_at == pytest.approx(sent + pcw.cache_warming_delay_s(300))
+    assert warmer._run.next_warm_at == pytest.approx(sent + pcw.cache_warming_delay_s(300), rel=0, abs=0.5)
     warmer.cancel("done")
     assert _arm(agent, _request(), _RESPONSE, sent_at=_time.time() - 400) == "cache window not guaranteed warm"
 
@@ -396,7 +403,7 @@ def test_warming_follows_the_shared_clock_and_never_warms_without_a_guarantee(pr
     assert _arm(native, _one_hour_request()) is None
     window = cache_window(native)
     assert window.tier == "1h"
-    assert native._prompt_cache_warmer._run.next_warm_at == pytest.approx(window.guaranteed_until - 10)
+    assert native._prompt_cache_warmer._run.next_warm_at == pytest.approx(window.guaranteed_until - (3600 - pcw.cache_warming_delay_s(3600)), rel=0, abs=0.5)
 
 
 def test_a_refresh_moves_the_clock_and_the_next_one_is_due_from_its_new_deadline(priced):
@@ -414,6 +421,6 @@ def test_a_refresh_moves_the_clock_and_the_next_one_is_due_from_its_new_deadline
     _fire(warmer)
     after = cache_window(agent)
     assert after.guaranteed_until > before + 200 and after.confidence != "unknown"
-    assert warmer._run.next_warm_at == pytest.approx(after.guaranteed_until - 30)
+    assert warmer._run.next_warm_at == pytest.approx(after.guaranteed_until - 30, rel=0, abs=0.5)
     (row,) = booked
     assert row["task"] == "cache_warm" and json.loads(row["prompt_cache_clock"])["read_tokens"] == 119_997

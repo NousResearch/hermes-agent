@@ -392,16 +392,19 @@ class AIAgent(
         With ``previous_messages`` / ``old_session_id`` / ``carry_over_context`` the context engine gets the
         full transition lifecycle instead of a bare reset.
         """
-        for counter in (
-            "session_total_tokens", "session_input_tokens", "session_output_tokens", "session_prompt_tokens",
-            "session_completion_tokens", "session_cache_read_tokens", "session_cache_write_tokens",
-            "session_reasoning_tokens", "session_api_calls", "session_cache_warm_calls",
-        ):
-            setattr(self, counter, 0)
-        # Monotonic, unlike the counters it accompanies: a reply to a request sent before this
-        # reset (a cache keep-alive in flight) compares it to tell the old session from the new.
-        self._session_reset_epoch = getattr(self, "_session_reset_epoch", 0) + 1
-        self.session_estimated_cost_usd = 0.0
+        from agent.prompt_cache_warmer import session_totals_lock
+
+        with session_totals_lock(self):  # a keep-alive in flight adds to these under the same lock
+            for counter in (
+                "session_total_tokens", "session_input_tokens", "session_output_tokens", "session_prompt_tokens",
+                "session_completion_tokens", "session_cache_read_tokens", "session_cache_write_tokens",
+                "session_reasoning_tokens", "session_api_calls", "session_cache_warm_calls",
+            ):
+                setattr(self, counter, 0)
+            # Monotonic, unlike the counters it accompanies: a reply to a request sent before this
+            # reset (a cache keep-alive in flight) compares it to tell the old session from the new.
+            self._session_reset_epoch = getattr(self, "_session_reset_epoch", 0) + 1
+            self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
 

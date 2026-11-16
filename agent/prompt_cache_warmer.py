@@ -29,12 +29,14 @@ scheduled from the deadline the refresh itself bought.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import copy
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+import uuid
+from dataclasses import asdict, dataclass, field
 from decimal import Decimal
 from typing import Any, Callable, Optional
 
@@ -257,7 +259,7 @@ class PromptCacheWarmer:
         if client is None:
             return self._stop("no provider client")
         # Economics before the deep copy: an unpriced/cheap model never pays for the copy either.
-        decision = evaluate_economics(self._pricing(), cached_tokens, uncached_tokens)
+        decision = self._decide(cached_tokens, uncached_tokens)
         self._last_decision = decision
         if decision.action != "warm":
             return self._stop(decision.stop_reason)
@@ -431,11 +433,50 @@ class PromptCacheWarmer:
             # A byte-identical replay inside OpenRouter's response-cache TTL would be answered
             # from that cache and never reach (or refresh) the prompt cache upstream.
             kwargs["extra_headers"] = {**(kwargs.get("extra_headers") or {}), "X-OpenRouter-Cache": "false"}
-            return client.chat.completions.create(**kwargs)
+            return self._with_aux_hooks(run, client, kwargs, lambda: client.chat.completions.create(**kwargs))
         from agent.anthropic_adapter import create_anthropic_message
 
         kwargs["max_tokens"] = 1
-        return create_anthropic_message(client, kwargs, log_prefix=self._prefix(), prefer_stream=False)
+        return self._with_aux_hooks(
+            run, client, kwargs,
+            lambda: create_anthropic_message(client, kwargs, log_prefix=self._prefix(), prefer_stream=False),
+        )
+
+    def _with_aux_hooks(self, run: _Run, client: Any, kwargs: dict[str, Any], call: Callable[[], Any]) -> Any:
+        """One keep-alive attempt between ``pre_auxiliary_call`` and ``post_auxiliary_call``
+        (``aux_task="cache_warm"``), so observers that meter auxiliary spend see every refresh.
+        The observers read the request; the bytes sent are unchanged."""
+        from agent.auxiliary_hooks import finish_aux_call_hooks, start_aux_call_hooks
+
+        b = run.billing
+        hooks = start_aux_call_hooks(
+            aux_task="cache_warm", metadata={"api_request_id": f"cache-warm-{uuid.uuid4().hex}"}, client=client,
+            kwargs=kwargs, provider=str(b["provider"] or ""), model=str(run.model or ""), api_mode=run.api_mode,
+            streaming=False,
+        )
+        try:
+            message = call()
+        except BaseException as exc:
+            finish_aux_call_hooks(hooks, error=exc)
+            raise
+        if hooks is not None:
+            finish_aux_call_hooks(hooks, message, normalized=self._hook_view(run, message))
+        return message
+
+    @staticmethod
+    def _hook_view(run: _Run, message: Any) -> tuple[Any, Any, Optional[dict[str, Any]]]:
+        """``(assistant_message, finish_reason, usage)`` on either wire, usage normalized on the
+        wire it came from (an Anthropic Message has no ``choices``)."""
+        from agent.usage_pricing import normalize_usage
+
+        choice = (getattr(message, "choices", None) or [None])[0]
+        finish = getattr(choice, "finish_reason", None) if choice is not None else getattr(message, "stop_reason", None)
+        usage = None
+        if getattr(message, "usage", None):
+            cu = normalize_usage(message.usage, provider=run.billing["provider"], api_mode=run.api_mode)
+            usage = {k: v for k, v in asdict(cu).items() if k != "raw_usage"}
+            usage.update(prompt_tokens=cu.prompt_tokens, total_tokens=cu.total_tokens)
+        return getattr(choice, "message", None), finish, usage
 
     def _record(self, run: _Run, message: Any, decision: CacheWarmingDecision, sent_at: float) -> Optional[str]:
         """Fold the refresh's tokens and dollars into the session totals (never into the
@@ -458,9 +499,11 @@ class PromptCacheWarmer:
                 run.spent_usd += amount
                 run.last_warm_usd = amount
             # Compression keeps the running counters (a refresh still adds to them); only
-            # ``reset_session_state`` zeroes them, and it advances the reset epoch with them.
-            if getattr(agent, "_session_reset_epoch", 0) == b["reset_epoch"]:
-                self._add_to_session_totals(canonical, amount)
+            # ``reset_session_state`` zeroes them, and it advances the reset epoch with them under
+            # this same lock, so a reset never lands between the epoch check and the add.
+            with self._lock:
+                if getattr(agent, "_session_reset_epoch", 0) == b["reset_epoch"]:
+                    self._add_to_session_totals(canonical, amount)
             clock = self._fold_clock(run, canonical, sent_at)
             db = getattr(agent, "_session_db", None)
             if db is not None and b["session_id"]:
@@ -528,10 +571,34 @@ class PromptCacheWarmer:
             agent.session_estimated_cost_usd += amount
 
     def _evaluate(self, run: _Run) -> CacheWarmingDecision:
-        return evaluate_economics(
-            self._pricing(), run.cached_tokens, run.uncached_tokens,
-            spent_usd=run.spent_usd, observed_warm_usd=run.last_warm_usd,
-        )
+        return self._decide(run.cached_tokens, run.uncached_tokens,
+                            spent_usd=run.spent_usd, observed_warm_usd=run.last_warm_usd)
+
+    def _decide(self, cached_tokens: int, uncached_tokens: int, **spend: float) -> CacheWarmingDecision:
+        """``evaluate_economics``, refused outright when the estimator that bills a refresh
+        (``_record``) cannot price the refresh's cache read or the miss's cache write: a missing
+        cache rate must not read as free and approve a refresh whose saving is unknown."""
+        decision = evaluate_economics(self._pricing(), cached_tokens, uncached_tokens, **spend)
+        if decision.action == "warm" and not self._cache_costs_known(cached_tokens, uncached_tokens):
+            return CacheWarmingDecision(
+                warm_cost=decision.warm_cost, miss_cost=decision.miss_cost,
+                expected_savings=decision.expected_savings, economics_available=False, action="stop",
+            )
+        return decision
+
+    def _cache_costs_known(self, cached_tokens: int, uncached_tokens: int) -> bool:
+        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+
+        agent = self.agent
+        route = dict(provider=agent.provider, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""))
+        refresh = CanonicalUsage(input_tokens=uncached_tokens, output_tokens=1, cache_read_tokens=cached_tokens)
+        miss = CanonicalUsage(input_tokens=uncached_tokens, output_tokens=1, cache_write_tokens=cached_tokens)
+        try:
+            return all(estimate_usage_cost(agent.model, usage, **route).amount_usd is not None
+                       for usage in (refresh, miss))
+        except Exception:  # health: allow BLE001 -- unpriced means never warm; logged
+            logger.debug("prompt cache warm cost estimate unavailable", exc_info=True)
+            return False
 
     def _pricing(self) -> Any:
         agent = self.agent
@@ -592,6 +659,14 @@ def get_prompt_cache_warmer(agent: Any) -> PromptCacheWarmer:
         warmer = PromptCacheWarmer(agent)
         agent._prompt_cache_warmer = warmer
     return warmer
+
+
+def session_totals_lock(agent: Any) -> Any:
+    """What ``reset_session_state`` holds while it zeroes the running totals and advances the
+    reset epoch: the lock a keep-alive holds across its epoch check and its add. With no warmer
+    there is no keep-alive in flight, so nothing to exclude."""
+    warmer = getattr(agent, "_prompt_cache_warmer", None)
+    return warmer._lock if warmer is not None else contextlib.nullcontext()
 
 
 def start_prompt_cache_warming(agent: Any, api_kwargs: Any, response: Any) -> None:

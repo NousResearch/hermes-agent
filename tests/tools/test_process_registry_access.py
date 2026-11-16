@@ -79,17 +79,14 @@ def test_compression_continuation_keeps_access(reg, monkeypatch):
 def test_resumed_api_run_keeps_access_after_compression(monkeypatch):
     """/v1/runs binds task_id to the conversation's live compression tip and the session key to a
     fresh run id, so after a rotation only the task's own lineage ties the caller to its process."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
     monkeypatch.setattr("hermes_cli.process_identity._update_supervised_pgids", lambda verb, pgids: None)
     registry = ProcessRegistry()
     monkeypatch.setattr(pr, "process_registry", registry)
-    db = SessionDB()
-    try:
-        db.create_session("api-conv", "api_server")
-        db.end_session("api-conv", end_reason="compression")
-        db.create_session("api-conv-tip", "api_server", parent_session_id="api-conv")
-    finally:
-        db.close()
+    with open_persistence(profile_scope()) as store:
+        seed_session(store, "api-conv", "api_server", end_reason="compression")
+        seed_session(store, "api-conv-tip", "api_server", parent_session_id="api-conv")
     registry._finished["proc_owned1"] = _session(owner_task_id="api-conv", session_key="run-1", task_id="api-conv")
     assert _call(monkeypatch, "poll", "api-conv-tip", "run-2")["status"] != "not_found"
     assert _call(monkeypatch, "poll", "other-conv", "run-3") == pr._not_found("proc_owned1")

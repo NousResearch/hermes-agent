@@ -687,6 +687,15 @@ export const svOverrides: TranslationOverrides = {
         cancel: 'Avbryt',
         effectScheduled: (targetName, effectiveAt, creditsDelta) =>
           `Byt till ${targetName} – börjar gälla ${effectiveAt}. Ingen debitering nu; du behåller ditt nuvarande abonnemang tills dess.${creditsDelta ? ` Månadskrediter ändras: ${creditsDelta}.` : ''}`
+      },
+      keepGoingOnCredits: {
+        title: 'Fortsätt med krediter',
+        description: 'Använd dina krediter när den inkluderade användningen är slut. Av: Hermes väntar på återställningen.',
+        approveInBrowser: 'Godkänn Remote Spending i webbläsaren för att ändra detta. Ändringen gäller så snart du godkänner.',
+        openAgain: 'Öppna igen',
+        cancel: 'Avbryt',
+        approvedRetry: 'Remote Spending är godkänt, men ändringen sparades inte.',
+        tryAgain: 'Försök igen'
       }
     },
     hudModifier: {

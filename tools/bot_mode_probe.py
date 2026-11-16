@@ -142,9 +142,13 @@ def _boolish(value: object) -> bool:
 def _force_private(root: Path) -> bool:
     """``bots.force_private`` from the SHARED root config: a per-profile key cannot outrank its
     own profile, and this switch takes every agent out of the mesh at once."""
-    cfg = _read_yaml_dict(root / "config.yaml", "force_private") or {}
-    bots = cfg.get("bots")
-    return _boolish(bots.get("force_private")) if isinstance(bots, dict) else False
+    def _read() -> bool:
+        from hermes_cli.config_backend import read_config_doc_readonly
+        doc = read_config_doc_readonly(root / "config.yaml")
+        bots = doc.get("bots") if isinstance(doc, dict) else None
+        return _boolish(bots.get("force_private")) if isinstance(bots, dict) else False
+
+    return _swallow(_read, False)
 
 
 def _is_private(profile_dir: Path) -> bool:

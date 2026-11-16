@@ -213,9 +213,10 @@ def _repair_command(name: str, route: dict) -> str:
     for key, flag in _REPAIR_FLAGS:
         if isinstance(route.get(key), str) and route[key]:
             parts += [flag, shlex.quote(route[key])]
+    from gateway.platforms.webhook_filters import route_names
     for key, flag in (("events", "--events"), ("skills", "--skills")):
-        if isinstance(route.get(key), list) and route[key]:
-            parts += [flag, shlex.quote(",".join(map(str, route[key])))]
+        if names := route_names(route.get(key)):
+            parts += [flag, shlex.quote(",".join(names))]
     parts += [flag for key, flag in (("deliver_only", "--deliver-only"), ("mirror_to_session", "--mirror-to-session"))
               if route.get(key) is True]
     return " ".join(parts)

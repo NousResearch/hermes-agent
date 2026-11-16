@@ -665,6 +665,28 @@ export const svOverrides: TranslationOverrides = {
         added: amount => `${amount} tillagt. Saldo uppdateras.`,
         retry: 'Försök igen',
         openPortal: 'Öppna portalen'
+      },
+      plan: {
+        title: 'Abonnemang',
+        changePlan: 'Byt abonnemang',
+        viewPlans: 'Visa abonnemang',
+        backAria: 'Tillbaka till fakturering',
+        current: 'Aktuellt abonnemang',
+        scheduled: 'Planerat',
+        empty: 'Det finns inga abonnemang att byta till just nu.',
+        undo: 'Ångra',
+        undoing: 'Ångrar …',
+        downgrade: 'Nedgradera',
+        confirmDowngrade: 'Bekräfta nedgradering',
+        tryAgain: 'Försök igen',
+        checkingChange: 'Kontrollerar ändringen …',
+        cannotChange: 'Den ändringen kan inte göras här.',
+        alreadyOn: name => `Du använder redan ${name}. Det finns inget att ändra.`,
+        notScheduleable: 'Den ändringen kan inte schemaläggas här.',
+        scheduling: 'Schemalägger …',
+        cancel: 'Avbryt',
+        effectScheduled: (targetName, effectiveAt, creditsDelta) =>
+          `Byt till ${targetName} – börjar gälla ${effectiveAt}. Ingen debitering nu; du behåller ditt nuvarande abonnemang tills dess.${creditsDelta ? ` Månadskrediter ändras: ${creditsDelta}.` : ''}`
       }
     },
     hudModifier: {

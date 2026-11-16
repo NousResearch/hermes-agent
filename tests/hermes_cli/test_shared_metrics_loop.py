@@ -337,7 +337,7 @@ def browser_exec_route(monkeypatch):
     monkeypatch.setattr(bs_cloud, "auto_local_for_private_urls", lambda: True)
     monkeypatch.setattr(bs, "get_session_info", session_info)
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
-    monkeypatch.setattr(supervisor, "SUPERVISOR_REGISTRY", SimpleNamespace(get_or_start=lambda **kw: None))
+    monkeypatch.setattr(supervisor, "SUPERVISOR_REGISTRY", SimpleNamespace(get_or_start=lambda **kw: None, get=lambda task_id: None))
     monkeypatch.setattr(bu, "_find_cli", lambda: ["browser-use"])
     monkeypatch.setattr(bu, "_run_cli_killing_process_group",
                         lambda cmd, code, env, timeout: subprocess.CompletedProcess(cmd, 0, "ok", ""))

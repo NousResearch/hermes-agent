@@ -320,6 +320,8 @@ _UPDATE_PIPELINE = (
     "gateway/host_rendezvous.py",
     "gateway/shutdown_forensics.py",
     "gateway/restart.py",
+    "gateway/host_topology.py",  # update --force: the served homes of a host multiplexer
+    "tools/process_registry.py",  # update --force: sweeps a killed gateway's background processes
     "scripts/desktop-update/",  # the hand-off scripts run `hermes update`
 )
 # Selectors are owned by the import graph, not remembered. The update

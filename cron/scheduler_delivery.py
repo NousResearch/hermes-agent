@@ -67,6 +67,24 @@ def _resolve_cron_surface_mode(pconfig, logical_platform_name: str) -> str:
     return "thread"
 
 
+def _fresh_thread_overrides_origin_topic(pconfig) -> bool:
+    """``platforms.<p>.extra.cron_fresh_thread_per_run: true``: a continuable job created inside a
+    topic/thread opens a fresh thread per run instead of delivering back to its origin topic
+    (#76548). Off by default; any value but a boolean ``true`` keeps the origin topic and warns."""
+    extra = getattr(pconfig, "extra", None) or {}
+    raw = extra.get("cron_fresh_thread_per_run", False) if isinstance(extra, dict) else False
+    if isinstance(raw, bool):
+        return raw
+    logger.warning("cron_fresh_thread_per_run must be true or false, got %r; keeping the origin topic", raw)
+    return False
+
+
+def _origin_thread_is(job: dict, thread_id) -> bool:
+    """Whether ``thread_id`` is the thread/topic recorded on the job's own origin."""
+    origin_thread = (_resolve_origin(job) or {}).get("thread_id")
+    return origin_thread is not None and str(origin_thread) == str(thread_id)
+
+
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job. Non-dict origins (provenance strings, hand-edited
     jobs.json) are treated as missing — otherwise every fire crashed on ``origin.get``.
@@ -1643,7 +1661,11 @@ def _prepare_target_delivery(
         and not in_channel_surface
         and runtime_adapter is not None
         and loop is not None
-        and not thread_id  # never override an explicit origin thread/topic
+        # Never override a target thread/topic unless the platform opted in AND it is the job's own
+        # origin topic (#76548): an origin without a thread matches any thread as a wildcard, so a
+        # topic the user named explicitly must not count as the origin's.
+        and (not thread_id or (
+            origin_target and _origin_thread_is(job, thread_id) and _fresh_thread_overrides_origin_topic(pconfig)))
     ):
         opened_thread_id = _open_continuable_cron_thread(
             job, runtime_adapter, chat_id, loop) or None
@@ -1680,6 +1702,19 @@ def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
     msg = f"no delivery target resolved for deliver={deliver_value}"
     logger.warning("Job '%s': %s", job["id"], msg)
     return msg
+
+
+def _should_wrap_cron_response(job: dict, user_cfg: Any) -> bool:
+    """Whether to wrap delivered output in the cron header/footer. A bool per-job
+    ``wrap_response`` overrides the global ``cron.wrap_response`` (read from the active
+    profile); an unreadable or malformed config falls back to the default (wrap)."""
+    if isinstance(job.get("wrap_response"), bool):
+        return job["wrap_response"]
+    cron_cfg = user_cfg.get("cron") if isinstance(user_cfg, dict) else None
+    if not isinstance(cron_cfg, dict):
+        return True
+    # Truthiness, as the inline check this replaces used; YAML yields real bools here.
+    return bool(cron_cfg.get("wrap_response", True))
 
 
 def _deliver_result(
@@ -1721,12 +1756,11 @@ def _deliver_result(
 
     from gateway.config import load_gateway_config
 
-    # Wrap with header/footer unless cron.wrap_response: false.
-    wrap_response = True
+    # user_cfg is loaded either way: the wrap decision and the delivery settings below reuse it.
     user_cfg = None
     with contextlib.suppress(Exception):
         user_cfg = _sched.load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+    wrap_response = _should_wrap_cron_response(job, user_cfg)
     # Mark live sends FINAL so the platform pushes them (Telegram "important" mode mutes otherwise).
     notify_delivery = _cron_delivery_notify_enabled(user_cfg)
     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);

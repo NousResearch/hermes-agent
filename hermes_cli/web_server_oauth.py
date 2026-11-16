@@ -94,12 +94,27 @@ def _claude_code_only_status() -> dict[str, Any]:
 
 def _external_process_cli_command(provider_id: str, default: str) -> str:
     """Render an external-process provider's sign-in command with the CLI actually configured
-    (its profile's ``process_command_env_vars`` override); others get ``default`` untouched."""
+    (its profile's ``process_command_env_vars`` override); others get ``default`` untouched.
+
+    The first-token swap only fits defaults that are the provider CLI's own template (curated
+    rows like ``copilot login``). Plugin rows default to the *Hermes* command ``hermes auth add
+    <slug>``; swapping its first token mints a command neither CLI understands (``agy auth add
+    <slug>``), so a ``hermes``-led default survives verbatim when the plugin ships an
+    ``auth_handler`` and otherwise becomes the re-login every other surface names for these
+    plugins: the CLI login the plugin declares, which changes no Hermes config (#136071)."""
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
         pconfig = PROVIDER_REGISTRY.get(provider_id)
         if not pconfig or pconfig.auth_type != "external_process":
             return default
+        if default.split(" ", 1)[0] == "hermes":
+            # `hermes auth add <slug>` only works when the plugin owns an auth_handler; without
+            # one the CLI exits with "ships no auth_handler" and no executable swap fixes that.
+            from hermes_cli.auth_plugin_providers import plugin_auth_handler
+            if plugin_auth_handler(provider_id) is not None:
+                return default
+            from agent.turn_failure_copy import oauth_relogin_command
+            return oauth_relogin_command(provider_id)
         status = get_external_process_provider_status(provider_id) or {}
         command = str(status.get("command") or "").strip()
         if command:

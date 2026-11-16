@@ -59,6 +59,8 @@ def _resolve_policy_agent_runtime(runner, policy, *, fallback=True, record_notic
                                             fallback=fallback)
     if fallback_entry is not None:
         from hermes_cli.fallback_config import pre_agent_fallback_notice
+        from agent.primary_auth_fallback import RUNTIME_KEY, set_pending_primary_auth_failure
+        set_pending_primary_auth_failure(runtime.get(RUNTIME_KEY))
         notice = pre_agent_fallback_notice(
             provider or '', model or '',
             runtime.get('provider') or fallback_entry.get('provider') or 'unknown',
@@ -207,6 +209,9 @@ class GatewayTurnPrepareMixin:
         # turn (#74349). Set again below only when THIS resolution fell back.
         if record_notice:
             self._pre_agent_fallback_notice = None
+        # This turn's context only (each gateway turn runs in its own context copy), so no record_notice gate.
+        from agent.primary_auth_fallback import set_pending_primary_auth_failure
+        set_pending_primary_auth_failure(None)
         policy = policy_for_source(self, source) if source is not None else None
         if policy is not None:
             return _resolve_policy_agent_runtime(self, policy, fallback=fallback, record_notice=record_notice)
@@ -268,6 +273,8 @@ class GatewayTurnPrepareMixin:
         # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn
         # runner surfaces it through the agent's one-shot fallback notice (#74349).
         notice = runtime_kwargs.pop("_fallback_notice", None)
+        from agent.primary_auth_fallback import RUNTIME_KEY, failure_for_route, route_snapshot
+        primary_auth_failure, resolved_route = runtime_kwargs.pop(RUNTIME_KEY, None), route_snapshot(runtime_kwargs)
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
@@ -283,6 +290,8 @@ class GatewayTurnPrepareMixin:
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)
+        # A channel's own provider or the session's /model replaced the route resolution fell back to.
+        set_pending_primary_auth_failure(failure_for_route(primary_auth_failure, resolved_route, runtime_kwargs))
 
         # Provider resolved but no model.default (`hermes auth add` without `hermes model`): use the
         # provider's first catalog model.
@@ -326,6 +335,7 @@ class GatewayTurnPrepareMixin:
         }
         if tier is _TIER_FROM_RUNNER:
             tier = getattr(self, "_service_tier", None)
+        route["service_tier"] = tier  # the tier this turn's agent runs, carried with its overrides
         if tier not in STATIC_TIERS:
             # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
             route["request_overrides"] = base_request_overrides
@@ -606,7 +616,7 @@ class GatewayTurnPrepareMixin:
         """Prepend topic/channel-bound skill payload(s) to ``event.text`` on a new session."""
         _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
         try:
-            from agent.skill_commands import _load_skill_payload, _build_skill_message
+            from agent.skill_commands import _load_skill_payload, _build_skill_message, register_auto_load_scaffold
             _combined_parts: list[str] = []
             _loaded_names: list[str] = []
             for _sname in _skill_names:
@@ -624,8 +634,11 @@ class GatewayTurnPrepareMixin:
                     _combined_parts.append(_part)
                     _loaded_names.append(_sname)
             if _combined_parts:
-                _combined_parts.append(event.text)  # user's original text after the payloads
-                event.text = "\n\n".join(_combined_parts)
+                # The exact boundary, so memory providers keep the typed text even when it
+                # looks like scaffolding (a pasted setup note or footer sentence).
+                _scaffold = "\n\n".join(_combined_parts) + "\n\n"
+                register_auto_load_scaffold(_scaffold)
+                event.text = _scaffold + (event.text or "")  # user's original text after the payloads
                 logger.info("[Gateway] Auto-loaded skill(s) %s for session %s", _loaded_names, session_key)
         except Exception as e:
             logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
@@ -853,7 +866,10 @@ class GatewayTurnPrepareMixin:
             self._set_pending_turn_sidecar_notes(session_key, turn_sidecar_notes)
 
         # Bind this run generation to the adapter so deferred post-delivery callbacks are released
-        # by the run that registered them.
+        # by the run that registered them. The turn's own event carries it too: a busy follow-up's
+        # reply is sent by ``dispatch_shared_busy``'s observer, which holds no session guard and
+        # releases the turn's callbacks by this per-turn stamp (``turn_run_generation``).
+        event._hermes_run_generation = run_generation
         self._bind_adapter_run_generation(self._delivery_adapter_for(source), session_key, run_generation)
         # Delivery IDs are only unique in their transport namespace. Keyless turns
         # need their own identity, even when another process writes to this session.

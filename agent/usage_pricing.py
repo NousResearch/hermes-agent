@@ -71,6 +71,10 @@ class CanonicalUsage:
     reasoning_tokens: int = 0
     request_count: int = 1
     raw_usage: Optional[dict[str, Any]] = None
+    # Granted cache tier per written token, when the response names it: Anthropic (and Kimi's
+    # Messages wire) ``cache_creation.ephemeral_5m/1h_input_tokens``, OpenAI Responses
+    # ``cache_write_tokens_details.ttl_30m/12h_tokens``. ``(("1h", 4096),)``; empty = not reported.
+    cache_write_by_ttl: tuple[tuple[str, int], ...] = ()
 
     @property
     def prompt_tokens(self) -> int:
@@ -81,15 +85,18 @@ class CanonicalUsage:
         return self.prompt_tokens + self.output_tokens
 
     def __add__(self, other: CanonicalUsage) -> CanonicalUsage:
-        """Sum two usage buckets. ``raw_usage`` (single-response detail) is
-        dropped; ``request_count`` adds so callers see how many API calls a
+        """Sum two usage buckets. ``raw_usage`` and ``cache_write_by_ttl`` (single-response
+        detail) are dropped; ``request_count`` adds so callers see how many API calls a
         combined figure covers."""
         if not isinstance(other, CanonicalUsage):
             return NotImplemented
         return CanonicalUsage(**{
             f.name: getattr(self, f.name) + getattr(other, f.name)
-            for f in fields(CanonicalUsage) if f.name != "raw_usage"
+            for f in fields(CanonicalUsage) if f.name not in _PER_RESPONSE_FIELDS
         })
+
+
+_PER_RESPONSE_FIELDS = frozenset({"raw_usage", "cache_write_by_ttl"})
 
 
 @dataclass(frozen=True)
@@ -652,6 +659,20 @@ _CHAT_USAGE_SHAPE = (
 )
 
 
+# Where each wire reports the tier a cache write was granted at: (tier, path).
+_CACHE_WRITE_TIER_PATHS = (
+    ("5m", ("cache_creation", "ephemeral_5m_input_tokens")),
+    ("1h", ("cache_creation", "ephemeral_1h_input_tokens")),
+    ("30m", ("input_tokens_details", "cache_write_tokens_details", "ttl_30m_tokens")),
+    ("12h", ("input_tokens_details", "cache_write_tokens_details", "ttl_12h_tokens")),
+)
+
+
+def cache_write_tiers(response_usage: Any) -> tuple[tuple[str, int], ...]:
+    """Non-zero ``(tier, tokens)`` pairs the response proved for its cache writes."""
+    return tuple((tier, n) for tier, path in _CACHE_WRITE_TIER_PATHS if (n := _usage_field(response_usage, *path)))
+
+
 def normalize_usage(
     response_usage: Any, *, provider: Optional[str] = None, api_mode: Optional[str] = None
 ) -> CanonicalUsage:
@@ -707,6 +728,7 @@ def normalize_usage(
         input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens, reasoning_tokens=reasoning_tokens,
         raw_usage=dict(u) if isinstance(u, dict) else (u.model_dump() if callable(getattr(u, 'model_dump', None)) else None),
+        cache_write_by_ttl=cache_write_tiers(u),
     )
 
 

@@ -666,6 +666,7 @@
     "plugins/video_gen/fal/__init__.py tools.fal_common._ManagedFalSyncClient": 1,
     "plugins/video_gen/fal/__init__.py tools.fal_common._extract_http_status": 1,
     "plugins/video_gen/fal/__init__.py tools.fal_common._managed_fal_billing_error": 1,
+    "plugins/video_gen/fal/__init__.py tools.fal_common.direct_fal_client": 1,
     "plugins/video_gen/fal/__init__.py tools.fal_common.import_fal_client": 1,
     "plugins/video_gen/fal/__init__.py tools.fal_common.submit_managed_fal_with_rate_limit_retry": 1,
     "plugins/video_gen/fal/__init__.py tools.fal_common.wait_fal_queue_result": 2,

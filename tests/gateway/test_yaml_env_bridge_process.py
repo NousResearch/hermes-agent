@@ -93,7 +93,8 @@ def test_fresh_process_refreshes_only_bridge_owned_values(tmp_path, source):
 
     second = _boot(home, env)
 
-    assert second["value"] == ("true" if source == "bridge" else "false")
+    # An unmarked inherited export loses to the explicit YAML key too (#110295); only .env wins.
+    assert second["value"] == ("false" if source == "dotenv" else "true")
     if source == "bridge":
         assert second["marker"] == bridged_env_digest("true")
 
@@ -136,7 +137,10 @@ def test_real_child_env_builder_preserves_refresh_retraction_and_operator_preced
     assert Path(observed["builder_module"]).resolve() == (
         Path(__file__).resolve().parents[2] / "tools/environments/local.py"
     )
-    expected = "false" if source != "bridge" else (None if replacement == "{}\n" else "true")
+    if replacement == "{}\n":  # removed key: only the bridge's own marked value is retracted
+        expected = None if source == "bridge" else "false"
+    else:  # explicit YAML key: beats an unmarked inherited export, never .env (#110295, #109032)
+        expected = "false" if source == "dotenv" else "true"
     assert observed["value"] == expected
     if source == "bridge":
         assert observed["marker"] == bridged_env_digest(expected)

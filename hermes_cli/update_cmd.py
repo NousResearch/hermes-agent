@@ -1479,6 +1479,7 @@ class _UpdateOptions:
     switch_branch: bool
     discard_local_changes: bool
     no_gateway_restart: bool = False
+    force: bool = False
 
 
 def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
@@ -1513,7 +1514,7 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
         pre_update_version=pre_update_version,
         gw_input_fn=gw_input_fn, assume_yes=assume_yes, keep_stash=keep_stash,
         switch_branch=switch_branch, discard_local_changes=discard_local_changes,
-        no_gateway_restart=no_gateway_restart)
+        no_gateway_restart=no_gateway_restart, force=bool(getattr(args, "force", False)))
 
 
 def _begin_update_receipt_and_plan(args):
@@ -1756,7 +1757,7 @@ def _pause_gateways_for_update(opts):
     """Windows pauses here (venv locks); Linux/macOS only arm a pause the commit point performs."""
     try:
         return _m()._pause_windows_gateways_for_update() or _posix_pause.arm_pause(
-            no_gateway_restart=opts.no_gateway_restart)
+            no_gateway_restart=opts.no_gateway_restart, force=opts.force)
     except RuntimeError:  # update_cmd_windows._abort_on_error / ServicePauseFailed: nothing moved
         _record_stop("gateway_pause_failed")
         raise

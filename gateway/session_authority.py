@@ -589,6 +589,8 @@ class SessionAuthority:
         payload = await prepare_native(self.runner, event)
         if fingerprint := getattr(event, '_ingress_sha256', None):
             payload['native_text_v1']['ingress_sha256'] = fingerprint  # the delivery before a rewrite
+        from gateway.session_moa_turn import stamp_moa_turn
+        stamp_moa_turn(event, payload['native_text_v1'])
         self._require_admission_open()
         source = restore_native_source(payload)  # no re-hash of the just-captured media on the loop
         from gateway.session_runtime_workers import tracked_write

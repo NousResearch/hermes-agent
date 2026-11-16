@@ -11,8 +11,11 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 from __future__ import annotations
 
 import ast
+import codecs
+import io
 import os
 import subprocess
+import tokenize
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
@@ -29,7 +32,7 @@ from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v13"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v15"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
@@ -147,15 +150,22 @@ def _is_main_guard(node: ast.If) -> bool:
     )
 
 
+def _parse_python_source(file_path: Path) -> Optional[ast.Module]:
+    """Parse *file_path* as Python; unreadable or invalid source returns ``None``."""
+    try:
+        return ast.parse(file_path.read_text(encoding="utf-8-sig"))
+    except (OSError, SyntaxError, ValueError):  # ValueError: UnicodeDecodeError, NUL bytes
+        return None
+
+
 def _main_guard_body_lines(file_path: Path) -> set[int]:
     """Return lines executed only by ``if __name__ == '__main__'`` blocks.
 
     Invalid Python deliberately returns no lines so its findings retain the
     conservative severity.
     """
-    try:
-        tree = ast.parse(file_path.read_text(encoding="utf-8-sig"))
-    except (OSError, SyntaxError, ValueError):  # ValueError: UnicodeDecodeError, NUL bytes
+    tree = _parse_python_source(file_path)
+    if tree is None:
         return set()
     lines: set[int] = set()
     for node in ast.walk(tree):
@@ -166,14 +176,74 @@ def _main_guard_body_lines(file_path: Path) -> set[int]:
     return lines
 
 
+# Nodes that can own a docstring: only the first statement of a module, class or function is one.
+_DOCSTRING_OWNERS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _declares_non_utf8_source(file_path: Path) -> bool:
+    """A PEP 263 cookie (``# coding: utf-7``) makes CPython run a different text than the UTF-8 parse
+    the docstring spans come from, so those spans say nothing about what executes. Fail closed."""
+    try:
+        raw = file_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        codec = tokenize.detect_encoding(io.BytesIO(raw).readline)[0]
+        return codecs.lookup(codec).name not in ("utf-8", "utf-8-sig")
+    except (OSError, SyntaxError, LookupError, UnicodeError):
+        return True
+
+
+def _docstring_lines(file_path: Path) -> set[int]:
+    """Return the lines holding module/class/function docstrings and nothing else.
+
+    A docstring is prose that documents a defense for a reader, so its findings take the same
+    one-step cap as a whole-line comment (#155823). ``ast`` reports a docstring only for the first
+    statement of a module/class/function, so a triple-quoted *constant* (``PAYLOAD = \\"\\"\\"...
+    \\"\\"\\"``) is not included: prose cannot execute, but a string the code can hand to ``exec`` can.
+    A line any other node also occupies (``\\"\\"\\"x\\"\\"\\"; os.system(...)``, a default argument on a
+    multi-line ``def`` header) is code. Invalid Python returns no lines, keeping every finding at
+    its conservative severity.
+    """
+    tree = _parse_python_source(file_path)
+    if tree is None or _declares_non_utf8_source(file_path):
+        return set()
+    lines: set[int] = set()
+    docstrings: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, _DOCSTRING_OWNERS) or not node.body:
+            continue
+        first = node.body[0]
+        if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)):
+            docstrings.update((id(first), id(first.value)))
+            lines.update(range(first.lineno, getattr(first, "end_lineno", first.lineno) + 1))
+    for node in ast.walk(tree):
+        first_line = getattr(node, "lineno", None)
+        if id(node) in docstrings or first_line is None:
+            continue
+        # A compound statement's span is its whole body: drop only its first line here; the
+        # header's own parts (decorators, arguments, defaults, bases) are nodes of their own.
+        last = first_line if hasattr(node, "body") else getattr(node, "end_lineno", first_line)
+        lines.difference_update(range(first_line, last + 1))
+    return lines
+
+
+def _docstring_cap(f: Finding) -> str:
+    """The comment cap, floored at ``high`` for a critical. A docstring is runtime data any file can
+    read back (``x.__doc__``, ``getattr(x, "__" + "doc__")``, ``inspect.getdoc``) by names no static
+    scan can enumerate, so a critical one stays visible and needs the user's confirmation
+    (``caution``): never ``safe``, and never the un-overridable ``dangerous`` that prose alone caused."""
+    return "high" if f.severity == "critical" else _comment_severity(f)
+
+
 def _filter_findings(findings: list[Finding], rel_path: str, file_path: Path) -> list[Finding]:
     """Apply plugin-specific exemptions and severity remaps to raw findings."""
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
-    main_guard_lines = _main_guard_body_lines(file_path) if file_path.suffix.lower() == ".py" else set()
+    is_python = file_path.suffix.lower() == ".py"
+    main_guard_lines = _main_guard_body_lines(file_path) if is_python else set()
     is_js = Path(rel_path).suffix.lower() in {".js", ".ts"}
     # A CI workflow definition runs on the forge's runner, not the host: same cap as a README.
     is_ci = is_ci_workflow(rel_path)
     doc_prose = is_doc_prose(rel_path) or is_ci
+    docstring_lines = _docstring_lines(file_path) if is_python else set()
     locale_catalog = is_locale_catalog(rel_path)
     lines = _file_lines(file_path) if findings else []
     out: list[Finding] = []
@@ -190,8 +260,8 @@ def _filter_findings(findings: list[Finding], rel_path: str, file_path: Path) ->
         joined = logical_line(lines, f.line - 1) if 0 < f.line <= len(lines) else line
         f.severity = _context_severity(f, rel_path, line, joined, doc_prose or locale_catalog, is_code,
                                        locale_catalog)
-        if _is_defensive_documentation(f, rel_path):
-            f.severity = _comment_severity(f)
+        if _is_defensive_documentation(f, rel_path, docstring_lines):
+            f.severity = _docstring_cap(f) if f.line in docstring_lines else _comment_severity(f)
             # A quoted injection phrase in a defensive doc (``"ignore previous instructions"`` in a
             # CHANGELOG / code comment describing the filter that refuses it) is a note, not caution.
             if is_quoted_injection_phrase(f, line):
@@ -288,13 +358,15 @@ def _inert_context_cap(f: Finding, rel_path: str, line: str, joined: str, is_cod
     return sev
 
 
-def _is_defensive_documentation(finding: Finding, rel_path: str) -> bool:
-    """A whole-line code comment or a changelog entry *describes* threats (the attack a
-    defense rejects, the hardening a release shipped) instead of executing them, so its
+def _is_defensive_documentation(finding: Finding, rel_path: str, docstring_lines: Optional[set[int]] = None) -> bool:
+    """A whole-line code comment, a Python docstring or a changelog entry *describes* threats (the
+    attack a defense rejects, the hardening a release shipped) instead of executing them, so its
     findings cap one severity step lower — visible and reviewable, never un-overridable
     ``dangerous`` from prose alone. Runtime code and agent-facing docs keep full severity.
     """
     if Path(rel_path).name.lower() in CHANGELOG_FILENAMES:
+        return True
+    if docstring_lines and finding.line in docstring_lines:
         return True
     prefix = COMMENT_PREFIXES_BY_EXTENSION.get(Path(rel_path).suffix.lower())
     if prefix is None or not finding.match:

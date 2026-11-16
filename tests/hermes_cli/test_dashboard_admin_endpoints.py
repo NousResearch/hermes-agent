@@ -787,7 +787,7 @@ class TestSkillsHubScanEndpoint:
         )
         monkeypatch.setattr(
             "tools.skills_guard.scan_skill",
-            lambda path, source="community": fake_result,
+            lambda path, source="community", trust_level=None: fake_result,
         )
         # Avoid touching the filesystem during cleanup.
         monkeypatch.setattr("shutil.rmtree", lambda *a, **k: None)

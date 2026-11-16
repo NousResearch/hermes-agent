@@ -777,7 +777,7 @@ async def create_profile_endpoint(body: ProfileCreate):
     # skills_hub.SKILLS_DIR at import). PIDs go back for the UI to poll.
     def _spawn_install(ident: str):
         return _spawn_hermes_action(["-p", body.name, "skills", "install", ident, "--yes"],
-                                    _hub_action_name("install", ident)).pid
+                                    _hub_action_name("install", ident, body.name)).pid
 
     hub_installs: list[dict[str, Any]] = [
         {"identifier": ident, "pid": _best_effort(

@@ -511,9 +511,24 @@ def write_config_keys(config_path: PathLike, updates: Mapping[str, Any]) -> None
     A remote backend sends them as one CAS PATCH, so a refusal of any of them (a lock, a value
     check) changes none of them: a grouped edit such as a model switch (default + provider + ...)
     never lands half-applied. The file backend applies them key by key, as before."""
+    _refuse_redacted_sets(config_path, {k: v for k, v in updates.items() if v is not None})
     backend, home = _route(config_path)
     backend.write_changes(home, Changes(set={k: v for k, v in updates.items() if v is not None},
                                         unset=tuple(k for k, v in updates.items() if v is None)))
+
+
+def _refuse_redacted_sets(config_path: PathLike, sets: Mapping[str, Any]) -> None:
+    """A keyed write never stores a redacted display mask as a credential (#42727): the same
+    check the document writer (``hermes_cli.config._write_config_state``) runs."""
+    from hermes_cli.config_credential_values import refuse_redacted_config_sets
+
+    def read_old() -> Any:  # a guard read: never the read base a Remote Config edit diffs against
+        try:
+            return keeping_read_base(lambda: read_config_doc(config_path)) or {}
+        except FileNotFoundError:
+            return {}
+
+    refuse_redacted_config_sets(sets, read_old)
 
 
 def keeping_read_base(read):
@@ -573,6 +588,7 @@ def write_changes(config_path: PathLike, changes: Changes) -> None:
     """One :class:`Changes` write. Unlike :func:`write_config_keys`, a ``None`` in ``set`` stores
     an explicit null (Remote Config: "no value", masking an inherited scalar); the file backend
     writes it as YAML null."""
+    _refuse_redacted_sets(config_path, changes.set)
     backend, home = _route(config_path)
     backend.write_changes(home, changes)
 

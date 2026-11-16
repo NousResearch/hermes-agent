@@ -472,7 +472,7 @@ def is_env_dump_in_safety_clause(finding: Finding, line: str) -> bool:
 # doc (comment / CHANGELOG), the phrase is a description of a defense, not an instruction — it caps to a
 # note rather than the one-step comment cap. An UNQUOTED injection in a README/SKILL.md prose line, or
 # a quoted phrase outside a comment/CHANGELOG, keeps full severity.
-_INJECTION_PHRASE_IDS = {"prompt_injection_ignore", "disregard_rules"}
+_INJECTION_PHRASE_IDS = {"prompt_injection_ignore", "disregard_rules", "forget_rules"}
 _QUOTED_SPAN = re.compile(r'"[^"\n]*"|\'[^\'\n]*\'|`[^`\n]*`|«[^»\n]*»|“[^”\n]*”|‘[^’\n]*’')
 
 

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import hmac
 import json
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
@@ -22,6 +24,31 @@ from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest
 from gateway.bridged_env import YAML_ENV_LOCK as _YAML_ENV_LOCK
 
 logger = logging.getLogger(__name__)
+
+# How far a signed webhook/callback timestamp may drift from now (either way) before the request is
+# treated as a replay. Providers retry within seconds; per-message dedup caches expire long before
+# a captured request stops verifying, so the signature alone never bounds replay.
+WEBHOOK_REPLAY_WINDOW_SECONDS = 300
+
+
+def secrets_match(provided: Any, expected: Any) -> bool:
+    """Timing-safe equality of a remote-supplied secret or signature against the configured one.
+
+    Fails closed on a missing/non-str value or an unset ``expected``. Compared as UTF-8 bytes with
+    ``surrogatepass``: ``compare_digest`` raises TypeError on non-ASCII str, and aiohttp
+    surrogate-escapes undecodable header bytes, which a plain ``.encode()`` turns into a 500.
+    """
+    if not isinstance(provided, str) or not isinstance(expected, str) or not expected:
+        return False
+    return hmac.compare_digest(provided.encode("utf-8", "surrogatepass"), expected.encode("utf-8", "surrogatepass"))
+
+
+def timestamp_fresh(raw: Any, window: float = WEBHOOK_REPLAY_WINDOW_SECONDS) -> bool:
+    """True when epoch-seconds *raw* lies within *window* of now; unparseable → False."""
+    try:
+        return abs(time.time() - int(raw)) <= window
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def get_scoped_secret(name: str, default: Any = None, *, external_fallback: bool = False) -> Any:
@@ -346,9 +373,9 @@ def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
     Hooks seed the same values into the returned ``extra`` so each profile's adapter reads its own.
     Lists are comma-joined; ``None`` is skipped.
 
-    Precedence is per *value*, not just per name: a var whose current value is the one this bridge
-    wrote last time is the bridge's own leftover (a restarted gateway inherits it) and is refreshed
-    from YAML, while any other preset value is an operator's and wins.
+    Precedence: a value from ``.env`` or an external secret source wins (#109032); any other preset
+    value (the bridge's own leftover a restarted gateway inherits, or a launcher's process env) is
+    replaced by the explicit YAML key, since config.yaml wins for non-secret settings (#110295).
     """
     skip = bridge_env_skipped()
 
@@ -365,8 +392,14 @@ def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
             marker = bridged_env_marker(name)
             current = os.getenv(name)
             if current is not None and current.strip():
-                if not _is_bridge_leftover(name, os.getenv(marker)) or _supplied_by_operator(name):
-                    return  # the operator's value, not this bridge's leftover
+                if _supplied_by_operator(name):
+                    return  # ``.env`` / a secret source: the operator's deliberate value (#109032)
+                if not _is_bridge_leftover(name, os.getenv(marker)):
+                    if current == bridged:
+                        return  # already the YAML value; never claim an unmarked export
+                    # An inherited process value (a launcher's env, an older gateway's unmarked write)
+                    # loses to an explicit config.yaml key: config.yaml wins for non-secret settings.
+                    logger.info("config.yaml sets %s; replacing the inherited environment value", name)
             if load is not None:
                 load.prior.setdefault(name, (current, os.getenv(marker)))
             os.environ[name] = bridged

@@ -110,6 +110,8 @@ _GUARDS = {
     "config-writers": ["scripts/check_config_yaml_writers.py"],
     "config-readers": ["scripts/check_config_yaml_readers.py"],
     "profile-create-entry": ["scripts/check_profile_create_entry.py"],
+    "tool-discovery": ["scripts/check_tool_discovery.py"],
+    "packaged-imports": ["scripts/check_packaged_imports.py"],
     "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],
     "agents-md": ["scripts/ci/check_agents_md_size.py"],
     "shims": ["scripts/move/generate_shims.py", "--check"],

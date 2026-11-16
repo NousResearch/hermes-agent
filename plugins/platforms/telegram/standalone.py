@@ -129,8 +129,9 @@ def _telegram_bot(token, extra=None):
     from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, safe_proxy_url_for_log
     proxy = None
     extra = extra or {}
+    from plugins.platforms.telegram.telegram_network import bot_api_urls
     base_url = extra.get("base_url")
-    urls = {"base_url": base_url, "base_file_url": extra.get("base_file_url") or base_url} if base_url else {}
+    urls = bot_api_urls(extra)
     try:
         from telegram.request import HTTPXRequest
         from plugins.platforms.telegram.telegram_network import build_ptb_requests, proxy_target_hosts, telegram_verify

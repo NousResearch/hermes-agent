@@ -942,6 +942,18 @@ desktop:
 
 Use single quotes or no quotes so the backslashes stay literal. The key goes two spaces under `desktop:`, like the launch keys above. It has no effect on macOS or Linux.
 
+### SSH remote: the connection times out on a slow link
+
+The app gives SSH 15 seconds to connect and 15 seconds to set up its port forward. It passes the connect limit to `ssh` on the command line, so a `ConnectTimeout` in `~/.ssh/config` does not raise it. If your network needs longer (a VPN that takes a while to come up, a jump host, a lossy link) and boot keeps failing with `ssh timed out after 15000ms`, raise the limits in `config.yaml` and restart the app:
+
+```yaml
+desktop:
+  ssh_connect_timeout: 60
+  ssh_forward_timeout: 60
+```
+
+Both take a whole number of seconds, up to 120. Anything else (`60s`, `1.5`, `0`) is ignored and the app logs `desktop.ssh_connect_timeout was ignored` at startup. The keys go two spaces under `desktop:`, like the launch keys above.
+
 ### "The host key has CHANGED since you last connected" (SSH remote)
 
 If your SSH remote was reinstalled or its host key rotated, SSH fails closed

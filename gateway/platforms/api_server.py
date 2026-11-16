@@ -9,7 +9,6 @@ OpenAI-compatible frontend connects at http://localhost:8642/v1 with API_SERVER_
 import asyncio
 import errno
 import hashlib
-import hmac
 import itertools
 import json
 from contextlib import contextmanager, nullcontext, suppress
@@ -129,6 +128,7 @@ from gateway.readiness import collect_runtime_readiness
 
 from gateway.parked_route_refusal import ParkedRouteRefused
 from gateway.platforms._shared import coerce_port as _coerce_port, get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import secrets_match
 from gateway.platforms.tcp_site import start_tcp_site
 from hermes_state_errors import SessionActiveWriteGuardError
 
@@ -1427,9 +1427,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            # Compare as bytes: compare_digest raises TypeError on non-ASCII str, and the
-            # token is raw client input — a stray byte must 401, not 500.
-            if hmac.compare_digest(token.encode(), expected_key.encode()):
+            if secrets_match(token, expected_key):
                 return None
         logger.warning("API server rejected invalid API key: %s", self._request_audit_log_suffix(request))
         return self._auth_failed_response()
@@ -2194,18 +2192,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
             _resolve_gateway_model, _load_gateway_config, GatewayRunner)
         from hermes_cli.tools_config import _get_platform_tools
-        # RuntimeError is caught ONLY here (sole provider-auth raiser); the typed subclass keeps
-        # run_conversation() errors distinct.
+        # RuntimeError is caught ONLY here (sole provider-auth raiser); the typed subclass keeps run_conversation() errors distinct.
         try:
             runtime_kwargs = _resolve_runtime_agent_kwargs()
         except RuntimeError as exc:
             raise _ProviderAuthResolutionError(str(exc)) from exc
-        # A fallback-provider runtime carries its own ``model``: pop it (overrides config, and
-        # must not collide with the ``**runtime_kwargs`` spread).
+        # A fallback runtime's own ``model`` overrides config and must not collide with the spread.
         model = runtime_kwargs.pop("model", None) or _resolve_gateway_model()
         runtime_kwargs.pop("_fallback_notice", None)  # raw API surface: the switch is already logged
-        request_reasoning_config = _request_reasoning_config(model_options)
-        request_service_tier = _request_service_tier(model_options)
+        from agent.primary_auth_fallback import RUNTIME_KEY, attach_primary_auth_failure, failure_for_route, route_snapshot
+        _primary_auth_failure, resolved_route = runtime_kwargs.pop(RUNTIME_KEY, None), route_snapshot(runtime_kwargs)
+        request_reasoning_config, request_service_tier = _request_reasoning_config(model_options), _request_service_tier(model_options)
         model, session_override, request_model, request_provider = self._select_agent_runtime(
             runtime_kwargs, model,
             requested_model=requested_model, requested_provider=requested_provider, route=route,
@@ -2251,6 +2248,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
+        attach_primary_auth_failure(agent, failure_for_route(_primary_auth_failure, resolved_route, runtime_kwargs))
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override

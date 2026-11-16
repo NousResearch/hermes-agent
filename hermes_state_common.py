@@ -149,7 +149,7 @@ _PREVIEW_RAW_SELECT = (
     f" THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW}) || '{SKILL_EXCERPT_JOINT}'"
     f" || SUBSTR({_PREVIEW_CONTENT_SQL}, -{_PREVIEW_SCAFFOLD_WINDOW})"
     f" WHEN {_PREVIEW_SCAFFOLDED_SQL} THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW * 2})"
-    f" ELSE SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_HEAD_CHARS}) END")
+    f" ELSE SUBSTR({_sql_ltrim_whitespace(_PREVIEW_CONTENT_SQL)}, 1, {_PREVIEW_HEAD_CHARS}) END")
 
 
 def _shape_preview(raw: Any) -> str:
@@ -531,6 +531,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_read_at REAL,
     tool_names TEXT,
     transcript_revision INTEGER NOT NULL DEFAULT 0,
+    prompt_cache_clock TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id),
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );

@@ -2302,13 +2302,13 @@ def _prepare_job_prompt(
             f"**Job ID:** {job_id}\n"
             f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"**Status:** BLOCKED\n\n"
-            "The assembled prompt (user prompt + loaded skill content) tripped "
-            "the cron injection scanner and the agent was NOT run.\n\n"
+            "The assembled prompt (job prompt, plus any skill content or run data) "
+            "tripped the cron injection scanner and the agent was NOT run.\n\n"
             f"**Scanner result:** {block_exc}\n\n"
-            "Audit the skill(s) attached to this job for prompt-injection "
-            "payloads or invisible-unicode markers. If the skill is legitimate "
-            "and the match is a false positive, rephrase the content to avoid "
-            "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
+            "Edit the job prompt, or audit the skill(s) attached to this job, for "
+            "the pattern named above or invisible-unicode markers. If the content is "
+            "legitimate and the match is a false positive, rephrase it to avoid the "
+            "threat pattern (`tools/cronjob_prompt_scan.py`)."
         )
         return (False, blocked_doc, "", str(block_exc)), None
     if prompt is None:
@@ -3415,9 +3415,12 @@ def _run_one_job_body(
         from cron.scheduler_authority import CronExecutionUnknown
         if isinstance(e, CronExecutionUnknown):
             from cron.executions import give_up_execution
+            from cron.jobs_error_text import sanitize_persisted_error
             from cron.scheduler_authority import pause_for_unknown
-            pause_for_unknown(job["id"], execution_id, str(e))
-            give_up_execution(execution_id, reason=str(e))
+            # One sanitized string for both stores: _lift_pause matches the pause by its reason.
+            reason = sanitize_persisted_error(str(e)) or "unverified admission"
+            pause_for_unknown(job["id"], execution_id, reason)
+            give_up_execution(execution_id, reason=reason)
             logger.error("Cron %s paused with unverified admission: %s", job["id"], e)
             return False
         # BaseException, not Exception: CancelledError/KeyboardInterrupt/SystemExit propagate here.

@@ -6,6 +6,16 @@ import { svUpdateChannel } from './sv_update_channel'
 // Swedish desktop translation. Keep the English fallback for keys introduced
 // between translation updates.
 export const svOverrides: TranslationOverrides = {
+  externalOpenFailed: {
+    title: 'Det gick inte att öppna länken',
+    message: 'Ingen webbläsare är registrerad för att öppna den här adressen. Kopiera länken och öppna den manuellt.',
+    copyUrl: 'Kopiera länk',
+    close: 'Stäng',
+    missing: {
+      title: 'Filen hittades inte',
+      message: 'Filen finns inte. Den kan ha tagits bort eller flyttats, eller finnas på en annan dator.'
+    }
+  },
   skillDeepLink: {
     installTitle: name => `Installera ”${name}”?`,
     installDescription: 'Den här skillen blir tillgänglig i nya sessioner. Installera bara källor som du litar på.',
@@ -65,6 +75,12 @@ export const svOverrides: TranslationOverrides = {
     }
   },
   connectorsPage: {
+    title: 'Anslutningar',
+    searchPlaceholder: count => `Sök bland ${count} appar`,
+    filterCategory: 'Kategori',
+    categoryAll: 'Alla kategorier',
+    uncategorised: 'Okategoriserade',
+    residencyLocal: 'På den här datorn',
     segment: {
       all: 'Alla',
       available: 'Tillgängliga',
@@ -182,6 +198,16 @@ export const svOverrides: TranslationOverrides = {
     }
   },
   promptNotices: {
+    legacySendUnconfirmed:
+      'Servern kunde inte bekräfta att meddelandet skickades tidigare, så det kan redan ha körts. Kontrollera konversationen innan du skickar det igen.',
+    restoredDraftAttachmentsDropped:
+      'Bilagorna i ditt oskickade meddelande återställdes inte. Bifoga dem igen innan du skickar meddelandet.',
+    mcpReloadDeferred:
+      'Chatten är upptagen. MCP-ändringen tillämpas när turen är klar och MCP har lästs in igen, eller när du öppnar chatten på nytt.',
+    mcpReloadUnavailable: servers => `Kunde inte ansluta: ${servers}`,
+    compactedTurnUnavailable:
+      'Meddelandet sammanfattades när chatten komprimerades och kan därför inte längre återställas eller redigeras.',
+    staleTurnUnavailable: 'Meddelandet finns inte längre i chattens historik.',
     desktopCommands: svDesktopCommands,
     sessionCommands: {
       undoUsage: 'användning: /undo [N]',
@@ -4516,6 +4542,9 @@ export const svOverrides: TranslationOverrides = {
     replaceValue: 'Ersätt aktuellt värde',
     openDocs: 'Öppna dokumentation',
     clearField: key => `Rensa ${key}`,
+    addListEntry: 'Lägg till en till',
+    removeListEntry: 'Ta bort',
+    listEntryPlaceholder: 'Ange ett ID',
     enableAria: name => `Aktivera ${name}`,
     disableAria: name => `Inaktivera ${name}`,
     platformEnabled: name => `${name} aktiverad`,
@@ -4641,6 +4670,9 @@ export const svOverrides: TranslationOverrides = {
     restarting: 'Startar om…',
     restartFailedManual:
       'Omstarten av gatewayen misslyckades. Starta om den manuellt och kontrollera gatewayens loggar.',
+    restartFailedManualDetail: 'Försök starta om igen. Om det fortfarande misslyckas öppnar du loggarna och skickar diagnostik.',
+    restartAgain: 'Starta om igen',
+    openLogs: 'Öppna loggar',
     relayLink: {
       title: 'Teamgateway',
       badge: 'Ingen bottoken behövs',

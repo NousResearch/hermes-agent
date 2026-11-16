@@ -35,8 +35,11 @@ describe('showsRunningArc', () => {
     expect(showsRunningArc('needs-input')).toBe(false)
   })
 
+  it('keeps the arc while subagents or background processes outlive the turn', () => {
+    expect(showsRunningArc('background')).toBe(true)
+  })
+
   it('leaves a session that is not running unmarked', () => {
-    expect(showsRunningArc('background')).toBe(false)
     expect(showsRunningArc('idle')).toBe(false)
     expect(showsRunningArc('unread')).toBe(false)
   })
@@ -53,8 +56,7 @@ describe('hasLiveTurn', () => {
     }
   })
 
-  it('excludes work that outlived the turn', () => {
-    expect(hasLiveTurn('background')).toBe(false)
+  it('excludes a finished session', () => {
     expect(hasLiveTurn('unread')).toBe(false)
   })
 })

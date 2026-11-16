@@ -1,0 +1,20 @@
+name: dreaming
+repo: https://github.com/hsyvy/dreaming-memory
+sha: 72387f60c47ea741e32cae265aa1d24c02bd1c48
+subdir: dreaming
+description: "Local memory provider (memory.provider: dreaming) after Anthropic's \"The components of agent memory\": every turn is kept as a transcript and the agent writes quick notes; an offline dream pass checks notes against the transcripts, resolves changes stated by reference (\"she handed everything over\", nicknames, \"what I said last time\"), and rewrites a linked wiki plus a short index loaded into every session. Tools via the memory provider: mem_search, mem_read, mem_write; CLI: hermes dreaming status|dream|search|show. Disclosure — memory stays in <hermes_home>/dreaming/ as markdown, JSONL and a SQLite FTS5 cache; the plugin makes no network calls of its own, and the dream pass sends transcript excerpts and memory files to the user's configured model through ctx.llm; with auto_dream on (default) a pass runs in a background thread at session start. No credentials, no shell commands, no telemetry, no self-updating."
+maintainer: hsyvy
+tier: community
+category: memory
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/hsyvy/dreaming-memory/blob/72387f60c47ea741e32cae265aa1d24c02bd1c48/README.md
+version: "0.2.0"
+image: "https://raw.githubusercontent.com/hsyvy/dreaming-memory/72387f60c47ea741e32cae265aa1d24c02bd1c48/docs/banner.png"
+readme: true
+platforms: []
+title: Dreaming
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

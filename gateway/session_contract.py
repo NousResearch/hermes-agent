@@ -1,6 +1,6 @@
 """Public session authority contract; live execution state never crosses this boundary."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Mapping, Protocol
 
 JsonObject = Mapping[str, object]
@@ -10,7 +10,7 @@ CANONICAL_GATEWAY_PROTOCOL = 'hermes-gateway-v1'
 
 
 @dataclass(frozen=True)
-class Principal:
+class SessionActor:
     subject: str
     profile_id: str
     capabilities: frozenset[str]
@@ -64,6 +64,11 @@ class AdmissionReceipt:
 class PendingAdmission(AdmissionReceipt):
     input_id: str
     text: str
+    # The queued-row verbs this owner serves for the row (``steer`` / ``replace``); empty otherwise.
+    controls: list[str] = field(default_factory=list)
+    # A queued admission in transfer to the running turn (``prompt.steer_queued``): it reads ``started``
+    # but goes back to its queue place if its text never reached that turn.
+    steering: bool = False
 
 
 @dataclass(frozen=True)
@@ -75,18 +80,21 @@ class SubscriptionSnapshot:
     history: tuple[JsonObject, ...]
     pending: tuple[PendingAdmission, ...]
     prompts: tuple[JsonObject, ...]
+    # The physical transcript a history-less attach resolved under the stream lock (``history=False``).
+    transcript_target: str | None = None
 
 
 class SessionAuthority(Protocol):
-    async def create(self, actor: Principal, request: SessionCreate) -> SessionHandle: ...
-    async def resolve(self, actor: Principal, ref: SessionRef) -> SessionHandle: ...
-    async def attach(self, actor: Principal, ref: SessionRef) -> SubscriptionSnapshot: ...
-    async def detach(self, actor: Principal, subscription_id: str, *, end_reason: str | None = None) -> None: ...
-    async def submit(self, actor: Principal, request: Submission) -> AdmissionReceipt: ...
-    async def receipt(self, actor: Principal, ref: SessionRef, admission_id: str) -> AdmissionReceipt: ...
-    async def cancel_queued(self, actor: Principal, ref: SessionRef, admission_id: str) -> AdmissionReceipt: ...
-    async def interrupt(self, actor: Principal, ref: SessionRef, generation: int) -> SessionHandle: ...
-    async def respond(self, actor: Principal, ref: SessionRef, generation: int,
+    async def create(self, actor: SessionActor, request: SessionCreate) -> SessionHandle: ...
+    async def resolve(self, actor: SessionActor, ref: SessionRef) -> SessionHandle: ...
+    async def attach(self, actor: SessionActor, ref: SessionRef, *, history: bool = True,
+                     replay_from: tuple[str, int] | None = None) -> SubscriptionSnapshot: ...
+    async def detach(self, actor: SessionActor, subscription_id: str, *, end_reason: str | None = None) -> None: ...
+    async def submit(self, actor: SessionActor, request: Submission) -> AdmissionReceipt: ...
+    async def receipt(self, actor: SessionActor, ref: SessionRef, admission_id: str) -> AdmissionReceipt: ...
+    async def cancel_queued(self, actor: SessionActor, ref: SessionRef, admission_id: str) -> AdmissionReceipt: ...
+    async def interrupt(self, actor: SessionActor, ref: SessionRef, generation: int) -> SessionHandle: ...
+    async def respond(self, actor: SessionActor, ref: SessionRef, generation: int,
                       prompt_id: str, response: JsonObject) -> JsonObject: ...
-    async def mutate(self, actor: Principal, ref: SessionRef, revision: int,
+    async def mutate(self, actor: SessionActor, ref: SessionRef, revision: int,
                      request_id: str, action: str, arguments: JsonObject) -> SessionHandle: ...

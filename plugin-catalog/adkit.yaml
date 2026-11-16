@@ -1,0 +1,20 @@
+name: adkit
+title: AdKit
+repo: https://github.com/adkit/ads-mcp
+sha: 97f9a776fd317329f544d10ce22792eb4b115c62
+subdir: hermes
+version: "1.0.0"
+description: "Manage ads on Google Ads, Meta Ads (Facebook, Instagram), TikTok, LinkedIn, Microsoft, Reddit and X Ads through the hosted AdKit MCP: launch campaigns, ad sets and ads as drafts, pull performance reports with breakdowns, browse competitor ads in the Meta, Google and LinkedIn ad libraries, and generate ad creatives. Built for people who run several ad accounts. Agent Plugins v1 package (plugin.json + mcp.json), configuration only; OAuth uses pinned mcp-remote@0.1.49 over npx stdio, so Node.js 20.18.1+ and npm are required. Disclosure — creates and edits real ad campaigns that spend your ad budgets (creates are drafts until you approve publishing); the package marks the adkit server untrusted, so Hermes asks before every tool the server does not annotate as read-only and refuses them in cron and headless runs. Every tool call goes to mcp.adkit.so; sign-in runs npx mcp-remote@0.1.49 from the npm registry, which stores its OAuth tokens in ~/.mcp-auth. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: AdKit
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/adkit/ads-mcp/tree/main/hermes#readme
+image: https://raw.githubusercontent.com/adkit/ads-mcp/97f9a776fd317329f544d10ce22792eb4b115c62/assets/cover.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

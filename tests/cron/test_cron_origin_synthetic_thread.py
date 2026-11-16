@@ -155,7 +155,7 @@ class TestNearHorizonSlackThreadKept:
         frozen = hermes_time.now()
         with (
             _session_env(_TOP_LEVEL_SLACK),
-            patch("tools.cronjob_job_args.hermes_time") as frozen_clock,
+            patch("cron.job_args.hermes_time") as frozen_clock,
         ):
             frozen_clock.now.return_value = frozen
             origin = _origin_from_env({"kind": "once", "run_at": frozen.isoformat()})

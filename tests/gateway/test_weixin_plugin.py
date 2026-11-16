@@ -11,7 +11,7 @@ from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, Platform
 from plugins.platforms.weixin import adapter as weixin
 from plugins.platforms.weixin.adapter import ContextTokenStore, WeixinAdapter
-from tools.send_message_targets import _parse_target_ref
+from gateway.outbound.targets import _parse_target_ref
 
 
 def _make_adapter() -> WeixinAdapter:
@@ -134,7 +134,7 @@ class TestWeixinStatePersistence:
         def _boom(_src, _dst):
             raise OSError("disk full")
 
-        monkeypatch.setattr("utils.os.replace", _boom)
+        monkeypatch.setattr("utils.files.os.replace", _boom)
 
         try:
             weixin.save_weixin_account(

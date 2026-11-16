@@ -89,6 +89,17 @@ _ENV_RECREATED_NOTE = (
 )
 
 
+def _cwd_fallback_note(fallback: Any) -> str | None:
+    """Model-facing notice that the working directory was gone and the command ran elsewhere."""
+    if not isinstance(fallback, dict) or not fallback.get("used"):
+        return None
+    return (
+        f"Working directory {fallback.get('requested')} no longer exists or is not accessible; "
+        f"this command ran in {fallback['used']} instead, so relative paths resolved there. "
+        "Check where you are before anything destructive and `cd` to the intended directory explicitly."
+    )
+
+
 def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     """Note for a non-zero exit code that is informational rather than an
     error (grep=1 "no matches", diff=1 "files differ", signal deaths), so the
@@ -193,11 +204,12 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
     return [("output_total_chars", total_chars), ("full_output_path", path), ("truncation_note", note)]
 
 
-def _verification_evidence(command, cwd, session_id, returncode, output) -> Optional[dict]:
+def _verification_evidence(command, cwd, session_id, returncode, output, pipeline_status=None) -> Optional[dict]:
     with _quiet("verification evidence recording"):
         from agent.verification_evidence import record_terminal_result
         evidence = record_terminal_result(command=command, cwd=cwd, session_id=session_id,
-                                          exit_code=returncode, output=output)
+                                          exit_code=returncode, output=output,
+                                          pipeline_status=pipeline_status)
         if evidence:
             return {k: evidence.get(k) for k in ("status", "kind", "scope", "canonical_command")}
     return None
@@ -261,10 +273,11 @@ def finalize_foreground_result(
     optional_fields: list[tuple[str, Any]] = [
         ("cwd", changed_cwd),
         ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
+        ("cwd_fallback", _cwd_fallback_note(result.get("cwd_fallback"))),
         *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
         ("verification_evidence", _verification_evidence(
             command, command_cwd, session_id or task_id or effective_task_id or "default",
-            returncode, output)),
+            returncode, output, result.get("pipeline_status"))),
         ("approval", approval_note or None),
         ("exit_code_meaning", exit_note or None),
         ("hint", failure_hint or None),

@@ -39,7 +39,15 @@ def test_unknown_discard_is_exact_and_never_requeues(tmp_path, monkeypatch):
         monkeypatch.setattr(service, '_resolve_member_transport', lambda *args: rpc)
         monkeypatch.setattr(service.runtime, 'publish_terminal', None)
         args = dict(room_id='room', task_id='task', member_id='one', execution_generation=1)
-        action, = service.status('room')['pending_actions']
+        with monkeypatch.context() as scoped:
+            # groups.state reads only the shown (live/retryable) rows, never every retained task.
+            scoped.setattr(tasks, 'list_tasks', lambda *a, **k: pytest.fail('status() decoded every task'))
+            action, = service.status('room')['pending_actions']
+            # A native room lists its exact attempt controls after the approval cards.
+            service._set_pending_action(
+                'room', 'one', {'kind': 'approval', 'task_id': 'task', 'execution_generation': 1, 'request_id': 'r2'})
+            assert [a['kind'] for a in service.status('room')['pending_actions']] == ['approval', 'discard']
+            service._set_pending_action('room', 'one', None)
         assert action == {'kind': 'discard', 'member_id': 'one', 'task_id': 'task', 'execution_generation': 1}
         for change in ({'member_id': 'two'}, {'execution_generation': 2}, {'execution_generation': True}):
             with pytest.raises(RuntimeStoreError):

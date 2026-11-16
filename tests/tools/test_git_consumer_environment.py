@@ -41,7 +41,6 @@ def test_checkpoint_and_diff_follow_selected_git_environment(tmp_path, monkeypat
 
     monkeypatch.setattr(pm, "ensure", selected_git)
     monkeypatch.setenv("PATH", str(tmp_path / "missing-path"))
-    monkeypatch.setattr(checkpoint_manager, "CHECKPOINT_BASE", tmp_path / "checkpoints")
     manager = checkpoint_manager.CheckpointManager(enabled=True)
     assert manager.ensure_checkpoint(str(repo)) is True
     result = working_diff.collect_working_diff(str(repo))
@@ -80,7 +79,6 @@ def test_git_consumers_fall_back_to_system_git(tmp_path, monkeypatch, consumer, 
 
     boundary = "current_target" if failure == "unsupported-target" else "_installed_location"
     monkeypatch.setattr(resolver, boundary, unavailable)
-    monkeypatch.setattr(checkpoint_manager, "CHECKPOINT_BASE", tmp_path / "checkpoints")
     if consumer == "checkpoint":
         manager = checkpoint_manager.CheckpointManager(enabled=True)
         assert manager.ensure_checkpoint(str(repo)) is True

@@ -7,7 +7,7 @@ import { fileDigest, treeDigest, preparationRequired } from './prepared-packagin
 /** @param {string} source @returns {string} */
 function nativeIdentity(source) {
   return createHash('sha256').update(JSON.stringify([
-    fileDigest(path.join(source, 'package-lock.json')),
+    fileDigest(path.join(source, 'pnpm-lock.yaml')),
     fileDigest(path.join(source, 'apps/desktop/package.json')),
     fileDigest(path.join(import.meta.dirname, 'stage-native-deps.mjs')),
     fileDigest(path.join(import.meta.dirname, 'prepared-native-deps.mjs')),

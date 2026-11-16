@@ -1,0 +1,35 @@
+name: stablelens
+title: StableLens
+repo: https://github.com/erhnysr/stablelens
+sha: 4555b3e57f871003b14952fcd06f0854f1eac07a
+description: >-
+  Read-only tools for Arc Network, the stablecoin-native L1 where USDC is the gas token:
+  native USDC and Circle token balances (USDC, EURC, USYC, cirBTC, WETH, plus any ERC-20)
+  read at one block, transaction status with the USDC fee and decoded ERC-20 transfers, the
+  current cost of a transfer, and token, address and block lookups, on mainnet (chain 5042)
+  and testnet (5042002). Standard library only; never signs, sends or holds keys. Disclosure —
+  each tool call sends JSON-RPC requests carrying the addresses, transaction hashes, token
+  addresses and block numbers asked about to Arc's public RPC endpoints (rpc.mainnet.arc.io /
+  rpc.testnet.arc.io and the Blockdaemon, dRPC and QuickNode endpoints Arc publishes), or
+  first to a private endpoint the user stores as a Hermes secret (STABLELENS_MAINNET_RPC_URL /
+  STABLELENS_TESTNET_RPC_URL, read through the secret scope); registration makes no network
+  calls, and there are no other network calls, file writes, shell commands or background
+  processes.
+maintainer: erhnysr
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/erhnysr/stablelens#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/erhnysr/stablelens/4555b3e57f871003b14952fcd06f0854f1eac07a/docs/banner.png
+capabilities:
+  provides_tools:
+    - arc_network_status
+    - arc_balance
+    - arc_transaction
+    - arc_address
+    - arc_token
+    - arc_block
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -51,6 +51,12 @@ class GatewayProcessView:
         self.delegations = 0
         self._polled = 0.0
         self._lock = threading.Lock()
+        self.subagents: list = []
+        self._subagents_polled = 0.0
+        self._subagents_seen = 0.0
+        self._subagents_lock = threading.Lock()
+        self._tail = None
+        self._subagents_watch_until = 0.0
 
     @property
     def session_id(self):
@@ -127,6 +133,107 @@ class GatewayProcessView:
             return 0
         value = usage.get("active_subagents")
         return value if isinstance(value, int) else 0
+
+    # -- the subagent registry main's Ctrl+T monitor and dock read ---------------------------
+    def watch_subagents(self, seconds=_RETAIN_SECONDS):
+        """Poll ``subagent.list`` for a while even with no turn running: an off-turn spawn
+        (``/review``) moves neither ``busy`` nor the usage count the gate below reads."""
+        self._subagents_watch_until = time.time() + seconds
+        self._subagents_polled = 0.0
+
+    def subagent_rows(self, *, busy):
+        """The session's live children (``subagent.list``). Asks at most once a second, and only
+        while a turn runs (``busy``), children were listed last time, the gateway counts some, or
+        an off-turn spawn asked to be watched."""
+        now = time.time()
+        wanted = (busy or self.subagents or now < self._subagents_watch_until
+                  or self.active_delegations())
+        if wanted and now - self._subagents_polled >= _POLL_SECONDS and self._subagents_lock.acquire(blocking=False):
+            try:
+                self._subagents_polled = now
+                result = self.connection.call("subagent.list", session_id=self.session_id, timeout=5)
+                self.subagents = list((result or {}).get("subagents") or [])
+                self._subagents_seen = now
+            except (GatewayClientError, RuntimeError) as exc:
+                logger.debug("subagent.list failed: %s", exc)
+                if now - self._subagents_seen > _RETAIN_SECONDS:
+                    self.subagents = []  # no answer for a minute: drop the rows and stop polling
+            finally:
+                self._subagents_lock.release()
+        return [dict(row) for row in self.subagents]
+
+    def subagent_tail(self, subagent_id, *, fetch=False):
+        """The child's live transcript tail (``subagent.tail``); None when the gateway has none.
+        The detail view repaints every frame and reads only the cache; ``fetch`` (the monitor's
+        tick, on the spinner thread) asks the gateway at most once a second, failures included."""
+        now = time.time()
+        cached = self._tail if self._tail and self._tail[0] == subagent_id else None
+        if not fetch or (cached and now - cached[1] < _POLL_SECONDS):
+            return cached[2] if cached else None
+        try:
+            result = self.connection.call("subagent.tail", session_id=self.session_id,
+                                          subagent_id=subagent_id, timeout=5) or {}
+            text = result.get("text") if result.get("available") else None
+            if text is not None:  # filter once here, not on every repaint of the detail view
+                text = "".join(c for c in text if c.isprintable() or c in "\n\t")
+        except (GatewayClientError, RuntimeError) as exc:
+            logger.debug("subagent.tail failed: %s", exc)
+            text = None
+        self._tail = (subagent_id, now, text)
+        return text
+
+    def subagent_control(self, action, subagent_id, message=None):
+        """Steer (``subagent.steer``) or stop (``subagent.interrupt``) one child of this session, in
+        the shape ``delegate_tool_registry._handle_control_action`` answers: ``note`` or ``error``."""
+        from tools.delegate_tool_registry import _CONTROL_OUTCOMES
+
+        status, note, failure = _CONTROL_OUTCOMES[action]
+        try:
+            if action == "steer":
+                result = self.connection.call("subagent.steer", session_id=self.session_id,
+                                              subagent_id=subagent_id, text=message, timeout=5) or {}
+                ok = result.get("status") == "queued"
+            else:
+                result = self.connection.call("subagent.interrupt", session_id=self.session_id,
+                                              subagent_id=subagent_id, timeout=5) or {}
+                ok = bool(result.get("found"))
+        except GatewayClientError as exc:
+            return {"error": str(exc)}
+        self._subagents_polled = 0.0  # the next tick re-reads the roster
+        if ok:
+            return {"action": action, "subagent_id": subagent_id, "status": status, "note": note}
+        return {"error": failure.format(sid=subagent_id)}
+
+
+class LocalSubagents:
+    """This process's own subagent registry behind the view's ``subagent_*`` surface, for a CLI that
+    runs its agent in-process: the dock and monitor talk to one backend shape either way."""
+
+    def __init__(self, cli):
+        self.cli = cli
+        self._paths: dict = {}
+
+    def subagent_rows(self, *, busy):
+        from tools.delegate_tool_registry import _list_payload, list_active_subagents
+        parent = getattr(self.cli, "agent", None)
+        entries = _list_payload(parent)["subagents"] if parent is not None else []
+        # The scoped control-plane snapshot supplies authority and transcript paths; the public
+        # lifecycle record supplies start time and the latest observed tool (as subagent.list does).
+        live = {r["subagent_id"]: r for r in list_active_subagents()} if entries else {}
+        for row in entries:
+            record = live.get(row["subagent_id"], {})
+            row["started_at"], row["last_tool"] = record.get("started_at"), record.get("last_tool") or ""
+        self._paths = {row["subagent_id"]: row.get("live_transcript") for row in entries}
+        return entries
+
+    def subagent_tail(self, subagent_id, *, fetch=False):
+        from hermes_cli.cli_subagent_monitor import read_tail
+        return read_tail(self._paths.get(subagent_id))
+
+    def subagent_control(self, action, subagent_id, message=None):
+        import json
+        from tools.delegate_tool_registry import _handle_control_action
+        return json.loads(_handle_control_action(action, subagent_id, message, getattr(self.cli, "agent", None)))
 
 
 class _OpenedSession:

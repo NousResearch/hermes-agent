@@ -29,16 +29,26 @@ class DaytonaEnvironment(BaseEnvironment):
     """
 
     _stdin_mode = "payload"
+    # The askpass prologue checks sudo ``-A`` support inside each command, so no capability probe
+    # runs here (a timed-out probe could only be cancelled by stopping the sandbox).
+    _sudo_askpass_runtime_checked = True
 
     def __init__(self, image: str, cwd: str = "/home/daytona", timeout: int = 60, cpu: int = 1,
                  memory: int = 5120, disk: int = 10240, persistent_filesystem: bool = True,
                  task_id: str = "default"):
         super().__init__(cwd=cwd, timeout=timeout)
         ensure_lazy_dep("daytona")
-        from daytona import Daytona, CreateSandboxFromImageParams, DaytonaError, Resources, SandboxState
+        from daytona import (Daytona, CreateSandboxFromImageParams, DaytonaConfig, DaytonaError, Resources,
+                             SandboxState)
+        from agent.secret_scope import get_secret, serves_routed_profile
 
         self._persistent, self._task_id, self._SandboxState = persistent_filesystem, task_id, SandboxState
-        self._daytona = Daytona()
+        # With no key the SDK falls back to os.environ and the cwd .env: another profile's account.
+        api_key = get_secret("DAYTONA_API_KEY")
+        if not api_key and serves_routed_profile():
+            raise ValueError("DAYTONA_API_KEY is not set for this profile: add it to this profile's .env "
+                             "(or its secret source). Another profile's Daytona key is never used.")
+        self._daytona = Daytona(DaytonaConfig(api_key=api_key))
         self._sandbox = None
         self._lock = threading.Lock()
 

@@ -1,12 +1,12 @@
 name: doc-markdown
 repo: https://github.com/TakeshiTGAL/hermes-plugin-doc-markdown
-sha: 4206b7f8066fe84f2c295f480a441f47154d9315
-description: "Convert one local file to Markdown with doc_convert on Linux and macOS, built on Microsoft's MarkItDown. Microsoft and MarkItDown are trademarks of the Microsoft group of companies. Disclosure — the doc_markdown toolset is on by default on every surface, including a gateway, so anyone you allow there can call doc_convert; stop it with hermes tools. It does not fetch pages. Unattended sessions still convert when Hermes calls the tool. This plugin creates no cron job. A child process runs MarkItDown with no Hermes keys in its environment; on macOS the plugin runs ps about every 10 ms to watch that child's memory. It stops 8 seconds after its converters load, at 60 seconds if loading never finishes, or above 922746880 bytes. It is not a sandbox: after realpath it may read any allowlisted path it can open. Unpublished Hermes code locates the Hermes home, and a failed check refuses the path. Removal deletes the plugin directory, not the markitdown package. Windows was not tested."
+sha: e776b16636977db980b8aebe046f5361b8bce67d
+description: "doc_convert makes Markdown from one local PDF, .docx, .xlsx, .pptx, HTML, CSV, JSON, Markdown, or plain text on Linux and macOS, built on Microsoft's MarkItDown; CSV, JSON, Markdown, and plain text must be UTF-8. Microsoft and MarkItDown are trademarks of the Microsoft group of companies. Disclosure — fetches no pages; after realpath, any allowlisted path it can open is readable, and it is not a sandbox; the child gets no Hermes keys; unpublished Hermes code locates the Hermes home, and a failed check refuses the path; on every surface, including a gateway, for anyone you allow, and for unattended calls Hermes makes; hermes tools stops it; no cron; about 500 MB; removal leaves that install."
 maintainer: TakeshiTGAL
 tier: community
 category: tools
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-doc-markdown#readme
-version: "0.1.0"
+version: 0.1.1
 requires_hermes: ">=0.21.4"
 platforms:
   - linux

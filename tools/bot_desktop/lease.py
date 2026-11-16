@@ -202,13 +202,18 @@ def acquire(viewer_id: str, *, profile_key: Optional[str] = None, reason: str = 
 
 
 def release(viewer_id: Optional[str] = None, *, profile_key: Optional[str] = None,
-            unless_human: bool = False) -> Lease:
+            unless_human: bool = False, epoch: Optional[int] = None) -> Lease:
     """Return control to the agent. With ``viewer_id`` only that holder may release (a stale viewer
     closing its window must not yank control from the one who took over after it). ``unless_human``
     makes a bare release a no-op while any human holds: the decision is taken under the file lock,
-    so a takeover racing a check-then-release cannot be silently revoked. Callers read the returned
-    lease's holder to learn whether anything happened."""
+    so a takeover racing a check-then-release cannot be silently revoked. ``epoch`` releases only the
+    lease generation the caller judged: any transition since (a takeover, a hand-back and re-take by the
+    same viewer) keeps the lease. Callers read the returned lease's holder to learn whether anything
+    happened."""
     def _m(lease: Lease) -> bool:
+        if epoch is not None and lease.epoch != epoch:
+            logger.info("bot-desktop lease: release of epoch %d ignored, the lease changed since", epoch)
+            return False
         if unless_human and lease.holder == HUMAN:
             logger.info("bot-desktop lease: bare release ignored, a human holds")
             return False
@@ -244,14 +249,3 @@ def assert_agent_may_act(profile_key: Optional[str] = None) -> Lease:
             "A human has taken over this desktop (they may be entering a credential). Screen actions and "
             "captures are refused until they hand control back. Tell the user what you need in your reply.")
     return lease
-
-
-def _reset_for_tests() -> None:
-    with _lock:
-        _listeners.clear()
-    p = get_hermes_home() / "bot-desktop" / "lease.json"
-    for f in (p, p.with_suffix(".lock"), p.with_suffix(".json.tmp")):
-        try:
-            f.unlink()
-        except OSError:
-            pass

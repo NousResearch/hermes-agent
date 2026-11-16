@@ -14,7 +14,7 @@ _QUESTION_KEYS = ("qid", "question", "choices", "multi_select")
 
 
 def ask_clarify_batch(turn, questions) -> dict:
-    from gateway.session_sudo_prompt import ask_viewer_result
+    from gateway.session_server_requests import ask_viewer_result
     from tools.clarify_gateway import get_clarify_timeout
     authority, session_id, _generation = turn._approval_owner
     live = authority.sessions.get(session_id)
@@ -25,8 +25,10 @@ def ask_clarify_batch(turn, questions) -> dict:
         return {"answers": {}, "outcome": "cancelled"}
     wire = [{key: entry.get(key) for key in _QUESTION_KEYS if entry.get(key) is not None} for entry in questions]
     timeout = get_clarify_timeout()
+    # ``qids``: the viewer's batch panel locks each answer with ``clarify.lock`` (#140400).
     result = ask_viewer_result(live.event_stream, session_id, "clarify", {"questions": wire},
-                               cancelled=interrupted, timeout=timeout if timeout > 0 else None)
+                               cancelled=interrupted, timeout=timeout if timeout > 0 else None,
+                               qids=[entry["qid"] for entry in questions])
     if result is None:
         return {"answers": {}, "outcome": "cancelled" if interrupted() else "timed_out"}
     answers = result.get("answers")
@@ -34,5 +36,7 @@ def ask_clarify_batch(turn, questions) -> dict:
         return {"answers": {}, "outcome": "cancelled"}
     known = {entry["qid"] for entry in questions}
     clean = {qid: (value if isinstance(value, str) else None) for qid, value in answers.items() if qid in known}
-    outcome = result.get("outcome") if result.get("outcome") in ("submitted", "timed_out", "cancelled") else "submitted"
+    # ``session_server_requests`` settles a batch with its terminal outcome (an absent outcome on a frame
+    # that carried answers is ``submitted``; a cancel-all or error is ``cancelled``).
+    outcome = result.get("outcome") if result.get("outcome") in ("submitted", "timed_out", "cancelled") else "cancelled"
     return {"answers": clean, "outcome": outcome}

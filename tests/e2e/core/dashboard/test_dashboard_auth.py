@@ -51,6 +51,12 @@ _CHAT_WS = ("/api/ws", "/api/events", "/api/console")  # accept a token-bearing 
 # The contract for the ``?token=`` channel, owned by this test (not read from production): only a
 # download URL opened outside the SPA may carry the token in its query string.
 _QUERY_TOKEN_ROUTES = frozenset({"/api/files/download"})
+# ``/api/peer/`` is opened only by a peer pass minted for this agent, never by the session token
+# (``hermes_cli.dashboard_auth.peer_pass``, 3dbdf864026d). With no pass provider registered (this
+# sandbox) it answers 404 ``peer_access_unavailable``, the same bit ``/api/status`` publishes as
+# ``peer_access: 0``; with one, a missing or wrong pass is 401. Held to that by its own test below.
+_PEER_PREFIX = "/api/peer/"
+_PEER_REFUSALS = {401: "unauthenticated", 404: "peer_access_unavailable"}
 
 
 def _concrete(path: str) -> str:
@@ -83,7 +89,8 @@ def inventory(dash: H.Dashboard) -> dict:
 def _gated_http(inv: dict) -> list[tuple[str, str]]:
     public = set(inv["public"])
     return [(m, p) for m, p in inv["http"]
-            if p.startswith("/api/") and p not in public and not p.startswith(_BROWSER_REDIRECT_PREFIXES)]
+            if p.startswith("/api/") and p not in public and not p.startswith(_BROWSER_REDIRECT_PREFIXES)
+            and not p.startswith(_PEER_PREFIX)]
 
 
 def _bad_credentials(dash: H.Dashboard, path: str) -> list[tuple[str, dict, dict]]:
@@ -115,6 +122,27 @@ def test_every_api_route_refuses_missing_and_wrong_token(dash: H.Dashboard, inve
         assert ("GET", path) in gated, f"{path} is no longer a gated GET route: {sorted(_QUERY_TOKEN_ROUTES)}"
         r = dash.http.get(path, params={"token": dash.token, "path": "e2e-missing"})
         assert r.status_code != 401, f"GET {path}?token=<real token> refused: {r.status_code} {r.text[:200]}"
+
+
+def test_peer_route_refuses_every_credential_but_a_peer_pass(dash: H.Dashboard, inventory: dict) -> None:
+    """The peer route's exemption from the sweep above is held to its own contract: every method,
+    with every bad credential AND with the dashboard's real session token on each channel, is refused
+    by the peer-pass check (never forwarded, never a 2xx/5xx from the api_server behind it)."""
+    peer = [(m, p) for m, p in inventory["http"] if p.startswith(_PEER_PREFIX)]
+    assert peer, f"no {_PEER_PREFIX} route mounted: the exemption is stale"
+    real = [("real session token", {H.TOKEN_HEADER: dash.token}, {}),
+            ("real token as bearer", {"Authorization": f"Bearer {dash.token}"}, {})]
+    bad = []
+    for method, path in peer:
+        for label, headers, query in [*_bad_credentials(dash, path), *real]:
+            r = dash.http.request(method, _concrete(path), headers=headers, params=query,
+                                  json={} if method != "GET" else None)
+            body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            if r.status_code not in _PEER_REFUSALS or _PEER_REFUSALS[r.status_code] != body.get("error"):
+                bad.append(f"{method} {path} ({label}) -> {r.status_code} {r.text[:120]!r}")
+    assert not bad, "the peer route served or misanswered a caller without a peer pass:\n  " + "\n  ".join(bad)
+    status = dash.http.get("/api/status").json()
+    assert status.get("peer_access") == 0, f"404 answers but /api/status reports peer_access={status.get('peer_access')!r}"
 
 
 def test_public_exemptions_hold_their_own_contract(dash: H.Dashboard, inventory: dict) -> None:

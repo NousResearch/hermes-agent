@@ -682,7 +682,8 @@ class TestBundledDiscovery:
 
 
     def test_disabled_beats_enabled(self, _isolate_env):
-        """plugins.disabled wins even if the plugin is also in plugins.enabled."""
+        """plugins.disabled wins even if the plugin is also in plugins.enabled — and the
+        contradiction is surfaced (#131980), not absorbed as a plain disable."""
         import hermes_yaml as yaml
         cfg_path = _isolate_env / "config.yaml"
         cfg_path.write_text(yaml.safe_dump({
@@ -696,7 +697,7 @@ class TestBundledDiscovery:
         mgr.discover_and_load()
         loaded = mgr._plugins["disk-cleanup"]
         assert not loaded.enabled
-        assert loaded.error == "disabled via config"
+        assert loaded.error == "listed in both plugins.enabled and plugins.disabled — disabled wins"
 
     def test_memory_and_context_engine_subdirs_skipped(self, _isolate_env):
         """Bundled scan must NOT pick up plugins/memory or plugins/context_engine

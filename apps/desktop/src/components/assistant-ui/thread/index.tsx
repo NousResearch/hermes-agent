@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { createContext, memo, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import { ChatEmptySlot } from '@/components/assistant-ui/chat-empty-slot'
@@ -14,6 +15,7 @@ import { Intro, type IntroProps } from '@/components/chat/intro'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { $webappSignedOut } from '@/store/boot'
 import { notifyError } from '@/store/notifications'
 
 type ThreadLoadingState = 'response' | 'session'
@@ -73,6 +75,9 @@ export const Thread = memo(function Thread({
   const { t } = useI18n()
   const copy = t.assistant.thread
   const { isHistorical } = useTranscriptWindow()
+  // A signed-out Webapp tab keeps no conversation on the page under its sign-in view; the
+  // messages mount again from the session once the tab signs back in.
+  const signedOut = useStore($webappSignedOut)
 
   if (isHistorical) {
     onBranchInNewChat = undefined
@@ -184,18 +189,22 @@ export const Thread = memo(function Thread({
         className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]"
         data-slot="thread"
       >
-        <ThreadMessageList
-          clampToComposer={clampToComposer}
-          components={messageComponents}
-          emptyPlaceholder={emptyPlaceholder}
-          loadingIndicator={loadingIndicator}
-          scrollProfile={scrollProfile}
-          sessionId={sessionId}
-          sessionKey={sessionKey}
-          sessionLoading={loading === 'session'}
-        />
-        {loading === 'session' && <CenteredThreadSpinner />}
-        <ThreadTimeline />
+        {!signedOut && (
+          <>
+            <ThreadMessageList
+              clampToComposer={clampToComposer}
+              components={messageComponents}
+              emptyPlaceholder={emptyPlaceholder}
+              loadingIndicator={loadingIndicator}
+              scrollProfile={scrollProfile}
+              sessionId={sessionId}
+              sessionKey={sessionKey}
+              sessionLoading={loading === 'session'}
+            />
+            {loading === 'session' && <CenteredThreadSpinner />}
+            <ThreadTimeline />
+          </>
+        )}
         <ConfirmDialog
           confirmLabel={copy.restoreConfirm}
           description={copy.restoreBody}

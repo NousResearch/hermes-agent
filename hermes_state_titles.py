@@ -8,7 +8,20 @@ import re
 from typing import Any, Dict, Optional
 
 from agent.message_sanitization import _sanitize_surrogates
-from hermes_state_common import _COMPRESSION_CHILD_SQL, escape_like as _escape_like
+from hermes_state_common import (
+    _COMPRESSION_CHILD_SQL, _RECOVERABLE_END_REASONS, _RECOVERABLE_END_REASONS_SQL,
+    _non_continuation_child_sql, escape_like as _escape_like,
+)
+
+
+def bot_chat_title_released(archived: Any, auto_archived: Any, tip_end_reason: Optional[str]) -> bool:
+    """The ONE predicate for "this archived row titled "Bot Chat" no longer holds the name"
+    (#139779): deliberately archived, i.e. not by the idle sweep (``auto_archived``, which
+    re-activation undoes) and without a recoverable reaper stamp on the lineage tip (#92687
+    resurrects those). Hidden or visible alike: a Bot Chat the delivery door minted is visible.
+    The title lookup skips exactly the rows the title-conflict check frees, so a lookup that says
+    "absent" never meets a name it cannot take."""
+    return bool(archived) and not auto_archived and (tip_end_reason or "") not in _RECOVERABLE_END_REASONS
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -63,10 +76,10 @@ class SessionTitlesMixin:
     def _is_compression_ancestor(self, conn, *, ancestor_id: str, descendant_id: str) -> bool:
         """True if *ancestor_id* is a compression predecessor of *descendant_id*, via the
         canonical continuation edge ``_COMPRESSION_CHILD_SQL`` (excludes delegate/branch
-        children that also carry ``parent_session_id``)."""
+        children that also carry ``parent_session_id``, even under a compressed parent)."""
         if not ancestor_id or not descendant_id or ancestor_id == descendant_id:
             return False
-        edge = _COMPRESSION_CHILD_SQL.format(a="child")
+        edge = _COMPRESSION_CHILD_SQL.format(a="child") + _non_continuation_child_sql("child.", "parent.id")
         return conn.execute(f"""
             WITH RECURSIVE ancestors(id) AS (
                 SELECT ?
@@ -134,7 +147,7 @@ class SessionTitlesMixin:
         rule lives, shared by renames and the API server's create-with-title. Returns the id
         whose title was cleared (an affected row for mutation receipts), else None."""
         conflict = conn.execute(
-            f"SELECT id, archived, hidden, {self._EMPTY_SESSION_WHERE} AS ghost "
+            f"SELECT id, archived, auto_archived, hidden, {self._EMPTY_SESSION_WHERE} AS ghost "
             "FROM sessions WHERE title = ? AND id != ?", (title, session_id),
         ).fetchone()
         if not conflict:
@@ -145,16 +158,19 @@ class SessionTitlesMixin:
         if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
             conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
             return conflict_id
-        # A deliberately archived hidden Bot Chat is a retired registry
-        # entry, not a live identity. Retire its name in the same title
-        # transaction so a replacement can become the sole canonical row;
-        # the old session remains archived and otherwise untouched.
+        # A deliberately archived Bot Chat is a retired registry entry, not a live identity
+        # (same predicate the title lookup skips). Retire its name in the same title
+        # transaction so a replacement can become the sole canonical row; the old session
+        # remains archived and otherwise untouched.
         # An ended, empty, visible ghost (abandoned new chat that listings filter
         # out, so the user cannot find it to free the name) yields too (#81888).
         # The full index stays: a ``message_count > 0`` partial index would make
         # the ghost's first append_message fail with IntegrityError.
-        if (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
-              and bool(conflict["hidden"])) or (conflict["ghost"] and not conflict["hidden"]):
+        retired = title == self.CANONICAL_BOT_CHAT_TITLE and bot_chat_title_released(
+            conflict["archived"], conflict["auto_archived"], conn.execute(
+                "SELECT end_reason FROM sessions WHERE id = ?",
+                (self._compression_tip_on(conn, conflict_id),)).fetchone()[0])
+        if retired or (conflict["ghost"] and not conflict["hidden"]):
             conn.execute(
                 "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
                 (conflict_id,),
@@ -192,13 +208,60 @@ class SessionTitlesMixin:
             "UPDATE sessions SET title_source = ? WHERE id = ? AND title IS NOT NULL", (source, session_id)
         ) > 0
 
+    def _retire_canonical_bot_chat_in_transaction(self, conn, session_id: str) -> list[str]:
+        """A DELIBERATE archive (user, CLI, API, Desktop's sidebar mutation) of the canonical
+        Bot Chat retires its name, so the next bot click or delivery mints a fresh "Bot Chat"
+        (#139779). Hidden (Desktop-minted) and visible (minted by a delivery, cron or
+        ``chat -c "Bot Chat" --create-if-missing``) rows alike.
+
+        Runs whether or not the row was already archived: a chat the ws-orphan / startup reaper
+        already closed (``ws_orphan_reap``, ``startup_orphan_reap``, ``agent_close``) is still the
+        user's chat, and their Archive means "done with it". So the lineage's recoverable
+        ``end_reason`` is cleared (``ended_at`` stays, so no orphan sweep re-stamps the closed row
+        recoverable and nothing resurrects it), its "Bot Chat" title is NULLed and it is un-hidden:
+        it is an ordinary archived conversation now, listed under Archived and back in the sidebar
+        if the user unarchives it. The idle sweep, bulk archive and the reapers never call this.
+        Returns the ids whose title was released."""
+        from hermes_state_sessions import _LINEAGE_CTE_SQL
+        lineage = (session_id, session_id)
+        # Visible reaped rows retire too: no reaper archives, so this call is always the user's.
+        # A legacy accidental archive (old code, title + recoverable stamp kept) never comes here
+        # and still resurrects via #92687.
+        held = [sid for (sid,) in conn.execute(
+            _LINEAGE_CTE_SQL + "SELECT id FROM sessions WHERE id IN (SELECT id FROM lineage) AND title = ?",
+            (*lineage, self.CANONICAL_BOT_CHAT_TITLE),
+        ).fetchall()]
+        if not held:
+            return []
+        conn.execute(
+            _LINEAGE_CTE_SQL + "UPDATE sessions SET end_reason = CASE WHEN end_reason IN "
+            f"({_RECOVERABLE_END_REASONS_SQL}) THEN NULL ELSE end_reason END, hidden = 0 "
+            "WHERE id IN (SELECT id FROM lineage)", lineage)
+        conn.executemany("UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
+                         [(sid,) for sid in held])
+        return held
+
     def get_session_by_title(self, title: str) -> Optional[dict[str, Any]]:
-        """Look up a session by exact title. Returns session dict or None."""
+        """Look up a session by exact title. Returns session dict or None.
+
+        A deliberately archived canonical "Bot Chat" (:func:`bot_chat_title_released`, judged on
+        the compression tip like ``unarchive_recoverable_session``) is a retired name: skipped, so
+        Bot Mode mints a fresh one (#139779). Recoverable auto-archives stay visible for #92687
+        resurrection. Every other title keeps returning its archived row (``-c``, ``/resume``).
+        """
         row = self._read_one(
             "SELECT s.*, COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
             "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
             "WHERE s.title = ?", (title,))
-        return self._session_row_dict(row) if row else None
+        if not row:
+            return None
+        session = self._session_row_dict(row)
+        if title != self.CANONICAL_BOT_CHAT_TITLE or not session.get("archived"):
+            return session
+        tip_id = self.get_compression_tip(session["id"]) or session["id"]
+        tip = (self.get_session(tip_id) or session) if tip_id != session["id"] else session
+        released = bot_chat_title_released(session["archived"], session.get("auto_archived"), tip.get("end_reason"))
+        return None if released else session
 
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest "title #N" continuation."""
@@ -210,8 +273,10 @@ class SessionTitlesMixin:
         # it. Every DM transport (``hermes -p <bot> chat --in ~ -c "Bot Chat"``: message_agent,
         # bot_relay, cron delivery) resolves through here, so letting the numbered row win
         # silently routes teammates' messages into a chat whose bot cannot answer back.
-        if exact is not None and title == self.CANONICAL_BOT_CHAT_TITLE:
-            return exact["id"]
+        # A retired (deliberately archived) Bot Chat must not fall through to "#N" either:
+        # lookup returning None is what lets Desktop mint a fresh canonical chat (#139779).
+        if title == self.CANONICAL_BOT_CHAT_TITLE:
+            return exact["id"] if exact is not None else None
         # Escape LIKE wildcards so "%"/"_" in titles cannot false-match.
         numbered = self._read_all(
             "SELECT id, title, started_at FROM sessions "

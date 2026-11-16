@@ -72,4 +72,6 @@ async def test_stored_picker_survives_upgrade_and_resumes_without_copying(tmp_pa
     assert 'old-cli' in {r['id'] for r in (await listing(native))['result']['sessions']}
     compressed = await native.dispatch({'id': 3, 'method': 'session.resume', 'params': {'session_id': 'tui-tip'}})
     assert 'result' in compressed, compressed
-    assert [m['content'] for m in compressed['result']['messages']] == ['compressed question', 'compressed answer']
+    messages = compressed['result']['messages']
+    assert [m['content'] for m in messages if not m.get('archived')] == ['compressed question', 'compressed answer']
+    assert [m['content'] for m in messages if m.get('archived')] == ['old-tui question', 'old-tui answer']

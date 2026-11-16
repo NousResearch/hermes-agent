@@ -136,7 +136,7 @@ WECOM_CALLBACK_ALLOW_ALL_USERS=true
 
 所有回调载荷均使用 EncodingAESKey 通过 AES-CBC 加密。适配器处理：
 
-- **入站**：解密 XML 载荷，验证 SHA1 签名
+- **入站**：解密 XML 载荷，验证 SHA1 签名，并拒绝与网关时钟相差超过 5 分钟的签名时间戳（防重放）
 - **出站**：通过主动调用 API 发送回复（非加密回调响应）
 
 加密实现与腾讯官方 WXBizMsgCrypt SDK 兼容。

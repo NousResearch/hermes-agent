@@ -1,0 +1,55 @@
+name: sharewise
+repo: https://github.com/ardianreffa/sharewise
+sha: dd82698f253a29fe6eb53a8c36d4b51b11a289a9
+title: Sharewise
+description: >-
+  See what your photos and videos reveal before you share them. Reports, as yes/no counts only,
+  exact location, location detail, time, device, unique IDs, owner name, captions, hidden
+  thumbnails, edit history, depth maps and (videos) per-frame face data; on macOS finds faces,
+  people, street names, house numbers and plates with Apple Vision on this computer; a local review
+  page lets the user switch areas off, draw, move, resize, rotate and reshape them; hidden areas are
+  rebuilt from their surroundings (faces) or become a blank plate in the sign's colour, so nothing
+  of what was there is kept; copies drop all metadata except copyright and are re-read and verified.
+  Videos (MOV, MP4, M4V, 3GP) are cleaned without re-encoding: metadata boxes, timed-metadata
+  tracks and unreferenced media bytes are zeroed in a copy and the whole file is scanned; faces
+  inside videos are not hidden. Disclosure — reads JPEG, HEIC, PNG, WebP and the video types above
+  only in a folder the user names inside the home folder or on an external drive; refuses the
+  operating system, disk roots, the whole home folder, ~/Library, hidden and locked items, symlinks
+  and app-managed libraries. Writes only new copies to a Sharewise/ folder inside that folder and
+  never writes or overwrites originals. sharewise_share takes check ids, photo numbers, fixed keep
+  choices, the user's selection codes and areas to add (never file paths), is validated by its own
+  pre_tool_call hook, and keeping location is escalated to Hermes' human-approval gate (fails
+  closed with no human present). The agent can add areas but cannot switch them off; switching
+  off comes from the review page's selection code (a design rule, not a cryptographic barrier).
+  Stores the last 10 checks (paths, yes/no findings, area boxes), review pages with downsized
+  photos and downsized finished copies in its plugin data folder; never stores metadata values or
+  text read in photos. Sends to the model provider, as part of the conversation, the folder, file
+  names and yes/no and area counts, and, only when the user asks for a visual check
+  (sharewise_look), downsized finished copies that are already hidden and clean. Apple Vision runs
+  on-device via pyobjc-framework-Vision (macOS only; elsewhere detection is off and areas can be
+  drawn by hand). No network calls, model calls, shell commands or telemetry; no process-wide
+  settings changed.
+maintainer: ardianreffa
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/ardianreffa/sharewise#readme
+version: "0.1.6"
+image: https://raw.githubusercontent.com/ardianreffa/sharewise/dd82698f253a29fe6eb53a8c36d4b51b11a289a9/docs/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/ardianreffa/sharewise/dd82698f253a29fe6eb53a8c36d4b51b11a289a9/docs/screenshot-1-check.jpg
+  - https://raw.githubusercontent.com/ardianreffa/sharewise/dd82698f253a29fe6eb53a8c36d4b51b11a289a9/docs/screenshot-2-review.jpg
+  - https://raw.githubusercontent.com/ardianreffa/sharewise/dd82698f253a29fe6eb53a8c36d4b51b11a289a9/docs/screenshot-3-hidden-for-good.jpg
+  - https://raw.githubusercontent.com/ardianreffa/sharewise/dd82698f253a29fe6eb53a8c36d4b51b11a289a9/docs/screenshot-4-verified-get-info.jpg
+  - https://raw.githubusercontent.com/ardianreffa/sharewise/dd82698f253a29fe6eb53a8c36d4b51b11a289a9/docs/screenshot-5-verified-mdls.jpg
+platforms: []
+capabilities:
+  provides_tools:
+    - sharewise_check
+    - sharewise_review
+    - sharewise_share
+    - sharewise_look
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

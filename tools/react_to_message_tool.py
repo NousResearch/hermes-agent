@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Agent emoji reaction in the Hermes desktop app: the counterpart to the user's tapback
 (same store, one-per-author, ``author="agent"``). Lives in the ``desktop_ui`` toolset so it
-costs nothing elsewhere (adapters expose reactions via ``send_message(action="react")``);
-defaults to the triggering message and emits ``message.reaction`` for live painting."""
+costs nothing elsewhere; defaults to the triggering message and emits ``message.reaction``
+for live painting."""
 
 import contextlib
 import json
@@ -24,7 +24,8 @@ def _open_session_db():
 def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -> str:
     """Attach (or with an empty ``emoji`` retract) the agent's reaction."""
     emoji = (emoji or "").strip()
-    session_key = get_session_env("HERMES_SESSION_KEY", "") or get_session_env("HERMES_SESSION_ID", "")
+    # Routing keys identify a channel; message rows belong to the live durable session.
+    session_key = get_session_env("HERMES_SESSION_ID", "") or get_session_env("HERMES_SESSION_KEY", "")
     if not session_key:
         return tool_error("No active session — reactions need a persisted conversation.")
     db = _open_session_db()
@@ -115,4 +116,5 @@ registry.register(
         emoji=args.get("emoji", ""), message_row_id=args.get("message_row_id"),
         messages_back=args.get("messages_back")),
     check_fn=check_react_requirements, emoji="💛",
+    self_checked_args=("emoji",),  # no emoji retracts the reaction
 )

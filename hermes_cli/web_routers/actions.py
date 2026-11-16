@@ -159,9 +159,10 @@ def _persisted_action_id(log_dir: Path, name: str) -> Optional[str]:
 
 @router.post("/api/gateway/restart")
 async def restart_gateway(profile: Optional[str] = None):
-    """Kick off a ``hermes gateway restart`` in the background."""
+    """Kick off a ``hermes gateway restart --interrupt`` in the background: the user-commanded force
+    path that supersedes a drain (D6, 19b26244046), so live sessions do not refuse it."""
     with http_failure("Failed to spawn gateway restart", 500, "Failed to restart gateway"):
-        proc, _reused = _spawn_gateway_restart(profile)
+        proc, _reused = _spawn_gateway_restart(profile, interrupt=True)
     return {"ok": True, "pid": proc.pid, "name": "gateway-restart"}
 
 
@@ -280,6 +281,11 @@ _NON_APPLYABLE_MESSAGES = {
 }
 
 
+def _source_release_label(status: dict[str, Any]) -> str:
+    version = status.get("sourceVersion")
+    return f"{status.get('channel') or 'stable'} release" + (f" v{version}" if version else "")
+
+
 @router.get("/api/hermes/update/check")
 async def check_hermes_update(force: bool = False, profile: Optional[str] = None):
     """Report whether a Hermes update is available, without applying it.
@@ -323,6 +329,7 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
 
     # source_check.check_for_updates() handles git / nix-revision paths through the GitHub API and
     # caches the result for 24h. ``force`` busts the cache so "Check now" reflects reality.
+    status: dict[str, Any] = {}
     try:
         from hermes_cli.source_check import check_for_updates
 
@@ -336,6 +343,11 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
     payload["behind"] = behind
     if behind is None:
         payload["message"] = "Couldn't reach the update source — try again later."
+    elif behind == 0 and status.get("held"):
+        version = status.get("sourceVersion")
+        payload.update(held=status["held"], source_version=version,
+                       message=f"This build is newer than {_source_release_label(status)}, which predates the gateway "
+                               "runtime its sessions use. It stays on this build until a newer release ships.")
     elif behind == 0:
         payload["message"] = "You're on the latest version."
     else:
@@ -343,7 +355,7 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
         if status.get("rollback"):
             # A stable release this build already contains: applying it moves back.
             payload.update(rollback_to=status.get("sourceVersion"),
-                           message=f"This build is newer than stable release v{status.get('sourceVersion')}. "
+                           message=f"This build is newer than {_source_release_label(status)}. "
                                    "Updating moves it back to that release.")
         # "What's changed" for the desktop's remote update overlay; best-effort
         # (empty list on any failure). Channel + release name pick its notes source.
@@ -368,6 +380,34 @@ def _completed_exit_code(
         # a null clients time out on. ``partial`` maps to exit 1 like the CLI.
         return 0 if receipt["outcome"] == "success" else 1
     return None
+
+
+def _import_report(log_path: Path, pid: Optional[int]) -> dict[str, Any]:
+    """What a keep-host import reported in its own section of the action log (the one this dashboard
+    spawned as *pid*): its undo point as soon as it exists (also when the import fails), the
+    messaging platforms ``--messaging-off`` switched off, and a gateway that did not start again."""
+    from hermes_cli.backup_keep_host import GATEWAY_DOWN_LINE, MESSAGING_OFF_LINE, UNDO_POINT_LINE
+    from hermes_cli.web_server_gateway import _ACTION_LOG_STARTS
+    report: dict[str, Any] = {"undo_archive": None}
+    start = _ACTION_LOG_STARTS.get("import")
+    if start is None or start[0] != pid:
+        return report
+    try:
+        with log_path.open("rb") as log:
+            log.seek(start[1])
+            section = log.read(_ACTION_LOG_TAIL_MAX_BYTES).decode("utf-8", errors="replace")
+    except OSError:
+        return report
+    lines = section.lstrip("\n").split("\n=== import started", 1)[0].splitlines()
+    report["undo_archive"] = next((line[len(UNDO_POINT_LINE):].strip() for line in lines
+                                   if line.startswith(UNDO_POINT_LINE)), None)
+    off = next((line[len(MESSAGING_OFF_LINE):] for line in lines if line.startswith(MESSAGING_OFF_LINE)), None)
+    if off is not None:
+        report["messaging_off"] = [name.strip() for name in off.split(",") if name.strip()]
+    down = next((line[len(GATEWAY_DOWN_LINE):].strip() for line in lines if line.startswith(GATEWAY_DOWN_LINE)), None)
+    if down is not None:
+        report["gateway_down"] = down
+    return report
 
 
 @status_router.get("/api/actions/{name}/status")
@@ -425,6 +465,8 @@ async def get_action_status(name: str, lines: int = 200):
             _finish_action(name, exit_code, pid)
 
     response = {"name": name, "running": running, "exit_code": exit_code, "pid": pid, "lines": tail}
+    if name == "import":
+        response.update(_import_report(log_dir / log_file_name, pid))
     if durable_update_action_id:
         response["action_id"] = durable_update_action_id
     if update_receipt_summary is not None:

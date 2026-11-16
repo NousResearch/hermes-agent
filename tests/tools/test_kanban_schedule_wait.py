@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -67,11 +67,11 @@ def spawn(monkeypatch, tmp_path):
 
 
 def _future() -> str:
-    return datetime.fromtimestamp(time.time() + 3600, timezone.utc).isoformat()
+    return datetime.fromtimestamp(time.time() + 3600, UTC).isoformat()
 
 
 def _schedule(args: dict) -> dict:
-    from tools import kanban_tools  # noqa: F401  (registers the kanban tools)
+    from tools import kanban_tools  # registers the kanban tools
     from tools.registry import registry
 
     return json.loads(registry.get_entry("kanban_schedule").handler(args))

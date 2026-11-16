@@ -11,7 +11,7 @@ import json
 import os
 import signal
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -65,11 +65,11 @@ def spawn(monkeypatch, tmp_path):
 
 
 def _iso(epoch: float) -> str:
-    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+    return datetime.fromtimestamp(epoch, UTC).isoformat()
 
 
 def _park(session, *, until: float | None = None) -> dict:
-    from tools import kanban_tools  # noqa: F401  (registers the kanban tools)
+    from tools import kanban_tools  # registers the kanban tools
     from tools.registry import registry
 
     args = {"reason": "waiting on a job", "wait_for_process": session.id,
@@ -83,7 +83,6 @@ def _tick(spawned: list) -> None:
 
     def record_spawn(task, workspace, board=None):
         spawned.append(task.id)
-        return None
 
     with kbc.connect() as conn:
         kbd.dispatch_once(conn, spawn_fn=record_spawn)
@@ -191,7 +190,7 @@ def test_task_stays_parked_while_parking_worker_is_alive(worker_env, spawn, all_
 def test_later_plain_schedule_ignores_earlier_process_wait(worker_env, spawn, monkeypatch, all_assignees_spawnable):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
-    from tools import kanban_tools  # noqa: F401  (registers the kanban tools)
+    from tools import kanban_tools  # registers the kanban tools
     from tools.process_registry import process_registry
     from tools.registry import registry
 

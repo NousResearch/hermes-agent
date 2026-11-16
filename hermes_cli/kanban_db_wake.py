@@ -13,10 +13,13 @@ Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached late-
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def process_wait(*, session_id: str, pid: int, output_log: str, until: int) -> dict:
@@ -34,8 +37,6 @@ def process_wait(*, session_id: str, pid: int, output_log: str, until: int) -> d
 def wake_scheduled_waits(conn: sqlite3.Connection) -> list[str]:
     """Reopen ``scheduled`` tasks whose process wait resolved; returns the woken task ids.
     One task's failure is logged and skips only that task."""
-    from hermes_cli import kanban_db as _kb
-
     now = int(time.time())
     woken: list[str] = []
     for row in _pending_waits(conn):
@@ -43,8 +44,8 @@ def wake_scheduled_waits(conn: sqlite3.Connection) -> list[str]:
             if _resolve_one(conn, row, now):
                 woken.append(row["task_id"])
         except Exception:
-            _kb._log.debug("kanban wake: scheduled wait check failed for task %s",
-                           row["task_id"], exc_info=True)
+            logger.debug("kanban wake: scheduled wait check failed for task %s",
+                         row["task_id"], exc_info=True)
     return woken
 
 
@@ -157,6 +158,6 @@ def _comment(wait: dict, outcome: str, exit_code: Optional[int]) -> str:
     if outcome == "lost":
         return (f"Scheduled wait ended: process {sid} is gone and recorded no exit code "
                 f"(killed, or the host restarted). Output log: {log}")
-    deadline = datetime.fromtimestamp(int(wait["until"]), timezone.utc).isoformat()
+    deadline = datetime.fromtimestamp(int(wait["until"]), UTC).isoformat()
     return (f"Scheduled wait ended: the deadline {deadline} passed and process {sid} "
             f"(pid {wait['pid']}) is still running. It was not stopped.")

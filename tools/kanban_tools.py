@@ -895,8 +895,8 @@ def _handle_schedule(args: dict, **kw) -> str:
 
 
 def _iso_utc(epoch: float) -> str:
-    from datetime import datetime, timezone
-    return datetime.fromtimestamp(int(epoch), timezone.utc).isoformat()
+    from datetime import UTC, datetime
+    return datetime.fromtimestamp(int(epoch), UTC).isoformat()
 
 
 def _process_wait_for(args: dict) -> Optional[dict]:

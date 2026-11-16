@@ -508,7 +508,10 @@ class _ProviderCollector:
         is_async = kwargs.get("is_async", args[2] if len(args) > 2 else False)
         registration = self.__getattr__("register_tool")(
             name, toolset, schema, _ClaimGatedHandler(self, name, handler, bool(is_async)), *args, **kwargs)
-        self._supersede_tool_registration(name, registration)
+        if self._manager is None:
+            # A load into a throwaway manager (``transient_plugin_host``) is torn down with that
+            # manager; recording it here would pin its handler -> provider past the teardown.
+            self._supersede_tool_registration(name, registration)
         return registration
 
     def _supersede_tool_registration(self, name, registration) -> None:

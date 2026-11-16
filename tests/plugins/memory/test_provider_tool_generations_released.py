@@ -134,3 +134,36 @@ def test_lease_and_ledger_bookkeeping_stays_bounded(home):
         tool_regs = [r for r in manager._registration_order if r.kind == "tool" and r.key == _TOOL]
     assert len(replacement_coordinator._active.get(slot, [])) == 1
     assert len(tool_regs) == 1
+
+
+def test_throwaway_manager_load_leaves_the_live_tool_and_pins_nothing(home):
+    """A one-shot load into a throwaway plugin manager (``transient_plugin_host``, the profile
+    lifecycle hook) must neither revoke the active provider's registry tool nor stay recorded as a
+    generation once that manager is torn down."""
+    import pergen_provider
+    from hermes_cli.plugins import PluginManager, get_plugin_manager
+    from plugins.memory import _MEMORY_PROVIDER_TOOL_REGISTRATIONS, _ProviderCollector
+    from tools.registry import registry
+
+    first = _build_and_finish(home, 0)
+    current = _build_and_finish(home, 1)
+    with _scoped(home):
+        scope = get_plugin_manager().scope_key
+        expected = registry.snapshot_registration(_TOOL, scope=scope)
+        assert expected is not None
+        recorded = dict(_MEMORY_PROVIDER_TOOL_REGISTRATIONS)
+        throwaway = PluginManager()
+        throwaway.scope_key = f"{throwaway.scope_key}#transient"  # what transient_plugin_host() yields
+        collector = _ProviderCollector("pergen", register_skills=False, manager=throwaway)
+        collector.collect(pergen_provider.register)
+        assert collector.provider is not None
+        transient = weakref.ref(collector.provider)
+        del collector
+        throwaway.unload()
+        assert registry.snapshot_registration(_TOOL, scope=scope) is expected
+        assert json.loads(registry.dispatch(_TOOL, {})) == {"generation": 1}
+        assert _MEMORY_PROVIDER_TOOL_REGISTRATIONS == recorded
+    gc.collect()
+    assert first() is None, "a superseded normal generation is still retained"
+    assert transient() is None, "the finished throwaway-manager provider is still retained"
+    assert current() is not None

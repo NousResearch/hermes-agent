@@ -1,0 +1,49 @@
+name: pandora
+repo: https://github.com/36North/Pandora-for-Hermes
+subdir: pandora
+sha: b2016f1687e3b51dc6daa8c39b52debd2748aca3
+description: >-
+  Unofficial Pandora (pandora.com) client for Hermes: play your stations on this PC or cast
+  to networked speakers, see the Now Playing artist and song in the desktop status bar.
+  Left-click the chip for search, play/pause, skips, thumbs, volume, recent stations and
+  output. Search for an artist or song to start a station (on-demand playback depends on the
+  Pandora plan); albums and playlists appear only when the account's plan allows them. Also
+  usable headless: the seven agent tools work from the CLI with no desktop app. Local playback
+  uses mpv, which is not bundled: after installing, click "Set up audio" in the Pandora chip
+  (or run `hermes pandora setup`) — that downloads mpv, the audio engine the plugin streams
+  music through, as a SHA-256-verified official portable build (~27 MB, once per PC). Nothing
+  is downloaded until you ask. Disclosure - sign-in uses your
+  own Pandora account email + password (`hermes pandora login`); the password is stored in the
+  OS keychain (Windows Credential Manager on Windows, entry "Hermes pandora" / your account
+  email, shared by every Hermes profile of that OS user) and read back from that same entry,
+  both through a plugin-registered Hermes secret source and directly. No plaintext password is
+  written unless you explicitly pass `--save-to env`. The session token and cookie jar live in
+  the active profile's auth.json under providers.pandora. Credentials are sent only to
+  pandora.com. Disclosure - this plugin uses automated access to pandora.com that may violate
+  Pandora's Terms of Use; use is at your own account risk. Unofficial and unaffiliated; no
+  Pandora logo or artwork is bundled. Windows only (exercised end to end).
+maintainer: 36North
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/36North/Pandora-for-Hermes#readme
+version: "0.5.2"
+title: Pandora for Hermes
+image: https://raw.githubusercontent.com/36North/Pandora-for-Hermes/b2016f1687e3b51dc6daa8c39b52debd2748aca3/assets/card.jpg
+screenshots:
+  - https://raw.githubusercontent.com/36North/Pandora-for-Hermes/b2016f1687e3b51dc6daa8c39b52debd2748aca3/assets/chip-store.jpg
+readme: true
+platforms:
+  - windows
+capabilities:
+  provides_tools:
+    - pandora_playback
+    - pandora_search
+    - pandora_stations
+    - pandora_feedback
+    - pandora_collection
+    - pandora_playlists
+    - pandora_devices
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -220,3 +220,15 @@ def test_a_change_elsewhere_takes_the_gateways_planned_restart(plane, monkeypatc
     assert stop["restart"] is True and stop["service_restart"] is supervised
     assert stop["detached_restart"] is (not supervised)
     assert ({"detached_helper": True} in runner.stopped) is (not supervised)
+
+
+def test_the_gateway_installs_its_planned_restart_at_start():
+    """``start_gateway`` registers the restart beside its signal handlers (the line this pins is the
+    only caller; without it a running gateway would only log that a change waits for a restart)."""
+    import ast
+    import inspect
+
+    import gateway.run_bootstrap as bootstrap
+    calls = [node for node in ast.walk(ast.parse(inspect.getsource(bootstrap)))
+             if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "install_secret_store_restart"]
+    assert [[ast.unparse(a) for a in call.args] for call in calls] == [["loop", "runner"]]

@@ -104,3 +104,14 @@ def warning_notifications_enabled(platform, user_config=None) -> bool:
         user_config = {}
     platform_key = getattr(platform, "value", platform)
     return not resolve_display_setting(user_config, platform_key, "suppress_warning_notifications", False)
+
+
+def provider_error_detail_shown(platform, user_config=None) -> bool:
+    """``display.provider_error_detail`` for ``platform``: whether a failed turn's chat copy keeps the
+    provider's own words. Same snapshot-or-active-profile rule as ``warning_notifications_enabled``."""
+    if user_config is None:
+        user_config = effective_user_config()
+    elif not isinstance(user_config, dict):
+        user_config = {}
+    platform_key = getattr(platform, "value", platform)
+    return resolve_display_setting(user_config, platform_key, "provider_error_detail", True) is not False

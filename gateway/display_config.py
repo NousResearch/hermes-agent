@@ -26,6 +26,8 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
     "suppress_warning_notifications": False,
+    # A failed turn's chat copy keeps the provider's own words ("Provider said: …") unless set false.
+    "provider_error_detail": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
@@ -178,6 +180,13 @@ def _norm_suppress_warning_notifications(value: Any) -> bool:
     return False
 
 
+def _norm_provider_error_detail(value: Any) -> bool:
+    # Only an explicit, recognized opt-out withholds the provider's words.
+    if isinstance(value, bool):
+        return value
+    return not (isinstance(value, str) and value.strip().lower() in _FALSY | {"off"})
+
+
 def _norm_cleanup_progress(value: Any) -> bool:
     return value.lower() in _TRUTHY if isinstance(value, str) else bool(value)
 
@@ -203,6 +212,7 @@ _NORMALISERS: dict[str, Any] = {
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
     "suppress_warning_notifications": _norm_suppress_warning_notifications,
+    "provider_error_detail": _norm_provider_error_detail,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,

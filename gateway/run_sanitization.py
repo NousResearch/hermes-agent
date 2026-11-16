@@ -15,6 +15,8 @@ from typing import Any, Optional
 
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
+from agent.turn_failure_copy import PROVIDER_SAID
+from gateway.warning_notifications import provider_error_detail_shown
 
 # Surfaces consuming gateway text programmatically must keep RAW status/error text; unknown/empty -> chat.
 _GATEWAY_RAW_TEXT_PLATFORMS = frozenset({"local", "api_server", "webhook", "msgraph_webhook"})
@@ -222,4 +224,9 @@ def _sanitize_gateway_final_response(
     if _looks_like_gateway_provider_error(
             redacted, terminal_failure=_turn_result_failed(agent_result)):
         return _gateway_provider_error_reply(redacted)
+    # Curated failure copy ends with the provider's own words; a bot that answers other people can
+    # send the category reply instead (display.provider_error_detail: false). The log keeps the text.
+    if (_turn_result_failed(agent_result) and PROVIDER_SAID in redacted
+            and not provider_error_detail_shown(platform)):
+        return _gateway_provider_error_reply(redacted.rpartition(PROVIDER_SAID)[2])
     return redacted

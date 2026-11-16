@@ -5470,6 +5470,19 @@ export interface CanonicalReplaceQueuedParams {
   display_kind?: 'hidden' | null
   title_preview?: string | null
 }
+export interface CanonicalRoomMemberYoloParams {
+  profile?: string | null
+  room_id: string
+  member_id: string
+  enabled?: boolean | null
+}
+export interface CanonicalRoomMemberYoloResult {
+  room_id: string
+  member_id: string
+  session_key: string
+  enabled: boolean
+  effective_enabled: boolean
+}
 export interface CanonicalConfigGetResult {
   value?: string | null
   display?: string | null
@@ -7172,6 +7185,8 @@ export interface CanonicalRpcMethods {
   'groups.create': { params: CanonicalRoomCreateParams; result: GroupsCreateResult }
   /** Discard one indeterminate room task after explicit user confirmation. */
   'groups.discard': { params: GroupsDiscardParams; result: GroupsDiscardResult }
+  /** Read or explicitly set YOLO for one existing local room participant session. */
+  'groups.member.yolo': { params: CanonicalRoomMemberYoloParams; result: CanonicalRoomMemberYoloResult }
   /** Operator only: mint one room grant for a member of another gateway's room. */
   'groups.peer.invite': { params: CanonicalGroupsPeerInviteParams; result: GroupsPeerInviteResult }
   /** Bind a target grant to the room's pinned peer member after a live scoped probe. */
@@ -7253,6 +7268,7 @@ export const CANONICAL_RPC_METHODS = [
   'groups.attachment.upload',
   'groups.create',
   'groups.discard',
+  'groups.member.yolo',
   'groups.peer.invite',
   'groups.peer.register',
   'groups.peer.revoke',

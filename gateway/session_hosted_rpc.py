@@ -117,6 +117,10 @@ class HostedRoomAuthorityRPC:
         await self.authority.resolve(self.principal, self.ref)
         return {'session_id': self.ref.session_id, 'title': f'Group: {self.room_id}'}
 
+    async def _yolo(self, params):
+        from gateway.session_hosted_yolo import session_yolo
+        return await session_yolo(self, params)
+
     def _rows(self):
         self.authority.authorize(self.principal, self.ref, 'session:read')
         rows = list_session_admissions(self.authority.db, session_id=self.ref.session_id, pending_only=False)

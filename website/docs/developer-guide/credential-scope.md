@@ -88,8 +88,75 @@ consumers are unaffected. Plugins that do not declare the capability keep
 working unchanged — they simply never see the field. Probe with
 `ctx.has_capability("llm.credential_scope")` and degrade gracefully.
 
+## Quota observation (llm.quota_observation)
+
+`post_api_request` and `api_request_error` also carry a `quota_observation`
+object, gated by the **`llm.quota_observation`** capability (consent-only;
+an independent grant from `llm.credential_scope`):
+
+```python
+{
+    "schema_version": 1,
+    "provider_id": "openrouter",
+    "credential_scope_id": "9f2c…",   # same opaque id as credential_scope
+    "identity_status": "known",
+    "observed_at": 1756000001.234,
+    "outcome": "ok",                   # ok | auth_failure | rate_limited | provider_error | timeout | unknown
+    "status_code": 200,                # or None
+    "retry_after_seconds": None,       # parsed Retry-After, or None (never "no wait")
+    "rate_limit": {                    # only windows the provider actually sent
+        "requests_min": {"limit": 100, "remaining": 87, "reset_seconds": 42.0},
+    },                                 # None when no x-ratelimit-* headers were present
+}
+```
+
+Contract rules:
+
+- **No invented verdicts.** A generic 200 is not proof of remaining allowance;
+  a 429 maps to `rate_limited`, never to "monthly allowance exhausted" (the
+  taxonomy deliberately has no `quota_exhausted` class); `Retry-After` and
+  `x-ratelimit-*` are reported exactly as sent — missing windows are absent,
+  never zero-filled.
+- **Attempt-bound.** The observation is built from the same snapshot as
+  `credential_scope`, so retry rotation attributes outcomes to the credential
+  that served the attempt.
+- **Non-secret.** No keys, tokens or authorization headers; ids match
+  `credential_scope`.
+
+## ctx.quota_fetch (OpenRouter official key limits)
+
+Plugins granted `llm.quota_observation` may call:
+
+```python
+result = ctx.quota_fetch(
+    provider_id="openrouter",
+    credential_scope_id="9f2c…",        # from an observed scope
+    quota_source="official_key_limits", # the only implemented source
+    timeout=2.0,                        # clamped to <= 2 s
+)
+```
+
+- The host resolves the credential for **that scope's pool entry** and calls
+  the documented key-info endpoint; the credential never leaves the host and
+  never appears in the result.
+- Success: `{"status": "ok", "provider_id": "openrouter",
+  "credential_scope_id": "9f2c…", "quota_source": "official_key_limits",
+  "observed_at": …, "expires_at": …, "limit": int, "remaining": int,
+  "used": int}` with `remaining + used == limit`.
+- Anything else — capability not granted, unsupported provider/source,
+  unknown or rotated scope, provider error, timeout, off-contract response
+  shape — returns `{"status": "unavailable", "reason": …}`. Fail-closed by
+  contract: no quota is ever guessed.
+- Other providers have no authoritative quota endpoint and report
+  `unsupported_provider`; no endpoint is invented.
+- Plugins that do not declare the capability keep working unchanged — calls
+  return `unavailable` without touching the network.
+
+## Scope of the contract
+
 Auxiliary calls (`pre_auxiliary_call` / `post_auxiliary_call`) do not carry
-`credential_scope` today; the contract covers the main agent loop.
+`credential_scope` or `quota_observation` today; the contract covers the main
+agent loop.
 
 ## Security properties
 

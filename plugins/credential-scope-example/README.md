@@ -11,8 +11,11 @@ It is deliberately boring:
 - in-memory counters only (a real quota/health consumer would persist them);
 - `unknown` / `unavailable` scopes are counted provider-wide, never guessed
   into an account bucket;
-- if the `llm.credential_scope` capability is not granted, the host strips
-  `credential_scope` from this plugin's payloads and the plugin stays idle.
+- `post_api_request` / `api_request_error` also carry a `quota_observation`
+  (outcome class, status, Retry-After, `x-ratelimit-*` windows), gated by the
+  independent `llm.quota_observation` capability — same rules apply;
+- if a capability is not granted, the host strips the matching field from this
+  plugin's payloads and the plugin stays idle.
 
-To try it: declare the capability, grant it through the normal consent flow,
+To try it: declare the capabilities, grant them through the normal consent flow,
 and watch the `credential-scope-example` debug logs during a session.

@@ -143,6 +143,7 @@ _DEFAULT_PAYLOADS = {
         "base_url": "https://api.anthropic.com", "api_mode": "anthropic_messages",
         "api_call_count": 1, "api_duration": 1.234,
         "credential_scope": {"provider_id": "anthropic", "credential_scope_id": "00000000000000000000000000000000", "identity_status": "known"},
+        "quota_observation": {"schema_version": 1, "provider_id": "anthropic", "credential_scope_id": "00000000000000000000000000000000", "identity_status": "known", "observed_at": 1756000001.234, "outcome": "ok", "status_code": 200, "retry_after_seconds": None, "rate_limit": None},
         "started_at": 1756000000.0, "ended_at": 1756000001.234, "first_chunk_at": 1756000000.512,
         "finish_reason": "stop", "message_count": 4, "response_model": "claude-sonnet-4-6",
         "usage": {"input_tokens": 2048, "output_tokens": 512}, "context_length": 200000,

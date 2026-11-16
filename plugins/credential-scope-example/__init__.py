@@ -36,10 +36,13 @@ def _scope_key(credential_scope: Any) -> str:
 def _record(outcome: str, kwargs: dict[str, Any]) -> None:
     key = _scope_key(kwargs.get("credential_scope"))
     with _lock:
-        bucket = _counters.setdefault(key, {"attempts": 0, "ok": 0, "error": 0})
+        bucket = _counters.setdefault(key, {"attempts": 0, "ok": 0, "error": 0, "observations": 0})
         bucket["attempts"] += 1
         if outcome in bucket:
             bucket[outcome] += 1
+        observation = kwargs.get("quota_observation")
+        if isinstance(observation, dict) and observation.get("outcome"):
+            bucket["observations"] += 1
     logger.debug("credential-scope-example %s %s", outcome, key)
 
 

@@ -35,7 +35,14 @@ def extend_start_timeout(seconds: float) -> bool:
 
 
 def watchdog_interval_seconds() -> float | None:
+    """systemd's watchdog interval for *this* process, or ``None``.
+
+    Mirrors ``sd_watchdog_enabled(3)``: ``WATCHDOG_PID``, when present, scopes the watchdog to that PID,
+    so an inherited environment in any other process (or an unparsable PID) means the watchdog is off.
+    """
     try:
+        if (pid := os.environ.get("WATCHDOG_PID", "").strip()) and int(pid) != os.getpid():
+            return None
         interval = float(os.environ.get("WATCHDOG_USEC", "") if _notify_socket() else "") / 1e6
     except (TypeError, ValueError):
         return None

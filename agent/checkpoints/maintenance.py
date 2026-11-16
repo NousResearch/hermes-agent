@@ -8,14 +8,15 @@ from typing import Dict, Optional
 
 from hermes_cli.gitlock import clear_stale_tmp_packs
 from utils import rmtree_readonly
-from tools.checkpoint_manager import (
+from agent.checkpoints.manager import (
     _GIT_TIMEOUT, _LEGACY_PREFIX, _PRUNE_MARKER_NAME, _REFS_PREFIX, _STORE_DIRNAME,
     _dir_size_bytes, _index_path, _list_projects, _pre_v2_shadow_repos,
     _project_meta_path, _ref_name, _resolve_checkpoint_base, _run_git, _store_has_head,
     _store_path,
 )
 
-logger = logging.getLogger(__name__)
+# Pinned name: these lines stay under `hermes logs --component tools`.
+logger = logging.getLogger("tools.checkpoint_maintenance")
 
 # ---------------------------------------------------------------------------
 # Auto-maintenance
@@ -183,7 +184,7 @@ def prune_checkpoints(
     if not base.exists():
         return result
 
-    from tools.checkpoint_pruning import PruneError, store_lock
+    from agent.checkpoints.pruning import PruneError, store_lock
 
     try:
         with store_lock(base):
@@ -342,7 +343,7 @@ def _prune_checkpoints(
             else:
                 result["deleted_stale"] += 1
 
-        from tools.checkpoint_pruning import Pruner, PruneError
+        from agent.checkpoints.pruning import Pruner, PruneError
 
         pruner = Pruner(_run_git, store, str(base), _GIT_TIMEOUT, _dir_size_bytes, _REFS_PREFIX)
         try:
@@ -576,7 +577,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> dict[str, int]:
         return out
     size = _dir_size_bytes(base)
     try:
-        from tools.checkpoint_pruning import store_lock
+        from agent.checkpoints.pruning import store_lock
 
         with store_lock(base):
             _rmtree_force(base)
@@ -593,7 +594,7 @@ def clear_legacy(checkpoint_base: Optional[Path] = None) -> dict[str, int]:
     out = {"bytes_freed": 0, "deleted": 0, "errors": 0}
     if not base.exists():
         return out
-    from tools.checkpoint_pruning import store_lock
+    from agent.checkpoints.pruning import store_lock
 
     try:
         with store_lock(base):

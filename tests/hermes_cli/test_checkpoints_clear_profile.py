@@ -1,7 +1,7 @@
 """`hermes checkpoints clear` acts on the active profile's checkpoint folder.
 
 One process can serve several profiles. A checkpoint folder that belongs to the profile
-`tools.checkpoint_manager` was loaded under must not decide what `clear` does for a profile
+`agent.checkpoints.manager` was loaded under must not decide what `clear` does for a profile
 that has none.
 """
 
@@ -18,7 +18,7 @@ def test_clear_reads_the_active_profile_not_the_one_the_module_loaded_under(tmp_
     active.mkdir()
 
     monkeypatch.setenv("HERMES_HOME", str(loaded_under))
-    from tools import checkpoint_manager
+    from agent.checkpoints import manager as checkpoint_manager
     importlib.reload(checkpoint_manager)
     monkeypatch.setenv("HERMES_HOME", str(active))
 

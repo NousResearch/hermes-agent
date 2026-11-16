@@ -55,7 +55,7 @@ def test_browser_exec_runs_no_tenant_python_on_the_host(monkeypatch, no_spawn):
 
 
 def test_checkpoints_take_and_restore_nothing_on_the_host(tmp_path, no_spawn):
-    from tools.checkpoint_manager import CheckpointManager
+    from agent.checkpoints.manager import CheckpointManager
 
     mgr = CheckpointManager(enabled=True)
     (tmp_path / "f.txt").write_text("x")
@@ -159,7 +159,7 @@ def test_local_calls_still_reach_every_guarded_path(tmp_path):
     """With no scope bound the same entry points behave as before (spot checks of the cheap ones)."""
     from agent.coding_context import build_coding_workspace_block
     from agent.skill_preprocessing import run_inline_shell
-    from tools.checkpoint_manager import CheckpointManager
+    from agent.checkpoints.manager import CheckpointManager
 
     assert run_inline_shell("echo LOCAL", tmp_path, 5) == "LOCAL"
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)

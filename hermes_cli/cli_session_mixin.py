@@ -264,8 +264,8 @@ class CLISessionMixin:
         return buf.getvalue().rstrip("\n").splitlines()
 
     def _resolve_checkpoint_ref(self, ref: str, checkpoints: list) -> str | None:
-        """A 1-indexed checkpoint number or a hash (``tools/checkpoint_refs.py``, every surface's rule)."""
-        from tools.checkpoint_refs import resolve_checkpoint_ref
+        """A 1-indexed checkpoint number or a hash (``agent/checkpoints/refs.py``, every surface's rule)."""
+        from agent.checkpoints.refs import resolve_checkpoint_ref
         try:
             return resolve_checkpoint_ref(checkpoints, ref)
         except ValueError:

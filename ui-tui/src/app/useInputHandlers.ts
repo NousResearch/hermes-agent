@@ -15,6 +15,7 @@ import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
 import { $agentDockCollapsed } from './agentRoster.js'
 import { $backtrackPrime, $pendingRewind, cancelBacktrackPrime, cancelPendingRewind, primeBacktrack } from './backtrackStore.js'
+import { useDashboardStop } from './dashboardStop.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import {
   type ComposerActions,
@@ -430,6 +431,8 @@ function handlePagerKey(ch: string, key: Key, pagerPageSize: number) {
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
+
+  useDashboardStop({ enabled: DASHBOARD_TUI_MODE, stdout: terminal.stdout, gw: gateway.gw, appendMessage: actions.appendMessage, sys: actions.sys })
 
   const overlay = useStore($overlayState)
   const isBlocked = useStore($isBlocked)

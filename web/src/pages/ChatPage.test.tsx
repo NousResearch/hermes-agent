@@ -30,11 +30,15 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static oscHandler: ((data: string) => boolean) | undefined;
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
   parser = {
-    registerOscHandler: vi.fn(),
+    registerOscHandler: vi.fn((id: number, handler: (data: string) => boolean) => {
+      if (id === 6973) FakeTerminal.oscHandler = handler;
+      return { dispose() {} };
+    }),
   };
   unicode = { activeVersion: "" };
 
@@ -279,6 +283,29 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
+  it("stops the confirmed PTY turn without sending keyboard input", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(<MemoryRouter initialEntries={["/chat"]}><ChatPage isActive /></MemoryRouter>);
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => socket.onopen?.());
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Stop response"]');
+    expect(button).not.toBeNull();
+    expect(button?.disabled).toBe(true);
+    const queryFrame = socket.send.mock.calls.map(([frame]) => frame as string).find(frame => frame.startsWith("\x1b]6973;"));
+    const query = JSON.parse(queryFrame!.slice(7, -1));
+    await act(async () => { FakeTerminal.oscHandler?.(JSON.stringify({ action: "state", nonce: query.nonce, bound: { sid: "s", epoch: "e", generation: 3 } })); });
+    expect(button?.disabled).toBe(false);
+    await act(async () => button?.click());
+    expect(JSON.parse(socket.send.mock.calls.at(-1)![0].slice(7, -1))).toEqual({ action: "stop", sid: "s", epoch: "e", generation: 3, nonce: query.nonce });
+    expect(button?.disabled).toBe(true);
+    await act(async () => { FakeTerminal.oscHandler?.(JSON.stringify({ action: "state", nonce: query.nonce, bound: { sid: "s", epoch: "e", generation: 3 } })); });
+    expect(button?.disabled).toBe(false);
+    await act(async () => socket.onclose?.({ code: 1001, reason: "", wasClean: true }));
+    expect(button?.disabled).toBe(true);
+    await act(async () => { FakeTerminal.oscHandler?.(JSON.stringify({ action: "state", nonce: query.nonce, bound: { sid: "s", epoch: "e", generation: 3 } })); });
+    expect(button?.disabled).toBe(true);
+  });
   it("sends a PTY keepalive frame every 20 seconds while the socket is open", async () => {
     vi.useFakeTimers();
     try {

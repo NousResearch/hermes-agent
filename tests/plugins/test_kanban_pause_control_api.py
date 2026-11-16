@@ -6,6 +6,7 @@ import importlib.util
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -62,6 +63,7 @@ def test_get_is_read_only_and_post_returns_idempotent_readback(client):
     )
     assert repeated.status_code == 200
     assert repeated.json()["boards"][0]["revision"] == 1
+    assert repeated.json()["boards"][0]["changed_at_utc"].endswith("Z")
     assert repeated.json()["boards"][0]["reason"] == "maintenance"
 
 
@@ -101,3 +103,32 @@ def test_partial_multi_board_mutation_is_structured_and_non_200(client, monkeypa
     payload = response.json()
     assert payload["state"] == "partial"
     assert [row["state"] for row in payload["boards"]] == ["paused", "unknown"]
+
+
+def test_mutation_records_verified_request_principal(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db(board="default")
+    app = FastAPI()
+    app.state.auth_required = True
+
+    @app.middleware("http")
+    async def verified_session(request, call_next):
+        request.state.session = SimpleNamespace(user_id="operator-1", provider="portal")
+        return await call_next(request)
+
+    app.include_router(_load_router(), prefix="/api/plugins/kanban")
+    verified = TestClient(app).post("/api/plugins/kanban/control/pause", json={})
+    assert verified.status_code == 200
+    assert verified.json()["boards"][0]["changed_by"] == "portal:operator-1"
+
+    unauthenticated = FastAPI()
+    unauthenticated.state.auth_required = True
+    unauthenticated.include_router(_load_router(), prefix="/api/plugins/kanban")
+    denied = TestClient(unauthenticated).post(
+        "/api/plugins/kanban/control/resume", json={},
+    )
+    assert denied.status_code == 401

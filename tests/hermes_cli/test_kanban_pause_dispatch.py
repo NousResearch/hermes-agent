@@ -73,6 +73,7 @@ def test_pause_after_selection_refuses_claim_and_resume_uses_next_tick(monkeypat
     assert result.spawned == []
     assert conn.execute("SELECT status FROM tasks WHERE id='queued'").fetchone()[0] == "ready"
     assert conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id='queued'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM kanban_claim_admissions").fetchone()[0] == 0
 
     monkeypatch.setattr(dispatch, "_dispatch_lane_task", original)
     kanban_control.resume_board(conn, changed_by="operator")

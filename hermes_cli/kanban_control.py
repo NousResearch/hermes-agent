@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Optional
 
 
@@ -32,7 +34,6 @@ CREATE TABLE IF NOT EXISTS kanban_dispatch_control_events (
 );
 """
 
-_CONTROL_COLUMNS = {"id", "state", "revision", "changed_at", "changed_by", "reason"}
 _VALID_STATES = {"running", "paused"}
 _MAX_ACTOR_LENGTH = 200
 _MAX_REASON_LENGTH = 2_000
@@ -62,17 +63,94 @@ def _valid_text(value, *, maximum: int, allow_none: bool) -> bool:
     return isinstance(value, str) and bool(value.strip()) and len(value) <= maximum
 
 
+def _control_schema_state(conn: sqlite3.Connection) -> str:
+    rows = conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='table' "
+        "AND name IN ('kanban_dispatch_control', 'kanban_dispatch_control_events')",
+    ).fetchall()
+    schemas = {
+        (row["name"] if isinstance(row, sqlite3.Row) else row[0]):
+        (row["sql"] if isinstance(row, sqlite3.Row) else row[1])
+        for row in rows
+    }
+    if not schemas:
+        return "missing"
+    if set(schemas) != {"kanban_dispatch_control", "kanban_dispatch_control_events"}:
+        return "invalid"
+
+    control_info = conn.execute("PRAGMA table_info(kanban_dispatch_control)").fetchall()
+    observed_control = [
+        (
+            item["name"] if isinstance(item, sqlite3.Row) else item[1],
+            (item["type"] if isinstance(item, sqlite3.Row) else item[2]).upper(),
+            int(item["notnull"] if isinstance(item, sqlite3.Row) else item[3]),
+            int(item["pk"] if isinstance(item, sqlite3.Row) else item[5]),
+        )
+        for item in control_info
+    ]
+    expected_control = [
+        ("id", "INTEGER", 0, 1),
+        ("state", "TEXT", 1, 0),
+        ("revision", "INTEGER", 1, 0),
+        ("changed_at", "INTEGER", 1, 0),
+        ("changed_by", "TEXT", 1, 0),
+        ("reason", "TEXT", 0, 0),
+    ]
+    event_info = conn.execute("PRAGMA table_info(kanban_dispatch_control_events)").fetchall()
+    observed_events = [
+        (
+            item["name"] if isinstance(item, sqlite3.Row) else item[1],
+            (item["type"] if isinstance(item, sqlite3.Row) else item[2]).upper(),
+            int(item["notnull"] if isinstance(item, sqlite3.Row) else item[3]),
+            int(item["pk"] if isinstance(item, sqlite3.Row) else item[5]),
+        )
+        for item in event_info
+    ]
+    expected_events = [
+        ("revision", "INTEGER", 0, 1),
+        ("old_state", "TEXT", 1, 0),
+        ("new_state", "TEXT", 1, 0),
+        ("changed_by", "TEXT", 1, 0),
+        ("reason", "TEXT", 0, 0),
+        ("changed_at", "INTEGER", 1, 0),
+    ]
+    control_sql = re.sub(
+        r"\s+", " ", str(schemas["kanban_dispatch_control"] or "").lower(),
+    )
+    events_sql = re.sub(
+        r"\s+", " ", str(schemas["kanban_dispatch_control_events"] or "").lower(),
+    )
+    control_constraints = (
+        "check (id = 1)",
+        "check (state in ('running', 'paused'))",
+        "check (revision >= 1)",
+    )
+    event_constraints = (
+        "check (old_state in ('running', 'paused'))",
+        "check (new_state in ('running', 'paused'))",
+    )
+    valid = (
+        observed_control == expected_control
+        and observed_events == expected_events
+        and all(fragment in control_sql for fragment in control_constraints)
+        and all(fragment in events_sql for fragment in event_constraints)
+    )
+    return "valid" if valid else "invalid"
+
+
 def read_control(conn: sqlite3.Connection) -> ControlState:
     """Read authoritative board control without initializing or repairing it."""
     try:
-        columns = {
-            row["name"] if isinstance(row, sqlite3.Row) else row[1]
-            for row in conn.execute("PRAGMA table_info(kanban_dispatch_control)")
-        }
-        if not _CONTROL_COLUMNS.issubset(columns):
+        schema_state = _control_schema_state(conn)
+        if schema_state == "missing":
+            return ControlState(state="running", revision=0)
+        if schema_state != "valid":
             return _unknown("control_schema_invalid")
         rows = conn.execute(
-            "SELECT id, state, revision, changed_at, changed_by, reason "
+            "SELECT id, state, revision, changed_at, changed_by, reason, "
+            "typeof(id) AS id_type, typeof(state) AS state_type, "
+            "typeof(revision) AS revision_type, typeof(changed_at) AS changed_at_type, "
+            "typeof(changed_by) AS changed_by_type, typeof(reason) AS reason_type "
             "FROM kanban_dispatch_control"
         ).fetchall()
     except (sqlite3.DatabaseError, UnicodeDecodeError):
@@ -84,16 +162,26 @@ def read_control(conn: sqlite3.Connection) -> ControlState:
         return _unknown("invalid_control_state")
     row = rows[0]
     try:
-        row_id = int(row["id"])
-        revision = int(row["revision"])
-        changed_at = int(row["changed_at"])
-    except (KeyError, TypeError, ValueError, OverflowError):
+        values = tuple(row) if not isinstance(row, sqlite3.Row) else None
+        row_id = row["id"] if values is None else values[0]
+        state = row["state"] if values is None else values[1]
+        revision = row["revision"] if values is None else values[2]
+        changed_at = row["changed_at"] if values is None else values[3]
+        changed_by = row["changed_by"] if values is None else values[4]
+        reason = row["reason"] if values is None else values[5]
+        storage = (
+            row["id_type"], row["state_type"], row["revision_type"],
+            row["changed_at_type"], row["changed_by_type"], row["reason_type"],
+        ) if values is None else values[6:12]
+    except (IndexError, KeyError, TypeError):
         return _unknown("invalid_control_state")
-    state = row["state"]
-    changed_by = row["changed_by"]
-    reason = row["reason"]
     if (
-        row_id != 1
+        storage[:5] != ("integer", "text", "integer", "integer", "text")
+        or storage[5] not in {"null", "text"}
+        or type(row_id) is not int
+        or type(revision) is not int
+        or type(changed_at) is not int
+        or row_id != 1
         or state not in _VALID_STATES
         or revision < 1
         or changed_at < 1
@@ -186,6 +274,13 @@ def _control_row(board: str, state: ControlState) -> dict:
         "state": state.state,
         "revision": state.revision,
         "changed_at": state.changed_at,
+        "changed_at_utc": (
+            datetime.fromtimestamp(state.changed_at, tz=UTC)
+            .isoformat()
+            .replace("+00:00", "Z")
+            if state.changed_at is not None
+            else None
+        ),
         "changed_by": state.changed_by,
     }
     if state.reason is not None:
@@ -224,13 +319,21 @@ def _aggregate(rows: list[dict], *, desired_state: Optional[str] = None) -> str:
 
 def control_status(*, board: Optional[str] = None) -> dict:
     """Read one or all active boards without mutating control state."""
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db as kb
 
     rows = []
     for slug in selected_boards(board):
         try:
-            with kbc.connect_closing(board=slug) as conn:
-                state = read_control(conn)
+            path = kb.kanban_db_path(board=slug)
+            if not path.exists():
+                state = ControlState(state="running", revision=0)
+            else:
+                conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+                conn.row_factory = sqlite3.Row
+                try:
+                    state = read_control(conn)
+                finally:
+                    conn.close()
         except Exception as exc:
             logger.exception("failed to read Kanban pickup control for board %s", slug)
             state = ControlState(

@@ -70,6 +70,33 @@ def test_existing_database_gains_control_schema_without_state_write(tmp_path):
         migrated.close()
 
 
+def test_status_reads_legacy_database_without_schema_or_file_mutation(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    path = kb.kanban_db_path(board="default")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = sqlite3.connect(path)
+    legacy.executescript(kb.SCHEMA_SQL.replace(kanban_control.CONTROL_SCHEMA_SQL, ""))
+    legacy.close()
+    before = path.read_bytes()
+
+    result = kanban_control.control_status(board="default")
+
+    assert result["state"] == "running"
+    assert result["boards"][0]["revision"] == 0
+    assert path.read_bytes() == before
+    verify = sqlite3.connect(path)
+    try:
+        assert verify.execute(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type='table' AND name LIKE 'kanban_dispatch_control%'",
+        ).fetchone()[0] == 0
+    finally:
+        verify.close()
+
+
 def test_pause_persists_and_records_one_matching_event(conn):
     paused = kanban_control.pause_board(
         conn, changed_by="operator@example", reason="maintenance",
@@ -160,6 +187,29 @@ def test_schema_drift_reads_unknown_without_repair(conn):
     assert state.state == "unknown"
     assert state.error_code == "control_schema_invalid"
     assert conn.total_changes == before
+
+
+def test_missing_audit_table_fails_control_closed(conn):
+    kanban_control.pause_board(conn, changed_by="operator")
+    conn.execute("DROP TABLE kanban_dispatch_control_events")
+
+    state = kanban_control.read_control(conn)
+
+    assert state.state == "unknown"
+    assert state.error_code == "control_schema_invalid"
+
+
+@pytest.mark.parametrize("column", ["revision", "changed_at"])
+def test_fractional_integer_control_values_fail_closed(conn, column):
+    kanban_control.pause_board(conn, changed_by="operator")
+    conn.execute("PRAGMA ignore_check_constraints=ON")
+    conn.execute(f"UPDATE kanban_dispatch_control SET {column}=1.5 WHERE id=1")
+    conn.execute("PRAGMA ignore_check_constraints=OFF")
+
+    state = kanban_control.read_control(conn)
+
+    assert state.state == "unknown"
+    assert state.error_code == "invalid_control_state"
 
 
 def _queued_task(conn, status):
@@ -349,3 +399,119 @@ def test_claim_and_pause_race_has_one_linearized_outcome(tmp_path, monkeypatch):
     assert outcomes["pause"].state == "paused"
     assert task is not None and task.status == "running"
     assert state.state == "paused"
+
+
+@pytest.mark.parametrize(
+    ("status", "claim_name"),
+    [("ready", "claim_task_result"), ("review", "claim_review_task_result")],
+)
+def test_pause_first_race_refuses_both_claim_lanes_without_mutation(
+    tmp_path, monkeypatch, status, claim_name,
+):
+    path = tmp_path / f"{status}.db"
+    setup = kbc.connect(path)
+    task_id = _queued_task(setup, status)
+    before = _claim_path_snapshot(setup, task_id)
+    setup.close()
+    entered_pause = threading.Event()
+    release_pause = threading.Event()
+    original_read = kanban_control.read_control
+
+    def blocked_pause_read(connection):
+        if threading.current_thread().name == "pause-writer" and not entered_pause.is_set():
+            entered_pause.set()
+            assert release_pause.wait(5)
+        return original_read(connection)
+
+    monkeypatch.setattr(kanban_control, "read_control", blocked_pause_read)
+    outcomes = {}
+
+    def pause_worker():
+        connection = kbc.connect(path)
+        outcomes["pause"] = kanban_control.pause_board(
+            connection, changed_by="operator",
+        )
+        connection.close()
+
+    def claim_worker():
+        connection = kbc.connect(path)
+        outcomes["claim"] = getattr(kb, claim_name)(
+            connection, task_id, claimer="worker",
+        )
+        connection.close()
+
+    pause_thread = threading.Thread(target=pause_worker, name="pause-writer")
+    claim_thread = threading.Thread(target=claim_worker, name="claim-writer")
+    pause_thread.start()
+    assert entered_pause.wait(5)
+    claim_thread.start()
+    release_pause.set()
+    pause_thread.join(5)
+    claim_thread.join(5)
+    assert not pause_thread.is_alive() and not claim_thread.is_alive()
+
+    verify = kbc.connect(path)
+    try:
+        assert outcomes["pause"].state == "paused"
+        assert outcomes["claim"].reason == "kanban_paused"
+        assert _claim_path_snapshot(verify, task_id) == before
+    finally:
+        verify.close()
+
+
+def test_resume_first_race_creates_exactly_one_consistent_run(tmp_path, monkeypatch):
+    path = tmp_path / "resume.db"
+    setup = kbc.connect(path)
+    task_id = _queued_task(setup, "ready")
+    kanban_control.pause_board(setup, changed_by="operator")
+    setup.close()
+    entered_resume = threading.Event()
+    release_resume = threading.Event()
+    original_read = kanban_control.read_control
+
+    def blocked_resume_read(connection):
+        if threading.current_thread().name == "resume-writer" and not entered_resume.is_set():
+            entered_resume.set()
+            assert release_resume.wait(5)
+        return original_read(connection)
+
+    monkeypatch.setattr(kanban_control, "read_control", blocked_resume_read)
+    outcomes = {}
+
+    def resume_worker():
+        connection = kbc.connect(path)
+        outcomes["resume"] = kanban_control.resume_board(
+            connection, changed_by="operator",
+        )
+        connection.close()
+
+    def claim_worker():
+        connection = kbc.connect(path)
+        outcomes["claim"] = kb.claim_task_result(
+            connection, task_id, claimer="worker",
+        )
+        connection.close()
+
+    resume_thread = threading.Thread(target=resume_worker, name="resume-writer")
+    claim_thread = threading.Thread(target=claim_worker, name="claim-writer")
+    resume_thread.start()
+    assert entered_resume.wait(5)
+    claim_thread.start()
+    release_resume.set()
+    resume_thread.join(5)
+    claim_thread.join(5)
+    assert not resume_thread.is_alive() and not claim_thread.is_alive()
+
+    verify = kbc.connect(path)
+    try:
+        task = kb.get_task(verify, task_id)
+        runs = verify.execute(
+            "SELECT id, status FROM task_runs WHERE task_id=?", (task_id,),
+        ).fetchall()
+        assert outcomes["resume"].state == "running"
+        assert outcomes["claim"].task is not None
+        assert task is not None and task.status == "running"
+        assert task.current_run_id == runs[0]["id"]
+        assert [(row["status"]) for row in runs] == ["running"]
+    finally:
+        verify.close()

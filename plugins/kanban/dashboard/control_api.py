@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -53,16 +54,33 @@ def _mutation_response(result: dict):
     return result
 
 
+def _request_actor(request: Request) -> str:
+    session = getattr(request.state, "session", None)
+    if session is not None and getattr(session, "user_id", None):
+        return f"{getattr(session, 'provider', 'session')}:{session.user_id}"
+    principal = getattr(request.state, "token_principal", None)
+    if principal is not None and getattr(principal, "principal", None):
+        return f"{getattr(principal, 'provider', 'token')}:{principal.principal}"
+    native = getattr(request.state, "native_http_principal", None)
+    if isinstance(native, dict):
+        caller = native.get("user_id") or native.get("client_id") or native.get("profile_id")
+        if caller:
+            return f"native:{Path(str(caller)).name}"
+    if getattr(request.app.state, "auth_required", False):
+        raise HTTPException(status_code=401, detail="authenticated principal unavailable")
+    return "dashboard-local"
+
+
 @router.get("/control")
 def get_control(board: Optional[str] = Query(None)):
     return _unknown_503(kanban_control.control_status(board=_board_or_http(board)))
 
 
 @router.post("/control/pause")
-def pause_control(payload: ControlMutation):
+def pause_control(payload: ControlMutation, request: Request):
     try:
         result = kanban_control.set_control_scope(
-            "paused", changed_by="dashboard", reason=payload.reason,
+            "paused", changed_by=_request_actor(request), reason=payload.reason,
             board=_board_or_http(payload.board),
         )
     except ValueError as exc:
@@ -71,10 +89,10 @@ def pause_control(payload: ControlMutation):
 
 
 @router.post("/control/resume")
-def resume_control(payload: ControlMutation):
+def resume_control(payload: ControlMutation, request: Request):
     try:
         result = kanban_control.set_control_scope(
-            "running", changed_by="dashboard", reason=payload.reason,
+            "running", changed_by=_request_actor(request), reason=payload.reason,
             board=_board_or_http(payload.board),
         )
     except ValueError as exc:

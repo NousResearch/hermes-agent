@@ -1,4 +1,6 @@
 """A user rename addressed to an ended compression segment lands on the conversation's live tip (#152624)."""
+import pytest
+
 from hermes_state import SessionDB
 import hermes_state_runtime as rt
 
@@ -44,3 +46,16 @@ def test_name_held_by_ended_ancestor_moves_to_the_tip(tmp_path):
         # A rename sent to the tip itself (the classic CLI path) is unchanged.
         assert _rename(db, epoch, 'chat-2', 'Tip name', 'r2')['title'] == 'Tip name'
         assert db.get_session('chat-2')['title'] == 'Tip name'
+
+
+def test_a_tip_rename_makes_an_older_copy_of_any_segment_stale(tmp_path):
+    """Client A read the ended segment, client B then renamed the live tip: A's rename (now landing
+    on that same tip) must refuse instead of silently overwriting B's name."""
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        epoch = _compressed(db)
+        stale = db.get_session('chat')['runtime_revision']
+        _rename(db, epoch, 'chat-2', 'B name', 'b1')
+        with pytest.raises(rt.RuntimeStoreError, match='revision_conflict'):
+            rt.mutate_runtime_session(db, epoch=epoch, principal_id='human', session_id='chat', request_id='a1',
+                                      expected_revision=stale, operation='sidebar', payload={'title': 'A name'})
+        assert db.get_session('chat-2')['title'] == 'B name'

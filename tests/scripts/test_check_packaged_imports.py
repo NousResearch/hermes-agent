@@ -63,3 +63,24 @@ def test_files_under_a_namespace_directory_are_scanned(tmp_path):
         "toolsets/__init__.py": "",
     })
     assert unshipped_imports(repo) == ["toolsets"]
+
+
+def test_optional_imports_are_not_wheel_dependencies(tmp_path):
+    # A missing module is caught by the except ImportError handler, and TYPE_CHECKING never runs.
+    repo = _repo(tmp_path, {
+        "agent/__init__.py": "",
+        "agent/a.py": "try:\n    import optpkg\nexcept ImportError:\n    optpkg = None\n",
+        "agent/b.py": "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from optpkg import thing\n",
+        "optpkg/__init__.py": "",
+    })
+    assert unshipped_imports(repo) == []
+
+
+def test_a_package_under_an_unshipped_namespace_directory_is_flagged(tmp_path):
+    repo = _repo(tmp_path, {
+        "pyproject.toml": '[tool.setuptools.packages.find]\ninclude = ["agent"]\n',
+        "agent/__init__.py": "",
+        "agent/a.py": "import agent.ns.missing\n",
+        "agent/ns/missing/__init__.py": "",
+    })
+    assert unshipped_imports(repo) == ["agent.ns.missing"]

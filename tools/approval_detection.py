@@ -45,6 +45,7 @@ from tools.approval_detection_lex import (
     _quoted_heredoc_body_spans,  # re-exported: tools.approval_detection_shell_scope imports it from here
     _read_shell_word,
     _skip_shell_whitespace,
+    _simple_command_end,
     _splice,
     _strip_shell_word_syntax,  # re-exported: tools.approval_wrappers imports it from here
 )
@@ -1206,40 +1207,6 @@ def _substitution_body_spans(command: str) -> list[tuple[int, int]]:
 
     scan(0, len(command))
     return spans
-
-
-def _simple_command_end(command: str, start: int, spans: list[tuple[int, int]]) -> int:
-    """End offset of the simple command starting at *start*: bounded by the innermost substitution
-    body that contains it, then by the first unquoted separator or closing ``)`` at its own nesting
-    level. Nested ``$(...)`` / backtick operands are skipped as units, so their quotes and
-    separators never leak into (or truncate) the enclosing command's words — without this,
-    ``echo "$(grep "a|b" f; bash -c 'reboot')"`` tokenized ``bash`` through the enclosing ``)"``,
-    lexed as malformed, and the shell payload was silently skipped."""
-    limit = len(command)
-    enclosing = max((span for span in spans if span[0] <= start < span[1]), default=None)
-    if enclosing is not None:
-        limit = enclosing[1]
-    depth = 0  # unquoted `(`: subshells, process substitutions, arrays
-    previous = None
-    for step in _scan_shell(command, start, limit, subst="uq", brace=True, comments=True):
-        kind, i, _, quote = step
-        prior, previous = previous, step
-        if kind == "comment":
-            return i
-        if kind != "char" or quote is not None:
-            continue
-        ch = command[i]
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            if depth == 0:
-                return i
-            depth -= 1
-        elif ch == "`" or (depth == 0 and ch in ";&|\n"
-                           and not _is_redirection_operator_char(command, i, prior)):
-            # A backtick left as a char has no closer: it ends the command it sits inside.
-            return i
-    return limit
 
 
 def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:

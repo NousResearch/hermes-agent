@@ -246,3 +246,37 @@ def _blank_shell_redirections(text: str, start: int) -> str:
         edits.append((op_start, target_end, " " * (target_end - op_start)))
         skip_to, previous = target_end, None
     return _splice(text, edits) if edits else text
+
+
+def _simple_command_end(command: str, start: int, spans: list[tuple[int, int]]) -> int:
+    """End offset of the simple command starting at *start*: bounded by the innermost substitution
+    body that contains it, then by the first unquoted separator or closing ``)`` at its own nesting
+    level. Nested ``$(...)`` / backtick operands are skipped as units, so their quotes and
+    separators never leak into (or truncate) the enclosing command's words — without this,
+    ``echo "$(grep "a|b" f; bash -c 'reboot')"`` tokenized ``bash`` through the enclosing ``)"``,
+    lexed as malformed, and the shell payload was silently skipped."""
+    limit = len(command)
+    enclosing = max((span for span in spans if span[0] <= start < span[1]), default=None)
+    if enclosing is not None:
+        limit = enclosing[1]
+    depth = 0  # unquoted `(`: subshells, process substitutions, arrays
+    previous = None
+    for step in _scan_shell(command, start, limit, subst="uq", brace=True, comments=True):
+        kind, i, _, quote = step
+        prior, previous = previous, step
+        if kind == "comment":
+            return i
+        if kind != "char" or quote is not None:
+            continue
+        ch = command[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth == 0:
+                return i
+            depth -= 1
+        elif ch == "`" or (depth == 0 and ch in ";&|\n"
+                           and not _is_redirection_operator_char(command, i, prior)):
+            # A backtick left as a char has no closer: it ends the command it sits inside.
+            return i
+    return limit

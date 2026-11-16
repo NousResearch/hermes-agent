@@ -1,7 +1,7 @@
 name: kumpay-aeo
 repo: https://github.com/kumpayinteractive-sudo/kumpay-aeo-mcp
-sha: 6c11360f9e7e149996d50298868bb4723bc4c4d6
-description: "Kumpay AEO gives Hermes live SEO and AI-search visibility data: keyword research, SERP competition analysis, backlink profiles, full site audits, and AI visibility scoring via 7 metered MCP tools on a hosted server. Portable Agent Plugins v1 package with the hosted MCP server (remote streamable-http, API-key auth) and 1 skill. Disclosure — competition and backlink analysis cost 10 Kumpay credits each and site audits cost 1 credit per page (Hermes asks before each call and enforces a 100-credit per-chat spend limit); the domains, keywords and business names you check are sent to mcp.kumpaytech.com and its upstream SEO data provider; API keys are issued manually after a credit-pack purchase."
+sha: 07690a18b13c3ec55e903aa10b683df61e00bbe2
+description: "Kumpay AEO gives Hermes live SEO and AI-search visibility data: keyword research, SERP competition analysis, backlink profiles, full site audits, and AI visibility scoring via 7 metered MCP tools on a hosted server. Portable Agent Plugins v1 package with the hosted MCP server (remote streamable-http, API-key auth) and 1 skill. Disclosure — competition and backlink analysis cost €2.63 each and site audits cost €0.26 per page (Hermes asks before each call and enforces a €26.35 per-chat spend limit); the domains, keywords and business names you check are sent to mcp.kumpaytech.com and its upstream SEO data provider; API keys are issued manually after a credit-pack purchase."
 maintainer: kumpayinteractive-sudo
 tier: community
 category: tools

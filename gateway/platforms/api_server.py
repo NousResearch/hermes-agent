@@ -74,6 +74,7 @@ _CAPABILITY_ENDPOINTS = (
     ("session_update", ("PATCH", "/api/sessions/{session_id}")),
     ("session_delete", ("DELETE", "/api/sessions/{session_id}")),
     ("session_messages", ("GET", "/api/sessions/{session_id}/messages")),
+    ("session_append_messages", ("POST", "/api/sessions/{session_id}/messages", "session_append_messages")),
     ("session_fork", ("POST", "/api/sessions/{session_id}/fork")),
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
@@ -1564,6 +1565,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("POST", "/api/sessions/{session_id}/messages", self._handle_append_session_messages),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
@@ -2357,6 +2359,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
             **_STATIC_FEATURE_FLAGS,
             "run_unknown_resolution": getattr(runner, "session_authority", None) is not None,
+            "session_append_messages": getattr(runner, "session_authority", None) is not None,
             "cors": bool(self._cors_origins)}
         return web.json_response({
             "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
@@ -2726,39 +2729,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     @_require_auth
     async def _handle_session_messages(self, request: web.Request) -> web.Response:
-        """GET /api/sessions/{session_id}/messages."""
-        session_id = request.match_info["session_id"]
-        _, err = await self._get_existing_session_or_404(session_id)
-        if err:
-            return err
-        db = await self._ensure_session_db_async()
-        resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
-        raw_limit, raw_offset = request.query.get("limit"), request.query.get("offset", "0")
-        order = request.query.get("order")
-        if order not in (None, "oldest", "latest"):
-            return _error_response("order must be one of: oldest, latest", 400, code="invalid_pagination")
-        try:
-            offset = int(raw_offset)
-            requested_limit = None if raw_limit is None else int(raw_limit)
-        except (TypeError, ValueError):
-            offset = requested_limit = -1
-        if offset < 0 or (requested_limit is not None and requested_limit < 0):
-            return _error_response("limit and offset must be non-negative integers", 400, code="invalid_pagination")
-        default_page = requested_limit is None
-        latest_page = order == "latest" or (order is None and default_page)
-        limit = 500 if default_page else min(requested_limit, 500)
-        include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=False)
-        # Compression lineage: return root→tip messages, matching the REST router (#51058).
-        messages = await asyncio.to_thread(
-            db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
-            include_compacted=include_compacted, include_ancestors=True)
-        return web.json_response({
-            "object": "list", "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
-            "pagination": {
-                "limit": limit, "offset": offset,
-                "order": order or ("latest" if default_page else "oldest"),
-                "returned": len(messages)}})
+        from gateway.platforms.api_server_session_messages import read_messages
+        return await read_messages(self, request)
+
+    @_require_auth
+    async def _handle_append_session_messages(self, request: web.Request) -> web.Response:
+        from gateway.platforms.api_server_session_messages import append_messages
+        return await append_messages(self, request)
 
     @_require_auth
     async def _handle_fork_session(self, request: web.Request) -> web.Response:

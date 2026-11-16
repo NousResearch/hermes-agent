@@ -39,7 +39,9 @@ def _reviewing(live):
     """A cold ``/refine`` review still running: its run token lives on this ``LiveSession``, so a
     second /refine joins it and the next turn cancels it (``_execute_claimed``)."""
     run = getattr(live.review, '_background_review_run', None)
-    return run is not None and not run.request_done.is_set()
+    external = getattr(live, 'external_review_task', None)
+    return ((run is not None and not run.request_done.is_set())
+            or (external is not None and not external.done()))
 
 
 def retire_idle(authority, session_id, live, target):

@@ -902,3 +902,11 @@ __all__ = [
     "TurnStatus", "VoicePartialPayload", "VoiceStatusPayload",
     "VoiceTranscriptPayload", "WakeDetectedPayload",
 ]
+
+
+class SessionMessagesAppendedPayload(Payload):
+    session_id: str
+    message_ids: list[int]
+
+
+event('session.messages.appended', SessionMessagesAppendedPayload)

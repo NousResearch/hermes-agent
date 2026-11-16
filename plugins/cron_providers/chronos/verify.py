@@ -18,7 +18,7 @@ _FIRE_PURPOSE = "cron_fire"
 
 # Process-wide PyJWKClient cache keyed by JWKS URL: PyJWKClient caches keys on the INSTANCE, so a
 # fresh client per fire re-fetched JWKS every time (portal rate-limits 403->401; relay 504s).
-_JWK_CLIENTS: Dict[str, Any] = {}
+_JWK_CLIENTS: dict[str, Any] = {}
 _JWK_CLIENTS_LOCK = threading.Lock()
 
 
@@ -39,7 +39,7 @@ def _get_jwk_client(jwks_url: str) -> Any:
 
 
 def verify_nas_fire_token(*, token: str, expected_audience: str, jwks_or_key: Optional[str] = None,
-                          issuer: Optional[str] = None, leeway_seconds: int = 30) -> Optional[Dict[str, Any]]:
+                          issuer: Optional[str] = None, leeway_seconds: int = 30) -> Optional[dict[str, Any]]:
     """Verify a NAS-minted cron-fire JWT; return decoded claims or None (never raises, so the
     handler answers 401 without leaking which check failed). Checks asymmetric signature (JWKS
     URL or inline PEM; symmetric rejected), ``aud``, ``exp``/``nbf`` with leeway, ``iss`` when
@@ -55,7 +55,7 @@ def verify_nas_fire_token(*, token: str, expected_audience: str, jwks_or_key: Op
             signing_key = _get_jwk_client(jwks_or_key).get_signing_key_from_jwt(token).key
         else:
             signing_key = jwks_or_key  # inline PEM public key (test / pinned-key deployments)
-        decode_kwargs: Dict[str, Any] = dict(
+        decode_kwargs: dict[str, Any] = dict(
             algorithms=["RS256", "RS384", "RS512", "ES256", "ES384"], audience=expected_audience,
             leeway=leeway_seconds, options={"require": ["exp", "aud"]})
         if issuer:
@@ -70,6 +70,6 @@ def verify_nas_fire_token(*, token: str, expected_audience: str, jwks_or_key: Op
     return claims
 
 
-def get_fire_verifier() -> Callable[..., Optional[Dict[str, Any]]]:
+def get_fire_verifier() -> Callable[..., Optional[dict[str, Any]]]:
     """Return the active inbound-fire verifier (default: the NAS-JWT verifier)."""
     return verify_nas_fire_token

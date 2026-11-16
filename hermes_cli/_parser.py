@@ -6,6 +6,9 @@ gateway, sessions, …) is built by ``hermes_cli/subcommands/<group>.py`` and wi
 """
 
 import argparse
+import difflib
+import re
+import sys
 from functools import lru_cache
 
 # `--profile` / `-p` is consumed by ``main._apply_profile_override`` before argparse runs
@@ -19,9 +22,22 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-
 # snapshot lacks AND derivation regresses.
 _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
     "-z", "--oneshot", "-m", "--model", "--provider", "--reasoning", "-t", "--toolsets",
-    "-r", "--resume", "-s", "--skills", "--usage-file", "--in",
+    "-r", "--resume", "-s", "--skills", "--usage-file", "--in", "--cpu-profile",
 })
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
+
+
+def _cfg_path() -> str:
+    """``~/.hermes/config.yaml`` spelled for the active profile, for help text.
+
+    ``main._apply_profile_override`` builds this parser (via ``top_level_value_flag_sets``) BEFORE
+    it re-homes the process to the sticky ``active_profile``; ``get_hermes_home()`` would emit the
+    "[HERMES_HOME fallback] ... wrong profile" warning on every ``hermes`` command for that
+    throwaway help string. Read the process home directly: after the override it IS the profile home.
+    """
+    from hermes_constants import display_hermes_home, get_process_hermes_home
+
+    return f"{display_hermes_home(get_process_hermes_home())}/config.yaml"
 
 
 @lru_cache(maxsize=1)
@@ -50,6 +66,21 @@ def top_level_value_flag_sets() -> tuple[frozenset[str], frozenset[str]]:
         return _VALUE_FLAGS_FALLBACK, _OPTIONAL_VALUE_FLAGS_FALLBACK
 
 
+def command_argv(argv: list[str]) -> list[str]:
+    """Subcommand and its arguments, excluding top-level flags and their values."""
+    required, optional = top_level_value_flag_sets()
+    value_flags = required | optional | {flag for flag, takes_value in PRE_ARGPARSE_INHERITED_FLAGS if takes_value}
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "--":
+            return argv[i + 1:]
+        if not token.startswith("-"):
+            return argv[i:]
+        i += 2 if "=" not in token and token in value_flags and i + 1 < len(argv) else 1
+    return []
+
+
 def _inherited_flag(parser, *args, **kwargs):
     """``parser.add_argument`` + tag the Action ``inherit_on_relaunch`` for ``hermes_cli.relaunch``."""
     action = parser.add_argument(*args, **kwargs)
@@ -73,18 +104,26 @@ Examples:
     hermes auth add <provider>    Add a pooled credential
     hermes auth list              List pooled credentials
     hermes auth remove <p> <t>    Remove pooled credential by index, id, or label
-    hermes auth reset <provider>  Clear exhaustion status for a provider
+    hermes auth reset <p> [t]     Clear exhaustion status for a provider, or one credential
+    hermes auth priority <p> <t> <n>  Move a pooled credential to priority n (0 = tried first)
+    hermes auth refresh <p> [t]   Refresh a pooled OAuth credential and clear its cooldown
     hermes model                  Select default model
     hermes fallback [list]        Show fallback provider chain
     hermes fallback add           Add a fallback provider (same picker as `hermes model`)
     hermes fallback remove        Remove a fallback provider from the chain
+    hermes fallback check [--live]  Check each fallback entry can be used (exit 1 if not)
     hermes config                 View configuration
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
     hermes gateway                Run messaging gateway
+    hermes gateway install        Install gateway background service
+    hermes gateway start          Start the installed gateway service
+    hermes gateway stop           Stop the gateway service
+    hermes gateway status         Show gateway status
+    hermes -p <profile> <cmd>     Run any command against a named profile's
+                                  home (also --profile) — e.g. hermes -p coder gateway stop
     hermes -s hermes-agent-dev,github-auth
     hermes -w                     Start in isolated git worktree
-    hermes gateway install        Install gateway background service
     hermes sessions list          List past sessions
     hermes sessions browse        Interactive session picker
     hermes sessions rename ID T   Rename/title a session
@@ -119,6 +158,10 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "(estimated cost, token counts, model, api_calls) to PATH. "
         "The report is written even when the run fails, so pipelines "
         "can always account for spend. No effect outside -z/--oneshot."))
+    add("--cpu-profile", metavar="PATH", default=None, help=(
+        "Profile this process with cProfile and write PATH (pstats) plus PATH.txt (top functions) "
+        "on exit. A relative PATH goes under the profile's logs/profiles/. Adds overhead for as "
+        "long as the process runs; under --tui it profiles the launcher, not the agent backend."))
     # --model / --provider are accepted at the top level so they can pair with -z without the
     # `chat` subcommand; if neither -z nor a subcommand consumes them, they fall through as None.
     inherited(parser, "-m", "--model", default=None, help=(
@@ -160,14 +203,18 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
               help="Bypass all dangerous command approval prompts (use at your own risk)")
     inherited(parser, "--pass-session-id", action="store_true", default=False,
               help="Include the session ID in the agent's system prompt")
+    inherited(parser, "--checkpoints", action="store_true", default=False,
+              help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)")
     inherited(parser, "--ignore-user-config", action="store_true", default=False,
-              help="Ignore ~/.hermes/config.yaml and fall back to built-in defaults (credentials in .env are still loaded)")
+              help=f"Ignore {_cfg_path()} and fall back to built-in defaults (credentials in .env are still loaded)")
     inherited(parser, "--ignore-rules", action="store_true", default=False,
               help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills")
     inherited(parser, "--safe-mode", action="store_true", default=False,
               help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules)")
     inherited(parser, "--tui", action="store_true", default=False,
               help="Launch the modern TUI instead of the classic REPL")
+    inherited(parser, "--native", "--tui-native", dest="tui_native", action="store_true", default=False,
+              help="With --tui: use native terminal scrollback and disable mouse tracking")
     inherited(parser, "--cli", action="store_true", default=False,
               help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
     inherited(parser, "--dev", dest="tui_dev", action="store_true", default=False,
@@ -199,8 +246,7 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "interpreted, so quotes, $(...), and backticks are preserved "
         "verbatim. Mutually exclusive with -q."))
     # Distinct dest: the top-level `-z/--oneshot PROMPT` is value-taking and its dispatch sites do
-    # `if args.oneshot: _run_and_exit_oneshot(args.oneshot)` — a shared boolean dest would be
-    # passed as the prompt.
+    # read `args.oneshot` as the prompt — a shared boolean dest would be passed as the prompt.
     add("--oneshot", dest="oneshot_exit", action="store_true", default=False, help=(
         "With -q/--query-file: answer the query and exit (legacy "
         "single-query behavior) instead of seeding an interactive "
@@ -219,9 +265,18 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     # too; runtime resolution (resolve_runtime_provider) validates, same as the top-level flag.
     inherited(chat_parser, "--provider", default=SUPPRESS,
               help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.")
+    # Explicit endpoint launches (custom provider, --safe-mode isolation) are frozen into the
+    # session policy by the gateway; the key lives only in the authority's memory, never on disk.
+    add("--base-url", dest="base_url", default=SUPPRESS, metavar="URL",
+        help="OpenAI-compatible endpoint for --provider custom (e.g. http://127.0.0.1:8000/v1).")
+    add("--api-key", dest="api_key", default=SUPPRESS, metavar="KEY",
+        help="API key for this launch only; not persisted.")
     add("-v", "--verbose", action="store_true", default=SUPPRESS, help="Verbose output")
     add("-Q", "--quiet", action="store_true",
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.")
+    add("--format", choices=["text", "stream-json"], default="text", dest="output_format", help=(
+        "Output format for single-query mode (-q). 'text' prints the final response as plain text (default). "
+        "'stream-json' emits newline-delimited JSON events (JSONL), implies --quiet, and cannot be combined with --tui."))
     add("--resume", "-r", metavar="SESSION_ID", default=SUPPRESS, help=(
         "Resume a previous session by ID (shown on exit), or 'latest' "
         "for the most recent session"))
@@ -243,10 +298,10 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "Auto-approve any unseen shell hooks declared in config.yaml "
         "without a TTY prompt (see also HERMES_ACCEPT_HOOKS env var and "
         "hooks_auto_accept: in config.yaml)."))
-    add("--checkpoints", action="store_true", default=False,
-        help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)")
+    inherited(chat_parser, "--checkpoints", action="store_true", default=SUPPRESS,
+              help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)")
     add("--max-turns", type=int, default=None, metavar="N",
-        help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)")
+        help="Maximum tool-calling iterations per conversation turn (default: unlimited, or agent.max_turns in config)")
     add("--run-budget", type=float, default=None, metavar="SECONDS", dest="run_budget", help=(
         "Optional wall-clock budget in seconds for each conversation run. "
         "At 80%% elapsed the agent gets a one-time wrap-up notice, and "
@@ -259,7 +314,7 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     inherited(chat_parser, "--pass-session-id", action="store_true", default=SUPPRESS,
               help="Include the session ID in the agent's system prompt")
     inherited(chat_parser, "--ignore-user-config", action="store_true", default=SUPPRESS,
-              help="Ignore ~/.hermes/config.yaml and fall back to built-in defaults (credentials in .env are still loaded). Useful for isolated CI runs, reproduction, and third-party integrations.")
+              help=f"Ignore {_cfg_path()} and fall back to built-in defaults (credentials in .env are still loaded). Useful for isolated CI runs, reproduction, and third-party integrations.")
     inherited(chat_parser, "--ignore-rules", action="store_true", default=SUPPRESS,
               help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.")
     inherited(chat_parser, "--safe-mode", action="store_true", default=SUPPRESS,
@@ -268,11 +323,63 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.")
     inherited(chat_parser, "--tui", action="store_true", default=SUPPRESS,
               help="Launch the modern TUI instead of the classic REPL")
+    inherited(chat_parser, "--native", "--tui-native", dest="tui_native", action="store_true", default=SUPPRESS,
+              help="Use native terminal scrollback and disable mouse tracking")
     inherited(chat_parser, "--cli", action="store_true", default=SUPPRESS,
               help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
     inherited(chat_parser, "--dev", dest="tui_dev", action="store_true", default=SUPPRESS,
               help="With --tui: run TypeScript sources via tsx (skip dist build)")
     return chat_parser
+
+
+def _plugin_command_install_hint(prog: str, value: str):
+    """Install command when *value* names a catalog memory plugin that resolves nowhere: its
+    ``hermes <name>`` command exists only once the plugin is installed. Top level only; never raises."""
+    if prog != "hermes" or not re.fullmatch(r"[a-z0-9_-]{1,64}", value):
+        return None
+    try:
+        from plugins.memory import find_provider_dir
+        if find_provider_dir(value) is not None:
+            return None
+        from hermes_cli.memory_provider_migration import catalog_install_hint
+        return catalog_install_hint(value, category="memory")
+    except Exception:
+        return None
+
+
+def _moved_command_hint(prog: str, value: str) -> str:
+    """Where a command that left core went (``hermes auth spotify``, ``hermes mcp serve``, ...)."""
+    from hermes_cli.left_core_migration import moved_command_hint
+    return moved_command_hint(prog, value)
+
+
+class HermesArgumentParser(argparse.ArgumentParser):
+    """argparse parser whose unknown-subcommand error is three short lines, not a 70-name dump.
+
+    Stock argparse prints the full usage block plus ``(choose from 'chat', 'model', …)`` when
+    the first positional is not a registered subcommand. That buries the only useful fact
+    (the word is not a command) and offers no closest match. Every other error keeps the
+    stock usage + message shape.
+    """
+
+    def _check_value(self, action, value):
+        if isinstance(action, argparse._SubParsersAction) and value not in action.choices:
+            # ``self.prog`` is "hermes" at the top level and "hermes gateway" for a nested group
+            # (argparse hands add_parser() the parent's class), so the copy stays correct for both.
+            lines = [f"{self.prog}: '{value}' is not a `{self.prog}` command."]
+            close = difflib.get_close_matches(str(value), list(action.choices), n=3, cutoff=0.6)
+            install = _plugin_command_install_hint(self.prog, str(value))
+            moved = "" if install else _moved_command_hint(self.prog, str(value))
+            if install:
+                # A provider that left core (``hermes honcho``) registers its command only once installed.
+                lines.append(f"The '{value}' memory plugin is not installed. Install it with: {install}")
+            elif moved:
+                lines.append(moved)
+            elif close:
+                lines.append(f"Did you mean: {', '.join(close)}?")
+            lines.append(f"Run `{self.prog} --help` to see all commands.")
+            self.exit(2, "\n".join(lines) + "\n")
+        super()._check_value(action, value)
 
 
 def build_top_level_parser():
@@ -282,9 +389,141 @@ def build_top_level_parser():
     ``chat_parser.set_defaults(func= cmd_chat)`` and registers further subparsers via
     ``subparsers.add_parser(...)``.
     """
-    parser = argparse.ArgumentParser(
+    parser = HermesArgumentParser(
         prog="hermes", description="Hermes Agent - AI assistant with tool-calling capabilities",
         formatter_class=argparse.RawDescriptionHelpFormatter, epilog=_EPILOGUE)
     _add_top_level_flags(parser)
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    # metavar keeps the usage line to ``hermes [...] <command>`` instead of the brace list of
+    # every subcommand name; ``hermes --help`` still lists each command with its help row.
+    subparsers = parser.add_subparsers(dest="command", help="Command to run", metavar="<command>")
     return parser, subparsers, _build_chat_parser(subparsers)
+
+
+# Pre-parse of `-p`/`--profile` (main._apply_profile_override); shared with the container boot
+# reconciler, which reads the container CMD without importing the side-effectful CLI entry point.
+_PROFILE_NAME_RE = r"^[a-z0-9][a-z0-9_-]{0,63}$"  # mirrors hermes_cli.profiles._PROFILE_ID_RE
+
+
+def _inside_mcp_add_args(argv: list, index: int) -> bool:
+    """True once argv reaches `hermes mcp add ... --args <command argv>`.
+
+    ``mcp add --args`` is command-argv passthrough. Flags after that point
+    belong to the child MCP command (for example Docker MCP Toolkit's
+    ``--profile``), not to Hermes' own profile selector.
+    """
+    try:
+        mcp_index = argv.index("mcp", 0, index)
+        argv.index("add", mcp_index + 1, index)
+    except ValueError:
+        return False
+    return True
+
+
+def _looks_like_hermes_invocation() -> bool:
+    """False when ``sys.argv`` belongs to a test runner rather than a ``hermes`` run.
+
+    pytest's own ``-p no:xdist`` reaches ``scan_profile_flag`` through ``sys.argv`` at import
+    time; it must stay a silent skip, while a real ``hermes -p 'Work Bot'`` must fail loudly.
+    """
+    return "pytest" not in (sys.argv[0] or "")
+
+
+def _exit_invalid_profile_name(value: str) -> None:
+    from hermes_cli.profiles import _invalid_profile_name_error
+
+    print(f"Error: {_invalid_profile_name_error(value)}", file=sys.stderr)
+    print("Run `hermes profile list` to see your profiles.", file=sys.stderr)
+    sys.exit(2)
+
+
+def _looks_like_option_value(value: str) -> bool:
+    """A ``-p`` value that clearly belongs to some other tool (pytest's ``-p no:xdist``, a
+    third-party ``-p --flag``), never a mistyped profile name."""
+    return value.startswith("-") or ":" in value
+
+
+def scan_profile_flag(argv: list) -> tuple:
+    """Find -p/--profile/--profile= in argv -> (name, tokens_consumed, index).
+
+    Historically the flag worked even after the subcommand (`hermes chat -p
+    coder`), so scan broadly; stop at ``--`` and at the `mcp add --args`
+    passthrough region. The value is normalised (strip + casefold, matching
+    ``profiles.normalize_profile_name``) before validation so ``-p Work`` selects
+    ``work``. A value that cannot be a profile name is rejected so
+    resolve_profile_env never sys.exits on it; the rejection is explained (exit 2)
+    only when the flag comes BEFORE the first subcommand token under a real
+    ``hermes`` run — after a subcommand, ``-p`` may belong to that subcommand or a
+    plugin (`hermes kanban ... -p 8080`), and option-looking values (``no:xdist``,
+    ``--flag``) are always a silent skip.
+    """
+    value_flags, optional_value_flags = top_level_value_flag_sets()
+    i = 0
+    saw_subcommand = False
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--" or (arg == "--args" and _inside_mcp_add_args(argv, i)):
+            break
+        if arg in {"--profile", "-p"} and i + 1 < len(argv):
+            raw = argv[i + 1]
+            value = raw.strip().casefold()
+            if re.match(_PROFILE_NAME_RE, value):
+                return value, 2, i
+            if not saw_subcommand and not _looks_like_option_value(raw) and _looks_like_hermes_invocation():
+                _exit_invalid_profile_name(raw)
+            break
+        if arg.startswith("--profile="):
+            return arg.split("=", 1)[1].strip().casefold(), 1, i
+        takes_value = "=" not in arg and i + 1 < len(argv) and (
+            arg in value_flags
+            or (arg in optional_value_flags and not argv[i + 1].startswith("-"))
+        )
+        if not takes_value and not arg.startswith("-"):
+            saw_subcommand = True
+        i += 2 if takes_value else 1
+    return None, 0, None
+
+
+def scan_profile_flag_quietly(argv: list) -> tuple | None:
+    """``scan_profile_flag`` for callers that only inspect a command line (the container boot
+    reconciler): None where the CLI would reject the ``-p`` value and exit, never printing or exiting."""
+    import contextlib
+    import io
+
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return scan_profile_flag(argv)
+    except SystemExit:
+        return None
+
+
+def gateway_run_no_supervise(argv) -> bool:
+    """True when the CLI would parse ``argv`` (no program name) as ``gateway run --no-supervise``.
+
+    The one decision for "this command is a foreground, unsupervised gateway run", shared by the
+    early profile pre-parse (``main._s6_supervised_gateway_run``) and the container boot
+    reconciler so both agree: the real parsers decide, so accepted abbreviations
+    (``--no-supervis``) and flag placement count exactly as they do when the command runs.
+    """
+    import contextlib
+    import io
+
+    from hermes_cli.subcommands.gateway import build_gateway_parser
+
+    args = list(argv)
+    scanned = scan_profile_flag_quietly(args)
+    if scanned is None:  # the CLI rejects this -p value and runs nothing
+        return False
+    _, consumed, index = scanned
+    if index is not None:  # stripped before argparse, as main._apply_profile_override does
+        args = args[:index] + args[index + consumed:]
+
+    parser, subparsers, _ = build_top_level_parser()
+    build_gateway_parser(subparsers, cmd_gateway=None, cmd_proxy=None, cmd_gateway_enroll=None)
+    sink = io.StringIO()
+    try:  # an invalid command (or --help) exits without running a gateway
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            parsed = parser.parse_args(args)
+    except SystemExit:
+        return False
+    return (parsed.command == "gateway" and getattr(parsed, "gateway_command", None) == "run"
+            and bool(getattr(parsed, "no_supervise", False)))

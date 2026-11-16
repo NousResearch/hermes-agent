@@ -8,20 +8,22 @@ skill share a slug, the bundle wins — slash dispatch checks bundles first, on 
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home
+from utils import atomic_write_text
 from agent.skill_commands import command_snapshot, diff_command_snapshots, resolve_slash_key, slugify_skill_name as _slugify
 
 logger = logging.getLogger(__name__)
 
-_bundles_cache: Dict[str, Dict[str, Any]] = {}
-_bundles_cache_mtime: Optional[float] = None
+_bundles_cache: dict[str, dict[str, Any]] = {}
+_bundles_cache_mtime: Optional[tuple] = None  # _bundles_sig() (content digests) of the cached scan
 
 
 def _bundles_dir() -> Path:
@@ -30,26 +32,28 @@ def _bundles_dir() -> Path:
     return Path(override).expanduser() if override else get_hermes_home() / "skill-bundles"
 
 
-def _iter_bundle_files() -> List[Path]:
+def _iter_bundle_files() -> list[Path]:
     base = _bundles_dir()
     return [f for ext in ("*.yaml", "*.yml") for f in sorted(base.glob(ext))] if base.exists() else []
 
 
-def _max_mtime(files: List[Path]) -> float:
-    """Highest mtime across the bundle files plus the dir itself (dir mtime catches deletions)."""
-    mtimes = []
-    for f in (_bundles_dir(), *files):
+def _bundles_sig(files: list[Path]) -> tuple:
+    """Sorted ``(path, content digest)`` of the bundle files. Content, not timestamps: a same-size
+    rewrite within one coarse mtime/ctime tick, or under host/filesystem clock skew, still moves it.
+    Bundles are a handful of small YAML files, so reading them per check is cheap."""
+    entries = []
+    for f in files:
         try:
-            mtimes.append(f.stat().st_mtime)
+            entries.append((str(f), hashlib.sha256(f.read_bytes()).hexdigest()))
         except OSError:
             continue
-    return max(mtimes, default=0.0)
+    return tuple(sorted(entries))
 
 
-def _load_bundle_file(path: Path) -> Optional[Dict[str, Any]]:
+def _load_bundle_file(path: Path) -> Optional[dict[str, Any]]:
     """Parse one bundle YAML; ``None`` (logged) on any error so a broken bundle can't break discovery."""
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
     except OSError as exc:
         logger.warning("Could not read bundle %s: %s", path, exc)
         return None
@@ -79,11 +83,13 @@ def _load_bundle_file(path: Path) -> Optional[Dict[str, Any]]:
     }
 
 
-def scan_bundles() -> Dict[str, Dict[str, Any]]:
+def scan_bundles() -> dict[str, dict[str, Any]]:
     """Rebuild the ``"/slug"`` -> bundle info cache; duplicate slugs keep the first (alphabetical)."""
     global _bundles_cache, _bundles_cache_mtime
     files = _iter_bundle_files()
-    out: Dict[str, Dict[str, Any]] = {}
+    # Stamp BEFORE parsing: a write landing mid-scan must leave the stamp stale, not match it.
+    sig = _bundles_sig(files)
+    out: dict[str, dict[str, Any]] = {}
     for f in files:
         info = _load_bundle_file(f)
         if not info:
@@ -94,13 +100,13 @@ def scan_bundles() -> Dict[str, Dict[str, Any]]:
             continue
         out[key] = info
     _bundles_cache = out
-    _bundles_cache_mtime = _max_mtime(files)
+    _bundles_cache_mtime = sig
     return out
 
 
-def get_skill_bundles() -> Dict[str, Dict[str, Any]]:
-    """Current bundle mapping; rescans only when a bundle file or the dir mtime changed."""
-    current_mtime = _max_mtime(_iter_bundle_files())
+def get_skill_bundles() -> dict[str, dict[str, Any]]:
+    """Current bundle mapping; rescans only when the set of bundle files or their content changed."""
+    current_mtime = _bundles_sig(_iter_bundle_files())
     if not _bundles_cache or _bundles_cache_mtime != current_mtime:
         scan_bundles()
     return _bundles_cache
@@ -111,20 +117,20 @@ def resolve_bundle_command_key(command: str) -> Optional[str]:
     return resolve_slash_key(command, get_skill_bundles())
 
 
-def reload_bundles() -> Dict[str, Any]:
+def reload_bundles() -> dict[str, Any]:
     """Re-scan and return an ``added``/``removed``/``unchanged``/``total`` diff (same shape as reload_skills)."""
     before = command_snapshot(_bundles_cache)
     return diff_command_snapshots(before, command_snapshot(scan_bundles()))
 
 
-def list_bundles() -> List[Dict[str, Any]]:
+def list_bundles() -> list[dict[str, Any]]:
     """Return a sorted list of bundle info dicts for display."""
     return sorted(get_skill_bundles().values(), key=lambda b: b["slug"])
 
 
 def build_bundle_invocation_message(
     cmd_key: str, user_instruction: str = "", task_id: str | None = None, platform: str | None = None,
-) -> Optional[Tuple[str, List[str], List[str]]]:
+) -> Optional[tuple[str, list[str], list[str]]]:
     """Build the user message for a bundle invocation: ``(message,
     loaded_skill_names, missing_skill_names)`` or ``None`` if the bundle wasn't
     found. Uninstalled members are skipped with a note; disabled ones too, since
@@ -171,7 +177,7 @@ def bundle_path_for(name: str) -> Path:
     return _bundles_dir() / f"{slug}.yaml"
 
 
-def save_bundle(name: str, skills: List[str], description: str = "", instruction: str = "", overwrite: bool = False) -> Path:
+def save_bundle(name: str, skills: list[str], description: str = "", instruction: str = "", overwrite: bool = False) -> Path:
     """Write a bundle to disk and refresh the cache. Raises ``FileExistsError``
     if the target exists and not ``overwrite``; ``ValueError`` for unusable inputs."""
     name = (name or "").strip()
@@ -184,9 +190,10 @@ def save_bundle(name: str, skills: List[str], description: str = "", instruction
     if path.exists() and not overwrite:
         raise FileExistsError(f"Bundle already exists at {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload: Dict[str, Any] = {"name": name, "skills": cleaned_skills}
+    payload: dict[str, Any] = {"name": name, "skills": cleaned_skills}
     payload.update({k: v for k, v in (("description", description), ("instruction", instruction)) if v})
-    path.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    # Atomic: a gateway process scanning mid-write must never parse a truncated bundle.
+    atomic_write_text(path, yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), preserve_mode=True)
     scan_bundles()
     return path
 
@@ -201,14 +208,6 @@ def delete_bundle(name: str) -> Path:
     return path
 
 
-def get_bundle(name: str) -> Optional[Dict[str, Any]]:
+def get_bundle(name: str) -> Optional[dict[str, Any]]:
     """Look up a bundle by name (slug-normalized)."""
     return get_skill_bundles().get(f"/{_slugify(name)}")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import re  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

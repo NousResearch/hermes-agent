@@ -7,11 +7,17 @@ The fix routes the recovery-key read through ``_scoped_recovery_key()``,
 which uses :func:`agent.secret_scope.get_secret` (scope-aware) and only falls
 back to ``os.getenv`` for an *unscoped* read under multiplex — mirroring the
 established Slack app-token pattern (#59739).
+
+``MATRIX_RECOVERY_KEY_OUTPUT_FILE`` is the sibling of the recovery key itself
+(read by ``_recovery_key_output_path()``) and was missed by the #69090 fix:
+it still used a bare ``os.getenv``, so a secondary profile's freshly
+bootstrapped recovery key would either not be written at all, or be written
+to the default profile's configured path.
 """
 import pytest
 
 from agent import secret_scope as ss
-from plugins.platforms.matrix.adapter import _scoped_recovery_key
+from plugins.platforms.matrix.adapter import _recovery_key_output_path, _scoped_recovery_key
 
 
 @pytest.fixture(autouse=True)
@@ -77,3 +83,37 @@ class TestScopedRecoveryKey:
     def test_unset_returns_empty(self, monkeypatch):
         monkeypatch.delenv("MATRIX_RECOVERY_KEY", raising=False)
         assert _scoped_recovery_key() == ""
+
+
+class TestScopedRecoveryKeyOutputPath:
+    def test_multiplex_active_scoped_uses_scope_not_environ(self, monkeypatch, tmp_path):
+        """Secondary profile under multiplex must resolve its own output path.
+
+        A bare ``os.getenv`` would have returned the default profile's path
+        (from os.environ), writing the secondary profile's freshly bootstrapped
+        recovery key to the wrong profile's file.
+        """
+        default_path = tmp_path / "default-profile-key.txt"
+        secondary_path = tmp_path / "secondary-profile-key.txt"
+        monkeypatch.setenv("MATRIX_RECOVERY_KEY_OUTPUT_FILE", str(default_path))
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(
+            {"MATRIX_RECOVERY_KEY_OUTPUT_FILE": str(secondary_path)}
+        )
+        try:
+            assert _recovery_key_output_path() == secondary_path
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_multiplex_active_scoped_missing_key_is_none(self, monkeypatch, tmp_path):
+        """A scope without the setting must NOT fall through to another
+        profile's env — the secondary profile's key silently goes unwritten
+        instead of landing in the default profile's file."""
+        default_path = tmp_path / "default-profile-key.txt"
+        monkeypatch.setenv("MATRIX_RECOVERY_KEY_OUTPUT_FILE", str(default_path))
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"SOME_OTHER_KEY": "x"})
+        try:
+            assert _recovery_key_output_path() is None
+        finally:
+            ss.reset_secret_scope(token)

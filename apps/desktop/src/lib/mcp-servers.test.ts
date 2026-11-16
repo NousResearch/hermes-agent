@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { getServers } from './mcp-servers'
+import cases from './mcp-enabled-cases.json'
+import { getServers, serverEnabled } from './mcp-servers'
 
 describe('getServers', () => {
   it('returns empty when the map is absent or not a map', () => {
@@ -33,5 +34,13 @@ describe('getServers', () => {
     const servers = { broken: null, list: ['a'], scalar: 3, working: { command: 'npx' } }
 
     expect(getServers({ mcp_servers: servers })).toEqual({ working: { command: 'npx' } })
+  })
+})
+
+// The backend reads the same table (tests/tools/test_mcp_enabled_reader.py), so
+// the MCP page and the runtime cannot disagree about whether a server is on.
+describe('serverEnabled', () => {
+  it.each(cases)('%j', ({ on, ...entry }) => {
+    expect(serverEnabled({ command: 'x', ...entry })).toBe(on)
   })
 })

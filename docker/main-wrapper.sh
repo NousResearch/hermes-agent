@@ -70,8 +70,6 @@ export HOME=/opt/data
 _hermes_orig_cwd="${HERMES_ORIG_CWD:-$PWD}"
 
 cd /opt/data
-# shellcheck disable=SC1091
-. /opt/hermes/.venv/bin/activate
 
 # Restore the original working directory before handing off to
 # the user's command so `hermes chat` starts in the Docker -w
@@ -82,10 +80,18 @@ if [ $# -eq 0 ]; then
     drop hermes
 fi
 
-if command -v "$1" >/dev/null 2>&1; then
-    # Bare executable — pass through directly.
-    drop "$@"
-fi
+# A leading flag is a hermes global option (`-p <profile> gateway run`), never an executable:
+# `command -v -p` parses -p as an option to `command` itself and succeeds, so the wrapper exec'd
+# "-p" and the container restart-looped.
+case "$1" in
+    -*) ;;
+    *)
+        if command -v "$1" >/dev/null 2>&1; then
+            # Bare executable — pass through directly.
+            drop "$@"
+        fi
+        ;;
+esac
 
 # Hermes subcommand pass-through.
 drop hermes "$@"

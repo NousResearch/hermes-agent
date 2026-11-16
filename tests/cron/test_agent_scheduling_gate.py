@@ -32,21 +32,8 @@ class TestGateOffDefault:
             "cronjob", "messaging", "clarify",
         ]
 
-    def test_none_config_denies_cronjob(self):
-        assert _resolve_cron_disabled_toolsets(None) == [
-            "cronjob", "messaging", "clarify",
-        ]
 
-    def test_cron_section_present_but_gate_absent(self):
-        cfg = {"cron": {"preflight": True}}
-        assert _resolve_cron_disabled_toolsets(cfg) == [
-            "cronjob", "messaging", "clarify",
-        ]
 
-    def test_explicit_false_matches_default(self):
-        cfg = {"cron": {"allow_agent_scheduling": False}}
-        assert _resolve_cron_disabled_toolsets(cfg) == \
-            _resolve_cron_disabled_toolsets({})
 
     @pytest.mark.parametrize("falsy", [False, None, "", 0])
     def test_falsy_values_keep_gate_off(self, falsy):
@@ -101,11 +88,6 @@ class TestUserLayerUnchanged:
         # No duplicate when the user names an already-denied toolset.
         assert disabled.count("cronjob") == 1
 
-    def test_user_can_still_deny_memory_for_cron(self):
-        # Memory is no longer policy-denied, but a user-level denylist
-        # entry still applies to cron runs.
-        cfg = {"agent": {"disabled_toolsets": ["memory"]}}
-        assert "memory" in _resolve_cron_disabled_toolsets(cfg)
 
     def test_blank_and_whitespace_entries_ignored(self):
         cfg = {

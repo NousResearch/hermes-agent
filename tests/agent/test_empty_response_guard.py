@@ -224,7 +224,7 @@ class TestEmptyRetryBudget:
         )
         assert (
             guard._cost_threshold_usd(
-                _agent(_empty_guard_cost_threshold_usd=Decimal("-1"))
+                _agent(_empty_guard_cost_threshold_usd=Decimal(-1))
             )
             == guard.DEFAULT_COST_THRESHOLD_USD
         )
@@ -353,7 +353,7 @@ class TestResolveGuardSettings:
 
     def test_custom_threshold(self):
         _, threshold = guard.resolve_guard_settings({"cost_threshold_usd": 5})
-        assert threshold == Decimal("5")
+        assert threshold == Decimal(5)
         _, threshold = guard.resolve_guard_settings({"cost_threshold_usd": "1.50"})
         assert threshold == Decimal("1.50")
 

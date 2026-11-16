@@ -1,0 +1,67 @@
+# Submission entry for the Hermes plugin catalog.
+#
+# Copy this file into hermes-agent/plugin-catalog/morph.yaml in a PR, with `sha`
+# set to the exact commit being submitted (the catalog rejects branches and short
+# SHAs) and the image/screenshot URLs re-pinned to that same SHA. Everything here
+# is checked against the code at that commit by `hermes plugins validate`.
+name: morph
+repo: https://github.com/timioni001/morph-hermes
+sha: "1a3a8bce10d5d5b14bd3ae3cddc908199fe2f90c"
+title: "MORPH"
+description: >-
+  One adaptive workspace across the applications you use, with human-approved,
+  verified actions: an approval gate between the agent and the APIs it can write to. Connect a GitHub
+  repository (`hermes morph connect github owner/name`) or any service that publishes
+  an OpenAPI document, and MORPH learns from the schema what can be read and what can
+  be safely changed. The agent gets tools to read and to propose; it has no tool that
+  approves and is never given the token an approval needs. A human approves each
+  change in the dashboard, seeing the exact before and after; MORPH writes it, then
+  re-reads the record from the API and reports it verified only if it matches what
+  was promised. Only operations with a checkable effect are offered — for GitHub
+  issues: close, close as not planned, reopen, set labels, set title, assign,
+  unassign. The dashboard has five views (Workspace, Connections, Approvals, Activity,
+  Context) and composes tables, boards and charts over the connected data from a goal
+  stated in plain language. Every proposal, approval and result is kept in a
+  hash-chained audit log.
+  Disclosure — MORPH makes outbound HTTPS calls to the services the operator
+  connects, including api.github.com when a repository is connected (loopback only
+  with an explicit opt-in; private, link-local, reserved and cloud-metadata targets
+  are refused, redirects are never followed, and the address actually dialled is
+  validated at connect time); it stores its connection list, workspaces, pending
+  proposals, read cursors and the audit log in its own plugin-data directory; it
+  reads bearer tokens through agent.secret_scope by environment-variable name and
+  never logs, stores or returns them; it calls the host model through ctx.llm for
+  interface planning with a deterministic offline fallback, and sends the model
+  schema only, never a record value. No telemetry, no shell commands, no
+  self-updating code. Ships three workflow skills and an optional offline sandbox of
+  three loopback services (`hermes morph connect sandbox`, started only by
+  `hermes morph up`) so the whole loop can be tried with no account and no key.
+maintainer: timioni001
+tier: community
+category: tools
+requires_hermes: ">=0.19.0"
+version: "1.0.0"
+docs_url: https://github.com/timioni001/morph-hermes#readme
+readme: true
+platforms: []
+image: https://raw.githubusercontent.com/timioni001/morph-hermes/1a3a8bce10d5d5b14bd3ae3cddc908199fe2f90c/docs/assets/catalog-card.png
+screenshots:
+  - https://raw.githubusercontent.com/timioni001/morph-hermes/1a3a8bce10d5d5b14bd3ae3cddc908199fe2f90c/docs/assets/workspace.png
+  - https://raw.githubusercontent.com/timioni001/morph-hermes/1a3a8bce10d5d5b14bd3ae3cddc908199fe2f90c/docs/assets/approvals.png
+  - https://raw.githubusercontent.com/timioni001/morph-hermes/1a3a8bce10d5d5b14bd3ae3cddc908199fe2f90c/docs/assets/connections.png
+  - https://raw.githubusercontent.com/timioni001/morph-hermes/1a3a8bce10d5d5b14bd3ae3cddc908199fe2f90c/docs/assets/context.png
+capabilities:
+  provides_tools:
+    - morph_discover
+    - morph_plan_workspace
+    - morph_workspace_state
+    - morph_refresh
+    - morph_inspect_record
+    - morph_propose_action
+    - morph_verify_action
+  provides_hooks:
+    - on_session_start
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

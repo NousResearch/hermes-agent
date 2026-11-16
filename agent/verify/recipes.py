@@ -47,7 +47,7 @@ class Recipe:
         }
 
     @classmethod
-    def from_dict(cls, raw: Any) -> "Recipe | None":
+    def from_dict(cls, raw: Any) -> Recipe | None:
         """Tolerant loader mirroring grok's ``normalizeVerifyRecipe``; accepts
         both this module's field names and grok's camelCase aliases."""
         if not isinstance(raw, dict):
@@ -79,7 +79,7 @@ class Recipe:
 
 def _read_text(root: Path, name: str) -> str | None:
     try:
-        return (root / name).read_text(encoding="utf-8")
+        return (root / name).read_text(encoding="utf-8-sig")
     except OSError:
         return None
 

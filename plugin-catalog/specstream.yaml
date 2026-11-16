@@ -1,0 +1,18 @@
+name: specstream
+repo: https://github.com/specstream/specstream-tools
+sha: d62eac8deb008f106d6df8036d2724e1a483e0d3
+subdir: plugins/hermes
+description: "SpecStream gives Hermes finished lists from the live web: describe the list in plain words and get every matching row with the page it was read from, priced per match with a maximum you approve before anything runs. Portable Agent Plugins v1 package with the hosted MCP server (remote streamable-http, OAuth 2.1 with dynamic client registration) and four skills (compile, review-work, approve-work, continue-work); no Python, no executables, no stored credentials. Disclosure — your request text and your answers to the price are sent to api.specstream.ai; approving a price spends your SpecStream balance (new accounts get $10 free) and the plugin marks its server `untrusted`, so Hermes asks before every call that is not read-only and refuses those calls in unattended runs; a `specstream` server you define in config.yaml replaces the package's and drops that prompt unless you add `trust: untrusted`."
+maintainer: Specstreamai
+title: SpecStream
+version: "1.2.0"
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://specstream.ai/docs/mcp
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

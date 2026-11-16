@@ -55,6 +55,9 @@ def test_parked_server_self_probes_and_revives(monkeypatch, tmp_path):
     # Keep the self-probe cadence tiny so the test is fast.
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0.05)
 
+    from tools import mcp_tool_config as _config
+    monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"srv": {"command": "x"}})
+
     _real_sleep = asyncio.sleep
 
     async def _fast_sleep(_delay, *a, **kw):
@@ -133,7 +136,7 @@ def test_parked_server_self_probes_and_revives(monkeypatch, tmp_path):
         task._reconnect_event.set()
         try:
             await asyncio.wait_for(run_task, timeout=15)
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+        except (TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
     asyncio.run(_scenario())

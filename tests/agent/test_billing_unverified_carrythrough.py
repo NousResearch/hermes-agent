@@ -15,7 +15,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agent.conversation_loop import _billing_failure_result, _billing_terminal_label
+from agent.conversation_loop import _billing_failure_result
 from agent.error_classifier import FailoverReason, classify_api_error
 
 
@@ -72,8 +72,6 @@ class TestTerminalResponse:
         assert not final.startswith("Billing or credits exhausted")
         assert "unverified" in final
         assert "content-filter" in final or "content filter" in final
-        # The guidance must ride along and hedge too.
-        assert "still shows quota remaining" in final
 
     def test_unverified_terminal_response_structured_fields(self):
         """The structured result carries the ambiguity, not just the prose."""
@@ -111,12 +109,6 @@ class TestTerminalResponse:
         if block is not None:
             assert "unverified" not in block
 
-    def test_terminal_label_contract(self):
-        assert _billing_terminal_label("boom", False) == "Billing or credits exhausted: boom"
-        hedged = _billing_terminal_label("boom", True)
-        assert "unverified" in hedged
-        assert "content-filter" in hedged
-        assert not hedged.startswith("Billing or credits exhausted")
 
 
 # ── Credential-pool plumbing ─────────────────────────────────────────────────

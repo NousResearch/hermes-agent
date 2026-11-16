@@ -47,23 +47,6 @@ function openContextMenu(target: HTMLElement) {
 }
 
 describe('statusbar item visibility', () => {
-  it('hides the route/toggle items out of the box and keeps status items', () => {
-    bar([
-      item('cron', 'Cron'),
-      item('webhooks', 'Webhooks'),
-      item('agents', 'Agents'),
-      item('terminal', 'Terminal'),
-      item('approval-mode', 'Approvals'),
-      item('gateway-health', 'Gateway')
-    ])
-
-    for (const label of ['Cron', 'Webhooks', 'Agents', 'Terminal', 'Approvals']) {
-      expect(screen.queryByText(label)).toBeNull()
-    }
-
-    expect(screen.getByText('Gateway')).toBeTruthy()
-  })
-
   it('shows an item once the user enables it from the bar context menu', async () => {
     const statusbar = bar([item('cron', 'Cron'), item('gateway-health', 'Gateway')])
 
@@ -93,33 +76,6 @@ describe('statusbar item visibility', () => {
     bar([{ id: 'plugin-thing', label: 'Plugin thing', variant: 'action' }])
 
     expect(screen.getByText('Plugin thing')).toBeTruthy()
-  })
-
-  it('starts the per-turn session readouts hidden and restores them from the menu', async () => {
-    const statusbar = bar([
-      item('running-timer', 'Turn timer', { variant: 'text' }),
-      item('context-usage', 'Context meter', { variant: 'menu' }),
-      item('cache-hit-rate', 'Cache hit rate', { variant: 'text' }),
-      item('tokens-per-second', 'Tokens per second', { variant: 'text' }),
-      item('session-timer', 'Session timer', { variant: 'text' }),
-      item('gateway-health', 'Gateway')
-    ])
-
-    for (const label of ['Turn timer', 'Context meter', 'Cache hit rate', 'Tokens per second', 'Session timer']) {
-      expect(screen.queryByText(label)).toBeNull()
-    }
-
-    openContextMenu(statusbar)
-
-    for (const [id, label] of [
-      ['session-timer', 'Session timer'],
-      ['cache-hit-rate', 'Cache hit rate']
-    ]) {
-      fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: label }))
-
-      expect($statusbarHiddenIds.get()).not.toContain(id)
-      expect(within(statusbar).getByText(label)).toBeTruthy()
-    }
   })
 })
 

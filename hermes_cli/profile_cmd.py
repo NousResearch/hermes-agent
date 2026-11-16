@@ -9,9 +9,10 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import sys
+from typing import NoReturn, Optional
 
 
-def _die(msg: str, code: int = 1, *, err: bool = False) -> None:
+def _die(msg: str, code: int = 1, *, err: bool = False) -> NoReturn:
     print(msg, file=sys.stderr if err else sys.stdout)
     sys.exit(code)
 
@@ -30,21 +31,10 @@ def _is_active(p, active: str) -> bool:
 
 
 def _env_file_has_key(env_path: Path, key: str) -> bool:
-    """True when *key* is assigned in *env_path*. Read as utf-8-sig: a Notepad-edited .env can
-    carry a BOM that would hide the first key behind U+FEFF. A mis-encoded file (UnicodeDecodeError
-    is a ValueError, not OSError) must not abort the install preview — skip the pre-check."""
-    if not env_path.is_file():
-        return False
-    try:
-        # .env is written as UTF-8 everywhere in the codebase, but a Notepad-edited file can carry a BOM —
-        # read as utf-8-sig so the first key isn't hidden behind U+FEFF (#62617).
-        for raw in env_path.read_text(encoding="utf-8-sig").splitlines():
-            line = raw.strip()
-            if line and not line.startswith("#") and line.split("=", 1)[0].strip() == key:
-                return True
-    except (OSError, UnicodeDecodeError):
-        pass
-    return False
+    """True when *key* is assigned in *env_path* (unreadable/mis-encoded file → False, never aborts)."""
+    from agent.secret_scope import load_env_file
+
+    return key in load_env_file(env_path)
 
 
 def _render_distribution_plan(plan) -> None:
@@ -69,7 +59,8 @@ def _render_distribution_plan(plan) -> None:
         else:
             print(
                 "  ⚠ Profile exists but is NOT a distribution.  Installing here will\n"
-                "    overwrite its SOUL.md, skills/, cron/, and mcp.json.\n"
+                "    overwrite its SOUL.md and mcp.json and replace any skill or cron job\n"
+                "    of the same name the distribution ships.\n"
                 "    Your memories, sessions, auth.json, and .env will be preserved,\n"
                 "    but any hand-edits to distribution-owned files will be lost."
             )
@@ -132,6 +123,29 @@ def _profile_list(args):
         dist = f"{p.distribution_name}@{p.distribution_version or '?'}"[:30] if p.distribution_name else "—"
         print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias:<12} {dist}")
     print()
+    for line in _shared_credential_warnings(profiles):
+        print(line)
+
+
+def _shared_credential_warnings(profiles) -> list:
+    """One warning per named profile whose bot credential is byte-identical to the default's
+    (typically an old ``--clone`` that copied .env): the collision that parks a multiplexed
+    adapter or makes two standalone gateways fight over one bot."""
+    from hermes_cli.profile_channels import shared_channel_credentials, shared_credential_warning
+    default = next((p for p in profiles if p.is_default), None)
+    if default is None:
+        return []
+    lines = []
+    for p in profiles:
+        if p.is_default:
+            continue
+        try:
+            shared = shared_channel_credentials(p.path, default.path)
+        except Exception:
+            continue
+        if shared:
+            lines.append(shared_credential_warning(p.name, shared))
+    return lines + ([""] if lines else [])
 
 
 def _profile_use(args):
@@ -144,78 +158,122 @@ def _profile_use(args):
         _die(f"Error: {e}")
 
 
+def _print_channel_clone_notice(name: str, made, clone_channels: bool, clone_flag: str) -> None:
+    from hermes_cli.profile_channels import format_stripped_notice, shared_credential_warning
+    if not clone_channels:
+        for line in format_stripped_notice(name, made.channels_left_behind, clone_flag):
+            print(line)
+        return
+    if made.shared_channels:
+        print(shared_credential_warning(name, made.shared_channels, made.source_label))
+
+
+def _print_mirrored(mirrored: dict, launch: str, *, isolate_hint: bool) -> None:
+    """What the new profile took from the launch profile (the bot page's "Share keys & accounts")."""
+    if mirrored.get("env"):
+        print(f"Copied API keys from '{launch}' (bot tokens and allowlists left out).")
+    if mirrored.get("auth") == "shared":
+        hint = " (--isolated-auth copies them)" if isolate_hint else ""
+        print(f"Logins and subscriptions are shared with the default profile{hint}.")
+    elif mirrored.get("auth"):
+        print(f"Copied logins from '{launch}' (single-use OAuth logins are still read from the default profile).")
+    if mirrored.get("model_inherited"):
+        print(f"Model inherited from '{launch}'.")
+
+
+def _refuse_create_args(args, clone_from: Optional[str], cloned: bool) -> None:
+    """Flag combinations refused before any create, local or through a gateway."""
+    if clone_from is not None and not clone_from.strip():
+        # Locally that is the empty-name error; on the wire it would read as "clone the caller".
+        _die("Error: profile name cannot be empty")
+    if cloned and getattr(args, "no_credentials", False):
+        # A clone copies the source's .env/config (and --clone-all its auth.json) by request.
+        _die("Error: --no-credentials cannot be combined with --clone / --clone-from / --clone-all "
+             "(a clone copies the source's keys); create without cloning instead.", err=True)
+
+
 def _profile_create(args):
-    from hermes_cli.profiles import (
-        _get_wrapper_dir, _is_wrapper_dir_in_path, check_alias_collision, create_profile,
-        create_wrapper_script, get_active_profile_name, seed_profile_skills,
-    )
+    from hermes_cli.profile_provision import CREATE_REFUSALS, ProfileCreateReceipt, ProfileCreateRequest, provision_profile
+    from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
+    from hermes_cli.profiles import _get_wrapper_dir, _is_wrapper_dir_in_path
     name = args.profile_name
     clone = getattr(args, "clone", False)
     clone_all = getattr(args, "clone_all", False)
     no_alias = getattr(args, "no_alias", False)
-    no_skills = getattr(args, "no_skills", False)
     clone_from = getattr(args, "clone_from", None)
+    clone_channels = getattr(args, "clone_channels", False)
+    sync_imports = getattr(args, "sync_imports", False)
     clone_config = clone or clone_from is not None
     cloned = clone_config or clone_all
+    _refuse_create_args(args, clone_from, cloned)
+    request = ProfileCreateRequest(
+        name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
+        no_skills=getattr(args, "no_skills", False), description=getattr(args, "description", None),
+        clone_channels=clone_channels, sync_imports=sync_imports,
+        alias=not no_alias, quiet=False,
+        mirror_credentials=not getattr(args, "no_credentials", False),
+        share_auth=not getattr(args, "isolated_auth", False))
     try:
-        profile_dir = create_profile(
-            name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
-            no_alias=no_alias, no_skills=no_skills, description=getattr(args, "description", None),
-        )
-    except (ValueError, FileExistsError, FileNotFoundError) as e:
+        # A gateway serving this terminal makes the profile (one HERMES_TUI_GATEWAY_URL names always
+        # does); with none it is made here. Either way the receipt below is read where it was made.
+        made = create_through_gateway(request) or ProfileCreateReceipt.of(request, provision_profile(request))
+    except (*CREATE_REFUSALS, GatewayCreateError) as e:
         _die(f"Error: {e}")
-    print(f"\nProfile '{name}' created at {profile_dir}")
+    print(f"\nProfile '{name}' created at {made.path}")
+    source_label = made.source_label
     if cloned:
-        source_label = clone_from or get_active_profile_name()
         if clone_all:
-            print(f"Full copy from {source_label} (excluding session history, backups, and snapshots).")
+            print(f"Full copy from {source_label} (excluding session history, cron jobs, backups, and snapshots).")
         else:
             print(f"Cloned config, .env, SOUL.md, and skills from {source_label}.")
-        # Auto-clone Honcho config for the new profile (only with clone operations)
-        try:
-            from plugins.memory.honcho.cli import clone_honcho_for_profile
-            if clone_honcho_for_profile(name):
-                print(f"Honcho config cloned (peer: {name})")
-        except Exception:
-            pass  # Honcho plugin not installed or not configured
+            if made.cloned_plugins:
+                print(f"Cloned installed plugins too: {', '.join(made.cloned_plugins)}.")
+            if made.memory_provider:
+                print(f"Cloned memory provider config ({made.memory_provider}) too.")
+        if sync_imports:
+            print(f"Import sources carried over — `hermes -p {name} import-agent --sync` "
+                  "keeps pulling the same Claude Code / Codex trees.")
+        _print_channel_clone_notice(name, made, clone_channels, "--clone-all" if clone_all else "--clone")
     else:
         # Fresh profiles only: clones already carry the source's (user-curated) skills.
-        result = seed_profile_skills(profile_dir)
-        if result and result.get("skipped_opt_out"):
+        if made.skills_opted_out:
             print("No bundled skills seeded (--no-skills). Delete .no-bundled-skills in the profile to opt back in.")
-        elif result:
-            print(f"{len(result.get('copied', []))} bundled skills synced.")
+        elif made.skills_synced is not None:
+            print(f"{made.skills_synced} bundled skills synced.")
         else:
             print(f"⚠ Skills could not be seeded. Run `{name} update` to retry.")
     if not no_alias:
-        collision = check_alias_collision(name)
-        if collision:
-            print(f"\n⚠ Cannot create alias '{name}' — {collision}")
+        if made.alias_collision:
+            print(f"\n⚠ Cannot create alias '{name}' — {made.alias_collision}")
             print(f"  Choose a custom alias:  hermes profile alias {name} --name <custom>")
             print(f"  Or access via flag:     hermes -p {name} chat")
-        else:
-            wrapper_path = create_wrapper_script(name)
-            if wrapper_path:
-                print(f"Wrapper created: {wrapper_path}")
-                if not _is_wrapper_dir_in_path():
-                    print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
-                    print("  Add to your shell config (~/.bashrc or ~/.zshrc):")
-                    print('    export PATH="$HOME/.local/bin:$PATH"')
-    try:
-        profile_dir_display = "~/" + profile_dir.relative_to(Path.home()).as_posix()
-    except ValueError:
-        profile_dir_display = str(profile_dir)
+        elif made.alias_path:
+            print(f"Wrapper created: {made.alias_path}")
+            if not _is_wrapper_dir_in_path():
+                print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
+                print("  Add to your shell config (~/.bashrc or ~/.zshrc):")
+                print('    export PATH="$HOME/.local/bin:$PATH"')
+    _print_mirrored(made.mirrored, made.launch_label,
+                    isolate_hint=not getattr(args, "isolated_auth", False) and not getattr(args, "no_credentials", False))
+    for warning in made.warnings:
+        print(f"⚠ {warning}")
     print("\nNext steps:")
     print(f"  {name} setup              Configure API keys and model")
     print(f"  {name} chat               Start chatting")
-    print(f"  {name} gateway start      Start the messaging gateway")
-    if clone or clone_all:
-        print(f"\n  Edit {profile_dir_display}/.env for different API keys")
-        print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
+    if made.served_now:
+        print("  (served now by the running multiplexed gateway — add its bot token and it connects)")
+    elif made.served_now is False:
+        # The multiplexer did not pick the profile up (older gateway or the signal failed): a restart serves it.
+        print("  hermes gateway restart    Serve this profile from the running multiplexed gateway")
+    else:
+        print(f"  {name} gateway start      Start the messaging gateway")
+    if cloned or made.mirrored.get("env"):
+        print(f"\n  Edit {made.display_path}/.env for different API keys")
+        print(f"  Edit {made.display_path}/SOUL.md for different personality")
     else:
         print(f"\n  ⚠ This profile has no API keys yet. Run '{name} setup' first,")
         print("    or it will inherit keys from your shell environment.")
-        print(f"  Edit {profile_dir_display}/SOUL.md to customize personality")
+        print(f"  Edit {made.display_path}/SOUL.md to customize personality")
     print()
 
 
@@ -223,7 +281,7 @@ def _profile_delete(args):
     from hermes_cli.profiles import delete_profile
     try:
         delete_profile(args.profile_name, yes=getattr(args, "yes", False))
-    except (ValueError, FileNotFoundError) as e:
+    except (ValueError, FileNotFoundError, RuntimeError) as e:
         _die(f"Error: {e}")
 
 
@@ -339,19 +397,24 @@ def _profile_alias(args):
     name = args.profile_name
     remove = getattr(args, "remove", False)
     custom_name = getattr(args, "alias_name", None)
-    if not profile_exists(name):
-        _die(f"Error: Profile '{name}' does not exist.")
     alias_name = custom_name or name
     try:
         validate_alias_name(alias_name)
     except ValueError as exc:
         _die(f"Error: {exc}")
-    if remove:
+    if remove:  # runs without the profile: an orphan alias outlives it
+        exists = profile_exists(name)
+        if custom_name and not exists:  # orphan cleanup is `alias <alias> --remove`
+            _die(f"Error: Profile '{name}' does not exist.")
         if remove_wrapper_script(alias_name):
             print(f"✓ Removed alias '{alias_name}'")
+        elif not exists:
+            _die(f"Error: No alias '{alias_name}' and no profile '{name}'. `hermes doctor` lists orphan aliases.")
         else:
             print(f"No alias '{alias_name}' found to remove.")
         return
+    if not profile_exists(name):
+        _die(f"Error: Profile '{name}' does not exist.")
     collision = check_alias_collision(alias_name)
     if collision:
         _die(f"Error: {collision}")
@@ -371,6 +434,36 @@ def _profile_rename(args):
             print(f"Path: {new_dir}\n")
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         _die(f"Error: {e}")
+
+
+def _profile_migrate_identity(args):
+    """Retry the identity migration of a rename that already completed. Exits non-zero when a
+    live gateway would not migrate (it still owns the routing index in memory), or when a
+    database rejected the rewrite (collision, lock, partial failure)."""
+    from hermes_cli.profile_identity import migrate_profile_identity
+    try:
+        migrated = migrate_profile_identity(args.old_name, args.new_name)
+    except (ValueError, FileNotFoundError) as e:
+        _die(f"Error: {e}")
+    if not migrated:
+        _die(f"Error: session identity was not migrated. Restart or stop the gateway, then run:\n"
+             f"    hermes profile migrate-identity {args.old_name} {args.new_name}", err=True)
+    print(f"✓ Session/routing identity migrated: {args.old_name} → {args.new_name}")
+
+
+def _profile_purge_identity(args):
+    """Retry the identity purge of a delete that already completed. Exits non-zero when a live
+    gateway would not purge (it still owns the routing index in memory), or when a database rejected
+    the delete (lock, partial failure)."""
+    from hermes_cli.profile_identity import purge_profile_identity
+    try:
+        purged = purge_profile_identity(args.profile_name)
+    except ValueError as e:
+        _die(f"Error: {e}")
+    if not purged:
+        _die(f"Error: session identity was not purged. Restart or stop the gateway, then run:\n"
+             f"    hermes profile purge-identity {args.profile_name}", err=True)
+    print(f"✓ Session/routing identity purged: {args.profile_name}")
 
 
 def _profile_export(args):
@@ -512,6 +605,8 @@ PROFILE_ACTIONS = {
     'show': _profile_show,
     'alias': _profile_alias,
     'rename': _profile_rename,
+    'purge-identity': _profile_purge_identity,
+    'migrate-identity': _profile_migrate_identity,
     'export': _profile_export,
     'import': _profile_import,
     'install': _profile_install,

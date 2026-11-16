@@ -1,21 +1,10 @@
 """Shared GFM table → bullet conversion helpers."""
 
 from gateway.platforms.helpers import (
-    TABLE_SEPARATOR_RE,
-    is_table_row,
-    split_markdown_table_row,
     convert_table_to_bullets,
 )
 
 
-class TestTablePrimitives:
-
-    def test_separator_re_matches_basic(self):
-        assert TABLE_SEPARATOR_RE.match("|---|---|")
-
-
-    def test_is_table_row_with_pipe(self):
-        assert is_table_row("| Alice | 150 |")
 
 
 class TestConvertTableToBullets:
@@ -66,5 +55,19 @@ class TestConvertTableToBullets:
         assert "**a**" in out
         assert "• head1: a" not in out
         assert "• head2: b" in out
+
+    def test_code_span_pipes_keep_both_backticks_in_bullet(self):
+        text = "| Feature | Example |\n|---------|---------|\n| Table | `| table |` |"
+
+        out = convert_table_to_bullets(text)
+
+        assert "• Example: `| table |`" in out
+
+    def test_escaped_pipe_stays_in_bullet_cell(self):
+        text = "| Feature | Example |\n|---------|---------|\n| Route | left\\|right |"
+
+        out = convert_table_to_bullets(text)
+
+        assert "• Example: left\\|right" in out
 
 

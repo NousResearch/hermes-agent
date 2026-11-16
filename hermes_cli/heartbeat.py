@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
@@ -76,7 +77,7 @@ class HeartbeatState:
         return json.dumps(asdict(self), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, raw: str) -> "HeartbeatState":
+    def from_json(cls, raw: str) -> HeartbeatState:
         data = json.loads(raw)
         return cls(**{name: coerce(data.get(name) or default) for name, (coerce, default) in _STATE_FIELDS.items()})
 
@@ -99,12 +100,16 @@ def _get_session_db() -> Optional[Any]:
         return None
 
 
+_META_PREFIX = "heartbeat:"
+_CLAIM_LOCK = threading.Lock()  # every driver of a session's heartbeat runs in its owning gateway process
+
+
 def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
     db = _get_session_db() if session_id else None
     if db is None:
         return None
     try:
-        raw = db.get_meta(f"heartbeat:{session_id}")
+        raw = db.get_meta(_META_PREFIX + session_id)
     except Exception as exc:
         logger.debug("HeartbeatManager: get_meta failed: %s", exc)
         return None
@@ -116,6 +121,19 @@ def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
     return None if state is None or state.status == "cleared" else state
 
 
+def store_has_active_heartbeat(db: Any) -> bool:
+    """True when *db* holds an ACTIVE ``heartbeat:*`` row — or one that cannot be parsed (unknown, so
+    the caller keeps its full sweep). ``clear``/``pause`` keep their rows (status ``cleared``/``paused``),
+    so key existence alone is not "active". Read errors propagate: "unavailable" is the caller's call."""
+    for _key, raw in db.list_meta_prefix(_META_PREFIX):
+        try:
+            if HeartbeatState.from_json(raw).status == "active":
+                return True
+        except Exception:
+            return True
+    return False
+
+
 def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
     if not session_id:
         return
@@ -125,7 +143,7 @@ def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
         _warn_dropped_write("HeartbeatManager", "heartbeat", session_id)
         return
     try:
-        db.set_meta(f"heartbeat:{session_id}", state.to_json())
+        db.set_meta(_META_PREFIX + session_id, state.to_json())
     except Exception as exc:
         logger.debug("HeartbeatManager: set_meta failed: %s", exc)
 
@@ -140,6 +158,7 @@ class HeartbeatManager:
     def __init__(self, session_id: str):
         self.session_id = session_id
         self._state: Optional[HeartbeatState] = load_heartbeat(session_id)
+        self._last_claim: Optional[tuple[float, int]] = None  # (last_fired_at, fire_count) before the last due_prompt
 
     @property
     def state(self) -> Optional[HeartbeatState]:
@@ -178,10 +197,11 @@ class HeartbeatManager:
     def _set_status(self, status: str, *, reanchor: bool = False) -> Optional[HeartbeatState]:
         if not self._state:
             return None
-        self._state.status = status
-        if reanchor:
-            self._state.last_fired_at = time.time()
-        save_heartbeat(self.session_id, self._state)
+        with _CLAIM_LOCK:  # a stop landing inside a claim's reread-then-write would be overwritten by it
+            self._state.status = status
+            if reanchor:
+                self._state.last_fired_at = time.time()
+            save_heartbeat(self.session_id, self._state)
         return self._state
 
     def pause(self) -> Optional[HeartbeatState]:
@@ -203,13 +223,38 @@ class HeartbeatManager:
         double-fire the same tick. Missed ticks coalesce: the anchor resets to NOW, not the theoretical
         schedule.
         """
-        s = self._state
-        if s is None or not s.is_due(now):
-            return None
-        s.last_fired_at = now if now is not None else time.time()
-        s.fire_count += 1
+        with _CLAIM_LOCK:
+            s = self._state
+            if s is None or not s.is_due(now):
+                return None
+            # Compare-and-set on the stored row: the gateway poller and a viewer's due_prompt RPC each hold
+            # their own manager over it, and only one may take the tick. A row cleared or paused since is lost too.
+            stored = load_heartbeat(self.session_id)
+            if stored is None or stored.status != "active" or (
+                    stored.last_fired_at, stored.fire_count) != (s.last_fired_at, s.fire_count):
+                self._state = stored
+                return None
+            self._last_claim = (s.last_fired_at, s.fire_count)
+            s.last_fired_at = now if now is not None else time.time()
+            s.fire_count += 1
+            save_heartbeat(self.session_id, s)
+            return s.render_prompt()
+
+    def abandon_fire(self) -> bool:
+        """Rewind the fire recorded by the last :meth:`due_prompt` whose turn never started, so the tick stays
+        due for the next poll instead of being silently consumed. Mirrors ``LoopManager.abandon_tick``. Skipped
+        (False) when the persisted state moved on — a pause/resume/clear that landed in between wins."""
+        claim, s = self._last_claim, self._state
+        if claim is None or s is None:
+            return False
+        current = load_heartbeat(self.session_id)
+        if current is None or current.status != "active" or (current.last_fired_at, current.fire_count) != (
+                s.last_fired_at, s.fire_count):
+            return False
+        s.last_fired_at, s.fire_count = claim
+        self._last_claim = None
         save_heartbeat(self.session_id, s)
-        return s.render_prompt()
+        return True
 
 
 def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bool:
@@ -233,14 +278,14 @@ def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bo
 
 
 __all__ = [
-    "HeartbeatState", "HeartbeatManager", "parse_interval", "format_interval", "load_heartbeat", "save_heartbeat",
-    "migrate_heartbeat_to_session", "HEARTBEAT_PROMPT_TEMPLATE", "MIN_INTERVAL_SECONDS", "POLL_SECONDS",
+    "HEARTBEAT_PROMPT_TEMPLATE",
+    "MIN_INTERVAL_SECONDS",
+    "POLL_SECONDS",
+    "HeartbeatManager",
+    "HeartbeatState",
+    "format_interval",
+    "load_heartbeat",
+    "migrate_heartbeat_to_session",
+    "parse_interval",
+    "save_heartbeat",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

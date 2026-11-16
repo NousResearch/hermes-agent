@@ -67,6 +67,16 @@ class TestNormalizeCustomProviderEntry:
         assert result is not None
         assert result["base_url"] == "${PROVIDER_A_BASE_URL}"
 
+    def test_catalog_provider_is_a_known_key_and_survives_normalization(self, caplog):
+        """``catalog_provider`` (vendor alias for metadata lookups, #112649) is accepted without an
+        unknown-key warning and carried on the normalized entry."""
+        entry = {"base_url": "https://gw.example.com/v1", "key_env": "GW_KEY", "catalog_provider": "deepseek"}
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry, provider_key="925llm")
+        assert result is not None
+        assert result["catalog_provider"] == "deepseek"
+        assert not [r for r in caplog.records if "unknown config keys" in r.message.lower()]
+
 
     def test_numeric_yaml_name_and_key_become_strings(self):
         """Unquoted YAML `name: 2070` / key 2070 must not be dropped as non-str."""

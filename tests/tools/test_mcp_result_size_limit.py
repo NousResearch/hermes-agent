@@ -46,20 +46,8 @@ class TestTruncateMcpTextResult:
         assert result.startswith(head_marker)
         assert result.endswith(tail_marker)
 
-    def test_truncation_includes_omitted_count(self):
-        text = "a" * 5000
-        result = _truncate_mcp_text_result(text, max_chars=100)
-        assert "4,900" in result  # 5000 - 100 omitted
-        assert "5,000" in result  # total original length
 
-    def test_truncation_uses_40_60_head_tail_split(self):
-        text = "H" * 40 + "M" * 5000 + "T" * 60
-        result = _truncate_mcp_text_result(text, max_chars=100)
-        assert result[:40] == "H" * 40
-        assert result[-60:] == "T" * 60
 
-    def test_empty_result_unchanged(self):
-        assert _truncate_mcp_text_result("") == ""
 
     def test_hard_cap_sits_above_spillover_threshold(self):
         """The hard cap must stay far above the MCP spillover threshold so

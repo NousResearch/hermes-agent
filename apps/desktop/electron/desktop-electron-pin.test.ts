@@ -5,22 +5,23 @@
  * changed its install mechanism mid patch-series:
  *
  *     electron 40.9.3 .. 40.10.2  -> @electron/get@^2 + extract-zip@^2  (pure JS)
- *     electron 40.10.3 / 40.10.4  -> @electron/get@^5 +
+ *     electron 40.10.3 and later  -> @electron/get@^5 +
  *                                    @electron-internal/extract-zip@^1 (native napi)
  *
  * ``apps/desktop/package.json`` declared ``electronVersion: 40.9.3`` (the tested,
  * JS-extract build) but pinned the dependency loosely as ``electron: ^40.9.3``.
- * ``npm ci`` then resolved 40.10.3/40.10.4 — the new *native* extract-zip whose
- * win32-x64 binding fails to ``dlopen`` on some Windows hosts
- * (``ERR_DLOPEN_FAILED loading index.win32-x64-msvc.node``).
+ * npm then resolved 40.10.3/40.10.4 — the new *native* extract-zip whose
+ * win32 binding imports VCRUNTIME140.dll and fails to ``dlopen`` on hosts without
+ * the VC++ runtime (``ERR_DLOPEN_FAILED loading index.win32-x64-msvc.node``).
+ * scripts/build/electron-runtime.mjs now supplies that DLL.
  *
  * These tests lock the contract that prevents that drift, without hard-coding the
  * specific version (which is allowed to move):
  *
  * 1. the Electron dependency is an *exact* version (Electron Builder needs the
  *    installed binary to match ``electronVersion`` / ``electronDist``), and
- * 2. the dependency, ``build.electronVersion``, and the resolved lockfile entry
- *    all agree — so ``npm ci`` installs exactly what the build packages.
+ * 2. the dependency and the independently resolved lockfile entry agree — so a frozen install installs exactly
+ *    what the build packages.
  */
 
 import assert from 'node:assert/strict'
@@ -28,10 +29,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { test } from 'vitest'
+import { parse } from 'yaml'
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const DESKTOP_PKG = path.join(REPO_ROOT, 'apps', 'desktop', 'package.json')
-const ROOT_LOCK = path.join(REPO_ROOT, 'package-lock.json')
+const ROOT_LOCK = path.join(REPO_ROOT, 'pnpm-lock.yaml')
 
 // An exact semver: digits.digits.digits with an optional prerelease/build tag,
 // but NO range operators (^ ~ > < = * x || spaces || -range).
@@ -62,48 +64,43 @@ test('electron dependency is exactly pinned', () => {
     spec,
     EXACT_SEMVER,
     `electron must be pinned to an exact version, got "${spec}". ` +
-      'A range (^/~) lets npm ci resolve a newer Electron whose postinstall ' +
+      'A range (^/~) lets a lockfile update resolve a newer Electron whose postinstall ' +
       'may differ from the one the build was validated against.'
   )
 })
 
-test('electron dependency matches build.electronVersion', () => {
-  const pkg = desktopPkg()
-  const spec = electronSpec(pkg)
-  const build = (pkg.build ?? {}) as Record<string, unknown>
-  const builderVersion = build.electronVersion as string | undefined
-  assert.ok(builderVersion, 'build.electronVersion is missing')
-  assert.equal(
-    spec,
-    builderVersion,
-    `electron dependency ("${spec}") must equal build.electronVersion ` +
-      `("${builderVersion}"); otherwise electron-builder packages a different ` +
-      'version than npm installs into electronDist.'
-  )
-})
+interface LockDependency {
+  specifier: string
+  version: string
+}
+
+interface Lockfile {
+  importers?: Record<string, Partial<Record<'dependencies' | 'devDependencies', Record<string, LockDependency>>>>
+  packages?: Record<string, unknown>
+}
 
 test('lockfile resolves the pinned electron', () => {
-  if (!fs.existsSync(ROOT_LOCK)) {
-    return
-  } // skip if lockfile not present
-
   const spec = electronSpec(desktopPkg())
-  const lock = JSON.parse(fs.readFileSync(ROOT_LOCK, 'utf-8'))
-  const packages = (lock.packages ?? {}) as Record<string, { version?: string }>
+  const lock = parse(fs.readFileSync(ROOT_LOCK, 'utf-8')) as Lockfile
+  const importer = lock.importers?.['apps/desktop']
+  const entry = importer?.devDependencies?.electron ?? importer?.dependencies?.electron
 
-  const resolved = Object.entries(packages)
-    .filter(([key]) => key.endsWith('node_modules/electron'))
-    .map(([, meta]) => meta.version)
-    .filter((v): v is string => !!v)
+  assert.ok(entry, 'no apps/desktop electron entry found in pnpm-lock.yaml')
 
-  assert.ok(resolved.length > 0, 'no electron entry found in package-lock.json')
+  // A locked version carries its peer resolution as a suffix: 44.9.3(supports-color@10.2.2).
+  const resolved = [
+    entry.version.replace(/\(.*$/, ''),
+    ...Object.keys(lock.packages ?? {})
+      .filter(key => key.startsWith('electron@'))
+      .map(key => key.slice('electron@'.length))
+  ]
 
   for (const v of resolved) {
     assert.equal(
       v,
       spec,
-      `package-lock.json resolves electron to ${v}, but the pin is "${spec}"; ` +
-        'run `npm install --package-lock-only` so `npm ci` stays consistent.'
+      `pnpm-lock.yaml resolves electron to ${v}, but the pin is "${spec}"; ` +
+        'run `pnpm install --lockfile-only` so frozen installs stay consistent.'
     )
   }
 })

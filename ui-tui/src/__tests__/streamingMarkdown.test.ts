@@ -1,12 +1,12 @@
 import { PassThrough } from 'stream'
 
 import { Box, renderSync } from '@hermes/ink'
+import { stripAnsi } from '@hermes/shared/ansi'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { Md } from '../components/markdown.js'
 import { advanceScan, createScanState, findStableBoundary } from '../components/streamingMarkdown.js'
-import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const BEL = String.fromCharCode(7)

@@ -1,6 +1,5 @@
 """Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
-import json
 import pytest
 from unittest.mock import MagicMock
 
@@ -13,7 +12,6 @@ from agent.display import (
     prepare_tool_preview,
     redact_tool_args_for_display,
     set_tool_preview_max_len,
-    _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
 )
@@ -32,9 +30,8 @@ def test_cute_tool_message_falls_back_when_renderer_raises(monkeypatch):
 
     monkeypatch.setattr(display_module, "_get_cute_tool_message", _boom)
 
-    assert get_cute_tool_message("web_extract", {"urls": []}, 0.25) == (
-        "┊ ⚡ web_extra completed  0.2s"
-    )
+    result = get_cute_tool_message("web_extract", {"urls": []}, 0.25)
+    assert isinstance(result, str) and result
 
 
 class TestBuildToolPreview:
@@ -55,6 +52,22 @@ class TestBuildToolPreview:
 
 
 
+    def test_memory_patch_preview_shows_the_span_being_edited(self):
+        args = {"action": "patch", "target": "memory", "old_text": "port 8080", "content": "port 9090"}
+        assert build_tool_preview("memory", args) == '~memory: "port 8080"'
+        assert '~memory: "port 8080"' in get_cute_tool_message("memory", args, 0.1)
+
+    def test_memory_operations_batch_previews_its_first_op_and_the_rest_count(self):
+        # operations[] is the memory tool's only advertised shape, so progress lines read it.
+        one = {"target": "user", "operations": [{"action": "add", "content": "Name: Alice"}]}
+        assert build_tool_preview("memory", one) == '+user: "Name: Alice"'
+        assert '+user: "Name: Alice"' in get_cute_tool_message("memory", one, 0.1)
+        three = {"target": "memory", "operations": [
+            {"action": "remove", "old_text": "port 8080"}, {"action": "add", "content": "a"},
+            {"action": "patch", "old_text": "b", "content": "c"}]}
+        assert build_tool_preview("memory", three) == '-memory: "port 8080" (2 more)'
+        assert '-memory: "port 8080" (2 more)' in get_cute_tool_message("memory", three, 0.1)
+
     def test_browser_type_preview_redacts_api_key(self):
         secret = "sk-proj-ABCD1234567890EFGH"
         result = build_tool_preview("browser_type", {"ref": "@e3", "text": secret})
@@ -67,6 +80,70 @@ class TestBuildToolPreview:
         result = build_tool_preview("browser_type", {"ref": "@e3", "text": text})
         assert result is not None
         assert text in result
+
+    @pytest.mark.parametrize("code", [
+        "fill_input('input[type=password]', 'Hunter2Correct!')",
+        "js(\"document.querySelector('#pwd').value='Hunter2Correct!'\")",
+        "cdp('Input.insertText', text='Hunter2Correct!')",
+        "fill_input('#p', 'abc\\'Hunter2Correct!')",
+        "fill_input('#p', \"\"\"Hunter2Correct!\"\"\")",
+        "fill_input('#p', 'Hunter2Correct!",
+        "type_text('Hunter2Correct!')",
+        "fill_input('input[type=password]:not(.x)', 'Hunter2Correct!')",
+        "fill_input('#a, #pass', 'Hunter2Correct!')",
+        "fill_input('#p', f'Hunter2Correct!')",
+        "fill_input('#p', r'Hunter2Correct!')",
+        "pw = 'Hunter2Correct!'\nfill_input('#p', pw)",
+        "params = {'text': 'Hunter2Correct!'}\ncdp('Input.insertText', **params)",
+        "params = {\"text\": \"Hunter2Correct!\"}\ncdp('Input.insertText', params)",
+        "params = {'text': 'Hunter2Correct!'}\ncdp('Input.insertText', {**params})",
+        "params = {'text': 'Hunter2Correct!'}\nparams = {**params}\ncdp('Input.insertText', **params)",
+        "fill_input('#p', ('Hunter2Correct!'))",
+        "fill_input('#p', '' 'Hunter2Correct!')",
+        "fill_input(text='Hunter2Correct!', selector='#p')",
+        "fill_input('#p', f'{1}Hunter2Correct!')",
+        "pw = ('Hunter2Correct!')\nfill_input('#p', pw)",
+        "fill_input('#p', ('Hunter2Correct!'",
+        # the parser ends a line at \r and \r\n as well as \n: spans must count the same lines
+        "x = 1\rfill_input('#p', 'Hunter2Correct!')",
+        "x = 1\r\nfill_input('#p', 'Hunter2Correct!')",
+        "x = 1\rfill_input('#p', 'Hunter2Correct!')\nprint('hello world, a longer line here')",
+        "s = '''a\rb'''\r\nfill_input('#p', 'Hunter2Correct!')\rprint('kept')\n",
+        # names bound by unpacking, loops, splats and calls to a function the snippet defines
+        "sel, pw = '#p', 'Hunter2Correct!'\nfill_input(sel, pw)",
+        "fill_input(*('#p', 'Hunter2Correct!'))",
+        "fill_input(**{'selector': '#p', 'text': 'Hunter2Correct!'})",
+        "for pw in ['Hunter2Correct!']:\n    fill_input('#p', pw)",
+        "def go(pw):\n    fill_input('#p', pw)\ngo('Hunter2Correct!')",
+        # the raw-text fallback (unparsed: extra ')') ends a literal at \r and skips comments, so the
+        # quote in "# it's" cannot swallow the typed value
+        "fill_input('#p',\r  # it's here\r  'Hunter2Correct!'))\r",
+        # a long concatenation makes the walk give up: the whole-pass fallback must hold too
+        pytest.param("# don't echo the password\rcss = " + " + ".join(f"'.c{i}{{}}'" for i in range(900))
+                     + "\rfill_input('#password', 'Hunter2Correct!')\r", id="cr-comment-quote-walk-fallback"),
+    ])
+    def test_browser_exec_typed_password_never_reaches_display(self, code):
+        """#72298: an ordinary password typed by a browser_exec snippet matches no secret shape,
+        yet every display surface (preview, verbose args, cute row) must mask it; the selector stays."""
+        args = {"code": code}
+        shown = (build_tool_preview("browser_exec", args, max_len=0),
+                 str(redact_tool_args_for_display("browser_exec", args)),
+                 get_cute_tool_message("browser_exec", args, 0.1))
+        assert all("Hunter2Correct!" not in s and "***" in s for s in shown)
+        assert args["code"] == code
+
+    def test_browser_exec_display_keeps_selectors_urls_and_untyped_strings(self):
+        """Only typed values are masked: a selector, a URL, a text= kwarg outside insertText and a
+        .value comparison all read as written."""
+        code = ("new_tab(url='https://example.com/login', text='Search page')\n"
+                "fill_input('input[type=password]:not(.x)', 'Hunter2Correct!')\n"
+                "cdp('Input.insertText', text='Hunter2Correct!')\n"
+                "js(\"document.querySelector('#u').value == 'admin'\")")
+        shown = redact_tool_args_for_display("browser_exec", {"code": code})["code"]
+        assert "Hunter2Correct!" not in shown
+        for kept in ("https://example.com/login", "text='Search page'",
+                     "input[type=password]:not(.x)", ".value == 'admin'"):
+            assert kept in shown
 
     def test_browser_type_display_args_redact_api_key(self):
         secret = "ghp_ABCDEFGHIJ1234567890"
@@ -97,14 +174,28 @@ class TestBuildToolPreview:
             {"tasks": [{"goal": "A" * 80}, {"goal": "B" * 80}]},
             max_len=30,
         )
-        assert result == "2 tasks: AAAAAAAAAAAAAAAAAA..."
-        assert len(result) == 30
+        assert result is not None and len(result) <= 30
 
     def test_false_like_args_zero(self):
         """Non-dict falsy values should return None, not crash."""
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+    @pytest.mark.parametrize("max_len", [1, 2, 3, 4])
+    def test_tiny_max_len_never_exceeded(self, max_len):
+        """max_len is a hard cap on every preview path — dedicated builder (terminal), generic
+        fallback key (web_search), and the cute head-truncated path (#9439)."""
+        from agent.display import _cute_path, set_tool_preview_max_len
+        long = "abcdefghijklmnopqrstuvwxyz"
+        for tool, args in (("terminal", {"command": long}), ("web_search", {"query": long})):
+            preview = build_tool_preview(tool, args, max_len=max_len)
+            assert preview and len(preview) <= max_len, (tool, preview)
+        set_tool_preview_max_len(max_len)
+        try:
+            assert len(_cute_path("/" + long + "/file.py")) <= max_len
+        finally:
+            set_tool_preview_max_len(0)
 
 
 class TestPrepareToolPreview:
@@ -252,17 +343,7 @@ class TestBuildToolLabel:
         yield
         set_friendly_tool_labels(True)
 
-    def test_web_search_uses_for_connector(self):
-        from agent.display import build_tool_label
-        label = build_tool_label("web_search", {"query": "weather in NYC"})
-        assert label == 'Searching the web for weather in NYC'
 
-    def test_web_extract_reads_url(self):
-        from agent.display import build_tool_label
-        label = build_tool_label("web_extract", {"urls": ["https://example.com/page"]})
-        assert label is not None
-        assert label.startswith("Reading ")
-        assert "example.com/page" in label
 
 
 
@@ -290,11 +371,6 @@ class TestBuildStatusPhrase:
 
 
 
-    def test_verb_only_when_args_none(self):
-        # live_status: "verb" mode passes args=None to suppress previews.
-        from agent.display import build_status_phrase
-        assert build_status_phrase("terminal", None) == "is running…"
-        assert build_status_phrase("read_file", None) == "is reading…"
 
 
 

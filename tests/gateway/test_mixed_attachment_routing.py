@@ -22,7 +22,8 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, merge_pending_message_event
+from gateway.platforms.base import merge_pending_message_event
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import (
     GatewayRunner,
     _build_media_placeholder,
@@ -69,9 +70,7 @@ async def test_mixed_document_event_preserves_audio_as_non_stt_file_path():
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
     )
     runner.adapters = {}
-    runner._pending_native_image_paths_by_session = {}
     runner._session_model_overrides = {}
-    runner._session_reasoning_overrides = {}
     source = SessionSource(
         platform=Platform.TELEGRAM,
         chat_id="mixed-audio",

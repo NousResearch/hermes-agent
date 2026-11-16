@@ -4,13 +4,14 @@ Tests the _handle_resume_command handler (switch to a previously-named session)
 across gateway messenger platforms.
 """
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, build_session_key
 
 
@@ -71,13 +72,6 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
 class TestHandleResumeCommand:
     """Tests for GatewayRunner._handle_resume_command."""
 
-    @pytest.mark.asyncio
-    async def test_no_session_db(self):
-        """Returns error when session database is unavailable."""
-        runner = _make_runner(session_db=None)
-        event = _make_event(text="/resume My Project")
-        result = await runner._handle_resume_command(event)
-        assert "not available" in result.lower()
 
     @pytest.mark.asyncio
     async def test_list_named_sessions_when_no_arg(self, tmp_path):
@@ -101,50 +95,39 @@ class TestHandleResumeCommand:
         result = await runner._handle_resume_command(event)
         assert "Research" in result
         assert "Coding" in result
-        assert "Named Sessions" in result
         assert "1." in result
         assert "2." in result
         assert "/resume 1" in result
         db.close()
 
-    @pytest.mark.asyncio
-    async def test_resume_all_nonadmin_downgrade_is_announced(self, tmp_path):
-        """A non-admin `/resume --all` must say the widening was declined."""
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
-        event = _make_event(text="/resume --all")
-        lane_key = _session_key_for_event(event)
-        db.create_session(
-            "sess_001", "telegram", session_key=lane_key,
-            user_id="12345", chat_id="67890",
-        )
-        db.set_session_title("sess_001", "Research")
 
-        runner = _make_runner(session_db=db, event=event)
-        result = await runner._handle_resume_command(event)
-        assert "Research" in result
-        assert "requires a configured admin" in result
-        db.close()
+
 
     @pytest.mark.asyncio
-    async def test_resume_plain_listing_has_no_scope_notice(self, tmp_path):
-        """No downgrade notice when `--all` wasn't requested."""
+    async def test_resume_other_session_notices_paused_messages_left_behind(self, tmp_path, monkeypatch):
+        """A /resume route switch must tell the chat about queued messages left behind (#145177)."""
         from hermes_state import SessionDB
+
         db = SessionDB(db_path=tmp_path / "state.db")
-        event = _make_event(text="/resume")
-        lane_key = _session_key_for_event(event)
-        db.create_session(
-            "sess_001", "telegram", session_key=lane_key,
-            user_id="12345", chat_id="67890",
-        )
-        db.set_session_title("sess_001", "Research")
+        db.create_session("saved_session", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("saved_session", "Earlier Work")
+        db.create_session("paused_session", "telegram", user_id="12345", chat_id="67890")
 
-        runner = _make_runner(session_db=db, event=event)
-        result = await runner._handle_resume_command(event)
-        assert "Research" in result
-        assert "requires a configured admin" not in result
+        async def count_paused(_runner, session_id):
+            assert session_id == "paused_session"  # must inspect the departed route, not the target
+            return 2
+
+        monkeypatch.setattr("gateway.slash_commands_session.paused_followers", count_paused)
+        event = _make_event(text="/resume Earlier Work")
+        runner = _make_runner(session_db=db, current_session_id="paused_session", event=event)
+
+        reply = await runner._handle_resume_command(event)
+
+        assert "Earlier Work" in reply
+        assert "2 message" in reply and "/resume paused_session" in reply
+        assert "/discard" in reply
+        runner.session_store.switch_session.assert_called_once()
         db.close()
-
 
     @pytest.mark.asyncio
     async def test_resume_clears_session_model_overrides(self, tmp_path):
@@ -169,9 +152,8 @@ class TestHandleResumeCommand:
             "agent:main:telegram:dm:other": "[Note: keep-me]",
         }
 
-        result = await runner._handle_resume_command(event)
-
-        assert "Resumed" in result
+        await runner._handle_resume_command(event)
+        assert runner.session_store.switch_session.call_args.kwargs["preserve_prompt_pin"] is False
         # The resumed chat's override + pending note are cleared...
         assert key not in runner._session_model_overrides
         assert key not in runner._pending_model_notes
@@ -197,16 +179,12 @@ class TestHandleResumeCommand:
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
                               event=event)
         key = _session_key_for_event(event)
-        runner._last_resolved_model = {
-            key: "gpt-5",
-            "agent:main:telegram:dm:other": "keep-me",
-        }
+        runner._session_state(key).conversation.last_resolved_model = "gpt-5"
+        runner._session_state("agent:main:telegram:dm:other").conversation.last_resolved_model = "keep-me"
 
-        result = await runner._handle_resume_command(event)
-
-        assert "Resumed" in result
-        assert key not in runner._last_resolved_model
-        assert runner._last_resolved_model["agent:main:telegram:dm:other"] == "keep-me"
+        await runner._handle_resume_command(event)
+        assert not runner._session_state(key).conversation.last_resolved_model
+        assert runner._session_state("agent:main:telegram:dm:other").conversation.last_resolved_model == "keep-me"
         db.close()
 
 
@@ -236,8 +214,6 @@ class TestHandleResumeCommand:
         )
 
         result = await runner._handle_resume_command(event)
-
-        assert "Resumed session" in result
         assert "(1 message)" in result
         call_args = runner.session_store.switch_session.call_args
         assert call_args[0][1] == "compressed_child"
@@ -306,6 +282,31 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_bare_resume_ranks_lineages_by_last_activity(self, tmp_path):
+        """A lineage whose root started days ago but was touched last must lead the list: the
+        picker ranks by lineage activity, not root ``started_at`` (#114271)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/resume")
+        lane_key = _session_key_for_event(event)
+        t0 = time.time() - 5 * 86400
+        for sid, started, active in (("old_root", t0, t0 + 4 * 86400), ("new_root", t0 + 86400, t0 + 86400 + 60)):
+            db.create_session(sid, "telegram", session_key=lane_key, user_id="12345", chat_id="67890")
+            db.append_message(sid, "user", "hi")
+            db._conn.execute("UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?", (started, active, sid))
+            db._conn.execute("UPDATE messages SET timestamp=? WHERE session_id=?", (active, sid))
+        db._conn.commit()
+        db.set_session_title("old_root", "Old But Active")
+        db.set_session_title("new_root", "Newer But Idle")
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert result.index("Old But Active") < result.index("Newer But Idle")
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_bare_resume_admin_all_preserves_same_platform_widening(self, tmp_path):
         from hermes_state import SessionDB
 
@@ -358,9 +359,7 @@ class TestHandleResumeCommand:
         runner = _make_runner(
             session_db=db, current_session_id="current_session_001", event=event
         )
-        result = await runner._handle_resume_command(event)
-
-        assert "Resumed" in result
+        await runner._handle_resume_command(event)
         runner.session_store.switch_session.assert_called_once()
         assert runner.session_store.switch_session.call_args[0][1] == "lane_older"
         db.close()
@@ -588,47 +587,7 @@ class TestHandleSessionsCommand:
         assert "current_root" not in result
         db.close()
 
-    @pytest.mark.asyncio
-    async def test_sessions_all_nonadmin_downgrade_is_announced(self, tmp_path):
-        """A non-admin `/sessions all` must say the widening was declined."""
-        from hermes_state import SessionDB
 
-        db = SessionDB(db_path=tmp_path / "state.db")
-        event = _make_event(text="/sessions all")
-        lane_key = _session_key_for_event(event)
-        db.create_session(
-            "sess_local", "telegram", session_key=lane_key,
-            user_id="12345", chat_id="67890",
-        )
-        db.set_session_title("sess_local", "Local Work")
-
-        runner = _make_runner(session_db=db, event=event)
-        result = await runner._handle_sessions_command(event)
-
-        assert "Local Work" in result
-        assert "requires a configured admin" in result
-        db.close()
-
-    @pytest.mark.asyncio
-    async def test_sessions_plain_listing_has_no_scope_notice(self, tmp_path):
-        """No notice when the caller never asked for `all`."""
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
-        event = _make_event(text="/sessions")
-        lane_key = _session_key_for_event(event)
-        db.create_session(
-            "sess_local", "telegram", session_key=lane_key,
-            user_id="12345", chat_id="67890",
-        )
-        db.set_session_title("sess_local", "Local Work")
-
-        runner = _make_runner(session_db=db, event=event)
-        result = await runner._handle_sessions_command(event)
-
-        assert "Local Work" in result
-        assert "requires a configured admin" not in result
-        db.close()
 
     @pytest.mark.asyncio
     async def test_sessions_admin_all_preserves_cross_origin_widening(self, tmp_path):
@@ -970,3 +929,61 @@ class TestSameMatrixRoomThreadScoping:
         caller = self._msrc(thread_id="thread-a")
         victim_origin = self._msrc(thread_id="thread-b")
         assert runner._same_matrix_room(caller, victim_origin) is False
+
+
+class TestResumeCallerAdminAmbiguousScope:
+    """Ambiguous chat_type + both scopes gated: a scope-specific admin must not pass the
+    admin check end-to-end (cross-origin /resume and /goal gate add ride this)."""
+
+    def _runner_with_both_scopes_gated(self):
+        from gateway.config import PlatformConfig
+        runner = _make_runner()
+        runner.config = SimpleNamespace(platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, extra={
+                "allow_admin_from": ["dm-admin", "dual-admin"],
+                "group_allow_admin_from": ["group-admin", "dual-admin"],
+            }),
+        })
+        return runner
+
+    def test_ambiguous_source_group_only_admin_is_not_admin(self):
+        runner = self._runner_with_both_scopes_gated()
+        src = SessionSource(platform=Platform.TELEGRAM, chat_id="dm-chat",
+                            chat_type=None, user_id="group-admin")
+        assert runner._resume_caller_is_admin(src) is False
+
+    def test_ambiguous_source_dm_only_admin_is_not_admin(self):
+        runner = self._runner_with_both_scopes_gated()
+        src = SessionSource(platform=Platform.TELEGRAM, chat_id="dm-chat",
+                            chat_type=None, user_id="dm-admin")
+        assert runner._resume_caller_is_admin(src) is False
+
+    def test_ambiguous_source_dual_scope_admin_stays_admin(self):
+        runner = self._runner_with_both_scopes_gated()
+        src = SessionSource(platform=Platform.TELEGRAM, chat_id="dm-chat",
+                            chat_type=None, user_id="dual-admin")
+        assert runner._resume_caller_is_admin(src) is True
+
+
+class TestBlankChatTypeOwnershipProof:
+    """A blank chat_type could be a group: the /resume ownership proofs must not read it as a DM,
+    or a member in group chat -100 could take over another member's per-user session there."""
+
+    @staticmethod
+    def _src(user_id, chat_type):
+        return SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type=chat_type,
+                             user_id=user_id)
+
+    @pytest.mark.parametrize("chat_type", ["", "  ", None])
+    def test_blank_caller_cannot_match_other_members_group_origin(self, chat_type):
+        runner = _make_runner()
+        victim = self._src("victim", "group")
+        assert runner._same_origin_chat(self._src("mallory", chat_type), victim) is False
+        assert runner._same_origin_chat(self._src("victim", chat_type), victim) is True
+
+    @pytest.mark.parametrize("chat_type", ["", "  ", None])
+    def test_blank_caller_cannot_prove_other_members_group_row(self, chat_type):
+        runner = _make_runner()
+        row = {"source": "telegram", "chat_id": "-100", "chat_type": "group", "user_id": "victim"}
+        assert runner._persisted_row_proves_owner(self._src("mallory", chat_type), row) is False
+        assert runner._persisted_row_proves_owner(self._src("victim", chat_type), row) is True

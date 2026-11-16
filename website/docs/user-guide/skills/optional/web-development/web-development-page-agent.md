@@ -15,7 +15,7 @@ Embed an in-page natural-language GUI copilot in web apps.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/web-development/page-agent` |
-| Path | `optional-skills/web-development\page-agent` |
+| Path | `optional-skills/web-development/page-agent` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -44,7 +44,7 @@ Load this skill when a user wants to:
 
 ## When NOT to use this skill
 
-- User wants **Hermes itself to drive a browser** → use Hermes' built-in browser tool (Browserbase / Camofox). page-agent is the *opposite* direction.
+- User wants **Hermes itself to drive a browser** → use Hermes' built-in `browser_exec` tool (local Chromium or a cloud browser). page-agent is the *opposite* direction.
 - User wants **cross-tab automation without embedding** → use Playwright, browser-use, or the page-agent Chrome extension
 - User needs **visual grounding / screenshots** → page-agent is text-DOM only; use a multimodal browser agent instead
 

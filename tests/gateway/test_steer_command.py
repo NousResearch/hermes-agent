@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -61,9 +61,7 @@ def _make_runner(session_entry: SessionEntry):
     runner.session_store.load_transcript.return_value = []
     runner.session_store.has_any_sessions.return_value = True
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None
     runner._reasoning_config = None
@@ -74,7 +72,6 @@ def _make_runner(session_entry: SessionEntry):
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
     return runner, adapter
 
@@ -108,7 +105,10 @@ async def test_steer_calls_agent_steer_and_does_not_interrupt():
     assert result is not None
     assert "steer" in result.lower() or "queued" in result.lower()
     # The agent's steer() was called with the payload (prefix stripped)
-    running_agent.steer.assert_called_once_with("also check auth.log")
+    running_agent.steer.assert_called_once()
+    injected = running_agent.steer.call_args.args[0]
+    assert injected.endswith("\n\nalso check auth.log")
+    assert '"chat_id": "c1"' in injected
     # Critically: interrupt was NOT called
     running_agent.interrupt.assert_not_called()
     # And no user-text queueing happened — the steer doesn't go into
@@ -132,12 +132,15 @@ async def test_steer_reaches_ancient_turn_via_fresh_timestamp_fallback(
         "last_activity_desc": "receiving stream response",
     }
     runner._running_agents[sk] = running_agent
-    runner._running_agents_ts[sk] = time.time() - 31_471
+    runner._session_state(sk).turn.started_ts = time.time() - 31_471
     monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "1800")
 
     result = await runner._handle_message(_make_event("/steer pause safely"))
 
-    running_agent.steer.assert_called_once_with("pause safely")
+    running_agent.steer.assert_called_once()
+    injected = running_agent.steer.call_args.args[0]
+    assert injected.endswith("\n\npause safely")
+    assert '"chat_id": "c1"' in injected
     assert runner._running_agents[sk] is running_agent
     assert result is not None
 
@@ -167,6 +170,37 @@ async def test_steer_agent_without_steer_method_falls_back():
         adapter._pending_messages[sk].channel_context
         == "[Thread context]\nAlice: earlier request"
     )
+
+
+@pytest.mark.asyncio
+async def test_steer_with_media_queues_whole_event_instead_of_dropping_the_photo():
+    """/steer sent as a photo caption must not steer only the caption while silently
+    dropping the photo: the whole event (caption + media) is queued as its own
+    follow-up turn, matching how the plain-message busy gate demotes non-text
+    input (#70253, #132371)."""
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    runner._running_agents[sk] = running_agent
+
+    event = _make_event("/steer what do you think of this?")
+    event.media_urls = ["/cache/images/img_1.jpg"]
+    event.media_types = ["photo"]
+    result = await runner._handle_message(event)
+
+    # The photo never reached the running turn as a text-only steer...
+    running_agent.steer.assert_not_called()
+    # ...the whole caption+photo event was queued for the next turn...
+    assert sk in adapter._pending_messages
+    queued = adapter._pending_messages[sk]
+    assert queued.text == "what do you think of this?"
+    assert queued.media_urls == ["/cache/images/img_1.jpg"]
+    assert queued.media_types == ["photo"]
+    # ...and the reply says so.
+    assert result is not None
+    assert "queued" in result.lower()
 
 
 if __name__ == "__main__":  # pragma: no cover

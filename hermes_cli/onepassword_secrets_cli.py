@@ -21,6 +21,7 @@ from hermes_cli._secrets_common import (
     arg,
     cfg_str,
     cli_version,
+    console_safe,
     disable_secret_source,
     flag,
     print_status_panel,
@@ -28,7 +29,6 @@ from hermes_cli._secrets_common import (
     register_subcommands,
     require_enabled,
     rotate_token,
-    secret_cli_env,
     section_cfg,
     yn,
 )
@@ -133,7 +133,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     else:
         who = _op_whoami(binary, op_cfg.get("account", ""))
         if who:
-            console.print(f"  [green]✓[/green] using existing op session ({who})")
+            console.print(f"  [green]✓[/green] using existing op session ({console_safe(who)})")
         else:
             console.print(
                 "  [yellow]No service-account token and no active op session "
@@ -193,7 +193,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     if binary and not token_set:
         who = _op_whoami(binary, account)
         if who:
-            console.print(f"\n  [green]Active op session:[/green] {who}")
+            console.print(f"\n  [green]Active op session:[/green] {console_safe(who)}")
         else:
             console.print(
                 f"\n  [yellow]No active op session and {token_env} is unset — "
@@ -213,7 +213,7 @@ def cmd_set(args: argparse.Namespace) -> int:
     valid, warnings = op_src._validate_references({args.env_var: args.reference})
     if args.env_var not in valid:
         for w in warnings:
-            console.print(f"[red]{w}[/red]")
+            console.print(f"[red]{console_safe(w)}[/red]")
         return 1
 
     cfg = load_config()
@@ -267,7 +267,7 @@ def cmd_token(args: argparse.Namespace) -> int:
         if who is None:
             console.print("[red]✗ New token was rejected by op — nothing was changed.[/red]")
             return False
-        console.print(f"[green]✓ Token accepted[/green] ({who}).")
+        console.print(f"[green]✓ Token accepted[/green] ({console_safe(who)}).")
         return True
 
     return rotate_token(
@@ -317,7 +317,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             cache_ttl_seconds=0,  # an explicit sync always resolves fresh
         )
         if result.error:
-            console.print(f"[red]{result.error}[/red]")
+            console.print(f"[red]{console_safe(result.error)}[/red]")
             return 1
         print_table(
             console, (("Env var", {"style": "cyan"}), "Action"),
@@ -338,7 +338,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             use_cache=False,
         )
     except RuntimeError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{console_safe(str(exc))}[/red]")
         return 1
 
     override = bool(op_cfg.get("override_existing", True))
@@ -380,40 +380,16 @@ def _op_whoami(binary: Path, account: str, *, token_value: str = "") -> Optional
     cmd = [str(binary), "whoami"]
     if account:
         cmd += ["--account", account]
-    env = secret_cli_env()
-    if token_value:
-        env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
+    # Same allowlist as the fetch path; op itself reads OP_SERVICE_ACCOUNT_TOKEN.
+    env = op_src._op_child_env(token_value or os.environ.get(op_src._DEFAULT_TOKEN_ENV, ""))
     try:
         res = subprocess.run(
             cmd, env=env, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=10
+            encoding="utf-8", errors="replace", timeout=10,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if res.returncode != 0:
         return None
     return (res.stdout or "").strip().replace("\n", " ")[:120] or "authenticated"
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from rich.table import Table  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'masked_secret_prompt': ('hermes_cli.secret_prompt', 'masked_secret_prompt'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

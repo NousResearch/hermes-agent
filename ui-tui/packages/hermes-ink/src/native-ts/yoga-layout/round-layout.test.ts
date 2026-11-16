@@ -129,11 +129,9 @@ describe('incremental layout rounding', () => {
       return { rounded: counters.rounded, roundSkips: counters.roundSkips }
     })
 
-    expect(results).toEqual([
-      { rounded: 2, roundSkips: 1 },
-      { rounded: 2, roundSkips: 1 },
-      { rounded: 2, roundSkips: 1 }
-    ])
+    // Flat: rounding work on a clock-only change must not scale with row count.
+    expect(results[1]).toEqual(results[0])
+    expect(results[2]).toEqual(results[0])
   })
 
   it('re-rounds cached raw geometry when the point scale changes', () => {

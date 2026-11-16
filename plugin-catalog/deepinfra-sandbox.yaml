@@ -1,0 +1,15 @@
+name: deepinfra-sandbox
+repo: https://github.com/deepinfra/deepinfra-hermes-sandbox
+sha: 259a477548f1862071c9e2462fda6a7bb9de68c8
+description: Terminal backend running agent commands in isolated DeepInfra cloud sandboxes (deep_sands microVMs). Disclosure — runs agent commands in billable DeepInfra cloud sandboxes and uploads your Hermes skills, cache and skill-registered credential files to the sandbox at /workspace/.hermes; dangerous-command approval is skipped inside the sandbox.
+maintainer: DeepInfra
+tier: community
+category: platform
+docs_url: https://github.com/deepinfra/deepinfra-hermes-sandbox#readme
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - DEEPINFRA_API_KEY

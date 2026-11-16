@@ -19,6 +19,14 @@ DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
+# Seconds for one STT HTTP request; shared by the OpenAI-SDK path and the QQ adapter so a
+# self-hosted model's cold start is not cut off at the old fixed 30s (#112939).
+DEFAULT_STT_TIMEOUT = 60.0
+# /v1/stt's server default moved from grok-voice-transcribe-1.0 to 2.0 between Sep 17 and
+# Sep 21 2026 and 1.0 is slated for retirement; naming the model keeps the wire deterministic
+# and lets STT_XAI_MODEL / stt.xai.model pin 1.0 for a rollback.
+XAI_STT_MODEL_ENV = "STT_XAI_MODEL"
+LEGACY_XAI_STT_MODEL = "grok-stt"
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -33,9 +41,24 @@ SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", 
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
-# Known model sets for auto-correction
-OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"}
-GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
+# Per-provider model catalogs keyed by ``stt.<provider>`` section, default first. This one table
+# feeds the `hermes tools` picker, the dashboard selects and the auto-correction sets below.
+# DeepInfra has no static list: its picker reads the live catalog.
+STT_MODEL_CATALOG = {
+    "local": ["base", "tiny", "small", "medium", "large-v3", "turbo"],
+    "groq": ["whisper-large-v3-turbo", "whisper-large-v3"],
+    "openai": ["whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"],
+    "mistral": ["voxtral-mini-latest", "voxtral-mini-2602"],
+    "xai": ["grok-voice-transcribe-2.0", "grok-voice-transcribe-1.0"],
+    "elevenlabs": ["scribe_v2", "scribe_v1"]}
+# ElevenLabs historically uses ``model_id`` instead of ``model``.
+STT_MODEL_CONFIG_KEY = {"elevenlabs": "model_id"}
+
+# Known model sets for auto-correction. Groq shut distil-whisper-large-v3-en down on
+# 2025-08-23 (console.groq.com/docs/deprecations); a config still naming it is remapped.
+OPENAI_MODELS = frozenset(STT_MODEL_CATALOG["openai"])
+GROQ_MODELS = frozenset(STT_MODEL_CATALOG["groq"])
+RETIRED_GROQ_MODELS = frozenset({"distil-whisper-large-v3-en"})
 
 # Providers with native handlers. Kept in sync with ``agent.transcription_registry._BUILTIN_NAMES``
 # (a regression test fails on drift); plugins may not register under these names and the
@@ -48,36 +71,60 @@ BUILTIN_STT_PROVIDERS = frozenset({
 CLOUD_STT_PROVIDERS = frozenset(BUILTIN_STT_PROVIDERS - {"local", "local_command"})
 
 
-def _error_result(error: str, **extra: Any) -> Dict[str, Any]:
+def _error_result(error: str, **extra: Any) -> dict[str, Any]:
     """Standard failure envelope shared by every provider and validator."""
     return {"success": False, "transcript": "", "error": error, **extra}
 
 
-def _ok_result(transcript: str, provider: str) -> Dict[str, Any]:
+class STTResponseError(ValueError):
+    """A provider answered with a structured object carrying no transcript text.
+
+    Raised by ``_extract_transcript_text`` when an SDK object or JSON body reports an
+    ``error`` (or neither ``text`` nor ``error``) instead of a usable transcript. The
+    message is the provider's own, so the STT failure paths surface it verbatim rather
+    than stringifying the response object into its repr (#78098)."""
+
+
+def normalize_xai_stt_model(model: Any) -> str:
+    """Return a valid xAI STT model: blank or Hermes' old ``grok-stt`` alias -> ``STT_XAI_MODEL`` (read
+    per call, so a profile's env applies), else the catalog default."""
+    value = str(model or "").strip()
+    if not value or value == LEGACY_XAI_STT_MODEL:
+        return os.getenv(XAI_STT_MODEL_ENV, "").strip() or STT_MODEL_CATALOG["xai"][0]
+    return value
+
+
+def _ok_result(transcript: str, provider: str) -> dict[str, Any]:
     return {"success": True, "transcript": transcript, "provider": provider}
 
 
-def _lazy_ensure_quietly(dep: str) -> None:
-    """Best-effort ``tools.lazy_deps.ensure(dep, prompt=False)``; failures are swallowed.
-    prompt=False: a bare input() deadlocks under the interactive CLI where prompt_toolkit owns
-    stdin; installs are gated by ``security.allow_lazy_installs``."""
+def _lazy_ensure_quietly(extra: str) -> None:
+    """Best-effort ``pm.ensure_import(extra)``; failures are swallowed.
+    Installs are gated by ``security.allow_lazy_installs`` inside pm."""
     try:
-        from tools.lazy_deps import ensure
-        ensure(dep, prompt=False)
+        import pm
+        pm.ensure_import(extra)
     except Exception:
         pass
 
 
-def _process_error_detail(exc: "subprocess.CalledProcessError") -> str:
+def _process_error_detail(exc: subprocess.CalledProcessError) -> str:
     """stderr > stdout > str(exc) for a failed helper binary."""
-    return exc.stderr.strip() or exc.stdout.strip() or str(exc)
+    for output in (exc.stderr, exc.stdout):
+        if isinstance(output, bytes):
+            detail = output.decode("utf-8", errors="replace").strip()
+        else:
+            detail = str(output or "").strip()
+        if detail:
+            return detail
+    return str(exc)
 
 
 def _log_prompt_unsupported(label: str) -> None:
     logger.debug("%s does not support transcription prompts — proceeding without the prompt.", label)
 
 
-def _config_number(cfg: Dict[str, Any], key: str, default, cast=float):
+def _config_number(cfg: dict[str, Any], key: str, default, cast=float):
     """Read ``cfg[key]`` through *cast*, falling back to *default* on bad values."""
     try:
         return cast(cfg.get(key, default))

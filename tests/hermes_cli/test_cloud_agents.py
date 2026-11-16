@@ -105,5 +105,7 @@ def test_signed_out_install_is_told_to_sign_in_not_a_server_error(client, tmp_pa
     http, _token = client
     (tmp_path / "hermes" / "auth.json").unlink()
     response = http.get("/api/cloud/agents")
-    assert response.status_code == 401
+    # Not 401: that status means "your dashboard session was refused" to every dashboard client.
+    assert response.status_code == 409
     assert response.json()["detail"]["code"] == "portal_signin_required"
+    assert "Sign in to Nous Portal" in response.json()["detail"]["message"]

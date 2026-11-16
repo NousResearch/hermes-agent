@@ -261,9 +261,12 @@ _PIPE_SHELL_TOKEN_RE = (
     rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"\s;&|<>)`]|$)"
 )
 # A stdin-reading interpreter with no script argument (or `-`) runs the piped text as code;
-# `python3 -m json.tool` / `node script.js` name their own program and stay out.
+# `python3 -m json.tool` / `node script.js` name their own program and stay out. Output redirects
+# (`> out.txt`, `2>&1`, `&>> log`) leave stdin alone; an input redirect replaces it and stays out.
+_PIPE_OUTPUT_REDIRECT_RE = r"\s*+(?:[0-9]*+>>?|&>>?)\s*+(?:&[0-9-]|[^\s;&|<>()`]++)"
 _PIPE_INTERPRETER_TOKEN_RE = (
-    rf"{_PIPE_PATH_PREFIX_RE}(?:python[0-9.]*|node|perl|ruby|php)(?:\.exe)?(?:\s++-)?(?=\s*+(?:[;&|)`}}]|$))"
+    rf"{_PIPE_PATH_PREFIX_RE}(?:python[0-9.]*|node|perl|ruby|php)(?:\.exe)?(?:\s++-)?"
+    rf"(?:{_PIPE_OUTPUT_REDIRECT_RE})*+(?=\s*+(?:[;&|)`}}]|$))"
 )
 # Lookup/list modes name a shell without running it (`command -v bash`, `sudo -l bash`). The `l`
 # must be a bare flag: in `sudo -pl bash` / `-ul` it is the VALUE of -p / -u and bash runs.

@@ -207,6 +207,53 @@ describe("SessionsPage list ordering (#155919)", () => {
       expect(order ?? options?.order).toBe("recent");
     }
   });
+
+  it("refreshes the history list when the overview order changes but the head id does not", async () => {
+    const pollCallbacks: (() => void)[] = [];
+    const realSetInterval = globalThis.setInterval;
+    const intervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((fn: () => void, delay?: number) => {
+      if (delay === 5000) pollCallbacks.push(fn);
+      return realSetInterval(fn, delay);
+    }) as typeof setInterval);
+
+    const row = (id: string, last_active: number) => ({
+      id, profile: "default", source: "cli", model: null, title: id, started_at: 1, ended_at: null,
+      last_active, is_active: false, message_count: 2, tool_call_count: 0, input_tokens: 1,
+      output_tokens: 1, preview: id,
+    });
+    await renderSessionsPage([row("A", 300)]);
+    await waitFor(() => pollCallbacks.length > 0);
+
+    let overview = [row("A", 300), row("B", 200), row("C", 100)];
+    const listCalls = () => apiMocks.getSessions.mock.calls.filter(([limit]) => limit < 50).length;
+    const pollOverview = async () => {
+      apiMocks.getSessions.mockImplementation(async (limit: number) => ({
+        sessions: limit >= 50 ? overview : [row("A", 300)],
+        total: limit >= 50 ? overview.length : 1,
+        limit,
+        offset: 0,
+      }));
+      await act(async () => {
+        pollCallbacks[pollCallbacks.length - 1]();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    };
+
+    // First poll only sets the baseline.
+    await pollOverview();
+    const baseline = listCalls();
+
+    // Same order again: no refresh.
+    await pollOverview();
+    expect(listCalls()).toBe(baseline);
+
+    // Chat C is continued and A is active again in the same poll window:
+    // A stays first while C moves ahead of B.
+    overview = [row("A", 400), row("C", 390), row("B", 200)];
+    await pollOverview();
+    expect(listCalls()).toBe(baseline + 1);
+    intervalSpy.mockRestore();
+  });
 });
 
 describe("structured reasoning rendering (#59957)", () => {

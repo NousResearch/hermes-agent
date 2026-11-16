@@ -114,6 +114,57 @@ class TestFormatSessionInfo:
         assert "config" in info
         assert "131K" not in info
 
+    def test_named_custom_endpoint_shows_entry_slug(self, runner, tmp_path):
+        """A bare ``custom`` runtime provider is reverse-looked-up to its named
+        ``custom:<name>`` entry, so the banner tells multi-endpoint users which
+        saved provider actually serves this session."""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: glm-5.3-flash\n  provider: custom\n  context_length: 8192\n",
+            "glm-5.3-flash",
+            {"provider": "custom", "base_url": "https://api.zhipu.example/v1", "api_key": ""})
+        with p1, p2, p3, patch(
+            "hermes_cli.runtime_provider.load_config",
+            return_value={"custom_providers": [
+                {"name": "zhipu-glm", "base_url": "https://api.zhipu.example/v1"},
+            ]},
+        ):
+            info = runner._format_session_info()
+        assert "custom:zhipu-glm" in info
+
+    def test_unmatched_custom_endpoint_keeps_bare_custom(self, runner, tmp_path):
+        """No matching entry keeps the plain ``custom`` display — the banner
+        never invents a provider name."""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: glm-5.3-flash\n  provider: custom\n  context_length: 8192\n",
+            "glm-5.3-flash",
+            {"provider": "custom", "base_url": "https://unknown.example/v1", "api_key": ""})
+        with p1, p2, p3, patch(
+            "hermes_cli.runtime_provider.load_config",
+            return_value={"custom_providers": [
+                {"name": "zhipu-glm", "base_url": "https://api.zhipu.example/v1"},
+            ]},
+        ):
+            info = runner._format_session_info()
+        assert "custom:zhipu-glm" not in info
+
+    def test_unreadable_config_keeps_bare_custom(self, runner, tmp_path):
+        """An unreadable config must not break the banner: the reverse lookup
+        fails closed to the plain ``custom`` display."""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: glm-5.3-flash\n  provider: custom\n  context_length: 8192\n",
+            "glm-5.3-flash",
+            {"provider": "custom", "base_url": "https://api.zhipu.example/v1", "api_key": ""})
+        with p1, p2, p3, patch(
+            "hermes_cli.runtime_provider.load_config",
+            side_effect=RuntimeError("config unreadable"),
+        ):
+            info = runner._format_session_info()
+        assert "custom:zhipu-glm" not in info
+        assert "custom" in info
+
 
 class TestChannelOverrideSessionInfo:
     """The /new and auto-reset banners must advertise the channel override's

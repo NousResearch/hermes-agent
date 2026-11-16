@@ -775,15 +775,12 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     gateway_session_key, key_err = self._parse_session_key_header(request)
     if key_err is not None:
         return key_err
-    try:
-        body = await request.json()
-    except Exception:
-        return _json_error(_openai_error, "Invalid JSON", status=400)
+    body, body_err = await self._read_json_body(request)  # invalid JSON, or not an object: a 400
+    if body_err is not None:
+        return body_err
     body, room_error = await self._normalize_room_dispatch(request, body)
     if room_error is not None:
         return room_error
-    if not isinstance(body, dict):
-        return _json_error(_openai_error, "Request body must be a JSON object", status=400)
     room_dispatch, room_execution_policy = (
         v if isinstance(v, dict) else None
         for v in (body.get("hosted_room_dispatch"), body.get("_room_execution_policy")))

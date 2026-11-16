@@ -3247,7 +3247,14 @@ export const svOverrides: TranslationOverrides = {
       reorder: 'Ändra gruppordning',
       actions: 'Gruppåtgärder'
     },
-    projectLoadFailed: 'Det gick inte att läsa in sessioner'
+    projectLoadFailed: 'Det gick inte att läsa in sessioner',
+    storageCorrupt: {
+      title: 'Sessionsdatabasen är skadad',
+      body: profiles =>
+        `Hermes kan inte läsa hela sessionshistoriken för ${profiles}. Chattar som saknas i listan har inte tagits bort, men filen som innehåller dem är skadad.`,
+      action: 'Avsluta Hermes för den här profilen och granska sedan filen utan att ändra den, eller återställ en ögonblicksbild:',
+      guide: 'Återställningsguide'
+    }
   },
   prompts: {
     gatewayDisconnected: 'Hermes-gatewayen är inte ansluten',

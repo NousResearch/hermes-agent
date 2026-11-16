@@ -31,6 +31,12 @@ describe('readDesktopSshBudgets (#132508)', () => {
     expect(logged).toHaveLength(2)
   })
 
+  it('reads past a column-0 comment inside the desktop block', () => {
+    const { budgets } = read(['desktop:', '  ssh_connect_timeout: 45', '# slow link', '  ssh_forward_timeout: 60'])
+
+    expect(budgets).toEqual({ connectTimeoutMs: 45_000, forwardTimeoutMs: 60_000 })
+  })
+
   it('keeps the default and warns once per key when a value is not whole seconds', () => {
     const { budgets, warned } = read(['desktop:', '  ssh_connect_timeout: 45s', '  ssh_forward_timeout: 1.5'])
 

@@ -303,8 +303,14 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 
 
 def _cmd_gc(args: argparse.Namespace) -> int:
-    """Remove archived tasks' scratch workspaces, old events, and old worker logs."""
-    import shutil
+    """Remove terminal tasks' scratch workspaces, old events, and old worker logs.
+
+    ``archived`` keeps its original scope. ``done`` rows are collected too: they
+    are the backstop for a completion-time removal that could not finish (a
+    process still working in the tree, a child still reading handoff artifacts,
+    an I/O error), which used to be unreachable by any standard command and
+    stayed on disk forever.
+    """
     event_days = getattr(args, "event_retention_days", 30)
     log_days = getattr(args, "log_retention_days", 30)
     if event_days < 0 or log_days < 0:
@@ -313,8 +319,8 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     removed_ws = 0
     with kbc.connect_closing() as conn:
         rows = conn.execute(
-            "SELECT id, workspace_kind, workspace_path, branch_name FROM tasks "
-            "WHERE status = 'archived'"
+            "SELECT id, status, workspace_kind, workspace_path, branch_name FROM tasks "
+            "WHERE status IN ('archived', 'done')"
         ).fetchall()
         for row in rows:
             if row["workspace_kind"] == "worktree":
@@ -324,7 +330,7 @@ def _cmd_gc(args: argparse.Namespace) -> int:
                 if wt_path and Path(wt_path).is_dir():
                     if kbw._defer_shared_worktree_cleanup(conn, row["id"], wt_path):
                         continue
-                    kbw._cleanup_worktree_workspace(row["id"], wt_path, row["branch_name"])
+                    kbw._cleanup_worktree_workspace(row["id"], wt_path, row["branch_name"], conn=conn)
                     if not Path(wt_path).is_dir():
                         removed_ws += 1
                 continue
@@ -337,10 +343,19 @@ def _cmd_gc(args: argparse.Namespace) -> int:
             # completion, and rmtree refuses a symlink (so it must not be counted).
             if not path.is_dir() or path.is_symlink() or not kbw._is_managed_scratch_path(path):
                 continue
+            # A done parent can still have a live child reading its handoff
+            # artifacts; completion defers on that and so must the backstop.
+            if kbw._has_active_children(conn, row["id"]):
+                continue
             if kbw._defer_shared_workspace_cleanup(conn, row["id"], path):
                 continue
-            shutil.rmtree(path, ignore_errors=True)
-            if not path.exists():
+            if kbw._workspace_busy_reason(path):
+                kbw._record_cleanup_event(
+                    conn, row["id"], "workspace_cleanup_deferred_busy",
+                    {"path": str(path), "reason": "busy"},
+                )
+                continue
+            if kbw._remove_scratch_dir(conn, row["id"], path):
                 removed_ws += 1
 
     removed_events = 0

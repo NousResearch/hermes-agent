@@ -22,6 +22,11 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     (workspace / 'pyproject.toml').write_text('[project]\nname = "task"\n')  # a code worktree
     from contextlib import closing
     kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)
+    # The skill-pin gate requires a pinned skill to exist in the assignee's home
+    # (profiles are islands; resolve_profile_env('default') is patched to tmp_path).
+    skill = tmp_path / 'skills' / 'owned-skill'
+    skill.mkdir(parents=True)
+    (skill / 'SKILL.md').write_text('---\nname: owned-skill\ndescription: Owned fixture\n---\nKANBAN_SKILL_SENTINEL\n', encoding='utf-8')
     with closing(connect(board='owned')) as conn:
         task_id = kb.create_task(conn, title='Owned acceptance', body='Goal criteria', assignee='default',
             workspace_kind='dir', workspace_path=str(workspace), skills=['owned-skill'], goal_mode=True,

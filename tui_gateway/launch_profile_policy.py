@@ -245,12 +245,7 @@ def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     from hermes_secret_routing import routed_provider
     provider = routed_provider()
     if provider is not None:
-        # Store-owned launch entries must not survive revocation in the fallback layer.
-        from hermes_secret_routing import published_env_names
-        def launch_fallback():
-            owned = published_env_names(launch_home) | set(provider.current_snapshot(launch_home).env)
-            return {k: v for k, v in scope.items() if k not in owned}
-        return LiveSecretScope((profile, launch_fallback))
+        return LiveSecretScope.for_profile(Path(launch_home), provider, _build_launch_secret_scope)
     scope.update(profile)
     return scope
 
@@ -268,6 +263,15 @@ def follow_launch_bridged_env() -> None:
     if isinstance(scope, dict):
         follow_bridged_env(scope)
         scope.update(build_profile_secret_scope(get_hermes_home()))  # .env / sources still win, as at build
+
+
+def _build_launch_secret_scope(home):
+    from agent.secret_scope import _is_global_env, _build_profile_secret_scope
+    from hermes_secret_routing import published_env_names
+    owned = published_env_names(home)
+    scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k) and k not in owned}
+    scope.update(_build_profile_secret_scope(home))
+    return scope
 
 
 def owner_secret_scope(home: str | Path) -> dict[str, str]:

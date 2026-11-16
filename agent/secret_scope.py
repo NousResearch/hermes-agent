@@ -430,28 +430,29 @@ def build_profile_secret_scope(hermes_home: Path) -> Mapping[str, str]:
     """Build a profile's secret mapping from ``<home>/.env`` plus its external
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
     from ``os.environ`` — so the scope holds only profile secrets."""
-    from hermes_secret_routing import read_profile_env  # the selected secret store's view of the profile
-    from hermes_secret_routing import live_bootstrap_env, routed_provider, profile_env_layer
+    from hermes_secret_routing import routed_provider
     provider = routed_provider()
     if provider is not None:
-        provider.current_snapshot(hermes_home)
-        secrets = LiveSecretScope((live_bootstrap_env(hermes_home, provider),
-                                   profile_env_layer(provider, hermes_home)))
-        dotenv = {}
-    else:
-        secrets = read_profile_env(Path(hermes_home) / ".env")
-        # Launch-only keys are never profile secrets (#135200): get_secret consults
-        # _is_global_env first, but direct scope.get readers (e.g. platform_gate_env
-        # under multiplexing) do not — a planted .env entry would otherwise survive
-        # into the mapping as a readable value. The external/managed paths below
-        # already drop them via _is_global_env; this is the one entry that doesn't.
-        from hermes_constants import is_launch_only_env_key
-        secrets = {k: v for k, v in secrets.items() if not is_launch_only_env_key(k)}
-        dotenv = dict(secrets)
+        return LiveSecretScope.for_profile(hermes_home, provider, _build_profile_secret_scope)
+    return _build_profile_secret_scope(hermes_home)
+
+
+def _build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
+    """The file-backed builder; stores replace only its raw profile read."""
+    from hermes_secret_routing import read_profile_env
+    secrets = read_profile_env(Path(hermes_home) / ".env")
+    # Launch-only keys are never profile secrets (#135200): get_secret consults
+    # _is_global_env first, but direct scope.get readers (e.g. platform_gate_env
+    # under multiplexing) do not — a planted .env entry would otherwise survive
+    # into the mapping as a readable value. The external/managed paths below
+    # already drop them via _is_global_env; this is the one entry that doesn't.
+    from hermes_constants import is_launch_only_env_key
+    secrets = {k: v for k, v in secrets.items() if not is_launch_only_env_key(k)}
+    dotenv = dict(secrets)
     try:
         from hermes_cli.env_loader import get_secret_source_values
         external_secrets = get_secret_source_values(Path(hermes_home))
-    except Exception:
+    except Exception:  # health: allow BLE001 -- external sources are optional, preserving the local builder
         external_secrets = {}
     secrets.update((k, v) for k, v in external_secrets.items() if not _is_global_env(k))
     # The DEFAULT profile's config.yaml allow_all_users grant lives only in os.environ (bridged by
@@ -460,10 +461,7 @@ def build_profile_secret_scope(hermes_home: Path) -> Mapping[str, str]:
     from gateway.config_loader import bridged_allow_all_users
     bridged = bridged_allow_all_users()
     if bridged is not None and _is_process_home(hermes_home):
-        if isinstance(secrets, LiveSecretScope):
-            secrets.layers += ({"GATEWAY_ALLOW_ALL_USERS": bridged},)
-        else:
-            secrets.setdefault("GATEWAY_ALLOW_ALL_USERS", bridged)
+        secrets.setdefault("GATEWAY_ALLOW_ALL_USERS", bridged)
     # Administrator-managed ``.env`` LAST, with override: the launch process applies it that way
     # (``env_loader._apply_managed_env``) so policy beats a user's own value. Under multiplex
     # semantics ``get_secret`` never reads ``os.environ`` on a scope miss, so a scope built from
@@ -476,8 +474,6 @@ def build_profile_secret_scope(hermes_home: Path) -> Mapping[str, str]:
     managed = {k: v for k, v in load_managed_env().items() if not _is_global_env(k)}
     secrets.update(managed)
     _expand_dotenv_templates(secrets, hermes_home, {**dotenv, **managed})
-    if provider is not None:
-        secrets.profile_home = hermes_home
     return secrets
 
 
@@ -517,7 +513,30 @@ class LiveSecretScope(Mapping[str, str]):
         self.profile_home = profile_home
         self.layers = ({}, *layers)  # writable caller overlay, then highest precedence first
 
+    @classmethod
+    def for_profile(cls, home, provider, builder):
+        scope = cls((), profile_home=Path(home))
+        scope.provider = provider
+        scope.builder = builder
+        scope.version = None
+        scope.refresh()
+        return scope
+
+    def refresh(self):
+        snapshot = self.provider.current_snapshot(self.profile_home)
+        from hermes_secret_routing import bootstrap_generation
+        version = (snapshot.version, bootstrap_generation(self.profile_home))
+        if self.version != version:
+            # The raw reader is pinned while the ordinary builder composes all its layers.
+            from hermes_secret_routing import profile_snapshot
+            with profile_snapshot(self.profile_home, snapshot):
+                values = self.builder(self.profile_home)
+            self.layers = (self.layers[0], values)
+            self.version = version
+
     def _maps(self):
+        if self.profile_home is not None:
+            self.refresh()
         return (layer() if callable(layer) else layer for layer in self.layers)
 
     def __getitem__(self, name):
@@ -586,7 +605,8 @@ def refresh_installed_secret_scope(hermes_home: Path) -> bool:
             if not isinstance(layer, LiveSecretScope):
                 return
             if layer.profile_home == hermes_home:
-                layer.layers = build_profile_secret_scope(hermes_home).layers
+                layer.version = None
+                layer.refresh()
             else:
                 for child in layer.layers:
                     refresh(child)

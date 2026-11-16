@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import os
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -191,6 +193,21 @@ def local_bootstrap_env(home: Path, provider: SecretStoreProvider) -> dict[str, 
 
 
 _BOOTSTRAP_LAYERS = {}
+_BOOTSTRAP_GENERATIONS = {}
+_PROFILE_SNAPSHOT = ContextVar("raw_profile_snapshot", default=None)
+
+
+@contextmanager
+def profile_snapshot(home, snapshot):
+    token = _PROFILE_SNAPSHOT.set((Path(home), snapshot))
+    try:
+        yield
+    finally:
+        _PROFILE_SNAPSHOT.reset(token)
+
+
+def bootstrap_generation(home):
+    return _BOOTSTRAP_GENERATIONS.get(Path(home), 0)
 
 
 def live_bootstrap_env(home, provider):
@@ -198,35 +215,13 @@ def live_bootstrap_env(home, provider):
     from hermes_constants import hermes_home_key
     key = hermes_home_key(home)
     values = local_bootstrap_env(home, provider)
+    _BOOTSTRAP_GENERATIONS[Path(home)] = bootstrap_generation(home) + 1
     layer = _BOOTSTRAP_LAYERS.setdefault(key, {})
     layer.update(values)
     for name in tuple(layer):
         if name not in values:
             del layer[name]
     return layer
-
-
-class ProfileEnvLayer(Mapping[str, str]):
-    """Filter one snapshot by key without copying its complete view."""
-
-    def __init__(self, provider, home):
-        self.provider, self.home = provider, home
-
-    def __getitem__(self, name):
-        if stays_local(self.provider, name):
-            raise KeyError(name)
-        return self.provider.current_snapshot(self.home).env[name]
-
-    def __iter__(self):
-        return (name for name in self.provider.current_snapshot(self.home).env
-                if not stays_local(self.provider, name))
-
-    def __len__(self):
-        return sum(1 for _ in self)
-
-
-def profile_env_layer(provider, home):
-    return ProfileEnvLayer(provider, home)
 
 
 def read_profile_env(env_path: Path) -> dict[str, str]:
@@ -237,7 +232,9 @@ def read_profile_env(env_path: Path) -> dict[str, str]:
     if provider is None or home is None:
         return secret_scope.load_env_file(env_path)
     merged = {k: v for k, v in secret_scope.load_env_file(env_path).items() if stays_local(provider, k)}
-    merged.update((k, v) for k, v in provider.env_view(home).items() if not stays_local(provider, k))
+    pinned = _PROFILE_SNAPSHOT.get()
+    snapshot = pinned[1] if pinned is not None and pinned[0] == Path(home) else provider.current_snapshot(home)
+    merged.update((k, v) for k, v in snapshot.env.items() if not stays_local(provider, k))
     return merged
 
 
@@ -265,7 +262,7 @@ def env_file_exists(env_path: Path) -> bool:
     provider, home = _routed_env_home(env_path)
     if provider is None or home is None:
         return Path(env_path).exists()
-    return bool(read_profile_env(env_path))
+    return True  # an authoritative empty profile still occupies the dotenv layer
 
 
 def routed_bootstrap_env(env_path: Path) -> Optional[dict[str, str]]:
@@ -290,62 +287,85 @@ def published_env_names(home):
     with _PUBLISH_LOCK:
         return set(_PUBLISHED_NAMES.get(hermes_home_key(home), ()))
 
-_PUBLISH_LOCK = threading.Lock()
+_PUBLISH_LOCK = threading.RLock()
 
 
 def boot_secret_store(home: Path) -> Optional[dict[str, str]]:
-    """Boot the selected store for the process's profile *home* (fail closed) and return the env
-    view to publish into ``os.environ``; None with the local store (the ``.env`` load already did)."""
+    """Boot without publishing: the ordinary dotenv loader owns publication."""
     provider = routed_provider()
-    if provider is None or _profile_home_of(Path(home) / ENV_FILENAME, ENV_FILENAME) is None:
+    if provider is None:
         return None
-    provider.boot(Path(home))
-    from hermes_constants import hermes_home_key
-    key = hermes_home_key(home)
-    with _PUBLISH_LOCK:
-        _PUBLISHED.setdefault(key, {})
-    view_changed(home)
+    pinned = _PROFILE_SNAPSHOT.get()
+    if pinned is None or pinned[0] != Path(home):
+        provider.boot(Path(home))
     return dict(provider.current_snapshot(home).env)
 
 
-def view_changed(home: Path, old_env=None, new_env=None) -> None:
-    """Publish only the currently installed snapshot, never a notification's obsolete payload.
+def load_profile_dotenv(loader, **kwargs):
+    """Serialize the ordinary loader against snapshot publication, not a second loader."""
+    from hermes_constants import get_process_hermes_home, hermes_home_key, get_hermes_home, get_hermes_home_override
+    from agent.secret_scope import is_multiplex_active
+    from agent.safe_worker_policy import worker_config_snapshot
+    home = Path(kwargs.get("hermes_home") or get_process_hermes_home())
+    if worker_config_snapshot() is not None:
+        return loader(**kwargs)
+    launch = get_process_hermes_home().resolve()
+    if (is_multiplex_active() and get_hermes_home_override() is not None
+            and (home.resolve() != launch or get_hermes_home().resolve() != launch)):
+        return loader(**kwargs)
+    # Selection can be supplied by the local bootstrap file.
+    from hermes_cli.config_backend import bootstrap_deployment
+    bootstrap_deployment(home, kwargs.get("project_env"))
+    provider = routed_provider()
+    if provider is None:
+        return loader(**kwargs)
+    if _PROFILE_SNAPSHOT.get() is not None:
+        return loader(**kwargs)
+    provider.boot(home)
+    with _PUBLISH_LOCK:
+        snapshot = provider.current_snapshot(home)
+        with profile_snapshot(home, snapshot):
+            result = loader(**kwargs)
+            if not is_multiplex_active():
+                raw = read_profile_env(home / ENV_FILENAME)
+                key = hermes_home_key(home)
+                _PUBLISHED[key] = {name: os.environ[name] for name in raw
+                                   if not stays_local(provider, name) and name in os.environ}
+                _PUBLISHED_VERSIONS[key] = snapshot.version
+                _PUBLISHED_NAMES.setdefault(key, set()).update(_PUBLISHED[key])
+        return result
 
-    Live scopes need no notifications. The process-env mirror is serialized and version fenced;
-    multiplexing moves only the frozen launch view, never the shared process environment.
-    """
-    from agent.secret_scope import invalidate_env_file_cache, is_multiplex_active
+
+def view_changed(home: Path, old_env=None, new_env=None) -> None:
+    """A version fence surrounds the SAME dotenv loader used by explicit reloads."""
+    from agent.secret_scope import is_multiplex_active, invalidate_env_file_cache
     from hermes_constants import hermes_home_key
-    from hermes_cli.env_loader import _LOADED_DOTENV_KEYS, _resolve_dotenv_assignments, _dotenv_lookup_env, _DOTENV_LOCK
+    from hermes_cli.env_loader import load_hermes_dotenv, resolve_home_dotenv
     from tui_gateway.launch_profile_policy import move_launch_env
     provider = routed_provider()
     if provider is None:
         return
     snapshot = provider.current_snapshot(home)
-    new = {k: v for k, v in snapshot.env.items() if not stays_local(provider, k)}
-    with _DOTENV_LOCK:
-        new = _resolve_dotenv_assignments(list(new.items()), {**_dotenv_lookup_env(None), **new}, override=True)
     key = hermes_home_key(home)
-    multiplex = is_multiplex_active()
     invalidate_env_file_cache()
     with _PUBLISH_LOCK:
         old = _PUBLISHED.get(key)
         if old is None or snapshot.version <= _PUBLISHED_VERSIONS.get(key, 0):
             return
-        if multiplex:
-            move_launch_env(old, new)
-        else:
-            for name, value in old.items():
-                if name not in new and os.environ.get(name) == value:
-                    os.environ.pop(name, None)
-            changed = {name: value for name, value in new.items()
-                       if old.get(name) != value and (name not in old or os.environ.get(name) in (None, old.get(name)))}
-            for name, value in changed.items():
-                os.environ[name] = value
-            _LOADED_DOTENV_KEYS.update(changed)
-        _PUBLISHED[key] = new
-        _PUBLISHED_VERSIONS[key] = snapshot.version
-        _PUBLISHED_NAMES.setdefault(key, set()).update(new)
+        # Read again under the publication fence: callbacks may arrive out of order.
+        snapshot = provider.current_snapshot(home)
+        with profile_snapshot(home, snapshot):
+            new = resolve_home_dotenv(Path(home))
+            if is_multiplex_active():
+                move_launch_env(old, new)
+            else:
+                for name, value in old.items():
+                    if name not in new and os.environ.get(name) == value:
+                        os.environ.pop(name, None)
+                load_hermes_dotenv(hermes_home=home)
+            _PUBLISHED[key] = {k: v for k, v in new.items() if not stays_local(provider, k)}
+            _PUBLISHED_VERSIONS[key] = snapshot.version
+            _PUBLISHED_NAMES.setdefault(key, set()).update(_PUBLISHED[key])
 
 
 def route_env_write(env_path: Path, key: str, value: Optional[str]) -> Optional[bool]:

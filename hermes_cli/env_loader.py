@@ -400,6 +400,10 @@ def _sanitize_loaded_credentials() -> None:
 
 def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
     """``(name, raw value)`` assignments of one dotenv file, uninterpolated, in file order."""
+    from hermes_secret_routing import routed_profile_env
+    routed = routed_profile_env(path)
+    if routed is not None:
+        return list(routed.items())
     raw = path.read_bytes()
     try:
         # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
@@ -454,8 +458,6 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None)
     With a secret store that keeps the profile's secrets off disk, the home's layer is what the
     launch load publishes for it instead: the file's bootstrap names plus the store's view, as is."""
     from hermes_cli import managed_scope
-    from hermes_secret_routing import routed_profile_env
-
     managed_dir = managed_scope.get_managed_dir()
     layers = [home / ".env", *([managed_dir / ".env"] if managed_dir is not None else [])]
     if lookup_env is not None:
@@ -465,12 +467,11 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None)
             lookup_env = _dotenv_lookup_env(None)
     out: dict[str, str] = {}
     for path in layers:
-        routed = routed_profile_env(path)
         try:
-            assignments = _parse_dotenv_file(path) if routed is None else {}
+            assignments = _parse_dotenv_file(path)
         except OSError:
             continue
-        resolved = routed if routed is not None else _resolve_dotenv_assignments(assignments, lookup_env, override=True)
+        resolved = _resolve_dotenv_assignments(assignments, lookup_env, override=True)
         for name, value in resolved.items():
             if value is not None:
                 lookup_env[name] = out[name] = value
@@ -755,12 +756,7 @@ def _load_user_dotenv(path: Path, *, load_pass: int) -> bool:
     environment and pins the backend. Without that pin the ``PermissionError`` propagates: the file may
     be the only place the backend is set, and skipping it would run terminal commands on the host."""
     try:
-        from hermes_secret_routing import routed_bootstrap_env
-        bootstrap = routed_bootstrap_env(path)  # None: the local store, the file loads as it always did
-        if bootstrap is None:
-            _load_dotenv_with_fallback(path, override=True, load_pass=load_pass)
-        else:
-            publish_routed_env(bootstrap)
+        _load_dotenv_with_fallback(path, override=True, load_pass=load_pass)
     except PermissionError:
         from hermes_cli import managed_scope
 
@@ -799,7 +795,14 @@ def _boot_stores(home_path: Path, project_env_path: Path | None) -> dict[str, st
     return routed_view
 
 
-def load_hermes_dotenv(
+def load_hermes_dotenv(*, hermes_home=None, project_env=None, load_external_secrets=True):
+    """Load the ordinary dotenv layers, substituting only a routed profile's raw read."""
+    from hermes_secret_routing import load_profile_dotenv
+    return load_profile_dotenv(_load_hermes_dotenv, hermes_home=hermes_home,
+                               project_env=project_env, load_external_secrets=load_external_secrets)
+
+
+def _load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
@@ -865,12 +868,13 @@ def load_hermes_dotenv(
 
     from hermes_secret_routing import routed_provider
     routed = routed_provider() is not None  # the selector bootstrap_deployment just published
-    if user_env.exists() and _load_user_dotenv(user_env, load_pass=load_pass):
+    if (user_env.exists() or routed) and _load_user_dotenv(user_env, load_pass=load_pass):
         loaded.append(user_env)
         _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
     # A store that keeps the profile's secrets off disk publishes its view HERE, where the local
     # profile .env loads: .op.env and the project .env (its ${VAR} expansion too) see it the same way.
-    routed_view = _boot_stores(home_path, project_env_path) if routed else None
+    if routed:
+        _boot_stores(home_path, project_env_path)
 
     # .op.env AFTER .env so .env wins, but the bootstrap OP_SERVICE_ACCOUNT_TOKEN reaches
     # apply_onepassword_secrets() even in cron with no shell state; gitignored so the token never enters
@@ -880,7 +884,7 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(op_env, override=False, load_pass=load_pass)
 
     if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not (user_env.exists() or routed_view),
+        _load_dotenv_with_fallback(project_env_path, override=not (user_env.exists() or routed),
                                    load_pass=load_pass)
         loaded.append(project_env_path)
 

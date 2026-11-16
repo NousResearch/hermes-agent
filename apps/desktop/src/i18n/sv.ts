@@ -610,6 +610,25 @@ export const svOverrides: TranslationOverrides = {
   settings: {
     memoryLayers: svMemoryLayers,
     about: { updates: 'Uppdateringar', channel: svUpdateChannel },
+    billing: {
+      perMonth: amount => `${amount}/mån`,
+      creditsPerMonth: amount => `${amount} krediter/mån`,
+      usageLabel: label => `${label}-användning`,
+      freeTier: {
+        signIn: 'Logga in',
+        title: 'Du använder Nous kostnadsfria nivå',
+        message: 'Logga in med ett Nous-konto för att låsa upp fler modeller och verktyg.',
+        caption:
+          'Körs på nous/welcome med anslutningar inkluderade. När du loggar in behålls dina anslutningar och verktygen som kräver konto samt alla andra modeller läggs till.',
+        name: 'Nous · kostnadsfri nivå',
+        footnote:
+          'Den kostnadsfria nivån har inget saldo och inget att betala. Betalning och användning visas när du loggar in med ett Nous-konto.',
+        plan: 'Kostnadsfri nivå',
+        model: 'Modell',
+        connectors: 'Anslutningar',
+        included: 'Ingår'
+      }
+    },
     hudModifier: {
       title: 'Aktivera HUD med modifierartangenter',
       description:

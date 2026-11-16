@@ -137,12 +137,26 @@ export const svOverrides: TranslationOverrides = {
       backgroundExited: 'Hermes bakgrundsprocess avslutades.',
       backgroundExitedDuringStartup: 'Hermes bakgrundsprocess avslutades under start.',
       backendStopped: 'Serverdelen stoppades',
+      restartHermes: 'Starta om Hermes',
+      openLogs: 'Öppna loggar',
       desktopBootFailed: 'Starten av skrivbordsappen misslyckades',
       gatewayConnectionLost: 'Anslutningen till gatewayen bröts',
       gatewayConnectionLostDetail:
         'Försöker fortfarande igen i bakgrunden. Du kan fortsätta läsa och skriva utkast — öppna gateway-inställningarna om det kvarstår.',
+      reconnectNow: 'Återanslut nu',
+      connectionSettings: 'Anslutningsinställningar',
       gatewaySignInRequired: 'Inloggning till gateway krävs',
+      gatewaySignInRequiredDetail: 'Logga in igen för att återansluta. Dina chattar och inställningar är säkra.',
+      signInAgain: 'Logga in igen',
       ipcBridgeUnavailable: 'Skrivbordsappens IPC-brygga är inte tillgänglig.'
+    },
+    causes: {
+      exitedEarly: 'Hermes bakgrundstjänst avslutades strax efter starten.',
+      timedOut: 'Hermes bakgrundstjänst svarade inte i tid.',
+      permission: 'Hermes kunde inte skriva till sin datamapp på grund av behörighetsproblem.',
+      diskFull: 'Disken är full, så Hermes kunde inte starta.',
+      portInUse: 'Ett annat program använder nätverksporten som Hermes behöver.',
+      installMissing: 'En del av Hermes-installationen saknas. Välj Reparera installation för att återställa den.'
     },
     failure: {
       title: 'Hermes kunde inte starta',

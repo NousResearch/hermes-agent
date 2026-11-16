@@ -47,21 +47,36 @@ def _name(node: ast.expr | None) -> str | None:
     return getattr(node, "id", getattr(node, "attr", None))
 
 
+def _same_scope(root: ast.AST):
+    """``root`` and its descendants, minus the bodies of the functions it defines: those run when
+    called, outside the guard."""
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            stack.extend(ast.iter_child_nodes(node))
+
+
 def _guards_imports(node: ast.AST) -> bool:
-    """``try`` with an ``except ImportError``/``ModuleNotFoundError`` handler, or ``if TYPE_CHECKING:``."""
+    """``try`` with an ``except ImportError``/``ModuleNotFoundError`` handler that never re-raises,
+    or ``if TYPE_CHECKING:``."""
     if isinstance(node, ast.Try | ast.TryStar):
-        types = [t for h in node.handlers
-                 for t in (h.type.elts if isinstance(h.type, ast.Tuple) else [h.type])]
-        return any(_name(t) in _IMPORT_ERRORS for t in types)
+        handlers = [h for h in node.handlers if any(
+            _name(t) in _IMPORT_ERRORS
+            for t in (h.type.elts if isinstance(h.type, ast.Tuple) else [h.type]))]
+        return bool(handlers) and not any(isinstance(n, ast.Raise)
+                                          for h in handlers for n in _same_scope(h))
     return isinstance(node, ast.If) and _name(node.test) == "TYPE_CHECKING"
 
 
 def _optional_imports(tree: ast.AST) -> set[ast.AST]:
     """Nodes in the body of an import guard, which cannot fail an installed wheel's import: the
     handler catches the missing module, and ``TYPE_CHECKING`` is false at run time. The handlers,
-    ``else`` and ``finally`` stay checked."""
+    ``else`` and ``finally`` stay checked, and so do the functions a ``try`` body defines."""
     return {n for node in ast.walk(tree) if _guards_imports(node)
-            for stmt in node.body for n in ast.walk(stmt)}
+            for stmt in node.body
+            for n in (ast.walk if isinstance(node, ast.If) else _same_scope)(stmt)}
 
 
 def imported_names(path: Path, package: tuple[str, ...]) -> set[str]:

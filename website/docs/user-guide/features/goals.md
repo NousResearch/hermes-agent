@@ -188,6 +188,8 @@ After every turn, Hermes calls an auxiliary model with:
 
 The judge is deliberately conservative: it marks a goal `done` only when the response **explicitly** confirms the goal is complete, when the final deliverable is clearly produced. A goal the agent explains is **unachievable** (impossible, out of scope, needs user input) gets a `blocked` verdict instead — never `done`: the goal **pauses** with the judge's reason (`🚫 Goal judged unachievable — paused`), so you can re-scope it with `/goal <text>` or override with `/goal resume` rather than burning budget or having an impossible task waved through as complete.
 
+Approval blockers bypass the judge. When a command approval is still waiting in the chat, or a background subagent ended `blocked` on an approval (pending, denied, withdrawn, timed out or undeliverable) since the goal was last evaluated, the goal pauses with `⏸ Goal paused — command approval blocked work (…)` naming the delegation, and nothing is retried automatically. `/goal resume` starts a new observation boundary, so a refusal that was already reported does not pause the resumed goal again.
+
 ### Fail-open semantics
 
 If the judge errors (network blip, malformed response, unavailable aux client), Hermes treats the verdict as `continue` — a broken judge never wedges progress. The **turn budget** is the real backstop.

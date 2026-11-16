@@ -816,7 +816,7 @@ def get_durable_delegation(delegation_id: str) -> Optional[dict[str, Any]]:
         "delivery_attempts": row[6], "origin_session_id": row[7] or ""}
 
 
-_FAILED_TASK_STATES = frozenset({"error", "failed", "failure", "timeout", "stalled", "unknown", "interrupted"})
+_FAILED_TASK_STATES = frozenset({"error", "failed", "failure", "timeout", "stalled", "unknown", "interrupted", "blocked"})
 _FAILURE_SURFACE_WINDOW_S = 24 * 3600.0
 
 
@@ -871,7 +871,8 @@ def failed_delegations_for_session(
                 # ``goals`` is the whole call's list (split units store it too); task_index indexes it.
                 "goal": str((goals[index] if 0 <= index < len(goals) else goals[0]) or ""),
                 "error": str(error) if error else None,
-                "dispatched_at": dispatched_at, "completed_at": completed_at})
+                "dispatched_at": dispatched_at, "completed_at": completed_at,
+                **({"approval_blockers": entry["approval_blockers"]} if entry.get("approval_blockers") else {})})
     return failed[:limit]
 
 
@@ -969,6 +970,8 @@ def _batch_crash(error: str, duration: float) -> dict[str, Any]:
 def _batch_status(combined: dict[str, Any]) -> str:
     """Batch status: completed unless every child errored/was interrupted."""
     child_results = combined.get("results") or []
+    if any(r.get("approval_blockers") for r in child_results):
+        return "blocked"
     ok = ("completed", "success")
     return "error" if child_results and all(r.get("status") not in ok for r in child_results) else "completed"
 

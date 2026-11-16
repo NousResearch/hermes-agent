@@ -633,6 +633,38 @@ def _build_tool_trace(messages: Any) -> list[dict[str, Any]]:
                 tool_trace[-1].update(result_meta)  # no tool_call_id: pair with the latest call
     return tool_trace
 
+def _approval_blockers(messages) -> list[dict]:
+    """Structured approval failures are not task completion, regardless of model prose.
+
+    Clear a blocker only after a real successful result for the identical tool/arguments;
+    unrelated successful inspection must not erase an unexecuted launch.
+    """
+    calls, blockers = {}, {}
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        for call in message.get('tool_calls') or []:
+            fn = call.get('function') or {}
+            calls[call.get('id')] = (fn.get('name'), fn.get('arguments'))
+        if message.get('role') != 'tool':
+            continue
+        try:
+            data = json.loads(message.get('content') or '{}')
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        identity = calls.get(message.get('tool_call_id'), (message.get('name'), message.get('tool_call_id')))
+        if data.get('approval_pending') or data.get('status') in ('pending_approval', 'approval_required') or (
+            data.get('status') == 'blocked' and data.get('approval_outcome')
+        ):
+            blockers[identity] = {k: data[k] for k in ('status', 'command', 'description', 'request_id',
+                'delegation_id', 'approval_outcome', 'user_summary') if k in data}
+        elif data.get('exit_code') == 0 or data.get('success') is True:
+            blockers.pop(identity, None)
+    return list(blockers.values())
+
+
 def _build_result_entry(
     child: Any, result: dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome,
 ) -> dict[str, Any]:
@@ -674,6 +706,10 @@ def _build_result_entry(
         exit_reason = "completed" if result.get("completed", False) else "max_iterations"
         status = "completed" if usable_summary else "failed"
 
+    blockers = _approval_blockers(result.get("messages"))
+    if blockers and status == "completed":
+        status, exit_reason = "blocked", "approval_required"
+
     _cost = getattr(child, "session_estimated_cost_usd", 0.0)
     _cost_status = getattr(child, "session_cost_status", None)
     # Result entry contract: see the _run_single_child docstring.
@@ -699,6 +735,9 @@ def _build_result_entry(
         "_child_role": getattr(child, "_delegate_role", None),
         "_child_cost_usd": float(_cost or 0.0) if isinstance(_cost, (int, float)) else 0.0,
     }
+    if blockers:
+        entry["approval_blockers"] = blockers
+        entry["error"] = "Blocked on command approval; the action did not execute. Do not retry without explicit authorization."
     # Model-visible per-delegation spend (unlike _child_cost_usd above).
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"

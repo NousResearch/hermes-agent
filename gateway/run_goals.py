@@ -26,6 +26,17 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _approval_blockers(mgr: Any, session_key: str, session_id: str) -> list[dict]:
+    """Approvals still waiting in this chat, plus background children that ended blocked on one since
+    the goal's last evaluation: an older refusal must not pause a new or resumed goal forever."""
+    from tools.approval import list_gateway_approvals
+    from tools.async_delegation import failed_delegations_for_session
+    cutoff = max(mgr.state.created_at, mgr.state.last_turn_at)
+    blockers = list_gateway_approvals(session_key) if session_key else []
+    return blockers + [r for r in failed_delegations_for_session(parent_session_id=session_id)
+                       if r.get("approval_blockers") and (r.get("completed_at") or 0) >= cutoff]
+
+
 class GatewayGoalsMixin:
     """Goal/heartbeat continuation, post-turn hooks and loop-wakeup watcher methods for GatewayRunner."""
 
@@ -332,13 +343,15 @@ class GatewayGoalsMixin:
             _bg_procs = _gather_bg(owner_task_id=getattr(session_entry, "session_id", None) or None)
             _active_deleg = count_active_delegations(getattr(session_entry, "session_id", None))
 
+        route = self._session_key_for_source(source)
         # judge_goal() is a synchronous aux-LLM HTTP call (10-40 s; would block Discord heartbeats).
         # _run_in_executor_with_context carries the profile secret scope / aux runtime contextvars
-        # without which aux credential resolution fails under multiplexing.
+        # without which aux credential resolution fails under multiplexing (the blocker read too).
         decision = await self._run_in_executor_with_context(
             lambda: mgr.evaluate_after_turn(
                 final_response or "", user_initiated=True, background_processes=_bg_procs,
                 active_delegations=_active_deleg,
+                approval_blockers=_approval_blockers(mgr, route, getattr(session_entry, "session_id", "")),
             ),
         )
         msg = decision.get("message") or ""

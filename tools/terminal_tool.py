@@ -1211,6 +1211,8 @@ def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *,
             "Use the approval prompt to allow it, or rephrase the command."
         )
         raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
+                                    **({"approval_outcome": approval["outcome"]} if approval.get("outcome") else {}),
+                                    command=_redact_terminal_error_text(command), description=_redact_terminal_error_text(desc),
                                     **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
     desc = approval.get("description", "flagged as dangerous")
     if approval.get("user_approved"):

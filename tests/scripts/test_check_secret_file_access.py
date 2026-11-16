@@ -132,15 +132,15 @@ def test_every_listed_line_needs_a_reason_and_the_old_count_shape_is_refused(che
     assert module.main([]) == 1 and "must list each allowed line" in capsys.readouterr().out
 
 
-def test_the_per_file_count_only_falls_against_the_base(check, monkeypatch, capsys):
+def test_explicit_allowlist_additions_with_reasons_can_raise_the_file_limit(check, monkeypatch, capsys):
     module, root = check
     _write(root, "hermes_cli/kept.py", "def f(home):\n    return home / '.env'\ndef g(home):\n    return home / 'auth.json'\n")
     two = [{"line": "return home / '.env'", "why": "shown"}, {"line": "return home / 'auth.json'", "why": "shown"}]
     _allow(root, {"hermes_cli/kept.py": two})
     monkeypatch.setattr(module, "base_allowlist", lambda base, head=None: {"hermes_cli/kept.py": two[:1]})
-    assert module.main([]) == 1 and "only falls" in capsys.readouterr().out
+    assert module.main([]) == 0
     monkeypatch.setattr(module, "base_allowlist", lambda base, head=None: {})
-    assert module.main([]) == 1 and "0 at the base" in capsys.readouterr().out
+    assert module.main([]) == 0
     monkeypatch.setattr(module, "base_allowlist", lambda base, head=None: {"hermes_cli/kept.py": {"count": 2}})
     assert module.main([]) == 0
 

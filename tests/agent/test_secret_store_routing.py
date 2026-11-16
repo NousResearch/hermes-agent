@@ -164,8 +164,10 @@ def test_a_view_change_reaches_a_scope_already_installed_on_another_thread(store
     assert read() == {"ROTATING_KEY": MARK, "REVOKED_KEY": None, "ADDED_KEY": "added"}
 
 
-def test_a_view_change_keeps_a_value_a_higher_layer_put_in_the_scope(store):
+def test_a_view_change_keeps_a_value_a_higher_layer_put_in_the_scope(store, monkeypatch):
     provider, home = store
+    from hermes_cli import managed_scope
+    monkeypatch.setattr(managed_scope, "load_managed_env", lambda: {"POLICY_KEY": "managed-wins"})
     provider.seed_external(home, {"POLICY_KEY": "store-old"})
     provider.refresh(home)
     from agent.secret_scope import build_profile_secret_scope, current_secret_scope, reset_secret_scope, set_secret_scope

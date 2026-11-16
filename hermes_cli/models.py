@@ -1946,6 +1946,12 @@ def _credential_fingerprint(provider: str) -> str:
             path = os.path.expanduser(rel)
             _mtime_part(path, path)
 
+    from hermes_secret_routing import routed_provider
+    store = routed_provider()
+    if store is not None:
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home()
+        parts.append(f"secret_view={home}:{store.view_version(home)}")
     blob = "|".join(parts).encode("utf-8", errors="replace")
     # blake2b, not sha256: fingerprint only (collisions = a harmless cache miss), and CodeQL's
     # weak-sensitive-data-hashing rule flags sha256 over env vars named *API_KEY*/*TOKEN*.
@@ -1971,14 +1977,8 @@ def _save_provider_models_cache(data: dict) -> None:
 def _store_cache_entry(cache_key: str, entry: dict) -> None:
     """Write one row into the disk cache, re-reading it under the thread + cross-process locks: a slow
     fetch worker or another process must never write back the snapshot it loaded before fetching."""
-    from hermes_cli.models_cache_lock import write_under_cache_lock
-
-    def write_row() -> None:
-        cache = _load_provider_models_cache()
-        cache[cache_key] = entry
-        _save_provider_models_cache(cache)
-
-    write_under_cache_lock(_provider_models_cache_path(), write_row)
+    from hermes_cli.models_cache_lock import store_cache_entry
+    store_cache_entry(cache_key, entry)
 
 
 def _normalized_cache_slug(provider: Optional[str]) -> str:

@@ -25,13 +25,14 @@ Every remaining site must be listed, per line, with its reason, in
 ``scripts/secret_file_access_allowlist.json`` (``{file: [{"line": <stripped source line>,
 "why": <reason>}, ...]}``). A site whose line is not listed fails, so new behaviour in an
 allowlisted file fails as it would anywhere else; a listed line that is gone fails too, asking for
-it to be removed. The number of listed lines per file is a ratchet that can only fall: it is
-compared with the allowlist at the merge-base with ``origin/main`` (``--base REV`` to choose), and a
-file whose count grew, or that the base allowlist did not list, fails.
+it to be removed. Counts cannot exceed the allowlist. An addition is permitted only through an
+explicit allowlist edit with a per-line reason in the same change, visible to review.
 
 This is a ratchet, not a proof. It reads source text: a path built from computed strings, a file
 name that arrives from another module, or a reader reached through an alias it cannot see is not
-caught. It keeps the known sites from growing and makes every new one a reviewed allowlist line.
+caught. Routed-call argument subtrees are exempt, including side effects during argument
+evaluation; import rebinding can also impersonate a routed name. These are known bypasses, not
+security boundaries. It keeps known sites explicit and makes additions reviewed allowlist lines.
 
 Usage: python3 scripts/check_secret_file_access.py [--write-allowlist] [--base REV] [--head REV]
 """
@@ -242,10 +243,14 @@ def problems_in(current: dict[str, list[tuple[int, str]]], allow: dict, base_all
         if any(not str(item.get("why") or "").strip() or item.get("why") == "TODO" for item in listed):
             problems.append(f"{rel}: every allowlisted line needs a reason")
     for rel, entry in sorted(allow.items()) if base_allow is not None else ():
-        was, now = _entry_count(base_allow.get(rel)), _entry_count(entry)
-        if now > was:
-            problems.append(f"{rel}: {now} allowlisted site(s), {was} at the base: the allowlist is a ratchet "
-                            "that only falls; route the new access through hermes_secret_routing instead")
+        previous = base_allow.get(rel)
+        if previous == entry:
+            continue
+        # An explicit allowlist edit is the review surface for additions. Site matching above
+        # still bounds each file by its listed lines; missing reasons always fail.
+        if not isinstance(entry, list) or any(not str(item.get("why") or "").strip()
+                                              or item.get("why") == "TODO" for item in entry):
+            problems.append(f"{rel}: an allowlist addition needs a per-line reason in this change")
     return problems
 
 

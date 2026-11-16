@@ -61,6 +61,12 @@ class MemoryViewProvider(SecretStoreProvider):
         return self.remote.setdefault(self._key(home), {"env": {}, "auth": {}, "version": 1})
 
     def refresh(self, home: Any = None) -> None:
+        """Serialize view publication with installed-scope registration."""
+        from agent.secret_scope import _INSTALLED_SCOPES_LOCK
+        with _INSTALLED_SCOPES_LOCK:
+            self._refresh(home)
+
+    def _refresh(self, home: Any = None) -> None:
         """Re-read the "remote" side, telling the router (``view_changed``) about each home whose
         env names moved, as a store's poller does."""
         moved = []

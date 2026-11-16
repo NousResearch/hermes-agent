@@ -501,53 +501,76 @@ def _is_process_home(hermes_home: Path) -> bool:
 # Installed scopes live in other tasks' and threads' contexts, where nothing else could reach them;
 # a finished activity's scope is dropped from here when the last context holding it goes.
 _INSTALLED_SCOPES: dict[str, list] = {}
-_INSTALLED_SCOPES_LOCK = threading.Lock()
+_INSTALLED_SCOPES_LOCK = threading.RLock()
 
 
-def track_installed_scope(bound, profile_home) -> None:
+def installed_scope_view_version(home):
+    """The selected store's per-home snapshot identity, or None for local files."""
+    from hermes_secret_routing import routed_provider
+    provider = routed_provider()
+    return None if provider is None else provider.view_version(Path(home))
+
+
+def track_installed_scope(bound, profile_home, *, builder=None, view_version=None) -> None:
     """Record *bound* (a ``hermes_scope.BoundSecrets`` about to be installed) under the home it was
     built for: *profile_home*, or the launch profile when unstamped."""
     import weakref
 
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
-    key = hermes_home_key(Path(profile_home) if profile_home else get_routing_process_hermes_home())
+    home = Path(profile_home) if profile_home else get_routing_process_hermes_home()
+    key = hermes_home_key(home)
+    if builder is None:
+        builder = lambda: build_profile_secret_scope(home)
 
     def _forget(ref, key=key):
         with _INSTALLED_SCOPES_LOCK:
             refs = _INSTALLED_SCOPES.get(key)
             if refs is not None:
-                refs[:] = [r for r in refs if r is not ref]
+                refs[:] = [entry for entry in refs if entry[0] is not ref]
                 if not refs:
                     _INSTALLED_SCOPES.pop(key, None)
 
     ref = weakref.ref(bound, _forget)
-    with _INSTALLED_SCOPES_LOCK:
-        _INSTALLED_SCOPES.setdefault(key, []).append(ref)
+    while True:
+        current = installed_scope_view_version(home)
+        if current != view_version:
+            from hermes_scope import push_state
+            with push_state(home=str(home)):
+                rebuilt = builder()
+            _replace_scope_mapping(bound.mapping, rebuilt)
+            view_version = current
+        with _INSTALLED_SCOPES_LOCK:
+            if installed_scope_view_version(home) != view_version:
+                continue
+            _INSTALLED_SCOPES.setdefault(key, []).append((ref, builder, view_version))
+            return
+
+
+def _replace_scope_mapping(scope, rebuilt):
+    scope.update(rebuilt)
+    for name in [name for name in scope if name not in rebuilt]:
+        scope.pop(name, None)
 
 
 def update_installed_scopes(hermes_home: Path, old: Mapping[str, str], new: Mapping[str, str]) -> int:
-    """A secret store's view of *hermes_home* moved from *old* to *new*: carry that into every
-    installed scope built for the home, in place. A name moves only where the scope still holds
-    the store's previous value (or, for a new name, nothing): a value a higher layer supplied
-    (managed ``.env``, a secret source, the launch environment) stays. Changed and added names are
-    written first, then removed ones dropped, so a concurrent reader never sees a gap. Returns how
-    many scopes changed."""
+    """Recompose each installed owner's mapping, preserving policy through its normal builder.
+
+    The view installer holds the same lock as registration. Updates precede removals, so readers
+    never observe a temporarily empty mapping. No value comparison can infer provenance safely.
+    """
     from hermes_constants import hermes_home_key
-    with _INSTALLED_SCOPES_LOCK:
-        refs = list(_INSTALLED_SCOPES.get(hermes_home_key(Path(hermes_home)), ()))
+    from hermes_scope import push_state
     updated = 0
-    for ref in refs:
-        bound = ref()
-        scope = bound.mapping if bound is not None else None
-        if not isinstance(scope, dict):
-            continue
-        changed = {name: value for name, value in new.items()
-                   if old.get(name) != value and scope.get(name) in (None, old.get(name))}
-        gone = [name for name, value in old.items() if name not in new and scope.get(name) == value]
-        scope.update(changed)
-        for name in gone:
-            scope.pop(name, None)
-        updated += bool(changed or gone)
+    with _INSTALLED_SCOPES_LOCK:
+        entries = _INSTALLED_SCOPES.get(hermes_home_key(Path(hermes_home)), ())
+        for ref, builder, _version in list(entries):
+            bound = ref()
+            if bound is None or not isinstance(bound.mapping, dict):
+                continue
+            with push_state(home=str(hermes_home)):
+                rebuilt = builder()
+            updated += bound.mapping != rebuilt
+            _replace_scope_mapping(bound.mapping, rebuilt)
     return updated
 
 

@@ -143,6 +143,10 @@ def _config_stamp() -> tuple:
                          else file_cache_version(home / name, always_digest=True))
         except OSError:
             stamp.append(None)
+    from hermes_secret_routing import routed_provider
+    provider = routed_provider()
+    if provider is not None:
+        stamp.append((str(home), provider.view_version(home)))
     return tuple(stamp)
 
 

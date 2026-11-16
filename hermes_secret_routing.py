@@ -265,7 +265,6 @@ def view_changed(home: Path, old_env: Mapping[str, str], new_env: Mapping[str, s
     old = {k: v for k, v in old_env.items() if not keep(k)}
     new = {k: v for k, v in new_env.items() if not keep(k)}
     invalidate_env_file_cache()
-    update_installed_scopes(Path(home), old, new)
     key = hermes_home_key(home)
     if is_multiplex_active():
         with _PUBLISH_LOCK:
@@ -273,12 +272,15 @@ def view_changed(home: Path, old_env: Mapping[str, str], new_env: Mapping[str, s
         if published:
             from tui_gateway.launch_profile_policy import move_launch_env
             move_launch_env(old, new)
+        update_installed_scopes(Path(home), old, new)
         return
     with _PUBLISH_LOCK:
         published_view = _PUBLISHED.get(key)
-        if published_view is None:
-            return
-        _PUBLISHED[key] = dict(new)
+        if published_view is not None:
+            _PUBLISHED[key] = dict(new)
+    if published_view is None:
+        update_installed_scopes(Path(home), old, new)
+        return
     for name, value in published_view.items():
         if name not in new and os.environ.get(name) == value:
             os.environ.pop(name, None)
@@ -289,6 +291,7 @@ def view_changed(home: Path, old_env: Mapping[str, str], new_env: Mapping[str, s
     if changed:
         from hermes_cli.env_loader import publish_routed_env
         publish_routed_env(changed)
+    update_installed_scopes(Path(home), old, new)
 
 
 def route_env_write(env_path: Path, key: str, value: Optional[str]) -> Optional[bool]:

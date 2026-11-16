@@ -35,3 +35,15 @@ def write_under_cache_lock(path: Path, write: Callable[[], None]) -> None:
             write()
     except (OSError, TimeoutError):
         logger.debug("provider models cache write skipped (%s)", path, exc_info=True)
+
+
+def store_cache_entry(cache_key: str, entry: dict) -> None:
+    """Re-read and update one catalog row under the shared cache lock."""
+    from hermes_cli import models
+
+    def write_row():
+        cache = models._load_provider_models_cache()
+        cache[cache_key] = entry
+        models._save_provider_models_cache(cache)
+
+    write_under_cache_lock(models._provider_models_cache_path(), write_row)

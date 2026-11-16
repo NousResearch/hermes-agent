@@ -12,7 +12,7 @@ import pytest
 
 URL = 'http://127.0.0.1:38263/v1'
 # The profile pins a mode that differs from the old row's stamp, so the turn must run the profile's.
-PROFILE = {'provider': 'custom', 'base_url': URL, 'default': 'mock-model', 'api_mode': 'codex_responses'}
+PROFILE = {'provider': 'custom', 'base_url': URL, 'default': 'mock-model', 'api_mode': 'anthropic_messages'}
 LIST = {'model': PROFILE, 'custom_providers': [{'name': 'Mock', 'base_url': URL, 'key_env': 'OPENAI_API_KEY'}]}
 DICT = {'model': PROFILE, 'providers': {'mock': {'name': 'Mock', 'api': URL, 'key_env': 'OPENAI_API_KEY'}}}
 
@@ -43,7 +43,7 @@ async def test_a_bare_custom_desktop_row_resumes_on_the_profiles_route(monkeypat
         assert _route(runner, live) == ('mock-model', URL, 'profile-key')
         from gateway.run_turn_prepare import GatewayTurnPrepareMixin
         _model, runtime = GatewayTurnPrepareMixin._resolve_session_agent_runtime(runner, source=live.source)
-        assert runtime.get('api_mode') == 'codex_responses'  # the profile's mode, not the row's stamp
+        assert runtime.get('api_mode') == 'anthropic_messages'  # the profile's mode, not the row's stamp
     finally:
         await owner.close()
         store.close_all_db_handles()

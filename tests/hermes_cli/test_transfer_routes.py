@@ -82,3 +82,20 @@ def test_starting_an_upload_reclaims_abandoned_ones(client):
     assert _send(http, None, 0, b"PK").status_code == 200
 
     assert not stale.exists() and live.exists()
+
+
+def test_a_late_duplicate_chunk_never_cuts_off_the_chunks_after_it(client):
+    """A dropped request can land after its retry and the next chunk: it must not truncate them."""
+    http, _ = client
+    archive = _zip()
+    first = _send(http, None, 0, archive[:10]).json()
+    assert _send(http, first["upload_id"], 10, archive[10:20]).json()["received"] == 20
+    assert _send(http, first["upload_id"], 20, archive[20:]).json()["received"] == len(archive)
+
+    late = _send(http, first["upload_id"], 10, archive[10:20])
+    differing = _send(http, first["upload_id"], 10, b"x" * 10)
+
+    assert late.status_code == 200 and late.json()["received"] == len(archive)
+    assert differing.status_code == 409
+    restored = http.post("/api/ops/transfer/restore", json={"upload_id": first["upload_id"], "size": len(archive)})
+    assert restored.status_code == 200

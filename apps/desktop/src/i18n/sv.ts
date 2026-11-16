@@ -61,6 +61,17 @@ export const svOverrides: TranslationOverrides = {
       }
     }
   },
+  firstRun: {
+    beats: {
+      name: 'Namn',
+      theme: 'Accentfärg',
+      layout: 'Layout',
+      connectors: 'Appar',
+      plugins: 'Insticksprogram',
+      tour: 'Rundtur',
+      build: 'Första uppgiften'
+    }
+  },
   fileMenu: {
     revealFinder: 'Visa i Finder',
     revealExplorer: 'Visa i Utforskaren',

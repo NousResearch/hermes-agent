@@ -84,3 +84,15 @@ def test_a_name_freed_from_another_chat_advances_that_chats_revision(tmp_path):
         _rename(db, epoch, 'chat', 'Shared name', 'g1')
         assert (db.get_session('ghost')['title'], db.get_session('chat-2')['title']) == (None, 'Shared name')
         assert db.get_session('ghost')['runtime_revision'] > before
+
+
+def test_clearing_through_a_canonical_bot_chat_ancestor_keeps_its_name(tmp_path):
+    """The hidden canonical Bot Chat is found by its exact name: a clear must not reach past the
+    untitled tip and empty it on the ancestor, or the bot loses its conversation."""
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        epoch = _compressed(db, root_title=db.CANONICAL_BOT_CHAT_TITLE)
+        db.set_session_hidden('chat', True)
+        db.set_session_title('chat-2', '')  # the rotation's title copy never happened
+        with pytest.raises(ValueError, match='canonical Bot Chat'):
+            _rename(db, epoch, 'chat', '', 'b1')
+        assert db.resolve_session_by_title(db.CANONICAL_BOT_CHAT_TITLE) is not None

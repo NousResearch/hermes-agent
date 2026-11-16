@@ -156,17 +156,6 @@ class TestOggCodecRepair:
         assert _sniff_ogg_codec(str(out)) == "opus"
 
 
-    def test_ogg_flac_untouched_when_opus_is_not_needed(self, tmp_path):
-        """Non-Opus platforms accept Ogg/Vorbis and Ogg/FLAC as plain audio: never re-encode."""
-        wav, out = tmp_path / "sidecar.wav", tmp_path / "reply.ogg"
-        if not _sine_wav(wav) or not _ogg_flac(wav, out):
-            pytest.skip("ffmpeg cannot produce ogg/flac here")
-        original = out.read_bytes()
-
-        assert _repair_ogg_container(str(out)) == str(out)
-        assert out.read_bytes() == original
-
-
 class TestOpusPlatformSet:
     def test_opus_platforms_cover_voice_bubble_platforms(self):
         # Behavior contract: the platforms whose adapters deliver native

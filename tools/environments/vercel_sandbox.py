@@ -23,9 +23,10 @@ import httpx
 
 from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _update_json_store
+from tools.environments.base import BaseEnvironment, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
+from utils import read_json_or_empty
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +141,7 @@ def _snapshot_store() -> Path:
 
 
 def _load_snapshots() -> dict:
-    return _load_json_store(_snapshot_store())
+    return read_json_or_empty(_snapshot_store())
 
 
 def _store_snapshot(task_id: str, snapshot_id: str) -> None:

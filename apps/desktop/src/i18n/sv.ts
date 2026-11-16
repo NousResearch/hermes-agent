@@ -4965,7 +4965,28 @@ export const svOverrides: TranslationOverrides = {
     timedOutBody: 'Koden användes inte i tid. Du använder fortfarande den kostnadsfria nivån.',
     errorBody: 'Inloggningen slutfördes inte. Försök igen.',
     alreadySignedInHeading: 'Redan inloggad.',
-    alreadySignedInBody: 'Denna Hermes-installation är redan inloggad på ett Nous-konto.'
+    alreadySignedInBody: 'Denna Hermes-installation är redan inloggad på ett Nous-konto.',
+    setupFailed: {
+      gateClosed:
+        'Den här versionen av Hermes kan inte starta utan ett Nous-konto. Logga in eller skapa ett, det är kostnadsfritt och tar bara någon minut.',
+      paused:
+        'Användning av Hermes utan inloggning är tillfälligt pausad. Hermes fortsätter att kontrollera. Inloggning är kostnadsfri och får dig i gång direkt.',
+      rateLimited: wait =>
+        `Många kommer i gång just nu, så Hermes försöker igen om ${wait}. Inloggning är kostnadsfri och hoppar över väntan.`,
+      unreachable:
+        'Hermes kunde inte nå Nous-tjänsten. Kontrollera internetanslutningen och tryck sedan på Försök igen. Du kan också ansluta en annan leverantör tills vidare.',
+      serverError:
+        'Nous-tjänsten fick ett tillfälligt fel. Tryck på Försök igen om en stund eller anslut en annan leverantör tills vidare.',
+      powRequired:
+        'Nous-servern begärde ett arbetsbevis, men din Agent har inte stöd för det ännu. Logga in eller skapa ett kostnadsfritt Nous-konto för att fortsätta.',
+      locked:
+        'Sessionen kan inte fortsätta utan inloggning. Logga in eller skapa ett kostnadsfritt Nous-konto för att fortsätta.',
+      generic:
+        'Hermes kunde inte ställa in kostnadsfri åtkomst utan inloggning. Inloggning är kostnadsfri, eller så kan du ansluta en annan leverantör.',
+      signInBelow: 'Inloggning är kostnadsfri. Välj Nous nedan.',
+      tryAgain: 'Försök igen',
+      retrying: 'Försöker igen…'
+    }
   }
 }
 

@@ -53,7 +53,8 @@ import {
   onComposerFocusRequest,
   onComposerInsertRefsRequest,
   onComposerInsertRequest,
-  releaseActiveComposer
+  releaseActiveComposer,
+  takeUnclaimedTypedChars
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
 import {
@@ -331,10 +332,14 @@ export function useComposerDraft({
       return undefined
     }
 
-    const offFocus = onComposerFocusRequest(({ target: requested, typeChar }) => {
+    const offFocus = onComposerFocusRequest(detail => {
+      const { target: requested, typeChar } = detail
+
       if (requested !== target) {
         return
       }
+
+      detail.claimed = true
 
       // Type-to-focus appends at end; bare Enter just focuses.
       if (typeChar) {
@@ -346,6 +351,16 @@ export function useComposerDraft({
 
       setFocusRequestId(id => id + 1)
     })
+
+    // Keys typed while this target had no composer (the cold-start resume
+    // unmounts it behind the restored chat's loading view) were held for the
+    // next one: append them after the draft this mount restored, in order.
+    const heldChars = takeUnclaimedTypedChars(target)
+
+    if (heldChars) {
+      paintDraft(`${draftRef.current}${heldChars}`, false)
+      focusInput()
+    }
 
     const offInsert = onComposerInsertRequest(({ mode, target: requested, text, token }) => {
       if (requested === target) {

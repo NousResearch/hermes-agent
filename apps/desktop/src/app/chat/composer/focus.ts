@@ -14,6 +14,7 @@ import { isElementInHiddenPane, queryAllVisible, queryVisible } from '@/componen
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { subscribePreviewAnnotateHandoff } from '@/lib/preview-annotate/handoff'
 import { dataUrlToBlob } from '@/lib/preview-annotate/pack'
+import { newSessionDraftHandoffPending } from '@/store/composer'
 
 import { $floatingComposerOwner } from './floating-state'
 import type { InlineRefInput } from './inline-refs'
@@ -28,6 +29,9 @@ export interface FocusDetail {
   target: ComposerTarget
   /** Append after focus (type-to-focus / soft `/`). */
   typeChar?: string
+  /** Set by the subscriber that owns `target`; an unclaimed `typeChar` is kept
+   *  for the next composer that mounts there (see takeUnclaimedTypedChars). */
+  claimed?: boolean
 }
 
 interface InsertDetail {
@@ -262,17 +266,40 @@ export const releaseActiveComposer = (target: ComposerTarget) => {
  *  a keep-alive-mounted background composer. */
 export const getActiveComposer = (): ComposerTarget => resolveActive()
 
+/** Type-to-focus characters typed while no composer subscribed for their target. */
+const unclaimedTypedChars = new Map<ComposerTarget, string>()
+
+/** Take (and clear) the keystrokes typed for `target` while no composer owned
+ *  it, so a freshly mounted composer can append them after its draft. */
+export const takeUnclaimedTypedChars = (target: ComposerTarget): string => {
+  const chars = unclaimedTypedChars.get(target) ?? ''
+
+  unclaimedTypedChars.delete(target)
+
+  return chars
+}
+
 export const requestComposerFocus = (
   target: ComposerTarget | 'active' = 'active',
   { typeChar }: { typeChar?: string } = {}
 ) => {
-  const detail = { target: resolve(target), typeChar }
+  const detail: FocusDetail = { target: resolve(target), typeChar }
   const owner = $floatingComposerOwner.get()
 
   // A first character must land before subsequent native input events, not
   // behind a timer that can reorder fast typing or a pane handoff.
   if (typeChar) {
     dispatchNow<FocusDetail>(FOCUS_EVENT, detail)
+
+    // Nobody owns the target right now: the composer is between unmount and
+    // remount (the cold-start resume's loading view mounts none). While that
+    // draft handoff is pending, keep the keystroke for the composer that
+    // mounts next on the target instead of dropping it — type-to-focus has
+    // already preventDefault-ed it. Outside a handoff an unclaimed key stays
+    // dropped, so stray typing is never replayed into a later composer.
+    if (!detail.claimed && newSessionDraftHandoffPending()) {
+      unclaimedTypedChars.set(detail.target, `${unclaimedTypedChars.get(detail.target) ?? ''}${typeChar}`)
+    }
   } else if (typeof window !== 'undefined') {
     window.setTimeout(() => {
       if (!owner || $floatingComposerOwner.get() === owner) {

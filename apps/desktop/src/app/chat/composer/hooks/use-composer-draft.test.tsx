@@ -23,7 +23,7 @@ import { $connection } from '@/store/session'
 
 import { useComposerActions } from '../../hooks/use-composer-actions'
 import type { QueueEditState } from '../composer-utils'
-import { type ComposerTarget, getActiveComposer, markActiveComposer } from '../focus'
+import { type ComposerTarget, getActiveComposer, markActiveComposer, requestComposerFocus } from '../focus'
 import { caretOffsetInEditor, composerPlainText } from '../rich-editor'
 import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
@@ -306,6 +306,83 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     expect(editor!.contains(selection.anchorNode)).toBe(true)
     expect(selection.isCollapsed).toBe(true)
     expect(caretOffsetInEditor(editor!)).toBe('Hello, can y'.length)
+  })
+
+  it('keeps keys typed while the cold-start resume has no composer mounted and appends them after the carried draft', async () => {
+    let editor: HTMLDivElement | null = null
+
+    function MainComposer({ scope }: { scope: string | null }) {
+      const draft = useComposerDraft({
+        activeQueueSessionKey: scope,
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null },
+        sessionId: scope ?? ''
+      })
+
+      return (
+        <div
+          contentEditable
+          data-slot="composer-rich-input"
+          ref={element => {
+            draft.editorRef.current = element
+            editor = element
+          }}
+          tabIndex={0}
+        />
+      )
+    }
+
+    markActiveComposer('main')
+    const fresh = render(<MainComposer scope={null} />)
+
+    stashSessionDraft(null, 'Hello, c', [])
+    announceNewSessionDraftKey('session-created')
+    fresh.unmount()
+
+    // The restored chat's loading view: no composer is mounted, and
+    // type-to-focus (use-keybinds) has preventDefault-ed these keys.
+    for (const char of 'an you') {
+      requestComposerFocus('active', { typeChar: char })
+    }
+
+    render(<MainComposer scope="session-created" />)
+
+    await waitFor(() => expect(document.activeElement).toBe(editor))
+    expect(composerPlainText(editor!)).toBe('Hello, can you')
+    expect(caretOffsetInEditor(editor!)).toBe('Hello, can you'.length)
+  })
+
+  it('does not replay keys that no composer owned when no draft handoff is pending', () => {
+    let editor: HTMLDivElement | null = null
+
+    function MainComposer() {
+      const draft = useComposerDraft({
+        activeQueueSessionKey: 'session-A',
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null },
+        sessionId: 'session-A'
+      })
+
+      return (
+        <div
+          contentEditable
+          data-slot="composer-rich-input"
+          ref={element => {
+            draft.editorRef.current = element
+            editor = element
+          }}
+          tabIndex={0}
+        />
+      )
+    }
+
+    markActiveComposer('main')
+    requestComposerFocus('active', { typeChar: 'x' })
+    render(<MainComposer />)
+
+    expect(composerPlainText(editor!)).toBe('')
   })
 
   it('leaves the pre-session draft alone when a composer mounts on a session nobody announced', () => {

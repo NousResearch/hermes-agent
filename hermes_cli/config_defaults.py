@@ -131,6 +131,7 @@ DEFAULT_CONFIG = {
         # otherwise wedge the turn until the idle watchdog discards the already-billed response
         # (#103864). 0 skips the drain. Well-behaved endpoints close immediately and never wait this long.
         "stream_drain_timeout": 2.0,
+        "network_outage_max_wait_seconds": 120,  # machine offline: hold the primary route this long, no WAN fallback (0 = fail fast)
         # Empty-response retry guard. Empty retries re-send the full input at full price; this stops
         # re-billing deterministic empties (unsignaled refusals, zero output tokens) while failing
         # open on ambiguous evidence (missing usage, any tokens, model/provider change).
@@ -2665,7 +2666,6 @@ DEFAULT_CONFIG = {
     },
     "_config_version": 53,  # Config schema version - bump this when adding new required fields
 }
-
 
 from hermes_cli.config_defaults_env import OptionalEnvVars, _base_url, _env, _msg, _prov, _setting, _skill, _tool
 

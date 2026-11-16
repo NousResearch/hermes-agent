@@ -22,6 +22,7 @@ from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.local_network import hold_primary_while_offline, local_network_outage, reserved_outage_wait, route_needs_external_network
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _messages_carry_images,
     _sanitize_messages_non_ascii,
@@ -1487,7 +1488,7 @@ def reset_hint(api_error: Exception) -> str:
 
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
-    is_zai_coding_overload: bool, base_url: Any, model: Any,
+    is_zai_coding_overload: bool, base_url: Any, model: Any, outage_state: Any = None,
 ) -> float:
     """Pick the wait before the next API retry and announce it. Retry-After wins for
     rate limits and any other retryable error (capped at ``RETRY_AFTER_CAP_S``); otherwise
@@ -1510,6 +1511,7 @@ def compute_error_backoff(
     if _retry_after is not None:
         _retry_after = min(_retry_after, RETRY_AFTER_CAP_S)
     wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+    _offline_wait, wait_time = reserved_outage_wait(api_error, outage_state, wait_time)  # outage ledger
     _backoff_policy = None
     _adaptive = is_rate_limited or is_zai_coding_overload
     if _adaptive and _retry_after is None:
@@ -1526,7 +1528,7 @@ def compute_error_backoff(
                    f"(attempt {retry_count + 1}/{max_retries}){_policy_note}...")
         _announce_now = _backoff_policy == "zai_coding_overload_long"
     else:
-        _status = f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})..."
+        _status = f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries}){' — waiting for internet connectivity' if _offline_wait else ''}..."
         # A 5xx Retry-After can reach the cap; buffering it would leave the user silent for minutes.
         _announce_now = _retry_after is not None and _retry_after > LIVE_RETRY_WAIT_CAP_S
     if _announce_now:
@@ -1540,9 +1542,9 @@ def compute_error_backoff(
     if _reset:
         _live_reason = f"{_wait_reason.lower()} — resets in {_reset},"
     else:
-        _live_reason = "the free model is busy —" if _free_busy else "waiting on provider —"
+        _live_reason = "no internet access —" if _offline_wait else "the free model is busy —" if _free_busy else "waiting on provider —"
     agent._emit_diagnostic_wait(
-        f"⏳ {_live_reason} retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
+        f"{'🌐' if _offline_wait else '⏳'} {_live_reason} retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
     )
     logger.warning(
         "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
@@ -1935,6 +1937,9 @@ def route_classified_error(
         if classified.reason == FailoverReason.rate_limit else None
     )
     _is_transport_failure = classified.reason in _TRANSPORT_FAILURE_REASONS
+    _local_outage = _is_transport_failure and local_network_outage(api_error)
+    if _local_outage and route_needs_external_network(agent.provider, str(base_url or "")):
+        max_retries = hold_primary_while_offline(agent, _retry, retry_count=retry_count, max_retries=max_retries)
     # Z.AI overload 429s classify `overloaded`, which `is_rate_limited` excludes. Detect
     # directly so the long backoff runs, and raise the ceiling to reach it.
     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
@@ -1955,7 +1960,7 @@ def route_classified_error(
         if not pool_may_recover:
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
-            if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
+            if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at, suppress_external_network=_local_outage):
                 return _fallback_break()
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:

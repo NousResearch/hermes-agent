@@ -197,14 +197,16 @@ hermes chat --provider alibaba --model qwen3.5-plus
 hermes chat --provider xiaomi --model mimo-v2-pro
 # 需要：~/.hermes/.env 中的 XIAOMI_API_KEY
 
-# 腾讯 TokenHub（Hy4 preview 或正式版 Hy4）
+# 腾讯 TokenHub（Hy4 preview、正式版 Hy4 或 Hy4 Flash——支持图像输入的高速档）
 hermes chat --provider tencent-tokenhub --model hy4-preview
 hermes chat --provider tencent-tokenhub --model hy4
+hermes chat --provider tencent-tokenhub --model hy4-flash
 # 需要：~/.hermes/.env 中的 TOKENHUB_API_KEY
 
-# 腾讯 TokenPlan（Hy4 preview 或正式版 Hy4，经 Anthropic Messages 端点）
+# 腾讯 TokenPlan（Hy4 preview、正式版 Hy4 或 Hy4 Flash，经 Anthropic Messages 端点）
 hermes chat --provider tencent-tokenplan --model hy4-preview
 hermes chat --provider tencent-tokenplan --model hy4
+hermes chat --provider tencent-tokenplan --model hy4-flash
 # 需要：~/.hermes/.env 中的 TOKENPLAN_API_KEY
 
 # Arcee AI（Trinity 模型）

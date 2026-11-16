@@ -688,9 +688,9 @@ _DEEPSEEK_FLASH_VISION: dict[str, Any] = {
     "family": "deepseek-flash",
 }
 
-# Stable Hy4 accepts image input (Hy4 preview and Hy3 stay text-only), and is served on both
-# Tencent endpoints under the same id. Without this, a cold/empty cache treats ``hy4`` as unknown
-# → image_input_mode falls through to the lossy describe path.
+# Stable Hy4 and Hy4 Flash accept image input (Hy4 preview and Hy3 stay text-only), and are
+# served on both Tencent endpoints under the same ids. Without this, a cold/empty cache treats
+# ``hy4`` / ``hy4-flash`` as unknown → image_input_mode falls through to the lossy describe path.
 _TENCENT_HY4_VISION: dict[str, Any] = {
     "limit": {"context": 1_048_576, "output": 65_536},
     "modalities": {"input": ["text", "image"], "output": ["text"]},
@@ -709,6 +709,8 @@ _BUILTIN_MODEL_METADATA: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("tencent-tokenhub", "hy4"): _TENCENT_HY4_VISION,
     ("tencent-tokenplan", "hy4"): _TENCENT_HY4_VISION,
+    ("tencent-tokenhub", "hy4-flash"): _TENCENT_HY4_VISION,
+    ("tencent-tokenplan", "hy4-flash"): _TENCENT_HY4_VISION,
     # Native DeepSeek V4.1-Flash is multimodal (https://api-docs.deepseek.com/guides/vision).
     # models.dev lagged the 2026-09-10 rename; without this, a cold/empty cache treats
     # ``deepseek-flash`` as unknown → image_input_mode falls through to lossy text.

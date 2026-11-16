@@ -1089,6 +1089,15 @@ export const svOverrides: TranslationOverrides = {
       resumeLastSessionDesc:
         'När detta är aktiverat öppnar appen din senaste chatt vid uppstart. Stäng av för att alltid börja med en ny chatt.'
     },
+    pluginPages: {
+      blurb:
+        'Alternativ som installerade insticksprogram lägger till. Varje insticksprogram får en egen sida, och vissa lägger även till undersidor.',
+      empty: 'Inget insticksprogram har några inställningar ännu.',
+      manage: 'Hantera insticksprogram',
+      agentSettings: 'Agentinställningar',
+      pageCount: n => (n === 1 ? '1 sida' : `${n} sidor`),
+      missing: 'Det insticksprogrammet har ingen inställningssida. Det kan vara avstängt eller avinstallerat.'
+    },
     plugins: {
       title: 'Insticksprogram för skrivbordet',
       openFolder: 'Öppna mapp för insticksprogram',

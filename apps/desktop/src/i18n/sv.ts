@@ -1008,6 +1008,8 @@ export const svOverrides: TranslationOverrides = {
       nousAuthDoneTitle: 'Nous Portal ansluten',
       nousAuthDoneMessage: 'Dina prenumerationsserverdelar är nu aktiva.',
       nousAuthFailed: 'Inloggningen till Nous Portal slutfördes inte',
+      nousAuthFailedMessage: 'Försök igen.',
+      nousAuthTryAgain: 'Försök igen',
       noApiKeyRequired: 'Ingen API-nyckel krävs.',
       postSetupHint: step =>
         `Denna serverdel kräver en engångsinstallation (${step}). Körs på denna dator — kan ta några minuter.`,
@@ -1021,6 +1023,8 @@ export const svOverrides: TranslationOverrides = {
       postSetupCompleteMessage: step => `${step} installerades.`,
       postSetupErrorTitle: 'Installationen slutfördes med fel',
       postSetupErrorMessage: step => `Kontrollera loggen för ${step}.`,
+      postSetupOpenLogs: 'Öppna loggar',
+      postSetupRunAgain: 'Kör igen',
       postSetupFailed: step => `Kunde inte köra installationen för ${step}`,
       webSearchActive: backend => `Sökning: ${backend}`,
       webExtractActive: backend => `Extrahering: ${backend}`,
@@ -1051,7 +1055,19 @@ export const svOverrides: TranslationOverrides = {
         selectedTitle: 'Serverdel vald',
         selectedMessage: backend => `Terminalkommandon körs nu via ${backend}. Gäller för nya sessioner.`,
         failedSelect: backend => `Kunde inte välja ${backend}`,
-        needsSetupHint: 'Du kan välja denna serverdel nu — kommandon misslyckas tills installationen är klar.'
+        needsSetupHint: 'Du kan välja denna serverdel nu — kommandon misslyckas tills installationen är klar.',
+        needsSetupConfirmTitle: backend => `Välj ${backend} ändå?`,
+        needsSetupConfirmDescription: detail =>
+          `${detail} Sessioner som startas efter ändringen saknar terminal- och filverktyg tills installationen är klar.`,
+        needsSetupConfirmDescriptionGeneric:
+          'Den här serverdelen är inte konfigurerad ännu. Sessioner som startas efter ändringen saknar terminal- och filverktyg tills installationen är klar.',
+        needsSetupConfirmAction: 'Välj ändå',
+        unavailableTitle: 'Terminalkommandon är inte tillgängliga',
+        unavailableMessage: backend =>
+          `Hermes kan inte köra skalkommandon just nu: ${backend} är inte klar. Växla till Lokal eller slutför installationen av ${backend} och försök igen.`,
+        openBackendSettings: 'Öppna terminalinställningar',
+        useLocal: 'Använd Lokal',
+        switchedToLocal: 'Terminalkommandon körs nu lokalt. Gäller för nya sessioner.'
       },
       browserRealProfile: {
         label: 'Använd min riktiga webbläsarprofil',
@@ -1062,6 +1078,13 @@ export const svOverrides: TranslationOverrides = {
         disabledTitle: 'Surfning med riktig profil är av',
         disabledMessage: 'Profilögonblicksbilden tas bort; nya sessioner använder en ren webbläsare.',
         failedSave: 'Kunde inte spara inställningen för riktig profil',
+        reimportSignins: 'Importera inloggningar igen',
+        signinsImportedTitle: 'Inloggningar i appens webbläsare',
+        signinsImported: count =>
+          `Loggade in appens webbläsare med ${count} kaka${count === 1 ? '' : 'or'} från din webbläsarprofil.`,
+        signinsRemote:
+          'Den här serverdelen körs på en annan dator, så dess webbläsarprofil importeras inte till appens webbläsare.',
+        signinsFailed: 'Kunde inte importera inloggningar till appens webbläsare',
         prompt: {
           title: 'Fortsätt vara inloggad på dina webbplatser',
           body: 'Låt Hermes surfa med en ögonblicksbild av din standardwebbläsarprofil, så att webbplatser öppnas när du redan är inloggad.',

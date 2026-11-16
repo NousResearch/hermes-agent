@@ -1,0 +1,24 @@
+name: kanzo-board
+title: Kanzo Board
+repo: https://github.com/0sahil/hermes-kanzo-board
+sha: "7d2ec5974803df80354894521f5abfb24f3fd350"
+version: "0.1.1"
+description: "Your Kanzo kanban board (github.com/emanuele-em/kanzo) as a Hermes Desktop sidebar page. The page runs the board's own web UI from the user's running board inside SandboxedFrame, with a bridge that routes the frame's requests, storage, confirm() and links through the plugin. When no board answers, the page offers to install the official Kanzo release, start it, or join a shared board; a bar offers to add Kanzo's MCP server so the agent can work on the board. Disclosure — backend routes under /api/plugins/kanzo-board/ proxy requests to the configured board (127.0.0.1 on Kanzo's port from $KANZO_HOME/config.toml or ~/kanzo, or the board_url setting); paths are limited to that board. Only on a user click: downloads one file from github.com/emanuele-em/kanzo releases, checked against a SHA-256 pinned in the plugin, and writes the kanzo program to $CARGO_HOME/bin or ~/.cargo/bin (never over an existing one); runs `kanzo service install` (a login service), `kanzo --no-open` (detached, log in $HERMES_HOME/plugin-data/kanzo-board/), `kanzo join <address>`, and `hermes mcp add kanzo` (adds an mcp_servers entry with all of Kanzo's tools, including delete_task). Runs `kanzo --version` for the status screen. Reads Hermes' config read-only. The page loads the board's images and translation file directly from the board. Kanzo has no login. No telemetry, no update check."
+maintainer: "0sahil"
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/0sahil/hermes-kanzo-board#readme
+image: https://raw.githubusercontent.com/0sahil/hermes-kanzo-board/7d2ec5974803df80354894521f5abfb24f3fd350/docs/images/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/0sahil/hermes-kanzo-board/7d2ec5974803df80354894521f5abfb24f3fd350/docs/images/board.png
+  - https://raw.githubusercontent.com/0sahil/hermes-kanzo-board/7d2ec5974803df80354894521f5abfb24f3fd350/docs/images/setup.png
+platforms: []
+known_issues:
+  - "Turn on both switches on the Kanzo Board row in Capabilities → Plugins (Agent for the backend, Desktop for the page), then restart the gateway."
+  - "Shows Kanzo's current web UI (0.4.x) through a bridge; a Kanzo release that rebuilds its page may need a plugin update."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

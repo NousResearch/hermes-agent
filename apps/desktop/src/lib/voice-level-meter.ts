@@ -78,6 +78,7 @@ export function startVoiceLevelMeter(
       channelCountMode: 'explicit',
       channelInterpretation: 'speakers'
     })
+
     node.port.onmessage = ({ data }: MessageEvent<{ level: number; audioTime: number; nextReportTime: number }>) => {
       if (!disposed) {
         // Drain every level for speech detection. Only the latest reporting
@@ -85,6 +86,7 @@ export function startVoiceLevelMeter(
         onLevel(data.level, data.audioTime * 1_000, context.currentTime < data.nextReportTime)
       }
     }
+
     node.onprocessorerror = fail
     source.connect(node)
     connected = true

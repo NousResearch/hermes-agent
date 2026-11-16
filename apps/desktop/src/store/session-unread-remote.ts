@@ -23,7 +23,15 @@ import { atom } from 'nanostores'
 
 import { setSessionUnreadRemote } from '@/hermes'
 
-import { $cronSessions, $messagingSessions, $sessions, ownerLookupSessionRows, setCronSessions, setMessagingSessions, setSessions } from './session'
+import {
+  $cronSessions,
+  $messagingSessions,
+  $sessions,
+  ownerLookupSessionRows,
+  setCronSessions,
+  setMessagingSessions,
+  setSessions
+} from './session'
 
 export const UNREAD_WRITE_GUARD_MS = 10_000
 

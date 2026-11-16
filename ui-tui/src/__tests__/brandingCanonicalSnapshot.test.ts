@@ -101,7 +101,7 @@ describe('banner from a canonical session snapshot', () => {
     expect(frame).not.toMatch(/not exposed by this runtime/)
   })
 
-  it('renders main\'s banner, not a placeholder, before the inventory arrives', async () => {
+  it("renders main's banner, not a placeholder, before the inventory arrives", async () => {
     // A non-local route's snapshot info is `{ desktop_protocol }` only; main's banner still
     // draws its card (headings, version line slot, loading rows) rather than a one-line notice.
     const { info } = canonicalResult('session.resume', {

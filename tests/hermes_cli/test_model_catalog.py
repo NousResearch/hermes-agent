@@ -738,3 +738,20 @@ class TestManifestMatchesInRepoLists:
         for version in ("1.2", "1.3"):
             assert f"meta/muse-spark-{version}" in nous
             assert f"meta/muse-spark-{version}-contributor" not in nous
+
+    def test_qwen4_max_is_curated_and_published(self):
+        """qwen/qwen4-max must reach the picker from both OPENROUTER_MODELS and the manifest."""
+        from hermes_cli.models_catalog_static import OPENROUTER_MODELS, _PROVIDER_MODELS
+        curated_ids = [mid for mid, _desc in OPENROUTER_MODELS]
+        assert "qwen/qwen4-max" in curated_ids
+        assert "qwen/qwen4-max" in _PROVIDER_MODELS["nous"]
+        repo_root = Path(__file__).resolve().parents[2]
+        manifest_path = repo_root / "website" / "static" / "api" / "model-catalog.json"
+        if not manifest_path.exists():
+            pytest.skip(f"manifest missing at {manifest_path}")
+        with open(manifest_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+            openrouter_ids = [entry["id"] for entry in data["providers"]["openrouter"]["models"]]
+            nous_ids = [entry["id"] for entry in data["providers"]["nous"]["models"]]
+        assert "qwen/qwen4-max" in openrouter_ids
+        assert "qwen/qwen4-max" in nous_ids

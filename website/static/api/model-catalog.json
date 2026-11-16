@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-23T20:38:09Z",
+  "updated_at": "2026-11-25T00:36:44Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -195,6 +195,10 @@
         {
           "id": "deepseek/deepseek-v4-flash-0731",
           "description": "dated snapshot of v4-flash"
+        },
+        {
+          "id": "qwen/qwen4-max",
+          "description": ""
         },
         {
           "id": "qwen/qwen3.8-max-0902",
@@ -480,6 +484,9 @@
         },
         {
           "id": "deepseek/deepseek-v4-flash-0731"
+        },
+        {
+          "id": "qwen/qwen4-max"
         },
         {
           "id": "qwen/qwen3.8-max-0902"

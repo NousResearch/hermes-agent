@@ -66,6 +66,7 @@ mcp_servers:
 | `max_lifetime_seconds` | number | stdio | Optional stdio server recycle after age (`0` disables). May also live under a `lifecycle:` mapping |
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
+| `bearer_refresh_cmd` | string or list | HTTP | Command that prints a fresh bearer token when the server answers `401`, for an `Authorization: Bearer` token that expires. Not run through a shell. See [Bearer refresh command](#bearer-refresh-command) |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
 | `events` | bool | both | Experimental MCP events client with webhook delivery (default: `false`). Registers `list_event_types`, `subscribe_event` and `unsubscribe_event` for this server. Needs `platforms.webhook.extra.public_url` (HTTPS) and a running gateway. Hermes refreshes subscriptions only while it is connected to the server, so with `lazy: true` or `idle_timeout_seconds` a subscription can lapse until the next connection resubscribes it. See [MCP Events](../user-guide/features/mcp.md#mcp-events-experimental) |
@@ -432,6 +433,29 @@ mcp_servers:
 `user_agent` replaces the default `User-Agent` on **token-endpoint requests only** (authorization-code exchange, refresh and the device-flow token poll). Without it Hermes sends `Hermes-Agent/<version>` — never a header-less request, which WAF-fronted authorization servers answer with `403`. It never applies to MCP traffic, and no other token-request headers are configurable. Empty or null values are ignored. A failed exchange reports the status plus a short, redacted excerpt of the error body (a WAF's "Request blocked" page vs the issuer's `invalid_grant`), so the cause is visible without packet captures. `hermes mcp login` clears the stale grant and client registration before re-authorizing but keeps the cached authorization-server metadata, so the announced authorize URL stays the discovered one even when the metadata document cannot be re-fetched.
 
 OAuth discovery and dynamic-client-registration requests (the `/.well-known/...` metadata documents and the `registration_endpoint` POST) always carry `User-Agent: Hermes-Agent/<version>`. The MCP SDK builds those requests without any client default headers, and WAF-fronted authorization servers answer a header-less request with `403` — the metadata document then looks unreadable, registration falls back to a guessed `/register` on the MCP host, and the login fails with `Registration failed: 404`. When every metadata fetch does fail, the error now leads with those statuses (`Could not read authorization-server metadata (403 from https://…/.well-known/oauth-authorization-server; …)`) before the registration fallback's own error.
+
+## Bearer refresh command
+
+For an HTTP server behind a short-lived bearer token (an OAuth `client_credentials` grant, a token your vault mints) that you would otherwise put in `headers.Authorization` from an environment variable, set `bearer_refresh_cmd` and Hermes asks your command for a new token whenever the server answers `401`:
+
+```yaml
+mcp_servers:
+  internal-api:
+    url: "https://mcp.internal.example.com/mcp"
+    headers:
+      Authorization: "Bearer ${INTERNAL_MCP_TOKEN}"   # optional starting token
+    bearer_refresh_cmd: "~/bin/mint-mcp-token --audience mcp"   # or a list: ["~/bin/mint-mcp-token", "--audience", "mcp"]
+```
+
+Contract:
+
+- **Not run through a shell.** A string is split into arguments the way a shell would split it (quotes are honoured), but no shell runs it: pipes, `&&`, redirects, `$VAR` expansion and globs are not interpreted. Only `~` in the first word is expanded. If you need shell features, point it at a script, or write `["sh", "-c", "…"]` yourself. It runs with the serving profile's own environment and secrets, never another profile's, and the same malware/backdoor checks that guard a stdio `command` apply to it.
+- **Stdout is the token, and nothing else.** Print only the bare token on stdout (no `Bearer ` prefix, no JSON), then exit `0`. Leading and trailing whitespace is stripped. Send any logging to stderr. Hermes rejects output that is empty, shorter than 16 or longer than 8192 characters, that contains whitespace or non-printable characters, or that starts like an error message or an error body (`error…`, `fail…`, `{`, `[`, `<`). A rejected output, a non-zero exit, or a run longer than 10 seconds (the command is killed) keeps the current bearer.
+- **When it runs.** When a request answers `401`, Hermes runs the command once, sends the token as `Authorization: Bearer <token>` (replacing a configured `Authorization` header whatever its capitalisation), and retries that request once. If no `Authorization` header is configured, it also runs before the first request. Concurrent `401`s share one run. A rotation is therefore not a connection failure: it uses up no reconnect attempts.
+- **Cooldown.** At most one run per 60 seconds per server. A `401` inside that window, or a `401` with the new token, fails as it would without this key.
+- **Failure behaviour is unchanged.** When the command cannot produce a usable token, the `401` reaches Hermes' normal auth-failure handling. On the first connect that means the server is parked right away, without retries. The key adds no retry loop around a broken credential. A parked server tries again on its periodic self-probe, which can run the command again once the cooldown has passed.
+- **Secrecy.** The token stays in memory only. It is never written to disk or config, never logged (the log shows only the server name and that a refresh happened), and is added to the redaction list so tool output cannot echo it. Like any `Authorization` header, it is not sent on a redirect to another origin.
+- **Limits.** It applies only to the `Authorization` bearer of `url` servers (Streamable HTTP and SSE). It cannot be combined with `auth: oauth`. It skips the unauthenticated content-type probe, as OAuth servers do, because the starting token may already be stale. A server using it is never shared across profiles.
 
 ## Add to Hermes link
 

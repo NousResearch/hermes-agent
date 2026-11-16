@@ -1022,6 +1022,38 @@ class TestSymlinkedExternalSkillDirs:
         assert shadow["success"] is False
         assert "already exists" in shadow["error"]
 
+    def test_excluded_alias_visited_first_does_not_hide_valid_skill(
+        self, symlink_external_home, monkeypatch
+    ):
+        """Regression: excluded .archive symlink must not poison seen before demo is walked."""
+        _home, view, real = symlink_external_home
+        (view / ".archive").symlink_to(real, target_is_directory=True)
+
+        _orig_walk = os.walk
+
+        def _walk_archive_first(top, *args, **kwargs):
+            for dirpath, dirnames, files in _orig_walk(top, *args, **kwargs):
+                dirnames.sort(key=lambda d: (0 if d == ".archive" else 1, d))
+                yield dirpath, dirnames, files
+
+        monkeypatch.setattr("tools.skill_manager_tool.os.walk", _walk_archive_first)
+
+        found = _find_skill("demo")
+        assert found is not None, (
+            "valid symlink alias must resolve when excluded alias shares realpath"
+        )
+        assert found["path"].name == "demo"
+
+        raw = skill_manage(
+            action="patch",
+            name="demo",
+            old_string="OLD_MARKER",
+            new_string="NEW_MARKER",
+        )
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert "NEW_MARKER" in (real / "SKILL.md").read_text(encoding="utf-8")
+
     def test_symlink_loop_does_not_hang_or_duplicate(self, symlink_external_home):
         _home, view, _real = symlink_external_home
         (view / "loop").symlink_to(view, target_is_directory=True)

@@ -246,7 +246,8 @@ def _iter_skill_dirs(root: Path):
         seen.add(real)
         dirnames[:] = [
             d for d in dirnames
-            if os.path.realpath(os.path.join(dirpath, d)) not in seen
+            if not is_excluded_skill_path(Path(dirpath) / d / "SKILL.md")
+            and os.path.realpath(os.path.join(dirpath, d)) not in seen
         ]
         if "SKILL.md" in files:
             skill_md = Path(dirpath) / "SKILL.md"

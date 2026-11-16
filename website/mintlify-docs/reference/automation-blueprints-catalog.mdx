@@ -1,0 +1,260 @@
+---
+sidebar_position: 7
+title: "Automation Blueprints Catalog"
+description: "Ready-to-run automation blueprints — set one up from the dashboard, CLI, TUI, any messenger, or the desktop app."
+---
+
+---
+sidebar_position: 7
+title: Automation Blueprints
+description: "Ready-to-run automation blueprints — set one up from the dashboard, CLI, TUI, any messenger, or the desktop app."
+sidebarTitle: Automation Blueprints Catalog
+---
+
+
+Automation Blueprints are ready-to-run automations. Pick one, fill in a couple
+of fields, and Hermes schedules it as a cron job — no cron syntax required.
+
+Every blueprint works from **every surface**:
+
+- **Dashboard / desktop app** — open the Cron page, switch to the **Blueprints**
+  tab, fill the form, and click *Schedule it*.
+- **CLI, TUI, and messengers** — type `/blueprint <name>` (e.g.
+  `/blueprint morning-brief`) and Hermes asks you for what it needs, one
+  question at a time, then schedules it. The name match is forgiving — a
+  prefix or near-spelling resolves. Power users can skip the questions by
+  passing values inline: `/blueprint morning-brief time=08:00`.
+- **Desktop app** — click **Send to App** on any blueprint and it opens with the
+  command pre-loaded in your composer.
+
+Blueprints never schedule anything silently — you always confirm before the job
+is created. Manage created jobs anytime with `/cron`.
+
+
+
+## Blueprints from plugins
+
+Plugins can add their own blueprints. They show up in the same catalog as the
+built-ins: in `/blueprint`, the dashboard's Blueprints tab, and the desktop Cron
+page, labelled with the plugin's name. Their keys are prefixed with the plugin
+name (`/blueprint teamtools:standup`), so a plugin can never replace a built-in.
+Plugins load per profile, so a plugin blueprint is listed only in profiles where
+that plugin is enabled.
+
+A job you create from a plugin blueprint is an ordinary cron job. Disabling the
+plugin removes the blueprint from the catalog, but jobs you already created keep
+running.
+
+## Writing your own
+
+A blueprint is just a skill with a `metadata.hermes.blueprint` block in its
+`SKILL.md` frontmatter. See
+[Creating Skills → Automation Blueprints](../developer-guide/creating-skills) for the
+slot schema and how to publish one. Plugin authors can register one directly
+with `ctx.register_automation_blueprint()`; see
+[Build a Plugin → Add Automation Blueprints](../developer-guide/plugins/index#add-automation-blueprints).
+
+
+## Daily
+
+### Morning briefing
+
+A short daily briefing: today's calendar, weather, and anything urgent waiting on you.
+
+**Schedule:** daily at 08:00
+
+```bash
+/blueprint morning-brief time=08:00 deliver=origin
+```
+
+Tags: `daily`, `briefing`
+
+### Workday start reminder
+
+A weekday nudge with your agenda and top priorities.
+
+**Schedule:** weekdays at 09:00
+
+```bash
+/blueprint workday-start time=09:00 deliver=origin
+```
+
+Tags: `daily`, `focus`
+
+### Evening wind-down
+
+An end-of-day check-in: tomorrow's calendar at a glance and anything you should prep tonight.
+
+**Schedule:** daily at 21:00
+
+```bash
+/blueprint evening-winddown time=21:00 deliver=origin
+```
+
+Tags: `daily`, `evening`
+
+### Daily learning drip
+
+One bite-sized lesson a day on a topic you want to learn, building progressively over time.
+
+**Schedule:** weekdays at 08:30
+
+```bash
+/blueprint learn-daily topic="Spanish vocabulary" time=08:30 recurrence=weekdays deliver=origin
+```
+
+Tags: `learning`, `daily`
+
+### On-this-day discovery
+
+A daily dose of curiosity: a notable historical event, fact, or word for the day.
+
+**Schedule:** daily at 07:30
+
+```bash
+/blueprint on-this-day flavor="on this day in history" time=07:30 deliver=origin
+```
+
+Tags: `daily`, `curiosity`
+
+
+## Email
+
+### Important-mail monitor
+
+Check your inbox periodically and ping you ONLY about mail that actually needs attention.
+
+**Schedule:** every 30 minutes
+
+```bash
+/blueprint important-mail interval_min=30 criteria="needs a reply today, is from my manager or family, or mentions a deadline" deliver=origin
+```
+
+Tags: `email`, `monitor`
+
+
+## General
+
+### Custom reminder
+
+A recurring reminder in your own words, on your schedule.
+
+**Schedule:** everyday at 14:00
+
+```bash
+/blueprint custom-reminder what="take a break and stretch" time=14:00 recurrence=everyday deliver=origin
+```
+
+Tags: `reminder`
+
+### Topic news digest
+
+A recurring digest on a topic you care about — deduped against what was already sent, so only genuinely new items land.
+
+**Schedule:** weekdays at 18:00
+
+```bash
+/blueprint news-digest topic="AI and technology" time=18:00 recurrence=weekdays count=5 deliver=origin
+```
+
+Tags: `digest`, `research`
+
+### Bills & renewals reminder
+
+A heads-up before a recurring payment, subscription renewal, or due date — so nothing auto-charges by surprise.
+
+**Schedule:** everyday at 10:00
+
+```bash
+/blueprint bill-renewal-watch what="my streaming subscription renews soon" time=10:00 recurrence=everyday deliver=origin
+```
+
+Tags: `reminder`, `finance`
+
+### Price & availability watch
+
+Watch an exact product, flight, hotel, or listing and alert when your price or availability condition is met.
+
+**Schedule:** on a schedule
+
+```bash
+/blueprint price-watch item="a product URL or exact flight/hotel/listing description" condition="the all-in price drops below my target" interval_h=6 deliver=origin
+```
+
+Tags: `prices`, `shopping`, `travel`, `monitor`
+
+### Competitor news watch
+
+Track named companies for material news — launches, pricing, funding, filings — with a cited digest.
+
+**Schedule:** monday at 09:00
+
+```bash
+/blueprint competitor-watch companies="two or three competitors, by canonical name" categories="product launches, pricing changes, funding, partnerships, executive moves, incidents" time=09:00 recurrence=monday deliver=origin
+```
+
+Tags: `competitors`, `news`, `monitor`, `research`
+
+### Habit check-in
+
+A recurring nudge to keep a habit on track and reflect on whether you did it.
+
+**Schedule:** everyday at 20:00
+
+```bash
+/blueprint habit-checkin habit="20 minutes of reading" time=20:00 recurrence=everyday deliver=origin
+```
+
+Tags: `habit`, `wellbeing`
+
+### Hydration & movement nudge
+
+A periodic nudge during the day to drink water, stand up, and stretch.
+
+**Schedule:** weekdays, every hour
+
+```bash
+/blueprint hydration-move interval_hours=1 start_hour=9 end_hour=17 deliver=origin
+```
+
+Tags: `wellbeing`, `focus`
+
+### Gratitude & reflection prompt
+
+A gentle evening prompt to reflect on the day and note what went well.
+
+**Schedule:** everyday at 21:30
+
+```bash
+/blueprint gratitude-journal time=21:30 recurrence=everyday deliver=origin
+```
+
+Tags: `wellbeing`, `reflection`
+
+
+## Weekly
+
+### Weekly review
+
+A weekly recap: what got done, what's still open, and what's coming up.
+
+**Schedule:** sunday at 18:00
+
+```bash
+/blueprint weekly-review time=18:00 day=sunday deliver=origin
+```
+
+Tags: `weekly`, `review`
+
+### Weekly meal plan
+
+A weekly meal plan plus a consolidated grocery list, tuned to your diet and how much time you have to cook.
+
+**Schedule:** sunday at 17:00
+
+```bash
+/blueprint meal-plan diet="no restrictions" meals="dinner only" effort=quick time=17:00 day=sunday deliver=origin
+```
+
+Tags: `weekly`, `food`
+

@@ -454,3 +454,21 @@ def test_a_spawn_does_not_prune_a_long_running_session_that_just_exited(monkeypa
     with registry._lock:
         registry._prune_if_needed()
     assert session.id not in registry._finished, "a session is still pruned once it has been finished for the TTL"
+
+
+@pytest.mark.parametrize("read", [False, True])
+def test_an_evicted_session_remembers_whether_its_result_was_read(monkeypatch, read):
+    """Pruning drops the registry's per-id consumed mark, so the evicted session (still held by the gateway watcher) carries it."""
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry, "_write_checkpoint", lambda *_a, **_k: None)
+    session = _session("proc_evicted", notify_on_complete=True)
+    registry._running[session.id] = session
+    registry._finish_exited(session, 0)
+    if read:
+        assert registry.read_log(session.id)["status"] == "exited"
+    session.exited_at -= module.FINISHED_TTL_SECONDS + 1
+    with registry._lock:
+        registry._prune_if_needed()
+
+    assert session.id not in registry._finished and not registry.is_completion_consumed(session.id)
+    assert session._consumed_at_eviction is read

@@ -593,6 +593,56 @@ async def test_watcher_delivers_completion_of_a_session_the_registry_dropped_aft
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("already_read", [False, True])
+async def test_watcher_does_not_repeat_a_read_completion_after_capacity_eviction(monkeypatch, tmp_path, already_read):
+    """Evicting a session also forgets the registry's per-id "result already read" mark. The watcher, which keeps
+    the session it last saw, must still skip a result the agent read through wait/log, and still deliver an unread one."""
+    import time
+    import tools.process_registry as pr_module
+    from tools.process_registry import MAX_PROCESSES, ProcessRegistry, ProcessSession
+
+    registry = ProcessRegistry()
+    registry._write_checkpoint = lambda *_a, **_k: None
+    session = ProcessSession(
+        id="proc_read_then_evicted", command="echo done", task_id="task", started_at=time.time(),
+        output_buffer="done\n", notify_on_complete=True,
+    )
+    registry._running[session.id] = session
+    monkeypatch.setattr(pr_module, "process_registry", registry)
+
+    ticks = 0
+
+    async def _between_polls(*_a, **_kw):
+        nonlocal ticks
+        ticks += 1
+        if ticks != 2:  # poll 1 sees it running; the exit, the read and the eviction all land before poll 2
+            return
+        registry._finish_exited(session, 0)
+        if already_read:
+            assert registry.read_log(session.id)["status"] == "exited"
+        for idx in range(MAX_PROCESSES):  # later spawns fill the registry to its cap
+            registry._finished[f"proc_other_{idx}"] = ProcessSession(
+                id=f"proc_other_{idx}", command="true", task_id="task", started_at=time.time() + 1 + idx,
+                exited=True, exited_at=time.time(),
+            )
+        with registry._lock:
+            registry._prune_if_needed()
+        assert registry.get(session.id) is None and not registry.is_completion_consumed(session.id)
+    monkeypatch.setattr(asyncio, "sleep", _between_polls)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+
+    await runner._run_process_watcher({**_watcher_dict(session.id), "notify_on_complete": True})
+
+    if already_read:
+        runner._enqueue_process_completion_notification.assert_not_awaited()
+        runner.adapters[Platform.TELEGRAM].send.assert_not_awaited()
+    else:
+        runner._enqueue_process_completion_notification.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_watcher_warns_when_the_session_vanishes_before_it_was_ever_seen(monkeypatch, tmp_path, caplog):
     import tools.process_registry as pr_module
 

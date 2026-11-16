@@ -78,6 +78,9 @@ def run_compress_case(tmp_path, mode, in_place):
             sid = (await call('session.create', source='cli', request_id='owner', toolsets=[],
                               model='original', provider='custom', base_url=url,
                               safe_mode=mode == 'safe'))['session_id']
+            created = await call('session.resume', session_id=sid)
+            await call('session.mutate', session_id=sid, request_id='name', operation='rename',
+                       payload={'title': 'Named chat'}, expected_revision=created['revision'])
             physical = sid
             if in_place is True:
                 initial = await call('session.resume', session_id=sid)
@@ -147,6 +150,11 @@ def run_compress_case(tmp_path, mode, in_place):
                                   (branch['branched_session_id'],)).fetchall() == [(result['target_session_id'],)]
                 archived = db.execute('SELECT count(*) FROM messages WHERE session_id=? AND active=0 AND compacted=1', (physical,)).fetchone()[0]
                 assert (archived > 0) is effective_in_place
+                # A rotation moves the conversation's name onto its live segment, as automatic
+                # compression does (the in-place row reset first, so it never carried one).
+                if not effective_in_place:
+                    titled = db.execute('SELECT id FROM sessions WHERE title=?', ('Named chat',)).fetchall()
+                    assert titled == [(result['target_session_id'],)]
                 if mode != 'normal':
                     assert not db.execute("SELECT execution_id FROM worker_executions WHERE status!='terminal'").fetchall()
                     journals = list((home / 'worker-outboxes').rglob('pending.json'))

@@ -249,8 +249,13 @@ class GatewaySessionStore:
                          expected_revision=snapshot["revision"], operation=operation, payload=payload, **fence)
 
     def set_session_title(self, session_id, title):
+        snapshot = self.call("session.resume", session_id=session_id)
+        if snapshot["stored_session_id"] != session_id:
+            # A later compression segment answers with its owner's snapshot, but a rename is fenced on
+            # the row it names: send that row's own revision, or it is a revision_conflict forever.
+            snapshot = {**snapshot, "revision": self._row_revision(session_id, snapshot["revision"])}
         try:
-            self._mutate(session_id, "rename", {"title": title})
+            self._mutate(session_id, "rename", {"title": title}, snapshot)
         except GatewayClientError as exc:
             # The owner's SessionDB ValueError text never crosses the wire (bounded reason codes):
             # print main's "already in use" copy from the reader when another row holds the title.
@@ -305,6 +310,14 @@ class GatewaySessionStore:
         """Main's ``/yolo`` persist hook: the gateway session's own bypass (``config.set yolo``, persisted
         on the route), since approvals run there. The CLI's in-process flag stays main's display state."""
         self.call("config.set", session_id=session_id, key="yolo", value="1" if enabled else "0")
+
+    def _row_revision(self, session_id, default):
+        db = self._db()
+        if db is None:
+            return default
+        with db._read_ctx() as conn:
+            row = conn.execute("SELECT runtime_revision FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return row[0] if row else default
 
     def _title_holder(self, session_id, title):
         db = self._db()

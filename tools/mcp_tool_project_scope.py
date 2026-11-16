@@ -99,7 +99,10 @@ def _caller_cwd() -> str:
         # remote workspace (review finding 8c residual). A bound policy already merged its own
         # profile's terminal config, so the launch config is consulted only when unbound.
         from hermes_cli.config import load_config_readonly
-        terminal_cfg = (load_config_readonly() or {}).get("terminal") or {}
+        try:
+            terminal_cfg = (load_config_readonly() or {}).get("terminal") or {}
+        except OSError:  # a stat failure behind the config cache must not error the MCP call
+            return ""
         backend = str(terminal_cfg.get("backend") or "").strip().lower()
         if backend and backend != "local":
             return ""

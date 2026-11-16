@@ -852,12 +852,14 @@ def test_an_in_process_gateway_with_a_remote_config_backend_never_clones(root, m
     name = "cwdprobe_cfgbackend"
     _register(root, name)
     monkeypatch.delenv("TERMINAL_ENV", raising=False)
-    (get_hermes_home() / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
+    cfg_path = get_hermes_home() / "config.yaml"
+    cfg_path.write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
     try:
         _call(name, cwd=str(root / "a"))  # a host dir the remote workspace coincidentally names
         assert not _clones(name), "a remote config backend spawned a host clone for a remote path"
         assert _call(name)[0] != str(root / "a")  # the launch-dir baseline still serves it
     finally:
+        cfg_path.unlink(missing_ok=True)  # a test appended after this one must not inherit ssh
         shutdown_mcp_servers(scope=None, names={name})
 
 

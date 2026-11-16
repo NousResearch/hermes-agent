@@ -70,7 +70,7 @@ def _review_run(conn, *, assignee="reviewer"):
     Returns (task_id, review_run_id). The claim uses a host claimer so the
     attempt is host-local (the reaper/kill only ever touch host-local pids)."""
     tid = kb.create_task(conn, title="review fan-in", assignee=assignee)
-    impl = kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    assert kb.claim_task(conn, tid, claimer=kb._claimer_id()) is not None
     run_id = kb._current_run_id(conn, tid)
     assert kb.request_review(conn, tid, summary="implementer handoff",
                              reviewer=assignee, expected_run_id=run_id) is True
@@ -258,10 +258,14 @@ def test_clean_review_handoff_records_no_collision_at_claim(conn):
 
 def test_transition_kill_failure_is_recorded_not_silent(conn, monkeypatch):
     """If the immediate kill cannot deliver, the gap is booked (``worker_kill_
-    deferred``) instead of pretending the worker is down — the reap tick retries."""
+    deferred``) instead of pretending the worker is down — the reap tick retries.
+    The seam is patched on the dispatch module AS RESOLVED IN sys.modules at call
+    time: transition code imports it lazily, so patching the collection-time
+    reference alone can miss when an earlier fixture swapped the module graph."""
     import json
     survivor = _sleeper()
-    real_terminate = kbd._terminate_reclaimed_worker
+    live_kbd = sys.modules.get("hermes_cli.kanban_db_dispatch", kbd)
+    real_terminate = live_kbd._terminate_reclaimed_worker
 
     def failing_terminate(pid, claim_lock, **kw):
         return {"prev_pid": pid, "host_local": True, "termination_attempted": True,
@@ -270,7 +274,7 @@ def test_transition_kill_failure_is_recorded_not_silent(conn, monkeypatch):
     try:
         tid, run_id = _review_run(conn)
         _bind_worker_session(conn, tid, run_id, survivor)
-        monkeypatch.setattr(kbd, "_terminate_reclaimed_worker", failing_terminate)
+        monkeypatch.setattr(live_kbd, "_terminate_reclaimed_worker", failing_terminate)
 
         ok, _ = kb.request_changes(conn, tid, reason="found issues", expected_run_id=run_id)
         assert ok is True
@@ -280,12 +284,12 @@ def test_transition_kill_failure_is_recorded_not_silent(conn, monkeypatch):
         payload = json.loads(deferred[0])
         assert payload["run_id"] == run_id
         assert survivor.pid in payload["targets"]
-        monkeypatch.setattr(kbd, "_terminate_reclaimed_worker", real_terminate)
+        monkeypatch.setattr(live_kbd, "_terminate_reclaimed_worker", real_terminate)
         # The next reap tick closes the gap (grace already passed by the test clock? No —
         # ended just now: force past the grace window, exactly as a stuck row ages).
         conn.execute("UPDATE task_runs SET ended_at = ended_at - ? WHERE id=?",
-                     (kbd.TERMINAL_WORKER_REAP_GRACE_SECONDS, run_id))
-        assert kbd.reap_terminal_workers(conn) == [tid]
+                     (live_kbd.TERMINAL_WORKER_REAP_GRACE_SECONDS, run_id))
+        assert live_kbd.reap_terminal_workers(conn) == [tid]
         assert survivor.wait(timeout=10) is not None
     finally:
         if survivor.poll() is None:

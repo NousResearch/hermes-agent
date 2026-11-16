@@ -34,6 +34,9 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('es')).toBe('es')
     expect(normalizeLocale('ES-419')).toBe('es')
     expect(normalizeLocale(' es_mx ')).toBe('es')
+    expect(normalizeLocale('ES-VE')).toBe('es')
+    expect(normalizeLocale('es-CO')).toBe('es')
+    expect(normalizeLocale(' es_cl ')).toBe('es')
     expect(normalizeLocale('Español')).toBe('es')
   })
 

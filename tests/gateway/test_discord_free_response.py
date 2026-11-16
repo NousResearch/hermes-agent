@@ -485,6 +485,78 @@ def test_discord_free_response_auto_thread_yaml_bridge(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discord_mention_gating_explicit_env_beats_yaml(adapter, monkeypatch):
+    """#13685: explicit .env beats seeded YAML; blank or absent env falls back."""
+    from hermes_cli import env_loader
+
+    # The bridge distinguishes operator-provided .env settings from inherited launcher values.
+    monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", {
+        "DISCORD_REQUIRE_MENTION", "DISCORD_FREE_RESPONSE_CHANNELS",
+    })
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
+    adapter.config.extra.update(
+        discord_platform._apply_yaml_config(
+            {}, {"require_mention": True, "free_response_channels": "456"}
+        ) or {}
+    )
+
+    assert adapter._discord_require_mention() is False
+    assert adapter._discord_free_response_channels() == {"123"}
+
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    await adapter._handle_message(
+        make_message(channel=FakeTextChannel(channel_id=456), content="YAML channel")
+    )
+    adapter.handle_message.assert_not_awaited()
+    await adapter._handle_message(
+        make_message(channel=FakeTextChannel(channel_id=123), content="env channel")
+    )
+    adapter.handle_message.assert_awaited_once()
+
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "  ")
+    assert adapter._discord_free_response_channels() == {"456"}
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS")
+    assert adapter._discord_free_response_channels() == {"456"}
+
+
+def test_discord_free_response_snapshots_stay_profile_local(tmp_path, monkeypatch):
+    """Adapters keep their own env/YAML precedence after leaving their profile scope."""
+    from pathlib import Path
+
+    from agent.runtime_scope import bind_profile_scope
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from gateway.config import Platform, load_gateway_config
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "999")
+    adapters = []
+    token = set_multiplex_context(True)
+    try:
+        for name, dotenv, channels in (
+            ("a", "DISCORD_FREE_RESPONSE_CHANNELS=123\n", "456"),
+            ("b", "", "789"),
+        ):
+            home = tmp_path / ".hermes" / "profiles" / name
+            home.mkdir(parents=True)
+            (home / ".env").write_text(dotenv, encoding="utf-8")
+            (home / "config.yaml").write_text(
+                "platforms:\n  discord:\n    enabled: true\n    token: test-token\n"
+                f"discord:\n  free_response_channels: '{channels}'\n",
+                encoding="utf-8",
+            )
+            with bind_profile_scope(home):
+                scoped = DiscordAdapter(load_gateway_config().platforms[Platform.DISCORD])
+                scoped._snapshot_gate_env()
+                adapters.append(scoped)
+        assert [item._discord_free_response_channels() for item in adapters] == [{"123"}, {"789"}]
+    finally:
+        reset_multiplex_context(token)
+
+
+@pytest.mark.asyncio
 async def test_fetch_channel_context_stops_at_self_message_and_reverses_to_chronological_order(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
     adapter.config.extra["history_backfill_limit"] = 10

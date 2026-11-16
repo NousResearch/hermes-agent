@@ -300,7 +300,7 @@ from hermes_cli.subcommands.usage import build_usage_parser
 from hermes_cli.subcommands.monitoring import build_monitoring_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
-from hermes_cli.subcommands.plugins import build_plugins_parser
+from hermes_cli.subcommands.plugins import attach_plugin_cli_command, build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.connectors import build_connectors_parser
 from hermes_cli.subcommands.vault import build_vault_parser
@@ -3051,48 +3051,6 @@ def _advertise_agent_env() -> None:
     os.environ.setdefault("HERMES_AGENT", "true")
 
 
-def _attach_plugin_cli_command(subparsers, cmd_info) -> None:
-    """Register one plugin-provided top-level command from its descriptor.
-
-    Never raises: a taken name or a failing ``setup_fn`` skips only this command, so one
-    plugin cannot crash ``hermes`` or hide another plugin's commands.
-    """
-    name = cmd_info["name"]
-    log = logging.getLogger(__name__)
-    if name in subparsers.choices:
-        # Built-ins win: a core release that adds a name a plugin already used must
-        # cost that plugin one command, not break the CLI.
-        log.warning(
-            "Plugin %r CLI command %r skipped: the name is already a hermes command",
-            cmd_info.get("plugin"), name,
-        )
-        return
-    try:
-        plugin_parser = subparsers.add_parser(
-            name,
-            help=cmd_info["help"],
-            description=cmd_info.get("description", ""),
-            formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
-        )
-        # Python < 3.14 accepts a malformed help (a bare "%") here, then every
-        # `hermes --help` crashes formatting it; 3.14 raises from add_parser.
-        if cmd_info["help"]:
-            plugin_parser._get_formatter()._expand_help(subparsers._choices_actions[-1])
-        cmd_info["setup_fn"](plugin_parser)
-        if cmd_info.get("handler_fn") is not None:
-            plugin_parser.set_defaults(func=cmd_info["handler_fn"])
-    except Exception as exc:
-        # A half-built parser would still parse and dispatch to nothing.
-        subparsers._name_parser_map.pop(name, None)
-        subparsers._choices_actions[:] = [
-            a for a in subparsers._choices_actions if a.dest != name
-        ]
-        log.warning(
-            "Plugin %r CLI command %r skipped: setup failed: %s",
-            cmd_info.get("plugin"), name, exc,
-        )
-
-
 def _register_plugin_cli_commands(subparsers) -> None:
     """Register plugin-provided top-level commands (each plugin builds its own argparse tree).
 
@@ -3109,7 +3067,7 @@ def _register_plugin_cli_commands(subparsers) -> None:
         recover_for_command(_first_positional_argv())
         seen_plugin_commands = set()
         for cmd_info in discover_plugin_cli_commands():
-            _attach_plugin_cli_command(subparsers, cmd_info)
+            attach_plugin_cli_command(subparsers, cmd_info)
             seen_plugin_commands.add(cmd_info["name"])
 
         discover_plugins()
@@ -3119,7 +3077,7 @@ def _register_plugin_cli_commands(subparsers) -> None:
         _resolve_deferred_platform_cli_command(_first_positional_argv())
         for cmd_info in get_plugin_manager()._cli_commands.values():
             if cmd_info["name"] not in seen_plugin_commands:
-                _attach_plugin_cli_command(subparsers, cmd_info)
+                attach_plugin_cli_command(subparsers, cmd_info)
     except Exception as _exc:
         logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
 

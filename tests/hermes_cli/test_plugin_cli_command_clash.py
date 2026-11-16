@@ -77,7 +77,7 @@ def test_plugin_named_like_any_builtin_never_crashes_or_shadows_it(builtin_names
 def test_failing_or_colliding_plugin_does_not_drop_another_plugins_command(
     builtin_names, build_with_plugins, caplog,
 ):
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.main"):
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.subcommands.plugins"):
         parser, subparsers = build_with_plugins([
             ("aaa-clash", builtin_names[0], _setup),
             ("aab-broken", "brokencmd", _boom),

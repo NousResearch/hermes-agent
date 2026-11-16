@@ -868,6 +868,8 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         loop.set_exception_handler(_gateway_loop_exception_handler)
 
         _start_gateway_install_signal_handlers(loop, shutdown_signal_handler, restart_signal_handler)
+        from gateway.restart_when_idle import install_secret_store_restart
+        install_secret_store_restart(loop, runner)
 
         # Windows has no add_signal_handler, so `hermes gateway stop`'s SIGTERM would never drain; poll the
         # planned-stop marker (written BEFORE the kill) instead. Runs everywhere so masked-SIGTERM drains.

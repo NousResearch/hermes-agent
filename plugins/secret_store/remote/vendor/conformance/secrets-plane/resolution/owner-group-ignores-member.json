@@ -1,0 +1,44 @@
+{
+  "name": "owner-group-ignores-member",
+  "description": "A group-owned agent resolves the group's owner-wide entries; a member's own owner-wide entries never resolve on it.",
+  "agent": {
+    "owner": "group:eng"
+  },
+  "levels": {
+    "owners": {
+      "principal:alice": {
+        "env": {
+          "ALICE_ONLY": "alice"
+        },
+        "auth": {
+          "alice-provider": {
+            "a": 1
+          }
+        }
+      },
+      "group:eng": {
+        "env": {
+          "TEAM": "eng"
+        }
+      }
+    },
+    "tenant": {
+      "env": {
+        "ALICE_ONLY": "tenant default"
+      }
+    }
+  },
+  "expected": {
+    "env": {
+      "TEAM": {
+        "value": "eng",
+        "level": "owner"
+      },
+      "ALICE_ONLY": {
+        "value": "tenant default",
+        "level": "tenant"
+      }
+    },
+    "auth": {}
+  }
+}

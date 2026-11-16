@@ -1,0 +1,51 @@
+{
+  "name": "auth-precedence-per-provider",
+  "description": "Auth records resolve per provider id with the same precedence; env and auth never shadow each other.",
+  "agent": {
+    "owner": "principal:alice"
+  },
+  "levels": {
+    "tenant": {
+      "auth": {
+        "shared": {
+          "from": "tenant"
+        },
+        "tenant-only": {
+          "from": "tenant"
+        }
+      }
+    },
+    "profile": {
+      "env": {
+        "shared": "an env name equal to a provider id"
+      },
+      "auth": {
+        "shared": {
+          "from": "profile"
+        }
+      }
+    }
+  },
+  "expected": {
+    "env": {
+      "shared": {
+        "value": "an env name equal to a provider id",
+        "level": "profile"
+      }
+    },
+    "auth": {
+      "shared": {
+        "record": {
+          "from": "profile"
+        },
+        "level": "profile"
+      },
+      "tenant-only": {
+        "record": {
+          "from": "tenant"
+        },
+        "level": "tenant"
+      }
+    }
+  }
+}

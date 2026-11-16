@@ -1,0 +1,40 @@
+{
+  "name": "person-profile-patch",
+  "description": "PATCH /v1/secrets/agents/{instanceId}/profiles/{name} (administering person): the /self PATCH body; the answer is the resolved view without values.",
+  "agents": [
+    {
+      "instanceId": "inst-1",
+      "owner": "alice"
+    }
+  ],
+  "steps": [
+    {
+      "as": "person:alice",
+      "method": "PATCH",
+      "path": "/v1/secrets/agents/inst-1/profiles/work",
+      "body": {
+        "expectedProfileVersion": 0,
+        "set": {
+          "A": "secret"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "etag": "<body.version>"
+        },
+        "body": {
+          "version": "<etag>",
+          "env": {
+            "A": {
+              "level": "profile",
+              "version": 1
+            }
+          },
+          "auth": {},
+          "profileVersion": 1
+        }
+      }
+    }
+  ]
+}

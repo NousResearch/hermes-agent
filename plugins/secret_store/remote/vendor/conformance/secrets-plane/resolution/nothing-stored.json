@@ -1,0 +1,12 @@
+{
+  "name": "nothing-stored",
+  "description": "No levels written: an empty view.",
+  "agent": {
+    "owner": "principal:alice"
+  },
+  "levels": {},
+  "expected": {
+    "env": {},
+    "auth": {}
+  }
+}

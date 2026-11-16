@@ -1,0 +1,142 @@
+{
+  "name": "person-agent-get",
+  "description": "GET /v1/secrets/agents/{instanceId} (record owner or tenant admin): names and metadata of every level that applies, and the resolved names; no values.",
+  "agents": [
+    {
+      "instanceId": "inst-1",
+      "owner": "alice"
+    }
+  ],
+  "steps": [
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "expectedProfileVersion": 0,
+        "set": {
+          "A": "secret"
+        },
+        "auth": {
+          "p": {
+            "expectedVersion": 0,
+            "record": {
+              "t": "secret"
+            }
+          }
+        }
+      },
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "as": "nas:inst-1",
+      "method": "PATCH",
+      "path": "/v1/secrets/agents/inst-1",
+      "body": {
+        "expectedVersion": 0,
+        "set": {
+          "A": "secret",
+          "B": "secret"
+        }
+      },
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "as": "person:alice",
+      "method": "GET",
+      "path": "/v1/secrets/agents/inst-1",
+      "expect": {
+        "status": 200,
+        "body": {
+          "instanceId": "inst-1",
+          "profile": "default",
+          "owner": "principal:alice",
+          "profiles": [
+            "default"
+          ],
+          "levels": {
+            "profile": {
+              "level": "profile",
+              "profile": "default",
+              "version": 1,
+              "updatedBy": "agent:inst-1",
+              "updatedAt": "<time>",
+              "env": {
+                "A": {
+                  "version": 1,
+                  "updatedBy": "agent:inst-1",
+                  "updatedAt": "<time>"
+                }
+              },
+              "auth": {
+                "p": {
+                  "version": 1,
+                  "updatedBy": "agent:inst-1",
+                  "updatedAt": "<time>"
+                }
+              }
+            },
+            "instance": {
+              "level": "instance",
+              "version": 2,
+              "updatedBy": "system:admin",
+              "updatedAt": "<time>",
+              "env": {
+                "A": {
+                  "version": 2,
+                  "updatedBy": "system:admin",
+                  "updatedAt": "<time>"
+                },
+                "B": {
+                  "version": 2,
+                  "updatedBy": "system:admin",
+                  "updatedAt": "<time>"
+                }
+              },
+              "auth": {}
+            },
+            "owner": {
+              "level": "owner",
+              "subject": "principal:alice",
+              "version": 0,
+              "updatedBy": null,
+              "updatedAt": null,
+              "env": {},
+              "auth": {}
+            },
+            "tenant": {
+              "level": "tenant",
+              "version": 0,
+              "updatedBy": null,
+              "updatedAt": null,
+              "env": {},
+              "auth": {}
+            }
+          },
+          "resolved": {
+            "env": {
+              "A": {
+                "level": "profile",
+                "version": 1
+              },
+              "B": {
+                "level": "instance",
+                "version": 2
+              }
+            },
+            "auth": {
+              "p": {
+                "level": "profile",
+                "version": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

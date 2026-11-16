@@ -1,0 +1,78 @@
+{
+  "name": "errors",
+  "description": "Error envelope {error, message, ...}: reserved name, admin refusal, unauthenticated. Messages never carry a value.",
+  "agents": [
+    {
+      "instanceId": "inst-1",
+      "owner": "alice"
+    }
+  ],
+  "steps": [
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "expectedProfileVersion": 0,
+        "set": {
+          "HERMES_HOME": "secret"
+        }
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "error": "secret_name_reserved",
+          "message": "<any>",
+          "kind": "env",
+          "name": "HERMES_HOME"
+        }
+      }
+    },
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "auth": {
+          "nous": {
+            "expectedVersion": 0,
+            "record": {}
+          }
+        }
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "error": "secret_name_reserved",
+          "message": "<any>",
+          "kind": "auth",
+          "name": "nous"
+        }
+      }
+    },
+    {
+      "as": "none",
+      "method": "GET",
+      "path": "/v1/secrets/self?profile=default",
+      "expect": {
+        "status": 401,
+        "body": {
+          "error": "unauthenticated",
+          "message": "<any>"
+        }
+      }
+    },
+    {
+      "as": "person:bob",
+      "method": "GET",
+      "path": "/v1/secrets/tenant",
+      "expect": {
+        "status": 403,
+        "body": {
+          "error": "forbidden",
+          "message": "<any>"
+        }
+      }
+    }
+  ]
+}

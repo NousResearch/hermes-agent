@@ -1,0 +1,159 @@
+{
+  "name": "auth-cas-per-provider",
+  "description": "auth-only bodies may omit expectedProfileVersion; each record is CAS'd on its own version (0 = absent), so refreshes of different providers never conflict.",
+  "agents": [
+    {
+      "instanceId": "inst-1",
+      "owner": "alice"
+    }
+  ],
+  "steps": [
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "auth": {
+          "p1": {
+            "expectedVersion": 0,
+            "record": {
+              "t": "a"
+            }
+          }
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "version": "<etag>",
+          "env": {},
+          "auth": {
+            "p1": {
+              "record": {
+                "t": "a"
+              },
+              "level": "profile",
+              "version": 1
+            }
+          },
+          "profileVersion": 1
+        }
+      }
+    },
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "auth": {
+          "p2": {
+            "expectedVersion": 0,
+            "record": {
+              "t": "b"
+            }
+          }
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "version": "<etag>",
+          "env": {},
+          "auth": {
+            "p1": {
+              "record": {
+                "t": "a"
+              },
+              "level": "profile",
+              "version": 1
+            },
+            "p2": {
+              "record": {
+                "t": "b"
+              },
+              "level": "profile",
+              "version": 2
+            }
+          },
+          "profileVersion": 2
+        }
+      }
+    },
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "auth": {
+          "p1": {
+            "expectedVersion": 0,
+            "record": {
+              "t": "stale"
+            }
+          }
+        }
+      },
+      "expect": {
+        "status": 409,
+        "body": {
+          "error": "secret_version_conflict",
+          "message": "<any>",
+          "provider": "p1",
+          "version": 1
+        }
+      }
+    },
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "auth": {
+          "gone": {
+            "expectedVersion": 2,
+            "record": null
+          }
+        }
+      },
+      "expect": {
+        "status": 409,
+        "body": {
+          "error": "secret_version_conflict",
+          "message": "<any>",
+          "provider": "gone",
+          "version": 0
+        }
+      }
+    },
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "auth": {
+          "p1": {
+            "expectedVersion": 1,
+            "record": null
+          }
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "version": "<etag>",
+          "env": {},
+          "auth": {
+            "p2": {
+              "record": {
+                "t": "b"
+              },
+              "level": "profile",
+              "version": 2
+            }
+          },
+          "profileVersion": 3
+        }
+      }
+    }
+  ]
+}

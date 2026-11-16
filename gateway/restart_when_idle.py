@@ -181,6 +181,13 @@ def request_planned_restart(runner) -> bool:
     return runner.request_restart(detached=not via_service, via_service=via_service)
 
 
+def install_secret_store_restart(loop, runner) -> None:
+    """A secret store applies its values at start, so a change made elsewhere asks for this
+    restart (from its poller thread): ``/restart``'s plan, marshalled onto the gateway's loop."""
+    from hermes_secret_routing import set_restart_handler
+    set_restart_handler(lambda: loop.call_soon_threadsafe(request_planned_restart, runner))
+
+
 def force_stop_budgets(runner) -> None:
     """A forced restart does not drain: ``stop()`` interrupts turns, delegations and processes."""
     runner._restart_drain_timeout = 0.0

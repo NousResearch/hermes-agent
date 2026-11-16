@@ -1,4 +1,5 @@
-"""HTTP client for the agent routes of the config plane (contract.md §7.1, §7.2).
+"""HTTP client for the agent routes of the config plane (contract.md §7.1, §7.2), and the
+credentialed transport (:func:`send`) the secrets plane client shares with it.
 
 Plain HTTP (D9), stdlib only: it runs inside ``load_hermes_dotenv`` before most of Hermes is
 imported. Every request re-resolves the bearer (contract §10.2).
@@ -90,11 +91,16 @@ def request(method: str, home: Path, profile: str, *, etag: Optional[str] = None
     redirect (:mod:`.destination`): raises its :class:`CredentialDestinationError` instead."""
     plane = checked_url(base_url(), env_name=URL_ENV)
     url = f"{plane}/v1/config/self?{urllib.parse.urlencode({'profile': profile})}"
-    headers = {
-        "Authorization": f"Bearer {token or plane_token(home)}",
-        "X-Hermes-Instance-Id": instance_id(),
-        "Accept": "application/json",
-    }
+    return send(method, url, token=token or plane_token(home), etag=etag, body=body,
+                headers={"X-Hermes-Instance-Id": instance_id()})
+
+
+def send(method: str, url: str, *, token: str, etag: Optional[str] = None, body: Optional[dict[str, Any]] = None,
+         headers: Optional[dict[str, str]] = None) -> Response:
+    """One credentialed JSON request to a connector plane route at *url* (already checked against
+    the destination policy): the transport the config plane and the secrets plane share. The
+    request never follows a redirect (:mod:`.destination`)."""
+    headers = {"Authorization": f"Bearer {token}", **(headers or {}), "Accept": "application/json"}
     data = None
     if body is not None:
         data = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")

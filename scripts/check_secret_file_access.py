@@ -60,7 +60,7 @@ AUTH_MODULE = "hermes_cli.auth"
 ROUTED = {
     ROUTING_MODULE: frozenset({
         "read_profile_env", "read_env_text", "env_file_exists", "route_env_write", "routed_bootstrap_env",
-        "routed_profile_env", "read_auth_json", "auth_json_exists", "auth_view_version"}),
+        "routed_profile_env", "routed_store_env", "read_auth_json", "auth_json_exists", "auth_view_version"}),
     AUTH_MODULE: frozenset({"_load_auth_store", "_save_auth_store"}),
 }
 

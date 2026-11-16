@@ -33,7 +33,7 @@ from urllib.parse import urlparse
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_cache_version, is_truthy_value
-from hermes_secret_routing import auth_view_version as _routed_auth_view_version, routed_auth_loader, save_auth_store as _routed_auth_save
+from hermes_secret_routing import boot_before_auth_lock as _boot_before_auth_lock, auth_view_version as _routed_auth_view_version, routed_auth_loader, save_auth_store as _routed_auth_save
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -716,7 +716,7 @@ def _auth_store_lock(
     ``_nous_shared_store_lock`` SECOND (inner), else deadlock against a concurrent shared import."""
     auth_path = target_path if target_path is not None else _auth_file_path()
     lock_path = auth_path.with_suffix(".lock")
-    with _file_lock(
+    with _boot_before_auth_lock(auth_path), _file_lock(
         lock_path, _auth_lock_holder_for(auth_path), timeout_seconds,
         f"Timed out waiting for auth store lock ({lock_path})"):
         yield

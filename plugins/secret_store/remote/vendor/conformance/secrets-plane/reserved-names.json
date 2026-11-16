@@ -1,0 +1,220 @@
+{
+  "description": "Names the plane refuses with 400 secret_name_reserved on every write route (set, unset, auth). Env names: process-global, launch-only (any letter case) and bootstrap names; auth: the plane credential's record. Generated list: conformance/secrets-reserved-names.json.",
+  "cases": [
+    {
+      "kind": "env",
+      "name": "PATH",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HOME",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_HOME",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "hermes_home",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "Hermes_Managed_Dir",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_MANAGED_DIR",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_PROFILE",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "_HERMES_GATEWAY",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "API_SERVER_PORT",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "GATEWAY_RELAY_URL",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "GATEWAY_RELAY_INSTANCE_ID",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_KANBAN_DB",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_KANBAN_ANYTHING",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_TELEGRAM_BATCH_DELAY",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "TERMINAL_BACKEND",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_CONFIG_BACKEND",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_CONFIG_REMOTE_URL",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_CONFIG_INSTANCE_ID",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_SHARED_AUTH_DIR",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_PORTAL_BASE_URL",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "NOUS_PORTAL_BASE_URL",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "GATEWAY_RELAY_IDP_TOKEN_URL",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "GATEWAY_RELAY_IDP_CLIENT_SECRET",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "GATEWAY_RELAY_IDP_FUTURE_KEY",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_SECRET_STORE",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_SECRETS_REMOTE_URL",
+      "expect": "reserved"
+    },
+    {
+      "kind": "env",
+      "name": "OPENAI_API_KEY",
+      "expect": "allowed"
+    },
+    {
+      "kind": "env",
+      "name": "GATEWAY_RELAY_SECRET",
+      "expect": "allowed"
+    },
+    {
+      "kind": "env",
+      "name": "GATEWAY_RELAY_DELIVERY_KEY",
+      "expect": "allowed"
+    },
+    {
+      "kind": "env",
+      "name": "API_SERVER_KEY",
+      "expect": "allowed"
+    },
+    {
+      "kind": "env",
+      "name": "TELEGRAM_BOT_TOKEN",
+      "expect": "allowed"
+    },
+    {
+      "kind": "env",
+      "name": "path",
+      "expect": "allowed"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_HOMES",
+      "expect": "allowed"
+    },
+    {
+      "kind": "env",
+      "name": "MY_PATH",
+      "expect": "allowed"
+    },
+    {
+      "kind": "env",
+      "name": "TERMINAL",
+      "expect": "allowed"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_KANBAN",
+      "expect": "allowed"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_TELEGRAM",
+      "expect": "allowed"
+    },
+    {
+      "kind": "env",
+      "name": "hermes_kanban_db",
+      "expect": "allowed"
+    },
+    {
+      "kind": "env",
+      "name": "HERMES_CONFIG",
+      "expect": "allowed"
+    },
+    {
+      "kind": "auth",
+      "name": "nous",
+      "expect": "reserved"
+    },
+    {
+      "kind": "auth",
+      "name": "openai-codex",
+      "expect": "allowed"
+    },
+    {
+      "kind": "auth",
+      "name": "nous-research",
+      "expect": "allowed"
+    },
+    {
+      "kind": "auth",
+      "name": "anthropic",
+      "expect": "allowed"
+    }
+  ]
+}

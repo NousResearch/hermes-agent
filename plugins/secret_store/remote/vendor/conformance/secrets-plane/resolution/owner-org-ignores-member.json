@@ -1,0 +1,35 @@
+{
+  "name": "owner-org-ignores-member",
+  "description": "An org-owned agent resolves the org's owner-wide entries only.",
+  "agent": {
+    "owner": "org:org_a"
+  },
+  "levels": {
+    "owners": {
+      "principal:alice": {
+        "env": {
+          "ALICE_ONLY": "alice"
+        }
+      },
+      "group:eng": {
+        "env": {
+          "TEAM": "eng"
+        }
+      },
+      "org:org_a": {
+        "env": {
+          "ORG": "org"
+        }
+      }
+    }
+  },
+  "expected": {
+    "env": {
+      "ORG": {
+        "value": "org",
+        "level": "owner"
+      }
+    },
+    "auth": {}
+  }
+}

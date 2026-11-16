@@ -1,0 +1,11 @@
+name: remote
+description: >-
+  Remote secrets — keeps every profile secret (.env-style names and auth.json
+  records) on the connector's secrets plane instead of the profile's files:
+  loaded once at start (fail closed), written back with compare-and-swap; an
+  ETag poller restarts the process gracefully when the view changes elsewhere;
+  the local files keep only the bootstrap credential.
+  Selected only by HERMES_SECRET_STORE=remote in the environment; never loaded
+  as a general plugin.
+version: 1.0.0
+author: Nous Research

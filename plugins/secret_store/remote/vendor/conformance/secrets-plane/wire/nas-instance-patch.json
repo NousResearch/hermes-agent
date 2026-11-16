@@ -1,0 +1,35 @@
+{
+  "name": "nas-instance-patch",
+  "description": "PATCH /v1/secrets/agents/{instanceId} with a connector-secrets-system token: env writes to the instance level; the answer is the version, never values.",
+  "agents": [
+    {
+      "instanceId": "inst-1",
+      "owner": "alice"
+    }
+  ],
+  "steps": [
+    {
+      "as": "nas:inst-1",
+      "method": "PATCH",
+      "path": "/v1/secrets/agents/inst-1",
+      "body": {
+        "expectedVersion": 0,
+        "set": {
+          "EDITOR_KEY": "v"
+        },
+        "unset": [
+          "NOT_THERE"
+        ]
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "cache-control": "no-store"
+        },
+        "body": {
+          "version": 1
+        }
+      }
+    }
+  ]
+}

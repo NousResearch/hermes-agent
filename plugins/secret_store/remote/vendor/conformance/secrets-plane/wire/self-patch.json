@@ -1,0 +1,94 @@
+{
+  "name": "self-patch",
+  "description": "PATCH /v1/secrets/self: set, unset and auth in one atomic body; the answer is the new resolved view.",
+  "agents": [
+    {
+      "instanceId": "inst-1",
+      "owner": "alice"
+    }
+  ],
+  "steps": [
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "expectedProfileVersion": 0,
+        "set": {
+          "NAME": "value",
+          "OTHER": "x"
+        },
+        "auth": {
+          "openai-codex": {
+            "expectedVersion": 0,
+            "record": {
+              "k": "v"
+            }
+          },
+          "old-provider": {
+            "expectedVersion": 0,
+            "record": {
+              "k": "old"
+            }
+          }
+        }
+      },
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "expectedProfileVersion": 1,
+        "set": {
+          "NAME": "value2"
+        },
+        "unset": [
+          "OTHER"
+        ],
+        "auth": {
+          "openai-codex": {
+            "expectedVersion": 1,
+            "record": {
+              "k": "v2"
+            }
+          },
+          "old-provider": {
+            "expectedVersion": 1,
+            "record": null
+          }
+        }
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "etag": "<body.version>",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "version": "<etag>",
+          "env": {
+            "NAME": {
+              "value": "value2",
+              "level": "profile",
+              "version": 2
+            }
+          },
+          "auth": {
+            "openai-codex": {
+              "record": {
+                "k": "v2"
+              },
+              "level": "profile",
+              "version": 2
+            }
+          },
+          "profileVersion": 2
+        }
+      }
+    }
+  ]
+}

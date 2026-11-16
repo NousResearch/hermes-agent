@@ -1,0 +1,43 @@
+{
+  "name": "env-requires-profile-version",
+  "description": "set/unset without expectedProfileVersion is a 400; nothing is written.",
+  "agents": [
+    {
+      "instanceId": "inst-1",
+      "owner": "alice"
+    }
+  ],
+  "steps": [
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "set": {
+          "A": "x"
+        }
+      },
+      "expect": {
+        "status": 400,
+        "body": {
+          "error": "secret_request_invalid",
+          "message": "<any>"
+        }
+      }
+    },
+    {
+      "as": "agent",
+      "method": "GET",
+      "path": "/v1/secrets/self?profile=default",
+      "expect": {
+        "status": 200,
+        "body": {
+          "version": "<etag>",
+          "env": {},
+          "auth": {},
+          "profileVersion": 0
+        }
+      }
+    }
+  ]
+}

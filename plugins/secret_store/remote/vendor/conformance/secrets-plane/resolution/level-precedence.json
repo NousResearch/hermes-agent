@@ -1,0 +1,58 @@
+{
+  "name": "level-precedence",
+  "description": "Per env name, the highest level that defines it wins: profile > instance > owner > tenant.",
+  "agent": {
+    "owner": "principal:alice"
+  },
+  "levels": {
+    "tenant": {
+      "env": {
+        "T": "tenant",
+        "O": "tenant",
+        "I": "tenant",
+        "P": "tenant"
+      }
+    },
+    "owners": {
+      "principal:alice": {
+        "env": {
+          "O": "owner",
+          "I": "owner",
+          "P": "owner"
+        }
+      }
+    },
+    "instance": {
+      "env": {
+        "I": "instance",
+        "P": "instance"
+      }
+    },
+    "profile": {
+      "env": {
+        "P": "profile"
+      }
+    }
+  },
+  "expected": {
+    "env": {
+      "T": {
+        "value": "tenant",
+        "level": "tenant"
+      },
+      "O": {
+        "value": "owner",
+        "level": "owner"
+      },
+      "I": {
+        "value": "instance",
+        "level": "instance"
+      },
+      "P": {
+        "value": "profile",
+        "level": "profile"
+      }
+    },
+    "auth": {}
+  }
+}

@@ -171,7 +171,7 @@ def stays_local(provider: SecretStoreProvider, name: str) -> bool:
     to it: the store's bootstrap names, and every name Hermes treats as process-global (deployment
     settings, not profile secrets: ``agent.secret_scope._is_global_env``) or as a per-process
     credential a parent injects."""
-    if name in provider.bootstrap_env_names() or name.upper() in LAUNCH_ONLY_ENV_NAMES:
+    if provider.keeps_local(name) or name.upper() in LAUNCH_ONLY_ENV_NAMES:
         return True
     from agent.secret_scope import _is_global_env
     from hermes_cli.env_loader import _SPAWN_CREDENTIAL_KEYS
@@ -237,6 +237,18 @@ def routed_profile_env(env_path: Path) -> Optional[dict[str, str]]:
     :func:`read_profile_env`: for readers that parse the file themselves only when it is the store's."""
     provider, home = _routed_env_home(env_path)
     return None if provider is None or home is None else read_profile_env(env_path)
+
+
+def routed_store_env(env_path: Path) -> Optional[dict[str, str]]:
+    """For a store with :attr:`~hermes_secret_port.SecretStoreProvider.literal_values`, its own
+    entries for the profile at *env_path* (bootstrap names excluded), as stored: the dotenv loader
+    reads the file's bootstrap lines itself and installs these verbatim. None otherwise."""
+    provider, home = _routed_env_home(env_path)
+    if provider is None or home is None or not provider.literal_values:
+        return None
+    pinned = _PROFILE_SNAPSHOT.get()
+    snapshot = pinned[1] if pinned is not None and pinned[0] == Path(home) else provider.current_snapshot(home)
+    return {k: v for k, v in snapshot.env.items() if not stays_local(provider, k)}
 
 
 def env_file_exists(env_path: Path) -> bool:
@@ -390,6 +402,16 @@ def _routed_auth_home(auth_file: Path) -> tuple[Optional[SecretStoreProvider], O
     return (provider, home) if home is not None else (None, None)
 
 
+def boot_before_auth_lock(auth_path: Path):
+    """For ``_auth_store_lock``: a store's first boot may rewrite ``auth.json`` (its one-time
+    import) under that same lock, so boot before the transaction takes it, never inside it."""
+    from contextlib import nullcontext
+    provider, home = _routed_auth_home(Path(auth_path))
+    if provider is not None and home is not None:
+        provider.boot(home)
+    return nullcontext()
+
+
 def routed_auth_loader(load):
     """Decorates ``hermes_cli.auth._load_auth_store``: resolves the default path (the active
     profile's ``auth.json``) exactly as the loader did, runs the loader on it, and hands its result
@@ -480,3 +502,34 @@ def auth_json_exists(auth_file: Path) -> bool:
     has a view: an empty one reads as a store with no records)."""
     provider, _home = _routed_auth_home(auth_file)
     return Path(auth_file).exists() if provider is None else True
+
+
+# --- restart on a change made elsewhere -----------------------------------------------------------
+
+_RESTART_HANDLER: list = []   # [callable] the running process's graceful restart, when it has one
+
+
+def set_restart_handler(handler) -> None:
+    """Register the process's graceful restart (the gateway registers its drain-aware service
+    restart, the one ``SIGUSR1`` runs): a no-argument callable, safe to call from any thread.
+    ``None`` unregisters it."""
+    _RESTART_HANDLER[:] = [handler] if handler is not None else []
+
+
+def request_restart(reason: str) -> bool:
+    """Ask the process to restart gracefully because its secrets changed somewhere else (a store
+    applies its values at start only). *reason* names the change, never a value. True when a
+    restart was requested; False when this process has no restart mechanism (an interactive CLI):
+    the change then applies the next time it starts."""
+    import logging
+    log = logging.getLogger(__name__)
+    handler = _RESTART_HANDLER[0] if _RESTART_HANDLER else None
+    if handler is None:
+        log.warning("Secrets changed outside this process (%s); they apply when Hermes next starts", reason)
+        return False
+    log.warning("Secrets changed outside this process (%s); restarting gracefully to apply them", reason)
+    try:
+        handler()
+    except RuntimeError:  # the registering loop has closed: the process is already stopping
+        return False
+    return True

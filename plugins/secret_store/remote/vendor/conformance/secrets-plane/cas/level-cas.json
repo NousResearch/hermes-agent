@@ -1,0 +1,86 @@
+{
+  "name": "level-cas",
+  "description": "Instance, owner and tenant writes CAS on the level's expectedVersion; a mismatch is 409 with the current version.",
+  "agents": [
+    {
+      "instanceId": "inst-1",
+      "owner": "alice"
+    }
+  ],
+  "steps": [
+    {
+      "as": "nas:inst-1",
+      "method": "PATCH",
+      "path": "/v1/secrets/agents/inst-1",
+      "body": {
+        "expectedVersion": 0,
+        "set": {
+          "A": "x"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "version": 1
+        }
+      }
+    },
+    {
+      "as": "nas:inst-1",
+      "method": "PATCH",
+      "path": "/v1/secrets/agents/inst-1",
+      "body": {
+        "expectedVersion": 0,
+        "unset": [
+          "A"
+        ]
+      },
+      "expect": {
+        "status": 409,
+        "body": {
+          "error": "secret_version_conflict",
+          "message": "<any>",
+          "version": 1
+        }
+      }
+    },
+    {
+      "as": "person:alice",
+      "method": "PATCH",
+      "path": "/v1/secrets/owners/principal/alice",
+      "body": {
+        "expectedVersion": 3,
+        "set": {
+          "A": "x"
+        }
+      },
+      "expect": {
+        "status": 409,
+        "body": {
+          "error": "secret_version_conflict",
+          "message": "<any>",
+          "version": 0
+        }
+      }
+    },
+    {
+      "as": "admin",
+      "method": "PATCH",
+      "path": "/v1/secrets/tenant",
+      "body": {
+        "expectedVersion": 1,
+        "set": {
+          "A": "x"
+        }
+      },
+      "expect": {
+        "status": 409,
+        "body": {
+          "error": "secret_version_conflict",
+          "message": "<any>",
+          "version": 0
+        }
+      }
+    }
+  ]
+}

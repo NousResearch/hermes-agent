@@ -1,0 +1,1095 @@
+{
+ "source": "7541e088e1",
+ "method": "Original load_hermes_dotenv(load_external_secrets=False) in a fresh process (process home); original resolver with process-global lookup (satellite home)",
+ "launch": {
+  "OPENAI_API_KEY": "launch-credential-marker",
+  "RV10_OUTSIDE": "outside-marker",
+  "RV10_TEMPLATE": "${RV10_OUTSIDE}",
+  "TERMINAL_RV10_GLOBAL": "global-marker",
+  "TERMINAL_RV10_TEMPLATE": "${TERMINAL_RV10_GLOBAL}"
+ },
+ "rows": [
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=plain\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "plain"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=abc$def\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "abc$def"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=$$\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "$$"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "${"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${OPENAI_API_KEY}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "launch-credential-marker"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_OUTSIDE}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "outside-marker"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_MISSING:-fallback}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "fallback"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_MISSING}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_INNER}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "earlier"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a\\nb\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\nb"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a\\tb\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\tb"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a\\\\b\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\\\b"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a\\\"b\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\\"b"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a'b\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a'b"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a # comment\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a#part\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a#part"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE= leading trailing \n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "leading trailing"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${:-$}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "$"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${MISSING:-${NEST}}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "${NEST}"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='plain'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "plain"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='abc$def'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "abc$def"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='$$'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "$$"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "${"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${OPENAI_API_KEY}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "launch-credential-marker"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_OUTSIDE}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "outside-marker"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_MISSING:-fallback}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "fallback"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_MISSING}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_INNER}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "earlier"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='a\\nb'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\nb"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='a\\tb'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\tb"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='a\\\\b'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\b"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='a\\\"b'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\\"b"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='a # comment'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a # comment"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='a#part'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a#part"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=' leading trailing '\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": " leading trailing "
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=''\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${:-$}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "$"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${MISSING:-${NEST}}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "${NEST}"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"plain\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "plain"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"abc$def\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "abc$def"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"$$\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "$$"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "${"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${OPENAI_API_KEY}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "launch-credential-marker"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_OUTSIDE}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "outside-marker"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_MISSING:-fallback}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "fallback"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_MISSING}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_INNER}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "earlier"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\nb\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\nb"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\tb\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\tb"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\\\b\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\b"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"a'b\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a'b"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"a # comment\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a # comment"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"a#part\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a#part"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\" leading trailing \"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": " leading trailing "
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${:-$}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "$"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${MISSING:-${NEST}}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "${NEST}"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=plain\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "plain"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=abc$def\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "abc$def"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=$$\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "$$"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "${"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${OPENAI_API_KEY}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_OUTSIDE}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_MISSING:-fallback}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "fallback"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_MISSING}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_INNER}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "earlier"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a\\nb\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\nb"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a\\tb\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\tb"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a\\\\b\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\\\b"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a\\\"b\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\\"b"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a'b\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a'b"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a # comment\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=a#part\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a#part"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE= leading trailing \n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "leading trailing"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${:-$}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "$"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=${MISSING:-${NEST}}\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "${NEST}"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='plain'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "plain"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='abc$def'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "abc$def"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='$$'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "$$"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "${"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${OPENAI_API_KEY}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_OUTSIDE}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_MISSING:-fallback}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "fallback"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_MISSING}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_INNER}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "earlier"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='a\\nb'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\nb"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='a\\tb'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\tb"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='a\\\\b'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\b"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='a\\\"b'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\\"b"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='a # comment'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a # comment"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='a#part'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a#part"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=' leading trailing '\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": " leading trailing "
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=''\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${:-$}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "$"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE='${MISSING:-${NEST}}'\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "${NEST}"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"plain\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "plain"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"abc$def\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "abc$def"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"$$\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "$$"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "${"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${OPENAI_API_KEY}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_OUTSIDE}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_MISSING:-fallback}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "fallback"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_MISSING}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_INNER}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "earlier"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\nb\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\nb"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\tb\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\tb"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\\\b\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a\\b"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"a'b\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a'b"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"a # comment\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a # comment"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"a#part\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "a#part"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\" leading trailing \"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": " leading trailing "
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${:-$}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "$"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_INNER=earlier\nRV10_VALUE=\"${MISSING:-${NEST}}\"\n",
+   "values": {
+    "RV10_INNER": "earlier",
+    "RV10_VALUE": "${NEST}"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_A=first\nRV10_VALUE=${RV10_A}\nRV10_A=last\n",
+   "values": {
+    "RV10_A": "last",
+    "RV10_VALUE": "first"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_A=first\nRV10_VALUE=${RV10_A}\nRV10_A=last\n",
+   "values": {
+    "RV10_A": "last",
+    "RV10_VALUE": "first"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_VALUE=${RV10_OUTSIDE}\nRV10_OUTSIDE=profile\n",
+   "values": {
+    "RV10_VALUE": "outside-marker",
+    "RV10_OUTSIDE": "profile"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_VALUE=${RV10_OUTSIDE}\nRV10_OUTSIDE=profile\n",
+   "values": {
+    "RV10_VALUE": "",
+    "RV10_OUTSIDE": "profile"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_OUTSIDE=prefix:${RV10_OUTSIDE}\nRV10_VALUE=${RV10_OUTSIDE}\n",
+   "values": {
+    "RV10_OUTSIDE": "prefix:outside-marker",
+    "RV10_VALUE": "prefix:outside-marker"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_OUTSIDE=prefix:${RV10_OUTSIDE}\nRV10_VALUE=${RV10_OUTSIDE}\n",
+   "values": {
+    "RV10_OUTSIDE": "prefix:",
+    "RV10_VALUE": "prefix:"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_VALUE=${RV10_TEMPLATE}\n",
+   "values": {
+    "RV10_VALUE": "${RV10_OUTSIDE}"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_VALUE=${RV10_TEMPLATE}\n",
+   "values": {
+    "RV10_VALUE": ""
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_VALUE=${TERMINAL_RV10_TEMPLATE}\n",
+   "values": {
+    "RV10_VALUE": "${TERMINAL_RV10_GLOBAL}"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_VALUE=${TERMINAL_RV10_TEMPLATE}\n",
+   "values": {
+    "RV10_VALUE": "${TERMINAL_RV10_GLOBAL}"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_VALUE=${TERMINAL_RV10_GLOBAL}/${OPENAI_API_KEY}\n",
+   "values": {
+    "RV10_VALUE": "global-marker/launch-credential-marker"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_VALUE=${TERMINAL_RV10_GLOBAL}/${OPENAI_API_KEY}\n",
+   "values": {
+    "RV10_VALUE": "global-marker/"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_LATER=${RV10_VALUE:-early}\nRV10_VALUE=set\nRV10_AFTER=${RV10_VALUE:-late}\n",
+   "values": {
+    "RV10_LATER": "early",
+    "RV10_VALUE": "set",
+    "RV10_AFTER": "set"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_LATER=${RV10_VALUE:-early}\nRV10_VALUE=set\nRV10_AFTER=${RV10_VALUE:-late}\n",
+   "values": {
+    "RV10_LATER": "early",
+    "RV10_VALUE": "set",
+    "RV10_AFTER": "set"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_VALUE=old\nRV10_LATER=profile-marker\nRV10_VALUE=${RV10_LATER:-fallback}\n",
+   "values": {
+    "RV10_VALUE": "profile-marker",
+    "RV10_LATER": "profile-marker"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_VALUE=old\nRV10_LATER=profile-marker\nRV10_VALUE=${RV10_LATER:-fallback}\n",
+   "values": {
+    "RV10_VALUE": "profile-marker",
+    "RV10_LATER": "profile-marker"
+   }
+  },
+  {
+   "home": "process",
+   "text": "export RV10_VALUE=\"a${RV10_OUTSIDE}b\"\nRV10_X='${RV10_VALUE}'\n",
+   "values": {
+    "RV10_VALUE": "aoutside-markerb",
+    "RV10_X": "aoutside-markerb"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "export RV10_VALUE=\"a${RV10_OUTSIDE}b\"\nRV10_X='${RV10_VALUE}'\n",
+   "values": {
+    "RV10_VALUE": "ab",
+    "RV10_X": "ab"
+   }
+  },
+  {
+   "home": "process",
+   "text": "RV10_VALUE=\"multi\nline ${RV10_OUTSIDE}\"\n",
+   "values": {
+    "RV10_VALUE": "multi\nline outside-marker"
+   }
+  },
+  {
+   "home": "satellite",
+   "text": "RV10_VALUE=\"multi\nline ${RV10_OUTSIDE}\"\n",
+   "values": {
+    "RV10_VALUE": "multi\nline "
+   }
+  }
+ ]
+}

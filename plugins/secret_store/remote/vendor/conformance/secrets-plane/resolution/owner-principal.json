@@ -1,0 +1,35 @@
+{
+  "name": "owner-principal",
+  "description": "A principal-owned agent resolves its owner's owner-wide entries, and no other principal's.",
+  "agent": {
+    "owner": "principal:alice"
+  },
+  "levels": {
+    "owners": {
+      "principal:alice": {
+        "env": {
+          "MINE": "alice"
+        }
+      },
+      "principal:bob": {
+        "env": {
+          "BOBS": "bob"
+        }
+      },
+      "group:eng": {
+        "env": {
+          "TEAM": "eng"
+        }
+      }
+    }
+  },
+  "expected": {
+    "env": {
+      "MINE": {
+        "value": "alice",
+        "level": "owner"
+      }
+    },
+    "auth": {}
+  }
+}

@@ -366,20 +366,22 @@ def _format_offending_chars(value: str, limit: int = 3) -> str:
     return ", ".join(seen)
 
 
-def _sanitize_loaded_credentials() -> None:
+def _sanitize_loaded_credentials(env: dict[str, str] | None = None) -> None:
     """Strip non-ASCII from credential env vars (``_CREDENTIAL_SUFFIXES``) so the codebase never sees them.
+    *env* defaults to ``os.environ`` (a secret store's one-time import sanitizes the values it stores).
 
     Emits a one-line warning to stderr when characters are stripped. Silent stripping would mask copy-paste
     corruption (Unicode lookalike glyphs from PDFs / rich-text editors, ZWSP from web pages) as opaque
     provider-side "invalid API key" errors (see #6843).
     """
-    for key, value in list(os.environ.items()):
+    target = os.environ if env is None else env
+    for key, value in list(target.items()):
         if not any(key.endswith(suffix) for suffix in _CREDENTIAL_SUFFIXES):
             continue
         if value.isascii():
             continue
         cleaned = value.encode("ascii", errors="ignore").decode("ascii")
-        os.environ[key] = cleaned
+        target[key] = cleaned
         if key in _WARNED_KEYS:
             continue
         _WARNED_KEYS.add(key)
@@ -399,12 +401,30 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
+class StoredValue(str):
+    """A secret store's value in a profile ``.env`` layer: a literal string, never expanded."""
+
+
 def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
-    """``(name, raw value)`` assignments of one dotenv file, uninterpolated, in file order."""
-    from hermes_secret_routing import routed_profile_env
-    routed = routed_profile_env(path)
-    if routed is not None:
-        return list(routed.items())
+    """``(name, raw value)`` assignments of one dotenv file, uninterpolated, in file order. For a
+    profile ``.env`` a secret store serves: its view, and for a store of literal values the file's own
+    bootstrap lines, then the store's values as :class:`StoredValue` (a later layer may still expand
+    them like any value)."""
+    from hermes_secret_routing import routed_profile_env, routed_provider, routed_store_env, stays_local
+    stored = routed_store_env(path)
+    if stored is None:
+        routed = routed_profile_env(path)
+        return _parse_local_dotenv_file(path) if routed is None else list(routed.items())
+    provider = routed_provider()
+    try:
+        local = [(name, value) for name, value in _parse_local_dotenv_file(path) if stays_local(provider, name)]
+    except FileNotFoundError:
+        local = []
+    return [*local, *((name, StoredValue(value)) for name, value in stored.items())]
+
+
+def _parse_local_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
+    """The file's own ``(name, raw value)`` assignments, in file order."""
     raw = path.read_bytes()
     try:
         # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
@@ -443,7 +463,9 @@ def _resolve_dotenv_assignments(
 
     resolved: dict[str, str | None] = {}
     for name, value in assignments:
-        if value is not None:
+        if isinstance(value, StoredValue):
+            value = str(value)  # a secret store's value is literal
+        elif value is not None:
             lookup = {**lookup_env, **resolved} if override else {**resolved, **lookup_env}
             value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
         resolved[name] = value

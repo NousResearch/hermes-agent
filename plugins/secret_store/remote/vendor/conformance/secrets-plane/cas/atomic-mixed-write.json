@@ -1,0 +1,52 @@
+{
+  "name": "atomic-mixed-write",
+  "description": "A write with env and auth changes is atomic: one failing auth CAS writes nothing.",
+  "agents": [
+    {
+      "instanceId": "inst-1",
+      "owner": "alice"
+    }
+  ],
+  "steps": [
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "expectedProfileVersion": 0,
+        "set": {
+          "A": "x"
+        },
+        "auth": {
+          "p": {
+            "expectedVersion": 5,
+            "record": {}
+          }
+        }
+      },
+      "expect": {
+        "status": 409,
+        "body": {
+          "error": "secret_version_conflict",
+          "message": "<any>",
+          "provider": "p",
+          "version": 0
+        }
+      }
+    },
+    {
+      "as": "agent",
+      "method": "GET",
+      "path": "/v1/secrets/self?profile=default",
+      "expect": {
+        "status": 200,
+        "body": {
+          "version": "<etag>",
+          "env": {},
+          "auth": {},
+          "profileVersion": 0
+        }
+      }
+    }
+  ]
+}

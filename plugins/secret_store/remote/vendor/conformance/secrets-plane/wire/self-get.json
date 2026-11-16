@@ -1,0 +1,96 @@
+{
+  "name": "self-get",
+  "description": "GET /v1/secrets/self: the resolved view with values. ETag header = body.version; If-None-Match with it → 304.",
+  "agents": [
+    {
+      "instanceId": "inst-1",
+      "owner": "alice"
+    }
+  ],
+  "steps": [
+    {
+      "as": "admin",
+      "method": "PATCH",
+      "path": "/v1/secrets/tenant",
+      "body": {
+        "expectedVersion": 0,
+        "set": {
+          "SHARED_KEY": "from-tenant"
+        }
+      },
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "expectedProfileVersion": 0,
+        "set": {
+          "OPENAI_API_KEY": "sk-test"
+        },
+        "auth": {
+          "openai-codex": {
+            "expectedVersion": 0,
+            "record": {
+              "access_token": "at",
+              "refresh_token": "rt"
+            }
+          }
+        }
+      },
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "as": "agent",
+      "method": "GET",
+      "path": "/v1/secrets/self?profile=default",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "etag": "<body.version>",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "version": "<etag>",
+          "env": {
+            "OPENAI_API_KEY": {
+              "value": "sk-test",
+              "level": "profile",
+              "version": 1
+            },
+            "SHARED_KEY": {
+              "value": "from-tenant",
+              "level": "tenant",
+              "version": 1
+            }
+          },
+          "auth": {
+            "openai-codex": {
+              "record": {
+                "access_token": "at",
+                "refresh_token": "rt"
+              },
+              "level": "profile",
+              "version": 1
+            }
+          },
+          "profileVersion": 1
+        }
+      }
+    },
+    {
+      "as": "agent",
+      "method": "GET",
+      "path": "/v1/secrets/self?profile=default",
+      "ifNoneMatch": "<previous.etag>",
+      "expect": {
+        "status": 304
+      }
+    }
+  ]
+}

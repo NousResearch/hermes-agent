@@ -339,6 +339,15 @@ class SecretStoreProvider(ABC):
         exists. A files-backed store keeps everything local and needs none."""
         return frozenset()
 
+    #: Whether this store's values are literal strings: the dotenv loader installs them as stored and
+    #: never expands ``${...}`` in them (a later layer still may). False: they read as dotenv text.
+    literal_values: bool = False
+
+    def keeps_local(self, name: str) -> bool:
+        """Whether env *name* is one of this store's bootstrap entries: :meth:`bootstrap_env_names`,
+        plus any family of names a store declares by rule (a prefix) rather than one by one."""
+        return name in self.bootstrap_env_names()
+
     def bootstrap_auth_records(self) -> frozenset[str]:
         """``auth.json`` record ids (:func:`hermes_secret_routing.auth_records`) that stay in the
         local file and are never sent: the record this store's own credential comes from."""

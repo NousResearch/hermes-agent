@@ -1,0 +1,86 @@
+{
+  "name": "profile-cas",
+  "description": "A write with expectedProfileVersion equal to the profile level's version succeeds and bumps it; a stale one is refused 409 with the current profileVersion and changes nothing.",
+  "agents": [
+    {
+      "instanceId": "inst-1",
+      "owner": "alice"
+    }
+  ],
+  "steps": [
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "expectedProfileVersion": 0,
+        "set": {
+          "A": "one"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "version": "<etag>",
+          "env": {
+            "A": {
+              "value": "one",
+              "level": "profile",
+              "version": 1
+            }
+          },
+          "auth": {},
+          "profileVersion": 1
+        }
+      }
+    },
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "expectedProfileVersion": 0,
+        "set": {
+          "A": "two"
+        }
+      },
+      "expect": {
+        "status": 409,
+        "body": {
+          "error": "secret_version_conflict",
+          "message": "<any>",
+          "profileVersion": 1
+        }
+      }
+    },
+    {
+      "as": "agent",
+      "method": "PATCH",
+      "path": "/v1/secrets/self?profile=default",
+      "body": {
+        "expectedProfileVersion": 1,
+        "set": {
+          "A": "two"
+        },
+        "unset": [
+          "NEVER_SET"
+        ]
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "version": "<etag>",
+          "env": {
+            "A": {
+              "value": "two",
+              "level": "profile",
+              "version": 2
+            }
+          },
+          "auth": {},
+          "profileVersion": 2
+        }
+      }
+    }
+  ]
+}

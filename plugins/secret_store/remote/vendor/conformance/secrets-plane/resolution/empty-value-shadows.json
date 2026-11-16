@@ -1,0 +1,28 @@
+{
+  "name": "empty-value-shadows",
+  "description": "An empty string is a value: it shadows lower levels.",
+  "agent": {
+    "owner": "principal:alice"
+  },
+  "levels": {
+    "tenant": {
+      "env": {
+        "A": "tenant"
+      }
+    },
+    "profile": {
+      "env": {
+        "A": ""
+      }
+    }
+  },
+  "expected": {
+    "env": {
+      "A": {
+        "value": "",
+        "level": "profile"
+      }
+    },
+    "auth": {}
+  }
+}

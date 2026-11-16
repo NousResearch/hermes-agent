@@ -1,0 +1,115 @@
+{
+  "name": "owner-and-tenant-levels",
+  "description": "GET/PATCH /v1/secrets/owners/{kind}/{id} and /v1/secrets/tenant: env writes with expectedVersion; answers are names and metadata.",
+  "agents": [],
+  "steps": [
+    {
+      "as": "person:alice",
+      "method": "PATCH",
+      "path": "/v1/secrets/owners/principal/alice",
+      "body": {
+        "expectedVersion": 0,
+        "set": {
+          "MY_KEY": "secret"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "level": "owner",
+          "subject": "principal:alice",
+          "version": 1,
+          "updatedBy": "alice",
+          "updatedAt": "<time>",
+          "env": {
+            "MY_KEY": {
+              "version": 1,
+              "updatedBy": "alice",
+              "updatedAt": "<time>"
+            }
+          },
+          "auth": {}
+        }
+      }
+    },
+    {
+      "as": "admin",
+      "method": "PATCH",
+      "path": "/v1/secrets/owners/group/eng",
+      "body": {
+        "expectedVersion": 0,
+        "set": {
+          "TEAM_KEY": "secret"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "level": "owner",
+          "subject": "group:eng",
+          "version": 1,
+          "updatedBy": "admin",
+          "updatedAt": "<time>",
+          "env": {
+            "TEAM_KEY": {
+              "version": 1,
+              "updatedBy": "admin",
+              "updatedAt": "<time>"
+            }
+          },
+          "auth": {}
+        }
+      }
+    },
+    {
+      "as": "admin",
+      "method": "PATCH",
+      "path": "/v1/secrets/tenant",
+      "body": {
+        "expectedVersion": 0,
+        "set": {
+          "ORG_KEY": "secret"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": {
+          "level": "tenant",
+          "version": 1,
+          "updatedBy": "admin",
+          "updatedAt": "<time>",
+          "env": {
+            "ORG_KEY": {
+              "version": 1,
+              "updatedBy": "admin",
+              "updatedAt": "<time>"
+            }
+          },
+          "auth": {}
+        }
+      }
+    },
+    {
+      "as": "admin",
+      "method": "GET",
+      "path": "/v1/secrets/tenant",
+      "expect": {
+        "status": 200,
+        "body": {
+          "level": "tenant",
+          "version": 1,
+          "updatedBy": "admin",
+          "updatedAt": "<time>",
+          "env": {
+            "ORG_KEY": {
+              "version": 1,
+              "updatedBy": "admin",
+              "updatedAt": "<time>"
+            }
+          },
+          "auth": {}
+        }
+      }
+    }
+  ]
+}

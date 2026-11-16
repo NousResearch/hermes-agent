@@ -74,7 +74,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def _report(repo: Path, head: str | None) -> int:
     paths = [p for p in gitio.tracked_files(repo, head) if in_scope(p)]
-    measurer = Measurer(repo, resolve_ruff(repo), known_env=gitio.known_env_names(repo, head))
+    measurer = Measurer(repo, resolve_ruff(repo), known_env=gitio.known_env_names(repo, head),
+                        first_party=gitio.first_party_names(repo, head))
     print(summarize_tree(measurer.measure(head, paths)))
     return 0
 
@@ -105,7 +106,8 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
     # Base files are measured too: a deleted .py still needs ruff on the base side.
     needs_ruff = any(p.endswith(".py") for p in (*head_paths, *base_paths))
     ruff = resolve_ruff(repo) if needs_ruff else []
-    measurer = Measurer(repo, ruff, known_env=gitio.known_env_names(repo, base))
+    measurer = Measurer(repo, ruff, known_env=gitio.known_env_names(repo, base),
+                        first_party=gitio.first_party_names(repo, base) | gitio.first_party_names(repo, head))
     base_m = measurer.measure(base, base_paths)
     head_m = measurer.measure(head, head_paths)
     findings = compare(base_m, head_m, changes, gitio.tree_moves(repo, head))

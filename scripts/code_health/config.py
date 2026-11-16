@@ -180,6 +180,13 @@ RULES: tuple[Rule, ...] = (
          " redacted form (`redact_phone`); the verbatim value goes to `logger.debug`. A content-named"
          " value that holds no user data (a config string) takes `# health: allow HX017 -- <why>`",
          "ast", include=("gateway/*", "plugins/platforms/*")),
+    # utils is importable from every package only while it pulls none of the product in.
+    Rule("HX018", "utils reaches product code", "`utils/` imports only the standard library,"
+         " third-party packages, other `utils` modules, `hermes_constants`, `hermes_platform`,"
+         " `hermes_yaml` and `pm`, and never looks a module up in `sys.modules`: pass the value in"
+         " as an argument, or keep the helper in the package that owns the knowledge. A real"
+         " exception takes `# health: allow HX018 -- <why>`; see utils/AGENTS.md", "ast",
+         include=("utils/*",)),
 )
 
 RULES_BY_ID = {rule.id: rule for rule in RULES}

@@ -261,7 +261,7 @@ def test_crlf_blob_measures_like_lf(tmp_path, monkeypatch):
             ["git", "show", f"{head}:pkg/b.py"], cwd=repo, capture_output=True, timeout=60, check=True).stdout)
         with monkeypatch.context() as patch:
             patch.setattr(Path, "write_text", _windows_write_text)
-            measurer = Measurer(repo, resolve_ruff(repo), known_env=set())
+            measurer = Measurer(repo, resolve_ruff(repo), known_env=set(), first_party=frozenset())
             base_m, head_m = measurer.measure(base, []), measurer.measure(head, ["pkg/b.py"])
         findings = compare(base_m, head_m, gitio.changed_files(repo, base, head))
         apply_allows(findings, head_m)

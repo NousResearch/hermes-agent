@@ -15,7 +15,8 @@ from tools.process_registry import ProcessRegistry, ProcessSession
 @pytest.fixture()
 def registry(monkeypatch, tmp_path):
     monkeypatch.setattr("tools.process_registry._SYSTEMD_SCOPE_AVAILABLE", False)
-    monkeypatch.setattr("tools.process_registry.CHECKPOINT_PATH", tmp_path / "processes.json")
+    monkeypatch.setattr("tools.process_registry._checkpoint_path", lambda: tmp_path / "processes.json")
+    monkeypatch.setattr("hermes_cli.process_identity._update_supervised_pgids", lambda verb, pgids: None)
     return ProcessRegistry()
 
 
@@ -121,7 +122,7 @@ class TestReaderLoopEofWhileAlive:
         """After EOF-while-alive, the eventual real exit must notify on its own:
         no poll()/wait() may supply the reconcile (issue #86416, second half)."""
         monkeypatch.setattr(
-            "tools.process_registry.CHECKPOINT_PATH", tmp_path / "processes.json"
+            "tools.process_registry._checkpoint_path", lambda: tmp_path / "processes.json"
         )
         release = tmp_path / "release"
         child = (

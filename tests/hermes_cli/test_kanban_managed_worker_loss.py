@@ -237,17 +237,49 @@ def test_a_settled_receipt_with_a_live_gateway_owner_no_longer_holds_the_claim(b
 @pytest.mark.parametrize("live", [False, True], ids=["absent-pid", "live-pid"])
 def test_a_refused_signal_reads_the_pid_not_the_error(board, live):
     """A bare OSError from the kill (Windows reports an absent pid as error 87) is a success only
-    when the pid is really gone; a live worker that refuses the signal is not terminated."""
+    when the pid is really gone; a live worker that refuses the signal is not terminated. The live
+    case uses a REAL child process (PR#51 hardening: a dead pid is never signalled at all and
+    one's own pid is never a target, so ``os.getpid()`` no longer doubles as a stand-in for
+    liveness)."""
     import os
-    pid = os.getpid() if live else _absent_pid(base=3_970_000)
+    import subprocess
+    import sys
+
+    proc = None
+    if live:
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        time.sleep(0.2)
+        pid, fp = proc.pid, kbd._process_fingerprint(proc.pid)
+    else:
+        pid, fp = _absent_pid(base=3_970_000), None
 
     def refusing_kill(pid, sig):
         raise OSError(87, "The parameter is incorrect")
 
-    info = kbd._terminate_reclaimed_worker(pid, f"{HOST}:{_absent_pid(base=3_980_000)}",
-                                           started_at=kbd._process_fingerprint(pid) if live else None,
-                                           signal_fn=refusing_kill)
-    assert info["terminated"] is (not live)
+    try:
+        info = kbd._terminate_reclaimed_worker(pid, f"{HOST}:{_absent_pid(base=3_980_000)}",
+                                               started_at=fp, signal_fn=refusing_kill)
+        assert info["terminated"] is (not live)
+    finally:
+        if proc is not None:
+            proc.kill()
+            proc.wait()
+
+
+def test_ones_own_pid_is_never_a_termination_target(board):
+    """The reaper/kill run inside gateway, CLI, and worker processes: closing someone else's
+    attempt must never signal our own pid as a side effect (PR#51 hardening — self-exclusion,
+    verified as gone WITHOUT signalling rather than killed)."""
+    import os
+
+    def recording_kill(pid, sig):
+        raise AssertionError(f"must never signal self: kill({pid}, {sig})")
+
+    info = kbd._terminate_reclaimed_worker(os.getpid(), f"{HOST}:{_absent_pid(base=3_980_000)}",
+                                          started_at=kbd._process_fingerprint(os.getpid()),
+                                          signal_fn=recording_kill)
+    assert info["terminated"] is True
+    assert info["termination_attempted"] is False
 
 
 # --- D1: the OWNER writes the loss where the dispatcher can read it -----------------------

@@ -45,8 +45,17 @@ KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 # A healthy worker is still alive for a while after kanban_complete /
 # kanban_request_review returns (final assistant turn, session persistence), so
 # a run's retained worker is only reaped once ended_at is at least this old
-# (two default dispatch ticks).
+# (two default dispatch ticks). Review-lane runs are exempt: a terminal review
+# transition terminates its worker immediately (kill_run_worker_now), because a
+# reviewer whose authority has ended keeps comment rights and shell/gh CLI
+# capability — the PR#51 class of survivor-merge.
 TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
+
+# Rows whose ended_at is older than this are resolved without scanning their
+# events: any worker that outlived its run that long has long since been dealt
+# with by a previous tick (or by the reclaim paths), and the sweep must not
+# rescan board history every tick now that evidence lives in events too.
+TERMINAL_WORKER_REAP_MAX_AGE_SECONDS = 7 * 86400
 
 # ---------------------------------------------------------------------------
 # Respawn guard constants
@@ -444,13 +453,24 @@ def _terminate_reclaimed_worker(
     *,
     signal_fn=None,
     started_at=None,
+    extra_targets: Optional[list[tuple[int, Any]]] = None,
+    kill_group: bool = False,
 ) -> dict[str, Any]:
     """Best-effort host-local worker termination for reclaim paths. ``started_at`` is the spawn-time
     fingerprint: when the live process no longer matches it, the PID was recycled and nothing is
     signalled — the worker is gone, which is what the reclaim wanted (``terminated`` = True). An
     UNVERIFIED spawn (fingerprint capture failed) that is still live is never signalled either, but
     it is reported as surviving (``signal_refused``) so the reclaim holds the claim instead of
-    spawning a duplicate beside it."""
+    spawning a duplicate beside it.
+
+    ``extra_targets`` are (pid, fingerprint) pairs recorded for the same attempt — a dispatcher
+    spawn is only half the story when the session binds elsewhere (``worker_bound``): the PR#51
+    survivor merged 41 s after a reaper that SIGTERM'd only the spawn parent and recorded
+    ``terminated: true``. ``terminated`` is therefore the answer for EVERY target, each re-checked
+    via /proc liveness (never "the kill call didn't raise"); ``kill_group`` additionally signals a
+    worker process group that is not our own (never our group — the dispatcher's children share
+    it). A target equal to ``os.getpid()`` is never signalled: this runs inside gateway/CLI/pytest
+    processes that must not self-terminate as a side effect of closing someone else's run."""
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
         "host_local": False,
@@ -472,29 +492,100 @@ def _terminate_reclaimed_worker(
         info["signal_refused"] = True
         info["terminated"] = not _kb._pid_alive(pid)
         return info
-    if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
-        info["terminated"] = True
+    targets: list[tuple[int, Any]] = [(int(pid), started_at)]
+    targets += [(int(t_pid), t_fp) for t_pid, t_fp in (extra_targets or [])]
+    targets = [(t_pid, t_fp) for t_pid, t_fp in targets
+               if t_pid > 0 and t_pid != os.getpid()]
+    if not targets:
+        info["terminated"] = True  # only self / already-cleared targets: nothing to signal
+        return info
+    # Per-target identity filter: a recycled pid is evidence of a GONE worker (drop it, it must
+    # not mask a live sibling target); an UNVERIFIED fingerprint is refusal, not permission —
+    # the attempt stays armed until its identity can be proven.
+    if any(fp == UNVERIFIED_WORKER_FINGERPRINT for _p, fp in targets if _kb._pid_alive(_p)):
+        info["signal_refused"] = True
+        info["terminated"] = False
+        return info
+    recycled = any(_kb._pid_alive(t_pid) and _pid_recycled(t_pid, t_fp) for t_pid, t_fp in targets)
+    targets = [(t_pid, t_fp) for t_pid, t_fp in targets
+               if not (_kb._pid_alive(t_pid) and _pid_recycled(t_pid, t_fp))]
+    if recycled:
         info["pid_recycled"] = True
+    if not targets:
+        info["terminated"] = True  # every recorded pid is gone or recycled: the attempt is over
         return info
 
-    info["termination_attempted"] = True
-    try:
-        kill(int(pid), signal.SIGTERM)
-    except OSError:
-        # Already gone = successful termination (Windows reports an absent pid as a bare OSError, not
-        # ProcessLookupError). Leaving terminated=False would make the reclaim defer forever.
-        info["terminated"] = not _worker_alive(pid, started_at)
-        return info
+    group = 0
+    if kill_group and signal_fn is None and hasattr(os, "killpg"):
+        with contextlib.suppress(OSError):
+            group = os.getpgid(int(pid))
+        if group in (0, os.getpgrp()):
+            group = 0  # never signal our own process group: the dispatcher's children live in it
 
-    if _poll_worker_exit(pid, started_at):
+    alive = [(t_pid, t_fp) for t_pid, t_fp in targets if _worker_alive(t_pid, t_fp)]
+    if not alive:
         info["terminated"] = True
         return info
-    if _worker_alive(pid, started_at):
-        if not _sigkill(kill, pid):
-            return info
-        info["sigkill"] = True
-    info["terminated"] = not _worker_alive(pid, started_at)
+    info["termination_attempted"] = True
+    if group:
+        with contextlib.suppress(OSError):
+            # Negative pid = the whole group (workers are spawned start_new_session, so this
+            # is the attempt's own isolated group — the dispatcher's group was excluded above).
+            kill(-group, signal.SIGTERM)
+    for t_pid, _fp in alive:
+        try:
+            kill(t_pid, signal.SIGTERM)
+        except OSError:
+            # Already gone = successful termination (Windows reports an absent pid as a bare OSError,
+            # not ProcessLookupError). Leaving terminated=False would make the reclaim defer forever.
+            pass
+
+    remaining = [(t_pid, t_fp) for t_pid, t_fp in alive
+                 if not _poll_worker_exit(t_pid, t_fp)]
+    if remaining:
+        if group:
+            with contextlib.suppress(OSError):
+                _sigkill(kill, -group)
+        survivors = []
+        for t_pid, t_fp in remaining:
+            if not _worker_alive(t_pid, t_fp):
+                continue
+            if _sigkill(kill, t_pid):
+                info["sigkill"] = True
+            if _worker_alive(t_pid, t_fp):
+                survivors.append(t_pid)
+        if survivors:
+            info["survivors"] = survivors
+            return info  # still alive: the caller retries; never report success beside a live worker
+    info["terminated"] = not any(_worker_alive(t_pid, t_fp) for t_pid, t_fp in targets)
     return info
+
+
+def _run_worker_targets(conn: sqlite3.Connection, run_id: int, row_pid, row_fp) -> list[tuple[int, Any]]:
+    """Every process identity recorded for one attempt: the run row's spawn-pair plus the
+    ``spawned`` / ``worker_bound`` events. The dispatcher spawn is only half the story when the
+    session binds a separate interpreter (``worker_bound``) — PR#51's survivor merged 41 s after a
+    reaper that signalled only the spawn parent. Event payloads carry their own spawn-time
+    fingerprint; an event with no ``started_at`` is identity-less and never a kill target (missing
+    process identity is refusal, not permission, #99558). Deduped by pid; the row pair wins so the
+    claim/timeout fingerprint stays authoritative."""
+    targets: dict[int, Any] = {}
+    if row_pid:
+        targets[int(row_pid)] = row_fp
+    rows = conn.execute(
+        "SELECT kind, payload FROM task_events WHERE run_id = ? AND kind IN ('spawned', 'worker_bound')",
+        (run_id,),
+    ).fetchall()
+    for ev in rows:
+        try:
+            payload = _kb._json_dict(_kb._row_get(ev, "payload"))
+            ev_pid = payload.get("pid")
+            if not ev_pid:
+                continue
+            targets.setdefault(int(ev_pid), payload.get("started_at"))
+        except (TypeError, ValueError):
+            continue
+    return list(targets.items())
 
 
 def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
@@ -502,17 +593,21 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
     that called ``kanban_complete`` and then hung keeps its ``state.db`` sidecar
     fds open and no ``running``-only sweep can see it once ``tasks.worker_pid`` is
     cleared. Keys on the closed ``task_runs`` row's retained pid + spawn
-    fingerprint: a legacy row (NULL fingerprint) or a recycled PID is never
-    signalled; a pid that is simply gone just has its evidence cleared. A run
-    that ended less than ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` ago is left
-    alone so a worker still finalising after its own transition is not killed.
-    One row's failure (signal, /proc probe) is logged and skips only that row.
-    Returns the task ids whose worker was terminated."""
+    fingerprint AND the ``spawned`` / ``worker_bound`` event identities beside it:
+    a legacy row (NULL fingerprint) or a recycled PID is never signalled; a pid
+    that is simply gone just has its evidence cleared. A run that ended less than
+    ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` ago is left alone so a worker still
+    finalising after its own transition is not killed. ``terminated`` covers every
+    target — evidence is cleared (``worker_reaped``) only when the whole attempt,
+    bound session included, is verifiably gone. One row's failure (signal, /proc
+    probe) is logged and skips only that row. Returns the task ids whose worker
+    was terminated."""
+    now = int(time.time())
     rows = conn.execute(
-        "SELECT id, task_id, worker_pid, worker_started_at, claim_lock FROM task_runs "
-        "WHERE ended_at IS NOT NULL AND ended_at <= ? "
-        "AND worker_pid IS NOT NULL AND worker_started_at IS NOT NULL",
-        (int(time.time()) - TERMINAL_WORKER_REAP_GRACE_SECONDS,),
+        "SELECT id, task_id, worker_pid, worker_started_at, claim_lock, ended_at FROM task_runs "
+        "WHERE ended_at IS NOT NULL AND ended_at <= ? AND worker_reaped IS NULL "
+        "AND ended_at >= ?",
+        (now - TERMINAL_WORKER_REAP_GRACE_SECONDS, now - TERMINAL_WORKER_REAP_MAX_AGE_SECONDS),
     ).fetchall()
     host_prefix = _kb._host_prefix()
     reaped: list[str] = []
@@ -528,31 +623,86 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
 
 
 def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: list[str]) -> None:
-    pid, fingerprint = int(row["worker_pid"]), row["worker_started_at"]
-    if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
+    if row["ended_at"] is None or not str(row["claim_lock"] or "").startswith(host_prefix):
         return
-    if fingerprint == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
+    if row["worker_started_at"] is None and row["worker_pid"] and _kb._pid_alive(row["worker_pid"]):
+        return  # legacy row (no fingerprint): never signalled and its evidence stays (#99558)
+    targets = _run_worker_targets(conn, int(row["id"]), row["worker_pid"], row["worker_started_at"])
+    targets = [(pid, fp) for pid, fp in targets if pid != os.getpid()]
+    if any(fp == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid) for pid, fp in targets):
         return  # unproven identity: never signalled; its evidence is cleared once the pid is gone
-    alive = _worker_alive(pid, fingerprint)
-    termination = None
-    if alive:
-        termination = _terminate_reclaimed_worker(
-            pid, row["claim_lock"], signal_fn=signal_fn, started_at=fingerprint)
-        if not termination["terminated"]:
-            return  # still alive: try again next tick
+    alive = [(pid, fp) for pid, fp in targets if _worker_alive(pid, fp)]
+    if not alive:
+        # Nothing recorded for this attempt is live (or the row carried no evidence at all,
+        # or its pids were recycled onto other processes): nothing to signal — resolve the
+        # evidence (clearing a stale/recycled spawn pair, as the signal path does) so the
+        # sweep never rescans board history. No event — nothing was signalled.
+        with _kb.write_txn(conn):
+            conn.execute("UPDATE task_runs SET worker_pid = NULL, worker_started_at = NULL, "
+                         "worker_reaped = ? WHERE id = ? AND worker_reaped IS NULL",
+                         (int(time.time()), row["id"]))
+        return
+    termination = _terminate_reclaimed_worker(
+        alive[0][0], row["claim_lock"], signal_fn=signal_fn, started_at=alive[0][1],
+        extra_targets=alive[1:], kill_group=True,
+    )
+    if not termination["terminated"]:
+        return  # still alive: try again next tick
     with _kb.write_txn(conn):
         conn.execute(
-            "UPDATE task_runs SET worker_pid = NULL, worker_started_at = NULL "
-            "WHERE id = ? AND worker_pid = ? AND worker_started_at = ?",
-            (row["id"], pid, fingerprint),
+            "UPDATE task_runs SET worker_pid = NULL, worker_started_at = NULL, worker_reaped = ? "
+            "WHERE id = ? AND worker_reaped IS NULL",
+            (int(time.time()), row["id"]),
         )
-        if alive:
-            _kb._append_event(
-                conn, row["task_id"], "terminal_worker_reaped",
-                {"pid": pid, "worker_started_at": fingerprint, **termination}, run_id=row["id"],
-            )
-    if alive:
-        reaped.append(row["task_id"])
+        _kb._append_event(
+            conn, row["task_id"], "terminal_worker_reaped",
+            {
+                "pid": termination["prev_pid"],
+                "worker_started_at": row["worker_started_at"],
+                "targets": [pid for pid, _fp in targets],
+                **termination,
+            },
+            run_id=row["id"],
+        )
+    reaped.append(row["task_id"])
+
+
+def kill_run_worker_now(conn: sqlite3.Connection, task_id: str, run_id: int) -> dict[str, Any]:
+    """Terminate one run's worker processes at the moment a terminal transition commits (D2).
+
+    The post-hoc reap (ended_at + grace + next tick) leaves a review worker fully armed — shell,
+    gh CLI, comment rights — for the whole window after its authority ends; the PR#51 survivor
+    used exactly that window to merge. This signals every identity recorded for the attempt
+    (spawn pair + ``worker_bound``, never our own pid, never an unproven identity), SIGKILL-
+    escalating, and reports honestly: ``terminated`` is true only when every target is verifiably
+    gone. Best-effort: a signal/probe failure degrades to the next reap tick, never an exception
+    into the transition."""
+    info: dict[str, Any] = {"terminated": False, "targets": []}
+    try:
+        row = conn.execute(
+            "SELECT id, claim_lock, worker_pid, worker_started_at FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return info
+        info["targets"] = [
+            (pid, fp) for pid, fp in _run_worker_targets(conn, int(run_id), row["worker_pid"], row["worker_started_at"])
+            if pid != os.getpid() and _worker_alive(pid, fp)
+        ]
+        if not info["targets"]:
+            info["terminated"] = True
+            return info
+        info.update(_terminate_reclaimed_worker(
+            info["targets"][0][0], row["claim_lock"],
+            started_at=info["targets"][0][1],
+            extra_targets=info["targets"][1:], kill_group=True,
+        ))
+    except Exception:
+        _kb._log.debug(
+            "kanban dispatch: transition-triggered kill failed for run %s (task %s)",
+            run_id, task_id, exc_info=True,
+        )
+    return info
 
 
 def _worker_survived_termination(termination: dict) -> bool:

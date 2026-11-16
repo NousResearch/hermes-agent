@@ -193,6 +193,8 @@ export interface NativeNotificationAction {
 export interface NativeNotificationInput {
   kind: NativeNotificationKind
   title: string
+  /** Named-title template (session name appended) overriding the kind's default. */
+  namedTitleKey?: string
   body?: string
   sessionId?: null | string
   /**
@@ -242,7 +244,7 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     return false
   }
 
-  const namedKey = input.sessionId ? NAMED_TITLE_KEYS[input.kind] : undefined
+  const namedKey = input.sessionId ? (input.namedTitleKey ?? NAMED_TITLE_KEYS[input.kind]) : undefined
   const title = namedKey && input.sessionId ? withSessionLabel(namedKey, input.sessionId) : input.title
 
   void window.hermesDesktop?.notify({

@@ -343,7 +343,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // for this session so an approval/sudo/secret overlay can't linger past
     // the failed turn (same intent as the message.complete clear).
     if (sessionId) {
-      clearAllPrompts(sessionId)
+      clearAllPrompts(sessionId, 'turn-end')
       clearSettledClarifyRequest(sessionId)
       clearActiveSessionTodos(sessionId)
       reconcileSessionCompacting(sessionId, 'terminal')

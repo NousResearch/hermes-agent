@@ -25,6 +25,11 @@ import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import type { PreviewOwner } from '@/store/preview-ownership'
 import {
+  accessTarget,
+  approvalKindFields,
+  type ApprovalRequest,
+  networkTarget,
+  networkTargetName,
   receiveApprovalRequest,
   setSecretRequest,
   setSudoRequest,
@@ -395,8 +400,7 @@ const approval: Handler = ctx => {
     return
   }
 
-  rememberServerRequest(request)
-  void receiveApprovalRequest(null, {
+  const parked: ApprovalRequest = {
     // false only when the backend forbids a permanent allow; it omits the field otherwise.
     allowPermanent: p.allow_permanent !== false,
     choices: Array.isArray(p.choices)
@@ -408,27 +412,61 @@ const approval: Handler = ctx => {
     requestId: str(p.request_id) || undefined,
     serverRequestId: request.id,
     sessionId: sessionId || null,
-    smartDenied: p.smart_denied === true
-  }).catch(() => undefined)
+    smartDenied: p.smart_denied === true,
+    ...approvalKindFields(p)
+  }
+
+  rememberServerRequest(request)
+  void receiveApprovalRequest(null, parked).catch(() => undefined)
   markNeedsInput(ctx)
 
   if (!request.replayed) {
+    const notice = approvalNotice(parked)
+
     dispatchNativeNotification({
       actions: [
         {
           id: str(p.request_id) ? `approve:${str(p.request_id)}` : 'approve',
-          text: translateNow('notifications.native.approveAction')
+          text: translateNow(notice.approveKey)
         },
         {
           id: str(p.request_id) ? `reject:${str(p.request_id)}` : 'reject',
-          text: translateNow('notifications.native.rejectAction')
+          text: translateNow(notice.rejectKey)
         }
       ],
-      body: command || description,
+      body: notice.body,
       kind: 'approval',
+      namedTitleKey: notice.namedTitleKey,
       sessionId: sessionId || null,
-      title: translateNow('notifications.native.approvalTitle')
+      title: translateNow(notice.titleKey)
     })
+  }
+}
+
+/** Native notification copy per approval kind: a folder or site card names
+ *  what it asks for, never "Approve" a command that does not exist. */
+function approvalNotice(request: ApprovalRequest) {
+  const access = accessTarget(request)
+  const network = networkTarget(request)
+
+  if (request.kind === 'access' || request.kind === 'network') {
+    const prefix = request.kind === 'access' ? 'accessTitle' : 'networkTitle'
+
+    return {
+      approveKey: 'notifications.native.allowAction',
+      body: access?.path ?? (network ? networkTargetName(network) : request.description),
+      namedTitleKey: `notifications.native.${prefix}Named`,
+      rejectKey: 'notifications.native.denyAction',
+      titleKey: `notifications.native.${prefix}`
+    }
+  }
+
+  return {
+    approveKey: 'notifications.native.approveAction',
+    body: request.command || request.description,
+    namedTitleKey: undefined,
+    rejectKey: 'notifications.native.rejectAction',
+    titleKey: 'notifications.native.approvalTitle'
   }
 }
 

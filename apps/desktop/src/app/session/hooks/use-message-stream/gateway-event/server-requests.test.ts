@@ -7,6 +7,7 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { runTour } from '@/lib/tour'
 import { $previewTabs, closeRightRail, openPreview, setPreviewTabPinned } from '@/store/preview'
+import { clearAllPrompts, sessionApprovalRequests } from '@/store/prompts'
 import { hasOpenServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { setActiveSessionId, setSelectedStoredSessionId, setSessions } from '@/store/session'
 import { $sessionStates, $sessionTiles, dropSessionState, publishSessionState } from '@/store/session-states'
@@ -94,6 +95,7 @@ describe('approval request routing', () => {
 
   afterEach(() => {
     delete desktopWindow.hermesDesktop
+    clearAllPrompts()
     setSessions([])
     setActiveSessionId(null)
   })
@@ -107,6 +109,79 @@ describe('approval request routing', () => {
 
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'approval', title: expect.stringContaining('Fix the flaky test') })
+    )
+  })
+
+  it('parks a folder card with its target and risk, and notifies with folder copy', () => {
+    deliver(
+      'approval',
+      {
+        access: 'read_write',
+        choices: ['once', 'always', 'deny'],
+        command: '',
+        description: 'Allow read and write access to C:\\docs',
+        kind: 'access',
+        path: 'C:\\docs',
+        request_id: 'sandbox-card-1',
+        risk: 'The agent can change and delete files in this folder.',
+        session_id: 'session-c'
+      },
+      'session-b'
+    )
+
+    expect(sessionApprovalRequests('session-c').get()).toEqual([
+      expect.objectContaining({
+        kind: 'access',
+        requestId: 'sandbox-card-1',
+        risk: 'The agent can change and delete files in this folder.',
+        serverRequestId: 'srq-1',
+        target: { access: 'read_write', path: 'C:\\docs' }
+      })
+    ])
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actions: [
+          { id: 'approve:sandbox-card-1', text: 'Allow' },
+          { id: 'reject:sandbox-card-1', text: 'Deny' }
+        ],
+        body: 'C:\\docs',
+        kind: 'approval',
+        title: expect.stringMatching(/^Folder access needed — /)
+      })
+    )
+  })
+
+  it('parks a site card with its label and names the site in the notification', () => {
+    deliver(
+      'approval',
+      {
+        choices: ['once', 'always', 'deny'],
+        command: '',
+        description: 'Allow the sandbox to reach Web search (api.keenable.ai)',
+        host: 'api.keenable.ai',
+        kind: 'network',
+        label: 'Web search (api.keenable.ai)',
+        request_id: 'sandbox-card-3',
+        risk: 'The web search tool uses this site.',
+        session_id: 'session-e'
+      },
+      'session-b'
+    )
+
+    expect(sessionApprovalRequests('session-e').get()[0]).toMatchObject({
+      choices: ['once', 'always', 'deny'],
+      kind: 'network',
+      target: { host: 'api.keenable.ai', label: 'Web search (api.keenable.ai)' }
+    })
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actions: [
+          { id: 'approve:sandbox-card-3', text: 'Allow' },
+          { id: 'reject:sandbox-card-3', text: 'Deny' }
+        ],
+        body: 'Web search (api.keenable.ai)',
+        title: expect.stringMatching(/^Website access needed — /)
+      })
     )
   })
 })

@@ -45,4 +45,6 @@ def test_satellite_interpolation_never_reads_launch_credential(local_homes):
     home = local_homes["satellite"]
     (home / ".env").write_text("COPY=${OPENAI_API_KEY}\n", encoding="utf-8")
     with set_secret_scope(build_profile_secret_scope(home), profile_home=home):
-        assert get_secret("COPY") == "${OPENAI_API_KEY}"
+        # A satellite's references resolve against process-global vars only (recorded from the base).
+        assert get_secret("COPY") == ""
+        assert "launch-private-marker" not in (get_secret("COPY") or "")

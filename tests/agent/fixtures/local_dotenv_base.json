@@ -1,5 +1,5 @@
 {
-  "source": "8c06a808e3e57",
+  "source": "2a436d8f287e2",
   "rows": [
     {
       "home": "process",
@@ -24,27 +24,27 @@
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${OPENAI_API_KEY}\n",
-      "base": "${OPENAI_API_KEY}"
+      "base": "launch-private-marker"
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_OUTSIDE}\n",
-      "base": "${RV10_OUTSIDE}"
+      "base": "launch-outside"
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_MISSING:-fallback}\n",
-      "base": "${RV10_MISSING:-fallback}"
+      "base": "fallback"
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_MISSING}\n",
-      "base": "${RV10_MISSING}"
+      "base": ""
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_INNER}\n",
-      "base": "${RV10_INNER}"
+      "base": "earlier"
     },
     {
       "home": "process",
@@ -94,12 +94,12 @@
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${:-$}\n",
-      "base": "${:-$}"
+      "base": "$"
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${MISSING:-${NEST}}\n",
-      "base": "${MISSING:-${NEST}}"
+      "base": "${NEST}"
     },
     {
       "home": "process",
@@ -124,27 +124,27 @@
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${OPENAI_API_KEY}'\n",
-      "base": "${OPENAI_API_KEY}"
+      "base": "launch-private-marker"
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_OUTSIDE}'\n",
-      "base": "${RV10_OUTSIDE}"
+      "base": "launch-outside"
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_MISSING:-fallback}'\n",
-      "base": "${RV10_MISSING:-fallback}"
+      "base": "fallback"
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_MISSING}'\n",
-      "base": "${RV10_MISSING}"
+      "base": ""
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_INNER}'\n",
-      "base": "${RV10_INNER}"
+      "base": "earlier"
     },
     {
       "home": "process",
@@ -189,12 +189,12 @@
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${:-$}'\n",
-      "base": "${:-$}"
+      "base": "$"
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${MISSING:-${NEST}}'\n",
-      "base": "${MISSING:-${NEST}}"
+      "base": "${NEST}"
     },
     {
       "home": "process",
@@ -219,27 +219,27 @@
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${OPENAI_API_KEY}\"\n",
-      "base": "${OPENAI_API_KEY}"
+      "base": "launch-private-marker"
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_OUTSIDE}\"\n",
-      "base": "${RV10_OUTSIDE}"
+      "base": "launch-outside"
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_MISSING:-fallback}\"\n",
-      "base": "${RV10_MISSING:-fallback}"
+      "base": "fallback"
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_MISSING}\"\n",
-      "base": "${RV10_MISSING}"
+      "base": ""
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_INNER}\"\n",
-      "base": "${RV10_INNER}"
+      "base": "earlier"
     },
     {
       "home": "process",
@@ -284,12 +284,12 @@
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${:-$}\"\n",
-      "base": "${:-$}"
+      "base": "$"
     },
     {
       "home": "process",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${MISSING:-${NEST}}\"\n",
-      "base": "${MISSING:-${NEST}}"
+      "base": "${NEST}"
     },
     {
       "home": "satellite",
@@ -314,27 +314,27 @@
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${OPENAI_API_KEY}\n",
-      "base": "${OPENAI_API_KEY}"
+      "base": ""
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_OUTSIDE}\n",
-      "base": "${RV10_OUTSIDE}"
+      "base": ""
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_MISSING:-fallback}\n",
-      "base": "${RV10_MISSING:-fallback}"
+      "base": "fallback"
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_MISSING}\n",
-      "base": "${RV10_MISSING}"
+      "base": ""
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_INNER}\n",
-      "base": "${RV10_INNER}"
+      "base": "earlier"
     },
     {
       "home": "satellite",
@@ -384,12 +384,12 @@
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${:-$}\n",
-      "base": "${:-$}"
+      "base": "$"
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=${MISSING:-${NEST}}\n",
-      "base": "${MISSING:-${NEST}}"
+      "base": "${NEST}"
     },
     {
       "home": "satellite",
@@ -414,27 +414,27 @@
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${OPENAI_API_KEY}'\n",
-      "base": "${OPENAI_API_KEY}"
+      "base": ""
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_OUTSIDE}'\n",
-      "base": "${RV10_OUTSIDE}"
+      "base": ""
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_MISSING:-fallback}'\n",
-      "base": "${RV10_MISSING:-fallback}"
+      "base": "fallback"
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_MISSING}'\n",
-      "base": "${RV10_MISSING}"
+      "base": ""
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_INNER}'\n",
-      "base": "${RV10_INNER}"
+      "base": "earlier"
     },
     {
       "home": "satellite",
@@ -479,12 +479,12 @@
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${:-$}'\n",
-      "base": "${:-$}"
+      "base": "$"
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE='${MISSING:-${NEST}}'\n",
-      "base": "${MISSING:-${NEST}}"
+      "base": "${NEST}"
     },
     {
       "home": "satellite",
@@ -509,27 +509,27 @@
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${OPENAI_API_KEY}\"\n",
-      "base": "${OPENAI_API_KEY}"
+      "base": ""
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_OUTSIDE}\"\n",
-      "base": "${RV10_OUTSIDE}"
+      "base": ""
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_MISSING:-fallback}\"\n",
-      "base": "${RV10_MISSING:-fallback}"
+      "base": "fallback"
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_MISSING}\"\n",
-      "base": "${RV10_MISSING}"
+      "base": ""
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_INNER}\"\n",
-      "base": "${RV10_INNER}"
+      "base": "earlier"
     },
     {
       "home": "satellite",
@@ -574,12 +574,12 @@
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${:-$}\"\n",
-      "base": "${:-$}"
+      "base": "$"
     },
     {
       "home": "satellite",
       "text": "RV10_INNER=earlier\nRV10_VALUE=\"${MISSING:-${NEST}}\"\n",
-      "base": "${MISSING:-${NEST}}"
+      "base": "${NEST}"
     }
   ]
 }

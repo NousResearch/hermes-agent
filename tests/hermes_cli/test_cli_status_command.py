@@ -95,7 +95,7 @@ def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path, caps
     monkeypatch.setenv("HERMES_HOME", str(profile_home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "unrelated-home")
 
-    cli_obj._handle_profile_command()
+    cli_obj._handle_profile_command("/profile")
 
     out = capsys.readouterr().out
     assert "Profile: coder" in out

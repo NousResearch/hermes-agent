@@ -168,11 +168,53 @@ def _handoff_completions(sub_text: str, sub_lower: str):
             name, partial, name, f"→ {home_name}" if home_name else "send this session here")
 
 
+# /profile completion: list_profiles() parses one config.yaml per profile (seconds on a box
+# with dozens), and the completer runs on every keystroke, so reuse the last listing until the
+# profiles ROOT changes. Create/delete/rename touches its mtime; editing one profile's config
+# does not — that leaves the model column stale for a menu, and never hides a profile.
+_profiles_memo: Optional[tuple[tuple[str, int, int], list[tuple[str, str]]]] = None
+
+
+def _profiles_signature() -> tuple[str, int, int]:
+    """``(root, mtime_ns, size)`` of the named-profiles dir — the cache key for profile rows."""
+    from hermes_constants import get_default_hermes_root
+    root = get_default_hermes_root() / "profiles"
+    try:
+        st = root.stat()
+        return (str(root), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (str(root), 0, 0)
+
+
+@_quiet
+def _profile_completions(sub_text: str, sub_lower: str):
+    """/profile — profile names; meta is the profile's model, plus ``default`` for the host one.
+    Surfaces decide what picking a name does (desktop: next new chat; WebUI: switch), so the meta
+    stays factual rather than promising a hot swap the CLI cannot do."""
+    global _profiles_memo
+    from hermes_cli.profiles import list_profile_names, list_profiles
+    signature = _profiles_signature()
+    if _profiles_memo is None or _profiles_memo[0] != signature:
+        rows: list[tuple[str, str]] = []
+        try:
+            rows = [
+                (info.name, " · ".join(part for part in (
+                    info.model or "", "default" if info.is_default else "") if part) or "profile")
+                for info in list_profiles(lazy_skill_count=True)]
+        except Exception:
+            # A config that will not parse must not cost the whole menu: fall back to the
+            # name-only listing (dirs + identity markers, no per-profile reads).
+            rows = [(name, "profile") for name in list_profile_names()]
+        _profiles_memo = (signature, rows)
+    yield from _prefix_completions(_profiles_memo[1], sub_text)
+
+
 # base command -> (handler(sub_text, sub_lower), single_word_only). Single-word handlers only
 # run while the first argument is typed; /tools and /handoff parse multi-word input themselves.
 _DYNAMIC_COMPLETIONS: dict[str, tuple[Callable[..., Any], bool]] = {
     "/skin": (_skin_completions, True),
     "/personality": (_personality_completions, True),
+    "/profile": (_profile_completions, True),
     "/tools": (_tools_completions, False),
     "/handoff": (_handoff_completions, False)}
 
@@ -266,6 +308,7 @@ class SlashCommandCompleter(Completer):
     _extract_path_word = staticmethod(_extract_path_word)
     _path_completions = staticmethod(_path_completions)
     _personality_completions = staticmethod(_personality_completions)
+    _profile_completions = staticmethod(_profile_completions)
     _tools_completions = staticmethod(_tools_completions)
 
     def __init__(

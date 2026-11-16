@@ -5,6 +5,7 @@ Secret/sudo prompts remain native; no response is published or journaled here.
 """
 from copy import deepcopy
 
+from gateway.session_prompt_hooks import PromptTable
 from hermes_state_runtime import RuntimeStoreError
 from tools.approval import list_gateway_approvals, resolve_gateway_approval
 
@@ -12,7 +13,7 @@ from tools.approval import list_gateway_approvals, resolve_gateway_approval
 class PendingControls:
     def __init__(self, events):
         self.events = events
-        self.pending = {}
+        self.pending = PromptTable()  # a prompt leaving it is settled for observers
         self.remote_responders = {}
 
     def register(self, session_id, route, generation, data, *, timeout_s=None):

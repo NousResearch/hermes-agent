@@ -9,10 +9,12 @@ fails like it always did, on the local backend and through the shared sandbox wr
 import json
 import shutil
 import subprocess
+import time
 
 import pytest
 
 from tools.environments.base import BaseEnvironment
+from tools.environments.base_output import _pipe_stdin
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
 from tests.waiting import wait_until
@@ -24,8 +26,11 @@ class _BashSandbox(BaseEnvironment):
     """A sandbox backend reduced to a real bash: no host-side ``_usable_cwd``, the wrapper decides."""
 
     def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
-        return subprocess.Popen(["bash", "-c", cmd_string], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, text=True, cwd="/")
+        proc = subprocess.Popen(["bash", "-c", cmd_string], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL if stdin_data is None else subprocess.PIPE, text=True, cwd="/")
+        if stdin_data is not None:
+            _pipe_stdin(proc, stdin_data)
+        return proc
 
     def cleanup(self):
         pass
@@ -113,3 +118,24 @@ def test_sandbox_job_that_deletes_its_cwd_is_still_tracked_and_session_cwd_is_un
         assert env.cwd == str(doomed)
     finally:
         process_registry.kill_all()
+
+
+@pytest.mark.parametrize("at_root", [False, True], ids=["project-cwd", "root-cwd"])
+def test_sandbox_execute_code_per_call_leaves_the_session_cwd_alive(tmp_path, at_root):
+    """The per-call ``execute_code`` launch enters a scratch dir and deletes it when done. If that dir
+    became ``env.cwd``, the "/" cleanup's restore kept it, so every later file op, an absolute read
+    included, failed at ``cd`` with "working directory ... does not exist"."""
+    from tools.code_execution_tool import _run_remote_per_call
+
+    project = tmp_path.resolve() / "proj"
+    project.mkdir()
+    (project / "notes.txt").write_text("NOTES\n")
+    session_cwd = "/" if at_root else str(project)
+    env = _BashSandbox(cwd=session_cwd, timeout=30)
+    ran = json.loads(_run_remote_per_call(env, "ssh", "print('ran')", "per-call-cwd", frozenset(),
+                                          timeout=30, max_tool_calls=1, exec_start=time.monotonic()))
+    assert ran["status"] == "success" and ran["output"].strip() == "ran", ran
+
+    read = ShellFileOperations(env).read_file(str(project / "notes.txt"))
+    assert "NOTES" in (read.content or ""), read
+    assert env.cwd == session_cwd

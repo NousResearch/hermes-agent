@@ -6,6 +6,21 @@ import { svUpdateChannel } from './sv_update_channel'
 // Swedish desktop translation. Keep the English fallback for keys introduced
 // between translation updates.
 export const svOverrides: TranslationOverrides = {
+  connectorsPage: {
+    segment: {
+      all: 'Alla',
+      available: 'Tillgängliga',
+      connected: 'Anslutna',
+      off: 'Avstängda'
+    },
+    group: {
+      connected: 'Anslutna',
+      connectedNote: 'Trasiga anslutningar visas först.',
+      available: 'Tillgängliga',
+      off: 'Avstängda',
+      offNote: 'Inloggningarna behålls.'
+    }
+  },
   promptNotices: {
     desktopCommands: svDesktopCommands,
     sessionCommands: {

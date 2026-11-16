@@ -329,9 +329,9 @@ paths in contribution order. The first `true` result receives the path in
 `open(path)`, and the built-in preview does not open. If nobody claims it, or
 `open` fails, Hermes uses the built-in preview. Remote gateway files and URLs
 are not offered to this area. Inline image, audio, and video rendering does not
-change. A plugin can navigate to its own route with `host.navigate`; users can
-still choose the built-in preview's system-app action when they want another
-reader.
+change. A plugin can navigate to its own route with `host.navigate`. When a
+plugin claims a path, its page owns any additional actions it wants to provide,
+such as opening the file in another application.
 
 ```javascript
 import { FILE_OPENER_AREA, host } from '@hermes/plugin-sdk'

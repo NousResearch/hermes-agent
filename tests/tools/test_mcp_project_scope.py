@@ -841,6 +841,26 @@ def test_a_refusal_scope_session_serves_off_the_baseline(root):
         shutdown_mcp_servers(scope=None, names={name})
 
 
+def test_an_in_process_gateway_with_a_remote_config_backend_never_clones(root, monkeypatch):
+    """``terminal.backend: ssh`` in the config bridges no TERMINAL_ENV inside the gateway process
+    (the launcher bridge exists only for spawned children), so a gate reading only the env var
+    clones for a coincidental host path of the remote workspace. Chain the config key like the
+    worker side's _effective_terminal_backend (T00018 residual 2)."""
+    from hermes_constants import get_hermes_home
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+
+    name = "cwdprobe_cfgbackend"
+    _register(root, name)
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    (get_hermes_home() / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
+    try:
+        _call(name, cwd=str(root / "a"))  # a host dir the remote workspace coincidentally names
+        assert not _clones(name), "a remote config backend spawned a host clone for a remote path"
+        assert _call(name)[0] != str(root / "a")  # the launch-dir baseline still serves it
+    finally:
+        shutdown_mcp_servers(scope=None, names={name})
+
+
 def _reap_bare_keyed_clones() -> None:
     """Reap clones stranded under a bare baseline key (the rekey bug's signature), so a run of
     these tests never leaks its children into the next one."""

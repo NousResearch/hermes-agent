@@ -87,12 +87,23 @@ def _caller_cwd() -> str:
     way: no clone, the baseline child serves the call — raising out of here would break every
     scoped stdio call from that session (review finding 8c residual).
     realpath: ``/p``, ``/p/`` and a symlink to it are one project."""
-    from tools.terminal_scope import TerminalPolicyUnavailable, terminal_env
+    from tools.terminal_scope import TerminalPolicyUnavailable, get_terminal_scope, terminal_env
     try:
         backend = terminal_env("TERMINAL_ENV", "local")
     except TerminalPolicyUnavailable:  # refusal scope: no-clone, never a mid-call raise
         return ""
-    if (backend or "local").strip().lower() != "local":
+    if (backend or "local").strip().lower() == "local" and get_terminal_scope() is None:
+        # An in-process gateway bridges no TERMINAL_ENV for ``terminal.backend: docker/ssh`` (the
+        # launcher bridge exists only for spawned children) — chain the config key like the worker
+        # side's _effective_terminal_backend, or the gate clones for a coincidental host path of a
+        # remote workspace (review finding 8c residual). A bound policy already merged its own
+        # profile's terminal config, so the launch config is consulted only when unbound.
+        from hermes_cli.config import load_config_readonly
+        terminal_cfg = (load_config_readonly() or {}).get("terminal") or {}
+        backend = str(terminal_cfg.get("backend") or "").strip().lower()
+        if backend and backend != "local":
+            return ""
+    if backend != "local":
         return ""
     from agent.runtime_cwd import resolve_agent_cwd
     try:

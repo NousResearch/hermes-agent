@@ -197,6 +197,11 @@ function isMachineNotice(displayKind: SessionMessage['display_kind']): boolean {
   return displayKind !== undefined && (NOTICE_DISPLAY_KINDS as readonly string[]).includes(displayKind)
 }
 
+/** A user row keeps its kind so the timeline can tell injected prompts from typed ones. */
+function userDisplayKind(role: SessionMessage['role'], displayKind: SessionMessage['display_kind']) {
+  return role === 'user' && displayKind ? { displayKind } : {}
+}
+
 // A remote backend older than this app serves display_metadata as raw JSON text,
 // and `in` throws on a primitive — which used to fail the whole session resume.
 function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): null | Record<string, unknown> {
@@ -704,6 +709,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
+      ...userDisplayKind(displayRole, message.display_kind),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),

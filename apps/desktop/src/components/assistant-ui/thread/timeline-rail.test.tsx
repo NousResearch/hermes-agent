@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { TimelineRail } from './timeline-rail'
+import { TimelineRail, timelineTickLabel } from './timeline-rail'
 
 vi.mock('@/components/ui/tooltip', () => ({ Tip: ({ children }: { children: ReactNode }) => children }))
 
@@ -47,5 +47,28 @@ describe('TimelineRail', () => {
     expect(active.getAttribute('aria-current')).toBe('location')
     fireEvent.click(active)
     expect(onJump).toHaveBeenCalledWith('message-0')
+  })
+
+  it('labels and marks ticks by author so themes can style them', () => {
+    const mixed = [
+      { id: 'u1', preview: 'first', author: 'human' as const, number: 1 },
+      { id: 's1', preview: 'Board updated.', author: 'system' as const },
+      { id: 'u2', preview: 'second', author: 'human' as const, number: 2 }
+    ]
+
+    render(<TimelineRail activeIndex={2} entries={mixed} loadingId={null} onJump={vi.fn()} />)
+
+    const human = screen.getByRole('button', { name: '2 · second' })
+    const system = screen.getByRole('button', { name: '🤖 Board updated.' })
+
+    expect(human.dataset.author).toBe('human')
+    expect(human.dataset.promptNumber).toBe('2')
+    expect(system.dataset.author).toBe('system')
+    expect(system.dataset.promptNumber).toBeUndefined()
+  })
+
+  it('falls back to the bare preview when a human prompt has no known number', () => {
+    expect(timelineTickLabel({ id: 'u', preview: 'tail', author: 'human' })).toBe('tail')
+    expect(timelineTickLabel({ id: 'more', preview: 'Show earlier' })).toBe('Show earlier')
   })
 })

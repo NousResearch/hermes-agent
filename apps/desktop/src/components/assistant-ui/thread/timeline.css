@@ -41,6 +41,16 @@
   transition: width 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
+/* The user's own prompts carry the rail; prompts Hermes injected stay as faint hairlines. */
+.thread-timeline-tick[data-author='human'] [data-slot='timeline-bar'] {
+  height: 0.125rem;
+  opacity: 0.9;
+}
+
+.thread-timeline-tick[data-author='system'] [data-slot='timeline-bar'] {
+  opacity: 0.3;
+}
+
 .thread-timeline-tick[aria-current='location'] [data-slot='timeline-bar'] {
   background: var(--theme-primary);
   opacity: 1;

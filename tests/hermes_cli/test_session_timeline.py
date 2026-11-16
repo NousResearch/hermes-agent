@@ -42,7 +42,8 @@ def test_timeline_pages_project_human_prompts_without_tool_payloads(timeline_sto
     first = response.json()
     assert first["session_id"] == "timeline-root"
     assert first["profile"] == "default"
-    assert first["entries"] == [{"row_id": expected_ids[0], "preview": "First prompt", "timestamp": 200}]
+    assert first["entries"] == [{"row_id": expected_ids[0], "preview": "First prompt", "timestamp": 200,
+                                 "display_kind": None, "author": "human"}]
     assert first["pagination"]["total"] == 2
     assert first["pagination"]["returned"] == 1
     assert first["pagination"]["has_more"] is True
@@ -53,6 +54,30 @@ def test_timeline_pages_project_human_prompts_without_tool_payloads(timeline_sto
     assert second["pagination"]["has_more"] is False
     assert second["pagination"]["next_cursor"] is None
     assert b"secret tool payload" not in response.content
+
+
+def test_timeline_marks_injected_prompts_system_and_keeps_them(timeline_store):
+    db, client, _ = timeline_store
+    db.append_messages_batch("timeline-root", [
+        {"role": "user", "content": "typed prompt", "timestamp": 100},
+        {"role": "user", "content": "[kanban] Task t_1 completed.", "timestamp": 110},
+        {"role": "user", "content": '[Cronjob "nightly" output — done]', "timestamp": 120},
+        {"role": "user", "content": "[IMPORTANT: You are running as a scheduled cron job. Run it.]",
+         "timestamp": 130},
+        {"role": "user", "content": "go left instead", "display_kind": "steer", "timestamp": 140},
+    ])
+    entries = client.get("/api/sessions/timeline-root/timeline").json()["entries"]
+    assert [(entry["author"], entry["display_kind"]) for entry in entries] == [
+        ("human", None), ("system", None), ("system", None), ("system", None), ("human", "steer")]
+
+
+def test_prompt_author_prefers_display_kind():
+    from hermes_state_timeline import _prompt_author
+
+    assert _prompt_author(None, "hello") == "human"
+    assert _prompt_author("", "[kanban] board updated") == "system"
+    assert _prompt_author("internal_notification", "looks typed") == "system"
+    assert _prompt_author("skill_invocation", "/review") == "human"
 
 
 @pytest.mark.parametrize("legacy", [False, True])

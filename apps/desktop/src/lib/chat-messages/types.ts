@@ -54,6 +54,10 @@ export type ChatMessage = {
   errorSurface?: ErrorSurface
   branchGroupId?: string
   hidden?: boolean
+  /** A persisted user row's `display_kind` (`internal_notification`, `steer`, …);
+   *  absent on the words a user typed. The timeline reads it to tell prompts
+   *  Hermes injected from the user's own. */
+  displayKind?: string
   /** Sealed mid-turn commentary (`message.interim`) — rendered without the
    *  action footer so only the turn's final reply carries copy/refresh, and
    *  the live view matches rehydration (which merges the turn into one bubble). */

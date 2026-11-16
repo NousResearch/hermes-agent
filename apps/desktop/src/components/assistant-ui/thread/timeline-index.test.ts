@@ -26,7 +26,7 @@ describe('timeline metadata index', () => {
     const a = fetchTimelineIndex('session', scope)
     const b = fetchTimelineIndex('session', scope)
     expect(a).toBe(b)
-    expect((await a).entries).toEqual([{ id: 'history:1', rowId: 1, preview: 'Prompt 1' }])
+    expect((await a).entries).toEqual([{ id: 'history:1', rowId: 1, preview: 'Prompt 1', author: 'human' }])
     expect(api).toHaveBeenCalledTimes(1)
     expect(api.mock.calls[0][0]).toMatchObject({ connectionId: 'local', profile: 'default', passive: true })
     expect(api.mock.calls[0][0].path).toContain('/timeline?limit=500')
@@ -50,6 +50,21 @@ describe('timeline metadata index', () => {
     expect(api.mock.calls[1][0].path).toContain('after_row_id=1')
     await fetchTimelineIndex('session', 'default')
     expect(api).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the server author, and classifies previews from backends that send none', async () => {
+    api.mockResolvedValueOnce({
+      entries: [
+        { row_id: 1, preview: 'typed', author: 'human', display_kind: null },
+        { row_id: 2, preview: 'looks typed', author: 'system', display_kind: null },
+        { row_id: 3, preview: '[kanban] Task t_1 completed.' },
+        { row_id: 4, preview: 'go left', display_kind: 'steer' }
+      ],
+      pagination: { next_cursor: null, has_more: false }
+    })
+    const { fetchTimelineIndex } = await import('./timeline-index')
+    const { entries } = await fetchTimelineIndex('session', 'default')
+    expect(entries.map(e => e.author)).toEqual(['human', 'system', 'system', 'human'])
   })
 
   it('isolates identical session IDs by owning connection and profile', async () => {

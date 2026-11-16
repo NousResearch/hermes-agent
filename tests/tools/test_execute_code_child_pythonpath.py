@@ -99,3 +99,27 @@ print(json.dumps({
     assert str(site) not in result["child_pythonpath"].split(os.pathsep)
     # The marker is consumed by the kernel and never handed onward.
     assert result["strip_marker"] is None
+
+
+@pytest.mark.platforms("linux", "macos", "windows")
+def test_blank_pythonpath_components_survive_the_scrub(child_env, tmp_path, monkeypatch):  # noqa: F811
+    """A blank component means "the current directory" to CPython — the scrub must not eat it."""
+    site = _fake_runtime_site(tmp_path)
+    venv = site.parents[2]
+    user_lib = tmp_path / "user-lib"
+    user_lib.mkdir()
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(site), "", str(user_lib)]))
+    validated, resolver = _with_runtime_site(site, venv)
+    with validated, resolver:
+        result = run_code(
+            """
+import json, os, sys
+print(json.dumps({"cell_pythonpath": os.environ.get("PYTHONPATH", "")}))
+""",
+            mode="strict",
+        )
+    entries = result["cell_pythonpath"].split(os.pathsep)
+    assert str(site) not in entries, "the runtime tree is still the thing being removed"
+    assert "" in entries, "a blank entry is cwd for a child import; dropping it changes behaviour"
+    assert str(user_lib) in entries, "an operator-supplied entry is left alone"
+

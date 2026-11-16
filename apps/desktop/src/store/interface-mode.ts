@@ -103,6 +103,7 @@ export interface ModePolicy {
   chatItemsOpen: boolean
   fileBrowserOpen: boolean
   hideCodeDiffs: boolean
+  portalStatusBarOpen: boolean
   profileRailVisible: boolean
   reasoningCollapsedByDefault: boolean
   reviewOpen: boolean
@@ -125,6 +126,8 @@ const SIMPLE_POLICY: PolicyTable = {
   fileBrowserOpen: false,
   // Inline diffs are the review pane's job; the changed-files summary stays.
   hideCodeDiffs: true,
+  // The redesign's status bar rests collapsed; its toggle stays in the corner.
+  portalStatusBarOpen: false,
   // Without the statusbar, multi-gateway installs still need the rail even
   // when the active gateway has only one profile.
   profileRailVisible: context => context.profileCount > 1 || context.connectionCount > 1,

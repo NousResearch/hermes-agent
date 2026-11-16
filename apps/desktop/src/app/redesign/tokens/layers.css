@@ -11,4 +11,7 @@
   --portal-layer-sheet-scrim: 44;
   --portal-layer-sheet: 45;
   --portal-layer-sheet-rail: 51;
+  /* The status bar stands in the canvas on route pages too (z-50, mounted before it), and under the
+     menus and popovers opened after it. */
+  --portal-layer-status-bar: 50;
 }

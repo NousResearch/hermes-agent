@@ -487,13 +487,15 @@ Review, Browser) has one user-resizable width shared by every tool, never under 
 The rail's Settings menu lists the Settings page's destinations, in its order and under its names
 (`settings/redesign-navigation.ts`), with Interface mode and Documentation below a separator.
 
-The redesign has no statusbar strip. With developer chrome, the readouts that describe the chat being
-worked in (workspace, turn timer, context, cache hit rate, tokens per second, focus timer, approvals)
-sit on one mono caption line in the 30px floor under that chat's composer, the workspace at its start;
-a readout with nothing to report stays off it. The rest of the bar's items are rows in the rail's
-System popover, whose switch hides the line (the chat's readouts then join those rows). No Figma frame
-covers this yet: it is inferred from the sidebar's captions and lives in
-`app/redesign/portal-chat-status.*` and `store/portal-chat-status.ts`.
+The redesign's status bar (Figma "status bar", rev 11/16) stands in the canvas under the workspace
+frame, ending at the frame's end: the readouts that describe the chat being worked in (workspace, turn
+timer, context, cache hit rate, tokens per second, focus timer, approvals) and what plugins add, as
+20px mono chips, then a toggle. A readout with nothing to report stays off it. Open, the frame's floor
+gap grows from 15px to 40px; collapsed, the toggle floats in the frame's end corner and the bar's
+items join the rest of the classic bar's as rows in the rail's System popover. It is open by default
+with developer chrome only: Simple rests it collapsed, and its toggle there opens it for the session.
+A phone has neither bar nor toggle. It lives in `app/redesign/portal-status-bar.*` and
+`store/portal-status-bar.ts`.
 
 ## Portal design language (the redesign)
 
@@ -697,6 +699,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-surface-chrome-hover` | `color-mix( in srgb, var(--portal-raw-pure-white) 8%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 30%, transparent)) )` | `var(--portal-raw-ink-5)` |  |
 | `--portal-surface-chrome-pressed` | `color-mix( in srgb, var(--portal-raw-pure-white) 10%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 40%, transparent)) )` | `var(--portal-raw-ink-10)` |  |
 | `--portal-text-chrome` | `var(--portal-raw-ink-40)` | `color-mix(in srgb, var(--ui-base) 48%, transparent)` |  |
+| `--portal-status-chip-fill` | `var(--portal-surface-chrome)` | `color-mix(in srgb, var(--portal-raw-pure-white) 60%, transparent)` | The status bar's chips (tab 1262:39845): the band's chrome tile in dark, white .6 in light. |
 | `--portal-rail-fill` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 20%, transparent)) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 20%, transparent)` | The global rail's buttons (ico 16292:15253): a navy tile, white .05 / black .60 / blue .20, the glyph at .4; the open destination white .10 / black .60 / blue .40 (16292:15245) with its glyph in full ink. Hover takes the step between them. |
 | `--portal-rail-fill-hover` | `color-mix( in srgb, var(--portal-raw-pure-white) 8%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 30%, transparent)) )` | `var(--portal-raw-ink-5)` |  |
 | `--portal-rail-fill-selected` | `color-mix( in srgb, var(--portal-raw-pure-white) 10%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 40%, transparent)) )` | `var(--portal-raw-ink-10)` |  |
@@ -787,10 +790,9 @@ The tables below are generated from the CSS; do not edit them by hand.
 |---|---|---|---|
 | `--portal-rail-width` | `3.75rem` | ″ | The global rail and the developer rail (1036:7202). |
 | `--portal-rail-reserve` | `0px` | ″ | What the rail takes from the layout: its width, none on compact, where it rides the sheet. |
-| `--portal-rail-top` | `5.625rem` | ″ | The global rail ("Prod - Desktop" rail 16292:15233): no brand badge (its layer is hidden in every row), the destinations from 90px down on every host, clear of macOS traffic lights in the column; 30px buttons (the chrome row, the touch target on a coarse pointer) with 16px glyphs, 20px apart; the foot's buttons carry 20px glyphs, 40px off the window floor. |
+| `--portal-rail-top` | `5.625rem` | ″ | The global rail ("Prod - Desktop" rail 16292:15233): no brand badge (its layer is hidden in every row), the destinations from 90px down on every host, clear of macOS traffic lights in the column; 30px buttons (the chrome row, the touch target on a coarse pointer), 20px apart, the foot's 40px off the window floor. Every glyph is 20px: Figma draws the destinations at 16 and the foot at 20, and the designer's review of the build (rev 11/16, 1260:39312) asks for 20 throughout. |
 | `--portal-rail-button` | `var(--portal-row-chrome)` | ″ |  |
-| `--portal-rail-glyph` | `1rem` | ″ |  |
-| `--portal-rail-glyph-foot` | `1.25rem` | ″ |  |
+| `--portal-rail-glyph` | `1.25rem` | ″ |  |
 | `--portal-rail-gap` | `1.25rem` | ″ |  |
 | `--portal-rail-bottom` | `2.5rem` | ″ |  |
 | `--portal-rail-popover-offset` | `calc( (var(--portal-rail-width) - var(--portal-rail-button)) / 2 + var(--portal-space-tight) )` | ″ | A rail menu or popover opens one tight gap past the rail's edge, whatever the rail button's size (30px, 44px on touch): the distance from the button's end to the rail's, plus that gap. |
@@ -816,6 +818,12 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-workspace-inset-start` | `0.3125rem` | ″ | The workspace frame's gaps, where the artwork shows, measured in Figma's 1280×880 window (Content 16292:14463 at x 65–1265, y 60–865): 5px past a 60px rail (and before the developer rail), 15px to the window's end (the "inset" column 18521:22266 and the frame's 5px edge) and to its floor (the "Spacer" 18521:17513). 0 for all three puts the panels back on the edges. |
 | `--portal-workspace-inset-end` | `0.9375rem` | ″ |  |
 | `--portal-workspace-inset-bottom` | `0.9375rem` | ″ |  |
+| `--portal-status-bar-height` | `1.25rem` | ″ | The status bar ("status bar", rev 11/16: Frame 403 1262:39850) stands in the floor under the frame: 20px chips 9px apart, 12px off the window's floor and 8px under the frame, whose floor gap grows to 40px while the bar is open. Collapsed (1264:40699), its toggle floats 7px inside the frame's end corner. |
+| `--portal-status-bar-gap` | `0.5625rem` | ″ |  |
+| `--portal-status-bar-floor` | `0.75rem` | ″ |  |
+| `--portal-status-bar-open-inset` | `2.5rem` | ″ |  |
+| `--portal-status-bar-corner` | `0.4375rem` | ″ |  |
+| `--portal-status-bar-glyph` | `0.8125rem` | ″ |  |
 | `--portal-column-form` | `52.5rem` | ″ | The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and tables (919:9281: 980), and the conversation shared by the transcript and the docked composer: both 640 wide, the transcript flush with the composer's edges. Figma draws 440 (chat 16292:16175); the owner keeps the wider column. |
 | `--portal-column-catalog` | `61.25rem` | ″ |  |
 | `--portal-column-conversation` | `40rem` | ″ |  |
@@ -905,6 +913,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-layer-sheet-scrim` | `44` | ″ | Sheets below wide (the chat sidebar, a page panel) and their scrim: over the stage and the band, under menus and popovers (z-50), so a row's menu opens over its sheet. The rail joins a compact sheet from outside the page layer (route pages are z-50), so it alone sits just over it. |
 | `--portal-layer-sheet` | `45` | ″ |  |
 | `--portal-layer-sheet-rail` | `51` | ″ |  |
+| `--portal-layer-status-bar` | `50` | ″ | The status bar stands in the canvas on route pages too (z-50, mounted before it), and under the menus and popovers opened after it. |
 
 #### Bridge (`bridge.css`): portal roles under the names shared components read
 

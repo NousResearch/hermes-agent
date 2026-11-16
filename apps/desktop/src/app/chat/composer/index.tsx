@@ -6,7 +6,6 @@ import { useTourMarker } from '@/app/chat/tour-marker'
 import type { GatewayRequester } from '@/app/contrib/types'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { ComposerSurfaceBacking } from '@/app/redesign/composer-surface-backing'
-import { PortalChatStatusSlot } from '@/app/redesign/portal-chat-status'
 import { useBusyInputMode } from '@/app/session/hooks/use-busy-input-mode'
 import { composerFloatingStrip, composerInputBacking, composerSurfaceRing } from '@/components/chat/composer-dock'
 import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
@@ -1508,7 +1507,6 @@ export function ChatBar({
           <div className={cn(composerFloatingStrip, 'px-[5px] pt-1.5 empty:hidden')}>
             <ContribSlot area={COMPOSER_AREAS.underside} />
           </div>
-          {redesigned && <PortalChatStatusSlot target={scope.target} />}
         </div>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>
 

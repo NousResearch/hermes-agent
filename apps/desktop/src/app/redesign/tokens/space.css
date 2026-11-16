@@ -8,12 +8,12 @@
   --portal-rail-reserve: var(--portal-rail-width);
   /* The global rail ("Prod - Desktop" rail 16292:15233): no brand badge (its layer is hidden in every
      row), the destinations from 90px down on every host, clear of macOS traffic lights in the column;
-     30px buttons (the chrome row, the touch target on a coarse pointer) with 16px glyphs, 20px apart;
-     the foot's buttons carry 20px glyphs, 40px off the window floor. */
+     30px buttons (the chrome row, the touch target on a coarse pointer), 20px apart, the foot's 40px
+     off the window floor. Every glyph is 20px: Figma draws the destinations at 16 and the foot at 20,
+     and the designer's review of the build (rev 11/16, 1260:39312) asks for 20 throughout. */
   --portal-rail-top: 5.625rem;
   --portal-rail-button: var(--portal-row-chrome);
-  --portal-rail-glyph: 1rem;
-  --portal-rail-glyph-foot: 1.25rem;
+  --portal-rail-glyph: 1.25rem;
   --portal-rail-gap: 1.25rem;
   --portal-rail-bottom: 2.5rem;
   /* A rail menu or popover opens one tight gap past the rail's edge, whatever the rail button's size
@@ -73,6 +73,16 @@
   --portal-workspace-inset-start: 0.3125rem;
   --portal-workspace-inset-end: 0.9375rem;
   --portal-workspace-inset-bottom: 0.9375rem;
+  /* The status bar ("status bar", rev 11/16: Frame 403 1262:39850) stands in the floor under the
+     frame: 20px chips 9px apart, 12px off the window's floor and 8px under the frame, whose floor
+     gap grows to 40px while the bar is open. Collapsed (1264:40699), its toggle floats 7px inside
+     the frame's end corner. */
+  --portal-status-bar-height: 1.25rem;
+  --portal-status-bar-gap: 0.5625rem;
+  --portal-status-bar-floor: 0.75rem;
+  --portal-status-bar-open-inset: 2.5rem;
+  --portal-status-bar-corner: 0.4375rem;
+  --portal-status-bar-glyph: 0.8125rem;
   /* The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and
      tables (919:9281: 980), and the conversation shared by the transcript and the docked composer:
      both 640 wide, the transcript flush with the composer's edges. Figma draws 440 (chat

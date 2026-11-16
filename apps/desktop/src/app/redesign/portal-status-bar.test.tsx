@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { STATUSBAR_WAITING, type StatusbarItem } from '@/app/shell/statusbar-controls'
 
-import { chatStatusItems, systemStatusItems } from './portal-chat-status'
+import { statusBarItems, systemStatusItems } from './portal-status-bar'
 
 const item = (id: string, extra: Partial<StatusbarItem> = {}): StatusbarItem => ({ id, label: id, ...extra })
 
@@ -20,19 +20,26 @@ const BAR = [
   item('some-plugin:item')
 ]
 
+const PLUGINS = new Set(['some-plugin:item'])
+
 const ids = (items: readonly StatusbarItem[]) => items.map(entry => entry.id)
 
 describe('the redesign’s split of the statusbar', () => {
-  it('puts the chat’s own readouts on its line, workspace first, without waiting or hidden ones', () => {
-    expect(ids(chatStatusItems(BAR))).toEqual(['workspace-cwd', 'cache-hit-rate', 'approval-mode'])
+  it('puts the chat’s readouts on the bar, workspace first, then plugins’, without waiting or hidden ones', () => {
+    expect(ids(statusBarItems(BAR, PLUGINS))).toEqual([
+      'workspace-cwd',
+      'cache-hit-rate',
+      'approval-mode',
+      'some-plugin:item'
+    ])
   })
 
   it('keeps everything else in the System popover, minus what the chrome already carries', () => {
-    expect(ids(systemStatusItems(BAR, true))).toEqual(['agents', 'version-client', 'some-plugin:item'])
+    expect(ids(systemStatusItems(BAR, PLUGINS, true))).toEqual(['agents', 'version-client'])
   })
 
-  it('returns the chat’s readouts to the popover while its line is off', () => {
-    expect(ids(systemStatusItems(BAR, false))).toEqual([
+  it('returns the bar’s items to the popover while it is collapsed', () => {
+    expect(ids(systemStatusItems(BAR, PLUGINS, false))).toEqual([
       'workspace-cwd',
       'agents',
       'context-usage',

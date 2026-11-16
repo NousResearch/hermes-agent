@@ -274,11 +274,6 @@
   font-size: var(--portal-rail-glyph);
 }
 
-/* The foot's destinations draw their glyphs a step larger (bell, user: 16292:15274). */
-:root[data-shell='portal'] [data-slot='global-nav'] .portal-rail-foot .portal-chrome-button .codicon[class*='codicon-'] {
-  font-size: var(--portal-rail-glyph-foot);
-}
-
 /* A destination that needs the user (Routines with a failed routine, Figma 1081:29422): the error
    ink's dot at the glyph's top end, ringed by the rail so it reads on the brand selection too. */
 :root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button:has(> [data-slot='rail-alert']) {
@@ -296,10 +291,10 @@
   box-shadow: 0 0 0 2px var(--portal-surface-canvas);
 }
 
-/* Figma's robot fills more of its box than the codicons do (906:19430). */
+/* The robot is an image, not a font glyph: it takes the rail's glyph box by hand. */
 :root[data-shell='portal'] .portal-rail-robot {
-  inline-size: calc(var(--portal-rail-glyph) * 1.125);
-  block-size: calc(var(--portal-rail-glyph) * 1.125);
+  inline-size: var(--portal-rail-glyph);
+  block-size: var(--portal-rail-glyph);
 }
 
 /* The developer rail's destinations rest at .8 ink. */

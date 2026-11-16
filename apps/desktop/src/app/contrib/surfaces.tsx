@@ -29,8 +29,8 @@ import { ChatSidebar } from '../chat/sidebar'
 import { PortalSidebar } from '../chat/sidebar/portal/portal-sidebar'
 import { type PageFrameKind, WorkspacePageFallback } from '../overlays/page-header-skeleton'
 import { ArtifactsView, CapabilitiesView, MessagingView } from '../page-views'
-import { PortalChatStatus, PortalSystemStatus } from '../redesign/portal-chat-status'
 import { PortalGatewayMenuPanel } from '../redesign/portal-gateway-menu-panel'
+import { PortalStatusBarItems, PortalSystemStatus } from '../redesign/portal-status-bar'
 import { TerminalPaneChrome } from '../right-sidebar/terminal/chrome'
 import { contributedRoutes, isOverlayView, NEW_CHAT_ROUTE, ROUTES_AREA, sessionRoute } from '../routes'
 import { useStatusSnapshot } from '../shell/hooks/use-status-snapshot'
@@ -97,7 +97,7 @@ export const StatusbarSurface = memo(function StatusbarSurface({
   actions: WiringActions
   agentsOpen: boolean
   chatOpen: boolean
-  /** The redesign's line under the focused composer, in place of a bar. */
+  /** The redesign's status bar chips, in place of the classic bar. */
   chatStatus?: boolean
   commandCenterOpen: boolean
   onClose?: () => void
@@ -148,8 +148,11 @@ export const StatusbarSurface = memo(function StatusbarSurface({
     return null
   }
 
+  const portalItems = [...leftStatusbarItems, ...statusbarItems]
+  const contributed = new Set([...extraLeftItems, ...extraRightItems].map(item => item.id))
+
   if (chatStatus) {
-    return <PortalChatStatus items={[...leftStatusbarItems, ...statusbarItems]} />
+    return <PortalStatusBarItems contributed={contributed} items={portalItems} />
   }
 
   if (onClose) {
@@ -164,7 +167,7 @@ export const StatusbarSurface = memo(function StatusbarSurface({
           statusSnapshot={statusSnapshot}
         />
         {(advanced || statusbarVisible) && (
-          <PortalSystemStatus advanced={advanced} items={[...leftStatusbarItems, ...statusbarItems]} />
+          <PortalSystemStatus contributed={contributed} items={portalItems} />
         )}
       </>
     )

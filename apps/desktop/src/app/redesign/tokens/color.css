@@ -164,6 +164,8 @@
     color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 40%, transparent))
   );
   --portal-text-chrome: var(--portal-raw-ink-40);
+  /* The status bar's chips (tab 1262:39845): the band's chrome tile in dark, white .6 in light. */
+  --portal-status-chip-fill: var(--portal-surface-chrome);
   /* The global rail's buttons (ico 16292:15253): a navy tile, white .05 / black .60 / blue .20, the
      glyph at .4; the open destination white .10 / black .60 / blue .40 (16292:15245) with its glyph in
      full ink. Hover takes the step between them. */
@@ -303,6 +305,7 @@
   --portal-surface-chrome-hover: var(--portal-raw-ink-5);
   --portal-surface-chrome-pressed: var(--portal-raw-ink-10);
   --portal-text-chrome: color-mix(in srgb, var(--ui-base) 48%, transparent);
+  --portal-status-chip-fill: color-mix(in srgb, var(--portal-raw-pure-white) 60%, transparent);
   /* Light's settings cards are near-white on the page (#F9F9FA, 16292:26032). */
   --portal-settings-card: color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent);
   --portal-composer-fill: color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--ui-chat-surface-background));

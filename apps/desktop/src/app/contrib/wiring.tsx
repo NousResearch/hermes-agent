@@ -51,7 +51,7 @@ import {
   type OnboardingRequest,
   type OnboardingResume
 } from '@/store/onboarding-run'
-import { $portalChatStatusShown } from '@/store/portal-chat-status'
+import { $portalStatusBarOpen } from '@/store/portal-status-bar'
 import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
@@ -127,6 +127,7 @@ import {
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
 import { $widthClass } from '../redesign/breakpoints'
 import { PortalFreeTierSignIn } from '../redesign/portal-free-tier-sign-in'
+import { PortalStatusBar } from '../redesign/portal-status-bar'
 import { PortalStatusMenu } from '../redesign/portal-status-menu'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
@@ -259,15 +260,17 @@ function useFirstRunOnboarding(request: OnboardingRequest, open: OnboardingResum
   }, [open])
 }
 
-/** The redesign's chat status line: the statusbar's data, mounted only while the line is shown (its
- *  status poll goes with it) and drawn under the focused composer. */
-function PortalChatStatusSource(props: {
+/** The redesign's status bar: its toggle always, and the statusbar's data only while it is open (the
+ *  status poll goes with it). */
+function PortalStatusBarSource(props: {
   actions: WiringActions
   agentsOpen: boolean
   chatOpen: boolean
   commandCenterOpen: boolean
 }) {
-  return useStore($portalChatStatusShown) ? <StatusbarSurface {...props} chatStatus /> : null
+  const open = useStore($portalStatusBarOpen)
+
+  return <PortalStatusBar>{open && <StatusbarSurface {...props} chatStatus />}</PortalStatusBar>
 }
 
 function useStatusbarSurfaces(
@@ -298,7 +301,7 @@ function useStatusbarSurfaces(
             <>
               <PortalFreeTierSignIn />
               <PortalStatusMenu>{renderStatusbar}</PortalStatusMenu>
-              <PortalChatStatusSource
+              <PortalStatusBarSource
                 actions={actions}
                 agentsOpen={agentsOpen}
                 chatOpen={chatOpen}

@@ -362,12 +362,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const shown = shownInMode(interfaceMode)
   const visibleTool = (tool: TitlebarTool) => !tool.hidden && shown(tool)
 
-  // `titleBar.*` slot content is mount-scoped — a page's <Contribute> registers
-  // only while that surface is up — so a non-empty area means a page is
-  // actively projecting chrome into the band right now.
-  const titleBarLeft = useContributions('titleBar.left')
-  const titleBarRight = useContributions('titleBar.right')
-  const pageOwnsTitlebar = titleBarLeft.length + titleBarRight.length > 0
+  const { pageOwnsTitlebar, posture } = useBandPosture(portal)
 
   // POSITIONAL toggles: each button shows/hides everything on its physical
   // side of the main zone (the layout tree collapses the whole side), so they
@@ -476,7 +471,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     }
   ]
 
-  const view = appViewForPath(location.pathname)
   const { clusterStyle, leftClusterStyle } = usePortalClusterStyles(portal)
 
   // Route changes can replace measured clusters without resizing the panels.
@@ -491,7 +485,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // Schedules and Settings are primary destinations, so the clusters are
   // parked instead (hidden, same tree): `titleBar.*` slots are permanent mount
   // points, and a plugin's setup/cleanup must not run on every visit.
-  const posture = bandPosture(view, portal, pageOwnsTitlebar)
   const parked = posture === 'parked'
   const parkedProps = parked ? PARKED_CLUSTER : {}
 
@@ -599,6 +592,41 @@ function bandPosture(view: AppView, portal: boolean, pageOwnsTitlebar: boolean):
   return hidesFixedTitlebarClusters(view) && pageOwnsTitlebar ? 'page' : 'full'
 }
 
+function useBandPosture(portal: boolean) {
+  const location = useLocation()
+  // `titleBar.*` slot content is mount-scoped — a page's <Contribute> registers
+  // only while that surface is up — so a non-empty area means a page is
+  // actively projecting chrome into the band right now.
+  const titleBarLeft = useContributions('titleBar.left')
+  const titleBarRight = useContributions('titleBar.right')
+  const pageOwnsTitlebar = titleBarLeft.length + titleBarRight.length > 0
+
+  return { pageOwnsTitlebar, posture: bandPosture(appViewForPath(location.pathname), portal, pageOwnsTitlebar) }
+}
+
+/** The redesign's session tab. It sits mid-band, over the chat pane's window-drag handle, and
+ *  Electron folds app-region rects in document order with no regard for stacking: a drag rect
+ *  that comes later re-covers an earlier no-drag one, and macOS then drags the window instead of
+ *  delivering the click. So this mounts AFTER the pane tree, where its "+" is carved out last. */
+export function TitlebarSessionTab() {
+  const portal = usePortalShell()
+  const { posture } = useBandPosture(portal)
+  const { clusterStyle } = usePortalClusterStyles(portal)
+
+  if (!portal || posture !== 'full') {
+    return null
+  }
+
+  return (
+    <div
+      className={cn(titlebarToolClusterClass, 'portal-session-tab-cluster top-(--titlebar-controls-top)')}
+      style={clusterStyle}
+    >
+      <PortalSessionTab />
+    </div>
+  )
+}
+
 /** A parked cluster: out of sight and out of the tab order, still mounted. */
 const PARKED_CLUSTER = { hidden: true, inert: true } as const
 
@@ -610,8 +638,8 @@ interface BandOverlaysProps {
   portal: boolean
 }
 
-/** The band's chrome besides its two clusters: the redesign's sheet scrim and session tab, the
- *  floating sidebar reveal, and the pane tools. None of it holds a plugin mount, so a parked band
+/** The band's chrome besides its two clusters: the redesign's sheet scrim, the floating sidebar
+ *  reveal, and the pane tools. None of it holds a plugin mount, so a parked band
  *  drops it outright. */
 function BandOverlays({ clusterStyle, leftSideOpen, navigate, paneTools, portal }: BandOverlaysProps) {
   const { t } = useI18n()
@@ -620,14 +648,6 @@ function BandOverlays({ clusterStyle, leftSideOpen, navigate, paneTools, portal 
     <>
       {portal && <ShellSheetScrim />}
       <FloatingSidebarReveal leftSideOpen={leftSideOpen} portal={portal} />
-      {portal && (
-        <div
-          className={cn(titlebarToolClusterClass, 'portal-session-tab-cluster top-(--titlebar-controls-top)')}
-          style={clusterStyle}
-        >
-          <PortalSessionTab />
-        </div>
-      )}
       {paneTools.length > 0 && (
         <div
           aria-label={t.shell.appControls}

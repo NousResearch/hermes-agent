@@ -170,7 +170,7 @@ import {
   titlebarToolsWidthCss,
   TOUCH_TITLEBAR_HEIGHT
 } from '../shell/titlebar'
-import { TitlebarControls } from '../shell/titlebar-controls'
+import { TitlebarControls, TitlebarSessionTab } from '../shell/titlebar-controls'
 import { useTouchTitlebar } from '../shell/use-touch-titlebar'
 import { WslgWindowControls } from '../shell/wslg-window-controls'
 import { StableNavigateContext, useStableNavigateSource } from '../stable-navigate'
@@ -1353,6 +1353,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             />
           )}
           {children}
+          {!isHudWindow() && !isBrowserWindow() && <TitlebarSessionTab />}
         </div>
 
         {/* The full real overlay set (mirrors DesktopController's `overlays`). */}

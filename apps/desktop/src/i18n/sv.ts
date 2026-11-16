@@ -696,6 +696,34 @@ export const svOverrides: TranslationOverrides = {
         cancel: 'Avbryt',
         approvedRetry: 'Remote Spending är godkänt, men ändringen sparades inte.',
         tryAgain: 'Försök igen'
+      },
+      state: {
+        notice: {
+          loggedOut: {
+            title: 'Anslut ditt Nous-konto',
+            message: 'Logga in med ditt Nous-konto för att se saldo, abonnemang och användning här.',
+            action: 'Logga in'
+          },
+          openPortal: 'Öppna portalen ↗',
+          noCard: {
+            title: 'Ingen betalningsmetod är registrerad',
+            message: 'Köp av påfyllningskrediter och automatisk påfyllning är avstängda tills ett kort har registrerats. Lägg till ett på portalen.',
+            action: 'Lägg till kort ↗'
+          }
+        },
+        paymentMethod: {
+          title: 'Betalningsmetod',
+          description: 'Hantera kortet som används för påfyllning och abonnemangsförnyelse.',
+          addAction: 'Lägg till betalningsmetod',
+          updateAction: 'Uppdatera',
+          provenance: {
+            autoRefill: 'kort för automatisk påfyllning',
+            customerDefault: 'kundens standardkort',
+            subPin: 'abonnemangskort',
+            suffix: label => ` – ${label}`
+          }
+        },
+        buyCredits: { description: 'En engångsdebitering på ditt kort som läggs till ditt saldo i dag.' }
       }
     },
     hudModifier: {

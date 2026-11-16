@@ -206,6 +206,20 @@ def _mirror_result_onto_live_lists(agent, result, messages, *, direct_path: bool
             forget_message_token_memo(messages, keep=result_messages)
 
 
+def _forget_guardrail_results_if_compacted(agent, result, messages, before_len: int) -> None:
+    """After a committed compaction the evicted tool results are gone; reset the guardrail's
+    no-progress memory for them. Aborted / no-op compactions leave the guardrail untouched."""
+    if not (isinstance(result, tuple) and result and isinstance(result[0], list)):
+        return
+    if result[0] is messages and len(result[0]) == before_len:
+        return  # aborted / no-op compaction: input unchanged
+    guard = getattr(agent, "_tool_guardrails", None)
+    forget = getattr(guard, "forget_results_after_compaction", None)
+    if callable(forget):
+        with contextlib.suppress(Exception):
+            forget()
+
+
 def _rebind_caller_session_context(agent) -> None:
     """Propagate a rotated session id to the CALLER's thread/ContextVar (idempotent otherwise).
     The worker thread rotated hermes_logging's thread-local id; post-compression tools must resolve
@@ -249,6 +263,7 @@ class CompressionFacadeMixin:
             resolve_context_compression_timeouts,
         )
         reset_context_compression_timeout_outcome(self)
+        before_len = len(messages) if isinstance(messages, list) else -1
         from agent.portal_tags import (
             get_affinity_scope, get_conversation_context, reset_affinity_scope, reset_conversation_context,
             set_affinity_scope, set_conversation_context,
@@ -308,6 +323,7 @@ class CompressionFacadeMixin:
                     idle_timeout=idle_timeout, total_ceiling=total_ceiling, approx_tokens=approx_tokens,
                 )
             _mirror_result_onto_live_lists(self, result, messages, direct_path=direct_path)
+            _forget_guardrail_results_if_compacted(self, result, messages, before_len)
             _rebind_caller_session_context(self)
             return result
         finally:

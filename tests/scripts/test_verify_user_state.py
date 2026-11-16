@@ -104,21 +104,39 @@ def test_plugins_and_bundled_skills_are_not_judged(tmp_path):
         "the curator's archive holds USER skills and is judged"
 
 
-def test_a_profile_cache_rebuilt_by_the_upgrade_is_advisory_only(tmp_path):
+def _write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+@pytest.mark.parametrize("external", [False, True], ids=["home-profiles", "profiles-dir"])
+def test_a_rebuilt_profile_cache_is_advisory_but_its_kept_subdirs_stay_judged(tmp_path, external):
     # profiles/<p>/cache/schema_columns.json is rewritten whenever a release changes
-    # the session schema; the root's cache/ is never judged, so a profile's must not be.
+    # the session schema, so it must not fail the check; the citations ledger under
+    # the same cache/ is durable (hermes_cli/backup.py keeps it), so losing it must.
     home = _home(tmp_path)
-    cache = os.path.join(home, "profiles", "second", "cache")
-    os.makedirs(cache, exist_ok=True)
-    with open(os.path.join(cache, "schema_columns.json"), "w") as f:
-        f.write('{"schema_hash": "old"}')
-    snap = _snapshot(home)
+    profiles_dir = str(tmp_path / "ext-profiles") if external else None
+    base = profiles_dir or os.path.join(home, "profiles")
+    memo = os.path.join(base, "second", "cache", "schema_columns.json")
+    ledger = os.path.join(base, "second", "cache", "citations", "ledger.json")
+    _write(memo, '{"schema_hash": "old"}')
+    _write(ledger, '{"claims": [1]}')
+    snap = vus.snapshot_home(str(home), profiles_dir)
+    if profiles_dir:
+        snap["_profiles_dir"] = profiles_dir
     assert "profiles/second/cache/schema_columns.json" in snap["advisory"]
-    with open(os.path.join(cache, "schema_columns.json"), "w") as f:
-        f.write('{"schema_hash": "new"}')
+    assert "profiles/second/cache/citations/ledger.json" in snap["entries"]
+
+    _write(memo, '{"schema_hash": "new"}')
     report = _verify(home, snap)
     assert report["ok"], report
     assert "profiles/second/cache/schema_columns.json" in report["advisory"]["modified"]
+
+    os.remove(ledger)
+    report = _verify(home, snap)
+    assert not report["ok"]
+    assert "profiles/second/cache/citations/ledger.json" in report["deleted"]
 
 
 # --- the contract -----------------------------------------------------------

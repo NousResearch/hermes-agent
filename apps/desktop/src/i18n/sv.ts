@@ -5018,7 +5018,16 @@ export const svOverrides: TranslationOverrides = {
     search: 'Hitta en app',
     empty: 'Inga matchande appar',
     disclaimer: 'Anslutningar är valfria. Godkänn bara åtkomst till de appar som du vill att Hermes ska använda.',
-    execution: 'Verktyg för anslutna appar'
+    execution: 'Verktyg för anslutna appar',
+    directory: {
+      suggested: 'Föreslagna',
+      allApps: 'Alla appar',
+      receiptConnected: apps => `Anslutna: ${apps}`,
+      receiptNone: 'Inga nya appar anslöts',
+      receiptTimedOut: 'Stängdes efter 10 minuter',
+      finishInBrowser: 'Slutför i webbläsaren',
+      signInFailed: 'Det gick inte att ansluta. Klicka för att försöka igen'
+    }
   },
   sessionImport: {
     title: 'Fortsätt från en annan app',

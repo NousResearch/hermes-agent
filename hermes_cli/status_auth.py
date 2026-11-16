@@ -116,7 +116,7 @@ def _render_auth_providers(ctx):
     # Meta OAuth likewise (its status is a refresh-free snapshot, safe for this surface).
     try:
         statuses["get_meta_oauth_auth_status"] = auth.get_meta_oauth_auth_status() or {}
-    except Exception:
+    except Exception:  # health: allow BLE001 -- mirrors the xAI guard above; a status snapshot must never break `hermes status`
         statuses["get_meta_oauth_auth_status"] = {}
 
     info = None

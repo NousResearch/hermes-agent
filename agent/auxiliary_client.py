@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- meta-oauth aux refresher mirrors the xai-oauth refresher beside it; credential logic lives in hermes_cli/auth_meta.py
 """Shared auxiliary client router for side tasks (compression, search, vision, ...).
 
 Text auto chain: main provider+model → OpenRouter → Nous Portal → custom endpoint →

@@ -38,7 +38,7 @@ def _meta_error(message: str, code: Optional[str] = None, *, relogin: bool = Fal
 def _safe_json(response: Any) -> dict[str, Any]:
     try:
         payload = response.json()
-    except Exception:
+    except (ValueError, TypeError):
         return {}
     return payload if isinstance(payload, dict) else {}
 
@@ -223,7 +223,7 @@ def _trusted_http_url(value: Any) -> Optional[str]:
         return None
     try:
         parsed = urlparse(value)
-    except Exception:
+    except ValueError:
         return None
     host = (parsed.hostname or "").lower()
     if parsed.scheme != "https" or not (host == "meta.com" or host.endswith(".meta.com")):
@@ -327,13 +327,13 @@ def _quarantine_meta_oauth_tokens(exc: AuthError) -> None:
             _store_provider_state(store, META_OAUTH_PROVIDER_ID, state, set_active=False)
             _save_auth_store(store)
     except Exception as save_exc:
-        logger.debug("Meta OAuth: failed to persist quarantined state: %s", save_exc)
+        logger.debug("Meta OAuth: failed to persist quarantined state: %s", save_exc, exc_info=True)
 
 
 def _meta_oauth_key_is_expiring(tokens: dict[str, Any], skew_seconds: int = 0) -> bool:
     try:
         expires_ms = int(tokens.get("expires_at_ms") or 0)
-    except Exception:
+    except (TypeError, ValueError):
         return True
     if expires_ms <= 0:
         return True
@@ -345,7 +345,7 @@ def _meta_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> 
         return True
     try:
         data = _read_meta_oauth_tokens()
-    except Exception:
+    except Exception:  # health: allow BLE001 -- any unreadable singleton means the token is not the stored one (pool-only credentials have no singleton)
         # Pool-only `hermes auth add meta-oauth` credentials do not have an
         # auth-store singleton. Their expiry is tracked on the pool entry;
         # treating the missing singleton as an expired bearer hides a valid
@@ -453,7 +453,7 @@ def _meta_oauth_inference_base_url() -> str:
     from hermes_cli.auth_constants import DEFAULT_META_OAUTH_BASE_URL
 
     candidate = (
-        os.getenv("HERMES_META_BASE_URL", "").strip().rstrip("/")
+        os.getenv("HERMES_META_BASE_URL", "").strip().rstrip("/")  # health: allow HX002 -- mirrors HERMES_XAI_BASE_URL in auth_xai.py
         or os.getenv("META_BASE_URL", "").strip().rstrip("/")
     )
     return candidate or DEFAULT_META_OAUTH_BASE_URL
@@ -482,7 +482,7 @@ def _meta_env_api_key() -> str:
             token = _clean(get_secret_str(var, ""))
         except UnscopedSecretError:
             raise
-        except Exception:
+        except Exception:  # health: allow BLE001 -- a secret-scope read failure is a miss for this var, never a login failure
             token = ""
         if token:
             return token
@@ -495,7 +495,7 @@ def _refresh_meta_oauth_tokens(tokens: dict[str, Any]) -> dict[str, Any]:
     try:
         state = _load_provider_state(_load_auth_store(), META_OAUTH_PROVIDER_ID) or {}
         auth_mode = str(state.get("auth_mode") or "oauth_device_code")
-    except Exception:
+    except Exception:  # health: allow BLE001 -- unreadable prior state falls back to the only auth mode meta-oauth has
         auth_mode = "oauth_device_code"
     refreshed = refresh_meta_oauth_pure(
         _clean(tokens.get("access_token")), _clean(tokens.get("refresh_token")))

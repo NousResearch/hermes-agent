@@ -580,7 +580,7 @@ async def _start_xai_device_code(profile: Optional[str]) -> dict[str, Any]:
     )
 
 
-async def _start_meta_device_code(profile: Optional[str]) -> Dict[str, Any]:
+async def _start_meta_device_code(profile: Optional[str]) -> dict[str, Any]:
     """Request Meta's device code before the background worker mints the inference key."""
     from hermes_cli.auth_meta import start_device_authorization
 

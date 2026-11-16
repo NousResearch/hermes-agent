@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- meta-oauth adds one live-catalog fetcher mirroring _codex_catalog; static rows live in models_catalog_static.py
 """Provider/model catalogs: discovery, caching, and identity helpers.
 
 Origin module; cohesive clusters live in siblings and are re-imported here so
@@ -1381,6 +1382,7 @@ def _meta_oauth_catalog(normalized: str, force_refresh: bool) -> list[str] | Non
             return None
         return profile.fetch_models(api_key=api_key, base_url=str(creds.get("base_url") or "") or None)
     except Exception:
+        logger.debug("meta-oauth live catalog fetch failed", exc_info=True)
         return None
 
 

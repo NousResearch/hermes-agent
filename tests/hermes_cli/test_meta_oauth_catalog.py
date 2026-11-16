@@ -19,7 +19,7 @@ def _live_fetch(monkeypatch):
 
 
 def test_picker_uses_live_catalog_with_stored_credential(monkeypatch, _live_fetch):
-    import hermes_cli.auth as auth
+    from hermes_cli import auth
 
     monkeypatch.setattr(
         auth, "resolve_meta_oauth_runtime_credentials",
@@ -36,7 +36,7 @@ def test_picker_uses_live_catalog_with_stored_credential(monkeypatch, _live_fetc
 
 
 def test_picker_falls_back_to_curated_rows_without_credential(monkeypatch):
-    import hermes_cli.auth as auth
+    from hermes_cli import auth
 
     def _no_creds(**_kw):
         raise RuntimeError("not logged in")

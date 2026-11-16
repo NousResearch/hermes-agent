@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- meta-oauth adds pool table rows and expiry plumbing; provider logic lives in hermes_cli/auth_meta.py
 """Persistent multi-credential pool for same-provider failover."""
 
 from __future__ import annotations

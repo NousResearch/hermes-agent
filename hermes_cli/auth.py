@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- meta-oauth adds registry/alias rows only; provider logic lives in hermes_cli/auth_meta.py
 """Multi-provider authentication system for Hermes Agent.
 
 - ``ProviderConfig`` / ``PROVIDER_REGISTRY`` describe every known inference provider.
@@ -89,7 +90,7 @@ from hermes_cli.auth_qwen import (
     _qwen_access_token_is_expiring, _qwen_base_url, _qwen_cli_auth_path, _read_qwen_cli_tokens,
     _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status,
     resolve_qwen_runtime_credentials)
-from hermes_cli.auth_meta import (  # noqa: F401  re-exported
+from hermes_cli.auth_meta import (
     _login_meta_oauth, _meta_access_token_is_expiring, _meta_oauth_device_code_login,
     _meta_oauth_key_is_expiring, _read_meta_oauth_tokens, _save_meta_oauth_tokens,
     get_meta_oauth_auth_status, refresh_meta_oauth_pure,

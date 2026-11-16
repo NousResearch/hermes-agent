@@ -830,6 +830,29 @@ export const svOverrides: TranslationOverrides = {
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Största storlek för förhandsvisning/bildinläsning i megabyte'
     },
+    screenshot: {
+      enabledTitle: 'Kortkommando för skärmbild',
+      enabledDesc:
+        'Tryck ned båda Kommando-tangenterna samtidigt i valfri app för att fånga dess främsta fönster och bifoga bilden till ditt aktuella Hermes-utkast. Bilden skickas aldrig automatiskt. Av som standard och gäller bara på denna Mac. Fönstrets innehåll kan vara känsligt — granska bilagan innan du skickar den.',
+      statusTitle: 'Status för kortkommandot för skärmbild',
+      checking: 'Kontrollerar kortkommandot för skärmbild…',
+      disabled: 'Kortkommandot för skärmbild är av.',
+      starting: 'Startar genvägslyssnaren. Den är inte klar ännu.',
+      ready: 'Kortkommandot är klart. Skärmbilder bifogas till ditt aktuella utkast utan att skickas.',
+      inputPermission:
+        'Behörigheten Indataövervakning låter Hermes känna av båda Kommando-tangenterna medan en annan app är aktiv. Tillåt Hermes i Systeminställningar → Integritet och säkerhet → Indataövervakning, gå sedan tillbaka hit och försök igen.',
+      screenPermission:
+        'Behörigheten Skärminspelning låter Hermes fånga den främsta appens fönster när du använder kortkommandot. Tillåt Hermes i Systeminställningar → Integritet och säkerhet → Skärminspelning, gå sedan tillbaka hit och försök igen. Starta om Hermes om macOS ber om det.',
+      openSettings: 'Öppna Systeminställningar',
+      retry: 'Försök igen',
+      unavailable: 'Kortkommandot för skärmbild är inte tillgängligt. Försök igen eller stäng av det.',
+      errorTitle: 'Fel med kortkommandot för skärmbild',
+      loadFailed: 'Kunde inte läsa statusen för kortkommandot. Försök igen för att kontrollera den aktuella inställningen.',
+      saveFailed: 'Kunde inte bekräfta ändringen av kortkommandot. Försök igen för att kontrollera den aktuella inställningen.',
+      permissionFailed: 'Kunde inte öppna Systeminställningar. Öppna Integritet och säkerhet manuellt och försök sedan igen.',
+      captureFailed: 'Kunde inte fånga det främsta fönstret. Ingenting bifogades eller skickades.',
+      contextChanged: 'Det aktuella utkastet ändrades medan bilden fångades. Skärmbilden bifogades eller skickades inte.'
+    },
     quickEntry: {
       enabledTitle: 'Snabbinmatning',
       enabledDesc:

@@ -25,7 +25,7 @@ from gateway.config import (
     SHARED_LISTENER_MIRROR_PLATFORMS,
 )
 from gateway.platform_env import INT, csv_extras, env_extras
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 # Logger name parity with the origin module: records stay under "gateway.config".
 logger = logging.getLogger("gateway.config")
@@ -85,7 +85,7 @@ def _loading_secondary_under_multiplexer() -> bool:
     """True while a multiplexer loads a NON-default profile's config (``_profile_runtime_scope`` sets the
     home override; the runner sets the multiplex flag). Same signal ``gateway.config`` uses for scoped reads."""
     from agent.secret_scope import is_multiplex_active
-    from hermes_constants import get_hermes_home_override, profile_name_for_home
+    from hermes_agent.hermes_constants import get_hermes_home_override, profile_name_for_home
     override = get_hermes_home_override()
     return bool(override) and is_multiplex_active() and profile_name_for_home(override) != "default"
 

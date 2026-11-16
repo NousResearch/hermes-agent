@@ -12,7 +12,7 @@ from agent import codex_runtime, runtime_cwd
 from agent.transports import codex_app_server_session
 from agent.memory_provider import MemoryProvider
 from hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from tools import terminal_tool
 
 
@@ -56,8 +56,8 @@ def workspace_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_session_info", lambda agent, session: {"cwd": session["cwd"]})
     monkeypatch.setattr(server, "_persist_session_git_meta", lambda *a, **k: None)
     monkeypatch.setattr("tools.terminal_tool_lifecycle.cleanup_vm", lambda *a: None)
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
-    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda *a, **k: {})
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", lambda *a, **k: {})
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", MagicMock())
     monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"memory": {"provider": "cwd-recording"}})
     providers, agents, starts, network_attempts = [], [], [], []

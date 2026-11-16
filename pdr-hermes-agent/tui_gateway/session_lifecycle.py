@@ -532,7 +532,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if hasattr(agent, "_persist_session") and (snapshot := getattr(agent, "_session_messages", None)):
         with contextlib.suppress(Exception):
             agent._persist_session(snapshot)
-    # interrupted=True so crash-recovery plugins can flush state (mirrors cli.py atexit). The end-of-session
+    # interrupted=True so crash-recovery plugins can flush state (mirrors hermes_agent/cli.py atexit). The end-of-session
     # hooks and the memory commit read the provider's config/credentials at call time; every caller of this
     # chokepoint is an unscoped reaper/Timer/atexit/pool thread, so bind the SESSION's profile here — unscoped
     # they fail closed under multiplex (tail never committed) or, on the Desktop backend serving a named
@@ -713,7 +713,7 @@ def _pop_session_by_id(sid: str) -> dict | None:
     with _sessions_lock:
         session = _sessions.pop(sid, None)
         if session is not None:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
 
             home = str(Path(session.get("profile_home") or get_hermes_home()).resolve())
             last_active = time.time() if session.get("running") else float(session.get("last_active") or 0)

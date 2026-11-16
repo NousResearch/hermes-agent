@@ -1,6 +1,6 @@
 """Tool-dispatch helpers — parallelism gating, multimodal envelopes, mutation tracking.
 
-Stateless utilities extracted from ``run_agent.py`` (which re-exports each name): the
+Stateless utilities extracted from ``hermes_agent/run_agent.py`` (which re-exports each name): the
 batch-parallelism planner (path-overlap admission; V4A patch scope comes from patch-body
 headers, not a decoy ``path=``), multimodal ``{"_multimodal": True, "content": [...],
 "text_summary": ...}`` envelope helpers, file-mutation verifier inputs, trajectory

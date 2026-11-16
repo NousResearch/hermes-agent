@@ -113,11 +113,11 @@ class TestOpenCodeZenV1Strip:
 
 
 class TestAgentSwitchModelDefenseInDepth:
-    """run_agent.AIAgent.switch_model() also strips /v1 as defense-in-depth."""
+    """hermes_agent.run_agent.AIAgent.switch_model() also strips /v1 as defense-in-depth."""
 
     def test_agent_switch_model_strips_v1_for_anthropic_messages(self):
         """Even if a caller hands in a /v1 URL, the agent strips it."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         # Build a bare agent instance without running __init__; we only want
         # to exercise switch_model's base_url normalization logic.
@@ -190,7 +190,7 @@ class TestStaleConfigDefaultDoesNotWedgeResolver:
     """
 
     def test_kimi_switch_keeps_v1_despite_claude_config_default(self, tmp_path, monkeypatch):
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         import importlib
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -133,7 +133,7 @@ def _run(command: list[str], stdin_text: Optional[str] = None) -> Optional[subpr
 
 def _profile_parses(parser: str, text: str) -> bool:
     """Compile *text* as this user without loading it, so a bad profile never reaches /etc."""
-    from hermes_constants import get_scratch_dir
+    from hermes_agent.hermes_constants import get_scratch_dir
 
     with tempfile.TemporaryDirectory(dir=get_scratch_dir(), prefix="apparmor-") as scratch:
         candidate = Path(scratch) / "hermes-desktop.profile"

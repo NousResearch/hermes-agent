@@ -75,7 +75,7 @@ class TestXiaomiCredentials:
         from agent import secret_scope as ss
         from hermes_cli import config as config_module
         from hermes_cli import env_loader
-        from hermes_constants import hermes_home_key
+        from hermes_agent.hermes_constants import hermes_home_key
 
         home = tmp_path / "hermes"
         home.mkdir()

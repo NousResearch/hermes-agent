@@ -276,7 +276,7 @@ def _load_reasoning_config(model: str = "") -> dict | None:
 
     Closes #21256.
     """
-    from hermes_constants import resolve_reasoning_config
+    from hermes_agent.hermes_constants import resolve_reasoning_config
     return resolve_reasoning_config(_load_cfg(), model)
 
 
@@ -325,7 +325,7 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
     """Toolsets that exist because of the CLIENT (off ``_HERMES_CORE_TOOLS``; this is the one gate).
     ``platform`` is the SESSION's source, never a process env var: the desktop may drive a URL/cloud
     backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule)."""
-    from toolsets import CLIENT_SURFACE_TOOLSETS
+    from hermes_agent.toolsets import CLIENT_SURFACE_TOOLSETS
     return set(CLIENT_SURFACE_TOOLSETS) if platform == "desktop" else {"project"}
 
 
@@ -406,7 +406,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             if selection is not None:
                 return sorted(_with_session_toolsets(selection, session_platform))
     try:
-        from toolsets import validate_toolset
+        from hermes_agent.toolsets import validate_toolset
     except Exception:
         validate_toolset = None
     if explicit and validate_toolset is not None:
@@ -611,7 +611,7 @@ def _rederive_per_model_route(model: str, runtime: dict) -> None:
 
 def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     """Config ephemeral system prompt + HERMES_TUI_SKILLS preload block. Hard-fails only when EVERY requested
-    skill is missing (cli.py parity): a typo'd name must not auto-block the Kanban task."""
+    skill is missing (hermes_agent/cli.py parity): a typo'd name must not auto-block the Kanban task."""
     from hermes_cli.config import resolve_ephemeral_system_prompt_from_config
     system_prompt = resolve_ephemeral_system_prompt_from_config(cfg)
     startup_skills = _parse_tui_skills_env()
@@ -641,7 +641,7 @@ def _make_agent(
     if synthetic is not None:
         return synthetic
     from agent.onboarding_session import onboarding_toolsets
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     # MCP discovery runs in a daemon thread (a dead server can't freeze the shell); the agent snapshots its tool
     # list once, so briefly wait for in-flight discovery. Dashboard /api/ws uses mcp_startup; TUI stdio uses entry.
     for _mod in ("hermes_cli.mcp_startup", "tui_gateway.entry"):

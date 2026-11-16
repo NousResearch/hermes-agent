@@ -39,7 +39,7 @@ class TestContentAwareRefresh(unittest.TestCase):
     def _refresh(self, agent, new_desc, **kw):
         from tools.mcp_tool_agent import refresh_agent_mcp_tools
 
-        with patch("model_tools.get_tool_definitions",
+        with patch("hermes_agent.model_tools.get_tool_definitions",
                    return_value=_defs(new_desc)), \
              patch("tools.mcp_tool_agent._reinject_post_build_tools",
                    return_value=set()):

@@ -39,7 +39,7 @@ os.chdir(ws)
 sys.path.insert(0, TREE)
 
 import agent.turn_response_check as trc
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 calls = []
 

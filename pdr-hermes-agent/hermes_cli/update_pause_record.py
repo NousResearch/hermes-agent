@@ -67,7 +67,7 @@ def _install_key(root: Path | None = None) -> str:
 
 
 def record_path() -> Path:
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     return get_default_hermes_root() / f"{RECORD_STEM}.{_install_key()}.json"
 
 

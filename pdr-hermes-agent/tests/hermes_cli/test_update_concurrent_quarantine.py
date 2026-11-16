@@ -107,7 +107,7 @@ def test_pause_stops_launcher_after_worker_drain(
 
     # The install venv is whatever hermes_constants.project_venv_dir resolves for the checkout (a
     # CI checkout has no venv/ and the test interpreter lives elsewhere); pin it to the fixture layout.
-    monkeypatch.setattr("hermes_constants.project_venv_dir", lambda root: cli_main.PROJECT_ROOT / "venv")
+    monkeypatch.setattr("hermes_agent.hermes_constants.project_venv_dir", lambda root: cli_main.PROJECT_ROOT / "venv")
     venv_exe = str(cli_main.PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
     worker_exe = r"C:\Users\x\AppData\Roaming\uv\python\cpython-3.11\python.exe"
 

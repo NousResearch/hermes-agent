@@ -10,7 +10,7 @@ profile's cache. The validator must resolve the cache roots per-call.
 """
 from pathlib import Path
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 def _make_profile(root: Path) -> Path:

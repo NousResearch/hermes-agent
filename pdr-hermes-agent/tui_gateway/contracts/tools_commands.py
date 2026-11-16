@@ -265,7 +265,7 @@ method("command.resolve", params=CommandResolveParams, result=CommandResolveResu
 
 
 class DispatchType(WireEnum):
-    """``apps/shared/src/slash.ts::parseCommandDispatch`` branches on this."""
+    """``ui-tui/packages/shared/src/slash.ts::parseCommandDispatch`` branches on this."""
 
     exec = "exec"
     alias = "alias"

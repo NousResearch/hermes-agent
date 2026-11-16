@@ -875,7 +875,7 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         _fake_resolve_runtime_provider,
     )
-    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _StubAgent)
 
     meta = curator._run_llm_review("review prompt")
 
@@ -914,7 +914,7 @@ def test_review_fork_receives_configured_reasoning(curator_env, monkeypatch):
         lambda **kwargs: {"provider": "openai-api", "api_key": "k", "base_url": "https://api.openai.com/v1",
                           "api_mode": "codex_responses"},
     )
-    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _StubAgent)
 
     meta = curator._run_llm_review("review prompt")
 
@@ -959,7 +959,7 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
         def close(self):
             pass
 
-    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _StubAgent)
     result = curator._run_llm_review("review")
 
     assert result["error"] is None
@@ -1006,7 +1006,7 @@ def test_review_fork_restricts_toolsets_to_skills_only(curator_env, monkeypatch)
         def close(self):
             pass
 
-    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _StubAgent)
 
     meta = curator._run_llm_review("review prompt")
 
@@ -1037,7 +1037,7 @@ def test_review_fork_toolset_surface_excludes_execution_tools():
     the user's own install decision, not the attack class this guard defends
     against.
     """
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
 
     surface = set(resolve_toolset("skills", include_registry=False))
 
@@ -1113,7 +1113,7 @@ def test_review_fork_seeds_shared_read_marks(curator_env, monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _StubAgent)
     result = curator._run_llm_review("review")
 
     assert result["error"] is None
@@ -1128,7 +1128,7 @@ def test_threaded_llm_pass_keeps_callers_profile_scope(curator_env, tmp_path, mo
     """#125032: the daemon ``curator-review`` thread must inherit the caller's contextvars (home
     override + secret scope), else on a multiplexed gateway it runs unscoped against the ROOT home."""
     from agent import secret_scope as ss
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     c, root = curator_env["curator"], curator_env["home"]
     profile = tmp_path / "profiles" / "served"

@@ -53,7 +53,7 @@ def _play(conn, client, frames):
 
 
 def _idle_cli(conn):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = SID
     cli._pending_input = queue.Queue()

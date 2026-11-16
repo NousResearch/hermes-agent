@@ -149,7 +149,7 @@ mining, per-epoch anchor windows) before default flip.
    gold: `#60593, #61969`
 5. **What is the recommended Git command to find when a specific symbol fix landed on the main branch?**  
    gold: `git log -S "<symbol>"`
-6. **Why did the #39719 salvage silently delete 236 lines of code from cli-config.yaml.example?**  
+6. **Why did the #39719 salvage silently delete 236 lines of code from hermes_cli/data/cli-config.yaml.example?**  
    gold: `the stale file version silently deletes newer main code`
 7. **What is the rule for salvaging commits with placeholder identities like 'pwn@example.com'?**  
    gold: `do NOT cherry-pick. Surgical reapply as maintainer-authored commit, Co-authored-by the GitHub PR author`

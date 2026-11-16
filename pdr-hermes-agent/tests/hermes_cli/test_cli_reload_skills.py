@@ -3,7 +3,7 @@
 The CLI handler prints the diff (name + description) for the user and —
 when any skills were added or removed — queues a one-shot note on
 ``self._pending_skills_reload_note``. The note is prepended to the NEXT
-user message (see cli.py ~L8770, same pattern as
+user message (see hermes_agent/cli.py ~L8770, same pattern as
 ``_pending_model_switch_note``) and cleared after use, so no phantom user
 turn is persisted to ``conversation_history``.
 """
@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 def _make_cli():
     """Build a minimal HermesCLI shell exposing ``_reload_skills``."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     obj = object.__new__(cli_mod.HermesCLI)
     obj._command_running = False

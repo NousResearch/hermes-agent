@@ -45,7 +45,7 @@ url=f'http://127.0.0.1:{server.server_port}/v1'
 # Runtime override preserves loopback routing, without relaxing URL validation.
 os.environ['NOUS_INFERENCE_BASE_URL']=url
 os.environ['HERMES_SHARED_AUTH_DIR']=str(home/'shared')
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from agent.turn_iteration_prep import prepare_iteration
 import agent.client_lifecycle as lifecycle
 from hermes_cli import auth

@@ -198,7 +198,7 @@ def _frame_renderable(payload, *, cols, rows, reveal, color):
 def _console(*, color: bool, width: Optional[int] = None, force: bool = False):
     """A Rich console. ``force`` emits truecolor ANSI even into a captured stream — the interactive CLI
     grabs that output and re-renders it through prompt_toolkit (raw escapes to a real terminal would
-    otherwise be swallowed). Mirrors the ``ChatConsole`` idiom in ``cli.py``.
+    otherwise be swallowed). Mirrors the ``ChatConsole`` idiom in ``hermes_agent/cli.py``.
     """
     from rich.console import Console
 

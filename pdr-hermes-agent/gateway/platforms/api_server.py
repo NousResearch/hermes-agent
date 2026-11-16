@@ -870,7 +870,7 @@ def _names_launch_profile(profile: str) -> bool:
     un-prefixed and prefixed requests are one profile and must key one session."""
     try:
         from hermes_cli.profiles import profile_matches_home
-        from hermes_constants import get_routing_process_hermes_home
+        from hermes_agent.hermes_constants import get_routing_process_hermes_home
         return profile_matches_home(profile, home=get_routing_process_hermes_home())
     except Exception:
         return False
@@ -1079,7 +1079,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         self._response_store = ResponseStore()  # this home's; a /p/<profile>/ route gets its own
         self._response_store_home = str(get_hermes_home())
         self._response_stores: dict[str, ResponseStore] = {}
@@ -1514,7 +1514,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 from agent.secret_scope import is_multiplex_active
                 if is_multiplex_active():
                     from gateway.run import _profile_runtime_scope
-                    from hermes_constants import get_hermes_home
+                    from hermes_agent.hermes_constants import get_hermes_home
                     return _profile_runtime_scope(get_hermes_home())
             return nullcontext()
         from gateway.run import _profile_runtime_scope
@@ -1676,7 +1676,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _current_response_store(self) -> ResponseStore:
         """Responses state of the routed profile's home. Conversation names are client-chosen, so one
         shared store let any profile's key read, chain onto and overwrite another's (#84253)."""
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         home = get_hermes_home()
         if str(home) == self._response_store_home:
             return self._response_store
@@ -1736,13 +1736,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """SessionDB for the active profile home (the runtime scope redirects ``get_hermes_home()``
         per profile). Sync, for ``_create_agent``; handlers use ``_ensure_session_db_async``."""
         if self.gateway_runner is not None:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             from gateway.platforms.api_server_store import selected_session_db
             return selected_session_db(self, get_hermes_home())
         if self._session_db is not None:
             return self._session_db
         try:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             return self._open_and_cache_session_db(get_hermes_home())
         except Exception as e:
             logger.debug("SessionDB unavailable for API server: %s", e)
@@ -1752,13 +1752,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """Async variant: the profile home is captured on the loop thread (its scope is invisible
         inside ``to_thread``), only the blocking open runs in the worker, single-flight locked."""
         if self.gateway_runner is not None:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             from gateway.platforms.api_server_store import selected_session_db
             return selected_session_db(self, get_hermes_home())
         if self._session_db is not None:
             return self._session_db
         try:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             home = get_hermes_home()
             key = str(home)
             with self._session_db_cache_lock:
@@ -2187,7 +2187,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
         session ``/model`` override, disables the fallback chain and fails closed."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         from gateway.run import (
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
             _resolve_gateway_model, _load_gateway_config, GatewayRunner)
@@ -2400,7 +2400,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from hermes_cli.tools_config import (
                 _get_effective_configurable_toolsets, _get_platform_tools, _toolset_has_keys,
                 get_nous_subscription_features)
-            from toolsets import resolve_toolset
+            from hermes_agent.toolsets import resolve_toolset
             config = load_config()
             enabled_toolsets = _get_platform_tools(config, "api_server", include_default_mcp_servers=False)
             features = get_nous_subscription_features(config)
@@ -2701,7 +2701,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # get_hermes_home() for this request) — without it the transcript/dump scrub is skipped.
         sessions_dir = None
         try:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             sessions_dir = Path(get_hermes_home()) / "sessions"
         except Exception:
             logger.debug("sessions dir unavailable for delete of %s", session_id, exc_info=True)

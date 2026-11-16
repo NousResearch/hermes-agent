@@ -11,7 +11,7 @@ def mount_authority(app, adapter):
         from gateway.run import GatewayRunner
         from gateway.session_authority import initialize_session_authority
         from gateway.session import SessionStore
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         runner = GatewayRunner()
         # Route tests mount ONE default-profile authority with no profile reservation; a profiles/
         # directory in the test home must not flip the runner into (unreserved) multiplex mode.

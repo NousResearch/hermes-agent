@@ -101,7 +101,7 @@ def _key_for_endpoint(api_key: str, current_key: str, current_url: str, effectiv
     for its own key instead of receiving the old one."""
     if api_key or not current_key:
         return api_key
-    from utils import same_base_url_origin
+    from hermes_agent.utils import same_base_url_origin
     key_url = current_url or "https://api.openai.com/v1"
     if same_base_url_origin(key_url, effective_url):
         return current_key
@@ -207,7 +207,7 @@ def _model_flow_custom(config):
         print(f"  API key saved to .env as {custom_key_env}")
 
     def _apply_endpoint(model: dict) -> None:
-        from utils import same_base_url_origin
+        from hermes_agent.utils import same_base_url_origin
         if not same_base_url_origin(str(model.get("base_url") or current_url), effective_url):
             # An inline key (or its legacy ``api`` alias) was entered for the previous host.
             model.pop("api_key", None)

@@ -31,7 +31,7 @@ def test_reasoning_flag_rides_with_the_pick_and_validates():
 def test_cli_commit_applies_effort_after_the_agent_swap(monkeypatch):
     """The agent's switch_model resets reasoning_config from config; the ride-along effort must
     win over that reset, on both the CLI and the live agent."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     from hermes_cli import cli_model_switch_mixin as mixin
 
     class _Agent:

@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import run_agent
+from hermes_agent import run_agent
 from agent.session_activity import ActivityProvenance
 
 

@@ -131,7 +131,7 @@ def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason
     """Missing file = fresh profile (agent). A file that exists but cannot be parsed must not read as
     "agent holds": a torn write must never let the agent act on a human's screen. Taking over after a
     request keeps the agent's reason so the human still sees WHY while they act."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     home = str(tmp_path)
     assert lease.get(profile_key=home).holder == lease.AGENT

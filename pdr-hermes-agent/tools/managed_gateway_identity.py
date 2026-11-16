@@ -52,7 +52,7 @@ def _platform_name() -> str:
     from agent.relay_runtime import current_turn
     from gateway.session_context import get_session_env
     from tools.connectors.gateway.config import session_platform
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
 
     turn = current_turn()
     if turn is not None and turn.lease.platform:

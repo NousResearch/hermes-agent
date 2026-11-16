@@ -317,7 +317,7 @@ def test_retirement_is_latched_when_an_upload_leaves_the_request(tmp_path, monke
     relaxes to the 100-image ceiling and a from-scratch decision restored all eight retired
     screenshots into already-sent history. Driven through the agent's request builder."""
     from agent.chat_completion_helpers import _iteration_summary_api_messages
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     agent = AIAgent(api_key="k", base_url="https://api.anthropic.com", provider="anthropic",

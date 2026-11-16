@@ -28,11 +28,11 @@ before the next cell starts, noted in the evidence: ``_run_cells``):
   ``reset`` / ``checkout``) is inside the checkout with ``.git/index.lock`` held. The kill is
   deterministic: a smudge filter the harness names in the install's own ``.git/config`` and
   ``.git/info/attributes`` (git's filter hook, nothing in the product) holds git while it
-  writes ``hermes_constants.py``, the last changed path in index order. At that moment git
+  writes ``hermes_agent/hermes_constants.py``, the last changed path in index order. At that moment git
   has written the cell's new file and ``hermes_cli/main.py`` and unlinked
-  ``hermes_constants.py``: the torn tree, stale ``index.lock`` and missing startup module
+  ``hermes_agent/hermes_constants.py``: the torn tree, stale ``index.lock`` and missing startup module
   a mid-merge kill leaves;
-* ``mid_git_bootstrap``: the same hold on ``hermes_bootstrap.py``, the first changed path in
+* ``mid_git_bootstrap``: the same hold on ``hermes_agent/hermes_bootstrap.py``, the first changed path in
   index order and the module every launcher imports to reach the repair: the kill leaves it
   unlinked, so the next launch must repair from the recovery code the update published outside
   the tree before git wrote;
@@ -96,7 +96,7 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
 
 MARKER = ".hermes-update-in-progress"
 # Imported by every `hermes` launch: each crash target appends one statement to both.
-RUNTIME_FILES = ("hermes_constants.py", "hermes_cli/main.py")
+RUNTIME_FILES = ("hermes_agent/hermes_constants.py", "hermes_cli/main.py")
 
 
 def _git_op(proc, ops: tuple[str, ...]) -> tuple[str, int] | None:
@@ -129,8 +129,8 @@ def _git_fetching(proc, machine, target) -> str | None:
 LOCAL_GIT_OPS = ("merge", "reset", "checkout")
 HOLD_FILTER = "hermes-e2e-hold"
 # The last changed path in index order (".hermes-e2e-*" < "hermes_cli/main.py" <
-# "hermes_constants.py"): when git reaches it, the other two are already written at the target.
-HELD_PATH = "hermes_constants.py"
+# "hermes_agent/hermes_constants.py"): when git reaches it, the other two are already written at the target.
+HELD_PATH = "hermes_agent/hermes_constants.py"
 # The smudge filter. Git runs it while it checks out HELD_PATH, inside unpack_trees with
 # .git/index.lock held and the old file already unlinked. One shot: the first run marks
 # `held` and waits (the kill lands here); any later checkout passes the bytes through.
@@ -721,7 +721,7 @@ def journey(tmp_path_factory):
                 "install", j["install"].returncode == 0, "install.ps1 failed", j["install"]))
             if j.ok("installed"):
                 hold = _GitHold(machine)
-                boot_hold = _GitHold(machine, "hermes_bootstrap.py")
+                boot_hold = _GitHold(machine, "hermes_agent/hermes_bootstrap.py")
                 _run_cells(machine, j, (
                     ("mid_fetch", lambda: _crash(machine, srv, "mid-fetch",
                                                  _cli_update(machine, "mid-fetch-update"), _git_fetching)),
@@ -736,7 +736,7 @@ def journey(tmp_path_factory):
                                                _cli_update(machine, "mid-git-update"), hold.point, hold)),
                     ("mid_git_bootstrap", lambda: _crash(
                         machine, srv, "mid-git-bootstrap", _cli_update(machine, "mid-git-bootstrap-update"),
-                        boot_hold.point, boot_hold, runtime_files=("hermes_bootstrap.py", *RUNTIME_FILES))),
+                        boot_hold.point, boot_hold, runtime_files=("hermes_agent/hermes_bootstrap.py", *RUNTIME_FILES))),
                 ))
             _record_cells_ran(j)
             yield j
@@ -792,7 +792,7 @@ def test_update_killed_mid_fetch_leaves_a_runnable_install(journey: Journey) -> 
 #
 # What that exposed (native run 37190464303): the launcher imported hermes_constants from the
 # checkout before `import hermes_bootstrap`, whose restore_interrupted_pull is the repair, so a
-# merge killed after git unlinked hermes_constants.py bricked every launch. Fixed in #132361
+# merge killed after git unlinked hermes_agent/hermes_constants.py bricked every launch. Fixed in #132361
 # (launchers reach the repair first); this cell asserts recovery outright.
 
 
@@ -804,13 +804,13 @@ def test_update_killed_mid_git_leaves_a_runnable_install(journey: Journey) -> No
     _assert_recovered(journey, "mid_git")
 
 
-# The repair's own entry: hermes_bootstrap.py unlinked by the killed merge. Red before #132361
+# The repair's own entry: hermes_agent/hermes_bootstrap.py unlinked by the killed merge. Red before #132361
 # round 8 (D1): every launch died importing it, the marker kept, the tree never restored.
 def test_update_killed_writing_the_launch_repairs_own_code_leaves_a_runnable_install(journey: Journey) -> None:
     r = journey["mid_git_bootstrap"]
     assert r["index_lock_after_kill"] and r["held_missing_after_kill"], fail_with(
         journey.machine, f"mid_git_bootstrap: the kill did not leave git's checkout holding with "
-                         f"hermes_bootstrap.py unlinked (killed at {r['seen']}, index.lock="
+                         f"hermes_agent/hermes_bootstrap.py unlinked (killed at {r['seen']}, index.lock="
                          f"{r['index_lock_after_kill']}, unlinked={r['held_missing_after_kill']})")
     _assert_recovered(journey, "mid_git_bootstrap")
 

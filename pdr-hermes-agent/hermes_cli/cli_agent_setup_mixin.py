@@ -1,5 +1,5 @@
 """Agent construction + session-resume display for ``HermesCLI``: credential resolution,
-per-turn agent config, first-use build, resume preload + recap. ``cli.py`` helpers are
+per-turn agent config, first-use build, resume preload + recap. ``hermes_agent/cli.py`` helpers are
 imported lazily inside each method (import cycle)."""
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import sys
 from rich.markup import escape as _escape
 
 from agent.i18n import t
-from utils import base_url_host_matches
+from hermes_agent.utils import base_url_host_matches
 
 
 def _single_query_clarify_callback(questions: list) -> dict:
@@ -256,7 +256,7 @@ class CLIAgentSetupMixin:
     def _ensure_runtime_credentials(self) -> bool:
         """Re-resolve provider credentials before agent use so key rotation / token
         refresh are picked up without restarting the CLI. False on auth failure."""
-        from cli import ChatConsole, logger
+        from hermes_agent.cli import ChatConsole, logger
         from hermes_cli.runtime_provider import (
             deferred_token_mint, format_runtime_provider_error, resolve_runtime_provider)
         _primary_exc = None
@@ -374,7 +374,7 @@ class CLIAgentSetupMixin:
         """Primary provider resolution failed: on an AuthError try each fallback entry in
         order and switch the CLI's requested_provider/model to the first that resolves.
         None when the error is not auth-related or no fallback resolves."""
-        from cli import _cprint, logger
+        from hermes_agent.cli import _cprint, logger
         from hermes_cli.auth import AuthError, primary_failure_wording
         from hermes_cli.runtime_provider import resolve_runtime_provider
         if not isinstance(primary_exc, AuthError):
@@ -453,7 +453,7 @@ class CLIAgentSetupMixin:
 
         True when the failure was explained; False when nothing is configured (the wizard's case).
         """
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         from hermes_cli.auth import format_auth_error
         if error is None or getattr(error, "code", None) == "no_provider_configured":
             return False
@@ -474,7 +474,7 @@ class CLIAgentSetupMixin:
         """Offer the provider picker when no provider is configured at all (interactive
         startup, TTY). Runs the same flow as ``hermes model`` so onboarding has a single
         source of truth. True when a provider was configured."""
-        from cli import _cprint, logger
+        from hermes_agent.cli import _cprint, logger
         _cprint("")
         _cprint(t("cli.startup.first_run_no_provider"))
         _cprint(f"  {t('cli.startup.first_run_pick_provider')}")
@@ -579,7 +579,7 @@ class CLIAgentSetupMixin:
         """Late resume path: validate the session and load its history from the DB when
         _preload_resumed_session() (called from run()) did not already populate it.
         False when the resume must abort (missing session / over the safe-resume limit)."""
-        from cli import ChatConsole, _DIM, _RST, _accent_hex, _cprint
+        from hermes_agent.cli import ChatConsole, _DIM, _RST, _accent_hex, _cprint
         session_meta = self._session_db.get_session(self.session_id)
         # Quiet mode (tool_progress_mode == "off") routes resume status lines to
         # stderr so stdout stays machine-readable for `$(hermes chat -Q --resume ...)`.
@@ -637,7 +637,7 @@ class CLIAgentSetupMixin:
     def _init_agent(self, *, model_override: str | None = None, runtime_override: dict | None = None, request_overrides: dict | None = None) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
-        from cli import ChatConsole, _cprint, logger
+        from hermes_agent.cli import ChatConsole, _cprint, logger
         from hermes_cli.gateway_agent import GatewayAgent as AIAgent  # the gateway runs the turn
         if self.agent is not None:
             return True
@@ -732,13 +732,13 @@ class CLIAgentSetupMixin:
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
                 notice_callback=self._on_notice, notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction)
-            # Reference for atexit memory-provider shutdown: ``_run_cleanup`` in cli.py
+            # Reference for atexit memory-provider shutdown: ``_run_cleanup`` in hermes_agent/cli.py
             # reads ``cli._active_agent_ref``, so this MUST write the ``cli`` module's
             # global — a ``global`` statement here would bind this module's namespace.
-            # When this code lived in cli.py a bare ``global _active_agent_ref`` worked; after the god-file
+            # When this code lived in hermes_agent/cli.py a bare ``global _active_agent_ref`` worked; after the god-file
             # extraction into this mixin a ``global`` here would bind *this module's* namespace, leaving
             # ``cli._active_agent_ref`` None forever — so memory shutdown never ran on /exit (#49287).
-            import cli as _cli
+            from hermes_agent import cli as _cli
             _cli._active_agent_ref = self.agent
             self.agent.control_update_callback = self._mark_automation_stale
             # Seed the agent's once-per-lifecycle auto_load cache with the bytes the preload
@@ -784,7 +784,7 @@ class CLIAgentSetupMixin:
             console = ChatConsole()
             from hermes_cli.cli_chat_error_copy import agent_init_failure_message
             console.print(f"[bold red]{_escape(agent_init_failure_message(e))}[/]")
-            from hermes_constants import partial_update_hint
+            from hermes_agent.hermes_constants import partial_update_hint
             for line in partial_update_hint(e):
                 console.print(line)
             return False
@@ -797,7 +797,7 @@ class CLIAgentSetupMixin:
         tip. Generic guard failures fail OPEN; only a genuine over-limit result blocks."""
         if not self._session_db:
             return None
-        from cli import logger
+        from hermes_agent.cli import logger
         from hermes_state import SessionResumeTooLargeError
         try:
             safety_check = getattr(self._session_db, "assert_resume_safe", None)
@@ -817,7 +817,7 @@ class CLIAgentSetupMixin:
         """Load a resumed session's history early (from run(), before the first chat) so
         it can be displayed; ``_init_agent()`` then skips its own DB round-trip. Sets
         ``self.conversation_history`` and prints the status line. True if history loaded."""
-        from cli import _accent_hex
+        from hermes_agent.cli import _accent_hex
         if not self._resumed or not self._session_db:
             return False
         session_meta = self._session_db.get_session(self.session_id)
@@ -868,7 +868,7 @@ class CLIAgentSetupMixin:
     def _display_resumed_history(self):
         """Render a dim Rich-panel recap of the previous conversation, capped at the last
         ``resume_exchanges`` user/assistant exchanges with a hidden-count indicator."""
-        from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
+        from hermes_agent.cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
         from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
         display_history = getattr(self, "_resume_display_history", self.conversation_history)
         if not display_history or self.resume_display == "minimal":

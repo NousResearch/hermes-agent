@@ -16,7 +16,7 @@ import pytest
 
 from agent.i18n import t
 
-import cli as cli_mod
+from hermes_agent import cli as cli_mod
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
 
 requires_git = pytest.mark.skipif(

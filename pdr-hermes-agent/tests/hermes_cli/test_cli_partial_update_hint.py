@@ -1,6 +1,6 @@
 """Chat startup must explain a mixed-version ImportError (#96900).
 
-A half-updated install can ship a newer ``cli.py`` (or launcher) importing
+A half-updated install can ship a newer ``hermes_agent/cli.py`` (or launcher) importing
 config helpers that the older ``hermes_cli.config`` does not export. ``cmd_chat``
 (around ``cli.main``) and the ``-z`` transport launch are the load-bearing catches:
 bare ``hermes`` and ``hermes chat`` (including the fast-chat launch path)
@@ -14,7 +14,7 @@ import types
 
 import pytest
 
-from hermes_constants import emit_partial_update_hint
+from hermes_agent.hermes_constants import emit_partial_update_hint
 
 
 def _chat_args(**overrides):
@@ -59,7 +59,7 @@ def _missing_config_name_error(name: str = "resolve_turn_limit") -> ImportError:
 
 def _install_boom(monkeypatch, boom):
     """``hermes chat`` runs main's ``cli.main``; ``-z`` keeps the gateway transport launcher."""
-    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(main=lambda **_kw: boom(None)))
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", types.SimpleNamespace(main=lambda **_kw: boom(None)))
     monkeypatch.setattr("hermes_cli.gateway_chat.launch_from_args", boom)
 
 

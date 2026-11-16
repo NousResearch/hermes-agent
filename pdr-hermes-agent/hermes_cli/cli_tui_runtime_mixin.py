@@ -1,6 +1,6 @@
 """Classic-TUI run loop phases: input processing, after-turn bookkeeping, startup banner/prewarm/maintenance, prompt_toolkit application build, signal handlers and shutdown.
 
-Mixin split out of ``cli.py``; bound onto ``HermesCLI`` via the MRO.
+Mixin split out of ``hermes_agent/cli.py``; bound onto ``HermesCLI`` via the MRO.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
 from agent import terminal_image
 from contextlib import suppress
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from prompt_toolkit.application import Application
 from rich.markup import escape as _escape
 
@@ -97,7 +97,7 @@ class CLITuiRuntimeMixin:
 
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
-        from cli import _DIM, _PASTE_REF_RE, _RST, _cprint, _detect_file_drop, _looks_like_slash_command, _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
+        from hermes_agent.cli import _DIM, _PASTE_REF_RE, _RST, _cprint, _detect_file_drop, _looks_like_slash_command, _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         from tools.process_registry_notifications import TimelineNotification
         self._tui_dock_drop_dequeued()
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
@@ -167,7 +167,7 @@ class CLITuiRuntimeMixin:
 
     def _tui_run_slash_input(self, user_input: str):
         """Dispatch a slash command. Returns the pending agent seed to run as a chat turn, else None."""
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         _cprint(f"\n⚙️  {user_input}")
         try:
             if not self.process_command(user_input):
@@ -183,7 +183,7 @@ class CLITuiRuntimeMixin:
 
     def _tui_after_turn(self):
         """Post-turn bookkeeping after chat() returns (normal, error, or interrupt)."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         self._agent_running = self._pet_reasoning = False
         self._spinner_text = self._last_scrollback_tool = ""
         self._tool_start_time = 0.0
@@ -242,7 +242,7 @@ class CLITuiRuntimeMixin:
         ``logger.debug`` is guarded: logging is not reentrant-safe and a shutdown race
         can raise ``KeyError`` inside the handler, bypassing prompt_toolkit's unwind.
         """
-        from cli import _arm_exit_watchdog_on_shutdown_signal, _interrupt_agent_for_signal
+        from hermes_agent.cli import _arm_exit_watchdog_on_shutdown_signal, _interrupt_agent_for_signal
         with suppress(Exception):
             logger.debug("Received signal %s, triggering graceful shutdown", signum)
         # Arm the backstop IMMEDIATELY: if the unwind wedges, _run_cleanup never arms its own.
@@ -278,7 +278,7 @@ class CLITuiRuntimeMixin:
 
     def _tui_print_startup(self):
         """Startup output: light-mode probe, banner, advisories, resume/welcome lines, tips."""
-        from cli import _accent_hex, _detect_light_mode
+        from hermes_agent.cli import _accent_hex, _detect_light_mode
         with suppress(Exception):  # light-mode probe before pt grabs the tty (cached)
             _detect_light_mode()
         from hermes_cli.cli_inline_images import vscode_images_hint
@@ -317,14 +317,14 @@ class CLITuiRuntimeMixin:
         if sys.stdin.isatty():
             try:
                 from hermes_cli.sandbox_image_switch import offer_interactive
-                from cli import _cprint
+                from hermes_agent.cli import _cprint
                 offer_interactive(cprint=_cprint)
             except Exception:
                 logger.debug("sandbox image switch offer failed", exc_info=True)
             # Low disk + auto-prune never decided: ask once (either answer ends it for good).
             try:
                 from hermes_cli.prune_advisor import offer_interactive as _offer_auto_prune
-                from cli import _cprint
+                from hermes_agent.cli import _cprint
                 _offer_auto_prune(cprint=_cprint)
             except Exception:
                 logger.debug("auto-prune offer failed", exc_info=True)
@@ -374,7 +374,7 @@ class CLITuiRuntimeMixin:
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             def _prewarm_agent_runtime() -> None:
                 try:
-                    import run_agent
+                    from hermes_agent import run_agent
                     import openai
                 except Exception:
                     logger.debug("agent runtime pre-import failed", exc_info=True)
@@ -430,7 +430,7 @@ class CLITuiRuntimeMixin:
 
     def _tui_build_application(self, layout, kb, style):
         """Construct the prompt_toolkit Application for the REPL."""
-        from cli import CLI_CONFIG, EditingMode, _STEADY_CURSOR, _select_classic_cli_pt_output
+        from hermes_agent.cli import CLI_CONFIG, EditingMode, _STEADY_CURSOR, _select_classic_cli_pt_output
         _cpr_disabled_output = _select_classic_cli_pt_output(sys.stdout)
 
         # Kitty placeholders encode the image id in exact foreground RGB, so the whole app
@@ -519,7 +519,7 @@ class CLITuiRuntimeMixin:
 
     def _tui_shutdown(self):
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
-        from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
+        from hermes_agent.cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
         self._should_exit = True
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
@@ -580,7 +580,7 @@ class CLITuiRuntimeMixin:
             _invoke_interrupted_session_end(self.agent, self.agent.session_id, "shutdown")
         # Ask AND apply before _run_cleanup arms the exit watchdog, so a large archive is never cut
         # short; a signal-driven exit never asks.
-        import cli as _cli_mod
+        from hermes_agent import cli as _cli_mod
         if not _cli_mod._signal_watchdog_armed and _cli_mod._active_worktree:
             from hermes_cli.worktree_exit import apply_exit_choice, ask_exit_choice
             with suppress(Exception, KeyboardInterrupt):

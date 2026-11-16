@@ -31,7 +31,7 @@ from gateway.slash_commands_session import GatewaySessionCommandsMixin
 from gateway.slash_commands_login import GatewayLoginCommandsMixin
 from gateway.slash_commands_status import GatewayStatusCommandsMixin, history_unreadable
 from hermes_cli.config import atomic_config_write, cfg_get
-from utils import atomic_json_write, is_truthy_value
+from hermes_agent.utils import atomic_json_write, is_truthy_value
 from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger("gateway.run")
@@ -312,7 +312,7 @@ class GatewaySlashCommandsMixin(
         gateway the process-level profile is the multiplexer's own ("default" in every chat), so
         with ``multiplex_profiles`` on report ``source.profile`` and resolve home under that
         profile's runtime scope; when off the stamp is ignored, mirroring ``_run_agent``."""
-        from hermes_constants import display_hermes_home
+        from hermes_agent.hermes_constants import display_hermes_home
         source = getattr(event, "source", None)
         profile_name = display = ""
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
@@ -1026,7 +1026,7 @@ class GatewaySlashCommandsMixin(
             return EphemeralReply(t("gateway.busy.unknown_mode", arg=arg))
 
         # Persist before mutate
-        from cli import save_config_value
+        from hermes_agent.cli import save_config_value
         if not save_config_value("display.busy_input_mode", arg):
             return EphemeralReply(t("gateway.busy.save_failed"))
         if live is not None:
@@ -1112,7 +1112,7 @@ class GatewaySlashCommandsMixin(
             if choice == "always":
                 # Persist the opt-out and run the reload.
                 try:
-                    from cli import save_config_value
+                    from hermes_agent.cli import save_config_value
                     save_config_value("approvals.mcp_reload_confirm", False)
                     logger.info("User opted out of /reload-mcp confirmation (session=%s)", session_key)
                 except Exception as exc:

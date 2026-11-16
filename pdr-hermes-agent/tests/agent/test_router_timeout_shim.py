@@ -33,10 +33,10 @@ def _chunk(content=None, finish_reason=None, usage=None):
          "Connect timeout, then success: done.", True),
     ],
 )
-@patch("run_agent.AIAgent._create_request_openai_client")
-@patch("run_agent.AIAgent._close_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
 def test_stream_holds_router_timeout_shim_until_judged(mock_close, mock_create, chunks, expect_streamed, expect_valid):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     deltas = []
     mock_client = MagicMock()
@@ -71,7 +71,7 @@ def test_auxiliary_validation_rejects_router_timeout_shim():
 def test_iteration_limit_summary_retries_past_router_timeout_shim(_mock_openai):
     """The iteration-limit summary is the fourth consumer: a shim takes the retry slot and the
     real summary from the second call is returned instead of the sentinel text."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     def _completion(content, completion_tokens):
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None),

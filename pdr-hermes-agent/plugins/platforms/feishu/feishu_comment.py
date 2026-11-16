@@ -458,7 +458,7 @@ def _resolve_model_and_runtime() -> tuple[str, dict]:
         pass
     # Same chokepoint as every other surface: without it ``agent.reasoning_effort`` never reaches the
     # comment agent and the transport applies its default effort (a 400 on non-reasoning models).
-    from hermes_constants import resolve_reasoning_config
+    from hermes_agent.hermes_constants import resolve_reasoning_config
     runtime_kwargs["reasoning_config"] = resolve_reasoning_config(_load_gateway_config(), model)
     return model, runtime_kwargs
 
@@ -490,7 +490,7 @@ def _save_session_history(key: str, messages: list[dict[str, Any]]) -> None:
 
 def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
     """Create an AIAgent with feishu tools and run the prompt; empty string on failure. *session_key*, if given, loads/saves history for cross-card memory in the same document."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tools import feishu_doc_tool, feishu_drive_tool
     logger.info("[Feishu-Comment] _run_comment_agent: injecting lark client into tool thread-locals")
     tool_mods = (feishu_doc_tool, feishu_drive_tool)

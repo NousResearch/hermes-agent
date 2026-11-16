@@ -10,7 +10,7 @@ SESSION_ID = "test-identity-flush"
 
 def _make_agent(session_db, session_id=SESSION_ID):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",

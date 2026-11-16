@@ -226,14 +226,14 @@ def test_default_timeout_read_from_config(registry, monkeypatch):
 # ── CLI exit paths invoke the linger ─────────────────────────────────────────
 
 def test_finalize_single_query_settles_session_then_releases_then_lingers(monkeypatch):
-    """cli._finalize_single_query ordering contract: session-owned settlement
+    """hermes_agent.cli._finalize_single_query ordering contract: session-owned settlement
     (durable flush incl. end_session, finalize hook, memory-provider session
     finalization — providers commit THIS session's remote state at on_session_end)
     completes BEFORE the lease release, so a successor can never receive a stale
     end-stamp or a remote commit mid-turn; the lease release precedes the exit
     linger, so a finished turn stops refusing deliveries (#118826); the linger
     precedes teardown (the parent owns the children's pipes)."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     order = []
     from tools.process_registry import process_registry
@@ -266,7 +266,7 @@ def test_finalize_single_query_settles_session_then_releases_then_lingers(monkey
 
 def test_finalize_single_query_survives_wait_failure(monkeypatch):
     """A raising wait must not break the durable flush path."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     order = []
     from tools.process_registry import process_registry

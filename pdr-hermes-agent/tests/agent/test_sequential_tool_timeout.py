@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.tool_executor import execute_tool_calls_sequential
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from tools.clarify_gateway import resolve_clarify_timeout
 
 
@@ -62,7 +62,7 @@ def _deterministic_worker_start(monkeypatch):
 def _make_agent(tmp_path: Path) -> AIAgent:
     with (
         patch(
-            "model_tools.get_tool_definitions",
+            "hermes_agent.model_tools.get_tool_definitions",
             return_value=[
                 {
                     "type": "function",
@@ -74,9 +74,9 @@ def _make_agent(tmp_path: Path) -> AIAgent:
                 }
             ],
         ),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
-        patch("run_agent._hermes_home", tmp_path),
+        patch("hermes_agent.run_agent._hermes_home", tmp_path),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
         agent = AIAgent(
@@ -143,7 +143,7 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
     started = time.monotonic()
     try:
         with (
-            patch("model_tools.handle_function_call", side_effect=_dispatch),
+            patch("hermes_agent.model_tools.handle_function_call", side_effect=_dispatch),
             patch(
                 "agent.tool_executor._emit_terminal_post_tool_call",
                 side_effect=_capture_terminal_event,
@@ -168,7 +168,7 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
 
 def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkeypatch):
     from hermes_cli import lifecycle
-    import model_tools
+    from hermes_agent import model_tools
 
     agent = _make_agent(tmp_path)
     release_first = threading.Event()
@@ -266,7 +266,7 @@ def test_sequential_tool_interrupt_hides_lifecycle_cancel_detail(tmp_path, monke
 
     try:
         with (
-            patch("model_tools.handle_function_call", side_effect=_dispatch),
+            patch("hermes_agent.model_tools.handle_function_call", side_effect=_dispatch),
             patch(
                 "agent.tool_executor._emit_terminal_post_tool_call",
                 side_effect=lambda *_args, **kwargs: terminal_events.append(kwargs),
@@ -327,7 +327,7 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
     messages: list[dict] = []
     started = time.monotonic()
     with (
-        patch("model_tools.handle_function_call", side_effect=_dispatch),
+        patch("hermes_agent.model_tools.handle_function_call", side_effect=_dispatch),
         patch(
             "agent.tool_executor._emit_terminal_post_tool_call",
             side_effect=_capture_terminal_event,

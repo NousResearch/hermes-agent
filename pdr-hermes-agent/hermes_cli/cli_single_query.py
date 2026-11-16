@@ -1,6 +1,6 @@
 """Single-query (``-q`` / one-shot) helpers: kanban goal loops, exit-code mapping, quiet single-query runner, image routing, signal handlers and the single-query mode orchestrator.
 
-Split out of ``cli.py``; ``cli`` re-exports every public name and moved bodies late-bind
+Split out of ``hermes_agent/cli.py``; ``cli`` re-exports every public name and moved bodies late-bind
 cli-level names through ``from cli import ...`` at call time so facade monkeypatch seams hold.
 """
 
@@ -22,7 +22,7 @@ from typing import Any
 logger = logging.getLogger("cli")
 
 if TYPE_CHECKING:
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
 
 def _int_or(value, default: int) -> int:
@@ -39,7 +39,7 @@ def _interrupt_agent_for_signal(agent, signum) -> None:
     The grace lets the agent thread kill the tool's setsid subprocess group before the
     main thread unwinds (else an orphan child). Never raises.
     """
-    from cli import _float_env
+    from hermes_agent.cli import _float_env
     try:
         if agent is not None:
             request_hard_interrupt(agent, f"received signal {signum}")
@@ -57,7 +57,7 @@ def _run_kanban_goal_loop_q(cli: HermesCLI, first_response: str, run_turn=None, 
     passes ``cli.chat`` so every follow-up turn keeps the tool activity feed that the Kanban
     worker log is made of. The caller swallows all errors: a broken loop must never wedge a worker.
     """
-    from cli import _int_or, _sync_cli_session_id_from_agent
+    from hermes_agent.cli import _int_or, _sync_cli_session_id_from_agent
     task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
     if not task_id:
         return
@@ -114,7 +114,7 @@ def _run_kanban_goal_loop_chat(cli: HermesCLI, first_response: str) -> None:
     """``-q`` worker variant: follow-up turns go through ``cli.chat`` (tool feed stays on stdout,
     which is the Kanban worker log) and judge verdicts are printed there too, so a goal_mode card's
     log reads like any other worker's instead of staying blank until the final answer."""
-    from cli import _run_kanban_goal_loop_q
+    from hermes_agent.cli import _run_kanban_goal_loop_q
 
     def _log(msg: str) -> None:
         logger.info("%s", msg)
@@ -167,8 +167,8 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     either — the exit mapping and the recovery gate must agree on what a worker is.
     """
     # Late-bound through the ``cli`` facade so a patched ``cli._*_PROVIDER_REASONS`` holds.
-    from cli import _TERMINAL_PROVIDER_REASONS as terminal_reasons
-    from cli import _TRANSIENT_PROVIDER_REASONS as transient_reasons
+    from hermes_agent.cli import _TERMINAL_PROVIDER_REASONS as terminal_reasons
+    from hermes_agent.cli import _TRANSIENT_PROVIDER_REASONS as transient_reasons
     from agent.kanban_turn_recovery import kanban_task_id
     from hermes_cli.turn_exit import turn_exit_code
     return turn_exit_code(
@@ -187,7 +187,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     Nested Bot Mode notifies bind this session's key (not the dispatcher's) and resume in-process
     before stdout is printed, so a teammate reply is the quiet run's final answer rather than a
     stranded receipt."""
-    from cli import _emit_interrupted_session_end, _run_kanban_goal_loop_q, _single_query_exit_code, _sync_cli_session_id_from_agent
+    from hermes_agent.cli import _emit_interrupted_session_end, _run_kanban_goal_loop_q, _single_query_exit_code, _sync_cli_session_id_from_agent
     from agent.interrupt_compat import _accepts_keyword
     from agent.turn_author import take_turn_author_from_env
     from hermes_cli.quiet_single_query import (
@@ -405,7 +405,7 @@ def _install_single_query_signal_handlers(cli):
     A plain KeyboardInterrupt only unwinds the main thread, so tool worker threads
     would orphan the setsid child; the interrupt + grace window lets them kill it.
     """
-    from cli import _arm_exit_watchdog_on_shutdown_signal, _flush_logging_and_stdio, _flush_one_shot_session_store, _interrupt_agent_for_signal
+    from hermes_agent.cli import _arm_exit_watchdog_on_shutdown_signal, _flush_logging_and_stdio, _flush_one_shot_session_store, _interrupt_agent_for_signal
     import signal as _signal
 
     def _kill_foreground_and_exit(*_):
@@ -473,7 +473,7 @@ def _configure_quiet_agent(agent) -> None:
 def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool = False):
     """``-q``/``--image`` entry: seed an interactive session on a TTY, else run the one-shot turn and exit.
     ``stream_json`` (implies quiet) swaps the plain-text final answer for the JSONL event protocol."""
-    from cli import _SeededQueryMessage, _collect_kanban_task_images, _collect_query_images, _configure_quiet_agent, _finalize_single_query, _route_single_query_images, _run_kanban_goal_loop_chat, _run_quiet_single_query, _should_seed_interactive, _single_query_exit_code
+    from hermes_agent.cli import _SeededQueryMessage, _collect_kanban_task_images, _collect_query_images, _configure_quiet_agent, _finalize_single_query, _route_single_query_images, _run_kanban_goal_loop_chat, _run_quiet_single_query, _should_seed_interactive, _single_query_exit_code
     if _should_seed_interactive(query, image, quiet, oneshot):
         seeded_query, seeded_images = _collect_query_images(query, image)
         logger.info(
@@ -488,7 +488,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     # No user can answer approval prompts: the approval gate takes the deterministic path.
     # One-shot mode: no between-turns MCP late-binding refresh, so the agent must wait the full MCP
     # cold-start bound before its first (and only) tool snapshot. See #51316.
-    # Mark single-query for the approval gate. cli.py sets HERMES_INTERACTIVE earlier for interactive sudo
+    # Mark single-query for the approval gate. hermes_agent/cli.py sets HERMES_INTERACTIVE earlier for interactive sudo
     # prompts, but a -q run has NO user waiting to answer approval prompts. The gate reads this marker (via
     # gateway.session_context.get_session_env, which falls back to os.environ when the session-context layer
     # isn't engaged) and takes the deterministic approvals.single_query_mode path instead of waiting the

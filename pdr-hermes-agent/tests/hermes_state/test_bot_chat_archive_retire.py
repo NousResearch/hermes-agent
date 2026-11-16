@@ -41,7 +41,7 @@ async def test_delivery_after_archive_of_delivery_minted_bot_chat_mints_fresh(hi
     ``admission_conflict`` (visible) nor re-title the archived row (hidden) (#139779)."""
     from gateway import run
     from gateway.session_bot import _target
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from tests.gateway.test_follow_profile_followups import _profile
     from tests.gateway.test_session_follow_profile_config import _owner
     home = get_hermes_home()

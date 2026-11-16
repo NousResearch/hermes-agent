@@ -13,7 +13,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_constants import get_hermes_dir
+from hermes_agent.hermes_constants import get_hermes_dir
 
 logger = logging.getLogger("tools.vision_tools")
 

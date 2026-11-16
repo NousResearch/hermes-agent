@@ -6,7 +6,7 @@ faster on flaky primaries instead of burning ~3x180s on the same stall.
 """
 from unittest.mock import patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent(api_max_retries=None):

@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from hermes_cli.models_local import LMStudioLoadResult
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _agent(load_mode="explicit"):

@@ -82,7 +82,7 @@ def _resolve_profile(rid, params):
 def _read_profile_yaml(profile_dir) -> dict:
     """profile.yaml as a mapping; ``{}`` when missing, unreadable, unparseable, or not a mapping."""
     def load():
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         meta_path = profile_dir / "profile.yaml"
         return (yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}) if meta_path.is_file() else {}
     loaded = _try(load, {})
@@ -470,7 +470,7 @@ def _describe_toolsets(cfg):
     from hermes_cli.tools_config import (
         _coerce_platform_toolsets_value, _get_effective_configurable_toolsets, _get_platform_tools,
         _toolset_allowed_for_platform)
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
     pinned = _coerce_platform_toolsets_value((cfg.get("platform_toolsets") or {}).get("cli"), "cli")
     pinned_set = _clean_names(pinned) if isinstance(pinned, list) else None
     platform_enabled = _try(lambda: set(_get_platform_tools(cfg, "cli", include_default_mcp_servers=False)), set())
@@ -531,7 +531,7 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
             else:
                 existing.pop("ui_meta", None)
             existing["_ui_meta_revisions"] = revisions
-            from utils import atomic_yaml_write
+            from hermes_agent.utils import atomic_yaml_write
             atomic_yaml_write(profile_dir / "profile.yaml", existing, sort_keys=False)
             applied["ui_meta"] = True
             applied["ui_meta_revisions"] = {key: revisions[key] for key in incoming}

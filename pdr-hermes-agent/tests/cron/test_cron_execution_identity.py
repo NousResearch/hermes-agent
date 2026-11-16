@@ -42,7 +42,7 @@ print(json.dumps({"outside": ctx.current_cron_execution(), "profile": ctx.profil
 
 
 def test_tool_hook_in_a_ticked_job_sees_its_execution_and_none_outside(tmp_path):
-    from hermes_time import now
+    from hermes_agent.hermes_time import now
 
     home = tmp_path / "home"
     plugin_dir = home / "plugins" / "cron-identity-probe"

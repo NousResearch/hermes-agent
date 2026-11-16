@@ -18,7 +18,7 @@ from tests.fakes.redactor_plugin import COMMENTARY, RAW, REWRITE, redactor_home,
 
 
 def _agent(server, **kwargs):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     return AIAgent(base_url=server.base_url, api_key="sk-fake-e2e", provider="custom", model="fake-model",
                    quiet_mode=True, skip_context_files=True, skip_memory=True, enabled_toolsets=["todo"], **kwargs)

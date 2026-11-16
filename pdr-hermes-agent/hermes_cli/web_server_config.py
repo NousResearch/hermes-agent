@@ -18,7 +18,7 @@ from hermes_cli.config_route_guard import clear_aux_credentials_on_route_change
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
 from tools.transcription_common import STT_MODEL_CATALOG
 from tools.wake_word import _PROVIDER_PREFERENCE
-from utils import same_base_url_origin
+from hermes_agent.utils import same_base_url_origin
 
 if TYPE_CHECKING:
     from hermes_cli.model_switch import ModelSwitchResult
@@ -739,10 +739,10 @@ def _normalize_aux_reasoning_effort(value: Optional[str]) -> Optional[str]:
     canonical level (``none`` for a disable), 400 on an unknown level."""
     if value is None:
         return None
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     parsed = parse_reasoning_effort(value)
     if parsed is None:
-        from hermes_constants import VALID_REASONING_EFFORTS
+        from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS
         raise HTTPException(status_code=400,
                             detail=f"reasoning_effort must be one of: none, {', '.join(VALID_REASONING_EFFORTS)}")
     return "none" if parsed.get("enabled") is False else parsed["effort"]

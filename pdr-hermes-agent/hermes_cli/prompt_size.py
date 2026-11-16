@@ -50,7 +50,7 @@ def _build_inspection_agent(platform: str) -> Any:
     direct-construction path (no provider auto-detection, no network); toolsets resolve the way
     the gateway does so the breakdown matches a real session.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from hermes_cli.config import load_config
     from hermes_cli.tools_config import _get_platform_tools
     from agent.skill_utils import parse_config_string_list

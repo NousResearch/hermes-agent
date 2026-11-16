@@ -2,7 +2,7 @@
 """Regenerate website/docs/developer-guide/gateway-command-parity.md from the code.
 
 For every ``COMMAND_REGISTRY`` command it records what each local client does with it on the
-shared gateway -- the classic CLI (main's ``HermesCLI`` dispatch table, ``cli.py``), Ink
+shared gateway -- the classic CLI (main's ``HermesCLI`` dispatch table, ``hermes_agent/cli.py``), Ink
 (``ui-tui/src/app/slash/commands/*.ts``), Desktop (``apps/desktop/src/lib/desktop-slash-commands.ts``
 + the registry's ``desktop=`` dump), ACP (``acp_adapter/gateway_commands.py``) -- and the
 gateway's own ``slash.exec`` verdict for a local session (``gateway/session_commands.py``).
@@ -90,7 +90,7 @@ def classic_cell(cmd):
     """``hermes chat`` is main's ``HermesCLI`` with a gateway-backed agent and session store
     (``hermes_cli/gateway_agent.py``, ``gateway_session_store.py``): every command runs main's own
     handler in the CLI process. The cell names that handler; a gateway-only command has none."""
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     entry = HermesCLI._slash_handler(cmd.name)
     if entry is None:
         return "messaging-only: unknown command" if cmd.gateway_only else "unknown command"

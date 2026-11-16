@@ -302,7 +302,7 @@ class TestBedrockPreserveDotsFlag:
     def test_bedrock_provider_preserves_dots(self):
         from types import SimpleNamespace
         agent = SimpleNamespace(provider="bedrock", base_url="")
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is True
 
 
@@ -317,7 +317,7 @@ class TestBedrockPreserveDotsFlag:
             provider="custom",
             base_url="https://s3.us-east-1.amazonaws.com",
         )
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is False
 
 

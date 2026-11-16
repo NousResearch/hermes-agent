@@ -16,7 +16,7 @@ HOST = "https://api.wirefake.test/v1"
 def wire_profile():
     import providers
     from providers.base import ProviderProfile
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
 
     seen_keys = []
 
@@ -48,7 +48,7 @@ def wire_profile():
 
 
 def _agent(provider, base_url, model="gpt-4.1"):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with patch("agent.process_bootstrap.OpenAI") as mock_openai:
         mock_openai.return_value = MagicMock()
@@ -58,7 +58,7 @@ def _agent(provider, base_url, model="gpt-4.1"):
 
 def test_api_mode_for_model_decides_responses_routing_per_model(wire_profile):
     from hermes_cli.model_switch import model_derived_api_mode
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     # The profile keeps this gpt-5 id on chat completions; the generic GPT-5 rule would upgrade it.
     assert AIAgent._provider_model_requires_responses_api("gpt-5-lite", provider="wirefake") is False

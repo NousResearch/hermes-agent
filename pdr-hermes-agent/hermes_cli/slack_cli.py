@@ -127,7 +127,7 @@ def slack_manifest_command(args) -> int:
         sys.stdout.write(payload)
         return 0
     if isinstance(write_target, bool) and write_target:  # bare --write → default location
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         target = Path(get_hermes_home()) / "slack-manifest.json"
     else:
         target = Path(write_target).expanduser()

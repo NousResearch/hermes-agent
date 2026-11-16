@@ -77,9 +77,9 @@ async def show_tools(connection, ref, params):
     agent = authority.agent(ref)
 
     def build():
-        import model_tools
+        from hermes_agent import model_tools
         from agent.skill_utils import parse_config_string_list
-        from toolsets import session_disabled_toolsets
+        from hermes_agent.toolsets import session_disabled_toolsets
         with owner_scope(authority):
             if agent is not None:
                 enabled, disabled = getattr(agent, 'enabled_toolsets', None), getattr(agent, 'disabled_toolsets', None)

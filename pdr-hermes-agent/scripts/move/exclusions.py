@@ -29,7 +29,7 @@ EXCLUDED: tuple[tuple[str, str, str], ...] = (
     ("hermes_cli/_launchers.py", '_CLOSURE_REPAIR = """\\', PERSISTED),
     ("hermes_cli/_launchers.py", "return (\n        # The repair's own stdlib", PERSISTED),
     ("hermes_cli/_launchers.py", "def print_runtime_command(", PERSISTED),
-    ("hermes_bootstrap.py", "def _settle_interrupted_update(", TORN_UPDATE),
+    ("hermes_agent/hermes_bootstrap.py", "def _settle_interrupted_update(", TORN_UPDATE),
     (".github/actions/plugin-validate/action.yml", '"$_VALIDATOR_PYTHON" -I -m hermes_cli.main plugins validate "$_PLUGIN_PATH"', SHIPPED),
     ("apps/bootstrap-installer/src-tauri/src/update.rs", 'if install_root.join("hermes_cli/_launchers.py").is_file() {', SHIPPED),
     ("apps/desktop/electron/desktop-uninstall.ts", "return ['-m', 'hermes_cli.uninstall', '--mode', mode]", SHIPPED),
@@ -97,7 +97,7 @@ EXCLUDED: tuple[tuple[str, str, str], ...] = (
     ("tools/bot_desktop/runtime.py", 'Path(project_root_str()), module="tools.bot_desktop.idle_watch")),', SHIPPED),
     ("tools/mcp_tool_lifecycle.py", '"tui_gateway.slash_worker", "tui_gateway.entry",', IDENTITY),
     ("tui_gateway/host_supervisor.py", 'return "tui_gateway.compute_host" in _pid_command(pid)', IDENTITY),
-    ("scripts/build/launcher_wrapper.py", 'importlib.import_module("hermes_bootstrap")', PERSISTED),
+    ("scripts/build/launcher_wrapper.py", 'importlib.import_module("hermes_agent.hermes_bootstrap")', PERSISTED),
 )
 
 BY_HAND: tuple[tuple[str, str], ...] = (

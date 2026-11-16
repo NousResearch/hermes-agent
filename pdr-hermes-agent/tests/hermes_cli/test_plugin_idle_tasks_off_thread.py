@@ -110,7 +110,7 @@ def test_the_claim_is_released_and_the_run_recorded_after_an_exception(home):
 
 
 def test_the_worker_keeps_the_profile_scope_of_the_poll(home, tmp_path):
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     coder = tmp_path / "profiles" / "coder"
     coder.mkdir(parents=True)

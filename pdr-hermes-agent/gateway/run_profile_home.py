@@ -23,7 +23,7 @@ def resolve_profile_home_for_source(runner, source) -> Path:
     from gateway.session_identity import identity_of
     from hermes_cli.profiles import (
         get_active_profile_name, get_profile_dir, normalize_profile_name, profile_exists)
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     identity = identity_of(source)
     if identity is not None:
         return identity.runtime_home

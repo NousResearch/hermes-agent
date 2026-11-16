@@ -21,7 +21,7 @@ from threading import Barrier
 
 import pytest
 
-import model_tools
+from hermes_agent import model_tools
 
 
 @pytest.fixture(autouse=True)

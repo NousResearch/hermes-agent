@@ -17,7 +17,7 @@ NOTE = "[System note: Your previous turn was interrupted. Continue the old task.
 
 
 def _render(text, timestamp=STAMP):
-    from hermes_time import get_timezone
+    from hermes_agent.hermes_time import get_timezone
 
     return render_user_content_with_timestamp(text, timestamp, tz=get_timezone())
 
@@ -47,7 +47,7 @@ def test_recovery_cleanup_never_restores_a_sidecar(timestamps, embedded, real_te
 def responses_agent(tmp_path, monkeypatch):
     """Use the real agent/Responses converter; replace only the network call."""
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     captured = []
     responses = []

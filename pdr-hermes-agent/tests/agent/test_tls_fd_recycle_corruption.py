@@ -121,7 +121,7 @@ def test_agent_abort_request_openai_client_does_not_call_client_close(caplog):
     the FD race is back. Pin both the shutdown side-effect AND the absence
     of any ``client.close()`` call.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     sock = _FakeSocket()
     client = _build_fake_client(sock)

@@ -10,7 +10,7 @@ from pathlib import Path
 from hermes_cli import source_check
 # Historical updater import (tests/compat/old_updater_surface.json). In-tree callers use the owner.
 from hermes_cli.source_check import _github_compare_behind
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from hermes_cli._startup_fast import project_root_str
 
@@ -110,7 +110,7 @@ def _memo(cache_name: str, compute):
 
     Not consulted under a routed profile (HERMES_HOME override): every memo here is derived from the
     launch home (its skills tree, its checkout), and the TUI gateway calls these per profile."""
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
     if get_hermes_home_override() is not None:
         return compute()
     cached = globals()[cache_name]
@@ -463,7 +463,7 @@ def save_banner_snapshot(tools: list[dict], enabled_toolsets: list[str], availab
     }
 
     def _write():
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
         atomic_json_write(_banner_snapshot_path(), payload, indent=None, mode=0o600)
     _quiet(_write)
 
@@ -473,7 +473,7 @@ def compute_toolset_availability(enabled_toolsets: list[str] | None = None) -> d
 
     Split out so the result can be snapshotted and replayed without importing ``model_tools``.
     """
-    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    from hermes_agent.model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     enabled_toolsets = enabled_toolsets or []
     _, unavailable_toolsets = check_tool_availability(quiet=True)
     # The availability check walks the GLOBAL registry, so it includes toolsets outside this
@@ -688,7 +688,7 @@ def build_welcome_banner(
     from rich.panel import Panel
     from rich.table import Table
     if get_toolset_for_tool is None:
-        from model_tools import get_toolset_for_tool
+        from hermes_agent.model_tools import get_toolset_for_tool
     tools = tools or []
     enabled_toolsets = enabled_toolsets or []
     if availability is None:

@@ -76,7 +76,7 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
     # Load the checkout's constants before the launcher's bootstrap import;
     # an editable test interpreter may also expose an older installed checkout.
     import shutil
-    shutil.copyfile(real_root / "hermes_constants.py", root / "hermes_constants.py")
+    shutil.copyfile(real_root / "hermes_agent/hermes_constants.py", root / "hermes_agent/hermes_constants.py")
     (package / "__init__.py").write_text(
         f"__path__.append({str(real_root / 'hermes_cli')!r})\n", encoding="utf-8")
     (package / "main.py").write_text(
@@ -86,7 +86,7 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
         "    print(json.dumps([plugin_generation_probe.VALUE, sys.argv[1:]]))\n"
         "    return 0\n", encoding="utf-8")
     # Keep the entry point local and non-networked, but run real PM selection.
-    (root / "hermes_bootstrap.py").write_text(
+    (root / "hermes_agent/hermes_bootstrap.py").write_text(
         f"import sys\nsys.path.append({str(real_root)!r})\n"
         "from pathlib import Path\nfrom pm.environments import activate_dependencies\n"
         "activate_dependencies(Path(__file__).resolve().parent)\n", encoding="utf-8")
@@ -106,7 +106,7 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
     (old_package / "__init__.py").write_text("", encoding="utf-8")
     (old_package / "main.py").write_text(
         "def main():\n    print('old-generation')\n    return 0\n", encoding="utf-8")
-    (old_package.parent / "hermes_bootstrap.py").write_text("", encoding="utf-8")
+    (old_package.parent / "hermes_agent/hermes_bootstrap.py").write_text("", encoding="utf-8")
     assert _launchers.mint_launcher("hermes", old_package.parent, old_bin, real_python, None)
     monkeypatch.setattr("hermes_cli._startup_fast.project_root_str", lambda: str(root))
     monkeypatch.setattr(sys, "executable", str(old_bin / "python.exe"))

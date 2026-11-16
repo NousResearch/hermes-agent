@@ -10,7 +10,7 @@ Protocol: reads JSON lines from stdin {id, command}, writes {id, ok, output|erro
 # ``hermes_bootstrap`` lives at the repo root, so importing it is safe before the guard runs (its name won't
 # collide with a user package), and it owns the canonical path-hardening logic shared with the other entry
 # points — #51693 added the guard to ``entry.py``/``acp_adapter/entry.py`` but missed this child.
-import hermes_bootstrap
+from hermes_agent import hermes_bootstrap
 
 hermes_bootstrap.harden_import_path()
 
@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from tui_gateway._stdin_recovery import handle_spurious_eof
 
 if TYPE_CHECKING:
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ def _refuse_skill_slash(command: str) -> None:
     if not base:
         return
     try:
-        from cli import get_skill_commands
+        from hermes_agent.cli import get_skill_commands
         commands = get_skill_commands()
     except Exception:
         return
@@ -111,11 +111,11 @@ def _run(cli: "HermesCLI", command: str) -> str:
     """Run one command; return its captured, ANSI-stripped output.
 
     A command like /prompt or /blueprint parks the composed text on the one-shot
-    ``_pending_agent_seed`` for the interactive REPL loop (cli.py) — but this
+    ``_pending_agent_seed`` for the interactive REPL loop (hermes_agent/cli.py) — but this
     worker has no REPL, so the seed is harvested here onto ``cli._harvested_seed``
     and routed back to the gateway, which sends it as the next turn (#107800).
     """
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     from rich.console import Console
 
     cli._harvested_seed = ""  # one-shot: a fresh run never re-sends a stale seed
@@ -168,7 +168,7 @@ def main():
     _start_legacy_parent_watchdog(args.parent_pid)
     # Import cli ahead of MCP discovery: importing it loads ~/.hermes/.env and sets HERMES_QUIET,
     # which MCP ``${VAR}`` interpolation in the runtime prep depends on.
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     _prepare_slash_worker_runtime()
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

@@ -97,7 +97,7 @@ def _kanban_worktree(project, tmp_path, monkeypatch):
 
 
 def _cli_worktree(project, tmp_path, monkeypatch):
-    import cli
+    from hermes_agent import cli
     wt = _linked_worktree(project, tmp_path)
     info = {"path": str(wt), "branch": "wt/t1", "repo_root": str(project)}
     return wt, project, lambda: cli._cleanup_worktree(info)

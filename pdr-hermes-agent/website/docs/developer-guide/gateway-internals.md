@@ -575,7 +575,7 @@ same-user lock left at mode 0644 by an older Hermes is narrowed to 0600, as
 `hermes gateway attach` does. None of this protects against code already running as your user,
 or root.
 
-The contract is pinned by `apps/shared/src/node/control-socket.vectors.json`: request and reply
+The contract is pinned by `ui-tui/packages/shared/src/node/control-socket.vectors.json`: request and reply
 pairs a client in any language can replay, run against the gateway by
 `tests/gateway/test_control_socket_vectors.py`.
 

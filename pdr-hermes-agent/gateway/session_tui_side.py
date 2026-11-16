@@ -90,7 +90,7 @@ def _side_agent(authority, policy, live, task_id, **overrides):
     """A fresh ``AIAgent`` on the session's frozen route (call inside ``_side_scope``)."""
     from agent.skill_utils import parse_config_string_list
     from gateway.run import _checkpoint_agent_kwargs
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     runner = authority.runner
     model, runtime = _resolve_runtime(authority, policy)
     config = policy.config(authority)

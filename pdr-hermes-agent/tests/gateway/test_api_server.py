@@ -217,7 +217,7 @@ class TestAdapterInit:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
 
-        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs",
             lambda: {
@@ -1021,7 +1021,7 @@ class TestToolsetsEndpoint:
             "hermes_cli.tools_config._toolset_has_keys",
             return_value=True,
         ) as has_keys, patch(
-            "toolsets.resolve_toolset",
+            "hermes_agent.toolsets.resolve_toolset",
             side_effect=lambda name: {
                 "default": ["terminal", "read_file"],
                 "web": ["web_search"],
@@ -1418,7 +1418,7 @@ class TestDeriveChatSessionId:
     def test_launch_profile_prefix_keeps_the_unprefixed_id(self, monkeypatch, tmp_path):
         """A gateway launched as ``work`` serves ``/p/work/`` and the bare route as ONE profile:
         both must derive one id, or the same conversation forks by URL."""
-        import hermes_constants
+        from hermes_agent import hermes_constants
         from hermes_cli import profiles
 
         work = tmp_path / "profiles" / "work"
@@ -2568,7 +2568,7 @@ def _make_routing_adapter(routes) -> APIServerAdapter:
 
 def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
     """Stub out every external dependency of _create_agent."""
-    monkeypatch.setattr("run_agent.AIAgent", fake_agent_cls)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", fake_agent_cls)
     monkeypatch.setattr(
         "gateway.run._resolve_runtime_agent_kwargs",
         lambda: {
@@ -3051,7 +3051,7 @@ class TestCreateAgentModelRecovery:
                 captured.append(dict(kwargs))
 
         _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
-        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FakeAgent)
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)

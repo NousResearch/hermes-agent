@@ -7,7 +7,7 @@ import sys
 import textwrap
 
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 
 @pytest.mark.parametrize("case", ["native", "url-only", "disabled", "managed", "managed-only", "scoped"])
@@ -42,7 +42,7 @@ def test_cold_fronted_platforms_is_read_only(tmp_path, case):
                     "GATEWAY_RELAY_SECRET": "inherited-test-secret"})
     code = textwrap.dedent("""
         import json, os, sys
-        from hermes_constants import set_hermes_home_override
+        from hermes_agent.hermes_constants import set_hermes_home_override
         if sys.argv[1] == "scoped":
             set_hermes_home_override(sys.argv[2])
         before = dict(os.environ)

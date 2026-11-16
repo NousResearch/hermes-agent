@@ -20,7 +20,7 @@ def _make_minimal_agent(memory_manager, context_compressor, session_id="abc"):
     to a SimpleNamespace-style object that has the attributes the method
     actually touches.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     obj = SimpleNamespace(
         _memory_manager=memory_manager,

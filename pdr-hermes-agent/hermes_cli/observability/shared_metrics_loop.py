@@ -27,7 +27,7 @@ def _bound_home(hermes_home: Any) -> Iterator[None]:
     if not hermes_home:
         yield
         return
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     token = set_hermes_home_override(hermes_home)
     try:
@@ -63,7 +63,7 @@ def _parsed(result: Any) -> dict[str, Any]:
 
 def _current_home() -> str | None:
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         return str(get_hermes_home())
     except Exception:

@@ -89,7 +89,7 @@ def direct_fal_client(fal_client: Any) -> Any:
     Entra clients and rebuilt when that profile's key (or the ``fal_client`` module, which tests
     replace) changes, so its ``httpx.Client`` is not leaked per call. A replaced client is not
     closed: a result wait that started before a key rotation still polls through it."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     from tools.tool_backend_helpers import fal_key
     key = fal_key()
     if not key:

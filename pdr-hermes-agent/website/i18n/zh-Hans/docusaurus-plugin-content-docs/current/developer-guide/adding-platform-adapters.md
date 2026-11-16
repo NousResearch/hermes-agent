@@ -565,8 +565,8 @@ await self.handle_message(event)
 
 ### 8. Toolset
 
-1. **`toolsets.py`** — 添加带 `_HERMES_CORE_TOOLS` 的 `"hermes-newplat"` toolset 定义
-2. **`toolsets.py`** — 将 `"hermes-newplat"` 添加到 `"hermes-gateway"` 的 includes 列表
+1. **`hermes_agent/toolsets.py`** — 添加带 `_HERMES_CORE_TOOLS` 的 `"hermes-newplat"` toolset 定义
+2. **`hermes_agent/toolsets.py`** — 将 `"hermes-newplat"` 添加到 `"hermes-gateway"` 的 includes 列表
 
 ### 9. 可选：平台提示
 

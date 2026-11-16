@@ -1,7 +1,7 @@
 """Interrupt / steer / redirect control surface for ``AIAgent``.
 
 Soft/hard interrupt requests, tool-thread interrupt propagation, pending steer/redirect queues.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import contextlib
 import logging

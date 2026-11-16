@@ -55,7 +55,7 @@ def _decoded_candidate(raw: str, *, cwd: str | None = None) -> Path | None:
 def _file_url_path(url: str) -> str:
     """The native path a ``file:`` URL names, percent-decoded once.
 
-    A URL that encodes a separator is refused (ValueError) as ``apps/shared/src/file-url.ts``
+    A URL that encodes a separator is refused (ValueError) as ``ui-tui/packages/shared/src/file-url.ts``
     refuses it in the renderer and Electron: ``%2f``, and ``%5c`` on a Windows gateway or in a
     Windows URL (a UNC host or a drive letter). Decoding it would add a segment, so ``..%2f`` would
     name a file outside the folder the URL spells.
@@ -200,7 +200,7 @@ def _agent_path_scope(profile_home: Path | None = None) -> Iterator[None]:
     agree about the backend.
     """
     from hermes_cli.config import get_hermes_home
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         get_hermes_home_override, get_process_hermes_home, reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -378,7 +378,7 @@ def _default_hermes_root_is_opt_data() -> bool:
     if not raw:
         return False
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
 
         root = get_default_hermes_root().expanduser().resolve(strict=False)
     except (OSError, RuntimeError):
@@ -399,7 +399,7 @@ def _dashboard_local_update_managed_externally() -> bool:
     if _default_hermes_root_is_opt_data():
         return True
     try:
-        from hermes_constants import is_container
+        from hermes_agent.hermes_constants import is_container
 
         if not is_container():
             return False

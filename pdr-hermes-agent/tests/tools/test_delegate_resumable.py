@@ -63,7 +63,7 @@ def test_a_limit_stopped_child_is_continued_after_a_restart_on_its_own_transcrip
     resets = time.time() + 3600
     model = _FailingModel(resets_at=resets)
     parent = _parent()
-    with patch("run_agent.AIAgent", side_effect=model):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model):
         out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}], background=True, parent_agent=parent))
         done = _completion(out["delegation_id"])
         sid = out["subagent_ids"][0]
@@ -108,7 +108,7 @@ def test_a_gateway_shutdown_leaves_a_resumable_record_and_a_user_stop_does_not(c
         return child
 
     parent = _parent()
-    with patch("run_agent.AIAgent", side_effect=build):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=build):
         out = json.loads(delegate_task(tasks=[{"goal": "long job"}], background=True, parent_agent=parent))
         sid = out["subagent_ids"][0]
         assert started.wait(10)
@@ -170,7 +170,7 @@ def test_a_resumable_childs_isolation_worktree_survives_its_stop_and_continue_ru
         return child
 
     parent = _parent()
-    with patch("run_agent.AIAgent", side_effect=build):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=build):
         out = json.loads(delegate_task(tasks=[{"goal": "edit"}], background=True, parent_agent=parent))
         sid = out["subagent_ids"][0]
         assert started.wait(10)
@@ -197,7 +197,7 @@ def test_crashed_childs_worktree_survives_the_sweep_until_its_record_expires(tmp
     from hermes_state import SessionDB
     from tools.async_delegation import recover_abandoned_delegations
     from tools.delegate_tool_resumable import _upsert
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     repo = tmp_path / "repo"
     repo.mkdir()

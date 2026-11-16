@@ -24,7 +24,7 @@ def _import_cli():
             "validated": False,
         }
 
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     return cli_mod
 

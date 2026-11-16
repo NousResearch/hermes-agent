@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -178,7 +178,7 @@ async def test_interim_off_joins_the_children_and_the_chat_gets_one_completed_an
 
 @pytest.mark.asyncio
 async def test_interim_on_keeps_the_background_path_and_its_schema_byte_identical(monkeypatch, dispatches):
-    import model_tools
+    from hermes_agent import model_tools
 
     chat, requests = await _turn(monkeypatch, {})
 
@@ -290,7 +290,7 @@ def test_each_profile_resolves_its_own_mode_under_the_multiplexer(monkeypatch, t
     (root / "config.yaml").write_text(yaml.safe_dump(_interim(False)))
     (beta / "config.yaml").write_text(yaml.safe_dump(_interim(True)))
     monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda: root)
     prev = secret_scope.is_multiplex_active()
     secret_scope.set_multiplex_active(True)
     try:

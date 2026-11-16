@@ -138,7 +138,7 @@ def _legacy_row(home):
 @pytest.mark.parametrize("multiplex, mode", [(False, "retained"), (True, "missing"), (False, "legacy-leased")],
                          ids=["standalone-resume-restored", "satellite-create-missing", "legacy-reimport-leased"])
 def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiplex, mode, capsys, monkeypatch):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     from types import MethodType
     home = local_gateway(multiplex)
     legacy = _legacy_row(home) if mode == "legacy-leased" else None

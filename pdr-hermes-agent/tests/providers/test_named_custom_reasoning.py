@@ -62,7 +62,7 @@ def test_bare_named_custom_memo_caches_the_helper_result(monkeypatch):
     which lands inside per-model prefix loops.
     """
     import providers
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 
     home, hkey = get_hermes_home(), hermes_home_key()
     calls = []
@@ -81,7 +81,7 @@ def test_bare_named_custom_memo_caches_the_helper_result(monkeypatch):
 def test_bare_named_custom_memo_invalidates_on_config_change(monkeypatch):
     """A config edit re-arms the memo: the signature is the same signal load_config uses."""
     import providers
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 
     home, hkey = get_hermes_home(), hermes_home_key()
     cfg = home / "config.yaml"
@@ -99,7 +99,7 @@ def test_bare_named_custom_memo_invalidates_on_config_change(monkeypatch):
 def test_bare_named_custom_memo_is_keyed_by_home(monkeypatch):
     """Two home keys never borrow each other's answers (multiplex isolation)."""
     import providers
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = get_hermes_home()
     answers = {"key-a": True, "key-b": False}

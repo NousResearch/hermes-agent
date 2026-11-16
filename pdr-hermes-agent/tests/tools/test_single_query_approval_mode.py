@@ -1,7 +1,7 @@
 """Tests for approvals.single_query_mode — configurable approval behavior for
 single-query (-q) sessions.
 
-Background (#86878): ``hermes chat -q "..."`` runs one turn and exits. cli.py
+Background (#86878): ``hermes chat -q "..."`` runs one turn and exits. hermes_agent/cli.py
 exports ``HERMES_INTERACTIVE=1`` (needed for interactive sudo password
 prompts), which previously made ``_is_interactive_cli()`` report True in the
 approval gate. A -q run has NO user waiting to answer approval prompts, so a

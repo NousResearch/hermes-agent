@@ -29,7 +29,7 @@ def refresh_launch_files() -> None:
     from hermes_cli.config_backend import ConfigBackendUnavailable
     from hermes_cli.update_fleet_scope import update_scope_homes
     from hermes_cli.update_receipt import _profile_homes, record_followup
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     try:
         refreshers = _refreshers()

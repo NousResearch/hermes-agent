@@ -13,7 +13,7 @@ Usage:
 # ``hermes update`` the editable install's ``.pth`` may not list it yet; crashing
 # here would block ``hermes update``.
 try:
-    import hermes_bootstrap
+    from hermes_agent import hermes_bootstrap
 except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
@@ -66,7 +66,7 @@ def _argv_is_gateway_run(argv: list) -> bool:
 
 if _argv_is_gateway_run(sys.argv[1:]):
     try:
-        from hermes_startup_watchdog import arm_startup_watchdog as _arm_sw
+        from hermes_agent.hermes_startup_watchdog import arm_startup_watchdog as _arm_sw
 
         _arm_sw()
         del _arm_sw
@@ -357,7 +357,7 @@ def _resolve_sudo_user_profile_env(name: str) -> str | None:
     """
     if name == "default":
         return None
-    from hermes_constants import named_profile_is_live, sudo_invoker_default_home
+    from hermes_agent.hermes_constants import named_profile_is_live, sudo_invoker_default_home
 
     sudo_home = sudo_invoker_default_home()
     if sudo_home is None:
@@ -450,7 +450,7 @@ def _apply_profile_override() -> None:
             and not _startup_fast.is_desktop_ssh_backend_argv(argv)
             and not _s6_supervised_gateway_run(argv)):
         try:
-            from hermes_constants import get_default_hermes_root
+            from hermes_agent.hermes_constants import get_default_hermes_root
 
             active_path = get_default_hermes_root() / "active_profile"
             if active_path.exists():
@@ -509,7 +509,7 @@ _apply_profile_override()
 # ``-p``/active_profile re-homed the process after hermes_bootstrap ran: re-point the temp vars
 # at THIS home's scratch dir (a user-set TMPDIR is still left alone).
 try:
-    from hermes_constants import export_scratch_tmp_env as _export_scratch_tmp_env
+    from hermes_agent.hermes_constants import export_scratch_tmp_env as _export_scratch_tmp_env
 
     _export_scratch_tmp_env()
 except Exception:
@@ -585,7 +585,7 @@ if server_process_argv(sys.argv[1:]):
 # Centralized file logging for every subcommand (agent.log + errors.log).
 # Dashboard entrypoints use GUI mode so gui.log captures pre-dispatch failures.
 try:
-    from hermes_logging import setup_logging as _setup_logging
+    from hermes_agent.hermes_logging import setup_logging as _setup_logging
 
     _setup_logging(
         mode=(
@@ -601,7 +601,7 @@ except Exception:
 # Apply IPv4 preference before any HTTP client is created.
 if _FORCE_IPV4_EARLY:
     try:
-        from hermes_constants import apply_ipv4_preference as _apply_ipv4
+        from hermes_agent.hermes_constants import apply_ipv4_preference as _apply_ipv4
 
         _apply_ipv4(force=True)
     except Exception:
@@ -1603,7 +1603,7 @@ def cmd_chat(args):
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
-        from cli import main as cli_main
+        from hermes_agent.cli import main as cli_main
         from hermes_cli.observability.shared_metrics_process import begin_process
 
         begin_process("cli")
@@ -1612,12 +1612,12 @@ def cmd_chat(args):
         print(f"Error: {e}")
         sys.exit(1)
     except ImportError as e:
-        # Mixed-version installs (new cli.py, older hermes_cli.config) crash
+        # Mixed-version installs (new hermes_agent/cli.py, older hermes_cli.config) crash
         # here — e.g. missing resolve_turn_limit / split_model_config_default
         # (#96900). The agent-setup mixin prints this hint too late: HermesCLI
         # construction already failed. Fast-chat launch also goes through
         # cmd_chat, so this one catch covers `hermes` / `hermes chat`.
-        from hermes_constants import emit_partial_update_hint
+        from hermes_agent.hermes_constants import emit_partial_update_hint
 
         if emit_partial_update_hint(e):
             sys.exit(1)
@@ -2315,7 +2315,7 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
     if getattr(args, "stop", False):
         # Scoped to the invoking home (`-p` applied by _apply_profile_override): another
         # install's or profile's backend on this machine is never a target (#113978).
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         own_home = str(get_hermes_home())
         if not _find_stale_dashboard_pids(scope_home=own_home):
@@ -2391,7 +2391,7 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     # Attach gui.log early so dashboard startup/build failures are captured in
     # the same logs directory as every other Hermes surface.
     try:
-        from hermes_logging import setup_logging as _setup_logging_gui
+        from hermes_agent.hermes_logging import setup_logging as _setup_logging_gui
         _setup_logging_gui(mode="gui")
     except Exception:
         pass
@@ -2403,7 +2403,7 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     _sync_bundled_skills_quietly()
 
     # Bridge terminal.* config into TERMINAL_* env for THIS process, like the
-    # CLI (cli.py env_mappings) and gateway (_terminal_env_map) do. The
+    # CLI (hermes_agent/cli.py env_mappings) and gateway (_terminal_env_map) do. The
     # dashboard/serve backend runs agents in-process (tui_gateway.ws →
     # server._make_agent) and ticks cron itself when desktop-spawned; without
     # this those consumers saw an unset TERMINAL_ENV and ran every command on
@@ -2824,7 +2824,7 @@ def _set_chat_arg_defaults(args) -> None:
 def _run_oneshot_from_args(args) -> None:
     """Top-level --oneshot / -z: single-shot mode, stdout = final response only.
 
-    Bypasses cli.py entirely; the transport launcher never returns.
+    Bypasses hermes_agent/cli.py entirely; the transport launcher never returns.
     """
     from hermes_cli.gateway_chat_startup import launch_gateway_chat
     sys.exit(launch_gateway_chat(args))

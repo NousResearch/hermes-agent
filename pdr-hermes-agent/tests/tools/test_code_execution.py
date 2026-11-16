@@ -307,7 +307,7 @@ class TestExecuteCode(unittest.TestCase):
 
     def _run(self, code, enabled_tools=None):
         """Helper: run code with mocked handle_function_call."""
-        with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=_mock_handle_function_call):
             result = execute_code(
                 code=code,
                 task_id="test-task",
@@ -336,7 +336,7 @@ class TestExecuteCode(unittest.TestCase):
         """Sandboxed scripts can import modules that live at the repo root."""
         result = self._run('import hermes_constants; print(hermes_constants.__file__)')
         self.assertEqual(result["status"], "success")
-        self.assertIn("hermes_constants.py", result["output"])
+        self.assertIn("hermes_agent/hermes_constants.py", result["output"])
 
     def test_single_tool_call(self):
         """Script calls terminal and prints the result."""
@@ -398,7 +398,7 @@ else:
                 function_name, function_args, task_id=task_id, user_task=user_task
             )
 
-        with patch("model_tools.handle_function_call", side_effect=slow_mock):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=slow_mock):
             raw = execute_code(
                 code=code,
                 task_id="test-concurrent",
@@ -606,7 +606,7 @@ class TestEnvVarFiltering(unittest.TestCase):
         try:
             if extra_env:
                 os.environ.update(extra_env)
-            with patch("model_tools.handle_function_call", return_value='{}'), \
+            with patch("hermes_agent.model_tools.handle_function_call", return_value='{}'), \
                  patch("tools.code_execution_tool._load_config",
                        return_value={"timeout": 10, "max_tool_calls": 50}):
                 # reset=True: a session kernel's env is frozen at spawn, so
@@ -741,7 +741,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         ImportError. Previously ``[]`` was conflated with ``None`` and
         broadened to every sandbox tool (#84271)."""
         code = "from hermes_tools import terminal\nprint('should not reach')\n"
-        with patch("model_tools.handle_function_call",
+        with patch("hermes_agent.model_tools.handle_function_call",
                    side_effect=_mock_handle_function_call):
             result = json.loads(execute_code(
                 code, task_id="test-empty-deny-all",
@@ -760,7 +760,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         back to every sandbox tool — the exact authenticated manifest is used,
         and an empty intersection denies all (#84271)."""
         code = "from hermes_tools import terminal\nprint('fallback')\n"
-        with patch("model_tools.handle_function_call",
+        with patch("hermes_agent.model_tools.handle_function_call",
                    side_effect=_mock_handle_function_call):
             result = json.loads(execute_code(
                 code, task_id="test-nonoverlap",
@@ -783,7 +783,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
             "r = terminal('echo hi')\n"
             "print(r.get('output', ''))\n"
         )
-        with patch("model_tools.handle_function_call",
+        with patch("hermes_agent.model_tools.handle_function_call",
                    side_effect=_mock_handle_function_call):
             result = json.loads(execute_code(
                 code, task_id="test-none-default",
@@ -876,7 +876,7 @@ class TestInterruptHandling(unittest.TestCase):
         t.start()
 
         try:
-            with patch("model_tools.handle_function_call",
+            with patch("hermes_agent.model_tools.handle_function_call",
                         return_value=json.dumps({"ok": True})), \
                  patch("tools.code_execution_tool._load_config",
                        return_value={"timeout": 30, "max_tool_calls": 50}):
@@ -895,7 +895,7 @@ class TestHeadTailTruncation(unittest.TestCase):
     """Tests for head+tail truncation of large stdout in execute_code."""
 
     def _run(self, code):
-        with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=_mock_handle_function_call):
             result = execute_code(
                 code=code,
                 task_id="test-task",
@@ -1000,7 +1000,7 @@ class TestHeadTailTruncation(unittest.TestCase):
         """Tightening an existing cache/exec drops world bits only: a shared-group home
         (HERMES_HOME_MODE=2770) keeps group access; the spill file itself is 0600."""
         import stat as stat_mod
-        from hermes_constants import get_hermes_dir
+        from hermes_agent.hermes_constants import get_hermes_dir
         from tools.code_execution_tool import _spill_full_stdout
         cache_dir = get_hermes_dir("cache/exec", "exec_spill")
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1058,7 +1058,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
 
         def _run():
             with patch(
-                "model_tools.handle_function_call",
+                "hermes_agent.model_tools.handle_function_call",
                 side_effect=_mock_handle_function_call,
             ):
                 _rpc_server_loop(

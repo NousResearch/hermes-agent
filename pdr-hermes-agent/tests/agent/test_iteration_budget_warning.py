@@ -9,9 +9,9 @@ def _agent(tmp_path, monkeypatch, ratio):
     (tmp_path / "config.yaml").write_text(
         f"agent:\n  budget_warning_ratio: {ratio}\n", encoding="utf-8"
     )
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from hermes_state import SessionDB
-    from model_tools import _clear_tool_defs_cache
+    from hermes_agent.model_tools import _clear_tool_defs_cache
     from tools.registry import invalidate_check_fn_cache
 
     # Cases model separate worker processes; their availability caches must not

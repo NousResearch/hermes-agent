@@ -1,7 +1,7 @@
 """Tests for hermes_bootstrap — Windows UTF-8 stdio shim.
 
 The bootstrap module is imported at the top of every Hermes entry point
-(hermes, hermes-agent, hermes-acp, gateway, batch_runner, cli.py).  It
+(hermes, hermes-agent, hermes-acp, gateway, batch_runner, hermes_agent/cli.py).  It
 fixes Python's Windows UTF-8 defaults so print("café") doesn't crash and
 subprocess children inherit UTF-8 mode.
 
@@ -42,8 +42,8 @@ def _fresh_import():
     Drops any cached copy from sys.modules first so module-level code
     runs again and the platform check re-evaluates.
     """
-    sys.modules.pop("hermes_bootstrap", None)
-    import hermes_bootstrap  # noqa: WPS433
+    sys.modules.pop("hermes_agent.hermes_bootstrap", None)
+    from hermes_agent import hermes_bootstrap  # noqa: WPS433
     return hermes_bootstrap
 
 
@@ -183,8 +183,8 @@ class TestStdioReconfigureErrorHandling:
 
 
 @pytest.mark.parametrize("path", [current_path(entry) for entry in (
-    "hermes_cli/main.py", "run_agent.py", "acp_adapter/entry.py",
-    "gateway/run.py", "batch_runner.py", "cli.py",
+    "hermes_cli/main.py", "hermes_agent/run_agent.py", "acp_adapter/entry.py",
+    "gateway/run.py", "hermes_agent/batch_runner.py", "hermes_agent/cli.py",
 )])
 def test_entrypoint_executes_bootstrap_before_application_imports(tmp_path, path):
     import subprocess
@@ -276,12 +276,12 @@ class PrePMEditableFinder(MetaPathFinder):
             return importlib.util.spec_from_file_location(
                 name, os.path.join(pkg, '__init__.py'), submodule_search_locations=[pkg])
         if name == 'hermes_bootstrap':
-            return importlib.util.spec_from_file_location(name, os.path.join(root, 'hermes_bootstrap.py'))
+            return importlib.util.spec_from_file_location(name, os.path.join(root, 'hermes_agent/hermes_bootstrap.py'))
         return None
 sys.meta_path.append(PrePMEditableFinder())
 sys.argv = ['hermes', 'pm', 'repair']
 import hermes_cli
-import hermes_bootstrap
+from hermes_agent import hermes_bootstrap
 assert hermes_bootstrap._pm_repair is True
 print('reached-pm')
 """
@@ -293,8 +293,8 @@ print('reached-pm')
 
 
 @pytest.mark.parametrize("path", [current_path(entry) for entry in (
-    "hermes_cli/main.py", "run_agent.py", "acp_adapter/entry.py",
-    "gateway/run.py", "batch_runner.py", "cli.py",
+    "hermes_cli/main.py", "hermes_agent/run_agent.py", "acp_adapter/entry.py",
+    "gateway/run.py", "hermes_agent/batch_runner.py", "hermes_agent/cli.py",
     "agent/managed_worker.py", "hermes_cli/kanban_worker_client.py",
 )])
 @pytest.mark.parametrize("bootstrap,expected", [
@@ -313,7 +313,7 @@ def test_entrypoint_tolerates_only_an_absent_bootstrap(tmp_path, path, bootstrap
     fake_root = tmp_path / "root"
     fake_root.mkdir()
     if bootstrap is not None:
-        (fake_root / "hermes_bootstrap.py").write_text(bootstrap)
+        (fake_root / "hermes_agent/hermes_bootstrap.py").write_text(bootstrap)
     program = r"""
 import builtins, runpy, sys
 fake_root, entry = sys.argv[1:]
@@ -417,7 +417,7 @@ class TestEnableWindowsVt:
             import ctypes, msvcrt, sys
             from ctypes import wintypes
             sys.path.insert(0, sys.argv[1])
-            import hermes_bootstrap
+            from hermes_agent import hermes_bootstrap
             kernel32 = ctypes.WinDLL("kernel32")
             handle = msvcrt.get_osfhandle(sys.stdout.fileno())
             mode = wintypes.DWORD()
@@ -443,7 +443,7 @@ class TestEnableWindowsVt:
     def test_leaves_non_console_handles_and_colour_alone(self, tmp_path, monkeypatch):
         # Redirected output must neither fail nor flip Hermes to NO_COLOR.
         monkeypatch.delenv("NO_COLOR", raising=False)
-        import hermes_bootstrap
+        from hermes_agent import hermes_bootstrap
 
         with open(tmp_path / "out.txt", "w", encoding="utf-8") as stream:
             assert hermes_bootstrap.enable_windows_vt([stream]) is True
@@ -497,7 +497,8 @@ class TestHappyEyeballsSocketConnect:
         # The bootstrap must not pay urllib3's import (~50 ms) on every process start: a fresh
         # interpreter gets the patch the moment urllib3 loads, not before.
         subprocess.run([sys.executable, "-c", textwrap.dedent("""
-            import sys, hermes_bootstrap
+            import sys
+            from hermes_agent import hermes_bootstrap
             assert "urllib3" not in sys.modules, "bootstrap imported urllib3 eagerly"
             import urllib3.util.connection as c
             assert c.create_connection._hermes_happy_eyeballs
@@ -606,7 +607,8 @@ class TestNeverFreeEnviron:
     def test_arrays_superseded_by_new_names_stay_intact(self):
         # Fresh interpreter: the test process's own environ history must not matter.
         subprocess.run([sys.executable, "-c", textwrap.dedent("""
-            import ctypes, os, hermes_bootstrap
+            import ctypes, os
+            from hermes_agent import hermes_bootstrap
             environ = ctypes.c_void_p.in_dll(ctypes.CDLL(None), "environ")
             def snapshot(addr):
                 array, out = ctypes.cast(addr, ctypes.POINTER(ctypes.c_void_p)), []
@@ -629,7 +631,8 @@ class TestNeverFreeEnviron:
     def test_concurrent_writers_lose_no_name_in_the_c_environ(self):
         # Unserialized writers each copied the live array; the later publish dropped the others' names.
         subprocess.run([sys.executable, "-c", textwrap.dedent("""
-            import ctypes, os, sys, threading, hermes_bootstrap
+            import ctypes, os, sys, threading
+            from hermes_agent import hermes_bootstrap
             getenv = ctypes.CDLL(None).getenv
             getenv.restype, getenv.argtypes = ctypes.c_char_p, [ctypes.c_char_p]
             sys.setswitchinterval(1e-6)
@@ -648,7 +651,8 @@ class TestNeverFreeEnviron:
     def test_set_del_churn_of_the_same_names_keeps_memory_bounded(self):
         # Kanban ticks, the spinner pause and _restore_env set and pop the same names forever.
         subprocess.run([sys.executable, "-c", textwrap.dedent("""
-            import os, tracemalloc, hermes_bootstrap
+            import os, tracemalloc
+            from hermes_agent import hermes_bootstrap
             def churn(cycles):
                 for _ in range(cycles):
                     for k in range(4):

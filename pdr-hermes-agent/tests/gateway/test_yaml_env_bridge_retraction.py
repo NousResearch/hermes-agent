@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from hermes_yaml import YAMLError
+from hermes_agent.hermes_yaml import YAMLError
 
 from gateway.config_loader import load_yaml_layer
 from gateway.platforms._shared import bridged_env_digest, bridged_env_marker

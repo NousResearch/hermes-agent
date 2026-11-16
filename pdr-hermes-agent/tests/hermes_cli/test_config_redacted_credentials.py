@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 REAL = "sk-proj-" + "a1B2c3D4" * 6
 

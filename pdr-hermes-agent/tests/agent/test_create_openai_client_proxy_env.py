@@ -15,7 +15,7 @@ from unittest.mock import patch
 import httpx
 
 from agent.process_bootstrap import _get_proxy_for_base_url, _get_proxy_from_env
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent():

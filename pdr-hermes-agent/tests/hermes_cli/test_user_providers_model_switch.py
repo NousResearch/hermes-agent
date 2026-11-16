@@ -402,7 +402,7 @@ def test_list_authenticated_providers_dedup_honors_base_url_env_override(monkeyp
 
 def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     """/model switch should resolve credentials for providers: dict providers."""
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
     
     config = {
         "providers": {
@@ -707,7 +707,7 @@ def test_cli_picker_provider_select_reads_the_disk_cached_catalog(monkeypatch):
     disk-cached live catalog (like the gateway pickers), not the blocking ``provider_model_ids``
     probe: azure-foundry's probe walks api-version fallbacks with a 6 s timeout each (#27989)."""
     from types import SimpleNamespace
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     seen = []
     monkeypatch.setattr("hermes_cli.models.cached_provider_model_ids",

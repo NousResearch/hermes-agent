@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_constants as hc
+from hermes_agent import hermes_constants as hc
 
 
 def _uncached(path=None) -> str:

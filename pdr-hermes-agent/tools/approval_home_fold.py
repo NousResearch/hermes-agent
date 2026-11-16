@@ -112,7 +112,7 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     match Docker/gateway deployments and the platform default in every spelling a shell uses for it
     (native, Git Bash ``/c/…``, ``~/AppData/Local/hermes``, ``$LOCALAPPDATA/hermes``)."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         home = get_hermes_home().expanduser()
         paths = _home_spellings([str(home), str(home.resolve(strict=False))], command)
     except Exception:

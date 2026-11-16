@@ -130,7 +130,7 @@ def _retry(authority, ref, operation, request):
 
 def _require_connectors(authority, ref):
     """The sidecar's ``_session_connector_gate``: connectors on, and ``manage_connections`` in the session's tools."""
-    import model_tools
+    from hermes_agent import model_tools
     from tools.connectors import connectors_available
     from tui_gateway import connector_refusals as refusals
     enabled, disabled = _session_toolsets(authority, ref)
@@ -144,7 +144,7 @@ def _session_toolsets(authority, ref):
         return getattr(agent, 'enabled_toolsets', None), getattr(agent, 'disabled_toolsets', None)
     from agent.skill_utils import parse_config_string_list
     from gateway.session_policy import policy_for_source
-    from toolsets import session_disabled_toolsets
+    from hermes_agent.toolsets import session_disabled_toolsets
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     config = policy.config(authority, secrets=False) if policy is not None else {}
     enabled = list(policy.current_toolsets(config)) if policy is not None else None

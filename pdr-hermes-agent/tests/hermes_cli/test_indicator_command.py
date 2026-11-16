@@ -10,7 +10,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def _import_cli():
@@ -23,7 +23,7 @@ def _import_cli():
             "validated": False,
         }
 
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     return cli_mod
 
@@ -46,8 +46,8 @@ class TestIndicatorDispatch(unittest.TestCase):
     def test_indicator_is_not_unknown_command(self):
         cli_obj = _make_cli()
         with (
-            patch("cli._cprint") as mock_cprint,
-            patch("cli.save_config_value", return_value=True),
+            patch("hermes_agent.cli._cprint") as mock_cprint,
+            patch("hermes_agent.cli.save_config_value", return_value=True),
         ):
             result = cli_obj.process_command("/indicator emoji")
 
@@ -122,7 +122,7 @@ class TestIndicatorRegistry(unittest.TestCase):
 
     def test_indicator_subcommands_match_handler(self):
         from hermes_cli.commands import COMMAND_REGISTRY
-        from hermes_constants import INDICATOR_STYLES
+        from hermes_agent.hermes_constants import INDICATOR_STYLES
 
         indicator = next(c for c in COMMAND_REGISTRY if c.name == "indicator")
         # The registered styles are what the handler accepts — single source of truth.

@@ -104,7 +104,7 @@ def _always_in_worker(tmp_path, monkeypatch, live_yaml, bind=True, *, safe_mode=
         capture_output=True, text=True, timeout=90, check=False,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    import hermes_yaml
+    from hermes_agent import hermes_yaml
     on_disk = hermes_yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
     return json.loads(proc.stdout.strip().splitlines()[-1]), on_disk, snapshot
 

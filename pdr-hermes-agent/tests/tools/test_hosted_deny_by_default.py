@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.runtime_scope import bind_state
-from hermes_scope import Principal, Scope
+from hermes_agent.hermes_scope import Principal, Scope
 from tests.tools.test_sandbox_scope_conformance import A, B
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
 from tools.environments import sandbox_conformance as c
@@ -33,7 +33,7 @@ provider = _conformance_provider  # the recording-sandbox fixture, by its name
 def _local_scope() -> Scope:
     """The local install's scope, homed at the test's HERMES_HOME (a relative agent path would
     make ``bind_state`` stamp a home under the working directory)."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return Scope("local", str(get_hermes_home()), Principal("local"))
 
 
@@ -113,12 +113,12 @@ def _null():
 
 
 def _make_agent(tmp_path: Path):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
-        patch("run_agent._hermes_home", tmp_path),
+        patch("hermes_agent.run_agent._hermes_home", tmp_path),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
         agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
@@ -208,7 +208,7 @@ def test_the_inline_executor_table_refuses_on_its_own(monkeypatch):
 
 def test_handle_function_call_refuses_connectors_and_bridges(monkeypatch):
     """Connector calls skip the registry (``dispatch_connector_call``); the entry point refuses them."""
-    import model_tools
+    from hermes_agent import model_tools
     from tools import connectors
 
     reached = []
@@ -258,7 +258,7 @@ def test_the_memory_store_itself_never_touches_the_host_file_in_a_hosted_scope()
 
 
 def test_session_search_reads_no_host_history():
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state import SessionDB
     from tools.registry import registry
     db = SessionDB(get_hermes_home() / "state.db")
@@ -274,7 +274,7 @@ def test_session_search_reads_no_host_history():
 
 def test_recall_never_opens_the_profile_state_db(monkeypatch):
     import hermes_state.registry
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     opened = []
     monkeypatch.setattr(hermes_state.registry, "acquire", lambda *a, **k: opened.append(1) or object())
     agent = SimpleNamespace(_persist_disabled=False, _session_db=None)
@@ -285,7 +285,7 @@ def test_recall_never_opens_the_profile_state_db(monkeypatch):
 
 def test_web_extract_never_spills_to_host(provider, monkeypatch):
     import tools.web_tools as web
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from tools.registry import registry
 
     async def safe(url):
@@ -336,7 +336,7 @@ def test_video_is_not_materialized_on_host():
 
 def test_startup_context_reads_no_host_file(tmp_path, monkeypatch):
     from agent.prompt_builder import build_context_files_prompt, load_soul_md
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     (tmp_path / "AGENTS.md").write_text("HOST-STARTUP-PRIVATE")
     (get_hermes_home() / "SOUL.md").write_text("HOST-SOUL-PRIVATE")
     with c._watch_host(tmp_path) as touched, bind_state(A):
@@ -376,7 +376,7 @@ def test_built_in_memory_and_providers_are_not_initialized(tmp_path, monkeypatch
 
 
 def test_background_review_is_not_spawned(monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     spawned = []
     agent = SimpleNamespace(_spawn_background_review_now=lambda **kw: spawned.append(kw), _delegate_depth=0)
     with bind_state(A):

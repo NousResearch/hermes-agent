@@ -16,7 +16,7 @@ for k in list(os.environ):
 home = tempfile.mkdtemp(prefix='cap-review-')
 os.environ['HERMES_HOME'] = home
 os.environ['HERMES_DISABLE_REDACTION'] = 'true'
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 cfg = {'model': {'default': 'anthropic/claude-fable-5.1', 'provider':'openai-compat', 'base_url':'http://127.0.0.1:1/v1', 'context_length':1000000}, 'compression':{'threshold':0.85}, 'delegation': {}}
 if len(sys.argv)>3:
     cfg['delegation']['compression_threshold_tokens'] = json.loads(sys.argv[3])
@@ -25,7 +25,7 @@ def blocked(*a, **kw):
     raise RuntimeError('Network disabled in unpaid cap probe')
 socket.socket.connect = blocked
 socket.create_connection = blocked
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 import tools.delegate_tool as dt
 import agent.context_compressor as mod
 from agent.model_metadata import estimate_messages_tokens_rough

@@ -55,7 +55,7 @@ def _resolve_spill_dir(directory_override: Optional[str], session_id: Optional[s
     if directory_override:
         base = Path(os.path.expanduser(directory_override))
     else:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         base = Path(get_hermes_home()) / "hook_outputs"
     session_segment = (session_id or "no-session").replace("/", "_").replace("\\", "_").replace("..", "_")
     return base / session_segment

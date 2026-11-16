@@ -75,7 +75,7 @@ TEMPLATE = '''try:  {header}
     except Exception:
         if sys.argv[:1] != ["-m"] and __name__ != "__main__":  # an entry launch; a plain import stays light
             raise
-        import hermes_bootstrap  # repairs a killed update and relaunches when it restored something
+        from hermes_agent import hermes_bootstrap  # repairs a killed update and relaunches when it restored something
         _module = _forward()
     if __name__ == "__main__":
         runpy.run_module("{new}", run_name="__main__", alter_sys=True)

@@ -44,7 +44,7 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
     core.mkdir()
     home = tmp_path / "home"
     home.mkdir()
-    for name in ("hermes_bootstrap.py", "hermes_constants.py"):
+    for name in ("hermes_agent/hermes_bootstrap.py", "hermes_agent/hermes_constants.py"):
         shutil.copy2(repo / name, core / name)
     for package in ("pm", "hermes_agent"):
         shutil.copytree(repo / package, core / package, ignore=shutil.ignore_patterns("__pycache__"))

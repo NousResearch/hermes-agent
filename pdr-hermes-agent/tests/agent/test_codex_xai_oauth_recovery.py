@@ -54,7 +54,7 @@ import pytest
 
 def _make_codex_agent():
     """Build a minimal AIAgent wired for codex_responses streaming tests."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key",
@@ -73,7 +73,7 @@ def _make_codex_agent():
 def test_codex_stream_wire_error_event_surfaces_stream_error_event():
     """A wire ``type=error`` SSE frame raises ``_StreamErrorEvent`` with the
     provider's real message in the body."""
-    from run_agent import _StreamErrorEvent
+    from hermes_agent.run_agent import _StreamErrorEvent
 
     provider_message = "You do not have an active Grok subscription"
 
@@ -113,7 +113,7 @@ def test_codex_stream_wire_error_event_surfaces_stream_error_event():
 
 def test_codex_stream_wire_error_event_nested_envelope_attr_style():
     """Details nested under ``error`` (SDK attr-object shape) are surfaced."""
-    from run_agent import _StreamErrorEvent
+    from hermes_agent.run_agent import _StreamErrorEvent
 
     agent = _make_codex_agent()
 
@@ -169,7 +169,7 @@ def test_summarize_api_error_decorates_xai_entitlement_403():
     separate SKU.  Other causes (no subscription, wrong tier, exhausted
     quota) follow.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     error = RuntimeError(
         "HTTP 403: Error code: 403 - {'code': 'The caller does not have permission "
@@ -214,7 +214,7 @@ def test_classify_api_error_stream_event_grok_subscription_is_auth():
     skipped.  The explicit pattern added at step 1 must fire first and
     return auth/non-retryable so _is_entitlement_failure can stop the loop.
     """
-    from run_agent import _StreamErrorEvent
+    from hermes_agent.run_agent import _StreamErrorEvent
     from agent.error_classifier import classify_api_error, FailoverReason
 
     err = _StreamErrorEvent(
@@ -324,7 +324,7 @@ def test_codex_reasoning_replay_includes_encrypted_content_for_xai():
     ],
 )
 def test_is_entitlement_failure_matches_real_xai_bodies(message):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     assert AIAgent._is_entitlement_failure(
         {"message": message, "reason": "permission_denied"},
@@ -334,7 +334,7 @@ def test_is_entitlement_failure_matches_real_xai_bodies(message):
 
 def test_is_entitlement_failure_false_for_status_other_than_401_403():
     """200/429/500 must never be classified as entitlement, even if body matches."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     body = {
         "message": "do not have an active Grok subscription",

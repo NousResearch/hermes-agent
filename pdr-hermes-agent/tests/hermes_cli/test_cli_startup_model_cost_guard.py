@@ -60,7 +60,7 @@ def fake_cli(monkeypatch):
     def fake_cli_main(**kwargs):
         captured.update(kwargs)
 
-    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(main=fake_cli_main))
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", types.SimpleNamespace(main=fake_cli_main))
     return captured
 
 

@@ -1,6 +1,6 @@
 """HermesCLI constructor phases: display options, model/provider routing, turn limits, toolsets, checkpoints, prompt/reasoning, runtime state, session store and UI state.
 
-Mixin split out of ``cli.py``; bound onto ``HermesCLI`` via the MRO.
+Mixin split out of ``hermes_agent/cli.py``; bound onto ``HermesCLI`` via the MRO.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from hermes_state.ids import new_session_id
 from pathlib import Path
 from rich.console import Console
 from typing import Any, Dict, List, Optional
-from utils import base_url_host_matches, base_url_hostname, is_truthy_value
+from hermes_agent.utils import base_url_host_matches, base_url_hostname, is_truthy_value
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cli")
@@ -65,7 +65,7 @@ def _explicit_launch_skills(cli):
     if not requested:
         return None
     from agent.skill_commands import resolve_auto_load_skills
-    from cli import CLI_CONFIG
+    from hermes_agent.cli import CLI_CONFIG
     auto = set() if getattr(cli, "ignore_rules", False) else set(resolve_auto_load_skills(CLI_CONFIG))
     return [name for name in requested if name not in auto] or None
 
@@ -115,7 +115,7 @@ class CLIInitMixin:
 
     def _init_display_options(self, verbose, compact):
         """Display-related config: compact/tool-progress/focus view, bells, streaming, previews, stream buffers."""
-        from cli import CLI_CONFIG, _configure_output_history, _int_or
+        from hermes_agent.cli import CLI_CONFIG, _configure_output_history, _int_or
         self.console = Console()
         self.config = CLI_CONFIG
         # A local /reasoning show|hide or /footer saves the per-platform ``cli`` key: read it (T7).
@@ -200,7 +200,7 @@ class CLIInitMixin:
 
     def _init_model_and_provider(self, model, provider, api_key, base_url):
         """Priority: CLI args > env vars > config file."""
-        from cli import CLI_CONFIG, _normalize_moa_model, _split_model_config_default
+        from hermes_agent.cli import CLI_CONFIG, _normalize_moa_model, _split_model_config_default
         # LLM_MODEL/OPENAI_MODEL env vars are deliberately NOT checked (multi-agent setups
         # would stomp each other through the environment).
         _model_config = CLI_CONFIG["model"]
@@ -297,7 +297,7 @@ class CLIInitMixin:
 
     def _init_turn_limits(self, max_turns, run_budget):
         """max_turns: CLI arg > config > env var > default; run budget: CLI flag > config."""
-        from cli import CLI_CONFIG
+        from hermes_agent.cli import CLI_CONFIG
         # resolve_turn_limit() accepts "none"/"unlimited" (-> sys.maxsize) alongside ints.
         # KEEP the root-level CLI_CONFIG["max_turns"] fallback: it is never migrated on disk
         # and other config paths may bypass the load-time fold.
@@ -312,7 +312,7 @@ class CLIInitMixin:
         self._explicit_max_turns = max_turns
 
     def _init_toolsets(self, toolsets):
-        from cli import CLI_CONFIG
+        from hermes_agent.cli import CLI_CONFIG
         self.enabled_toolsets = toolsets
         # Only a picked list rides session.create; _build_cli_from_args clears this unless -t was typed (the
         # gateway resolves the profile default and coding posture itself; a stale explicit name is refused, #138670).
@@ -325,7 +325,7 @@ class CLIInitMixin:
         # (``_adopt_gateway_toolsets``), so this process never discovers plugins to tell them apart (PLG-7).
 
     def _init_checkpoints_and_rules(self, checkpoints, pass_session_id, ignore_rules):
-        from cli import CLI_CONFIG
+        from hermes_agent.cli import CLI_CONFIG
         cp_cfg = CLI_CONFIG.get("checkpoints", {})
         if isinstance(cp_cfg, bool):
             cp_cfg = {"enabled": cp_cfg}
@@ -342,7 +342,7 @@ class CLIInitMixin:
 
     def _init_prompt_and_reasoning(self, reasoning):
         """Ephemeral system prompt/prefill, reasoning + service tier, OpenRouter routing knobs, fallback chain."""
-        from cli import CLI_CONFIG, _load_prefill_messages, _parse_reasoning_config, _parse_service_tier_config, _resolve_prefill_messages_file
+        from hermes_agent.cli import CLI_CONFIG, _load_prefill_messages, _parse_reasoning_config, _parse_service_tier_config, _resolve_prefill_messages_file
         # Env var wins, then hermes_cli.personality (single owner of overlay resolution).
         from hermes_cli.personality import available_personalities, resolve_ephemeral_system_prompt
 
@@ -354,7 +354,7 @@ class CLIInitMixin:
         # Per-model override > global reasoning_effort.
         # Reasoning config (OpenRouter reasoning effort level) Per-model override > global reasoning_effort
         # — resolved through the shared chokepoint in hermes_constants (Closes #21256).
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         self._explicit_reasoning_config = None
         self._explicit_reasoning = None
@@ -392,7 +392,7 @@ class CLIInitMixin:
 
     def _init_runtime_state(self, resume):
         """Session store + all per-run mutable state (queues, overlays, pet/voice/status-bar fields)."""
-        from cli import _hermes_home
+        from hermes_agent.cli import _hermes_home
         from hermes_cli.left_core_migration import serve_notices_on_stderr
         serve_notices_on_stderr()
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
@@ -508,7 +508,7 @@ class CLIInitMixin:
 
     def _init_ui_state(self):
         """Per-run mutable UI state; must exist before any chat() call since -q never goes through run()."""
-        from cli import CLI_CONFIG, _status_bar_visible_from_display_config
+        from hermes_agent.cli import CLI_CONFIG, _status_bar_visible_from_display_config
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
         self._agent_running = self._should_exit = False

@@ -96,7 +96,7 @@ def _make_hermes_tree(root: Path) -> None:
 
     # hermes-agent repo (should be EXCLUDED)
     (root / "hermes-agent").mkdir(exist_ok=True)
-    (root / "hermes-agent" / "run_agent.py").write_text("# big file\n")
+    (root / "hermes-agent" / "hermes_agent/run_agent.py").write_text("# big file\n")
     (root / "hermes-agent" / ".git").mkdir()
     (root / "hermes-agent" / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
 
@@ -1267,7 +1267,7 @@ class TestImportAtomicWrites:
             lambda p: (123, 456) if Path(p).exists() else None,
         )
         monkeypatch.setattr(
-            "utils.os.chown",
+            "hermes_agent.utils.os.chown",
             lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
         )
 
@@ -1997,7 +1997,7 @@ class TestRunPreUpdateBackup:
 
     @staticmethod
     def _set_mode(hermes_home, value):
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         (hermes_home / "config.yaml").write_text(yaml.safe_dump({
             "_config_version": 22,
             "updates": {"pre_update_backup": value},
@@ -2345,7 +2345,7 @@ class TestRestoreConfigModelSettingsIfRewritten:
         return cfg
 
     def test_restores_rewritten_provider_and_dropped_moa(self, tmp_path):
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         from hermes_cli.backup import restore_config_model_settings_if_rewritten
 
         hermes_home = tmp_path / ".hermes"
@@ -2396,7 +2396,7 @@ class TestRestoreConfigModelSettingsIfRewritten:
     def test_preserves_legitimate_update_writes(self, tmp_path):
         """Only protected keys are restored — a version bump or a new section
         the migration legitimately wrote must survive the restore."""
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         from hermes_cli.backup import restore_config_model_settings_if_rewritten
 
         hermes_home = tmp_path / ".hermes"
@@ -2575,7 +2575,7 @@ class TestImportHonorsHermesHomeOverride:
         (root / "config.yaml").write_text("model:\n  provider: openai\n")
 
         monkeypatch.setenv("HERMES_HOME", str(profile))
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         assert get_hermes_home() == profile
 

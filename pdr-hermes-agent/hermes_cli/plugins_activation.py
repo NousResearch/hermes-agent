@@ -140,7 +140,7 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> dict[str, Any]
     (``activation.missing_dependencies``; ``activation.missing_in`` names which: ``gateway`` and/or
     ``backend``, the Desktop / dashboard process): a running process never switches to the dependency
     generation an enable just installed, so only restarting that process loads them."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     activation: Optional[dict[str, Any]] = load_and_go_live(name) if in_process else None
     if not in_process:
         activation = (notify_serve_backend(name, Path(get_hermes_home())) or {}).get("activation")
@@ -169,7 +169,7 @@ def reload_running_gateway() -> Optional[dict[str, Any]]:
     gateway now. The ``reload-plugins`` answer, or None when no gateway answered."""
     try:
         from gateway.control_socket import reload_gateway_plugins
-        from hermes_constants import get_default_hermes_root, get_hermes_home
+        from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home
         home = Path(get_hermes_home())
         answer = reload_gateway_plugins(home)
         if answer is None:
@@ -238,7 +238,7 @@ def _go_live(name: str) -> Optional[dict[str, Any]]:
     server = sys.modules.get("tui_gateway.server")  # loaded == this process hosts chats
     note = live_notice(activation)
     if server is not None and (servers or note):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         try:
             server.refresh_plugin_sessions(Path(get_hermes_home()), activation["key"], note)
         except Exception:
@@ -285,7 +285,7 @@ def _gateway_present() -> bool:
     gateway service is installed for it."""
     from gateway.status import get_running_pid
     from hermes_cli.gateway import _installed_service_kind
-    from hermes_constants import get_default_hermes_root, get_hermes_home
+    from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home
     homes = {Path(get_hermes_home()).resolve(), Path(get_default_hermes_root()).resolve()}
     return (any(get_running_pid(home / "gateway.pid", cleanup_stale=False) for home in homes)
             or _installed_service_kind() is not None)

@@ -404,7 +404,7 @@ router = APIRouter()
 
 @router.get("/whoami")
 async def whoami():
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return {"pid": os.getpid(), "home": str(get_hermes_home())}
 '''
 

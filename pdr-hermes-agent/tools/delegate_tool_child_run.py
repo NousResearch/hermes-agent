@@ -239,7 +239,7 @@ def _dump_subagent_timeout_diagnostic(
     response", 0 API calls, nothing to inspect): ``~/.hermes/logs/subagent-timeout-<sid>-<ts>.log`` with the
     child's config, prompt/schema sizes, activity snapshot and worker stack. Path, or None on failure."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         import datetime as _dt
         logs_dir = get_hermes_home() / "logs"
         try:
@@ -1221,7 +1221,7 @@ class _ChildRun:
 
         # Restore the parent's tool names so the process-global is correct for
         # any subsequent execute_code calls or other consumers.
-        import model_tools
+        from hermes_agent import model_tools
         saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
         if isinstance(saved_tool_names, list):
             model_tools._last_resolved_tool_names = list(saved_tool_names)

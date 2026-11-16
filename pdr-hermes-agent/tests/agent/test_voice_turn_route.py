@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 
 

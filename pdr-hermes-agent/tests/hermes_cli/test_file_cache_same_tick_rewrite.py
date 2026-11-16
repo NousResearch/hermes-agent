@@ -19,7 +19,7 @@ import pytest
 @pytest.fixture
 def coarse_clock(monkeypatch):
     """Every stat signature reports one frozen mtime/ctime tick, like a coarse filesystem clock."""
-    import utils
+    from hermes_agent import utils
     real, tick = utils.file_signature, time.time_ns()
 
     def frozen(st):
@@ -69,7 +69,7 @@ def test_a_same_size_env_edit_in_one_tick_changes_the_served_profile_signature(c
 def test_a_long_lived_signature_does_not_change_when_the_file_settles(tmp_path, monkeypatch):
     """``always_digest`` is for signatures compared much later (profile reconnects, parse-failure
     records): one taken while the file was fresh still matches the unchanged file once it settles."""
-    import utils
+    from hermes_agent import utils
     path = tmp_path / "config.yaml"
     path.write_text("model: a\n")
     fresh = utils.file_cache_version(path, always_digest=True)
@@ -82,7 +82,7 @@ def test_a_long_lived_signature_does_not_change_when_the_file_settles(tmp_path, 
 
 def test_an_mtime_restoring_rewrite_still_gets_a_content_digest(tmp_path):
     """``cp -p`` / ``rsync --inplace -t`` put an old mtime back after writing; ctime still says fresh."""
-    import utils
+    from hermes_agent import utils
     path = tmp_path / "auth.json"
     path.write_text('{"k": "aaaa"}')
     old = time.time() - 3600
@@ -95,7 +95,7 @@ def test_an_mtime_restoring_rewrite_still_gets_a_content_digest(tmp_path):
 _WORKER_PROBE = r"""
 import json, os, sys
 from pathlib import Path
-import utils
+from hermes_agent import utils
 utils.RACY_MTIME_WINDOW_NS = int(sys.argv[1])
 home = Path(os.environ["HERMES_HOME"])
 (home / "config.yaml").write_text("agent:\n  max_turns: 17\nskills:\n  external_dirs: []\n")

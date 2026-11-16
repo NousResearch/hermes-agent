@@ -26,7 +26,7 @@ class _LiveSocket:
 
 @pytest.fixture
 def resident(monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     db = SessionDB(db_path=get_hermes_home() / "state.db")

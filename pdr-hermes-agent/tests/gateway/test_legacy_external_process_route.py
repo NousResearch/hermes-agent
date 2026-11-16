@@ -24,7 +24,7 @@ ADDRESS = 'process://proc-provider'
 def home(monkeypatch):
     import providers
     from gateway import run
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from providers.base import ProviderProfile
     profile = ProviderProfile(name=PROVIDER, auth_type='external_process', base_url=ADDRESS,
                               api_mode='chat_completions')

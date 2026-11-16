@@ -104,7 +104,7 @@ def test_memo_does_not_leak_across_multiplex_profile_contexts(tmp_path):
     on that same resolved home, or one profile's context can read another
     profile's already-cached Nous access token for up to the TTL window.
     """
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     profile_a = tmp_path / "profile-a"
     profile_b = tmp_path / "profile-b"

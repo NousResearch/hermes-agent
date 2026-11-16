@@ -8,9 +8,9 @@ never invokes. The notice fires only when checkpoints are enabled AND the store 
 
 import os
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from tools.checkpoint_manager import CheckpointManager
 from tools.checkpoint_maintenance import checkpoint_footprint_notice
 

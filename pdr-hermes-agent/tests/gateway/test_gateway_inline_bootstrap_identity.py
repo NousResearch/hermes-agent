@@ -151,7 +151,7 @@ def test_payload_launcher_profile_is_read_from_the_hermes_argv(argv: list[str], 
 def test_live_payload_launched_gateway_is_found_for_its_home(argv, profile, found, tmp_path, monkeypatch) -> None:
     """The dashboard / ``gateway stop`` / ``restart`` lookup: the live ``/proc`` cmdline of a gateway
     started through the payload ``bin/hermes`` proves its home's runtime record (#127865)."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     root = tmp_path / ".hermes"
     home = root / "profiles" / profile if profile else root

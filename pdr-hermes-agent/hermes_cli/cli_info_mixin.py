@@ -1,7 +1,7 @@
 """Informational views and reload flows for the interactive CLI: banner, help, tools, usage,
 insights, MCP/skills reload, bang shell.
 
-Mixin split out of ``cli.py``; bound onto ``HermesCLI`` via the MRO. cli.py-internal symbols are
+Mixin split out of ``hermes_agent/cli.py``; bound onto ``HermesCLI`` via the MRO. hermes_agent/cli.py-internal symbols are
 imported LAZILY inside each method — the mixin never imports ``cli`` at module load time (cycle).
 """
 
@@ -16,9 +16,9 @@ import time
 from typing import Any, NamedTuple
 
 from agent.i18n import t
-from hermes_constants import is_termux as _is_termux_environment
+from hermes_agent.hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname
+from hermes_agent.utils import base_url_hostname
 
 from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
@@ -145,7 +145,7 @@ class CLIInfoMixin:
 
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
-        from cli import _build_compact_banner, get_tool_definitions, logger
+        from hermes_agent.cli import _build_compact_banner, get_tool_definitions, logger
         from hermes_cli.banner import build_welcome_banner
         self.console.clear()
         store, gateway_inventory, ctx_len, banner_kw = banner_plan(self, self.console)
@@ -181,7 +181,7 @@ class CLIInfoMixin:
 
                 def _refresh_banner_snapshot() -> None:
                     try:
-                        from model_tools import get_toolset_for_tool
+                        from hermes_agent.model_tools import get_toolset_for_tool
                         tools = get_tool_definitions(
                             enabled_toolsets=self.enabled_toolsets,
                             disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
@@ -196,7 +196,7 @@ class CLIInfoMixin:
                 ).start()
             else:
                 # Cold path: compute live, then persist the snapshot for the next launch.
-                from model_tools import get_toolset_for_tool
+                from hermes_agent.model_tools import get_toolset_for_tool
                 tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
                                              disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
                 availability = compute_toolset_availability(self.enabled_toolsets)
@@ -291,7 +291,7 @@ class CLIInfoMixin:
     def show_help(self, arg: str = ""):
         """Display help. Bare /help shows categorized core commands with the skill list collapsed
         to one line; /help skills lists all skill commands; /help <query> filters by substring."""
-        from cli import (
+        from hermes_agent.cli import (
             ChatConsole, _BOLD, _DIM, _RST, _accent_hex, _cprint, _session_skill_commands,
             _termux_example_image_path, get_skill_bundles)
         from hermes_cli.commands import COMMAND_REGISTRY, HELP_SESSION_SUBGROUPS
@@ -428,8 +428,8 @@ class CLIInfoMixin:
         if remote is not None:
             tools, get_toolset_for_tool = remote
         else:
-            from cli import get_tool_definitions
-            from model_tools import get_toolset_for_tool
+            from hermes_agent.cli import get_tool_definitions
+            from hermes_agent.model_tools import get_toolset_for_tool
             # Pre-assembly list: /tools is a discovery surface, so it must show the full catalog
             # including tools deferred behind the tool_search bridge (users verify MCP installs here).
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
@@ -490,7 +490,7 @@ class CLIInfoMixin:
         next-turn message. Dispatching inline on the UI thread acts mid-run (``agent.steer()`` is
         thread-safe; ``/bg`` / ``/btw`` start their side session without touching the foreground turn).
         """
-        from cli import _looks_like_slash_command
+        from hermes_agent.cli import _looks_like_slash_command
         if not text or has_images or not _looks_like_slash_command(text):
             return False
         if not getattr(self, "_agent_running", False):
@@ -528,7 +528,7 @@ class CLIInfoMixin:
         (tests/hermes_cli/test_bang_shell_mode.py). Returns False when the text is not a bang command or
         bang mode is disabled for this context (gateway/cron), so the caller routes normally.
         """
-        from cli import _rich_text_from_ansi
+        from hermes_agent.cli import _rich_text_from_ansi
         from hermes_cli.bang_shell import (
             USAGE_HINT, bang_shell_enabled, check_bang_approval, is_bang_command,
             parse_bang_command, resolve_bang_cwd, run_bang_command)
@@ -587,7 +587,7 @@ class CLIInfoMixin:
         ``self.verbose`` or the agent's ``verbose_logging`` / ``quiet_mode`` (those belong to
         ``-v`` and ``/verbose-logging``).
         """
-        from cli import _cprint, save_config_value
+        from hermes_agent.cli import _cprint, save_config_value
         try:
             idx = _TOOL_PROGRESS_CYCLE.index(self.tool_progress_mode)
         except ValueError:
@@ -760,7 +760,7 @@ class CLIInfoMixin:
         The Nous credits block is agent-independent (portal fetch), so it runs even with no live
         agent — the TUI's /usage slash-worker resumes the session WITHOUT building an agent.
         """
-        from cli import datetime, format_duration_compact
+        from hermes_agent.cli import datetime, format_duration_compact
 
         def _credits_or(fallback: str) -> None:
             # Account limits (e.g. Codex subscription windows) need only the configured provider

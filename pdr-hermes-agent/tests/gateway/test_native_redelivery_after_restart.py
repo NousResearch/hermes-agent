@@ -70,7 +70,7 @@ async def _admitted_before_crash(runner, adapter, *, started, **event_fields):
     from gateway.platforms.event import MessageEvent
     from gateway.session_authority import initialize_session_authority
     from gateway.session_ingress_context import native_callback
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state.runtime import claim_session_input
     source = adapter.build_source(chat_id='42', chat_type='dm', user_id='42', thread_id='T1')
     first = await initialize_session_authority(runner, profile_id=str(get_hermes_home()), instance_id='before-crash')
@@ -87,7 +87,7 @@ async def _admitted_before_crash(runner, adapter, *, started, **event_fields):
 async def _restart(runner):
     from gateway.run_runtime import recover_profile_native_sessions
     from gateway.session_authority import initialize_session_authority
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     second = await initialize_session_authority(runner, profile_id=str(get_hermes_home()), instance_id='after-restart')
     await recover_profile_native_sessions(runner, second)
     _wire(runner, runner.adapters[next(iter(runner.adapters))])

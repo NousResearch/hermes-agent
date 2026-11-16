@@ -6,10 +6,10 @@ For occasional contributors and PR authors. Full developer docs: https://hermes-
 
 ```
 hermes-agent/
-├── run_agent.py          # AIAgent — core conversation loop
-├── model_tools.py        # Tool discovery and dispatch
-├── toolsets.py           # Toolset definitions
-├── cli.py                # Interactive CLI (HermesCLI)
+├── hermes_agent/run_agent.py          # AIAgent — core conversation loop
+├── hermes_agent/model_tools.py        # Tool discovery and dispatch
+├── hermes_agent/toolsets.py           # Toolset definitions
+├── hermes_agent/cli.py                # Interactive CLI (HermesCLI)
 ├── hermes_state/__init__.py       # SQLite session store
 ├── agent/                # Prompt builder, context compression, memory, model routing, credential pooling, skill dispatch
 ├── hermes_cli/           # CLI subcommands, config, setup, commands
@@ -55,7 +55,7 @@ registry.register(
 )
 ```
 
-**2. Wire it into a toolset in `toolsets.py`** — add the name to
+**2. Wire it into a toolset in `hermes_agent/toolsets.py`** — add the name to
 `_HERMES_CORE_TOOLS` (every platform) or to a specific toolset.
 
 All handlers must return JSON strings. Use `get_hermes_home()` for paths,
@@ -65,7 +65,7 @@ never hardcode `~/.hermes`. For custom/local-only tools, write a plugin in
 ### Adding a Slash Command
 
 1. Add `CommandDef` to `COMMAND_REGISTRY` in `hermes_cli/commands.py`
-2. Add handler in `cli.py` → `process_command()`
+2. Add handler in `hermes_agent/cli.py` → `process_command()`
 3. (Optional) Add gateway handler in `gateway/run.py`
 
 All consumers (help text, autocomplete, Telegram menu, Slack mapping) derive from the central registry automatically.

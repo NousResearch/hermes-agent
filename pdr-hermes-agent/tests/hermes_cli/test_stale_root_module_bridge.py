@@ -23,7 +23,7 @@ _PRE_HANDOFF_PURGE_PROTECTED = {"hermes_cli", "hermes_cli.main", "hermes_cli.her
 @pytest.fixture
 def pre_handoff_purge():
     """Evict what a pre-hand-off updater evicts after the pull; restore the original graph after."""
-    saved: dict = {"utils": sys.modules.get("utils")}
+    saved: dict = {"utils": sys.modules.get("hermes_agent.utils")}
 
     def _purge() -> None:
         for name in list(sys.modules):
@@ -45,7 +45,7 @@ def test_fresh_hermes_cli_import_heals_stale_utils_missing_file_signature(
     monkeypatch, pre_handoff_purge, consumer
 ):
     """Restart-phase shape: hermes_cli.* purged, root utils stale, consumer freshly imported."""
-    import utils
+    from hermes_agent import utils
 
     monkeypatch.delattr(utils, "file_signature")
     pre_handoff_purge()
@@ -53,14 +53,14 @@ def test_fresh_hermes_cli_import_heals_stale_utils_missing_file_signature(
 
     module = importlib.import_module(consumer)
     assert callable(module.file_signature)
-    assert hasattr(sys.modules["utils"], "file_signature")
+    assert hasattr(sys.modules["hermes_agent.utils"], "file_signature")
 
 
 def test_drop_stale_root_modules_leaves_complete_utils_alone():
-    import utils
+    from hermes_agent import utils
     from hermes_cli.stale_modules import drop_stale_root_modules
 
     assert hasattr(utils, "file_signature")
-    before = sys.modules["utils"]
+    before = sys.modules["hermes_agent.utils"]
     assert drop_stale_root_modules() == []
-    assert sys.modules["utils"] is before
+    assert sys.modules["hermes_agent.utils"] is before

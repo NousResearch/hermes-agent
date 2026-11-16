@@ -46,7 +46,7 @@ def bang_shell_enabled() -> bool:
     at the keyboard.
     """
     try:
-        from utils import env_var_enabled
+        from hermes_agent.utils import env_var_enabled
     except Exception:  # pragma: no cover - utils is always importable in-tree
         def env_var_enabled(name, default=""):  # type: ignore[misc]
             return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}

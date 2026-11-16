@@ -146,7 +146,7 @@ def test_schema_never_in_global_registry():
     from tools.registry import registry
 
     assert bot_mode_dm.MESSAGE_AGENT_TOOL_NAME not in getattr(registry, "_tools", {})
-    import toolsets
+    from hermes_agent import toolsets
 
     for names in toolsets.TOOLSETS.values():
         assert bot_mode_dm.MESSAGE_AGENT_TOOL_NAME not in names

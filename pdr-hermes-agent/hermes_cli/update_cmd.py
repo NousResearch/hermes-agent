@@ -207,12 +207,12 @@ def _map_ssl_cert_file_for_git(git_cmd) -> None:
 # declaration has this layout, so the list stays as it is when files move. The first rows are what
 # the launcher and ``hermes_bootstrap`` import before any application code (review G3).
 _UPDATE_CRITICAL_FILES = (
-    "hermes_bootstrap.py", "hermes_cli/_parser.py", "hermes_cli/_launchers.py",
+    "hermes_agent/hermes_bootstrap.py", "hermes_cli/_parser.py", "hermes_cli/_launchers.py",
     "hermes_cli/_early_recovery.py", "hermes_cli/update_lock.py", "hermes_cli/update_custody.py",
     "hermes_cli/update_handoff.py", "hermes_cli/venv_sync.py", "pm/__init__.py", "pm/environments.py",
     "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
-    "hermes_cli/web_server.py", "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
-    "hermes_constants.py")
+    "hermes_cli/web_server.py", "hermes_agent/cli.py", "hermes_agent/run_agent.py", "hermes_agent/model_tools.py", "hermes_agent/toolsets.py",
+    "hermes_agent/hermes_constants.py")
 
 
 def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
@@ -369,7 +369,7 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     """
     import json as _json
     import uuid as _uuid
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     if _posix_pause.gateways_paused():  # the gateway that would relay it is stopped for the update
         print(f"  → {prompt_text} → {default or '(empty)'} (gateways are paused for the update)")
@@ -543,7 +543,7 @@ def _log_only_write(text: str) -> None:
     log_file = getattr(stream, "_log", None)
     with suppress(Exception):
         if log_file is None:
-            from hermes_constants import get_default_hermes_root
+            from hermes_agent.hermes_constants import get_default_hermes_root
 
             log_path = get_default_hermes_root() / "logs" / "update.log"  # the root home's tee
             log_path.parent.mkdir(parents=True, exist_ok=True)

@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 from agent import background_review
 from agent.side_question_lease import issue_side_question_token

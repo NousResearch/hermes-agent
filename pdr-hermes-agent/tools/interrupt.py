@@ -8,7 +8,7 @@ import logging
 import threading
 from collections.abc import Callable
 
-from utils import env_var_enabled
+from hermes_agent.utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 

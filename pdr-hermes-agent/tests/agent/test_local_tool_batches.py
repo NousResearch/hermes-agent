@@ -58,7 +58,7 @@ for line in sys.stdin:
 
 @pytest.mark.parametrize("mode", ["allow", "block", "scope", "schema", "interrupt"])
 def test_local_batch_runs_once_per_entry_through_agent_and_persists_pairs(mcp_server, mode):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     names, call_log = mcp_server
     with patch("agent.process_bootstrap.OpenAI"), patch("agent.model_metadata.fetch_model_metadata", return_value={}):

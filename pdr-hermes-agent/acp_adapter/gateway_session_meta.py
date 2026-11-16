@@ -76,7 +76,7 @@ SERVICE_TIER_LABELS = {"normal": "Normal", "fast": "Fast", "auto": "Auto", "cold
 
 def reasoning_choices() -> tuple[str, ...]:
     """The owner's ``reasoning`` levels; ``default`` hands the level back to the profile."""
-    from hermes_constants import VALID_REASONING_EFFORTS
+    from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS
     return ("default", "none", *VALID_REASONING_EFFORTS)
 
 

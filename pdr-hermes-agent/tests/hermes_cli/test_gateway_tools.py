@@ -114,7 +114,7 @@ def test_agents_before_the_first_turn_reads_the_opened_sessions_processes(gatewa
     """A resumed session's background work runs on the gateway before this CLI's first turn builds
     its chat agent: opening the session binds the view, so /agents never reads the empty local
     registry (Greptile 4277259979)."""
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     from hermes_cli.gateway_session_store import GatewaySessionStore
 
     class _ResumedStore(GatewaySessionStore):
@@ -142,8 +142,8 @@ def test_stop_typed_mid_turn_interrupts_the_turn_then_stops_processes(gateway, m
     prompt_toolkit redraw, so a mid-turn /stop printed nothing (tracker #134889 CLI-27)."""
     import threading
     from types import SimpleNamespace
-    import cli as cli_module
-    from cli import HermesCLI
+    from hermes_agent import cli as cli_module
+    from hermes_agent.cli import HermesCLI
     painted = []
     monkeypatch.setattr(cli_module, "_cprint", painted.append)
     _agent, client = gateway

@@ -33,7 +33,7 @@ class _ProfileAdapter(BasePlatformAdapter):
 
 
 def _runner(*, default_mode: str = "interrupt") -> GatewayRunner:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     # The routed profile must really exist: a missing one is refused, never served by the launch home.
     research = get_hermes_home() / "profiles" / "research"
     research.mkdir(parents=True, exist_ok=True)
@@ -466,8 +466,8 @@ async def test_primary_adapter_busy_origin_uses_routed_privacy(
     """The primary busy callback bypasses the scoped normal-message handler."""
     from dataclasses import asdict
     from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results
-    from hermes_constants import get_hermes_home_override
-    from run_agent import AIAgent
+    from hermes_agent.hermes_constants import get_hermes_home_override
+    from hermes_agent.run_agent import AIAgent
 
     home = tmp_path / ".hermes"
     secondary = home / "profiles" / "research"

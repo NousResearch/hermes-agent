@@ -30,7 +30,7 @@ from unittest.mock import MagicMock
 
 from agent.codex_runtime import run_codex_app_server_turn
 from hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 def _make_turn():
     return SimpleNamespace(

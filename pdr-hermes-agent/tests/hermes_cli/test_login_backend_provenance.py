@@ -61,7 +61,7 @@ def _commit(repo: Path, msg: str) -> str:
 def world(request, tmp_path, monkeypatch):
     """A file:// login-backend plugin repo (two commits), a catalog entry pinned to the first, a temp home."""
     request.getfixturevalue("client")
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     repo = tmp_path / "repo"
     repo.mkdir()

@@ -6,7 +6,7 @@ or fuzzy resolution (the "claude → claude-sonnet-3" footgun). These pin the
 index-preserving contract of ``_filter_model_picker_entries``.
 """
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 MODELS = [

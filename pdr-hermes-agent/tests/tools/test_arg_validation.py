@@ -2,7 +2,7 @@
 
 import json
 
-from model_tools import handle_function_call
+from hermes_agent.model_tools import handle_function_call
 from tools.registry import registry
 
 _SKILL = "---\nname: flat-shape-skill\ndescription: Use when probing. Does nothing.\n---\n# Probe\nbody\n"

@@ -220,7 +220,7 @@ const _matchesNamedKey = (named: VoiceRecordKeyNamed, key: RuntimeKeyEvent, ch: 
  * AND the named tokens declared in ``_NAMED_KEY_ALIASES`` (``space``,
  * ``enter``/``return``, ``tab``, ``escape``/``esc``, ``backspace``,
  * ``delete``) — matching the keys prompt_toolkit accepts on the CLI
- * side via the ``c-<name>`` rewrite in ``cli.py``.
+ * side via the ``c-<name>`` rewrite in ``hermes_agent/cli.py``.
  *
  * Accepts ``unknown`` because the source is raw YAML via
  * ``config.get full`` — a hand-edited ``voice.record_key: 1`` or
@@ -257,7 +257,7 @@ export const parseVoiceRecordKey = (raw: unknown): ParsedVoiceRecordKey => {
   // single-token validator made a typo bind a different shortcut than
   // the user configured (Copilot round-3 review on #19835). The classic
   // CLI only supports single-modifier bindings via prompt_toolkit's
-  // ``c-x`` / ``a-x`` rewrite in ``cli.py``, so this matches CLI parity.
+  // ``c-x`` / ``a-x`` rewrite in ``hermes_agent/cli.py``, so this matches CLI parity.
   if (modCandidates.length > 1) {
     return DEFAULT_VOICE_RECORD_KEY
   }

@@ -89,7 +89,7 @@ def test_only_a_same_profile_restart_child_keeps_the_markers(tmp_path, monkeypat
 def test_a_load_for_another_home_never_rewrites_the_launch_profiles_values(tmp_path, monkeypatch):
     """No secret scope bound: the HERMES_HOME override alone must keep B's YAML off A's env."""
     from gateway.config import load_gateway_config
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch, other = tmp_path / "a", tmp_path / "b"
     monkeypatch.setenv("HERMES_HOME", str(launch))

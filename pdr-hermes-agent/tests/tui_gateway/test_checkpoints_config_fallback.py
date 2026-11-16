@@ -111,7 +111,7 @@ class TestMakeAgentCheckpointsFallback:
                 "credential_pool": None,
             },
         )
-        monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", fake_agent)
         monkeypatch.setattr(server, "_load_enabled_toolsets", lambda platform=None: ["file"])
         monkeypatch.setattr(server, "_get_db", lambda: None)
         server._make_agent("sid", "session-key")

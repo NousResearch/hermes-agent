@@ -168,8 +168,8 @@ def test_agent_drain_shuts_sockets_down_without_fd_release(monkeypatch):
     import threading as _threading
     from unittest.mock import patch
 
-    with patch("run_agent.AIAgent.__init__", return_value=None):
-        from run_agent import AIAgent
+    with patch("hermes_agent.run_agent.AIAgent.__init__", return_value=None):
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent.__new__(AIAgent)
 

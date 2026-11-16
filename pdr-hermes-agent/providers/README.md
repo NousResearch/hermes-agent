@@ -51,7 +51,7 @@ layer reads from it:
 - `agent/transports/chat_completions.py::_build_kwargs_from_profile()`
   invokes `profile.prepare_messages()`, `profile.build_extra_body()`,
   and `profile.build_api_kwargs_extras()` on every call.
-- `run_agent.py` passes `provider_profile=<ProviderProfile>` so the
+- `hermes_agent/run_agent.py` passes `provider_profile=<ProviderProfile>` so the
   transport takes the profile path instead of the legacy flag path.
 
 ---

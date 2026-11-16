@@ -143,7 +143,7 @@ async def probe(peer):
             names = {t['function']['name'] for t in requests[0]['tools']}
             assert 'terminal' in names
             assert ('desktop_ui' in agent.enabled_toolsets) == (source == 'gui')
-            from toolsets import resolve_toolset
+            from hermes_agent.toolsets import resolve_toolset
             desktop_names = resolve_toolset('desktop_ui')
             surface_on_wire = any(name in json.dumps(requests[0]['tools']) for name in desktop_names)
             assert surface_on_wire == (source == 'gui'), (source, desktop_names, names)

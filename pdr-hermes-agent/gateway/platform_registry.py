@@ -15,7 +15,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 # The verdict of an ``ensure_deps`` an async gateway caller already ran in an executor (#125607).

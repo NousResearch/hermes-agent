@@ -33,7 +33,7 @@ def cli(tmp_path, monkeypatch):
     cli._invalidate = MagicMock()
     cli._pending_input = MagicMock()
     printed = []
-    monkeypatch.setattr("cli._cprint", lambda text, *a, **k: printed.append(text))
+    monkeypatch.setattr("hermes_agent.cli._cprint", lambda text, *a, **k: printed.append(text))
     cli.printed = printed
     _terminal(monkeypatch, 100, 30)
     yield cli

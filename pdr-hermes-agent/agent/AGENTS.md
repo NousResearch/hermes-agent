@@ -4,13 +4,13 @@ Applies on top of the root `AGENTS.md` (prompt-caching invariant, facade + sibli
 
 ## Shape
 
-`run_agent.py` is the public facade: `AIAgent` is assembled from mixins (`agent/turn_facade.py`,
+`hermes_agent/run_agent.py` is the public facade: `AIAgent` is assembled from mixins (`agent/turn_facade.py`,
 `client_lifecycle.py`, `stream_delivery.py`, `session_persistence.py`, `compression_facade.py`, ...).
 Construction runs `agent/agent_init.py::init_agent`; a turn is
 `agent/conversation_loop.py::run_conversation`, which `AIAgent.run_conversation` forwards to after
 taking the session turn lease (`turn_facade_lease.py`). `AIAgent.__init__` takes ~60 parameters
 (credentials, routing, callbacks, session context, budget, credential pool, ...) — read
-`run_agent.py` for the list; the subset you usually touch: `base_url`, `api_key`, `provider`,
+`hermes_agent/run_agent.py` for the list; the subset you usually touch: `base_url`, `api_key`, `provider`,
 `api_mode` (`"chat_completions" | "codex_responses" | ...`), `model` (empty → resolved from
 config/provider later), `max_iterations` (default 500, shared with subagents),
 `enabled_toolsets`/`disabled_toolsets`, `quiet_mode`, `save_trajectories`, `platform`
@@ -70,7 +70,7 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
   (`CONTEXT_FILE_MAX_CHARS` / dynamic cap from the context window / `context_file_max_chars`).
   Never load an install-tree `AGENTS.md` as project context (PR #64611); subdirectory hints reject
   paths outside the working dir so `~/.codex/AGENTS.md` / `~/.claude/CLAUDE.md` never mix in.
-- **`_last_resolved_tool_names` is a process-global in `model_tools.py`.** `_run_single_child()`
+- **`_last_resolved_tool_names` is a process-global in `hermes_agent/model_tools.py`.** `_run_single_child()`
   in `tools/delegate_tool.py` saves/restores it around subagent execution; code reading it may see
   a temporarily stale value during child runs.
 
@@ -117,7 +117,7 @@ validation and `_normalize_lang` accept; `SUPPORTED_LANGUAGES` stays the bundled
 `.desktop.yaml` pack files are opaque here beyond parse/flatten/serve (`surface_catalog`, RPC
 `i18n.catalog`); for the `tui` surface the bundled `locales/<lang>.tui.yaml` is the bottom layer of what
 `surface_catalog` serves (the TUI ships English only in TS). Endonyms for bundled ids live in `i18n_languages.py` and must agree with
-`apps/shared/src/i18n.ts`.
+`ui-tui/packages/shared/src/i18n.ts`.
 
 ## Memory, context engines, curator
 

@@ -23,7 +23,7 @@ def test_the_active_memory_providers_command_ends_a_session_name(monkeypatch, tm
 
 
 def test_a_provider_without_a_cli_is_part_of_the_session_name(monkeypatch, tmp_path):
-    """A provider that ships no ``cli.py`` registers no ``hermes <name>``, so its name is just a word."""
+    """A provider that ships no ``hermes_agent/cli.py`` registers no ``hermes <name>``, so its name is just a word."""
     _active_provider(monkeypatch, tmp_path, with_cli=False)
     assert _coalesce_session_name_args(["-c", "my", "somemem", "notes"]) == ["-c", "my somemem notes"]
 

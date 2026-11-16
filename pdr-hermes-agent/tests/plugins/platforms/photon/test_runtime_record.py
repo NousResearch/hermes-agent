@@ -70,7 +70,7 @@ def test_write_read_delete_roundtrip(record_path: Path) -> None:
 
 
 def test_record_lives_at_the_top_of_the_profile_home() -> None:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     assert photon_adapter._runtime_record_path() == get_hermes_home() / "photon-sidecar.json"
 

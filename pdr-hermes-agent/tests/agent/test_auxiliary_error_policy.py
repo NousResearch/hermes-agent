@@ -261,7 +261,7 @@ def test_pool_recovery_reuses_the_failed_requests_verdict(monkeypatch, route_tag
 def test_opencode_go_upstream_throttle_keeps_the_key_on_an_unnamed_route(monkeypatch, route, is_async):
     """A ``custom`` or untagged auto route at the main runtime's OpenCode Go host: the one classification per request
     is made on opencode-go, so Go's per-model upstream 429 rotates no key and the call falls back."""
-    import model_tools  # registers the bundled provider profiles
+    from hermes_agent import model_tools  # registers the bundled provider profiles
     from agent import auxiliary_client as aux
 
     seen, real_pool_provider = [], aux._recoverable_pool_provider
@@ -295,7 +295,7 @@ def test_a_custom_zen_endpoint_is_not_classified_as_the_main_runtimes_go(is_asyn
     """OpenCode Zen and Go share opencode.ai: a custom Zen endpoint with its own key, while the main runtime is Go,
     is judged as custom, so its upstream 429 gets the same-key retry and the second request answers. So is
     an endpoint on Go's path at another origin."""
-    import model_tools  # registers the bundled provider profiles
+    from hermes_agent import model_tools  # registers the bundled provider profiles
 
     sent, statuses = [], iter([429, 200])
 
@@ -404,7 +404,7 @@ def test_opencode_go_candidate_classifies_on_its_concrete_provider(monkeypatch, 
     """A sync candidate tagged opencode-go (converted to async by ``async_call_llm``) classifies on Go's
     profile: the upstream throttle quarantines the candidate without rotating its key. A discovered candidate keeps
     the route label ``api-key`` as its effective provider and names Go in its backend tag."""
-    import model_tools  # registers the bundled provider profiles
+    from hermes_agent import model_tools  # registers the bundled provider profiles
     from agent import auxiliary_error_policy as aux_errors
 
     seen, real = [], aux_errors.classify_api_error
@@ -441,7 +441,7 @@ def test_opencode_go_candidate_classifies_on_its_concrete_provider(monkeypatch, 
 def test_discovered_api_key_client_classifies_on_its_concrete_provider(monkeypatch, is_async):
     """Auto discovery's API-key step builds the OpenCode Go client itself (no hand-set tag): its upstream
     throttle is judged on Go's profile, not under the route label "api-key", so the key is not rotated."""
-    import model_tools  # registers the bundled provider profiles
+    from hermes_agent import model_tools  # registers the bundled provider profiles
     from agent import auxiliary_client as aux, auxiliary_error_policy as aux_errors
 
     seen, real = [], aux_errors.classify_api_error

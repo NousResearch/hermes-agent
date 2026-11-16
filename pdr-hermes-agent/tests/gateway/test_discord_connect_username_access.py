@@ -10,7 +10,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 import pytest
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config

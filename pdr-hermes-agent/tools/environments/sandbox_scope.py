@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import IO, Any, Callable, Optional
 from urllib.parse import quote
 
-from hermes_scope import Scope, current_scope
+from hermes_agent.hermes_scope import Scope, current_scope
 
 
 class CrossAgentHandleRefused(PermissionError):

@@ -16,7 +16,7 @@ from pm.environments import install_state_dir, site_packages
 
 ROOT = Path(__file__).resolve().parents[2]
 BOOT_FILES = (
-    "hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py", "hermes_cli/_launchers.py",
+    "hermes_agent/hermes_bootstrap.py", "hermes_agent/hermes_constants.py", "hermes_cli/__init__.py", "hermes_cli/_launchers.py",
     "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py", "hermes_agent/compat/finder.py",
     "hermes_agent/compat/moves.py",
     "pm/environments.py", "pm/filesystem.py", "pm/paths.py", "hermes_cli/runtime_state.py",
@@ -586,10 +586,10 @@ def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monk
     assert Path(json.loads(result.stdout)["exe"]) == store / "python-B/bin/python3"
 
 def _torn_by_a_killed_merge(tmp_path, monkeypatch):
-    """A git install whose update was killed mid-merge while git rewrote ``hermes_constants.py``.
+    """A git install whose update was killed mid-merge while git rewrote ``hermes_agent/hermes_constants.py``.
 
     Git rewrites a file as unlink, create, write: the kill left HEAD at the old commit, the
-    interrupted-pull marker of a dead updater, ``.git/index.lock`` and no ``hermes_constants.py``.
+    interrupted-pull marker of a dead updater, ``.git/index.lock`` and no ``hermes_agent/hermes_constants.py``.
     """
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     for relative in ("hermes_cli/update_lock.py", "hermes_cli/update_custody.py"):
@@ -605,7 +605,7 @@ def _torn_by_a_killed_merge(tmp_path, monkeypatch):
     git("add", "-A")
     git("commit", "-qm", "pre")
     pre = git("rev-parse", "HEAD")
-    constants = repo / "hermes_constants.py"
+    constants = repo / "hermes_agent/hermes_constants.py"
     original = constants.read_bytes()
     constants.write_bytes(original + b"\nTARGET_ONLY = 1\n")
     git("commit", "-qam", "target")
@@ -628,7 +628,7 @@ def _torn_by_a_killed_merge(tmp_path, monkeypatch):
 @pytest.mark.parametrize("surface", ["launcher", "runtime-command"])
 def test_a_merge_killed_writing_hermes_constants_is_repaired_by_the_next_launch(tmp_path, monkeypatch, surface):
     """C1 recovery reachability: the launcher reaches the repair before importing any other
-    checkout module, so a torn ``hermes_constants.py`` is put back instead of killing every launch."""
+    checkout module, so a torn ``hermes_agent/hermes_constants.py`` is put back instead of killing every launch."""
     repo, home, interpreter, pre, original, marker = _torn_by_a_killed_merge(tmp_path, monkeypatch)
     env = dict(os.environ)
     env.pop("HERMES_HOME", None)  # the default-home pin itself needs hermes_constants
@@ -651,7 +651,7 @@ def test_a_merge_killed_writing_hermes_constants_is_repaired_by_the_next_launch(
     receipt = json.loads(result.stdout.strip().splitlines()[-1])
     assert receipt["value"] == "repaired"
     assert Path(receipt["home"]) == home, "the default home is still pinned, after the repair"
-    assert (repo / "hermes_constants.py").read_bytes() == original
+    assert (repo / "hermes_agent/hermes_constants.py").read_bytes() == original
     assert not marker.exists() and not (repo / ".git" / "index.lock").exists()
     head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
                           text=True, encoding="utf-8", check=True).stdout.strip()

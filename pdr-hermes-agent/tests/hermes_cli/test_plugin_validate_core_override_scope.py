@@ -46,7 +46,7 @@ CASES = {
     "closure_param_shadows_parent_taint": ((
         "import importlib\n"
         "def outer(register):\n"
-        "    key = importlib.import_module('run_agent')\n"
+        "    key = importlib.import_module('hermes_agent.run_agent')\n"
         "    def callback(key):\n"
         "        key.x = 1\n"
         "    register(callback)\n"
@@ -68,7 +68,7 @@ CASES = {
     "closure_sees_parent_taint": ((
         "import importlib\n"
         "def outer():\n"
-        "    core = importlib.import_module('run_agent')\n"
+        "    core = importlib.import_module('hermes_agent.run_agent')\n"
         "    def apply():\n"
         "        core.AIAgent.run_conversation = print\n"
         "    apply()\n"
@@ -117,7 +117,7 @@ CASES = {
         "def init():\n"
         "    global _AGENT\n"
         "    import importlib\n"
-        "    _AGENT = importlib.import_module('run_agent')\n"
+        "    _AGENT = importlib.import_module('hermes_agent.run_agent')\n"
         "def patch():\n"
         "    _AGENT.AIAgent.run_conversation = print\n"
     ), {}, ["_AGENT.AIAgent.run_conversation (__init__.py:6)"]),

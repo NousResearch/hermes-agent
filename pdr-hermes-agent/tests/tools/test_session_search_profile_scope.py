@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from gateway.session_policy import _ACTIVE_POLICY, SURFACES, LocalSessionPolicy
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_state import SessionDB
 from tools.session_search_tool import session_search
 

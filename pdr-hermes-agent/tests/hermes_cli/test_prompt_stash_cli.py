@@ -1,7 +1,7 @@
 """Tests for the Ctrl+S prompt stash wiring inside HermesCLI.
 
 The state machine itself is covered by tests/hermes_cli/test_prompt_stash.py. These
-tests verify the cli.py side:
+tests verify the hermes_agent/cli.py side:
   - HermesCLI.__init__ creates a PromptStash
   - the layout hook makes room for the stash browse panel
   - _render_stash_panel renders bounded, display-width-correct rows
@@ -52,7 +52,7 @@ def _make_cli(**kwargs):
     with patch.dict(sys.modules, prompt_toolkit_stubs), patch.dict(
         "os.environ", clean_env, clear=False
     ):
-        import cli as _cli_mod
+        from hermes_agent import cli as _cli_mod
 
         _cli_mod = importlib.reload(_cli_mod)
         with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), patch.dict(

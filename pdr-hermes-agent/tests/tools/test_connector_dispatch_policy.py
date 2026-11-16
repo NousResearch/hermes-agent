@@ -7,7 +7,7 @@ import pytest
 
 @pytest.mark.parametrize("blocked_by", ["hook", "execution"])
 def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blocked_by):
-    import model_tools
+    from hermes_agent import model_tools
     from hermes_cli import plugins
     from tools.registry import invalidate_check_fn_cache
     from tools.connectors.gateway import bridge, config
@@ -78,7 +78,7 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
 
 
 def test_stop_during_a_connector_batch_leaves_unstarted_entries_unsent(monkeypatch):
-    import model_tools
+    from hermes_agent import model_tools
     from tools.interrupt import set_interrupt
     from tools.registry import invalidate_check_fn_cache
     from tools.connectors.gateway import bridge, config
@@ -124,7 +124,7 @@ def test_disabled_connections_cannot_be_called_through_a_stale_schema(monkeypatc
 
 
 def test_a_connector_batch_collects_the_union_of_data_use_and_keeps_it_out_of_the_result(monkeypatch):
-    import model_tools
+    from hermes_agent import model_tools
     from tools.connectors.data_use import collect_data_use
     from tools.connectors.gateway import bridge, config
     from tools.registry import invalidate_check_fn_cache

@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
-from hermes_constants import socket_safe_tmpdir
+from hermes_agent.hermes_constants import socket_safe_tmpdir
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
 from tools.environments.base_output import _popen_bash
 from tools.environments.file_sync import (

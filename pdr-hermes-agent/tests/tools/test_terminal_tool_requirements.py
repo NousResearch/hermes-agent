@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from model_tools import get_tool_definitions
+from hermes_agent.model_tools import get_tool_definitions
 
 terminal_tool_module = importlib.import_module("tools.terminal_tool")
 
@@ -15,7 +15,7 @@ def _clear_caches():
     """Invalidate check_fn and tool-definitions caches before each test
     so that monkeypatched env vars / config take effect."""
     from tools.registry import invalidate_check_fn_cache
-    from model_tools import _clear_tool_defs_cache
+    from hermes_agent.model_tools import _clear_tool_defs_cache
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
     yield
@@ -134,7 +134,7 @@ class TestCheckFnTransientFailureSuppression:
         def never_gate():
             return False
 
-        import toolsets
+        from hermes_agent import toolsets
 
         clock = {"now": 1000.0}
         monkeypatch.setattr(reg.time, "monotonic", lambda: clock["now"])
@@ -196,11 +196,11 @@ class TestCheckFnTransientFailureSuppression:
             set_multiplex_active,
             set_secret_scope,
         )
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )
-        from model_tools import _clear_tool_defs_cache, get_tool_definitions
+        from hermes_agent.model_tools import _clear_tool_defs_cache, get_tool_definitions
 
         profile_a = tmp_path / "profiles" / "a"
         profile_b = tmp_path / "profiles" / "b"
@@ -258,7 +258,7 @@ class TestCheckFnTransientFailureSuppression:
 
     def test_unscoped_multiplex_request_bypasses_cache(self, monkeypatch):
         """An unknown profile must never share another request's cache entry."""
-        import model_tools
+        from hermes_agent import model_tools
         import tools.registry as reg
         from agent.secret_scope import set_multiplex_active
 
@@ -330,7 +330,7 @@ class TestCheckFnTransientFailureSuppression:
         t = {"now": 5000.0}
         monkeypatch.setattr(reg.time, "monotonic", lambda: t["now"])
 
-        from model_tools import get_tool_definitions, _clear_tool_defs_cache
+        from hermes_agent.model_tools import get_tool_definitions, _clear_tool_defs_cache
 
         reg.invalidate_check_fn_cache()
         _clear_tool_defs_cache()

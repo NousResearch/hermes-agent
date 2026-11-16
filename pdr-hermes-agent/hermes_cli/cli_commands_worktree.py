@@ -12,7 +12,7 @@ def enter_new_worktree(cli, wt_info) -> bool:
     A gateway refusal (e.g. ``session_busy``) moved nothing: the fresh tree is removed now instead of
     sitting unlisted until quit, and an earlier active tree stays active. A chdir failure after the
     gateway accepted the move leaves only this process behind, so it is reported as that."""
-    import cli as _cli
+    from hermes_agent import cli as _cli
     from hermes_cli.cli_chat_error_copy import refusal_text
     from hermes_cli.gateway_automation import gateway_connection
     from hermes_cli.gateway_client import GatewayClientError

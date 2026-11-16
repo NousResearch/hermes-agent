@@ -802,7 +802,7 @@ async def test_session_model_lock_endpoint_then_chat_reuses_persisted_lock_and_p
             return {"final_response": "locked", "session_id": self.session_id}
 
     _patch_api_server_runtime(monkeypatch)
-    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FakeAgent)
     monkeypatch.setattr(
         adapter,
         "_session_model_override_for",
@@ -1049,7 +1049,7 @@ def test_confirmed_runtime_lock_disables_global_fallback_model(adapter, monkeypa
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FakeAgent)
 
     adapter._create_agent(
         session_id="locked-session",
@@ -1433,6 +1433,6 @@ async def test_interim_commentary_reaches_session_sse_and_responses_stream(adapt
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    monkeypatch.setattr("run_agent.AIAgent", CapturingAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", CapturingAgent)
     adapter._create_agent(session_id="gated", interim_assistant_callback=lambda *_a, **_k: None)
     assert captured["interim_assistant_callback"] is None

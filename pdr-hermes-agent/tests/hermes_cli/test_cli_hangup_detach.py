@@ -21,7 +21,7 @@ pytestmark = pytest.mark.platforms("posix")  # SIGHUP exists only on POSIX hosts
 
 @pytest.fixture
 def cli_mod():
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     cli_mod._cleanup_done = False
     yield cli_mod
     cli_mod._active_agent_ref = None

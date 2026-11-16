@@ -10,7 +10,7 @@ import pytest
 
 from gateway.config import Platform, StreamingConfig
 from gateway.session import SessionSource
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter, _make_runner
 
 

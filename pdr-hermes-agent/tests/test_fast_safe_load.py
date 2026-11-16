@@ -8,9 +8,9 @@ any particular document.
 
 import io
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
-from utils import fast_safe_load
+from hermes_agent.utils import fast_safe_load
 
 
 _DOCS = [

@@ -154,13 +154,13 @@ class _FakeAgentProviderClient:
 
 def _run_turn(monkeypatch, *, projected, iterations):
     """Drive one real ``run_conversation`` turn against the fake client."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setattr(
         "agent.process_bootstrap.OpenAI",
         lambda **_kw: _FakeAgentProviderClient(projected, iterations),
     )
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **k: [])
 
     agent = AIAgent(
         model="test-model",

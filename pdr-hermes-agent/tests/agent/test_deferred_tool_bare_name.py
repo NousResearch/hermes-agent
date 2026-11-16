@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 _ARGS = {"action": "poll", "session_id": "proc_x"}
 

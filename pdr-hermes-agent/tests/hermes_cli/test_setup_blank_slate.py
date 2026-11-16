@@ -20,7 +20,7 @@ class TestBlankSlateMinimalToolsets:
         share a tool with a kept toolset — it would silently strip that tool
         from the blank-slate agent (#57315, #58281).
         """
-        from toolsets import resolve_toolset
+        from hermes_agent.toolsets import resolve_toolset
         cfg = {}
         _blank_slate_minimal_toolsets(cfg)
         kept_tools = set()
@@ -44,7 +44,7 @@ class TestBlankSlateMinimalToolsets:
         backend; mock the requirement check so the toolset logic is exercised
         independent of the test host's provider credentials.
         """
-        import model_tools
+        from hermes_agent import model_tools
         from tools.registry import registry as _tool_registry
         _entry = _tool_registry.get_entry("vision_analyze")
         monkeypatch.setattr(_entry, "check_fn", lambda: True)

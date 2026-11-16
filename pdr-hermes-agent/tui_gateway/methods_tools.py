@@ -321,7 +321,7 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False,
     ``(plugin_key, text)`` queued once per session for its next tool result or turn
     (``agent/plugin_live_notes.py``)."""
     from agent.onboarding_session import carry_onboarding_toolset
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     want = hermes_home_key(home) if home is not None else None
     with _sessions_lock:
         live = [(sid, sess) for sid, sess in _sessions.items() if sess.get("agent") is not None and (
@@ -606,7 +606,7 @@ def _dispatch_skill(rid, params, session, name, arg):
         sc = _tools_mod("agent.skill_commands")
         cmds, key = sc.get_interactive_skill_commands(), f"/{name}".lower()
         if key in cmds:
-            # Stacked leading /skill tokens (up to 5, cli.py + gateway parity, #74705): the
+            # Stacked leading /skill tokens (up to 5, hermes_agent/cli.py + gateway parity, #74705): the
             # first token matched above; consume any further leading skill tokens from `arg`,
             # then build one invocation that loads every skill over the remaining instruction.
             extra_keys, user_instruction = sc.split_stacked_skill_commands(arg, interactive=True)
@@ -919,7 +919,7 @@ _SKILLS_USAGE = ("Unknown /skills subcommand here. "
 
 def _pending_subcommand_store(session):
     """Memory store for the session's own profile: the live agent's store when there is one, else a
-    freshly loaded on-disk store — mirroring cli.py's /memory handler and the gateway's (Desktop/TUI
+    freshly loaded on-disk store — mirroring hermes_agent/cli.py's /memory handler and the gateway's (Desktop/TUI
     sessions have no long-lived agent store). ``None`` when even that fails, which the shared handler
     reports as "memory store unavailable" instead of claiming the write was applied."""
     if session:

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import threading
 
-import run_agent as run_agent_module
-from run_agent import AIAgent
+from hermes_agent import run_agent as run_agent_module
+from hermes_agent.run_agent import AIAgent
 
 
 _REAL_THREAD = threading.Thread

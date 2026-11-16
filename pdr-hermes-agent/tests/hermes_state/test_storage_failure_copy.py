@@ -38,7 +38,7 @@ def test_details_line_is_flattened_and_bounded():
 def test_action_command_is_pinned_to_the_failing_profile(monkeypatch, tmp_path):
     """The action names the profile whose store failed (multi-profile backends serve sessions
     whose state.db is not the process default; a bare ``hermes`` follows active_profile)."""
-    from hermes_constants import profile_cli_selector
+    from hermes_agent.hermes_constants import profile_cli_selector
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
     selector = profile_cli_selector()

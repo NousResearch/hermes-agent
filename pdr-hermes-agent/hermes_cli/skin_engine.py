@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +350,7 @@ _active_skin_by_home: dict[str, tuple[str, SkinConfig]] = {}
 
 
 def _routed_home_key() -> Optional[str]:
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
     return None if get_hermes_home_override() is None else hermes_home_key()
 
 
@@ -369,7 +369,7 @@ def _skins_dir() -> Path:
 def _load_skin_from_yaml(path: Path) -> Optional[dict[str, Any]]:
     """Load a skin definition from a YAML file; None on any failure."""
     try:
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         with open(path, "r", encoding="utf-8-sig") as f:
             data = yaml.safe_load(f)
         if isinstance(data, dict) and "name" in data:
@@ -547,7 +547,7 @@ def get_prompt_toolkit_style_overrides() -> dict[str, str]:
         return {}
     # `prompt` is unset by default so typed text inherits the terminal's foreground (readable
     # on light and dark schemes); skins opt into a colored prompt symbol via `prompt` in YAML.
-    # Every read goes through skin.get_color (cli.py wraps it for light-mode remapping).
+    # Every read goes through skin.get_color (hermes_agent/cli.py wraps it for light-mode remapping).
     palette: dict[str, str] = {}
     for name, key, fallback in _STYLE_PALETTE:
         palette[name] = skin.get_color(key, palette[fallback[1:]] if fallback.startswith("@") else fallback)

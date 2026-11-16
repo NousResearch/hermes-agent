@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import get_default_hermes_root
+from hermes_agent.hermes_constants import get_default_hermes_root
 from pm import packages
 from pm import paths
 

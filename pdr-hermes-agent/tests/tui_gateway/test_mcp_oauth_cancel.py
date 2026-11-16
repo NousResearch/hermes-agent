@@ -83,7 +83,7 @@ def test_cancel_is_scoped_idempotent_and_releases_worker(
 
 @pytest.mark.parametrize("operation", ["poll", "callback", "cancel"])
 def test_session_operations_require_resolved_owner(tmp_path, monkeypatch, operation):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     home = str(tmp_path / "owner")
     flow = DashboardOAuthFlow(
@@ -99,7 +99,7 @@ def test_session_operations_require_resolved_owner(tmp_path, monkeypatch, operat
             return sessions.poll_flow("owned", "reports")
         if operation == "callback":
             return sessions.deliver_callback_flow("owned", "reports", code="valid", state="test")
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         return sessions.cancel_flow("owned", "reports", str(get_hermes_home()))
 
     token = set_hermes_home_override(tmp_path / "other")

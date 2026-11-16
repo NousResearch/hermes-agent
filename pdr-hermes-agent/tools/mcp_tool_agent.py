@@ -48,7 +48,7 @@ def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
         enabled = enabled_override if enabled_override is not None else enabled
         if disabled_override is not None:
             from agent.oneshot_footprint import agent_is_oneshot
-            from toolsets import session_disabled_toolsets
+            from hermes_agent.toolsets import session_disabled_toolsets
             agent._configured_disabled_toolsets = disabled_override
             disabled = session_disabled_toolsets(
                 disabled_override, getattr(agent, "platform", None), oneshot=agent_is_oneshot(agent))
@@ -69,7 +69,7 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
 def _drop_session_tools(agent, new_defs: list, new_names: set) -> tuple:
     # Drops only: runs after a merge, where a carried or pinned entry keeps the bytes already sent. The one-shot
     # schema variants (``toolsets.agent_tool_surface``) shape fresh definitions, before any merge.
-    from toolsets import agent_tool_drops
+    from hermes_agent.toolsets import agent_tool_drops
     drops = agent_tool_drops(agent)
     if not drops:
         return new_defs, new_names
@@ -149,9 +149,9 @@ def refresh_agent_mcp_tools(
     With ``preserve_prefix`` off (explicit ``/reload-mcp``, and a rebuild before the
     first turn) a same-name schema change is published. The caller has already
     accepted the cache break, or nothing has been cached yet."""
-    from model_tools import get_tool_definitions
+    from hermes_agent.model_tools import get_tool_definitions
     from tools.registry import registry
-    from toolsets import agent_tool_surface, tool_selection_key
+    from hermes_agent.toolsets import agent_tool_surface, tool_selection_key
     enabled, disabled = _resolve_refresh_toolsets(agent, enabled_override, disabled_override)
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.
@@ -199,7 +199,7 @@ def reprobe_tool_availability() -> None:
     """Explicit ``/reload-mcp`` hatch out of the tools[] freeze: drop the ``check_fn`` verdict
     cache AND the ``get_tool_definitions`` memo (keyed on registry generation, so it would
     otherwise replay the stale verdicts)."""
-    from model_tools import _clear_tool_defs_cache
+    from hermes_agent.model_tools import _clear_tool_defs_cache
     from tools.registry import invalidate_check_fn_cache
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
@@ -233,7 +233,7 @@ def persist_agent_tool_names(agent) -> None:
 
 
 def _pinned_snapshot_key(session_id) -> tuple:
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     return hermes_home_key(), str(session_id)
 
 
@@ -270,8 +270,8 @@ def _config_permitted_names(agent) -> set:
     forward. A client-surface toolset counts as allowed (only its client can add it, so its absence
     here is no config choice); ``disabled_toolsets`` still strips it."""
     from agent.oneshot_footprint import ONESHOT_DISABLED_TOOLSETS, agent_is_oneshot
-    from model_tools import _select_tool_names
-    from toolsets import CLIENT_SURFACE_TOOLSETS
+    from hermes_agent.model_tools import _select_tool_names
+    from hermes_agent.toolsets import CLIENT_SURFACE_TOOLSETS
     enabled = getattr(agent, "enabled_toolsets", None)
     if enabled is not None:
         enabled = [*enabled, *CLIENT_SURFACE_TOOLSETS]
@@ -285,7 +285,7 @@ def _config_permitted_names(agent) -> set:
 def _drop_gated_carried_tools(merged: list, carried: set) -> list:
     """A carried tool also passes the session-level schema gates the fresh build applied
     (``browser_exec`` needs ``terminal`` in the same array), judged on the merged array."""
-    from model_tools import _DYNAMIC_SCHEMA_REWRITERS
+    from hermes_agent.model_tools import _DYNAMIC_SCHEMA_REWRITERS
     available = {_def_name(t) for t in merged}
     return [t for t in merged if _def_name(t) not in carried or _def_name(t) not in _DYNAMIC_SCHEMA_REWRITERS
             or _DYNAMIC_SCHEMA_REWRITERS[_def_name(t)](t, available) is not None]
@@ -318,7 +318,7 @@ def pinned_tool_defs(saved) -> list:
     pinned definitions keep their bytes, a legacy name list takes each tool's current registry schema."""
     # With no agent built yet (gateway warm-up off, failed or still running), nothing has run tool
     # discovery, so the registry would resolve no legacy name.
-    import model_tools
+    from hermes_agent import model_tools
     return _pinned_tool_defs(saved, {}, keep_bytes=True)[2]
 
 

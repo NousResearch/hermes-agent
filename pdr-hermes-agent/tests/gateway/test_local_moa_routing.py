@@ -46,7 +46,7 @@ class _Agent:
 
 @pytest_asyncio.fixture
 async def owner(tmp_path, monkeypatch):
-    import run_agent
+    from hermes_agent import run_agent
     from gateway import run
     from gateway.config import GatewayConfig
     from gateway.run import GatewayRunner

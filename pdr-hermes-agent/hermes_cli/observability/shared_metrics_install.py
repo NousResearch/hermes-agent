@@ -101,7 +101,7 @@ def version_age_bucket(now: float | None = None) -> str:
 def behind_bucket(home: Path | None = None, now: float | None = None) -> str:
     """Commits/releases behind, from the update check's cached result for this exact revision."""
     from hermes_cli.update_channel import install_id
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     root = _project_root()
     cache_file = (home or get_hermes_home()) / "source-checks" / f"{install_id(root)}.json"

@@ -38,7 +38,7 @@ def keep_running_checkout_importable(watcher_env: dict) -> dict:
 
 def _detached_restart_log_path() -> Optional[Path]:
     """``<HERMES_HOME>/logs/detached-restart.log``, or None when the logs dir cannot be made."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     log_path = get_hermes_home() / "logs" / "detached-restart.log"
     try:

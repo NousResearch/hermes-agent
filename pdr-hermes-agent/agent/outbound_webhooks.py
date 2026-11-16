@@ -78,7 +78,7 @@ def register_from_config(cfg: Optional[dict[str, Any]]) -> list[WebhookTarget]:
         return []
     if not isinstance(cfg, dict):
         return []
-    from utils import env_var_enabled
+    from hermes_agent.utils import env_var_enabled
     if env_var_enabled("HERMES_SAFE_MODE"):
         logger.info("HERMES_SAFE_MODE=1 — outbound webhook registration skipped")
         return []

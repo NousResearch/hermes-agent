@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-import cli
+from hermes_agent import cli
 
 
 @pytest.fixture(autouse=True)

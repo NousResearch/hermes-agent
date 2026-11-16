@@ -475,7 +475,7 @@ class TestConfigAllowlist:
         """Restore the ``tools`` logger level after cross-test pollution.
 
         ``AIAgent(quiet_mode=True)`` globally sets ``tools`` and
-        ``tools.*`` children to ``ERROR`` (see run_agent.py quiet_mode
+        ``tools.*`` children to ``ERROR`` (see hermes_agent/run_agent.py quiet_mode
         block).  A persistent test process keeps that setting, so a
         streaming test will silence WARNING-level logs from
         ``tools.discord_tool`` for every test that follows.  Reset here so
@@ -677,14 +677,14 @@ class Test403Enrichment:
 class TestModelToolsIntegration:
     def setup_method(self):
         _reset_capability_cache()
-        from model_tools import _clear_tool_defs_cache
+        from hermes_agent.model_tools import _clear_tool_defs_cache
         from tools.registry import invalidate_check_fn_cache
         _clear_tool_defs_cache()
         invalidate_check_fn_cache()
 
     def teardown_method(self):
         _reset_capability_cache()
-        from model_tools import _clear_tool_defs_cache
+        from hermes_agent.model_tools import _clear_tool_defs_cache
         from tools.registry import invalidate_check_fn_cache
         _clear_tool_defs_cache()
         invalidate_check_fn_cache()
@@ -703,7 +703,7 @@ class TestModelToolsIntegration:
         # Bot without GUILD_MEMBERS intent
         mock_req.return_value = {"flags": 0}
 
-        from model_tools import get_tool_definitions
+        from hermes_agent.model_tools import get_tool_definitions
         # skip_tool_search_assembly: this test exercises the dynamic schema
         # rebuild; under tiered disclosure the discord tools defer behind the
         # bridge, but the rebuilt schema is what tool_describe serves.

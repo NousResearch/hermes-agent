@@ -2,7 +2,7 @@
 
 import json
 
-from batch_runner import BatchRunner, _process_batch_worker
+from hermes_agent.batch_runner import BatchRunner, _process_batch_worker
 
 SECRET = "sk-" + "proj-batchrunner-secret-1234567890"
 
@@ -22,7 +22,7 @@ def test_batch_worker_redacts_trajectory_before_append(tmp_path, monkeypatch):
         "api_calls": 1,
         "toolsets_used": [],
     }
-    monkeypatch.setattr("batch_runner._process_single_prompt", lambda *a, **kw: result)
+    monkeypatch.setattr("hermes_agent.batch_runner._process_single_prompt", lambda *a, **kw: result)
 
     _process_batch_worker((1, [(0, {"prompt": prompt})], tmp_path, set(), {"verbose": False}))
 
@@ -43,7 +43,7 @@ def test_resume_still_skips_prompt_saved_in_redacted_form(tmp_path, monkeypatch)
         "reasoning_stats": {"has_any_reasoning": True},
         "tool_stats": {}, "metadata": {}, "completed": True, "api_calls": 1, "toolsets_used": [],
     }
-    monkeypatch.setattr("batch_runner._process_single_prompt", lambda *a, **kw: result)
+    monkeypatch.setattr("hermes_agent.batch_runner._process_single_prompt", lambda *a, **kw: result)
     _process_batch_worker((1, [(0, runner.dataset[0])], tmp_path, set(), {"verbose": False}))
 
     remaining, skipped = runner._filter_dataset_by_completed(runner._scan_completed_prompts_by_content())

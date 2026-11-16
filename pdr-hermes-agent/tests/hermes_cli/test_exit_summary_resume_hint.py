@@ -3,7 +3,7 @@
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 from hermes_cli.main_tui_launch import _print_tui_exit_summary
 
 import hermes_cli.main

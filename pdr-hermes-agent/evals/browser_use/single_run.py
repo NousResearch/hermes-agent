@@ -57,7 +57,7 @@ cfg = {
     "display": {"quiet": True},
 }
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 with open(os.path.join(hh, "config.yaml"), "w", encoding="utf-8") as f:
     yaml.safe_dump(cfg, f)
@@ -76,7 +76,7 @@ import logging
 
 logging.disable(logging.CRITICAL)
 
-import run_agent
+from hermes_agent import run_agent
 
 _loaded = os.path.normcase(os.path.normpath(run_agent.__file__))
 _want = os.path.normcase(os.path.normpath(WT))
@@ -90,7 +90,7 @@ if ARM == "prns":
     bu._skill_text_cache = None
     bu.BROWSER_EXEC_SCHEMA["description"] = bu._description_header()
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 # Provider resolution: default openrouter (original battery), but allow the
 # Nous-subscription path on boxes without an OpenRouter key. Credentials are
@@ -131,7 +131,7 @@ agent = AIAgent(
 
 schema_desc_len = 0
 try:
-    from model_tools import get_tool_definitions
+    from hermes_agent.model_tools import get_tool_definitions
 
     for t in get_tool_definitions(agent.enabled_toolsets):
         if t["function"]["name"].startswith("browser"):

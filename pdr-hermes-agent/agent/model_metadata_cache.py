@@ -10,7 +10,7 @@ import functools
 import logging
 import threading
 
-from utils import atomic_yaml_write
+from hermes_agent.utils import atomic_yaml_write
 
 logger = logging.getLogger(__name__)
 

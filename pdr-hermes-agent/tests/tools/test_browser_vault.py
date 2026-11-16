@@ -650,7 +650,7 @@ def test_every_registered_tool_schema_declares_openai_style_parameters():
     """The registry emits ``parameters`` (OpenAI function shape) and every provider adapter converts from
     it; a schema that spells it ``input_schema`` (Anthropic shape) ships with NO parameters, so the model is
     told the tool takes nothing and calls browser_vault_fill without a handle."""
-    import model_tools
+    from hermes_agent import model_tools
     from tools.registry import registry
 
     missing = [entry.name for entry in registry.get_all_entries()
@@ -718,9 +718,9 @@ class TestManagerAutoDetection:
 
 
 def test_every_vault_tool_is_in_the_browser_toolset():
-    """toolsets.py is a hand-maintained list; a tool registered here but missing there is invisible to the model
+    """hermes_agent/toolsets.py is a hand-maintained list; a tool registered here but missing there is invisible to the model
     (live: browser_vault_save_login was registered, tested, and never offered)."""
-    import toolsets
+    from hermes_agent import toolsets
     from tools import browser_vault_tool
     from tools.registry import registry
 

@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hermes_cli import env_loader
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 
 
 @pytest.fixture(autouse=True)
@@ -159,7 +159,7 @@ def test_single_profile_scoped_load_keeps_override_behavior(tmp_path, monkeypatc
     not on the home override alone -- single-profile ``-p`` runs still load.
     """
     from agent import secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.delenv("HERMES_TEST_SHARED_ADAPTER_CONFIG", raising=False)
     other_home = tmp_path / "other"
@@ -189,7 +189,7 @@ def test_multiplex_dotenv_load_hydrates_sources_without_global_env(
     from agent import secret_scope
     import agent.secret_sources.bitwarden as bw_module
     from agent.secret_sources import registry as reg_module
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -425,7 +425,7 @@ def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch)
 
 def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypatch):
     """``load_hermes_dotenv()`` is called at module-import time from several
-    hot modules (cli.py, hermes_cli/main.py, run_agent.py, ...).  The
+    hot modules (hermes_agent/cli.py, hermes_cli/main.py, hermes_agent/run_agent.py, ...).  The
     Bitwarden status line previously printed once per call — 3-5x per
     startup.  The applied-home guard must short-circuit subsequent calls
     so the heavy work (config re-parse, Bitwarden lookup, status print)
@@ -459,7 +459,7 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
     reg_module._reset_registry_for_tests()
 
     # Five calls in a row, simulating module-import-time invocations from
-    # cli.py, hermes_cli/main.py, run_agent.py, trajectory_compressor.py,
+    # hermes_agent/cli.py, hermes_cli/main.py, hermes_agent/run_agent.py, hermes_agent/trajectory_compressor.py,
     # gateway/run.py.  Only the first should actually call the backend.
     for _ in range(5):
         env_loader._apply_external_secret_sources(tmp_path)

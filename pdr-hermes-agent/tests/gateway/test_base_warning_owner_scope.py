@@ -11,7 +11,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 class RecordingAdapter(BasePlatformAdapter):
@@ -117,7 +117,7 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
 
     fake = types.ModuleType("run_agent")
     fake.AIAgent = ScriptedAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "test-key"})
     # No platform credentials: authorize the fixture identity at the auth backend,
     # retaining admission, generation/lease lifecycle and queued-result handoff.

@@ -24,7 +24,7 @@ def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stre
     from agent.model_metadata import estimate_tokens_rough
     from agent.usage_anchor import anchored_context_tokens
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     reasoning = "I should look this up.\n<tool_call>\nlookup({})\n</tool_call>"
     stages = (["tool"] if after_tool else []) + ["empty", "tool", "answer", "answer"]
@@ -127,7 +127,7 @@ def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stre
         agent.valid_tool_names = {"lookup"}
         # Only the leaf tool is substituted; Hermes owns request assembly,
         # the real SDK/HTTP transport, execution bookkeeping and SQLite writes.
-        monkeypatch.setattr("model_tools.handle_function_call", lambda *a, **kw: "42")
+        monkeypatch.setattr("hermes_agent.model_tools.handle_function_call", lambda *a, **kw: "42")
         prompt = "Look up the answer."
         if parts:
             prompt = [

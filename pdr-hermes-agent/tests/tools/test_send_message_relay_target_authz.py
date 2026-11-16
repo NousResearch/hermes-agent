@@ -80,7 +80,7 @@ def _send(target: str, sent):
 
     with patch("gateway.config.load_gateway_config", return_value=config), patch(
         "tools.interrupt.is_interrupted", return_value=False
-    ), patch("model_tools._run_async", side_effect=lambda c: asyncio.run(c)), patch(
+    ), patch("hermes_agent.model_tools._run_async", side_effect=lambda c: asyncio.run(c)), patch(
         "tools.send_message_tool._send_to_platform", side_effect=_record
     ), patch(
         "gateway.mirror.mirror_to_session", return_value=False
@@ -269,7 +269,7 @@ def _send_slack(target: str, sent, *, resolves_to: str | None = SLACK_DM):
 
     with patch("gateway.config.load_gateway_config", return_value=config), patch(
         "tools.interrupt.is_interrupted", return_value=False
-    ), patch("model_tools._run_async", side_effect=lambda c: asyncio.run(c)), patch(
+    ), patch("hermes_agent.model_tools._run_async", side_effect=lambda c: asyncio.run(c)), patch(
         "tools.send_message_tool._send_to_platform", side_effect=_record
     ), patch(
         "tools.send_message_tool._resolve_slack_user_target", side_effect=_resolve

@@ -303,7 +303,7 @@ def setup_isolated_home(enabled: bool, listing: str = "off",
 
 def _yaml_dump(obj: Any) -> str:
     try:
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         return yaml.safe_dump(obj, sort_keys=False)
     except ImportError:
         return json.dumps(obj, indent=2)
@@ -389,7 +389,7 @@ def run_one_scenario(scenario: dict[str, Any], enabled: bool, out_dir: Path) -> 
     final_response = ""
     messages_out = []
     try:
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = AIAgent(
             provider="openrouter",
             model="anthropic/claude-haiku-4.5",

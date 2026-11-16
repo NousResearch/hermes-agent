@@ -183,7 +183,7 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
     monkeypatch.setenv("HERMES_GATEWAY_NOTIFY_INTERVAL", "0")
     monkeypatch.setitem(sys.modules, "dotenv", types.SimpleNamespace(load_dotenv=lambda: None))
-    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=_PendingVoiceAgent))
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", types.SimpleNamespace(AIAgent=_PendingVoiceAgent))
 
     adapter = _PendingVoiceAdapter()
     runner = _run_agent_runner(adapter)

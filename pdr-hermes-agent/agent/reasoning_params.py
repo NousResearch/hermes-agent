@@ -2,14 +2,14 @@
 
 When ``reasoning`` extra_body is safe to send, LM Studio / Ollama / endpoint-profile capability probes,
 ``reasoning_content`` echo families, and strict-API tool-call sanitising.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import logging
 import time
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.message_sanitization import matches_reasoning_echo_family
-from utils import base_url_host_matches
+from hermes_agent.utils import base_url_host_matches
 
 # Static OpenRouter fallback when the live /v1/models capability cache is cold.
 _OPENROUTER_REASONING_PREFIXES = (

@@ -502,7 +502,7 @@ def test_turn_author_reaches_the_agent_through_the_real_facade(monkeypatch):
     """``AIAgent.run_conversation(turn_author=...)`` crosses the facade and the loop entry point, not only
     ``build_turn_context``; a kwarg dropped at either hop raised TypeError on every real turn."""
     from types import SimpleNamespace
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     class _Completions:
         def create(self, **_kw):
@@ -512,7 +512,7 @@ def test_turn_author_reaches_the_agent_through_the_real_facade(monkeypatch):
 
     monkeypatch.setattr("agent.process_bootstrap.OpenAI",
                         lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **k: [])
     agent = AIAgent(model="test-model", api_key="k", base_url="http://localhost:1/v1", platform="cli",
                     max_iterations=2, quiet_mode=True, skip_memory=True)
     agent._disable_streaming = True
@@ -685,7 +685,7 @@ def test_between_turns_refresh_adds_late_tool_when_servers_registered():
 
     new_def = {"type": "function", "function": {"name": "mcp_x_tool", "description": "", "parameters": {}}}
 
-    import model_tools
+    from hermes_agent import model_tools
     import tools.mcp_tool
     with patch("tools.mcp_tool_discovery.has_registered_mcp_tools", return_value=True), \
          patch.object(model_tools, "get_tool_definitions", return_value=[new_def]):

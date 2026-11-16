@@ -29,7 +29,7 @@ from pathlib import Path
 
 def register(ctx):
     def seen(**kw):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         with open(%r, "a") as log:
             log.write(json.dumps(dict(kw, pid=os.getpid(), home=str(get_hermes_home()))) + "\\n")
     ctx.register_hook("pre_command", seen)
@@ -176,7 +176,7 @@ def test_real_cli_startup_and_commands_run_no_plugin_code_in_the_cli(tmp_path, m
 def test_pre_command_fires_once_in_the_gateway_and_cli_plugins_reads_its_list(tmp_path, monkeypatch, capsys):
     import hermes_cli.plugins as plugins_mod
     from agent.i18n import t
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     root = Path(__file__).resolve().parents[2]
     home, user, work = tmp_path / 'state', tmp_path / 'user', tmp_path / 'work'
     home.mkdir(mode=0o700)
@@ -431,7 +431,7 @@ def test_commands_the_cli_does_not_run_on_the_gateway_fire_nothing(monkeypatch, 
     """A registry command with no classic CLI handler runs nothing in the CLI, so no
     ``command.observe`` goes out; a command the CLI runs (``/reload``, ``/handoff`` through the
     owner's handoff verbs, #143608) is reported before it runs."""
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     from hermes_cli.commands import COMMAND_REGISTRY
 
     class Connection:

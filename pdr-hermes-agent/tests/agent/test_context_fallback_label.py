@@ -85,7 +85,7 @@ class TestFallbackMarker:
     def test_profiles_keep_their_own_label(self, tmp_path, defaulted_first):
         """Greptile: a multiplexed gateway resolves for several profiles; one profile's answer is not another's."""
         from agent.context_pin import context_window_marker
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         homes = {"defaulted": tmp_path / "a", "confirmed": tmp_path / "b"}
         for home in homes.values():
             home.mkdir()
@@ -156,7 +156,7 @@ class TestFallbackIsLabelledOnSurfaces:
 
     def _cli_with_bedrock_agent(self, model="acme.unknown-model-v1", context_length=128_000):
         from datetime import datetime, timedelta
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         cli_obj = HermesCLI.__new__(HermesCLI)
         cli_obj.model = model
         cli_obj.session_start = datetime.now() - timedelta(minutes=3)
@@ -208,7 +208,7 @@ class TestFallbackIsLabelledOnSurfaces:
         assert "(fallback)" in line
 
     def test_cli_model_switch_marks_the_fallback_window(self, monkeypatch):
-        import cli as cli_mod
+        from hermes_agent import cli as cli_mod
         from hermes_cli.model_switch import ModelSwitchResult
         captured: list[str] = []
         monkeypatch.setattr(cli_mod, "_cprint", lambda s, *a, **k: captured.append(str(s)))

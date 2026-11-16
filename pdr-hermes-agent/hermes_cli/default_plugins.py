@@ -100,7 +100,7 @@ def _settled(home: Path, entry) -> bool:
         return True
     names = {entry.name, target.name}
     try:
-        from hermes_yaml import safe_load
+        from hermes_agent.hermes_yaml import safe_load
         names.add(str((safe_load((target / "plugin.yaml").read_text(encoding="utf-8-sig")) or {}).get("name") or ""))
     except (OSError, ValueError, AttributeError):  # no or malformed manifest: the dir names count
         pass

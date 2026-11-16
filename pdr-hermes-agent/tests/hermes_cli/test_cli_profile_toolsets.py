@@ -28,7 +28,7 @@ def store():
 def _launch(monkeypatch, db, toolsets=None, coding=None):
     """``_build_cli_from_args`` then the session's gateway create; HermesCLI is the real toolset init on a
     bare host. Returns the CLI and the lines its startup printed."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     from hermes_cli.cli_init_mixin import CLIInitMixin
     monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
     monkeypatch.setattr(cli_mod, "CLI_CONFIG", CONFIG)

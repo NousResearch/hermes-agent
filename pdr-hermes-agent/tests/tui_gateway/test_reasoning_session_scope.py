@@ -143,7 +143,7 @@ class TestSessionNoneReachesDeepSeekWire:
         assert kw["reasoning_config_override"] == {"enabled": False}
 
     def test_effort_none_override_emits_thinking_disabled(self) -> None:
-        import model_tools
+        from hermes_agent import model_tools
         import providers
         from agent.transports.chat_completions import ChatCompletionsTransport
 

@@ -457,7 +457,7 @@ def test_iteration_summary_strips_images_for_rejecting_model(tmp_path, monkeypat
 
     from agent.chat_completion_helpers import _iteration_summary_api_messages
     from agent.vision_message_prep import _provider_model_key
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     agent = AIAgent(api_key="k", base_url="https://api.groq.com/openai/v1", provider="custom", model="m",

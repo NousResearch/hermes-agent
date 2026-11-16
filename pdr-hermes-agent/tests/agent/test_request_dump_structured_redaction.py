@@ -6,10 +6,10 @@ import json
 def test_request_dump_corrupting_secret_is_parseable_and_preserves_safe_fields(
     monkeypatch, tmp_path
 ):
-    import run_agent
+    from hermes_agent import run_agent
 
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kwargs: [])
-    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda **kwargs: [])
+    monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", dict)
     agent = run_agent.AIAgent(
         model="gpt-4o",
         base_url="http://127.0.0.1:9208/v1",
@@ -38,10 +38,10 @@ def test_request_dump_corrupting_secret_is_parseable_and_preserves_safe_fields(
 
 
 def test_request_dump_list_held_env_secret_keeps_sibling_fields(monkeypatch, tmp_path):
-    import run_agent
+    from hermes_agent import run_agent
 
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kwargs: [])
-    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda **kwargs: [])
+    monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", dict)
     agent = run_agent.AIAgent(
         model="gpt-4o",
         base_url="http://127.0.0.1:9208/v1",

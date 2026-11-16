@@ -123,7 +123,7 @@ if len(sys.argv) == 1:
 else:
     # Fresh credential-free process, real production imports; no prompt seams mocked.
     sys.path.insert(0, str(SRC))
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from agent.system_prompt import build_system_prompt, build_system_prompt_parts
     from agent.prompt_builder import build_context_files_prompt
     from agent.prompt_caching import build_prompt_cache_plan

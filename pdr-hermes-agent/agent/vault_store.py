@@ -31,10 +31,10 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
-from hermes_dir_acl import make_user_dir
+from hermes_agent.hermes_dir_acl import make_user_dir
 
-from hermes_constants import get_hermes_home
-from utils import atomic_write_bytes
+from hermes_agent.hermes_constants import get_hermes_home
+from hermes_agent.utils import atomic_write_bytes
 
 logger = logging.getLogger(__name__)
 

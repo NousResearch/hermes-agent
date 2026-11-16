@@ -152,7 +152,7 @@ def _reports(client, step: str, profile: str | None = None) -> Any:
 
 
 def test_a_start_waiting_for_another_gateways_start_is_reported_from_when_it_was_asked(nous, gateway, builds, monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     solo = get_hermes_home() / "profiles" / "solo"
     solo.mkdir(parents=True)

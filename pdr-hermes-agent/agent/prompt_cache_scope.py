@@ -14,7 +14,7 @@ import hashlib
 import logging
 from typing import Any, Optional
 
-from utils import base_url_hostname
+from hermes_agent.utils import base_url_hostname
 
 logger = logging.getLogger(__name__)
 

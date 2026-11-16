@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import run_agent
+from hermes_agent import run_agent
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 
 
@@ -617,7 +617,7 @@ class TestReviewForkApiModeDowngrade:
                 return None
             self.close = _no_op_close
 
-        with _patch("run_agent.AIAgent.__init__", _capture_init):
+        with _patch("hermes_agent.run_agent.AIAgent.__init__", _capture_init):
             agent._spawn_background_review(
                 messages_snapshot=[{"role": "user", "content": "x"}],
                 review_memory=True,
@@ -732,7 +732,7 @@ class TestQuotaFailureFallsOverToConfiguredFallback:
 
 
 class TestSessionRetirementOnRunAgent:
-    """run_agent.py side: when run_turn returns should_retire=True, the
+    """hermes_agent/run_agent.py side: when run_turn returns should_retire=True, the
     AIAgent must close + null _codex_session so the next turn respawns."""
 
     def test_should_retire_drops_session(self, monkeypatch):

@@ -121,7 +121,7 @@ def test_delegation_cfg_as_task_projection():
 def test_picker_provider_switch_drops_old_endpoint_credentials(tmp_path, monkeypatch):
     """Picking a new provider must not leave the old endpoint's key_env/api_mode behind: the aux
     resolver hands them to whatever provider the block now names (#141832)."""
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
     from agent.auxiliary_client import _resolve_task_provider_model
     _isolate_home(tmp_path, monkeypatch)
     monkeypatch.setenv("OLD_ENDPOINT_KEY", "sk-old-endpoint")

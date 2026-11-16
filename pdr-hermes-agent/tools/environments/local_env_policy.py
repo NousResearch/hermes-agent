@@ -158,7 +158,7 @@ def _home_adapter_secret_env() -> frozenset:
     or flat manifest unreadable or unparsable) keeps the names this home already had and is not
     cached, so a failed discovery never releases a known denial and recovery is seen at once."""
     from hermes_cli.config import platform_manifest_secret_scan, platform_manifest_stamp
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
     home = get_hermes_home()
     key, stamp = hermes_home_key(home), platform_manifest_stamp(home)
     cached = _HOME_ADAPTER_SECRET_CACHE.get(key)
@@ -209,7 +209,7 @@ def _home_declared_key_env() -> frozenset:
     keeps the names this home already denied instead of reopening the leak."""
     from hermes_cli.config import FailedConfigRead, get_config_path, read_raw_config_readonly
     from hermes_cli.config_backups import load_newest_good_backup
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     key = hermes_home_key()
     raw = read_raw_config_readonly()
@@ -515,7 +515,7 @@ def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:
     from hermes_cli.config import load_config_readonly
     from hermes_cli.managed_scope import load_managed_config
     from hermes_cli.profile_channels import credential_env_keys
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     adapter_keys = credential_env_keys()
     registered = _registered_adapter_secret_env()

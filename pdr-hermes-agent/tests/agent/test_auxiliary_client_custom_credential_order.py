@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 from agent.auxiliary_client import resolve_provider_client
 

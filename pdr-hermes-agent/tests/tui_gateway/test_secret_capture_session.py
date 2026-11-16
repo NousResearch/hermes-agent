@@ -181,7 +181,7 @@ def test_background_prompt_secret_reaches_its_own_session_and_profile(two_profil
             view = json.loads(skills_tool.skill_view("secret-skill", preprocess=False))
             return {"final_response": view.get("readiness_status") or view.get("error")}
 
-    monkeypatch.setattr("run_agent.AIAgent", ModelBoundary)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", ModelBoundary)
     monkeypatch.setattr(server, "_background_agent_kwargs", lambda _agent, _task_id: {})
     sessions = {
         sid: {"agent": object(), "session_key": f"key-{sid}", "profile_home": str(home), "cwd": str(home)}
@@ -245,7 +245,7 @@ def test_closed_runtime_secret_request_is_refused(two_profiles, monkeypatch):
             view = json.loads(skills_tool.skill_view("secret-skill", preprocess=False))
             return {"final_response": view.get("readiness_status") or view.get("error")}
 
-    monkeypatch.setattr("run_agent.AIAgent", ModelBoundary)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", ModelBoundary)
     monkeypatch.setattr(server, "_background_agent_kwargs", lambda _agent, _task_id: {})
     frames, completed = _client(server, server_requests, monkeypatch, {"session-A": "a-secret"})
     with server._sessions_lock:

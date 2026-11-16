@@ -161,7 +161,7 @@ class TestNativeTurnDedupe:
         from types import SimpleNamespace
 
         from agent.image_routing import build_native_content_parts
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         from tools import vision_tools
 
         same = _png(tmp_path / "same.png")
@@ -195,9 +195,9 @@ class TestNativeTurnDedupe:
 
         monkeypatch.setattr("agent.process_bootstrap.OpenAI",
                             lambda **kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
-        monkeypatch.setattr("model_tools.get_tool_definitions",
+        monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions",
                             lambda *a, **kw: [{"function": {"name": "vision_analyze"}}])
-        monkeypatch.setattr("model_tools.handle_function_call", _dispatch)
+        monkeypatch.setattr("hermes_agent.model_tools.handle_function_call", _dispatch)
         monkeypatch.setattr(vision_tools, "_should_use_native_vision_fast_path", lambda: True)
 
         agent = AIAgent(model="test-model", api_key="test-key", base_url="http://localhost:8080/v1",

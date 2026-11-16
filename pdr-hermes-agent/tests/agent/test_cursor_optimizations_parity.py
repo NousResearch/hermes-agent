@@ -133,7 +133,7 @@ def test_parity_token_memo():
 
 def test_parity_persist_bounded_scan():
     print("=== parity: _flush_messages_to_session_db bounded scan ===")
-    import run_agent as ra
+    from hermes_agent import run_agent as ra
     from agent.context_compressor import _DB_PERSISTED_MARKER
 
     class FakeDB:

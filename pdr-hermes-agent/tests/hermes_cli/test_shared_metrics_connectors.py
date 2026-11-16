@@ -217,7 +217,7 @@ def test_the_chain_survives_a_compression_rotation(fake_relay):
 def test_entries_report_their_own_post_even_under_the_executor_suppression(monkeypatch):
     """The sequential executor suppresses the inner post_tool_call for the call it owns; connector
     entries are their own calls and must still report, or each entry's lifecycle never closes."""
-    import model_tools
+    from hermes_agent import model_tools
     from hermes_cli import lifecycle as lc
     from tools.connectors.gateway import bridge, config
     from tools.registry import invalidate_check_fn_cache

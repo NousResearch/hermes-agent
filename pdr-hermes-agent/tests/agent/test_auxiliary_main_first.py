@@ -90,7 +90,7 @@ class TestResolveAutoMainFirst:
         acting model). The virtual moa://local base_url + placeholder key must
         be dropped so the aggregator resolves via its own provider credentials.
         """
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
 
         home = tmp_path / ".hermes"
         home.mkdir()

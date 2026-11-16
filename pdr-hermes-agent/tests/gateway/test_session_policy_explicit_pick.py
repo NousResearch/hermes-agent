@@ -31,7 +31,7 @@ def test_a_named_mcp_server_stays_and_the_others_do_not(tmp_path, extensions, se
 
 
 def test_a_named_plugin_toolset_stays(tmp_path, extensions, monkeypatch):
-    monkeypatch.setattr('toolsets.validate_toolset', lambda name: True)
+    monkeypatch.setattr('hermes_agent.toolsets.validate_toolset', lambda name: True)
     monkeypatch.setattr('hermes_cli.toolset_validation.saved_toolset_resolver', lambda _cfg: lambda name: True)
     toolsets = _toolsets(tmp_path, extensions, ['session_search', 'fake_coding_plugin'])
     assert toolsets == {'session_search', 'fake_coding_plugin'}, toolsets

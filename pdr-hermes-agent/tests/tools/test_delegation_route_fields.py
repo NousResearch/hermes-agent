@@ -60,7 +60,7 @@ def _spawn(routes, *, cfg=None, parent=None, construct=_construct, provider=None
     with (
         patch("tools.delegate_tool._load_config", return_value=cfg or {}),
         patch("tools.delegate_tool_routes._active_provider", return_value=provider or _Backend(routes)),
-        patch("run_agent.AIAgent", side_effect=construct) as agent,
+        patch("hermes_agent.run_agent.AIAgent", side_effect=construct) as agent,
         patch("tools.delegate_tool._run_batch",
               side_effect=lambda batch, background: batches.append(batch) or json.dumps(
                   {"status": "built", **({"refused": batch.refused} if batch.refused else {})})),

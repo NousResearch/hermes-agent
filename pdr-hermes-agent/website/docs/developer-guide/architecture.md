@@ -14,13 +14,13 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Entry Points                                  │
 │                                                                      │
-│  CLI (cli.py)    Gateway (gateway/run.py)    ACP (acp_adapter/)     │
+│  CLI (hermes_agent/cli.py)    Gateway (gateway/run.py)    ACP (acp_adapter/)     │
 │  Batch Runner    API Server                  Python Library          │
 └──────────┬──────────────┬───────────────────────┬───────────────────┘
            │              │                       │
            ▼              ▼                       ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     AIAgent (run_agent.py)                          │
+│                     AIAgent (hermes_agent/run_agent.py)                          │
 │                                                                     │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
 │  │ Prompt       │  │ Provider     │  │ Tool         │               │
@@ -52,13 +52,13 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 
 ```text
 hermes-agent/
-├── run_agent.py              # AIAgent facade — loop lives in agent/conversation_loop.py + agent/turn_*.py
-├── cli.py                    # HermesCLI facade — mixins in hermes_cli/cli_*_mixin.py
-├── model_tools.py            # Tool discovery, schema collection, dispatch
-├── toolsets.py               # Tool groupings and platform presets
+├── hermes_agent/run_agent.py              # AIAgent facade — loop lives in agent/conversation_loop.py + agent/turn_*.py
+├── hermes_agent/cli.py                    # HermesCLI facade — mixins in hermes_cli/cli_*_mixin.py
+├── hermes_agent/model_tools.py            # Tool discovery, schema collection, dispatch
+├── hermes_agent/toolsets.py               # Tool groupings and platform presets
 ├── hermes_state/__init__.py           # SQLite session/state database facade (+ hermes_state/*.py siblings)
-├── hermes_constants.py       # HERMES_HOME, profile-aware paths
-├── batch_runner.py           # Batch trajectory generation
+├── hermes_agent/hermes_constants.py       # HERMES_HOME, profile-aware paths
+├── hermes_agent/batch_runner.py           # Batch trajectory generation
 │
 ├── agent/                    # Agent internals
 │   ├── prompt_builder.py     # System prompt assembly
@@ -195,7 +195,7 @@ If you are new to the codebase:
 
 ### Agent Loop
 
-The synchronous orchestration engine (`AIAgent`, exposed by the `run_agent.py` facade; the loop lives in `agent/conversation_loop.py` and `agent/turn_*.py`). Handles provider selection, prompt construction, tool execution, retries, fallback, callbacks, compression, and persistence. Supports three API modes for different provider backends.
+The synchronous orchestration engine (`AIAgent`, exposed by the `hermes_agent/run_agent.py` facade; the loop lives in `agent/conversation_loop.py` and `agent/turn_*.py`). Handles provider selection, prompt construction, tool execution, retries, fallback, callbacks, compression, and persistence. Supports three API modes for different provider backends.
 
 → [Agent Loop Internals](./agent-loop.md)
 
@@ -275,9 +275,9 @@ tools/registry.py  (no deps — imported by all tool files)
        ↑
 tools/*.py  (each calls registry.register() at import time)
        ↑
-model_tools.py  (imports tools/registry + triggers tool discovery)
+hermes_agent/model_tools.py  (imports tools/registry + triggers tool discovery)
        ↑
-run_agent.py, cli.py, batch_runner.py, environments/
+hermes_agent/run_agent.py, hermes_agent/cli.py, hermes_agent/batch_runner.py, environments/
 ```
 
 This chain means tool registration happens at import time, before any agent instance is created. Any `tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.

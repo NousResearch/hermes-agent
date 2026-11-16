@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class _MtimeCache:
         self._entries.pop(self._resolve(), None)
 
     def load(self) -> dict:
-        from utils import file_cache_version
+        from hermes_agent.utils import file_cache_version
         path = self._resolve()
         try:
             version = file_cache_version(path)

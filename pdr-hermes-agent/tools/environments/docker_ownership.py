@@ -38,7 +38,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from hermes_constants import get_default_hermes_root
+from hermes_agent.hermes_constants import get_default_hermes_root
 from tools.environments.base import get_sandbox_dir
 from tools.environments.remote_common import run_capture
 

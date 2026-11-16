@@ -2,12 +2,12 @@
 from unittest.mock import MagicMock, patch
 
 from tests.waiting import wait_for_ctime_tick
-from utils import file_signature
+from hermes_agent.utils import file_signature
 
 
 def _make_cli(tmp_path, mcp_servers=None, extra_config=None):
     """Create a minimal HermesCLI instance with mocked config."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     obj = object.__new__(cli_mod.HermesCLI)
     cfg = {"mcp_servers": mcp_servers or {}}
     if extra_config:
@@ -36,7 +36,7 @@ class TestMCPConfigWatch:
 
     def test_new_mcp_server_triggers_reload(self, tmp_path):
         """Adding a new MCP server to config triggers auto-reload."""
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         obj, cfg_file = _make_cli(tmp_path, mcp_servers={})
 
         # Simulate user adding a new MCP server to config.yaml
@@ -50,7 +50,7 @@ class TestMCPConfigWatch:
 
     def test_removed_mcp_server_triggers_reload(self, tmp_path):
         """Removing an MCP server from config triggers auto-reload."""
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         obj, cfg_file = _make_cli(tmp_path, mcp_servers={"github": {"url": "https://mcp.github.com"}})
 
         # Simulate user removing the server
@@ -77,7 +77,7 @@ class TestMCPConfigWatch:
         flipping the toggle and editing mcp_servers in one edit behaves
         correctly.
         """
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         obj, cfg_file = _make_cli(
             tmp_path,
             mcp_servers={},
@@ -102,7 +102,7 @@ class TestMCPConfigWatch:
         """After an opted-out change, the watcher must not re-notify every
         tick: the snapshot is updated so the same content compares equal on
         the next pass."""
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         obj, cfg_file = _make_cli(tmp_path, mcp_servers={})
 
         cfg_file.write_text(yaml.safe_dump({
@@ -128,7 +128,7 @@ class TestMCPConfigWatch:
 
         A config that sets ONLY ``auxiliary.mcp.auto_reload_on_config_change:
         false`` must NOT disable the reload."""
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         obj, cfg_file = _make_cli(
             tmp_path,
             mcp_servers={},
@@ -159,7 +159,7 @@ class TestMCPConfigWatch:
         save_config_value('agent.reasoning_effort', ...) from /reasoning)
         fired a full MCP reconnect.
         """
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         monkeypatch.setenv("MCP_GH_API_KEY", "sekrit-token")
 
         raw_servers = {
@@ -200,7 +200,7 @@ def test_tui_init_run_state_seeds_config_sig_when_config_exists(monkeypatch):
     exercised the call, and a missing import crashed every real CLI launch.
     """
     from hermes_cli.config import get_config_path
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     # Bare object: skip the tool-callback / security wiring at the end of the init.
     monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")

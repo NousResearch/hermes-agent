@@ -6,7 +6,7 @@ import os
 import pytest
 
 import tools.file_tools_write_guards as guards
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 @pytest.fixture

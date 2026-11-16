@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from unittest.mock import patch
 
-import run_agent
+from hermes_agent import run_agent
 import agent.background_review as bg_review
 from agent.background_review import build_cache_parity_fork
 

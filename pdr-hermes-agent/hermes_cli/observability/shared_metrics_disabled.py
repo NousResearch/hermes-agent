@@ -235,7 +235,7 @@ def hermes_applied_write() -> Iterator[None]:
 
 
 def _record(old: Any, new: Any, surface: str, home: str) -> None:
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     token = set_hermes_home_override(home)  # a thread does not inherit the profile binding
     try:
@@ -251,7 +251,7 @@ def record_config_saved(old_raw: Any, new_config: Any) -> None:
     if _process_surface is None or _hermes_write.get():
         return
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         from .relay_shared_metrics import enabled
 

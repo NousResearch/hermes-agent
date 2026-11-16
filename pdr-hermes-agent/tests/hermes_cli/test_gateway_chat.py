@@ -193,7 +193,7 @@ def test_every_relocation_hint_names_a_command_that_parses():
 
 
 def test_one_letter_alias_refusal_names_a_flag_the_user_can_type(monkeypatch, capsys):
-    """`cli.main(w=True)` (`python cli.py -w`) is refused as `-w`; `--w` is not an option anywhere."""
+    """`cli.main(w=True)` (`python -m hermes_agent.cli -w`) is refused as `-w`; `--w` is not an option anywhere."""
     from hermes_cli import gateway_chat
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: pytest.fail("connected"))
     assert gateway_chat.launch_from_args(argparse.Namespace(w=True)) == 2

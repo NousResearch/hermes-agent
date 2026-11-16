@@ -14,7 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 import pytest
 
 import hermes_cli.plugins as plugins_mod
@@ -240,7 +240,7 @@ def test_timeout_is_clamped(executor, consented, given, used):
 
 
 def test_post_llm_call_hook_redeems_its_token_end_to_end(monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     answers = Path(os.environ["HERMES_HOME"]) / "side_answers.json"
     _install_plugin("next-prompt", declares=True, hook_body=(
@@ -259,8 +259,8 @@ def test_post_llm_call_hook_redeems_its_token_end_to_end(monkeypatch):
     client.chat.completions.create.side_effect = lambda **kw: (requests.append(kw), replies.pop(0))[1]
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI", return_value=client),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
@@ -279,7 +279,7 @@ def test_post_llm_call_hook_redeems_its_token_end_to_end(monkeypatch):
 def _observed_turn_with_side_question(monkeypatch, side_reply) -> list[dict]:
     """Run a real turn whose granted ``observer`` plugin asks a side question and records every
     request event; ``side_reply`` is what the provider returns to the side request."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     events = Path(os.environ["HERMES_HOME"]) / "events.jsonl"
     plugin_dir = Path(os.environ["HERMES_HOME"]) / "plugins" / "observer"
@@ -314,8 +314,8 @@ def _observed_turn_with_side_question(monkeypatch, side_reply) -> list[dict]:
     client.chat.completions.create.side_effect = lambda **kw: replies.pop(0)
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI", return_value=client),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):

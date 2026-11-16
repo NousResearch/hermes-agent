@@ -566,7 +566,7 @@ class TestVoiceChannelCommands:
             "gateway.run._multiplex_profile_homes",
             lambda _config: [("team-bot", None), ("first", None), ("second", None)],
         )
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         (get_hermes_home() / "profiles" / "second").mkdir(parents=True, exist_ok=True)
         (get_hermes_home() / "profiles" / "second" / "config.yaml").write_text("{}\n", encoding="utf-8")
         mock_adapter = AsyncMock()

@@ -233,7 +233,7 @@ def test_final_response_fills_pure_tool_call_tail(monkeypatch):
 def test_final_response_fill_invalidates_flush_scan_cursor():
     """The fill's marker pop must invalidate the bounded flush-scan cursor.
 
-    The cursor (run_agent.py) skips the identity-matched prefix of its
+    The cursor (hermes_agent/run_agent.py) skips the identity-matched prefix of its
     previous snapshot assuming no live dict loses ``_db_persisted`` in place
     — the fill is the one path that pops it. Without invalidation, the
     turn-end flush skips the filled row as 'already stamped' and the

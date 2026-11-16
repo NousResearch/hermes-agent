@@ -134,7 +134,7 @@ def test_a_provider_configured_after_boot_flips_the_stale_setup_record(isolated_
 
     # The record is the launch profile's: a write scoped to another profile (the dashboard's
     # ``?profile=b``) must not let THAT profile's provider open the launch gate.
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     profile_b = isolated_home / "profiles" / "b"
     profile_b.mkdir(parents=True)
     (profile_b / "config.yaml").write_text("model:\n  default: qwen3\n  provider: custom\n  base_url: http://127.0.0.1:8000/v1\n  api_key: dummy\n", encoding="utf-8")

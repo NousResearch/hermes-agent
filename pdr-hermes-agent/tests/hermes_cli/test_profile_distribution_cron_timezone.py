@@ -17,7 +17,7 @@ import pytest
 
 pytest.importorskip("croniter")
 
-import hermes_time
+from hermes_agent import hermes_time
 from cron import jobs
 from hermes_cli.profile_distribution import (
     DistributionError, DistributionManifest, install_distribution, update_distribution,
@@ -105,7 +105,7 @@ def test_a_shipped_pin_fires_on_new_york_time_for_every_user(operator_env, user_
          "deliver": "local"}])
     plan = install_distribution(str(staged), name="desk")
     (plan.target_dir / "config.yaml").write_text(f"timezone: {user_zone}\n", encoding="utf-8")
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(str(plan.target_dir))
     try:
         hermes_time.reset_cache()

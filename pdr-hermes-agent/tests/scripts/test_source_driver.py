@@ -176,8 +176,8 @@ def test_pm_observer_accepts_ready_fixture_and_leaves_failed_fixture_untouched(t
     root = tmp_path / "source"
     for directory in ("pm", "hermes_cli"):
         shutil.copytree(repo / directory, root / directory, ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copy2(repo / "hermes_constants.py", root / "hermes_constants.py")
-    (root / "hermes_bootstrap.py").write_text("raise RuntimeError('bootstrap must not run')", encoding="utf-8")
+    shutil.copy2(repo / "hermes_agent/hermes_constants.py", root / "hermes_agent/hermes_constants.py")
+    (root / "hermes_agent/hermes_bootstrap.py").write_text("raise RuntimeError('bootstrap must not run')", encoding="utf-8")
     (root / "uv.lock").write_text("fixture locked graph", encoding="utf-8")
     home = tmp_path / "home"
     store = tmp_path / "store"

@@ -33,7 +33,7 @@ import time
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 class _DB:
     def __init__(self, session_exists=True, acquire_result=True):

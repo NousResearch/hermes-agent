@@ -323,7 +323,7 @@ class TestPrologueStamping:
 
 class TestFlushOverrideSidecar:
     def _make_agent(self, db, sid):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -474,7 +474,7 @@ def wire_env():
     prev_home = os.environ.get("HERMES_HOME")
     os.environ["HERMES_HOME"] = os.path.join(test_home, ".hermes")
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     from pathlib import Path
 
@@ -586,7 +586,7 @@ class TestWireInvariant:
         wire as a text part, the persisted row carries it, and a resumed turn N+1 replays
         the same view — same contract as the string sidecar path."""
         make_agent, handler, db, sid = wire_env
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         turn = [{"type": "text", "text": "what is this"}, image]
 
@@ -609,7 +609,7 @@ class TestWireInvariant:
 
     @staticmethod
     def _stored_multimodal_turn(wire_env):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         make_agent, handler, db, sid = wire_env
         image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         with patch.object(AIAgent, "_model_supports_vision", return_value=True):
@@ -744,7 +744,7 @@ class TestSetLatestUserApiContent:
 
 class TestFlushCompressedSummaryOverrideGuard:
     def _make_agent(self, db, sid):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -852,7 +852,7 @@ class TestFlushCompressedSummaryOverrideGuard:
 
 class TestFlushSanitizeDivergenceCapture:
     def _make_agent(self, db, sid):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -916,7 +916,7 @@ class TestMaxIterationsSummaryReplay:
         main-loop call sent — popping the sidecar without substituting sends
         CLEAN content and diverges the prefix at the earliest injected
         message, exactly when the context is largest."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         from agent.chat_completion_helpers import handle_max_iterations
 
         agent = AIAgent(
@@ -975,7 +975,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
     against a real, empty SessionDB."""
 
     def _make_agent(self, db, sid, *, in_place, current_user_content="hello"):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             agent = AIAgent(

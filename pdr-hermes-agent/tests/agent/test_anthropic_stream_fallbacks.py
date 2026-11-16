@@ -96,7 +96,7 @@ def test_null_usage_aux_stream_is_normalized_without_create_retry():
 
 
 def _anthropic_agent(stream_factory, provider="custom"):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(api_key="k", base_url="https://api.minimax.io/anthropic", model="MiniMax-M2",
                     quiet_mode=True, skip_context_files=True, skip_memory=True)

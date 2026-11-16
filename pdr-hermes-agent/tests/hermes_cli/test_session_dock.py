@@ -24,7 +24,7 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 def test_dock_paints_goal_on_top_and_queue_last_and_follows_their_lifecycle(hermes_home):
-    from cli import _VoiceInputMessage
+    from hermes_agent.cli import _VoiceInputMessage
     from hermes_cli.cli_subagent_monitor import SubagentMonitor
     from hermes_cli.goals import GoalManager
     from tools.process_registry_notifications import TimelineNotification
@@ -82,7 +82,7 @@ def test_dock_drops_the_prompt_a_turn_takes_from_the_queue_before_the_turn_runs(
     or the dock is still painted when the reply prints and shrinks under it afterwards."""
     from unittest.mock import Mock
 
-    from cli import HermesCLI, _SeededQueryMessage
+    from hermes_agent.cli import HermesCLI, _SeededQueryMessage
     from hermes_cli.cli_subagent_monitor import SubagentMonitor
 
     cli = HermesCLI.__new__(HermesCLI)

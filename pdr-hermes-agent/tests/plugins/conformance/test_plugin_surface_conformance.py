@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "conformance_surface"
 _ROOT = Path(__file__).resolve().parents[3]
@@ -89,7 +89,7 @@ def _provider(manager, registry_mod: str, lookup: str):
 
 
 def _call_echo(text: str = "hi") -> str:
-    import model_tools
+    from hermes_agent import model_tools
 
     return model_tools.handle_function_call(
         "conformance_echo", {"text": text}, task_id="task-1", session_id="session-1",

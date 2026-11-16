@@ -29,8 +29,8 @@ def _command_threads():
 
 def _cli(monkeypatch, home):
     """``(cli, connection)``: a classic CLI on its own production connection to ``home``."""
-    import cli as cli_mod
-    from cli import HermesCLI
+    from hermes_agent import cli as cli_mod
+    from hermes_agent.cli import HermesCLI
     from hermes_cli.gateway_connection import GatewayConnection
     from hermes_cli.gateway_session_store import GatewaySessionStore
     _no_local_plugins(monkeypatch)

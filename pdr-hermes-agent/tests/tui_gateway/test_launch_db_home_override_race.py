@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 import hermes_state.registry as registry
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tui_gateway import server
 
 
@@ -151,7 +151,7 @@ def test_prompt_background_turn_survives_parent_close(launch_db_env, tmp_path, m
     monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
     monkeypatch.setattr(server, "_load_reasoning_config", lambda *_a, **_kw: None)
     with patch("tui_gateway.server.threading.Thread", InlineThread), \
-            patch("run_agent.AIAgent", FakeAgent), \
+            patch("hermes_agent.run_agent.AIAgent", FakeAgent), \
             patch("tui_gateway.server._sess", return_value=(session, None)), \
             patch("tui_gateway.server._set_session_context", return_value=None), \
             patch("tui_gateway.server._clear_session_context"), \

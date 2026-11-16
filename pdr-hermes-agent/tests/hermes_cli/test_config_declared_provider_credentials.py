@@ -13,7 +13,7 @@ import json
 import sys
 from unittest.mock import MagicMock
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 import pytest
 
 from agent import auxiliary_client as aux

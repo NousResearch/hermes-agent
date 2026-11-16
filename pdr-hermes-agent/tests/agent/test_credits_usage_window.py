@@ -1119,9 +1119,9 @@ class TestBlockedResponseCapture:
         from unittest.mock import patch
 
         from agent.turn_api_error import handle_api_error
-        from run_agent import AIAgent
-        with patch("model_tools.get_tool_definitions", return_value=[]), \
-                patch("model_tools.check_toolset_requirements", return_value={}), \
+        from hermes_agent.run_agent import AIAgent
+        with patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]), \
+                patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
                 patch("agent.process_bootstrap.OpenAI"):
             agent = AIAgent(api_key="test-key-1234567890", base_url="https://inference-api.nousresearch.com/v1",
                             quiet_mode=True, skip_context_files=True, skip_memory=True)

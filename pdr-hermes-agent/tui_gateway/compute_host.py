@@ -7,7 +7,7 @@ from __future__ import annotations
 # Only as ``python -m``: tests import this module, and the bootstrap's TMPDIR/scratch exports
 # must not fire in a library importer.
 if __name__ == "__main__":
-    import hermes_bootstrap
+    from hermes_agent import hermes_bootstrap
 
 import argparse
 import concurrent.futures
@@ -352,7 +352,7 @@ class ComputeHost:
         owns_db = False
         try:
             if profile_home:
-                from hermes_constants import set_hermes_home_override
+                from hermes_agent.hermes_constants import set_hermes_home_override
                 from agent.secret_scope import build_profile_secret_scope, set_secret_scope
                 from hermes_cli.env_loader import hydrate_profile_secret_sources
                 from hermes_state.registry import acquire
@@ -387,7 +387,7 @@ class ComputeHost:
                     release_or_close(session_db)
             if home_token is not None:
                 with contextlib.suppress(Exception):
-                    from hermes_constants import reset_hermes_home_override
+                    from hermes_agent.hermes_constants import reset_hermes_home_override
                     from agent.secret_scope import reset_secret_scope
                     reset_hermes_home_override(home_token)
                     reset_secret_scope(secret_token)

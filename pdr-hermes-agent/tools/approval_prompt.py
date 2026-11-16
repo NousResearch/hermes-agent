@@ -137,7 +137,7 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
         # Fail fast and log loudly so the caller can surface a real error to the agent. Any thread
         # that needs interactive approval must install a callback via
         # tools.terminal_tool.set_approval_callback() before reaching this point (see delegate_tool.py,
-        # run_agent.py _execute_tool_calls_concurrent / _spawn_background_review for the established
+        # hermes_agent/run_agent.py _execute_tool_calls_concurrent / _spawn_background_review for the established
         # pattern). See #15216.
         from prompt_toolkit.application.current import get_app_or_none
         if get_app_or_none() is not None:

@@ -115,7 +115,7 @@ function typecheck(ts, root, scratch) {
 }
 
 export async function buildWeb(options) {
-  const { source, out } = productOutput(options.source, options.out, ['web', 'apps/shared', 'node_modules'])
+  const { source, out } = productOutput(options.source, options.out, ['web', 'ui-tui/packages/shared', 'node_modules'])
   if (!options.icons) throw new Error('Prepared icons are required (--icons)')
   const publicIcons = path.resolve(options.icons, 'web/public')
   const favicon = path.join(publicIcons, 'favicon.ico')

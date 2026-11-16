@@ -87,7 +87,7 @@ def test_local_relative_path_still_anchors_on_the_process_cwd(monkeypatch, host_
     """With no scope bound and no configured cwd a relative write lands in the process cwd, as it always did."""
     import os
 
-    import model_tools  # registers the tools dispatched through the registry
+    from hermes_agent import model_tools  # registers the tools dispatched through the registry
     from tools import file_tools, terminal_tool
 
     _, host_cwd = host_paths

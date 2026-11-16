@@ -6,7 +6,7 @@ clipping the bottom border and any items past the terminal's last row.
 The viewport helper now caps visible items and slides the offset to keep
 the cursor on screen.
 """
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 _compute = HermesCLI._compute_model_picker_viewport

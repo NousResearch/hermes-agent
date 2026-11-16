@@ -1,7 +1,7 @@
 """Lifecycle-hook payloads for ``AIAgent`` API requests.
 
 JSON-safe coercion, secret-key redaction, size caps, and the ``api_request_error`` hook dispatch.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import json
 import os

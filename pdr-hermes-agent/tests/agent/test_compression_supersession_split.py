@@ -27,7 +27,7 @@ def _build_agent(tmp_path: Path, session_id: str):
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session(session_id, source="cli")
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",

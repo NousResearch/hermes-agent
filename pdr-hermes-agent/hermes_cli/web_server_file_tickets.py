@@ -64,7 +64,7 @@ class FileAuthority:
 
     def check_live(self) -> None:
         """``FileNotFoundError`` once a named profile home this file belongs to is missing or deleted."""
-        from hermes_constants import assert_named_profile_home_live
+        from hermes_agent.hermes_constants import assert_named_profile_home_live
 
         for home in self.homes:
             assert_named_profile_home_live(home)

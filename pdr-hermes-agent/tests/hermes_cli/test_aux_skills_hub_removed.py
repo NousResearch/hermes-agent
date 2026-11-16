@@ -6,7 +6,7 @@ Skills Hub search/install never called an LLM, so the slot was a silent no-op (#
 
 from __future__ import annotations
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 import pytest
 from fastapi import HTTPException
 

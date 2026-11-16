@@ -113,7 +113,7 @@ def test_only_a_chat_with_a_run_in_progress_gets_the_onboarding_toolset(root):
 
 def test_an_unrestricted_chat_with_a_run_keeps_every_tool_and_gets_setup_beat(root):
     """HERMES_TUI_TOOLSETS=all loads None, which selects no session-gated toolset (onboarding is one)."""
-    from model_tools import _select_tool_names
+    from hermes_agent.model_tools import _select_tool_names
     db = server._get_db()
     db.create_session("onb", "desktop")
     db.create_session("plain", "desktop")
@@ -381,7 +381,7 @@ def test_deleting_the_onboarding_chat_ends_its_run_and_closes_the_flag(root):
 
 
 def test_the_onboarding_facts_are_read_in_the_default_profile(root, client, monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     work = root / "profiles" / "work"
     (work / "skills").mkdir(parents=True)
     (work / "config.yaml").write_text("model: {}\n", encoding="utf-8")

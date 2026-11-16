@@ -208,7 +208,7 @@ _whatsapp_onboarding_sessions: dict[str, _WhatsAppOnboardingSession] = {}
 
 
 def _whatsapp_session_path() -> Path:
-    from hermes_constants import get_hermes_dir
+    from hermes_agent.hermes_constants import get_hermes_dir
     return get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
 
 

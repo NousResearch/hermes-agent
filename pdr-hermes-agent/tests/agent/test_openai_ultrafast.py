@@ -79,7 +79,7 @@ def test_desktop_surfaces_carry_the_exact_tier_ultrafast_is_never_plain_fast():
 
 @pytest.mark.parametrize("provider", ["openai", "openai-api"])
 def test_cli_and_gateway_turn_routes_send_the_static_tier(provider):
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     from gateway.run import GatewayRunner
 
     stub = SimpleNamespace(model="gpt-6-astra", api_key="k", base_url="https://api.openai.com/v1", provider=provider,
@@ -94,7 +94,7 @@ def test_cli_and_gateway_turn_routes_send_the_static_tier(provider):
 
 
 def test_cli_refuses_ultrafast_on_a_model_without_it(monkeypatch):
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     from unittest.mock import MagicMock
 
     stub = SimpleNamespace(service_tier="priority", model="gpt-6-sol", agent=MagicMock(model="gpt-6-sol"),

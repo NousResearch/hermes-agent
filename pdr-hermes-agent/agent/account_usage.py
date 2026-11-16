@@ -11,7 +11,7 @@ from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.auth_codex import _codex_pool_route_base_url
 from hermes_cli.runtime_provider import resolve_runtime_provider
-from hermes_time import safe_strftime
+from hermes_agent.hermes_time import safe_strftime
 
 if TYPE_CHECKING:
     from typing import TypeGuard

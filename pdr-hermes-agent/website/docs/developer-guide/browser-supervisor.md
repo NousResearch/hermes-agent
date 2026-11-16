@@ -226,7 +226,7 @@ expiry, while the supervisor's long-lived connection keeps a valid session.
 - `tools/browser_dialog_tool.py` — `browser_dialog` tool handler
 - `tools/browser_session_cdp.py` — `ensure_cdp_supervisor` / `stop_cdp_supervisor`, `/browser connect` reattach, dialog-policy config
 - `tools/browser_session_lifecycle.py` — per-session teardown (supervisor stopped first)
-- `toolsets.py` — registers `browser_dialog` in `browser`, `hermes-acp`, `hermes-api-server`, and core toolsets (gated on CDP reachability)
+- `hermes_agent/toolsets.py` — registers `browser_dialog` in `browser`, `hermes-acp`, `hermes-api-server`, and core toolsets (gated on CDP reachability)
 - `hermes_cli/config.py` — `browser.dialog_policy` and `browser.dialog_timeout_s` defaults
 
 ## Non-goals

@@ -1,7 +1,7 @@
 """Slash-command handlers for the interactive CLI (``HermesCLI`` inherits ``CLICommandsMixin``).
 
-cli.py-internal symbols (``_cprint``/``_ACCENT``/``save_config_value``…) are imported LAZILY inside
-the helpers/handlers via ``from cli import ...`` — cli.py imports this module (cycle otherwise).
+hermes_agent/cli.py-internal symbols (``_cprint``/``_ACCENT``/``save_config_value``…) are imported LAZILY inside
+the helpers/handlers via ``from cli import ...`` — hermes_agent/cli.py imports this module (cycle otherwise).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from rich import box as rich_box
 from rich.markup import escape as _escape
 from rich.panel import Panel
 
-from hermes_constants import display_hermes_home
+from hermes_agent.hermes_constants import display_hermes_home
 from hermes_state.ids import new_session_id as mint_session_id
 from agent.i18n import t
 from agent.message_metadata import message_identity
@@ -193,7 +193,7 @@ def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_not
     """Print a worker-thread result (/bg, /btw, /login) into the scrollback: accent rules around
     ``header_lines``, then ``body`` in a skinned Rich panel (or ``empty_note``).
     Forces a TUI refresh first so the spinner/status bar don't overlap the output."""
-    from cli import ChatConsole, _accent_hex, _maybe_remap_for_light_mode, _render_final_assistant_content
+    from hermes_agent.cli import ChatConsole, _accent_hex, _maybe_remap_for_light_mode, _render_final_assistant_content
     _refresh_tui_before_print(cli)
     rich_console = console or ChatConsole()
     rich_console.print(f"[{_accent_hex()}]{'─' * 40}[/]")
@@ -549,7 +549,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         console = getattr(self, "console", None)
         if console is not None:
             try:
-                from cli import _rich_text_from_ansi
+                from hermes_agent.cli import _rich_text_from_ansi
                 console.print(_rich_text_from_ansi(text))
                 return
             except Exception:
@@ -749,7 +749,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 # _run_cleanup must NOT finalize the row on exit: the gateway owns it now, and an
                 # end_reason set under it would drop the handoff leg from session history/search.
                 # See #88234.
-                from cli import _handed_off_session_ids
+                from hermes_agent.cli import _handed_off_session_ids
                 _handed_off_session_ids.add(self.session_id)
                 self._should_exit = True  # same exit semantics as /quit
                 return False
@@ -794,7 +794,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
         if getattr(self, "_agent_running", False):
             return _cp(f"  {_t('shared.agent_busy', command='/resume')}")
-        from cli import _sync_process_session_id
+        from hermes_agent.cli import _sync_process_session_id
         target = _command_arg(cmd_original)
         # Users copy the help text's placeholder brackets/quotes verbatim (``/resume <abc123>``).
         if len(target) >= 2 and target[0] + target[-1] in {"<>", "[]", '""', "''"}:
@@ -914,7 +914,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         # turn's remaining messages land on the branch. Refuse mid-turn like /handoff does.
         if getattr(self, "_agent_running", False):
             return _cp(f"  {_t('shared.agent_busy', command='/branch')}")
-        from cli import _sync_process_session_id
+        from hermes_agent.cli import _sync_process_session_id
         if not self.conversation_history:
             return _cp(f"  {_gt('branch.no_conversation')}")
         if not self._session_db:
@@ -975,7 +975,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """Handle /worktree [new [name]|list|prune [--dry-run]] — isolated git worktrees.
         ``new`` moves this session into the tree (as ``hermes -w``: kept on exit only with
         unpushed commits); ``prune`` never deletes tracked changes, unique commits, or in-use trees."""
-        import cli as _cli
+        from hermes_agent import cli as _cli
         parts = cmd_original.split(None, 2)
         sub = parts[1].lower() if len(parts) > 1 else ""
         rest = parts[2].strip() if len(parts) > 2 else ""
@@ -1002,7 +1002,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         getattr(self, handler)(repo_root, rest)
 
     def _worktree_prune(self, repo_root: str, rest: str) -> None:
-        import cli as _cli
+        from hermes_agent import cli as _cli
         from hermes_cli import worktree_gc
         rest = rest.lower()
         dry_run = "--dry-run" in rest or "-n" in rest.split()
@@ -1036,7 +1036,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         _pr(*(f"  {line}" for line in out.splitlines()) if out else (f"  {_t('worktree.list_failed')}",))
 
     def _worktree_new(self, repo_root: str, rest: str) -> None:
-        import cli as _cli
+        from hermes_agent import cli as _cli
         from hermes_cli.config import load_config
         try:
             sync_base = bool(load_config().get("worktree_sync", True))
@@ -1250,7 +1250,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub, after intercepting the
         write-approval review subcommands (pending/approve/reject/diff/mode)."""
-        from cli import ChatConsole
+        from hermes_agent.cli import ChatConsole
         args = cmd.strip().split()[1:]
         review_words = {"pending", "approve", "apply", "reject", "deny", "drop", "diff", "approval", "mode"}
         if args and args[0].lower() in review_words:
@@ -1294,7 +1294,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         /learn, /plan, /init pattern: no engine, no model-tool footprint, prompt-cache safe). ``ack``
         paints first on the turn's own channel (_cprint), so the turn's `────` never overtakes it."""
         if ack:
-            __import__("cli")._cli_visible_print("\n" + ack)
+            __import__("hermes_agent.cli")._cli_visible_print("\n" + ack)
         if hasattr(self, "_pending_input"):
             self._pending_input.put(msg)
         else:  # pragma: no cover - defensive (no live input loop)
@@ -1343,8 +1343,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             _cp(f"  {_t('background.started', number=task_num, preview=preview)}",
                 f"  {_t('background.task_id', task_id=task_id)}", f"  {_t('background.keep_chatting')}\n")
             return self._start_background_worker(task_id, task_num, preview, wait)
-        from cli import set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
-        from run_agent import AIAgent
+        from hermes_agent.cli import set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
+        from hermes_agent.run_agent import AIAgent
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
         if not self._ensure_runtime_credentials():
             return _cp(f"  {_t('background.no_credentials')}")
@@ -1550,7 +1550,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_bundles_command(self, cmd: str) -> None:
         """In-session ``/bundles`` — show installed skill bundles (``hermes bundles list`` rendered
         inside the running CLI). Bundles are loaded via ``/<bundle-name>``."""
-        from cli import ChatConsole, _BOLD, _RST, _accent_hex
+        from hermes_agent.cli import ChatConsole, _BOLD, _RST, _accent_hex
         from hermes_cli.slash_exec import CommandContext, execute_command
         reply = execute_command("bundles", CommandContext(surface="cli"))
         if "error" in reply.data:
@@ -1775,7 +1775,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     # ---- /skin, /prompt -------------------------------------------------------------------
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
-        from cli import _ACCENT
+        from hermes_agent.cli import _ACCENT
         try:
             from hermes_cli.skin_engine import list_skins, set_active_skin, get_active_skin_name
         except ImportError:
@@ -1842,7 +1842,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if not composed:
             return _cp(_dim_line(_t("prompt_compose.empty")))
         # One-shot seed: the interactive loop runs this as the next agent turn right after
-        # process_command() returns (see cli.py main loop).
+        # process_command() returns (see hermes_agent/cli.py main loop).
         self._pending_agent_seed = composed
 
     # ---- /focus and its display hooks -----------------------------------------------------
@@ -1982,7 +1982,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning [<level> [--global]|show|hide|full|clamp] — effort level (session
         scope unless --global) and thinking display toggles (always saved)."""
-        from cli import CLI_CONFIG, _parse_reasoning_config
+        from hermes_agent.cli import CLI_CONFIG, _parse_reasoning_config
         from agent.reasoning_effort import effort_display_label
         raw = _command_arg(cmd)
         from hermes_cli.codex_runtime_switch import get_current_runtime
@@ -2046,7 +2046,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_indicator_command(self, cmd: str):
         """Handle /indicator [status|kaomoji|emoji|unicode|ascii] — pick the TUI busy-indicator style.
         Persists to ``display.tui_status_indicator`` (the key the TUI reads) for its next render."""
-        from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
+        from hermes_agent.hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
         current = (self.config.get("display") or {}).get("tui_status_indicator", DEFAULT_INDICATOR_STYLE)
         arg = _command_arg(cmd, lower=True)
         usage = _dim_line(_t("indicator.usage", styles="|".join(INDICATOR_STYLES)))

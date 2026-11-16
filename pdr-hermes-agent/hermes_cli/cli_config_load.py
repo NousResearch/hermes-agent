@@ -1,6 +1,6 @@
 """Classic-CLI config loading: prefill messages, reasoning/service-tier parsing, terminal env mirroring, CLI defaults + user YAML merge and the logging/display bootstrap.
 
-Split out of ``cli.py``; ``cli`` re-exports every public name and moved bodies late-bind
+Split out of ``hermes_agent/cli.py``; ``cli`` re-exports every public name and moved bodies late-bind
 cli-level names through ``from cli import ...`` at call time so facade monkeypatch seams hold.
 """
 
@@ -19,7 +19,7 @@ logger = logging.getLogger("cli")
 
 def _cli():
     """Late import of the ``cli`` facade: mutable CLI module state (and its test seams) lives there."""
-    import cli
+    from hermes_agent import cli
 
     return cli
 
@@ -62,7 +62,7 @@ def _resolve_prefill_messages_file(config: dict[str, Any]) -> str:
 
 def _parse_reasoning_config(effort) -> dict | None:
     """Parse a reasoning effort level (string or YAML bool; ``false``/``off`` = disabled)."""
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     result = parse_reasoning_effort(effort)
     if effort and str(effort).strip() and result is None:
         logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
@@ -121,7 +121,7 @@ _CWD_PLACEHOLDERS = (".", "auto", "cwd")
 
 def _mirror_config_to_env(defaults, _file_has_terminal_config):
     """Project config.yaml values into the env vars the tool modules read (terminal/browser/auxiliary/security/sessions). Env always wins when already set."""
-    from cli import _AUXILIARY_TASK_ENV, _CWD_PLACEHOLDERS, _TERMINAL_ENV_MAPPINGS
+    from hermes_agent.cli import _AUXILIARY_TASK_ENV, _CWD_PLACEHOLDERS, _TERMINAL_ENV_MAPPINGS
     terminal_config = defaults.get("terminal", {})
 
     # "backend" (documented) and legacy "env_type" are both accepted; "backend" wins.
@@ -259,7 +259,7 @@ def load_cli_config() -> dict[str, Any]:
 
     ``HERMES_IGNORE_USER_CONFIG=1`` skips the user config entirely (``.env`` still loads).
     """
-    from cli import _cli_config_defaults, _hermes_home, _merge_file_config, _mirror_config_to_env
+    from hermes_agent.cli import _cli_config_defaults, _hermes_home, _merge_file_config, _mirror_config_to_env
     from hermes_cli.config_backend import config_exists, read_config_doc
     config_path = _hermes_home / 'config.yaml'
 
@@ -283,7 +283,7 @@ def load_cli_config() -> dict[str, Any]:
     from hermes_cli.config import _expand_env_vars
     defaults = _expand_env_vars(defaults)
 
-    # Administrator-pinned (managed scope) values overlay LAST; cli.py builds its config
+    # Administrator-pinned (managed scope) values overlay LAST; hermes_agent/cli.py builds its config
     # independently of hermes_cli.config, so this keeps parity with `hermes config`. Fail-open.
     from hermes_cli import managed_scope
 

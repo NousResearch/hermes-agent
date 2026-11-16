@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from agent.prompt_builder import steer_user_row
 from hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def test_flushed_steer_keeps_one_display_identity_across_compactions(tmp_path):

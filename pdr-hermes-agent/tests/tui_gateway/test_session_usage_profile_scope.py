@@ -57,7 +57,7 @@ def test_session_usage_fetches_credits_in_the_sessions_profile_scope(two_homes, 
         records the Portal override, home and Nous token the request would have used."""
         from hermes_cli.auth import get_provider_auth_state
         from hermes_cli.auth_nous import _nous_portal_env_override
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         token = (get_provider_auth_state("nous") or {}).get("access_token")
         calls.append((_nous_portal_env_override(), Path(get_hermes_home()).resolve(), token))
         raise RuntimeError("no network in tests")  # fail-open: session.usage still answers

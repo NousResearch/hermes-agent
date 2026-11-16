@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 def _process_hermes_home() -> Path:
     """HERMES_HOME for process-level identity files (ignore task overrides)."""
-    from hermes_constants import get_hermes_home, get_process_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home, get_process_hermes_home
 
     # get_process_hermes_home expands ``~``/``$VAR`` (python -m gateway.run skips the CLI normalizer).
     return get_process_hermes_home() if os.environ.get("HERMES_HOME", "").strip() else get_hermes_home()
@@ -84,10 +84,10 @@ def _read_json(path: Path) -> Optional[dict[str, Any]]:
 
 def _write_sentinel(payload: dict[str, Any], home: Optional[Path]) -> None:
     try:
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
 
         path = get_lifecycle_sentinel_path(home)
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
         mkdir_under_hermes_home(path.parent)
         atomic_json_write(path, payload, indent=None)
@@ -99,7 +99,7 @@ def _append_exit_diag(record: dict[str, Any], home: Optional[Path]) -> None:
     """Append a JSON line to gateway-exit-diag.log (same format as the CLI's ``_exit_diag``)."""
     try:
         path = _home_path(home, "logs", "gateway-exit-diag.log")
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
         mkdir_under_hermes_home(path.parent)
         with path.open("a", encoding="utf-8") as fh:
@@ -218,7 +218,7 @@ def _install_integrity_check_lease(conn: sqlite3.Connection, *, deadline_at: Opt
     caller can bound the scan.  Synchronous by design: no checker worker thread can outlive
     the check.
     """
-    from hermes_startup_watchdog import report_startup_progress
+    from hermes_agent.hermes_startup_watchdog import report_startup_progress
 
     report_startup_progress(_INTEGRITY_CHECK_LEASE_S, phase=_INTEGRITY_CHECK_LEASE_PHASE)
     last_renew = time.monotonic()

@@ -24,7 +24,7 @@ from hermes_cli import lifecycle, plugins
 from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_process as process_metrics
 from hermes_cli.plugins import PluginManager
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tests.waiting import wait_until
 
 
@@ -130,7 +130,7 @@ def test_compute_host_shutdown_frame_writes_the_open_sessions_summary(metrics_ho
 def test_sigtermed_kanban_worker_writes_the_open_sessions_summary(metrics_home, monkeypatch):
     import signal
 
-    import cli
+    from hermes_agent import cli
     from hermes_cli import cli_single_query
 
     home, _ = metrics_home

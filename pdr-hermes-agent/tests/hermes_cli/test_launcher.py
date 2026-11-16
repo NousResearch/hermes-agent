@@ -25,7 +25,7 @@ def test_launcher_delegates_to_argparse_entrypoint(monkeypatch):
         raise AssertionError("launcher should not import cli.main")
 
     fake_cli_module.main = legacy_cli_main
-    monkeypatch.setitem(sys.modules, "cli", fake_cli_module)
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", fake_cli_module)
 
     fake_fire_module = types.ModuleType("fire")
 

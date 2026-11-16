@@ -24,7 +24,7 @@ from tools.tts_command_provider import (
 from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
     BUILTIN_STT_PROVIDERS, _error_result, _log_prompt_unsupported, _ok_result)
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.transcription_tools")

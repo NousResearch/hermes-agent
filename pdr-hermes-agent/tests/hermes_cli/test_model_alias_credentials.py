@@ -498,7 +498,7 @@ class TestSchemelessBaseUrls:
     """
 
     def test_hostname_and_port_survive_without_a_scheme(self):
-        from utils import base_url_origin
+        from hermes_agent.utils import base_url_origin
 
         assert base_url_origin("localhost:11434/v1") == ("", "localhost", 11434)
         assert base_url_origin("127.0.0.1:11434") == ("", "127.0.0.1", 11434)
@@ -685,7 +685,7 @@ class TestBaseUrlOrigin:
         ("https://h:99999/v1", ("", "", 0)),
     ])
     def test_origin_normalisation(self, url, expected):
-        from utils import base_url_origin
+        from hermes_agent.utils import base_url_origin
 
         assert base_url_origin(url) == expected
 

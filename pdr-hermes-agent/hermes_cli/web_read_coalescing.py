@@ -6,7 +6,7 @@ from weakref import WeakKeyDictionary
 from typing import get_type_hints
 
 from anyio.to_thread import run_sync
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 def _freeze(value):

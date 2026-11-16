@@ -10,7 +10,7 @@ import pytest
 
 from agent import secret_scope
 from gateway.run import _profile_runtime_scope
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 from tools import browser_session_cdp as bs_cdp
 from tools import browser_harness_dirs as harness_dirs
 from tools.browser_harness_dirs import claim_private_dir as _REAL_CLAIM  # conftest stubs it per test

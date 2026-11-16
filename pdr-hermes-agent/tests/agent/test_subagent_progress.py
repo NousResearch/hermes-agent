@@ -141,7 +141,7 @@ class TestBuildChildProgressCallback:
 
 
 # =========================================================================
-# Integration: thinking callback in run_agent.py
+# Integration: thinking callback in hermes_agent/run_agent.py
 # =========================================================================
 
 

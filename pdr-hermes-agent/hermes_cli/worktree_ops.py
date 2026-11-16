@@ -26,14 +26,14 @@ from hermes_cli.git_commit_graph import (
     refresh_commit_graph,
     run_bounded_git,
 )
-from hermes_constants import get_hermes_home
-from utils import atomic_json_write
+from hermes_agent.hermes_constants import get_hermes_home
+from hermes_agent.utils import atomic_json_write
 
 logger = logging.getLogger("cli")
 
 
 def _cprint(text: str) -> None:
-    from cli import _cprint as _impl
+    from hermes_agent.cli import _cprint as _impl
     _impl(text)
 
 

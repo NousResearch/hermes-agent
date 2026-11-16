@@ -317,7 +317,7 @@ def _safe_directory_cache_key(env: Mapping[str, str]) -> tuple:
         env.get("GIT_CONFIG_GLOBAL") or os.path.join(home, ".gitconfig"),
         os.path.join(xdg, "git", "config"),
     )
-    from utils import file_cache_version
+    from hermes_agent.utils import file_cache_version
     stamps = []
     for path in candidates:
         try:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from hermes_time import now as _hermes_now
+from hermes_agent.hermes_time import now as _hermes_now
 from typing import Optional
 
 # Log-record parity with the origin module.
@@ -297,7 +297,7 @@ def _run_time_line(job: Optional[dict] = None) -> str:
     cron sessions are fresh per fire. A pinned job reads its schedule in its own zone, so its run
     time is stated there too (a 09:00 New York job is not told 06:00 from a Los Angeles profile)."""
     from cron.jobs_time import zone_for_job
-    from hermes_time import safe_strftime
+    from hermes_agent.hermes_time import safe_strftime
     now = _hermes_now()
     pinned = zone_for_job(job or {})
     if pinned is not None:

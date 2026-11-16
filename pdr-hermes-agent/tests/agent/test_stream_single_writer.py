@@ -15,7 +15,7 @@ import pytest
 
 
 def _make_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key",
@@ -112,8 +112,8 @@ class TestSingleWriterSink:
 
 
 class TestSingleWriterLoop:
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_consume_loop_stops_when_superseded_mid_stream(self, _close, mock_create):
         """The real streaming loop bails out the moment a newer attempt claims
         the sink, so a superseded stream cannot interleave into the turn."""

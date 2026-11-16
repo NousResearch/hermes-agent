@@ -13,9 +13,9 @@ import re
 import time
 import uuid
 from contextlib import ExitStack, contextmanager
-from hermes_dir_acl import make_user_dir, unusable_dir_remedy
+from hermes_agent.hermes_dir_acl import make_user_dir, unusable_dir_remedy
 
-from utils import atomic_json_write, fsync_directory
+from hermes_agent.utils import atomic_json_write, fsync_directory
 from pathlib import Path
 from typing import Any, Callable
 
@@ -111,7 +111,7 @@ def _authority_rpc(home, method, params):
             return asyncio.run(request())
         # A gateway-hosted tool call runs on a thread with a live loop, where asyncio.run() raises
         # before anything is dialed (#139303).
-        from model_tools import _run_async
+        from hermes_agent.model_tools import _run_async
         return _run_async(request())
     except Exception as exc:
         if not rpc_started:

@@ -19,7 +19,7 @@ def create() -> dict | None:
     """
     wt_info = None
     try:
-        from cli import _git_repo_root, _maintain_pack_health, _prune_stale_worktrees, _setup_worktree
+        from hermes_agent.cli import _git_repo_root, _maintain_pack_health, _prune_stale_worktrees, _setup_worktree
         repo = _git_repo_root()
         if repo:
             _prune_stale_worktrees(repo)
@@ -94,7 +94,7 @@ def _remove_idle_clean_tui_worktree(wt_info: dict) -> bool:
         # After the grace above: a legacy sidecar stamps its rows ``tui_shutdown`` as it exits.
         if _tree_still_served(db_path, path):
             return False
-        from cli import _cleanup_worktree
+        from hermes_agent.cli import _cleanup_worktree
         _cleanup_worktree(wt_info)
     except Exception:
         logger.debug("TUI worktree cleanup failed; keeping %s", path, exc_info=True)

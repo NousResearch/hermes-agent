@@ -33,7 +33,7 @@ class _Agent:
 
 
 def _config(**vision):
-    from hermes_constants import get_hermes_home  # sandboxed per test by conftest
+    from hermes_agent.hermes_constants import get_hermes_home  # sandboxed per test by conftest
     cfg = {"agent": {"image_input_mode": vision.pop("mode", "native")}, "vision": vision}
     (get_hermes_home() / "config.yaml").write_text(json.dumps(cfg), encoding="utf-8")  # JSON is valid YAML
 

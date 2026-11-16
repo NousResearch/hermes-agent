@@ -8,7 +8,7 @@ import pytest
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.platforms.base import SendResult
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 @pytest.fixture(params=[None, False, True, "override", "managed", "null"])

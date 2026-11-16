@@ -1,4 +1,4 @@
-"""Memory plugin CLI discovery: only the active provider's ``cli.py`` commands are exposed."""
+"""Memory plugin CLI discovery: only the active provider's ``hermes_agent/cli.py`` commands are exposed."""
 
 import sys
 

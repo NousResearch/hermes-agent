@@ -5,7 +5,7 @@ import stat
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_cli.config import atomic_config_replace, atomic_config_write
 from hermes_cli.config_backend import write_config_key
 from hermes_cli.xai_retirement import apply_migration, find_retired_xai_refs

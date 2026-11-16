@@ -28,7 +28,7 @@ import pytest
 
 from agent.turn_context import build_turn_context
 from hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 NOTE = "[System note: Your previous turn was interrupted mid-run …]\n\nkeep going"
 

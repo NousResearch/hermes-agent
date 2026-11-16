@@ -20,7 +20,7 @@ from agent.secret_sources.base import FetchResult
 from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
 from agent.tool_dispatch_helpers import make_tool_result_message
 from hermes_cli import env_loader
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 OPAQUE = "mxq7Tpl2vRw9Kd"  # no vendor prefix: the pattern passes keep it bare
 DSN = "postgres://reporting:Vb8wqLr2@db.internal:5432/prod"

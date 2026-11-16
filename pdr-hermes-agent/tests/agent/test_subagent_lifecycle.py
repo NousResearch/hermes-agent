@@ -170,7 +170,7 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
 
 
 def test_agent_turn_binds_and_clears_lifecycle_parent(monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent.__new__(AIAgent)
     observed = []
@@ -335,7 +335,7 @@ def test_routing_unknown_provider_refuses_before_registration(routing_lifecycle,
 
 
 def test_plugin_toolsets_are_known_toolsets(lifecycle, monkeypatch):
-    monkeypatch.setattr("toolsets._get_plugin_toolset_names", lambda: {"plugin-tools"})
+    monkeypatch.setattr("hermes_agent.toolsets._get_plugin_toolset_names", lambda: {"plugin-tools"})
     parent = SimpleNamespace(session_id="parent-plugin", enabled_toolsets=["file", "plugin-tools"])
     service = SubagentLifecycleService(lambda: parent)
     handle = service.launch(SubagentLaunchRequest(goal="use the plugin", allowed_toolsets=("plugin-tools",)))

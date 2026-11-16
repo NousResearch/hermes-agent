@@ -8,7 +8,7 @@ import io
 
 from rich.console import Console
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 NOTE = "slash command /handoff unavailable — name taken by built-in; use /skill handoff"
 
@@ -20,7 +20,7 @@ def _write_skill(name: str) -> None:
 
 
 def test_built_in_name_collision_is_visible_on_every_listing_surface(monkeypatch):
-    import cli
+    from hermes_agent import cli
     from tools import skills_tool
     from hermes_cli.cli_info_mixin import CLIInfoMixin
     from hermes_cli.skills_hub import do_list

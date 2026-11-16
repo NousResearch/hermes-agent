@@ -14,7 +14,7 @@ from agent.relay_runtime import (
 )
 from hermes_cli.platforms import PLATFORMS
 from tools.connectors.gateway.names import CONNECTOR_NAME_PREFIX
-from toolsets import BUILTIN_TOOL_NAMES, BUILTIN_TOOLSET_NAMES
+from hermes_agent.toolsets import BUILTIN_TOOL_NAMES, BUILTIN_TOOLSET_NAMES
 
 from .shared_metrics_prepared_compaction import (
     PREPARED_COMPACTION_DIMENSIONS, PREPARED_COMPACTION_MARK, PREPARED_COMPACTION_METRIC,

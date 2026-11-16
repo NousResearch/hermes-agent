@@ -8,7 +8,7 @@ from agent.compression_marker import _COMPRESSION_MARKER_RE
 
 
 def _make_agent(memory_manager, compressor):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key",

@@ -82,13 +82,13 @@ class TestStripBlockedTools(unittest.TestCase):
         must instead pass exact one-tool deny toolsets to AIAgent, where
         model_tools applies them after resolving the composite.
         """
-        import model_tools
+        from hermes_agent import model_tools
 
         parent = _make_mock_parent()
         parent.enabled_toolsets = ["hermes-cli"]
         parent.disabled_toolsets = ["browser"]
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             MockAgent.return_value = MagicMock()
             _build_child_agent(
                 task_index=0,
@@ -127,14 +127,14 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertTrue(DELEGATE_BLOCKED_TOOLS.isdisjoint(names))
 
     def test_orchestrator_composite_regains_only_delegate_task(self):
-        import model_tools
+        from hermes_agent import model_tools
 
         parent = _make_mock_parent()
         parent.enabled_toolsets = ["hermes-cli"]
         parent.disabled_toolsets = ["delegation", "browser"]
 
         with (
-            patch("run_agent.AIAgent") as MockAgent,
+            patch("hermes_agent.run_agent.AIAgent") as MockAgent,
             patch("tools.delegate_tool._get_orchestrator_enabled", return_value=True),
             patch("tools.delegate_tool._get_max_spawn_depth", return_value=2),
         ):
@@ -187,7 +187,7 @@ class TestDelegateTask(unittest.TestCase):
         parent.provider = "openai-codex"
         parent.api_mode = "codex_responses"
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.run_conversation.return_value = {
                 "final_response": "ok",
@@ -219,7 +219,7 @@ class TestDelegateTask(unittest.TestCase):
         parent_db = SessionDB()
         parent._session_db = parent_db
         try:
-            with patch("run_agent.AIAgent") as MockAgent:
+            with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
                 mock_child = MagicMock()
                 MockAgent.return_value = mock_child
 
@@ -262,7 +262,7 @@ class TestDelegateTask(unittest.TestCase):
         """
         parent = _make_mock_parent(depth=0)
         parent._session_db = None
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             MockAgent.return_value = mock_child
 
@@ -302,7 +302,7 @@ class TestDelegateTask(unittest.TestCase):
             parent._session_db = parent_db
             child_db = None
             try:
-                with patch("run_agent.AIAgent") as MockAgent:
+                with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
                     MockAgent.return_value = MagicMock()
 
                     _build_child_agent(
@@ -344,7 +344,7 @@ class TestDelegateTask(unittest.TestCase):
         parent.api_mode = "anthropic_messages"
         parent.model = "anthropic/claude-opus-4.8"
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             MockAgent.return_value = mock_child
 
@@ -364,7 +364,7 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["model"], "hermes-4-405b")
             self.assertEqual(kwargs["api_mode"], "chat_completions")
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             MockAgent.return_value = mock_child
             parent.api_mode = "chat_completions"
@@ -391,13 +391,13 @@ class TestToolNamePreservation(unittest.TestCase):
         """The process-global _last_resolved_tool_names must be restored
         after a subagent completes so the parent's execute_code sandbox
         generates correct imports."""
-        import model_tools
+        from hermes_agent import model_tools
 
         parent = _make_mock_parent(depth=0)
         original_tools = ["terminal", "read_file", "web_search", "execute_code", "delegate_task"]
         model_tools._last_resolved_tool_names = list(original_tools)
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.run_conversation.return_value = {
                 "final_response": "done", "completed": True, "api_calls": 1,
@@ -418,7 +418,7 @@ class TestDelegateObservability(unittest.TestCase):
         """Completed child should return tool_trace, tokens, model, exit_reason."""
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.model = "claude-sonnet-4-6"
             mock_child.session_prompt_tokens = 5000
@@ -463,7 +463,7 @@ class TestDelegateObservability(unittest.TestCase):
         """Tool-result content blocks should not crash observability metadata."""
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.model = "claude-sonnet-4-6"
             mock_child.session_prompt_tokens = 0
@@ -494,7 +494,7 @@ class TestDelegateObservability(unittest.TestCase):
         """Parallel tool calls should each get their own result via tool_call_id matching."""
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.model = "claude-sonnet-4-6"
             mock_child.session_prompt_tokens = 3000
@@ -541,13 +541,13 @@ class TestDelegateObservability(unittest.TestCase):
 
     def test_empty_sentinel_marks_status_failed(self):
         """Regression: a child that returns the literal '(empty)' sentinel
-        (emitted by run_agent.py when the LLM returns empty responses after
+        (emitted by hermes_agent/run_agent.py when the LLM returns empty responses after
         retries — e.g. transport misrouting) must be reported as failed, not
         silently accepted as a completed delegation. Otherwise the parent
         surfaces an empty string as if the subagent succeeded."""
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.model = "claude-sonnet-4-6"
             mock_child.session_prompt_tokens = 0
@@ -573,7 +573,7 @@ class TestDelegateObservability(unittest.TestCase):
         ``failed`` flag must win over a non-empty summary."""
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.model = "claude-sonnet-4-6"
             mock_child.session_prompt_tokens = 0
@@ -611,7 +611,7 @@ class TestDelegateObservability(unittest.TestCase):
         status=completed — the fix must not change success behavior."""
         parent = _make_mock_parent(depth=0)
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.model = "claude-sonnet-4-6"
             mock_child.session_prompt_tokens = 0
@@ -649,7 +649,7 @@ class TestDelegateFailedChildStatus(unittest.TestCase):
         """Dispatch a single task whose mock child returns `child_result`,
         returning the parsed child result entry dict."""
         parent = _make_mock_parent(depth=0)
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.model = "claude-sonnet-4-6"
             mock_child.session_prompt_tokens = 0
@@ -757,7 +757,7 @@ class TestSubagentCostRollup(unittest.TestCase):
     def test_single_child_cost_folded_into_parent(self):
         parent = self._make_parent_with_cost_counters(starting_cost=0.10)
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.model = "claude-sonnet-4-6"
             mock_child.session_prompt_tokens = 1000
@@ -1004,7 +1004,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         parent.base_url = "https://inference-api.nousresearch.com/v1"
         parent.api_key = "nous-key-abc"
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.run_conversation.return_value = {
                 "final_response": "done", "completed": True, "api_calls": 1
@@ -1096,7 +1096,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         provider_pool.current.return_value = MagicMock(id="anthropic-default")
 
         with (
-            patch("run_agent.AIAgent") as MockAgent,
+            patch("hermes_agent.run_agent.AIAgent") as MockAgent,
             patch("agent.credential_pool.load_pool", return_value=provider_pool),
         ):
             child = MagicMock()
@@ -1144,7 +1144,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
     def test_named_custom_child_pool_follows_requested_provider_not_endpoint_order(self):
         """#45763 (salvage #89021): two named custom providers on one gateway URL keep separate pools; the child
         leases the pool of the identity it inherited, not the first entry registered for that URL."""
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         url = "https://gateway.invalid/v1"
         get_hermes_home().joinpath("config.yaml").write_text(
@@ -1168,7 +1168,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         parent = _make_mock_parent()
         parent.enabled_toolsets = ["web", "browser", "mcp-MiniMax"]
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             MockAgent.return_value = mock_child
 
@@ -1482,7 +1482,7 @@ class TestDelegationReasoningEffort(unittest.TestCase):
     """Tests for delegation.reasoning_effort config override."""
 
     @patch("tools.delegate_tool._load_config")
-    @patch("run_agent.AIAgent")
+    @patch("hermes_agent.run_agent.AIAgent")
     def test_inherits_parent_reasoning_when_no_override(self, MockAgent, mock_cfg):
         """With no delegation.reasoning_effort, child inherits parent's config."""
         mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": ""}
@@ -1499,7 +1499,7 @@ class TestDelegationReasoningEffort(unittest.TestCase):
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "xhigh"})
 
     @patch("tools.delegate_tool._load_config")
-    @patch("run_agent.AIAgent")
+    @patch("hermes_agent.run_agent.AIAgent")
     def test_override_reasoning_effort_from_config(self, MockAgent, mock_cfg):
         """delegation.reasoning_effort overrides the parent's level."""
         mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "low"}
@@ -1524,7 +1524,7 @@ class TestDispatchDelegateTask(unittest.TestCase):
 
     def test_model_acp_args_not_forwarded(self):
         """The live model dispatch path strips hidden ACP transport args."""
-        import run_agent
+        from hermes_agent import run_agent
 
         captured = {}
 
@@ -1641,7 +1641,7 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
             "api_key": None, "api_mode": None, "model": None,
         }
         parent = _make_mock_parent(depth=0)
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.run_conversation.return_value = {
                 "final_response": "done", "completed": True,
@@ -1723,7 +1723,7 @@ class TestOrchestratorRoleBehavior(unittest.TestCase):
         }
         parent = _make_mock_parent(depth=0)
         parent.enabled_toolsets = ["terminal", "file"]
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = _make_role_mock_child()
             MockAgent.return_value = mock_child
             delegate_task(goal="test", role="orchestrator", parent_agent=parent)
@@ -1745,7 +1745,7 @@ class TestOrchestratorRoleBehavior(unittest.TestCase):
         }
         parent = _make_mock_parent(depth=1)
         parent.enabled_toolsets = ["terminal", "delegation"]
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = _make_role_mock_child()
             MockAgent.return_value = mock_child
             delegate_task(goal="test", role="orchestrator", parent_agent=parent)
@@ -1841,7 +1841,7 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
 
             return m
 
-        with patch("run_agent.AIAgent", side_effect=_factory) as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent", side_effect=_factory) as MockAgent:
             delegate_task(
                 goal="top-level orchestration",
                 role="orchestrator",
@@ -1938,7 +1938,7 @@ class TestFallbackModelInheritance(unittest.TestCase):
         parent._fallback_chain = [fallback_entry]
 
         with (
-            patch("run_agent.AIAgent") as MockAgent,
+            patch("hermes_agent.run_agent.AIAgent") as MockAgent,
             patch("tools.delegate_tool._load_config", return_value={}),
         ):
             MockAgent.return_value = MagicMock()
@@ -1962,7 +1962,7 @@ class TestFallbackModelInheritance(unittest.TestCase):
         parent._fallback_chain = []
 
         with (
-            patch("run_agent.AIAgent") as MockAgent,
+            patch("hermes_agent.run_agent.AIAgent") as MockAgent,
             patch("tools.delegate_tool._load_config", return_value={}),
         ):
             MockAgent.return_value = MagicMock()
@@ -1989,7 +1989,7 @@ class TestFallbackModelInheritance(unittest.TestCase):
             {"provider": "openrouter", "model": "gpt-4o-mini", "api_key": "sk-or-x"}
         ]
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             MockAgent.return_value = MagicMock()
             _build_child_agent(
                 task_index=0,
@@ -2015,7 +2015,7 @@ class TestFallbackModelInheritance(unittest.TestCase):
         parent = _make_mock_parent(depth=0)
         parent._fallback_chain = None
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             MockAgent.return_value = MagicMock()
             with patch("shutil.which", return_value=None):
                 with self.assertRaises(ValueError) as ctx:
@@ -2064,7 +2064,7 @@ class TestAtomicChildCredentialBundle(unittest.TestCase):
     """
 
     def _build(self, parent, **overrides):
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             MockAgent.return_value = MagicMock()
             _build_child_agent(
                 task_index=0, goal="bundle", context=None, toolsets=None, model=None,

@@ -119,7 +119,7 @@ def _exact_forms(values: dict[str, str]) -> tuple[str, ...]:
 def publish_secret_source_values(hermes_home: str | Path, values: dict[str, str]) -> None:
     """Replace ``hermes_home``'s registered values with the ones its sources just applied (classified by
     the first scrub that reads them, see ``_VALUES_BY_HOME``)."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     applied = {name: value for name, value in values.items() if isinstance(value, str)}
     key = hermes_home_key(hermes_home)
@@ -149,7 +149,7 @@ def redact_secret_source_values(text: str) -> str:
     """Exact-substring scrub of the current profile's applied secret-source values."""
     if not _VALUES_BY_HOME or not isinstance(text, str) or not text:
         return text
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     for value in _registered(hermes_home_key()):
         if value in text:

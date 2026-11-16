@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import providers
 from providers.base import ProviderProfile
-from utils import base_url_host_matches
+from hermes_agent.utils import base_url_host_matches
 
 
 class _OwnCreds(ProviderProfile):

@@ -78,7 +78,7 @@ def _resolve_and_run(home, backup_url):
     assert entry is not None and entry["model"] == "gpt-fake"
 
     from agent.primary_auth_fallback import RUNTIME_KEY, attach_primary_auth_failure
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(api_key=runtime["api_key"], base_url=runtime["base_url"], provider=runtime["provider"],
                     api_mode=runtime.get("api_mode"), model=entry["model"], max_iterations=2,
@@ -106,7 +106,7 @@ def test_backup_out_of_credits_leads_with_primary_relogin_and_names_backup_probl
 
 def test_primary_serving_again_reports_only_its_own_failure(home, backup_url):
     """No resolution fallback happened: the copy is the provider's own, with no re-login lead."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(api_key="sk-x", base_url=backup_url, provider="custom", model="gpt-fake",
                     max_iterations=2, enabled_toolsets=[], quiet_mode=True, skip_context_files=True,

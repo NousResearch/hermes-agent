@@ -53,7 +53,7 @@ def cold_review_parent(runner, source, session_key, session_id):
     from gateway.session_authorities import active_authority
     from gateway.session_policy import policy_for_source, policy_scope, policy_turn_toolsets
     from gateway.session_worker_construct import session_prefill, session_routing
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     policy = policy_for_source(runner, source)
     authority = active_authority(runner) if policy else None
     user_config = policy.config(authority, secrets=False) if policy else _load_gateway_config()

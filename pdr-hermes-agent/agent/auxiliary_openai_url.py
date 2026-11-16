@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse
 
-from utils import base_url_host_matches, base_url_hostname
+from hermes_agent.utils import base_url_host_matches, base_url_hostname
 
 logger = logging.getLogger("agent.auxiliary_client")
 

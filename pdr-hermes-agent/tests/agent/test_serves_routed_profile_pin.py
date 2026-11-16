@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from agent.secret_scope import _is_process_home, serves_routed_profile
 from hermes_cli.env_loader import _process_hermes_home
 from tools.environments.local import _is_routed_home

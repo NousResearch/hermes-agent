@@ -309,7 +309,7 @@ class TestConsentWindows:
         # the probe and the store must agree the way they do in production.
         home = tmp_path / "home"
         monkeypatch.setattr(
-            "hermes_constants.get_hermes_home", lambda: home
+            "hermes_agent.hermes_constants.get_hermes_home", lambda: home
         )
         root = home / "telemetry" / "shared_metrics"
         store = SharedMetricsStore(

@@ -425,7 +425,7 @@ class TestAgentInitConfig:
     def test_loaded_config_reaches_request_threshold(
         self, tmp_path, monkeypatch, threshold_yaml, configured, resolved
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         home = tmp_path / ".hermes"
         home.mkdir()
@@ -457,7 +457,7 @@ class TestAgentInitConfig:
 
 
     def test_kwargs_omit_field_for_ineligible_model_even_when_enabled(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",

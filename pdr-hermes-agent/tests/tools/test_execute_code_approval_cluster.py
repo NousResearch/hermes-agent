@@ -91,7 +91,7 @@ def test_helper_clears_callbacks_on_teardown():
 @pytest.mark.parametrize("transport", ["local", "remote-file"])
 def test_rpc_carries_authority_to_real_dispatch(child_env, monkeypatch, transport):
     import time
-    import model_tools
+    from hermes_agent import model_tools
     from tests.tools._child_env_fixtures import RunToCompletionEnv, run_code
     from tools import terminal_tool
     from tools.code_execution_tool import _run_remote_per_call

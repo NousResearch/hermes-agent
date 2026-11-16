@@ -112,7 +112,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
     with patch.dict(sys.modules, prompt_toolkit_stubs), patch.dict(
         "os.environ", clean_env, clear=False
     ):
-        import cli as _cli_mod
+        from hermes_agent import cli as _cli_mod
 
         _cli_mod = importlib.reload(_cli_mod)
         with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), patch.dict(
@@ -203,7 +203,7 @@ def test_run_cleanup_flushes_pending_memory_manager_work(tmp_path):
 
     _run_cleanup gives the manager's serialized worker a bounded drain via
     flush_pending() before shutdown_all()'s short-fuse drain runs."""
-    import cli as _cli_mod
+    from hermes_agent import cli as _cli_mod
 
     agent = MagicMock()
     mm = MagicMock()
@@ -255,7 +255,7 @@ def test_new_session_resets_token_counters(tmp_path):
     import types
 
     from agent.context_engine import ContextEngine
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     cli = _prepare_cli_with_active_session(tmp_path)
     agent = cli.agent

@@ -86,7 +86,7 @@ def test_only_foreground_commands_may_prompt_for_hook_consent(monkeypatch, comma
 def test_deferred_first_turn_discovers_no_plugins_spawns_no_mcp_and_registers_no_hooks(monkeypatch):
     # Termux's deferred startup ran plugin discovery before the first turn; the gateway runs the turn
     # and loads the plugins (PLG-7).
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     from hermes_cli import gateway_agent
     from hermes_cli import mcp_startup
     calls = []
@@ -110,7 +110,7 @@ def test_deferred_first_turn_discovers_no_plugins_spawns_no_mcp_and_registers_no
 
 
 def test_init_agent_runs_no_mcp_discovery(monkeypatch):
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     from hermes_cli import gateway_agent
     from hermes_cli import mcp_startup
     calls = []
@@ -129,8 +129,8 @@ def test_init_agent_runs_no_mcp_discovery(monkeypatch):
 
 
 def test_session_store_open_runs_no_state_db_or_checkpoint_maintenance(monkeypatch):
-    import cli as cli_mod
-    from cli import HermesCLI
+    from hermes_agent import cli as cli_mod
+    from hermes_agent.cli import HermesCLI
     calls = []
     monkeypatch.setattr(cli_mod, "_run_state_db_auto_maintenance", lambda db: calls.append("state.db"))
     monkeypatch.setattr(cli_mod, "_run_checkpoint_auto_maintenance", lambda: calls.append("checkpoints"))

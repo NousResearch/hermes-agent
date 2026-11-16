@@ -19,7 +19,7 @@ def _make_voice_cli(**overrides):
     needed.  Only the voice state attributes (from __init__ lines 3749-3758)
     are populated.
     """
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     cli = HermesCLI.__new__(HermesCLI)
     cli._voice_lock = threading.Lock()
@@ -94,14 +94,14 @@ class TestHandleVoiceCommandReal:
         cli._show_voice_status = MagicMock()
         return cli
 
-    @patch("cli._cprint")
+    @patch("hermes_agent.cli._cprint")
     def test_on_calls_enable(self, _cp):
         cli = self._cli()
         cli._handle_voice_command("/voice on")
         cli._enable_voice_mode.assert_called_once()
 
 
-    @patch("cli._cprint")
+    @patch("hermes_agent.cli._cprint")
     def test_unknown_subcommand(self, mock_cp):
         cli = self._cli()
         cli._handle_voice_command("/voice foobar")
@@ -115,7 +115,7 @@ class TestHandleVoiceCommandReal:
 class TestEnableVoiceModeReal:
     """Tests _enable_voice_mode with real CLI instance."""
 
-    @patch("cli._cprint")
+    @patch("hermes_agent.cli._cprint")
     @patch("hermes_cli.config.load_config", return_value={"voice": {}})
     @patch("tools.voice_mode.check_voice_requirements",
            return_value={"available": True, "details": "OK"})
@@ -127,7 +127,7 @@ class TestEnableVoiceModeReal:
         assert cli._voice_mode is True
 
 
-    @patch("cli._cprint")
+    @patch("hermes_agent.cli._cprint")
     @patch("hermes_cli.config.load_config", side_effect=Exception("broken config"))
     @patch("tools.voice_mode.check_voice_requirements",
            return_value={"available": True, "details": "OK"})
@@ -147,8 +147,8 @@ class TestVoiceBeepConfigReal:
         cli = _make_voice_cli()
         assert cli._voice_beeps_enabled() is False
 
-    @patch("cli._cprint")
-    @patch("cli.threading.Thread")
+    @patch("hermes_agent.cli._cprint")
+    @patch("hermes_agent.cli.threading.Thread")
     @patch("tools.voice_mode.play_beep")
     @patch("tools.voice_mode.create_audio_recorder")
     @patch(
@@ -195,8 +195,8 @@ class TestMaxRecordingSecondsConfigReal:
     """
 
     def _start_with_voice_cfg(self, voice_cfg):
-        with patch("cli._cprint"), \
-             patch("cli.threading.Thread", return_value=MagicMock(start=MagicMock())), \
+        with patch("hermes_agent.cli._cprint"), \
+             patch("hermes_agent.cli.threading.Thread", return_value=MagicMock(start=MagicMock())), \
              patch("tools.voice_mode.play_beep"), \
              patch("tools.voice_mode.create_audio_recorder") as mock_create, \
              patch(
@@ -236,7 +236,7 @@ class TestMaxRecordingSecondsConfigReal:
 class TestDisableVoiceModeReal:
     """Tests _disable_voice_mode with real CLI instance."""
 
-    @patch("cli._cprint")
+    @patch("hermes_agent.cli._cprint")
     @patch("tools.voice_mode.stop_playback")
     def test_all_flags_reset(self, _sp, _cp):
         cli = _make_voice_cli(_voice_mode=True, _voice_tts=True,
@@ -247,7 +247,7 @@ class TestDisableVoiceModeReal:
         assert cli._voice_continuous is False
 
 
-    @patch("cli._cprint")
+    @patch("hermes_agent.cli._cprint")
     @patch("tools.voice_mode.stop_playback", side_effect=RuntimeError("boom"))
     def test_stop_playback_exception_swallowed(self, _sp, _cp):
         cli = _make_voice_cli(_voice_mode=True)
@@ -271,13 +271,13 @@ class TestVoiceSpeakResponseReal:
             def start(self):
                 starts.append(cli._voice_tts_done.is_set())
 
-        with patch("cli.threading.Thread", FakeThread):
+        with patch("hermes_agent.cli.threading.Thread", FakeThread):
             cli._voice_speak_response_async("Hello")
 
         assert starts == [False]
         assert not cli._voice_tts_done.is_set()
 
-    @patch("cli._cprint")
+    @patch("hermes_agent.cli._cprint")
     def test_early_return_when_tts_off(self, _cp):
         cli = _make_voice_cli(_voice_tts=False)
         with patch("tools.tts_tool.text_to_speech_tool") as mock_tts:
@@ -285,11 +285,11 @@ class TestVoiceSpeakResponseReal:
             mock_tts.assert_not_called()
 
 
-    @patch("cli._cprint")
-    @patch("cli.os.unlink")
-    @patch("cli.os.path.getsize", return_value=1000)
-    @patch("cli.os.path.isfile", return_value=True)
-    @patch("cli.os.makedirs")
+    @patch("hermes_agent.cli._cprint")
+    @patch("hermes_agent.cli.os.unlink")
+    @patch("hermes_agent.cli.os.path.getsize", return_value=1000)
+    @patch("hermes_agent.cli.os.path.isfile", return_value=True)
+    @patch("hermes_agent.cli.os.makedirs")
     @patch("tools.voice_mode.play_audio_file")
     @patch("tools.tts_tool.text_to_speech_tool")
     def test_play_audio_uses_returned_file_paths(
@@ -319,14 +319,14 @@ class TestVoiceSpeakResponseReal:
 class TestVoiceStopAndTranscribeReal:
     """Tests _voice_stop_and_transcribe with real CLI instance."""
 
-    @patch("cli._cprint")
+    @patch("hermes_agent.cli._cprint")
     def test_guard_not_recording(self, _cp):
         cli = _make_voice_cli(_voice_recording=False)
         with patch("tools.voice_mode.transcribe_recording") as mock_tr:
             cli._voice_stop_and_transcribe()
             mock_tr.assert_not_called()
 
-    @patch("cli._cprint")
+    @patch("hermes_agent.cli._cprint")
     @patch("tools.voice_mode.play_beep")
     def test_no_speech_detected(self, _beep, _cp):
         recorder = MagicMock()
@@ -335,9 +335,9 @@ class TestVoiceStopAndTranscribeReal:
         cli._voice_stop_and_transcribe()
         assert cli._pending_input.empty()
 
-    @patch("cli._cprint")
-    @patch("cli.os.unlink")
-    @patch("cli.os.path.isfile", return_value=True)
+    @patch("hermes_agent.cli._cprint")
+    @patch("hermes_agent.cli.os.unlink")
+    @patch("hermes_agent.cli.os.path.isfile", return_value=True)
     @patch("hermes_cli.config.load_config", return_value={"stt": {}})
     @patch("tools.voice_mode.transcribe_recording",
            return_value={"success": True, "transcript": "hello world"})
@@ -352,7 +352,7 @@ class TestVoiceStopAndTranscribeReal:
         queued = cli._pending_input.get_nowait()
         # Voice transcripts are wrapped in the _VoiceInputMessage sentinel so
         # only genuine STT output gets the voice prefix (#65827).
-        from cli import _VoiceInputMessage
+        from hermes_agent.cli import _VoiceInputMessage
         assert isinstance(queued, _VoiceInputMessage)
         assert str(queued) == "hello world"
 
@@ -362,8 +362,8 @@ class TestVoiceStopAndTranscribeReal:
         recorder.stop.return_value = "/tmp/test.wav"
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
 
-        with patch("cli._cprint") as mock_print, \
-             patch("cli.os.path.isfile", return_value=False), \
+        with patch("hermes_agent.cli._cprint") as mock_print, \
+             patch("hermes_agent.cli.os.path.isfile", return_value=False), \
              patch(
                  "hermes_cli.config.load_config",
                  return_value={"stt": {"provider": "openai", "model": "whisper-1"}},
@@ -402,7 +402,7 @@ class TestVoiceBargeCaptureSubmit:
         cli._voice_submit_barge_utterance(str(wav))
 
         queued = cli._pending_input.get_nowait()
-        from cli import _VoiceInputMessage
+        from hermes_agent.cli import _VoiceInputMessage
         assert isinstance(queued, _VoiceInputMessage)
         assert str(queued) == "stop, do it differently"
         assert not cli._voice_barge_capture.is_set()
@@ -547,7 +547,7 @@ class TestVoiceFullDuplexListener:
 
         assert interrupted.is_set()
         assert pipe_stop.is_set()  # stale reply's TTS can never play
-        from cli import _VoiceInputMessage
+        from hermes_agent.cli import _VoiceInputMessage
         queued = cli._pending_input.get_nowait()
         assert isinstance(queued, _VoiceInputMessage)
         assert str(queued) == "actually wait"

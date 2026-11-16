@@ -14,7 +14,7 @@ import pytest
 from agent.pet import store
 from agent.pet.constants import FRAME_H, FRAME_W
 from agent.pet.render import PetRenderer
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 @pytest.fixture
@@ -259,7 +259,7 @@ def test_force_full_redraw_requeues_kitty_frame(boba_like, monkeypatch):
             self.invalidated = True
 
     cli_obj._app = App()
-    monkeypatch.setattr("cli._replay_output_history", lambda *_: None)
+    monkeypatch.setattr("hermes_agent.cli._replay_output_history", lambda *_: None)
 
     cli_obj._force_full_redraw()
 

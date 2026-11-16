@@ -108,7 +108,7 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
         # Validate the repaired shape dispatch will see; copy because coerce_tool_args may
         # normalize in place (dispatch re-coerces canonically).
         try:
-            from model_tools import coerce_tool_args
+            from hermes_agent.model_tools import coerce_tool_args
             candidate_args = coerce_tool_args(name, dict(args))
         except Exception:
             logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)

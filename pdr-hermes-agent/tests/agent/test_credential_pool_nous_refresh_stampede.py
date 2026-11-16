@@ -110,7 +110,7 @@ def test_agent_401_refresh_passes_failed_bearer_as_stale_hint(monkeypatch):
     subagent rotates the shared grant again (the "no crash, N refreshes"
     variant of the Sep 2 stampede).
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent.__new__(AIAgent)
     agent.provider = "nous"

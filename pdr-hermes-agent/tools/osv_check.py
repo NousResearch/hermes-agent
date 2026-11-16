@@ -49,7 +49,7 @@ def _disk_cache_path() -> Optional[Path]:
     resolved, in which case only the in-process cache is used.
     """
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         home = get_hermes_home()
     except Exception:
@@ -132,7 +132,7 @@ def _save_disk_cache() -> None:
     try:
         # Shared atomic writer (temp file + fsync + rename); mkstemp's 0600
         # is kept on create, so verdicts never sit in a world-readable file.
-        from utils import atomic_write_text
+        from hermes_agent.utils import atomic_write_text
 
         atomic_write_text(path, json.dumps(data))
     except Exception as exc:

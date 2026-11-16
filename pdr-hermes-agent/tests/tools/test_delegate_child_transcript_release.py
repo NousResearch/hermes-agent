@@ -25,7 +25,7 @@ from agent.subagent_lifecycle import (
     bind_subagent_parent,
     get_active_subagent_parent,
 )
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _bare_agent() -> AIAgent:

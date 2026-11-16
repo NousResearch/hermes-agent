@@ -9,14 +9,14 @@ from unittest.mock import MagicMock, patch
 
 
 from agent.error_classifier import FailoverReason
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent(fallback_model=None):
     """Create a minimal AIAgent with optional fallback config."""
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
@@ -487,7 +487,7 @@ class TestFallbackExtraBodyReResolution:
 
 def _write_moa_home(tmp_path, monkeypatch):
     """Real config.yaml with a MoA preset under a temp HERMES_HOME (genuine preset resolution)."""
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
 
     home = tmp_path / ".hermes"
     home.mkdir(exist_ok=True)
@@ -536,8 +536,8 @@ class TestMoaPresetFallback:
             return (aggregator_client, "grok-4.6") if provider == "moa" else (None, None)
 
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.auxiliary_client.resolve_provider_client", side_effect=_route),
         ):
             agent = AIAgent(model="anthropic/claude-sonnet-4.5", provider="openrouter",

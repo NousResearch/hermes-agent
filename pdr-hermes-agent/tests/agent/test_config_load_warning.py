@@ -6,13 +6,13 @@ from unittest.mock import patch
 
 import pytest
 
-import hermes_logging
+from hermes_agent import hermes_logging
 
 
 @pytest.fixture
 def make_agent(monkeypatch):
-    from hermes_constants import get_hermes_home
-    import run_agent
+    from hermes_agent.hermes_constants import get_hermes_home
+    from hermes_agent import run_agent
 
     home = get_hermes_home()
     (home / "config.yaml").write_text("", encoding="utf-8")
@@ -41,7 +41,7 @@ def make_agent(monkeypatch):
     with (
         patch("agent.process_bootstrap.OpenAI"),
         patch("agent.model_metadata_http.get") as metadata_get,
-        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("tools.env_probe.warm_environment_probe_async"),
     ):
         # The prewarm thread and compressor keep imported metadata aliases; stop
@@ -62,7 +62,7 @@ def test_config_failure_warns_without_exposing_values_and_preserves_defaults(
     make_agent, monkeypatch, caplog, failure_at, reader,
 ):
     from hermes_cli import config
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     import sys
 
     home = get_hermes_home()
@@ -185,7 +185,7 @@ def test_config_failure_warns_without_exposing_values_and_preserves_defaults(
 
 
 def test_empty_config_initializes_memory_without_a_load_warning(make_agent, caplog):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     with caplog.at_level(logging.WARNING, logger="run_agent"):
         agent = make_agent()

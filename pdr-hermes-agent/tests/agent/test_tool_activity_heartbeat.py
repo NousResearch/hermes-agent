@@ -28,7 +28,7 @@ def _make_agent(monkeypatch):
     """Minimal AIAgent-like stub, mirroring test_start_order_gate.py."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "")
-    import run_agent as _ra
+    from hermes_agent import run_agent as _ra
 
     class _Stub:
         _interrupt_requested = False
@@ -247,7 +247,7 @@ def test_concurrent_tool_call_heartbeat(monkeypatch):
     agent._touch_activity = lambda desc: touches.append(time.time())
 
     agent._execute_tool_calls_concurrent = (
-        __import__("run_agent").AIAgent._execute_tool_calls_concurrent.__get__(agent)
+        __import__("hermes_agent.run_agent").AIAgent._execute_tool_calls_concurrent.__get__(agent)
     )
 
     class _FakeToolCall:

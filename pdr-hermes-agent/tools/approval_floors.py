@@ -15,7 +15,7 @@ import time
 import uuid
 from tools import approval_context as _ctx
 from tools.approval_ansi_c import expand_ansi_c_quotes
-from utils import unlink_files_older_than
+from hermes_agent.utils import unlink_files_older_than
 from tools.approval_detection import (
     _FALLBACK_MATCH_SUFFIX, _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants)
 
@@ -64,7 +64,7 @@ def _save_blocked_payload(command: str) -> str | None:
     if not host_feature_enabled("tool_host_artifacts"):
         return None
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         script_dir = get_hermes_home() / "cache" / "blocked-scripts"
         script_dir.mkdir(parents=True, exist_ok=True)
         # Opportunistic cleanup: blocked payloads older than 7 days.

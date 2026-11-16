@@ -257,7 +257,7 @@ def _max_workers_for_tool_batch(runnable_calls) -> int:
 
 def _ra():
     """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
-    import run_agent
+    from hermes_agent import run_agent
     return run_agent
 
 
@@ -368,7 +368,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
     filtered on, a per-agent copy keyed on registry generation would not, and a recovered
     MCP server's tools would stay uncallable for the agent's lifetime."""
     try:
-        import model_tools
+        from hermes_agent import model_tools
         from tools import tool_search as _ts
     except Exception:
         return frozenset()
@@ -384,7 +384,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
 
 def _canonical_tool_name(function_name: str) -> str:
     """Map legacy tool-name aliases BEFORE agent-loop dispatch."""
-    from model_tools import _LEGACY_TOOL_ALIASES as _lta
+    from hermes_agent.model_tools import _LEGACY_TOOL_ALIASES as _lta
 
     return _lta.get(function_name, function_name)
 
@@ -1733,7 +1733,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
 
     # Registry tools: post hook is owned by this executor (inner observer suppressed).
     def _execute(next_args: dict) -> Any:
-        import model_tools
+        from hermes_agent import model_tools
 
         with model_tools.suppress_post_tool_call_hook():
             return model_tools.handle_function_call(

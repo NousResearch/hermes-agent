@@ -106,7 +106,7 @@ def test_driven_tab_elsewhere_falls_back_to_the_origin_walk(supervisor):
 @pytest.mark.platforms("linux", "macos")
 def test_harness_current_target_reads_the_daemons_attached_tab():
     """The daemon socket the harness binds for ``env`` answers ``current_tab`` with its targetId."""
-    from hermes_constants import socket_safe_tmpdir
+    from hermes_agent.hermes_constants import socket_safe_tmpdir
     from tools.browser_harness_dirs import harness_current_target
 
     runtime = tempfile.mkdtemp(prefix="bhct-", dir=socket_safe_tmpdir())

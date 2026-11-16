@@ -15,7 +15,7 @@ from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_contract import SessionActor, SessionRef, Submission
 from hermes_state import SessionDB
 from hermes_state.runtime import begin_runtime_epoch
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 ACTOR = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
 REF = SessionRef('owned', 's')

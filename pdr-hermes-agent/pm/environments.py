@@ -14,7 +14,7 @@ import re
 import shlex
 from pathlib import Path
 
-from hermes_constants import get_default_hermes_root, project_venv_dir
+from hermes_agent.hermes_constants import get_default_hermes_root, project_venv_dir
 
 
 def install_key(project_root: Path) -> str:
@@ -24,7 +24,7 @@ def install_key(project_root: Path) -> str:
 
 def dependency_home_root() -> Path:
     """Scope dependency state like a process launched in the active home."""
-    from hermes_constants import get_default_hermes_root, get_hermes_home_override
+    from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home_override
 
     override = get_hermes_home_override()
     return get_default_hermes_root(home=override) if override else get_default_hermes_root()
@@ -55,7 +55,7 @@ def owning_home_root(project_root: Path) -> Path | None:
     and it execs the owner's store Python. With no live launcher to ask, the root the checkout
     sits in outranks the platform default.
     """
-    from hermes_constants import _get_platform_default_hermes_home
+    from hermes_agent.hermes_constants import _get_platform_default_hermes_home
 
     root = Path(project_root).resolve()
     key = install_key(root)

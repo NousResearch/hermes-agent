@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from tools import mcp_tool
 from tools import mcp_tool_handlers as _mcp_handlers
 from tools import mcp_tool_registration as _mcp_registration

@@ -232,17 +232,17 @@ class _FakeConverse:
 
 @pytest.fixture()
 def bedrock_claude_agent(monkeypatch):
-    import run_agent
+    from hermes_agent import run_agent
 
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATESTTESTTESTTEST")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kwargs: [{
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda **kwargs: [{
         "type": "function",
         "function": {"name": "t", "description": "t", "parameters": {"type": "object", "properties": {}}},
     }])
-    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
+    monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", dict)
     monkeypatch.setattr("time.sleep", lambda *_: None)
     log: list[dict] = []
     converse_models: list[str] = []

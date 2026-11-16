@@ -44,7 +44,7 @@ def _run_chat(monkeypatch, argv, *, provider_configured):
     monkeypatch.setattr(main_mod, "_sync_bundled_skills_for_startup", lambda: None, raising=False)
     fake_cli = types.ModuleType("cli")
     fake_cli.main = classic_main
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", fake_cli)
     from hermes_cli import gateway_chat
 
     # The classic CLI rides the gateway client: it must still front the guard and never reach

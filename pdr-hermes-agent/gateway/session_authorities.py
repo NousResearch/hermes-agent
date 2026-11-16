@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from hermes_constants import get_hermes_home, get_hermes_home_override, hermes_home_key
+from hermes_agent.hermes_constants import get_hermes_home, get_hermes_home_override, hermes_home_key
 from hermes_state.runtime import RuntimeStoreError
 
 
@@ -185,7 +185,7 @@ def served_profile_name(home) -> str:
     ``profiles/<name>`` (via ``hermes_constants.profile_name_for_home``, the resolver main uses).
     Any other custom HERMES_HOME is the process's own single profile and keeps the ``default``
     label the CLI reports for it (``hermes -p`` never targets such a home by name)."""
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
     return profile_name_for_home(home) or 'default'
 
 

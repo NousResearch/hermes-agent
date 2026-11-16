@@ -24,7 +24,7 @@ from __future__ import annotations
 
 def _make_cli():
     """Bare HermesCLI (no __init__): the detector only reads _agent_running."""
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     return HermesCLI.__new__(HermesCLI)
 

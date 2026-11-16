@@ -23,7 +23,7 @@ if arm == "B":
     import agent.anthropic_adapter as ad
     if hasattr(ad, "_manage_thinking_signatures"):
         ad._manage_thinking_signatures = _keep_all
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_cli.runtime_provider import resolve_runtime_provider
 rt = resolve_runtime_provider(requested="nous", target_model="anthropic/claude-fable-5.1")
 sid = f"f0ab_{arm}_{int(time.time())}"

@@ -9,8 +9,8 @@ from collections import OrderedDict
 
 import pytest
 
-import model_tools
-from model_tools import get_tool_definitions
+from hermes_agent import model_tools
+from hermes_agent.model_tools import get_tool_definitions
 from tests.module_clock import install_module_clock
 from tools import registry as registry_mod
 from tools.mcp_tool_agent import reprobe_tool_availability
@@ -176,7 +176,7 @@ def _tool_results(server):
 def test_long_running_agent_bridge_recovers_after_mcp_reconnect(mail_state, clock):
     """Composed: one AIAgent across turns, real bridge dispatch, the mail server recovering
     between turns without re-registering (the reconnect path keeps its registered names)."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.fakes.fake_llm_provider import MODEL_ID, FakeLLMServer, Text, ToolCall
 
     script = [
@@ -224,7 +224,7 @@ def direct_tools():
 
 
 def _direct_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     return AIAgent(model="test-model", provider="openai", api_key="unused-test-key",
                    base_url="http://127.0.0.1:9/v1", enabled_toolsets=BOTH, quiet_mode=True,
@@ -308,7 +308,7 @@ def tool_search_on():
 
 
 def _agent(enabled_toolsets):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     return AIAgent(model="test-model", provider="openai", api_key="unused-test-key",
                    base_url="http://127.0.0.1:9/v1", enabled_toolsets=enabled_toolsets, quiet_mode=True,
@@ -345,7 +345,7 @@ def test_selection_widened_by_a_late_connection_appends_with_the_generation_unch
     """``adopt_late_connections`` widens the selection to a server another session already
     connected in this process: nothing registers, the generation stays put, and the server's
     tools must still append between turns, as on main."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     from tools.connectors import mcp as connectors_mcp
     from tools.mcp_tool_agent import refresh_agent_mcp_tools
 

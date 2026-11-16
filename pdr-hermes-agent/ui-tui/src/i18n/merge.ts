@@ -1,4 +1,4 @@
-// Deep-merge helpers for catalogs. Same semantics as apps/shared/src/i18n.ts
+// Deep-merge helpers for catalogs. Same semantics as ui-tui/packages/shared/src/i18n.ts
 // `mergeTranslations`, kept local because that module touches `document`
 // (applyDocumentLocale) and the TUI compiles without the DOM lib.
 

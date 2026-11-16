@@ -20,7 +20,7 @@ def _cmd_memory_off():
 
 
 def _cmd_memory_reset(args):
-    from hermes_constants import get_hermes_home, display_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home, display_hermes_home
     mem_dir = get_hermes_home() / "memories"
     target = getattr(args, "target", "all")
     files_to_reset = []

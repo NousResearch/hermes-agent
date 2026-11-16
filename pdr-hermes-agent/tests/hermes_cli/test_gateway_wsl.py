@@ -6,7 +6,7 @@ from unittest.mock import patch, mock_open
 import pytest
 
 from hermes_cli import gateway
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_platform.host import runtime as host_runtime
 
 # =============================================================================

@@ -5,13 +5,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 
 def test_agent_build_arms_only_consented_profile_policy(tmp_path, monkeypatch):
     from agent import shell_hooks
     from hermes_cli import plugins
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tui_gateway import server
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))

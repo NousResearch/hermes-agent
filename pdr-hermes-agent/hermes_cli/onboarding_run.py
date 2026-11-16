@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hermes_constants import get_default_hermes_root
+from hermes_agent.hermes_constants import get_default_hermes_root
 
 
 def _root_config() -> Path:

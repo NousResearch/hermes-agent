@@ -18,7 +18,7 @@ def _box(title: str, width: int) -> list[str]:
 
 def toolsets_lines(enabled) -> list[str]:
     """``/toolsets``: every toolset, ``(*)`` on the ones *enabled* names."""
-    from toolsets import get_all_toolsets, get_toolset_info
+    from hermes_agent.toolsets import get_all_toolsets, get_toolset_info
     out = ["", *_box(t("cli.toolsets.header"), 58), ""]
     for name in sorted(get_all_toolsets()):
         info = get_toolset_info(name)
@@ -31,7 +31,7 @@ def toolsets_lines(enabled) -> list[str]:
 
 def platforms_lines() -> list[str]:
     """``/platforms``: the messaging platforms the profile's gateway config enables."""
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
     from gateway.config import load_gateway_config, Platform
     out = ["", *_box(t("cli.gateway_status.header"), 60), ""]
     config_file = f"{display_hermes_home()}/config.yaml"
@@ -52,7 +52,7 @@ def platforms_lines() -> list[str]:
             else:
                 out.append(f"    ○ {name:<12} {t('cli.gateway_status.not_configured', env_var=env_var)}")
         return [*out, "", f"  {t('cli.gateway_status.conversations_persist')}", "",
-                f"  {t('cli.gateway_status.to_start')}", "    python cli.py --gateway", "",
+                f"  {t('cli.gateway_status.to_start')}", "    python -m hermes_agent.cli --gateway", "",
                 f"  {t('cli.gateway_status.config_file', path=config_file)}", ""]
     except Exception as e:  # health: allow BLE001 -- moved unchanged from CLIInfoMixin._show_gateway_status (main): any config load failure prints the setup steps
         return [*out, f"  {t('cli.gateway_status.load_error', error=str(e))}", "",

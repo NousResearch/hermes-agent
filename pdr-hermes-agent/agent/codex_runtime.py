@@ -861,7 +861,7 @@ def _codex_event_has_content(event: Any) -> bool:
 def _raise_stream_error(event: Any) -> None:
     """Raise ``_StreamErrorEvent`` from a ``type=error`` SSE frame. The spec puts code/message/param at the
     top level, but the SDK and several proxies nest them under ``error``; read top-level first, then the envelope."""
-    from run_agent import _StreamErrorEvent
+    from hermes_agent.run_agent import _StreamErrorEvent
     nested = _event_field(event, "error")
 
     def _error_field(name: str) -> Any:

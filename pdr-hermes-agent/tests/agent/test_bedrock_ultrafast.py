@@ -39,7 +39,7 @@ def test_bedrock_ultrafast_is_exact_model_route_and_tier():
 
 def _configure(tmp_path, *, model=MODEL, region="us-east-1", tier="ultrafast"):
     from hermes_cli.config import atomic_config_write, load_config
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     atomic_config_write(get_hermes_home() / "config.yaml", {
         "model": {"provider": "bedrock", "default": model}, "bedrock": {"region": region},
         "agent": {"service_tier": tier}, "compression": {"enabled": False},
@@ -49,7 +49,7 @@ def _configure(tmp_path, *, model=MODEL, region="us-east-1", tier="ultrafast"):
 
 def _turn_route(cfg, runtime, surface):
     from agent.fast_mode import parse_service_tier
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     from gateway.run import GatewayRunner
     tier = parse_service_tier(cfg["agent"]["service_tier"])
     model = cfg["model"]["default"]
@@ -74,7 +74,7 @@ def test_config_tier_reaches_real_sdk_preserving_off_body(tmp_path, monkeypatch,
     import boto3
     from agent.codex_runtime import _consume_codex_event_stream
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     cfg = _configure(tmp_path)
     monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
@@ -145,7 +145,7 @@ def test_config_tier_reaches_real_sdk_preserving_off_body(tmp_path, monkeypatch,
                                          (MODEL, "us-west-2"), ("openai.gpt-6-astra", "us-east-1")])
 def test_config_unsupported_routes_do_not_gain_tier_or_change_transport(tmp_path, monkeypatch, model, region):
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     cfg = _configure(tmp_path, model=model, region=region)
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bedrock-bearer")
     runtime = resolve_runtime_provider(requested="bedrock", target_model=model)
@@ -166,7 +166,7 @@ def test_config_unsupported_routes_do_not_gain_tier_or_change_transport(tmp_path
 
 
 def test_cli_explicit_ultrafast_is_available_on_supported_mantle_route(monkeypatch):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     shell = SimpleNamespace(model=MODEL, provider="bedrock", base_url=BASE, api_key="test-bedrock-bearer",
                             service_tier=None, agent=None)
     shell._fast_command_available = lambda: HermesCLI._fast_command_available(shell)
@@ -178,7 +178,7 @@ def test_cli_explicit_ultrafast_is_available_on_supported_mantle_route(monkeypat
 def test_fast_capability_is_reported_only_on_the_mantle_route():
     """``/fast`` and the ACP speed picker ask ``model_supports_fast_mode``: Sol is fast only where the
     request builder sends the tier, never by model name alone."""
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     assert model_supports_fast_mode(MODEL, provider="bedrock", base_url=BASE)
     for provider, base in ((None, None), ("bedrock", None), ("bedrock", BASE.replace("us-east-1", "us-west-2")),
                            ("openai", "https://api.openai.com/v1"), ("openrouter", BASE)):

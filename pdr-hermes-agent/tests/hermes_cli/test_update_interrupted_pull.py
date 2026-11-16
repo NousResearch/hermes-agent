@@ -33,7 +33,7 @@ _MULTI = "top = 1\nx = 0\ny = 0\nz = 0\nend = 1\n"
 # before any code in the entry can), then stops.
 _ENTRY_SPY = """
 import importlib, json, os, sys
-import hermes_bootstrap
+from hermes_agent import hermes_bootstrap
 from hermes_cli import _early_recovery as er
 
 venv, entry = os.path.realpath(sys.prefix), sys.argv[1]
@@ -59,13 +59,13 @@ def checkout(tmp_path, monkeypatch):
     _git(origin, "init", "-q", "-b", "main")
     _git(origin, "config", "user.email", "t@example.invalid")
     _git(origin, "config", "user.name", "t")
-    files = {"utils.py": "OLD = 1\n", "other.py": "a = 1\n", "gone.py": "x = 1\n", "cut.py": "c = 1\n",
+    files = {"hermes_agent/utils.py": "OLD = 1\n", "other.py": "a = 1\n", "gone.py": "x = 1\n", "cut.py": "c = 1\n",
              "blank.py": "b = 1\n", "half.py": "h = 1\n", "tool.sh": "echo\n", "multi.py": _MULTI}
     for name, body in files.items():
         (origin / name).write_text(body, encoding="utf-8", newline="")
     _git(origin, "add", "-A")
     _git(origin, "commit", "-qm", "A")
-    for name, body in {"utils.py": "NEW = 1\n", "other.py": "a = 2\n", "cut.py": "c = 2\n", "multi.py": "top = 2\n" + _MULTI[8:],
+    for name, body in {"hermes_agent/utils.py": "NEW = 1\n", "other.py": "a = 2\n", "cut.py": "c = 2\n", "multi.py": "top = 2\n" + _MULTI[8:],
                        "blank.py": "b = 2\n", "half.py": "h = 2  # long enough to span pages\n"}.items():
         (origin / name).write_text(body, encoding="utf-8", newline="")
     (origin / "gone.py").unlink()
@@ -95,7 +95,7 @@ def test_killed_pull_is_restored_on_next_launch_and_update_reruns(checkout, monk
     def dying_git_run(git_cmd, args, *rest, **kw):
         if args[:1] == ["merge"]:
             # Git rewrites a file as unlink, create, write: the kill lands inside one of those.
-            (root / "utils.py").write_text("NEW = 1\n", encoding="utf-8", newline="")
+            (root / "hermes_agent/utils.py").write_text("NEW = 1\n", encoding="utf-8", newline="")
             (root / "cut.py").unlink()
             (root / "blank.py").write_bytes(b"")
             (root / "half.py").write_bytes(b"h = 2  # long")  # a multi-page write cut short
@@ -160,7 +160,7 @@ def test_restore_runs_the_installers_store_git_when_path_has_none(checkout, monk
     import pm.paths
 
     root, a, b = checkout
-    (root / "utils.py").write_text("NEW = 1\n", encoding="utf-8", newline="")  # the killed ff's first write
+    (root / "hermes_agent/utils.py").write_text("NEW = 1\n", encoding="utf-8", newline="")  # the killed ff's first write
     (root / ".git" / "index.lock").write_bytes(b"")  # left by the killed git
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait()
@@ -214,7 +214,7 @@ def test_restore_never_touches_user_work_when_git_wrote_nothing(checkout, capsys
     merge = subprocess.run(["git", "-C", str(root), "merge", "origin/main"],
                            capture_output=True, text=True, encoding="utf-8", check=False)
     assert (root / ".git" / "MERGE_HEAD").exists(), merge.stdout + merge.stderr
-    (root / "utils.py").write_text("OLD = 1  # resolved by hand\n", encoding="utf-8", newline="")
+    (root / "hermes_agent/utils.py").write_text("OLD = 1  # resolved by hand\n", encoding="utf-8", newline="")
     before = _git(root, "status", "--porcelain", "--untracked-files=all")
     monkeypatch.setattr(er, "_merge_advice_shown", False, raising=False)
     capsys.readouterr()
@@ -223,10 +223,10 @@ def test_restore_never_touches_user_work_when_git_wrote_nothing(checkout, capsys
     # MERGE_HEAD is the update's own target: say how to get out of it, once per launch.
     assert capsys.readouterr().err.count(f"git -C {root} merge --abort") == 1
     _git(root, "reset", "-q", "--hard")  # the user gives up on the merge
-    (root / "utils.py").write_text("OLD = 1  # my stash, re-applied\n", encoding="utf-8", newline="")
+    (root / "hermes_agent/utils.py").write_text("OLD = 1  # my stash, re-applied\n", encoding="utf-8", newline="")
     # tool.sh only changes mode upstream and git never reached it: nothing to restore, no relaunch.
     assert er.restore_interrupted_pull(root) is False
-    assert (root / "utils.py").read_text(encoding="utf-8") == "OLD = 1  # my stash, re-applied\n"
+    assert (root / "hermes_agent/utils.py").read_text(encoding="utf-8") == "OLD = 1  # my stash, re-applied\n"
     assert not marker.exists(), "git wrote nothing: the marker is spent"
     # A target git no longer knows (gc, re-clone) can never be compared against: the marker goes
     # only over a clean tracked tree, since the dirty bytes may be the update's (review G2).
@@ -234,7 +234,7 @@ def test_restore_never_touches_user_work_when_git_wrote_nothing(checkout, capsys
     capsys.readouterr()
     assert er.restore_interrupted_pull(root) is False and marker.exists()
     assert "the marker was kept" in capsys.readouterr().err
-    assert (root / "utils.py").read_text(encoding="utf-8") == "OLD = 1  # my stash, re-applied\n"
+    assert (root / "hermes_agent/utils.py").read_text(encoding="utf-8") == "OLD = 1  # my stash, re-applied\n"
     _git(root, "stash", "-q")
     assert er.restore_interrupted_pull(root) is False and not marker.exists()
     _git(root, "stash", "pop", "-q")
@@ -249,7 +249,7 @@ def test_restore_never_touches_user_work_when_git_wrote_nothing(checkout, capsys
     merged_multi = _git(root, "show", f"{merged}:multi.py") + "\n"
     assert merged_multi == "top = 2\nx = 0\ny = 0\nz = 0\nend = 'mine'\n"  # neither side's blob
     (root / "multi.py").write_text(merged_multi, encoding="utf-8", newline="")
-    (root / "utils.py").write_text("NEW = 1\n", encoding="utf-8", newline="")
+    (root / "hermes_agent/utils.py").write_text("NEW = 1\n", encoding="utf-8", newline="")
     (root / "half.py").write_bytes(b"h = 2  # long")
     (root / "other.py").write_text("a = 1  # my edit\n", encoding="utf-8", newline="")
     marker.write_text(f"pid=0\npre={pre}\ntarget={b}\nstash=\n", encoding="utf-8", newline="")
@@ -725,12 +725,12 @@ def test_an_unmarked_rollback_that_fails_never_reports_the_install_unchanged(che
     root, a, b = checkout
     _git(root, "reset", "-q", "--hard", b)
     er.interrupted_pull_marker(root).mkdir()
-    monkeypatch.setattr(update_cmd._commit, "tree_syntax_error", lambda _root, _files: ("utils.py", "SyntaxError"))
+    monkeypatch.setattr(update_cmd._commit, "tree_syntax_error", lambda _root, _files: ("hermes_agent/utils.py", "SyntaxError"))
     real = update_cmd._git_run
 
     def hard_reset_fails(git_cmd, args, *rest, **kw):
         if args[:2] == ["reset", "--hard"]:
-            return subprocess.CompletedProcess(args, 1, "", "error: unable to unlink utils.py")
+            return subprocess.CompletedProcess(args, 1, "", "error: unable to unlink hermes_agent/utils.py")
         return real(git_cmd, args, *rest, **kw)
 
     monkeypatch.setattr(update_cmd, "_git_run", hard_reset_fails)

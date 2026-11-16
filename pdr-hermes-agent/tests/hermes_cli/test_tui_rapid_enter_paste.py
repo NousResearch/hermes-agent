@@ -13,7 +13,7 @@ from hermes_cli.cli_tui_mixin import _RAPID_INPUT_ENTER_WINDOW_S
 
 
 def _shell():
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     shell = object.__new__(HermesCLI)
     shell._tui_enter_overlay = lambda event: False
     shell._tui_multiline_shortcuts = False

@@ -92,7 +92,7 @@ class TestCheckOpenrouterCacheStatus:
 
     def _make_agent(self):
         """Create a minimal AIAgent-like object with just the method under test."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         # Use object.__new__ to skip __init__, then set the attributes we need
         agent = object.__new__(AIAgent)

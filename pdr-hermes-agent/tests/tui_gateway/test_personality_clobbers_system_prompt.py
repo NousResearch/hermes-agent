@@ -34,7 +34,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tui_gateway import server
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 
 MANUAL_PROMPT = "manual_prompt_1"

@@ -143,7 +143,7 @@ class TestBangExecution:
 
 def _make_cli(history=None):
     """Build a HermesCLI shell with only what handle_bang_shell touches."""
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     cli = HermesCLI.__new__(HermesCLI)
     cli.config = {}

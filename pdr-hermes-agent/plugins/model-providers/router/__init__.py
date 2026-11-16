@@ -55,7 +55,7 @@ _state_by_home: dict[str, _CacheState] = {}
 def _state() -> Any:
     """Holder of ``_efforts_cache``/``_warm_started``/``_disk_checked``: this module when unscoped
     (tests monkeypatch those slots), else the active home's ``_CacheState``."""
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
 
     if get_hermes_home_override() is None:
         return sys.modules[__name__]
@@ -138,7 +138,7 @@ def _parse_efforts(items: Any) -> Optional[dict[str, list[str]]]:
 
 def _disk_path() -> Optional[Path]:
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         return get_hermes_home() / "cache" / "router_catalog.json"
     except Exception:
         return None

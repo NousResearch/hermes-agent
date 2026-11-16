@@ -122,7 +122,7 @@ class TestPersistDisabledHardStop:
             db = SessionDB(db_path=Path(tmp) / "t.db")
             try:
                 with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-                    from run_agent import AIAgent
+                    from hermes_agent.run_agent import AIAgent
                     agent = AIAgent(
                         api_key="test-key",
                         base_url="https://openrouter.ai/api/v1",

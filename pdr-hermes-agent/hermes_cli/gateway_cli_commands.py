@@ -83,7 +83,7 @@ def run(cli, canonical, cmd):
     try:
         return route(cli, connection, (cmd or "").strip())
     except GatewayClientError as exc:
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         # A refusal's code alone (``invalid_params``) does not say what to fix; its detail does.
         _cprint(f"  /{canonical}: {(getattr(exc, 'data', None) or {}).get('detail') or exc}")
         return True

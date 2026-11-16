@@ -97,8 +97,8 @@ def test_swept_legacy_backup_becomes_owner_only(tmp_path: Path, monkeypatch):
 def test_backups_written_before_the_fix_lose_world_access(tmp_path: Path, monkeypatch):
     # A reason that never fires again never rotates its old 0644 copy out; any later backup secures it.
     # Group bits stay (shared-group homes), as for config.yaml writes (#59726).
-    monkeypatch.setattr("hermes_constants.get_managed_system", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_constants._container_or_chmod_skipped", lambda: False)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_managed_system", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_constants._container_or_chmod_skipped", lambda: False)
     cfg = tmp_path / "config.yaml"
     cfg.write_text("api_key: secret\n")
     root = tmp_path / "backups" / "config"
@@ -118,8 +118,8 @@ def test_backups_written_before_the_fix_lose_world_access(tmp_path: Path, monkey
 
 @pytest.mark.platforms("posix")
 def test_backup_pass_never_chmods_through_a_planted_link(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("hermes_constants.get_managed_system", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_constants._container_or_chmod_skipped", lambda: False)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_managed_system", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_constants._container_or_chmod_skipped", lambda: False)
     cfg = tmp_path / "config.yaml"
     cfg.write_text("api_key: secret\n")
     outside = tmp_path / "outside.txt"

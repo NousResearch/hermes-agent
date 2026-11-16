@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
-from utils import base_url_host_matches
+from hermes_agent.utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
 

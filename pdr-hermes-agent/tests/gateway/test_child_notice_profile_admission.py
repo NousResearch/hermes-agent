@@ -22,7 +22,7 @@ def _build_rig(monkeypatch, tmp_path, request, surface_a, mode):
     from gateway.platforms.base import BasePlatformAdapter
     from gateway.run import _async_profile_runtime_scope
     from hermes_cli.profiles import get_profile_dir
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     import hermes_state
     from tools import process_registry as pr_module
     from tools.process_registry import ProcessRegistry
@@ -86,7 +86,7 @@ async def _for_each_leg(rig, owner, surface_a, path, consume):
     """Run ``consume`` on legs A, B, A; afterwards no route, row or pin may have moved."""
     from gateway.run import _async_profile_runtime_scope, _profile_runtime_scope
     from gateway.session import SessionSource
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from tools.process_registry import ProcessSession
 
     runner, registry, homes = rig.runner, rig.registry, rig.homes

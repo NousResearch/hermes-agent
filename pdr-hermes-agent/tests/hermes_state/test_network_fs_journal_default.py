@@ -20,7 +20,7 @@ import sqlite3
 import pytest
 
 import hermes_state.wal
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 from hermes_state.wal import apply_wal_with_fallback
 
 

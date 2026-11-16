@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 from tools.process_registry_notifications import (
     PROCESS_COMPLETE_DISPLAY_KIND, format_process_notification, process_completion_display_text)
 from tui_gateway import server
@@ -33,7 +33,7 @@ def test_drain_honors_background_process_notifications_off(monkeypatch, mode, ex
     acked = []
     monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
     monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: acked.append(a))
-    monkeypatch.setattr("cli.CLI_CONFIG", {"display": {"background_process_notifications": mode}})
+    monkeypatch.setattr("hermes_agent.cli.CLI_CONFIG", {"display": {"background_process_notifications": mode}})
     cli._drain_process_notifications("cli-post-turn")
     assert acked, "events must still be claimed and acknowledged under every mode"
     assert cli._pending_input.empty() is (not expect_injected)
@@ -53,7 +53,7 @@ def test_off_mutes_process_wakes_but_subagent_results_still_land(monkeypatch):
     monkeypatch.setattr("tools.process_registry.process_registry", _registry(events))
     monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
     monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: None)
-    monkeypatch.setattr("cli.CLI_CONFIG", {"display": {"background_process_notifications": "off"}})
+    monkeypatch.setattr("hermes_agent.cli.CLI_CONFIG", {"display": {"background_process_notifications": "off"}})
     cli._drain_process_notifications("cli-post-turn")
     queued = cli._pending_input.get_nowait()
     assert cli._pending_input.empty()

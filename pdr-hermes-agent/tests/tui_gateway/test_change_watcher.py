@@ -262,7 +262,7 @@ def test_pairing_probe_reuses_live_profile_roots_until_the_profile_set_moves(wat
     """The per-profile liveness probe (~14 stats each) runs once per profiles/ mtime + TTL, not
     on every 2 s tick (#114041 §2); ledger writes under known roots are still seen each tick,
     and a newly created profile is picked up because creating it bumps the parent's mtime."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     home, events = watcher_home
     live_calls = []

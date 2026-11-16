@@ -7,14 +7,14 @@ persistence flows exclusively through persist_personality().
 import os
 import pytest
 from unittest.mock import MagicMock, patch
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 # ── CLI tests ──────────────────────────────────────────────────────────────
 
 class TestCLIPersonalityNone:
 
     def _make_cli(self, personalities=None):
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         from hermes_cli.personality import available_personalities
 
         cli = HermesCLI.__new__(HermesCLI)
@@ -154,7 +154,7 @@ class TestPersonalityDictFormat:
     """Test dict-format custom personalities with description, tone, style."""
 
     def _make_cli(self, personalities):
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         from hermes_cli.personality import available_personalities
 
         cli = HermesCLI.__new__(HermesCLI)

@@ -26,7 +26,7 @@ class TestRegisterServerTools:
         server = MCPServerTask("my_srv")
         server._tools = [_make_mcp_tool("my_tool", "desc")]
         server.session = MagicMock()
-        from toolsets import resolve_toolset, validate_toolset
+        from hermes_agent.toolsets import resolve_toolset, validate_toolset
 
         with patch("tools.registry.registry", mock_registry):
             registered = _register_server_tools("my_srv", server, {})
@@ -43,7 +43,7 @@ class TestRegisterServerTools:
         returned the static definition without consulting the alias
         registered by _register_server_tools().
         """
-        from toolsets import TOOLSETS, get_toolset, resolve_toolset
+        from hermes_agent.toolsets import TOOLSETS, get_toolset, resolve_toolset
 
         assert "browser" in TOOLSETS  # collision premise
         static_tools = set(TOOLSETS["browser"]["tools"])
@@ -76,7 +76,7 @@ class TestRefreshTools:
         server = MCPServerTask("live_srv")
         server._refresh_lock = asyncio.Lock()
         server._config = {}
-        from toolsets import resolve_toolset
+        from hermes_agent.toolsets import resolve_toolset
 
         # Seed initial state: one old tool registered
         mock_registry.register(
@@ -109,7 +109,7 @@ class TestRefreshTools:
         instead of raising ``AttributeError: 'NoneType' object has no attribute 'list_tools'``.
         The reconnect's own discovery re-lists tools, so the refresh is a no-op that leaves the
         previous registration — and the owned-names bookkeeping — intact."""
-        from toolsets import resolve_toolset
+        from hermes_agent.toolsets import resolve_toolset
 
         server = MCPServerTask("restart_srv")
         server._config = {}
@@ -165,7 +165,7 @@ class TestRefreshTools:
     async def test_refresh_after_session_restored_succeeds(self, mock_registry):
         """The skip applies only while the session is genuinely absent: once the restart
         re-establishes it, a refresh from an empty registration publishes the live tools."""
-        from toolsets import resolve_toolset
+        from hermes_agent.toolsets import resolve_toolset
 
         server = MCPServerTask("restored_srv")
         server._config = {}

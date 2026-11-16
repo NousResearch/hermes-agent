@@ -50,7 +50,7 @@ def repo(tmp_path: Path) -> Path:
         "hermes_agent/oldpkg/data.py": "# copied byte for byte\nX = 1\n",
         "hermes_agent/oldtop.py": "",
         "oldtop.py": "# hand-written\n",
-        "hermes_bootstrap.py": "import sys\nsys.stderr.write('bootstrap ran\\n')\n",
+        "hermes_agent/hermes_bootstrap.py": "import sys\nsys.stderr.write('bootstrap ran\\n')\n",
         ".gitattributes": "*.py text eol=lf\n" + BLOCK,
         ".gitignore": "__pycache__/\noldpkg/build/\n",
         "pyproject.toml": '[tool.hermes]\nupdate-startup-files = ["oldtop.py"]\n',
@@ -91,7 +91,7 @@ def test_old_name_launch_repairs_a_torn_update_before_importing_hermes_agent(rep
     # hermes_agent/ must not stop `python -m <old name>` from reaching it.
     (repo / "hermes_agent/compat/__init__.py").write_text("def install(", encoding="utf-8")
     assert "bootstrap ran" in _run(repo, "-m", "oldpkg.tool").stderr
-    assert "bootstrap ran" in _run(repo, "oldpkg/tool.py").stderr  # `python cli.py` is an entry launch too
+    assert "bootstrap ran" in _run(repo, "oldpkg/tool.py").stderr  # `python -m hermes_agent.cli` is an entry launch too
     plain = _run(repo, "-c", "import oldpkg")  # a plain import stays light and shows the real damage
     assert "bootstrap ran" not in plain.stderr and "SyntaxError" in plain.stderr
 
@@ -110,7 +110,7 @@ def test_old_name_launch_from_a_cwd_with_another_hermes_agent_runs_this_trees_mo
 def test_old_name_launch_on_a_healthy_tree_does_not_run_the_bootstrap(repo):
     # Light -m targets (an old updater's abort recovery, uninstall) never imported the bootstrap, so a
     # bootstrap that fails (dependencies that do not activate) must not stop them.
-    (repo / "hermes_bootstrap.py").write_text("import sys\nsys.exit('bootstrap ran')\n", encoding="utf-8")
+    (repo / "hermes_agent/hermes_bootstrap.py").write_text("import sys\nsys.exit('bootstrap ran')\n", encoding="utf-8")
     result = _run(repo, "-m", "oldpkg.tool", "a")
     assert (result.returncode, result.stdout.strip()) == (0, "argv ['a']"), result.stderr
 

@@ -94,7 +94,7 @@ async def test_compress_command_works_when_auto_compaction_disabled():
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("hermes_agent.run_agent.AIAgent", return_value=agent_instance),
         patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
     ):
         result = await runner._handle_compress_command(_make_event())
@@ -155,7 +155,7 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered(t
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("hermes_agent.run_agent.AIAgent", return_value=agent_instance),
         patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
     ):
         result = await runner._handle_compress_command(_make_event())
@@ -211,7 +211,7 @@ async def test_compress_command_in_place_skips_destructive_rewrite():
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("hermes_agent.run_agent.AIAgent", return_value=agent_instance),
         patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
     ):
         result = await runner._handle_compress_command(_make_event())
@@ -247,7 +247,7 @@ async def test_compress_command_preserves_platform_and_gateway_session_key():
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance) as mock_agent,
+        patch("hermes_agent.run_agent.AIAgent", return_value=agent_instance) as mock_agent,
         patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
     ):
         await runner._handle_compress_command(_make_event())
@@ -283,7 +283,7 @@ async def test_compress_command_agent_receives_configured_reasoning():
         patch("gateway.run._load_gateway_config", return_value={"agent": {"reasoning_effort": "none"}}),
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="gpt-4o-mini"),
-        patch("run_agent.AIAgent", return_value=agent_instance) as mock_agent,
+        patch("hermes_agent.run_agent.AIAgent", return_value=agent_instance) as mock_agent,
         patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
     ):
         await runner._handle_compress_command(_make_event())
@@ -327,7 +327,7 @@ async def test_compress_command_passes_tool_messages_to_compressor():
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("hermes_agent.run_agent.AIAgent", return_value=agent_instance),
         patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
     ):
         await runner._handle_compress_command(_make_event())
@@ -408,7 +408,7 @@ async def test_compress_command_multiplexed_runs_under_profile_secret_scope(tmp_
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch("run_agent.AIAgent", return_value=agent_instance),
+            patch("hermes_agent.run_agent.AIAgent", return_value=agent_instance),
             patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
         ):
             result = await runner._handle_compress_command(_make_event())

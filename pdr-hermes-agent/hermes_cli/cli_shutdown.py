@@ -1,6 +1,6 @@
 """Classic-CLI shutdown and one-shot finalize helpers: process session-id sync, deferred agent startup, exit watchdog, cleanup steps, session-finalize notifications and the terminal input-mode reset.
 
-Split out of ``cli.py``; ``cli`` re-exports every public name and moved bodies late-bind
+Split out of ``hermes_agent/cli.py``; ``cli`` re-exports every public name and moved bodies late-bind
 cli-level names through ``from cli import ...`` at call time so facade monkeypatch seams hold.
 """
 
@@ -19,7 +19,7 @@ logger = logging.getLogger("cli")
 
 def _cli():
     """Late import of the ``cli`` facade: mutable CLI module state (and its test seams) lives there."""
-    import cli
+    from hermes_agent import cli
 
     return cli
 
@@ -50,7 +50,7 @@ def _float_env(name: str, default: float) -> float:
 
 def _exit_watchdog_timeout() -> float:
     """``HERMES_EXIT_WATCHDOG_S`` as a float (default 30; ``0`` disables)."""
-    from cli import _float_env
+    from hermes_agent.cli import _float_env
     return _float_env("HERMES_EXIT_WATCHDOG_S", 30.0)
 
 
@@ -65,7 +65,7 @@ def _arm_exit_watchdog(timeout_s: float | None = None, *, from_signal: bool = Fa
     are joined unconditionally by ``concurrent.futures``' atexit hook even after ``shutdown(wait=False)``,
     so one tool thread wedged on a socket held the process open forever (#27563 class).
     """
-    from cli import _exit_watchdog_timeout, _flush_logging_and_stdio
+    from hermes_agent.cli import _exit_watchdog_timeout, _flush_logging_and_stdio
     if timeout_s is None:
         timeout_s = _exit_watchdog_timeout()
     if timeout_s <= 0:
@@ -211,7 +211,7 @@ def _invoke_interrupted_session_end(agent, session_id, reason: str, **extra) -> 
 
 def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") -> None:
     """Best-effort on_session_end hook for interrupted non-interactive runs."""
-    from cli import _invoke_interrupted_session_end, _oneshot_agent_and_session
+    from hermes_agent.cli import _invoke_interrupted_session_end, _oneshot_agent_and_session
     agent, session_id = _oneshot_agent_and_session(cli)
     if agent is None:
         return
@@ -235,7 +235,7 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
 
 
 def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> None:
-    from cli import _notify_session_finalize, _oneshot_agent_and_session
+    from hermes_agent.cli import _notify_session_finalize, _oneshot_agent_and_session
     agent, session_id = _oneshot_agent_and_session(cli)
     if session_id in _cli()._single_query_finalize_attempted_session_ids:
         return
@@ -270,7 +270,7 @@ def _flush_one_shot_session_store(cli) -> None:
     stamps (already-written turns are not re-written) and ``end_session`` no-ops on an already-ended row.
     See #88234.
     """
-    from cli import _oneshot_agent_and_session
+    from hermes_agent.cli import _oneshot_agent_and_session
     agent, session_id = _oneshot_agent_and_session(cli)
     if agent is None or not session_id or session_id in _cli()._handed_off_session_ids:
         return
@@ -309,7 +309,7 @@ def _wait_for_oneshot_background_completions(cli) -> None:
 
     See #90879.
     """
-    from cli import _oneshot_agent_and_session
+    from hermes_agent.cli import _oneshot_agent_and_session
     from tools.process_registry import process_registry
 
     if getattr(cli, "_quiet_notify_linger_done", False):
@@ -361,8 +361,8 @@ def _finalize_single_query(cli) -> None:
     a successor that acquires and reopens the session can never receive this
     process's stale ``cli_close`` end-stamp, because phase 1 has already run it.
     """
-    import cli as cli_module
-    from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _shutdown_agent_memory_provider, _wait_for_oneshot_background_completions
+    from hermes_agent import cli as cli_module
+    from hermes_agent.cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _shutdown_agent_memory_provider, _wait_for_oneshot_background_completions
     try:
         try:
             _flush_one_shot_session_store(cli)

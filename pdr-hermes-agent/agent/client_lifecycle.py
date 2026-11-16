@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static, lazy_attr as _lazy_attr
 from hermes_cli.timeouts import get_provider_request_timeout
-from utils import base_url_host_matches, env_float
+from hermes_agent.utils import base_url_host_matches, env_float
 
 logger = logging.getLogger("run_agent")  # origin module's logger name: log records / caplog filters unchanged
 _QWEN_CODE_VERSION = "0.14.1"  # Qwen Portal mimics the QwenCode CLI
@@ -103,7 +103,7 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
 class ClientLifecycleMixin:
     def _close_task_resources(self, task_id: str) -> None:
         """Release task resources without treating a shared environment as process ownership."""
-        from run_agent import _quietly, cleanup_browser, cleanup_vm
+        from hermes_agent.run_agent import _quietly, cleanup_browser, cleanup_vm
 
         def kill_processes() -> None:
             from tools.process_registry import process_registry

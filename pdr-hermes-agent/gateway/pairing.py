@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Optional
 
 from gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
-from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
-from utils import atomic_json_write, file_cache_version
+from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
+from hermes_agent.utils import atomic_json_write, file_cache_version
 
 logger = logging.getLogger(__name__)
 

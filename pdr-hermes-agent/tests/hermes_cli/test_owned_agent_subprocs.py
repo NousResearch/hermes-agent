@@ -76,7 +76,7 @@ _OWNERS = {
         "from gateway.platforms import whatsapp_common\n"
         "from hermes_cli.web_routers import messaging\n"
         "whatsapp_common.resolve_whatsapp_bridge_dir = lambda: bridge\n"
-        "hermes_constants.find_node_executable = lambda name: sys.executable\n"
+        "hermes_agent.hermes_constants.find_node_executable = lambda name: sys.executable\n"
         "messaging._ensure_whatsapp_bridge_dependencies = lambda bridge_dir: None\n"
         "messaging._spawn_whatsapp_pairing_process(out / 'session', 'bot')\n"
     ),

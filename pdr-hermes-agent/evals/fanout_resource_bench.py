@@ -164,7 +164,7 @@ def main() -> None:
 
     srv = _serve()
     port = srv.server_address[1]
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tools import delegate_tool
 
     from hermes_state import SessionDB

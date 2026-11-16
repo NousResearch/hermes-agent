@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 import pytest
 
 from hermes_cli.config import DEFAULT_CONFIG, atomic_config_write, read_user_config_raw

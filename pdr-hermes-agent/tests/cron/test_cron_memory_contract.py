@@ -79,7 +79,7 @@ def _run_job_patches(tmp_path):
                 "api_mode": "chat_completions",
             },
         ),
-        patch("run_agent.AIAgent", return_value=mock_agent),
+        patch("hermes_agent.run_agent.AIAgent", return_value=mock_agent),
     ]
     with contextlib.ExitStack() as stack:
         entered = [stack.enter_context(cm) for cm in base]

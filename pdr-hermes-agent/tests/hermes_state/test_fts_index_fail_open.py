@@ -23,7 +23,7 @@ import pytest
 
 from hermes_state import SessionDB, StateDbCorruptError
 from hermes_state.health import mark_storage_corrupt, reset_storage_state
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _flush_agent(db, session_id):

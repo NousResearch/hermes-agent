@@ -198,7 +198,7 @@ class TestForkPath:
         """The /btw fork shares the live session's id, which keys its terminal sandbox: a real
         fork's teardown must release clients only, never ``close()`` the session's tool state."""
         from agent.side_question import _answer_via_fork
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         from tools import terminal_tool
 
         class _Env:
@@ -207,8 +207,8 @@ class TestForkPath:
             def cleanup(self, **_kwargs):
                 _Env.cleaned = True
 
-        with patch("model_tools.get_tool_definitions", return_value=[]), \
-             patch("model_tools.check_toolset_requirements", return_value={}), \
+        with patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]), \
+             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
              patch("agent.model_metadata.fetch_model_metadata", return_value={}):
             parent = AIAgent(api_key="k", base_url="https://openrouter.ai/api/v1", model="test/model",
                              quiet_mode=True, skip_context_files=True, skip_memory=True, session_id="sess-btw")

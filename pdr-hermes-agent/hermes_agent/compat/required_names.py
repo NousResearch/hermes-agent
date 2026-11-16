@@ -125,7 +125,7 @@ REQUIRED_NAMES: dict[str, str] = {
     "hermes_cli.version_info": "module",  # v0.22.7..v0.23.0: hermes_cli/update_cmd_fleet.py:144@v0.23.0
     "hermes_bootstrap": "hand",  # v0.21.6..v0.23.0: every launcher script and inline launch command, -I, no finder: hermes_cli/_launchers.py:68,499@v0.23.0; it repairs a killed update that moved hermes_agent/ aside
     "hermes_constants": "module",  # v0.21.6..v0.23.0: launcher --print-runtime-command, before hermes_bootstrap: hermes_cli/_launchers.py:61,492,504@v0.23.0
-    "hermes_state.common": "module",  # v0.22.7..v0.23.1: the updater reads its text, see REQUIRED_TEXT
+    "hermes_state_common": "module",  # v0.22.7..v0.23.1: the updater reads its text, see REQUIRED_TEXT
     "model_tools": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
     "run_agent": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
     "tools.env_passthrough": "module",  # v0.22.7..v0.23.0: tools/environments/local.py:322@v0.23.0
@@ -221,5 +221,5 @@ REQUIRED_NAMES: dict[str, str] = {
 REQUIRED_TEXT: dict[str, str] = {
     # v0.22.7..v0.23.1: hermes_cli/update_downgrade_guard.py:67@v0.23.1 greps the target's root
     # hermes_state*.py for the ledger table and refuses the update as a downgrade when it is absent
-    "hermes_state.common": "CREATE TABLE IF NOT EXISTS session_admissions",
+    "hermes_state_common": "CREATE TABLE IF NOT EXISTS session_admissions",
 }

@@ -197,7 +197,7 @@ def test_dashboard_stop_refuses_while_sessions_are_live(monkeypatch):
 def test_sudo_system_stop_checks_the_units_home_not_roots(tmp_path, monkeypatch, recorded, capsys):
     """``sudo hermes gateway stop --system``: HOME=/root and HERMES_HOME stripped, while the system unit
     runs the invoking user's home. The live-work check must ask the unit's home, without adopting it."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
     root_home, user_home = tmp_path / "root", tmp_path / "user" / ".hermes"
     (root_home / ".hermes").mkdir(parents=True)
     user_home.mkdir(parents=True)

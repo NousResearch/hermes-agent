@@ -14,7 +14,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.run_turn import _unexpected_silence_reply
 from gateway.session_identity import RoutingIdentity
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from tests.gateway.test_gateway_silence_tokens import _runner
 from gateway.session import SessionSource
 from tests.gateway.test_platform_allow_silence import (

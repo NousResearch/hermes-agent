@@ -139,7 +139,7 @@ class TestMinimaxPreserveDots:
     def test_minimax_provider_preserves_dots(self):
         from types import SimpleNamespace
         agent = SimpleNamespace(provider="minimax", base_url="")
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is True
 
 
@@ -171,8 +171,8 @@ class TestMinimaxSwitchModelCredentialGuard:
         """switch_model() should NOT call resolve_anthropic_token() for MiniMax."""
         from unittest.mock import patch, MagicMock
 
-        with patch("run_agent.AIAgent.__init__", return_value=None):
-            from run_agent import AIAgent
+        with patch("hermes_agent.run_agent.AIAgent.__init__", return_value=None):
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.provider = "anthropic"
             agent.model = "claude-sonnet-4"

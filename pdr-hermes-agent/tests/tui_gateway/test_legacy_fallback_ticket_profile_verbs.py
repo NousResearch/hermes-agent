@@ -38,7 +38,7 @@ def test_secondary_ticket_runs_connectors_and_billing_in_its_own_profile(homes, 
     import tools.connectors
     import tools.connectors.managed
     import tools.managed_tool_gateway
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     server, launch, bee = homes
     seen = []
 

@@ -2,7 +2,7 @@
 import os
 
 
-from utils import load_yaml_file_readonly
+from hermes_agent.utils import load_yaml_file_readonly
 
 
 def test_cache_hit_returns_same_object_and_invalidates_on_rewrite(tmp_path):

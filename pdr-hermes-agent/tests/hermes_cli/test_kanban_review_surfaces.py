@@ -95,7 +95,7 @@ def test_review_tools_are_gated_and_visible_to_kanban_workers(
 ) -> None:
     import tools.kanban_tools
     from tools.registry import invalidate_check_fn_cache, registry
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
 
     invalidate_check_fn_cache()
     definitions = registry.get_definitions(

@@ -314,7 +314,7 @@ def role_agent(a: dict, out: Out) -> int:
     (a fresh process resuming the session)."""
     from agent.conversation_compression_manual import compress_now, parse_compress_args
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     stop_file = Path(a["stop"])
     db = SessionDB(db_path=Path(a["db"]))

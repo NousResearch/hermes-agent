@@ -1,7 +1,7 @@
 """Status bar, spinner, turn-summary, pet pane, and prompt-stash rendering for the
 interactive CLI.
 
-Mixin bound onto ``HermesCLI`` via the MRO. cli.py-internal symbols are imported LAZILY
+Mixin bound onto ``HermesCLI`` via the MRO. hermes_agent/cli.py-internal symbols are imported LAZILY
 inside each method (``from cli import ...``) — never at module load time (import cycle).
 """
 
@@ -102,7 +102,7 @@ class CLIStatusBarMixin:
     def _handle_battery_command(self, cmd_original: str) -> None:
         """``/battery`` toggles, ``/battery on|off`` sets, ``/battery status`` reports the
         setting plus a live reading. Persisted to ``display.battery``."""
-        from cli import save_config_value
+        from hermes_agent.cli import save_config_value
         parts = (cmd_original or "").split()
         arg = parts[1].strip().lower() if len(parts) > 1 else ""
 
@@ -185,13 +185,13 @@ class CLIStatusBarMixin:
     def _format_idle_since(last_finished_at: Optional[float], turn_live: bool) -> str:
         """``✓ 42s`` since the last final response; empty while a turn is live or before the
         first turn completes."""
-        from cli import format_duration_compact
+        from hermes_agent.cli import format_duration_compact
         if turn_live or last_finished_at is None:
             return ""
         return f"✓ {format_duration_compact(max(0.0, time.time() - last_finished_at))}"
 
     def _get_status_bar_snapshot(self) -> dict[str, Any]:
-        from cli import _reverse_alias_for_display, datetime, format_duration_compact
+        from hermes_agent.cli import _reverse_alias_for_display, datetime, format_duration_compact
         agent = getattr(self, "agent", None)
         # Prefer the agent's model name — it updates on fallback; self.model never changes.
         model_name = (getattr(agent, "model", None) or self.model or t("cli.shared.unknown"))
@@ -635,7 +635,7 @@ class CLIStatusBarMixin:
 
     def _turn_summary_emit(self) -> None:
         """Print the post-turn accounting line, when enabled for this surface."""
-        from cli import _DIM as _D, _RST, _cprint, logger
+        from hermes_agent.cli import _DIM as _D, _RST, _cprint, logger
         collector = getattr(self, "_turn_summary_collector", None)
         if collector is None or not self._turn_summary_is_active():
             return
@@ -667,7 +667,7 @@ class CLIStatusBarMixin:
         try:
             from agent.pet import constants, store
             from hermes_cli.config import load_config
-            from utils import is_truthy_value
+            from hermes_agent.utils import is_truthy_value
 
             cfg = load_config()
             display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
@@ -1001,7 +1001,7 @@ class CLIStatusBarMixin:
         prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
         (opt-in only). Order is fixed; the config controls visibility only.
         """
-        from cli import CLI_CONFIG
+        from hermes_agent.cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
             return self._status_bar_field_set_cache
         result = None
@@ -1021,7 +1021,7 @@ class CLIStatusBarMixin:
         """Ordered status-bar segments for one width tier (<52 / <76 / wide), each a list of
         ``(style, text)`` fragments. Shared by the plain-text and prompt_toolkit renderers so
         the two can never drift; ``styled`` selects the graphical context bar."""
-        from cli import format_token_count_compact
+        from hermes_agent.cli import format_token_count_compact
         model_short = snapshot["model_short"]
         duration_label = snapshot["duration"]
         goal_segment = self._status_bar_goal_segment(snapshot)

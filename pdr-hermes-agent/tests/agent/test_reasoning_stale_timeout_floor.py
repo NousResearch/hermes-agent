@@ -17,7 +17,7 @@ These tests pin the floor's behavior:
    (gpt-4o, olmo-1, etc.), and longest-substring-first wins on
    shared prefixes (``o3-mini-`` > ``o3-``).
 2. The non-stream resolver at
-   ``run_agent.py:AIAgent._resolved_api_call_stale_timeout_base``
+   ``hermes_agent/run_agent.py:AIAgent._resolved_api_call_stale_timeout_base``
    consults the floor at priority 4 (after explicit user config,
    provider config, and env var; before the 90s default), and
    returns ``uses_implicit_default=False`` so the local-endpoint
@@ -89,7 +89,7 @@ def _write_config(tmp_path: Path, body: str) -> None:
 
 
 def _make_agent(tmp_path: Path, **overrides):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     kwargs = dict(
         model="gpt-5.5",
         provider="openai-codex",
@@ -120,7 +120,7 @@ def test_non_reasoning_model_keeps_default(monkeypatch, tmp_path):
     _write_config(tmp_path, "")
 
     # No provider config, no env var, no floor match -> 90s implicit default.
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
 
     agent = _make_agent(
@@ -140,7 +140,7 @@ def test_gpt_5_6_floor_reaches_non_stream_and_stream_resolvers(monkeypatch, tmp_
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
     _write_config(tmp_path, "")
 
-    import run_agent
+    from hermes_agent import run_agent
     from agent.chat_completion_helpers import _cloud_stale_timeout
     from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
 

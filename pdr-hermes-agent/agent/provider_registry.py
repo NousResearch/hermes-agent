@@ -15,7 +15,7 @@ import logging
 import threading
 from typing import Any, Callable, Dict, FrozenSet, Generic, List, Optional, TypeVar
 
-from hermes_constants import hermes_home_key, normalize_scope
+from hermes_agent.hermes_constants import hermes_home_key, normalize_scope
 
 P = TypeVar("P")
 

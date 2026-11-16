@@ -62,7 +62,7 @@ def _execute(frame, monkeypatch, base=object, built=None, result=None, sent=None
     monkeypatch.setattr('agent.runtime_session_store.WorkerRPC', lambda home: lambda *a, **k: {'owner_epoch': 1})
     monkeypatch.setattr('agent.runtime_session_store.RuntimeSessionStore', Store)
     monkeypatch.setattr('tools.process_registry.process_registry.recover_from_checkpoint', lambda: None)
-    monkeypatch.setattr('run_agent.AIAgent', Agent)
+    monkeypatch.setattr('hermes_agent.run_agent.AIAgent', Agent)
     monkeypatch.setattr('agent.title_generator.wait_for_title_upgrades', lambda: None)
     sent = [] if sent is None else sent
     worker.execute(frame, SimpleNamespace(send=lambda kind, **payload: sent.append((kind, payload))))
@@ -154,10 +154,10 @@ def test_bound_launch_key_builds_without_the_providers_login(tmp_path, monkeypat
 
 
 def _constructed_agent(frame, monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     prewarmed = threading.Event()
     prewarmed.set()
-    monkeypatch.setattr('run_agent._openrouter_prewarm_done', prewarmed)
+    monkeypatch.setattr('hermes_agent.run_agent._openrouter_prewarm_done', prewarmed)
     made = []
 
     class Recorded(AIAgent):
@@ -307,7 +307,7 @@ def test_keyless_worker_on_a_fallback_never_sends_its_key_to_the_primary_endpoin
         clients.append((api_key, base_url))
         return SimpleNamespace()
     monkeypatch.setattr('agent.anthropic_adapter.build_anthropic_client', build_anthropic_client)
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     built = _execute(_minimax_frame(tmp_path, monkeypatch), monkeypatch, base=AIAgent)
     primary = [key for key, base_url in clients if base_url == BASE_URL]
     assert primary and fallback_key not in primary

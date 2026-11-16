@@ -46,7 +46,7 @@ def _session_db(name):
 
 def _make_agent(session_db, session_id):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",

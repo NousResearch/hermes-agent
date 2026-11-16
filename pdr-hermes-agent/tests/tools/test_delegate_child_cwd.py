@@ -88,7 +88,7 @@ def test_continued_children_each_run_in_their_own_worktree_after_a_sibling_finis
 
     build, seen = _pwd_model(stop_first_turn_of_each_child=True)
     parent = _parent()
-    with patch("run_agent.AIAgent", side_effect=build):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=build):
         a, b = _spawn(parent, "A"), _spawn(parent, "B")  # both stop resumable; their trees are kept
         for sid in (a, b):  # A is continued, finishes and its tree is removed; then B is continued
             out = json.loads(delegate_task(action="continue", subagent_id=sid, message="go on", background=True,
@@ -103,7 +103,7 @@ def test_continued_children_each_run_in_their_own_worktree_after_a_sibling_finis
 def test_a_new_child_starts_in_its_own_worktree_not_the_previous_siblings(repo, bound_session_key):
     build, seen = _pwd_model()
     parent = _parent()
-    with patch("run_agent.AIAgent", side_effect=build):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=build):
         a, b = _spawn(parent, "A"), _spawn(parent, "B")
 
     assert [(tid, code, os.path.realpath(pwd)) for tid, code, pwd in seen] == [

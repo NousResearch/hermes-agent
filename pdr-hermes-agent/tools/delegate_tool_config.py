@@ -7,7 +7,7 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Dict, Iterator, List, NamedTuple, Optional
-from utils import base_url_hostname, is_truthy_value
+from hermes_agent.utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -543,7 +543,7 @@ def _load_config() -> dict:
         except Exception:
             pass
     try:
-        from cli import CLI_CONFIG
+        from hermes_agent.cli import CLI_CONFIG
         cfg = CLI_CONFIG.get("delegation") or {}
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
@@ -593,7 +593,7 @@ def _child_reasoning(parent_agent, delegation_cfg: dict, route_effort: Any) -> A
     if not (delegation_effort or delegation_effort is False):
         delegation_effort = (delegation_cfg or {}).get("reasoning_effort")
     if delegation_effort or delegation_effort is False:
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.hermes_constants import parse_reasoning_effort
         parsed = parse_reasoning_effort(delegation_effort)
         if parsed is None:
             logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)

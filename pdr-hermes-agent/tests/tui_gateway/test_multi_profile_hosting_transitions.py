@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 from tui_gateway import server
 from tui_gateway import launch_profile_policy as lpp
 
@@ -121,7 +121,7 @@ def test_release_unbinds_home_secrets_and_terminal_together(two_homes, monkeypat
     """Release is one reset of one value: no piece of B (its terminal policy above all) can outlive
     the others on this thread, whichever reset helper a caller has patched."""
     from agent.secret_scope import current_secret_scope
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
     from tools import terminal_scope
 
     root, b = two_homes

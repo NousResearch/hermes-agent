@@ -3,7 +3,7 @@
 Covers:
 
 1. Stale-timeout deadline scaling in
-   ``run_agent.py:AIAgent._compute_non_stream_stale_timeout``:
+   ``hermes_agent/run_agent.py:AIAgent._compute_non_stream_stale_timeout``:
    - an active run budget CAPS an implicit stale timeout (default 90s and
      reasoning floors like deepseek's 600s) at ``max(60, remaining * 0.5)``;
    - the cap never RAISES the timeout above what it would otherwise be;
@@ -41,7 +41,7 @@ def _make_agent(tmp_path, monkeypatch, config_body: str = "", **overrides):
     monkeypatch.delenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", raising=False)
     _write_config(tmp_path, config_body)
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     kwargs = dict(
         model="gpt-5.5",
         provider="openai",
@@ -94,7 +94,7 @@ def test_constructor_arg_wins_over_config(monkeypatch, tmp_path):
 
 def test_no_budget_stale_timeout_unchanged(monkeypatch, tmp_path):
     """Without a run budget the implicit 90s default is untouched."""
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, monkeypatch)
     base, _implicit = agent._resolved_api_call_stale_timeout_base()
@@ -105,7 +105,7 @@ def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):
 
     900s budget, 800s elapsed -> remaining 100s -> cap = max(60, 50) = 60s.
     """
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(
         tmp_path, monkeypatch,
@@ -117,7 +117,7 @@ def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):
 
 def test_active_budget_cap_half_remaining(monkeypatch, tmp_path):
     """Cap is remaining * 0.5 when that exceeds the 60s floor."""
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(
         tmp_path, monkeypatch,
@@ -133,7 +133,7 @@ def test_active_budget_never_raises_timeout(monkeypatch, tmp_path):
 
     90s default with lots of remaining budget (cap would be ~445s) -> stays 90s.
     """
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
     base, _implicit = agent._resolved_api_call_stale_timeout_base()
@@ -142,7 +142,7 @@ def test_active_budget_never_raises_timeout(monkeypatch, tmp_path):
 
 def test_explicit_provider_config_wins_over_budget_cap(monkeypatch, tmp_path):
     """Explicit stale_timeout_seconds is never capped by the run budget."""
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: 1800.0)
     agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
     agent._run_budget_started_at = time.time() - 800
@@ -150,7 +150,7 @@ def test_explicit_provider_config_wins_over_budget_cap(monkeypatch, tmp_path):
 
 def test_explicit_env_var_wins_over_budget_cap(monkeypatch, tmp_path):
     """HERMES_API_CALL_STALE_TIMEOUT is explicit config — never capped."""
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
     monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "1200")
@@ -159,7 +159,7 @@ def test_explicit_env_var_wins_over_budget_cap(monkeypatch, tmp_path):
 
 def test_budget_without_started_clock_is_inert(monkeypatch, tmp_path):
     """A configured budget with no running turn clock changes nothing."""
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(
         tmp_path, monkeypatch,
@@ -364,7 +364,7 @@ def test_gemini_long_decode_scales_implicit_stale_timeout_by_hops(monkeypatch, t
     """One non-streaming stale timer spans every unary long-decode hop: an xhigh budget (262,144 tokens,
     8 hops of 32,768) gets 8x the 600s gemini-4 floor, not 600s for the whole answer. Explicit config
     still wins untouched, and a request without a long-decode budget is unchanged."""
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, monkeypatch, model="gemini-4-argon", provider="gemini", api_key="AQ.dummy",
                         base_url="https://generativelanguage.googleapis.com/v1beta")

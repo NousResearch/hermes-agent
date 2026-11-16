@@ -68,7 +68,7 @@ class TestPromptProgressHelpers:
 
 
 def _local_agent(provider="llamacpp", base_url="http://127.0.0.1:18434/v1"):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(api_key="k", base_url=base_url, provider=provider, model="qwen",
                     quiet_mode=True, skip_context_files=True, skip_memory=True)
@@ -78,8 +78,8 @@ def _local_agent(provider="llamacpp", base_url="http://127.0.0.1:18434/v1"):
 
 
 class TestMainStreamProgress:
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_llamacpp_stream_asks_for_progress_and_skips_progress_chunks(self, _close, mock_create):
         chunks = [_progress_chunk(0), _progress_chunk(500), _progress_chunk(1000),
                   _text_chunk("Hello"), _text_chunk(" there", finish_reason="stop")]
@@ -97,8 +97,8 @@ class TestMainStreamProgress:
         assert response.choices[0].message.content == "Hello there"
         assert "".join(deltas) == "Hello there"
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_cloud_stream_does_not_ask_for_progress(self, _close, mock_create):
         client = MagicMock()
         client.chat.completions.create.return_value = iter([_text_chunk("ok", finish_reason="stop")])

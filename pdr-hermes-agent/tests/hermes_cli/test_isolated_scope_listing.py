@@ -31,7 +31,7 @@ def _reset_scope(monkeypatch):
 
 @pytest.fixture
 def homes(monkeypatch, _isolate_hermes_home):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     root = get_hermes_home()
     worker = root / "profiles" / "worker"

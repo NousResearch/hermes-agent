@@ -154,7 +154,7 @@ class TestSummarizerPreservesGuidance:
     """
 
     def test_standard_key_guidance_survives_summarizer(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         body = _google_error_body(
             401, GOOGLE_AUTH_MESSAGE, reason="ACCESS_TOKEN_TYPE_UNSUPPORTED"
@@ -166,7 +166,7 @@ class TestSummarizerPreservesGuidance:
 
 
     def test_free_tier_guidance_survives_summarizer(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         body = json.dumps(
             {
@@ -187,7 +187,7 @@ class TestSummarizerPreservesGuidance:
     def test_non_gemini_errors_keep_response_body_extraction(self):
         from types import SimpleNamespace
 
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         err = Exception("")
         err.status_code = 400

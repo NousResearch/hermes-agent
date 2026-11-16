@@ -84,7 +84,7 @@ class TestClassification:
     def test_core_tools_never_defer(self):
         """The critical invariant from the OpenClaw report."""
         from tools.tool_search import is_deferrable_tool_name
-        from toolsets import _HERMES_CORE_TOOLS
+        from hermes_agent.toolsets import _HERMES_CORE_TOOLS
         assert _HERMES_CORE_TOOLS
         for core_name in _HERMES_CORE_TOOLS:
             assert not is_deferrable_tool_name(core_name), (
@@ -100,7 +100,7 @@ class TestClassification:
         """Session-gated GUI tools stay direct and stay off the global core list."""
         from tools.registry import discover_builtin_tools, registry
         from tools.tool_search import _DIRECT_SURFACE_TOOLSETS, is_deferrable_tool_name
-        from toolsets import _HERMES_CORE_TOOLS
+        from hermes_agent.toolsets import _HERMES_CORE_TOOLS
 
         discover_builtin_tools()
         surface = [n for n, ts in registry.get_tool_to_toolset_map().items()
@@ -434,7 +434,7 @@ class TestHandleFunctionCallIntegration:
 
     def test_tool_search_emits_one_terminal_hook(self, monkeypatch):
         """Inline bridge results still complete the tool lifecycle."""
-        import model_tools
+        from hermes_agent import model_tools
         from hermes_cli import lifecycle
         from tools import tool_search
 
@@ -531,7 +531,7 @@ class TestRegression_ToolsetScoping:
         )
 
     def test_search_catalog_is_scoped_to_session_toolsets(self):
-        import model_tools
+        from hermes_agent import model_tools
 
         for i in range(12):
             self._register(f"mcp_scoped_gh_{i}", "mcp-scoped-gh")
@@ -558,7 +558,7 @@ class TestRegression_ToolsetScoping:
         from tools.tool_search import scoped_deferrable_names
 
         self._register("mcp_helper_op", "mcp-helper")
-        import model_tools
+        from hermes_agent import model_tools
         defs = model_tools.get_tool_definitions(
             enabled_toolsets=["mcp-helper"],
             quiet_mode=True,
@@ -748,7 +748,7 @@ class TestDeferredCallSchemaProbe:
 
 
     def test_valid_tool_call_still_dispatches(self):
-        import model_tools
+        from hermes_agent import model_tools
 
         self._register("mcp_probe_valid_op", "mcp-probe-valid")
         result = json.loads(model_tools.handle_function_call(
@@ -761,7 +761,7 @@ class TestDeferredCallSchemaProbe:
         assert result.get("doc") == "abc"
 
     def test_invalid_enum_is_blocked_before_dispatch(self):
-        import model_tools
+        from hermes_agent import model_tools
 
         calls = []
         name = "mcp_probe_enum_validation"
@@ -833,7 +833,7 @@ class TestDeferredCallSchemaProbe:
         assert result["constraint"] == expected_constraint
 
     def test_coercible_arguments_validate_then_dispatch_repaired(self):
-        import model_tools
+        from hermes_agent import model_tools
 
         calls = []
         name = "mcp_probe_coercion_validation"
@@ -854,7 +854,7 @@ class TestDeferredCallSchemaProbe:
         assert calls == [{"count": 42}]
 
     def test_nullable_extension_remains_accepted(self):
-        import model_tools
+        from hermes_agent import model_tools
 
         calls = []
         name = "mcp_probe_nullable_validation"
@@ -889,7 +889,7 @@ class TestDeferredCallSchemaProbe:
         assert validate_deferred_call_args(name, {"value": enum_value}) is None
 
     def test_malformed_schema_fails_open(self):
-        import model_tools
+        from hermes_agent import model_tools
 
         calls = []
         name = "mcp_probe_malformed_validation"

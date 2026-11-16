@@ -83,7 +83,7 @@ def test_agent_close_owned_loop_skips_persisted_sessions(registry, monkeypatch):
     monkeypatch.setattr(registry_module, "process_registry", registry)
     # _close_task_resources also runs cleanup_vm/cleanup_browser/release_computer_use;
     # stub them so the loop under test is the only thing that runs.
-    import run_agent as ra
+    from hermes_agent import run_agent as ra
     monkeypatch.setattr(ra, "cleanup_vm", lambda *a, **k: None)
     monkeypatch.setattr(ra, "cleanup_browser", lambda *a, **k: None)
     import tools.computer_use.tool as cu

@@ -125,7 +125,7 @@ class PickerUsage:
 
     def blocks(self, model_id: str) -> bool:
         """Window only: a full allowance stops this model and top-up credits won't pay for it, so a picker
-        dims the row (the limit line says why, once). Same rule as apps/shared ``planBlocks``."""
+        dims the row (the limit line says why, once). Same rule as ui-tui/packages/shared ``planBlocks``."""
         return self.credits_pay is not True and self.exhausted_gauge(model_id) is not None
 
     def _full_all_gauge(self) -> Optional[UsageGauge]:

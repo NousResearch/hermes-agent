@@ -1,7 +1,7 @@
 """Secrets never reach disk or the next provider request through the classic CLI (``hermes chat -q``).
 
 Contract under test (``security.redact_secrets``, on by default; website/docs/user-guide/configuration.md
-§ Security, hermes_logging.py, user-guide/sessions.md § Export Sessions):
+§ Security, hermes_agent/hermes_logging.py, user-guide/sessions.md § Export Sessions):
 
 * tool output is redacted before it enters the conversation, so it never reaches state.db (any table,
   FTS, WAL), a session export, or the next provider request; a read of a secret-bearing file (``.env``)

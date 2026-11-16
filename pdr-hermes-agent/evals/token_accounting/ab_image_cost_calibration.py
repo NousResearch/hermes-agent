@@ -112,7 +112,7 @@ def _screenshot_turn(i: int) -> list:
 
 
 def run(out_path: str) -> dict:
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     wire = _FakeVisionChat()
     agent = AIAgent(

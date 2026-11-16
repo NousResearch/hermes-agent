@@ -24,7 +24,7 @@ _ABANDONED = "request abandoned"
 
 
 def _anthropic_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(api_key="test-key", base_url="https://example.com/v1", model="claude-opus-4-7",
                     quiet_mode=True, skip_context_files=True, skip_memory=True)

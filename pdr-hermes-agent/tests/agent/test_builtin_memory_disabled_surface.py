@@ -15,16 +15,16 @@ These tests exercise the real resolution chain (config on disk → check_fn →
 import json
 
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
-from model_tools import get_tool_definitions
+from hermes_agent.model_tools import get_tool_definitions
 
 
 @pytest.fixture(autouse=True)
 def _clear_caches():
     """check_fn results and tool definitions are both cached; config written by
     a test only takes effect once those are dropped."""
-    from model_tools import _clear_tool_defs_cache
+    from hermes_agent.model_tools import _clear_tool_defs_cache
     from tools.registry import invalidate_check_fn_cache
 
     invalidate_check_fn_cache()

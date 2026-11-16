@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import cli as cli_mod
+from hermes_agent import cli as cli_mod
 
 
 # ── A3.1 Test-First: verify _clear_terminal_on_exit gating ──────────────────

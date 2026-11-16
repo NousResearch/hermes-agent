@@ -8,8 +8,8 @@ dispatch so the idle prompt doesn't read as "nothing happened".
 
 import json
 
-import cli
-from cli import HermesCLI
+from hermes_agent import cli
+from hermes_agent.cli import HermesCLI
 
 
 def _make_cli():

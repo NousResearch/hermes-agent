@@ -124,7 +124,7 @@ def _recorded_homes(db, room_id, member_id):
 
 
 def _served_here(home):
-    from hermes_constants import named_profile_home, named_profile_is_deleted
+    from hermes_agent.hermes_constants import named_profile_home, named_profile_is_deleted
     return home.is_dir() and not (named_profile_home(home) is not None and named_profile_is_deleted(home))
 
 

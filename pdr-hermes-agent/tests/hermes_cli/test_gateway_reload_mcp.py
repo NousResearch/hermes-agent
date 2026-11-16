@@ -3,7 +3,7 @@ agents (``reload.mcp``); the CLI never touches its GatewayAgent stand-in's tools
 import asyncio
 from contextlib import asynccontextmanager
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 from hermes_cli.gateway_connection import GatewayConnection
 
 

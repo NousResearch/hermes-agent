@@ -21,7 +21,7 @@ def profile_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(profile))
     # hermes_constants memoizes root resolution per (native, env) pair;
     # reload to make the new env authoritative for this test.
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     importlib.reload(hermes_constants)
     yield root, profile
@@ -69,7 +69,7 @@ def test_default_profile_paths_unchanged(tmp_path, monkeypatch):
     root = tmp_path / ".hermes"
     root.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(root))
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     importlib.reload(hermes_constants)
     try:

@@ -5,7 +5,7 @@ the provider prompt cache) route through here. Button-UI adapters render Approve
 Approve / Cancel and call ``resolve()``; text-only adapters get a prompt and the gateway
 intercepts ``/approve``, ``/always``, ``/cancel``. State is module-level (like ``tools.approval``)
 so adapters can resolve without a ``GatewayRunner`` backreference. The CLI has its own
-synchronous variant (``_prompt_slash_confirm`` in ``cli.py``).
+synchronous variant (``_prompt_slash_confirm`` in ``hermes_agent/cli.py``).
 """
 
 from __future__ import annotations

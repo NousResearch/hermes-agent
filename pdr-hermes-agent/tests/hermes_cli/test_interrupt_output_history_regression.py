@@ -22,8 +22,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import cli as cli_mod
-from cli import HermesCLI, _suspend_output_history
+from hermes_agent import cli as cli_mod
+from hermes_agent.cli import HermesCLI, _suspend_output_history
 
 
 @pytest.fixture(autouse=True)

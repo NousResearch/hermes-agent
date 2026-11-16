@@ -45,7 +45,7 @@ def _pair():
 
 
 def _wire(model, base_url="https://ollama.com/v1"):
-    import model_tools  # registers provider profiles
+    from hermes_agent import model_tools  # registers provider profiles
     import providers
 
     messages = _pair()

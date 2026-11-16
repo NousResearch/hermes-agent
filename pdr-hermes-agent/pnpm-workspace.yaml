@@ -1,9 +1,7 @@
+# 桌面端（apps/）、仪表盘前端（web/）与 tests-js 已移除：PDR 的管理端、用户端在 pdr/web 下自建。
 packages:
-  - apps/*
   - ui-tui
   - ui-tui/packages/*
-  - web
-  - tests-js
 
 engineStrict: true
 

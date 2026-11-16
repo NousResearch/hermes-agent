@@ -185,8 +185,8 @@ def test_kill_during_branch_switch_is_restored(world):
 def test_syntax_error_target_is_refused_before_head_moves(world):
     sb = world["sb"]
     pre = _head(sb)
-    constants = I.git("show", "main:hermes_constants.py", cwd=world["origin"])
-    _release(world, {"hermes_constants.py": constants + "\ndef broken(:\n"})
+    constants = I.git("show", "main:hermes_agent/hermes_constants.py", cwd=world["origin"])
+    _release(world, {"hermes_agent/hermes_constants.py": constants + "\ndef broken(:\n"})
     reflog_before = I.git("reflog", "-n", "20", "--format=%H %gs", cwd=sb.checkout)
     refused = _update(sb)
     reflog_after = I.git("reflog", "-n", "20", "--format=%H %gs", cwd=sb.checkout)
@@ -368,13 +368,13 @@ def test_kill_during_syntax_rollback_lands_on_the_pre_update_commit(world):
     files back. The next launch must finish on the pre-update commit, not restore the broken one."""
     sb = world["sb"]
     pre = _head(sb)
-    constants = I.git("show", "main:hermes_constants.py", cwd=world["origin"])
-    broken = _release(world, {"hermes_constants.py": constants + "\ndef broken(:\n",
+    constants = I.git("show", "main:hermes_agent/hermes_constants.py", cwd=world["origin"])
+    broken = _release(world, {"hermes_agent/hermes_constants.py": constants + "\ndef broken(:\n",
                               "e2e_rollback_extra.py": "X = 1\n"})
-    _hostile_git(world, 'case " $* " in *" show "*":hermes_constants.py "*) "$REAL" show HEAD:hermes_constants.py; '
+    _hostile_git(world, 'case " $* " in *" show "*":hermes_agent/hermes_constants.py "*) "$REAL" show HEAD:hermes_agent/hermes_constants.py; '
                         'exit $?;; '
-                        '*" cat-file --batch "*) sed "s#^[^ ]*:hermes_constants.py\\$#HEAD:hermes_constants.py#" | "$REAL" "$@"; exit $?;; '
-                        '*" reset --hard "*) "$REAL" show "${@: -1}:hermes_constants.py" > hermes_constants.py; '
+                        '*" cat-file --batch "*) sed "s#^[^ ]*:hermes_agent/hermes_constants.py\\$#HEAD:hermes_agent/hermes_constants.py#" | "$REAL" "$@"; exit $?;; '
+                        '*" reset --hard "*) "$REAL" show "${@: -1}:hermes_agent/hermes_constants.py" > hermes_agent/hermes_constants.py; '
                         'kill -KILL $PPID; exit 137;; esac')
     killed = _update(sb)
     _hostile_git(world, "")
@@ -415,17 +415,17 @@ def test_git_killed_inside_the_rollback_reset_is_finished_by_the_next_launch(wor
     pre = _head(sb)
     # A critical module the launcher imports only after the launch-time repair ran (the launcher's own
     # first import, hermes_constants, is a documented limit: a broken copy dies before any repair).
-    tools = I.git("show", "main:model_tools.py", cwd=world["origin"])
-    broken = _release(world, {"model_tools.py": tools + "\ndef broken(:\n",
+    tools = I.git("show", "main:hermes_agent/model_tools.py", cwd=world["origin"])
+    broken = _release(world, {"hermes_agent/model_tools.py": tools + "\ndef broken(:\n",
                               "e2e_rollback_reset_extra.py": "X = 1\n"})
     killer = world["root"] / "git_killer.py"
     killer.write_text(_GIT_KILLER, encoding="utf-8")
     once = sb.root / "rollback-reset-killed"  # the sandbox can write only under its own root
     # The preflight reads the old file (so the broken release passes it); the rollback's first step,
     # `reset -q <pre>` (HEAD and index, no file), runs once under the killer.
-    _hostile_git(world, 'case " $* " in *" show "*":model_tools.py "*) "$REAL" show HEAD:model_tools.py; '
+    _hostile_git(world, 'case " $* " in *" show "*":hermes_agent/model_tools.py "*) "$REAL" show HEAD:hermes_agent/model_tools.py; '
                         'exit $?;; '
-                        '*" cat-file --batch "*) sed "s#^[^ ]*:model_tools.py\\$#HEAD:model_tools.py#" | "$REAL" "$@"; exit $?;; '
+                        '*" cat-file --batch "*) sed "s#^[^ ]*:hermes_agent/model_tools.py\\$#HEAD:hermes_agent/model_tools.py#" | "$REAL" "$@"; exit $?;; '
                         f'*" reset -q {pre} "*) if [ ! -e "{once}" ]; then : > "{once}"; '
                         f'exec "{sb.python}" "{killer}" "$REAL" "$@"; fi;; esac')
     killed = _update(sb)

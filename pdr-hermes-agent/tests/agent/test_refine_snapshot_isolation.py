@@ -22,7 +22,7 @@ def _agent_with_real_chokepoint():
     Everything below the chokepoint (thread spawn) is captured at
     ``_spawn_background_review_now`` so no fork actually runs.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = MagicMock()
     agent.valid_tool_names = {"memory"}
@@ -62,7 +62,7 @@ def _assert_isolated(live, snapshot):
 def test_cli_refine_snapshot_does_not_alias_live_history(monkeypatch):
     from hermes_cli.cli_commands_mixin import CLICommandsMixin
 
-    monkeypatch.setattr("cli._cprint", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("hermes_agent.cli._cprint", lambda *a, **k: None, raising=False)
     agent = _agent_with_real_chokepoint()
     cli = object.__new__(CLICommandsMixin)
     cli.agent = agent
@@ -80,7 +80,7 @@ def test_cli_refine_reaches_spawn_as_explicit(monkeypatch):
     is marked attended and keeps the full memory operation set (#105921 review)."""
     from hermes_cli.cli_commands_mixin import CLICommandsMixin
 
-    monkeypatch.setattr("cli._cprint", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("hermes_agent.cli._cprint", lambda *a, **k: None, raising=False)
     agent = _agent_with_real_chokepoint()
     cli = object.__new__(CLICommandsMixin)
     cli.agent = agent

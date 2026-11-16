@@ -9,7 +9,7 @@ from pathlib import Path
 
 from hermes_cli.config import get_hermes_home, get_env_path, get_project_root, load_config
 from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_constants import display_hermes_home
+from hermes_agent.hermes_constants import display_hermes_home
 from agent.skill_utils import is_excluded_skill_path
 from datetime import UTC
 

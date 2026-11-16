@@ -53,7 +53,7 @@ def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypat
         seen.append((name, args.copy()))
         return json.dumps({"name": name, "args": args})
 
-    monkeypatch.setattr("model_tools.handle_function_call", dispatch)
+    monkeypatch.setattr("hermes_agent.model_tools.handle_function_call", dispatch)
 
     class Shell:
         def execute(self, command, cwd=None, timeout=None, stdin_data=None):

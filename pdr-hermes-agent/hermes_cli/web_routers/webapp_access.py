@@ -115,7 +115,7 @@ class StartBody(BaseModel):
 @contextmanager
 def _gateway_scope(profile: Optional[str], *, config_write: bool):
     """Scope to the home of the gateway serving *profile*; yields that gateway's profile name."""
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
 
     with _profile_scope(profile):
         name = profile_name_for_home(webapp_access.gateway_home()) or profile

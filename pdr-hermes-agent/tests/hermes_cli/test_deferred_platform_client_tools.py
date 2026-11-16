@@ -22,7 +22,7 @@ import threading
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 
 A2A_CLIENT_TOOLS = {
@@ -170,7 +170,7 @@ class TestA2AClientToolsInCliProcess:
 
     def test_a2a_toolset_resolves_without_materializing_the_platform(self):
         from hermes_cli.plugins import PluginManager
-        from toolsets import resolve_toolset
+        from hermes_agent.toolsets import resolve_toolset
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -209,7 +209,7 @@ class TestA2AClientToolsInCliProcess:
         dropped from its bundle as well.
         """
         from hermes_cli.plugins import PluginManager
-        from toolsets import resolve_toolset
+        from hermes_agent.toolsets import resolve_toolset
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -225,7 +225,7 @@ class TestDeferredPlatformToolPreregistration:
         self, tmp_path, probe, clean_registry
     ):
         from hermes_cli.plugins import PluginManager
-        from toolsets import resolve_toolset
+        from hermes_agent.toolsets import resolve_toolset
 
         manifest = _write_platform_plugin(tmp_path, "probeplat", with_tools_module=True)
 
@@ -383,7 +383,7 @@ class TestDeferredPlatformToolPreregistration:
 
         # Attribution without a live tool would be a lie, so check the registry
         # itself rather than only the bookkeeping maps.
-        from toolsets import resolve_toolset
+        from hermes_agent.toolsets import resolve_toolset
 
         assert resolve_toolset("probeplat") == ["probeplat_call"]
         assert mgr._plugins["probeplat-platform"].tools_registered == ["probeplat_call"]
@@ -410,7 +410,7 @@ class TestDeferredPlatformToolPreregistration:
         """
         from gateway.platform_registry import platform_registry
         from hermes_cli.plugins import PluginManager
-        from toolsets import resolve_toolset
+        from hermes_agent.toolsets import resolve_toolset
 
         manifest = _write_platform_plugin(tmp_path, "probeplat", with_tools_module=True)
         tools_py = (Path(manifest.path) / "tools.py").read_text(encoding="utf-8")

@@ -16,7 +16,7 @@ from typing import Any, Callable, Optional
 # Modifier aliases mirrored from the TUI parser (``ui-tui/src/lib/platform.ts`` ``_MOD_ALIASES``)
 # so one config value binds the same shortcut in both runtimes. ``super``/``win``/``windows`` are
 # deliberately absent: prompt_toolkit has no super/meta modifier, so those spellings are TUI-only
-# and normalize to the default (a silent fallback beats a hard startup crash; cli.py warns).
+# and normalize to the default (a silent fallback beats a hard startup crash; hermes_agent/cli.py warns).
 _VOICE_MOD_ALIASES = {"ctrl": "c-", "control": "c-", "alt": "a-", "option": "a-", "opt": "a-"}
 
 # Named keys prompt_toolkit accepts as ``c-<name>`` / ``a-<name>``; aliases collapse to canonical.
@@ -128,7 +128,7 @@ def _beeps_enabled() -> bool:
     """CLI parity: voice.beep_enabled in config.yaml (default True)."""
     try:
         from hermes_cli.config import load_config
-        from utils import is_truthy_value
+        from hermes_agent.utils import is_truthy_value
 
         voice_cfg = load_config().get("voice", {})
         if isinstance(voice_cfg, dict):
@@ -142,7 +142,7 @@ def _beeps_enabled() -> bool:
 
 
 def _play_beep(frequency: int, count: int = 1) -> None:
-    """Audible cue matching cli.py's beeps (880 Hz once on start, 660 Hz twice on stop).
+    """Audible cue matching hermes_agent/cli.py's beeps (880 Hz once on start, 660 Hz twice on stop).
     Best-effort — a missing speaker must never break the voice loop."""
     if not _beeps_enabled():
         return
@@ -212,7 +212,7 @@ _continuous_auto_restart: bool = True
 _continuous_recorder: Any = None
 
 # TTS-vs-STT feedback guard: TTS over the speakers lands in the live mic and gets transcribed as
-# user input — an infinite loop the agent happily joins. Mirrors cli.py:_voice_tts_done: cleared
+# user input — an infinite loop the agent happily joins. Mirrors hermes_agent/cli.py:_voice_tts_done: cleared
 # while speak_text plays, set while silent. The silence callback waits on it before re-arming;
 # speak_text cancels live capture before playback so the previous utterance's tail doesn't leak.
 _tts_playing = threading.Event()
@@ -364,7 +364,7 @@ def start_continuous(
         rec.on_live_partial = on_partial
         rec._silence_threshold = silence_threshold
         rec._silence_duration = silence_duration
-        # Same numeric-with-bool-excluded guard as cli.py:_voice_start_recording.
+        # Same numeric-with-bool-excluded guard as hermes_agent/cli.py:_voice_start_recording.
         cap_ok = isinstance(max_recording_seconds, (int, float)) and not isinstance(max_recording_seconds, bool)
         rec._max_recording_seconds = max_recording_seconds if cap_ok and max_recording_seconds > 0 else 0.0
 

@@ -9,7 +9,7 @@ import pytest
 
 @pytest.mark.parametrize("surface", ["gateway", "tui", "cli"])
 def test_explicit_reload_updates_same_name_schema_and_retains_history(surface, monkeypatch):
-    import model_tools
+    from hermes_agent import model_tools
     from tools import mcp_tool
     from tools import mcp_tool_discovery, mcp_tool_lifecycle
 

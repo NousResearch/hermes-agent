@@ -109,7 +109,7 @@ CASES = {
         ["plugins/platforms/whatsapp/adapter.py"], _lanes(python=True, frontend=True, scan=True),
     ),
     "docs-only → nothing heavy": (["README.md", "docs/guide.md"], _lanes()),
-    "python source → python": (["run_agent.py"], _lanes(python=True, scan=True)),
+    "python source → python": (["hermes_agent/run_agent.py"], _lanes(python=True, scan=True)),
     # pyproject.toml declares the pytest markers the OS lanes select on, so it
     # also re-arms the desktop_updater integration tests (fail-open).
     # The dependency manifests are inputs to the image, the flake and every
@@ -139,15 +139,15 @@ CASES = {
     # Cross-language contract JSON under apps/: the pytest that pins it against
     # the Python side must run even when nothing else in the PR is Python.
     "generated gateway contract → python + frontend": (
-        ["apps/shared/src/gateway-contract.generated.ts"],
+        ["ui-tui/packages/shared/src/gateway-contract.generated.ts"],
         _lanes(python=True, frontend=True, e2e_desktop_core=True),
     ),
     "gateway OpenRPC document → python + frontend": (
-        ["apps/shared/src/gateway-contract.openrpc.json"],
+        ["ui-tui/packages/shared/src/gateway-contract.openrpc.json"],
         _lanes(python=True, frontend=True, e2e_desktop_core=True),
     ),
     "control-socket vectors → python + frontend": (
-        ["apps/shared/src/node/control-socket.vectors.json"],
+        ["ui-tui/packages/shared/src/node/control-socket.vectors.json"],
         _lanes(python=True, frontend=True, e2e_desktop_core=True),
     ),
     "desktop slash-registry JSON → python + frontend": (
@@ -323,7 +323,7 @@ CASES = {
         _lanes(frontend=True),
     ),
     "shared package eslint config → frontend": (
-        ["apps/shared/eslint.config.mjs"],
+        ["ui-tui/packages/shared/eslint.config.mjs"],
         _lanes(frontend=True),
     ),
     "bootstrap-installer eslint config → frontend + bootstrap": (
@@ -516,7 +516,7 @@ def test_every_slow_lane_path_matches_a_tracked_file():
 # tables of the updater audit's cli-update and desktop-update code maps). A
 # PR that edits only one of these must start the real-update suite that would
 # catch the regression; before, main.py / _early_recovery.py / relaunch.py /
-# gateway/ / hermes_bootstrap.py skipped both the Linux and Windows journeys.
+# gateway/ / hermes_agent/hermes_bootstrap.py skipped both the Linux and Windows journeys.
 _UPDATE_PATH_FILES = (
     "hermes_cli/main.py",
     "hermes_cli/main_dashboard.py",
@@ -540,8 +540,8 @@ _UPDATE_PATH_FILES = (
     "hermes_cli/gateway_windows.py",
     "hermes_cli/gateway_migrate.py",
     "hermes_cli/desktop_update_verify.py",
-    "hermes_bootstrap.py",
-    "hermes_constants.py",
+    "hermes_agent/hermes_bootstrap.py",
+    "hermes_agent/hermes_constants.py",
     "gateway/status.py",
     "gateway/control_socket.py",
     "gateway/code_skew.py",
@@ -589,7 +589,7 @@ def test_every_lane_reaches_the_composite_action():
     """The action is the one surface every consumer reads, so it must carry all
     of them — ci.yaml, nix.yml and docker.yml each re-export a different subset.
     """
-    lanes = set(classify(["run_agent.py"]))
+    lanes = set(classify(["hermes_agent/run_agent.py"]))
     action_outputs = set(_yaml(".github/actions/detect-changes/action.yml")["outputs"])
     assert lanes - action_outputs == set(), "lane(s) missing from the composite action's outputs"
 

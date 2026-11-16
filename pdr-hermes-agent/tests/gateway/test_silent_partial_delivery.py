@@ -273,7 +273,7 @@ def _make_runner(adapter):
 
 
 async def _run_turn(monkeypatch, tmp_path, *, consumer_cls=None, session_id):
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump(
@@ -295,7 +295,7 @@ async def _run_turn(monkeypatch, tmp_path, *, consumer_cls=None, session_id):
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = PrefixOnlyAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     gateway_run = importlib.import_module("gateway.run")
     if consumer_cls is not None:

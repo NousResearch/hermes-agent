@@ -127,7 +127,7 @@ def test_models_with_different_overrides_never_share_a_client_in_one_region(conf
 def test_profile_scoped_clients_carry_their_own_profile_timeouts(tmp_path, monkeypatch):
     """A routed profile's clients come from its own config.yaml and own cache slot, per timeout."""
     from agent import secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     home = tmp_path / "profile-home"
     home.mkdir()
@@ -189,7 +189,7 @@ def test_auxiliary_call_converse_uses_the_models_timeout(config, botocore_calls)
 
 def _agent():
     from agent.context_compressor import ContextCompressor
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     agent = AIAgent.__new__(AIAgent)
     agent.model, agent.provider = "claude-opus-4.8", "anthropic"
     agent.base_url, agent.api_key, agent.api_mode = "https://api.anthropic.com", "sk-ant", "anthropic_messages"

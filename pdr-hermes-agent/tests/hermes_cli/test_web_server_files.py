@@ -95,7 +95,7 @@ def _seed_file(client, root, name="out/hello.txt"):
 
 @pytest.mark.parametrize("endpoint", ["/api/files/upload", "/api/fs/write-text"])
 def test_atomic_write_failure_preserves_original(forced_files_client, monkeypatch, endpoint):
-    import utils
+    from hermes_agent import utils
 
     client, root = forced_files_client
     target = _seed_file(client, root)

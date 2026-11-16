@@ -11,8 +11,8 @@ Hermes tools are self-registering functions grouped into toolsets and executed t
 Primary files:
 
 - `tools/registry.py`
-- `model_tools.py`
-- `toolsets.py`
+- `hermes_agent/model_tools.py`
+- `hermes_agent/toolsets.py`
 - `tools/terminal_tool.py`
 - `tools/environments/*`
 
@@ -20,7 +20,7 @@ Primary files:
 
 Each tool module calls `registry.register(...)` at import time.
 
-`model_tools.py` is responsible for importing/discovering tool modules and building the schema list used by the model.
+`hermes_agent/model_tools.py` is responsible for importing/discovering tool modules and building the schema list used by the model.
 
 ### How `registry.register()` works
 
@@ -46,7 +46,7 @@ Each call creates a `ToolEntry` stored in the singleton `ToolRegistry._tools` di
 
 ### Discovery: `discover_builtin_tools()`
 
-When `model_tools.py` is imported, it calls `discover_builtin_tools()` from `tools/registry.py`. This function scans every `tools/*.py` file using AST parsing to find modules that contain top-level `registry.register()` calls, then imports them:
+When `hermes_agent/model_tools.py` is imported, it calls `discover_builtin_tools()` from `tools/registry.py`. This function scans every `tools/*.py` file using AST parsing to find modules that contain top-level `registry.register()` calls, then imports them:
 
 ```python
 # tools/registry.py (simplified)
@@ -132,7 +132,7 @@ When the model returns a `tool_call`, the flow is:
 ```
 Model response with tool_call
     ↓
-agent loop (`agent/conversation_loop.py`, via `run_agent.py`'s `AIAgent` facade)
+agent loop (`agent/conversation_loop.py`, via `hermes_agent/run_agent.py`'s `AIAgent` facade)
     ↓
 model_tools.handle_function_call(name, args, task_id, user_task)
     ↓

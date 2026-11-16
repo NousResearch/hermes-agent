@@ -9,7 +9,7 @@ error seen when third-party OpenAI-compatible endpoints serve gpt-4o / 4.1 /
 
 from __future__ import annotations
 
-from utils import model_forces_max_completion_tokens
+from hermes_agent.utils import model_forces_max_completion_tokens
 
 
 # ─── Positive cases: families that require max_completion_tokens ────────────

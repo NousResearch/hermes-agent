@@ -24,7 +24,7 @@ from pathlib import Path
 
 def register(ctx):
     def opened(**kw):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         log = Path(%r)
         gate = log.with_suffix(".gate")
         with open(log, "a") as out:
@@ -265,7 +265,7 @@ async def test_a_profile_with_no_consumer_starts_no_delivery_thread(monkeypatch,
     from gateway import session_commands, session_open
     from gateway.session_contract import SessionRef
     from hermes_cli import plugins
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     threads = []
 
     async def own_thread(fn):

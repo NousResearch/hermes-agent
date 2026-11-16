@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from tools import async_delegation as ad
 from tests.waiting import wait_until
 from tools.process_registry import process_registry

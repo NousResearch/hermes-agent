@@ -291,7 +291,7 @@ def test_a_timed_out_target_read_skips_the_preflight_instead_of_failing_the_upda
         raise subprocess.TimeoutExpired([*git_cmd, *args], 120)
 
     monkeypatch.setattr(update_cmd_commit, "run_git", slow)
-    assert update_cmd_commit.target_syntax_error(["git"], Path("."), "a" * 40, ["cli.py", "run_agent.py"]) is None
+    assert update_cmd_commit.target_syntax_error(["git"], Path("."), "a" * 40, ["hermes_agent/cli.py", "hermes_agent/run_agent.py"]) is None
     assert "Syntax preflight skipped (slow object fetch)" in capsys.readouterr().out
 
 

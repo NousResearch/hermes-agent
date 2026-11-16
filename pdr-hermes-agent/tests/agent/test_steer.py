@@ -13,7 +13,7 @@ import pytest
 
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from tools.registry import registry
 
 # Registry handler for the end-to-end steer-survival test below (module level,
@@ -640,7 +640,7 @@ class TestSteerSurvivesRedirectRebuild:
     def _loop_agent(self):
         from unittest.mock import MagicMock, patch
 
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         tool_schema = {
             "type": "function",
@@ -651,8 +651,8 @@ class TestSteerSurvivesRedirectRebuild:
             },
         }
         with (
-            patch("model_tools.get_tool_definitions", return_value=[tool_schema]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[tool_schema]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
         ):
             agent = AIAgent(
@@ -829,11 +829,11 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
     def _loop_agent(self):
         from unittest.mock import MagicMock, patch
 
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
         ):
             agent = AIAgent(

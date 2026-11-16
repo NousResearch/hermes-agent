@@ -112,7 +112,7 @@ def _connector_params(rid, params, model):
 
 
 def _session_connector_gate(rid, session, action):
-    import model_tools
+    from hermes_agent import model_tools
     from tools.connectors import connectors_available
 
     agent = session.get("agent")
@@ -129,7 +129,7 @@ def _session_connector_gate(rid, session, action):
 
 def _session_connector_rpc(rid, request, session, action):
     import json
-    import model_tools
+    from hermes_agent import model_tools
     import uuid
 
     from tools.connectors import live
@@ -400,7 +400,7 @@ def _operation_view(operation):
 
 
 def _connection_update(operation, change, snapshot):
-    from hermes_constants import get_process_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_process_hermes_home, hermes_home_key
     from tui_gateway import server
     from tui_gateway.connector_payload import connector_ui_payload
 

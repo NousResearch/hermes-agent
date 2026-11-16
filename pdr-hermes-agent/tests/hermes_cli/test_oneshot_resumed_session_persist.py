@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
-import cli as cli_mod
+from hermes_agent import cli as cli_mod
 
 @pytest.fixture(autouse=True)
 def _reset_finalize_state(monkeypatch):
@@ -36,7 +36,7 @@ def _reset_finalize_state(monkeypatch):
 def _make_agent(session_db, session_id="oneshot-88583"):
     """Real AIAgent bound to a real temp SessionDB (test_860_dedup pattern)."""
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",

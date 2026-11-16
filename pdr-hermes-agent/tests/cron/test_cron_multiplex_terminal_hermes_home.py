@@ -57,7 +57,7 @@ def _install_agent(monkeypatch, seen):
 
     fake = type(sys)("run_agent")
     fake.AIAgent = TerminalAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake)
     monkeypatch.setattr(rtp, "resolve_runtime_provider", lambda **_kw: {
         "provider": "test", "api_key": "k", "base_url": "http://test.local", "api_mode": "chat_completions"})
     monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None, **kw: "hi")

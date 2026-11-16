@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import cli as cli_mod  # module-level, like sibling CLI tests: importing cli runs bootstrap
+from hermes_agent import cli as cli_mod  # module-level, like sibling CLI tests: importing cli runs bootstrap
 from hermes_cli import plugins
 from hermes_cli.plugins import PluginManager
 

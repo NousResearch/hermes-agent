@@ -87,7 +87,7 @@ function shouldCollapsePaste(cleanedText: string, lineCount: number): boolean {
 /**
  * Quick client-side heuristic to detect text that looks like a dropped file path.
  * When this returns true the composer sends RPC calls to the server for actual
- * validation. Keep in sync with _detect_file_drop() in cli.py — see that
+ * validation. Keep in sync with _detect_file_drop() in hermes_agent/cli.py — see that
  * function for the canonical prefix list.
  */
 export function looksLikeDroppedPath(text: string): boolean {

@@ -25,7 +25,7 @@ from typing import Any, Callable, NamedTuple, Optional
 # Several of these look unused here but are resolved BARE by split-module bodies rebound onto this
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli import config_backend as _config_backend
@@ -34,7 +34,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 # The slash-worker client (slash_worker_client.py) runs on these globals; tests patch them here.
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 from hermes_state.ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
 from agent.fast_mode import STATIC_TIERS
@@ -1294,7 +1294,7 @@ def _get_usage(agent) -> dict:
     # Cache-hit ratio + rolling latency/tps (CLI status-bar parity). Omitted, not fabricated, when there is no
     # data (Codex reports no latency; zero cache reads shows no hit% rather than an alarming 0).
     with contextlib.suppress(Exception):
-        # Mirrors the classic CLI bar (cli.py _get_status_bar_snapshot / PR #98250): hit =
+        # Mirrors the classic CLI bar (hermes_agent/cli.py _get_status_bar_snapshot / PR #98250): hit =
         # session_cache_read_tokens / session_prompt_tokens (CanonicalUsage.prompt_tokens = input +
         # cache_read + cache_write) latency/tps read the deque(maxlen=10) history maintained per API call in
         # agent/conversation_loop.py.
@@ -1508,7 +1508,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     live_agent = agent is not None and not sess.get("_compute_host_active")
     if live_agent:
         with contextlib.suppress(Exception):
-            from model_tools import get_toolset_for_tool
+            from hermes_agent.model_tools import get_toolset_for_tool
             info["tools"] = {}
             for t in getattr(agent, "tools", []) or []:
                 name = t["function"]["name"]
@@ -1937,7 +1937,7 @@ def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
     """Shared tail for both reload paths: honor ``always`` (persist the confirm opt-out) and return the ok payload."""
     if bool(params.get("always", False)):
         try:
-            from cli import save_config_value
+            from hermes_agent.cli import save_config_value
             save_config_value("approvals.mcp_reload_confirm", False)
         except Exception as _exc:
             logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)

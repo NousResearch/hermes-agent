@@ -155,8 +155,8 @@ class _Wire:
 
 @pytest.mark.platforms("linux")
 def test_cli_plugin_command_runs_in_the_gateway_and_reaches_its_mcp_registry(tmp_path, monkeypatch, capsys):
-    import cli as cli_mod
-    from cli import HermesCLI
+    from hermes_agent import cli as cli_mod
+    from hermes_agent.cli import HermesCLI
     _no_local_plugins(monkeypatch)
     monkeypatch.setattr(cli_mod, '_ensure_skill_commands', dict)
     monkeypatch.setattr(cli_mod, 'get_skill_bundles', dict)
@@ -229,8 +229,8 @@ def test_a_redial_to_a_restarted_gateway_and_slash_new_reread_the_plugin_command
     gateway A serves /alpha, B (same home and socket) only /beta. A cached /alpha never runs: while no
     gateway answers it is a named refusal (no same-named skill stands in), on B it is no plugin
     command. /new through the gateway session store re-reads B's catalog for the new session."""
-    import cli as cli_mod
-    from cli import HermesCLI
+    from hermes_agent import cli as cli_mod
+    from hermes_agent.cli import HermesCLI
     from hermes_cli.gateway_connection import GatewayConnection
     from hermes_cli.gateway_session_store import GatewaySessionStore
     _no_local_plugins(monkeypatch)
@@ -317,8 +317,8 @@ def test_a_command_a_plugin_reload_removed_is_dispatched_again(tmp_path, monkeyp
     The cached name gets ``unsupported_command`` from ``slash.exec`` once: the CLI re-reads the catalog
     and dispatches the name again, so a same-named skill runs, and a name nothing else matches gets
     the "no longer has this plugin command" line, never the raw code, on that try or a later one."""
-    import cli as cli_mod
-    from cli import HermesCLI
+    from hermes_agent import cli as cli_mod
+    from hermes_agent.cli import HermesCLI
     from gateway.control_socket import reload_gateway_plugins
     _no_local_plugins(monkeypatch)
     ran_skill = []
@@ -388,8 +388,8 @@ def test_a_plugin_whose_register_fails_leaves_its_name_to_a_same_named_skill(tmp
     plugin has no command, so the catalog lists none and reports no discovery error, and the typed
     name goes on to the same-named skill. Main's CLI did the same: its own load dropped the
     command, ``_get_plugin_cmd_handler_names()`` missed it, and the skill branch ran."""
-    import cli as cli_mod
-    from cli import HermesCLI
+    from hermes_agent import cli as cli_mod
+    from hermes_agent.cli import HermesCLI
     _no_local_plugins(monkeypatch)
     ran_skill = []
     monkeypatch.setattr(cli_mod, '_ensure_skill_commands', dict)  # the skill is the gateway's, below
@@ -458,10 +458,10 @@ def test_a_plugin_command_outliving_the_rpc_limit_prints_its_reply_and_ctrl_c_st
     reply as long as the handler runs, not the 30 s RPC budget (injected here as 0, so a request on
     that budget gives up at once). Ctrl+C stops the wait with a line saying what happens next: the
     handler finishes in the gateway and its reply is dropped, while the next command already runs."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     from types import SimpleNamespace
     from prompt_toolkit.buffer import Buffer
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     from hermes_cli import gateway_plugin_commands
     from hermes_cli.gateway_connection import GatewayConnection
     from hermes_cli.gateway_session_store import GatewaySessionStore

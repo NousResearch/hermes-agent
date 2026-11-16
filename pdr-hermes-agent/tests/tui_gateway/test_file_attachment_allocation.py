@@ -136,7 +136,7 @@ def test_a_host_file_outside_the_workspace_is_copied_whole_whatever_its_size(ses
     fake_cli._detect_file_drop = lambda raw: None
     fake_cli._split_path_input = lambda raw: (raw, "")
     fake_cli._resolve_attachment_path = lambda raw: source
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", fake_cli)
 
     response = server._methods["file.attach"](1, {"session_id": "first", "path": str(source)})
 

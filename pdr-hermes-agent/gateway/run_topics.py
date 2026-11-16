@@ -21,7 +21,7 @@ from gateway.platforms.base import _prefix_within_utf16_limit, utf16_len
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from gateway.session_identity import replace_source
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner

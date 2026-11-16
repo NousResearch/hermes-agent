@@ -112,7 +112,7 @@ class TestBypassSdkRequestTransform:
 
 class TestRunCodexStreamRoutesPayloadViaExtraBody:
     def _make_agent(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",

@@ -26,7 +26,7 @@ _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete",
 
 
 def _default_dispatch(task_id, session_id=None, turn_id=None, conversation_id=None):
-    from model_tools import handle_function_call
+    from hermes_agent.model_tools import handle_function_call
     from tools.file_tools_read_tracking import programmatic_file_read
 
     def dispatch(tool_name, tool_args):

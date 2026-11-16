@@ -23,7 +23,7 @@ from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import content_policy_copy, provider_label_for, site_copy, stamp_failure
 from agent.turn_retry_state import TurnRetryState
 from agent.usage_pricing import normalize_usage
-from hermes_constants import PARTIAL_STREAM_STUB_ID
+from hermes_agent.hermes_constants import PARTIAL_STREAM_STUB_ID
 
 logger = logging.getLogger("agent.conversation_loop")
 

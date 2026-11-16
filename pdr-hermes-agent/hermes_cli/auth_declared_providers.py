@@ -70,7 +70,7 @@ def resolve_declared_api_key_provider(provider_id: str) -> dict[str, Any]:
     key_cmd = str(entry.get("key_cmd") or "").strip()
     if key_cmd:
         from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
-        from hermes_constants import hermes_home_key
+        from hermes_agent.hermes_constants import hermes_home_key
         token_source = _KEY_CMD_SOURCES.setdefault(
             (hermes_home_key(), key_cmd), build_command_token_provider(key_cmd, str(entry.get("name") or provider_id)))
         api_key = materialize_probe_api_key(token_source)
@@ -95,7 +95,7 @@ def relay_probe_api_key(provider_id: str, relay: str, api_key: str, cred_base_ur
     resolves, so a ``model.base_url`` on another origin (stale or edited) must not receive it.
     """
     from hermes_cli.auth import is_known_auth_provider
-    from utils import base_url_origin
+    from hermes_agent.utils import base_url_origin
 
     if not api_key or is_known_auth_provider(provider_id):
         return api_key

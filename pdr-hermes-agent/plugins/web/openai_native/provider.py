@@ -44,7 +44,7 @@ def has_codex_credentials() -> bool:
     exception so a corrupted auth store cannot block other availability scans.
     """
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         auth_path = get_hermes_home() / "auth.json"
         if not auth_path.exists():

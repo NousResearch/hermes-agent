@@ -7,7 +7,7 @@ import pytest
 def _write_config(tmp_path, config: dict) -> None:
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
     (hermes_home / "config.yaml").write_text(yaml.safe_dump(config))
 
 

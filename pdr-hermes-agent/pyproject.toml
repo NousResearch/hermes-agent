@@ -73,7 +73,7 @@ dependencies = [
   # Responses API resource is exercised from a non-main thread, which is the
   # codex_responses dispatch in agent/chat_completion_helpers.py:_call.
   "pydantic==2.14.1; python_version >= '3.14'",
-  # Interactive CLI (prompt_toolkit is used directly by cli.py)
+  # Interactive CLI (prompt_toolkit is used directly by hermes_agent/cli.py)
   "prompt_toolkit==3.0.53; python_version >= '3.14'",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter==6.2.4; python_version >= '3.14'",
@@ -200,7 +200,7 @@ dependencies = [
   # processes), pinning ``agent.log`` at the 5 MiB threshold and spamming
   # stderr on every emit (see #44873). ``concurrent-log-handler`` wraps the
   # rename in a cross-process file lock (via ``portalocker``: pywin32 on
-  # Windows) so only one process rotates at a time. ``hermes_logging.py``
+  # Windows) so only one process rotates at a time. ``hermes_agent/hermes_logging.py``
   # aliases it ONLY on Windows — POSIX renames an open file fine, so stdlib
   # already works there and managed-mode perms depend on its exact lifecycle.
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
@@ -607,12 +607,12 @@ opt-in-extras = ["kittentts"]
 # must exist; an update to a tree that lacks one is refused. A change that moves one of these
 # files updates its path here.
 update-startup-files = [
-  "hermes_bootstrap.py", "hermes_cli/_parser.py", "hermes_cli/_launchers.py",
+  "hermes_agent/hermes_bootstrap.py", "hermes_cli/_parser.py", "hermes_cli/_launchers.py",
   "hermes_cli/_early_recovery.py", "hermes_cli/update_lock.py", "hermes_cli/update_custody.py",
   "hermes_cli/update_handoff.py", "hermes_cli/venv_sync.py", "pm/__init__.py", "pm/environments.py",
   "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
-  "hermes_cli/web_server.py", "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
-  "hermes_constants.py", "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py",
+  "hermes_cli/web_server.py", "hermes_agent/cli.py", "hermes_agent/run_agent.py", "hermes_agent/model_tools.py", "hermes_agent/toolsets.py",
+  "hermes_agent/hermes_constants.py", "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py",
   "hermes_agent/compat/finder.py", "hermes_agent/compat/moves.py",
 ]
 
@@ -739,6 +739,7 @@ include = [
 
 [tool.setuptools.package-data]
 hermes_cli = [
+  "data/cli-config.yaml.example",
   "observability/schemas/*.json",
   "data/*.json",
   "local_runtime/*.json",

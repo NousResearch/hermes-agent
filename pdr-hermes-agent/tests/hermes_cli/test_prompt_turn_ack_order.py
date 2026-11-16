@@ -16,7 +16,7 @@ import pytest
     ("_handle_init_command", "/init", None),
 ])
 def test_prompt_turn_ack_paints_through_cprint_before_the_turn_is_queued(handler, arg, needle, monkeypatch, capsys):
-    import cli
+    from hermes_agent import cli
     from hermes_cli.cli_commands_mixin import CLICommandsMixin
     events = []
     monkeypatch.setattr(cli, "_pt_app_is_running", lambda: True)

@@ -19,7 +19,7 @@ ONE reusable wire client on the agent, keyed by the effective client kwargs:
 
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 class _StubClient:

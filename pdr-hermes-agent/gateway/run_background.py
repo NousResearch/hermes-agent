@@ -41,7 +41,7 @@ class GatewayBackgroundMixin:
             _checkpoint_agent_kwargs, _current_max_iterations, _load_gateway_config,
             _platform_config_key,
         )
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         media_urls = media_urls or []
         media_types = media_types or []
         adapter = self._delivery_adapter_for(source)

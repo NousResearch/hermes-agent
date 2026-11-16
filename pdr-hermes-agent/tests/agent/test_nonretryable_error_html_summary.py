@@ -17,8 +17,8 @@ terminal path is taken, ``result['error']`` is a short, HTML-free summary.
 
 from unittest.mock import MagicMock, patch
 
-import run_agent
-from run_agent import AIAgent
+from hermes_agent import run_agent
+from hermes_agent.run_agent import AIAgent
 
 
 # A representative Cloudflare "managed challenge" body, matching the shape the
@@ -55,8 +55,8 @@ def _make_agent() -> AIAgent:
     # validation ``ValueError`` *before* any API call, so the test passed
     # without ever touching the 403 summarization path.
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(

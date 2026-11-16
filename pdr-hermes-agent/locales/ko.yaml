@@ -3355,7 +3355,7 @@ cli:
     header: "(^_^)b 사용 가능한 도구 세트"
     currently_enabled_legend: "(*) = 현재 활성화됨"
     tip_enable_all: "팁: 모든 도구 세트를 활성화하려면 'all' 또는 '*'를 사용하세요"
-    example: "예시: python cli.py --toolsets web,terminal"
+    example: "예시: python -m hermes_agent.cli --toolsets web,terminal"
   usage:
     unknown_subcommand: "알 수 없는 /usage 하위 명령: {args}. /usage 또는 /usage reset [--force]를 사용해 보세요."
     reset_wrong_provider: "적립된 사용량 초기화는 openai-codex 제공자에서만 사용할 수 있어요."
@@ -3931,7 +3931,7 @@ tips:
   t330: "GATEWAY_PROXY_URL은 분리 구성을 실행해요: 플랫폼 I/O는 로컬에서, 에이전트 작업은 원격 API 서버에 위임해요."
   t331: "MATRIX_DEVICE_ID는 E2EE용 장치 ID를 고정해요 — 없으면 시작할 때마다 키가 바뀌어 과거 메시지 복호화가 깨져요."
   t332: "TELEGRAM_WEBHOOK_URL을 설정하면 TELEGRAM_WEBHOOK_SECRET이 반드시 필요해요 — openssl rand -hex 32로 생성하세요."
-  t333: "batch_runner.py --resume은 완료된 프롬프트를 텍스트 내용으로 매칭해서 데이터셋 순서가 바뀌어도 끝난 작업을 다시 실행하지 않아요."
+  t333: "hermes_agent/batch_runner.py --resume은 완료된 프롬프트를 텍스트 내용으로 매칭해서 데이터셋 순서가 바뀌어도 끝난 작업을 다시 실행하지 않아요."
   t334: "/new는 그 자리에서 새 세션을 시작해요 (별칭 /reset) — 새 세션 ID, 깨끗한 기록, CLI는 그대로 열려 있어요."
   t335: "/clear는 터미널 화면을 지우고 동시에 새 세션을 시작해요 — 한 번에 시각적으로 초기화하는 단축키예요."
   t336: "/history는 CLI를 벗어나지 않고 현재 대화를 바로 출력해요 — 빠르게 다시 읽어볼 때 유용해요."

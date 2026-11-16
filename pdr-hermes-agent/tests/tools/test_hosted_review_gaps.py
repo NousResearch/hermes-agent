@@ -54,7 +54,7 @@ def test_hosted_agents_sharing_a_task_id_keep_their_own_file_bookkeeping(provide
 
 
 def test_hosted_scope_is_offered_only_its_allowlist(provider):
-    from model_tools import get_tool_definitions
+    from hermes_agent.model_tools import get_tool_definitions
     from tools.hosted_tool_policy import HOSTED_TOOL_ALLOWLIST
 
     local = {t["function"]["name"] for t in get_tool_definitions(quiet_mode=True)}  # fills the memo first

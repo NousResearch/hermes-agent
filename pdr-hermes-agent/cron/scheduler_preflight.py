@@ -135,7 +135,7 @@ def _credential_store_scope_label() -> str:
     stored" that cannot be told apart from a real login gap (#116213).
     """
     from hermes_cli.profiles import get_active_profile_name
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return f"[profile '{get_active_profile_name() or 'default'}', HERMES_HOME {get_hermes_home()}]"
 
 
@@ -161,7 +161,7 @@ def _primary_route_tables_for_current_home():
     dispatch table from different reads. ``([], [])`` if this IS the primary home; ``([], None)``
     if the read fails — no route then lends the shared bot (fail closed)."""
     try:
-        from hermes_constants import get_default_hermes_root, get_hermes_home
+        from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home
         primary_home = get_default_hermes_root()
         current_home = _sched.Path(get_hermes_home())
         if (
@@ -434,7 +434,7 @@ def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
     if not requested:
         return None
     from hermes_cli.tools_config import enabled_mcp_server_names
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
     from tools.mcp_tool_discovery import mcp_server_reconnecting
     missing = [name for name in requested
                if name in enabled_mcp_server_names(cfg) and not resolve_toolset(name)]

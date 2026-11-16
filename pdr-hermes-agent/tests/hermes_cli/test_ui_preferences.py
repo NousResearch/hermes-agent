@@ -137,7 +137,7 @@ def _client(token: bool) -> TestClient:
 
 
 def test_the_webapp_reads_and_writes_the_machine_store_behind_the_session_gate(webapp_state):
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     store = get_default_hermes_root() / "ui-preferences.json"
     anonymous = _client(token=False)

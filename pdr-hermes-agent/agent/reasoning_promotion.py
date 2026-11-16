@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from utils import base_url_host_matches
+from hermes_agent.utils import base_url_host_matches
 
 _ANSWER_IN_REASONING_CAPABILITY = "answer_in_reasoning"
 _NEMOTRON_PARSER_MODEL_MARKER = "nemotron-3.5-lightning"

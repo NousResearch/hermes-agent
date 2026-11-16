@@ -27,7 +27,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_bootstrap
+from hermes_agent import hermes_bootstrap
 
 
 class RecordingAgent:
@@ -58,7 +58,7 @@ class RecordingAgent:
         cls.instances = []
 
     @classmethod
-    def use(cls, monkeypatch, *, where="run_agent.AIAgent", fail=False):
+    def use(cls, monkeypatch, *, where="hermes_agent.run_agent.AIAgent", fail=False):
         cls.reset()
         monkeypatch.setattr(where, cls)
         return cls
@@ -71,8 +71,8 @@ class TestBatchRunnerClosesAgent:
     CONFIG = {"model": "m", "max_iterations": 1, "distribution": "d", "verbose": False}
 
     def test_agent_closed_after_successful_prompt(self, monkeypatch):
-        import batch_runner
-        RecordingAgent.use(monkeypatch, where="batch_runner.AIAgent")
+        from hermes_agent import batch_runner
+        RecordingAgent.use(monkeypatch, where="hermes_agent.batch_runner.AIAgent")
         monkeypatch.setattr(batch_runner, "sample_toolsets_from_distribution", lambda name: [])
 
         result = batch_runner._process_single_prompt(0, {"prompt": "hi"}, 0, self.CONFIG)
@@ -82,7 +82,7 @@ class TestBatchRunnerClosesAgent:
         assert RecordingAgent.instances[0].closed
 
     def test_agent_closed_when_run_fails(self, monkeypatch):
-        import batch_runner
+        from hermes_agent import batch_runner
 
         class FailingAgent(RecordingAgent):
             def __init__(self, *args, **kwargs):
@@ -91,7 +91,7 @@ class TestBatchRunnerClosesAgent:
 
         FailingAgent.reset()
         FailingAgent.instances = []
-        monkeypatch.setattr("batch_runner.AIAgent", FailingAgent)
+        monkeypatch.setattr("hermes_agent.batch_runner.AIAgent", FailingAgent)
         monkeypatch.setattr(batch_runner, "sample_toolsets_from_distribution", lambda name: [])
 
         result = batch_runner._process_single_prompt(0, {"prompt": "hi"}, 0, self.CONFIG)
@@ -108,7 +108,7 @@ class TestFeishuCommentClosesAgent:
         from plugins.platforms.feishu import feishu_comment
 
         RecordingAgent.reset()
-        monkeypatch.setattr("run_agent.AIAgent", RecordingAgent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", RecordingAgent)
         monkeypatch.setattr(feishu_comment, "_resolve_model_and_runtime", lambda: ("m", {}))
         # session_key="" keeps the cross-card history cache out of the test.
         response = feishu_comment._run_comment_agent("hi", client=None, session_key="")
@@ -129,7 +129,7 @@ class TestFeishuCommentClosesAgent:
                 super().__init__(*args, **kwargs)
 
         FailingAgent.instances = []
-        monkeypatch.setattr("run_agent.AIAgent", FailingAgent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FailingAgent)
         monkeypatch.setattr(feishu_comment, "_resolve_model_and_runtime", lambda: ("m", {}))
         response = feishu_comment._run_comment_agent("hi", client=None, session_key="")
         assert response == ""
@@ -179,7 +179,7 @@ class TestPromptBackgroundClosesAgent:
 
         monkeypatch.setattr(server, "_spawn_side_agent", fake_spawn)
         agent_cls.reset()
-        monkeypatch.setattr("run_agent.AIAgent", agent_cls)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", agent_cls)
 
         response = server._methods["prompt.background"](
             1, {"session_id": sid, "text": "do work"})
@@ -224,7 +224,7 @@ class TestPromptBackgroundClosesAgent:
 
 
 def _make_cli():
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     cli = HermesCLI.__new__(HermesCLI)
     cli._background_task_counter = 0
@@ -252,9 +252,9 @@ class TestCliBackgroundCommandClosesAgent:
     def _run_bg(self, monkeypatch, agent_cls):
         cli = _make_cli()
         agent_cls.reset()
-        monkeypatch.setattr("run_agent.AIAgent", agent_cls)
-        for target in ("cli.set_sudo_password_callback", "cli.set_approval_callback",
-                       "cli.set_secret_capture_callback",
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", agent_cls)
+        for target in ("hermes_agent.cli.set_sudo_password_callback", "hermes_agent.cli.set_approval_callback",
+                       "hermes_agent.cli.set_secret_capture_callback",
                        "agent.vault_backends.unlock.set_code_prompt_callback",
                        "agent.vault_backends.unlock.set_save_login_prompt_callback",
                        "agent.vault_backends.unlock.set_unlock_prompt_callback"):

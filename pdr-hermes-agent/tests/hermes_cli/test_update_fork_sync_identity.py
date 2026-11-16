@@ -218,8 +218,8 @@ def test_a_broken_upstream_target_is_refused_before_the_second_move(tmp_path, mo
 
     clone, commits = _fork_behind_upstream(tmp_path, monkeypatch)
     upstream = tmp_path / "upstream"
-    (upstream / "hermes_constants.py").write_text("def broken(:\n", encoding="utf-8")
-    _git(upstream, "add", "hermes_constants.py")
+    (upstream / "hermes_agent/hermes_constants.py").write_text("def broken(:\n", encoding="utf-8")
+    _git(upstream, "add", "hermes_agent/hermes_constants.py")
     _git(upstream, "commit", "-qm", "broken c3")
     update_cmd_commit.begin_update_attempt()
     try:
@@ -227,6 +227,6 @@ def test_a_broken_upstream_target_is_refused_before_the_second_move(tmp_path, mo
             _sync_with_upstream_if_needed(["git"], clone, assume_yes=True)
     finally:
         update_cmd_commit.begin_update_attempt()
-    assert refused.value.path == "hermes_constants.py"
+    assert refused.value.path == "hermes_agent/hermes_constants.py"
     assert _git(clone, "rev-parse", "HEAD") == commits[1]
     assert not interrupted_pull_marker(clone).exists()

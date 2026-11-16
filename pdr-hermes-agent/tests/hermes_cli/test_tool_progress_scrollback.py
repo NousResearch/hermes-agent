@@ -48,7 +48,7 @@ def _make_cli(tool_progress="all", verbose=_UNSET):
     }
     with patch.dict(sys.modules, prompt_toolkit_stubs), \
          patch.dict("os.environ", clean_env, clear=False):
-        import cli as mod
+        from hermes_agent import cli as mod
         mod = importlib.reload(mod)
         _cli_mod = mod
         with patch.object(mod, "get_tool_definitions", return_value=[]), \
@@ -61,7 +61,7 @@ def _make_cli(tool_progress="all", verbose=_UNSET):
     # DROPS ``cli`` when this was the first import. The mixin handlers resolve
     # ``_cprint`` via a lazy ``from cli import ...``, so ``cli`` must stay
     # registered for ``patch.object(_cli_mod, "_cprint")`` to intercept.
-    sys.modules["cli"] = mod
+    sys.modules["hermes_agent.cli"] = mod
     return inst
 
 
@@ -87,10 +87,10 @@ class TestToolProgressScrollback:
         cli = _make_cli(tool_progress="all")
         with patch.object(_cli_mod, "_cprint") as mock_print:
             # First call
-            cli._on_tool_progress("tool.started", "read_file", "cli.py", {"path": "cli.py"})
+            cli._on_tool_progress("tool.started", "read_file", "hermes_agent/cli.py", {"path": "hermes_agent/cli.py"})
             cli._on_tool_progress("tool.completed", "read_file", None, None, duration=0.1, is_error=False)
             # Second call (same tool)
-            cli._on_tool_progress("tool.started", "read_file", "run_agent.py", {"path": "run_agent.py"})
+            cli._on_tool_progress("tool.started", "read_file", "hermes_agent/run_agent.py", {"path": "hermes_agent/run_agent.py"})
             cli._on_tool_progress("tool.completed", "read_file", None, None, duration=0.2, is_error=False)
 
         assert mock_print.call_count == 2

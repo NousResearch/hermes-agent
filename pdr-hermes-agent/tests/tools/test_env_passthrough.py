@@ -2,7 +2,7 @@
 
 import os
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 from agent import secret_scope as ss
 import tools.env_passthrough as _ep_mod

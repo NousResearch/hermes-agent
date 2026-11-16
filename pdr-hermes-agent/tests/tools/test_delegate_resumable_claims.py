@@ -31,7 +31,7 @@ def _set_row(parent, sid, **cols):
 
 def test_a_resumable_outcome_without_a_durable_record_is_pruned_as_before(tmp_path, monkeypatch):
     """No record (its write failed): nothing pins the tree, so the stop prunes it as main did."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from tools.delegate_tool import delegate_task
     from tools.terminal_tool import get_session_cwd, record_session_cwd
 
@@ -59,7 +59,7 @@ def test_a_resumable_outcome_without_a_durable_record_is_pruned_as_before(tmp_pa
     parent = _parent()
     parent._current_task_id = "parent-task"
     record_session_cwd("parent-task", str(repo))
-    with patch("run_agent.AIAgent", side_effect=build):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=build):
         out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}], background=True, parent_agent=parent))
         _completion(out["delegation_id"])
     assert os.path.realpath(cwds[0]) != os.path.realpath(repo)  # isolation engaged
@@ -100,7 +100,7 @@ def test_a_finished_tool_call_checkpoints_the_running_childs_cwd(tmp_path, monke
         child.run_conversation.side_effect = run_conversation
         return child
 
-    with patch("run_agent.AIAgent", side_effect=build):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=build):
         out = json.loads(delegate_task(tasks=[{"goal": "cd"}], background=True, parent_agent=parent))
         _completion(out["delegation_id"])
     assert mid_run == {out["subagent_ids"][0]: ("running", os.path.realpath(moved))}
@@ -109,7 +109,7 @@ def test_a_finished_tool_call_checkpoints_the_running_childs_cwd(tmp_path, monke
 @pytest.mark.parametrize("reason", ["billing", None])
 def test_a_resumable_isolated_child_keeps_its_worktree_and_continues_in_it(tmp_path, reason):
     """A usage limit (AUTO_AT) or a provider failure (ON_FIX) keeps the child's isolation tree for the continue."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from tools.delegate_tool import delegate_task
     from tools.terminal_tool import get_session_cwd, record_session_cwd
 
@@ -143,7 +143,7 @@ def test_a_resumable_isolated_child_keeps_its_worktree_and_continues_in_it(tmp_p
     parent = _parent()
     parent._current_task_id = "parent-task"
     record_session_cwd("parent-task", str(repo))
-    with patch("run_agent.AIAgent", side_effect=build):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=build):
         out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}], background=True, parent_agent=parent))
         done = _completion(out["delegation_id"])
         sid = out["subagent_ids"][0]
@@ -171,7 +171,7 @@ def test_a_continue_racing_onto_the_durable_row_does_not_run_the_child_twice(mon
     from tools.delegate_tool_registry import _recent_subagents
 
     parent = _parent()
-    with patch("run_agent.AIAgent", side_effect=_ScriptedModel()):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=_ScriptedModel()):
         sid, _ = _spawn(parent, "write the parser")
 
     real_claim, raced = resumable.claim, []
@@ -198,7 +198,7 @@ def test_a_continue_that_fails_before_its_run_records_itself_hands_the_claim_bac
     parent = _parent()
     model = _ScriptedModel()
     real_lease = dt._lease_child_credential
-    with patch("run_agent.AIAgent", side_effect=model):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model):
         sid, _ = _spawn(parent, "write the parser")
         _forget_process_state()
         with patch.object(dt, "_lease_child_credential", side_effect=RuntimeError("pool gone")):
@@ -223,7 +223,7 @@ def test_claim_reclaims_a_row_whose_owner_died_after_boot_recovery(owner):
 
     parent = _parent()
     model = _ScriptedModel()
-    with patch("run_agent.AIAgent", side_effect=model):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model):
         sid, _ = _spawn(parent, "write the parser")
         pid = _DEAD_PID if owner == "dead" else os.getpid()
         _set_row(parent, sid, state="running", owner_pid=pid,
@@ -242,7 +242,7 @@ def test_claim_reclaims_a_row_whose_owner_died_after_boot_recovery(owner):
 
 def test_boot_recovery_holds_no_write_lock_while_it_probes_git(monkeypatch):
     import tools.delegate_tool_resumable as resumable
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state import SessionDB
     from tools.async_delegation import recover_abandoned_delegations
 
@@ -306,7 +306,7 @@ def test_a_continue_resumes_the_childs_newest_conversation_segment(stopped):
         return child
 
     parent = _parent()
-    with patch("run_agent.AIAgent", side_effect=build):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=build):
         sid, _ = _spawn(parent, "write the parser")
         old, new = rotated[0]
         if stopped == "crashed":  # the stop record never landed: the row still names the first segment
@@ -328,7 +328,7 @@ def test_a_continue_resumes_the_childs_newest_conversation_segment(stopped):
 
 def test_each_profiles_pins_obey_that_profiles_own_cap():
     import tools.delegate_tool_resumable as resumable
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state import SessionDB
 
     default = get_hermes_home()

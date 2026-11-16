@@ -1,23 +1,23 @@
-# hermes_cli/ + cli.py — CLI, slash commands, config, skins, updater, profiles
+# hermes_cli/ + hermes_agent/cli.py — CLI, slash commands, config, skins, updater, profiles
 
 Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/cli-internals.md`.
 
 ## CLI architecture
 
-`cli.py` holds `HermesCLI` (REPL loop, config, slash dispatch); behaviour lives in mixins
+`hermes_agent/cli.py` holds `HermesCLI` (REPL loop, config, slash dispatch); behaviour lives in mixins
 `hermes_cli/cli_commands_mixin.py`, `cli_stream_mixin.py`, `cli_status_bar_mixin.py`,
 `cli_billing_mixin.py`, `cli_tui_mixin.py` (widgets, keybindings, panels), `cli_tui_runtime_mixin.py`
 (run-loop phases: input dispatch, startup, signals, shutdown), `cli_init_mixin.py` (the `__init__`
-phases), ... Module-level helpers live in topical siblings that `cli.py` re-exports:
+phases), ... Module-level helpers live in topical siblings that `hermes_agent/cli.py` re-exports:
 `cli_config_load.py` (defaults + YAML merge, env mirroring), `cli_render.py` (ANSI/skin colours,
 light mode, markdown, `_cprint`, panel wrap), `cli_terminal_input.py` (file drops, paste/Enter-key
 sequences, CPR guards), `cli_shutdown.py` (exit watchdog, cleanup steps, one-shot finalize),
 `cli_single_query.py` (`-q` runner, exit codes, kanban loops), `cli_auto_maintenance.py` (state-db/checkpoint maintenance).
 Moved bodies late-bind cli-level names via `from cli import ...` at call time, so patch seams on the
 `cli` facade still intercept them; mutable module state (`_cleanup_done`, `_OUTPUT_HISTORY`,
-`_LIGHT_MODE_CACHE`, ...) and every `global`-writing function stay in `cli.py`. **Rich** renders banner/panels; **prompt_toolkit**
+`_LIGHT_MODE_CACHE`, ...) and every `global`-writing function stay in `hermes_agent/cli.py`. **Rich** renders banner/panels; **prompt_toolkit**
 handles input + autocomplete; `KawaiiSpinner` (`agent/display.py`) animates API calls and prints
-the `┊` activity feed. `load_cli_config()` in `cli.py` merges CLI defaults + user YAML.
+the `┊` activity feed. `load_cli_config()` in `hermes_agent/cli.py` merges CLI defaults + user YAML.
 
 `hermes_cli/gateway.py` is the `hermes gateway` facade (process discovery, PM-aware systemd unit
 generation/refresh, command dispatch); topical siblings re-exported by the facade include
@@ -57,7 +57,7 @@ relevant `cli_*_mixin.py` (picked up by convention) or an explicit `_SLASH_DISPA
 gateway, `_handle_mycommand_command(self, event)` on the matching `gateway/slash_commands_*.py`
 mixin and list it in `_IDLE_COMMANDS` (or `_PLAIN_COMMANDS` if it must work mid-run) in
 `gateway/run_busy.py` — handlers resolve by name via `_command_handler_table`; (4) persistent
-settings via `save_config_value()` in `cli.py`. **Adding an alias** = add to `aliases`; every
+settings via `save_config_value()` in `hermes_agent/cli.py`. **Adding an alias** = add to `aliases`; every
 surface updates automatically. Commands that mutate system-prompt state default to deferred
 invalidation with `--now` opt-in (root invariant).
 
@@ -97,7 +97,7 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
   path (#92554). The commented example blocks are appended only when the file is created.
 - **Reads** too go only through `config_backend.py`; see `developer-guide/config-backend.md`.
   In daemon, RPC and tick code catch `ConfigBackendUnavailable` explicitly: it is a `SystemExit`, so `except Exception` won't stop it.
-- **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
+- **Three loaders — know which you're in:** `load_cli_config()` (CLI, `hermes_agent/cli.py`); `load_config()`
   (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
   `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via
   `gateway/run.py::_load_gateway_config`, TUI gateway `_load_cfg`, cron, `hermes send`, doctor,
@@ -122,7 +122,7 @@ Skins are **pure data** (`SkinConfig`); no code change to add one. `init_skin_fr
 from `default`). Built-ins in `_BUILTIN_SKINS`: `default`, `ares`, `mono`, `slate`. Keys: `colors.*`
 (banner border/title/accent/dim/text, response_border), `spinner.*` (waiting/thinking faces,
 thinking_verbs, wings), `tool_prefix`, `tool_emojis`, `branding.*` (agent_name, welcome,
-response_label, prompt_symbol). Consumers: `banner.py`, `display.py`, `cli.py`. Key-by-key table
+response_label, prompt_symbol). Consumers: `banner.py`, `display.py`, `hermes_agent/cli.py`. Key-by-key table
 and YAML template: `website/docs/user-guide/features/skins.md`.
 
 ## Update pipeline (`hermes update`)

@@ -81,7 +81,7 @@ def build_status_fields(
     ``home`` is an explicit owning-profile path for multiplexed surfaces; omitted callers keep
     the process/current-profile lookup.
     """
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
 
     meta = meta or {}
     if created is None or last_activity is None:

@@ -105,7 +105,7 @@ def _openrouter_row(usage_rows: list[dict]) -> dict:
 def test_multi_entry_pool_reports_per_account_rows(monkeypatch, tmp_path):
     """>=2 pool entries → ``usage.accounts`` (never a provider-wide ``windows`` gauge), one row
     per credential with its own cached windows, plus a background refresh per account."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "a"))
     _write_pool(tmp_path / "a", "openrouter", [

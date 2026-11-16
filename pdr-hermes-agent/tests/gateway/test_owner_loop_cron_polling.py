@@ -103,7 +103,7 @@ async def test_cron_owner_polls_keep_the_loop_ticking_on_slow_storage(tmp_path, 
 @pytest.mark.asyncio
 async def test_cron_receipt_journal_fsync_keeps_the_loop_ticking(tmp_path, monkeypatch):
     """``observe``'s journal ``save()`` (atomic write + file and directory fsync) runs off the loop."""
-    import utils
+    from hermes_agent import utils
     from cron.scheduler_authority import run_canonical_job
 
     def run_job(job, *, extra_prompt, execution_id, cancel_event):

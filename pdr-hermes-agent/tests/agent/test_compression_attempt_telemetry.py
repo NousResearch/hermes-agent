@@ -296,7 +296,7 @@ def test_in_place_commit_preserves_seeded_telemetry_fields(caplog):
 
     with tempfile.TemporaryDirectory() as tmp:
         from hermes_state import SessionDB
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         db = SessionDB(db_path=Path(tmp) / "t.db")
         sid = "20260920_234956_0c74e527"
@@ -380,7 +380,7 @@ def test_a_lock_contended_call_keeps_the_running_attempts_telemetry(tmp_path):
     db.create_session("S", source="cli")
     assert db.try_acquire_compression_lock("S", "winner", ttl_seconds=60)
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,

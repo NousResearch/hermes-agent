@@ -88,7 +88,7 @@ def test_a_session_retry_for_another_account_does_not_re_mint_the_open_one(monke
                    history_lock=threading.Lock(), history_version=0, running=False, attached_images=[],
                    source="desktop")
     monkeypatch.setitem(server._sessions, "alias-sid", session)
-    monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
+    monkeypatch.setattr("hermes_agent.model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
     operation = ConnectionOperation([Target("gmail", "connector", "connect", alias="home")], session_key="alias-sid")
     live.open(operation)
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/1")
@@ -127,7 +127,7 @@ def test_a_session_retry_with_the_open_accounts_id_reissues_it(monkeypatch):
                    history_lock=threading.Lock(), history_version=0, running=False, attached_images=[],
                    source="desktop")
     monkeypatch.setitem(server._sessions, "retry-sid", session)
-    monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
+    monkeypatch.setattr("hermes_agent.model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
     operation = ConnectionOperation([Target("gmail", "connector", "reconnect", alias="work")], session_key="retry-sid")
     live.open(operation)
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/1",

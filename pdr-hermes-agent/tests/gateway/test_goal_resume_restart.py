@@ -39,7 +39,7 @@ def hermes_home(tmp_path, monkeypatch):
     # this process would silently point the goals DB at a dead tmp
     # dir and make resume enqueue nothing (CI-only flake). Pin the
     # override to THIS home so the fixture is immune to leaks.
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -79,7 +79,7 @@ def _exhaust_budget(session_id: str, goal_text: str = "ship the benchmark"):
 
 
 def _make_cli(session_id: str):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     cli = HermesCLI.__new__(HermesCLI)
     cli._pending_input = queue.Queue()

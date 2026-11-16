@@ -124,7 +124,7 @@ def _run_handoff(db, session_id, monkeypatch, time_budget=30.0):
     def fake_sleep(secs):
         clock["t"] += max(secs * 4, 2.0)
 
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     with patch.object(gwc, "load_gateway_config", return_value=gw_config), \
          patch("time.time", side_effect=fake_time), \

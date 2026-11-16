@@ -499,7 +499,7 @@ export const sessionCommands: SlashCommand[] = [
             return
           }
 
-          // on/off — mirror cli.py:_enable_voice_mode's 3-line output
+          // on/off — mirror hermes_agent/cli.py:_enable_voice_mode's 3-line output
           if (r.enabled) {
             ctx.transcript.sys(r.tts ? t('slashCmd.session.voice.enabledWithTts') : t('slashCmd.session.voice.enabled'))
             ctx.transcript.sys(t('slashCmd.session.voice.recordHint', recordKeyLabel))

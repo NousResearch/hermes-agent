@@ -80,7 +80,7 @@ keep the poll alive forever.
 | `status: 'failed'`, `reason: 'payment_method_expired'` | `🔴 Your card has expired. Update it on the portal.` | + `Portal:` line. |
 | `status: 'failed'`, `reason: 'card_declined'` | `🔴 Your card was declined. Try another card on the portal.` | + `Portal:` line. |
 | `status: 'failed'`, `reason: 'processing_error'` | `🔴 The charge didn't go through (processing_error).` | + `Portal:` line. |
-| `status: 'failed'`, unrecognized/missing `reason` | `🔴 The charge didn't go through ({reason \|\| 'processing_error'}).` | Same portal funnel — parity with `cli.py`'s `_billing_portal_hint`. |
+| `status: 'failed'`, unrecognized/missing `reason` | `🔴 The charge didn't go through ({reason \|\| 'processing_error'}).` | Same portal funnel — parity with `hermes_agent/cli.py`'s `_billing_portal_hint`. |
 | Poll timeout (still `pending` past the 5-min cap) | `🟡 Still processing after 5 minutes — this is a timeout, not a failure. Check /topup or the portal shortly.` | + `Portal:` line if `portalUrl`. Explicitly NOT called a failure. |
 | Revocation mid-poll (`remote_spending_revoked` / `session_revoked` while polling) | Renders the matching §2 copy, **then** appends: `🟡 Your last charge's outcome is unconfirmed — check your balance/history before retrying.` | CF-7 rule 4: a post-revoke 403 while polling is ambiguous (the charge may have already settled) — never call it "failed". |
 | 429/503 while polling (`rate_limited`/`temporarily_unavailable`/`stripe_unavailable`) | No error shown; backs off using `retry_after` (default 5s, capped at 30s) and keeps polling until the 5-min cap, then reads as timeout. | Not a payment failure. |
@@ -153,7 +153,7 @@ this change on the portal.`
 
 ## Text-mode (CLI) parity
 
-`cli.py`'s `_show_billing` / `_billing_overview` and `_show_subscription` /
+`hermes_agent/cli.py`'s `_show_billing` / `_billing_overview` and `_show_subscription` /
 `_subscription_overview` render the same state shapes (balance title, two-bar
 dollar usage, auto-reload line, card line, monthly cap) and share the
 "fail-open on logged-out/portal-hiccup, never crash" discipline. The CLI's

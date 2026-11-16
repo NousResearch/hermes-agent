@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import cli
+from hermes_agent import cli
 from hermes_cli.auth import AuthError, CODEX_RATE_LIMITED_CODE
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 

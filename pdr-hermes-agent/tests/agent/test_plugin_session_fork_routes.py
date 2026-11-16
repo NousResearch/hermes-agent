@@ -115,12 +115,12 @@ def test_without_a_live_route_the_name_is_the_plugins_own(forks, probe):
 
 def _dispatcher(seen):
     """A real session agent with a live memory provider and context engine."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     names = ("cw_offer", *ROUTED)
     with (
-        patch("model_tools.get_tool_definitions", return_value=[_tool(n) for n in names]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[_tool(n) for n in names]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(api_key="k", base_url="https://openrouter.ai/api/v1", model="test/model",
@@ -180,7 +180,7 @@ def test_unfenced_the_same_calls_reach_the_route_the_predicate_names(probe, path
 def test_the_route_predicate_names_where_the_dispatcher_sends_each_name(probe):
     """Each kind the predicate reports is where dispatch actually goes, and the allowlist drops it."""
     from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
-    from model_tools import handle_function_call
+    from hermes_agent.model_tools import handle_function_call
 
     agent = _wire(SimpleNamespace(_gateway_session_key=""), probe.seen)
     assert {name: pre_registry_route(name, agent) for name in (*ROUTED, "cw_offer")} == {

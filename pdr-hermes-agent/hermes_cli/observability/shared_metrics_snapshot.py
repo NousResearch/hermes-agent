@@ -15,7 +15,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 from . import shared_metrics_contract as contract
 

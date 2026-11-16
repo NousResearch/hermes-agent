@@ -44,7 +44,7 @@ _spillover_pruned_homes: set = set()  # profile home keys already swept this pro
 
 def get_spillover_dir():
     """Return $HERMES_HOME/cache/spillover as a Path (not created)."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / SPILLOVER_SUBDIR
 
 
@@ -171,7 +171,7 @@ def _prune_spillover_once() -> None:
     """Best-effort prune, at most once per process PER PROFILE HOME (CLI-only installs never run
     housekeeping; a multiplexed gateway must sweep every profile's ``cache/spillover``, not just the
     first one that spilled)."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     home_key = hermes_home_key()
     with _spillover_prune_lock:
         if home_key in _spillover_pruned_homes:

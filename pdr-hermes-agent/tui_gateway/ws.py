@@ -87,7 +87,7 @@ _WS_WRITE_TIMEOUT_S = 10.0
 # Max seconds one send_text may await the socket once it is actually running on the loop. A healthy
 # socket returns from send_text without waiting (the frame lands in the transport buffer); only kernel
 # backpressure parks it, so a GIL/loop stall cannot start this clock. Deliberately 3x the worker wait
-# above and under the client's 45s heartbeat deadline (apps/shared json-rpc-gateway): a peer that
+# above and under the client's 45s heartbeat deadline (ui-tui/packages/shared json-rpc-gateway): a peer that
 # cannot drain ~48 KiB in 30s is gone, and closing here starts its reconnect instead of leaving every
 # later frame and RPC reply parked behind the writer lock (#106369).
 _WS_SEND_DEADLINE_S = 30.0

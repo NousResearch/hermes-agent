@@ -1,5 +1,5 @@
 """``platform_toolsets`` rows for plugin platforms (teams, google_chat, homeassistant) that the installers
-seeded from cli-config.yaml.example: inert until the plugin loads, so they must not log the #38798
+seeded from hermes_cli/data/cli-config.yaml.example: inert until the plugin loads, so they must not log the #38798
 "no valid toolsets" error, while a genuinely invalid row still does."""
 
 import json
@@ -7,7 +7,7 @@ import logging
 
 import pytest
 
-# The rows cli-config.yaml.example seeded into every install (install.sh, install.ps1, the Docker hook,
+# The rows hermes_cli/data/cli-config.yaml.example seeded into every install (install.sh, install.ps1, the Docker hook,
 # `hermes doctor --fix`), plus Home Assistant's from before it left core. None of these platforms is set up.
 _SEEDED_ROWS = {
     "cli": ["hermes-cli"],
@@ -38,7 +38,7 @@ def _fresh_warning_latch():
 
 def test_seeded_plugin_platform_rows_log_nothing_on_schema_build(caplog):
     """The kanban gate runs on every schema build and skills scan and resolves every saved row."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from tools.kanban_tools import _profile_has_kanban_toolset
 
     _write_config(get_hermes_home(), _SEEDED_ROWS)
@@ -49,7 +49,7 @@ def test_seeded_plugin_platform_rows_log_nothing_on_schema_build(caplog):
 
 
 def test_invalid_plugin_platform_row_still_warns(caplog):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from tools.kanban_tools import _profile_has_kanban_toolset
 
     _write_config(get_hermes_home(), {"cli": ["hermes-cli"], "teams": ["hermes-tems"]})
@@ -64,8 +64,8 @@ def test_seeded_config_rows_need_no_plugin():
     """A config.yaml seeded the way the installers seed it names only toolsets that resolve without any
     plugin loaded: a plugin platform falls back to ``hermes-<platform>`` on its own."""
     from hermes_cli.config import read_raw_config, seed_config_file
-    from hermes_constants import get_hermes_home
-    from toolsets import validate_toolset
+    from hermes_agent.hermes_constants import get_hermes_home
+    from hermes_agent.toolsets import validate_toolset
 
     assert seed_config_file(get_hermes_home() / "config.yaml") is True
     rows = read_raw_config().get("platform_toolsets") or {}

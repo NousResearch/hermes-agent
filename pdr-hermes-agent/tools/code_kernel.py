@@ -295,7 +295,7 @@ class CellAuthority:
         return self.ctx.run(self._invoke, tool_name, tool_args)
 
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
-        from model_tools import handle_function_call
+        from hermes_agent.model_tools import handle_function_call
         from tools.file_tools_read_tracking import programmatic_file_read
         previous = None
         if self._callbacks:
@@ -620,7 +620,7 @@ def _bind_rpc_socket(kernel: SessionKernel) -> str:
         host, port = server_sock.getsockname()[:2]
         rpc_endpoint = f"tcp://{host}:{port}"
     else:
-        from hermes_constants import socket_safe_tmpdir
+        from hermes_agent.hermes_constants import socket_safe_tmpdir
         sock_tmpdir = socket_safe_tmpdir()
         rpc_endpoint = kernel.sock_path = os.path.join(sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

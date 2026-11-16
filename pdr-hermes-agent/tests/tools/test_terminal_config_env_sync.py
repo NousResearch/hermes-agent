@@ -4,7 +4,7 @@ terminal_tool._get_env_config() reads ALL terminal settings from os.environ
 (TERMINAL_*).  config.yaml values therefore have to be bridged into env vars
 at startup, by THREE separate code paths:
 
-  1. cli.py            -> ``env_mappings`` dict (CLI / TUI startup)
+  1. hermes_agent/cli.py            -> ``env_mappings`` dict (CLI / TUI startup)
   2. gateway/run.py    -> ``_terminal_env_map`` dict (gateway / messaging
                           platforms)
   3. hermes_cli/config.py:set_config_value
@@ -18,7 +18,7 @@ for ``docker_run_as_host_user`` (gateway and CLI maps) and once for
 
 This test guards against future drift by driving the gateway bridge with
 every known ``terminal.*`` key and comparing the env var it writes against
-cli.py's map; the config-set path is checked for key coverage only.
+hermes_agent/cli.py's map; the config-set path is checked for key coverage only.
 """
 
 import os
@@ -27,7 +27,7 @@ from unittest.mock import patch
 
 def _cli_env_map() -> dict[str, str]:
     """terminal config key -> env var bridged by cli.load_cli_config() (via _mirror_config_to_env)."""
-    import cli
+    from hermes_agent import cli
     return dict(cli._TERMINAL_ENV_MAPPINGS)
 
 
@@ -90,13 +90,13 @@ def _save_config_env_sync_keys() -> set[str]:
     return {k for k in hc_config.TERMINAL_CONFIG_ENV_MAP if k != "cwd"}
 
 
-# Keys present in cli.py env_mappings but intentionally absent from
+# Keys present in hermes_agent/cli.py env_mappings but intentionally absent from
 # gateway/run.py or set_config_value.  Each entry must be justified.
 _CLI_ONLY_OK = frozenset({
-    # `env_type` is a legacy YAML key alias for `backend` that cli.py
+    # `env_type` is a legacy YAML key alias for `backend` that hermes_agent/cli.py
     # accepts for backwards-compat with older cli-config.yaml.  The
     # gateway path normalizes on the canonical `backend` key, which is
-    # also in the map and handles the same bridging.  See cli.py ~line 515.
+    # also in the map and handles the same bridging.  See hermes_agent/cli.py ~line 515.
     "env_type",
     # sudo_password is not a terminal-backend option — it's a credential
     # used across backends, bridged to $SUDO_PASSWORD (not TERMINAL_*).
@@ -106,7 +106,7 @@ _CLI_ONLY_OK = frozenset({
 
 
 def test_cli_and_gateway_env_maps_agree():
-    """cli.py and gateway/run.py must bridge each terminal key to the same env var.
+    """hermes_agent/cli.py and gateway/run.py must bridge each terminal key to the same env var.
 
     Both feed the same downstream consumer (terminal_tool).  Drift between
     them means a config.yaml setting that "works in CLI mode but not gateway
@@ -114,7 +114,7 @@ def test_cli_and_gateway_env_maps_agree():
     """
     cli_map = {k: v for k, v in _cli_env_map().items() if k not in _CLI_ONLY_OK}
     gw_map = _gateway_env_map()
-    # cli.py copies the canonical `backend` key onto the legacy `env_type`
+    # hermes_agent/cli.py copies the canonical `backend` key onto the legacy `env_type`
     # alias before bridging, so the gateway's `backend` is cli's `env_type`.
     gw_map.pop("backend", None)
 
@@ -128,7 +128,7 @@ def test_cli_and_gateway_env_maps_agree():
         f"as docker_run_as_host_user shipping wired in cli but not gateway)."
     )
     assert not missing_in_cli, (
-        f"Keys the gateway bridges but cli.py env_mappings ignores: "
+        f"Keys the gateway bridges but hermes_agent/cli.py env_mappings ignores: "
         f"{missing_in_cli}.  Add them to both maps."
     )
     assert not mismatched, f"Same key bridged to different env vars (cli, gateway): {mismatched}"

@@ -8,7 +8,7 @@ def _bound(fn, instance):
 
 
 def test_prompt_toolkit_model_picker_defers_confirmation_off_key_handler(monkeypatch):
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     result = ModelSwitchResult(
         success=True,

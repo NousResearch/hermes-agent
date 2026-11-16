@@ -170,7 +170,7 @@ def test_client_rpc_sends_correct_envelope_and_parses_response(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# cli.py
+# hermes_agent/cli.py
 # ---------------------------------------------------------------------------
 
 def _build_parser():

@@ -97,7 +97,7 @@ def _stable_api_key() -> str:
             return existing
     key = secrets.token_urlsafe(24)
     try:
-        from utils import atomic_write_text
+        from hermes_agent.utils import atomic_write_text
 
         # mkstemp creates the temp file 0600, so the key is never readable at the process umask.
         atomic_write_text(key_path, key, tmp_prefix=f".{key_path.name}_", mode=0o600)
@@ -277,7 +277,7 @@ class LlamaServerSupervisor:
         import os
         import psutil
         from gateway.status import get_process_start_time
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
 
         proc = psutil.Process(self.proc.pid)
         # create_time stays for runtimes that predate start_time.
@@ -288,7 +288,7 @@ class LlamaServerSupervisor:
                        "owner_create_time": psutil.Process().create_time(),
                        "owner_start_time": get_process_start_time(os.getpid())}
         path = state_path()
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(path.parent)
         atomic_json_write(path, self._state, mode=0o600)
 

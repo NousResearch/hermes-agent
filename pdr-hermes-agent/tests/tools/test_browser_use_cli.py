@@ -140,7 +140,7 @@ class TestToolSurfaceSwap:
 
         entry = registry.get_entry("browser_exec")
         monkeypatch.setattr(entry, "check_fn", lambda: True)
-        import model_tools
+        from hermes_agent import model_tools
 
         defs = model_tools.get_tool_definitions(
             enabled_toolsets=["browser"], quiet_mode=False
@@ -153,7 +153,7 @@ class TestToolSurfaceSwap:
 
         entry = registry.get_entry("browser_exec")
         monkeypatch.setattr(entry, "check_fn", lambda: True)
-        import model_tools
+        from hermes_agent import model_tools
 
         defs = model_tools.get_tool_definitions(
             enabled_toolsets=["browser", "terminal"], quiet_mode=False

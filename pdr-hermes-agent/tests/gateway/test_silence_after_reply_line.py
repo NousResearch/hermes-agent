@@ -45,7 +45,7 @@ def _source():
 
 
 async def _run(monkeypatch, tmp_path, *, queued_reply_expected=None, queued=False, **turn_kwargs):
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(yaml.safe_dump({"display": {}}), encoding="utf-8")
     fake_dotenv = types.ModuleType("dotenv")
@@ -53,7 +53,7 @@ async def _run(monkeypatch, tmp_path, *, queued_reply_expected=None, queued=Fals
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = RecordingAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
     monkeypatch.setattr(RecordingAgent, "seen", [])
     monkeypatch.setattr(RecordingAgent, "instances", [])
 

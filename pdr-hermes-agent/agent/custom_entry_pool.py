@@ -84,8 +84,8 @@ def _warn_withheld_builtin_key(pool_key: str, entry: dict[str, Any], rows: list[
     same-named built-in's keys are bound to another host: before #130410 the entry sent them, so the
     change must not surface only as the endpoint's 401. Keyed by home so one process serving several
     profiles warns each of them. Names the variables and the remedy, never a secret."""
-    from hermes_constants import hermes_home_key
-    from utils import base_url_hostname, same_base_url_origin
+    from hermes_agent.hermes_constants import hermes_home_key
+    from hermes_agent.utils import base_url_hostname, same_base_url_origin
     builtin = builtin_pool_address(pool_key)
     if builtin is None or entry_declares_credential(entry) or not rows or not target:
         return
@@ -116,7 +116,7 @@ def _own_seeded_sources(entry: dict[str, Any]) -> set[str]:
 
 
 def _row_serves(row: Any, own_sources: set[str], target: str, pool_key: str) -> bool:
-    from utils import same_base_url_origin
+    from hermes_agent.utils import same_base_url_origin
     if str(getattr(row, "source", "") or "").strip() in own_sources:
         return True
     url = recorded_address(row, pool_key)
@@ -132,7 +132,7 @@ def builtin_pool_address(pool_key: Optional[str]) -> Optional[str]:
     if not key or key.startswith(CUSTOM_POOL_PREFIX):
         return None
     if key == "openrouter":
-        from hermes_constants import OPENROUTER_BASE_URL
+        from hermes_agent.hermes_constants import OPENROUTER_BASE_URL
         return OPENROUTER_BASE_URL
     from hermes_cli.auth import PROVIDER_REGISTRY
     pconfig = PROVIDER_REGISTRY.get(key)

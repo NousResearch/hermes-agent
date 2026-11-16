@@ -1,6 +1,6 @@
 """Ctrl+S prompt stash — pure state machine for the classic CLI composer.
 
-No prompt_toolkit imports so it can be unit tested directly; ``cli.py`` owns only the keybinding
+No prompt_toolkit imports so it can be unit tested directly; ``hermes_agent/cli.py`` owns only the keybinding
 and the rendering. Newest-first: index 0 is always the most recently stashed draft, so "undo my
 last Ctrl+S" is a single keystroke.
 """

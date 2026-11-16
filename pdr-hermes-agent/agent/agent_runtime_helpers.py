@@ -37,7 +37,7 @@ from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
-from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
+from hermes_agent.utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
 _TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls", "toolcall")
@@ -82,7 +82,7 @@ _UNTERMINATED_TOOL_CALL_PATTERN = re.compile(
 
 def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
-    import run_agent
+    from hermes_agent import run_agent
     return run_agent
 
 
@@ -2424,7 +2424,7 @@ def switch_model(
     # Re-read the per-model reasoning_effort override so it applies immediately (per-model > global;
     # YAML False = disabled).
     try:
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         from hermes_cli.config import load_config as _sm_load_config
         agent.reasoning_config = resolve_reasoning_config(_sm_load_config() or {}, agent.model)
         logger.info(
@@ -2539,7 +2539,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True
-            import model_tools
+            from hermes_agent import model_tools
             return model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
     if skip_tool_execution_middleware:
         return _execute(function_args)
@@ -2661,7 +2661,7 @@ def fill_empty_non_final_wire_payload(msg: dict[str, Any], *, is_final: bool) ->
 
 def _session_id_for_heal_log() -> str:
     try:
-        from hermes_logging import _session_context
+        from hermes_agent.hermes_logging import _session_context
         return str(getattr(_session_context, "session_id", None) or "")
     except Exception:
         return ""

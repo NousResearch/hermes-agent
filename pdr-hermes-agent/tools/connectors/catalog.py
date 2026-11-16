@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli.plugin_install_phase import InstallPhase
-from hermes_constants import get_hermes_home, profile_name_for_home
+from hermes_agent.hermes_constants import get_hermes_home, profile_name_for_home
 from tools.connectors.contract import Actor, SettleReason, TargetState
 from tools.connectors.mcp import _fail, _move
 from tools.connectors.operation import ConnectionOperation, IllegalTransition, Target

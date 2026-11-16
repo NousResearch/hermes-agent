@@ -16,7 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 import pytest
 
 import hermes_cli.plugins as plugins_mod
@@ -649,7 +649,7 @@ def _call(call_id, name, arguments="{}"):
 def _run_turn_with_fork(monkeypatch, *, attempts=None, fork_replies=None, **fork_kwargs):
     """Live turn: calls cw_offer, answers. Its plugin forks the session from post_llm_call; the
     fork (by default) calls cw_other (not whitelisted) and cw_offer, then answers."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     probe = SimpleNamespace(calls=[], events=[], handles=[], prompt="Worth sharing with the team?",
                             attempts=list(attempts or (["cw_offer"],)), fork_kwargs=fork_kwargs)
@@ -671,9 +671,9 @@ def _run_turn_with_fork(monkeypatch, *, attempts=None, fork_replies=None, **fork
     client.chat.completions.create.side_effect = lambda **kw: (requests.append(kw), replies.pop(0))[1]
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     with (
-        patch("model_tools.get_tool_definitions",
+        patch("hermes_agent.model_tools.get_tool_definitions",
               return_value=[_tool("cw_offer"), _tool("cw_other"), _tool("delegate_task")]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI", return_value=client),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
@@ -726,7 +726,7 @@ def test_real_fork_never_reaches_a_delegate_worker(monkeypatch):
     import contextvars
 
     from hermes_cli.plugins import get_pre_tool_call_directive
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tools.terminal_tool import _get_approval_callback, set_approval_callback
 
     delegations: list = []

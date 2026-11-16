@@ -71,7 +71,7 @@ async def test_old_update_card_tapped_after_restart_does_not_answer_the_new_prom
     await after.send_update_prompt(chat_id="12345", prompt="Overwrite config?", session_key=_SESSION)
     response = tmp_path / ".update_response"
     with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False), \
-            patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            patch("hermes_agent.hermes_constants.get_hermes_home", return_value=tmp_path):
         await after._handle_callback_query(_tap(old_yes), MagicMock())
         assert not response.exists(), "the old /update card answered the new prompt"
         new_yes, new_no = _update_card_data(after, "y"), _update_card_data(after, "n")
@@ -89,9 +89,9 @@ async def test_update_card_stays_answerable_when_the_answer_could_not_be_written
     card = _update_card_data(adapter, "y")
     missing = tmp_path / "gone"  # the response write fails: its directory does not exist
     with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-        with patch("hermes_constants.get_hermes_home", return_value=missing):
+        with patch("hermes_agent.hermes_constants.get_hermes_home", return_value=missing):
             await adapter._handle_callback_query(_tap(card), MagicMock())
-        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+        with patch("hermes_agent.hermes_constants.get_hermes_home", return_value=tmp_path):
             await adapter._handle_callback_query(_tap(card), MagicMock())  # the retry still answers
     assert (tmp_path / ".update_response").read_text() == "y"
 
@@ -117,7 +117,7 @@ async def test_old_update_card_cannot_answer_while_the_new_card_awaits_its_send_
     try:
         await asyncio.wait_for(posted.wait(), 2)
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False), \
-                patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+                patch("hermes_agent.hermes_constants.get_hermes_home", return_value=tmp_path):
             await after._handle_callback_query(_tap(old_yes), MagicMock())
         assert not response.exists(), "the old /update card answered while the new card was sending"
     finally:

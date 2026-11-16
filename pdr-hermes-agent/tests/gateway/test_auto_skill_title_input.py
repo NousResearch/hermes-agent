@@ -12,7 +12,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionEntry
 from gateway.turn_context import TurnContext
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 class _TurnObserved(BaseException):

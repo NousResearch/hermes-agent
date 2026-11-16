@@ -18,7 +18,7 @@ import pytest
 
 @pytest.fixture()
 def cli_mod():
-    import cli
+    from hermes_agent import cli
 
     return cli
 

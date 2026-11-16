@@ -15,7 +15,7 @@ from tools.interrupt import set_interrupt
 
 
 def _bare_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent.__new__(AIAgent)
     agent._interrupt_requested = False

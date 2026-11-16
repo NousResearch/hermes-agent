@@ -18,10 +18,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
-from hermes_constants import get_hermes_home
-from utils import atomic_write_text, is_truthy_value
+from hermes_agent.hermes_constants import get_hermes_home
+from hermes_agent.utils import atomic_write_text, is_truthy_value
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     extract_skill_description,
@@ -324,7 +324,7 @@ def _find_skill_in_other_profiles(name: str) -> list[tuple[str, Path]]:
     error can explain a wrong-profile mistake). Fail-quiet."""
     matches: list[tuple[str, Path]] = []
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         root = get_default_hermes_root()
     except Exception:
         return matches
@@ -433,7 +433,7 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     scope, baseline, scan_error = _scan_baseline(skill_dir, target)
     if scan_error:
         return _err(scan_error)
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir, baseline, scope)
@@ -489,7 +489,7 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(skill_dir.parent)
     try:
         skill_dir.mkdir(exist_ok=False)

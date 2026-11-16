@@ -51,7 +51,7 @@ class TestChatVerboseArg:
         fake_skills_sync = types.ModuleType("tools.skills_sync")
         fake_skills_sync.sync_skills = lambda quiet=True: None
 
-        monkeypatch.setitem(sys.modules, "cli", fake_cli)
+        monkeypatch.setitem(sys.modules, "hermes_agent.cli", fake_cli)
         monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
         monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
         monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
@@ -86,7 +86,7 @@ class TestChatVerboseArg:
         fake_skills_sync = types.ModuleType("tools.skills_sync")
         fake_skills_sync.sync_skills = lambda quiet=True: None
 
-        monkeypatch.setitem(sys.modules, "cli", fake_cli)
+        monkeypatch.setitem(sys.modules, "hermes_agent.cli", fake_cli)
         monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
         monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
         monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)

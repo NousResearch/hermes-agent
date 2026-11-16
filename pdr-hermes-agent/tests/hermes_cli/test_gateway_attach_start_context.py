@@ -25,7 +25,7 @@ def _attach(monkeypatch, capsys, *flags, session=None, elevated=None, verdict=RE
     if session is not None:
         monkeypatch.setattr("hermes_platform.host.windows_session_id", lambda: session)
     if elevated is not None:
-        monkeypatch.setattr("hermes_dir_acl.process_is_elevated", lambda: elevated)
+        monkeypatch.setattr("hermes_agent.hermes_dir_acl.process_is_elevated", lambda: elevated)
     monkeypatch.setattr("hermes_cli.gateway_runtime.ensure_gateway_runtime",
                         lambda home, **kw: ran.append("start") or verdict)
     monkeypatch.setattr("hermes_cli.gateway_runtime.discover_gateway_endpoint",

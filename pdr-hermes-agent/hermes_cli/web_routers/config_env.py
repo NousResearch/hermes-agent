@@ -606,7 +606,7 @@ def _pooled_keys_left_on(old_url: str, new_url: str, pool_keys: tuple[str, ...])
     origin than *new_url*. Those rows never serve the new address (``entry_scoped_pool``)."""
     from agent.credential_pool import _is_manual_source, load_pool
     from agent.custom_entry_pool import bind_unrecorded_rows, recorded_address
-    from utils import same_base_url_origin
+    from hermes_agent.utils import same_base_url_origin
 
     left = False
     for key in dict.fromkeys(k for k in pool_keys if k):
@@ -625,7 +625,7 @@ def _drop_credentials_on_origin_move(entry: dict[str, Any], existing: dict[str, 
     rows for the entry) and the payload left the key untouched (``None``): reusing them would
     authenticate to a host they were never entered for. Pool rows stay bound to the old origin.
     """
-    from utils import same_base_url_origin
+    from hermes_agent.utils import same_base_url_origin
 
     # Migrated, legacy and hand-written entries store the address under ``api``/``url``/``baseUrl`` too.
     old_url = next((url for url in (str(existing.get(field) or "").strip() for field in ENDPOINT_ADDRESS_FIELDS)
@@ -792,7 +792,7 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     alias = details.get(model)
     canonical = (alias.canonical_model or "").strip() if alias is not None else ""
     if canonical and canonical != model:
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.hermes_constants import parse_reasoning_effort
         effort = (alias.reasoning_effort or "").strip().lower()
         if parse_reasoning_effort(effort) is not None:
             agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
@@ -874,7 +874,7 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
             with refusing_locked_omissions(*_ROUTE_SECTIONS) if body.make_default else contextlib.nullcontext():
                 save_config(cfg)
             response = _custom_endpoint_response(cfg)
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             home = get_hermes_home()
         if created:  # editing an endpoint that exists sets nothing new up
             _record_custom_endpoint_setup(home)

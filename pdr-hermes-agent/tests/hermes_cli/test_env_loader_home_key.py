@@ -6,7 +6,7 @@ from pathlib import Path
 from agent.secret_sources import registry
 from agent.secret_sources.base import FetchResult, SecretSource
 from hermes_cli import env_loader
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 
 
 class _HomeKeyProbe(SecretSource):

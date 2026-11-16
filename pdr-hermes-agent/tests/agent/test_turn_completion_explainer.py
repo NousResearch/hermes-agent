@@ -22,7 +22,7 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 # --------------------------------------------------------------------------
@@ -36,8 +36,8 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
 
 def _make_agent(max_iterations: int = 10, config: dict | None = None) -> AIAgent:
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value=config or {}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
@@ -220,7 +220,7 @@ def test_persistence_commands_are_pinned_to_the_failing_profile(monkeypatch, tmp
     whose store failed — a multi-profile backend serves sessions whose state.db is not the
     process default, and a bare ``hermes`` follows the sticky active_profile (#105887). The
     corrupt/fts_index causes already did this; replaced/deleted_wal/default did not."""
-    from hermes_constants import profile_cli_selector
+    from hermes_agent.hermes_constants import profile_cli_selector
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
     selector = profile_cli_selector()

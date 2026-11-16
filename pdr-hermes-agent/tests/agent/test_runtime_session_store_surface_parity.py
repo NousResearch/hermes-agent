@@ -16,7 +16,7 @@ from hermes_state.runtime import begin_runtime_epoch, mutate_worker_execution, r
 
 ROOT = Path(__file__).resolve().parents[2]
 # The agent core: everything a worker's AIAgent runs (tools open their own handles, or refuse).
-CORE = [ROOT / current_path('run_agent.py'), *sorted((ROOT / current_path('agent')).glob('*.py'))]
+CORE = [ROOT / current_path('hermes_agent/run_agent.py'), *sorted((ROOT / current_path('agent')).glob('*.py'))]
 
 
 def _core_session_db_calls():

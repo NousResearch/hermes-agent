@@ -150,7 +150,7 @@ def run_one(scenario, mode, rep, out_dir: Path):
     messages_out: list[dict[str, Any]] = []
     _orig_norm = None
     try:
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = AIAgent(provider="openrouter", model=model, quiet_mode=True,
                         save_trajectories=False, skip_context_files=True,
                         skip_memory=True, platform="cli", max_iterations=15)

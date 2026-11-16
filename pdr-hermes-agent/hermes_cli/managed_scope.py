@@ -23,7 +23,7 @@ from hermes_cli.stale_modules import drop_stale_root_modules
 
 drop_stale_root_modules()
 
-from utils import fast_safe_load, file_cache_version, file_signature  # file_signature: bound for the bridge above
+from hermes_agent.utils import fast_safe_load, file_cache_version, file_signature  # file_signature: bound for the bridge above
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +152,7 @@ def apply_managed_overlay(config: dict) -> dict:
         from hermes_cli.config import _deep_merge, _expand_env_vars, _normalize_root_model_keys
         managed_expanded = _normalize_root_model_keys(_expand_env_vars(managed))
         # _normalize_root_model_keys only promotes the string when root provider/base_url
-        # keys exist to migrate; handle the bare case here (matches cli.py) so _deep_merge
+        # keys exist to migrate; handle the bare case here (matches hermes_agent/cli.py) so _deep_merge
         # never replaces the caller's ``model`` dict with a string.
         if isinstance(managed_expanded.get("model"), str):
             managed_expanded = dict(managed_expanded)

@@ -2775,7 +2775,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
-    # Goal-loop mode (Ralph-style /goal judge loop in cli.py quiet-mode path).
+    # Goal-loop mode (Ralph-style /goal judge loop in hermes_agent/cli.py quiet-mode path).
     # Only set when enabled so non-goal tasks keep a clean env.
     if task.goal_mode:
         env["HERMES_KANBAN_GOAL_MODE"] = "1"

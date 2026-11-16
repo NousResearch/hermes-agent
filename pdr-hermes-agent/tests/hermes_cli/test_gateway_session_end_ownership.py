@@ -16,7 +16,7 @@ from hermes_cli.gateway_agent import GatewayAgent
 
 @pytest.fixture
 def cli_mod():
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     cli_mod._cleanup_done = False
     cli_mod._single_query_finalize_attempted_session_ids.clear()
     cli_mod._handed_off_session_ids.clear()

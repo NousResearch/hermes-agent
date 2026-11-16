@@ -29,7 +29,7 @@ pre-commit:
       run: just eslint {staged_files}
 
     - name: lint shared
-      root: apps/shared/
+      root: ui-tui/packages/shared/
       glob: "*.{js,ts,tsx}"
       run: just eslint {staged_files}
 

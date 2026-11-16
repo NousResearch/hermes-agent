@@ -97,7 +97,7 @@ class TestFinalizeSessionPersistE2E:
 
     @staticmethod
     def _real_agent(db, session_id, session_messages):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = object.__new__(AIAgent)
         agent._session_db = db

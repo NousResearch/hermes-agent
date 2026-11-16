@@ -10,7 +10,7 @@ bounded (~5s) drain and abandons whatever is still queued past it, so a
 next session then loaded stale memory.
 
 The CLI exit path already drains via ``MemoryManager.flush_pending`` before
-shutdown (cli.py); these tests pin the same contract on the gateway path.
+shutdown (hermes_agent/cli.py); these tests pin the same contract on the gateway path.
 
 The fix: in ``_cleanup_agent_resources``, call
 ``agent._memory_manager.flush_pending(timeout=10)`` BEFORE
@@ -81,7 +81,7 @@ def _make_agent(mgr: MemoryManager) -> SimpleNamespace:
     """Build a minimal agent wired to a real MemoryManager.
 
     ``shutdown_memory_provider`` mirrors ``AIAgent.shutdown_memory_provider``
-    (run_agent.py): end-of-session notification then ``shutdown_all``. The
+    (hermes_agent/run_agent.py): end-of-session notification then ``shutdown_all``. The
     memory manager is the live one carrying the queued writes, so the gateway
     cleanup path exercises the real flush -> shutdown ordering.
     """

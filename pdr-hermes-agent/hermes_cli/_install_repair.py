@@ -114,7 +114,7 @@ def ensure_windows_bin_launchers(
     # under ``hermes -p <name>`` that returns ``profiles\\<name>``, which
     # would fail the managed-clone gate below and silently skip the heal
     # for profile users. The launcher dir serves the whole machine.
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     try:
         home = Path(get_default_hermes_root())
@@ -132,7 +132,7 @@ def ensure_windows_bin_launchers(
         stage_launcher,
     )
 
-    from hermes_constants import project_venv_dir
+    from hermes_agent.hermes_constants import project_venv_dir
 
     venv_dir = project_venv_dir(root)
 
@@ -282,7 +282,7 @@ def migrate_windows_bin_path(
     root = Path(root)
 
     # Same per-machine anchor as ensure_windows_bin_launchers (see there).
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     from pm.environments import venv_bin_dir
 
     try:

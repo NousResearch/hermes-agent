@@ -49,7 +49,7 @@ def _patch_resolution(monkeypatch, *, runtime=None, error=None):
                         lambda: {"model": {"default": "some-model", "provider": "custom:home"}, "agent": {}})
     monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda cfg, platform: set())
     monkeypatch.setattr("hermes_cli.tools_config.enabled_mcp_server_names", lambda cfg: set())
-    monkeypatch.setattr("hermes_constants.resolve_reasoning_config", lambda cfg, model: None)
+    monkeypatch.setattr("hermes_agent.hermes_constants.resolve_reasoning_config", lambda cfg, model: None)
     monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
                         lambda **_kw: None)
     built: list[dict] = []
@@ -58,7 +58,7 @@ def _patch_resolution(monkeypatch, *, runtime=None, error=None):
         built.append(kwargs)
         return _agent()
 
-    monkeypatch.setattr("run_agent.AIAgent", _fake_agent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _fake_agent)
 
     def _resolve(*, requested=None, **_kw):
         if error is not None:
@@ -222,7 +222,7 @@ def test_persist_keeps_the_resolved_built_in_provider(monkeypatch, tmp_path, con
         "api_key": "k", "credential_pool": None, "command": None, "args": []})
     monkeypatch.setattr("hermes_cli.config.load_config",
                         lambda: {"model": {"default": "some-model", "provider": configured}, "agent": {}})
-    monkeypatch.setattr("run_agent.AIAgent", lambda **kw: _agent(provider=kw["provider"], base_url=kw["base_url"]))
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", lambda **kw: _agent(provider=kw["provider"], base_url=kw["base_url"]))
     db = SessionDB(tmp_path / "state.db")
     manager = SessionManager(db=db, agent_factory=None)
     state = manager.create_session(cwd=str(tmp_path))
@@ -240,7 +240,7 @@ def test_switch_model_compares_an_alias_session_by_its_resolved_provider(monkeyp
     _patch_resolution(monkeypatch, runtime={
         "provider": "anthropic", "api_mode": "anthropic_messages", "base_url": "https://api.test",
         "api_key": "k", "credential_pool": None, "command": None, "args": []})
-    monkeypatch.setattr("run_agent.AIAgent", lambda **kw: _agent(provider=kw["provider"], base_url=kw["base_url"]))
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", lambda **kw: _agent(provider=kw["provider"], base_url=kw["base_url"]))
     manager = SessionManager(db=SessionDB(tmp_path / "state.db"), agent_factory=None)
     live = manager._make_agent(session_id="s-alias", cwd=str(tmp_path), requested_provider="claude")
     seen: dict = {}

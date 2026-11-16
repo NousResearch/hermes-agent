@@ -11,7 +11,7 @@ import logging
 import pytest
 
 from hermes_cli.plugin_host import PluginHost
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 from tests.hermes_cli import test_plugin_secondary_profile_host as secondary
 
 daemon = secondary.daemon

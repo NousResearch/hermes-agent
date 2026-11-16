@@ -23,7 +23,7 @@ def claiming_profile(request):
 
 
 def _agent(provider, base_url, model):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with patch("agent.process_bootstrap.OpenAI") as mock_openai:
         mock_openai.return_value = MagicMock()

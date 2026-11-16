@@ -97,7 +97,7 @@ class TestBuildPartsFromTaskBody:
         body = _read_body(tid)
         paths, urls = extract_image_refs(body)
 
-        # Mirrors the cli.py wiring: pass the worker's literal -q argument
+        # Mirrors the hermes_agent/cli.py wiring: pass the worker's literal -q argument
         # (the dispatcher uses ``"work kanban task <id>"``) plus the
         # extracted refs through build_native_content_parts.
         parts, skipped = build_native_content_parts(

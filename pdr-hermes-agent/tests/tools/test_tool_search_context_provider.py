@@ -26,7 +26,7 @@ def _model_cfg(**overrides):
 class TestResolveActiveContextLengthProviderAware:
     def test_passes_provider_base_url_and_key_from_runtime(self):
         """Resolved runtime credentials must reach get_model_context_length."""
-        import model_tools
+        from hermes_agent import model_tools
 
         captured = {}
 
@@ -56,7 +56,7 @@ class TestResolveActiveContextLengthProviderAware:
         """Runtime resolution raising must not zero the gate — the resolver is
         still called with the configured provider/base_url and an empty key so
         static provider-aware fallbacks apply."""
-        import model_tools
+        from hermes_agent import model_tools
 
         captured = {}
 
@@ -79,7 +79,7 @@ class TestResolveActiveContextLengthProviderAware:
     def test_no_provider_configured_skips_runtime_resolution(self):
         """Without a provider in config, behavior matches the legacy path: no
         runtime resolution attempt, resolver called with empty routing."""
-        import model_tools
+        from hermes_agent import model_tools
 
         captured = {}
 
@@ -99,7 +99,7 @@ class TestResolveActiveContextLengthProviderAware:
 
     def test_config_context_length_still_short_circuits(self):
         """Explicit model.context_length must keep winning (issue #46620)."""
-        import model_tools
+        from hermes_agent import model_tools
 
         captured = {}
 

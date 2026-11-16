@@ -17,7 +17,7 @@ import os
 import threading
 import time
 from typing import Optional
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 _MAX_ENTRIES = 1000
 _MAX_TEXT_CHARS = 2000
@@ -30,7 +30,7 @@ _LOCK = threading.Lock()
 
 
 def _store_path() -> str:
-    from hermes_constants import get_hermes_home  # honors the active profile override
+    from hermes_agent.hermes_constants import get_hermes_home  # honors the active profile override
     return os.path.join(str(get_hermes_home()), "state", "rich_sent_index.json")
 
 

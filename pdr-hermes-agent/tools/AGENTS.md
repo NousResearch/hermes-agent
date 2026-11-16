@@ -1,4 +1,4 @@
-# tools/ + toolsets.py + model_tools.py — model tools
+# tools/ + hermes_agent/toolsets.py + hermes_agent/model_tools.py — model tools
 
 Applies on top of the root `AGENTS.md`: settle the **Footprint Ladder** before adding anything here.
 Most capabilities should NOT be core tools. Long-form: `website/docs/developer-guide/adding-tools.md`,
@@ -7,8 +7,8 @@ Most capabilities should NOT be core tools. Long-form: `website/docs/developer-g
 ## Registry and discovery
 
 `tools/registry.py` has no deps and is imported by every tool file; each `tools/*.py` calls
-`registry.register()` at import time; `model_tools.py` imports the registry and triggers discovery
-(`discover_builtin_tools()`), then `run_agent.py`, `cli.py`, `batch_runner.py`, `environments/`
+`registry.register()` at import time; `hermes_agent/model_tools.py` imports the registry and triggers discovery
+(`discover_builtin_tools()`), then `hermes_agent/run_agent.py`, `hermes_agent/cli.py`, `hermes_agent/batch_runner.py`, `environments/`
 consume it. Any `tools/*.py` with a top-level `registry.register()` is imported automatically — no
 manual import list. A tool that is a whole package (`tools/connectors/`) registers from
 `tools/<pkg>/tool.py`, the only file discovery scans inside a package; every sibling in the package
@@ -24,7 +24,7 @@ private vision check.
 
 For custom/local-only tools do NOT edit core: create `~/.hermes/plugins/<name>/plugin.yaml` +
 `__init__.py` and call `ctx.register_tool(...)`; plugin toolsets are discovered automatically and
-toggled without touching `tools/` or `toolsets.py` (`plugins/AGENTS.md`).
+toggled without touching `tools/` or `hermes_agent/toolsets.py` (`plugins/AGENTS.md`).
 
 1. `tools/your_tool.py`:
    ```python
@@ -37,7 +37,7 @@ toggled without touching `tools/` or `toolsets.py` (`plugins/AGENTS.md`).
        handler=lambda args, **kw: example_tool(param=args.get("param", ""), task_id=kw.get("task_id")),
        check_fn=check_requirements, requires_env=["EXAMPLE_API_KEY"])
    ```
-2. `toolsets.py`: add the name to `_HERMES_CORE_TOOLS` (all platforms) or a new toolset. **Required**
+2. `hermes_agent/toolsets.py`: add the name to `_HERMES_CORE_TOOLS` (all platforms) or a new toolset. **Required**
    — discovery registers the schema, but a tool is only exposed if a toolset names it.
    `_HERMES_CORE_TOOLS` is the default bundle every platform's base toolset inherits, not dead code.
 
@@ -45,7 +45,7 @@ Rules for tool code:
 - **Schema descriptions must not name tools from other toolsets** (a browser tool saying "prefer
   web_search"). Those tools may be unavailable (missing key, disabled toolset) and the model
   hallucinates calls to them. Cross-references are added dynamically in `get_tool_definitions()` in
-  `model_tools.py` — see the `browser_cdp` / `execute_code` post-processing blocks.
+  `hermes_agent/model_tools.py` — see the `browser_cdp` / `execute_code` post-processing blocks.
 - **Paths in schema descriptions use `display_hermes_home()`** (schema is built at import; under
   multiplex it shows the launch home, which is display-only). **State files use `get_hermes_home()`**
   at call time, never `Path.home()/.hermes` and never a module constant, so each served profile gets
@@ -62,12 +62,12 @@ Rules for tool code:
   `_load_enabled_toolsets(platform)` (root: capability is a property of the SESSION).
 - **Agent-level tools** (`todo`, `memory`) are intercepted before `handle_function_call()` via the
   `INLINE_TOOL_EXECUTORS` table (`agent/inline_tool_executors.py`; `agent/AGENTS.md`).
-- **`_last_resolved_tool_names`** is a process-global in `model_tools.py`; `_run_single_child()` in
+- **`_last_resolved_tool_names`** is a process-global in `hermes_agent/model_tools.py`; `_run_single_child()` in
   `delegate_tool.py` saves/restores it around child runs — readers may see it stale mid-delegation.
 - New tools integrate with existing setup UX (`hermes tools`, `hermes setup`, auto-install) rather
   than a raw env var; secrets go in `OPTIONAL_ENV_VARS` (`hermes_cli/AGENTS.md`).
 
-## Toolsets (`toolsets.py`)
+## Toolsets (`hermes_agent/toolsets.py`)
 
 Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, debugging,
 delegation, discord, discord_admin, feishu_doc, feishu_drive, file, image_gen,

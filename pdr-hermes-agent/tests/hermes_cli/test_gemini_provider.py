@@ -113,7 +113,7 @@ class TestGeminiAgentInit:
         monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
         with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client:
             mock_client.return_value = MagicMock()
-            from run_agent import AIAgent
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent(
                 model="gemini-2.5-flash",
                 provider="gemini",

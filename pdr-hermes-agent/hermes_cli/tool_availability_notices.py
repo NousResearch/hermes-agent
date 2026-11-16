@@ -1,6 +1,6 @@
 """Startup notice lines for toolsets that are switched off because their requirements are not met.
 
-Pure rendering: ``cli.py::_show_tool_availability_warnings`` feeds it the ``unavailable`` list from
+Pure rendering: ``hermes_agent/cli.py::_show_tool_availability_warnings`` feeds it the ``unavailable`` list from
 ``check_tool_availability()`` (entries carry ``name`` / ``env_vars`` / ``tools``) and prints the lines.
 Each line says what is off and the exact command that fixes it, in plain words; env-var names only
 appear as secondary detail for toolsets with a single obvious key.

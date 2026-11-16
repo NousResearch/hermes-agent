@@ -1,6 +1,6 @@
 """Tests for defensive bracketed-paste wrapper stripping in the CLI."""
 
-from cli import _strip_leaked_bracketed_paste_wrappers
+from hermes_agent.cli import _strip_leaked_bracketed_paste_wrappers
 
 
 class TestStripLeakedBracketedPasteWrappers:

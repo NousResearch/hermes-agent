@@ -200,7 +200,7 @@ class TestChineseReasoningTags:
         assert "最终答案" in out
 
     def test_cli_replay_strip_hides_chinese_tags(self) -> None:
-        from cli import _strip_reasoning_tags
+        from hermes_agent.cli import _strip_reasoning_tags
 
         assert _strip_reasoning_tags("<思考>secret</思考>答案") == "答案"
 

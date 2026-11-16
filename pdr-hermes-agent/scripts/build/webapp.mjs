@@ -71,7 +71,7 @@ export async function buildWebapp({ source, workspace, out }) {
   ;({ source, out } = productOutput(source, out, [
     // The output lives inside the Desktop workspace: protect its siblings, not the directory.
     ...readdirSync(join(resolve(source), app)).filter(name => !['dist', 'dist-webapp', 'build'].includes(name)).map(name => `${app}/${name}`),
-    'apps/shared', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'scripts/build', 'node_modules',
+    'ui-tui/packages/shared', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'scripts/build', 'node_modules',
     // Compiling in place (a desktop bundle build's checkout) leaves no separate workspace to protect.
     ...[relative(resolve(source), workspace)].filter(Boolean),
   ]))

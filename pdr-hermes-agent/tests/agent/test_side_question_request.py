@@ -21,7 +21,7 @@ import pytest
 from agent import side_question_lease
 from agent.side_question_lease import redeem_side_question
 from hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 SIDE_PROMPT = "Suggest the user's next prompt in one line."
 # Plugin side questions bill per plugin, apart from ``/btw``'s ``side_question``.
@@ -76,8 +76,8 @@ def provider(tmp_path, monkeypatch):
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     # Every agent built during the test (parent and fork) talks to the same fake.
     patches = [
-        patch("model_tools.get_tool_definitions", return_value=_tool_defs("web_search", "terminal")),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=_tool_defs("web_search", "terminal")),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI", return_value=fake.client),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
         # The side call only runs where a consented plugin holds the capability; that gate has
@@ -126,7 +126,7 @@ def _run_parent_turn(parent, provider, *, tool_round=True):
         ]
     else:
         provider.replies.append(_response("Found it: the answer is 42.", usage=_usage()))
-    with patch("model_tools.handle_function_call", return_value=json.dumps({"result": "42"})):
+    with patch("hermes_agent.model_tools.handle_function_call", return_value=json.dumps({"result": "42"})):
         return parent.run_conversation("look this up")
 
 
@@ -195,7 +195,7 @@ def dispatch_spy():
         return _fn
 
     with (
-        patch("model_tools.handle_function_call", side_effect=_record("handle_function_call")),
+        patch("hermes_agent.model_tools.handle_function_call", side_effect=_record("handle_function_call")),
         patch.object(AIAgent, "_invoke_tool", side_effect=_record("_invoke_tool"), autospec=False),
         patch.object(AIAgent, "_execute_tool_calls", side_effect=_record("_execute_tool_calls"), autospec=False),
     ):
@@ -256,7 +256,7 @@ def _usage_rows(db: SessionDB, session_id: str) -> list[dict]:
 
 
 def test_side_call_writes_only_one_usage_row(provider, issued, tmp_path):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     memories = Path(get_hermes_home()) / "memories"
     memories.mkdir(parents=True, exist_ok=True)
@@ -321,7 +321,7 @@ def test_side_call_runs_under_the_turns_profile_and_secret_scope(provider, issue
     """The plugin (of the turn's profile) redeems from its own thread, where no profile is bound;
     the request still resolves the parent turn's HERMES_HOME and secret scope."""
     from agent.secret_scope import current_secret_scope_home, reset_secret_scope, set_secret_scope
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     profile_home = tmp_path / "profiles" / "work"
     profile_home.mkdir(parents=True)

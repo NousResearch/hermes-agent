@@ -5,7 +5,7 @@ from unittest.mock import patch
 from rich.console import Console
 
 from hermes_cli import banner
-import model_tools
+from hermes_agent import model_tools
 import tools.mcp_tool_discovery
 
 def test_banner_snapshot_accepts_bom_without_weakening_freshness(tmp_path, monkeypatch):

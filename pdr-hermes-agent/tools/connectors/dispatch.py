@@ -25,7 +25,7 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
                              middleware_trace, enabled_toolsets, disabled_toolsets):
     from dataclasses import replace
 
-    from model_tools import handle_function_call, suppress_post_tool_call_hook
+    from hermes_agent.model_tools import handle_function_call, suppress_post_tool_call_hook
     from tools.interrupt import is_interrupted
 
     if len(calls) > MAX_CALLS_PER_DISPATCH:

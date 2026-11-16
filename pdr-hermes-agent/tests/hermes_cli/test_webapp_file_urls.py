@@ -73,7 +73,7 @@ def _plays_through_its_stream_ticket(webapp_client, files):
 
 
 def _reads_images_and_previews_by_native_path(webapp_client, files):
-    # ``str(path)`` is what the shared parser gives for ``path.as_uri()`` (``apps/shared/src/file-url.ts``).
+    # ``str(path)`` is what the shared parser gives for ``path.as_uri()`` (``ui-tui/packages/shared/src/file-url.ts``).
     shot = files / "shot one.png"
     read = webapp_client.get("/api/fs/read-data-url", params={"path": str(shot), "profile": PROFILE})
     assert read.status_code == 200, (shot, read.text)

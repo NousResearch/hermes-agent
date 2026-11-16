@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from hermes_constants import display_hermes_home
+from hermes_agent.hermes_constants import display_hermes_home
 
 
 def cron_output_dir_display(job_id: str) -> str:

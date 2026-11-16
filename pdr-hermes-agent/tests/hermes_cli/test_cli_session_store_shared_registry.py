@@ -6,7 +6,7 @@ single writer: ``_init_session_store`` builds a ``GatewaySessionStore`` and open
 
 from types import SimpleNamespace
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def test_cli_session_store_is_the_gateway_store_and_opens_no_writer(monkeypatch):

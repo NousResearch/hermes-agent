@@ -9,7 +9,7 @@ model and the tui keeps trying openrouter".
 
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent(chain):

@@ -55,7 +55,7 @@ def plugin_home(tmp_path, monkeypatch):
 
 
 def test_an_in_process_plugin_command_picks_with_the_cli_clarify_panel(plugin_home, monkeypatch, capsys):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     from hermes_cli.plugin_command_dispatch import invoke_plugin_command
     monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda _cli: None)
     cli = HermesCLI.__new__(HermesCLI)
@@ -100,7 +100,7 @@ class _GatewayConnection:
 
 
 def test_a_gateway_plugin_command_choice_is_answered_while_the_cli_waits(monkeypatch, capsys):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     from hermes_cli import gateway_plugin_commands
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "s1"
@@ -121,7 +121,7 @@ def test_a_gateway_plugin_command_choice_is_answered_while_the_cli_waits(monkeyp
 def test_a_settled_choice_closes_the_cli_picker(monkeypatch, capsys):
     """Another viewer answers the command's picker (the gateway's ``request.cancel``): the CLI's panel closes
     instead of keeping the input for an already-settled request."""
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     from hermes_cli import gateway_plugin_commands
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "s1"

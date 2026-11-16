@@ -139,10 +139,10 @@ _PY_RELEVANT_SITE = (
 # that can catch the drift, so these force the Python lane too.
 _PY_RELEVANT_CONTRACT_FILES = {
     # tests/tui_gateway/contracts/test_generated.py (rendered from tui_gateway/contracts)
-    "apps/shared/src/gateway-contract.generated.ts",
-    "apps/shared/src/gateway-contract.openrpc.json",
+    "ui-tui/packages/shared/src/gateway-contract.generated.ts",
+    "ui-tui/packages/shared/src/gateway-contract.openrpc.json",
     # tests/gateway/test_control_socket_vectors.py (the public control-socket contract)
-    "apps/shared/src/node/control-socket.vectors.json",
+    "ui-tui/packages/shared/src/node/control-socket.vectors.json",
     # tests/hermes_cli/test_desktop_slash_registry.py
     "apps/desktop/src/lib/desktop-slash-registry.json",
     # tests/tui_gateway/test_show_reasoning_display_gate.py (card-tool names vs the gateway lifecycle set)
@@ -309,9 +309,9 @@ _UPDATE_PIPELINE = (
     "hermes_cli/gateway_restart_env.py",  # the fleet restart watcher's env
     "hermes_cli/gateway_runtime_start.py",  # supervisor-marker strip for the watcher and the pause replay
     "hermes_cli/git_pack_tidy.py",  # partial-clone pack tidy: every update's pre-fetch runs it
-    "hermes_bootstrap.py",  # every launch's prepare_launch
-    "hermes_constants.py",  # root home = update marker location
-    "hermes_dir_acl.py",  # update restores the Windows user ACL on the home after elevation
+    "hermes_agent/hermes_bootstrap.py",  # every launch's prepare_launch
+    "hermes_agent/hermes_constants.py",  # root home = update marker location
+    "hermes_agent/hermes_dir_acl.py",  # update restores the Windows user ACL on the home after elevation
     "gateway/status.py",  # code_sha stamp the fleet verify reads
     "gateway/status_inline_source.py",  # the Windows pause identifies inline-bootstrapped gateways
     "gateway/status_lock_dir.py",  # gateway/status.py imports it at module level
@@ -403,7 +403,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/steward.py",
     "hermes_cli/observability/shared_metrics_update.py",
     "hermes_cli/main_install_repair.py",
-    "hermes_logging.py",
+    "hermes_agent/hermes_logging.py",
     "hermes_platform/host/__init__.py",
     "hermes_platform/host/facts.py",
     "hermes_platform/resolver/__init__.py",  # update_cmd_commit's interpreter lookup
@@ -425,7 +425,7 @@ _UPDATE_DEPENDENCIES = (
 # General-purpose modules an entry point imports but that half the product
 # imports too (>= HUB_MIN_IMPORTERS product modules, checked by the test). The
 # unit lanes cover them on every PR and the update suites on every push to main;
-# routing each config.py / utils.py edit through the update suites would make
+# routing each config.py / hermes_agent/utils.py edit through the update suites would make
 # them run on most PRs. Never an update-specific module: own those above.
 HUB_MIN_IMPORTERS = 25
 _SHARED_HUBS = frozenset({
@@ -433,13 +433,13 @@ _SHARED_HUBS = frozenset({
     "hermes_cli/config.py",
     "hermes_cli/profiles.py",
     "hermes_cli/version_info.py",
-    "utils.py",
+    "hermes_agent/utils.py",
     "hermes_state/__init__.py",
     "agent/__init__.py",
     "cron/jobs.py",
     "tools/environments/local.py",
     # Desktop lane only (the upgrade lane owns these outright):
-    "hermes_constants.py",
+    "hermes_agent/hermes_constants.py",
     "gateway/status.py",
     "pm/__init__.py",
     "pm/paths.py",
@@ -496,7 +496,7 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         *_DESKTOP_E2E_SHARED,
         "apps/desktop/e2e/",
         "apps/desktop/electron/backend-",
-        "apps/shared/src/",
+        "ui-tui/packages/shared/src/",
         "apps/desktop/src/store/session",
         "apps/desktop/src/store/transcript",
         # Every core spec drives open/resume/switch; #132017 changed resume
@@ -574,7 +574,7 @@ _E2E_LANE_EXCLUDES = {
 # recipe route here; Desktop sources stay out, as web/ and ui-tui/ do.
 _DOCKER_PATHS = (*_DOCKER_META, *_DEP_MANIFESTS, *_NPM_MANIFESTS, "pm/", "tests/docker/",
                  "apps/desktop/package.json", "apps/desktop/scripts/build-webapp.mjs",
-                 "apps/shared/package.json", "scripts/build/")
+                 "ui-tui/packages/shared/package.json", "scripts/build/")
 _NIX_LANE_PATHS = (*_NIX_PATHS, *_NIX_FILES, *_DEP_MANIFESTS, *_NPM_MANIFESTS)
 
 # A pull request with this label runs every slow lane, whatever it touches.

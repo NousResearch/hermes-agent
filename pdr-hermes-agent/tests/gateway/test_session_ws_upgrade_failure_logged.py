@@ -38,7 +38,7 @@ _DIALS = textwrap.dedent('''
     import json
     from cron.scheduler_authority import run_canonical_job
     from agent.runtime_session_store import WorkerRPC
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     success, _output, _answer, error = run_canonical_job({'id': 'cron4job', 'name': 'cron-4'},
                                                          execution_id='cron4-exec')
     try:

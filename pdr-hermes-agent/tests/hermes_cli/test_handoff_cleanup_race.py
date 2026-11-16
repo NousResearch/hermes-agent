@@ -31,7 +31,7 @@ def _reset_cli_globals(cli_mod):
 
 def test_handed_off_session_skips_cleanup_finalize():
     """_should_emit_cleanup_session_finalize returns False for a handed-off session."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     _reset_cli_globals(cli_mod)
     cli_mod._handed_off_session_ids.add("handoff-session-123")
@@ -41,7 +41,7 @@ def test_handed_off_session_skips_cleanup_finalize():
 
 def test_normal_session_still_finalizes():
     """_should_emit_cleanup_session_finalize returns True for a non-handed-off session."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     _reset_cli_globals(cli_mod)
     cli_mod._single_query_finalize_attempted_session_ids.add("other-session")
@@ -52,7 +52,7 @@ def test_normal_session_still_finalizes():
 
 def test_interrupted_session_end_skipped_for_handed_off():
     """_emit_interrupted_session_end returns early for a handed-off session."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     _reset_cli_globals(cli_mod)
     cli_mod._handed_off_session_ids.add("handoff-session-456")
@@ -74,7 +74,7 @@ def test_interrupted_session_end_skipped_for_handed_off():
 
 def test_interrupted_session_end_fires_for_normal():
     """_emit_interrupted_session_end fires for a normal (non-handed-off) session."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     _reset_cli_globals(cli_mod)
 
@@ -99,7 +99,7 @@ def test_interrupted_session_end_fires_for_normal():
 
 def test_cleanup_does_not_finalize_handed_off_session():
     """_run_cleanup must not call finalize_session for a handed-off session."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     _reset_cli_globals(cli_mod)
     cli_mod._handed_off_session_ids.add("handoff-session-abc")
@@ -120,7 +120,7 @@ def test_cleanup_does_not_finalize_handed_off_session():
 
 def test_cleanup_finalizes_normal_session():
     """_run_cleanup DOES call finalize_session for a normal session."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     _reset_cli_globals(cli_mod)
 
@@ -140,7 +140,7 @@ def test_cleanup_finalizes_normal_session():
 
 def test_single_query_finalize_skipped_for_handed_off():
     """_notify_single_query_session_finalize must not fire for a handed-off session."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     _reset_cli_globals(cli_mod)
     cli_mod._handed_off_session_ids.add("handoff-session-single")

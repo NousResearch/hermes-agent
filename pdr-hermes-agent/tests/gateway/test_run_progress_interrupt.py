@@ -161,7 +161,7 @@ async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = agent_cls
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     adapter = ProgressCaptureAdapter()
     runner = _make_runner(adapter)

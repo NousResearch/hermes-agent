@@ -405,7 +405,7 @@ def test_session_backed_commit_keeps_the_attempts_own_record(caplog, tmp_path, m
     before the record is emitted (#118580). The record must still describe this attempt and name the
     session it started in, in both commit modes."""
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     agent = AIAgent(
@@ -435,7 +435,7 @@ def test_committed_effect_includes_the_retained_partial_compression_tail(
 ):
     from agent.model_metadata import estimate_messages_tokens_rough
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     agent = AIAgent(

@@ -28,7 +28,7 @@ import sqlite3
 import pytest
 
 import hermes_state.wal
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 
 def _write_config(monkeypatch: pytest.MonkeyPatch, tmp_path, config: object) -> None:

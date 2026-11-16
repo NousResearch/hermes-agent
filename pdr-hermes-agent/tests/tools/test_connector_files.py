@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_hermes_home
+from hermes_agent.hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_hermes_home
 from tools.connectors.gateway import files
 from tools.connectors.gateway.bridge import connector_describe, run_remote
 from tools.connectors.gateway.client import ConnectorClient
@@ -276,7 +276,7 @@ def test_a_relative_path_resolves_against_the_session_working_directory(tmp_path
 
 
 def test_dispatch_resolves_a_relative_path_in_the_calling_task_s_directory(tmp_path, monkeypatch):
-    import model_tools
+    from hermes_agent import model_tools
     from tools.connectors.gateway import bridge, config
     from tools.registry import invalidate_check_fn_cache
     from tools.terminal_tool import clear_task_env_overrides, register_task_env_overrides

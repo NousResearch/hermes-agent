@@ -56,7 +56,7 @@ def test_actual_agent_tool_round_never_loads_plugins_in_safe_worker(tmp_path, mo
             if event == 'exec' and 'plugins' in Path(str(getattr(args[0], 'co_filename', ''))).parts:
                 executions.append(args[0].co_filename)
         sys.addaudithook(audit)
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         requests = []
         class Peer(BaseHTTPRequestHandler):
             def log_message(self, *args): pass

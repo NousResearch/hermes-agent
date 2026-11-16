@@ -163,7 +163,7 @@ def endpoint(monkeypatch):
 
 
 def _run_turn(server: _FakeEndpoint, api_mode: str) -> dict:
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         model="fixture-local", provider="custom", base_url=server.url, api_key="fixture", api_mode=api_mode,

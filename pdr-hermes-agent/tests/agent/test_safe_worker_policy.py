@@ -238,7 +238,7 @@ def test_bare_agent_constructor_cannot_restore_safe_customizations(tmp_path, mod
             if event == "open" and str(args[0]).endswith("config.yaml") and args[1] != "w":
                 reads.append(str(args[0]))
         sys.addaudithook(audit)
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = AIAgent(model="safe-fixture", provider="custom", base_url="http://127.0.0.1:9/v1",
             api_key="fixture", enabled_toolsets=[], quiet_mode=True, skip_context_files=False,
             load_soul_identity=True, skip_background_review=False,

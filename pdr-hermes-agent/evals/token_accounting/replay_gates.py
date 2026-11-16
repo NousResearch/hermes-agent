@@ -124,7 +124,7 @@ class _FakeChat:
 
 
 def _make_agent(base_url: str, session_id: str | None = None, session_db=None):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key", base_url=base_url, provider="custom", model="replay-model",
@@ -240,7 +240,7 @@ def scenario(wire: _FakeChat, *, shape: str, real: int, chars: int, tmp: Path) -
 
 def recovery_scenario(wire: _FakeChat, *, usage_less: bool) -> dict:
     """Real compression/retry, with only summary generation replaced by fixed local text."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = _make_agent(wire.base_url)
     wire.requests.clear()

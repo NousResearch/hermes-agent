@@ -6,8 +6,8 @@ from the gateway's ``commands.catalog``: no plugin code is imported or executed 
 """
 import pytest
 
-import cli as cli_mod
-from cli import HermesCLI
+from hermes_agent import cli as cli_mod
+from hermes_agent.cli import HermesCLI
 from hermes_cli.commands_completion import SlashCommandCompleter
 from hermes_cli.gateway_client import GatewayClientError
 

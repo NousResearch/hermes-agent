@@ -117,7 +117,7 @@ async def test_background_task_builds_its_agent_with_its_own_sessions_service_ti
     source = SessionSource(platform=Platform.TELEGRAM, user_id='u', chat_id='c', user_name='n')
     with patch('gateway.run._resolve_runtime_agent_kwargs', return_value={'api_key': 'k'}), \
          patch('gateway.run._load_gateway_config', return_value={}), \
-         patch('run_agent.AIAgent') as agent_cls:
+         patch('hermes_agent.run_agent.AIAgent') as agent_cls:
         agent_cls.return_value.run_conversation.return_value = {'final_response': 'ok', 'messages': []}
         await runner._run_background_task('hi', source, 'bg_tier')
     assert agent_cls.call_args.kwargs['service_tier'] is None

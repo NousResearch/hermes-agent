@@ -75,7 +75,7 @@ for label, params in [("compatible-claude", {"anthropic_max_output": 65536}), ("
     client.chat.completions.create(**kwargs)
     results[label] = captures[-1]
 from providers import get_provider_profile
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 agent = AIAgent(model="fixture", provider="custom", base_url=url + "/v1", api_key="fixture", quiet_mode=True, skip_memory=True, skip_context_files=True, enabled_toolsets=[])
 actual_kwargs = agent._build_api_kwargs(messages, tools_for_api=[])
 client.chat.completions.create(**actual_kwargs)

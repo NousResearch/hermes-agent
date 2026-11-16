@@ -12,7 +12,7 @@ from typing import Any
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.route_identity import normalize_route_base_url
-from utils import same_base_url_origin
+from hermes_agent.utils import same_base_url_origin
 
 _AUX_KEY_FIELDS = ("api_key", "key_env", "api_key_env")
 

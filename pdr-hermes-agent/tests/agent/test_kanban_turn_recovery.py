@@ -418,7 +418,7 @@ def test_exit_mapping_composes_with_the_stripped_worker_predicate(monkeypatch):
     this PR's contribution is that it asks ``kanban_task_id()`` whether this is a worker.
     Pin exactly that: surrounding whitespace must not decide worker-ness, or a
     bare-whitespace id would hand a quota wall the neutral 75."""
-    from cli import _single_query_exit_code
+    from hermes_agent.cli import _single_query_exit_code
 
     monkeypatch.setenv("HERMES_KANBAN_TASK", "   ")
     assert _single_query_exit_code(_failed(reason="rate_limit")) == 1

@@ -17,7 +17,7 @@ These tests pin:
   from codex-rs ``auth.rs``)
 - graceful handling of malformed tokens (drop the account-ID header, don't
   raise)
-- primary-client wiring at both entry points in ``run_agent.py``
+- primary-client wiring at both entry points in ``hermes_agent/run_agent.py``
 - aux-client wiring at both entry points in ``agent/auxiliary_client.py``
 """
 from __future__ import annotations
@@ -150,7 +150,7 @@ class TestPrimaryClientWiring:
 
     def test_apply_client_headers_on_base_url_change(self):
         """Credential-rotation / base-url change path must also emit codex headers."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         token = _make_codex_jwt("acct-rotation")
         with patch("agent.process_bootstrap.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
@@ -175,7 +175,7 @@ class TestPrimaryClientWiring:
 
     def test_apply_client_headers_clears_codex_headers_off_chatgpt(self):
         """Switching AWAY from chatgpt.com must drop the codex headers."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         token = _make_codex_jwt()
         with patch("agent.process_bootstrap.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()

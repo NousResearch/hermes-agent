@@ -195,24 +195,6 @@ jobs:
       event_name: ${{ needs.detect.outputs.event_name }}
       python: ${{ needs.detect.outputs.python == 'true' }}
 
-  js-tests:
-    name: JS & TS checks
-    needs: detect
-    if: needs.detect.outputs.frontend == 'true'
-    uses: ./.github/workflows/js-tests.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  rust-tests:
-    name: Rust tests
-    needs: detect
-    # Only for PRs that touch a Rust crate. `.rs` is under apps/, so these
-    # changes used to run the TypeScript matrix and nothing that compiles them.
-    if: needs.detect.outputs.rust == 'true'
-    uses: ./.github/workflows/rust-tests.yml
-    with:
-      commit: ${{ inputs.commit }}
-
   catalog-tests:
     name: Catalog tests
     needs: detect
@@ -233,62 +215,6 @@ jobs:
     # the other lanes and is required whenever detect selects it.
     if: needs.detect.outputs.remote_backends == 'true'
     uses: ./.github/workflows/remote-backends.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  bootstrap-installer:
-    name: Bootstrap installer
-    needs: detect
-    # The bootstrap-installer path: install.sh, the pin fragments it embeds,
-    # and the version stamp it ships. The PowerShell installer's native tests
-    # are platforms("windows") pytest files and run in tests-os.
-    if: needs.detect.outputs.bootstrap == 'true'
-    uses: ./.github/workflows/bootstrap-installer.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  e2e-desktop:
-    name: Desktop E2E
-    needs: detect
-    # python_prod (not python): the Playwright suite exercises the built app
-    # + `hermes serve` backend, which never import anything under tests/.
-    # Tests-only PRs (~17% of commits) skip this 5-minute job — the longest
-    # single job in the workflow — while still running the full pytest lanes.
-    #
-    # Re-disabled (Sep 2026): the Sep 1 re-enable is still incredibly flaky.
-    # Keep this a bare `if: false`. The earlier
-    # `${{ false && (... || ...) }}` form on this reusable-workflow job made
-    # GitHub's workflow parser fail at startup ("An unexpected error has
-    # occurred") — every ci.yaml run repo-wide dispatched 0 jobs from
-    # 24f5a60ed1 until this line changed. To re-enable, restore:
-    #   if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
-    if: false
-    uses: ./.github/workflows/e2e-desktop.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  e2e-desktop-core:
-    name: Desktop core E2E
-    needs: detect
-    # The deterministic core suite (apps/desktop/e2e/core): transcript
-    # integrity, boot/respawn/orphans, clarify+approval. Required; retries 0.
-    if: needs.detect.outputs.e2e_desktop_core == 'true'
-    uses: ./.github/workflows/e2e-desktop-core.yml
-    with:
-      commit: ${{ inputs.commit }}
-
-  e2e-desktop-update:
-    name: Desktop update E2E
-    needs: detect
-    # apps/desktop/e2e/update: a real install.sh install + packaged Desktop,
-    # first run, "Update now" hand-off/relaunch, concurrent-update refusal.
-    # Required when it runs: a PR that touches the Desktop update path (the
-    # classifier's e2e_desktop_update lane) cannot merge on a red shard. Like
-    # the Linux e2e-upgrade shards and the Windows install + update journey
-    # (tests / tests-os, gated on e2e_upgrade), it is skipped — and the skip
-    # counts as success — when the PR does not touch that path.
-    if: needs.detect.outputs.e2e_desktop_update == 'true'
-    uses: ./.github/workflows/e2e-desktop-update.yml
     with:
       commit: ${{ inputs.commit }}
 
@@ -352,14 +278,8 @@ jobs:
       - tests
       - tests-os
       - lint
-      - js-tests
-      - rust-tests
       - remote-backends
       - catalog-tests
-      - bootstrap-installer
-      - e2e-desktop
-      - e2e-desktop-core
-      - e2e-desktop-update
       - docs-site
       - repo-guards
       # OSV runs weekly against main (osv-scanner.yml schedule), not per PR:

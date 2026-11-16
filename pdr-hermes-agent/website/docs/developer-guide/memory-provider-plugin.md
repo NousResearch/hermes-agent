@@ -80,7 +80,7 @@ package layout. No copy under `$HERMES_HOME/plugins/` is required.
 
 A package entry point gets everything a directory install does, including the
 two files Hermes reads from disk rather than importing — `config_schema.py`
-(the dashboard config panel) and `cli.py` (your `hermes <provider>`
+(the dashboard config panel) and `hermes_agent/cli.py` (your `hermes <provider>`
 subcommands). Both are found next to your package's `__init__.py`, so point the
 entry point at a package rather than a single module if you ship either.
 
@@ -363,7 +363,7 @@ own directory, so a provider installed from the plugin catalog keeps all of them
 |---|---|
 | Desktop → Capabilities → Tools → Memory (config panel) | `config_schema.py` (below) |
 | `hermes memory setup` wizard | `get_config_schema()` declares the fields the wizard prompts for, `save_config(config, hermes_home)` persists them, `post_setup(hermes_home, config)` runs afterwards for anything interactive (OAuth, first sync); `get_status_config()` feeds `hermes memory status` |
-| `hermes <provider> …` subcommands | `cli.py` with `register_cli(subparser)` ([Adding CLI Commands](#adding-cli-commands)) |
+| `hermes <provider> …` subcommands | `hermes_agent/cli.py` with `register_cli(subparser)` ([Adding CLI Commands](#adding-cli-commands)) |
 | Python dependencies | `pyproject.toml` `[project] dependencies` (or `python_dependencies` in `plugin.yaml`); installed under Hermes' own pins at install time and re-applied across `hermes update` |
 
 Your provider's name, `memory.<name>` config section, data directory and tool names are the
@@ -563,7 +563,7 @@ Memory provider plugins can register their own CLI subcommand tree (e.g. `hermes
 
 ### How it works
 
-1. Add a `cli.py` file to your plugin directory
+1. Add a `hermes_agent/cli.py` file to your plugin directory
 2. Define a `register_cli(subparser)` function that builds the argparse tree
 3. The memory plugin system discovers it at startup via `discover_plugin_cli_commands()`
 4. Your commands appear under `hermes <provider-name> <subcommand>`
@@ -598,7 +598,7 @@ def register_cli(subparser) -> None:
 
 ### Reference implementation
 
-See the Honcho plugin's [`cli.py`](https://github.com/plastic-labs/honcho/blob/main/hermes-plugin-honcho/cli.py) for a full example with 13 subcommands, cross-profile management (`--target-profile`), and config read/write.
+See the Honcho plugin's [`hermes_agent/cli.py`](https://github.com/plastic-labs/honcho/blob/main/hermes-plugin-honcho/cli.py) for a full example with 13 subcommands, cross-profile management (`--target-profile`), and config read/write.
 
 ### Directory structure with CLI
 
@@ -606,7 +606,7 @@ See the Honcho plugin's [`cli.py`](https://github.com/plastic-labs/honcho/blob/m
 plugins/memory/my-provider/
 ├── __init__.py      # MemoryProvider implementation + register()
 ├── plugin.yaml      # Metadata
-├── cli.py           # register_cli(subparser) — CLI commands
+├── hermes_agent/cli.py           # register_cli(subparser) — CLI commands
 └── README.md        # Setup instructions
 ```
 

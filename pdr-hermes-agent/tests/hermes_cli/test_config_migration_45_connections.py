@@ -11,7 +11,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 
 class TestConnectionsToolsetMigration:

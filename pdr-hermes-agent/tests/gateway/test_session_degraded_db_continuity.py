@@ -36,7 +36,7 @@ SESSION_KEY = "agent:orion:telegram:group:-1001234567890:8148316720"
 def _make_gateway_agent(session_db):
     """Build an AIAgent carrying gateway routing identity (multiplex profile route)."""
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -122,7 +122,7 @@ class TestEnsureDbSessionPersistsRoutingIdentity:
             db = SessionDB(db_path=Path(tmpdir) / "t.db")
             try:
                 with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-                    from run_agent import AIAgent
+                    from hermes_agent.run_agent import AIAgent
 
                     agent = AIAgent(
                         api_key="test-key",

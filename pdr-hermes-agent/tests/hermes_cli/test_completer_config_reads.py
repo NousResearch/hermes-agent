@@ -7,7 +7,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 import hermes_cli.commands_completion as commands_mod
 
@@ -33,7 +33,7 @@ class TestPersonalityCompletionsMemo:
         def names():
             return {c.text for c in commands_mod.SlashCommandCompleter._personality_completions("zz", "zz")}
 
-        with patch("cli.load_cli_config", load_cli_config_from_disk), \
+        with patch("hermes_agent.cli.load_cli_config", load_cli_config_from_disk), \
              patch("hermes_cli.config.get_config_path", lambda: cfg_path):
             assert "zzfirst" in names()
 

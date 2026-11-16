@@ -29,7 +29,7 @@ def _resolve_profile_path(path_value: Any) -> Optional[Path]:
     raw = os.path.expandvars(path_value.strip())
     if not raw:
         return None
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     hermes_home = get_hermes_home()
     if raw == "~/.hermes" or raw.startswith("~/.hermes/"):
         return hermes_home / raw[len("~/.hermes/"):]
@@ -41,7 +41,7 @@ def _resolve_script_path(script_value: Any) -> tuple[Optional[Path], Optional[st
     """Resolve a route script; must live under HERMES_HOME/scripts."""
     if not isinstance(script_value, str) or not script_value.strip():
         return None, "script path is empty"
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     scripts_root = (get_hermes_home() / "scripts").resolve()
     raw_text = os.path.expandvars(script_value.strip())
     if raw_text == "~/.hermes" or raw_text.startswith("~/.hermes/"):

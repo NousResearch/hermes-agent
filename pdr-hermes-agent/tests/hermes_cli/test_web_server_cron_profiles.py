@@ -52,7 +52,7 @@ def test_fire_cron_job_scopes_store_and_runtime_home_together(
     from cron import jobs as cron_jobs
     from cron import scheduler
 
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -94,7 +94,7 @@ def test_create_registers_scheduler_inside_target_profile(
     """Dashboard create must resolve and register under the selected profile."""
     from cron import jobs as cron_jobs
     from cron.scheduler_provider import CronScheduler
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     worker_home = isolated_profiles["worker_alpha"]
     captured = {}
@@ -178,7 +178,7 @@ def test_notify_cron_provider_scopes_store_and_runtime_home_together(
     from cron import jobs as cron_jobs
     from cron import scheduler
 
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -1303,7 +1303,7 @@ class TestCronRunHistoryFallback:
         server's (review of #61403: a fixed-offset snapshot was off by hours
         when HERMES_TIMEZONE differs from the server zone)."""
         from zoneinfo import ZoneInfo
-        from hermes_time import _tz_cache
+        from hermes_agent.hermes_time import _tz_cache
 
         job_id = "job-tz"
         home = isolated_profiles["default"]
@@ -1475,7 +1475,7 @@ class TestCronRunHistoryFallback:
         (both profiles configure config.yaml timezones, so a shared env var
         cannot mask the mix-up)."""
         from zoneinfo import ZoneInfo
-        from hermes_time import _tz_cache
+        from hermes_agent.hermes_time import _tz_cache
 
         job_id = "job-owner-tz"
         worker_home = isolated_profiles["worker_alpha"]
@@ -1732,7 +1732,7 @@ async def test_create_cron_job_checks_base_url_against_the_jobs_profile(isolated
     """The pairing check must read the OWNING profile's providers: a named provider the
     launch profile points at the override must not vouch for another profile's same-named
     provider, whose stored key would then ship to that endpoint."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     get_hermes_home().joinpath("config.yaml").write_text(
         "providers:\n  myproxy:\n    base_url: https://attacker.invalid/v1\n", encoding="utf-8")

@@ -240,7 +240,7 @@ def test_in_process_turn_keeps_the_user_stop_when_shutdown_interrupts_it_again(u
     records no restart cause and gets no notice. A turn only the restart stopped still gets it."""
     from agent.interrupt_compat import request_hard_interrupt
     from gateway.session_settlement_recovery import owner_stop_notice
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.gateway.restart_test_helpers import make_restart_runner
     from tools.interrupt import set_interrupt
 
@@ -271,7 +271,7 @@ def test_in_process_turn_keeps_the_user_stop_when_shutdown_interrupts_it_again(u
 
 
 def _redirect_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     agent = AIAgent.__new__(AIAgent)
     agent._interrupt_requested = False
     agent._interrupt_message = agent._tool_interrupt_reason = None
@@ -413,7 +413,7 @@ def _core_closed_turn(tmp_path, monkeypatch, *, principal='person', earlier_fail
     from gateway.session_contract import SessionRef
     from hermes_state import SessionDB
     from hermes_state.runtime import admit_session_input, begin_runtime_epoch, claim_session_input
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     runner = SimpleNamespace(_draining=False, _running=True, _restart_requested=True)
     db = SessionDB(db_path=tmp_path / 'state.db')

@@ -30,7 +30,7 @@ def _personalities_from_cli_config() -> dict[str, Any]:
     load_cli_config() is a full YAML parse + deep merge and the completer runs per keystroke.
     Falls back to a fresh load when the file cannot be stat'ed."""
     global _personalities_memo
-    from cli import load_cli_config
+    from hermes_agent.cli import load_cli_config
     from hermes_cli.personality import available_personalities
     try:
         from hermes_cli.config import get_config_path
@@ -527,7 +527,7 @@ class SlashCommandAutoSuggest(AutoSuggest):
 def cli_slash_completer(cli):
     """The classic CLI prompt's slash completer; on a gateway session its skills and plugin commands are
     the gateway's (``commands.catalog``), so completing loads no plugin in the CLI process."""
-    from cli import _session_skill_commands, get_skill_bundles
+    from hermes_agent.cli import _session_skill_commands, get_skill_bundles
     from hermes_cli import gateway_plugin_commands
     return SlashCommandCompleter(
         skill_commands_provider=lambda: _session_skill_commands(cli), command_filter=cli._command_available,

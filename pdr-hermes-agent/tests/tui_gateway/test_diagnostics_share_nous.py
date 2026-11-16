@@ -100,7 +100,7 @@ def test_share_nous_client_text_gets_upload_safe_log_redaction(captured_upload):
 def test_redacted_support_egress_scrubs_structured_values_and_errors(
     captured_upload, monkeypatch
 ):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     canaries = {
         "url": "r36_REDACTED_url_canary_0123456789",

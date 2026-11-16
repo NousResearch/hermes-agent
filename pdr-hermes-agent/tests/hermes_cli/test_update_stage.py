@@ -70,7 +70,7 @@ def test_marker_fallback_covers_the_old_shim(status_file, tmp_path, monkeypatch)
 def test_marker_fallback_uses_the_platform_home_without_env_var(status_file, tmp_path, monkeypatch):
     """The shim without HERMES_HOME resolved the platform default, which is not ~/.hermes
     on every host (sudo invoker, data-dir suffix); the marker must be looked up there."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: tmp_path / "platform")

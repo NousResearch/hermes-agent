@@ -19,7 +19,7 @@ network, so it runs in CI on every PR.
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent():

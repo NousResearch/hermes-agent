@@ -81,7 +81,7 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
 @pytest.mark.asyncio
 async def test_status_command_reads_token_totals_from_session_db():
     """Regression test for #17158: /status must source token totals from the
-    SQLite SessionDB (where run_agent.py persists them) and sum all component
+    SQLite SessionDB (where hermes_agent/run_agent.py persists them) and sum all component
     counts, not from SessionEntry (which the agent never writes)."""
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
@@ -632,7 +632,7 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
     # The reply renders display_hermes_home() for the routed profile, which abbreviates a home
     # under $HOME to ``~/…``; compare against the same rendering rather than the raw path.
     from gateway.run import _profile_runtime_scope
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
 
     with _profile_runtime_scope(profile_home):
         expected_home = display_hermes_home()

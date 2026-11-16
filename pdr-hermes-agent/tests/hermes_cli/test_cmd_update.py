@@ -111,7 +111,7 @@ class TestGitTrampolineSelfHeal:
         # PortableGit tree lives under the SHARED root (monerostar review on
         # #88136). The candidate list must check get_default_hermes_root()
         # before the profile home.
-        import hermes_constants
+        from hermes_agent import hermes_constants
         from hermes_cli.update_cmd_git import _portable_git_candidates
 
         root = tmp_path / "root"
@@ -132,7 +132,7 @@ class TestGitTrampolineSelfHeal:
 
     def test_portable_git_candidates_include_the_pm_store_tree(self, tmp_path, monkeypatch):
         # install.ps1 and pm stage PortableGit at <store>/git-<version>-<target>/, not <root>/git.
-        import hermes_constants
+        from hermes_agent import hermes_constants
         from hermes_cli.update_cmd_git import _portable_git_candidates
 
         store = tmp_path / "tools"
@@ -151,7 +151,7 @@ class TestGitTrampolineSelfHeal:
         # Newest first by number, not by name: a name sort puts 2.56.9 ahead of 2.56.10.
         from types import SimpleNamespace
 
-        import hermes_constants
+        from hermes_agent import hermes_constants
         from hermes_cli.update_cmd_git import _portable_git_candidates
 
         store = tmp_path / "tools"

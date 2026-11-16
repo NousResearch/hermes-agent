@@ -50,7 +50,7 @@ def test_child_fallback_chain_matrix(pinned, declared, expected):
 
 def _spawn_kwargs(parent, cfg, **overrides):
     model = overrides.pop("model", None)
-    with patch("tools.delegate_tool._load_config", return_value=cfg), patch("run_agent.AIAgent") as MockAgent:
+    with patch("tools.delegate_tool._load_config", return_value=cfg), patch("hermes_agent.run_agent.AIAgent") as MockAgent:
         MockAgent.return_value = MagicMock()
         _build_child_agent(task_index=0, goal="matrix wiring", context=None, toolsets=None, model=model,
                            max_iterations=10, parent_agent=parent, task_count=1, **overrides)
@@ -75,9 +75,9 @@ def test_declared_chain_flows_through_real_profile_config_loader(
 ):
     """The public key must survive DEFAULT_CONFIG/profile loading without
     patching ``_load_config`` and reach the child constructor."""
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
 
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -91,7 +91,7 @@ def test_declared_chain_flows_through_real_profile_config_loader(
             ),
             encoding="utf-8",
         )
-        with patch("run_agent.AIAgent") as mock_agent:
+        with patch("hermes_agent.run_agent.AIAgent") as mock_agent:
             mock_agent.return_value = MagicMock()
             _build_child_agent(
                 task_index=0,
@@ -112,9 +112,9 @@ def test_declared_chain_flows_through_real_profile_config_loader(
 
 def test_explicit_empty_chain_survives_real_profile_config_loader(tmp_path, monkeypatch):
     """An explicit [] remains an authoritative disable after config loading."""
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
 
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
     token = set_hermes_home_override(tmp_path)
@@ -123,7 +123,7 @@ def test_explicit_empty_chain_survives_real_profile_config_loader(tmp_path, monk
             yaml.safe_dump({"delegation": {"fallback_providers": []}}),
             encoding="utf-8",
         )
-        with patch("run_agent.AIAgent") as mock_agent:
+        with patch("hermes_agent.run_agent.AIAgent") as mock_agent:
             mock_agent.return_value = MagicMock()
             _build_child_agent(
                 task_index=0,
@@ -143,10 +143,10 @@ def test_explicit_empty_chain_survives_real_profile_config_loader(tmp_path, monk
 
 def test_pinned_review_does_not_borrow_general_worker_chain(tmp_path, monkeypatch):
     """The public /review route owns its fallback policy as well as its model."""
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
 
     from agent.review_engine import start_review
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
     (tmp_path / "config.yaml").write_text(
@@ -182,7 +182,7 @@ def test_pinned_review_does_not_borrow_general_worker_chain(tmp_path, monkeypatc
 
     token = set_hermes_home_override(tmp_path)
     try:
-        with patch("run_agent.AIAgent", side_effect=capture):
+        with patch("hermes_agent.run_agent.AIAgent", side_effect=capture):
             with pytest.raises(ReachedConstructor):
                 start_review(
                     parent,
@@ -199,7 +199,7 @@ def test_pinned_review_does_not_borrow_general_worker_chain(tmp_path, monkeypatc
 def test_declared_child_chain_activates_on_primary_failure():
     """The selected chain is accepted by the real fallback activation rail."""
     from agent.error_classifier import FailoverReason
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     chain = _resolve_child_fallback_chain(
         _parent(list(PARENT_CHAIN)),
@@ -207,8 +207,8 @@ def test_declared_child_chain_activates_on_primary_failure():
         pinned=True,
     )
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         child = AIAgent(

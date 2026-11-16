@@ -46,7 +46,7 @@ def _bundled_platform_names() -> frozenset:
 def is_known_platform_bundle(platform: object, name: str) -> bool:
     """True when ``name`` is the ``hermes-<platform>`` bundle of a platform Hermes knows: builtin, shipped
     under ``plugins/platforms``, a platform that left core for a catalog plugin, or one a loaded plugin
-    registered. Installs seeded from cli-config.yaml.example carry such rows for platforms nobody set up
+    registered. Installs seeded from hermes_cli/data/cli-config.yaml.example carry such rows for platforms nobody set up
     (teams, google_chat, homeassistant), inert until the plugin loads. A misspelt platform key naming its
     own bundle (``telegarm: [hermes-telegarm]``) is not known, so it is still reported."""
     if name != _platform_default_toolset(platform):
@@ -87,7 +87,7 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
     happen only for a name the cheaper checks cannot place."""
     from functools import cache
 
-    from toolsets import validate_toolset
+    from hermes_agent.toolsets import validate_toolset
 
     mcp_servers = config.get("mcp_servers")
     servers = {str(name) for name in mcp_servers} if isinstance(mcp_servers, dict) else set()

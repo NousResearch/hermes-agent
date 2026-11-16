@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 
 def _agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     return AIAgent(
         api_key="test-key",
@@ -253,8 +253,8 @@ def test_stream_lifecycle_plugin_hooks_are_queued(monkeypatch):
     assert end_call[1]["error"] is None
 
 
-@patch("run_agent.AIAgent._create_request_openai_client")
-@patch("run_agent.AIAgent._close_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
 def test_chat_completion_stream_emits_lifecycle_hooks(_mock_close, mock_create, monkeypatch):
     from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
 

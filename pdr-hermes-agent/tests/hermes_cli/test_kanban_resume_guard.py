@@ -103,8 +103,8 @@ def test_guard_fails_open_on_probe_error(tmp_path):
 # ── CLI startup --resume / -c ────────────────────────────────────────
 
 def _make_cli(resume=None):
-    from cli import HermesCLI
-    import cli as _cli_mod
+    from hermes_agent.cli import HermesCLI
+    from hermes_agent import cli as _cli_mod
 
     _clean_config = {
         "model": {"default": "anthropic/claude-opus-4.6", "base_url": "https://openrouter.ai/api/v1",
@@ -114,7 +114,7 @@ def _make_cli(resume=None):
         "terminal": {"env_type": "local"},
     }
     with (
-        patch("cli.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.cli.get_tool_definitions", return_value=[]),
         patch.dict("os.environ", {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}, clear=False),
         patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}),
     ):
@@ -164,7 +164,7 @@ def test_midchat_resume_refuses_kanban_target(tmp_path):
     cli.session_id = "chat-1"
     cli.conversation_history = [{"role": "user", "content": "hi"}]
     printed = []
-    with patch("cli._cprint", lambda line: printed.append(line)):
+    with patch("hermes_agent.cli._cprint", lambda line: printed.append(line)):
         cli._handle_resume_command("/resume worker-1")
 
     joined = "\n".join(str(p) for p in printed)

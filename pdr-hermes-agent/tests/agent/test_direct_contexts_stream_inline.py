@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-import run_agent
+from hermes_agent import run_agent
 from agent.chat_completion_helpers import (
     interruptible_streaming_api_call,
     should_use_direct_api_call,

@@ -71,7 +71,7 @@ def test_shell_scopes_passthrough_after_eager_activation(
     host_app, tmp_path, monkeypatch, named_launch,
 ):
     from agent import secret_scope
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
     from tools.terminal_scope import get_terminal_scope
     from tui_gateway import launch_profile_policy
 
@@ -328,7 +328,7 @@ def ticket_url(user="owner", extra=""):
 
 
 def test_identity_profile_deletion_and_auth_gate(host_app, fake_bridges, tmp_path, monkeypatch):
-    from hermes_constants import mark_named_profile_deleted
+    from hermes_agent.hermes_constants import mark_named_profile_deleted
     home = tmp_path / ".hermes"
     for name in ("alpha", "beta"):
         profile = home / "profiles" / name
@@ -499,7 +499,7 @@ def test_ownership_checks_never_block_the_event_loop(host_app, fake_bridges, tmp
     check off-loop, and a deleted profile still loses its attached shell."""
     import asyncio
     from hermes_cli.web_host_terminal_sessions import HostOwner
-    from hermes_constants import mark_named_profile_deleted
+    from hermes_agent.hermes_constants import mark_named_profile_deleted
 
     profile = tmp_path / ".hermes" / "profiles" / "alpha"
     profile.mkdir(parents=True)

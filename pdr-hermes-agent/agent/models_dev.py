@@ -17,9 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils import atomic_json_write, atomic_write_text
+from hermes_agent.utils import atomic_json_write, atomic_write_text
 
-from hermes_constants import openrouter_variant_base
+from hermes_agent.hermes_constants import openrouter_variant_base
 
 import requests
 
@@ -233,7 +233,7 @@ def _cfg_get(*keys: str, default: Any, config: Optional[dict[str, Any]] = None) 
 
 
 def _hermes_path(name: str) -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / name
 
 
@@ -262,7 +262,7 @@ def _load_etag() -> str:
 def _save_etag(etag: str) -> None:
     def write() -> None:
         etag_path = _get_etag_path()
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
         mkdir_under_hermes_home(etag_path.parent)
         atomic_write_text(etag_path, etag)

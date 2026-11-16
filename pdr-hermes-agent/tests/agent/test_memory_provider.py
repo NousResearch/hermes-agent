@@ -277,7 +277,7 @@ class TestMemoryManager:
         from agent.secret_scope import (
             is_multiplex_active, reset_secret_scope, set_multiplex_active, set_secret_scope,
         )
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from hermes_cli.config import atomic_config_write
 
         a, b = tmp_path / "a", tmp_path / "b"
@@ -502,7 +502,7 @@ class TestMemoryManager:
         is keyed per Hermes home: another profile's same-named provider still recalls.
         """
         import agent.memory_manager as mm
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 1e9)
         stuck = mm._MAX_STUCK_CALLS
@@ -733,9 +733,9 @@ class TestUserInstalledProviderCli:
     """CLI commands of user-installed providers must be discoverable.
 
     Mirror of the relative-import regression above:
-    discover_plugin_cli_commands() imports the active provider's cli.py as
+    discover_plugin_cli_commands() imports the active provider's hermes_agent/cli.py as
     ``_hermes_user_memory.<name>.cli`` without registering the parent
-    packages, so a cli.py with a relative import could never load.
+    packages, so a hermes_agent/cli.py with a relative import could never load.
     """
 
     def _make_plugin_with_cli(self, tmp_path, name):
@@ -778,7 +778,7 @@ class TestUserInstalledProviderCli:
     def test_cli_discovered_for_user_plugin_with_relative_import(
         self, tmp_path, monkeypatch
     ):
-        """discover_plugin_cli_commands() loads a user provider's cli.py."""
+        """discover_plugin_cli_commands() loads a user provider's hermes_agent/cli.py."""
         from plugins.memory import discover_plugin_cli_commands
         self._make_plugin_with_cli(tmp_path, "extcli")
         self._activate(tmp_path, monkeypatch, "extcli")
@@ -791,7 +791,7 @@ class TestUserInstalledProviderCli:
         """The provider still loads after CLI discovery ran first.
 
         CLI discovery registers a synthetic parent package shell for the
-        relative imports in cli.py; _load_provider_from_dir() must load the
+        relative imports in hermes_agent/cli.py; _load_provider_from_dir() must load the
         real plugin module instead of reusing that shell.
         """
         from plugins.memory import discover_plugin_cli_commands, load_memory_provider
@@ -1015,7 +1015,7 @@ class TestSequentialDispatchRouting:
     memory_manager.has_tool() and handle_tool_call().
 
     This is a regression test for a bug where _execute_tool_calls_sequential
-    in run_agent.py had its own inline dispatch chain that skipped
+    in hermes_agent/run_agent.py had its own inline dispatch chain that skipped
     memory_manager.has_tool(), causing all memory provider tools to fall
     through to the registry and return "Unknown tool". The fix added
     has_tool() + handle_tool_call() to the sequential path.

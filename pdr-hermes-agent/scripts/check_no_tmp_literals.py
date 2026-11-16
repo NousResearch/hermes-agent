@@ -273,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
     print("\n".join(problems))
     print(
         f"\n{total} literal /tmp path(s) flagged. Resolve scratch space through "
-        f"hermes_constants.get_scratch_dir() (or $TMPDIR / tempfile, which Hermes points there), tell the "
+        f"hermes_agent.hermes_constants.get_scratch_dir() (or $TMPDIR / tempfile, which Hermes points there), tell the "
         f"model to do the same in skills and prompts, or mark a deliberate line with `{MARKER} — <why>` (same line or the line above). "
         f"See scripts/check_no_tmp_literals.py."
     )

@@ -64,7 +64,7 @@ def register_session_env(scope: str, names: Iterable[str], resolver: Resolver, *
 def session_env_names() -> frozenset[str]:
     """Every name declared in the active profile, unloaded plugins' included: none may be baked into (or
     restored from) a shared shell snapshot."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     scope = hermes_home_key()
     with _LOCK:
         return frozenset(_DECLARED.get(scope, ()))
@@ -77,7 +77,7 @@ def resolve_session_env(session_id: str) -> dict[str, Optional[str]]:
         registrations = tuple(_REGISTRATIONS.values())
     if not session_id or not registrations:
         return {}
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     scope = hermes_home_key()
     out: dict[str, Optional[str]] = {}
     for owner, _, names, resolver in registrations:

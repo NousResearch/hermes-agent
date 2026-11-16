@@ -113,7 +113,7 @@ class TestHiddenCounterAccumulation:
         for name in ("terminal", "read_file"):
             host._note_focus_hidden_line(name)
 
-        with patch("cli._cprint") as printer:
+        with patch("hermes_agent.cli._cprint") as printer:
             host._emit_focus_recovery_line()
 
         assert printer.call_count == 1
@@ -133,8 +133,8 @@ class TestHiddenCounterAccumulation:
 class TestFocusCommandHandler:
     def test_on_stashes_the_verbose_mode_and_snaps_to_off(self):
         host = _FocusHost(enabled=False, saved=None, tool_progress="verbose")
-        with patch("cli.save_config_value", return_value=True) as saver, \
-             patch("cli._cprint"):
+        with patch("hermes_agent.cli.save_config_value", return_value=True) as saver, \
+             patch("hermes_agent.cli._cprint"):
             host._handle_focus_command("/focus on")
 
         assert host._focus_view_enabled is True
@@ -148,7 +148,7 @@ class TestFocusCommandHandler:
 
     def test_idempotent_on_does_not_reclobber_the_stash(self):
         host = _FocusHost(enabled=True, saved="verbose", tool_progress="off")
-        with patch("cli.save_config_value") as saver, patch("cli._cprint"):
+        with patch("hermes_agent.cli.save_config_value") as saver, patch("hermes_agent.cli._cprint"):
             host._handle_focus_command("/focus on")
         saver.assert_not_called()
         # The stash still points at the real pre-focus mode, not "off".
@@ -157,7 +157,7 @@ class TestFocusCommandHandler:
     def test_live_agent_mode_is_synced(self):
         host = _FocusHost(enabled=False, saved=None, tool_progress="all")
         host.agent = SimpleNamespace(tool_progress_mode="all")
-        with patch("cli.save_config_value", return_value=True), patch("cli._cprint"):
+        with patch("hermes_agent.cli.save_config_value", return_value=True), patch("hermes_agent.cli._cprint"):
             host._handle_focus_command("/focus on")
         # tool_executor gates on the AGENT copy — syncing it is what makes the
         # suppression take effect this turn instead of after an agent rebuild.
@@ -179,7 +179,7 @@ class TestStatusBarSegment:
 
     @pytest.mark.parametrize("width", [40, 60, 120])
     def test_text_renderer_includes_the_badge_at_every_width_tier(self, width):
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         host = HermesCLI.__new__(HermesCLI)
         host.model = "opus"
@@ -219,7 +219,7 @@ class TestStatusBarSegment:
 
 def _make_agent(tool_progress_mode: str):
     """Build a real AIAgent whose display mode is the only difference."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     tool_defs = [
         {
@@ -232,8 +232,8 @@ def _make_agent(tool_progress_mode: str):
         }
     ]
     with (
-        patch("model_tools.get_tool_definitions", return_value=tool_defs),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=tool_defs),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
@@ -283,7 +283,7 @@ def _run_fake_turn(tool_progress_mode: str, dispatch_mode: str = "sequential"):
         return json.dumps({"ok": args["query"]})
 
     with (
-        patch("model_tools.handle_function_call", side_effect=fake_dispatch),
+        patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_dispatch),
         patch.object(agent, "_invoke_tool", side_effect=fake_dispatch),
         patch(
             "agent.tool_executor.maybe_persist_tool_result",
@@ -330,7 +330,7 @@ class TestModelFacingMessagesUnchanged:
         host.conversation_history = history
         snapshot = json.dumps(history)
 
-        with patch("cli.save_config_value", return_value=True), patch("cli._cprint"):
+        with patch("hermes_agent.cli.save_config_value", return_value=True), patch("hermes_agent.cli._cprint"):
             host._handle_focus_command("/focus on")
             host._note_focus_hidden_line("terminal")
             host._emit_focus_recovery_line()
@@ -349,7 +349,7 @@ class TestCommandRegistration:
     def test_verbose_cycle_releases_focus_view(self):
         # /verbose is the explicit tool-progress control; cycling it must clear
         # the focus badge so the indicator can never contradict the display.
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         host = HermesCLI.__new__(HermesCLI)
         host.tool_progress_mode = "off"
@@ -359,7 +359,7 @@ class TestCommandRegistration:
         host._focus_last_counted_tool = "terminal"
         host.agent = None
 
-        with patch("cli.save_config_value", return_value=True), patch("cli._cprint"):
+        with patch("hermes_agent.cli.save_config_value", return_value=True), patch("hermes_agent.cli._cprint"):
             HermesCLI._toggle_verbose(host)
 
         assert host._focus_view_enabled is False

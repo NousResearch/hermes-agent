@@ -236,7 +236,7 @@ def manage_connections_stub(args, **kw):
     return json.dumps({"targets": targets, "note": HOSTED_NOTE})
 
 
-import model_tools  # registers the built-in tools
+from hermes_agent import model_tools  # registers the built-in tools
 import tools.connectors as connectors_pkg
 import tools.connectors.tool as connectors_tool
 from tools.connectors.gateway import config as gateway_config
@@ -267,7 +267,7 @@ FAMILY_TOOLSETS = {"mem": ["memory", "skills", "file", "terminal"],
                    "search": ["file", "terminal"], "term": ["file", "terminal"]}
 TOOLSETS = FAMILY_TOOLSETS[TASK_ID.split("_", 1)[0]]
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 agent = AIAgent(base_url=INFER_URL, api_key=INFER_KEY, provider="custom", model=MODEL, quiet_mode=True,
                 skip_context_files=True, skip_memory=False, skip_background_review=True, enabled_toolsets=TOOLSETS,

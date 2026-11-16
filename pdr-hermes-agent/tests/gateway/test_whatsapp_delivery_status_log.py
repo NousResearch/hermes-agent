@@ -31,7 +31,7 @@ class _Resp:
 
 @pytest.mark.asyncio
 async def test_delivery_status_is_logged_to_gateway_log_and_never_dispatched(caplog):
-    from hermes_logging import COMPONENT_PREFIXES
+    from hermes_agent.hermes_logging import COMPONENT_PREFIXES
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={}))

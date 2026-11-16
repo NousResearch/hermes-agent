@@ -11,7 +11,7 @@ on disk and still shown by other surfaces.
 from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import ContextCompressor
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 PIN = 249_000
 ROUTE = "http://127.0.0.1:8123/v1"

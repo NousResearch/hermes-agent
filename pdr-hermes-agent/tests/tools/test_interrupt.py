@@ -206,7 +206,7 @@ class TestPreToolCheck:
 
         # Import and call the method
         import types
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         # Bind the real methods to our mock so dispatch works correctly
         agent._execute_tool_calls_sequential = types.MethodType(AIAgent._execute_tool_calls_sequential, agent)
         agent._execute_tool_calls_concurrent = types.MethodType(AIAgent._execute_tool_calls_concurrent, agent)
@@ -309,7 +309,7 @@ class TestRunToolCleanupOnBaseException:
         agent._invoke_tool = MagicMock(side_effect=BaseException("simulated CancelledError"))
 
         # Bind the real concurrent method so we get _run_tool
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent._execute_tool_calls_concurrent = types.MethodType(
             AIAgent._execute_tool_calls_concurrent, agent
         )

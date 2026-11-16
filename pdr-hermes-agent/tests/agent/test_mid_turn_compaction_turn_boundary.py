@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from agent.turn_preflight import compress_after_tool_results
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def test_post_tool_compression_reanchors_the_active_user_boundary(monkeypatch):
@@ -80,8 +80,8 @@ def test_pre_api_compression_mid_turn_keeps_this_turns_tool_pair_on_the_wire():
         "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
     }}
     with (
-        patch("model_tools.get_tool_definitions", return_value=[tool_def]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[tool_def]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
         patch("agent.model_metadata.get_model_context_length", return_value=256_000),
         patch("agent.context_compressor.get_model_context_length", return_value=256_000),

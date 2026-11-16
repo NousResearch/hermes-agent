@@ -689,7 +689,7 @@ def register(ctx):
 
 注册后，用户可以运行 `hermes my-plugin status`、`hermes my-plugin config` 等命令。
 
-**记忆提供商插件**使用基于约定的方式：在插件的 `cli.py` 文件中添加 `register_cli(subparser)` 函数。记忆插件发现系统会自动找到它——无需调用 `ctx.register_cli_command()`。详见[记忆提供商插件指南](../memory-provider-plugin.md#添加-cli-命令)。
+**记忆提供商插件**使用基于约定的方式：在插件的 `hermes_agent/cli.py` 文件中添加 `register_cli(subparser)` 函数。记忆插件发现系统会自动找到它——无需调用 `ctx.register_cli_command()`。详见[记忆提供商插件指南](../memory-provider-plugin.md#添加-cli-命令)。
 
 **活跃提供商限制：** 记忆插件 CLI 命令仅在其提供商是配置中活跃的 `memory.provider` 时才会出现。如果用户尚未设置你的提供商，你的 CLI 命令不会出现在帮助输出中。
 
@@ -916,7 +916,7 @@ def register(ctx):
 
 记忆提供商是单选的——同一时间只有一个处于活跃状态，通过 `config.yaml` 中的 `memory.provider` 选择。
 
-**完整指南：** [记忆提供商插件](../memory-provider-plugin.md)——完整的 `MemoryProvider` ABC、线程约定、配置文件隔离、通过 `cli.py` 注册 CLI 命令。
+**完整指南：** [记忆提供商插件](../memory-provider-plugin.md)——完整的 `MemoryProvider` ABC、线程约定、配置文件隔离、通过 `hermes_agent/cli.py` 注册 CLI 命令。
 
 ### 上下文引擎插件——替换上下文压缩器
 

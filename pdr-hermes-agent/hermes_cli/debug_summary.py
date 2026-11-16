@@ -84,7 +84,7 @@ def _platform_names() -> str:
 def _toolset_names(raw_config: dict[str, Any]) -> str:
     """Configured toolsets, by name only when the name is a built-in toolset (user-named custom
     toolsets are counted, not named)."""
-    from toolsets import TOOLSETS
+    from hermes_agent.toolsets import TOOLSETS
     configured = raw_config.get("toolsets")
     if not isinstance(configured, list):
         return "(default)"

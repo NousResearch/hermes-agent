@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from agent.redact import redact_derived_text
 from hermes_state.common import _BOUNDARY_END_REASONS, _PREVIEW_MAX_CHARS
-from hermes_time import safe_strftime
+from hermes_agent.hermes_time import safe_strftime
 
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
 # subagent runs, kanban workers are not the user's history.
@@ -558,7 +558,7 @@ def _cross_profile_reads_confined() -> bool:
     """
     from agent.secret_scope import serves_routed_profile
     from hermes_cli.profiles import get_profile_dir
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
     from tools.approval_context import is_local_interactive_session
     if not serves_routed_profile() or is_local_interactive_session():
         return False
@@ -570,7 +570,7 @@ def _resolve_profile_db(profile: str):
     if profile is None or not str(profile).strip():
         return None
     from hermes_cli import profiles as profiles_mod
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
     from hermes_state import SessionDB
     canon = profiles_mod.normalize_profile_name(profile)
     profiles_mod.validate_profile_name(canon)
@@ -758,7 +758,7 @@ def session_search(query: str = "", role_filter: str | None = None, limit: int |
                    after: str | None = None, before: str | None = None, exclude_session_ids: Optional[list[str]] = None) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
     new parameters are appended after ``detail``."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state import SessionDB, format_session_db_unavailable
     from hermes_state.registry import release_or_close
     owned_dbs: list[Any] = []

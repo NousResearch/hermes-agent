@@ -26,7 +26,7 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     from tools.registry import invalidate_check_fn_cache, registry
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
 
     invalidate_check_fn_cache()
     schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)

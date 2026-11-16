@@ -27,7 +27,7 @@ class TestCredentialPoolPreservedOnAutoDetect:
         from agent.agent_init import init_agent
 
         # Build a minimal agent-like object (like tests use object.__new__)
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = object.__new__(AIAgent)
         agent._base_url = ""
         agent._base_url_lower = ""
@@ -36,7 +36,7 @@ class TestCredentialPoolPreservedOnAutoDetect:
         pool = SimpleNamespace(provider="anthropic")
 
         with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \
-             patch("model_tools.get_tool_definitions", return_value=[]), \
+             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]), \
              patch('agent.anthropic_adapter.build_anthropic_client', return_value=MagicMock()), \
              patch('agent.anthropic_credentials.resolve_anthropic_token', return_value=''), \
              patch('agent.anthropic_credentials._is_oauth_token', return_value=False), \

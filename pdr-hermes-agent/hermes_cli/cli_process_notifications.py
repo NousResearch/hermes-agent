@@ -27,7 +27,7 @@ class CLIProcessNotificationsMixin:
         gateway semantics: events are still drained, claimed and acknowledged — only the
         turn-starting injection is suppressed."""
         try:
-            from cli import CLI_CONFIG
+            from hermes_agent.cli import CLI_CONFIG
             mode = str((CLI_CONFIG.get("display") or {}).get("background_process_notifications") or "").strip().lower()
         except Exception:
             return False
@@ -75,7 +75,7 @@ class CLIProcessNotificationsMixin:
 
     def _tui_unwrap_input(self, user_input):
         """Unwrap ``_VoiceInputMessage`` / ``_SeededQueryMessage`` -> ``(text_or_tuple, is_voice_input, is_seeded_query)``."""
-        from cli import _VoiceInputMessage, _SeededQueryMessage
+        from hermes_agent.cli import _VoiceInputMessage, _SeededQueryMessage
         from tools.process_registry import process_registry
         from tools.process_registry_notifications import (
             PROCESS_COMPLETE_DISPLAY_KIND, ProcessNotificationBatch, TimelineNotification)

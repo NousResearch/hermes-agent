@@ -157,7 +157,7 @@ class OwnQueueHold:
 
     @classmethod
     def begin(cls, cli, item):
-        from cli import _SeededQueryMessage
+        from hermes_agent.cli import _SeededQueryMessage
         from hermes_cli.gateway_tools_notify import gateway_store
         from tools.process_registry_notifications import TimelineNotification
         if getattr(cli, "_agent_running", False) or isinstance(item, (_SeededQueryMessage, TimelineNotification)):

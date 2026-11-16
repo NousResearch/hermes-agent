@@ -14,7 +14,7 @@ proves ``compress()`` routes into ``_generate_summary``.
 from datetime import datetime, timezone, UTC
 from unittest.mock import MagicMock, patch
 
-import hermes_time
+from hermes_agent import hermes_time
 from agent.context_compressor import ContextCompressor, HISTORICAL_TASK_HEADING
 
 

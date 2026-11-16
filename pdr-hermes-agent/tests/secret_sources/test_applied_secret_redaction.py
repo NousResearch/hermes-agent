@@ -20,7 +20,7 @@ from agent.redact import redact_sensitive_text, redact_terminal_output, register
 from agent.secret_sources import registry as reg
 from agent.secret_sources.base import FetchResult, SecretSource
 from hermes_cli import env_loader
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 def _key(label: str, kind: str, lines: int) -> tuple[str, list[str]]:

@@ -34,7 +34,7 @@ from hermes_state import SessionDB
 def _agent_with_db(db: SessionDB, session_id: str):
     """Real ``AIAgent`` wired to ``db`` and pinned to ``session_id`` (no network, no LLM)."""
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",

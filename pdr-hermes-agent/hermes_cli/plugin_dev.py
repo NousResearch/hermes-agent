@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from typing import Any, Literal
 from unittest.mock import patch
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 class _DoctorLoadError(RuntimeError):
@@ -411,7 +411,7 @@ def _check_desktop_half_copy(report: DoctorReport, path: Path) -> None:
         return
     source = source_dir / "plugin.js"
     shown = source.relative_to(path).as_posix()
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     app_root = get_default_hermes_root() / "desktop-plugins"
     try:

@@ -75,7 +75,7 @@ def queue_admitted_turn(cli, store) -> None:
             # input path paints and pumps it as a typed turn. Literal: it is a prompt, never a command.
             # Adopted by admission id (the item carries it), never by text: the input path may rewrite
             # the text, and a second ``prompt.submit`` would run the prompt twice.
-            from cli import _SeededQueryMessage
+            from hermes_agent.cli import _SeededQueryMessage
             _adopt(cli, state, {"admission_id": params["admission_id"],
                                 "execution_generation": params.get("execution_generation")}, queued_text)
             return
@@ -91,7 +91,7 @@ def queue_admitted_turn(cli, store) -> None:
 
 
 def _adopt(cli, state, adopted, text):
-    from cli import _SeededQueryMessage
+    from hermes_agent.cli import _SeededQueryMessage
     state.missed.discard(adopted["admission_id"])
     state.adopted[adopted["admission_id"]] = adopted
     _put_first(cli._pending_input, _SeededQueryMessage(text, admission_id=adopted["admission_id"]))

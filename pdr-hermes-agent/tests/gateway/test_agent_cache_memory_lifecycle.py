@@ -15,7 +15,7 @@ class TestAgentCacheMemoryLifecycle:
         import queue
         from agent.memory_manager import MemoryManager
         from agent.memory_provider import MemoryProvider
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         class _WriterProvider(MemoryProvider):
             def __init__(self):

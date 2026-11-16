@@ -8,7 +8,7 @@ import threading
 import time
 
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 
 @pytest.fixture
@@ -245,7 +245,7 @@ def test_actual_runtime_transitions_reach_chat_completions(
 ):
     from agent.error_classifier import FailoverReason
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     base_url, requests = actual_endpoint
     if hosted:
@@ -362,7 +362,7 @@ def test_actual_rejects_forced_responses_before_http(
         CodexAuxiliaryClient,
         resolve_provider_client,
     )
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     base_url, requests = actual_endpoint
     if hosted:
@@ -534,7 +534,7 @@ def test_actual_setup_keeps_provider_settings_in_yaml(
 
 
 def test_actual_key_reload_keeps_yaml_endpoint(tmp_path, monkeypatch, actual_endpoint):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     base_url, requests = actual_endpoint
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

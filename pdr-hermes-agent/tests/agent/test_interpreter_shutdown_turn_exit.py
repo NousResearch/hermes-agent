@@ -57,11 +57,11 @@ class _AlwaysFailingCompletions:
         raise Exception("API down")
 
 def _make_agent(monkeypatch, completions):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **kwargs: client)
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **k: [])
 
     agent = AIAgent(
         model="test-model",

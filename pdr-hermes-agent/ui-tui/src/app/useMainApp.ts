@@ -1601,7 +1601,7 @@ export function useMainApp(gw: GatewayClient) {
       stickyPrompt,
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
-      // on REC (cli.py:_get_voice_status_fragments line 2344).
+      // on REC (hermes_agent/cli.py:_get_voice_status_fragments line 2344).
       voiceLabel: voiceRecording
         ? i18n.session.main.voiceRec
         : voiceProcessing

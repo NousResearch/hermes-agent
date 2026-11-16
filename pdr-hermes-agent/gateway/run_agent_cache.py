@@ -816,7 +816,7 @@ class GatewayAgentCacheMixin:
             from gateway.session import _slack_tools_loaded
             slack_tools = "1" if _slack_tools_loaded() else "0"
         try:
-            from hermes_constants import display_hermes_home
+            from hermes_agent.hermes_constants import display_hermes_home
             home_display = str(display_hermes_home())
         except Exception:
             home_display = ""
@@ -919,7 +919,7 @@ class GatewayAgentCacheMixin:
         scope = nullcontext()
         if is_multiplex_active():
             from gateway.run import _profile_runtime_scope
-            from hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
+            from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
             owner = None
             store = getattr(self, "session_store", None)
             if session_key and store is not None:
@@ -982,7 +982,7 @@ class GatewayAgentCacheMixin:
         # persisted session JSON on the next turn, so dropping it here is safe.
         if hasattr(agent, "_session_messages"):
             agent._session_messages = []
-        # _db_flush_scan_prefix (run_agent.py, stamped on every successful flush) is a shallow copy
+        # _db_flush_scan_prefix (hermes_agent/run_agent.py, stamped on every successful flush) is a shallow copy
         # sharing every message dict of the flushed transcript, so leaving it pins the multi-MB strings
         # this eviction frees. Pressure-evictable agents have flushed by definition, so it's populated.
         if hasattr(agent, "_db_flush_scan_prefix"):

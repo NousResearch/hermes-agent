@@ -99,7 +99,7 @@ def test_prewarm_warms_the_active_custom_endpoint_for_the_next_open(monkeypatch)
             user_providers=ctx.user_providers,
             custom_providers=ctx.custom_providers,
             excluded_providers=ctx.excluded_providers,
-            # Exact kwargs cli.py's plain (no-args, no --refresh) /model
+            # Exact kwargs hermes_agent/cli.py's plain (no-args, no --refresh) /model
             # handler passes: probe only the active custom endpoint,
             # everything else from the warm disk cache.
             probe_custom_providers=False,

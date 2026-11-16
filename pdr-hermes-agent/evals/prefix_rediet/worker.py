@@ -193,7 +193,7 @@ def vault(action, args):
     return json.dumps({"success": False, "error": f"unknown action {action!r}"})
 
 
-import model_tools
+from hermes_agent import model_tools
 from tools.registry import registry
 
 
@@ -217,7 +217,7 @@ for name in registry.get_all_tool_names():  # pin the Browser Use surface: built
 TOOLSETS = ["browser", "clarify", "code_execution", "cronjob", "delegation", "file", "memory",
             "session_search", "skills", "terminal", "todo", "vision", "web", "image_gen"]
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 agent = AIAgent(base_url=INFER_URL, api_key=INFER_KEY, provider="custom", model=MODEL, quiet_mode=True, skip_context_files=True,
                 skip_memory=True, skip_background_review=True, enabled_toolsets=TOOLSETS,

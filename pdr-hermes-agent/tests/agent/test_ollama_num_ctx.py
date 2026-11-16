@@ -2,7 +2,7 @@
 
 Covers:
   agent/model_metadata.py — query_ollama_num_ctx()
-  run_agent.py — _ollama_num_ctx detection + extra_body injection
+  hermes_agent/run_agent.py — _ollama_num_ctx detection + extra_body injection
 """
 
 from unittest.mock import patch, MagicMock
@@ -129,8 +129,8 @@ class TestQueryOllamaSupportsVision:
 def _build_agent(cfg, probed_ctx, base_url="http://localhost:11434/v1"):
     import agent.context_compressor as cc_mod
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
         patch("hermes_cli.config.load_config", return_value=cfg),
         patch("hermes_cli.config.load_config_readonly", return_value=cfg),
@@ -142,7 +142,7 @@ def _build_agent(cfg, probed_ctx, base_url="http://localhost:11434/v1"):
             cc_mod, "get_model_context_length", return_value=probed_ctx,
         ),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         return AIAgent(
             model="gemma3:27b",
             api_key="ollama",

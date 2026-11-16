@@ -108,7 +108,7 @@ RULES: tuple[Rule, ...] = (
          " deliberately lives under the user's home, not the profile (e.g. the profiles root),"
          " takes `# health: allow HX001 -- <why>`", "ast",
          blocking=WARN_UNTIL_REPLAYED,
-         exclude=SINGLE_PROFILE + ("hermes_constants.py",)),
+         exclude=SINGLE_PROFILE + ("hermes_agent/hermes_constants.py",)),
     Rule("HX002", "new HERMES_* environment variable", "behavioural settings go in"
          " config.yaml, secrets through the secret scope; `.env` is for credentials only",
          "ast", exclude=SINGLE_PROFILE),
@@ -135,7 +135,7 @@ RULES: tuple[Rule, ...] = (
          " that binds less on purpose. A raw `set_hermes_home_override` / `set_secret_scope` /"
          " `set_terminal_scope` / `install_profile_terminal_scope` call blocks only when it is new: an"
          " existing call stays until someone migrates it", "ast",
-         exclude=SINGLE_PROFILE + ("agent/runtime_scope.py", "hermes_constants.py",
+         exclude=SINGLE_PROFILE + ("agent/runtime_scope.py", "hermes_agent/hermes_constants.py",
                                    "agent/secret_scope.py", "tools/terminal_scope.py")),
     # Process identity.
     Rule("HX003", "process identity from argv substrings", "use"

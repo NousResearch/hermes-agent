@@ -25,7 +25,7 @@ def _marker_path() -> Path:
     """The last-run marker, resolved per call (tests monkeypatch
     get_hermes_home). Derivation only — NO mkdir: a due-check or any
     read path must not create user state."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     return get_hermes_home() / _MARKERS_DIR / "last-run"
 
@@ -50,7 +50,7 @@ def record_check_results(results: list, checked_installs: dict) -> None:
     can tell whether the result still applies. Never raises."""
     import json
 
-    from utils import atomic_write_text
+    from hermes_agent.utils import atomic_write_text
 
     try:
         rows = []

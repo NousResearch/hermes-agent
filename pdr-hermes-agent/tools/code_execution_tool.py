@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from tools.thread_context import propagate_context_to_thread
 from tools.registry import registry, tool_error
 
-from hermes_time import get_timezone_name
+from hermes_agent.hermes_time import get_timezone_name
 from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
 from tools.code_execution_rpc import (
     _execute_checked, _private_dirs_cmd, _remote_write, _rpc_poll_loop, tool_errors_since,
@@ -92,7 +92,7 @@ def _spill_full_stdout(stdout_text: str, env: Any = None) -> Optional[str]:
     output is the tenant's and this host keeps none of it."""
     try:
         import hashlib
-        from hermes_constants import get_hermes_dir
+        from hermes_agent.hermes_constants import get_hermes_dir
         from tools.spill_safety import ensure_spill_dir, write_text_exclusive
         from tools.tool_result_storage import _persist_hosted
         if len(stdout_text) > MAX_SPILLED_STDOUT_BYTES:
@@ -962,7 +962,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
     }
 
 
-# Registration-time schema (all sandbox tools, configured mode); model_tools.py rebuilds per-session.
+# Registration-time schema (all sandbox tools, configured mode); hermes_agent/model_tools.py rebuilds per-session.
 EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import process_identity
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 
 
 @pytest.fixture
@@ -85,7 +85,7 @@ from pathlib import Path
 from hermes_cli import _startup_fast
 # Model two installed runtime roots without copying the source tree.
 _startup_fast.project_root_str = lambda: sys.argv[1]
-import cli
+from hermes_agent import cli
 
 def terminal_boundary(self):
     print('cli-ready', flush=True)

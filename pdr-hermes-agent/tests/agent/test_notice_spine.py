@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 
 from agent.credits_tracker import AgentNotice
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 # ── A. Emitter behaviour ─────────────────────────────────────────────────────

@@ -106,7 +106,7 @@ def activation_predicate(
     Hermes home.
     """
     if home is None:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         home = get_hermes_home()
     if yaml_cfg is None and home is not None:
         try:

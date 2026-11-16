@@ -1,6 +1,6 @@
 """Language identity for the bundled locales — endonym and script direction — plus the picker list.
 
-One Python table; ``apps/shared/src/i18n.ts`` ``LOCALE_ENDONYMS`` / ``RTL_LOCALES`` must agree for the
+One Python table; ``ui-tui/packages/shared/src/i18n.ts`` ``LOCALE_ENDONYMS`` / ``RTL_LOCALES`` must agree for the
 ids both sides bundle (the desktop lane's test checks the relationship). Pack-only languages take
 their endonym/rtl from the pack registration (``PluginContext.register_locale(endonym=..., rtl=...)``)
 and fall back to the bare id.
@@ -65,7 +65,7 @@ def language_options() -> list[LanguageOption]:
     """``[{"id", "endonym", "rtl", "source", "surfaces"}, ...]`` for every supported language, ``en`` first then sorted
     by id — the list ``i18n.languages`` serves and every switcher renders (endonym only, no flags)."""
     from agent import i18n, i18n_layers
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = get_hermes_home()
     overlay_langs = i18n_layers.overlay_languages(home)

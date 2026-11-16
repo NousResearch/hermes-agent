@@ -73,7 +73,7 @@ def fake_cli(monkeypatch):
 
     module.save_config_value = save_config_value
     module._outcome = True
-    monkeypatch.setitem(sys.modules, "cli", module)
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", module)
     module.calls = calls
     return module
 

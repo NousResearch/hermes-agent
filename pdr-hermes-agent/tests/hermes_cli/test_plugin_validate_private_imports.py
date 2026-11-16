@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 from hermes_cli.plugin_validate import validate_plugin_dir
 

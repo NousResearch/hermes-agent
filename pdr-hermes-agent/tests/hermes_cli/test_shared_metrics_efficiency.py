@@ -146,7 +146,7 @@ def test_tool_output_truncation_is_judged_after_the_turn_budget(direct_runtime, 
 
 def test_tool_overhead_and_unused_toolsets_report_once_per_conversation(direct_runtime, tmp_path, monkeypatch):
     toolsets = {"read_file": "file", "terminal": "terminal", "acme_private_tool": "acme-private"}
-    monkeypatch.setattr("model_tools.get_toolset_for_tool", toolsets.get)
+    monkeypatch.setattr("hermes_agent.model_tools.get_toolset_for_tool", toolsets.get)
     agent = _agent()
     _turn("s1", "t1", None, calls=[_usage(100)])
     eff.observe_request_tools(agent, agent.tools)
@@ -188,7 +188,7 @@ def test_cache_breaks_count_known_causes_once_and_unannounced_cold_reads_as_miss
     rt._sessions["s1"].efficiency.cache_ended_ns -= int(eff.CACHE_TTL_S * 1e9) + 1
     _turn("s1", "t6", {"completed": True}, calls=[_usage(9_000, cache_read=0)])
     # The tool array changing mid-conversation.
-    monkeypatch.setattr("model_tools.get_toolset_for_tool", lambda name: None)
+    monkeypatch.setattr("hermes_agent.model_tools.get_toolset_for_tool", lambda name: None)
     eff.observe_request_tools(agent, agent.tools)
     eff.observe_request_tools(agent, agent.tools[:1])
     # Internal forks and persistence-disabled side agents never count.

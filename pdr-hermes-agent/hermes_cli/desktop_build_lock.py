@@ -28,7 +28,7 @@ class DesktopBuildLock:
     """
 
     def __init__(self, project_root: Path) -> None:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
 
         resolved = os.path.normcase(str(project_root.resolve(strict=False)))
         checkout_key = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:24]

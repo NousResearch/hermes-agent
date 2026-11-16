@@ -57,7 +57,7 @@ def test_local_skills_publish_mapped_artwork_only(mod, tmp_path, monkeypatch, di
         skill = tmp_path / directory / "creative" / name
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\nExample.")
-    manifest = tmp_path / "apps/shared/src/catalog-curation.json"
+    manifest = tmp_path / "ui-tui/packages/shared/src/catalog-curation.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(json.dumps({
         "artwork": {"skills": {"creative/illustrated": "art.jpg"}},

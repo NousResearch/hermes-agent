@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import update_cmd, update_cmd_zip
-from hermes_constants import venv_bin_dir, venv_python_path
+from hermes_agent.hermes_constants import venv_bin_dir, venv_python_path
 
 # ---------------------------------------------------------------------------
 # Two-phase replace
@@ -137,26 +137,26 @@ def test_venv_helpers_accept_str_and_path():
 # ---------------------------------------------------------------------------
 
 def test_top_level_files_are_swapped_atomically(tmp_path):
-    """The repo root holds 20 first-party modules (run_agent.py, cli.py,
-    hermes_constants.py, ...). Covering only directories would leave exactly
+    """The repo root holds 20 first-party modules (hermes_agent/run_agent.py, hermes_agent/cli.py,
+    hermes_agent/hermes_constants.py, ...). Covering only directories would leave exactly
     the bug class this PR closes."""
     live, new = tmp_path / "live", tmp_path / "new"
     live.mkdir()
     new.mkdir()
-    (live / "run_agent.py").write_text("old")
-    (new / "run_agent.py").write_text("new")
+    (live / "hermes_agent/run_agent.py").write_text("old")
+    (new / "hermes_agent/run_agent.py").write_text("new")
 
     staged = [
         (
             update_cmd._stage_replacement(
-                str(new / "run_agent.py"), str(live / "run_agent.py")
+                str(new / "hermes_agent/run_agent.py"), str(live / "hermes_agent/run_agent.py")
             ),
-            str(live / "run_agent.py"),
+            str(live / "hermes_agent/run_agent.py"),
         )
     ]
     update_cmd._commit_staged_replacements(staged)
 
-    assert (live / "run_agent.py").read_text() == "new"
+    assert (live / "hermes_agent/run_agent.py").read_text() == "new"
     assert not [p for p in os.listdir(live) if "hermes-update" in p]
 
 def test_file_swap_failure_restores_the_original_file(tmp_path, monkeypatch):
@@ -164,13 +164,13 @@ def test_file_swap_failure_restores_the_original_file(tmp_path, monkeypatch):
     live, new = tmp_path / "live", tmp_path / "new"
     live.mkdir()
     new.mkdir()
-    for name in ("cli.py", "run_agent.py"):
+    for name in ("hermes_agent/cli.py", "hermes_agent/run_agent.py"):
         (live / name).write_text("old")
         (new / name).write_text("new")
 
     staged = [
         (update_cmd._stage_replacement(str(new / n), str(live / n)), str(live / n))
-        for n in ("cli.py", "run_agent.py")
+        for n in ("hermes_agent/cli.py", "hermes_agent/run_agent.py")
     ]
 
     real_replace = os.replace
@@ -187,8 +187,8 @@ def test_file_swap_failure_restores_the_original_file(tmp_path, monkeypatch):
         update_cmd._commit_staged_replacements(staged)
     monkeypatch.undo()
 
-    versions = {n: (live / n).read_text() for n in ("cli.py", "run_agent.py")}
-    assert versions == {"cli.py": "old", "run_agent.py": "old"}, (
+    versions = {n: (live / n).read_text() for n in ("hermes_agent/cli.py", "hermes_agent/run_agent.py")}
+    assert versions == {"hermes_agent/cli.py": "old", "hermes_agent/run_agent.py": "old"}, (
         f"mixed/corrupt root modules after rollback: {versions}"
     )
 
@@ -406,16 +406,16 @@ def test_root_files_never_go_missing_mid_swap(tmp_path, monkeypatch, hardlinks):
     for side, text in ((live, "old"), (new, "new")):
         (side / "hermes_cli").mkdir(parents=True)
         (side / "hermes_cli" / "main.py").write_text(text, encoding="utf-8")
-        for name in ("hermes_constants.py", "hermes_bootstrap.py"):
+        for name in ("hermes_agent/hermes_constants.py", "hermes_agent/hermes_bootstrap.py"):
             (side / name).write_text(text, encoding="utf-8")
-    names = ("hermes_constants.py", "hermes_cli", "hermes_bootstrap.py")
+    names = ("hermes_agent/hermes_constants.py", "hermes_cli", "hermes_agent/hermes_bootstrap.py")
     staged = [(update_cmd._stage_replacement(str(new / n), str(live / n)), str(live / n)) for n in names]
     missing: list[str] = []
 
     def probing(real):
         def step(src, dst):
             real(src, dst)
-            missing.extend(n for n in ("hermes_constants.py", "hermes_bootstrap.py") if not (live / n).is_file())
+            missing.extend(n for n in ("hermes_agent/hermes_constants.py", "hermes_agent/hermes_bootstrap.py") if not (live / n).is_file())
         return step
 
     monkeypatch.setattr(update_cmd.os, "rename", probing(os.rename))
@@ -423,8 +423,8 @@ def test_root_files_never_go_missing_mid_swap(tmp_path, monkeypatch, hardlinks):
     update_cmd._commit_staged_replacements(staged)
     monkeypatch.undo()
     assert not missing, f"root modules absent mid-swap: {missing}"
-    assert {n: (live / n).read_text(encoding="utf-8-sig") for n in ("hermes_constants.py", "hermes_bootstrap.py")} == {
-        "hermes_constants.py": "new", "hermes_bootstrap.py": "new"}
+    assert {n: (live / n).read_text(encoding="utf-8-sig") for n in ("hermes_agent/hermes_constants.py", "hermes_agent/hermes_bootstrap.py")} == {
+        "hermes_agent/hermes_constants.py": "new", "hermes_agent/hermes_bootstrap.py": "new"}
     assert not [p for p in os.listdir(live) if "hermes-update" in p]
 
 
@@ -767,21 +767,21 @@ def _swap_killed(tmp_path, monkeypatch, *, live: dict, new: dict, install_first:
 
 
 def test_recovery_never_installs_or_deletes_a_backup_suffix_created_after_the_kill(tmp_path, monkeypatch):
-    """A swap killed before any rename; then a user file appears at ``cli.py.hermes-update-old``. The
-    path-only journal took it for the swap's backup: it overwrote the live cli.py with it, and the old
+    """A swap killed before any rename; then a user file appears at ``hermes_agent/cli.py.hermes-update-old``. The
+    path-only journal took it for the swap's backup: it overwrote the live hermes_agent/cli.py with it, and the old
     bytes were gone (review Z1). Recovery now proves a backup is the entry it recorded before using or
     deleting it: the live file stays, the user's file is kept aside, byte for byte."""
     from hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
 
-    root = _swap_killed(tmp_path, monkeypatch, live={"cli.py": "LIVE"}, new={"cli.py": "NEW"}, install_first=False)
-    (root / "cli.py.hermes-update-old").write_text("USER LATER", encoding="utf-8")
+    root = _swap_killed(tmp_path, monkeypatch, live={"hermes_agent/cli.py": "LIVE"}, new={"hermes_agent/cli.py": "NEW"}, install_first=False)
+    (root / "hermes_agent/cli.py.hermes-update-old").write_text("USER LATER", encoding="utf-8")
 
     restore_interrupted_zip_swap(root)
 
-    assert (root / "cli.py").read_text(encoding="utf-8") == "LIVE"
+    assert (root / "hermes_agent/cli.py").read_text(encoding="utf-8") == "LIVE"
     kept = [p for p in root.iterdir() if p.read_bytes() == b"USER LATER"]
-    assert len(kept) == 1 and kept[0].name != "cli.py"
-    assert not (root / "cli.py.hermes-update-staging").exists() and not (root / ZIP_SWAP_JOURNAL).exists()
+    assert len(kept) == 1 and kept[0].name != "hermes_agent/cli.py"
+    assert not (root / "hermes_agent/cli.py.hermes-update-staging").exists() and not (root / ZIP_SWAP_JOURNAL).exists()
 
 
 def test_recovery_never_deletes_a_user_file_that_replaced_an_installed_entry(tmp_path, monkeypatch):
@@ -883,7 +883,7 @@ def test_a_committed_swap_keeps_its_journal_until_the_backup_is_gone(tmp_path, m
     assert not (live / "payload.hermes-update-old").exists() and not (live / ZIP_SWAP_JOURNAL).exists()
     assert update_cmd_zip._zip_overlay_block_reason(live) is None
 
-@pytest.mark.parametrize("planted", ["cli.py.hermes-update-staging", "cli.py.hermes-update-old"])
+@pytest.mark.parametrize("planted", ["hermes_agent/cli.py.hermes-update-staging", "hermes_agent/cli.py.hermes-update-old"])
 def test_a_suffix_path_that_appears_after_the_preflight_is_never_deleted(tmp_path, monkeypatch, planted):
     """F78: a file at the staging suffix (created during the download, after the clean-tree preflight)
     or at the backup suffix (created after the pre-swap recheck) is nothing this transaction made. The
@@ -895,17 +895,17 @@ def test_a_suffix_path_that_appears_after_the_preflight_is_never_deleted(tmp_pat
     live, extracted = tmp_path / "live", tmp_path / "extracted"
     live.mkdir()
     extracted.mkdir()
-    _git_checkout(live, {"cli.py": "LIVE"})
-    (extracted / "cli.py").write_text("NEW", encoding="utf-8")
+    _git_checkout(live, {"hermes_agent/cli.py": "LIVE"})
+    (extracted / "hermes_agent/cli.py").write_text("NEW", encoding="utf-8")
     user = live / planted
     if planted.endswith("-staging"):
         user.write_text("USER NOTE", encoding="utf-8")
     monkeypatch.setattr(update_cmd_commit, "arm_commit_obligations",  # the last step before the swap
                         lambda *a, **k: user.exists() or user.write_text("USER NOTE", encoding="utf-8"))
     with pytest.raises((SystemExit, OSError)):
-        update_cmd_zip._journaled_stage_and_swap(str(extracted), ["cli.py"], live, "b" * 40)
+        update_cmd_zip._journaled_stage_and_swap(str(extracted), ["hermes_agent/cli.py"], live, "b" * 40)
     restore_interrupted_zip_swap(live)
-    assert (live / "cli.py").read_text(encoding="utf-8") == "LIVE"
+    assert (live / "hermes_agent/cli.py").read_text(encoding="utf-8") == "LIVE"
     kept = [p.name for p in live.iterdir() if p.is_file() and p.read_bytes() == b"USER NOTE"]
     assert len(kept) == 1, sorted(p.name for p in live.iterdir())
     assert not (live / ZIP_SWAP_JOURNAL).exists()

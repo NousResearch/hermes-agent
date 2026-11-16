@@ -1,4 +1,4 @@
-import shared from '../eslint.config.shared.mjs'
+import shared from './eslint.config.shared.mjs'
 
 export default [
   ...shared,

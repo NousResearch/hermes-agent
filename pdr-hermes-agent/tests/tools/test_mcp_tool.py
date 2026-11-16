@@ -156,7 +156,7 @@ class TestLoadMCPConfig:
         self, tmp_path, monkeypatch
     ):
         import json
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
         from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
         from hermes_cli import plugins as plugins_mod
 
@@ -1224,7 +1224,7 @@ class TestToolsetInjection:
         """Discovered MCP tools resolve through raw server-name aliases."""
         from tools.mcp_tool import MCPServerTask
         from tools.registry import ToolRegistry
-        from toolsets import resolve_toolset, validate_toolset
+        from hermes_agent.toolsets import resolve_toolset, validate_toolset
 
         mock_tools = [_make_mcp_tool("list_files", "List files")]
         mock_session = MagicMock()
@@ -1288,7 +1288,7 @@ class TestToolsetInjection:
              patch("tools.mcp_tool._servers", fresh_servers), \
              patch("tools.mcp_tool_config._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool_discovery._connect_server", side_effect=flaky_connect), \
-             patch("toolsets.TOOLSETS", fake_toolsets):
+             patch("hermes_agent.toolsets.TOOLSETS", fake_toolsets):
             from tools.mcp_tool_discovery import discover_mcp_tools
 
             # First call: good connects, broken fails
@@ -1419,7 +1419,7 @@ class TestShutdown:
         from tools.mcp_tool import MCPServerTask, _servers
         from tools.mcp_tool_lifecycle import shutdown_mcp_servers
         from tools.registry import registry
-        from toolsets import resolve_toolset, validate_toolset
+        from hermes_agent.toolsets import resolve_toolset, validate_toolset
 
         _servers.clear()
         registry.register(
@@ -2624,7 +2624,7 @@ class TestMCPSelectiveToolLoading:
         async def run():
             with patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
                  patch("tools.registry.registry", mock_registry), \
-                 patch("toolsets.create_custom_toolset"):
+                 patch("hermes_agent.toolsets.create_custom_toolset"):
                 return await _discover_and_register_server(name, config)
 
         try:
@@ -2691,7 +2691,7 @@ class TestMCPSelectiveToolLoading:
              patch("tools.mcp_tool._servers", {}), \
              patch("tools.mcp_tool_config._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
-             patch("toolsets.TOOLSETS", fake_toolsets):
+             patch("hermes_agent.toolsets.TOOLSETS", fake_toolsets):
             result = discover_mcp_tools()
 
         assert connect_called == []
@@ -2805,7 +2805,7 @@ class TestSanitizeMcpNameComponent:
     def test_slash_in_server_alias_resolution(self):
         """Server names with slashes resolve through their live MCP alias."""
         from tools.registry import ToolRegistry
-        from toolsets import resolve_toolset, validate_toolset
+        from hermes_agent.toolsets import resolve_toolset, validate_toolset
 
         reg = ToolRegistry()
         reg.register(

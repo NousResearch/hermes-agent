@@ -66,7 +66,7 @@ def _make_cli():
     with patch.dict(sys.modules, prompt_toolkit_stubs), patch.dict(
         "os.environ", clean_env, clear=False
     ):
-        import cli as _cli_mod
+        from hermes_agent import cli as _cli_mod
 
         _cli_mod = importlib.reload(_cli_mod)
         with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), patch.dict(
@@ -244,7 +244,7 @@ def test_chat_preserves_clean_multimodal_input_when_note_changes_api_message():
 def test_chat_multimodal_note_persists_clean_input_once(tmp_path, monkeypatch):
     """The real CLI-to-agent path stores clean image parts, never the queued note."""
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     cli = _make_cli()
@@ -420,7 +420,7 @@ def test_chat_clears_previous_turn_persistence_override_before_staging():
 def test_close_waits_for_atomic_cli_staging_before_snapshot(tmp_path, monkeypatch):
     """Close cannot retain the mutable pre-append history as its DB baseline."""
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     cli = _make_cli()

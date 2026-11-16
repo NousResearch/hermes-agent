@@ -11,7 +11,7 @@ gated on ``skip_memory``.
 """
 
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 class _FakeOpenAI:
@@ -26,8 +26,8 @@ class _FakeOpenAI:
 def _make_agent(
     monkeypatch, enabled_toolsets=None, disabled_toolsets=None, skip_memory=True
 ):
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kw: [])
-    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda **kw: [])
+    monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", dict)
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
     return AIAgent(
         api_key="test-key",

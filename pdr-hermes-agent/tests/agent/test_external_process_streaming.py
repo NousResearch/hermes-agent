@@ -71,9 +71,9 @@ def test_discovered_process_provider_delivers_progress_before_completion(tmp_pat
     then cross the normal dispatch and streaming accumulator with a fixture client.
     Only native I/O is replaced, not routing, callbacks, accumulation or cleanup.
     """
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from providers import get_provider_profile
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from agent.turn_api_call import perform_api_call
 
     plugin = get_hermes_home() / "plugins" / "streaming-fixture"

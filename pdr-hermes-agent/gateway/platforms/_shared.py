@@ -88,7 +88,7 @@ def _unscoped_profile_secrets() -> dict:
     if _UNSCOPED_PROFILE_SECRETS is None:
         try:
             from agent.secret_scope import build_profile_secret_scope
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             _UNSCOPED_PROFILE_SECRETS = dict(build_profile_secret_scope(get_hermes_home()))
         except Exception:
             logger.warning(
@@ -205,7 +205,7 @@ _LAUNCH_GATE_RELOAD: contextvars.ContextVar[bool] = contextvars.ContextVar("_LAU
 
 def _foreign_home_load() -> bool:
     from agent.secret_scope import current_secret_scope_home
-    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key
     own = hermes_home_key(get_routing_process_hermes_home())
     return any(home and hermes_home_key(home) != own
                for home in (get_hermes_home_override(), current_secret_scope_home()))
@@ -238,7 +238,7 @@ def _supplied_by_operator(name: str) -> bool:
         from hermes_cli.env_loader import get_secret_source_values, has_nonblank_dotenv_value
     except ImportError:  # bridging must not fail because the loader is unavailable
         return False
-    from hermes_constants import get_routing_process_hermes_home
+    from hermes_agent.hermes_constants import get_routing_process_hermes_home
     # The launch home's CURRENT source snapshot, never the lifetime all-homes name history
     # (``source_supplied_names``): a mapping removed since, or another profile's vault, owns nothing here.
     return has_nonblank_dotenv_value(name) or name in get_secret_source_values(get_routing_process_hermes_home())
@@ -443,7 +443,7 @@ def gate_config_version(home: Any = None) -> tuple:
 
     from hermes_cli.config_backend import config_cache_version_or_none, config_version_or_none, get_config_backend
     from hermes_cli.managed_scope import get_managed_dir
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = get_hermes_home() if home is None else Path(home)
     managed = get_managed_dir()
@@ -474,7 +474,7 @@ def _owner_scope(home: str):
     stamped with another home counts as foreign even with no home override: its mapping, not the
     owner's, is what the gate would read."""
     from agent.secret_scope import current_secret_scope_home
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 
     stamped = current_secret_scope_home()
     if str(get_hermes_home()) == home and (stamped is None or hermes_home_key(stamped) == hermes_home_key(home)):
@@ -506,7 +506,7 @@ def refresh_live_gate_extra(adapter: Any, keys: Iterable[str], on_reload: Option
     with _LIVE_GATE_LOCK:
         if version == adapter._live_gate_version:
             return False
-        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+        from hermes_agent.hermes_constants import get_routing_process_hermes_home, hermes_home_key
         launch = hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home())
         with _owner_scope(home):
             return _reload_live_gate_extra(adapter, keys, version, on_reload, launch=launch)

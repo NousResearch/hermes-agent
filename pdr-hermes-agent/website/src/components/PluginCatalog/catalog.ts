@@ -1,4 +1,4 @@
-import { externalUrlTarget } from "../../../../apps/shared/src/external-url";
+import { externalUrlTarget } from "../../../../ui-tui/packages/shared/src/external-url";
 
 // Shared catalog vocabulary for the Plugins grid (src/pages/plugins), the per-plugin pages and the
 // author pages (plugins/plugin-catalog-pages generates their routes). One definition of the entry

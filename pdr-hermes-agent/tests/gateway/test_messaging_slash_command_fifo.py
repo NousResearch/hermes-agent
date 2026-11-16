@@ -151,7 +151,7 @@ async def test_idle_rewrite_waits_behind_a_queued_row(monkeypatch, command):
     from gateway.session_ingress import admit_message, executing_admission
     from gateway.session_ingress_context import native_callback
     from gateway.session_results import execution_result
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state.runtime import list_session_admissions
 
     runner, adapter, _sent = _owner(monkeypatch)

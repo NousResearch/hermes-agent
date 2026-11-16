@@ -26,7 +26,7 @@ from datetime import datetime, timezone, UTC
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO_ROOT)
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 LOCAL_SKILL_DIRS = [
     ("skills", "built-in"),
@@ -262,7 +262,7 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
 def extract_local_skills():
     skills = []
     try:
-        with open(os.path.join(REPO_ROOT, "apps/shared/src/catalog-curation.json"), encoding="utf-8") as curation_file:
+        with open(os.path.join(REPO_ROOT, "ui-tui/packages/shared/src/catalog-curation.json"), encoding="utf-8") as curation_file:
             curation = json.load(curation_file)
     except FileNotFoundError:
         # Curation is optional; a skills-only checkout still produces a catalog.

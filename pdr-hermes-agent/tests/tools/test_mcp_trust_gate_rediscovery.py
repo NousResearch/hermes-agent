@@ -155,7 +155,7 @@ def test_recycled_wake_with_unchanged_hint_never_asks():
 
 def test_recheck_with_no_trust_record_reads_the_configured_tier():
     """The post-acquire re-check resolves a missing record like the gate does (#153706), not as ``full``."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     (get_hermes_home() / "config.yaml").write_text(json.dumps({"mcp_servers": {"srv": UNTRUSTED}}))  # JSON is YAML
     task = _install(_server())

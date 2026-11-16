@@ -331,7 +331,7 @@ export function supportsExtendedKeys(): boolean {
  *  disambiguate-mode implementation strips the Alt modifier from Backspace —
  *  Option+Backspace arrives as bare \x7f instead of CSI-u \x1b[127;3u —
  *  breaking backward-kill-word. Ghostty implements modifyOtherKeys correctly,
- *  so it gets only that push (mirrors cli.py's Ghostty exception). */
+ *  so it gets only that push (mirrors hermes_agent/cli.py's Ghostty exception). */
 export function skipKittyKeyboardProtocol(): boolean {
   return env.terminal === 'ghostty'
 }

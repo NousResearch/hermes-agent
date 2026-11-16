@@ -27,7 +27,7 @@ class GuardedConnection(RecordingConnection):
 
 
 def _cli(monkeypatch, conn):
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     from hermes_cli.gateway_session_store import GatewaySessionStore
     from tests.hermes_cli.test_cli_model_once import _StubCLI
     stub = _StubCLI()
@@ -272,7 +272,7 @@ def test_once_reasoning_rides_the_admission_and_never_mutates_the_session(monkey
 def test_once_reasoning_equal_to_the_inherited_level_commits_nothing(monkeypatch):
     """dokterdok's probe: the session already runs ``high`` by inheritance; neither the --once pick nor its
     restore may write the session's reasoning."""
-    import cli
+    from hermes_agent import cli
     from hermes_cli.cli_model_switch_mixin import _commit_model_switch
     conn = RecordingConnection({"model": "old/model", "provider": "openrouter", "reasoning_effort": "high"})
     _cli_mod, stub, _printed = _cli(monkeypatch, conn)

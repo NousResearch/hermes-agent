@@ -124,7 +124,7 @@ def _install_fakes(monkeypatch, mode):
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = ClarifyThenToolAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
     import tools.terminal_tool
 
     gateway_run = importlib.import_module("gateway.run")

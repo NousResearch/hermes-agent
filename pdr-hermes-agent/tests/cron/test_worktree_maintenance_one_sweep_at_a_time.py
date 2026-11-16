@@ -41,13 +41,13 @@ def test_a_sweep_waits_instead_of_forking_git_beside_the_running_one(tmp_path, m
     # The queue-ahead sweep stays blocked; the one behind it must give up, not run beside it.
     monkeypatch.setattr(maintenance, "SWEEP_WAIT_SECONDS", 0.05, raising=False)
 
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path / "first")
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path / "first")
     try:
         scheduler._maybe_run_worktree_maintenance()
         assert entered.wait(30), "the first sweep never started"
 
         known = {t.ident for t in threading.enumerate() if t.name == "cron-worktree-prune"}
-        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path / "second")
+        monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path / "second")
         scheduler._maybe_run_worktree_maintenance()
         for thread in _new_prune_threads(known):
             thread.join(30)
@@ -77,11 +77,11 @@ def test_a_waiting_sweep_runs_once_the_one_ahead_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(scheduler, "_worktree_maintenance_repos", discover)
     monkeypatch.setattr(maintenance, "SWEEP_WAIT_SECONDS", 30.0, raising=False)
 
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path / "first")
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path / "first")
     try:
         scheduler._maybe_run_worktree_maintenance()
         assert entered.wait(30), "the first sweep never started"
-        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path / "second")
+        monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path / "second")
         scheduler._maybe_run_worktree_maintenance()
         release.set()
         # Serialising must queue the sweep behind, not lose it when the one ahead raises.

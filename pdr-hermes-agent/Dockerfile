@@ -207,8 +207,9 @@ COPY pm/ pm/
 # pm's lazy imports resolve get_default_hermes_root()/project_venv_dir()
 # from hermes_constants (stdlib-only) at install time — a sealed-stage
 # `python3 -m pm.cli install` fails with "No module named
-# 'hermes_constants'" without it on the path. Copy the module next to pm.
-COPY hermes_constants.py hermes_constants.py
+# 'hermes_agent.hermes_constants'" without it on the path. Copy the package
+# marker (no imports) and the module next to pm.
+COPY hermes_agent/__init__.py hermes_agent/hermes_constants.py hermes_agent/
 # PM imports the shared stdlib locking owner before deps exist.
 COPY hermes_cli/__init__.py hermes_cli/runtime_state.py hermes_cli/
 COPY scripts/bundles/payload.py scripts/bundles/payload.py
@@ -305,58 +306,29 @@ RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
     --extra azure-identity --extra matrix --extra google-chat --extra fal --extra documents
 
-# Icons render on the runtime environment: Pillow and resvg-py are core
-# dependencies. A stage of its own so the frontend stage keeps building its
-# Node dependencies in parallel with the Python ones.
-FROM python_deps AS icons
-COPY scripts/generate_icons.py scripts/
-COPY assets/ assets/
-RUN /opt/hermes/.venv/bin/python -I scripts/generate_icons.py --source /opt/hermes --out /tmp/hermes-icons
-
 # Frontend dependencies never enter the runtime layers.
 FROM runtime_base AS frontend_build
 # pnpm installs the workspaces; nothing in the runtime image runs it, so only
-# the build stages (this one and webapp_build) stage it.
+# this build stage stages it.
 RUN python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); Path("/usr/local/bin/pnpm").symlink_to(installed_package("pnpm").binary)' && \
     pnpm --version
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
-COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
-COPY apps/shared/ apps/shared/
+COPY ui-tui/packages/shared/ ui-tui/packages/shared/
 COPY scripts/build/node-deps*.mjs scripts/build/electron-runtime.mjs scripts/build/pnpm-lock.mjs scripts/build/
 # Root node_modules/typescript is a link into pnpm's virtual store, which never
 # reaches the runtime image: stage a dereferenced copy for it.
-RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --workspace web && \
+RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui && \
     mkdir -p /opt/products && \
     cp -RL node_modules/typescript /opt/products/typescript
 
 COPY pyproject.toml uv.lock ./
-COPY web/ web/
 COPY ui-tui/ ui-tui/
 COPY scripts/build/*.mjs scripts/build/
 COPY scripts/generate-icons.mjs scripts/generate_icons.py scripts/
 COPY assets/ assets/
-COPY --from=icons /tmp/hermes-icons /tmp/hermes-icons
-RUN node scripts/build/tui.mjs --source /opt/hermes --out /opt/products/tui && \
-    node scripts/build/web.mjs --source /opt/hermes --icons /tmp/hermes-icons --out /opt/products/web
-
-# The Webapp (the browser-hosted Desktop) builds through its source recipe,
-# which installs Desktop's dependencies in a private workspace. A stage of its
-# own so Desktop changes leave the TUI and dashboard layers cached.
-FROM runtime_base AS webapp_build
-RUN python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); Path("/usr/local/bin/pnpm").symlink_to(installed_package("pnpm").binary)' && \
-    pnpm --version
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
-COPY apps/desktop/package.json apps/desktop/
-COPY apps/desktop/scripts/build-webapp.mjs apps/desktop/scripts/
-COPY apps/shared/package.json apps/shared/
-COPY scripts/build/*.mjs scripts/build/
-# Dependencies first, keyed only by the manifests and the recipe, so a source
-# change reuses this layer and the build below reuses its install.
-RUN node apps/desktop/scripts/build-webapp.mjs --deps-only
-COPY apps/ apps/
-RUN node apps/desktop/scripts/build-webapp.mjs
+RUN node scripts/build/tui.mjs --source /opt/hermes --out /opt/products/tui
 
 FROM python_deps AS runtime
 # Standalone TypeScript linting is a runtime feature; Vite/esbuild are not.
@@ -382,8 +354,6 @@ RUN cd plugins/platforms/photon/sidecar && \
 
 # Shared product outputs are independent of application dependency assembly.
 COPY --from=frontend_build /opt/products/tui /opt/hermes/ui-tui
-COPY --from=frontend_build /opt/products/web /opt/hermes/hermes_cli/web_dist
-COPY --from=webapp_build /opt/hermes/apps/desktop/dist-webapp /opt/hermes/apps/desktop/dist-webapp
 # ---------- Bot Screen X socket directory ----------
 # Xvnc would create this itself (/tmp is 1777); pre-creating it keeps ownership
 # deterministic when HERMES_UID is remapped between boots.

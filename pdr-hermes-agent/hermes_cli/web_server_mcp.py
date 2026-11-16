@@ -121,7 +121,7 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
     from hermes_cli.mcp_config import _oauth_tokens_present, _probe_single_server, _save_mcp_server
     try:
         from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from tools.mcp_dashboard_oauth import dashboard_oauth_flow
         from tools.mcp_oauth import HermesTokenStorage, force_interactive_oauth, login_connect_timeout
         from tools.mcp_oauth_manager import get_manager

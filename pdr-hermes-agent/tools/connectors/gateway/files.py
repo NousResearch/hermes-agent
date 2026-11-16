@@ -290,7 +290,7 @@ def _download(client: Any, file: Mapping[str, Any]) -> dict[str, Any]:
 def _fetch_to_downloads(client: Any, url: str, name: str) -> str:
     """Stream ``url`` into a temp file, then link it under a fresh name: a cut download never leaves
     a partial file under the final name, and an existing file is never replaced."""
-    from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_hermes_home, mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_hermes_home, mkdir_under_hermes_home
 
     folder = mkdir_under_hermes_home(get_hermes_home() / CONNECTOR_DOWNLOADS_SUBDIR)
     handle = tempfile.NamedTemporaryFile(dir=folder, prefix=".partial-", delete=False)

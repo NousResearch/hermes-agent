@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import MagicMock, patch
 from agent.iteration_budget import IterationBudget
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from tools.delegate_tool import _run_single_child
 from tools.interrupt import set_interrupt, is_interrupted
 

@@ -1,4 +1,4 @@
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 from tools import approval
 
 

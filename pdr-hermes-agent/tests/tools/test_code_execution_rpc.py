@@ -109,7 +109,7 @@ class TestSandboxRpcAuthorization(unittest.TestCase):
 
             def run_server():
                 with patch(
-                    "model_tools.handle_function_call",
+                    "hermes_agent.model_tools.handle_function_call",
                     side_effect=self._dispatch_recorder(dispatched),
                 ):
                     _rpc_server_loop(
@@ -176,7 +176,7 @@ class TestSandboxRpcAuthorization(unittest.TestCase):
 
             def run_poller():
                 with patch(
-                    "model_tools.handle_function_call",
+                    "hermes_agent.model_tools.handle_function_call",
                     side_effect=self._dispatch_recorder(dispatched),
                 ):
                     _rpc_poll_loop(

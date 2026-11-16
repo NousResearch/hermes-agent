@@ -141,7 +141,7 @@ def run_skill(cli, base_cmd, rest):
     if connection is None:
         return False
     from agent.i18n import t
-    from cli import _cprint
+    from hermes_agent.cli import _cprint
     command = base_cmd.lstrip("/") + (" " + rest if rest else "")
     try:
         reply = connection.call("slash.exec", session_id=cli.session_id, command=command) or {}
@@ -209,7 +209,7 @@ def lookup(cli, name):
     try:
         return name in _read(cli, connection)
     except GatewayClientError as exc:
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         _cprint(f"  /{name}: the gateway's command list is unavailable ({exc}); nothing was run.")
         raise CatalogUnavailable(name) from exc
 
@@ -218,7 +218,7 @@ def call_unbounded(cli, connection, name, command):
     """``slash.exec`` of *command* with no answer deadline, on a socket of its own so the session's prompts
     and interrupts never queue behind it (GatewayConnection.call_until). Ctrl+C stops waiting: the stopped
     line is printed and :data:`STOPPED` returned (a KeyboardInterrupt still propagates after it)."""
-    from cli import _cprint
+    from hermes_agent.cli import _cprint
     from hermes_cli.gateway_connection import CallStopped
     wake = cli._gateway_command_wait = threading.Event()  # set by Ctrl+C (cli_tui_mixin)
     from agent.memory_provider import spawn_context_thread
@@ -279,7 +279,7 @@ def run(cli, name, arg):
     connection = connection_for(cli)
     if connection is None:
         return False
-    from cli import _cprint
+    from hermes_agent.cli import _cprint
     from hermes_cli.gateway_client import GatewayRPCError
     # No answer deadline: main's CLI waited for the handler, which may wait minutes (ctx.call_mcp).
     try:
@@ -322,7 +322,7 @@ def report_gone(name, *known):
     from hermes_cli.commands import COMMANDS
     if any(key.startswith("/" + name) for group in (COMMANDS, *known) for key in group):
         return False
-    from cli import _cprint
+    from hermes_agent.cli import _cprint
     _cprint(_GONE_LINE.format(name))
     return True
 
@@ -353,7 +353,7 @@ def observe(cli, name, arg, *, runs=True):
         cli._observe_unsupported = (connection, epoch)
         if not getattr(cli, "_observe_notice_shown", False):
             cli._observe_notice_shown = True
-            from cli import _cprint
+            from hermes_agent.cli import _cprint
             _cprint("  This gateway predates this CLI: plugin pre_command hooks don't see the commands the CLI "
                     "runs itself until it restarts.")
     except GatewayClientError as exc:
@@ -370,7 +370,7 @@ def loaded(cli):
     connection = connection_for(cli)
     if connection is None:
         return None
-    from cli import _cprint
+    from hermes_agent.cli import _cprint
     from hermes_cli.gateway_client import GatewayRPCError
     try:
         rows = (connection.call("plugins.list") or {}).get("plugins") or []

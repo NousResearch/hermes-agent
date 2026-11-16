@@ -192,10 +192,10 @@ def test_finite_chat_joins_parallel_children_before_final_response(tmp_path, mod
 @pytest.mark.parametrize("query,image", [("Delegate a task", None), (None, "image.png")])
 def test_tty_seeded_chat_keeps_background_delegation(monkeypatch, query, image):
     """A TTY -q (or image seed) still owns a later-turn completion consumer."""
-    import cli
+    from hermes_agent import cli
     import tools.delegate_tool as dt
     from gateway.session_context import reset_session_vars
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.tools.test_delegate import _make_mock_parent
 
     reset_session_vars()

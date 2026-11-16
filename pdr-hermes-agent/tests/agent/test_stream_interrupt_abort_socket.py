@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import run_agent
+from hermes_agent import run_agent
 from agent import chat_completion_helpers as helpers
 
 

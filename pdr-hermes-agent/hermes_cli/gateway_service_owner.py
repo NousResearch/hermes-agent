@@ -123,7 +123,7 @@ def foreign_systemd_unit_home(system: bool) -> str | None:
         return None
     if unit == mine:
         return None
-    from hermes_constants import account_default_hermes_home
+    from hermes_agent.hermes_constants import account_default_hermes_home
     if mine == account_default_hermes_home().resolve():
         return None
     return unit_home

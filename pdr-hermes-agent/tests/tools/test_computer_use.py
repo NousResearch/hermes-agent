@@ -2271,7 +2271,7 @@ class TestCapturePayloadBudget:
         cap = CaptureResult(mode="som", width=1024, height=768,
                             png_b64="iVBORw0KGgo=", elements=elements,
                             app="X", window_title="t", png_bytes_len=10)
-        with patch("model_tools._run_async",
+        with patch("hermes_agent.model_tools._run_async",
                    return_value=json.dumps({"analysis": "a screen"})):
             out = cu_tool._route_capture_through_aux_vision(
                 cap, "summary",

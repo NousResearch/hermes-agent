@@ -71,7 +71,7 @@ def main():
         os.environ['HERMES_DEFER_AGENT_STARTUP'] = '1'
     else:
         hermes_main._prepare_agent_startup(args)
-    import cli
+    from hermes_agent import cli
     from prompt_toolkit.document import Document
     outputs, errors, completions = {}, [], {}
     with redirect_stdout(io.StringIO()) as out:

@@ -141,7 +141,7 @@ class TestGmiDoctor:
             check_tool_availability=lambda *a, **kw: ([], []),
             TOOLSET_REQUIREMENTS={},
         )
-        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
         try:
             from hermes_cli import auth as _auth_mod
@@ -273,8 +273,8 @@ class TestGmiMainFlow:
 
             _model_flow_api_key_provider(load_config(), "gmi", "old-model")
 
-        import hermes_yaml as yaml
-        from hermes_constants import get_hermes_home
+        from hermes_agent import hermes_yaml as yaml
+        from hermes_agent.hermes_constants import get_hermes_home
 
         config = yaml.safe_load((get_hermes_home() / "config.yaml").read_text()) or {}
         model_cfg = config.get("model")

@@ -296,12 +296,12 @@ See [Package management](../website/docs/reference/package-management.md) for PM
 
 ```
 hermes-agent/
-├── run_agent.py              # AIAgent facade (~1.5k LOC) — the turn loop lives in agent/conversation_loop.py + agent/turn_*.py
-├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
-├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
-├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
+├── hermes_agent/run_agent.py              # AIAgent facade (~1.5k LOC) — the turn loop lives in agent/conversation_loop.py + agent/turn_*.py
+├── hermes_agent/cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
+├── hermes_agent/model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
+├── hermes_agent/toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
 ├── hermes_state/__init__.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state/*.py (21 siblings) — FTS5 search, session titles
-├── batch_runner.py           # Parallel batch processing for trajectory generation
+├── hermes_agent/batch_runner.py           # Parallel batch processing for trajectory generation
 │
 ├── agent/                    # Agent internals (extracted modules)
 │   ├── conversation_loop.py      # run_conversation() — the agent turn loop (phases in turn_*.py)
@@ -366,7 +366,7 @@ hermes-agent/
 ├── tests/                    # Test suite
 ├── website/                  # Documentation site (hermes-agent.nousresearch.com)
 │
-├── cli-config.yaml.example   # Example configuration (copied to ~/.hermes/config.yaml)
+├── hermes_cli/data/cli-config.yaml.example   # Example configuration (copied to ~/.hermes/config.yaml)
 └── AGENTS.md                 # Development guide for AI coding assistants
 ```
 
@@ -407,7 +407,7 @@ User message → AIAgent._run_agent_loop()
 
 ### Key Design Patterns
 
-- **Self-registering tools**: Each tool file calls `registry.register()` at import time. `model_tools.py` triggers discovery by importing all tool modules.
+- **Self-registering tools**: Each tool file calls `registry.register()` at import time. `hermes_agent/model_tools.py` triggers discovery by importing all tool modules.
 - **Toolset grouping**: Tools are grouped into toolsets (`web`, `terminal`, `file`, `browser`, etc.) that can be enabled/disabled per platform.
 - **Session persistence**: All conversations are stored in SQLite (`hermes_state/__init__.py`) with full-text search and unique session titles. Automatic per-session JSON snapshots have been removed. Existing files are left untouched; use `/save json` or `hermes sessions export` for an explicit export.
 - **Ephemeral injection**: System prompts and prefill messages are injected at API call time, never persisted to the database or logs.
@@ -484,12 +484,12 @@ registry.register(
 **Wire into a toolset (required):** Built-in tools are auto-discovered: any
 `tools/*.py` file that contains a top-level `registry.register(...)` call is
 imported by `discover_builtin_tools()` in `tools/registry.py` when `model_tools`
-loads. There is **no** manual import list in `model_tools.py` to maintain.
+loads. There is **no** manual import list in `hermes_agent/model_tools.py` to maintain.
 
-You must still add the tool name to the appropriate list in `toolsets.py`
+You must still add the tool name to the appropriate list in `hermes_agent/toolsets.py`
 (for example `_HERMES_CORE_TOOLS` or a dedicated toolset); otherwise the tool
 registers but is never exposed to the agent. If you introduce a new toolset,
-add it in `toolsets.py` and wire it into the relevant platform presets.
+add it in `hermes_agent/toolsets.py` and wire it into the relevant platform presets.
 
 See `AGENTS.md` (section **Adding New Tools**) for profile-aware paths and
 plugin vs core guidance.

@@ -185,7 +185,7 @@ class TestKanbanGatesRespectContext:
 
     def test_toolset_force_add_suppressed(self, worker_env):
         from agent.delegation_context import non_dispatcher_owned_context
-        import model_tools
+        from hermes_agent import model_tools
 
         assert model_tools._is_dispatcher_owned_worker() is True
         with non_dispatcher_owned_context():
@@ -229,7 +229,7 @@ class TestRunJobKanbanIsolation:
 
         fake_mod = type(sys)("run_agent")
         fake_mod.AIAgent = agent_cls or FakeAgent
-        monkeypatch.setitem(sys.modules, "run_agent", fake_mod)
+        monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_mod)
 
         from hermes_cli import runtime_provider as _rtp
 

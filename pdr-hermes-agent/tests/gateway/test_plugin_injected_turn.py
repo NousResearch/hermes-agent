@@ -23,7 +23,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 import pytest
 
 from tests.waiting import async_wait_until
@@ -71,7 +71,7 @@ LIVE_TURN_VIEW = {"turn_origin": None, "caller_scoped": None, "approval": None, 
 
 def _load_plugin():
     import hermes_cli.plugins as plugins_mod
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = Path(get_hermes_home())
     plugin_dir = home / "plugins" / PLUGIN
@@ -105,7 +105,7 @@ class _ScriptedFork:
         pass
 
     def run_conversation(self, user_message, conversation_history=None):
-        from model_tools import handle_function_call
+        from hermes_agent.model_tools import handle_function_call
 
         handle_function_call("cw_offer", {}, task_id="fork", session_id="sess")
         return {"final_response": "Offered.", "messages": []}
@@ -129,7 +129,7 @@ def probe(monkeypatch):
 
 def _live_turn_dispatch(probe):
     """A live turn's tool round: the plugin's tool dispatched on a turn worker thread."""
-    from model_tools import handle_function_call
+    from hermes_agent.model_tools import handle_function_call
 
     seen_before = len(probe.calls)
     handle_function_call("cw_offer", {}, task_id="live", session_id="sess")

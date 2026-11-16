@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def _make_cli():
@@ -58,7 +58,7 @@ class TestCliResumeCommand:
 
         with (
             patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
-            patch("cli._cprint") as mock_cprint,
+            patch("hermes_agent.cli._cprint") as mock_cprint,
         ):
             cli_obj._handle_resume_command("/resume 2")
 
@@ -72,7 +72,7 @@ class TestCliResumeCommand:
             {"id": "sess_002", "title": "Coding"},
         ])
 
-        with patch("cli._cprint") as mock_cprint:
+        with patch("hermes_agent.cli._cprint") as mock_cprint:
             cli_obj._handle_resume_command("/resume 9")
 
         assert mock_cprint.called
@@ -111,7 +111,7 @@ class TestCliResumeRestoresCwd:
 
         with (
             patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="sess_dir"),
-            patch("cli._cprint"),
+            patch("hermes_agent.cli._cprint"),
             patch.object(cli_obj, "_console_print"),
             patch("os.chdir") as mock_chdir,
             patch.dict(os.environ, {}, clear=False),
@@ -130,7 +130,7 @@ class TestCliResumeRestoresCwd:
 
         with (
             patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="sess_dir"),
-            patch("cli._cprint"),
+            patch("hermes_agent.cli._cprint"),
             patch.object(cli_obj, "_console_print"),
             patch("os.chdir") as mock_chdir,
             patch.dict(os.environ, {}, clear=False),
@@ -160,7 +160,7 @@ class TestPendingResumeNumberedSelection:
         cli_obj._list_recent_sessions = MagicMock(return_value=sessions)
         cli_obj._show_recent_sessions = MagicMock(return_value=True)
 
-        with patch("cli._cprint"):
+        with patch("hermes_agent.cli._cprint"):
             cli_obj._handle_resume_command("/resume")
 
         assert cli_obj._pending_resume_sessions == sessions
@@ -186,7 +186,7 @@ class TestPendingResumeNumberedSelection:
 
         with (
             patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
-            patch("cli._cprint"),
+            patch("hermes_agent.cli._cprint"),
         ):
             consumed = cli_obj._consume_pending_resume_selection("2")
 
@@ -232,7 +232,7 @@ class TestResumeFlushesBeforeEndSession:
 
         with (
             patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target"),
-            patch("cli._cprint"),
+            patch("hermes_agent.cli._cprint"),
         ):
             cli_obj._handle_resume_command("/resume target")
 
@@ -278,7 +278,7 @@ class TestResumeOpensTheTargetOnTheGateway:
         cli_obj._session_db = store
         with (
             patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target"),
-            patch("cli._cprint") as mock_cprint,
+            patch("hermes_agent.cli._cprint") as mock_cprint,
         ):
             cli_obj._handle_resume_command("/resume target")
         printed = " ".join(str(call) for call in mock_cprint.call_args_list)

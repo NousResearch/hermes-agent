@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from agent.secret_scope import serves_routed_profile, set_multiplex_active
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     get_hermes_home,
     get_process_hermes_home,
     get_routing_process_hermes_home,

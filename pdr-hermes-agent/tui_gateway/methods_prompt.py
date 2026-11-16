@@ -302,7 +302,7 @@ def _legacy_group_fence_error(rid, session, params):
         hosted = probe_hosted_room(default_db_path(), room_id=room_id)
         peer = False
         if not hosted:
-            from hermes_constants import profile_name_for_home
+            from hermes_agent.hermes_constants import profile_name_for_home
             peer = probe_peer_room_reservation(
                 default_db_path(), room_id=room_id, target_profile=(
                     profile_name_for_home(session.get("profile_home"))
@@ -1028,7 +1028,7 @@ def _(rid, params: dict) -> dict:
     if not raw:
         return _err(rid, 4015, "path required")
     try:
-        from cli import (
+        from hermes_agent.cli import (
             _IMAGE_EXTENSIONS, _detect_file_drop, _resolve_attachment_path, _split_path_input)
         if dropped := _detect_file_drop(raw):
             image_path, remainder = dropped["path"], dropped["remainder"]
@@ -1180,7 +1180,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from cli import _detect_file_drop
+        from hermes_agent.cli import _detect_file_drop
         dropped = _detect_file_drop(str(params.get("text", "") or ""))
         if not dropped:
             return _ok(rid, {"matched": False})
@@ -1207,7 +1207,7 @@ def _(rid, params: dict) -> dict:
         return err
 
     def body():
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         kwargs = _background_agent_kwargs(session["agent"], task_id)
         with _side_agent_session_db(kwargs.get("session_db")) as session_db:
             agent = AIAgent(**{**kwargs, "session_db": session_db})
@@ -1263,7 +1263,7 @@ def _(rid, params: dict) -> dict:
     preview_cwd = _validated_preview_cwd(cwd)
 
     def body():
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         from tools.terminal_tool import register_task_env_overrides
         if preview_cwd:
             register_task_env_overrides(task_id, {"cwd": preview_cwd})
@@ -1391,7 +1391,7 @@ def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
         pdf_path.write_bytes(pdf_bytes)
         return pdf_path, str(params.get("filename", "") or "uploaded.pdf"), None
     try:
-        from cli import _resolve_attachment_path
+        from hermes_agent.cli import _resolve_attachment_path
         resolved = _resolve_attachment_path(raw_path)
     except Exception:
         resolved = None

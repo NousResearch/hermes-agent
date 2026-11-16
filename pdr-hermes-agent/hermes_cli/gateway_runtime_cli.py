@@ -35,7 +35,7 @@ def _emit(payload, code) -> None:
 
 
 def cmd_gateway_ensure(args) -> None:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_cli.gateway_runtime import ensure_gateway_runtime
 
     try:
@@ -53,7 +53,7 @@ def cmd_gateway_attach(args) -> None:
     the dial ``protocols`` and one single-use ``ticket`` for this profile. A refusal adds the
     ``message`` Ink's bootstrap shows (``gateway <state>: <reason>`` lines) and exits like ensure.
     Every reply carries ``start_context.windows_service_session``."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, gateway_ws_target
     from hermes_cli.gateway_runtime import GatewayDiscovery
     from hermes_cli.gateway_runtime_attach import (SERVICE_SESSION_START_WARNING, GatewayAttach, TicketUnavailable,

@@ -70,7 +70,7 @@ def run(cli, canonical, cmd):
     connection = connection_for(cli)
     if connection is None:
         return False
-    from cli import _cprint
+    from hermes_agent.cli import _cprint
     from hermes_cli.gateway_client import GatewayClientError
     from hermes_cli.gateway_plugin_commands import STOPPED
     parts = (cmd or "").strip().split(None, 1)

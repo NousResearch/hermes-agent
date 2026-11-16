@@ -42,7 +42,7 @@ import pytest
 
 from agent.prompt_cache_scope import resolve_prompt_cache_scope
 from hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 # The bridge stamps its rows with the ``source`` carried by ``bridge.chat``
 # while ``AIAgent.platform`` is the bridge's own platform name; the two need
@@ -83,8 +83,8 @@ def db(tmp_path):
 def _bridge_agent(session_db, session_id: str, *, declared_key: str | None):
     """Construct an agent the way the Studio bridge pool does."""
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(

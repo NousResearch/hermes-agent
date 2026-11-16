@@ -28,7 +28,7 @@ def test_default_output_dir_follows_contextvar_profile_override(tmp_path, monkey
 
     tts_tool = _reload_tts_tool(default_home, monkeypatch)
 
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )

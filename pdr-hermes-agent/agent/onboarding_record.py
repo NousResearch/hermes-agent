@@ -73,7 +73,7 @@ def _transition(db, session_id: str, event: Event) -> Step | None:
 def _close_install_flag() -> None:
     from hermes_cli import config as config_mod
     from hermes_cli.onboarding_run import set_run
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     from agent.onboarding import PROFILE_BUILD_FLAG
 

@@ -12,7 +12,7 @@ import pytest
 
 from agent import relay_runtime
 from hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 class _DB:

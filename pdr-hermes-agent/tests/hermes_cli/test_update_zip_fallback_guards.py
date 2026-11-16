@@ -195,10 +195,10 @@ def test_status_uses_untracked_files_all(tmp_path, monkeypatch):
 
 def test_staging_artifact_lines_are_recognized():
     def is_artifact(line):
-        return update_cmd._is_zip_staging_artifact_status_line(line, ["agent", "cli.py", "tools"])
+        return update_cmd._is_zip_staging_artifact_status_line(line, ["agent", "hermes_agent/cli.py", "tools"])
 
     assert is_artifact("?? agent.hermes-update-staging/")
-    assert is_artifact("?? cli.py.hermes-update-staging")
+    assert is_artifact("?? hermes_agent/cli.py.hermes-update-staging")
     # Staging already removed every backup: one at re-check time is not this run's (review F15).
     assert not is_artifact("?? tools.hermes-update-old/")
     # Nested user files under a staging-lookalike directory don't match the
@@ -213,10 +213,10 @@ def test_recheck_ignores_own_staging_artifacts(tmp_path, monkeypatch):
     monkeypatch.setattr(
         update_cmd.subprocess,
         "run",
-        _porcelain_run("?? agent.hermes-update-staging/\n?? cli.py.hermes-update-staging\n"),
+        _porcelain_run("?? agent.hermes-update-staging/\n?? hermes_agent/cli.py.hermes-update-staging\n"),
     )
     assert (
-        update_cmd._zip_overlay_block_reason(tmp_path, staged=["agent", "cli.py"])
+        update_cmd._zip_overlay_block_reason(tmp_path, staged=["agent", "hermes_agent/cli.py"])
         is None
     )
     # Without the flag the same output still refuses (pre-download check).
@@ -300,13 +300,13 @@ def _git_install(root):
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / "alpha").mkdir()
     (root / "alpha" / "x.py").write_text("x = 1\n", encoding="utf-8")
-    (root / "cli.py").write_text("print('cli')\n", encoding="utf-8")
+    (root / "hermes_agent/cli.py").write_text("print('cli')\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(root), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
                    check=True)
 
 
-@pytest.mark.parametrize("name", ["alpha.hermes-update-staging", "cli.py.hermes-update-old"])
+@pytest.mark.parametrize("name", ["alpha.hermes-update-staging", "hermes_agent/cli.py.hermes-update-old"])
 def test_zip_gate_refuses_and_keeps_a_user_file_named_like_an_update_artifact(tmp_path, monkeypatch, name):
     """Staging deletes ``<entry>.hermes-update-staging``/``-old``: a user's own file by that name (no
     journal claims it) is user work the gate must refuse on, leaving it untouched."""
@@ -341,7 +341,7 @@ def test_zip_gate_admits_the_retry_after_an_interrupted_swap(tmp_path, monkeypat
     leftover.mkdir()
     (leftover / "x.py").write_text("x = 2\n", encoding="utf-8")
     write_zip_swap_journal(tmp_path, "staging", [["alpha", True, zip_entry_identity(leftover), ""],
-                                                 ["cli.py", True, "", ""]], "0123456789ab")
+                                                 ["hermes_agent/cli.py", True, "", ""]], "0123456789ab")
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     update_cmd._abort_zip_update_if_dirty_tree()
     assert not leftover.exists() and not (tmp_path / ZIP_SWAP_JOURNAL).exists()

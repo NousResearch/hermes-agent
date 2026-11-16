@@ -81,7 +81,7 @@ def _pin_environment() -> None:
     socket.getaddrinfo = refuse  # type: ignore[assignment]
     sys.platform = "linux"  # skills index ``platforms:`` gate
 
-    import hermes_time
+    from hermes_agent import hermes_time
     hermes_time.now = lambda: FIXED_NOW  # type: ignore[assignment]
     # Every registered tool counts as available, as on a fully configured install: check_fns
     # read credentials, binaries and the tool store, which vary by host and would hide schemas.
@@ -128,7 +128,7 @@ def _enabled_toolsets(platform: str) -> list[str]:
 def _render_surface(home: Path, platform: str, model: str, code: bool) -> tuple[dict[str, str], dict]:
     from hermes_cli.config import load_config, save_config
     from agent.system_prompt import build_system_prompt_parts
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     cfg = load_config()
     cfg["model"] = {**(cfg.get("model") or {}), "default": model}

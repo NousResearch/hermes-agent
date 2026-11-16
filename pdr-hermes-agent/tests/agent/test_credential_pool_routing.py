@@ -37,7 +37,7 @@ class TestCliTurnRoutePool:
             service_tier=None,
         )
 
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         bound = HermesCLI._resolve_turn_agent_config.__get__(shell)
         route = bound("test message")
 
@@ -93,7 +93,7 @@ class TestPoolRotationCycle:
     """Verify the retry-same → rotate → exhaust flow in _recover_with_credential_pool."""
 
     def _make_agent_with_pool(self, pool_entries=3):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         with patch.object(AIAgent, "__init__", lambda self, **kw: None):
             agent = AIAgent()
@@ -180,7 +180,7 @@ class TestPoolRotationCycle:
     def test_api_key_hint_from_pool_current_when_agent_key_missing(self):
         """api_key_hint should fall back to pool.current().runtime_api_key
         when agent.api_key is not set (#43747)."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         with patch.object(AIAgent, "__init__", lambda self, **kw: None):
             agent = AIAgent()

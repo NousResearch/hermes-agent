@@ -1,6 +1,6 @@
 """The public control-socket contract, pinned by the JSON vectors clients in any language replay.
 
-``apps/shared/src/node/control-socket.vectors.json`` is the single source: each vector builds a
+``ui-tui/packages/shared/src/node/control-socket.vectors.json`` is the single source: each vector builds a
 gateway control server, sends one request line and compares the one reply line. The
 ``session-ticket`` vectors describe the verb as it already is (they pass unchanged against a tree
 without ``resolve-profile``); the ``resolve-profile`` vectors pin the lookup verb.

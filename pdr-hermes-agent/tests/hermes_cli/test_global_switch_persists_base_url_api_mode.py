@@ -59,7 +59,7 @@ class _StubCLI:
     """Minimum attrs/methods `_handle_model_switch` reads or calls on self."""
     def _stage_and_swap_model(self, result, old_model):
         # Staging + in-place swap lives in a helper; run the real one on this stub.
-        import cli as _cli_mod
+        from hermes_agent import cli as _cli_mod
         return _cli_mod.HermesCLI._stage_and_swap_model(self, result, old_model)
 
 
@@ -81,7 +81,7 @@ class _StubCLI:
     def _confirm_and_apply_cli_model_switch(
         self, result, persist_global, one_turn, custom_provs=None
     ):
-        import cli as cli_mod
+        from hermes_agent import cli as cli_mod
 
         return cli_mod.HermesCLI._confirm_and_apply_cli_model_switch(
             self, result, persist_global, one_turn, custom_provs
@@ -92,7 +92,7 @@ class _StubCLI:
 
 
 def _run_switch(monkeypatch, result, cmd="/model MiniMax-M3 --global"):
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: result)
@@ -118,7 +118,7 @@ def test_global_switch_persists_base_url_and_api_mode(monkeypatch):
 def test_session_only_switch_does_not_touch_config(monkeypatch, model_config):
     """--session must not write config.yaml at all — persistence stays
     entirely in-memory."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
     original = model_config.read_bytes()
@@ -139,7 +139,7 @@ def _run_apply(monkeypatch, result, persist_global=True):
     `test_apply_model_switch_result_context.py` (which only ever calls this
     method with `persist_global=False`), this exercises the `persist_global=True`
     branch that actually writes to config.yaml."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
     cli_mod.HermesCLI._apply_model_switch_result(_StubCLI(), result, persist_global)

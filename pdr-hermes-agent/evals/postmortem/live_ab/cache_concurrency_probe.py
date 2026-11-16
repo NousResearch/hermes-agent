@@ -164,7 +164,7 @@ if API_MODE == "chat_completions": Completions.create = patched_create
 
 import agent.prompt_caching as _pc
 _pc.effective_cache_ttl = lambda ttl, *, model="", provider="": ARGS.ttl  # the probe pins the TTL; user config must not leak in
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 import itertools
 def creds():
     if PROVIDER == "openrouter":

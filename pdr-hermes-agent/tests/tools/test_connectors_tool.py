@@ -126,7 +126,7 @@ def _session_tool_names(enabled_toolsets, *, connectors, disabled_toolsets=None)
     check_fn, not about how many MCP servers the developer running the suite
     happens to have configured.
     """
-    from model_tools import _compute_tool_definitions
+    from hermes_agent.model_tools import _compute_tool_definitions
     from tools.registry import invalidate_check_fn_cache
 
     with patch("tools.connectors.gateway.config.connectors_available",

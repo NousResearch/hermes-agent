@@ -643,7 +643,7 @@ async def test_channel_override_turns_keep_one_cached_agent_and_the_pin(
     monkeypatch.setattr(gr, "_resolve_gateway_model", lambda config=None: global_model)
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = _TurnAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
     _TurnAgent.instances = 0
 
     runner = _make_runner(monkeypatch, config)

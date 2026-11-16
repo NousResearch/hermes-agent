@@ -35,11 +35,11 @@ def _clear_tool_hooks():
 
 
 def _loop_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     schema = {"type": "function", "function": {
         "name": _PROBE, "description": "probe", "parameters": {"type": "object", "properties": {}}}}
-    with (patch("model_tools.get_tool_definitions", return_value=[schema]),
-          patch("model_tools.check_toolset_requirements", return_value={}),
+    with (patch("hermes_agent.model_tools.get_tool_definitions", return_value=[schema]),
+          patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
           patch("agent.process_bootstrap.OpenAI")):
         agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1",
                         quiet_mode=True, skip_context_files=True, skip_memory=True)

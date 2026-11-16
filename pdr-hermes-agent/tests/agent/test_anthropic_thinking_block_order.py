@@ -65,9 +65,9 @@ def _interleaved_response() -> SimpleNamespace:
 def _stored_assistant_message(normalized) -> dict:
     """Reconstruct the OpenAI-style assistant message the way run_agent stores it.
 
-    run_agent.py persists assistant turns as separate fields: content,
+    hermes_agent/run_agent.py persists assistant turns as separate fields: content,
     reasoning_details (from provider_data), and tool_calls.  See
-    run_agent.py L1513-1516 and hermes_state/__init__.py.
+    hermes_agent/run_agent.py L1513-1516 and hermes_state/__init__.py.
     """
     provider_data = normalized.provider_data or {}
     tool_calls = []

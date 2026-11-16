@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import cli
+from hermes_agent import cli
 
 
 def test_resolve_prefill_messages_file_uses_top_level(monkeypatch):

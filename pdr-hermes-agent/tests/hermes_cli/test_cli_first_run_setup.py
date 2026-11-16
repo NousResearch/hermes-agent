@@ -49,7 +49,7 @@ def _import_cli():
             sys.modules.pop(name, None)
     if "firecrawl" not in sys.modules:
         sys.modules["firecrawl"] = types.SimpleNamespace(Firecrawl=object)
-    return importlib.import_module("cli")
+    return importlib.import_module("hermes_agent.cli")
 
 
 def _make_shell(cli, monkeypatch):

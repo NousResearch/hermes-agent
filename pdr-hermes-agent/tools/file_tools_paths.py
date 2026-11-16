@@ -42,7 +42,7 @@ def _expand_tilde(path: str, task_id: str = "default") -> str:
     if hosted_scope() is not None:
         return _expand_sandbox_tilde(path, task_id)
     try:
-        from hermes_constants import get_subprocess_home
+        from hermes_agent.hermes_constants import get_subprocess_home
 
         home = get_subprocess_home()
     except Exception:

@@ -14,7 +14,7 @@ Covered:
     clients inherit Entra auth.
   * ``_truncate_token`` (dashboard preview) renders ``"<entra-id-bearer>"``
     instead of ``"<function ...>"`` and never invokes the callable.
-  * ``run_agent.py`` masked-banner path renders the Entra placeholder
+  * ``hermes_agent/run_agent.py`` masked-banner path renders the Entra placeholder
     and never tries to slice/len the callable.
   * Serialization scrub: dumping a runtime dict via ``json.dumps`` with
     a callable api_key raises (default behaviour) — guards against
@@ -50,7 +50,7 @@ class TestCreateOpenAIClientCallable:
 
         # Build a minimal stand-in for AIAgent so we can call the bound
         # method directly without paying the full __init__ cost.
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent.__new__(AIAgent)
         # Attributes consulted by _create_openai_client / _client_log_context.

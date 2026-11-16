@@ -65,7 +65,7 @@ def test_kanban_guidance_requires_worker_task_at_agent_init(monkeypatch, task_id
     """A profile can expose kanban tools without making the session a worker."""
     from agent.agent_init import _load_tools
     from agent.prompt_builder import KANBAN_GUIDANCE
-    import model_tools
+    from hermes_agent import model_tools
 
     if task_id is None:
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
@@ -419,7 +419,7 @@ class TestNamedProfileHintIntegration:
 
         # Sanity-check the real chain before asserting on the prompt.
         from agent.file_safety import _resolve_active_profile_name
-        from hermes_constants import get_default_hermes_root, get_hermes_home
+        from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home
 
         assert _resolve_active_profile_name() == "coder"
         assert get_hermes_home() == profile_home
@@ -539,7 +539,7 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
             ),
         ),
         patch("agent.file_safety._resolve_active_profile_name", return_value="default"),
-        patch("hermes_time.now", return_value=datetime(2026, 1, 2)),
+        patch("hermes_agent.hermes_time.now", return_value=datetime(2026, 1, 2)),
     ):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
 
@@ -668,7 +668,7 @@ def _build(builder, **overrides):
         patch("agent.prompt_builder.load_soul_md", return_value=""),
         patch("agent.prompt_builder.build_environment_hints", return_value=""),
         patch("agent.prompt_builder.build_context_files_prompt", return_value=_CONTEXT),
-        patch("model_tools.get_toolset_for_tool", return_value=None),
+        patch("hermes_agent.model_tools.get_toolset_for_tool", return_value=None),
         patch("agent.prompt_builder.build_skills_system_prompt", return_value=_SKILLS),
     ):
         return builder(agent)
@@ -905,7 +905,7 @@ def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
         ),
         patch("agent.file_safety._resolve_active_profile_name", return_value="default"),
         # The system prompt is rebuilt a day LATER than the session start.
-        patch("hermes_time.now", return_value=datetime(2026, 1, 2, 9, 0)),
+        patch("hermes_agent.hermes_time.now", return_value=datetime(2026, 1, 2, 9, 0)),
     ):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
 
@@ -935,7 +935,7 @@ class TestConversationStartedTwoLine:
         assert "as of the last context rebuild" in vol
 
     def test_same_day_session_keeps_single_line(self):
-        from hermes_time import now as hermes_now
+        from hermes_agent.hermes_time import now as hermes_now
         sid = hermes_now().strftime("%Y%m%d_%H%M%S_fresh")
         vol = self._volatile(self._agent(sid))
         assert "Conversation started:" in vol
@@ -945,7 +945,7 @@ class TestConversationStartedTwoLine:
         # Windows cp1252 zone name decoded under a UTF-8 LC_CTYPE; strftime("%Z") raised (#102910).
         from datetime import timedelta, timezone
         current = datetime(2026, 7, 14, 13, 5, tzinfo=timezone(timedelta(hours=2), "Paris, Madrid (heure d'\udce9t\udce9)"))
-        with patch("hermes_time.now", return_value=current):
+        with patch("hermes_agent.hermes_time.now", return_value=current):
             vol = self._volatile(self._agent("20260714_090000_fresh"))
 
         json.dumps(vol, ensure_ascii=False).encode("utf-8")

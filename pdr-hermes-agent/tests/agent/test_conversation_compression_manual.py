@@ -137,7 +137,7 @@ def _stored_agent(db, history, *, create=True):
     for message in history:
         db.append_message("sid", message["role"], message["content"])
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
                         quiet_mode=True, session_db=db, session_id="sid", skip_context_files=True, skip_memory=True)
     agent._compression_feasibility_checked = True

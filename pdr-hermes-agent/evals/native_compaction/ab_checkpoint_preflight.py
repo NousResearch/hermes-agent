@@ -105,7 +105,7 @@ def _text_response(text: str, input_tokens: int, *, compaction_chars: int = 0) -
 
 
 def _make_agent(base_url: str, session_id: str | None = None):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key", base_url=base_url, provider="openai-codex", model="gpt-5.6",

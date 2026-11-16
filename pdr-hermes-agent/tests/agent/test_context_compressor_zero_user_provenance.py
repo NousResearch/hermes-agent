@@ -87,7 +87,7 @@ def _assistant_turns(start: int, count: int) -> list[dict]:
 
 def _lifecycle_agent(db: SessionDB, session_id: str):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",

@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.conversation_compression import compression_skipped_due_to_lock
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 LOCK_HOLDER = "pid=4242:tid=1:agent=deadbeef:nonce=abcd1234"
@@ -91,8 +91,8 @@ def _make_overflow_error():
 @pytest.fixture()
 def agent():
     with (
-        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(

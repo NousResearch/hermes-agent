@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from hermes_cli.runtime_provider import resolve_runtime_provider
 from agent.agent_runtime_helpers import copy_reasoning_content_for_api
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _write_home(tmp_path, monkeypatch, reasoning_echo: bool):

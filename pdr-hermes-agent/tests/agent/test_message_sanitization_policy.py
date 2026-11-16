@@ -308,7 +308,7 @@ class TestPerProviderReasoningEcho:
     def _make_agent(self, reasoning_echo_flag=False, provider="custom",
                     model="my-model", base_url="https://gw.example.com/v1"):
         """Build a minimal AIAgent-shaped object without full init."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = object.__new__(AIAgent)
         agent.provider = provider
         agent.model = model
@@ -390,7 +390,7 @@ class TestPerProviderReasoningEcho:
     def test_restore_primary_reverts_flag(self):
         """After fallback, restore_primary_runtime reverts the flag
         from the snapshot saved by switch_model."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = object.__new__(AIAgent)
         agent._reasoning_echo_flag = True  # primary had opt-in
         agent._fallback_activated = True

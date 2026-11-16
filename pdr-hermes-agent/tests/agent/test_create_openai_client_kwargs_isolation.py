@@ -12,7 +12,7 @@ function must treat its input dict as read-only.
 """
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 @patch("agent.process_bootstrap.OpenAI")

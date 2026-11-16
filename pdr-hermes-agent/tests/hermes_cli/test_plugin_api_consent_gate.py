@@ -81,7 +81,7 @@ def daemon(_isolate_hermes_home, monkeypatch):
     from hermes_cli.plugin_host import PluginHost
     from gateway.runtime_bootstrap import TicketStore
     from gateway.session_authorities import SessionAuthorities
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     launch = get_hermes_home().resolve()
     beta = launch / "profiles" / "beta"

@@ -10,7 +10,7 @@ import textwrap
 from agent.system_prompt import build_system_prompt, invalidate_system_prompt
 from hermes_cli import plugins
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _real_agent(*, session_id: str = "plugin-section-test") -> AIAgent:
@@ -103,7 +103,7 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
         from hermes_cli import plugins
         from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
         from hermes_state import SessionDB
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         db = SessionDB(db_path=Path(os.environ["TEST_DB"]))
         session_id = "resume-plugin-section"

@@ -11,7 +11,7 @@ from pathlib import Path
 
 def test_siblings_send_one_system_prompt_and_get_their_context_in_the_user_turn():
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
     from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
     from tools.delegate_tool import delegate_task
@@ -42,7 +42,7 @@ def test_schema_correction_turn_carries_the_contract_even_after_a_compaction():
     import json
 
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
     from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home
     from tools.delegate_tool import delegate_task
@@ -118,7 +118,7 @@ def test_a_steered_child_keeps_its_brief_through_a_second_compaction():
 
 def test_codex_siblings_share_the_session_header_the_backend_caches_under():
     from agent.chat_completion_helpers import _build_api_kwargs_for_mode
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tools.delegate_tool import _build_child_agent
 
     route = {"provider": "openai-codex", "base_url": "https://chatgpt.com/backend-api/codex", "api_key": "fake",

@@ -104,7 +104,7 @@ def _manifest_is_mode_independent(path: str) -> bool:
     mode. Unreadable / unparseable -> False (forwarding one would turn a working session into a hard startup
     failure; bounded forwards unconditionally anyway)."""
     try:
-        import hermes_yaml as yaml
+        from hermes_agent import hermes_yaml as yaml
 
         with open(path, "r", encoding="utf-8-sig") as handle:
             parsed = yaml.safe_load(handle)

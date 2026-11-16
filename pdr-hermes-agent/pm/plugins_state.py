@@ -129,7 +129,7 @@ def dependency_homes() -> list[Path]:
     marker and no tombstone. Staging dirs (``.work.staging-*``), deleted profiles and stray
     marker-less dirs must not put plugins into the shared environment.
     """
-    from hermes_constants import PROFILE_ID_RE, named_profile_is_live
+    from hermes_agent.hermes_constants import PROFILE_ID_RE, named_profile_is_live
     from pm.environments import dependency_home_root
 
     homes = [dependency_home_root()]

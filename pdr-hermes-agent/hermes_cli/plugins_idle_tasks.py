@@ -184,7 +184,7 @@ def load_state(path: Path, plugin_id: str = "", name: str = "") -> dict[str, Any
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -202,7 +202,7 @@ def set_paused(path: Path, paused: bool) -> dict[str, Any]:
 
 def iter_state_files(plugin_id: Optional[str] = None) -> Iterator[tuple[Path, dict[str, Any]]]:
     """Every idle task state of the active profile (optionally one plugin's), sorted."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     for path in sorted((get_hermes_home() / "plugin-data").glob(f"*/{_STATE_DIR}/*.json")):
         state = load_state(path)
@@ -318,7 +318,7 @@ def run_plugin_idle_tasks(
     """Poll the active profile's registered idle tasks and return at once; ``{"<plugin>:<task>":
     worker}`` for the runs it started, each on its own thread. A manager polled outside its own
     profile runs nothing; a host that stops passes its ``fence``. Never raises."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     from hermes_cli.plugins import get_plugin_manager
 
     started: dict[str, threading.Thread] = {}

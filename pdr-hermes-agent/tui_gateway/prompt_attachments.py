@@ -101,7 +101,7 @@ def _sniff_image_ext(img_bytes: bytes, filename: str = "") -> str:
 
 def _allowed_image_extensions() -> frozenset[str]:
     try:
-        from cli import _IMAGE_EXTENSIONS
+        from hermes_agent.cli import _IMAGE_EXTENSIONS
         return frozenset(_IMAGE_EXTENSIONS)
     except Exception:
         return frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
@@ -249,7 +249,7 @@ def _stage_browser_file_attachment(session: dict, staged_upload: object, name: s
     source home, which must still be a live profile (``hermes_cli/staged_uploads.py``). From there
     the copy is the native Desktop's out-of-workspace file attach, capped at the browser limit.
     """
-    from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+    from hermes_agent.hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
     from hermes_cli.staged_uploads import parse_staged_upload, resolve_staged_upload
 
     raw_home, raw_path = parse_staged_upload(staged_upload)
@@ -290,7 +290,7 @@ def _stage_session_file_attachment(
     resolved = None
     if raw_path:
         try:
-            from cli import _detect_file_drop, _resolve_attachment_path, _split_path_input
+            from hermes_agent.cli import _detect_file_drop, _resolve_attachment_path, _split_path_input
         except Exception:
             _detect_file_drop = None
         if _detect_file_drop is not None:

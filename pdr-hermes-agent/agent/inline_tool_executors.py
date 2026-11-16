@@ -48,7 +48,7 @@ def emit_terminal_post_tool_call(
 ) -> None:
     """Emit the one terminal ``post_tool_call`` hook for a tool_call_id (best-effort)."""
     try:
-        from model_tools import _emit_post_tool_call_hook
+        from hermes_agent.model_tools import _emit_post_tool_call_hook
         _emit_post_tool_call_hook(
             function_name=function_name,
             function_args=function_args,
@@ -80,7 +80,7 @@ def apply_transform_tool_result(
     reach it, so the agent paths call the same helper (after the terminal
     ``post_tool_call``) to keep the hook's "every tool" contract. Fail-open."""
     try:
-        from model_tools import _CallIds, _apply_transform_tool_result_hook
+        from hermes_agent.model_tools import _CallIds, _apply_transform_tool_result_hook
         return _apply_transform_tool_result_hook(
             function_name, function_args, result, duration_ms,
             _CallIds(**tool_hook_ids(agent, effective_task_id, tool_call_id)),
@@ -208,7 +208,7 @@ def _preview_is_default_vault_target(agent, task_id: str) -> bool:
 def _browser_vault(agent, args: dict, ctx: InlineToolContext) -> Any:
     # The preview transport is the agent's GUI callback, which registry dispatch never forwards.
     import tools.browser_vault_tool  # registers the real handler
-    from model_tools import _approval_observability, _CallIds
+    from hermes_agent.model_tools import _approval_observability, _CallIds
     from tools.registry import registry
 
     task_id = ctx.effective_task_id or "default"
@@ -408,7 +408,7 @@ def pre_registry_route(function_name: str, agent: Any = None) -> Optional[str]:
     path reaches the registry handler: ``alias``, ``bridge``, ``inline``, ``connector``, and with
     ``agent`` also ``context_engine`` / ``memory_provider``. Each test is the one the dispatcher
     runs, so a registration under such a name never runs its own handler there."""
-    from model_tools import _AGENT_LOOP_TOOLS, _LEGACY_TOOL_ALIASES
+    from hermes_agent.model_tools import _AGENT_LOOP_TOOLS, _LEGACY_TOOL_ALIASES
     from tools.connectors import is_connector_name
     from tools.tool_search import is_bridge_tool
 

@@ -36,8 +36,8 @@ def _chunk_with_provider(content=None, finish_reason=None, model=None, provider=
     return chunk
 
 
-@patch("run_agent.AIAgent._create_request_openai_client")
-@patch("run_agent.AIAgent._close_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+@patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
 def test_mid_stream_drop_retry_line_names_the_serving_provider(_mock_close, mock_create, agent, caplog):
     """A real stream: the first chunk says who served it, then the connection drops."""
 
@@ -66,8 +66,8 @@ def test_mid_stream_drop_retry_line_names_the_serving_provider(_mock_close, mock
 class TestServingProviderReachesPostApiRequest:
     """``upstream_provider`` on the post_api_request payload (plugin route auditing)."""
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_streamed_attempt_reports_the_serving_provider(self, _mock_close, mock_create, agent):
         chunks = [
             _chunk_with_provider(content="Hello", provider="Novita"),

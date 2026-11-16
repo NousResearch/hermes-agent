@@ -319,14 +319,14 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
 
 def _should_skip_upstream_prompt() -> bool:
     """Check if user previously declined to add upstream."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return (get_hermes_home() / SKIP_UPSTREAM_PROMPT_FILE).exists()
 
 
 def _mark_skip_upstream_prompt():
     """Create marker file to skip future upstream prompts."""
     with suppress(Exception):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         (get_hermes_home() / SKIP_UPSTREAM_PROMPT_FILE).touch()
 
 
@@ -620,7 +620,7 @@ def _portable_git_candidates() -> list:
     (``<root>/profiles/<name>``), so a profile-scoped ``hermes update`` must look there (monerostar
     review, #87876). install.ps1 (``Get-PinnedGit``) and pm stage the managed tree in the store.
     """
-    from hermes_constants import get_default_hermes_root, get_hermes_home
+    from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home
     trees = []
     with suppress(Exception):
         trees += [root / "git" for root in (get_default_hermes_root(), Path(get_hermes_home()))]

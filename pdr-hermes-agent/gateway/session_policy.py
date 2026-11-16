@@ -286,7 +286,7 @@ class LocalSessionPolicy:
         if not self.follows_profile:
             return self.reasoning_config
         from gateway.session_authorities import active_authority
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         config, model = self.effective(active_authority(runner), secrets=False)
         return resolve_reasoning_config(config, model or '')
 
@@ -354,7 +354,7 @@ class LocalSessionPolicy:
 
     @property
     def reasoning_config(self):
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         return resolve_reasoning_config(self.config(), self.model or '')
 
 
@@ -433,7 +433,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
                  client_local=False):
     from agent.runtime_cwd import resolve_agent_cwd
     from tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     source = params.get('source', 'cli')
     if source == 'a2a':
@@ -523,7 +523,7 @@ def _profile_workspace_cwd(home):
     """A NAMED profile's configured ``terminal.cwd``, which beats a client cwd the Desktop only inherited
     (``cwd_explicit: false``; main's ``_completion_cwd``). Placeholders and missing dirs are unset."""
     import os
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
     if profile_name_for_home(home) in {None, 'default'}:
         return None
     from hermes_cli.config import read_user_config_raw
@@ -598,7 +598,7 @@ def _apply_launch_overrides(params, config):
     """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
     from hermes_cli.config import resolve_turn_limit
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     params = _with_entry_pick(_without_auto_pick(params), config)
     picks_profile_entry = 'provider' in params and _keeps_profile_route(params['provider'], config)
     if 'provider' in params and not picks_profile_entry:
@@ -672,7 +672,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
     stays on ``focus``; the gateway decides it, never the client."""
     from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
     from hermes_cli.toolset_validation import saved_toolset_resolver
-    from toolsets import validate_toolset
+    from hermes_agent.toolsets import validate_toolset
     explicit = params.get('toolsets')
     if 'toolsets' in params:
         if not isinstance(explicit, list):
@@ -700,7 +700,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         posture = focus_toolsets(config)
     enabled = set(posture) if posture is not None else _get_platform_tools(config, 'acp' if source == 'acp' else 'cli')
     if explicit is not None:
-        from toolsets import TOOLSETS, resolve_toolset
+        from hermes_agent.toolsets import TOOLSETS, resolve_toolset
         requested = {t for name in explicit for t in resolve_toolset(name)}
         dropped = _unnamed_extension_toolsets(explicit, requested, config) & enabled
         enabled -= dropped
@@ -719,7 +719,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         # subtract again or `disabled_toolsets: [project]` is a no-op here (#54433).
         # desktop_ui is the client's own control surface, not a model toolset.
         from agent.skill_utils import parse_config_string_list
-        from toolsets import CLIENT_SURFACE_TOOLSETS
+        from hermes_agent.toolsets import CLIENT_SURFACE_TOOLSETS
         disabled = set(parse_config_string_list((config.get('agent') or {}).get('disabled_toolsets')))
         surface = set(CLIENT_SURFACE_TOOLSETS) if source == 'gui' else {'project'}
         enabled |= surface - (disabled - {'desktop_ui'})
@@ -737,7 +737,7 @@ def _unnamed_extension_toolsets(explicit, requested, config):
     if {'all', '*'} & set(explicit):
         return set()
     from hermes_cli.tools_config import _get_plugin_toolset_keys, enabled_mcp_server_names
-    from toolsets import TOOLSETS, resolve_toolset
+    from hermes_agent.toolsets import TOOLSETS, resolve_toolset
     configured = config.get('mcp_servers') if isinstance(config.get('mcp_servers'), dict) else {}
     named = set(explicit) | {n[4:] for n in explicit if n.startswith('mcp-') and n not in configured}
     plugin_keys = _get_plugin_toolset_keys()

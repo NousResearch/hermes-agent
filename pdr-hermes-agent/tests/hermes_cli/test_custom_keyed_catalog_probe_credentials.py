@@ -13,7 +13,7 @@ import json
 import threading
 from unittest.mock import patch
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 import pytest
 
 from hermes_cli import models as models_mod

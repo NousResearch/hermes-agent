@@ -1640,10 +1640,10 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 
 | Hook | Fired by |
 |------|----------|
-| `pre_tool_call` | `hermes_cli/plugins.py` `_dispatch_pre_tool_call_hooks`, called from `agent/tool_executor.py` `_pre_tool_block`, `agent/agent_runtime_helpers.py` `_pre_tool_block_message` and `model_tools.py` `_pre_dispatch_guards` |
-| `post_tool_call` | `model_tools.py` `_emit_post_tool_call_hook` |
+| `pre_tool_call` | `hermes_cli/plugins.py` `_dispatch_pre_tool_call_hooks`, called from `agent/tool_executor.py` `_pre_tool_block`, `agent/agent_runtime_helpers.py` `_pre_tool_block_message` and `hermes_agent/model_tools.py` `_pre_dispatch_guards` |
+| `post_tool_call` | `hermes_agent/model_tools.py` `_emit_post_tool_call_hook` |
 | `transform_terminal_output` | `tools/terminal_tool_result.py` `_apply_output_transform_hook` |
-| `transform_tool_result` | `model_tools.py` `_apply_transform_tool_result_hook` |
+| `transform_tool_result` | `hermes_agent/model_tools.py` `_apply_transform_tool_result_hook` |
 | `transform_llm_output` | `agent/turn_finalizer.py` `apply_llm_output_transform` |
 | `pre_llm_call` | `agent/turn_context.py` `_collect_pre_llm_call_context` |
 | `post_llm_call` | `agent/turn_finalizer.py` `_apply_output_hooks` |
@@ -1681,7 +1681,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_kanban_task_updated` | `hermes_cli/kanban_db.py` `notify_task_updated` |
 | `on_kanban_dispatch_tick` | `hermes_cli/kanban_db.py` `_fire_dispatch_tick_hook` |
 | `gateway_platform_event` | `gateway/run_adapters.py` `GatewayAdapterLifecycleMixin._handle_gateway_platform_event` (events come from the Telegram and Discord adapters) |
-| `pre_command` | `hermes_cli/plugins.py` `fire_pre_command_hook`, called from `cli.py` `HermesCLI.process_command`, `gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks` and `gateway/session_commands.py` |
+| `pre_command` | `hermes_cli/plugins.py` `fire_pre_command_hook`, called from `hermes_agent/cli.py` `HermesCLI.process_command`, `gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks` and `gateway/session_commands.py` |
 | `post_compaction` | `agent/compaction_events.py` `fire_post_compaction` |
 | `post_curator_run` | `agent/curator.py` `_notify_post_curator_run` |
 
@@ -1901,7 +1901,7 @@ def register(ctx):
 
 After registration, users can run `hermes my-plugin status`, `hermes my-plugin config`, etc.
 
-**Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](../memory-provider-plugin.md#adding-cli-commands) for details.
+**Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `hermes_agent/cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](../memory-provider-plugin.md#adding-cli-commands) for details.
 
 **Active-provider gating:** Memory plugin CLI commands only appear when their provider is the active `memory.provider` in config. If a user hasn't set up your provider, your CLI commands won't clutter the help output.
 
@@ -2551,7 +2551,7 @@ Memory providers are single-select — only one is active at a time, chosen via 
 
 If a provider also loads as a general plugin, general discovery owns its lifecycle hooks. The memory loader supplies hooks only as a fallback until that same plugin source loads successfully through general discovery. Repeated provider loads replace the fallback hook group; distinct callbacks within the group are preserved. This does not deduplicate hooks from different plugin sources or change provider activation.
 
-**Full guide:** [Memory Provider Plugins](../memory-provider-plugin.md) — full `MemoryProvider` ABC, threading contract, profile isolation, CLI command registration via `cli.py`.
+**Full guide:** [Memory Provider Plugins](../memory-provider-plugin.md) — full `MemoryProvider` ABC, threading contract, profile isolation, CLI command registration via `hermes_agent/cli.py`.
 
 ### Context engine plugins — replace the context compressor
 

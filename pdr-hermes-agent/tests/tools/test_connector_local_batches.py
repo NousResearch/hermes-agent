@@ -9,7 +9,7 @@ import pytest
 
 @pytest.mark.parametrize("mixed", [False, True])
 def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
-    import model_tools
+    from hermes_agent import model_tools
     from tools.tool_search import resolve_underlying_call
     from tools.connectors.gateway import bridge, config
     from tools.registry import invalidate_check_fn_cache
@@ -99,7 +99,7 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
 def test_dispatch_connector_batch_guard_echoes_first_entry(monkeypatch):
     """Direct call: the dispatcher's own local-entry guard (unreachable via tool_call, which
     partitions first) must reject with the echoed retry shape before any entry runs."""
-    import model_tools
+    from hermes_agent import model_tools
     from tools.connectors.dispatch import dispatch_connector_batch
 
     invoked = []

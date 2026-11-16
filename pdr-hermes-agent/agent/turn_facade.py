@@ -2,7 +2,7 @@
 
 Turn admission around ``conversation_loop.run_conversation``: durable cross-process session turn lease +
 refresher thread and liveness watchdog (``agent.turn_facade_lease``), relay/accounting/portal scopes, and
-balanced start/finish marks. Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s
+balanced start/finish marks. Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s
 MRO unchanged.
 """
 import logging

@@ -30,7 +30,7 @@ def test_sticky_standalone_profile_foreground_run_is_served_once(tmp_path, monke
                                          container_argv=["/init", "/opt/hermes/docker/main-wrapper.sh", *cmd])
     assert [a.action for a in actions if a.profile == "solo"] == ["registered"]  # boot: the CMD serves solo
 
-    monkeypatch.setattr("hermes_constants._get_platform_default_hermes_home", lambda: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants._get_platform_default_hermes_home", lambda: root)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr("hermes_cli.service_manager._s6_running", lambda: True)
     monkeypatch.setenv("HERMES_HOME", str(root))

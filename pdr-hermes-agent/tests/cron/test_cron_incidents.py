@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from cron import incidents
 import cron.jobs as cron_jobs
 import cron.scheduler as sched
-from hermes_time import now as _hermes_now
+from hermes_agent.hermes_time import now as _hermes_now
 
 
 def _point_db(monkeypatch, tmp_path):
@@ -73,7 +73,7 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated", *, settle=F
                    "api_mode": "chat_completions",
                }), \
          patch("cron.delivery_queue.enqueue", side_effect=fake_deliver), \
-         patch("run_agent.AIAgent") as mock_agent_cls:
+         patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls:
         mock_agent = MagicMock()
         mock_agent.run_conversation.side_effect = RuntimeError(error)
         mock_agent_cls.return_value = mock_agent

@@ -57,7 +57,7 @@ def provider_url():
 
 
 def _agent(provider_url, db):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     return AIAgent(
         api_key="test-key", base_url=provider_url, provider="openai-compat", model="test-model",

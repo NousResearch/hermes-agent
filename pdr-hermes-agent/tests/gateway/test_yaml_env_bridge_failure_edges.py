@@ -5,7 +5,7 @@ import pytest
 
 from gateway.config_loader import load_yaml_layer
 from gateway.platforms._shared import bridged_env_digest, bridged_env_marker, yaml_env_setter
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 
 
 @pytest.fixture(autouse=True)
@@ -178,7 +178,7 @@ def test_a_value_an_external_secret_source_supplies_is_the_operators(tmp_path, m
 
 
 def _launch_home_key() -> str:
-    from hermes_constants import get_routing_process_hermes_home
+    from hermes_agent.hermes_constants import get_routing_process_hermes_home
 
     return hermes_home_key(get_routing_process_hermes_home())
 

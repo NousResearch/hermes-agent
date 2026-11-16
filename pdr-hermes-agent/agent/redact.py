@@ -63,9 +63,9 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
 # ON by default; `security.redact_secrets: false` bridges to this env var.
 # ON by default — secure default per issue #17691. Users who need raw credential values in tool output (e.g.
 # working on the redactor itself) can opt out via `security.redact_secrets: false` in config.yaml (bridged
-# to this env var in hermes_cli/main.py, gateway/run.py, and cli.py) or `HERMES_REDACT_SECRETS=false` in
+# to this env var in hermes_cli/main.py, gateway/run.py, and hermes_agent/cli.py) or `HERMES_REDACT_SECRETS=false` in
 # ~/.hermes/.env. An opt-out warning is logged at gateway and CLI startup so operators see the downgrade —
-# see `_log_redaction_status()` in gateway/run.py and cli.py.
+# see `_log_redaction_status()` in gateway/run.py and hermes_agent/cli.py.
 _REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
 
 # Routed multiplex profiles: the import-time snapshot above is the LAUNCH profile's policy. A profile
@@ -89,7 +89,7 @@ def note_config_policy(home_key: str, raw) -> None:
 def resolve_profile_policy(home) -> None:
     """Record ``home``'s redaction policy now (log-routing setup), so its records never wait for it."""
     from agent.runtime_scope import bind_profile_scope
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     try:
         with bind_profile_scope(home, hydrate_secrets=False):
             key = hermes_home_key()
@@ -103,7 +103,7 @@ def resolve_profile_policy(home) -> None:
 def _redact_enabled() -> bool:
     """Effective redaction switch for the active profile (launch snapshot when no override). Reads
     only in-memory state: the live secret scope and the recorded per-profile policy."""
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
         return _REDACT_ENABLED
     home_key = hermes_home_key()
@@ -2045,5 +2045,5 @@ class RedactingFormatter(logging.Formatter):
         return "\n".join([first, *(_LOG_LINE_STAMP.sub("_", line) for line in rest)])
 
     def formatMessage(self, record: logging.LogRecord) -> str:
-        from hermes_logging import display_record  # lazy: hermes_logging imports this module lazily
+        from hermes_agent.hermes_logging import display_record  # lazy: hermes_logging imports this module lazily
         return super().formatMessage(display_record(record))

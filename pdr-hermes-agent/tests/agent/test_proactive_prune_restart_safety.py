@@ -40,7 +40,7 @@ def _history(*, large_chars: int = 24_000) -> list[dict]:
 
 def _build_agent(db: SessionDB, session_id: str, *, platform: str = "telegram"):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         return AIAgent(
             api_key="test-key",

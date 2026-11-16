@@ -13,7 +13,7 @@ through a thin wrapper that mirrors the real dispatch shape.
 
 from unittest.mock import patch
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def _make_cli():
@@ -26,7 +26,7 @@ def _make_cli():
 
 
 def _dispatch(cli, user_input: str, process_command_side_effect=None):
-    """Mirror the production dispatch shape from cli.py around line 14236.
+    """Mirror the production dispatch shape from hermes_agent/cli.py around line 14236.
 
     Real call site:
         if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):

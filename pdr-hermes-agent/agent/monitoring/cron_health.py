@@ -19,7 +19,7 @@ from cron.jobs import (
 from cron.occurrences import get_catch_up_occurrence_count
 from cron.scheduler import get_running_job_ids
 from cron.store_health import degraded_records
-from hermes_time import now as _now
+from hermes_agent.hermes_time import now as _now
 
 logger = logging.getLogger(__name__)
 # ``cancelled``: an operator stopped the run; ``missed``: the scheduler skipped past its slots.

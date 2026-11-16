@@ -6,7 +6,7 @@ winning on every read. A managed scope that pins something else must not block o
 from types import SimpleNamespace
 
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 from hermes_cli import managed_scope
 from tui_gateway import server

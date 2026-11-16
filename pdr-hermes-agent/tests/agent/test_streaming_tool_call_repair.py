@@ -47,7 +47,7 @@ class TestStreamingAssemblyRepair:
 
     These tests verify the REPAIR FUNCTION itself works correctly for the
     cases that arise during streaming assembly.  Integration tests that
-    exercise the full streaming path are in run_agent.py's streaming tests.
+    exercise the full streaming path are in hermes_agent/run_agent.py's streaming tests.
     """
 
     # -- Truncation cases (most common streaming failure) --

@@ -121,13 +121,13 @@ def whatsapp_bridge(monkeypatch):
     )
     monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
     # Standalone senders only READ the token the gateway persisted beside the session.
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     session_dir = get_hermes_home() / "platforms" / "whatsapp" / "session"
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / ".bridge-token").write_text(token)
     monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
-    monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
+    monkeypatch.setattr("hermes_agent.model_tools._run_async", lambda coro: asyncio.run(coro))
     monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *_args: False)
     monkeypatch.setattr(aiohttp, "ClientSession", lambda *_args, **_kwargs: BridgeSession())
     return SimpleNamespace(calls=calls, state=state)

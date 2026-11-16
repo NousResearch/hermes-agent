@@ -60,9 +60,9 @@ from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_tool_round import run_tool_round
-from hermes_logging import set_session_context
+from hermes_agent.hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
-from utils import base_url_host_matches
+from hermes_agent.utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
 
@@ -460,7 +460,7 @@ def _maybe_grow_local_window(agent: Any, compressor: Any,
 
 def _ra():
     """Lazy ``run_agent`` reference so patches on ``run_agent.*`` reach this code path."""
-    import run_agent
+    from hermes_agent import run_agent
     return run_agent
 
 

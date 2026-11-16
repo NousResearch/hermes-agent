@@ -15,7 +15,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 # tools.skills_hub / tools.skills_guard are imported inside functions (cycles + startup cost).
-from hermes_constants import display_hermes_home
+from hermes_agent.hermes_constants import display_hermes_home
 
 _console = Console()
 
@@ -1409,7 +1409,7 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
 
 def _read_frontmatter(skill_md: str) -> dict:
     """YAML frontmatter of a SKILL.md body ({} when absent/invalid)."""
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
     match = re.search(r'\n---\s*\n', skill_md[3:]) if skill_md.startswith("---") else None
     try:
         return (yaml.safe_load(skill_md[3:match.start() + 3]) or {}) if match else {}

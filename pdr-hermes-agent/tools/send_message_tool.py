@@ -198,7 +198,7 @@ def _handle_react(args, remove=False):
     if not callable(react_fn):
         return tool_error(f"Platform '{platform_name}' does not support message reactions.")
     try:
-        from model_tools import _run_async
+        from hermes_agent.model_tools import _run_async
         result = _run_async(react_fn(chat_id=chat_id, message_id=message_id, **({} if remove else {"emoji": emoji})))
     except Exception as e:
         return json.dumps(_error(f"Reaction failed: {e}"))
@@ -270,7 +270,7 @@ def _handle_send(args):
         return tool_error(_relay_denial)
 
     try:
-        from model_tools import _run_async
+        from hermes_agent.model_tools import _run_async
         # Only custom plugin handlers receive the complete typed request. ``mentions`` is only for platforms
         # whose StandaloneSendPolicy declares it (WhatsApp; the CLI rejects it elsewhere); other platforms'
         # standalone senders don't accept the kwarg.
@@ -336,7 +336,7 @@ def _not_configured_error(platform_name, platform, entry):
     from agent.secret_scope import load_env_file
     from gateway.config import _getenv
     from gateway.config_env import _ENV_ENABLE_CREDENTIALS
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_cli.config_backend import config_exists
     home = get_hermes_home()
     env_names = list(_ENV_ENABLE_CREDENTIALS.get(platform) or (entry.required_env if entry else ()))
@@ -368,7 +368,7 @@ def _not_configured_error(platform_name, platform, entry):
     # never reads this profile's .env at all.
     try:
         from gateway.status import read_runtime_status, runtime_status_pid_is_live
-        from hermes_constants import get_default_hermes_root, hermes_home_key
+        from hermes_agent.hermes_constants import get_default_hermes_root, hermes_home_key
         root = get_default_hermes_root()
         gateways = [(home, read_runtime_status())]
         if hermes_home_key(root) != hermes_home_key(home):
@@ -422,7 +422,7 @@ def _slack_dm_chat_id(pconfig, chat_id):
     dm_target = f"user:{chat_id}" if chat_id.startswith("U") and _SLACK_USER_ID_RE.fullmatch(chat_id) else chat_id
     if not dm_target.startswith(("user:", "user_name:")):
         return chat_id, None
-    from model_tools import _run_async
+    from hermes_agent.model_tools import _run_async
     return _run_async(_resolve_slack_user_target(pconfig.token, dm_target))
 
 

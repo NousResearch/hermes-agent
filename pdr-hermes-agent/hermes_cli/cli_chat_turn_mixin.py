@@ -1,6 +1,6 @@
 """chat() and its per-turn phases: image routing, staging, agent thread, interrupt monitor, rendering.
 
-Mixin bound onto ``HermesCLI`` via the MRO. cli.py-internal symbols are imported LAZILY
+Mixin bound onto ``HermesCLI`` via the MRO. hermes_agent/cli.py-internal symbols are imported LAZILY
 inside each method — importing ``cli`` at module load time would be a cycle.
 """
 
@@ -35,7 +35,7 @@ class CLIChatTurnMixin:
         """Adopt ``fallback_providers`` edits made while this chat is open (#95066) — the same
         per-turn, fail-closed contract as the Desktop/TUI and messaging gateways: a torn config.yaml
         keeps the last known-good chain instead of reading as "chain removed"."""
-        from cli import logger
+        from hermes_agent.cli import logger
         try:
             from gateway.run import GatewayRunner
             from hermes_cli.config_effective import load_user_config_effective
@@ -58,7 +58,7 @@ class CLIChatTurnMixin:
         objects for attached images voice_input: True when the message came from voice transcription (gates
         the concise voice-response prefix, #65827)
         """
-        from cli import ChatConsole, _ChatTurn, _DIM, _RST, _accent_hex, _cprint, set_secret_capture_callback
+        from hermes_agent.cli import ChatConsole, _ChatTurn, _DIM, _RST, _accent_hex, _cprint, set_secret_capture_callback
         from tools.process_registry_notifications import TimelineNotification
         # Single-query and direct chat callers do not go through run().
         set_secret_capture_callback(self._secret_capture_callback)
@@ -134,7 +134,7 @@ class CLIChatTurnMixin:
 
     def _chat_release_turn_audio(self, turn):
         """Every exit path: stop the thinking sound, send the TTS sentinel, cut TTS only if abnormal."""
-        from cli import logger
+        from hermes_agent.cli import logger
         if turn.thinking_started:
             try:
                 from tools.voice_mode import stop_thinking_sound
@@ -162,7 +162,7 @@ class CLIChatTurnMixin:
         "native" → OpenAI-style content parts (adapters translate per provider); "text" →
         vision_analyze each image and prepend the description. Decision: agent/image_routing.py.
         """
-        from cli import _DIM, _RST, _cprint, _split_model_config_default
+        from hermes_agent.cli import _DIM, _RST, _cprint, _split_model_config_default
         if not images:
             return message
         text = message if isinstance(message, str) else ""
@@ -224,7 +224,7 @@ class CLIChatTurnMixin:
 
     def _chat_setup_turn_audio(self, turn, message, voice_input):
         """Arm the full-duplex listener and the streaming-TTS pipeline for this turn (voice mode only)."""
-        from cli import _ACCENT, _RST, _STREAM_PAD, _cprint, datetime
+        from hermes_agent.cli import _ACCENT, _RST, _STREAM_PAD, _cprint, datetime
         if getattr(turn, "mute_notification_reply", False):
             return
         # Continuous voice mode: arm the mic NOW (utterance-submit), not at TTS playback —
@@ -292,7 +292,7 @@ class CLIChatTurnMixin:
 
     def _chat_run_agent(self, turn, message):
         """Agent-thread body: bind per-thread callbacks/approval key, prepend one-shot notes, run the turn."""
-        from cli import (
+        from hermes_agent.cli import (
             _prepend_note_to_message, set_approval_callback, set_secret_capture_callback,
             set_sudo_password_callback,
         )
@@ -412,7 +412,7 @@ class CLIChatTurnMixin:
 
     def _chat_monitor_agent_thread(self, turn, agent_thread):
         """Poll the interrupt queue while the agent thread runs; returns the interrupting message (or None)."""
-        from cli import _cprint, logger
+        from hermes_agent.cli import _cprint, logger
         # Ambient "thinking" blips in voice mode; skipped per-blip while TTS speaks, the mic
         # records or a barge capture is live. voice.thinking_sound gates it (default on).
         if self._voice_mode:
@@ -515,7 +515,7 @@ class CLIChatTurnMixin:
     def _handle_discard_command(self, cmd_original: str):
         """/discard <admission_id>: acknowledge a turn the gateway lost in a restart without replaying
         it (the owner's fenced ``prompt.resolve_unknown``), so prompts may run again."""
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         from hermes_cli.gateway_chat_view import lost_admission
         from hermes_cli.gateway_client import GatewayClientError
         from hermes_cli.gateway_side import connection_for
@@ -546,7 +546,7 @@ class CLIChatTurnMixin:
 
         Returns the response text.
         """
-        from cli import _DIM, _RST, _cprint, _suspend_output_history
+        from hermes_agent.cli import _DIM, _RST, _cprint, _suspend_output_history
         response = turn.result.get("final_response", "") if turn.result else ""
         if getattr(turn, "mute_notification_reply", False):
             pending, _ = self._chat_resolve_interrupt(turn, agent_thread, interrupt_msg, response)
@@ -678,7 +678,7 @@ class CLIChatTurnMixin:
 
     def _chat_print_reasoning_box(self, turn):
         """Collapsed reasoning box when show_reasoning is on and streaming did not already show it."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         # _reasoning_shown_this_turn, not _reasoning_stream_started: the latter resets at
         # intermediate turn boundaries (tool loops) and re-rendered the box after the answer.
         if self.show_reasoning and turn.result and not self._reasoning_shown_this_turn:
@@ -703,7 +703,7 @@ class CLIChatTurnMixin:
 
     def _chat_print_response_panel(self, turn, response):
         """Response box (close TTS-drawn box / post-stream transform / Rich Panel), then billing CTA."""
-        from cli import (
+        from hermes_agent.cli import (
             ChatConsole, _ACCENT, _RST, _cprint, _maybe_remap_for_light_mode, _post_stream_transform_output,
             _render_final_assistant_content,
         )

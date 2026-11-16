@@ -50,7 +50,7 @@ def _build_agent_with_db(
 ):
     """Build an AIAgent that's wired to ``db`` and pinned to ``session_id``."""
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -1248,7 +1248,7 @@ def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> No
 
     # The worker does a local ``from run_agent import AIAgent``; patching the
     # class method covers that import path.
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     real_run_conversation = AIAgent.run_conversation
 
@@ -1454,7 +1454,7 @@ def test_review_fork_fails_closed_when_compressor_rebind_raises(
 
     # The worker does a local ``from run_agent import AIAgent``; patching the
     # class method covers that import path.
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     _real_bind = ContextCompressor.bind_session_state
 

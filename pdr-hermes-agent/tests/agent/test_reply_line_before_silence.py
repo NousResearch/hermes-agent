@@ -162,7 +162,7 @@ def test_held_turn_rewrites_the_recovered_reply_as_a_new_final(held, monkeypatch
     # A hold_stream transform withheld the reply line, so it was never shown: the recovered reply
     # goes out as the rewrite and must not be flagged as previewed/reused (same rule as the
     # empty-follow-up path on main).
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.fakes.fake_llm_provider import Text, ToolCall
     from tests.fakes.redactor_plugin import RAW, REWRITE
 

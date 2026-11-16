@@ -359,19 +359,19 @@ class TestPlatformToolsetConsistency:
     def test_all_platforms_have_toolset_definitions(self):
         """Each platform's default_toolset must exist in TOOLSETS."""
         from hermes_cli.tools_config import PLATFORMS
-        from toolsets import TOOLSETS
+        from hermes_agent.toolsets import TOOLSETS
 
         for platform, meta in PLATFORMS.items():
             ts_name = meta["default_toolset"]
             assert ts_name in TOOLSETS, (
                 f"Platform {platform!r} references toolset {ts_name!r} "
-                f"which is not defined in toolsets.py"
+                f"which is not defined in hermes_agent/toolsets.py"
             )
 
     def test_gateway_toolset_includes_all_messaging_platforms(self):
         """hermes-gateway includes list should cover all messaging platforms."""
         from hermes_cli.tools_config import PLATFORMS
-        from toolsets import TOOLSETS
+        from hermes_agent.toolsets import TOOLSETS
 
         gateway_includes = set(TOOLSETS["hermes-gateway"]["includes"])
         # Exclude non-messaging platforms from the check
@@ -471,7 +471,7 @@ class TestChromiumPostSetup:
         with patch("pm.ensure", side_effect=error), patch(
             "hermes_cli.browser_runtime.chromium_executable", return_value=None
         ), patch("hermes_cli.browser_runtime.BAKED_EXECUTABLE_FILE", tmp_path / "absent"), patch(
-            "hermes_constants.is_termux", return_value=False
+            "hermes_agent.hermes_constants.is_termux", return_value=False
         ), patch("hermes_cli.tools_config_post_setup._print_warning") as warn, patch(
             "hermes_cli.tools_config_post_setup._print_info"
         ) as info:
@@ -917,8 +917,8 @@ def test_disabled_composite_debugging_prunes_constituent_platform_toolsets():
 def test_disabled_composite_display_matches_runtime_tool_selection():
     """Display/runtime parity: a toolset is listed as enabled iff the agent keeps
     at least one of its tools after the runtime's tool-level subtraction."""
-    from model_tools import _select_tool_names
-    from toolsets import resolve_toolset
+    from hermes_agent.model_tools import _select_tool_names
+    from hermes_agent.toolsets import resolve_toolset
 
     config = {
         "platform_toolsets": {"cli": ["hermes-cli"]},
@@ -935,7 +935,7 @@ def test_disabled_composite_display_matches_runtime_tool_selection():
 def test_platforms_whose_composite_excludes_it_are_left_narrow():
     """Parity is the justification, so don't widen a deliberately small
     composite (hermes-acp, hermes-webhook) that never carried the toolset."""
-    from toolsets import TOOLSETS, resolve_toolset
+    from hermes_agent.toolsets import TOOLSETS, resolve_toolset
 
     narrow = [
         platform
@@ -998,7 +998,7 @@ def test_explicit_plugin_toolset_admitted_in_platform_toolsets(monkeypatch):
     # Resolve dplat_call inside the dplat_client toolset — _get_platform_tools
     # ends up calling resolve_toolset() which can fall back to the registry
     # for plugin-provided names. Patch resolve_toolset for "dplat_client".
-    import toolsets as _toolsets_mod
+    from hermes_agent import toolsets as _toolsets_mod
 
     original_resolve = _toolsets_mod.resolve_toolset
 

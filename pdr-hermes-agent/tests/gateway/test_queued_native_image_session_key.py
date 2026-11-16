@@ -117,7 +117,7 @@ async def test_queued_followup_uses_pending_event_session_key_for_native_images(
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = CaptureQueuedNativeImageAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -182,7 +182,7 @@ async def test_compression_exhaustion_defers_queued_event_for_fresh_session(
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = CompressionExhaustedAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)

@@ -1,5 +1,5 @@
 """A config.yaml without ``_config_version`` is current-schema content that was never stamped:
-the installers seed it from cli-config.yaml.example and targeted writers (``hermes config set``,
+the installers seed it from hermes_cli/data/cli-config.yaml.example and targeted writers (``hermes config set``,
 /personality) never stamp. The one-time migration ladder must not treat it as a v0 install —
 its value- and absence-based steps would overwrite what the user chose."""
 
@@ -7,9 +7,9 @@ import shutil
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
-TEMPLATE = Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
+TEMPLATE = Path(__file__).resolve().parents[2] / "hermes_cli/data/cli-config.yaml.example"
 
 USER_CHOICES = {
     "delegation.max_concurrent_children": "3",

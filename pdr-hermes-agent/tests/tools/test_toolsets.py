@@ -1,8 +1,8 @@
-"""Tests for toolsets.py — toolset resolution, validation, and composition."""
+"""Tests for hermes_agent/toolsets.py — toolset resolution, validation, and composition."""
 
-import toolsets as toolsets_mod
+from hermes_agent import toolsets as toolsets_mod
 from tools.registry import ToolRegistry
-from toolsets import (
+from hermes_agent.toolsets import (
     TOOLSETS,
     get_toolset,
     resolve_toolset,

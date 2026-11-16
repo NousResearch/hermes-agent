@@ -49,7 +49,7 @@ def _doctor_fix(tmp_path, monkeypatch, cfg):
 
     root = tmp_path / "checkout"  # only the template, so a stray cli-config.yaml cannot short-circuit the seed
     root.mkdir()
-    shutil.copy2(cfg.get_project_root() / "cli-config.yaml.example", root / "cli-config.yaml.example")
+    shutil.copy2(cfg.get_project_root() / "hermes_cli/data/cli-config.yaml.example", root / "hermes_cli/data/cli-config.yaml.example")
     home = cfg.get_hermes_home()
     monkeypatch.setattr(doctor, "HERMES_HOME", home)
     monkeypatch.setattr(doctor, "PROJECT_ROOT", root)

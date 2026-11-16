@@ -7,7 +7,7 @@ Neither assignment secrets nor launch credentials appear in argv or logs.
 # Spawned as a bare ``sys.executable -m``: in a PM install that interpreter carries no dependencies
 # until hermes_bootstrap selects the committed environment, so it must be the first import.
 try:
-    import hermes_bootstrap
+    from hermes_agent import hermes_bootstrap
 except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise
@@ -406,7 +406,7 @@ def execute(frame, channel):
     scope = dict(frame['scope'])
     # This process serves exactly one turn of one profile: bind it as the runtime scope. The
     # profile state is this process's own (its environment names the home), so only the slot.
-    from hermes_scope import LOCAL_OWNER, LOCAL_TENANT, Fence, Scope, push_state
+    from hermes_agent.hermes_scope import LOCAL_OWNER, LOCAL_TENANT, Fence, Scope, push_state
     push_state(scope=Scope(LOCAL_TENANT, frame['home'], LOCAL_OWNER).for_turn(
         scope['session_id'], scope['execution_id'], Fence(scope['epoch'], scope['generation'])))
     rpc = WorkerRPC(frame['home'])
@@ -425,7 +425,7 @@ def execute(frame, channel):
     policy = restore_policy(frame['policy'])
     register_worker_hooks(policy)
     discover_profile_mcp(policy)
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tools.approval import register_gateway_notify, unregister_gateway_notify
     from tools.approval_context import set_current_session_key
     set_current_session_key(frame['route'])

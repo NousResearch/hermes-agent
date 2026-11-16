@@ -28,7 +28,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.media_cache import ext_for_mime
 from gateway.platforms.helpers import compile_mention_patterns, spoken_mention_clips, strip_markdown
 from gateway.platforms.helpers import voice_mention_gate_enabled
-from utils import TRUTHY_STRINGS
+from hermes_agent.utils import TRUTHY_STRINGS
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
 # gateway.platforms.media_cache. Both maps are CLOSED: unlisted mimes fall back to .jpg / .mp3.

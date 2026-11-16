@@ -14,7 +14,7 @@ from gateway.run import (
 )
 from gateway.session_context import set_session_vars
 from gateway.session_state import SessionState
-from model_tools import handle_function_call
+from hermes_agent.model_tools import handle_function_call
 from tools.approval_context import set_current_session_key
 from tools.process_registry import process_registry
 

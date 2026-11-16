@@ -2,7 +2,7 @@
 
 Entitlement-failure detection, xAI subscription decoration, structured-detail coercion, and log-safe
 redaction of provider error payloads.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import functools
 import json

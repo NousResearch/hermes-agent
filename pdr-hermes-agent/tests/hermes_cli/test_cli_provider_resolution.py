@@ -122,7 +122,7 @@ def _import_cli():
         importlib.import_module("prompt_toolkit")
     except ModuleNotFoundError:
         _install_prompt_toolkit_stubs()
-    return importlib.import_module("cli")
+    return importlib.import_module("hermes_agent.cli")
 
 
 def test_provider_flag_uses_named_custom_default_model(monkeypatch):
@@ -337,7 +337,7 @@ def test_fallback_runtime_resolves_the_fallback_entry_model(monkeypatch, tmp_pat
         "model:\n  default: mimo-v2.5-free\n  provider: opencode\n  base_url: https://opencode.ai/zen/v1\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("OPENCODE_GO_API_KEY", "sk-test-go")
-    monkeypatch.setattr("cli._cprint", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("hermes_agent.cli._cprint", lambda *a, **k: None, raising=False)
 
     shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
     shell._fallback_model = [{"provider": "opencode-go", "model": "mimo-v2.5"}]
@@ -372,7 +372,7 @@ def test_fallback_runtime_labels_quota_outage_and_bad_credentials_distinctly(mon
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     printed = []
-    monkeypatch.setattr("cli._cprint", printed.append, raising=False)
+    monkeypatch.setattr("hermes_agent.cli._cprint", printed.append, raising=False)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda **kw: {"provider": "custom", "base_url": "http://x/v1", "api_key": "k"},
@@ -397,7 +397,7 @@ def test_ensure_runtime_credentials_records_quota_vs_bad_key(monkeypatch, tmp_pa
     home = tmp_path / "hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("cli._cprint", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("hermes_agent.cli._cprint", lambda *a, **k: None, raising=False)
 
     def _raise_quota(**kw):
         raise _quota_auth_error()
@@ -442,7 +442,7 @@ def test_ensure_runtime_credentials_records_quota_vs_bad_key(monkeypatch, tmp_pa
 
 
 def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeypatch):
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
 
     config_home = tmp_path / "hermes"
     config_home.mkdir()
@@ -512,7 +512,7 @@ def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeyp
 
 
 def _seed_stale_custom_model(tmp_path, monkeypatch):
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
 
     config_home = tmp_path / "hermes"
     config_home.mkdir()
@@ -814,7 +814,7 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
 
 def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     """When a display name is passed, it should appear in the saved entry."""
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
     from hermes_cli.main_provider_setup import _save_custom_provider
 
     cfg_path = tmp_path / "config.yaml"
@@ -836,7 +836,7 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
 
 def test_save_custom_provider_references_the_key_instead_of_inlining_it(monkeypatch, tmp_path):
     """With key_env set the entry must not carry the secret (#69449)."""
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
     from hermes_cli.main_provider_setup import _save_custom_provider
 
     cfg_path = tmp_path / "config.yaml"

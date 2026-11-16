@@ -12,7 +12,7 @@ These tests assert the fence's *contract*: it may drop a provably superseded
 stream, but it must never fence (or crash) the sole legitimate writer.
 """
 
-import run_agent
+from hermes_agent import run_agent
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 
 

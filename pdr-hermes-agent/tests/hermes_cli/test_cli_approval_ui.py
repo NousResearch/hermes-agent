@@ -4,9 +4,9 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import cli as cli_module
+from hermes_agent import cli as cli_module
 from agent.i18n import t
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 class _FakeBuffer:
@@ -200,7 +200,7 @@ class TestCliApprovalUi:
 
         import shutil as _shutil
 
-        with patch("cli.shutil.get_terminal_size",
+        with patch("hermes_agent.cli.shutil.get_terminal_size",
                    return_value=_shutil.os.terminal_size((100, 24))):
             fragments = cli._get_approval_display_fragments()
 
@@ -246,7 +246,7 @@ class TestCliApprovalUi:
                     "failed": False,
                 }
 
-        with patch("run_agent.AIAgent", FakeAgent), \
+        with patch("hermes_agent.run_agent.AIAgent", FakeAgent), \
              patch.object(cli_module, "_cprint"), \
              patch.object(cli_module, "ChatConsole") as chat_console:
             chat_console.return_value.print = MagicMock()
@@ -366,7 +366,7 @@ class TestApprovalCallbackThreadLocalWiring:
     def test_child_thread_registration_is_visible_and_cleared_in_finally(self):
         """The fix pattern: register INSIDE the worker thread, clear in finally.
 
-        This is exactly what cli.py's run_agent() closure does. If this test
+        This is exactly what hermes_agent/cli.py's run_agent() closure does. If this test
         fails, the CLI approval prompt freeze (#13617) has regressed.
         """
         from tools.terminal_tool import (
@@ -385,7 +385,7 @@ class TestApprovalCallbackThreadLocalWiring:
         seen = {}
 
         def _worker():
-            # Mimic cli.py's run_agent() thread target.
+            # Mimic hermes_agent/cli.py's run_agent() thread target.
             set_approval_callback(approval_cb)
             set_sudo_password_callback(sudo_cb)
             try:

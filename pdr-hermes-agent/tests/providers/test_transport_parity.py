@@ -1,6 +1,6 @@
 """Parity tests: pin the exact current transport behavior per provider.
 
-These tests document the flag-based contract between run_agent.py and
+These tests document the flag-based contract between hermes_agent/run_agent.py and
 ChatCompletionsTransport.build_kwargs(). When the next PR wires profiles
 to replace flags, every assertion here must still pass — any failure is
 a behavioral regression.

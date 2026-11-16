@@ -53,8 +53,8 @@ class TestCleanupTaskResourcesHeadedSkip:
         from agent.chat_completion_helpers import cleanup_task_resources
         with (
             patch("tools.browser_session_cloud.is_headed_mode", return_value=False),
-            patch("run_agent.cleanup_vm"),
-            patch("run_agent.cleanup_browser") as mock_cb,
+            patch("hermes_agent.run_agent.cleanup_vm"),
+            patch("hermes_agent.run_agent.cleanup_browser") as mock_cb,
             patch(
                 "agent.chat_completion_helpers.is_persistent_env",
                 return_value=False,
@@ -69,8 +69,8 @@ class TestCleanupTaskResourcesHeadedSkip:
         from agent.chat_completion_helpers import cleanup_task_resources
         with (
             patch("tools.browser_session_cloud.is_headed_mode", return_value=True),
-            patch("run_agent.cleanup_vm"),
-            patch("run_agent.cleanup_browser") as mock_cb,
+            patch("hermes_agent.run_agent.cleanup_vm"),
+            patch("hermes_agent.run_agent.cleanup_browser") as mock_cb,
             patch(
                 "agent.chat_completion_helpers.is_persistent_env",
                 return_value=False,
@@ -85,8 +85,8 @@ class TestCleanupTaskResourcesHeadedSkip:
         from agent.chat_completion_helpers import cleanup_task_resources
         with (
             patch("tools.browser_session_cloud.is_headed_mode", return_value=True),
-            patch("run_agent.cleanup_vm") as mock_vm,
-            patch("run_agent.cleanup_browser"),
+            patch("hermes_agent.run_agent.cleanup_vm") as mock_vm,
+            patch("hermes_agent.run_agent.cleanup_browser"),
             patch(
                 "agent.chat_completion_helpers.is_persistent_env",
                 return_value=False,

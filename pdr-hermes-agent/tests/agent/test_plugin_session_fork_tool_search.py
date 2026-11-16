@@ -114,7 +114,7 @@ def _names(defs) -> list:
 # ── request time ─────────────────────────────────────────────────────────────────────────
 
 def test_with_tool_search_on_a_deferred_own_tool_is_admitted_and_the_prompt_says_how_to_call_it(forks, probe):
-    with patch("model_tools.get_tool_definitions", _session_defs(SESSION)):
+    with patch("hermes_agent.model_tools.get_tool_definitions", _session_defs(SESSION)):
         parent = _parent()
         assert "cw_offer" not in _names(parent.tools) and "tool_call" in _names(parent.tools)
         handle = _ctx(probe.manager).fork_session(issue_side_question_token(parent, [], "turn-1"), "Share it?",
@@ -128,7 +128,7 @@ def test_with_tool_search_on_a_deferred_own_tool_is_admitted_and_the_prompt_says
 
 
 def test_with_tool_search_off_the_direct_path_is_unchanged(forks, probe):
-    with patch("model_tools.get_tool_definitions", _session_defs(SESSION, tool_search="off")):
+    with patch("hermes_agent.model_tools.get_tool_definitions", _session_defs(SESSION, tool_search="off")):
         parent = _parent(tool_search="off")
         assert "cw_offer" in _names(parent.tools) and "tool_call" not in _names(parent.tools)
         handle = _ctx(probe.manager).fork_session(issue_side_question_token(parent, [], "turn-1"), "Share it?",
@@ -140,7 +140,7 @@ def test_with_tool_search_off_the_direct_path_is_unchanged(forks, probe):
 def test_an_own_tool_outside_the_sessions_deferred_catalog_is_refused(forks, probe):
     """``cw_hidden`` is the plugin's own but not in this session's scope: neither advertised nor
     deferred, so the request is refused (token spent, as for any tool the session lacks)."""
-    with patch("model_tools.get_tool_definitions", _session_defs(SESSION)):
+    with patch("hermes_agent.model_tools.get_tool_definitions", _session_defs(SESSION)):
         parent = _parent()
         token = issue_side_question_token(parent, [], "turn-1")
         assert _ctx(probe.manager).fork_session(token, "q", tools=["cw_offer", "cw_hidden"]) is None
@@ -151,7 +151,7 @@ def test_an_own_tool_outside_the_sessions_deferred_catalog_is_refused(forks, pro
 def test_without_the_bridge_in_the_captured_tools_a_missing_tool_is_refused(forks, probe):
     """The session's catalog classifies ``cw_hidden`` deferrable, but its captured ``tools[]`` carry
     no ``tool_call``: nothing could reach it, so it is not in the session."""
-    with patch("model_tools.get_tool_definitions", _session_defs((*SESSION, "cw_hidden"), tool_search="off")):
+    with patch("hermes_agent.model_tools.get_tool_definitions", _session_defs((*SESSION, "cw_hidden"), tool_search="off")):
         parent = _parent(tools=_raw(*SESSION))
         token = issue_side_question_token(parent, [], "turn-1")
         assert _ctx(probe.manager).fork_session(token, "q", tools=["cw_offer", "cw_hidden"]) is None
@@ -159,7 +159,7 @@ def test_without_the_bridge_in_the_captured_tools_a_missing_tool_is_refused(fork
 
 
 def test_another_plugins_deferred_tool_is_still_refused_before_the_lease(forks, probe):
-    with patch("model_tools.get_tool_definitions", _session_defs(SESSION)):
+    with patch("hermes_agent.model_tools.get_tool_definitions", _session_defs(SESSION)):
         parent = _parent()
         token = issue_side_question_token(parent, [], "turn-1")
         for foreign in ("peer_probe", "tool_call", "tool_describe", "tool_search"):
@@ -172,14 +172,14 @@ def test_probe_repro_a_plugin_tool_in_a_core_toolset_is_deferred_and_still_reach
     """The live failure, unit-level: the plugin tool sits in the ``skills`` toolset, and the real
     ``get_tool_definitions(["skills"])`` serves the skills tools plus the bridges, never the plugin
     tool. Before the fix the fork was refused ``tools_not_in_session``; now it starts."""
-    import model_tools
-    from run_agent import AIAgent
+    from hermes_agent import model_tools
+    from hermes_agent.run_agent import AIAgent
 
     assembled = _names(model_tools.get_tool_definitions(enabled_toolsets=["skills"], quiet_mode=True))
     assert "cw_offer" not in assembled
     assert {"tool_call", "tool_describe", "tool_search"} <= set(assembled)
     assert {n for n in assembled if n.startswith("skill")}  # the core skills tools stay direct
-    with patch("model_tools.check_toolset_requirements", return_value={}), patch("agent.process_bootstrap.OpenAI"):
+    with patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), patch("agent.process_bootstrap.OpenAI"):
         parent = AIAgent(api_key="k", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
                          skip_context_files=True, skip_memory=True, enabled_toolsets=["skills"])
     parent._cached_system_prompt, parent._current_turn_id = "sys", "turn-1"
@@ -222,9 +222,9 @@ DISPATCH_SESSION = (*SESSION, "cw_hidden", "manage_connections")
 
 def _dispatcher():
     """A real agent whose session defers the plugin tools behind Tool Search."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
-    with patch("model_tools.check_toolset_requirements", return_value={}), patch("agent.process_bootstrap.OpenAI"):
+    with patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), patch("agent.process_bootstrap.OpenAI"):
         agent = AIAgent(api_key="k", base_url="https://openrouter.ai/api/v1", model="test/model",
                         quiet_mode=True, skip_context_files=True, skip_memory=True)
     agent.client = MagicMock()
@@ -239,7 +239,7 @@ def test_inside_the_fork_tool_call_reaches_only_the_requested_own_tool(forks, pr
     tool, a deferred core tool, an undeferred core tool or a connector is denied before any handler,
     and so are ``tool_describe`` and ``tool_search``. The fork's ``tools[]`` are the captured ones."""
     monkeypatch.setattr(background_review, "release_cache_parity_fork", lambda *a, **k: {})
-    with patch("model_tools.get_tool_definitions", _session_defs(DISPATCH_SESSION)):
+    with patch("hermes_agent.model_tools.get_tool_definitions", _session_defs(DISPATCH_SESSION)):
         fork = _dispatcher()
         results: list = []
 
@@ -269,7 +269,7 @@ def test_inside_the_fork_tool_call_reaches_only_the_requested_own_tool(forks, pr
 def test_unfenced_the_same_bridged_calls_reach_their_handlers(probe, path):
     """Control for the test above: outside a fork the same ``tool_call`` carriers reach the
     plugin's unrequested tool, the other plugin's tool and the connector."""
-    with patch("model_tools.get_tool_definitions", _session_defs(DISPATCH_SESSION)):
+    with patch("hermes_agent.model_tools.get_tool_definitions", _session_defs(DISPATCH_SESSION)):
         fork = _dispatcher()
         getattr(fork, f"_execute_tool_calls_{path}")(_fork_calls(path), [], "task-1")
     reached = {entry[0] for entry in probe.seen}
@@ -282,7 +282,7 @@ def test_real_fork_with_tool_search_calls_its_deferred_tool_through_tool_call(mo
     """The live turn's ``tools[]`` hold the bridges, not the plugin tools. The fork sends the same
     ``tools[]`` byte for byte, its prompt carries core's line, and its ``tool_call`` to ``cw_offer``
     runs the handler once while the one to ``cw_other`` (not requested) is denied."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     probe = SimpleNamespace(calls=[], events=[], handles=[], prompt="Worth sharing with the team?",
                             attempts=[["cw_offer"]], fork_kwargs={})
@@ -301,8 +301,8 @@ def test_real_fork_with_tool_search_calls_its_deferred_tool_through_tool_call(mo
     client.chat.completions.create.side_effect = lambda **kw: (requests.append(copy.deepcopy(kw)), replies.pop(0))[1]
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     with (
-        patch("model_tools.get_tool_definitions", _session_defs(("cw_offer", "cw_other", "delegate_task"))),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", _session_defs(("cw_offer", "cw_other", "delegate_task"))),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI", return_value=client),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):

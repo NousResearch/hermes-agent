@@ -1,7 +1,7 @@
 """Regression tests for _wait_for_process subprocess cleanup on exception exit.
 
 When the poll loop exits via KeyboardInterrupt or SystemExit (SIGTERM via
-cli.py signal handler, SIGINT on the main thread in non-interactive -q mode,
+hermes_agent/cli.py signal handler, SIGINT on the main thread in non-interactive -q mode,
 or explicit sys.exit from some caller), the child subprocess must be killed
 before the exception propagates — otherwise the local backend's use of
 os.setsid leaves an orphan with PPID=1.

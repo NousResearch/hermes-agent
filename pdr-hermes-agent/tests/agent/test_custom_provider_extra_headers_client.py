@@ -8,7 +8,7 @@ never log them.
 """
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 _PROXY_URL = "https://llm.internal.example.com/v1"
 _PROXY_CONFIG = {

@@ -996,7 +996,7 @@ class TestProfileHomeExemptsHermesRoot:
         """Under a named profile bound by the per-turn scope (multiplex path), the ROOT's own store is
         not project-local ``.hermes`` config: the write lands with no approval prompt."""
         import tools.file_tools_write_guards as ft
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         root, profile = self._profile_layout(tmp_path)
         monkeypatch.delenv("HERMES_HOME", raising=False)
@@ -1020,7 +1020,7 @@ class TestProfileHomeExemptsHermesRoot:
         protected basenames stay gated (fail-closed, unwritten), and a coincidental
         ``.../profiles/<name>`` tree that is NOT a Hermes root never exempts its parent."""
         import tools.file_tools_write_guards as ft
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         _root, profile = self._profile_layout(tmp_path)
         repo = tmp_path / "repo"
@@ -1066,7 +1066,7 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
 
     def test_home_getter_tracks_active_profile_after_a_prior_scope(self, tmp_path):
         import tools.file_tools_write_guards as ft
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )
@@ -1089,7 +1089,7 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
         """End-to-end: the ``config.yaml`` hard-block must fire for beta's own
         config under beta's scope, regardless of alpha having run first."""
         import tools.file_tools_write_guards as ft
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )
@@ -1114,7 +1114,7 @@ def test_config_hard_block_follows_file_identity_not_spelling(tmp_path):
     """A second name for config.yaml (a differently-cased spelling on a case-insensitive
     filesystem, or here a hard link) is still the config file (#117815)."""
     import tools.file_tools_write_guards as ft
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     home = tmp_path / "home"
     home.mkdir()

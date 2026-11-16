@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 
 @pytest.mark.platforms("posix")

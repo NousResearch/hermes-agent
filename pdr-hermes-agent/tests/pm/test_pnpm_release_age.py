@@ -1,7 +1,7 @@
 """`hermes pm update --pnpm` drops the release-age excludes a refreshed lock no longer holds."""
 import pytest
 
-import hermes_yaml
+from hermes_agent import hermes_yaml
 from pm.pnpm_release_age import exclude_hint, prune_excludes
 
 LOCK = """lockfileVersion: '9.0'

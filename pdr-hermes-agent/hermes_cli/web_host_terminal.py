@@ -104,7 +104,7 @@ def resolve_argv(
     from gateway.run import _profile_runtime_scope
     from hermes_cli import __version__
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override,
     )
     from hermes_platform.host.facts import os_family

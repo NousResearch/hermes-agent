@@ -1,7 +1,7 @@
 """Turn-liveness activity tracking for ``AIAgent`` (gateway watchdog + session activity persistence).
 
 ``_touch_activity`` is the single write path; persistence is rate-limited and never raises.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import logging
 import os

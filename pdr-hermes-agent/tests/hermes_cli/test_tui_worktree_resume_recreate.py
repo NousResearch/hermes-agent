@@ -32,7 +32,7 @@ def _quit_clean_session_with_history(tmp_path, monkeypatch):
     """``hermes --tui -w``, one user + assistant exchange, ``/quit`` (row ended ``tui_shutdown``)."""
     from hermes_cli import main_tui_launch, session_worktree
     from hermes_cli.worktree_ops import _setup_worktree
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state import SessionDB
 
     repo = _repo(tmp_path)
@@ -105,7 +105,7 @@ def test_resume_recreates_the_removed_tui_worktree_so_turns_run(tmp_path, monkey
 def test_resume_reuses_the_surviving_branch(tmp_path, monkeypatch):
     """A tree removed while its branch survived comes back on that branch, at its commit."""
     from hermes_cli.worktree_ops import _setup_worktree
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state import SessionDB
 
     repo = _repo(tmp_path)
@@ -131,7 +131,7 @@ def test_resume_reuses_the_surviving_branch(tmp_path, monkeypatch):
 
 
 def test_resume_never_creates_a_missing_dir_the_launcher_did_not_make(tmp_path, monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state import SessionDB
 
     repo = _repo(tmp_path)
@@ -156,7 +156,7 @@ def test_a_store_error_reading_the_policy_falls_back_to_the_row_cwd(tmp_path, mo
 
     import hermes_state.local
     from hermes_cli.worktree_ops import _setup_worktree
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state import SessionDB
 
     repo = _repo(tmp_path)
@@ -182,7 +182,7 @@ def test_a_store_error_reading_the_policy_falls_back_to_the_row_cwd(tmp_path, mo
 async def test_resume_recreates_the_removed_classic_worktree(tmp_path, monkeypatch):
     """Classic ``hermes -w`` runs its session's tools in the tree (frozen policy cwd) while the row
     keeps main's stamp, the repo root. Quit removes the clean tree; ``-c`` now gets it back."""
-    import cli
+    from hermes_agent import cli
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
@@ -193,7 +193,7 @@ async def test_resume_recreates_the_removed_classic_worktree(tmp_path, monkeypat
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)
     monkeypatch.setitem(cli.CLI_CONFIG, 'worktree_sync', False)
-    monkeypatch.setitem(sys.modules, 'model_tools', SimpleNamespace(get_tool_definitions=lambda **_: []))
+    monkeypatch.setitem(sys.modules, 'hermes_agent.model_tools', SimpleNamespace(get_tool_definitions=lambda **_: []))
     monkeypatch.setattr(cli.atexit, 'register', lambda *_a, **_k: None)
     monkeypatch.setattr(cli, '_prune_stale_worktrees', lambda *_: None)
     monkeypatch.setattr(cli, '_maintain_pack_health', lambda *_: None)

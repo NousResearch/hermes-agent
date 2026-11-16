@@ -123,7 +123,7 @@ def _announce(text):
     except Exception:  # health: allow BLE001 -- no prompt_toolkit app: plain stderr
         running = False
     if running:
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         _cprint(text)
     else:
         print(text, file=sys.stderr, flush=True)

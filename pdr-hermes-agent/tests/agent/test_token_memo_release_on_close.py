@@ -8,7 +8,7 @@ them (~50 MB after 20 sessions x 10 turns of 256 KB replies on macOS).
 import threading
 
 from agent.model_metadata import _MSG_TOKENS_CACHE, estimate_messages_tokens_rough
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _pinned_ids() -> set[int]:

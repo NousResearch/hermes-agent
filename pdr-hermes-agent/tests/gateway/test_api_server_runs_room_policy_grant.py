@@ -149,7 +149,7 @@ def test_create_agent_without_room_dispatch_keeps_operator_toolsets(monkeypatch)
     monkeypatch.setattr(
         tools_config, "_get_platform_tools", lambda config, platform: {"web"}
     )
-    with patch("run_agent.AIAgent") as agent_cls:
+    with patch("hermes_agent.run_agent.AIAgent") as agent_cls:
         adapter._create_agent(room_execution_policy=_forged_policy())
     kwargs = agent_cls.call_args.kwargs
     assert kwargs["enabled_toolsets"] == ["web"]

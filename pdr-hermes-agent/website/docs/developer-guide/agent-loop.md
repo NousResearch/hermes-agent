@@ -6,7 +6,7 @@ description: "Detailed walkthrough of AIAgent execution, API modes, tools, callb
 
 # Agent Loop Internals
 
-The core orchestration engine is the `AIAgent` class. `run_agent.py` is now a thin facade: the loop itself lives in `agent/conversation_loop.py`, each turn phase in `agent/turn_*.py` (iteration prep, API call, API error, overflow, truncation, recovery), constructor wiring in `agent/agent_init.py`, and everything from prompt assembly to tool dispatch to provider failover in focused `agent/*.py` modules mixed into `AIAgent`.
+The core orchestration engine is the `AIAgent` class. `hermes_agent/run_agent.py` is now a thin facade: the loop itself lives in `agent/conversation_loop.py`, each turn phase in `agent/turn_*.py` (iteration prep, API call, API error, overflow, truncation, recovery), constructor wiring in `agent/agent_init.py`, and everything from prompt assembly to tool dispatch to provider failover in focused `agent/*.py` modules mixed into `AIAgent`.
 
 ## Core Responsibilities
 
@@ -223,7 +223,7 @@ After each turn:
 
 | File | Purpose |
 |------|---------|
-| `run_agent.py` | `AIAgent` facade — public entry points; loop and turn phases live in `agent/` |
+| `hermes_agent/run_agent.py` | `AIAgent` facade — public entry points; loop and turn phases live in `agent/` |
 | `agent/conversation_loop.py` | The agent loop (`run_conversation()` body) |
 | `agent/turn_*.py` | Turn phases: iteration_prep, api_call, api_error, overflow, truncation, recovery |
 | `agent/tool_executor.py` | Tool-call execution and agent-level tool interception |
@@ -232,7 +232,7 @@ After each turn:
 | `agent/context_compressor.py` | Default engine — lossy summarization algorithm |
 | `agent/prompt_caching.py` | Anthropic prompt caching markers and cache metrics |
 | `agent/auxiliary_client.py` | Auxiliary LLM client for side tasks (vision, summarization) |
-| `model_tools.py` | Tool schema collection, `handle_function_call()` dispatch |
+| `hermes_agent/model_tools.py` | Tool schema collection, `handle_function_call()` dispatch |
 
 ## Related Docs
 

@@ -11,8 +11,8 @@ trajectories.jsonl merge excludes.
 import json
 from unittest.mock import MagicMock, patch
 
-import batch_runner
-from batch_runner import (
+from hermes_agent import batch_runner
+from hermes_agent.batch_runner import (
     BatchRunner,
     _entry_prompt_text,
 )
@@ -120,7 +120,7 @@ def test_merge_excludes_tombstones_from_trajectories(tmp_path, monkeypatch):
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr("sys.argv", ["batch_runner.py"])
+    monkeypatch.setattr("sys.argv", ["hermes_agent/batch_runner.py"])
 
     runner = _make_real_runner(tmp_path, monkeypatch)
     # Point the runner at the pre-populated directory instead of cwd/data.

@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 _BASE = {
     "model": {

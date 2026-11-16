@@ -47,7 +47,7 @@ async def test_queued_followup_status_stays_on_its_own_message(monkeypatch, tmp_
 
     fake_run_agent = types.ModuleType('run_agent')
     fake_run_agent.AIAgent = _TwoTurnAgent
-    monkeypatch.setitem(sys.modules, 'run_agent', fake_run_agent)
+    monkeypatch.setitem(sys.modules, 'hermes_agent.run_agent', fake_run_agent)
     gateway_run = importlib.import_module('gateway.run')
     monkeypatch.setattr(gateway_run, '_hermes_home', tmp_path)
     monkeypatch.setattr(gateway_run, '_resolve_runtime_agent_kwargs', lambda: {'api_key': '***'})

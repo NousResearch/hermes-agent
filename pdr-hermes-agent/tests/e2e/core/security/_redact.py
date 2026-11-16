@@ -317,7 +317,7 @@ def files_with(root: Path, needles: list[str]) -> list[str]:
 
 if __name__ == "__main__":  # pragma: no cover - gateway child entry
     if len(sys.argv) >= 3 and sys.argv[1] == "serve":
-        from hermes_logging import setup_logging
+        from hermes_agent.hermes_logging import setup_logging
 
         setup_logging(mode="gateway")
         from tests.e2e.core.delivery._fake_platform import _serve

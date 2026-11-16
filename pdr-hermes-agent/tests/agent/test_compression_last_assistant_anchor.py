@@ -118,7 +118,7 @@ def _seed(tmp_path, tail_rows, fold, follower):
     assert isinstance(messages[-2].get("_row_id"), int) and messages[-2].get("timestamp") is not None
 
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",

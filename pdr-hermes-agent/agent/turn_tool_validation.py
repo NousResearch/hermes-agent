@@ -18,7 +18,7 @@ from agent.message_metadata import append_message
 from agent.message_sanitization import (close_interrupted_tool_sequence, coalesce_tool_call_id,
                                           normalize_provider_tool_call_ids)
 from agent.turn_failure_copy import site_copy, stamp_failure
-from hermes_constants import FINISH_REASON_LENGTH
+from hermes_agent.hermes_constants import FINISH_REASON_LENGTH
 
 logger = logging.getLogger("agent.conversation_loop")
 

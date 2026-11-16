@@ -59,7 +59,7 @@ class TestRestorePrimaryPoolReselect:
 
     def _make_agent(self, pool):
         """Create a minimal AIAgent with the given credential pool."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent.__new__(AIAgent)
         agent.model = "gpt-5.5"

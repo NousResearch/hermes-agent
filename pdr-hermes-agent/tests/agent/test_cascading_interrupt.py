@@ -2,7 +2,7 @@
 
 Original diagnosis and fix by Kristian Vastveit (@kristianvast) in PR #6600,
 against the then-inline ``_interruptible_api_call`` /
-``_interruptible_streaming_api_call`` methods in run_agent.py. Those methods
+``_interruptible_streaming_api_call`` methods in hermes_agent/run_agent.py. Those methods
 have since been extracted into ``agent/chat_completion_helpers.py``, so the
 fix is reapplied there and these tests target the extracted functions.
 

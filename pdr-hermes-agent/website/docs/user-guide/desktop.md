@@ -985,7 +985,7 @@ rm -f "$HOME/.cache/electron"/electron-*.zip            # Linux
 If you want to hack on the app itself, install workspace deps from the repo root once, then run the dev server from `apps/desktop`:
 
 ```bash
-pnpm install         # from repo root — links apps/desktop, web, apps/shared
+pnpm install         # from repo root — links apps/desktop, web, ui-tui/packages/shared
 cd apps/desktop
 pnpm run dev         # Vite renderer + Electron, which boots the Python backend
 ```

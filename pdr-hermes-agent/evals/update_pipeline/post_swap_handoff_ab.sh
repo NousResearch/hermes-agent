@@ -26,7 +26,7 @@ git clone -q --shared -b main "$ROOT/origin.git" "$ROOT/install"
 git clone -q --shared -b main "$ROOT/origin.git" "$ROOT/author"
 (
   cd "$ROOT/author"
-  printf '\n\ndef post_swap_probe() -> str:\n    """Added by the update under test."""\n    return "pulled-code"\n' >> hermes_logging.py
+  printf '\n\ndef post_swap_probe() -> str:\n    """Added by the update under test."""\n    return "pulled-code"\n' >> hermes_agent/hermes_logging.py
   python3 - <<'PY'
 import re
 p = "hermes_cli/config.py"; s = open(p).read()

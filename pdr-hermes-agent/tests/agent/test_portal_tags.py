@@ -153,7 +153,7 @@ def test_compress_context_preserves_ambient_context(monkeypatch):
         reset_conversation_context,
         set_conversation_context,
     )
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     seen = {}
 

@@ -79,7 +79,7 @@ describe('skipKittyKeyboardProtocol', () => {
   // Ghostty's kitty disambiguate mode strips the Alt modifier from
   // Backspace (Option+Backspace arrives as bare \x7f instead of CSI-u
   // \x1b[127;3u), so Ghostty must get only the modifyOtherKeys push.
-  // Mirrors cli.py's _GHOSTTY_EXTENDED_ENTER_KEYS_SEQ exception.
+  // Mirrors hermes_agent/cli.py's _GHOSTTY_EXTENDED_ENTER_KEYS_SEQ exception.
   it('skips the kitty protocol push for ghostty', async () => {
     const { env } = await import('../utils/env.js')
     const { skipKittyKeyboardProtocol } = await import('./terminal.js')

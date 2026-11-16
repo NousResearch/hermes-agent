@@ -95,7 +95,7 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
 
     if not hasattr(config_mod, "save_env_value_secure"):
         config_mod.save_env_value_secure = lambda key, value: {"success": True}
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     from gateway.run import GatewayRunner
     from hermes_cli.commands import COMMAND_REGISTRY
     from hermes_cli.config import DEFAULT_CONFIG

@@ -1,8 +1,8 @@
 """Central registry for all hermes-agent tools: each tool file calls ``registry.register()``
 at import to declare schema, handler, toolset membership and availability check;
-``model_tools.py`` queries the registry instead of keeping parallel data structures.
+``hermes_agent/model_tools.py`` queries the registry instead of keeping parallel data structures.
 Cycle-safe import chain: this module imports nothing from model_tools or tool files;
-tools/*.py import it at module level; model_tools.py imports both; run_agent/cli import
+tools/*.py import it at module level; hermes_agent/model_tools.py imports both; run_agent/cli import
 model_tools."""
 
 import ast
@@ -20,7 +20,7 @@ from contextvars import ContextVar, copy_context
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Set
 
-from hermes_constants import hermes_home_key, normalize_scope
+from hermes_agent.hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +179,7 @@ def _discovery_cache_path() -> Optional[Path]:
     """Path of the tool-discovery verdict cache, or None if unresolvable."""
     try:
         # Deferred import keeps tools/registry.py a no-deps leaf at import time.
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         return Path(get_hermes_home()) / "cache" / "tool_discovery_cache.json"
     except Exception:
         return None
@@ -204,8 +204,8 @@ def _save_discovery_cache(cache: dict[str, list]) -> None:
     if path is None:
         return
     try:
-        from utils import atomic_json_write  # stdlib+yaml only; no cycle
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.utils import atomic_json_write  # stdlib+yaml only; no cycle
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(path.parent)
         atomic_json_write(path, cache, indent=0)
     except Exception as e:
@@ -339,7 +339,7 @@ def check_fn_cache_scope() -> Optional[str]:
     per profile turn, so the canonical profile key is the boundary."""
     try:
         from agent.secret_scope import serves_routed_profile
-        from hermes_constants import get_hermes_home_override
+        from hermes_agent.hermes_constants import get_hermes_home_override
         if not serves_routed_profile():
             return None
         override = get_hermes_home_override()
@@ -551,7 +551,7 @@ def _check_fn_cached(fn: Callable) -> bool:
 def _core_tools_gated_by(fn: Callable) -> set[str]:
     """Names of ``_HERMES_CORE_TOOLS`` members whose registered ``check_fn`` is *fn*."""
     try:
-        from toolsets import _HERMES_CORE_TOOLS
+        from hermes_agent.toolsets import _HERMES_CORE_TOOLS
         core = frozenset(_HERMES_CORE_TOOLS)
     except Exception:
         return set()
@@ -1101,7 +1101,7 @@ class ToolRegistry:
             # plugin handler is not broken by every field the dispatcher injects (#68318).
             kwargs = _kwargs_accepted_by(entry.handler, kwargs)
             if entry.is_async:
-                from model_tools import _run_async
+                from hermes_agent.model_tools import _run_async
                 result = _run_async(entry.handler(args, **kwargs))
             else:
                 result = entry.handler(args, **kwargs)
@@ -1112,7 +1112,7 @@ class ToolRegistry:
             # Sanitize so framing tokens/CDATA/fences in exception text aren't structural noise.
             raw = f"Tool execution failed: {type(e).__name__}: {e}"
             try:
-                from model_tools import _sanitize_tool_error
+                from hermes_agent.model_tools import _sanitize_tool_error
                 sanitized = _sanitize_tool_error(raw)
             except Exception:
                 sanitized = raw  # defensive: never let the sanitizer block error propagation

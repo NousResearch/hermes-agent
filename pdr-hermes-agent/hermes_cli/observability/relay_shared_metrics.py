@@ -14,7 +14,7 @@ from time import monotonic_ns
 from typing import Any, Callable, Iterator
 
 from agent import relay_runtime
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from agent.portal_tags import get_conversation_context
 from hermes_cli.version_info import get_version_info
 
@@ -1405,7 +1405,7 @@ def _reconcile_send_consent_once() -> None:
     try:
         # Lazy: tests patch ``shared_metrics.SharedMetricsStore`` at its origin.
         from hermes_cli.observability.shared_metrics import SharedMetricsStore
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         resolved = _resolved_send_config()
         # Probe WITHOUT constructing a store: the constructor creates the directory and
@@ -1458,7 +1458,7 @@ def _with_runtime_toolset(event: dict[str, Any]) -> dict[str, Any]:
     if event.get("toolset") or not tool_name:
         return event
     try:
-        from model_tools import get_toolset_for_tool
+        from hermes_agent.model_tools import get_toolset_for_tool
 
         toolset = get_toolset_for_tool(tool_name)
     except Exception:

@@ -87,7 +87,7 @@ def _gateway_store(loop, authority, tmp_path):
 
 
 def _cli(store, session_id):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     cli = HermesCLI.__new__(HermesCLI)
     cli._resumed, cli._session_db, cli.session_id = True, store, session_id
     cli.session_start = None

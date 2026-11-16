@@ -44,7 +44,7 @@ def test_real_spawn_path_applies_it(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
         "prompt_caching:\n  cache_ttl: 1h\nmodel:\n  default: anthropic/claude-sonnet-4.6\n", encoding="utf-8")
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tools import delegate_tool as dt
     import tools.delegate_tool_config as dtc
     monkeypatch.setattr(dt, "_load_config", dict)

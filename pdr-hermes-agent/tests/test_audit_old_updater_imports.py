@@ -164,17 +164,17 @@ def test_shallow_clone_refuses_freeze_without_overwriting_and_tree_still_works(a
 def test_freeze_requires_cutoff_and_keeps_only_shipped_loads(audit, tmp_path, capsys):
     root = audit.REPO_ROOT
     put(root, "hermes_cli/update_cmd.py", """def cmd_update():
-    from hermes_constants import old_only, bare_then_guarded
+    from hermes_agent.hermes_constants import old_only, bare_then_guarded
     try:
-        from hermes_constants import guarded_then_bare, always_guarded
+        from hermes_agent.hermes_constants import guarded_then_bare, always_guarded
     except ImportError:
         pass
 """)
     commit(root, "not a tag, still a shipped updater")
     put(root, "hermes_cli/update_cmd.py", """def cmd_update():
-    from hermes_constants import guarded_then_bare
+    from hermes_agent.hermes_constants import guarded_then_bare
     try:
-        from hermes_constants import bare_then_guarded, always_guarded
+        from hermes_agent.hermes_constants import bare_then_guarded, always_guarded
     except ImportError:
         pass
 """)
@@ -218,10 +218,10 @@ def test_committed_merge_conflict_audits_both_arms_and_records_recovery(audit):
     root = audit.REPO_ROOT
     put(root, "old.py", """<<<<<<< HEAD
 def cmd_update():
-    from hermes_constants import ours
+    from hermes_agent.hermes_constants import ours
 =======
 def cmd_update():
-    from hermes_constants import theirs
+    from hermes_agent.hermes_constants import theirs
 >>>>>>> incoming
 """)
     commit(root, "accidentally committed conflict")
@@ -250,19 +250,19 @@ def test_only_swallowed_matching_load_failures_are_guarded(audit):
     put(root, "hermes_cli/update_cmd.py", """def cmd_update():
     import sys
     try:
-        from hermes_constants import wrong_exception
+        from hermes_agent.hermes_constants import wrong_exception
     except AttributeError:
         pass
     try:
-        from hermes_constants import name_not_module
+        from hermes_agent.hermes_constants import name_not_module
     except ModuleNotFoundError:
         pass
     try:
-        from hermes_constants import reraised
+        from hermes_agent.hermes_constants import reraised
     except ImportError:
         raise
     try:
-        module = sys.modules.get("hermes_constants")
+        module = sys.modules.get("hermes_agent.hermes_constants")
         getattr(module, "optional")
     except AttributeError:
         pass
@@ -281,11 +281,11 @@ from contextlib import suppress
 
 def cmd_update():
     with suppress(Exception):
-        from hermes_constants import via_suppress
+        from hermes_agent.hermes_constants import via_suppress
     with contextlib.suppress(ImportError):
-        from hermes_constants import via_qualified_suppress
+        from hermes_agent.hermes_constants import via_qualified_suppress
     with suppress(AttributeError):
-        from hermes_constants import wrong_suppress
+        from hermes_agent.hermes_constants import wrong_suppress
 """)
     commit(root, "suppress boundaries")
     surface = audit.audit_history()
@@ -305,7 +305,7 @@ def cmd_update():
     put(root, "hermes_cli/main.py", """from hermes_cli.gone import phase as phase
 
 def unrelated_command():
-    from hermes_constants import not_an_updater_load
+    from hermes_agent.hermes_constants import not_an_updater_load
 """)
     put(root, "hermes_cli/gone.py", "def phase():\n    from hermes_constants import actual_helper_load\n")
     commit(root, "lazy facade and re-exported helper")
@@ -316,7 +316,7 @@ def unrelated_command():
 
 def test_resolver_requires_a_module_binding_not_a_nested_name(audit):
     root = audit.REPO_ROOT
-    put(root, "hermes_constants.py", """def owner():
+    put(root, "hermes_agent/hermes_constants.py", """def owner():
     from pathlib import Path as local_import
     local_assignment = 1
     def local_function():
@@ -339,18 +339,18 @@ if True:
 def test_same_named_functions_keep_requirements_from_every_definition(audit):
     result = audit.analyse("""class First:
     def phase(self):
-        from hermes_constants import first
+        from hermes_agent.hermes_constants import first
 
 class Second:
     def phase(self):
-        from hermes_constants import second
+        from hermes_agent.hermes_constants import second
 
 if True:
     def platform_phase():
-        from hermes_constants import platform_a
+        from hermes_agent.hermes_constants import platform_a
 else:
     def platform_phase():
-        from hermes_constants import platform_b
+        from hermes_agent.hermes_constants import platform_b
 
 def cmd_update():
     Second().phase()

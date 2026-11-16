@@ -35,7 +35,7 @@ class _FakeAgent:
 class _StubCLI:
     def _stage_and_swap_model(self, result, old_model):
         # Staging + in-place swap lives in a helper; run the real one on this stub.
-        import cli as _cli_mod
+        from hermes_agent import cli as _cli_mod
         return _cli_mod.HermesCLI._stage_and_swap_model(self, result, old_model)
 
     model = "old/model"
@@ -58,7 +58,7 @@ class _StubCLI:
     def _confirm_and_apply_cli_model_switch(
         self, result, persist_global, one_turn, custom_provs=None
     ):
-        import cli as cli_mod
+        from hermes_agent import cli as cli_mod
 
         return cli_mod.HermesCLI._confirm_and_apply_cli_model_switch(
             self, result, persist_global, one_turn, custom_provs
@@ -78,7 +78,7 @@ def _make_result():
 
 
 def _patch_deps(monkeypatch, printed):
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda s, *a, **k: printed.append(str(s)))
     monkeypatch.setattr(
@@ -104,7 +104,7 @@ def test_confirm_runs_off_main_thread_when_tui_present(monkeypatch):
     """With ``_app`` set, the confirm modal must not block the caller's
     thread: the switch is dispatched on a worker thread and the command
     handler returns immediately."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     stub = _StubCLI()
     stub.agent = _FakeAgent()
@@ -149,7 +149,7 @@ def test_confirm_runs_off_main_thread_when_tui_present(monkeypatch):
 def test_confirm_stays_synchronous_without_app(monkeypatch):
     """Without a TUI app (unit tests / non-interactive) the old inline
     behaviour is preserved: confirm + apply run on the calling thread."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     stub = _StubCLI()
     stub.agent = _FakeAgent()

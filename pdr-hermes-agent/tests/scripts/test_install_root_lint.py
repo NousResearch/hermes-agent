@@ -114,5 +114,5 @@ def test_a_file_moved_twice_is_judged_against_its_first_path(tmp_path, monkeypat
     (tmp_path / "hermes_agent" / "constants.py").write_text(climb.format(1), encoding="utf-8")
     (tmp_path / "hermes_agent" / "pkg" / "new.py").write_text(climb.format(2), encoding="utf-8")
 
-    baseline = {"root_from_file": {"hermes_constants.py": 1, "pkg/old.py": 1}}
+    baseline = {"root_from_file": {"hermes_agent/hermes_constants.py": 1, "pkg/old.py": 1}}
     assert lint.regressions(lint.tally(lint.collect(tmp_path)), baseline) == []

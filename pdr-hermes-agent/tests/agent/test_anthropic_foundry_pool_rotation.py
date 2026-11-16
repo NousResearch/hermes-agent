@@ -21,7 +21,7 @@ OAUTH_TOKEN = "sk-ant-" + "oat01-" + "A" * 40  # concatenated: push protection r
 
 @pytest.mark.parametrize(("base_url", "after_429"), [(FOUNDRY_URL, "azure-key"), (ANTHROPIC_URL, OAUTH_TOKEN)])
 def test_rate_limit_rotation_takes_the_oauth_row_only_off_foundry(tmp_path, monkeypatch, base_url, after_429):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "AZURE_ANTHROPIC_KEY"):
         monkeypatch.delenv(name, raising=False)
     (tmp_path / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {

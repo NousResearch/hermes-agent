@@ -40,7 +40,7 @@ def container_env(tmp_path, monkeypatch):
 
 def test_get_container_exec_info_returns_metadata(container_env):
     """Reads .container-mode and returns all fields including exec_user."""
-    with patch("hermes_constants.is_container", return_value=False):
+    with patch("hermes_agent.hermes_constants.is_container", return_value=False):
         info = get_container_exec_info()
 
     assert info is not None

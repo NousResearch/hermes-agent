@@ -388,7 +388,7 @@ _FAL_INLINE_BUDGET = 3_500_000
 def _inline_fal_sources(sources: list) -> list:
     """FAL only fetches URLs, so local paths become ``data:`` URLs through the guarded resolver
     (credential-read guard, image sniff) on every terminal backend; then fit the gateway budget."""
-    from model_tools import _run_async
+    from hermes_agent.model_tools import _run_async
     from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url
     try:
         urls = [_run_async(resolve_local_source_to_data_url(s, None)) for s in sources]
@@ -803,7 +803,7 @@ def _confine_source_images(image_url, reference_image_urls, task_id, *, permitte
         if isinstance(reference_image_urls, (list, tuple)):
             reference_image_urls = [local_source_spelling(r) for r in reference_image_urls]
         return local_source_spelling(image_url), reference_image_urls, None
-    from model_tools import _run_async
+    from hermes_agent.model_tools import _run_async
     from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url
 
     def resolve(ref):

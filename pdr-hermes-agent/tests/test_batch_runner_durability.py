@@ -22,8 +22,8 @@ import pytest
 # so make the repo root importable when tests run from elsewhere.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import batch_runner
-from batch_runner import BatchRunner, _process_batch_worker
+from hermes_agent import batch_runner
+from hermes_agent.batch_runner import BatchRunner, _process_batch_worker
 
 
 # =========================================================================
@@ -51,7 +51,7 @@ class TestTrajectoryWriteDurability:
         }
 
         monkeypatch.setattr(
-            "batch_runner._process_single_prompt", lambda *a, **kw: prompt_result
+            "hermes_agent.batch_runner._process_single_prompt", lambda *a, **kw: prompt_result
         )
 
         # Intercept os.fsync to record calls

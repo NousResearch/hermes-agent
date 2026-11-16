@@ -23,7 +23,7 @@ from agent.agent_runtime_helpers import (
     repair_empty_non_final_messages,
 )
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
-from hermes_logging import clear_session_context, set_session_context
+from hermes_agent.hermes_logging import clear_session_context, set_session_context
 
 
 @pytest.fixture(autouse=True)
@@ -256,11 +256,11 @@ class TestProjectionStopsReheal:
     def _loop_agent(self):
         from unittest.mock import MagicMock, patch
 
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
         ):
             agent = AIAgent(

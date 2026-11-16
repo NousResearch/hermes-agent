@@ -9,7 +9,7 @@ or through an orchestrator child) resolves it.
 def test_spawned_children_resolve_by_subagent_id_only_under_their_conversation(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tools import delegate_tool as dt
     import tools.delegate_tool_config as dtc
     from tools.delegate_tool_sessions import stored_child_session

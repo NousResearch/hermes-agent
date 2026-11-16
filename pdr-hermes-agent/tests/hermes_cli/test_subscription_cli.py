@@ -1,4 +1,4 @@
-"""Tests for the /subscription CLI change flow (cli.py::_show_subscription).
+"""Tests for the /subscription CLI change flow (hermes_agent/cli.py::_show_subscription).
 
 Parity with the TUI overlay: the classic CLI now previews + applies a plan change
 in-terminal (picker → preview → confirm → apply), allows remote spending inline on
@@ -16,7 +16,7 @@ import agent.billing_usage as bu
 import agent.subscription_view as sv
 import hermes_cli.nous_billing as nb
 from agent.subscription_view import CurrentSubscription, SubscriptionState, SubscriptionTier
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 @pytest.fixture

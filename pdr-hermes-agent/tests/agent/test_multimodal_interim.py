@@ -35,7 +35,7 @@ from unittest.mock import MagicMock
 def _make_agent():
     """Minimal AIAgent with the real text helpers the fix relies on."""
     from agent.message_sanitization import _sanitize_surrogates
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = MagicMock(spec=AIAgent)
     agent._extract_reasoning = lambda msg: AIAgent._extract_reasoning(agent, msg)
@@ -97,7 +97,7 @@ class TestBuildAssistantMessageMultimodal:
 class TestInterimVisibleTextMultimodal:
     def test_tool_list_content_does_not_crash(self):
         """A tool message with list content must return a string, not raise."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = _make_agent()
         tool_msg = _vision_tool_result()
@@ -107,7 +107,7 @@ class TestInterimVisibleTextMultimodal:
 
     def test_assistant_list_content_flattened(self):
         """An assistant message with list content yields flattened visible text."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = _make_agent()
         assistant_msg = {

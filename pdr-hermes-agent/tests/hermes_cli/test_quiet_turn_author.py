@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import cli
+from hermes_agent import cli
 from agent.turn_author import TURN_AUTHOR_ENV
 
 AUTHOR = {"id": "bot:coder", "name": "coder", "is_bot": True}
@@ -182,7 +182,7 @@ def test_finalize_linger_skipped_after_quiet_notify_loop(monkeypatch):
     cli = SimpleNamespace(_quiet_notify_linger_done=True)
     cli._wait_for_oneshot_background_completions(cli) if hasattr(cli, "_wait_for_oneshot_background_completions") else None
     # The real entrypoint is the module function; call it through the CLI module.
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     cli_mod._wait_for_oneshot_background_completions(cli)
     assert waited == [], "finalize must skip the re-wait when the quiet notify loop already ran"

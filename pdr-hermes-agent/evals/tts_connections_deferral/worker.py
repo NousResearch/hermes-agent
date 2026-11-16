@@ -210,7 +210,7 @@ def connector_call_stub(name, arguments, tool_call_id=None, turn_id=None, task_i
     return json.dumps({"response": {"results": []}})
 
 
-import model_tools  # registers the built-in tools
+from hermes_agent import model_tools  # registers the built-in tools
 import tools.connectors as connectors_pkg
 import tools.connectors.dispatch as connectors_dispatch
 import tools.connectors.gateway.bridge as connectors_bridge
@@ -253,7 +253,7 @@ if ARM in ARMS:  # every arm pins its sentence: the tree's own default may be ei
 TOOLSETS = ["clarify", "code_execution", "cronjob", "file", "memory", "session_search", "skills", "terminal",
             "todo", "vision", "image_gen", "tts", "connections"]
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 agent = AIAgent(base_url=INFER_URL, api_key=INFER_KEY, provider="custom", model=MODEL, quiet_mode=True, skip_context_files=True,
                 skip_memory=True, skip_background_review=True, enabled_toolsets=TOOLSETS, max_iterations=20,

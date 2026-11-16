@@ -39,7 +39,7 @@ def repair():
     reads self.valid_tool_names. A SimpleNamespace stub is enough to
     bind the unbound function.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     stub = SimpleNamespace(valid_tool_names=VALID)
     return AIAgent._repair_tool_call.__get__(stub, AIAgent)
 
@@ -138,7 +138,7 @@ def test_repaired_name_reaches_the_native_replay(name, repaired):
     from agent.anthropic_message_convert import _convert_assistant_message
     from agent.bedrock_adapter import _assistant_blocks
     from agent.turn_tool_validation import validate_tool_calls
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent.__new__(AIAgent)
     agent.provider, agent.model, agent.session_id, agent.tools = "anthropic", "m", "s1", []

@@ -1,4 +1,4 @@
-"""Tests for the light-mode terminal detection + color remap in cli.py.
+"""Tests for the light-mode terminal detection + color remap in hermes_agent/cli.py.
 
 Covers the env-override path and the SkinConfig.get_color() wrapper that
 the resize / light-mode salvage installs at module import time.  We don't
@@ -15,7 +15,7 @@ import pytest
 @pytest.fixture
 def cli_mod(monkeypatch):
     """Import cli with the light-mode cache cleared each test."""
-    import cli as _cli
+    from hermes_agent import cli as _cli
 
     # The module-level _install_skin_light_mode_hook() and import-time
     # _detect_light_mode() prime ran once at first import.  We just reset
@@ -310,7 +310,7 @@ import sys as _sys
 _CHILD_SRC = r"""
 import sys, os
 sys.path.insert(0, os.environ["HERMES_REPO"])
-import cli
+from hermes_agent import cli
 bg = cli._query_osc11_background()
 print("RESULT:" + repr(bg), flush=True)
 # Drain anything left in the tty buffer — must be empty (no leak).

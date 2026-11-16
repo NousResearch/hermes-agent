@@ -21,7 +21,7 @@ from starlette.responses import FileResponse
 
 from hermes_cli import web_server, web_server_file_tickets
 from hermes_cli.web_routers import files
-from hermes_constants import mark_named_profile_deleted
+from hermes_agent.hermes_constants import mark_named_profile_deleted
 
 
 @pytest.fixture

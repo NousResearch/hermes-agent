@@ -72,7 +72,7 @@ def _sweep_killed_run_roots(root: str) -> None:
     there and leaks one root per in-flight worker; nothing else looks at this directory, so
     983 of them (3.4 GB) accumulated on one host in three days. Idle for a day = dead."""
     try:
-        from hermes_constants_scratch import prune_idle_entries
+        from hermes_agent.hermes_constants_scratch import prune_idle_entries
     except ImportError:  # runner invoked from outside the repo root
         return
     prune_idle_entries(Path(root), 24, frozenset())

@@ -24,7 +24,7 @@ def routed(monkeypatch):
     calls = {}
     fake_cli = types.ModuleType("cli")
     fake_cli.main = lambda **kw: calls.setdefault("cli_main", kw)
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", fake_cli)
     import hermes_cli.gateway_chat_startup as startup
     monkeypatch.setattr(startup, "launch_gateway_chat", lambda args: calls.setdefault("gateway", args) and 0)
     for name in ("_resolve_chat_session_args", "_warn_retired_xai_models", "_start_chat_background_prefetch",
@@ -57,5 +57,5 @@ def test_query_runs_main_hermes_cli(routed):
 def test_cli_main_does_not_hand_off_to_thin_client():
     import inspect
 
-    import cli
+    from hermes_agent import cli
     assert "launch_from_kwargs" not in inspect.getsource(cli.main)

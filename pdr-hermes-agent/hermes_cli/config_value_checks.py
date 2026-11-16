@@ -109,7 +109,7 @@ def _validate_quoted_containers(config: dict[str, Any], issues: list[ConfigIssue
     exclusions silently lapse (#83308, #105706). Finding only — the file is never rewritten."""
     import shlex
 
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
     from hermes_cli.config import _SCALAR_AS_ONE_ITEM_LIST_KEYS, _looks_structured_value, cfg_get
     for key, kind in _container_slots().items():
         # ``parse_config_string_list`` readers accept the quoted form; nothing is ignored there.

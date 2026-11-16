@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 from hermes_cli import status_bar_git
 from hermes_cli.status_bar_git import current_git_branch
 

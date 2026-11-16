@@ -9,7 +9,7 @@ sentinel (403 without it).
 
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
 
 

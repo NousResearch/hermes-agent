@@ -10,7 +10,7 @@ import sys
 import types
 from pathlib import Path
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 import pytest
 
 from agent.context_references import _context_reference_providers, get_context_reference_providers

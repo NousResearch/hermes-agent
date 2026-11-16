@@ -120,7 +120,7 @@ def _reply(line: bytes | None, mint) -> dict:
 
 
 def cmd_gateway_tickets(args) -> None:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_cli.gateway_runtime import attachable, discover_gateway_endpoint, gateway_profile_home
     from hermes_cli.gateway_runtime_attach import DISCOVER_TIMEOUT, TicketUnavailable, failure_message, mint_ticket
     from hermes_cli.gateway_runtime_cli import _verdict_payload, ensure_exit_code

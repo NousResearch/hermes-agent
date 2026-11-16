@@ -8,7 +8,7 @@ contracts as ``hermes_constants`` without requiring it on ``sys.path``.
 When ``hermes_constants`` IS available it is used directly so that any
 future enhancements (profile resolution, Docker detection, etc.) are
 picked up automatically.  The fallback path replicates the core logic
-from ``hermes_constants.py`` using only the stdlib.
+from ``hermes_agent/hermes_constants.py`` using only the stdlib.
 
 All scripts under ``google-workspace/scripts/`` should import from here
 instead of duplicating the ``HERMES_HOME = Path(os.getenv(...))`` pattern.
@@ -20,8 +20,8 @@ import os
 from pathlib import Path
 
 try:
-    from hermes_constants import display_hermes_home
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 except (ModuleNotFoundError, ImportError):
 
     def get_hermes_home() -> Path:

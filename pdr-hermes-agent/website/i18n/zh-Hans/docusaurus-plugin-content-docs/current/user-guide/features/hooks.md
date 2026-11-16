@@ -422,7 +422,7 @@ def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 | `args` | `dict` | 模型传递给工具的参数 |
 | `task_id` | `str` | 会话/任务标识符。未设置时为空字符串。 |
 
-**触发位置：** `model_tools.py` 中的 `handle_function_call()` 内，工具处理器运行前。每次工具调用触发一次——若模型并行调用 3 个工具，则触发 3 次。
+**触发位置：** `hermes_agent/model_tools.py` 中的 `handle_function_call()` 内，工具处理器运行前。每次工具调用触发一次——若模型并行调用 3 个工具，则触发 3 次。
 
 **返回值——阻断或要求审批：**
 
@@ -486,7 +486,7 @@ def my_callback(tool_name: str, args: dict, result: str, task_id: str,
 | `task_id` | `str` | 会话/任务标识符。未设置时为空字符串。 |
 | `duration_ms` | `int` | 工具分发耗时，单位毫秒（使用 `time.monotonic()` 在 `registry.dispatch()` 前后测量）。 |
 
-**触发位置：** `model_tools.py` 中的 `handle_function_call()` 内，工具处理器返回后。每次工具调用触发一次。若工具抛出未处理异常，**不会**触发（错误被捕获并以错误 JSON 字符串返回，`post_tool_call` 以该错误字符串作为 `result` 触发）。
+**触发位置：** `hermes_agent/model_tools.py` 中的 `handle_function_call()` 内，工具处理器返回后。每次工具调用触发一次。若工具抛出未处理异常，**不会**触发（错误被捕获并以错误 JSON 字符串返回，`post_tool_call` 以该错误字符串作为 `result` 触发）。
 
 **返回值：** 忽略。
 
@@ -538,7 +538,7 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | `model` | `str` | 模型标识符（如 `"anthropic/claude-sonnet-4.6"`） |
 | `platform` | `str` | 会话运行环境：`"cli"`、`"telegram"`、`"discord"` 等 |
 
-**触发位置：** `run_agent.py` 中的 `run_conversation()` 内，上下文压缩后、主 `while` 循环前。每次 `run_conversation()` 调用触发一次（即每个用户轮次一次），而非工具循环内每次 API 调用触发一次。
+**触发位置：** `hermes_agent/run_agent.py` 中的 `run_conversation()` 内，上下文压缩后、主 `while` 循环前。每次 `run_conversation()` 调用触发一次（即每个用户轮次一次），而非工具循环内每次 API 调用触发一次。
 
 **返回值：** 若回调返回包含 `"context"` 键的字典，或非空的普通字符串，该文本会追加到当前轮次的用户消息。返回 `None` 表示不注入。
 
@@ -620,7 +620,7 @@ def my_callback(session_id: str, user_message: str, assistant_response: str,
 | `model` | `str` | 模型标识符 |
 | `platform` | `str` | 会话运行环境 |
 
-**触发位置：** `run_agent.py` 中的 `run_conversation()` 内，工具循环以最终响应退出后。受 `if final_response and not interrupted` 保护——因此当用户在轮次中途中断，或 agent 在未产生响应的情况下达到迭代上限时，**不会**触发。
+**触发位置：** `hermes_agent/run_agent.py` 中的 `run_conversation()` 内，工具循环以最终响应退出后。受 `if final_response and not interrupted` 保护——因此当用户在轮次中途中断，或 agent 在未产生响应的情况下达到迭代上限时，**不会**触发。
 
 **返回值：** 忽略。
 
@@ -679,7 +679,7 @@ def my_callback(session_id: str, model: str, platform: str, **kwargs):
 | `model` | `str` | 模型标识符 |
 | `platform` | `str` | 会话运行环境 |
 
-**触发位置：** `run_agent.py` 中的 `run_conversation()` 内，新会话第一轮期间——具体在系统 prompt 构建后、工具循环开始前。检查条件为 `if not conversation_history`（无历史消息 = 新会话）。
+**触发位置：** `hermes_agent/run_agent.py` 中的 `run_conversation()` 内，新会话第一轮期间——具体在系统 prompt 构建后、工具循环开始前。检查条件为 `if not conversation_history`（无历史消息 = 新会话）。
 
 **返回值：** 忽略。
 
@@ -724,8 +724,8 @@ def my_callback(session_id: str, completed: bool, interrupted: bool,
 | `platform` | `str` | 会话运行环境 |
 
 **触发位置：** 两处：
-1. **`run_agent.py`** — 每次 `run_conversation()` 调用结束时，所有清理完成后。始终触发，即使轮次出错。
-2. **`cli.py`** — CLI 的 atexit 处理器中，但**仅当** agent 在退出时处于处理中状态（`_agent_running=True`）。这捕获了处理过程中的 Ctrl+C 和 `/exit`。此时 `completed=False`，`interrupted=True`。
+1. **`hermes_agent/run_agent.py`** — 每次 `run_conversation()` 调用结束时，所有清理完成后。始终触发，即使轮次出错。
+2. **`hermes_agent/cli.py`** — CLI 的 atexit 处理器中，但**仅当** agent 在退出时处于处理中状态（`_agent_running=True`）。这捕获了处理过程中的 Ctrl+C 和 `/exit`。此时 `completed=False`，`interrupted=True`。
 
 **返回值：** 忽略。
 

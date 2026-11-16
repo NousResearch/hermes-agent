@@ -177,7 +177,7 @@ def connection_cb(payload):
         {"name": t["name"], "status": "installed"} for t in payload.get("targets", [])]})
 
 # --- import the tree's model_tools + patch registry stubs ------------------
-import model_tools
+from hermes_agent import model_tools
 from tools.registry import registry
 
 def _stub_entry(name, handler):
@@ -214,7 +214,7 @@ TOOLSETS = ["file", "terminal", "search", "web", "todo", "session_search",
             "clarify", "image_gen", "computer_use", "cronjob", "memory",
             "desktop_ui", "project", "code_execution"]
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 agent = AIAgent(
     base_url="https://openrouter.ai/api/v1",

@@ -19,7 +19,7 @@ import pytest
 
 pytest.importorskip("nemo_relay")
 
-import run_agent
+from hermes_agent import run_agent
 from agent import relay_llm, relay_runtime, relay_tools
 from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
 from agent.session_activity import ActivityProvenance

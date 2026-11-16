@@ -4,7 +4,7 @@ import socket
 import httpcore
 import pytest
 
-import hermes_bootstrap
+from hermes_agent import hermes_bootstrap
 from agent import process_bootstrap
 
 
@@ -33,7 +33,7 @@ def _client_backends(client):
 
 
 def test_codex_sync_client_uses_happy_eyeballs_backend(no_proxy_env):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     client = AIAgent._build_keepalive_http_client(
         "https://chatgpt.com/backend-api/codex"

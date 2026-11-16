@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterable
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
 from tools.environments.base_output import (
     ProcessHandle, _finalize_wait_result, _new_output_collector, _start_drain_thread,
@@ -34,7 +34,7 @@ from tools.environments.base_session_env import (
 from tools.environments.base_processes import LongLivedProcessMixin
 from tools.environments.base_wait import _WaitTrace
 from tools.terminal_tool_sudo_askpass import fill_timeout_token, sudo_askpass_supported_once
-from utils import atomic_json_write, env_var_enabled, file_signature
+from hermes_agent.utils import atomic_json_write, env_var_enabled, file_signature
 
 logger = logging.getLogger(__name__)
 

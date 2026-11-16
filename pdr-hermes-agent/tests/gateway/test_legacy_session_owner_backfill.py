@@ -19,7 +19,7 @@ def _owners(db):
 
 
 def test_default_store_stamps_only_unowned_rows(_isolate_hermes_home):
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     with SessionDB(db_path=get_default_hermes_root() / 'state.db') as db:
         _legacy(db, 'null-row')
         _legacy(db, 'blank-row', '  ')
@@ -31,7 +31,7 @@ def test_default_store_stamps_only_unowned_rows(_isolate_hermes_home):
 
 
 def test_named_profile_store_stamps_its_own_name(_isolate_hermes_home):
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     home = get_default_hermes_root() / 'profiles' / 'work'
     home.mkdir(parents=True)
     with SessionDB(db_path=home / 'state.db') as db:

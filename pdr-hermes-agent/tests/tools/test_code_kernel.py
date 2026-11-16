@@ -499,7 +499,7 @@ class TestInScriptToolErrors(unittest.TestCase):
                 return json.dumps({"error": "Refusing to overwrite a.py: never read"})
             return json.dumps({"ok": True})
 
-        with _kernel_config(), patch("model_tools.handle_function_call", new=_handle):
+        with _kernel_config(), patch("hermes_agent.model_tools.handle_function_call", new=_handle):
             failed = _run("import hermes_tools\nhermes_tools.write_file('a.py', 'x')\nprint('done')\n")
             clean = _run("import hermes_tools\nhermes_tools.web_search(query='q')\n")
         self.assertEqual(failed["status"], "success", failed)
@@ -532,7 +532,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         seen = []
         cell = "import hermes_tools\nhermes_tools.web_search(query='q')\n"
         with _kernel_config(), patch(
-            "model_tools.handle_function_call", new=self._recorder(seen)
+            "hermes_agent.model_tools.handle_function_call", new=self._recorder(seen)
         ):
             def cb_one():
                 return "one"
@@ -564,7 +564,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
 
         seen = []
         with _kernel_config(), patch(
-            "model_tools.handle_function_call", new=self._recorder(seen)
+            "hermes_agent.model_tools.handle_function_call", new=self._recorder(seen)
         ):
             def cb_one():
                 return "one"
@@ -594,7 +594,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
             return json.dumps({"ok": True})
 
         authority = CellAuthority("turn-1", session_id="sess-A", turn_id="turn-A")
-        with patch("model_tools.handle_function_call", new=_handle):
+        with patch("hermes_agent.model_tools.handle_function_call", new=_handle):
             assert json.loads(authority.dispatch("web_search", {"query": "q"})) == {"ok": True}
         self.assertEqual(
             seen,
@@ -696,7 +696,7 @@ class TestCellStdoutSpill(unittest.TestCase):
     def test_cell_spill_on_disk_is_sanitized(self):
         import stat as stat_mod
         from agent.redact import redact_sensitive_text
-        from hermes_constants import get_hermes_dir
+        from hermes_agent.hermes_constants import get_hermes_dir
         secret = "ghp_" + "0123456789abcdef"
         masked = redact_sensitive_text(secret, code_file=True)
         with _kernel_config():

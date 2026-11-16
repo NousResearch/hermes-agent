@@ -71,7 +71,7 @@ if point == "commit":
     SessionDB.archive_and_compact = aac
     SessionDB._insert_message_rows = insert
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from agent.conversation_compression_manual import compress_now, parse_compress_args
 
 db = SessionDB(db_path=Path(db_path))

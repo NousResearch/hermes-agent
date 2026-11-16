@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 from hermes_cli.plugins import PluginManager
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 
@@ -39,7 +39,7 @@ def test_session_finalize_on_reset(mock_finalize_session, mock_invoke_hook):
 @patch("hermes_cli.lifecycle.finalize_session")
 def test_session_finalize_on_cleanup(mock_finalize_session):
     """Verify on_session_finalize fires during CLI exit cleanup."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     mock_agent = MagicMock()
     mock_agent.session_id = "cleanup-session-id"
@@ -60,7 +60,7 @@ def test_session_finalize_on_cleanup(mock_finalize_session):
 @patch("hermes_cli.lifecycle.invoke_hook")
 def test_interrupted_session_end_helper_emits_observer_shape(mock_invoke_hook):
     """Verify quiet single-query interruption emits a correlated session end."""
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     mock_agent = MagicMock()
     mock_agent.session_id = "agent-session-id"

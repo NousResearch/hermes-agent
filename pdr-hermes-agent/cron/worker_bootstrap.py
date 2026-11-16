@@ -63,6 +63,6 @@ def finish_worker_boot() -> None:
     ``sys.argv[0]`` is still ``-m`` and ``__main__`` has no spec, so the relaunch command could
     not name the module to re-run. In ``__main__`` both are set.
     """
-    import hermes_bootstrap
+    from hermes_agent import hermes_bootstrap
 
     os.environ.pop(WORKER_MARKER, None)

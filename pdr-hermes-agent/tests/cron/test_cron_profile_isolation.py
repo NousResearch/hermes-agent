@@ -23,7 +23,7 @@ from pathlib import Path
 def _set_profile_env(monkeypatch, root: Path, profile_home: Path) -> None:
     """Pretend the platform default root is ``root`` and the active
     HERMES_HOME is a profile under it (``<root>/profiles/<name>``)."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.setattr(
         hermes_constants, "_get_platform_default_hermes_home", lambda: root
@@ -40,7 +40,7 @@ def test_cron_storage_anchors_at_profile_home(tmp_path, monkeypatch):
 
     _set_profile_env(monkeypatch, root, profile_home)
 
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     # Sanity: the override is wired the way the gateway sees it.
     assert hermes_constants.get_hermes_home().resolve() == profile_home.resolve()

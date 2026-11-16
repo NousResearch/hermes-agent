@@ -10,7 +10,7 @@ import pytest
 
 from agent.bedrock_adapter import BedrockOpenAISigV4Auth
 from agent.context_compressor import ContextCompressor
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 MANTLE = "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
 RUNTIME_EU = "https://bedrock-runtime.eu-west-1.amazonaws.com"

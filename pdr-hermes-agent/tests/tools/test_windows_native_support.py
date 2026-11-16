@@ -388,7 +388,7 @@ class TestLocalEnvironmentPathInjectionGated:
 
 
 # ---------------------------------------------------------------------------
-# cli.py git path normalization
+# hermes_agent/cli.py git path normalization
 # ---------------------------------------------------------------------------
 
 

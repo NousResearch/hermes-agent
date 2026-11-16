@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional
 from agent.monitoring import emitter
 from agent.monitoring.events import GatewayDiagnosticEvent, GatewayHealthEvent
 from agent.monitoring.redaction import redact_bounded
-from hermes_logging import canonical_logger_name
+from hermes_agent.hermes_logging import canonical_logger_name
 
 logger = logging.getLogger(__name__)
 

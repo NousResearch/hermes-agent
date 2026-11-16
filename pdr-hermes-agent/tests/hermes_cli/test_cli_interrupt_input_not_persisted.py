@@ -28,7 +28,7 @@ def test_interrupt_fired_during_chat_does_not_persist_the_message(tmp_path):
     cli._pending_input = queue.Queue()
     cli._interrupt_queue.put(f"my token is {SECRET}")
 
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     with patch.object(cli_mod, "_hermes_home", tmp_path), \
          patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
@@ -44,7 +44,7 @@ def test_interrupt_fired_during_chat_does_not_persist_the_message(tmp_path):
 
 
 def test_enter_while_busy_interrupt_does_not_persist_the_message(tmp_path):
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     shell = object.__new__(cli_mod.HermesCLI)
     shell.busy_input_mode = "interrupt"

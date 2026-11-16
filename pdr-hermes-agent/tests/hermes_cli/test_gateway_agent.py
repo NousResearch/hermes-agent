@@ -899,7 +899,7 @@ def test_another_viewer_completing_the_clarify_batch_releases_mains_panel(make_a
     batch panel (``CLIModalMixin._clarify_callback``) blocks the agent thread, so the withdrawal must
     close it from the connection thread; the pump then reads the turn's completion instead of sitting
     in the modal until clarify_timeout."""
-    import cli
+    from hermes_agent import cli
     from tests.hermes_cli.test_cli_clarify_batch import _make_cli_stub
     monkeypatch.setattr(cli, "CLI_CONFIG", {"agent": {"clarify_timeout": 60}})
     panel = _make_cli_stub()
@@ -1045,7 +1045,7 @@ def test_a_voice_stopped_correction_is_consumed_not_requeued(make_agent, mode):
     voice is already off, and that becomes an agent turn."""
     import queue
 
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     agent, client = make_agent([])
     agent._generation = 7

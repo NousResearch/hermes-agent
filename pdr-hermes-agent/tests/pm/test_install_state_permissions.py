@@ -34,7 +34,7 @@ venv_sync.prepare_launch = denied if phase == "preparation" else lambda *_: None
 _early_recovery.recover_if_needed = lambda *_: False
 environments.activate_dependencies = denied if phase == "activation" else lambda *_: None
 sys.argv = ["hermes", "-z", "hi"]
-import hermes_bootstrap
+from hermes_agent import hermes_bootstrap
 """
     result = subprocess.run(
         [sys.executable, "-S", "-c", code, str(target), phase],

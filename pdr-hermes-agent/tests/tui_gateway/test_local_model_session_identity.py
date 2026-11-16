@@ -79,7 +79,7 @@ def test_session_info_recovers_identity_from_the_owning_profile(tmp_path, monkey
     import json
     from pathlib import Path
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     launch = tmp_path / "launch"
     secondary = launch / "profiles" / "secondary"

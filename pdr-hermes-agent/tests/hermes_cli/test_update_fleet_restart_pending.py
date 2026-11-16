@@ -27,7 +27,7 @@ from hermes_cli import main_install_repair
 from hermes_cli import update_cmd
 from hermes_cli import update_cmd_fleet
 from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 import hermes_cli.update_host_obligation as host_obligation
 from gateway import host_rendezvous
 

@@ -87,12 +87,12 @@ def T(name, fn, n):
     t=timeit.Timer(fn).repeat(repeat=5, number=n)
     out[name]=round(min(t)/n*1000, 4)  # ms per call
 try:
-    import model_tools
+    from hermes_agent import model_tools
     fn=getattr(model_tools,"get_tool_definitions",None) or getattr(model_tools,"get_all_tool_definitions",None)
     if fn: T("tool_definitions_ms", lambda: fn(), 20)
 except Exception as e: out["tool_definitions_err"]=repr(e)[:160]
 try:
-    from toolsets import get_all_toolsets, resolve_toolset
+    from hermes_agent.toolsets import get_all_toolsets, resolve_toolset
     T("resolve_toolset_hermes_default_ms", lambda: resolve_toolset("hermes-default"), 200)
 except Exception as e: out["toolsets_err"]=repr(e)[:160]
 try:

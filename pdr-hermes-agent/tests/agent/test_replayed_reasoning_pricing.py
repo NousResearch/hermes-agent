@@ -52,7 +52,7 @@ def test_each_row_carries_its_own_responses_count_into_the_request_estimate_not_
     """A real turn loop: a response reporting 8,000 reasoning tokens, then a TRUNCATED one reporting 73
     (its fragment is built before the usage fold), then the finish. The fragment is stamped 73, the
     next request's estimate sees the stamps, and no request-only key reaches the provider."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.agent.test_run_agent import _mock_response, _mock_tool_call
 
     def usage(reasoning):
@@ -60,8 +60,8 @@ def test_each_row_carries_its_own_responses_count_into_the_request_estimate_not_
                 "completion_tokens_details": {"reasoning_tokens": reasoning}}
 
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1",

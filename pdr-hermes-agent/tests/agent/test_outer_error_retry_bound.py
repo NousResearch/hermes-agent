@@ -38,12 +38,12 @@ import pytest
 def loop_agent():
     """AIAgent with a mocked OpenAI client (mirrors test_run_agent's fixture)
     so we can stage responses on ``.chat.completions.create``."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.agent.test_run_agent import _mock_response
 
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(

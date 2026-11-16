@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 from hermes_state import SessionDB
 from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_flush_agent(db: SessionDB, session_id: str):

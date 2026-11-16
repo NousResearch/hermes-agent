@@ -96,7 +96,7 @@ def run_one(scenario: dict[str, Any], mode: str, rep: int, out_dir: Path) -> dic
     messages_out: list[dict[str, Any]] = []
     pm = None
     try:
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = AIAgent(
             provider="openrouter", model="anthropic/claude-haiku-4.5",
             quiet_mode=True, save_trajectories=False,

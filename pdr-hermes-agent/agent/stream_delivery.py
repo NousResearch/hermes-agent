@@ -1,7 +1,7 @@
 """Streaming / interim-message delivery for ``AIAgent``.
 
 Single-writer stream ownership, delta/reasoning hook fan-out, and interim assistant text dedup.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import logging
 import re

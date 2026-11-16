@@ -10,7 +10,7 @@ def test_suppress_status_output_gates_quiet_tool_messages():
     callbacks neutralized it would otherwise print ``[tool]``/``[done]``
     lines straight into -Q's captured stdout (#93220).
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = object.__new__(AIAgent)
     agent.quiet_mode = True

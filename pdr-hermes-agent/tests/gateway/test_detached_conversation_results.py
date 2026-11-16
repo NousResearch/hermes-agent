@@ -126,7 +126,7 @@ async def test_a_secondary_profiles_old_conversation_gets_its_result_after_the_s
     from gateway.session_authorities import SessionAuthorities
     from gateway.session_authority import LiveSession, initialize_session_authority
     from gateway.session_detached import detach
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state import SessionDB
     root = tmp_path / 'hermes'
     profile = root / 'profiles' / 'fitness'

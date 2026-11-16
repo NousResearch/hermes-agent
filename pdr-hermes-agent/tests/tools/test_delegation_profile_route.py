@@ -5,7 +5,7 @@ import json
 import threading
 from unittest.mock import MagicMock, patch
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 import pytest
 
 
@@ -40,7 +40,7 @@ def two_profiles(tmp_path, monkeypatch):
 def _snapshot():
     from agent.secret_scope import get_secret
     from hermes_cli.config import load_config_readonly
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return {"home": str(get_hermes_home()), "secret": get_secret("PROBE_SECRET"),
             "model": load_config_readonly()["model"]["default"]}
 
@@ -92,7 +92,7 @@ def test_child_is_built_and_converses_inside_the_target_profile_scope(two_profil
                          "soul": kwargs.get("load_soul_identity")}
         return MagicMock(session_id="child-1")
 
-    with patch("run_agent.AIAgent", side_effect=construct):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=construct):
         child = _build_child_agent(task_index=0, goal="work as coder", context=None, toolsets=None,
                                    model=route.creds["model"], max_iterations=5, task_count=1,
                                    parent_agent=parent, **_route_overrides(route))
@@ -149,7 +149,7 @@ def _build(route, parent):
         seen.update(kwargs)
         return MagicMock(session_id="child-1")
 
-    with patch("run_agent.AIAgent", side_effect=construct):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=construct):
         child = _build_child_agent(task_index=0, goal="work as coder", context=None, toolsets=None,
                                    model=route.creds["model"], max_iterations=5, task_count=1,
                                    parent_agent=parent, **_route_overrides(route))

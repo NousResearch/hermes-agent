@@ -225,7 +225,7 @@ def test_store_is_falsy_once_the_gateway_connection_closed(store):
 def test_reader_opens_once_the_gateway_created_state_db(store, tmp_path, monkeypatch):
     """The startup maintenance probe runs before the gateway exists; that miss is not latched."""
     db, _ = store
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path)
     assert db.get_session("x") is None and db._reader is None
     from hermes_state import SessionDB
     SessionDB(db_path=tmp_path / "state.db").close()
@@ -251,7 +251,7 @@ def test_cli_startup_notices_render_from_the_snapshot(store, monkeypatch):
     db.current["info"].update(tool_availability_warnings=["[yellow]⚠ terminal off[/]"])
     printed = []
     host = SimpleNamespace(_session_db=db, _console_print=lambda *a: printed.append(a[0] if a else ""))
-    monkeypatch.setattr("cli._build_compact_banner", lambda: "compact", raising=False)
+    monkeypatch.setattr("hermes_agent.cli._build_compact_banner", lambda: "compact", raising=False)
     banner = SimpleNamespace(**vars(host), console=SimpleNamespace(clear=lambda: None), compact=True,
                              session_id="local-old", _show_status=lambda: None, agent=None,
                              _show_tool_availability_warnings=lambda: printed.append("LOCAL-WARN"))
@@ -264,7 +264,7 @@ def test_rename_refusal_prints_mains_title_in_use_text(store, tmp_path, monkeypa
     """The owner's ValueError text never crosses the wire (bounded reason codes); the rename copy
     main prints comes from the read-only reader."""
     db, client = store
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path)
     from hermes_state import SessionDB
     writer = SessionDB(db_path=tmp_path / "state.db")
     writer.create_session("local-other", source="local")
@@ -387,7 +387,7 @@ def test_cli_listings_include_gateway_rows_created_by_the_cli(store, tmp_path, m
     main's ``source='cli'`` listings (/resume picker, /sessions, /history, bare -c) read both labels."""
     import sqlite3
     db, _ = store
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path)
     from hermes_state import SessionDB
     writer = SessionDB(db_path=tmp_path / "state.db")
     rows = (("local-cli", "local", "cli"), ("local-tui", "local", "tui"), ("legacy", "cli", "cli"),
@@ -552,7 +552,7 @@ def test_a_mounting_docker_backend_sends_the_w_worktree_not_the_launch_dir(store
 def test_a_removed_w_worktree_is_sent_so_the_gateway_refuses_it(store, monkeypatch, tmp_path, backend, mount, entry):
     """-w publishes its tree in TERMINAL_CWD without a chdir; once the tree is gone, creating from the
     original checkout would put the agent's edits there. Main sent the path and the gateway refused it.
-    ``hermes -w`` records the tree in the imported ``cli`` module, ``python cli.py -w`` in ``__main__``."""
+    ``hermes -w`` records the tree in the imported ``cli`` module, ``python -m hermes_agent.cli -w`` in ``__main__``."""
     import sys
     from hermes_cli import gateway_session_store as gss
     db, client = store
@@ -561,7 +561,7 @@ def test_a_removed_w_worktree_is_sent_so_the_gateway_refuses_it(store, monkeypat
     tree = repo / ".worktrees" / "wt"  # never created: removed while the CLI was open
     monkeypatch.chdir(repo)
     if entry == "cli":
-        monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
+        monkeypatch.setitem(sys.modules, "hermes_agent.cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
     else:
         monkeypatch.setattr(sys.modules["__main__"], "_active_worktree", {"path": str(tree)}, raising=False)
     monkeypatch.setenv("TERMINAL_CWD", str(tree))
@@ -587,7 +587,7 @@ def test_a_project_resumed_after_w_is_sent_not_the_w_worktree(store, monkeypatch
     tree.mkdir(parents=True)
     project_b.mkdir()
     monkeypatch.chdir(tmp_path / "a")
-    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
     monkeypatch.setenv("TERMINAL_CWD", str(tree))
     monkeypatch.setenv("TERMINAL_ENV", backend)
     if mount:
@@ -707,7 +707,7 @@ def test_unchanged_model_flag_on_resume_ignores_the_configured_provider(store, m
     """CLI-2: `--resume <id> -m my-model` repeats the session's frozen `-m` while the CLI resolved the
     profile's provider; only a `--provider` the user typed is launch policy, so the repeat is accepted
     (as the thin client accepts it) and a different `--provider` is still refused."""
-    import cli as cli_module
+    from hermes_agent import cli as cli_module
     from hermes_cli.cli_init_mixin import CLIInitMixin
     monkeypatch.setitem(cli_module.CLI_CONFIG, "model", {"default": "cfg-model", "provider": "openrouter"})
     db, client = store
@@ -857,8 +857,8 @@ def test_clear_banner_shows_the_new_gateway_sessions_tools_and_short_label(store
     """#134889 CLI-22: `/clear` inside the running CLI redraws the banner from the new gateway
     session's snapshot (its MCP tools, main's 8-character label), as the startup banner does; this
     process's own tool registry has no MCP servers and is never walked."""
-    import cli as cli_mod
-    from cli import HermesCLI
+    from hermes_agent import cli as cli_mod
+    from hermes_agent.cli import HermesCLI
     db, client = store
     canonical = "local-ab12cd34" + "e" * 56
     info = {**INFO, "tools": {"file": ["read_file"], "mcp-zeta": ["mcp__zeta__ro_probe"]}}

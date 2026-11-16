@@ -13,7 +13,7 @@ import json
 import pytest
 
 from agent import terminal_env_registry as reg
-from hermes_scope import Principal, Scope
+from hermes_agent.hermes_scope import Principal, Scope
 from tools.environments import sandbox_conformance as conformance
 from tools.environments.sandbox_scope import (
     CrossAgentHandleRefused, HostedSandboxRequired, SandboxIdentity, ScopedEnvironment, sandbox_identity,
@@ -26,7 +26,7 @@ OTHER_TENANT_A = Scope("globex", "agent-a", Principal("u1"), owner=Principal("u1
 
 @pytest.fixture
 def provider(monkeypatch):
-    import model_tools  # registers the tools the checks dispatch through the registry
+    from hermes_agent import model_tools  # registers the tools the checks dispatch through the registry
     from tools import file_tools, process_registry, terminal_tool
 
     reg._reset_for_tests()
@@ -61,7 +61,7 @@ def test_conformance(name, provider, host_dir):
 
 
 def test_identity_is_tenant_and_agent_only():
-    turn = A.for_turn("session-1", "turn-1", fence=__import__("hermes_scope").Fence(1, 1))
+    turn = A.for_turn("session-1", "turn-1", fence=__import__("hermes_agent.hermes_scope").Fence(1, 1))
     assert sandbox_identity(turn) == sandbox_identity(A) == SandboxIdentity("acme", "agent-a")
     assert sandbox_identity(OTHER_TENANT_A).key != sandbox_identity(A).key
     # Percent-quoting keeps the key injective across tenant/agent boundaries.

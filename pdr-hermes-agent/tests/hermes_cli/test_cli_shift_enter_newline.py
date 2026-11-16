@@ -1,5 +1,5 @@
 """Verify Shift+Enter byte sequences parse to the same key tuple Alt+Enter
-produces, so the existing Alt+Enter newline handler in `cli.py` fires for
+produces, so the existing Alt+Enter newline handler in `hermes_agent/cli.py` fires for
 terminals that emit a distinct Shift+Enter under the Kitty keyboard protocol
 or xterm modifyOtherKeys mode.
 """

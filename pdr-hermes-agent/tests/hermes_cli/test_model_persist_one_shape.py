@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 from hermes_cli.model_switch import ModelSwitchResult
 
@@ -39,7 +39,7 @@ _RESULT = ModelSwitchResult(
 
 @pytest.fixture
 def seeded_home(tmp_path, monkeypatch):
-    import cli
+    from hermes_agent import cli
     (tmp_path / "config.yaml").write_text(_SEED, encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(cli, "_hermes_home", tmp_path)
@@ -79,11 +79,11 @@ def _via_dashboard(home):
                          ids=["cli", "gateway", "tui", "dashboard"])
 def test_every_persist_surface_writes_the_same_model_block(seeded_home, monkeypatch, surface):
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kw: _RESULT)
-    monkeypatch.setattr("cli.HermesCLI._persist_model_switch_to_session", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.cli.HermesCLI._persist_model_switch_to_session", lambda *a, **k: None)
     monkeypatch.setattr("hermes_cli.cli_model_switch_mixin._print_switch_summary", lambda *a, **k: None)
     monkeypatch.setattr("hermes_cli.model_selection_guards.combined_selection_warning",
                         lambda *a, **k: None, raising=False)
-    monkeypatch.setattr("cli._cprint", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("hermes_agent.cli._cprint", lambda *a, **k: None, raising=False)
 
     surface(seeded_home)
 

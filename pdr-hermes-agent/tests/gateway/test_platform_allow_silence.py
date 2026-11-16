@@ -17,7 +17,7 @@ from gateway.config import GatewayConfig, Platform, load_gateway_config
 from gateway.run_turn import _unexpected_silence_reply
 from gateway.session import SessionSource
 from gateway.session_identity import RoutingIdentity
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from tests.gateway.test_active_turn_recovery import _close_store_db, _db_runner, _entry_for
 from tests.gateway.test_gateway_silence_tokens import _runner
 from tests.gateway.test_slack_ignore_other_user_mentions import BOT_USER_ID, CHANNEL_ID

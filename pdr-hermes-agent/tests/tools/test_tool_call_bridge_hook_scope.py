@@ -46,7 +46,7 @@ def deferred_tool():
 
 def _bridge_skipping_wrapper_policy(**extra):
     """Invoke *TOOL* the way the agent loop invokes ``tool_call``: wrapper policy already fired."""
-    import model_tools
+    from hermes_agent import model_tools
 
     return model_tools.handle_function_call(
         "tool_call",

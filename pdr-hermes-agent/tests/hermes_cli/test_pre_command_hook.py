@@ -1,7 +1,7 @@
 """Tests for the ``pre_command`` observer hook (#64204).
 
 The hook fires when a recognized slash command is about to be dispatched,
-BEFORE the handler runs, on both the interactive CLI (cli.py
+BEFORE the handler runs, on both the interactive CLI (hermes_agent/cli.py
 process_command) and the gateway canonical-command dispatch
 (gateway/run.py _handle_message). Observer-only in v1: return values are
 ignored (directives are logged at debug for discoverability).
@@ -76,12 +76,12 @@ def test_fire_helper_swallows_manager_errors(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# CLI surface (cli.py process_command)
+# CLI surface (hermes_agent/cli.py process_command)
 # ---------------------------------------------------------------------------
 
 
 def _make_cli():
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
 
     inst = object.__new__(cli_mod.HermesCLI)
     inst.session_id = "sess-cli-1"

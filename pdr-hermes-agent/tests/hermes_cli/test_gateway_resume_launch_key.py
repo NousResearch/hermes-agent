@@ -282,7 +282,7 @@ async def test_slash_resume_in_a_typed_key_cli_switches_to_a_keyless_session_on_
     session>`` in a ``--api-key`` CLI switches to it as on main, and the owner does not bind the key to it:
     the session keeps its own frozen route."""
     from unittest.mock import patch
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     from hermes_state import SessionDB
     owners = await _Owners().start(tmp_path, monkeypatch)
     conn = GatewayConnection(connect=owners.dial)
@@ -296,7 +296,7 @@ async def test_slash_resume_in_a_typed_key_cli_switches_to_a_keyless_session_on_
         await asyncio.to_thread(store.open_session, cli, LAUNCH)  # hermes --resume <keyed> --api-key K
         printed = []
         with patch('hermes_cli.main._resolve_session_by_name_or_id', return_value=None), \
-                patch('cli._cprint', printed.append):
+                patch('hermes_agent.cli._cprint', printed.append):
             await asyncio.to_thread(cli._handle_resume_command, f'/resume {owners.plain}')
         assert cli.session_id == owners.plain, printed
         assert store.current['stored_session_id'] == owners.plain

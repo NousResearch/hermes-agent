@@ -122,7 +122,7 @@ def test_never_blocks_execution():
 def _fake_agent(stall_guards=True):
     from types import SimpleNamespace
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = SimpleNamespace(
         _tool_guardrails=ToolCallGuardrailController(),

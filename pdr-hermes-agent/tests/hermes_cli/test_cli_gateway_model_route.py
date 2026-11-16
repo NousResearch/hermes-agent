@@ -68,7 +68,7 @@ def _model_routes(conn):
 
 
 def test_classic_cli_model_switch_reaches_the_gateway_session(monkeypatch):
-    import cli as cli_mod
+    from hermes_agent import cli as cli_mod
     from tests.hermes_cli.test_cli_model_once import _StubCLI
     conn = RecordingConnection({"model": "old/model", "provider": "openrouter"})
     stub = _StubCLI()

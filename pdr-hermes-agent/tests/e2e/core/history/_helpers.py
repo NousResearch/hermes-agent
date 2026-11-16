@@ -584,7 +584,7 @@ class InProcessSession:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
         from hermes_state import SessionDB
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         self.db = SessionDB(db_path=hermes_home / "state.db")
         # The CLI entrypoints enable the platform's configured toolsets; a bare AIAgent would

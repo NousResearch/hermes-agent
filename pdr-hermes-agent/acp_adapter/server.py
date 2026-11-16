@@ -492,7 +492,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             logger.warning("Session %s: failed to register ACP MCP servers", state.session_id, exc_info=True)
             return
         try:
-            from model_tools import get_tool_definitions
+            from hermes_agent.model_tools import get_tool_definitions
             from agent.memory_manager_tools import inject_memory_provider_tools
 
             agent = state.agent

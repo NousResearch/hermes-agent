@@ -142,7 +142,7 @@ def test_string_api_keys_are_not_retained_in_cache_key_repr():
 def test_client_cache_key_is_scoped_per_profile_home(tmp_path):
     """Callers that omit api_key (pool / Nous auth.json paths) must not share a client across
     multiplex profiles: the per-turn HERMES_HOME override has to participate in the key."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir(); b.mkdir()

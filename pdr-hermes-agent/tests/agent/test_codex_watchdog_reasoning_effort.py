@@ -22,7 +22,7 @@ def _codex_agent(tmp_path: Path, monkeypatch, effort: str, *, enabled: bool = Tr
     for var in ("HERMES_API_CALL_STALE_TIMEOUT", "HERMES_CODEX_TTFB_TIMEOUT_SECONDS",
                 "HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "HERMES_CODEX_TTFB_MAX_SECONDS"):
         monkeypatch.delenv(var, raising=False)
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         model="gpt-5.5", provider="openai-codex", api_key="sk-dummy",

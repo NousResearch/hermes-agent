@@ -11,7 +11,7 @@ config section applies with ``DEFAULT_CONFIG`` defaults.
 
 import os
 
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 
 def _load_checkpoints_enabled(cfg: dict | None = None) -> bool:

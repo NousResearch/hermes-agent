@@ -6,7 +6,7 @@ import os
 import pytest
 
 from pm.environments import site_packages, store_root, venv_python_version
-from hermes_constants import get_default_hermes_root
+from hermes_agent.hermes_constants import get_default_hermes_root
 
 
 def test_store_resolution_follows_relocated_payload(tmp_path, monkeypatch):

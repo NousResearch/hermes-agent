@@ -15,8 +15,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from hermes_constants import get_hermes_home
-from hermes_time import now as _hermes_now
+from hermes_agent.hermes_constants import get_hermes_home
+from hermes_agent.hermes_time import now as _hermes_now
 
 # Optional test override. Production resolves the path at transaction time so multiplexed profile
 # ticks (set_hermes_home_override) cannot leak one profile's notepad rows into the import-time home

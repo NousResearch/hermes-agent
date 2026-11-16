@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort
 from providers import register_provider
 from providers.base import ProviderProfile
-from utils import base_url_host_matches
+from hermes_agent.utils import base_url_host_matches
 
 
 def _looks_like_ollama_endpoint(base_url: str | None) -> bool:

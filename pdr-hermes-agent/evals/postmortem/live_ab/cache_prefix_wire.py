@@ -42,7 +42,7 @@ def _wrapped(*a, **k):
 setattr(amc, name, _wrapped)
 if hasattr(ad, name): setattr(ad, name, _wrapped)
 print("hooked converter:", name)
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_cli.runtime_provider import resolve_runtime_provider
 rt = resolve_runtime_provider(requested="nous", target_model="anthropic/claude-fable-5.1")
 sid = f"f0wire_{arm}_{int(time.time())}"

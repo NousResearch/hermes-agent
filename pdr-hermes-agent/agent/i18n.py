@@ -88,7 +88,7 @@ def _locales_dir() -> Path:
 
 
 def _current_home() -> str:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return str(get_hermes_home())
 
 

@@ -356,7 +356,7 @@ class TestRunJobScript:
         (deps / "probe_pkg.py").write_text("VALUE = 42\n", encoding="utf-8")
         snapshot = tmp_path / "workspace-snapshot"
         snapshot.mkdir()
-        (snapshot / "hermes_constants.py").write_text("STALE = True\n", encoding="utf-8")
+        (snapshot / "hermes_agent/hermes_constants.py").write_text("STALE = True\n", encoding="utf-8")
         (deps / "snapshot.pth").write_text(f"{snapshot}\n", encoding="utf-8")
 
         monkeypatch.setattr(
@@ -382,7 +382,7 @@ class TestRunJobScript:
         value, constants_file, path0, pythonpath, pickled = output.splitlines()
         assert value == "42"
         repo = Path(scheduler_script.__file__).resolve().parents[1]
-        assert Path(constants_file).resolve() == repo / "hermes_constants.py"
+        assert Path(constants_file).resolve() == repo / "hermes_agent/hermes_constants.py"
         assert Path(path0).resolve() == script.parent.resolve()
         assert pythonpath == "PYTHONPATH="
         assert pickled == "pickled True"  # __main__ outlives the body, as in a plain run

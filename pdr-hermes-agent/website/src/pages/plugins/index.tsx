@@ -29,8 +29,8 @@ import {
 } from "../../components/PluginCatalog/catalog";
 import CopyButton from "../../components/PluginCatalog/CopyButton";
 import CatalogFeatured from "../../components/CatalogFeatured";
-import { groupCatalogPlugins, sortCatalogPlugins } from "../../../../apps/shared/src/catalog-browse";
-import { pickFeatured } from "../../../../apps/shared/src/catalog-featured";
+import { groupCatalogPlugins, sortCatalogPlugins } from "../../../../ui-tui/packages/shared/src/catalog-browse";
+import { pickFeatured } from "../../../../ui-tui/packages/shared/src/catalog-featured";
 
 // Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
 // `static/api/` ends up at `/docs/api/` — same pattern as the Skills Hub.
@@ -499,7 +499,7 @@ export default function PluginCatalogPage() {
     return groupCatalogPlugins(filtered);
   }, [filtered, search, categoryFilter]);
 
-  // Same pick as the desktop app (apps/shared pickFeatured): curated ranks from
+  // Same pick as the desktop app (ui-tui/packages/shared pickFeatured): curated ranks from
   // catalog-curation.json, rotated weekly, shown only while browsing everything.
   const featured = useMemo(
     () =>

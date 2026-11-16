@@ -92,7 +92,7 @@ def test_configure_processes_site_pth_files(tmp_path):
     Only addsitedir() runs .pth files, and pywin32.pth is load-bearing on
     Windows bundles: it puts win32\\lib on sys.path, which is what makes
     `import pywintypes` resolve (portalocker's Win32Locker →
-    concurrent-log-handler → hermes_logging.py's file handlers). The old
+    concurrent-log-handler → hermes_agent/hermes_logging.py's file handlers). The old
     raw sys.path[0:0] = entries skipped .pth processing entirely, silently
     killing file logging on Windows bundles (and any future .pth-based
     dependency on every platform).
@@ -215,10 +215,10 @@ def test_rendered_wrapper_dispatches_to_the_entry_module(tmp_path):
     (bin_dir / ".." / "repo" / "hermes_cli").mkdir(parents=True, exist_ok=True)
     (bin_dir / ".." / "venv" / "Lib" / "site-packages").mkdir(parents=True, exist_ok=True)
     (bin_dir / ".." / "repo" / "hermes_cli" / "__init__.py").write_text("")
-    (bin_dir / ".." / "repo" / "hermes_bootstrap.py").write_text("READY = True\n")
+    (bin_dir / ".." / "repo" / "hermes_agent/hermes_bootstrap.py").write_text("READY = True\n")
     (bin_dir / ".." / "repo" / "hermes_cli" / "main.py").write_text(
         "import sys\n"
-        "assert sys.modules['hermes_bootstrap'].READY\n"
+        "assert sys.modules['hermes_agent.hermes_bootstrap'].READY\n"
         "def main():\n"
         "    assert sys.argv[0].endswith('hermes.exe'), sys.argv[0]\n"
         "    assert sys.argv[1:] == ['--version']\n"

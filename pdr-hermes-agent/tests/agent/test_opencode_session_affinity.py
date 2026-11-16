@@ -9,7 +9,7 @@ import pytest
 
 from agent import auxiliary_client as aux
 from agent.chat_completion_helpers import build_api_kwargs
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 _MSGS = [{"role": "user", "content": "hi"}]
 

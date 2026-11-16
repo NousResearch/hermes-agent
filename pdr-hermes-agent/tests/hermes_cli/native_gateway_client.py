@@ -25,7 +25,7 @@ def native_desktop_client(monkeypatch, profiles: dict[str, Path] | None = None) 
     from gateway.runtime_bootstrap import TicketStore
     from gateway.session_authorities import SessionAuthorities
     from hermes_cli import web_server
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = get_hermes_home().resolve()
     homes = {name: Path(path).resolve() for name, path in (profiles or {}).items()}

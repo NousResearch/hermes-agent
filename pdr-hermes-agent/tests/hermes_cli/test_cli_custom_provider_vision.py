@@ -60,7 +60,7 @@ agent:
 
 def _resolve_cli_route():
     from hermes_cli._parser import build_top_level_parser
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     _write_profile_config(get_hermes_home())
     parser, _subparsers, _chat = build_top_level_parser()
@@ -100,7 +100,7 @@ def test_real_cli_args_keep_transport_and_capability_identities_separate():
 
 def test_named_identity_reaches_agent_and_vision_tool_native_gates():
     from agent.auxiliary_client import reset_runtime_main, set_runtime_main
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tools.vision_tools import _should_use_native_vision_fast_path
 
     _cli, route = _resolve_cli_route()

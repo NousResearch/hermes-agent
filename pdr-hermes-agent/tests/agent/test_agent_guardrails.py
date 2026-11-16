@@ -11,7 +11,7 @@ import types
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 # Pin the concurrency limit instead of reading the runtime config.
 # _cap_delegate_task_calls() resolves _get_max_concurrent_children() at CALL

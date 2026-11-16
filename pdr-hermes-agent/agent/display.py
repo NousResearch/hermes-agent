@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit
 
-from utils import safe_json_loads
+from hermes_agent.utils import safe_json_loads
 from agent.i18n import t
 from agent.redact import redact_sensitive_text, sanitize_command_for_display
 from agent.tool_result_classification import (

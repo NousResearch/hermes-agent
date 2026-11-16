@@ -1,7 +1,7 @@
 """A goal_mode Kanban worker keeps the live tool feed in its worker log.
 
 The dispatcher used to force ``-Q`` on goal_mode cards because the judge loop only ran in
-cli.py's fully-quiet branch; ``-Q`` strips every tool callback, so the dashboard's Worker log
+hermes_agent/cli.py's fully-quiet branch; ``-Q`` strips every tool callback, so the dashboard's Worker log
 stayed blank for the whole run while non-goal cards logged normally (Discord report, Sep 2026).
 The loop now also runs on the ``-q`` path, driving follow-up turns through ``cli.chat``.
 """

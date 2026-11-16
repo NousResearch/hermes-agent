@@ -230,7 +230,7 @@ class TestClarifyTimeoutResolution:
         legacy ``clarify.timeout`` there wins over the user's ``agent.clarify_timeout`` in
         the resolver, capping every CLI modal at that value (120 s) while the docs promise
         90 s / unlimited. The CLI defaults must leave the legacy key unset."""
-        import cli
+        from hermes_agent import cli
         from tools import clarify_gateway as cm
 
         defaults = cli._cli_config_defaults()

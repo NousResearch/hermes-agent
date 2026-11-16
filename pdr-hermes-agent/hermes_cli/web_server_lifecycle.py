@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 if TYPE_CHECKING:  # pragma: no cover - annotation only
     import uvicorn
@@ -314,7 +314,7 @@ def _request_orphan_shutdown() -> threading.Timer:
     installs before serving (#96095, ``install_exit_flush_signal_handlers``)
     and every ``atexit`` hook, so an unclean desktop exit dropped the in-memory
     transcripts that a SIGTERM from a live desktop persists to ``state.db``.
-    Raise SIGTERM instead, and keep the reap guaranteed the way ``cli.py``'s
+    Raise SIGTERM instead, and keep the reap guaranteed the way ``hermes_agent/cli.py``'s
     ``_arm_exit_watchdog`` does: a daemon timer that ``os._exit``\\ s if the
     unwind stalls (it survives ``Py_FinalizeEx``'s non-daemon thread joins).
     ``raise_signal`` reaches Python's handler on Windows too, where

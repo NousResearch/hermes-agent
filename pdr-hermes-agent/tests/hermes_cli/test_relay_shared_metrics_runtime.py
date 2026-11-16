@@ -1067,7 +1067,7 @@ def test_core_task_instrumentation_preserves_prompt_history_and_tool_schema(
     direct_runtime,
     monkeypatch,
 ):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = object.__new__(AIAgent)
     agent.session_id = "cache-stable-session"
@@ -1138,7 +1138,7 @@ def test_skipped_turn_does_not_finish_another_sessions_matching_task(
     monkeypatch,
 ):
     """A skipped turn must not use shared-metrics' task-id fallback on finish."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     owner_session = "instrumented-session"
     shared_task_id = "caller-supplied-task-id"
@@ -1221,7 +1221,7 @@ def test_managed_config_cannot_override_shared_metrics_consent(
     managed_enabled,
 ):
     from hermes_cli import config, managed_scope
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -1608,7 +1608,7 @@ def test_subagent_agent_boundary_closes_its_own_scope(
     monkeypatch,
     terminal,
 ):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     coordinator = relay_runtime.SESSION_COORDINATOR
     profile_key = relay_runtime.current_profile_key()
@@ -2360,7 +2360,7 @@ def test_tool_category_comes_from_runtime_registry_metadata(
     direct_runtime,
     monkeypatch,
 ):
-    import model_tools
+    from hermes_agent import model_tools
 
     monkeypatch.setattr(
         model_tools,
@@ -2567,7 +2567,7 @@ def test_task_ends_do_not_wait_on_the_process_wide_flush_barrier(parked_flush, t
 def test_background_flush_runs_under_the_finishing_turns_profile(
     direct_runtime, tmp_path, monkeypatch
 ):
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     seen: list[Any] = []
     monkeypatch.setattr(
@@ -2933,7 +2933,7 @@ def test_milestone_install_age_is_the_subscriber_profile_not_the_relay_thread(tm
 
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
     from hermes_cli.observability.shared_metrics_subscriber import SharedMetricsSubscriber
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch, other = tmp_path / "A", tmp_path / "B"
     for home in (launch, other):

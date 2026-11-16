@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from pm import packages, paths
 
 

@@ -3,8 +3,8 @@
 Python is the single source of truth for the JSON-RPC wire: every client→server method
 (params + result), every server→client request (params + result) and every notification
 payload is a Pydantic model declared in this package. ``scripts/gen_gateway_contracts.py``
-renders them into ``apps/shared/src/gateway-contract.generated.ts`` and
-``apps/shared/src/gateway-contract.openrpc.json``; ``tests/tui_gateway/contracts/test_generated.py``
+renders them into ``ui-tui/packages/shared/src/gateway-contract.generated.ts`` and
+``ui-tui/packages/shared/src/gateway-contract.openrpc.json``; ``tests/tui_gateway/contracts/test_generated.py``
 regenerates in memory and diffs the committed files, so a model edited without regenerating
 fails CI on the Python side, and TS that reads a phantom field fails ``tsc``.
 

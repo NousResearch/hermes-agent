@@ -270,7 +270,7 @@ def _seed_hardlinked_sibling(skills):
 def test_hardlinked_sibling_written_through_by_copy_fallback_is_scanned(skills, monkeypatch):
     """On a bind mount the rename fails with EBUSY and atomic_replace copies through the existing inode,
     so the hardlinked sibling takes the new bytes too; it must be in scope and the write rolled back."""
-    import utils
+    from hermes_agent import utils
     ref, sibling = _seed_hardlinked_sibling(skills)
     real_replace = os.replace
     def busy_replace(src, dst):

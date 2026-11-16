@@ -1,7 +1,7 @@
 """Shared print/translate helpers + session-info slash handlers (``cli_commands_mixin`` split).
 
 Moved verbatim from ``hermes_cli/cli_commands_mixin.py`` (file-line ratchet #68779): the
-lazy-binding contract carries over unchanged — ``cli.py``-internal symbols are imported at
+lazy-binding contract carries over unchanged — ``hermes_agent/cli.py``-internal symbols are imported at
 call time via ``from cli import ...``, so patch seams on the ``cli`` facade still intercept.
 ``cli_commands_mixin`` re-imports every helper moved here, so existing ``from
 cli_commands_mixin import _t`` style imports keep working.
@@ -20,8 +20,8 @@ from agent.i18n import t
 
 
 def _cp(*lines: str) -> None:
-    """``_cprint`` each line (lazy import: cli.py imports this module)."""
-    from cli import _cprint
+    """``_cprint`` each line (lazy import: hermes_agent/cli.py imports this module)."""
+    from hermes_agent.cli import _cprint
     for line in lines:
         _cprint(line)
 
@@ -33,14 +33,14 @@ def _pr(*lines: str) -> None:
 
 
 def _save(key: str, value) -> bool:
-    """cli.save_config_value, resolved lazily (cli.py imports this module)."""
-    from cli import save_config_value
+    """hermes_agent.cli.save_config_value, resolved lazily (hermes_agent/cli.py imports this module)."""
+    from hermes_agent.cli import save_config_value
     return save_config_value(key, value)
 
 
 def _dim(text: str) -> str:
     """Wrap ``text`` in the dim ANSI escape."""
-    from cli import _DIM, _RST
+    from hermes_agent.cli import _DIM, _RST
     return f"{_DIM}{text}{_RST}"
 
 
@@ -51,7 +51,7 @@ def _dim_line(text: str) -> str:
 
 def _accent(text: str) -> str:
     """Wrap ``text`` in the skin accent ANSI escape."""
-    from cli import _ACCENT, _RST
+    from hermes_agent.cli import _ACCENT, _RST
     return f"{_ACCENT}{text}{_RST}"
 
 
@@ -204,7 +204,7 @@ class CLICommandsSessionToolsMixin:
 
     def _handle_copy_command(self, cmd_original: str) -> None:
         """Handle /copy [number] — copy assistant output to clipboard."""
-        from cli import _assistant_copy_text
+        from hermes_agent.cli import _assistant_copy_text
         arg = _command_arg(cmd_original)
         assistant = [m for m in self.conversation_history if m.get("role") == "assistant"]
         if not assistant:
@@ -239,7 +239,7 @@ class CLICommandsSessionToolsMixin:
 
     def _handle_image_command(self, cmd_original: str):
         """Handle /image <path> — attach a local image file for the next prompt."""
-        from cli import _DIM, _IMAGE_EXTENSIONS, _RST, _cprint, _resolve_attachment_path, _split_path_input
+        from hermes_agent.cli import _DIM, _IMAGE_EXTENSIONS, _RST, _cprint, _resolve_attachment_path, _split_path_input
         raw_args = (cmd_original.split(None, 1)[1].strip() if " " in cmd_original else "")
         if not raw_args:
             hint = "/path/to/image.png"

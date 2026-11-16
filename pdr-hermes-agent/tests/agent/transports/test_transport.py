@@ -108,7 +108,7 @@ class TestAnthropicTransport:
         aux = _stream_final_message(lambda **_: _stream_cm(_snapshot()), {"model": "claude"}, "", None, None)
         assert transport.normalize_response(aux).provider_data["stop_details"] == details
 
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         # Unmanaged (no Relay runtime) streams never tick on_chunk; feed the accumulator the
         # way the managed path's observe_chunk does so the restore hunk is exercised.

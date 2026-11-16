@@ -70,7 +70,7 @@ def get_save_login_prompt_callback() -> Optional[SaveLoginPrompt]:
 def _key(backend: str) -> tuple[str, str]:
     # Tokens are profile-scoped: a Desktop gateway hosts several profiles in one process and
     # profile B must never reuse (or lock) profile A's manager session.
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return (str(get_hermes_home()), backend)
 
 

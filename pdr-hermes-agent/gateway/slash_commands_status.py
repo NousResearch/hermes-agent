@@ -374,7 +374,7 @@ class GatewayStatusCommandsMixin:
     async def _status_session_db_facts(self, session_id: str):
         """``(title, session_row, db_total_tokens, persisted_route)`` for /status; each fail-open.
 
-        Token totals come from the SQLite session DB, not SessionStore: run_agent.py persists per-turn
+        Token totals come from the SQLite session DB, not SessionStore: hermes_agent/run_agent.py persists per-turn
         token deltas into sessions_db, never into SessionEntry (its total_tokens is always 0).
         """
         db = self._session_db

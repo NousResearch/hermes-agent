@@ -241,7 +241,7 @@ def _turn_elapsed(cli) -> str:
     started = getattr(cli, "_prompt_start_time", None)
     if started is None:
         return ""
-    from cli import format_duration_compact
+    from hermes_agent.cli import format_duration_compact
     return format_duration_compact(max(0.0, time.time() - float(started)))
 
 
@@ -371,7 +371,7 @@ def modern_input_rules(cli, kb):
 
     def _can_queue() -> bool:
         from prompt_toolkit.application import get_app
-        from cli import _looks_like_slash_command
+        from hermes_agent.cli import _looks_like_slash_command
         from hermes_cli.cli_subagent_monitor import modal_prompt_active
         buf = get_app().current_buffer
         text = buf.text.strip()

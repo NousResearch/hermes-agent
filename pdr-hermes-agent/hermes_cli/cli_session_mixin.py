@@ -1,7 +1,7 @@
 """Session lifecycle for the interactive CLI: new/resume/save, undo/retry rewinds, yolo
 persistence, manual compression, and exit summary.
 
-Mixin bound onto ``HermesCLI`` via the MRO. cli.py-internal symbols are imported LAZILY
+Mixin bound onto ``HermesCLI`` via the MRO. hermes_agent/cli.py-internal symbols are imported LAZILY
 inside each method (``from cli import ...``) — never at module load time (import cycle).
 """
 
@@ -13,7 +13,7 @@ import shutil
 import sys
 
 from agent.i18n import t
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_state.ids import new_session_id
 from pathlib import Path
 from rich.console import Console
@@ -34,7 +34,7 @@ def _user_turn_indices(history: list) -> list[int]:
 
 def _timestamp_or(value, default):
     """``datetime.fromtimestamp(value)`` or *default* when the value is missing/unparseable."""
-    from cli import datetime
+    from hermes_agent.cli import datetime
 
     if not value:
         return default
@@ -64,7 +64,7 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
     session-only ``/model --session`` switch never leaks into the next session.
     Best-effort — an unreachable default must never block /new. Module-level helper (like
     ``_apply_new_session_title``): tests drive ``new_session`` unbound on a SimpleNamespace."""
-    from cli import CLI_CONFIG, _cprint, _split_model_config_default, logger
+    from hermes_agent.cli import CLI_CONFIG, _cprint, _split_model_config_default, logger
     _model_config = CLI_CONFIG.get("model", {})
     if isinstance(_model_config, dict):
         _raw_default = _model_config.get("default") or _model_config.get("model") or ""
@@ -113,7 +113,7 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
 
 def _apply_new_session_title(cli, title: str) -> Optional[str]:
     """Sanitize + persist a /new title; returns the stored title or None (untitled)."""
-    from cli import _cprint
+    from hermes_agent.cli import _cprint
     from hermes_state import SessionDB
     try:
         sanitized = SessionDB.sanitize_title(title)
@@ -183,7 +183,7 @@ def _save_on_older_gateway(connection, session_id, fmt, filename, redact):
 def _write_save(session_id, fmt, filename, render):
     """Write a ``/save`` export on this machine: ``filename`` as typed (relative to the cwd), else
     ``sessions/saved/hermes_conversation_<ts>.<fmt>`` under this CLI's home."""
-    from cli import datetime
+    from hermes_agent.cli import datetime
     saved_dir = get_hermes_home() / "sessions" / "saved"
     try:
         saved_dir.mkdir(parents=True, exist_ok=True)
@@ -252,7 +252,7 @@ class CLISessionMixin:
 
     def _render_resume_history_panel_lines(self, panel) -> list[str]:
         """Render the resume panel at the current terminal width for resize replay."""
-        from cli import _suspend_output_history
+        from hermes_agent.cli import _suspend_output_history
         from io import StringIO
 
         buf = StringIO()
@@ -274,7 +274,7 @@ class CLISessionMixin:
 
     def _show_status(self):
         """Show compact startup status line."""
-        from cli import get_tool_definitions
+        from hermes_agent.cli import get_tool_definitions
         from hermes_cli.gateway_tools_notify import gateway_store
         store = gateway_store(self)  # a gateway session's tools are the gateway's: never enumerated here
         inventory = store.banner_inventory() if store is not None else None
@@ -393,7 +393,7 @@ class CLISessionMixin:
 
         Returns True when something was shown, False if no session list was available.
         """
-        from cli import _cli_visible_print
+        from hermes_agent.cli import _cli_visible_print
         sessions = self._list_recent_sessions(limit=limit)
         if not sessions:
             return False
@@ -423,7 +423,7 @@ class CLISessionMixin:
 
     def show_history(self):
         """Display conversation history."""
-        from cli import _cli_visible_print
+        from hermes_agent.cli import _cli_visible_print
         if not self.conversation_history:
             if not self._show_recent_sessions(reason="history"):
                 _cli_visible_print(t("cli.session.history_empty"))
@@ -503,7 +503,7 @@ class CLISessionMixin:
                 "platform": getattr(self, "platform", None) or "cli",
                 "reason": "new_session" if event_type == "on_session_reset" else "session_boundary"}
             if event_type == "on_session_finalize":
-                from cli import _cli_visible_print
+                from hermes_agent.cli import _cli_visible_print
                 from hermes_cli.lifecycle import session_end_messages
                 for message in session_end_messages(finalize_session(**context)):
                     _cli_visible_print(message)
@@ -514,7 +514,7 @@ class CLISessionMixin:
         """Drop a just-ended session row that never gained content (quit-immediately, /new,
         /clear) so it doesn't clutter ``/resume``. ``SessionDB.delete_session_if_empty`` only
         removes rows with no messages, no title and no children (gemini-cli#27770 port)."""
-        from cli import logger
+        from hermes_agent.cli import logger
         if not self._session_db or not session_id:
             return False
         # In-memory transcript is authoritative: a real conversation whose DB flush failed
@@ -522,7 +522,7 @@ class CLISessionMixin:
         if getattr(self, "conversation_history", None):
             return False
         try:
-            from hermes_constants import get_hermes_home as _ghh
+            from hermes_agent.hermes_constants import get_hermes_home as _ghh
             return self._session_db.delete_session_if_empty(
                 session_id, sessions_dir=_ghh() / "sessions")
         except Exception:
@@ -542,7 +542,7 @@ class CLISessionMixin:
 
         Returns the snapshot to queue, or ``None`` when there is nothing to extract.
         """
-        from cli import logger
+        from hermes_agent.cli import logger
         agent = getattr(self, "agent", None)
         if not agent or not history_snapshot:
             return None
@@ -559,7 +559,7 @@ class CLISessionMixin:
 
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
-        from cli import (
+        from hermes_agent.cli import (
             CLI_CONFIG, _parse_service_tier_config,
             _sync_process_session_id, datetime)
         from hermes_cli.cli_model_switch_mixin import _resolve_cli_reasoning
@@ -674,7 +674,7 @@ class CLISessionMixin:
 
         See #34584.
         """
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         pending = self._pending_resume_sessions
         if not pending:
             return False
@@ -859,7 +859,7 @@ class CLISessionMixin:
         and fires the memory providers' ``rewound`` hook. Returns ``(live_text, archived_count)``,
         or None after printing ``failure_key`` when the durable rewind refused (history untouched).
         """
-        from cli import logger
+        from hermes_agent.cli import logger
         from agent.context_compressor import history_before_user_originated_turn
 
         warm_history = list(self.conversation_history)
@@ -933,7 +933,7 @@ class CLISessionMixin:
         silent no-op. ``run_conversation`` binds ``self.session_id`` as the active approval
         key, so the bypass applies to the very next dangerous command.
         """
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         from hermes_cli.colors import Colors as _Colors
         from tools.approval import _YOLO_MODE_FROZEN
 
@@ -1034,7 +1034,7 @@ class CLISessionMixin:
     def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:
         """Print a one-line scrollback summary of a resolved modal prompt (approval/clarify
         panels vanish on repaint); gated by ``display.persist_prompts``."""
-        from cli import CLI_CONFIG, _DIM, _RST, _cprint
+        from hermes_agent.cli import CLI_CONFIG, _DIM, _RST, _cprint
         if not CLI_CONFIG.get("display", {}).get("persist_prompts", True):
             return
         detail, outcome = (_squash(s) for s in (detail, outcome))
@@ -1081,7 +1081,7 @@ class CLISessionMixin:
         """Best-effort flush of the agent's live ``_session_messages`` before ``end_session()``
         — a terminal close/SIGHUP can unwind the app while the agent thread still holds the
         current turn only in memory."""
-        from cli import logger
+        from hermes_agent.cli import logger
         agent = getattr(self, "agent", None)
         if not agent or not hasattr(agent, "_persist_session"):
             return
@@ -1163,7 +1163,7 @@ class CLISessionMixin:
         Args: clear_screen: When True (default), clear the terminal screen and scrollback before printing
         the summary. See #38252, #53009.
         """
-        from cli import datetime
+        from hermes_agent.cli import datetime
         if clear_screen:
             # Clear the screen + scrollback before printing the summary so the live bottom chrome (status
             # bar, input box, separator rules) and the rest of the session transcript don't get stranded
@@ -1174,7 +1174,7 @@ class CLISessionMixin:
             # Honors NO_COLOR/dumb terminals by skipping silently when there's no real console.
             self._clear_terminal_on_exit()
         print()
-        import cli as _cli_module
+        from hermes_agent import cli as _cli_module
         # Plugin on_session_finalize messages from _run_cleanup: printed after the clear so they survive.
         for message in _cli_module._session_end_messages:
             print(message)

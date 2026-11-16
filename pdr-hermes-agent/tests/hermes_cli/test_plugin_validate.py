@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 from hermes_cli.plugin_validate import validate_plugin_dir
 from hermes_cli.plugin_validate_desktop import desktop_surface_hits, is_desktop_surface
@@ -524,13 +524,13 @@ def test_runtime_rebind_of_hermes_core_fails_admission(tmp_path):
     (good / "tools" / "__init__.py").write_text("def helper(**kw):\n    return None\n", encoding="utf-8")
     (good / "tests").mkdir()
     (good / "tests" / "test_x.py").write_text(
-        "from unittest import mock\nimport run_agent\nrun_agent.AIAgent.x = 1\nmock.patch('run_agent.AIAgent.y')\n",
+        "from unittest import mock\nimport run_agent\nrun_agent.AIAgent.x = 1\nmock.patch('hermes_agent.run_agent.AIAgent.y')\n",
         encoding="utf-8")
 
     from hermes_cli.plugin_validate_core_override import core_override_findings
 
     assert core_override_findings(bad) == [
-        "run_agent.AIAgent.run_conversation (__init__.py:6)",
+        "hermes_agent.run_agent.AIAgent.run_conversation (__init__.py:6)",
         "_wrap(run_agent.AIAgent, ...) (__init__.py:7)",
         "setattr(srv, ...) (__init__.py:9)",
         "m._PROVIDER_MODELS[...] (__init__.py:11)",

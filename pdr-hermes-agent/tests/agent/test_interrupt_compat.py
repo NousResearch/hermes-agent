@@ -77,7 +77,7 @@ def test_dynamic_proxy_does_not_fabricate_hard_interrupt_support() -> None:
 
 
 def test_inherited_hard_interrupt_bypasses_legacy_subclass_override() -> None:
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     class LegacySubclass(AIAgent):
         def __init__(self) -> None:

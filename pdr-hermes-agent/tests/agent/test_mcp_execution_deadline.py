@@ -11,7 +11,7 @@ from tools.registry import registry
 def test_registered_deadline_survives_sequential_execution_and_bridge(tmp_path):
     from agent.tool_executor import execute_tool_calls_sequential
     from hermes_cli.config import atomic_config_write, get_config_path
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     atomic_config_write(get_config_path(), {"timeouts": {"tools": {"sequential_call": 2}}})
     release = threading.Event()

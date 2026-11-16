@@ -3,8 +3,8 @@ import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
 import styles from "./styles.module.css";
 import CatalogFeatured from "../../components/CatalogFeatured";
-import { isOfficialSkillSource, pickFeatured } from "../../../../apps/shared/src/catalog-featured";
-import { skillCatalogInstallIdentifier, skillCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
+import { isOfficialSkillSource, pickFeatured } from "../../../../ui-tui/packages/shared/src/catalog-featured";
+import { skillCatalogInstallIdentifier, skillCatalogInstallUrl } from "../../../../ui-tui/packages/shared/src/catalog-install";
 
 interface Skill {
   name: string;
@@ -843,7 +843,7 @@ export default function SkillsDashboard() {
   const visible = filtered.slice(0, visibleCount);
   const hasMore = visibleCount < filtered.length;
 
-  // Same pick as the desktop app (apps/shared pickFeatured): curated ranks from
+  // Same pick as the desktop app (ui-tui/packages/shared pickFeatured): curated ranks from
   // catalog-curation.json, rotated weekly, shown only while browsing everything.
   const featured = useMemo(
     () =>

@@ -43,7 +43,7 @@ def windows_service_session() -> bool:
     with ``gateway_other_session``. A registered Scheduled Task (InteractiveToken, LeastPrivilege) runs in
     the signed-in user's session instead. It can still attach to a gateway the user's session started.
     False off Windows and whenever either fact cannot be read."""
-    from hermes_dir_acl import process_is_elevated
+    from hermes_agent.hermes_dir_acl import process_is_elevated
     from hermes_platform.host import windows_session_id
     try:
         return windows_session_id() == 0 and process_is_elevated()

@@ -76,7 +76,7 @@ def _restore_pool_keys(base_url, requested="custom:myep"):
 
 
 def _stored_rows(key):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return json.loads((get_hermes_home() / "auth.json").read_text())["credential_pool"][key]
 
 
@@ -126,7 +126,7 @@ def test_openrouter_pkce_key_is_bound_to_openrouter_even_with_a_proxy_entry(_iso
     from types import SimpleNamespace
 
     from hermes_cli.auth_commands import auth_add_command
-    from hermes_constants import OPENROUTER_BASE_URL
+    from hermes_agent.hermes_constants import OPENROUTER_BASE_URL
     _entry("openrouter")
     monkeypatch.setattr("hermes_cli.auth._openrouter_pkce_login", lambda **_kw: {"api_key": POOLED})
     auth_add_command(SimpleNamespace(provider="openrouter", auth_type="oauth", api_key=None,
@@ -153,7 +153,7 @@ def test_cli_added_key_reaches_no_aux_delegate_or_restore_path_after_a_move(clie
 def test_unrecorded_legacy_row_is_bound_to_the_entry_address_and_left_behind_by_a_move(client):
     """A manual row written before writers recorded an address is bound to the entry's address on
     first use (persisted once), and the move guard treats it as the old host's credential."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     _entry()
     (get_hermes_home() / "auth.json").write_text(json.dumps({"version": 1, "providers": {}, "credential_pool": {
         "myep": [{"id": "leg001", "label": "old", "auth_type": "api_key", "priority": 0,
@@ -169,7 +169,7 @@ def test_unrecorded_legacy_row_is_bound_to_the_entry_address_and_left_behind_by_
 @pytest.mark.parametrize("stored", [{}, {"extra_headers": {"X-Org": "a"}}, {"key_env": "MYEP_OLD_KEY"}])
 def test_unrecorded_legacy_row_is_bound_by_the_move_guard_even_if_never_used(client, stored):
     """Config credentials on the entry must not skip the binding, or the row follows the move."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     _entry(**stored)
     (get_hermes_home() / "auth.json").write_text(json.dumps({"version": 1, "providers": {}, "credential_pool": {
         "myep": [{"id": "leg002", "label": "old", "auth_type": "api_key", "priority": 0,
@@ -291,7 +291,7 @@ def test_aux_task_base_url_override_never_receives_the_entry_origin_key(_isolate
 def test_resolving_a_same_named_entry_never_moves_the_builtin_pool_to_the_entry_host(_isolate_hermes_home, monkeypatch):
     """A built-in's manual row with no recorded address belongs to the built-in's own address: a
     ``providers.deepseek`` proxy entry neither stamps it with the proxy URL nor sends it there."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_cli.runtime_provider import resolve_runtime_provider
     proxy = "https://proxy.example/v1"
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
@@ -318,7 +318,7 @@ def test_delegated_child_on_a_builtin_named_entry_leases_no_builtin_key(_isolate
     dashboard row or env key to the proxy, nor replace the entry's own key_env credential."""
     from types import SimpleNamespace
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from tools.delegate_tool_child_run import _lease_child_credential
     from tools.delegate_tool_config import _resolve_child_credential_pool, _resolve_delegation_credentials
     proxy = "https://proxy.example/v1"

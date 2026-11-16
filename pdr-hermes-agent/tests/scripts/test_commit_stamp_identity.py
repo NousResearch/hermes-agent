@@ -15,7 +15,7 @@ def test_stamp_uses_built_commit_even_with_dispatch_sha_and_refuses_mismatch(tmp
     repo.mkdir()
     for relative in ('scripts/write_install_stamp.py',
                      'hermes_cli/__init__.py', 'hermes_cli/update_channel.py', 'hermes_cli/release_channels.py',
-                     'pm/paths.py', 'pm/environments.py', 'hermes_cli/steward.py', 'hermes_constants.py'):
+                     'pm/paths.py', 'pm/environments.py', 'hermes_cli/steward.py', 'hermes_agent/hermes_constants.py'):
         dest = repo / relative
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, dest)

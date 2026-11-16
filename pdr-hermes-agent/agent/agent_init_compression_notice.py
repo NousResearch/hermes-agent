@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import suppress
 from typing import Any, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 def _build_codex_gpt5_autoraise_notice(

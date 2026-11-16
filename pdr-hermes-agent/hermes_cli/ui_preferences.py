@@ -36,7 +36,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Optional
 
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 STORE_NAME = "ui-preferences.json"
 KEY_PREFIXES = ("hermes.desktop.", "hermes-desktop-", "hermes-onboarding-")
@@ -67,7 +67,7 @@ def store_path(root: Optional[Path] = None) -> Path:
     resolved through symlinks on both sides. Every profile one process serves maps to the same
     root, so this read is profile-independent by design (not a launch-profile leak)."""
     if root is None:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         home = Path(os.path.abspath(get_hermes_home()))
         root = (home.parent.parent if home.parent.name.lower() == "profiles" else home).resolve()

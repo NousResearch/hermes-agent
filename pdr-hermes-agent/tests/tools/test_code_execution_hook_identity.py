@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from model_tools import handle_function_call
+from hermes_agent.model_tools import handle_function_call
 from tools.code_execution_rpc import _default_dispatch
 from tools.code_kernel import shutdown_all_kernels
 

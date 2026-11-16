@@ -3,7 +3,7 @@
 from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def test_credential_rotation_replaces_route_scoped_tls_settings():

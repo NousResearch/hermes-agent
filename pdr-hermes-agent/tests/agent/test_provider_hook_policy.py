@@ -42,7 +42,7 @@ def make_profile(request, monkeypatch):
 
 
 def _agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with patch("agent.process_bootstrap.OpenAI") as mock_openai:
         mock_openai.return_value = MagicMock()

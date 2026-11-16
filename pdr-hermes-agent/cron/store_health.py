@@ -272,7 +272,7 @@ def probe_store(cron_dir: Path) -> Optional[OSError]:
     over-quota or read-only target fails here the way the save would."""
     if not cron_dir.is_dir():
         return None
-    from utils import mkstemp_beside
+    from hermes_agent.utils import mkstemp_beside
     jobs_file = cron_dir / "jobs.json"
     try:
         size = jobs_file.stat().st_size + 4096

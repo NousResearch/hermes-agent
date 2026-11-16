@@ -81,8 +81,8 @@ def _schedule_persist(adapter: Any) -> None:
         return
 
     async def _flush() -> None:
-        from hermes_constants import mkdir_under_hermes_home
-        from utils import atomic_json_write
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.utils import atomic_json_write
         while adapter._telegram_send_cooldown_dirty:
             adapter._telegram_send_cooldown_dirty = False
             loop_now, now = asyncio.get_running_loop().time(), time.time()

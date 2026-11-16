@@ -2,7 +2,7 @@
 import logging
 
 from agent.provider_registry import ProviderRegistry
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 
 
 class Provider:

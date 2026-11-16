@@ -277,7 +277,7 @@ def test_send_message_routes_buzz_uuid_without_home_fallback() -> None:
     with patch("gateway.config.load_gateway_config", return_value=config), \
          patch("tools.interrupt.is_interrupted", return_value=False), \
          patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("raw UUID should not resolve via directory")), \
-         patch("model_tools._run_async", side_effect=_run_async_immediately), \
+         patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
          patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
          patch("gateway.mirror.mirror_to_session", return_value=True):
         result = json.loads(
@@ -340,7 +340,7 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
     with patch("gateway.config.load_gateway_config", return_value=config), \
          patch("tools.interrupt.is_interrupted", return_value=False), \
          patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("raw JID should not resolve via directory")), \
-         patch("model_tools._run_async", side_effect=_run_async_immediately), \
+         patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
          patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
          patch("gateway.mirror.mirror_to_session", return_value=True):
         result = json.loads(
@@ -390,7 +390,7 @@ def test_resolved_opaque_plugin_target_uses_directory_id() -> None:
                  "gateway.channel_directory.resolve_channel_name",
                  return_value="opaque:directory-id",
              ), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
              patch(
                  "tools.send_message_tool._send_to_platform",
                  new=AsyncMock(return_value={"success": True}),
@@ -452,7 +452,7 @@ def test_unresolved_plugin_target_requires_explicit_parser() -> None:
                  "hermes_cli.plugins.discover_plugins",
                  side_effect=lambda: platform_registry.register(entry),
              ) as discover_mock, \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
              patch(
                  "tools.send_message_tool._send_to_platform",
                  new=AsyncMock(return_value={"success": True}),
@@ -624,7 +624,7 @@ def test_bare_platform_home_fallback_preserves_thread_id() -> None:
 
     with patch("gateway.config.load_gateway_config", return_value=config), \
          patch("tools.interrupt.is_interrupted", return_value=False), \
-         patch("model_tools._run_async", side_effect=_run_async_immediately), \
+         patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
          patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
          patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
         result = json.loads(

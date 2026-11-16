@@ -50,7 +50,7 @@ class _ExecuteTransport:
 
 
 def test_the_account_a_call_ran_under_reaches_the_model_on_both_dispatch_paths(monkeypatch):
-    import model_tools
+    from hermes_agent import model_tools
     from tools.connectors.gateway import bridge, config
     from tools.registry import invalidate_check_fn_cache
 

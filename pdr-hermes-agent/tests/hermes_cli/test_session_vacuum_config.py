@@ -10,9 +10,9 @@ from unittest.mock import MagicMock
 
 def test_explicit_auto_prune_false_is_respected(monkeypatch, tmp_path: Path):
     """Migration guard: an install that explicitly opted out keeps its choice."""
-    import cli
+    from hermes_agent import cli
     import hermes_cli.config
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     session_db = MagicMock()
     session_db.get_meta.return_value = "already-done"
@@ -36,9 +36,9 @@ def test_negative_retention_days_in_config_deletes_nothing(monkeypatch, tmp_path
     """E2E through the real startup path: ``sessions.retention_days: -1`` reaches
     ``maybe_auto_prune_and_vacuum`` from this config loader; without validation it
     builds a future cutoff and deletes every ended session."""
-    import cli
+    from hermes_agent import cli
     import hermes_cli.config
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_state import SessionDB
 
     session_db = SessionDB(db_path=tmp_path / "state.db")
@@ -60,9 +60,9 @@ def test_negative_retention_days_in_config_deletes_nothing(monkeypatch, tmp_path
 
 
 def test_cli_auto_maintenance_forwards_vacuum_interval(monkeypatch, tmp_path: Path):
-    import cli
+    from hermes_agent import cli
     import hermes_cli.config
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     session_db = MagicMock()
     session_db.get_meta.return_value = "already-done"

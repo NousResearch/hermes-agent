@@ -26,7 +26,7 @@ def test_browser_setup_respects_provider_and_native_owner(monkeypatch, capsys, t
         patch('tools.browser_use_cli._find_cli', return_value=['harness']) as install,
         patch('hermes_cli.browser_runtime.BAKED_EXECUTABLE_FILE', baked),
         patch('hermes_cli.browser_runtime.chromium_executable', side_effect=lambda **_kw: next(found)) as chromium,
-        patch('hermes_constants.is_termux', return_value=False),
+        patch('hermes_agent.hermes_constants.is_termux', return_value=False),
         patch('hermes_platform.host.runtime.is_termux', return_value=False),
         patch('importlib.util.find_spec', return_value=object() if playwright else None),
         patch('shutil.which', return_value='/usr/bin/apt-get'),

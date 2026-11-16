@@ -31,7 +31,7 @@ def main():
     registered = rpc('worker.register', **scope, kind='compute')
     scope['epoch'] = registered['owner_epoch']
     store = RuntimeSessionStore(rpc, scope, home / 'worker-outboxes' / 'compression-worker')
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     agent = AIAgent(model='worker-model', provider='custom', base_url=command['url'], api_key='loopback-only',
         session_db=store, session_id=scope['session_id'], enabled_toolsets=[], skip_context_files=True,
         skip_memory=True, skip_background_review=True, quiet_mode=True)

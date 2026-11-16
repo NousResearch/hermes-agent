@@ -62,7 +62,7 @@ _cookie_droppers: set[tuple[str, str]] = set()
 
 def secondary_profile_home() -> Optional[Path]:
     """The active scope's home when it is a profile other than the launch profile, else None."""
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
     home = get_hermes_home()
     return None if hermes_home_key(home) == hermes_home_key(get_process_hermes_home()) else Path(home)
 
@@ -92,7 +92,7 @@ def _published(key: str, rescans: int, plugins: list) -> list:
 def profile_dashboard_plugins(home: Path, force_rescan: bool = False) -> list:
     """Dashboard plugins of the profile at ``home`` (:func:`_scan_profile_plugins`), cached per home
     like the launch profile's list. An explicit rescan also forgets the profile's cached misses."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     key = hermes_home_key(home)
     with _profile_plugins_lock:
         if force_rescan:
@@ -113,7 +113,7 @@ def rescanned_plugin(home: Path, name: str) -> Optional[dict]:
     """The profile at ``home``'s entry for ``name`` after a rescan, or None; a name found missing
     within the last :data:`_UNKNOWN_PLUGIN_RESCAN_SECS` is answered without one. Blocking: the
     request gate runs it on a worker thread."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     home_key, now = hermes_home_key(home), time.monotonic()
     key = (home_key, name)
     with _profile_plugins_lock:
@@ -215,7 +215,7 @@ def hosted_response(result: dict[str, Any], home: Path, name: str) -> Response:
 
 
 def _note_dropped_cookie(home: Path, name: str) -> None:
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     key = (hermes_home_key(home), name)
     with _profile_plugins_lock:
         if key in _cookie_droppers:
@@ -226,7 +226,7 @@ def _note_dropped_cookie(home: Path, name: str) -> None:
 
 
 def _hosted_executor(home: Path) -> ThreadPoolExecutor:
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     key = hermes_home_key(home)
     with _profile_plugins_lock:
         executor = _hosted_executors.get(key)

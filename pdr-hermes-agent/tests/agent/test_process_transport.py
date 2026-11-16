@@ -20,9 +20,9 @@ PROVIDER = "patience-fixture"
 
 @pytest.fixture
 def process_agent(monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from providers import get_provider_profile
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     for name in ("HERMES_API_CALL_STALE_TIMEOUT", "HERMES_STREAM_STALE_TIMEOUT", "HERMES_LOCAL_STREAM_STALE_TIMEOUT",
                  "HERMES_API_TIMEOUT"):
@@ -53,7 +53,7 @@ def _budgets(agent, model: str) -> tuple[float, float]:
 
 
 def _write_config(text: str) -> None:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     (get_hermes_home() / "config.yaml").write_text(text)
 

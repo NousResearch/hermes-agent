@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent() -> AIAgent:

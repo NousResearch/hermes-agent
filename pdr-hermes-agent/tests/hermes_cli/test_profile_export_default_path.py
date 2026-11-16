@@ -113,7 +113,7 @@ def test_cli_export_default_does_not_write_into_the_current_checkout(
     monkeypatch.chdir(checkout)
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
     monkeypatch.setattr(
-        "hermes_constants.get_default_hermes_root", lambda: default_home
+        "hermes_agent.hermes_constants.get_default_hermes_root", lambda: default_home
     )
 
     profile_cmd.cmd_profile(

@@ -19,7 +19,7 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
-from utils import base_url_host_matches, base_url_hostname, base_url_origin
+from hermes_agent.utils import base_url_host_matches, base_url_hostname, base_url_origin
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
 from hermes_cli.model_switch_providers import (
     _extra_headers_from_config, _saved_entry_on_other_origin, list_authenticated_providers)
@@ -126,7 +126,7 @@ def format_model_for_display(model_name: str) -> str:
 
 
 def is_nous_hermes_non_agentic(model_name: str) -> bool:
-    """True if *model_name* is a real Nous Hermes 3/4 chat model (single owner; cli.py uses it too)."""
+    """True if *model_name* is a real Nous Hermes 3/4 chat model (single owner; hermes_agent/cli.py uses it too)."""
     return bool(model_name and _NOUS_HERMES_NON_AGENTIC_RE.search(model_name))
 
 
@@ -267,7 +267,7 @@ _DIRECT_ALIAS_LOADED: Optional[dict] = None
 def _direct_alias_source_identity() -> Optional[tuple]:
     """Identity of the active profile's alias source; None means "do not reuse the cache"."""
     try:
-        from hermes_constants import get_config_path
+        from hermes_agent.hermes_constants import get_config_path
         path = get_config_path()
     except Exception:
         return None
@@ -557,7 +557,7 @@ def resolve_persist_behavior(
 
 
 # --- Single-owner /model request parsing + effective-model resolution. Surfaces
-# (cli.py, gateway/slash_commands.py, tui_gateway/server.py, api_server.py)
+# (hermes_agent/cli.py, gateway/slash_commands.py, tui_gateway/server.py, api_server.py)
 # map error codes to their own copy but never re-derive the semantics.
 
 # Error codes emitted by parse_model_switch_args().
@@ -634,7 +634,7 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
     if parsed.is_once and not parsed.model_input and not parsed.explicit_provider:
         errors.append(MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET)
     if parsed.reasoning_effort:
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.hermes_constants import parse_reasoning_effort
         if parse_reasoning_effort(parsed.reasoning_effort) is None:
             errors.append(MODEL_SWITCH_ERR_BAD_REASONING)
     if parsed.model_input.strip().lower() == MODEL_SWITCH_RESET_TOKEN and (
@@ -1906,7 +1906,7 @@ def remote_model_selection_guard(before: Any, after: Any) -> None:
     from hermes_cli.config_backend import ConfigLockedError, get_config_backend, supports_file_tooling
     if supports_file_tooling():
         return
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     before = before if isinstance(before, dict) else {}
     after = after if isinstance(after, dict) else {}
     backend, home = get_config_backend(), get_hermes_home()

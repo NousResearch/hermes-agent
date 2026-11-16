@@ -507,7 +507,7 @@ class TestStdioPgroupReaping:
 
 
 # ---------------------------------------------------------------------------
-# Fix 3: MCP reload timeout (cli.py)
+# Fix 3: MCP reload timeout (hermes_agent/cli.py)
 # ---------------------------------------------------------------------------
 
 

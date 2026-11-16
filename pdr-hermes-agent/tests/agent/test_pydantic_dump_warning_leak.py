@@ -98,7 +98,7 @@ def test_anthropic_to_plain_data_no_warning_leak():
 
 
 def test_hook_jsonable_no_warning_leak():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     stop_event, _ = _accumulated_stop_event()
     with warnings.catch_warnings(record=True) as recorded:

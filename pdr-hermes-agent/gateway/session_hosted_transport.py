@@ -44,7 +44,7 @@ def owner_request(home, verb, params, *, timeout=30):
     discovered = discover_gateway_endpoint(home, timeout=timeout)
     if discovered.state != 'ready' or discovered.endpoint is None:
         raise RuntimeStoreError('runtime_draining')
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     if hermes_home_key(discovered.endpoint.profile_id) != hermes_home_key(home):
         raise RuntimeStoreError('profile_mismatch')
     # Socket identity and logical authority identity are distinct under multiplex.
@@ -185,7 +185,7 @@ def install_hosted_transport(server, authority, loop, *, attest):
     Reinstallation for a secondary preserves routing to all other served owners.
     """
     def select(envelope):
-        from hermes_constants import assert_named_profile_home_live
+        from hermes_agent.hermes_constants import assert_named_profile_home_live
         params = dict(envelope)
         profile_id = params.pop('profile_id', None)
         if not isinstance(profile_id, str) or not Path(profile_id).is_absolute():

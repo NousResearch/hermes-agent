@@ -27,7 +27,7 @@ def _make_agent(monkeypatch):
     """Minimal AIAgent-like stub, mirroring test_concurrent_interrupt.py."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "")
-    import run_agent as _ra
+    from hermes_agent import run_agent as _ra
 
     class _Stub:
         _interrupt_requested = False

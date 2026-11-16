@@ -76,7 +76,7 @@ def test_delegated_child_context_suppresses_env_gated_kanban_tools(monkeypatch, 
 
     import tools.kanban_tools
     from agent.delegation_context import delegated_child_context
-    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from hermes_agent.model_tools import _clear_tool_defs_cache, get_tool_definitions
     from tools.registry import invalidate_check_fn_cache
 
     invalidate_check_fn_cache()
@@ -100,7 +100,7 @@ def test_build_child_agent_strips_kanban_toolset_even_when_parent_is_worker(monk
             self.session_id = "child-session"
             self._session_db = kwargs.get("session_db")
 
-    import run_agent
+    from hermes_agent import run_agent
     from tools import delegate_tool
     from tools import delegate_tool_config
 

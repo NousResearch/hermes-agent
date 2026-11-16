@@ -5,7 +5,7 @@ import styles from "./styles.module.css";
 
 /** The catalog hero both /skills and /plugins show, laid out like the desktop
  *  app's featured card (author, title, one-line description, tags; action
- *  bottom-right; no artwork). The pick comes from apps/shared `pickFeatured`,
+ *  bottom-right; no artwork). The pick comes from ui-tui/packages/shared `pickFeatured`,
  *  so the site and the app always feature the same entry. */
 export default function CatalogFeatured({
   label,

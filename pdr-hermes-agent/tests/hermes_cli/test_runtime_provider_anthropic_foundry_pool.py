@@ -21,7 +21,7 @@ OAUTH_TOKEN = "sk-ant-" + "oat01-" + "c" * 24  # concatenated: push protection r
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     """The test HERMES_HOME with a Claude Code login present and no ambient Anthropic/Azure keys."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "AZURE_ANTHROPIC_KEY",
                  "ANTHROPIC_BASE_URL"):
         monkeypatch.delenv(name, raising=False)

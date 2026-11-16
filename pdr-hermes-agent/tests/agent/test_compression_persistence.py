@@ -34,7 +34,7 @@ class TestFlushAfterCompression:
 
     def _make_agent(self, session_db):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-            from run_agent import AIAgent
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent(
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
@@ -473,7 +473,7 @@ class TestStoredPromptCwdDrift:
         from pathlib import Path
         from unittest.mock import patch
         from hermes_state import SessionDB
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         from agent.system_prompt import build_system_prompt_parts
 
         with tempfile.TemporaryDirectory() as tmpdir:

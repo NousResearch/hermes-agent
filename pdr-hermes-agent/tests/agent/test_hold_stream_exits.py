@@ -21,7 +21,7 @@ ATTEMPT = "Done, the deploy key SECRET-321 is in place."
 
 
 def _agent(server, db, session_id: str, **kwargs):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     kwargs.setdefault("enabled_toolsets", ["todo"])
     return AIAgent(base_url=server.base_url, api_key="sk-fake-e2e", provider="custom", model="fake-model",

@@ -9,7 +9,7 @@ sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
-import run_agent
+from hermes_agent import run_agent
 from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
 
 
@@ -24,7 +24,7 @@ def _no_codex_backoff(monkeypatch):
 
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
-        "model_tools.get_tool_definitions",
+        "hermes_agent.model_tools.get_tool_definitions",
         lambda **kwargs: [
             {
                 "type": "function",
@@ -36,7 +36,7 @@ def _patch_agent_bootstrap(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
+    monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", dict)
 
 
 def _build_agent(monkeypatch):

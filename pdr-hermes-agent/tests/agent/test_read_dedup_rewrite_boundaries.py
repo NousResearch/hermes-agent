@@ -62,15 +62,15 @@ def _dedup_state():
 def _run(agent, history, monkeypatch):
     tool_defs = [{"type": "function", "function": {"name": "skill_view", "description": "skill_view",
                                                    "parameters": {"type": "object", "properties": {}}}}]
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **kw: tool_defs)
-    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda *a, **kw: {})
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **kw: tool_defs)
+    monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", lambda *a, **kw: {})
     agent.tool_delay = 0
     agent.save_trajectories = False
     with (
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
-        patch("model_tools.handle_function_call",
+        patch("hermes_agent.model_tools.handle_function_call",
               lambda name, args, task_id=None, **_kw: _skill_view_with_bump(args, task_id=task_id)),
     ):
         result = agent.run_conversation("go on", conversation_history=history, task_id=TASK)
@@ -81,7 +81,7 @@ def _run(agent, history, monkeypatch):
 @pytest.mark.parametrize("splice", [True, False], ids=["spliced", "no_op"])
 def test_micro_compaction_splice_rearms_read_dedup(served, splice, monkeypatch):
     with patch("agent.process_bootstrap.OpenAI"):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
                         skip_context_files=True, skip_memory=True, max_iterations=4)
     agent.client = MagicMock()
@@ -121,7 +121,7 @@ def test_micro_compaction_splice_rearms_read_dedup(served, splice, monkeypatch):
 def test_native_checkpoint_rearms_read_dedup(served, monkeypatch):
     """The response carrying a server checkpoint re-views the skill: the next request starts at the
     checkpoint, so that re-view must deliver the body, not a stub for a result the wire dropped."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     monkeypatch.setattr("agent.model_metadata._fetch_codex_oauth_context_lengths_with_source", lambda _t, **_kw: ({}, False))
     agent = AIAgent(model="gpt-5.6", base_url="https://chatgpt.com/backend-api/codex", api_key="codex-token",
                     quiet_mode=True, skip_context_files=True, skip_memory=True, max_iterations=4)

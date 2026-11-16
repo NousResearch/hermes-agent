@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.version_info import get_version_info
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 @patch("agent.process_bootstrap.OpenAI")

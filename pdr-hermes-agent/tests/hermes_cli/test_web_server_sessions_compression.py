@@ -20,7 +20,7 @@ class _SessionsCompressionEndpoints:
             pytest.skip("fastapi/starlette not installed")
 
         import hermes_state
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(
@@ -84,7 +84,7 @@ class TestDeleteSessionCompressionChain(_SessionsCompressionEndpoints):
 
         from gateway.session_authority import LiveSession, SessionAuthority
         from hermes_cli.web_server import app
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_state import SessionDB
         from hermes_state.runtime import begin_runtime_epoch
 

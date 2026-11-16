@@ -144,7 +144,7 @@ def _is_repo_junk(root: str) -> bool:
     HERMES_HOME. User-created projects pointing there are still honored."""
     if not root:
         return True
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     real = os.path.realpath(root)
     hermes_home = os.path.realpath(str(get_hermes_home()))
     return (
@@ -158,7 +158,7 @@ def _is_session_cwd_junk(cwd: str) -> bool:
     intentional prose/data workspace, so only HERMES_HOME itself is excluded here."""
     if not cwd:
         return True
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     real = os.path.normcase(os.path.realpath(cwd))
     hermes_home = os.path.normcase(os.path.realpath(str(get_hermes_home())))
     return real in _non_workspace_dirs() or real == hermes_home

@@ -329,7 +329,7 @@ async def test_deleted_profile_is_torn_down_and_unrouted_others_untouched(tmp_pa
         reconnect = asyncio.get_running_loop().create_task(asyncio.sleep(3600))
         runner._profile_failed_platforms = {"gamma": {Platform.TELEGRAM: reconnect}}
 
-        from hermes_constants import mark_named_profile_deleted
+        from hermes_agent.hermes_constants import mark_named_profile_deleted
         mark_named_profile_deleted(gamma_dir)  # what ``delete_profile`` does before rmtree
         result = await runner.reconcile_served_profiles()
 
@@ -356,8 +356,8 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
     ``logs/.__agent.lock`` / ``logs/.__errors.lock`` / ``mcp-stderr.log`` (WinError 32)."""
     import logging as _logging
 
-    import hermes_logging
-    from hermes_constants import (
+    from hermes_agent import hermes_logging
+    from hermes_agent.hermes_constants import (
         hermes_home_key,
         mark_named_profile_deleted,
         reset_hermes_home_override,

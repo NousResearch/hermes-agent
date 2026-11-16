@@ -57,7 +57,7 @@ class _Agent:
         return extract_api_error_context(error)
 
     def _disable_codex_reasoning_replay(self, messages=None, **kwargs):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         return AIAgent._disable_codex_reasoning_replay(self, messages, **kwargs)
 
     def __getattr__(self, name):

@@ -51,7 +51,7 @@ _INPUT_FILES = (
     "scripts/releases/versioning.py", "scripts/releases/semver.py",
     "scripts/releases/bundle_env.py", "scripts/releases/commit_build.py", "scripts/termux/deb_version.py",
     "hermes_cli/__init__.py", "hermes_cli/release_channels.py", "hermes_cli/update_channel.py",
-    "hermes_cli/runtime_state.py", "hermes_constants.py", "hermes_platform/__init__.py",
+    "hermes_cli/runtime_state.py", "hermes_agent/hermes_constants.py", "hermes_platform/__init__.py",
     "hermes_platform/resolver/__init__.py", "hermes_platform/resolver/base.py",
     "hermes_platform/resolver/core.py", "hermes_platform/resolver/known_dirs.py", "hermes_agent/__init__.py",
 )

@@ -10,7 +10,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from tui_gateway import server

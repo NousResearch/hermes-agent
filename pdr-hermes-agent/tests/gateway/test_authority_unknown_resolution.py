@@ -165,7 +165,7 @@ async def test_discarded_lost_turn_is_closed_and_never_merged_into_the_follower_
     """Discard keeps the lost text visible for resending, but the next provider request must not
     glue it onto the follower (consecutive-user merge): it is closed like a failed turn."""
     from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.acp_adapter.test_failed_turn_closure import _LoopbackProvider
     monkeypatch.setenv('HERMES_DISABLE_PLUGINS', '1')
     monkeypatch.setenv('NO_PROXY', '127.0.0.1,localhost')

@@ -165,7 +165,7 @@ def test_the_restart_child_env_keeps_the_value_and_its_marker(monkeypatch, tmp_p
     monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
     monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), bridged_env_digest("false"))
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     child = served_profile_child_env(  # the launch profile's own restart: same home
         base=dict(shared.os.environ), target_home=get_hermes_home(), inherit_credentials=False

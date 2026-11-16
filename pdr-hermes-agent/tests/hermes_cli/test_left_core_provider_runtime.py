@@ -196,7 +196,7 @@ def installs_ok(monkeypatch):
     calls = []
 
     def fake_install(identifier, *, force, enable, catalog_name=None, assume_deps_consent=None, **kw):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         calls.append(catalog_name)
         (Path(get_hermes_home()) / "plugins" / catalog_name).mkdir(parents=True)
         return {"ok": True}

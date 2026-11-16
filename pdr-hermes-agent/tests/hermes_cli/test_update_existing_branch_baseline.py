@@ -20,11 +20,11 @@ def init_repo(root, monkeypatch):
 def checkout(tmp_path, monkeypatch):
     root = tmp_path / "checkout"
     init_repo(root, monkeypatch)
-    (root / "cli.py").write_text("value = 1\n", encoding="utf8")
+    (root / "hermes_agent/cli.py").write_text("value = 1\n", encoding="utf8")
     git(root, "add", ".")
     git(root, "commit", "-qm", "old")
     old = git(root, "rev-parse", "HEAD")
-    (root / "cli.py").write_text("value = 2\n", encoding="utf8")
+    (root / "hermes_agent/cli.py").write_text("value = 2\n", encoding="utf8")
     git(root, "commit", "-qam", "new")
     tip = git(root, "rev-parse", "HEAD")
     git(root, "update-ref", "refs/remotes/origin/main", tip)
@@ -88,7 +88,7 @@ def test_syntax_failure_returns_to_original_checkout_without_rewriting_main(chec
         old = git(root, "rev-parse", "HEAD")
     # Commit an actually invalid critical file on main; no mocked syntax verdict.
     git(root, "checkout", "-q", "main")
-    (root / "cli.py").write_text("def broken(\n", encoding="utf8")
+    (root / "hermes_agent/cli.py").write_text("def broken(\n", encoding="utf8")
     git(root, "commit", "-qam", "bad upstream")
     bad = git(root, "rev-parse", "HEAD")
     git(root, "update-ref", "refs/remotes/origin/main", bad)
@@ -100,7 +100,7 @@ def test_syntax_failure_returns_to_original_checkout_without_rewriting_main(chec
     assert git(root, "rev-parse", "HEAD") == old
     assert git(root, "rev-parse", "--abbrev-ref", "HEAD") == ("feature" if parked else "HEAD")
     assert git(root, "rev-parse", "main") == bad
-    assert (root / "cli.py").read_text(encoding="utf8") == "value = 1\n"
+    assert (root / "hermes_agent/cli.py").read_text(encoding="utf8") == "value = 1\n"
 
 
 def test_rollback_restores_the_commit_when_the_parked_branch_is_taken(checkout, tmp_path):
@@ -110,7 +110,7 @@ def test_rollback_restores_the_commit_when_the_parked_branch_is_taken(checkout, 
     git(root, "commit", "--allow-empty", "-qm", "local")
     feature_tip = git(root, "rev-parse", "HEAD")
     git(root, "checkout", "-q", "main")
-    (root / "cli.py").write_text("def broken(\n", encoding="utf8")
+    (root / "hermes_agent/cli.py").write_text("def broken(\n", encoding="utf8")
     git(root, "commit", "-qam", "bad upstream")
     git(root, "update-ref", "refs/remotes/origin/main", git(root, "rev-parse", "HEAD"))
     git(root, "checkout", "-q", "feature")
@@ -120,7 +120,7 @@ def test_rollback_restores_the_commit_when_the_parked_branch_is_taken(checkout, 
         pull(plan)
     assert git(root, "rev-parse", "HEAD") == feature_tip
     assert git(root, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
-    assert (root / "cli.py").read_text(encoding="utf8") == "value = 1\n"
+    assert (root / "hermes_agent/cli.py").read_text(encoding="utf8") == "value = 1\n"
 
 def test_locally_ahead_switch_still_needs_completion(checkout):
     root, _old, tip = checkout
@@ -304,14 +304,14 @@ def test_a_torn_branch_switch_leaves_the_autostash_parked(checkout, monkeypatch,
     from hermes_cli._early_recovery import interrupted_pull_marker
 
     root, _old, _tip = checkout
-    (root / "cli.py").write_text("value = 'local edit'\n", encoding="utf8")
+    (root / "hermes_agent/cli.py").write_text("value = 'local edit'\n", encoding="utf8")
     restored = []
     monkeypatch.setattr(update_cmd._m(), "_restore_stashed_changes", lambda *a, **k: restored.append(a))
 
     def torn_switch(git_cmd, branch, target_ref, *, pre, stash):
         interrupted_pull_marker(root).write_text(f"pid=1\npre={pre}\ntarget={pre}\nstash={stash}\n",
                                                  encoding="utf-8")
-        return subprocess.CompletedProcess(["checkout", branch], 1, "", "error: unable to write file cli.py")
+        return subprocess.CompletedProcess(["checkout", branch], 1, "", "error: unable to write file hermes_agent/cli.py")
 
     monkeypatch.setattr(update_cmd, "_switch_branch_at_commit_point", torn_switch)
     with pytest.raises(SystemExit):

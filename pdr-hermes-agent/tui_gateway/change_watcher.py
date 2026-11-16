@@ -276,7 +276,7 @@ _RACY_MTIME = object()
 
 def _settled_mtime(mtime):
     """``mtime`` when it is old enough to trust as a cache key, else a never-matching sentinel."""
-    from utils import mtime_is_racy  # function-local: bodies are rebound onto server.py's globals
+    from hermes_agent.utils import mtime_is_racy  # function-local: bodies are rebound onto server.py's globals
     if mtime is None or mtime_is_racy(mtime):
         return _RACY_MTIME
     return mtime
@@ -340,7 +340,7 @@ def _pairing_roots(home: Path) -> list:
     cached = _pairing_roots_cache
     if cached is not None and cached[0] == home and cached[1] == dir_mtime and now - cached[2] < _PAIRING_ROOTS_TTL_S:
         return cached[3]
-    from hermes_constants import named_profile_is_live
+    from hermes_agent.hermes_constants import named_profile_is_live
     roots = [home / "pairing", home / "platforms" / "pairing"]
     with contextlib.suppress(OSError):
         for profile_dir in profiles_dir.iterdir():

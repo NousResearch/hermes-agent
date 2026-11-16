@@ -7,7 +7,7 @@ These assert the toggle sets the instance flag, persists to config.yaml,
 and that the clamp gate honours the flag.
 """
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
 
@@ -29,7 +29,7 @@ def _seed_config(tmp_path, monkeypatch):
     (hh / "config.yaml").write_text("display:\n  show_reasoning: true\n")
     monkeypatch.setenv("HERMES_HOME", str(hh))
     # cli captures _hermes_home at import; force it to the temp home.
-    import cli
+    from hermes_agent import cli
 
     monkeypatch.setattr(cli, "_hermes_home", hh, raising=False)
     return hh

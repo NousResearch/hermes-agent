@@ -699,7 +699,7 @@ class TestCheckWebApiKey:
         for k in ("PERPLEXITY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
             monkeypatch.delenv(k, raising=False)
         from tools.registry import invalidate_check_fn_cache
-        import model_tools
+        from hermes_agent import model_tools
 
         with patch("tools.web_tools._load_web_config", return_value={}):
             invalidate_check_fn_cache()

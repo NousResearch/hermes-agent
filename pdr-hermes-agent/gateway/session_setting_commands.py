@@ -89,7 +89,7 @@ async def commit_reasoning_command(authority, actor, ref, value, persist_global)
     import asyncio
     from gateway.config import Platform
     from gateway.session_mutations import mutate_session
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     from hermes_state.mutation_guards import MUTATION_GUARD_REFUSALS
     from hermes_state.runtime import RuntimeStoreError
     if value == 'reset' and not persist_global:  # ``reset --global`` is the handler's named refusal

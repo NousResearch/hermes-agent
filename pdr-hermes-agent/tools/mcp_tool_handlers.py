@@ -134,7 +134,7 @@ def _raw_server_entry_trust(server_name: str, home) -> Any:
     propagate."""
     from hermes_cli.config_backend import read_config_doc_readonly
     from hermes_cli.managed_scope import load_managed_config
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 
     def entry(doc):
         servers = doc.get("mcp_servers") if isinstance(doc, dict) else None
@@ -164,7 +164,7 @@ def _configured_trust(server_name: str, key) -> str:
     entry that exists without a ``trust`` key keeps the compat ``full``; a failed read or a server no
     source configures is ``untrusted``."""
     from pathlib import Path
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from tools.mcp_tool_registration import _normalize_server_trust
     from tools.mcp_tool_scope import _key_scope
     scope = _key_scope(key)

@@ -42,7 +42,7 @@ def update_scope_homes() -> set[Path]:
     resolves the account's root) is not that install: it owns only itself."""
     invoking: Path | None = None
     with suppress(Exception):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         invoking = _resolved(get_hermes_home())
     inventory: set[Path] = set()
     with suppress(Exception):

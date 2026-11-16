@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-import model_tools
+from hermes_agent import model_tools
 import tools.delegate_tool  # registers delegate_task in the global registry
 from agent import runtime_session_store
 from agent.conversation_loop import _invalid_tool_name_error_content

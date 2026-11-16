@@ -3,7 +3,7 @@ and CLI integration.
 
 Coverage:
   hermes_cli/clipboard.py  — platform-specific image extraction (macOS, WSL, Wayland, X11)
-  cli.py                   — _try_attach_clipboard_image, _build_multimodal_content,
+  hermes_agent/cli.py                   — _try_attach_clipboard_image, _build_multimodal_content,
                               image attachment state, queue tuple routing
 """
 
@@ -36,7 +36,7 @@ from hermes_cli.clipboard import (
     _pipe_to_file,
     _probe,
 )
-from cli import _should_auto_attach_clipboard_image_on_paste
+from hermes_agent.cli import _should_auto_attach_clipboard_image_on_paste
 
 FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 FAKE_BMP = b"BM" + b"\x00" * 100
@@ -437,7 +437,7 @@ class TestPreprocessImagesWithVision:
     @pytest.fixture
     def cli(self):
         """Minimal HermesCLI with mocked internals."""
-        with patch("cli.load_cli_config") as mock_cfg:
+        with patch("hermes_agent.cli.load_cli_config") as mock_cfg:
             mock_cfg.return_value = {
                 "model": {"default": "test/model", "base_url": "http://x", "provider": "auto"},
                 "terminal": {"timeout": 60},
@@ -450,8 +450,8 @@ class TestPreprocessImagesWithVision:
                 "delegation": {},
             }
             with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}):
-                with patch("cli.CLI_CONFIG", mock_cfg.return_value):
-                    from cli import HermesCLI
+                with patch("hermes_agent.cli.CLI_CONFIG", mock_cfg.return_value):
+                    from hermes_agent.cli import HermesCLI
                     cli_obj = HermesCLI.__new__(HermesCLI)
                     # Manually init just enough state
                     cli_obj._attached_images = []
@@ -501,7 +501,7 @@ class TestTryAttachClipboardImage:
 
     @pytest.fixture
     def cli(self):
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         cli_obj = HermesCLI.__new__(HermesCLI)
         cli_obj._attached_images = []
         cli_obj._image_counter = 0
@@ -536,7 +536,7 @@ class TestAutoAttachClipboardImageOnPaste:
 class TestVoiceSubmission:
     @pytest.fixture
     def cli(self):
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         cli_obj = HermesCLI.__new__(HermesCLI)
         cli_obj._attached_images = [Path("/tmp/stale.png")]
         cli_obj._pending_input = queue.Queue()
@@ -554,13 +554,13 @@ class TestVoiceSubmission:
         with patch("tools.voice_mode.play_beep"):
             with patch("tools.voice_mode.transcribe_recording", return_value={"success": True, "transcript": "hello"}):
                 with patch("os.path.isfile", return_value=False):
-                    with patch("cli._cprint"):
+                    with patch("hermes_agent.cli._cprint"):
                         cli._voice_stop_and_transcribe()
 
         assert cli._attached_images == []
         queued = cli._pending_input.get_nowait()
         # Voice transcripts are wrapped in the _VoiceInputMessage sentinel
         # (#65827) so process_loop can distinguish STT output from typed text.
-        from cli import _VoiceInputMessage
+        from hermes_agent.cli import _VoiceInputMessage
         assert isinstance(queued, _VoiceInputMessage)
         assert queued.text == "hello"

@@ -61,7 +61,7 @@ def test_keyless_local_endpoint_is_ready():
 def test_validate_requested_model_proxy_url_routes_to_custom():
     """/model validation: an 'openrouter' provider pointed at a non-OpenRouter
     host is a custom endpoint, even when the URL contains the substring."""
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
 
     assert base_url_host_matches("https://openrouter.ai/api/v1", "openrouter.ai")
     assert base_url_host_matches("https://OPENROUTER.AI/api/v1", "openrouter.ai")
@@ -70,7 +70,7 @@ def test_validate_requested_model_proxy_url_routes_to_custom():
 
 
 def test_local_endpoint_hostname_detection():
-    from utils import base_url_hostname
+    from hermes_agent.utils import base_url_hostname
 
     assert base_url_hostname("http://localhost:11434/v1") == "localhost"
     assert base_url_hostname("http://127.0.0.1:1234") == "127.0.0.1"
@@ -83,7 +83,7 @@ def test_local_endpoint_hostname_detection():
 
 
 def test_nous_portal_host_detection():
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
 
     assert base_url_host_matches("https://inference-api.nousresearch.com/v1", "nousresearch.com")
     assert base_url_host_matches("https://portal.nousresearch.com", "nousresearch.com")
@@ -97,7 +97,7 @@ def test_nous_portal_host_detection():
 def test_azure_endpoint_detection_host_anchored():
     """Azure detection (runtime_provider + run_agent) must be host-anchored:
     a path or lookalike containing 'azure.com'/'openai.azure.com' is not Azure."""
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
 
     assert base_url_host_matches("https://myres.openai.azure.com/openai/v1", "azure.com")
     assert base_url_host_matches("https://myres.openai.azure.com/openai/v1", "openai.azure.com")
@@ -107,7 +107,7 @@ def test_azure_endpoint_detection_host_anchored():
 
 
 def test_run_agent_azure_url_predicate():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     probe = object.__new__(AIAgent)
     assert probe._is_azure_openai_url("https://myres.openai.azure.com/openai/v1") is True
@@ -116,7 +116,7 @@ def test_run_agent_azure_url_predicate():
 
 
 def test_dotted_model_name_provider_allowlist_host_anchored():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     probe = object.__new__(AIAgent)
     probe.provider = ""

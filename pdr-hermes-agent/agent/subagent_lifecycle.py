@@ -463,7 +463,7 @@ class SubagentLifecycleService:
         if not request.allowed_toolsets:
             return
         # Plugin and registry-alias toolsets count as known, as they do for delegate_task.
-        from toolsets import validate_toolset
+        from hermes_agent.toolsets import validate_toolset
         unknown = {name for name in request.allowed_toolsets if not validate_toolset(name)}
         if unknown:
             raise SubagentLifecycleError(f"Unknown toolsets: {', '.join(sorted(unknown))}.")

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from agent.context_compressor import ContextCompressor
 from hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _bare_agent() -> AIAgent:

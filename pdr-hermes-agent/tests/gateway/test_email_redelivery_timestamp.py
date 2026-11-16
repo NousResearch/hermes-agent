@@ -38,7 +38,7 @@ async def test_refetched_email_after_restart_is_its_committed_admission(tmp_path
     from gateway.run import GatewayRunner
     from gateway.session_authority import SessionAuthority, initialize_session_authority
     from gateway.session_ingress_context import native_callback
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state.runtime import (RuntimeStoreError, claim_session_input, list_session_admissions,
                                       settle_session_input)
     from plugins.platforms.email.adapter import EmailAdapter

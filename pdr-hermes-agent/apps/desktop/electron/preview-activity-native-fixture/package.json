@@ -1,6 +1,0 @@
-{
-  "name": "preview-activity-native-fixture",
-  "private": true,
-  "type": "module",
-  "main": "../preview-activity-native.test.mjs"
-}

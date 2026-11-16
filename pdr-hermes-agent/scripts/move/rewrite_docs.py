@@ -11,7 +11,7 @@ Text it reads: ``*.md``, ``*.mdx``, ``*.txt`` whole; ``*.yaml``/``*.yml``/``*.ya
 
 1. Path tokens: a moved file (``tui_gateway/entry.py``), a moved directory with a trailing slash
    (``tui_gateway/``), a bare stem (``tools/cronjob_tools``), a ``.symbol`` or sentence-final ``.`` after
-   either, a glob under a moved directory (``agent/turn_*.py``), a unique root file (``run_agent.py``),
+   either, a glob under a moved directory (``agent/turn_*.py``), a unique root file (``hermes_agent/run_agent.py``),
    and the same path behind ``github.com/<org>/hermes-agent/blob/<ref>/``. ``::symbol`` and ``:line`` stay.
 2. Dotted module names (``tui_gateway.entry``). A dotted name is a module reference only when it resolves: a
    moved module, or a moved module plus an attribute that module defines. A config key (``DEFAULT_CONFIG`` path,
@@ -165,7 +165,7 @@ class Plan:
         return self.attributes[module]
 
 
-AMBIGUOUS_FILES = {"cli.py", "utils.py", "config.py", "setup.py", "__init__.py", "conftest.py"}
+AMBIGUOUS_FILES = {"hermes_agent/cli.py", "hermes_agent/utils.py", "config.py", "setup.py", "__init__.py", "conftest.py"}
 
 
 def _defined_names(file: Path) -> frozenset[str] | None:

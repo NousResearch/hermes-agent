@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 import pytest
 
 ENDPOINT = "http://127.0.0.1:18080/v1"
@@ -293,7 +293,7 @@ def _restorable_agent(primary: dict):
     from unittest.mock import MagicMock
 
     from agent.credential_pool import CredentialPool
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent.__new__(AIAgent)
     agent.model, agent.provider, agent.base_url = "fallback-model", "openrouter", "https://openrouter.ai/api/v1"
@@ -539,7 +539,7 @@ def _snapshotted_agent(builder, initial, requested, api_key=ENTRY_KEY):
     """An agent built on the resolved primary ``initial``, snapshotted by a real builder, now on a fallback."""
     from unittest.mock import MagicMock
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     built = AIAgent.__new__(AIAgent)
     built.model, built.provider, built.requested_provider = "m", initial["provider"], requested

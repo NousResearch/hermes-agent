@@ -11,7 +11,7 @@ from hermes_cli import mem_trim
 
 
 def test_agent_close_trim_returns_pages_without_a_full_collection(monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     collect = Mock()
     trim = Mock(return_value=1)

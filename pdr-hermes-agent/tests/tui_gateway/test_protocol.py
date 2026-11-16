@@ -39,7 +39,7 @@ def server():
     # server's ``current_transport()`` never reads (first-in-process test sees ``_stdio_transport`` as caller).
     import tui_gateway.server_requests
     import tui_gateway.transport
-    import hermes_constants  # real get_process_hermes_home: a mocked one put state.db under the cwd (repo)
+    from hermes_agent import hermes_constants  # real get_process_hermes_home: a mocked one put state.db under the cwd (repo)
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test"),
                                       get_process_hermes_home=hermes_constants.get_process_hermes_home),
@@ -1233,7 +1233,7 @@ def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
             captured.update(kwargs)
             self.model = kwargs.get("model", "")
 
-    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=_Agent))
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", types.SimpleNamespace(AIAgent=_Agent))
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.runtime_provider",
@@ -1356,7 +1356,7 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
 
 def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path, monkeypatch):
     """#74705: Desktop/TUI command.dispatch must expand every real leading
-    /skill token (CLI cli.py and the messaging gateway already do), so
+    /skill token (CLI hermes_agent/cli.py and the messaging gateway already do), so
     '/nature-figure /academic-plotting Plot the results' loads BOTH skills
     over the remaining instruction instead of leaving the second token in
     the prompt as plain text."""

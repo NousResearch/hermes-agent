@@ -246,7 +246,7 @@ class TestModelPin:
 
     def test_agent_init_pins_only_on_welcome_route(self, portal):
         anon_auth.ensure_portal_identity(explicit=True)
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         welcome = AIAgent(provider="nous", base_url=WELCOME, api_key="k", model="openai/gpt-5",
                           quiet_mode=True, skip_context_files=True, skip_memory=True)
         paid = AIAgent(provider="nous", base_url="https://inference-api.nousresearch.com/v1", api_key="k",

@@ -20,7 +20,7 @@ from agent.secret_sources import registry as reg_module
 from agent.secret_sources.base import FetchResult
 from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
 from hermes_cli import env_loader
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 OPAQUE = "mxq7Tpl2vRw9Kd"
 PATH = "/srv/workspace/project"

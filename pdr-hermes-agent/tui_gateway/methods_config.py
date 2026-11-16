@@ -9,8 +9,8 @@ import threading
 from .method_ctx import HandlerRegistry, bind_module
 from ._env import env_int
 
-from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
-from hermes_constants import display_hermes_home as _display_hermes_home
+from hermes_agent.hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
+from hermes_agent.hermes_constants import display_hermes_home as _display_hermes_home
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -215,7 +215,7 @@ def _cfg_get_reasoning(params):
     else:
         raw_effort = (cfg.get("agent") or {}).get("reasoning_effort", "")
         if isinstance(raw_effort, dict):  # {enabled, effort} form: render the tier, never str(dict)
-            from hermes_constants import parse_reasoning_effort
+            from hermes_agent.hermes_constants import parse_reasoning_effort
             parsed = parse_reasoning_effort(raw_effort) or {}
             raw_effort = False if parsed.get("enabled") is False else parsed.get("effort")
         # YAML `reasoning_effort: false` means thinking disabled, not "unset".

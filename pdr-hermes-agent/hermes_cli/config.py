@@ -27,7 +27,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Dict, Any, Literal, Optional, List, Tuple, Set
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.colors import Colors, color
@@ -37,13 +37,13 @@ from hermes_cli.left_core_migration import profile_env_names as _left_core_profi
 from hermes_cli.secret_prompt import masked_secret_prompt
 # Managed-mode, container and HERMES_UID/GID policy live in hermes_constants (import-safe);
 # re-exported here so existing callers/patch targets keep working.
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     _IGNORED_MANAGED_VALUES, _LEGACY_MANAGED_SYSTEM, _MANAGED_FALSE_VALUES, _MANAGED_TRUE_VALUES,
     _chown_to_hermes_uid, _container_or_chmod_skipped, _resolve_hermes_uid_gid,
     apply_secure_dir_policy, get_managed_system)
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import LAUNCH_ONLY_ENV_KEYS, get_hermes_home, is_launch_only_env_key, get_process_hermes_home
-from utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
+from hermes_agent.hermes_constants import LAUNCH_ONLY_ENV_KEYS, get_hermes_home, is_launch_only_env_key, get_process_hermes_home
+from hermes_agent.utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
 from hermes_cli.config_set_scalars import _SCALAR_WORDS, _coerce_float, _coerce_int, _quoted_bool
 from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_credential_values import (
@@ -315,7 +315,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
 def _running_in_container() -> bool:
     """Import-safe wrapper around ``hermes_constants.is_container``."""
     try:
-        from hermes_constants import is_container
+        from hermes_agent.hermes_constants import is_container
 
         return is_container()
     except Exception:
@@ -408,7 +408,7 @@ def get_container_exec_info() -> Optional[dict]:
     if os.environ.get("HERMES_DEV") == "1":
         return None
 
-    from hermes_constants import is_container
+    from hermes_agent.hermes_constants import is_container
     if is_container():
         return None
 
@@ -511,12 +511,12 @@ def _secure_file(path):
 
 
 def seed_config_file(config_path: Path, template: Optional[Path] = None) -> bool:
-    """Create a missing config.yaml the way the installers do: copy cli-config.yaml.example (the display keys
+    """Create a missing config.yaml the way the installers do: copy hermes_cli/data/cli-config.yaml.example (the display keys
     there are commented out), else write stripped DEFAULT_CONFIG. Never DEFAULT_CONFIG verbatim -- the gateway
     merges no defaults, so every written display key becomes a global that beats each platform's own default
     (#121230). Shared by ``hermes config edit`` and ``hermes doctor --fix`` so the seeders cannot drift.
     Returns True when the template was copied (the fallback, like save_config, writes get_config_path())."""
-    template = template or get_project_root() / "cli-config.yaml.example"
+    template = template or get_project_root() / "hermes_cli/data/cli-config.yaml.example"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     if template.exists():
         shutil.copy2(template, config_path)
@@ -577,7 +577,7 @@ def ensure_hermes_home():
 
     # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale
     # empty shell cannot skip the deleted-profile guard.
-    from hermes_constants import assert_named_profile_home_live
+    from hermes_agent.hermes_constants import assert_named_profile_home_live
     assert_named_profile_home_live(home)
     if key in _HERMES_HOME_ENSURED and home.is_dir():
         return
@@ -1130,7 +1130,7 @@ def warn_deprecated_cwd_env_vars() -> None:
         if val:
             lines.append(f"  \033[33m⚠\033[0m {name}={val} found in .env — this is deprecated.")
     if lines:
-        from hermes_constants import display_hermes_home
+        from hermes_agent.hermes_constants import display_hermes_home
 
         hint_path = display_hermes_home()
         lines.insert(0, "\033[33m⚠ Deprecated .env settings detected:\033[0m")
@@ -1960,7 +1960,7 @@ def apply_terminal_config_to_env(
     """Bridge ``terminal.*`` config into the env vars terminal tools read.
     ``tools.terminal_tool`` is environment-driven because it also runs in child processes (TUI,
     dashboard PTY, gateway workers); this gives those launch paths the same bridge as the CLI
-    without importing ``cli.py``. Explicit keys in the user's raw ``terminal`` section override
+    without importing ``hermes_agent/cli.py``. Explicit keys in the user's raw ``terminal`` section override
     matching env values; merged defaults only backfill missing env vars."""
     target = os.environ if env is None else env
 
@@ -2327,7 +2327,7 @@ def _note_policy(setter: str, raw: Any) -> None:
     """Record the loaded profile's redaction policy for the log formatter, which never reads config."""
     note = getattr(sys.modules.get("agent.redact"), setter, None)
     if note is not None:
-        from hermes_constants import hermes_home_key
+        from hermes_agent.hermes_constants import hermes_home_key
         note(hermes_home_key(), raw)
 
 

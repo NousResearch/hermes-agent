@@ -14,13 +14,13 @@ description: "Hermes Agent 内部结构——主要子系统、执行路径、�
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Entry Points                                  │
 │                                                                      │
-│  CLI (cli.py)    Gateway (gateway/run.py)    ACP (acp_adapter/)     │
+│  CLI (hermes_agent/cli.py)    Gateway (gateway/run.py)    ACP (acp_adapter/)     │
 │  Batch Runner    API Server                  Python Library          │
 └──────────┬──────────────┬───────────────────────┬───────────────────┘
            │              │                       │
            ▼              ▼                       ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     AIAgent (run_agent.py)                          │
+│                     AIAgent (hermes_agent/run_agent.py)                          │
 │                                                                     │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
 │  │ Prompt       │  │ Provider     │  │ Tool         │               │
@@ -52,13 +52,13 @@ description: "Hermes Agent 内部结构——主要子系统、执行路径、�
 
 ```text
 hermes-agent/
-├── run_agent.py              # AIAgent — 核心对话循环（大文件）
-├── cli.py                    # HermesCLI — 交互式终端 UI（大文件）
-├── model_tools.py            # 工具发现、schema 收集、分发
-├── toolsets.py               # 工具分组与平台预设
+├── hermes_agent/run_agent.py              # AIAgent — 核心对话循环（大文件）
+├── hermes_agent/cli.py                    # HermesCLI — 交互式终端 UI（大文件）
+├── hermes_agent/model_tools.py            # 工具发现、schema 收集、分发
+├── hermes_agent/toolsets.py               # 工具分组与平台预设
 ├── hermes_state/__init__.py           # 带 FTS5 的 SQLite 会话/状态数据库
-├── hermes_constants.py       # HERMES_HOME、感知 profile 的路径
-├── batch_runner.py           # 批量轨迹生成
+├── hermes_agent/hermes_constants.py       # HERMES_HOME、感知 profile 的路径
+├── hermes_agent/batch_runner.py           # 批量轨迹生成
 │
 ├── agent/                    # Agent 内部模块
 │   ├── prompt_builder.py     # 系统 prompt 组装
@@ -188,7 +188,7 @@ hermes-agent/
 
 ### Agent 循环
 
-同步编排引擎（`run_agent.py` 中的 `AIAgent`）。负责 provider 选择、prompt 构建、工具执行、重试、回退、回调、压缩和持久化。支持三种 API 模式以适配不同 provider 后端。
+同步编排引擎（`hermes_agent/run_agent.py` 中的 `AIAgent`）。负责 provider 选择、prompt 构建、工具执行、重试、回退、回调、压缩和持久化。支持三种 API 模式以适配不同 provider 后端。
 
 → [Agent 循环内部机制](./agent-loop.md)
 
@@ -268,9 +268,9 @@ tools/registry.py  （无依赖——被所有工具文件导入）
        ↑
 tools/*.py  （每个文件在导入时调用 registry.register()）
        ↑
-model_tools.py  （导入 tools/registry 并触发工具发现）
+hermes_agent/model_tools.py  （导入 tools/registry 并触发工具发现）
        ↑
-run_agent.py, cli.py, batch_runner.py, environments/
+hermes_agent/run_agent.py, hermes_agent/cli.py, hermes_agent/batch_runner.py, environments/
 ```
 
 这条依赖链意味着工具注册发生在导入时，早于任何 agent 实例的创建。任何在顶层调用 `registry.register()` 的 `tools/*.py` 文件都会被自动发现——无需手动维护导入列表。

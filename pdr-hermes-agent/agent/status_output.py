@@ -2,7 +2,7 @@
 
 Safe printing, quiet-mode gating, deduped context-overflow warnings, and the buffered retry
 chatter that is shown only when every retry/fallback is exhausted.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import logging
 import sys

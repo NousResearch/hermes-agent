@@ -18,7 +18,7 @@ from tests.waiting import wait_until
 def _stub_refine(monkeypatch, refine, live, sid, review):
     from gateway import session_tui_side, session_policy, session_local_recovery
     from agent import background_review
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     authority = SimpleNamespace(profile_id='p', sessions={sid: live},
         db=SimpleNamespace(get_messages_as_conversation=lambda *a, **k: [{'role': 'user', 'content': 'h'}]))
     monkeypatch.setattr(refine, '_local_session', lambda r, s: (authority, live))

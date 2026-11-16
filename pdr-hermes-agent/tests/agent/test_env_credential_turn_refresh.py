@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 DEFAULT_BASE = "https://api.openai.com/v1"
 LOCAL_BASE = "http://127.0.0.1:39080"

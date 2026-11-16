@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
@@ -1630,8 +1630,8 @@ class TestForceReloadSymmetry:
         mock_registry = MagicMock()
         mock_registry.dispatch.side_effect = _dispatch
 
-        with patch("model_tools.registry", mock_registry):
-            from model_tools import handle_function_call
+        with patch("hermes_agent.model_tools.registry", mock_registry):
+            from hermes_agent.model_tools import handle_function_call
 
             result = handle_function_call(
                 "web_search",
@@ -2252,7 +2252,7 @@ class TestPluginToolVisibility:
         mgr.discover_and_load()
         monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
 
-        from model_tools import get_tool_definitions
+        from hermes_agent.model_tools import get_tool_definitions
 
         def _reachable(tools):
             names = [t["function"]["name"] for t in tools]
@@ -2412,7 +2412,7 @@ class TestPluginCommands:
         NOT touch ``os.environ``. A regression test that only flips the
         ``HERMES_HOME`` env var never exercises this path.
         """
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
         import hermes_cli.plugins as plugins_mod
 
         def write_engine_plugin(home: Path) -> None:
@@ -2496,7 +2496,7 @@ class TestPluginCommands:
         leaking the previous profile's module-level state (and code) into
         the new profile.
         """
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
         import hermes_cli.plugins as plugins_mod
 
         def write_stateful_plugin(home: Path, marker: str) -> None:

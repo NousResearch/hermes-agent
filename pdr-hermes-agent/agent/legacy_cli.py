@@ -3,7 +3,7 @@
 A console script calls its target with no arguments, so pointing ``hermes-agent``
 at ``run_agent.main`` ignored argv entirely: ``--help``, ``--version`` and a bare
 invocation all ran a real model turn with ``main()``'s built-in demo query, and
-``--query`` was silently dropped (#54648). ``python run_agent.py`` routes through
+``--query`` was silently dropped (#54648). ``python -m hermes_agent.run_agent`` routes through
 here too, so the installer's PATH launcher behaves the same way.
 """
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 # hermes_bootstrap first (UTF-8 stdio on Windows; no-op on POSIX), like every other entry point.
 try:
-    import hermes_bootstrap
+    from hermes_agent import hermes_bootstrap
 except ModuleNotFoundError:
     pass  # partial `hermes update` — only skips the Windows UTF-8 stdio setup
 
@@ -61,7 +61,7 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Callable[..., object
     """Parse ``argv`` (default ``sys.argv[1:]``) and run one query through ``run_agent.main``.
 
     Metadata flags and a bare invocation never reach the runner; ``run`` lets
-    ``python run_agent.py`` pass its own ``main`` instead of importing the module twice.
+    ``python -m hermes_agent.run_agent`` pass its own ``main`` instead of importing the module twice.
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -75,7 +75,7 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Callable[..., object
         return 0
 
     if run is None:
-        from run_agent import main as run
+        from hermes_agent.run_agent import main as run
 
     run(
         query=query,

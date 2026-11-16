@@ -40,7 +40,7 @@ def test_retained_tui_worktree_survives_stale_prune_while_its_session_resumes(tm
 
     from hermes_cli import main_tui_launch, session_worktree
     from hermes_cli.worktree_ops import _prune_stale_worktrees, _setup_worktree
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state import SessionDB
 
     repo = tmp_path / 'repo'
@@ -94,7 +94,7 @@ def test_retained_tui_worktree_kept_while_any_session_in_it_resumes(tmp_path, mo
     import time
 
     from hermes_cli import main_tui_launch, worktree_ops
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state import SessionDB
 
     home = tmp_path / ('Zoë "q" \\ home' if case == 'quoted_home' else 'home')

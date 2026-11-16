@@ -128,7 +128,7 @@ def _now_ms() -> int:
 
 
 def _root_home(profile_home: Path) -> Path:
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     try:
         return get_default_hermes_root(home=profile_home).resolve()
@@ -142,7 +142,7 @@ def _profile_hash(profile_home: Path) -> str:
 
 def _collects(home: Path) -> bool:
     """The root profile's own collection consent (read-only; never touches its runtime)."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     token = set_hermes_home_override(str(home))
     try:

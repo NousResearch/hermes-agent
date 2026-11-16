@@ -3,7 +3,7 @@
 One ``Payload`` model per event name, registered with ``event(...)``; ``request.cancel`` lives in
 ``server_requests.py`` next to the requests it withdraws. Each model's docstring names the Python
 emitter it was typed from — that emitter is the source of truth, the hand-written TS in
-``apps/shared/src/gateway-events.ts`` was only the map. Fields the emitter always sets are required;
+``ui-tui/packages/shared/src/gateway-events.ts`` was only the map. Fields the emitter always sets are required;
 anything conditional is ``X | None = None``.
 
 A handful of payloads stay ``extra="allow"`` on purpose: their closed shape is owned by another

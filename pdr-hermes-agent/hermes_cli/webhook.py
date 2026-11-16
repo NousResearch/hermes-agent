@@ -13,8 +13,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict
 
-from hermes_constants import display_hermes_home
-from utils import atomic_json_write
+from hermes_agent.hermes_constants import display_hermes_home
+from hermes_agent.utils import atomic_json_write
 from hermes_cli.config import cfg_get
 
 
@@ -30,7 +30,7 @@ class SubscriptionMutationConflict(RuntimeError):
 
 
 def _subscriptions_path() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / _SUBSCRIPTIONS_FILENAME
 
 
@@ -321,7 +321,7 @@ def _cmd_subscribe(args):
     print(f"  Profile: {profile}")
     # Masked: the full secret would otherwise land in scrollback, agent transcripts and CI logs.
     from agent.redact import mask_secret
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
     print(f"  Secret: {mask_secret(secret)} (full value in {display_hermes_home()}/{_SUBSCRIPTIONS_FILENAME})")
     print(f"  Events: {', '.join(events) or '(all)'}")
     print(f"  Signature: {route.get('signature', 'any supported scheme (unpinned)')!s}")

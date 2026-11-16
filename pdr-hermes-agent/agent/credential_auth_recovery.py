@@ -25,7 +25,7 @@ _EPISODE_IDLE_S = 120.0
 
 
 def _ra():
-    import run_agent
+    from hermes_agent import run_agent
     return run_agent
 
 

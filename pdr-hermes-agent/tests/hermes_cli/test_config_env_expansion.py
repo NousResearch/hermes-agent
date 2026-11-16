@@ -88,9 +88,9 @@ class TestLoadCliConfigExpansion:
         config_file = tmp_path / "config.yaml"
         config_file.write_text("terminal:\n")
 
-        monkeypatch.setattr("cli._hermes_home", tmp_path)
+        monkeypatch.setattr("hermes_agent.cli._hermes_home", tmp_path)
 
-        from cli import load_cli_config
+        from hermes_agent.cli import load_cli_config
         config = load_cli_config()
 
         assert isinstance(config["terminal"], dict)
@@ -107,9 +107,9 @@ class TestLoadCliConfigExpansion:
         config_file.write_text(config_yaml)
 
         monkeypatch.delenv("UNSET_CLI_VAR_ABC", raising=False)
-        monkeypatch.setattr("cli._hermes_home", tmp_path)
+        monkeypatch.setattr("hermes_agent.cli._hermes_home", tmp_path)
 
-        from cli import load_cli_config
+        from hermes_agent.cli import load_cli_config
         config = load_cli_config()
 
         assert config["auxiliary"]["vision"]["api_key"] == "${UNSET_CLI_VAR_ABC}"

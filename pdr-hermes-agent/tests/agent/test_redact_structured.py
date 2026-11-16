@@ -67,8 +67,8 @@ def test_nested_dict_list_and_tuple_are_walked_without_losing_their_shapes():
 
 def test_benign_values_pass_through_verbatim():
     payload = {
-        "summary": "fixed the bug in run_agent.py",
-        "changed_files": ["run_agent.py", "cli.py"],
+        "summary": "fixed the bug in hermes_agent/run_agent.py",
+        "changed_files": ["hermes_agent/run_agent.py", "hermes_agent/cli.py"],
         "nested": {"tuple": ("a", "b")},
         "number": 12,
         "ratio": 0.75,

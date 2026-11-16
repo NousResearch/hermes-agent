@@ -518,7 +518,7 @@ def _connectors_on(monkeypatch, client_factory):
 
 
 def _tool_call(calls):
-    import model_tools
+    from hermes_agent import model_tools
 
     return json.loads(model_tools.handle_function_call(
         "tool_call", {"calls": calls}, enabled_toolsets=["connections"], session_id="bridge-session",

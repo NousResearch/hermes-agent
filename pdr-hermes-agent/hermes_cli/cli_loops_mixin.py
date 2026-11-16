@@ -1,5 +1,5 @@
 """Simple slash-command wrappers plus goal/heartbeat/loop manager hooks for the interactive CLI.
-Mixin on ``HermesCLI``; cli.py symbols are imported lazily inside methods (import cycle)."""
+Mixin on ``HermesCLI``; hermes_agent/cli.py symbols are imported lazily inside methods (import cycle)."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ _QUEUE_VERBS: dict[str, tuple[str, bool]] = {
 
 def _print_decision_message(decision: dict) -> bool:
     """Print a manager decision's ``message`` (if any) via _cprint; True when one was printed."""
-    from cli import _cprint
+    from hermes_agent.cli import _cprint
     msg = decision.get("message") or ""
     if msg:
         _cprint(f"  {msg}")
@@ -77,7 +77,7 @@ class CLILoopsMixin:
 
     def _cmd_exit(self, cmd_original: str):
         # /exit --delete also removes the session's transcripts + SQLite history.
-        from cli import _DIM, _RST, _cprint, _slash_args
+        from hermes_agent.cli import _DIM, _RST, _cprint, _slash_args
         _args = _slash_args(cmd_original).lower()
         # Ported from google-gemini/gemini-cli#19332.
         if _args in {"--delete", "-d"}:
@@ -88,18 +88,18 @@ class CLILoopsMixin:
         return False
 
     def _cmd_help(self, cmd_original: str):
-        from cli import _slash_args
+        from hermes_agent.cli import _slash_args
         self.show_help(_slash_args(cmd_original))
 
     def _cmd_redraw(self, cmd_original: str):
         # Manual recovery for terminal buffer drift (mux tab switches, subshell ``clear``,
         # SSH restores; #8688). Ctrl+L is bound to the same helper.
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         self._force_full_redraw()
         _cprint(f"  {_DIM}{t('cli.display.ui_redrawn')}{_RST}")
 
     def _cmd_clear(self, cmd_original: str):
-        from cli import ChatConsole, _build_compact_banner, _clear_output_history, _cprint, get_tool_definitions
+        from hermes_agent.cli import ChatConsole, _build_compact_banner, _clear_output_history, _cprint, get_tool_definitions
         from hermes_cli.banner import build_welcome_banner
         if self._confirm_destructive_slash(
             "clear",
@@ -141,7 +141,7 @@ class CLILoopsMixin:
         self._print_random_tip()
 
     def _cmd_title(self, cmd_original: str):
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         from hermes_state import format_session_db_unavailable
         parts = cmd_original.split(maxsplit=1)
         if len(parts) == 1:
@@ -282,7 +282,7 @@ class CLILoopsMixin:
             self._reload_skills()
 
     def _cmd_plugins(self, cmd_original: str):
-        from hermes_constants import display_hermes_home
+        from hermes_agent.hermes_constants import display_hermes_home
         parts = cmd_original.split()[1:]
         if parts and parts[0] in ("update", "auto-update"):
             from hermes_cli.plugins_auto_update import plugins_slash_action
@@ -375,7 +375,7 @@ class CLILoopsMixin:
         return items + [(None, item) for item in self._pending_input_items()]
 
     def _queue_enqueue(self, text: str) -> None:
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         payload = self._expand_paste_references(text)
         store = self._gateway_queue_store() if self._agent_running else None
         if store is not None:
@@ -396,7 +396,7 @@ class CLILoopsMixin:
         _cprint(f"  {t(key, preview=_preview(payload))}")
 
     def _queue_list(self, rest: str) -> None:
-        from cli import _VoiceInputMessage, _cprint
+        from hermes_agent.cli import _VoiceInputMessage, _cprint
         items = self._queue_items()
         if not items:
             _cprint(f"  {t('cli.queue.empty')}" + ("" if rest else "  " + _queue_usage()))
@@ -408,7 +408,7 @@ class CLILoopsMixin:
 
     def _queue_gateway_call(self, verb, index, *args):
         """One owner verb on queued item ``index``; its refusal is printed (in its own words), never raised."""
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         from hermes_cli import gateway_queue
         from hermes_cli.gateway_client import GatewayRPCError
         try:
@@ -424,7 +424,7 @@ class CLILoopsMixin:
         return None
 
     def _queue_clear(self, rest: str) -> None:
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         owned = [admission for admission, _ in self._queue_items() if admission]
         cleared = sum(1 for idx, admission in enumerate(owned, 1)
                       if self._queue_gateway_call("cancel", idx, admission) == "cancelled")
@@ -434,7 +434,7 @@ class CLILoopsMixin:
         _cprint(f"  {t(key, count=cleared)}")
 
     def _queue_remove(self, rest: str) -> None:
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         bits = rest.split()
         idx = _parse_queue_index(bits[0]) if len(bits) == 1 else None
         if idx is None:
@@ -462,7 +462,7 @@ class CLILoopsMixin:
             _cprint(f"  {t('cli.queue.item_not_found', index=idx, size=owned + len(before))}")
 
     def _queue_edit(self, rest: str) -> None:
-        from cli import _VoiceInputMessage, _cprint
+        from hermes_agent.cli import _VoiceInputMessage, _cprint
         # Split on any whitespace, like ``_cmd_queue``'s routing check, so
         # ``edit 1<TAB>text`` doesn't leave "1\ttext" as the index token.
         bits = rest.split(None, 1)
@@ -496,7 +496,7 @@ class CLILoopsMixin:
             _cprint(f"  {t('cli.queue.updated', index=idx, preview=_preview(new_text))}")
 
     def _queue_move(self, rest: str) -> None:
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         bits = rest.split()
         src, dst = (_parse_queue_index(b) for b in bits) if len(bits) == 2 else (None, None)
         if src is None or dst is None:
@@ -525,7 +525,7 @@ class CLILoopsMixin:
         (``list``/``clear`` alone, ``edit N …``/``rm N``/``move A B``) manages the queue
         instead. Anything else — ``clear the logs``, ``edit the config`` — is still a prompt;
         ``/queue add <prompt>`` forces enqueueing."""
-        from cli import _cprint, _slash_args
+        from hermes_agent.cli import _cprint, _slash_args
         payload = _slash_args(cmd_original)
         if not payload:
             self._queue_list("")
@@ -551,7 +551,7 @@ class CLILoopsMixin:
         # Inject a message after the next tool call without interrupting: while the
         # agent runs, push into its pending_steer slot (drained by _execute_tool_calls_*
         # into the next tool result); otherwise fall back to /queue semantics.
-        from cli import _cprint, _slash_args
+        from hermes_agent.cli import _cprint, _slash_args
         payload = _slash_args(cmd_original)
         if not payload:
             _cprint(f"  {t('cli.steer.usage')}")
@@ -722,7 +722,7 @@ class CLILoopsMixin:
                 return  # barrier still holds (is_waiting() also applies the age cap)
             prompt = mgr.next_continuation_prompt()
             if prompt:
-                from cli import _DIM, _RST, _cprint
+                from hermes_agent.cli import _DIM, _RST, _cprint
                 _cprint(f"  {_DIM}{t('cli.goal.barrier_lifted')}{_RST}")
                 self._pending_input.put(prompt)
         except Exception as exc:
@@ -735,7 +735,7 @@ class CLILoopsMixin:
         wins the idle boundary, and so does an active (non-parked) /goal, whose
         judge-driven continuations own it; the loop defers to the next poll.
         """
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         mgr = self._get_loop_manager()
         if mgr is None or not mgr.is_due():
             return
@@ -804,7 +804,7 @@ class CLILoopsMixin:
         ``fire_tick``). Detects the LOOP_COMPLETE marker, judges --until, applies caps,
         and schedules the next tick. Mirrors _maybe_continue_goal_after_turn's shape.
         """
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         mgr = self._get_loop_manager()
         if mgr is None:
             return
@@ -834,7 +834,7 @@ class CLILoopsMixin:
         AUTO-PAUSES instead of judging — the judge on partial output nearly always says
         "continue" and would re-queue exactly what was cancelled; pausing is recoverable
         via ``/goal resume``. Empty-response skip mirrors ``gateway/run.py``."""
-        from cli import _DIM, _RST, _cprint, _looks_like_slash_command
+        from hermes_agent.cli import _DIM, _RST, _cprint, _looks_like_slash_command
         mgr = self._get_goal_manager()
         if mgr is None or not mgr.is_active():
             return

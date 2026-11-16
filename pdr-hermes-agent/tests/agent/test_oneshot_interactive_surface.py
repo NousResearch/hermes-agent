@@ -32,7 +32,7 @@ def _by_name(agent):
 
 
 def test_oneshot_tool_build_drops_clarify_and_delegate_live_control(monkeypatch):
-    import model_tools
+    from hermes_agent import model_tools
 
     interactive = _built_agent(monkeypatch, oneshot=False)
     tools = _by_name(interactive)

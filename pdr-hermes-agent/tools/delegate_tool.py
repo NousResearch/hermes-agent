@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +240,7 @@ def _build_child_agent(
     inheritance so children can run on a different provider:model pair. ``profile_home`` builds (and later runs,
     see ``_ChildRun.await_child``) the child inside that profile's scope; it never shares the parent's pool."""
     import uuid as _uuid
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from agent.delegation_context import delegated_child_context
     from tools.delegate_tool_resumable import endpoint_identity
     from tools.delegate_tool_routes import delegated_profile_scope

@@ -20,12 +20,12 @@ def repair_windows_home_acl(*, elevated: bool | None = None) -> None:
 
     *elevated* is the host fact (default: probed; False on every host but an elevated Windows one).
     """
-    from hermes_dir_acl import grant_tree_user_access, process_is_elevated
+    from hermes_agent.hermes_dir_acl import grant_tree_user_access, process_is_elevated
     if not (process_is_elevated() if elevated is None else elevated):
         # Only an elevated update leaves Administrators-only entries, and only an elevated token
         # can rewrite them; a recursive grant over the whole home on every update costs minutes.
         return
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = get_hermes_home()
     # The home itself is the operator's choice and may be a link: pin its real directory and walk

@@ -125,7 +125,7 @@ def _run_child(request: dict) -> tuple[int, dict]:
     """One JSON exchange; the old process never imports the updated graph."""
     root = Path(__file__).resolve().parents[1]
     home = os.environ.get("HERMES_HOME")
-    constants = sys.modules.get("hermes_constants")
+    constants = sys.modules.get("hermes_agent.hermes_constants")
     # The running process may hold any historical hermes_constants: older ones keep the override in
     # a module ContextVar, newer ones behind get_hermes_home_override() (the runtime scope state).
     override = vars(constants).get("_HERMES_HOME_OVERRIDE") if constants else None

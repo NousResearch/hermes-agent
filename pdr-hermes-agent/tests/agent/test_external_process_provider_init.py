@@ -71,7 +71,7 @@ def test_fallback_activation_keeps_external_process_provider_on_chat_completions
     any such profile — the bundled copilot-acp and an out-of-tree one alike (#65842, #107754)."""
     from agent.chat_completion_helpers import _fallback_api_mode_resolved
     from providers.base import ProviderProfile
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     profiles = {name: ProviderProfile(name=name, auth_type="external_process") for name in ("copilot-acp", "acme-acp")}
     monkeypatch.setattr("providers.get_provider_profile", profiles.get)

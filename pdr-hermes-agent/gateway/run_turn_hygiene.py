@@ -26,10 +26,10 @@ from gateway.session import (
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
-from hermes_constants import get_hermes_home_override
+from hermes_agent.hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from utils import base_url_hostname
+from hermes_agent.utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner
@@ -131,7 +131,7 @@ class GatewayTurnHygieneMixin:
                 except Exception:
                     hs.config_context_length = None
 
-            # custom_providers per-model context_length fallback (as in run_agent.py); needs base_url.
+            # custom_providers per-model context_length fallback (as in hermes_agent/run_agent.py); needs base_url.
             if hs.config_context_length is None and hs.base_url:
                 with suppress(TypeError, ValueError):
                     try:
@@ -666,7 +666,7 @@ class GatewayTurnHygieneMixin:
         """Build the detached hygiene ``AIAgent`` with the live session's system prompt. Returns
         ``(agent, sync_session_db)``."""
         from gateway.run import _GATEWAY_HYGIENE_PLATFORM, _seed_hygiene_system_prompt
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         try:
             _hyg_session_row = await self._session_db.get_session(session_entry.session_id)
         except Exception as exc:
@@ -680,7 +680,7 @@ class GatewayTurnHygieneMixin:
         # With compression.checkpoint_required on, load the memory provider so the checkpoint exists
         # before any mutation; otherwise keep the fast path (no provider init).
         from hermes_cli.config import load_config as _load_cfg
-        from utils import is_truthy_value as _is_truthy
+        from hermes_agent.utils import is_truthy_value as _is_truthy
 
         _hyg_checkpoint_required = _is_truthy(
             ((_load_cfg() or {}).get("compression") or {}).get("checkpoint_required"), default=False,

@@ -149,7 +149,7 @@ def trial_reserved() -> bool:
 def _write_marker(content: dict[str, str], *, answer_moved: bool = True) -> None:
     places = machine_places()
     if places.markers:
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
 
         marker = places.markers[0]
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -218,7 +218,7 @@ def _expand_all(patterns: Iterable[str]) -> Iterator[Path]:
 
 
 def _active_root() -> Iterable[Path]:
-    from hermes_constants import _get_platform_default_hermes_home, get_default_hermes_root
+    from hermes_agent.hermes_constants import _get_platform_default_hermes_home, get_default_hermes_root
 
     return (get_default_hermes_root(), _get_platform_default_hermes_home())
 
@@ -372,7 +372,7 @@ def _onboarding_done(home: _Root) -> bool:
 
 
 def _named_profile(home: _Root) -> bool:
-    from hermes_constants import PROFILE_ID_RE, named_profile_has_identity, named_profile_is_deleted
+    from hermes_agent.hermes_constants import PROFILE_ID_RE, named_profile_has_identity, named_profile_is_deleted
 
     profiles = home.file("profiles")
     if not profiles.is_dir():
@@ -485,7 +485,7 @@ def _read_mapping(path: Path, parse: Callable[[str], Any]) -> dict[str, Any]:
 
 
 def _parse_yaml(text: str) -> Any:
-    import hermes_yaml
+    from hermes_agent import hermes_yaml
 
     try:
         return hermes_yaml.safe_load(text)

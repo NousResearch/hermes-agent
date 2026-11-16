@@ -33,7 +33,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent(provider: str = "", model: str = "", base_url: str = "") -> AIAgent:

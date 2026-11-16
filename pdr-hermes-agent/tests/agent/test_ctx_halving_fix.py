@@ -146,7 +146,7 @@ class TestEphemeralMaxOutputTokens:
     def _make_agent(self):
         """Return a minimal AIAgent with api_mode='anthropic_messages' and
         a stubbed context_compressor, bypassing full __init__ cost."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = object.__new__(AIAgent)
         # Minimal attributes used by _build_api_kwargs
         agent.api_mode = "anthropic_messages"

@@ -1,4 +1,4 @@
-"""Tests for context token tracking in run_agent.py's usage extraction.
+"""Tests for context token tracking in hermes_agent/run_agent.py's usage extraction.
 
 The context counter (status bar) must show the TOTAL prompt tokens including
 Anthropic's cached portions. This is an integration test for the token
@@ -14,15 +14,15 @@ sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
-import run_agent
+from hermes_agent import run_agent
 
 
 def _patch_bootstrap(monkeypatch):
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kwargs: [{
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda **kwargs: [{
         "type": "function",
         "function": {"name": "t", "description": "t", "parameters": {"type": "object", "properties": {}}},
     }])
-    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
+    monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", dict)
 
 
 class _FakeAnthropicClient:

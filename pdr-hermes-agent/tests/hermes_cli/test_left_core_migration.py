@@ -32,7 +32,7 @@ def _home(tmp_path: Path, name: str = "home", *, env: str = "", config: str = ""
     return home
 
 
-# The uncommented platform_toolsets block cli-config.yaml.example carried (the homeassistant row from
+# The uncommented platform_toolsets block hermes_cli/data/cli-config.yaml.example carried (the homeassistant row from
 # 1aa7badb3c until fb9fc8a3dd). The installers (install.sh, install.ps1, the Docker hook) and
 # `hermes doctor` seed config.yaml from that file, so the block alone says nothing about use.
 _EXAMPLE_PLATFORM_TOOLSETS = (
@@ -180,7 +180,7 @@ def test_a_preinstalled_plugin_gets_the_scope_conversion_once(tmp_path):
 
     config = read_user_config_raw(home / "config.yaml")
     _save_platform_tools(config, "telegram", {"web", "homeassistant"})  # the user's later choice
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(home)
     try:
         save_config(config)

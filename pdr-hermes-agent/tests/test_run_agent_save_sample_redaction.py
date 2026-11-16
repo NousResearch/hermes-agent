@@ -1,10 +1,10 @@
-"""``run_agent.py --save_sample`` writes a trajectory file; secrets must be redacted (#108495)."""
+"""``hermes_agent/run_agent.py --save_sample`` writes a trajectory file; secrets must be redacted (#108495)."""
 
 import json
 from types import SimpleNamespace
 
 from agent.agent_runtime_helpers import convert_to_trajectory_format
-from run_agent import _save_sample_trajectory
+from hermes_agent.run_agent import _save_sample_trajectory
 
 SECRET = "sk-" + "proj-savesample-secret-1234567890"
 

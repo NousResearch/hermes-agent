@@ -17,7 +17,7 @@ def test_blank_slate_list_excludes_search_but_keeps_kanban():
 
 
 def test_legacy_search_entry_is_reported_then_cleared_by_enabling_web():
-    from model_tools import get_tool_definitions
+    from hermes_agent.model_tools import get_tool_definitions
     # Configs written by Blank Slate before this fix still carry `search` next to an enabled `web`; legacy
     # names (`terminal_tools`) strip tools the same way and must clear the same way.
     config = {"platform_toolsets": {"cli": ["file", "terminal", "web"]},

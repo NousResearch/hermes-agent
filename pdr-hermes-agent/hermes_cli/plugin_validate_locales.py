@@ -47,7 +47,7 @@ def reference_keys(surface: str) -> Optional[set[str]]:
 
 
 def _load_document(path: Path) -> Any:
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
     with path.open("r", encoding="utf-8-sig") as handle:
         return yaml.safe_load(handle)
 

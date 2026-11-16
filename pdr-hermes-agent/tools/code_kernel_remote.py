@@ -144,7 +144,7 @@ class RemoteKernel:
         if scope is None or (bound is not None and sandbox_identity(bound) == sandbox_identity(scope)):
             yield
             return
-        from hermes_scope import push_state
+        from hermes_agent.hermes_scope import push_state
         token = push_state(scope=scope, home=None, secrets=None, terminal=None)
         try:
             yield

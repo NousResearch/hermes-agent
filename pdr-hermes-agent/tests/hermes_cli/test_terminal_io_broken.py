@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 
 def _make_cli_stub():
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     cli = object.__new__(HermesCLI)
     cli._terminal_io_broken = False

@@ -12,7 +12,7 @@ def validate_action(operation, payload):
     # ``reasoning``: a level picked with the model, committed in the same selection.
     if (operation == 'model' and 'model' in payload and not set(payload) - {'model', 'provider', 'confirm', 'reasoning'}
             and all(isinstance(v, str) and v.strip() for v in payload.values())):
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.hermes_constants import parse_reasoning_effort
         if 'reasoning' not in payload or parse_reasoning_effort(payload['reasoning']) is not None:
             return
     if operation == 'branch' and _valid_branch_payload(payload):
@@ -22,7 +22,7 @@ def validate_action(operation, payload):
     if operation == 'reasoning' and set(payload) == {'effort'} and payload['effort'] is None:
         return  # ``/reasoning reset``: the session's level goes back to the profile
     if operation == 'reasoning' and set(payload) == {'effort'} and isinstance(payload['effort'], str):
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.hermes_constants import parse_reasoning_effort
         if parse_reasoning_effort(payload['effort']) is not None:
             return
     if operation == 'workspace' and set(payload) == {'cwd'} and isinstance(payload['cwd'], str) and payload['cwd'].strip():

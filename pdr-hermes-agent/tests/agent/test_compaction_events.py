@@ -396,7 +396,7 @@ def test_rotation_publishes_after_the_split_with_the_attempts_own_session(publis
     """A rotating commit re-points the agent at a child session and its memory flush resets the compressor's
     telemetry; the record is still built from this attempt's telemetry and names the session it started in."""
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         agent = AIAgent(
@@ -423,7 +423,7 @@ def test_a_split_that_fails_after_rewriting_history_is_still_a_compaction(publis
     """The in-place commit stored the compacted transcript, then a later bookkeeping write failed: the model
     sees the compacted history next, so Relay must reset freshness, and the record says what failed."""
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         db = SessionDB(db_path=Path(tmpdir) / "state.db")
@@ -452,7 +452,7 @@ def test_an_in_place_engine_whose_split_fails_after_the_archive_is_still_a_compa
     """An engine may compact its input list in place, so the returned list IS the input. After the atomic
     archive stored it, a later bookkeeping failure must still mark a compaction (freshness reset)."""
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     def _in_place(msgs, **_kwargs):
         compressor = agent.context_compressor

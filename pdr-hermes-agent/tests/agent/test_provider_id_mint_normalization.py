@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.chat_completion_helpers import _assistant_tool_call_dict
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _tool_call(raw_id, n, **extra):

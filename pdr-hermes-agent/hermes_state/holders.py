@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 _IS_WINDOWS = sys.platform == "win32"
 _HERMES_EXECUTABLES = frozenset({"hermes", "hermes-agent", "hermes-acp"})
 _HERMES_PYTHON_MODULES = frozenset({"acp_adapter", "hermes_cli.main"})
-_HERMES_PYTHON_SCRIPTS = frozenset({"hermes_cli/main.py", "run_agent.py"})
+_HERMES_PYTHON_SCRIPTS = frozenset({"hermes_cli/main.py", "hermes_agent/run_agent.py"})
 _PYTHON_SHORT_OPTIONS_WITH_OPERANDS = frozenset({"Q", "W", "X"})
 _PYTHON_LONG_OPTIONS_WITH_OPERANDS = frozenset(
     {"--check-hash-based-pycs", "--jit"}
@@ -192,7 +192,7 @@ def _store_install_layout(this_home: str) -> tuple[Optional[str], Optional[str]]
     so ANY named-profile selection contradicts it.
     """
     try:
-        from hermes_constants import named_profile_home
+        from hermes_agent.hermes_constants import named_profile_home
 
         profile_home = named_profile_home(this_home)
         if profile_home is not None:
@@ -593,7 +593,7 @@ def held_store_refusal(db_path: Path, *, command: str, force_hint: Optional[str]
     holders = foreign_state_db_holders(db_path)
     if not holders:
         return None
-    from hermes_constants import profile_cli_selector
+    from hermes_agent.hermes_constants import profile_cli_selector
     from hermes_state.errors import STORAGE_RECOVERY_DOCS_URL
 
     by_pid: dict[int, set[str]] = {}

@@ -274,7 +274,7 @@ const renderChargeFailed = (sys: Sys, reason?: string | null, portalUrl?: string
       sys(t('slashCmd.topup.charge.failedReason', reason || 'processing_error'))
   }
 
-  // Funnel to the portal after any failure (parity with cli.py _billing_portal_hint).
+  // Funnel to the portal after any failure (parity with hermes_agent/cli.py _billing_portal_hint).
   if (portalUrl) {
     sys(t('slashCmd.topup.error.portal', portalUrl))
   }

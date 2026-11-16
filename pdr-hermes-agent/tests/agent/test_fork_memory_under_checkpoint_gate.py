@@ -30,7 +30,7 @@ def _fork_site(site):
     """``(module holding the AIAgent binding, spawn thunk, extra patches)``, resolved lazily.
     batch_runner binds AIAgent at import, so its patch lands on its own global."""
     if site == "delegate":
-        import run_agent
+        from hermes_agent import run_agent
         from tools import delegate_tool
 
         parent = SimpleNamespace(
@@ -44,18 +44,18 @@ def _fork_site(site):
         )), ()
     if site == "curator":
         from agent import curator
-        import run_agent
+        from hermes_agent import run_agent
 
         return run_agent, (lambda: curator._run_llm_review("prompt")), ()
     if site == "batch_runner":
-        import batch_runner
+        from hermes_agent import batch_runner
 
         return batch_runner, (lambda: batch_runner._process_single_prompt(
             0, {"prompt": "p"}, 0, {"model": "m", "max_iterations": 3, "distribution": {}},
         )), (patch.object(batch_runner, "sample_toolsets_from_distribution", return_value=["terminal"]),)
     if site == "feishu_comment":
         from plugins.platforms.feishu import feishu_comment
-        import run_agent
+        from hermes_agent import run_agent
 
         return run_agent, (lambda: feishu_comment._run_comment_agent("p", client=object(), session_key="")), (
             patch.object(feishu_comment, "_resolve_model_and_runtime", return_value=("m", {})),
@@ -158,11 +158,11 @@ def _build_agent_with_recording_provider(seen, builtin_memory=False, **extra):
         patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.memory.load_memory_provider", return_value=_RecordingProvider(seen)),
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         return AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
                        skip_context_files=True, skip_memory=False, **extra)
@@ -197,7 +197,7 @@ def test_fork_keeps_builtin_memory_out_of_its_prompt():
     """The fork loads the provider for the checkpoint only: MEMORY.md and USER.md stay out of its
     system prompt, as with ``skip_memory=True``. The same config without the fork label loads them."""
     from agent.system_prompt import build_system_prompt
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     memories = get_hermes_home() / "memories"
     memories.mkdir(parents=True, exist_ok=True)

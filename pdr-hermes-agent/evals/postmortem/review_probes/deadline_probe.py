@@ -25,7 +25,7 @@ import agent.turn_usage as tu
 import tools.delegate_tool_results as dr
 import agent.usage_pricing as up
 import agent.codex_runtime as cr
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 for mod in (te, tu, dr, up, cr):
     assert pathlib.Path(mod.__file__).is_relative_to(root), mod.__file__
 print(json.dumps({'sha': subprocess.check_output(['git','rev-parse','HEAD'],text=True, encoding='utf-8', errors='replace').strip(), 'modules': {m.__name__:m.__file__ for m in (te,tu,dr,up,cr)}, 'home':home.name}), flush=True)

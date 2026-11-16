@@ -61,7 +61,7 @@ def profile(monkeypatch, tmp_path):
 
 def _agent(srv, home, session_id):
     from hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     db = SessionDB(db_path=home / "state.db")
     db.ensure_session(session_id, source="whatsapp")  # the gateway opens the row before the turn
@@ -137,7 +137,7 @@ def test_without_the_verb_a_continuing_session_keeps_its_stored_prompt(profile):
 
 
 def test_the_verb_makes_the_next_turn_adopt_soul_skills_and_project_files_once(profile, monkeypatch, capsys):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     srv, home, project = profile
     history, _ = _turn(srv, home, "chat-a", "hello", [])
@@ -181,7 +181,7 @@ def test_session_flag_refreshes_only_that_session(profile, monkeypatch):
 
 
 def test_a_session_started_after_the_request_is_not_rebuilt_again(profile, monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     srv, home, _project = profile
     _refresh_prompts(monkeypatch, home)
@@ -240,7 +240,7 @@ def test_refresh_request_is_scoped_to_its_profile(profile, monkeypatch, tmp_path
 def test_no_request_means_no_rebuild_and_no_prompt_source_reads(profile, monkeypatch):
     """Never ran the verb: the stored prompt is replayed byte-identically with no source reads."""
     import agent.prompt_builder as pb
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     srv, home, project = profile
     history, first = _turn(srv, home, "chat-a", "hello", [])
@@ -283,7 +283,7 @@ def _tool_description(request, name: str) -> str:
 def test_refresh_keeps_the_sessions_tools_pin(profile, monkeypatch):
     """The refresh is about instructions: tools[] stays the array the session already sends, even
     when the agent built for this turn derives a different schema for one of its tools."""
-    import model_tools
+    from hermes_agent import model_tools
 
     srv, home, project = profile
     history, _ = _turn(srv, home, "chat-a", "hello", [])
@@ -316,7 +316,7 @@ def test_refresh_prompts_unknown_session_fails(profile, monkeypatch, capsys):
 
 
 def _count_builds(monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     builds = []
     original = AIAgent._build_system_prompt
     monkeypatch.setattr(AIAgent, "_build_system_prompt",

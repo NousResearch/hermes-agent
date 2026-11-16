@@ -14,7 +14,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def existing_store(tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path)
     (tmp_path / "state.db").touch()
 
 

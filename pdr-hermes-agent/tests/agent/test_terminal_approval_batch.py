@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from gateway.session_context import clear_session_vars
 from tools import approval
 from tools.thread_context import propagate_context_to_thread
@@ -25,11 +25,11 @@ def _agent():
     from tools.terminal_tool import TERMINAL_SCHEMA
     from tools.file_tools import READ_FILE_SCHEMA
     with (
-        patch("model_tools.get_tool_definitions", return_value=[
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[
             {"type": "function", "function": schema}
             for schema in (TERMINAL_SCHEMA, READ_FILE_SCHEMA)
         ]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):

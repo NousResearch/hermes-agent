@@ -16,7 +16,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 import pm.workspace as ws
 from tests.pm import _fixtures

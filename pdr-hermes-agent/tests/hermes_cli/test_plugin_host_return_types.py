@@ -7,7 +7,7 @@ return value that crosses the wire as a generic placeholder fails here the way i
 import os
 import sys
 
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 import pytest
 
 from hermes_cli import plugins as plugins_mod

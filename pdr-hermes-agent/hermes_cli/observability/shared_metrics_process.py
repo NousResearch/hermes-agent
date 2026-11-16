@@ -129,7 +129,7 @@ def purge_pending_receipts(home: Path) -> None:
 def begin_process(kind: str) -> None:
     """Mark this process as a running ``kind`` and report dead predecessors. Once per process."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         from .shared_metrics_desktop import ONBOARDING_LATCH_DIRNAME
         from .shared_metrics_setup import markers_dir as setup_markers_dir
@@ -231,7 +231,7 @@ def settle_claim(claimed: Path, original: Path, saved: bool) -> None:
 
 
 def _report_dead_markers(home: Path, own: Path) -> None:
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     from . import shared_metrics_contract as contract
     from .shared_metrics_events import emit_saved
@@ -270,7 +270,7 @@ def arm_turn(agent: Any) -> None:
     """At turn entry (profile scope bound): the owning home for an off-thread watchdog abort, and
     a fresh once-per-turn latch shared by both turn watchdogs."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         agent._metrics_turn_home = str(get_hermes_home())
         agent._metrics_watchdog_abort_counted = False
@@ -286,7 +286,7 @@ def record_watchdog_turn_abort(agent: Any) -> None:
         if not home or getattr(agent, "_metrics_watchdog_abort_counted", True):
             return
         agent._metrics_watchdog_abort_counted = True
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         from . import shared_metrics_contract as contract
         from .shared_metrics_events import _emit

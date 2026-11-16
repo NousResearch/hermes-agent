@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 from hermes_cli.main_agent_cmds import cmd_insights
 
 

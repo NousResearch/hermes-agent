@@ -48,7 +48,7 @@ DYNAMIC, STRING_REF, BY_PATH, FILE_MATH, BY_HAND_KIND, MODULE_STRING, MODULE_TAB
     IMPORT, OTHER = ("dynamic-import", "string-module-ref", "by-path", "file-math", "by-hand", "module-string",
                      "module-table", "code-string", "kept-name", "import", "other")
 GENERATE_HINT = ("next: after `just move-docs`, run `just move-generate`: generated files embed code and docstrings "
-                 "this move rewrote (apps/shared/src/gateway-contract.*, tests/hermes_cli/serve_handler_ledger.json)")
+                 "this move rewrote (ui-tui/packages/shared/src/gateway-contract.*, tests/hermes_cli/serve_handler_ledger.json)")
 NOQA = "PLR0402"
 _DASH_M = re.compile(r"(?<![\w-])(-m(?:\s+|[\"'],\s*[\"']))([A-Za-z_][\w.-]*)")
 _DASH_C = re.compile(r"(?<![\w-])-c\s+([\"'])(.+?)(?<!\\)\1", re.DOTALL)
@@ -147,7 +147,7 @@ class Plan:
 
     @functools.cached_property
     def folders(self) -> frozenset[str]:
-        """Top-level folder and file names this move took away: ``tools``, ``model_tools.py``."""
+        """Top-level folder and file names this move took away: ``tools``, ``hermes_agent/model_tools.py``."""
         return frozenset(PurePosixPath(old).parts[0] for old, _ in self.paths)
 
     def old_paths(self) -> list[tuple[str, str]]:

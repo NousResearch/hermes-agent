@@ -13,7 +13,7 @@ def test_pairing_exit_controls_enablement_and_forwards_browser(tmp_path, monkeyp
     from gateway.platforms import whatsapp_common
     from hermes_cli import config, main, main_platform_setup as setup
     from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     parser = argparse.ArgumentParser()
     build_whatsapp_parser(parser.add_subparsers(), cmd_whatsapp=setup.cmd_whatsapp)

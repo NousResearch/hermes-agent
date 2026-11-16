@@ -51,7 +51,7 @@ def _delegate(agent) -> dict:
 
 
 def test_the_build_scope_picks_the_schema_and_the_agent_keeps_it():
-    import model_tools
+    from hermes_agent import model_tools
     from tools.delegate_tool import oneshot_delegate_function
     from tools.mcp_tool_agent import refresh_agent_mcp_tools
 

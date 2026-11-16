@@ -13,7 +13,7 @@ import types
 
 from agent.turn_context import _stage_turn_user_message
 from hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from tui_gateway import server
 
 

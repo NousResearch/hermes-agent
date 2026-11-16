@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_dir_acl
+from hermes_agent import hermes_dir_acl
 
 
 @pytest.mark.platforms("posix")

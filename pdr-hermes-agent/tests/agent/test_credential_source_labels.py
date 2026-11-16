@@ -1,6 +1,6 @@
 """A callable API key is labelled by its credential source, never by "is it callable".
 
-``/config`` (``cli.py`` ``show_config``) and the agent's key banner (``_print_key_banner``) printed
+``/config`` (``hermes_agent/cli.py`` ``show_config``) and the agent's key banner (``_print_key_banner``) printed
 "Microsoft Entra ID" for every callable key, so a custom provider's ``key_cmd`` bearer or MiniMax
 OAuth read as Azure. Each builder now tags its callable with a source, and both surfaces resolve the
 label through one table in ``agent.credential_source``. An untagged callable gets a neutral label.
@@ -23,7 +23,7 @@ def _never_called() -> str:
 
 
 def _config_api_line(capsys, api_key) -> str:
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     cli = HermesCLI.__new__(HermesCLI)
     cli.api_key, cli.agent = api_key, None

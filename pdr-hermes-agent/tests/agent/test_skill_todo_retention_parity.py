@@ -41,7 +41,7 @@ from tools.todo_tool import TODO_INJECTION_HEADER
 
 def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "cli"):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",

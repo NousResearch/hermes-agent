@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
-from hermes_scope import (
+from hermes_agent.hermes_scope import (
     LOCAL_OWNER,
     LOCAL_TENANT,
     BoundSecrets,
@@ -37,7 +37,7 @@ __all__ = [
 
 
 def _same_home(a: str | Path, b: str | Path) -> bool:
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     return hermes_home_key(a) == hermes_home_key(b)
 
 
@@ -210,7 +210,7 @@ def legacy_switch(
     if current is None:
         return None
     _refuse_inside_hosted("a legacy profile setter tried to switch profiles")
-    from hermes_constants import get_process_hermes_home
+    from hermes_agent.hermes_constants import get_process_hermes_home
     target = home if home is not None else get_process_hermes_home()
     if _same_home(current.agent, target):
         return None

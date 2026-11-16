@@ -395,7 +395,7 @@ class TestF6ExecutorSaturation:
             session_id = "F6_PRESTART_FENCE"
             db.create_session(session_id, source="cli")
             with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-                from run_agent import AIAgent
+                from hermes_agent.run_agent import AIAgent
 
                 agent = AIAgent(
                     api_key="test-key",

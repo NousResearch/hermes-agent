@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 class _Conn:
@@ -129,7 +129,7 @@ def handoff_cli(monkeypatch):
 def test_handoff_to_telegram_is_queued_on_the_gateway_and_the_cli_exits_once_it_lands(handoff_cli, capsys):
     """#143608: the pending row is written in the owner's store (where its watcher claims it), never
     this process's, and a completed transfer ends the CLI session like /quit."""
-    from cli import _handed_off_session_ids
+    from hermes_agent.cli import _handed_off_session_ids
     cli, conn = handoff_cli(["pending", "running", "completed"])
     # The TUI's slash dispatch: a session-ending answer closes the running app, as /quit does.
     assert cli._tui_run_slash_input("/handoff Telegram") is None
@@ -183,7 +183,7 @@ def test_save_writes_the_gateway_owners_export_on_this_machine(tmp_path, monkeyp
     """CLI-19: ``/save`` asks the owner (``session.export``) for its canonical export, never writes the
     in-memory fallback (no title, no metadata, no archived rows) that ``import_sessions`` can't restore.
     The CLI writes the content itself, so a remote owner's disk is never taken for this one."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     conn = _Conn({"session.export": {"format": "md", "filename": "hermes_session_s.md", "content": "# owner export"}})
     cli = _save_cli(conn, tmp_path, monkeypatch)
     work = tmp_path / "work"
@@ -232,7 +232,7 @@ def test_an_unclaimed_handoff_is_failed_on_the_gateway_so_it_can_be_retried(hand
 
 def test_a_handoff_claimed_as_the_pending_timeout_fires_still_completes(handoff_cli, monkeypatch):
     """The CAS-fail loses to a claim that finishes first: the CLI reports what the row says, not a timeout."""
-    from cli import _handed_off_session_ids
+    from hermes_agent.cli import _handed_off_session_ids
     cli, conn = handoff_cli(["pending", "completed", "completed"],
                             **{"handoff.fail": {"failed": False, "state": "completed"}})
     clock = iter([0.0, 100.0])

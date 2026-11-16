@@ -185,7 +185,7 @@ def cmd_worktree(args) -> int:
     from hermes_cli import worktree_gc
     repo_root = getattr(args, "repo", None)
     if not repo_root:
-        import cli as _cli
+        from hermes_agent import cli as _cli
         repo_root = _cli._git_repo_root()
     if not repo_root:
         print("Not inside a git repository (or pass --repo <path>).")

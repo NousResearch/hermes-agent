@@ -185,5 +185,5 @@ def probe_root(tmp_path):
     health marker — a developer venv whose editable ``.pth`` shadows the root hides
     the dependency, CI's clean environment does not.
     """
-    (tmp_path / "hermes_bootstrap.py").write_text("", encoding="utf-8")
+    (tmp_path / "hermes_agent/hermes_bootstrap.py").write_text("", encoding="utf-8")
     return tmp_path

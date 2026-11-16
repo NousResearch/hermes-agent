@@ -84,7 +84,7 @@ class _Owners:
 
 
 def _busy_cli(store, sid):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = sid
     cli._pending_input = queue.Queue()
@@ -95,7 +95,7 @@ def _busy_cli(store, sid):
 
 
 def _command(cli, text):
-    with patch("cli._cprint") as printed:
+    with patch("hermes_agent.cli._cprint") as printed:
         assert cli.process_command(text) is True
     return " ".join(str(call.args[0]) for call in printed.call_args_list)
 
@@ -180,7 +180,7 @@ def test_an_adopted_queued_prompt_never_submits_a_second_admission():
     """Review N5-F3: the adopted item is matched to its admission by id, not by text. A queued text the
     input path's cleanup rewrites (a leaked CPR, a bracketed-paste marker) must still be pumped as the
     admission the owner is running, never sent again as a new ``prompt.submit``."""
-    from cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
+    from hermes_agent.cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
     from hermes_cli.gateway_agent import GatewayAgent
     from tests.hermes_cli.test_gateway_agent import SID, frame
     from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli, _play
@@ -389,7 +389,7 @@ def test_dock_shows_a_fresh_submit_until_the_owner_publishes_its_list():
 
 
 def _queue_command(cli, fn, *args):
-    with patch("cli._cprint") as printed:
+    with patch("hermes_agent.cli._cprint") as printed:
         fn(*args)
     return " ".join(str(c.args[0]) for c in printed.call_args_list)
 
@@ -542,7 +542,7 @@ def _busy_enter(cli, mode, text, images=()):
     """Enter typed while the turn runs, through main's ``_tui_enter_while_busy``."""
     cli.busy_input_mode = mode
     cli.agent = getattr(cli, "agent", None)
-    with patch("agent.onboarding.is_seen", lambda *a: True), patch("cli._cprint"):
+    with patch("agent.onboarding.is_seen", lambda *a: True), patch("hermes_agent.cli._cprint"):
         cli._tui_enter_while_busy(text, list(images), (text, list(images)) if images else text)
 
 

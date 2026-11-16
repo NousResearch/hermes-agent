@@ -18,7 +18,7 @@ def _run_sequential(agent, function_result):
     agent._flush_messages_to_session_db = MagicMock()
     # Vision-capable route (the reporter's case): the envelope stays a part LIST in history, which
     # the per-turn aggregate budget cannot measure — so only per-part persistence bounds it.
-    with (patch("model_tools.handle_function_call", return_value=function_result),
+    with (patch("hermes_agent.model_tools.handle_function_call", return_value=function_result),
           patch.object(type(agent), "_model_supports_vision", lambda self: True),
           patch.object(type(agent), "_provider_supports_vision_tool_messages", lambda self: True)):
         agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
@@ -34,7 +34,7 @@ def _envelope(text: str) -> dict:
 
 def test_oversized_multimodal_text_part_is_spilled_and_recoverable(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path, raising=False)
     big = "x" * 760_396
     agent = _make_agent()
     (tool_msg,) = _run_sequential(agent, _envelope(big))

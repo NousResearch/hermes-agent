@@ -191,7 +191,7 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         import tempfile, shutil, subprocess
         from pathlib import Path
         from agent.system_prompt import build_system_prompt, invalidate_system_prompt
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         tmp = Path(tempfile.mkdtemp(prefix="test-pinned-boundary-"))
         try:

@@ -624,7 +624,7 @@ def test_an_unstamped_scope_on_a_pinned_host_belongs_to_the_pinned_home(tmp_path
     WebUI): an unstamped scope is the pinned launch home's, so the mirrored profile's refresh must
     not replace it, and a symlinked spelling of the pinned home still owns it."""
     from agent import secret_scope
-    from hermes_constants import pin_process_hermes_home
+    from hermes_agent.hermes_constants import pin_process_hermes_home
 
     launch = tmp_path / "launch"
     ops = launch / "profiles" / "ops"

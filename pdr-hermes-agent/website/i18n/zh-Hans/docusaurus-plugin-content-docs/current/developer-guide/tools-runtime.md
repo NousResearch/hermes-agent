@@ -11,8 +11,8 @@ Hermes 工具是自注册函数，按 toolset（工具集）分组，并通过�
 主要文件：
 
 - `tools/registry.py`
-- `model_tools.py`
-- `toolsets.py`
+- `hermes_agent/model_tools.py`
+- `hermes_agent/toolsets.py`
 - `tools/terminal_tool.py`
 - `tools/environments/*`
 
@@ -20,7 +20,7 @@ Hermes 工具是自注册函数，按 toolset（工具集）分组，并通过�
 
 每个工具模块在导入时调用 `registry.register(...)`。
 
-`model_tools.py` 负责导入/发现工具模块，并构建供模型使用的 schema 列表。
+`hermes_agent/model_tools.py` 负责导入/发现工具模块，并构建供模型使用的 schema 列表。
 
 ### `registry.register()` 的工作原理
 
@@ -46,7 +46,7 @@ registry.register(
 
 ### 发现机制：`discover_builtin_tools()`
 
-当 `model_tools.py` 被导入时，会调用 `tools/registry.py` 中的 `discover_builtin_tools()`。该函数使用 AST 解析扫描所有 `tools/*.py` 文件，找出包含顶层 `registry.register()` 调用的模块，然后导入它们：
+当 `hermes_agent/model_tools.py` 被导入时，会调用 `tools/registry.py` 中的 `discover_builtin_tools()`。该函数使用 AST 解析扫描所有 `tools/*.py` 文件，找出包含顶层 `registry.register()` 调用的模块，然后导入它们：
 
 ```python
 # tools/registry.py（简化版）
@@ -132,7 +132,7 @@ Toolset 是工具的命名集合。Hermes 通过以下方式解析它们：
 ```
 模型响应包含 tool_call
     ↓
-run_agent.py agent 循环
+hermes_agent/run_agent.py agent 循环
     ↓
 model_tools.handle_function_call(name, args, task_id, user_task)
     ↓

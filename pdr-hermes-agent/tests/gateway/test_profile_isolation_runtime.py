@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     get_hermes_home,
     reset_hermes_home_override,
     set_hermes_home_override,
@@ -208,7 +208,7 @@ class TestThreadContextPropagation:
 
 
     def test_run_async_worker_preserves_override(self, two_profiles):
-        """model_tools._run_async's worker-thread branch must keep the override.
+        """hermes_agent.model_tools._run_async's worker-thread branch must keep the override.
 
         This is the generic sync->async bridge for every async tool; if it
         leaks, every async tool that resolves get_hermes_home() leaks.
@@ -216,7 +216,7 @@ class TestThreadContextPropagation:
         import asyncio
 
         _prof_a, prof_b = two_profiles
-        import model_tools
+        from hermes_agent import model_tools
 
         async def reads_home():
             return str(get_hermes_home())

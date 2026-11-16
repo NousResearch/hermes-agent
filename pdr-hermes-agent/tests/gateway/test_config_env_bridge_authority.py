@@ -36,7 +36,7 @@ def _run_gateway_import(
         import os, sys
         sys.path.insert(0, {str(PROJECT_ROOT)!r})
         if {str(routed_home or "")!r}:
-            from hermes_constants import set_hermes_home_override
+            from hermes_agent.hermes_constants import set_hermes_home_override
             set_hermes_home_override({str(routed_home or "")!r})
 
         try:
@@ -107,7 +107,7 @@ def _run_gateway_import(
 
 def _write_config(home: Path, agent_cfg: dict | None = None, display_cfg: dict | None = None,
                   timezone: str | None = None, gateway_cfg: dict | None = None) -> None:
-    import hermes_yaml as yaml
+    from hermes_agent import hermes_yaml as yaml
     cfg: dict = {}
     if agent_cfg:
         cfg["agent"] = agent_cfg
@@ -230,7 +230,7 @@ def test_env_platform_connect_timeout_wins_over_config(hermes_home: Path) -> Non
 def test_first_import_under_a_routed_override_bridges_the_process_home(tmp_path: Path) -> None:
     """A multiplexed backend first imports gateway.run lazily inside a routed profile's session;
     the import-time bridge must still write the LAUNCH home's config into the process env."""
-    from utils import atomic_yaml_write
+    from hermes_agent.utils import atomic_yaml_write
 
     homes = {}
     for name, turns in (("launch", 111), ("routed", 222)):

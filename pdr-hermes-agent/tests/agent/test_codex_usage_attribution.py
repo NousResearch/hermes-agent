@@ -10,10 +10,10 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
 from hermes_cli.version_info import get_version_info
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 CODEX_URL = "https://chatgpt.com/backend-api/codex"
@@ -56,7 +56,7 @@ def _set_legacy_attribution(profile, enabled):
 def wire(profile, monkeypatch):
     """Replace only HTTP transports; use Hermes routing and the real SDK."""
     from agent import auxiliary_client
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     requests = []
     response = {
@@ -149,7 +149,7 @@ def test_new_identity_is_limited_to_the_official_endpoint(base_url, attributed):
 def test_primary_client_and_credential_rebuild_send_expected_headers(
     profile, wire,
 ):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key=_jwt(),
@@ -282,7 +282,7 @@ def test_required_identity_wins_over_configured_header_defaults(
     profile, wire,
 ):
     from agent import auxiliary_client
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     overrides = {
         "Originator": "codex_cli_rs",

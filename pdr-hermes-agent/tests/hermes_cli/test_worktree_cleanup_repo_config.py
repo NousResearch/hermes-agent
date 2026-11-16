@@ -49,7 +49,7 @@ def session_worktree(tmp_path):
 
 
 def _cleanup(monkeypatch, repo: Path, worktree: Path) -> str:
-    import cli
+    from hermes_agent import cli
 
     printed: list[str] = []
     monkeypatch.setattr(cli, "release_lsp_clients", lambda path: None)

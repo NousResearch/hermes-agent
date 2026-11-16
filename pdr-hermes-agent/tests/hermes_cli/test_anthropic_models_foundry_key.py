@@ -17,7 +17,7 @@ OAUTH_TOKEN = "sk-ant-" + "oat01-" + "c" * 24  # concatenated: push protection r
 @pytest.fixture
 def fx(tmp_path, monkeypatch):
     """HERMES_HOME with a Claude Code login; returns it and the list of (url, headers) the fetcher sends."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "AZURE_ANTHROPIC_KEY", "ANTHROPIC_BASE_URL"):
         monkeypatch.delenv(name, raising=False)
     claude_dir = tmp_path / "claude"

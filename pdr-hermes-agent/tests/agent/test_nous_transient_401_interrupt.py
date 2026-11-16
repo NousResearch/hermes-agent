@@ -10,13 +10,13 @@ import httpx
 import openai
 
 from agent import credential_auth_recovery
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _agent() -> AIAgent:
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
@@ -63,7 +63,7 @@ def test_stop_during_transient_401_backoff_sends_no_further_request(monkeypatch)
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
-        patch("run_agent._set_interrupt"),
+        patch("hermes_agent.run_agent._set_interrupt"),
         patch("agent.interrupt_control._set_interrupt"),
         patch.object(agent, "_interruptible_api_call", side_effect=_send),
         patch.object(agent, "_recover_with_credential_pool", side_effect=_recover_with_pool),

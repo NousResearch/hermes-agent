@@ -41,7 +41,7 @@ def built(tmp_path, monkeypatch):
 
 
 def _home(*, rows=(), **model):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     home = get_hermes_home()
     (home / "config.yaml").write_text(json.dumps({"model": model} if model else {}))
     pool_rows = [{"id": f"row{i}", "label": f"row{i}", "auth_type": "api_key", "priority": i, "source": "manual", **row}

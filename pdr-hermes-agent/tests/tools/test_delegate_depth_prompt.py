@@ -52,7 +52,7 @@ def test_dispatched_child_prompt_matches_depth_capability(
     with (
         patch.object(delegate_tool, "_load_config", return_value=config),
         patch.object(delegate_tool, "_resolve_workspace_hint", return_value=str(tmp_path)),
-        patch("run_agent.AIAgent", return_value=child) as agent_class,
+        patch("hermes_agent.run_agent.AIAgent", return_value=child) as agent_class,
     ):
         result = json.loads(registry.get_entry("delegate_task").handler(args, parent_agent=parent))
 

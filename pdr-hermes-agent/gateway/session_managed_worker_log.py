@@ -35,7 +35,7 @@ def _lock_for(path):
 
 def _append(path, text):
     """Append under the per-file lock; rotate once the cap would be exceeded. 0600 always."""
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
     data = text.encode('utf-8', 'replace')
     with _lock_for(path):
         mkdir_under_hermes_home(path.parent)

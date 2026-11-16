@@ -1,6 +1,6 @@
 """Classic-CLI slash commands reach shared metrics once each: canonical name, surface ``cli``."""
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def test_cli_counts_each_typed_slash_command_once(monkeypatch):

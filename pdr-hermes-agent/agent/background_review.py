@@ -314,7 +314,7 @@ def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
         return False, {}
     try:
         from hermes_cli.config import load_config_readonly
-        from utils import is_truthy_value
+        from hermes_agent.utils import is_truthy_value
         task = _task_block(load_config_readonly())
         return is_truthy_value(task.get("enabled"), default=True), task
     except Exception:
@@ -998,7 +998,7 @@ def _routed_reasoning_config(task_cfg: Optional[dict[str, Any]]) -> Optional[dic
     effort = _background_review_task_config(task_cfg).get("reasoning_effort")
     if effort is None or effort == "":
         return None
-    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+    from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
     parsed = parse_reasoning_effort(effort)
     if parsed is None:
         logger.warning(
@@ -1063,7 +1063,7 @@ def build_cache_parity_fork(
     ``(fork_agent, runtime_dict, routed)``; ``routed`` means a different model (cache cold —
     replay a digest). The caller owns registration, whitelisting, running, usage attribution and
     teardown."""
-    from run_agent import AIAgent  # local: avoids a circular import at load
+    from hermes_agent.run_agent import AIAgent  # local: avoids a circular import at load
     # Inherit the parent's live runtime: AIAgent.__init__'s env auto-resolution fails for
     # OAuth-only providers, session-scoped creds and credential pools.
     _rt = _resolve_review_runtime(agent, task_cfg)
@@ -1194,7 +1194,7 @@ def _review_tool_whitelist(
 ) -> tuple[set, set]:
     """``(whitelist, configured_extra_tools)`` for the review fork — DISPATCH-side only, so the
     advertised ``tools[]`` stays byte-identical to the parent's (prompt-cache parity)."""
-    from model_tools import get_tool_definitions
+    from hermes_agent.model_tools import get_tool_definitions
     # Gate the built-in memory tool on BOTH the profile's memory flags and the trigger that fired
     # (#105921): a skill-nudge review never gets the memory tool, so an unattended fork cannot
     # act on the memory tool's "consolidate now" hint and delete entries no one reviewed.

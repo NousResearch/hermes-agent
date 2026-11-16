@@ -14,7 +14,7 @@ import urllib.request
 from typing import Optional
 from urllib.parse import urlparse, urlsplit
 
-from utils import env_int
+from hermes_agent.utils import env_int
 
 logger = logging.getLogger(__name__)
 

@@ -40,7 +40,7 @@ reconnecting client re-renders the still-open questions). A client says once per
 answers them (`client.capabilities {server_requests: true}`, sent by the shared channel on `gateway.ready`);
 a WebSocket client that never did is an app build older than server→client requests, and `send()` fails
 fast for it instead of stalling the agent for the deadline. Desktop reaches the same server over WebSocket
-via `apps/shared` (`JsonRpcGatewayClient`, `onRequest`). New RPC = a new `methods_<topic>.py` or an entry
+via `ui-tui/packages/shared` (`JsonRpcGatewayClient`, `onRequest`). New RPC = a new `methods_<topic>.py` or an entry
 in an existing topical sibling, registered in the table — no `if method == ...` chain (root shape rules).
 
 **The wire is declared in Python and generated for TypeScript** (`tui_gateway/contracts/`). Every method
@@ -48,11 +48,11 @@ has a `Params` + `Result` model, every server→client request a `Params` + `Res
 `Payload` — one Pydantic class each, `extra="forbid"` by default (`OpenModel` for producer-owned dicts).
 `register_method` refuses an undeclared name at import; the dispatcher rejects unknown param keys
 (`4000` + key path) and, under `HERMES_TEST_ISOLATION=1`, raises `ContractViolation` when a handler's
-result or an emitted payload does not match its model (production only logs). `apps/shared/src/
+result or an emitted payload does not match its model (production only logs). `ui-tui/packages/shared/src/
 gateway-contract.generated.ts` (`RpcMethods`, `ServerRequestMap`, `BackendGatewayEventMap` + every value
 shape) and `gateway-contract.openrpc.json` are rendered by `scripts/gen_gateway_contracts.py`;
 `tests/tui_gateway/contracts/test_generated.py` fails when they are stale, so the loop is: change the model →
-regenerate → `tsc` shows every consumer the field moved. `apps/shared/src/gateway-events.ts` only adds
+regenerate → `tsc` shows every consumer the field moved. `ui-tui/packages/shared/src/gateway-events.ts` only adds
 the client-local synthetic events and the `GatewayEvent` envelope on top.
 The native `hermes-gateway-v1` transport has a separate `CANONICAL_METHODS` catalog in
 `contracts/canonical*.py`, declared with `canonical_method(...)`. `gateway/session_controls.py::

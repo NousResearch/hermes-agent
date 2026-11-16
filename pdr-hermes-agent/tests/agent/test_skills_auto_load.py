@@ -13,7 +13,7 @@ def _write_skill(root, name, body):
 
 
 def _bare_agent(session_id="auto-load-test"):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent.__new__(AIAgent)
     agent.valid_tool_names = {"skills_list", "skill_view", "skill_manage"}

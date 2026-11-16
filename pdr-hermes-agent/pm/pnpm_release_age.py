@@ -72,7 +72,7 @@ def immature_picks(pnpm: str, root: Path, env: dict[str, str], *, timeout: int =
 
 
 def _locked_versions(lock_text: str) -> dict[str, set[str]]:
-    import hermes_yaml
+    from hermes_agent import hermes_yaml
 
     locked: dict[str, set[str]] = {}
     for key in (hermes_yaml.safe_load(lock_text) or {}).get("packages") or {}:
@@ -96,7 +96,7 @@ def _yaml_scalar(value: str) -> str:
     A plain scalar can't start with `@` (every scoped name), `!`, `&`, `*`, `?`, `%`, a quote and the
     like, and `: ` or ` #` inside one changes its meaning; pnpm then refuses to load the workspace.
     """
-    import hermes_yaml
+    from hermes_agent import hermes_yaml
 
     try:
         plain = hermes_yaml.safe_load(f"- {value}") == [value]
@@ -112,7 +112,7 @@ def prune_excludes(workspace_yaml: Path, lock_yaml: Path) -> list[str]:
     rewrite a tracked file there; this runs only where the lock is refreshed. Each entry is one
     line, `  - name@version  # why`, so a dropped line takes its reason with it.
     """
-    import hermes_yaml
+    from hermes_agent import hermes_yaml
 
     text = workspace_yaml.read_text(encoding="utf-8")
     entries = (hermes_yaml.safe_load(text) or {}).get("minimumReleaseAgeExclude") or []

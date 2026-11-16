@@ -3,9 +3,9 @@
 from unittest.mock import patch
 
 import pytest
-import hermes_yaml as yaml
+from hermes_agent import hermes_yaml as yaml
 
-from utils import atomic_yaml_write
+from hermes_agent.utils import atomic_yaml_write
 
 
 class TestAtomicYamlWrite:
@@ -25,7 +25,7 @@ class TestAtomicYamlWrite:
         original = {"preserved": True}
         target.write_text(yaml.safe_dump(original), encoding="utf-8")
 
-        with patch("utils.yaml.safe_dump", side_effect=SimulatedAbort):
+        with patch("hermes_agent.utils.yaml.safe_dump", side_effect=SimulatedAbort):
             with pytest.raises(SimulatedAbort):
                 atomic_yaml_write(target, {"new": True})
 
@@ -44,7 +44,7 @@ class TestAtomicYamlWrite:
         corrupting the entire config.
         """
         target = tmp_path / "config.yaml"
-        # Mirrors the default personalities + skin cursor shipped in cli.py.
+        # Mirrors the default personalities + skin cursor shipped in hermes_agent/cli.py.
         data = {
             "personalities": {
                 "kawaii": "kawaii desu~! (◕‿◕) ★ ♪ ヽ(>∀<☆)ノ",

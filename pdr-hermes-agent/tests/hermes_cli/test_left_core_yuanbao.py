@@ -32,7 +32,7 @@ def _home(tmp_path: Path, *, env: str = "", config: str = "") -> Path:
     return home
 
 
-# The platform_toolsets block cli-config.yaml.example shipped while Yuanbao was in core; the installers
+# The platform_toolsets block hermes_cli/data/cli-config.yaml.example shipped while Yuanbao was in core; the installers
 # seed config.yaml from it, so its yuanbao row alone says nothing about use.
 _SHIPPED_PLATFORM_TOOLSETS = (
     "platform_toolsets:\n  cli: [hermes-cli]\n  telegram: [hermes-telegram]\n  qqbot: [hermes-qqbot]\n"

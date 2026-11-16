@@ -482,7 +482,7 @@ def test_actual_client_tls_default_does_not_override_explicit_config(monkeypatch
     assert explicit["http_client"] == "http-client"
 
 def test_actual_agent_side_routing_keeps_chat_completions_for_any_model():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     for model in ("qwen3.8-27b-Q4_K_M", "zai-org/GLM-5.3", "gpt-5.4"):
         assert not AIAgent._provider_model_requires_responses_api(
@@ -491,11 +491,11 @@ def test_actual_agent_side_routing_keeps_chat_completions_for_any_model():
         )
 
 def test_actual_agent_init_repairs_stale_responses_mode():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(

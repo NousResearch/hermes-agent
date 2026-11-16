@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
-from utils import atomic_write_text
+from hermes_agent.utils import atomic_write_text
 
 logger = logging.getLogger("tools.skills_sync")
 

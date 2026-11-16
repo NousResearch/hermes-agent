@@ -25,7 +25,7 @@ from hermes_cli.pty_session import (
     WS_CLOSE_VIEWER_STALLED_REASON, PtySession, PtySessionRegistry, RegistryFull, _close_ws, run_reaper,
 )
 from hermes_cli.web_host_terminal import META_PREFIX
-from hermes_constants import assert_named_profile_home_live, get_hermes_home
+from hermes_agent.hermes_constants import assert_named_profile_home_live, get_hermes_home
 
 # No survival across backend restart. Disconnects retain a bounded ANSI tail.
 RETENTION_SECONDS = 15 * 60

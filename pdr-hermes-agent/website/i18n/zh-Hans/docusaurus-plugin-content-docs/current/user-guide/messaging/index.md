@@ -70,7 +70,7 @@ flowchart TB
         end
 
         store["Session store<br/>per chat"]
-        agent["AIAgent<br/>run_agent.py"]
+        agent["AIAgent<br/>hermes_agent/run_agent.py"]
         cron["Cron scheduler<br/>ticks every 60s"]
     end
 

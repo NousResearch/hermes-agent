@@ -66,7 +66,7 @@ def test_outer_loop_diagnostic_preserves_verdict_and_trace(policy, local, capsys
 
 def test_missing_requirements_keeps_tool_inventory(policy, monkeypatch, capsys):
     from agent.agent_init import _load_tools
-    import model_tools
+    from hermes_agent import model_tools
     agent = Agent()
     agent.quiet_mode = agent.save_trajectories = agent._use_prompt_caching = False
     agent.ephemeral_system_prompt = None

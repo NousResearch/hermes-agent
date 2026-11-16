@@ -24,7 +24,7 @@ const stubDevtools = {
 }
 
 export async function buildTui(options) {
-  const { source, out: destination } = productOutput(options.source, options.out, ['ui-tui', 'apps/shared', 'node_modules'])
+  const { source, out: destination } = productOutput(options.source, options.out, ['ui-tui', 'ui-tui/packages/shared', 'node_modules'])
   const { build } = await import(pathToFileURL(workspaceTool(source, 'ui-tui', 'esbuild')).href)
   const root = join(source, 'ui-tui')
   const inputs = buildInputs(source, 'tui')

@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent import i18n
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ def _cli_with_approval():
 def test_approval_panel_and_hint_follow_the_live_catalog(swapped_catalog, monkeypatch):
     import shutil
 
-    monkeypatch.setattr("cli.shutil.get_terminal_size", lambda *_a, **_k: shutil.os.terminal_size((100, 40)))
+    monkeypatch.setattr("hermes_agent.cli.shutil.get_terminal_size", lambda *_a, **_k: shutil.os.terminal_size((100, 40)))
     cli = _cli_with_approval()
 
     rendered = "".join(text for _style, text in cli._get_approval_display_fragments())

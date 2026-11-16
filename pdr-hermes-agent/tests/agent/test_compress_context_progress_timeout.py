@@ -507,7 +507,7 @@ class TestCompressContextForwarderOwnsTimeout:
     """AIAgent._compress_context wraps when no caller fence is supplied."""
 
     def test_owned_timeout_skips_hung_compress(self, monkeypatch):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = object.__new__(AIAgent)
         agent.session_id = "s1"
@@ -581,7 +581,7 @@ class TestCompressContextForwarderOwnsTimeout:
         )
 
     def test_owned_total_ceiling_reports_progress_accurately(self, monkeypatch):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         from agent.context_compressor import ContextCompressor
 
         agent = object.__new__(AIAgent)
@@ -649,7 +649,7 @@ class TestCompressContextForwarderOwnsTimeout:
 
     def test_fallback_prompt_resolved_lazily_on_timeout(self, monkeypatch):
         """Eager prompt rebuild must not run before compression starts."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = object.__new__(AIAgent)
         agent.session_id = "s1"
@@ -703,7 +703,7 @@ class TestCompressContextForwarderOwnsTimeout:
         agent._emit_warning.assert_called_once()
 
     def test_caller_fence_bypasses_owned_wrapper(self, monkeypatch):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = object.__new__(AIAgent)
         agent.session_id = "s1"

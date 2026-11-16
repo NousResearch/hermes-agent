@@ -2,7 +2,7 @@
 import pytest
 
 from agent import secret_scope as ss
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 
 
 @pytest.fixture(autouse=True)
@@ -100,7 +100,7 @@ class TestRoutedForeignHomeScope:
     the .env-overlay fallthrough is only safe when the scope's home IS ours."""
 
     def test_scoped_miss_under_foreign_home_returns_default(self, monkeypatch, tmp_path):
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
         home_token = set_hermes_home_override(str(tmp_path / "other-profile"))
@@ -116,7 +116,7 @@ class TestRoutedForeignHomeScope:
     def test_scoped_miss_under_own_home_keeps_env_overlay(self, monkeypatch, tmp_path):
         """The deliberate single-profile overlay: a scope bound for the process's
         own home still falls through to os.environ (systemd / op run credentials)."""
-        from hermes_constants import get_process_hermes_home, set_hermes_home_override, reset_hermes_home_override
+        from hermes_agent.hermes_constants import get_process_hermes_home, set_hermes_home_override, reset_hermes_home_override
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-own-env")
         home_token = set_hermes_home_override(str(get_process_hermes_home()))
@@ -130,7 +130,7 @@ class TestRoutedForeignHomeScope:
 
     def test_scope_hit_under_foreign_home_still_wins(self, monkeypatch, tmp_path):
         """A scoped hit is unaffected: only the miss branch changes."""
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
         home_token = set_hermes_home_override(str(tmp_path / "other-profile"))
@@ -157,7 +157,7 @@ class TestRoutedForeignHomeScope:
     def test_stamped_own_home_scope_keeps_env_overlay(self, monkeypatch):
         """A scope stamped with the process's own home is not routed: env
         fallthrough stays, matching launch_secret_scope's documented precedence."""
-        from hermes_constants import get_process_hermes_home
+        from hermes_agent.hermes_constants import get_process_hermes_home
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-own-env")
         token = ss.set_secret_scope({}, profile_home=str(get_process_hermes_home()))
@@ -210,7 +210,7 @@ class TestScopeSetupRecovery:
 
     def test_profile_runtime_scope_setup_failure_restores_override(self, monkeypatch, tmp_path):
         from gateway.run import _profile_runtime_scope
-        from hermes_constants import get_hermes_home_override
+        from hermes_agent.hermes_constants import get_hermes_home_override
 
         foreign = tmp_path / "profiles" / "b"
         foreign.mkdir(parents=True)
@@ -227,7 +227,7 @@ class TestScopeSetupRecovery:
 
     def test_worker_profile_scope_setup_failure_restores_override(self, monkeypatch, tmp_path):
         from hermes_cli.kanban_db_dispatch import _worker_profile_scope
-        from hermes_constants import get_hermes_home_override
+        from hermes_agent.hermes_constants import get_hermes_home_override
 
         foreign = tmp_path / "profiles" / "assignee"
         foreign.mkdir(parents=True)
@@ -247,7 +247,7 @@ class TestScopeSetupRecovery:
         bound (home override + secret scope). Driven through ``server`` — the split module's
         functions run rebound on server.py's globals (``bind_module``)."""
         from tui_gateway import server
-        from hermes_constants import get_hermes_home_override
+        from hermes_agent.hermes_constants import get_hermes_home_override
 
         home = tmp_path / "profiles" / "b"
         home.mkdir(parents=True)

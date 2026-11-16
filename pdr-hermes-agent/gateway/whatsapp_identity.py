@@ -13,7 +13,7 @@ import logging
 import re
 from typing import Set
 
-from hermes_constants import get_hermes_dir
+from hermes_agent.hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
 

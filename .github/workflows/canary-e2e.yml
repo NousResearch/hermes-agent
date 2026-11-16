@@ -1,0 +1,86 @@
+name: Canary E2E
+
+# Pull requests and pushes to main run no E2E suite (ci.yaml's detect gate).
+# This runs a stable claim's E2E calls (stable-release.yml's ci, install-e2e and
+# windows-live, same inputs) on each successful canary's commit, so a regression
+# shows up the day after it lands instead of at the next claim. It only
+# reports: the canary never waits on it.
+#
+# A workflow_run run's github.sha is main's tip when it started, not the canary
+# commit, so every call is handed the canary run's head_sha.
+
+run-name: Canary E2E on ${{ github.event.workflow_run.head_sha || inputs.commit || github.sha }}
+
+on:
+  workflow_run:
+    workflows: ['Canary Release']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Full 40-hex SHA to test. Empty tests the dispatched ref.'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+# One set at a time (about 1,400 job-minutes each). A newer run waits, and
+# GitHub keeps only the newest pending one.
+concurrency:
+  group: canary-e2e
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve the commit under test
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.repository == 'NousResearch/hermes-agent' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch)
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 2
+    outputs:
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      - id: commit
+        env:
+          COMMIT: ${{ github.event.workflow_run.head_sha || inputs.commit || github.sha }}
+        run: |
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit must be a full 40-hex SHA, got: $COMMIT"; exit 1; }
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+
+  ci:
+    name: Full CI pipeline
+    needs: resolve
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+      security-events: write
+    uses: ./.github/workflows/ci.yaml
+    with:
+      commit: ${{ needs.resolve.outputs.commit }}
+      release: true
+
+  install-e2e:
+    name: Install and update E2E
+    needs: resolve
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/install-e2e.yml
+    with:
+      commit: ${{ needs.resolve.outputs.commit }}
+      release: true
+      route: all
+      tag-count: '3'
+
+  windows-live:
+    needs: resolve
+    uses: ./.github/workflows/windows-venv-e2e.yml
+    with:
+      commit: ${{ needs.resolve.outputs.commit }}
+      release: true

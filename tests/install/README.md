@@ -166,9 +166,10 @@ The result chart on the run summary shows each leg as passed, failed, or skipped
 
 ## Triggers and cost
 
-The matrix runs on release builds only. It never runs on pull requests, pushes to main, or a schedule: one leg installs real toolchains and takes more than 10 minutes. The triggers are:
+The matrix never runs on pull requests or pushes to main: one leg installs real toolchains and takes more than 10 minutes. The triggers are:
 
 - A reusable workflow call from the stable release gate (`route=all`).
+- The same call from Canary E2E (`.github/workflows/canary-e2e.yml`) on each successful canary's commit.
 - Manual dispatch. You can select the route and the tag count:
 
 ```

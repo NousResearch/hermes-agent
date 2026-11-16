@@ -120,9 +120,9 @@ Set these in `config.yaml` under `platforms.wecom.extra`:
 | `secret` | — | WeCom AI Bot Secret (required) |
 | `websocket_url` | `wss://openws.work.weixin.qq.com` | WebSocket gateway URL |
 | `dm_policy` | `open` | DM access: `open`, `allowlist`, `disabled`, `pairing` |
-| `group_policy` | `open` | Group access: `open`, `allowlist`, `disabled` |
+| `group_policy` | `pairing` | Group access: `open`, `allowlist`, `disabled`, `pairing` (see [Group Policy](#group-policy)) |
 | `allow_from` | `[]` | User IDs allowed for DMs (when dm_policy=allowlist) |
-| `group_allow_from` | `[]` | Group IDs allowed (when group_policy=allowlist) |
+| `group_allow_from` | `[]` | Group IDs allowed (when group_policy=allowlist). No env var — `config.yaml` only |
 | `groups` | `{}` | Per-group configuration (see below) |
 | `stream_keepalive_enabled` | `false` | Send periodic keepalive frames to refresh WeCom's ~6-minute reply-stream window on long turns |
 | `stream_keepalive_interval_seconds` | `120` | Keepalive frame cadence when enabled |
@@ -151,13 +151,22 @@ Controls which groups the bot responds in:
 
 | Value | Behavior |
 |-------|----------|
-| `open` | Bot responds in all groups (default) |
-| `allowlist` | Bot only responds in group IDs listed in `group_allow_from` |
+| `open` | Admits every group at intake. Senders are still authorized by the gateway allowlist, so this only answers for users who are also in `WECOM_ALLOWED_USERS` (or `GATEWAY_ALLOW_ALL_USERS`) |
+| `allowlist` | Bot only responds in group IDs listed in `group_allow_from`, and every sender in those groups is authorized. Narrow it per sender with `groups.<id>.allow_from` |
 | `disabled` | All group messages are ignored |
+| `pairing` | Default. WeCom has no group pairing handshake (codes are only offered in DMs), so group messages are dropped at intake — the same effect as `disabled` |
 
 ```bash
 WECOM_GROUP_POLICY=allowlist
 ```
+
+**To let a group's members use the bot**, set `group_policy: allowlist` and put the group's chat ID in `group_allow_from`. `open` is not a shortcut: intake admits the group, but the authorization layer trusts a self-gating adapter only under `allowlist`, so with `open` and no user allowlist the bot stays silent in that group. A dropped group message says exactly why, at INFO:
+
+```
+[Wecom] Group message DROPPED by policy: chat=... sender=... group_policy='pairing'
+```
+
+`WECOM_GROUP_POLICY` sets the policy, but `group_allow_from` has no environment variable — it is read from `config.yaml` only (a top-level `wecom:` block or `platforms.wecom.extra`).
 
 ### Per-Group Sender Allowlists
 
@@ -301,7 +310,7 @@ Inbound messages are deduplicated using message IDs with a 5-minute window and a
 | `WeCom startup failed: httpx not installed` | Install httpx: `hermes pm repair` |
 | `invalid secret (errcode=40013)` | Verify the secret matches your bot's credentials |
 | `Timed out waiting for subscribe acknowledgement` | Check network connectivity to `openws.work.weixin.qq.com` |
-| Bot doesn't respond in groups | Check `group_policy` setting and ensure the group ID is in `group_allow_from` |
+| Bot doesn't respond in groups | `group_policy` defaults to `pairing`, which drops group traffic at intake: set `group_policy: allowlist` and list the group's chat ID in `group_allow_from` (see [Group Policy](#group-policy)). Check the log for `Group message DROPPED by policy` |
 | Bot ignores certain users in a group | Check per-group `allow_from` lists in the `groups` config section |
 | Media decryption fails | Install `cryptography`: `hermes pm repair` |
 | `cryptography is required for WeCom media decryption` | The inbound media is AES-encrypted. Install: `hermes pm repair` |

@@ -2097,25 +2097,24 @@ test.skipIf(process.platform === 'win32')(
         'marker path must reach python fully expanded, with no quote characters'
       )
 
-      // The payload assigns reservation/lock/owner_file before its mkdir loop.
-      // Evaluate only that prefix the way the remote sh does; never the loop itself.
+      // The payload assigns the lockfile path and opens the reservation's
+      // descriptor lock before it spawns. Evaluate only that prefix the way the
+      // remote sh does; never the lock or the spawn itself.
       const payload = argv[3]
-      const loopStart = payload.indexOf('i=0;')
+      const loopStart = payload.indexOf('exec 9>>')
       assert.ok(loopStart > 0, 'payload prefix sentinel missing')
 
-      const { stdout } = await exec(
-        `${payload.slice(0, loopStart)} printf '%s\\n' "$reservation" "$lock" "$owner_file"`,
-        {
-          shell: 'sh',
-          env: { ...process.env, HOME: fakeHome }
-        }
-      )
+      const { stdout } = await exec(`${payload.slice(0, loopStart)} printf '%s\\n' "$lock"`, {
+        shell: 'sh',
+        env: { ...process.env, HOME: fakeHome }
+      })
 
-      const [reservation, lock, ownerFile] = stdout.split('\n')
       const base = `${fakeHome}/.hermes/desktop-ssh/${OWNERSHIP_ID}`
-      assert.equal(reservation, `${base}/.connect.lock`)
-      assert.equal(lock, `${base}/backend.lock.json`)
-      assert.equal(ownerFile, `${base}/.connect.lock/owner`)
+      assert.equal(stdout.trim(), `${base}/backend.lock.json`)
+      assert.ok(
+        payload.slice(loopStart).startsWith('exec 9>>') && payload.includes('/.connect.spawn.lock'),
+        'the reservation must open one descriptor lock on its own never-unlinked file'
+      )
     } finally {
       await rm(root, { recursive: true, force: true })
     }

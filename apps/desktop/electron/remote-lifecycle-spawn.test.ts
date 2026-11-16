@@ -11,7 +11,7 @@ import {
   assertRemoteInstallUpdateClear,
   buildSpawnCommand,
   cleanupStale,
-  connectReservationPath,
+  connectSpawnLockPath,
   expandRemotePath,
   fingerprintToken,
   LOCKFILE_SCHEMA_VERSION,
@@ -131,6 +131,9 @@ async function spawnFixture(launcher: 'setsid' | 'nohup', owned: boolean): Promi
     'ln',
     'env',
     'ps',
+    // The spawn reservation is one kernel lock: flock(1) on Linux, lockf(1) on
+    // macOS/FreeBSD. It is on the payload's PATH, so the fixture must ship it.
+    process.platform === 'darwin' ? 'lockf' : 'flock',
     launcher
   ]) {
     const executable: string = (await exec(`command -v ${tool}`, { shell })).stdout.trim()
@@ -207,6 +210,29 @@ async function reports(fixture: SpawnFixture): Promise<ChildReport[]> {
   )
 }
 
+/** Exit 0 only while nobody holds the spawn reservation at `$1`. */
+function lockProbe(): string {
+  // A lock file that does not exist holds nobody (the non-owned spawn path never
+  // touches it). An existing one is free only when the kernel grants a fresh
+  // exclusive lock immediately — which no live holder allows, including one this
+  // probe did not create. The fd form of lockf is the macOS/FreeBSD equivalent
+  // of `flock -n`.
+  const exclusive: string = process.platform === 'darwin' ? 'lockf -s -t 0 -k "$1" true' : 'flock -n "$1" -c true'
+
+  return `[ -e "$1" ] || exit 0\n${exclusive}`
+}
+
+/**
+ * The reservation must be free between spawns: the holder's descriptor is gone
+ * once its shell exits, so a fresh exclusive lock on the same path succeeds.
+ * This is the property `rm -rf` of a reservation directory used to assert.
+ */
+async function assertSpawnLockFree(root: string): Promise<void> {
+  const lock: string = root + connectSpawnLockPath(ownershipId).replace(/^~/, '')
+
+  await exec(`sh -c '${lockProbe()}' hermes-lock-probe '${lock}'`, { shell: 'sh' })
+}
+
 test.skipIf(process.platform === 'win32').each(variants)(
   '$launcher spawn (ownership=$owned) returns only the detached child PID and preserves ownership',
   async ({ launcher, owned }: SpawnVariant): Promise<void> => {
@@ -278,7 +304,10 @@ test.skipIf(process.platform === 'win32').each(variants)(
         )
       }
 
-      await assert.rejects(readFile(fixture.localPath(connectReservationPath(ownershipId))), { code: 'ENOENT' })
+      // The reservation's descriptor lock is released when the shell exits, and
+      // the lock file itself is never unlinked (a re-created lock path is a new
+      // inode another caller could lock while a holder is still live).
+      await assertSpawnLockFree(fixture.root)
       await cleanupStale(fixture.ssh, ownershipId, { ...lock, pid: foreign.pid, logPath: '' })
       assert.ok(process.kill(foreign.pid, 0), 'a foreign process is never killed by cleanup')
       await cleanupStale(fixture.ssh, ownershipId, lock)
@@ -303,7 +332,9 @@ test.skipIf(process.platform === 'win32').each(variants)(
         await writeFile(fixture.marker, marker, 'utf8')
         await assert.rejects(fixture.run(fixture.command), { code: 75, stdout: '' })
         assert.deepEqual(await reports(fixture), [])
-        await assert.rejects(readFile(fixture.localPath(connectReservationPath(ownershipId))), { code: 'ENOENT' })
+        // A refused spawn leaves the reservation free, not deleted: nothing
+        // about the mutex is state another caller has to reclaim.
+        await assertSpawnLockFree(fixture.root)
         await assert.rejects(readFile(fixture.localPath(lockfilePath(ownershipId))), { code: 'ENOENT' })
       }
     } finally {
@@ -333,6 +364,23 @@ async function deadPid(): Promise<number> {
   await new Promise(resolve => child.once('exit', resolve))
 
   return child.pid!
+}
+
+/** Wait for a file a gated racer creates. The gate, never a sleep, orders the race. */
+async function waitFor(file: string, timeoutMs: number): Promise<boolean> {
+  const deadline: number = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    try {
+      await readFile(file)
+
+      return true
+    } catch {
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+  }
+
+  return false
 }
 
 test.skipIf(process.platform === 'win32')(
@@ -408,8 +456,8 @@ interface ReservationRace {
   home: string
   /** The reservation block `buildSpawnCommand` composes, byte for byte. */
   payload: string
-  reservation: string
-  owner: string
+  /** The one file the reservation locks, for the life of the caller. */
+  spawnLock: string
 }
 
 /**
@@ -443,46 +491,66 @@ async function reservationRace(): Promise<ReservationRace> {
   await exec(command, { env: { ...process.env, HOME: home, PATH: `${argvShim}:${process.env.PATH}` }, shell: 'sh' })
 
   const payload: string = (await readFile(argvFile, 'utf8')).split('\0')[3]
-  const reservation: string = home + connectReservationPath(ownershipId).replace(/^~/, '')
+  const spawnLock: string = home + connectSpawnLockPath(ownershipId).replace(/^~/, '')
 
-  return { root, home, payload, reservation, owner: path.join(reservation, 'owner') }
+  return { root, home, payload, spawnLock }
 }
 
 /** The reservation block alone: everything the payload does before it spawns. */
 function reservationBlock(payload: string): string {
-  const reserve: number = payload.indexOf('i=0;')
-  const spawned: number = payload.indexOf('mkdir -p "$(dirname', reserve)
+  // The spawn begins at the log directory: the LAST `mkdir -p "$(dirname` in the
+  // payload. (A marker-era payload creates no other one before it; a kernel-lock
+  // payload also creates the ownership directory with the same shape, earlier.)
+  const spawned: number = payload.lastIndexOf('mkdir -p "$(dirname')
+  // The block starts at whichever primitive this payload reserves with, so the
+  // same racer runs the shipped bytes on both sides of the change.
+  const starts: number[] = ['exec 9>>', 'reservation='].map((needle: string): number => payload.indexOf(needle))
+  const reserve: number = Math.min(...starts.filter((at: number): boolean => at > 0))
 
-  assert.ok(reserve > 0 && spawned > reserve, 'the reservation block moved; teach this test its new shape')
+  assert.ok(spawned > 0 && spawned > reserve, 'the reservation block moved; teach this test its new shape')
 
   return payload.slice(0, spawned)
 }
 
+/** The lock probe as a script the racers can run from inside their hold. */
+async function lockProbeScript(root: string): Promise<string> {
+  const probe: string = path.join(root, 'probe.sh')
+
+  await writeFile(probe, `#!/bin/sh\n${lockProbe()}\n`, { mode: 0o755 })
+
+  return probe
+}
+
 /**
- * A caller that runs the shipped block, then behaves like the holder: it proves
- * the record it took is its own, holds long enough for a second holder to be
- * observable, and re-checks the record before it releases. `notmine`/`lost` are
- * a live holder whose record was taken away — the defect under test.
+ * A caller that runs the shipped reservation block, then behaves like the
+ * holder: it records the reservation it took, proves the mutex is genuinely
+ * held (an independent non-blocking lock on the same path must fail while it is
+ * inside), holds long enough for a second holder to be observable, and records
+ * its entry.
  */
-async function holderRacer(root: string, payload: string): Promise<string> {
-  const race: string = path.join(root, 'race.sh')
+async function holderRacer(root: string, payload: string, spawnLock: string, name = 'race'): Promise<string> {
+  const race: string = path.join(root, `${name}.sh`)
+  const probe: string = await lockProbeScript(root)
 
   await writeFile(
     race,
     `${reservationBlock(payload)}` +
       `printf '%s\\n' "$$" >> "$MARK_DIR/entries"; ` +
-      `case "$(cat "$owner_file" 2>/dev/null || true)" in "$$:"*) ;; *) : > "$MARK_DIR/notmine";; esac; ` +
       `if [ -e "$MARK_DIR/held" ]; then : > "$MARK_DIR/double"; fi; ` +
-      `: > "$MARK_DIR/held"; sleep 0.15; ` +
-      `case "$(cat "$owner_file" 2>/dev/null || true)" in "$$:"*) ;; *) : > "$MARK_DIR/lost";; esac; ` +
-      `rm -f "$MARK_DIR/held"; `,
+      `: > "$MARK_DIR/held"; ` +
+      // A lock probe that succeeds while this caller is inside is proof the
+      // mutex is not exclusive. It only says something when the lock file
+      // exists at all: the non-owned path never creates one.
+      `if [ -e '${spawnLock}' ] && sh '${probe}' '${spawnLock}' 2>/dev/null; then : > "$MARK_DIR/unheld"; fi; ` +
+      `sleep 0.15; ` +
+      `command -p rm -f "$MARK_DIR/held"; `,
     { mode: 0o755 }
   )
 
   return race
 }
 
-/** Run one round of `callers` real callers and fail on any overlap/steal marker. */
+/** Run one round of `callers` real callers and fail on any overlap/unheld marker. */
 async function raceRound(race: string, home: string, mark: string, callers: number, label: string): Promise<string[]> {
   await rm(mark, { force: true, recursive: true })
   await mkdir(mark)
@@ -493,16 +561,14 @@ async function raceRound(race: string, home: string, mark: string, callers: numb
     )
   )
 
-  for (const name of ['double', 'notmine', 'lost']) {
+  for (const name of ['double', 'unheld']) {
     await assert.rejects(
       readFile(path.join(mark, name)),
       { code: 'ENOENT' },
       `${label}: ${
         name === 'double'
           ? 'two callers held the ownership reservation at once'
-          : name === 'notmine'
-            ? 'a caller that believed it held the reservation found a foreign owner record'
-            : 'a live holder lost its owner record while it was holding'
+          : 'a lock probe succeeded while a live holder was inside the reservation'
       }`
     )
   }
@@ -510,13 +576,13 @@ async function raceRound(race: string, home: string, mark: string, callers: numb
   return (await readFile(path.join(mark, 'entries'), 'utf8')).trim().split('\n')
 }
 
-// The reservation must be decided by an atomic create, never by the exit status
-// of `mkdir`. Ubuntu 26.04 ships uutils coreutils 0.10.0, whose `mkdir` can
-// report success twice for the same path under concurrency; with mkdir as the
-// mutex the loser never took the "already reserved" path, two backends spawned
-// for one ownership id, and a reaper could delete a reservation whose owner
-// record was not written yet. A `mkdir` that claims a create it lost must not
-// be able to make two holders exist.
+// The reservation must never be decided by the exit status of `mkdir`. Ubuntu
+// 26.04 ships uutils coreutils 0.10.0, whose `mkdir` can report a create it lost
+// as a success; with mkdir as the mutex the loser never took the "already
+// reserved" path, two backends spawned for one ownership id, and a reaper could
+// delete a reservation whose owner record was not written yet. The mutex is a
+// kernel lock now, so a `mkdir` that lies cannot admit a second holder — and
+// this test stays as the guard against ever going back to a directory create.
 test.skipIf(process.platform === 'win32')(
   'the ownership reservation admits one holder when a mkdir reports a create it lost',
   async (): Promise<void> => {
@@ -574,32 +640,19 @@ test.skipIf(process.platform === 'win32')(
   60_000
 )
 
-// Reclaim must have the atomicity of acquire. A dead owner record used to be
-// removed with `rm -rf "$reservation"` by every waiter that judged the same pid
-// dead; a delete could land after another caller created its record, so a live
-// holder lost it and a second backend spawned. Measured on Ubuntu 26.04 with
-// uutils 0.10.0 at K=8: 14 of 20 rounds admitted two holders and 34-35 of 50
-// rounds took a live holder's record away.
+// The reservation is one kernel lock on one file, so every caller that takes it
+// is the only holder until it exits. K real callers on one ownership id take it
+// in turn: no owner record, no ~2 s grace for an unpublished record, and no
+// reclaim step at all.
 test.skipIf(process.platform === 'win32')(
-  'reclaiming a dead owner record admits one holder and never takes a live record away',
+  'K callers on one ownership id take the spawn reservation in turn',
   async (): Promise<void> => {
-    const { root, home, payload, reservation, owner }: ReservationRace = await reservationRace()
-    const race: string = await holderRacer(root, payload)
+    const { root, home, payload, spawnLock }: ReservationRace = await reservationRace()
+    const race: string = await holderRacer(root, payload, spawnLock)
 
     try {
-      for (let index = 0; index < 6; index++) {
-        const dead: number = await deadPid()
-
-        assert.throws(
-          (): boolean => process.kill(dead, 0),
-          { code: 'ESRCH' },
-          `round ${index + 1}: the seeded owner pid ${dead} is alive`
-        )
-
-        await mkdir(reservation, { recursive: true })
-        await writeFile(owner, `${dead}:${spawnNonce}`)
-
-        const entries: string[] = await raceRound(race, home, path.join(root, `dead-${index}`), 8, `round ${index + 1}`)
+      for (let index = 0; index < 4; index++) {
+        const entries: string[] = await raceRound(race, home, path.join(root, `turn-${index}`), 8, `round ${index + 1}`)
 
         assert.equal(entries.length, 8, `round ${index + 1}: every caller should have taken the reservation in turn`)
         assert.equal(new Set(entries).size, 8, `round ${index + 1}: a caller took the reservation twice`)
@@ -611,64 +664,161 @@ test.skipIf(process.platform === 'win32')(
   120_000
 )
 
-// The takeover is the crash window the reclaim now owns: a caller that dies
-// between "record moved" and "record judged" must leave the record moved — never
-// unlinked — and must not wedge the next callers.
+// SIGKILL cannot be trapped, and the kernel drops a descriptor lock when its
+// holder dies. A spawn killed between taking the reservation and publishing its
+// lockfile therefore leaves no state behind: the next caller takes the same lock
+// at once, with no pid to judge, no grace to wait out and nothing to reclaim.
 test.skipIf(process.platform === 'win32')(
-  'a reclaim killed mid-takeover leaves the record moved, not unlinked, and the next callers admit one holder',
+  'a holder killed with SIGKILL releases the reservation at once and leaves nothing to reclaim',
   async (): Promise<void> => {
-    const { root, home, payload, reservation, owner }: ReservationRace = await reservationRace()
-    const shim: string = path.join(root, 'kill-shim')
-    const race: string = path.join(root, 'race.sh')
-    const dead: number = await deadPid()
+    const { root, home, payload, spawnLock }: ReservationRace = await reservationRace()
+    const race: string = await holderRacer(root, payload, spawnLock, 'killed')
+    const mark: string = path.join(root, 'killed-mark')
 
-    await mkdir(shim)
-    // The takeover is the first `mv` the block runs: do the real rename and then
-    // kill the caller, which is exactly the crash between the two halves.
-    await writeFile(path.join(shim, 'mv'), '#!/bin/sh\ncommand -p mv "$@"\nkill -9 "$PPID"\n', { mode: 0o755 })
-    await writeFile(race, reservationBlock(payload), { mode: 0o755 })
+    await mkdir(mark)
 
     try {
-      await mkdir(reservation, { recursive: true })
-      await writeFile(owner, `${dead}:${spawnNonce}`)
-
-      const crash: { code: number | null; signal: string | null } = await new Promise(resolve => {
-        const child: ChildProcess = spawn('sh', [race], {
-          env: { ...process.env, HOME: home, PATH: `${shim}:${process.env.PATH}` },
-          stdio: 'ignore'
-        })
-
-        child.once('close', (code, signal) => resolve({ code, signal }))
+      const child: ChildProcess = spawn('sh', [race], {
+        env: { ...process.env, HOME: home, MARK_DIR: mark },
+        stdio: 'ignore'
       })
 
-      assert.equal(crash.signal, 'SIGKILL', 'the racer should be dead after the takeover moved the record')
+      assert.ok(await waitFor(path.join(mark, 'held'), 5_000), 'the killed caller never took the reservation')
+      child.kill('SIGKILL')
+      await new Promise(resolve => child.once('exit', resolve))
+
+      const next: string = await holderRacer(root, payload, spawnLock, 'next')
+      const started: number = Date.now()
+      const entries: string[] = await raceRound(next, home, path.join(root, 'next'), 4, 'after the kill')
+
+      assert.ok(Date.now() - started < 5_000, 'the next callers waited on a reservation whose holder was SIGKILLed')
+      assert.equal(entries.length, 4, 'the killed holder must not wedge the next callers')
+      assert.equal(new Set(entries).size, 4, 'a next caller took the reservation twice')
+    } finally {
+      await rm(root, { force: true, recursive: true })
+    }
+  },
+  60_000
+)
+
+// THE REGRESSION for the reclaim-marker race: two waiters read the same dead
+// marker, one removes it, a reaper publishes its own marker, and the delayed
+// waiter's unchecked `rm -f` deletes the marker that reaper is holding — so a
+// second reaper enters the section while the first one is still inside it.
+//
+// The interleaving is forced with gates, never with a timing assumption: the
+// delayed waiter's `rm` stops before it deletes, the first reaper's `mv` stops
+// inside the section, and the third caller starts only after the delete landed.
+// Those gates exist only while the payload still has the marker protocol; once
+// the marker is gone the seeded files are inert, no gate fires, and the three
+// callers take the one lock in turn. Either way the test fails if two callers
+// are ever inside the reservation at once.
+test.skipIf(process.platform === 'win32')(
+  'a waiter that judged a stale reclaim marker cannot admit a second reaper',
+  async (): Promise<void> => {
+    const { root, home, payload, spawnLock }: ReservationRace = await reservationRace()
+    const mark: string = path.join(root, 'marker-race')
+    const legacy: string = path.join(home, '.hermes', 'desktop-ssh', ownershipId, '.connect.lock')
+    const dead: number = await deadPid()
+    const roles: string[] = ['w', 'r', 'l']
+    const shims: Record<string, string> = {}
+
+    await mkdir(mark)
+    await mkdir(legacy, { recursive: true })
+    // The state a marker-era reaper judges: a dead owner record and a dead
+    // reaper's marker, both from a real, reaped pid.
+    await writeFile(path.join(legacy, 'owner'), `${dead}:${spawnNonce}`)
+    await writeFile(path.join(legacy, '.reclaim'), String(dead))
+
+    for (const role of roles) {
+      shims[role] = path.join(root, `${role}-shim`)
+      await mkdir(shims[role])
+    }
+
+    const mvShim: string = [
+      '#!/bin/sh',
+      ': > "$MARK_DIR/${ROLE}_inside"',
+      'for f in "$MARK_DIR"/*_inside; do',
+      '  [ -e "$f" ] || continue',
+      '  case "$f" in *"/${ROLE}_inside") continue;; esac',
+      '  o=${f##*/}; o=${o%_inside}',
+      '  [ -e "$MARK_DIR/${o}_done" ] || : > "$MARK_DIR/overlap"',
+      'done',
+      // The first reaper holds the section open until the third caller is in, so
+      // the overlap is a fact about the section and not about scheduling.
+      'if [ "${ROLE}" = r ]; then i=0; while [ ! -e "$MARK_DIR/l_inside" ] && [ "$i" -lt 500 ]; do sleep 0.02; i=$((i+1)); done; fi',
+      'command -p mv "$@"',
+      's=$?; : > "$MARK_DIR/${ROLE}_done"; exit $s',
+      ''
+    ].join('\n')
+
+    const rmShim: string = [
+      '#!/bin/sh',
+      'last=""; for a in "$@"; do last=$a; done',
+      'case "$last" in',
+      '  */.reclaim)',
+      // The waiter has already read the dead pid into its own variable here.
+      // Hold it until the reaper that replaced the marker is inside.
+      '    : > "$MARK_DIR/w_at_rm"',
+      '    i=0; while [ ! -e "$MARK_DIR/r_inside" ] && [ "$i" -lt 500 ]; do sleep 0.02; i=$((i+1)); done',
+      '    command -p rm "$@"; s=$?; : > "$MARK_DIR/w_done"; exit $s;;',
+      'esac',
+      'command -p rm "$@"',
+      ''
+    ].join('\n')
+
+    for (const role of roles) {
+      await writeFile(path.join(shims[role], 'mv'), mvShim, { mode: 0o755 })
+    }
+
+    await writeFile(path.join(shims.w, 'rm'), rmShim, { mode: 0o755 })
+
+    const races: Record<string, string> = {}
+
+    for (const role of roles) {
+      races[role] = await holderRacer(root, payload, spawnLock, role)
+    }
+
+    const run = (role: string): Promise<{ stdout: string }> =>
+      exec(races[role], {
+        env: { ...process.env, HOME: home, MARK_DIR: mark, ROLE: role, PATH: `${shims[role]}:${process.env.PATH}` },
+        shell: 'sh'
+      })
+
+    try {
+      if (payload.includes('reclaim_marker')) {
+        const waiter: Promise<{ stdout: string }> = run('w')
+
+        assert.ok(await waitFor(path.join(mark, 'w_at_rm'), 10_000), 'the delayed waiter never reached the marker delete')
+
+        const reaper: Promise<{ stdout: string }> = run('r')
+
+        assert.ok(
+          await waitFor(path.join(mark, 'r_inside'), 10_000),
+          'the first reaper never entered the reclaim section'
+        )
+        assert.ok(await waitFor(path.join(mark, 'w_done'), 10_000), 'the delayed waiter never deleted the marker')
+
+        const late: Promise<{ stdout: string }> = run('l')
+
+        await Promise.all([waiter, reaper, late])
+      } else {
+        // The marker does not exist in this design: the seeded files are inert
+        // and the three callers contend for the one lock directly.
+        await Promise.all(roles.map(run))
+      }
 
       await assert.rejects(
-        readFile(owner),
+        readFile(path.join(mark, 'overlap')),
         { code: 'ENOENT' },
-        'the dead record must have been moved off the shared path'
+        'two callers were inside the reclaim section at once: a delayed waiter deleted the marker a live reaper held'
       )
-
-      const owning: string = path.dirname(reservation)
-
-      const moved: string[] = (await readdir(owning)).filter((name: string): boolean =>
-        name.startsWith('.connect.lock.reclaim.')
-      )
-
-      assert.equal(moved.length, 1, 'the takeover must leave exactly one moved copy of the record')
-      assert.equal(
-        await readFile(path.join(owning, moved[0]), 'utf8'),
-        `${dead}:${spawnNonce}`,
-        'the moved copy must still be the record the takeover judged'
-      )
-
-      const next: string = await holderRacer(root, payload)
-      const entries: string[] = await raceRound(next, home, path.join(root, 'next'), 4, 'after the crash')
-
-      assert.equal(entries.length, 4, 'the crashed takeover must not wedge the next callers')
+      await assert.rejects(readFile(path.join(mark, 'double')), { code: 'ENOENT' })
+      await assert.rejects(readFile(path.join(mark, 'unheld')), { code: 'ENOENT' })
     } finally {
       await rm(root, { force: true, recursive: true })
     }
   },
   120_000
 )
+

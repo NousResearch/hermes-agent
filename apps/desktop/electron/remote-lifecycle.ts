@@ -141,8 +141,14 @@ function isLockfileSkew(lock) {
   return Boolean(lock) && (lock as any).skew === true
 }
 
-function connectReservationPath(ownershipId) {
-  return `${ownershipDirectory(ownershipId)}/.connect.lock`
+// The spawn mutex is one kernel lock on this file. It is never unlinked: a lock
+// path that is removed and re-created is a new inode, and a second exclusive
+// lock on the new inode succeeds while the first holder is still live (#112974).
+// `flock(1)`/`lockf(1)` lock the open descriptor, and the kernel drops that lock
+// when the holding process exits — including SIGKILL — so there is no owner
+// record to outlive its owner and nothing to reclaim.
+function connectSpawnLockPath(ownershipId) {
+  return `${ownershipDirectory(ownershipId)}/.connect.spawn.lock`
 }
 
 function spawnLogPath(ownershipId, spawnNonce) {
@@ -1130,20 +1136,20 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const subCmd = `serve --isolated --host 127.0.0.1 --port 0${tokenArg}${ownerArg}`
   const marker = expandRemotePath(`${remoteInstallRoot(opts.hermesHome || '~/.hermes')}/.hermes-update-in-progress`)
 
-  // The marker judge, ownership reservation, process creation, and initial
+  // The marker judge, the spawn reservation, process creation, and initial
   // lockfile publication are one remote command under the marker lock, so a
   // second Desktop process never observes an empty lock and spawns before this
   // one records its PID. The gate judges/clears the marker before the payload;
   // a marker present after the spawn came from a writer that skipped the lock,
-  // so the child is reaped. The reservation is an atomic O_EXCL create of the
-  // owner record, reclaimed only when its owning remote shell is dead.
+  // so the child is reaped. The reservation is one kernel lock held for the
+  // life of this shell, which is exactly the window the lockfile cannot cover.
   const markerAbsent = `[ ! -e ${marker} ]`
 
   const dashCmd =
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
     `exec env HERMES_DESKTOP=1${opts.guestOnboarding === true ? ' HERMES_GUEST_ONBOARDING=1' : ''} ${hermes} ${profileArgs}${subCmd}`
 
-  const detachedShell: string = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
+  const detachedShell: string = `eval "exec $1>&-"; exec 9>&-; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
   // The inner shell backgrounds Hermes and reports its PID; backgrounding the
   // launcher too adds its unrelated PID to the value published in the lock.
   const detachedSpawn: string = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1")`
@@ -1158,81 +1164,40 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
     )
   }
 
-  const reservation = expandRemotePath(connectReservationPath(opts.ownershipId))
   const lockPath = expandRemotePath(lockfilePath(opts.ownershipId))
   const tokenPath = tokenFilePath ? expandRemotePath(tokenFilePath) : ''
-  const ownerPath = `${reservation}/owner`
+  const spawnLockPath = expandRemotePath(connectSpawnLockPath(opts.ownershipId))
   const metadata = JSON.stringify({ schemaVersion: LOCKFILE_SCHEMA_VERSION, ...opts.lockMetadata, pid: '__PID__' })
   const reservationNonce = validateSpawnNonce(opts.reservationNonce || crypto.randomBytes(8).toString('hex'))
 
+  // `flock` is util-linux (and the BusyBox applet) on Linux; macOS and FreeBSD
+  // ship the fd form of `lockf`. Both lock the open descriptor, which is what
+  // `exec 9>>` above hands them.
+  const spawnLock: string =
+    String(opts.platform ?? process.platform).toLowerCase() === 'darwin' ? 'lockf -s -t 30 9' : 'flock -x -w 30 9'
+
   return withRemoteUpdateMutex(
-    `(umask 077 && mkdir -p "$(dirname ${reservation})"); ` +
-      // reservation/lockPath/ownerPath are expandRemotePath() output — already
+    `(umask 077 && mkdir -p "$(dirname ${lockPath})"); ` +
+      // lockPath/spawnLockPath are expandRemotePath() output — already
       // shell-quoted fragments ("$HOME"'/…'). Embed raw so the assignment
       // expands $HOME; shq() here would store the quote characters literally
       // and every mkdir/cat against the variable fails forever.
-      `reservation=${reservation}; lock=${lockPath}; owner_file=${ownerPath}; ` +
-      `reservation_nonce=${shq(reservationNonce)}; ` +
-      `i=0; incomplete=0; mkdir -p "$reservation"; reclaim_marker="$reservation/.reclaim"; ` +
-      `reclaim_hand="$reservation/.reclaim.$$"; ` +
-      // Reclaim has to be as atomic as acquire. The residue of the mkdir-era
-      // reaper was `rm -rf "$reservation"` issued by every waiter that judged
-      // the same pid dead: a delete could land AFTER another caller created its
-      // record, so a live holder lost it (measured 14/20 rounds with two holders
-      // at K=8). Now exactly one reaper exists at a time: the marker is published
-      // with `ln` (one winner) after its pid is already inside, so there is no
-      // window in which a marker exists without an owner, and a reaper that dies
-      // leaves a pid the next reaper clears. Inside that section the record is
-      // re-judged — a record another caller has replaced is left alone, a record
-      // whose pid is alive is left alone — and only then is it moved off the
-      // shared path with one `mv`, the MOVED copy judged again, and a still-live
-      // copy put back. Nothing ever unlinks the shared path.
-      `reclaim_record() { printf '%s' "$$" > "$reclaim_hand" 2>/dev/null || return 0; ` +
-      `if ! ln "$reclaim_hand" "$reclaim_marker" 2>/dev/null; then ` +
-      `held=$(cat "$reclaim_marker" 2>/dev/null || true); ` +
-      `case "$held" in ''|*[!0-9]*) ;; *) kill -0 "$held" 2>/dev/null || rm -f "$reclaim_marker" ;; esac; ` +
-      `rm -f "$reclaim_hand"; return 0; fi; rm -f "$reclaim_hand"; ` +
-      `now=$(cat "$owner_file" 2>/dev/null || true); ` +
-      `if [ "$now" = "$judged" ]; then ` +
-      `case "$now" in *:*) now_pid=${'${now%%:*}'}; ` +
-      `case "$now_pid" in ''|*[!0-9]*) ;; *) kill -0 "$now_pid" 2>/dev/null && { rm -f "$reclaim_marker"; return 0; };; esac;; esac; ` +
-      `taken="$reservation.reclaim.$$.$i"; ` +
-      `if mv "$owner_file" "$taken" 2>/dev/null; then moved=$(cat "$taken" 2>/dev/null || true); ` +
-      `case "$moved" in *:*) moved_pid=${'${moved%%:*}'}; ` +
-      `case "$moved_pid" in ''|*[!0-9]*) ;; *) kill -0 "$moved_pid" 2>/dev/null && (set -C; printf '%s' "$moved" > "$owner_file") 2>/dev/null;; esac;; esac; ` +
-      `rm -rf "$taken"; fi; fi; rm -f "$reclaim_marker"; }; ` +
-      // The reservation is ONE O_EXCL create of the owner record, never a
-      // `mkdir` exit status. Ubuntu 26.04 ships uutils coreutils 0.10.0, whose
-      // `mkdir` reports a create it lost as a success in a small fraction of
-      // parallel rounds (8 of 400 at K=8, 16 of 400 at K=16 here, earlier runs
-      // 1-5 per 200-1000, always exactly two winners and never three): with
-      // mkdir as the mutex the loser never takes the "already reserved" path
-      // below, two backends spawn for one ownership id, and a reaper can delete
-      // a reservation whose owner was not written yet. `set -C` (noclobber)
-      // makes the shell itself open the record O_CREAT|O_EXCL, which the kernel
-      // arbitrates: exactly one caller creates it (200 of 200 rounds under the
-      // same load), and every other lands in this retry body.
-      `while ! (set -C; printf '%s:%s' "$$" "$reservation_nonce" > "$owner_file") 2>/dev/null; do ` +
-      // The holder removes the reservation when it exits, so a missing
-      // directory is not a stale record: recreate the container and retry,
-      // never counting it as an unpublished owner.
-      `[ -d "$reservation" ] || { mkdir -p "$reservation"; i=$((i+1)); [ "$i" -ge 600 ] && exit 75; sleep 0.05; continue; }; ` +
-      `judged=$(cat "$owner_file" 2>/dev/null || true); owner_data=$judged; ` +
-      // A record lacking its pid:nonce separator is not published yet (the
-      // winner is between create() and write(), a microsecond window) or its
-      // writer died there. Retry briefly, then reclaim it as stale instead of
-      // spending the whole budget waiting on it.
-      `case "$owner_data" in *:*) ;; *) owner_data='';; esac; owner_pid=${'${owner_data%%:*}'}; ` +
-      `case "$owner_pid" in ''|*[!0-9]*) incomplete=$((incomplete+1)); ` +
-      `[ "$incomplete" -ge 40 ] && { incomplete=0; reclaim_record; };; ` +
-      // A published record whose owning shell is gone is stale.
-      `*) incomplete=0; kill -0 "$owner_pid" 2>/dev/null || reclaim_record;; esac; ` +
-      `i=$((i+1)); [ "$i" -ge 600 ] && exit 75; sleep 0.05; done; ` +
-      // Release on every exit path this shell can observe: EXIT covers normal
-      // and explicit exits, and each signal trap turns a caught HUP/INT/TERM
-      // into an exit so the EXIT trap still runs. SIGKILL cannot be trapped;
-      // the stale branches above reclaim that reservation on the next attempt.
-      `trap 'rm -rf "$reservation"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; ` +
+      `lock=${lockPath}; ` +
+      // ONE kernel lock replaces the reservation directory, the owner record
+      // and every line that existed only to reclaim them. The reservation's
+      // lifetime is exactly this shell's lifetime: it ends when the lockfile is
+      // published and the backend runs on without us. A descriptor lock has
+      // that lifetime by construction — the kernel drops it on exit, on a killed
+      // ssh channel and on SIGKILL — so no record can outlive its owner, no
+      // waiter can act on a record it did not judge, and there is nothing to
+      // reclaim. Append, never truncate: the lock lives on the inode, and a
+      // removed and re-created lock path is a new inode that a second exclusive
+      // lock would take while the first holder is still live (#112974).
+      `exec 9>>${spawnLockPath} || exit 75; ` +
+      // Bounded wait. A live holder is mid-spawn and publishes its lockfile in
+      // seconds; on timeout, or on a host that has neither flock nor lockf, fail
+      // closed with EX_TEMPFAIL instead of spawning a second backend.
+      `${spawnLock} || { echo "the spawn reservation is unavailable: another spawn holds it, or this host has neither flock nor lockf" >&2; exit 75; }; ` +
       `if [ -f "$lock" ]; then ` +
       `existing_pid=$(sed -n 's/.*"pid":\\([0-9][0-9]*\\).*/\\1/p' "$lock" | head -n 1); ` +
       `case "$existing_pid" in ''|*[!0-9]*) rm -f "$lock";; *) ` +
@@ -1344,6 +1309,7 @@ async function spawnRemoteDashboard(
     ownershipId,
     hermesHome = '~/.hermes',
     guestOnboarding = false,
+    platform = '',
     assertInstallClear = async () => {}
   }
 ) {
@@ -1416,6 +1382,7 @@ async function spawnRemoteDashboard(
         logPath,
         hermesHome,
         guestOnboarding,
+        platform,
         ownershipId,
         reservationNonce: spawnNonce,
         lockMetadata: {
@@ -1727,6 +1694,7 @@ async function connect(deps) {
     ownershipId,
     hermesHome,
     guestOnboarding,
+    platform: platform.os,
     assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
   })
 
@@ -1857,7 +1825,7 @@ export {
   classifySshReuseProof,
   cleanupStale,
   connect,
-  connectReservationPath,
+  connectSpawnLockPath,
   DEFAULT_READY_TIMEOUT_MS,
   disconnect,
   expandRemotePath,

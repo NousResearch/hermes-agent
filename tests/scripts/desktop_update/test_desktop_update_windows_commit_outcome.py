@@ -59,13 +59,15 @@ def main():
     if os.environ.get('HANDOFF_HANG'):
         print(os.environ['HANDOFF_HANG'], flush=True)
         time.sleep(300)
+        # ASCII only: the hand-off runs this child as `python -I`, which ignores PYTHONIOENCODING, so a
+        # piped stdout is cp1252 on Windows and a check mark would raise UnicodeEncodeError before the hang.
     stamp = os.environ.get('HANDOFF_LOG_THEN_HANG')   # one update.log write, the banner, then silence
     if stamp:
         log = Path(os.environ['HERMES_HOME']) / 'logs' / 'update.log'
         log.parent.mkdir(parents=True, exist_ok=True)
-        log.write_text('\\u2713 Code updated!\\n', encoding='utf-8')
+        log.write_text('Code updated!\\n', encoding='utf-8')
         Path(stamp).write_text(repr(time.time()), encoding='utf-8')
-        print('\\u2713 Code updated!', flush=True)
+        print('Code updated!', flush=True)
         time.sleep(300)
     receipt = os.environ.get('HANDOFF_RECEIPT')   # this run's finalized receipt: outcome[,correlation]
     if receipt:
@@ -239,7 +241,7 @@ def test_hanging_update_help_probe_is_bounded(tmp_path: Path) -> None:
 def test_watchdog_remaps_a_hang_after_the_code_updated_banner(tmp_path: Path) -> None:
     """#156217: the restart/verify phase parks after "Code updated!", before "Update complete!"."""
     code, out, _argv, result, _ = _handoff(
-        tmp_path, '-NoGateway', HANDOFF_HANG='\u2713 Code updated!',
+        tmp_path, '-NoGateway', HANDOFF_HANG='Code updated!',
         HERMES_UPDATE_STEP_IDLE_SECONDS='3',
     )
     assert code == 0, out

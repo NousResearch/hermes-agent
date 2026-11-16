@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { HermesGateway } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
+import { $profiles, $profilesByConnection } from '@/store/profile'
 
 import { isSkillItem } from '../composer-utils'
 
@@ -74,7 +75,14 @@ async function completions(api: { search: (query: string) => readonly Unstable_T
 afterEach(() => {
   cleanup()
   queryClient.clear()
+  $profiles.set([])
+  $profilesByConnection.set(new Map())
 })
+
+const ROSTER = [
+  { name: 'default', is_default: true, model: 'cheap-ai-fallback' },
+  { name: 'coder', is_default: false, model: 'qwen3.8-flash' }
+] as never
 
 describe('useSlashCompletions', () => {
   it('serves the bare-slash catalog from cache instead of re-requesting it', async () => {
@@ -186,5 +194,40 @@ describe('useSlashCompletions', () => {
     expect(groupOf('/refine')).toBe('Commands')
     expect(groupOf('/compress')).toBe('Commands')
     expect(groupOf('/docx')).toBe('Skills')
+  })
+
+  // The profile picker's roster is already on the client. Completing from it
+  // removes the two async dependencies (warmed catalog + cached complete.slash)
+  // that made `/profile ` intermittent in practice.
+  it('completes /profile names from the loaded roster without a slash RPC', async () => {
+    $profiles.set(ROSTER)
+    const request = vi.fn().mockResolvedValue(CATALOG)
+    const api = harness({ request } as unknown as HermesGateway)
+
+    const items = await completions(api, 'profile ')
+
+    expect(commandsOf(items)).toEqual(['/profile default', '/profile coder'])
+    expect(request).not.toHaveBeenCalledWith('complete.slash', expect.anything())
+  })
+
+  it('narrows roster names by the typed prefix', async () => {
+    $profiles.set(ROSTER)
+    const api = harness({ request: vi.fn().mockResolvedValue(CATALOG) } as unknown as HermesGateway)
+
+    expect(commandsOf(await completions(api, 'profile c'))).toEqual(['/profile coder'])
+  })
+
+  it('falls back to the backend provider until the roster has loaded', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : { items: [{ text: 'coder', display: 'coder', kind: 'command' }], replace_from: 9 }
+      )
+    )
+    const api = harness({ request } as unknown as HermesGateway)
+
+    expect(commandsOf(await completions(api, 'profile c'))).toEqual(['/profile coder'])
+    expect(request).toHaveBeenCalledWith('complete.slash', { text: '/profile c' })
   })
 })

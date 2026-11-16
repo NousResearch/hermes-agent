@@ -76,6 +76,18 @@ def _tool(args):
         return json.loads(send_message_tool(args))
 
 
+def _live_adapter_allows(platform, profile, chat_id, thread_id):
+    """The gate as the choke point applies it: ``_live_adapter`` resolves the profile itself (the
+    fixture's ``sec``) and must forward the target's thread."""
+    from tools.send_message_senders import SharedBotTargetRefused, _live_adapter
+
+    assert profile == "sec"
+    try:
+        return _live_adapter(platform, chat_id, thread_id)[1] is not None
+    except SharedBotTargetRefused:
+        return False
+
+
 def test_send_to_unrouted_chat_never_uses_the_primary_bot(satellite):
     slack = satellite.primary[Platform.SLACK]
     result = _tool({"action": "send", "target": "slack:C0UNROUTED", "message": "hi"})
@@ -136,7 +148,7 @@ def test_satellite_acts_in_its_inbound_routed_conversation_only(satellite, shape
     routes, origin = _ORIGIN_ROUTED[shape]
     platform = Platform(origin["platform"])
     satellite.runner.config.profile_routes = parse_profile_routes(routes)
-    allowed = satellite.runner._shared_bot_target_allowed
+    allowed = _live_adapter_allows
     tokens = set_session_vars(profile="sec", **origin)
     try:
         assert allowed(platform, "sec", origin["chat_id"], None) is True
@@ -164,7 +176,7 @@ def test_origin_topic_does_not_vouch_for_the_rest_of_its_chat(satellite):
 
     satellite.runner.config.profile_routes = parse_profile_routes([
         {"name": "t", "platform": "telegram", "chat_id": "-100222", "thread_id": "7", "profile": "sec"}])
-    allowed = satellite.runner._shared_bot_target_allowed
+    allowed = _live_adapter_allows
     tokens = set_session_vars(profile="sec", platform="telegram", chat_id="-100222", thread_id="7")
     try:
         assert allowed(Platform.TELEGRAM, "sec", "-100222", None) is False
@@ -181,7 +193,7 @@ def test_shared_channel_origin_matches_on_the_turn_sender(satellite):
 
     satellite.runner.config.profile_routes = parse_profile_routes([
         {"name": "u", "platform": "slack", "user_id": "U1", "profile": "sec"}])
-    allowed = satellite.runner._shared_bot_target_allowed
+    allowed = _live_adapter_allows
     tokens = set_session_vars(profile="sec", platform="slack", chat_id="C0SHARED", actor_id="U1")
     try:
         assert allowed(Platform.SLACK, "sec", "C0SHARED", None) is True

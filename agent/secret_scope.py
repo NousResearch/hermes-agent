@@ -514,7 +514,8 @@ class LiveSecretScope(Mapping[str, str]):
         self.layers = tuple(layers)  # highest precedence first; callables are live layers
 
     def _maps(self):
-        return tuple(layer() if callable(layer) else layer for layer in self.layers)
+        return tuple(layer.copy() if isinstance(layer, LiveSecretScope) else
+                     layer() if callable(layer) else layer for layer in self.layers)
 
     def __getitem__(self, name):
         for layer in self._maps():

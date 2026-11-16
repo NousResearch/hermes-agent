@@ -1,0 +1,51 @@
+"""The env mirror rejects a stale snapshot even when publication callers race."""
+
+import os
+import threading
+
+import hermes_secret_routing as routing
+
+pytest_plugins = ["tests.agent.test_secret_store_routing"]
+
+
+def test_late_snapshot_cannot_revert_process_env(store, monkeypatch):
+    provider, home = store
+    from hermes_cli.env_loader import load_hermes_dotenv
+    provider.seed_external(home, {"PUBLISH_KEY": "first-marker"})
+    monkeypatch.delenv("PUBLISH_KEY", raising=False)
+    load_hermes_dotenv(hermes_home=home)
+    provider.seed_external(home, {"PUBLISH_KEY": "second-marker"})
+    provider.refresh(home)
+    stale = provider.current_snapshot(home)
+    entered, release = threading.Event(), threading.Event()
+    original = provider.current_snapshot
+    errors = []
+
+    def snapshot(path):
+        if threading.current_thread() is late:
+            entered.set()
+            assert release.wait(10)
+            return stale
+        return original(path)
+
+    def publish():
+        try:
+            routing.view_changed(home)
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(provider, "current_snapshot", snapshot)
+    late = threading.Thread(target=publish, daemon=True)
+    late.start()
+    try:
+        assert entered.wait(10)
+        provider.seed_external(home, {"PUBLISH_KEY": "third-marker"})
+        provider.refresh(home)
+    finally:
+        release.set()
+        late.join(10)
+    assert not errors and not late.is_alive()
+    assert os.environ["PUBLISH_KEY"] == "third-marker"
+    assert routing._PUBLISHED[provider._key(home)]["PUBLISH_KEY"] == "third-marker"
+    routing.view_changed(home)
+    assert os.environ["PUBLISH_KEY"] == "third-marker"

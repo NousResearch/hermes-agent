@@ -247,9 +247,10 @@ def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     if provider is not None:
         # Store-owned launch entries must not survive revocation in the fallback layer.
         from hermes_secret_routing import published_env_names
-        for name in published_env_names(launch_home) | set(provider.current_snapshot(launch_home).env):
-            scope.pop(name, None)
-        return LiveSecretScope((profile, scope))
+        def launch_fallback():
+            owned = published_env_names(launch_home) | set(provider.current_snapshot(launch_home).env)
+            return {k: v for k, v in scope.items() if k not in owned}
+        return LiveSecretScope((profile, launch_fallback))
     scope.update(profile)
     return scope
 

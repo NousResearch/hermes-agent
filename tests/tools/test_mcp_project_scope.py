@@ -297,6 +297,93 @@ def test_a_clone_connecting_during_a_prune_is_discarded(root):
         _kill_orphaned_mcp_children(include_active=True)
 
 
+def test_a_clone_connect_completing_in_the_prunes_registry_window_is_discarded(root, monkeypatch):
+    """The prune's other window: ``pop_clones`` runs synchronously, but the baseline's registry
+    pop is deferred to the async ``_shutdown`` on the MCP loop. A clone connect that COMPLETES
+    in between (baseline still registered) must be refused by the gate like a dead generation —
+    never installed against a dying baseline, which would strand its live child with no owner.
+    ``test_a_clone_connecting_during_a_prune_is_discarded`` covers the opposite ordering (the
+    connect still blocked when the pop lands); this one is parked after a COMPLETED connect
+    (review finding 1)."""
+    from tests.waiting import wait_until
+    from tools import mcp_tool, mcp_tool_project_scope as scope
+    from tools.mcp_tool_discovery import register_mcp_servers
+    from tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children, shutdown_mcp_servers
+
+    name = "cwdprobe_prune_window"
+    proj = root / "windowproj"
+    proj.mkdir(exist_ok=True)
+    # A keeper keeps the MCP loop alive across the prune (the real /reload-mcp shape): with
+    # nothing else registered, the post-prune drain would cancel the in-flight connect itself
+    # and the window could never fire.
+    register_mcp_servers({"cwdprobe_window_keeper": {"command": sys.executable, "args": [str(root / "probe.py")],
+                                                     "connect_timeout": 30, "timeout": 30}})
+    register_mcp_servers({name: {"command": sys.executable, "args": [str(root / "probe.py")],
+                                 "connect_timeout": 30, "timeout": 30}})
+    assert name in mcp_tool._servers
+    result: dict = {}
+    connected, resume, pruned = threading.Event(), threading.Event(), threading.Event()
+    real_connect = scope._connect_clone
+    clone_ref: dict = {}
+
+    def parked_connect(server_name, baseline_, cwd):
+        clone = real_connect(server_name, baseline_, cwd)  # a real child, fully connected
+        clone_ref["clone"] = clone
+        connected.set()
+        resume.wait(30)  # park between the completed connect and the insert gate
+        return clone
+
+    monkeypatch.setattr(scope, "_connect_clone", parked_connect)
+    real_pop = scope.pop_clones
+
+    def pop_spy(keys):
+        out = real_pop(keys)  # the real synchronous pop, under the real shutdown path
+        pruned.set()
+        return out
+
+    monkeypatch.setattr(scope, "pop_clones", pop_spy)
+
+    def race() -> None:
+        from tools.mcp_tool_handlers import _make_tool_handler
+        set_session_cwd(str(proj))
+        try:
+            result["r"] = _make_tool_handler(name, "whereami", 30)({})
+        finally:
+            clear_session_cwd()
+
+    key = (name, os.path.realpath(str(proj)))
+    worker = threading.Thread(target=race)
+    worker.start()
+    try:
+        wait_until(lambda: (scope._scoped_connect_locks.get(key) or threading.Lock()).locked(),
+                   what="the clone connect to take flight")
+        assert connected.wait(30), "the clone connect never completed its spawn"
+        sh = threading.Thread(target=shutdown_mcp_servers, kwargs=dict(scope=None, names={name}))
+        sh.start()
+        assert pruned.wait(30), "pop_clones never ran"
+        resume.set()
+        worker.join(60)
+        sh.join(60)
+
+        assert name not in mcp_tool._servers, "test premise: the prune removed the baseline"
+        assert not _clones(name), "a clone installed itself for a dying baseline in the registry window"
+        assert "not connected" in str(result.get("r")), result.get("r")
+        assert not [k for k in scope._scoped_connect_locks if k[0] == name], \
+            "the refused generation left its connect lock behind"
+    finally:
+        clear_session_cwd()
+        # The parked real clone (refused by the gate) was discarded off-thread; make sure its
+        # child never outlives the test either way.
+        clone = clone_ref.get("clone")
+        if clone is not None:
+            try:
+                scope._loop._run_on_mcp_loop(clone.shutdown, timeout=15)
+            except Exception:  # already torn down by the discard path
+                pass
+        shutdown_mcp_servers()
+        _kill_orphaned_mcp_children(include_active=True)
+
+
 def test_the_insert_gate_refuses_a_torn_down_baseline(root, monkeypatch):
     """Gate-level twin of the prune race: when the baseline is already gone, the gate refuses
     BEFORE any spawn (a queued peer never pays a child spawn for a dead generation), inserts

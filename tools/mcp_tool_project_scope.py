@@ -48,6 +48,13 @@ _scoped_connect_locks: dict[tuple[Any, str], threading.Lock] = {}
 # instead of accumulating for the process lifetime (independent review, suggestion 3).
 _scoped_connect_waiters: dict[tuple[Any, str], int] = {}
 
+# Baseline keys a ``shutdown_mcp_servers`` pass is tearing down, stamped at the synchronous
+# ``pop_clones`` and cleared once the deferred async ``_servers.pop`` has landed: in between,
+# the registry still answers ``is baseline`` at the insert gate, and a clone installed there
+# would strand its live child with no owner (review finding 1). Read/written only under
+# ``_core._lock``.
+_torn_down_baselines: set = set()
+
 # The handler's lease list: every clone a lookup hands this handler is counted on the clone
 # itself (``_scoped_leases``) until the handler returns — counted on the object, never by key,
 # so a rekey or a reload that moves the key mid-call cannot strand the count (review finding 3).
@@ -201,7 +208,11 @@ def _server_for_call(server_name: str, key: Any, baseline: Any, *, connect: bool
             # Refuse BEFORE spawning when the baseline died while this thread queued on the
             # single-flight lock: a peer never pays a child spawn for a dead generation
             # (independent review, suggestion 2).
-            if clone is None and _core._servers.get(key) is not baseline:
+            if clone is None and (key in _torn_down_baselines
+                                  or _core._servers.get(key) is not baseline):
+                # Tombstone or baseline-death while this thread queued on the single-flight
+                # lock: a peer never pays a child spawn for a dead or dying generation
+                # (independent review, suggestion 2; tombstone = review finding 1).
                 _release_connect_lock(clone_key, keep=False)
                 return None
         if clone is None:
@@ -227,7 +238,8 @@ def _server_for_call(server_name: str, key: Any, baseline: Any, *, connect: bool
             # clone (a peer that queued on the same lock object and read it at the top of this
             # block): it leases and returns it, it must never discard it (#151827 port, review
             # finding 4).
-            if _core._servers.get(key) is baseline and (occupied is None or occupied is clone):
+            if (key not in _torn_down_baselines and _core._servers.get(key) is baseline
+                    and (occupied is None or occupied is clone)):
                 _scoped_servers[clone_key] = clone
                 _clear_clone_connect_failure(clone_key)
                 _lease(clone)
@@ -344,6 +356,12 @@ def pop_clones(keys: Optional[set]) -> list:
     """Remove and return the clones of the baseline *keys* (every clone when None) for the caller to
     shut down with their baselines. Caller holds ``_core._lock``."""
     popped = [k for k in _scoped_servers if keys is None or k[0] in keys]
+    # Tombstone the dying baselines NOW, while their registry entries are still live: the async
+    # ``_shutdown`` pops ``_core._servers`` only later, on the MCP loop, and a clone connect
+    # completing in that window would pass the insert gate's ``is baseline`` re-check and strand
+    # its live child with no owner (review finding 1). Cleared in ``clear_selected_status`` once
+    # the deferred pop has landed.
+    _torn_down_baselines.update(_core._servers.keys() if keys is None else keys)
     for clone_key in popped:
         _scoped_connect_locks.pop(clone_key, None)
         # The clone's per-project bookkeeping goes with it (design section "Lock cleanup": pop the

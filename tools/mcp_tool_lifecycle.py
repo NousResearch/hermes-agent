@@ -205,6 +205,14 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
             _core._server_connect_errors.pop(key, None)
             _core._server_scope_keys.pop(key, None)
             _core._server_tool_scopes.pop(key, None)
+        # The tombstones die with the status: in ``_shutdown`` this runs right after the
+        # deferred ``_servers.pop``, in the final sweep it covers a shutdown that never
+        # scheduled (loop gone) — a later re-registration of the same names must be able to
+        # grow clones again. The residual gap (a tombstone cleared while a timed-out
+        # ``_shutdown`` has yet to pop) still ends safe: when that pop lands, the gate's
+        # ``is baseline`` check refuses for it (review finding 1).
+        from tools.mcp_tool_project_scope import _torn_down_baselines
+        _torn_down_baselines.difference_update(selected)
 
     # Fast path: nothing to shut down. The connect-cooldown maps can still be populated here — a server that
     # failed to connect is never recorded in ``_servers`` (that is the very premise of the #50394 cooldown),

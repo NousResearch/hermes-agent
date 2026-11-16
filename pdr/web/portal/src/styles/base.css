@@ -1,0 +1,59 @@
+/* 用户端视觉变量：浅灰底 + 白色卡片 + 蓝紫强调色（参照用户提供的问答首页参考图） */
+:root {
+  --bg: #ebebee;
+  --frame: #f3f3f6;
+  --panel: #f8f8fa;
+  --surface: #ffffff;
+  --line: #e7e7ed;
+  --line-strong: #d9d9e2;
+  --text: #1c1c24;
+  --text-2: #4a4a57;
+  --muted: #6b6b78;
+  --accent: #5b5bea;
+  --accent-2: #8a7bf6;
+  --accent-soft: #eeeefe;
+  --ink: #121216;
+  --danger: #b4233c;
+  --radius: 16px;
+  --shadow-card: 0 1px 0 #ffffff inset, 0 18px 50px rgba(91, 91, 234, 0.08), 0 2px 6px rgba(20, 20, 40, 0.04);
+  --font: 'Inter', 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--accent); text-decoration: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--surface);
+  font-size: 12.5px; color: var(--text-2); white-space: nowrap;
+}
+.chip:hover { border-color: var(--line-strong); color: var(--text); }
+.chip[aria-pressed='true'] { border-color: #c9c8f7; background: var(--accent-soft); color: var(--accent); }
+
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+  border: 0; border-radius: 9px; background: transparent; color: var(--muted);
+}
+.icon-btn:hover { background: #efeff4; color: var(--text); }
+.icon-btn[aria-pressed='true'] { color: var(--accent); background: var(--accent-soft); }
+
+.btn-ink {
+  display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px; border: 0; border-radius: 10px;
+  background: var(--ink); color: #fff; font-size: 13px; font-weight: 500;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.18) inset, 0 4px 10px rgba(18, 18, 22, 0.18);
+}
+.btn-ink:hover { background: #26262d; }

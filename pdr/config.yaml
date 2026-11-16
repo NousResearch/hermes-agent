@@ -49,6 +49,8 @@ portal_web:
   allow_attachment: true
   #: 单条问题字数上限｜用户端输入框的最大字数｜范围:50-4000｜生效:热加载
   max_question_chars: 500
+  #: 使用示例数据｜后端问答接口完成前，用户端使用内置示例数据运行（登录、问答、出处、历史均可体验）；接口完成后改为 false｜范围:true/false｜生效:重启
+  mock_api: true
 
 install:
   #: 镜像选择策略｜安装依赖时选择下载源：fastest-并发测速选最快 first-按顺序选第一个可用 fixed-固定使用指定源｜范围:fastest|first|fixed｜生效:重启

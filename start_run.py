@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import secrets
+import signal
 import shutil
 import subprocess
 import sys
@@ -235,16 +236,84 @@ PENDING = [
     ("hermes 智能体网关", "hermes-agent/ 下的 gateway（api_server 平台）"),
     ("PDR 后端与 worker", "pdr/server"),
     ("管理端前端", "pdr/web/admin"),
-    ("用户端前端", "pdr/web/portal"),
 ]
+PORTAL = PDR / "web" / "portal"
 
 
-def start_apps(cfg: dict) -> None:
+def start_portal(cfg: dict) -> subprocess.Popen | None:
+    """安装并启动用户端（Vue 3 + Vite 开发服务器）；mock_api 为真时使用内置示例数据。"""
+    if not (PORTAL / "package.json").exists():
+        return None
+    pnpm = shutil.which("pnpm")
+    npm = shutil.which("npm")
+    if not pnpm and not npm:
+        say("  – 用户端：未找到 pnpm / npm，跳过（安装 Node.js ≥ 20 后重试）")
+        return None
+    inst = cfg.get("install", {})
+    registry = pick_mirror(inst.get("npm_registry", ""), inst.get("npm_candidates", []),
+                           inst.get("strategy", "fastest"), float(inst.get("probe_timeout_seconds", 3)))
+    say(f"  用户端依赖源：{registry or '默认'}")
+    tool = pnpm or npm
+    run([tool, "install", *(["--registry", registry] if registry else [])], cwd=PORTAL)
+    web = cfg["portal_web"]
+    env = {**os.environ, "PDR_PORTAL_PORT": str(web["port"]),
+           "PDR_API_URL": f"http://{cfg['app']['host']}:{cfg['app']['port']}",
+           "VITE_PORTAL_MOCK": "true" if web.get("mock_api", True) else "false"}
+    # 子进程单独成组，退出时整组结束（包括 pnpm 拉起的 vite）
+    group = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+    proc = subprocess.Popen([tool, "run", "dev"], cwd=PORTAL, env=env, **group)
+    mode = "示例数据" if web.get("mock_api", True) else "连接后端"
+    say(f"  ✓ 用户端已启动（{mode}）：http://127.0.0.1:{web['port']}")
+    return proc
+
+
+def start_apps(cfg: dict) -> list[subprocess.Popen]:
     step("7/7 应用进程")
     for name, where in PENDING:
-        say(f"  – {name}：尚未实现（{where}，编码阶段 M1–M5 交付后由此处拉起）")
-    say(f"\n计划访问地址：管理端 {cfg['admin_web']['public_url']}  用户端 {cfg['portal_web']['public_url']}"
-        "（两端独立，互不链接）")
+        say(f"  – {name}：尚未实现（{where}，编码阶段交付后由此处拉起）")
+    procs = [p for p in [start_portal(cfg)] if p]
+    say(f"\n访问地址：用户端 {cfg['portal_web']['public_url']}（已启动）  管理端 {cfg['admin_web']['public_url']}（待实现）"
+        "；两端独立，互不链接")
+    return procs
+
+
+def wait_for(procs: list[subprocess.Popen]) -> None:
+    """前台运行，Ctrl+C 时依次停止已拉起的进程。"""
+    if not procs:
+        return
+    say("按 Ctrl+C 停止。")
+
+    def _interrupt(*_: object) -> None:
+        raise KeyboardInterrupt
+
+    # 后台/服务方式启动时 SIGINT 可能被继承为忽略：显式接管 Ctrl+C 与 SIGTERM
+    signal.signal(signal.SIGINT, _interrupt)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _interrupt)
+    try:
+        while all(p.poll() is None for p in procs):
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for p in procs:
+            stop_tree(p)
+        say("已停止。")
+
+
+def stop_tree(p: subprocess.Popen) -> None:
+    if p.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True)
+        return
+    try:
+        os.killpg(p.pid, signal.SIGTERM)
+        p.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 # --------------------------------------------------------------------------- 入口
@@ -291,7 +360,7 @@ def main(argv: list[str]) -> int:
     render_ddl()
     start_services(env, cfg, use_docker)
     apply_schema(env, cfg, use_docker)
-    start_apps(cfg)
+    wait_for(start_apps(cfg))
     return 0
 
 

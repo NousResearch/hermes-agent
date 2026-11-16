@@ -873,6 +873,9 @@ gateway:
     action_restarting: "in riavvio"
     cron_interrupted: "⚠️ Il job pianificato '{job}' è stato interrotto perché Hermes è {action}; nessun risultato per questa esecuzione. Verrà eseguito di nuovo come pianificato, oppure eseguilo subito con `hermes cron run {job}` quando Hermes sarà tornato."
     notice_shutdown: "⚠️ Hermes si sta arrestando — la tua attività corrente verrà interrotta. Quando sarà di nuovo online, invia un messaggio qualsiasi e proverò a riprendere da dove eravamo rimasti."
+    notice_shutdown_reason: "⚠️ Hermes si sta arrestando ({reason}) — la tua attività corrente verrà interrotta. Quando sarà di nuovo online, invia un messaggio qualsiasi e proverò a riprendere da dove eravamo rimasti."
+    reason_external_systemd: "arresto esterno da systemd"
+    reason_external: "arresto esterno"
     notice_restart: "⚠️ Hermes si sta riavviando — la tua attività corrente verrà interrotta. Invia un messaggio qualsiasi dopo il riavvio e proverò a riprendere da dove eri rimasto."
   startup:
     handoff_thread_title: "Hermes — {title}"

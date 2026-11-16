@@ -873,6 +873,9 @@ gateway:
     action_restarting: "neu startet"
     cron_interrupted: "⚠️ Der geplante Job '{job}' wurde abgebrochen, weil Hermes gerade {action}; kein Ergebnis in diesem Lauf. Er läuft wieder nach Zeitplan, oder Sie starten ihn mit `hermes cron run {job}`, sobald Hermes zurück ist."
     notice_shutdown: "⚠️ Hermes wird heruntergefahren — Ihre aktuelle Aufgabe wird unterbrochen. Sobald Hermes wieder online ist, senden Sie eine beliebige Nachricht und ich versuche, dort weiterzumachen, wo wir aufgehört haben."
+    notice_shutdown_reason: "⚠️ Hermes wird heruntergefahren ({reason}) — Ihre aktuelle Aufgabe wird unterbrochen. Sobald Hermes wieder online ist, senden Sie eine beliebige Nachricht und ich versuche, dort weiterzumachen, wo wir aufgehört haben."
+    reason_external_systemd: "externer Stopp durch systemd"
+    reason_external: "externer Stopp"
     notice_restart: "⚠️ Hermes wird neu gestartet — Ihre aktuelle Aufgabe wird unterbrochen. Senden Sie nach dem Neustart eine beliebige Nachricht und ich versuche, dort weiterzumachen, wo Sie aufgehört haben."
   startup:
     handoff_thread_title: "Hermes — {title}"

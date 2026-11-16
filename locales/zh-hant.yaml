@@ -873,6 +873,9 @@ gateway:
     action_restarting: "重新啟動中"
     cron_interrupted: "⚠️ 排程任務 '{job}' 因 Hermes 正在{action}而中斷；本次沒有結果。它會依排程再次執行，或在 Hermes 恢復後用 `hermes cron run {job}` 立即執行。"
     notice_shutdown: "⚠️ Hermes 正在關閉 — 你目前的任務將被中斷。恢復上線後，傳送任何訊息，我會試著從中斷處繼續。"
+    notice_shutdown_reason: "⚠️ Hermes 正在關閉（{reason}） — 你目前的任務將被中斷。恢復上線後，傳送任何訊息，我會試著從中斷處繼續。"
+    reason_external_systemd: "由 systemd 外部停止"
+    reason_external: "外部停止"
     notice_restart: "⚠️ Hermes 正在重新啟動 — 你目前的任務將被中斷。重新啟動後傳送任何訊息，我會試著從中斷處繼續。"
   startup:
     handoff_thread_title: "Hermes — {title}"

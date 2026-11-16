@@ -189,6 +189,9 @@ def _active_async_delegation_count() -> int:
 class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixin):
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
+    # Shutdown-forensics snapshot the signal handler mirrors here (gateway/run_bootstrap.py).
+    _shutdown_ctx: Optional[dict] = None
+
     @dataclasses.dataclass
     class _StopContext:
         """State threaded through the ``_stop_*`` phases of one ``stop()`` run."""
@@ -1041,13 +1044,36 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             return False
         return True
 
+    def _shutdown_reason_hint(self) -> Optional[str]:
+        """Short "why" for the shutdown notice, or None to send the plain one.
+
+        Only an unplanned signal earns a reason: the handler sets ``_signal_initiated_shutdown`` only
+        when neither the planned-stop marker (``hermes gateway stop``, the systemd ExecStop mark) nor a
+        ``--replace`` takeover marker claimed the SIGTERM, and never for SIGINT. A restart already says
+        "restarting"; a missing forensics snapshot falls back to the plain notice.
+        """
+        if (self._restart_requested or self._planned_takeover_shutdown
+                or not getattr(self, "_signal_initiated_shutdown", False)):
+            return None
+        ctx = self._shutdown_ctx
+        if not isinstance(ctx, dict) or ctx.get("signal") != "SIGTERM":
+            return None
+        return t("gateway.shutdown.reason_external_systemd" if ctx.get("under_systemd")
+                 else "gateway.shutdown.reason_external")
+
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
 
         Called at the start of stop() while adapters are connected; send failures never block shutdown.
         """
         restart_source = self._restart_command_source if self._restart_requested else None
-        msg = t("gateway.shutdown.notice_restart" if self._restart_requested else "gateway.shutdown.notice_shutdown")
+        reason = self._shutdown_reason_hint()
+        if self._restart_requested:
+            msg = t("gateway.shutdown.notice_restart")
+        elif reason:
+            msg = t("gateway.shutdown.notice_shutdown_reason", reason=reason)
+        else:
+            msg = t("gateway.shutdown.notice_shutdown")
         restart_key = None
         if restart_source is not None:
             with suppress(Exception):

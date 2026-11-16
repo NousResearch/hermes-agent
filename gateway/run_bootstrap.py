@@ -203,6 +203,8 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
             planned_stop = True
         _shutdown_ctx = _best_effort(_snapshot, "snapshot_shutdown_context failed: %s")
         sig_name = _shutdown_ctx["signal"] if _shutdown_ctx else None
+        # Read by _shutdown_reason_hint for the chat notice; it only speaks for the unplanned branch below.
+        runner._shutdown_ctx = _shutdown_ctx
 
         if planned_takeover:
             # The replacing gateway serves this home on: telling its home chats "shutting down" is

@@ -873,6 +873,9 @@ gateway:
     action_restarting: "再起動中"
     cron_interrupted: "⚠️ Hermes が{action}のため、スケジュールジョブ '{job}' は途中で打ち切られました。今回の実行結果はありません。次回のスケジュールで再実行されます。Hermes の復帰後に `hermes cron run {job}` で今すぐ実行することもできます。"
     notice_shutdown: "⚠️ Hermes はシャットダウン中です — 現在のタスクは中断されます。オンラインに戻ったら何かメッセージを送ってください。中断したところから再開を試みます。"
+    notice_shutdown_reason: "⚠️ Hermes はシャットダウン中です（{reason}） — 現在のタスクは中断されます。オンラインに戻ったら何かメッセージを送ってください。中断したところから再開を試みます。"
+    reason_external_systemd: "systemd による外部停止"
+    reason_external: "外部停止"
     notice_restart: "⚠️ Hermes は再起動中です — 現在のタスクは中断されます。再起動後に何かメッセージを送ってください。中断したところから再開を試みます。"
   startup:
     handoff_thread_title: "Hermes — {title}"

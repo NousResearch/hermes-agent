@@ -873,6 +873,9 @@ gateway:
     action_restarting: "ag atosú"
     cron_interrupted: "⚠️ Gearradh an tasc sceidealta '{job}' go gairid mar tá Hermes {action}; gan toradh an rith seo. Rithfidh sé arís de réir an sceidil, nó rith anois é le `hermes cron run {job}` nuair a bheidh Hermes ar ais."
     notice_shutdown: "⚠️ Tá Hermes ag múchadh — cuirfear isteach ar do thasc reatha. Nuair a bheidh sé ar líne arís, seol teachtaireacht ar bith agus déanfaidh mé iarracht leanúint ar aghaidh ón áit ar stopamar."
+    notice_shutdown_reason: "⚠️ Tá Hermes ag múchadh ({reason}) — cuirfear isteach ar do thasc reatha. Nuair a bheidh sé ar líne arís, seol teachtaireacht ar bith agus déanfaidh mé iarracht leanúint ar aghaidh ón áit ar stopamar."
+    reason_external_systemd: "stopadh seachtrach ó systemd"
+    reason_external: "stopadh seachtrach"
     notice_restart: "⚠️ Tá Hermes ag atosú — cuirfear isteach ar do thasc reatha. Seol teachtaireacht ar bith tar éis an atosaithe agus déanfaidh mé iarracht leanúint ar aghaidh ón áit ar stop tú."
   startup:
     handoff_thread_title: "Hermes — {title}"

@@ -1,0 +1,30 @@
+name: iacg-board
+repo: https://github.com/RajaRenga/iacgenius-ce
+subdir: profiles/iacgenius/dashboard-plugins/iacg-board
+sha: dd897541cf571a25e2ad4a3d717038cf3ea36f60
+version: "0.1.0"
+title: IaC Genius Board — mission evidence dashboard tab
+description: >-
+  Web dashboard tab showing the IaC Genius mission board: findings, validation evidence with tool +
+  version, repair attempts spent/allowed, disposition and next owner. It renders the snapshot the
+  iacg-desk service writes and never invents live state; an empty state is shown until a snapshot
+  exists. Disclosure — read-only; reads the desk's board.json/board.html over the local Unix socket
+  or shared data dir; registers no agent tools, hooks or middleware; makes no network calls, runs no
+  subprocess and stores nothing; no telemetry, no self-update.
+maintainer: RajaRenga
+tier: community
+category: desktop
+docs_url: https://github.com/RajaRenga/iacgenius-ce/tree/dd897541cf571a25e2ad4a3d717038cf3ea36f60/profiles/iacgenius/dashboard-plugins/iacg-board#readme
+image: https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/dd897541cf571a25e2ad4a3d717038cf3ea36f60/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/dd897541cf571a25e2ad4a3d717038cf3ea36f60/docs/media/screens/01-board.png
+requires_hermes: ">=0.23.1"
+platforms: [linux]
+known_issues:
+  - "Shows an empty state until iacg-desk writes a board snapshot."
+  - "Linux only: the desk snapshot lives at /data/iacg."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

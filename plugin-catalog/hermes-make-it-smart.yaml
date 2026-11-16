@@ -1,6 +1,6 @@
 name: hermes-make-it-smart
 repo: https://github.com/tesla963/hermes-make-it-smart
-sha: 2a5634f17b2928410253b8106026af0075ce5cee
+sha: 4598aefe1ef7ea851e4f303bef16605547ec1ffa
 description: >-
   Canonical catalog over every Hermes profile. Reads the local state.db files, gives each
   session the "NNN [Subject] MMM [Tag] [Tag] Description · Verb" name, and exposes faceted
@@ -15,7 +15,7 @@ maintainer: tesla963
 tier: community
 category: productivity
 docs_url: https://github.com/tesla963/hermes-make-it-smart#readme
-version: "0.27.4"
+version: "0.29.0"
 platforms: []
 capabilities:
   provides_tools:
@@ -25,7 +25,7 @@ capabilities:
     - cellar_series
     - cellar_rename
     - cellar_tag
-    - cellar_bateria
+    - cellar_cheatsheet
     - cellar_index
     - cellar_verify
     - cellar_export

@@ -35243,7 +35243,7 @@
       },
       "RollbackRestoreResult": {
         "additionalProperties": true,
-        "description": "``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full\n(non-file) restore that also rewound the live transcript.",
+        "description": "``agent/checkpoints/manager.py::restore`` outcome; ``history_removed`` is added for a full\n(non-file) restore that also rewound the live transcript.",
         "properties": {
           "success": {
             "title": "Success",

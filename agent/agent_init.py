@@ -1087,7 +1087,7 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     _set_defaults(agent, _SESSION_STATE)
 
     # Filesystem checkpoint manager (transparent — not a tool)
-    from tools.checkpoint_manager import CheckpointManager
+    from agent.checkpoints.manager import CheckpointManager
     agent._checkpoint_mgr = CheckpointManager(
         enabled=checkpoints_enabled, max_snapshots=checkpoint_max_snapshots,
         max_total_size_mb=checkpoint_max_total_size_mb,

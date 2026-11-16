@@ -1,4 +1,4 @@
-"""Tests for tools/checkpoint_manager.py — CheckpointManager (v2 single-store)."""
+"""Tests for agent/checkpoints/manager.py — CheckpointManager (v2 single-store)."""
 
 import argparse
 import json
@@ -9,7 +9,7 @@ import time
 import pytest
 from pathlib import Path
 
-from tools.checkpoint_manager import (
+from agent.checkpoints.manager import (
     CheckpointManager,
     _init_store,
     _run_git,
@@ -21,7 +21,7 @@ from tools.checkpoint_manager import (
     _touch_project,
     _dir_file_count,
 )
-from tools.checkpoint_maintenance import (
+from agent.checkpoints.maintenance import (
     clear_all, clear_legacy, maybe_auto_prune_checkpoints, prune_checkpoints, store_status,
 )
 from hermes_constants import get_hermes_home
@@ -770,7 +770,7 @@ class TestErrorResilience:
     def test_checkpoint_failures_never_raise(self, mgr, work_dir, monkeypatch):
         def broken_run_git(*args, **kwargs):
             raise OSError("git exploded")
-        monkeypatch.setattr("tools.checkpoint_manager._run_git", broken_run_git)
+        monkeypatch.setattr("agent.checkpoints.manager._run_git", broken_run_git)
         assert mgr.ensure_checkpoint(str(work_dir), "test") is False
 
         # ...and when git isn't installed at all.
@@ -785,7 +785,7 @@ class TestDirFileCount:
     def test_checkpoint_guard_ignores_default_excluded_trees(
         self, mgr, work_dir, monkeypatch
     ):
-        monkeypatch.setattr("tools.checkpoint_manager._MAX_FILES", 5)
+        monkeypatch.setattr("agent.checkpoints.manager._MAX_FILES", 5)
         build_dir = Path(work_dir) / "build"
         build_dir.mkdir()
         for idx in range(10):
@@ -801,7 +801,7 @@ class TestDirFileCount:
     def test_checkpoint_guard_counts_retained_files_and_stops_at_limit(
         self, mgr, work_dir, monkeypatch
     ):
-        monkeypatch.setattr("tools.checkpoint_manager._MAX_FILES", 5)
+        monkeypatch.setattr("agent.checkpoints.manager._MAX_FILES", 5)
         source_dir = Path(work_dir) / "src"
         source_dir.mkdir()
         for idx in range(10):
@@ -823,7 +823,7 @@ class TestSnapshotScopeGuards:
     def test_existing_store_drops_a_browser_profile_it_already_captured(
         self, mgr, work_dir, monkeypatch,
     ):
-        import tools.checkpoint_manager as cm
+        import agent.checkpoints.manager as cm
 
         profile = work_dir / "chrome_cdp_profile" / "Default"
         profile.mkdir(parents=True)
@@ -1206,7 +1206,7 @@ class TestPruneSweepsTmpPackDebris:
     only runs when a ref moved — so the prune sweeps the debris unconditionally (#115410)."""
 
     def test_sweeps_debris_even_when_no_ref_moved(self, checkpoint_base, tmp_path, monkeypatch):
-        import tools.checkpoint_manager as cm
+        import agent.checkpoints.manager as cm
         monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
         work = tmp_path / "proj"
         work.mkdir()
@@ -1431,7 +1431,7 @@ class TestOrphanPruneRequiresObservableDeletion:
         self, tmp_path, checkpoint_base, monkeypatch,
     ):
         """A later failed evidence probe must not erase recorded identity."""
-        from tools.checkpoint_manager import _register_project
+        from agent.checkpoints.manager import _register_project
 
         parent = tmp_path / "projects"
         work_dir = parent / "proj"
@@ -1448,7 +1448,7 @@ class TestOrphanPruneRequiresObservableDeletion:
         # Re-register while the evidence probe fails (e.g. transient I/O
         # error): the previously recorded identity must be preserved.
         monkeypatch.setattr(
-            "tools.checkpoint_manager._volume_evidence", lambda _wd: {},
+            "agent.checkpoints.manager._volume_evidence", lambda _wd: {},
         )
         _register_project(store, str(work_dir))
 

@@ -411,7 +411,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_platform/resolver/core.py",
     "agent/curator.py",
     "plugins/memory/__init__.py",
-    "tools/checkpoint_maintenance.py",
+    "agent/checkpoints/maintenance.py",
     "tools/skills_sync.py",
     "tools/environments/local_env_policy.py",
     "pm/progress.py",

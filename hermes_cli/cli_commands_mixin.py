@@ -406,7 +406,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_rollback_command(self, command: str):
         """Handle /rollback [diff] <N> [<file>|--all] — list, diff, or restore checkpoints.
         A restore also undoes the last chat turn; ``--all`` overwrites user hand-edits too."""
-        from tools.checkpoint_manager import format_checkpoint_list
+        from agent.checkpoints.manager import format_checkpoint_list
         from hermes_cli.gateway_side import connection_for
         if (connection := connection_for(self)) is not None:
             # Checkpoints are taken by the gateway's tools: list/diff/restore are the owner's.

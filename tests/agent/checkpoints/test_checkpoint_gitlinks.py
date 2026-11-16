@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from tools import checkpoint_manager as cm
+from agent.checkpoints import manager as cm
 from utils import rmtree_readonly
 
 

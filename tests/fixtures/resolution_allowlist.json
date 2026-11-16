@@ -444,17 +444,17 @@
     "kind": "bare_which"
   },
   {
-    "path": "tools/checkpoint_manager.py",
+    "path": "agent/checkpoints/manager.py",
     "symbol": "_init_store",
     "kind": "bare_which"
   },
   {
-    "path": "tools/checkpoint_manager.py",
+    "path": "agent/checkpoints/manager.py",
     "symbol": "_run_git",
     "kind": "bare_which"
   },
   {
-    "path": "tools/checkpoint_manager_profile_rename.py",
+    "path": "agent/checkpoints/manager_profile_rename.py",
     "symbol": "migrate_profile_checkpoint_projects",
     "kind": "bare_which"
   },

@@ -768,7 +768,7 @@ class GatewaySessionCommandsMixin:
                   count=result["rewound_count"], preview=preview)
         if (mgr := self._checkpoint_manager(source)) is not None:
             # Same manager and cwd /rollback lists.
-            from tools.checkpoint_undo_hint import format_undo_rollback_hint, undo_changed_files
+            from agent.checkpoints.undo_hint import format_undo_rollback_hint, undo_changed_files
             files = await asyncio.to_thread(undo_changed_files, mgr, self._terminal_cwd(), result.get("undo_since"))
             if line := format_undo_rollback_hint(files):
                 reply += "\n" + line

@@ -417,7 +417,8 @@ def _enforce_session_cap() -> None:
 
     def over_cap() -> bool:
         with _sessions_lock:
-            return len(_sessions) - _pending_release_closes() > _max_live_sessions()
+            current_cap = _max_live_sessions()  # re-read: a cap disabled mid-sweep evicts nothing more
+            return current_cap > 0 and len(_sessions) - _pending_release_closes() > current_cap
 
     for sid, _s in evictable:
         if not over_cap():

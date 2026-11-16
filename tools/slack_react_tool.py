@@ -73,17 +73,19 @@ def _resolve_slack_token() -> str:
             return pconfig.token or ""
     except Exception:
         pass
-    token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+    # Multiplex: the profile scope only — a miss returns "" so the tool can
+    # never post or react as ANOTHER profile's bot via os.environ, and the
+    # self-heal (which loads into the default's os.environ) is skipped.
+    from agent.fork_secrets import heal_dotenv, read_secret
+
+    token = read_secret("SLACK_BOT_TOKEN", tool="slack")
     if token:
         return token
     # Token absent — the running process likely never loaded ~/.hermes/.env
     # (delegation sub-agent / worker). Load it once and retry.
-    try:
-        from hermes_cli.env_loader import load_hermes_dotenv
-        load_hermes_dotenv()
-    except Exception:
+    if not heal_dotenv():
         return ""
-    return os.getenv("SLACK_BOT_TOKEN", "").strip()
+    return read_secret("SLACK_BOT_TOKEN", tool="slack")
 
 
 async def _post_reaction(token: str, channel: str, ts: str, emoji: str, remove: bool) -> dict:

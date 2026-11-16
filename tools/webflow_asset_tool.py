@@ -96,12 +96,20 @@ WEBFLOW_ASSET_UPLOAD_SCHEMA = {
 
 
 def _load_dotenv_once() -> None:
-    """Pull ~/.hermes/.env into the process env for headless cron/worker runs."""
-    try:
-        from hermes_cli.env_loader import load_hermes_dotenv
-        load_hermes_dotenv()
-    except Exception:
-        pass
+    """Pull ~/.hermes/.env into the process env for headless cron/worker runs.
+
+    Single-profile only: under multiplex os.environ is the default profile's
+    environment, so it is not a credential source (``agent.fork_secrets``).
+    """
+    from agent.fork_secrets import heal_dotenv
+
+    heal_dotenv()
+
+
+def _wf_secret(name: str) -> str:
+    from agent.fork_secrets import read_secret
+
+    return read_secret(name, tool="webflow_asset_upload")
 
 
 def _site_token_env_map() -> dict:
@@ -118,7 +126,7 @@ def _site_token_env_map() -> dict:
     Malformed entries are skipped rather than raising: a typo must not take the
     tool offline for the sites that ARE configured.
     """
-    raw = os.getenv("WEBFLOW_SITE_TOKENS", "").strip()
+    raw = _wf_secret("WEBFLOW_SITE_TOKENS")
     if not raw:
         return {}
     mapping = {}
@@ -135,8 +143,8 @@ def _site_token_env_map() -> dict:
 def _default_webflow_token() -> str:
     """The site-agnostic token: canonical name first, MCP-only host second."""
     return (
-        os.getenv("WEBFLOW_API_TOKEN", "").strip()
-        or os.getenv("WEBFLOW_TOKEN", "").strip()
+        _wf_secret("WEBFLOW_API_TOKEN")
+        or _wf_secret("WEBFLOW_TOKEN")
     )
 
 
@@ -153,7 +161,7 @@ def _webflow_token(site_id: str = "") -> str:
     def _read(reloaded: bool) -> str:
         var = _site_token_env_map().get((site_id or "").strip())
         if var:
-            token = os.getenv(var, "").strip()
+            token = _wf_secret(var)
             if token:
                 return token
             if not reloaded:
@@ -361,7 +369,7 @@ def _check_webflow_asset_upload() -> bool:
     if _webflow_token():
         return True
     return any(
-        os.getenv(var, "").strip() for var in _site_token_env_map().values()
+        _wf_secret(var) for var in _site_token_env_map().values()
     )
 
 

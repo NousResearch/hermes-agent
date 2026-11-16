@@ -51,13 +51,31 @@ _LAZY_FEATURE = "plugin.google_drive_sa"
 
 _lock = threading.Lock()
 _credentials: Any | None = None
+# Multiplex only: credentials per profile home (``hermes_home_key``). The
+# process-wide slot above is the single-profile cache and stays as it was.
+_profile_credentials: dict[str, Any] = {}
 _thread_services = threading.local()
 _avail: bool | None = None
 _deps_ready = False
 
 
+def _multiplex() -> bool:
+    from agent.secret_scope import is_multiplex_active
+
+    return is_multiplex_active()
+
+
+def _env(name: str) -> str:
+    """Profile-scoped read under multiplex, plain ``os.getenv`` otherwise."""
+    if _multiplex():
+        from agent.fork_secrets import read_secret
+
+        return read_secret(name, tool="google_drive")
+    return os.getenv(name) or ""
+
+
 def _scopes() -> list[str]:
-    raw = os.getenv("HERMES_GDRIVE_SCOPES", "").strip()
+    raw = _env("HERMES_GDRIVE_SCOPES").strip()
     if raw:
         return [s.strip() for s in raw.split(",") if s.strip()]
     return list(_DEFAULT_SCOPES)
@@ -91,10 +109,7 @@ def _ensure_deps_once() -> None:
 def _load_credentials() -> Any:
     """Resolve service-account credentials (see module docstring for order)."""
     scopes = _scopes()
-    sa = (
-        os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON")
-        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    )
+    sa = _env("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON") or _env("GOOGLE_APPLICATION_CREDENTIALS")
     if sa:
         from google.oauth2 import service_account
 
@@ -112,6 +127,15 @@ def _load_credentials() -> Any:
             )
         return service_account.Credentials.from_service_account_file(sa, scopes=scopes)
 
+    if _multiplex():
+        # ADC reads the process environment (GOOGLE_APPLICATION_CREDENTIALS,
+        # the default profile's) and the VM metadata server — neither belongs
+        # to the profile that owns this call. Fail closed.
+        raise RuntimeError(
+            "Google Drive service account not configured for this profile "
+            "(set GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON in its .env)"
+        )
+
     # No explicit key — Application Default Credentials (the VM-attached SA).
     import google.auth
 
@@ -127,6 +151,20 @@ def _get_credentials() -> Any:
     globally rather than per-thread.
     """
     global _credentials
+    if _multiplex():
+        from hermes_constants import hermes_home_key
+
+        key = hermes_home_key()
+        creds = _profile_credentials.get(key)
+        if creds is not None:
+            return creds
+        _ensure_deps_once()
+        with _lock:
+            creds = _profile_credentials.get(key)
+            if creds is None:
+                creds = _load_credentials()
+                _profile_credentials[key] = creds
+            return creds
     if _credentials is not None:
         return _credentials
     _ensure_deps_once()
@@ -145,8 +183,13 @@ def _get_service(api: str, version: str) -> Any:
     it concurrently from multiple threads. Credentials are cached separately
     and shared.
     """
-    key = (api, version)
-    services: dict[tuple[str, str], Any] = getattr(_thread_services, "services", None)
+    key: tuple = (api, version)
+    if _multiplex():
+        # A service is bound to its credentials, so it is per profile too.
+        from hermes_constants import hermes_home_key
+
+        key = (hermes_home_key(), api, version)
+    services: dict[tuple, Any] = getattr(_thread_services, "services", None)
     if services is None:
         services = {}
         _thread_services.services = services
@@ -184,6 +227,18 @@ def check_available() -> bool:
     deps install on first dispatch; the handler surfaces any real ADC error.
     """
     global _avail
+    if _multiplex():
+        # Per profile: never cache one profile's verdict process-wide (the
+        # registry's check_fn cache is already scoped per profile).
+        try:
+            import google.auth  # noqa: F401
+        except Exception:
+            return True
+        try:
+            _load_credentials()
+            return True
+        except Exception:
+            return False
     if _avail is not None:
         return _avail
     try:

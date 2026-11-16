@@ -18,6 +18,16 @@ _PATH_TOKEN_STOP = r"""\s'"`;|&<>()"""
 _PATH_TAIL = r"(?P<tail>(?:[/\\][^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
 
 
+def _spell_component(component: str) -> str:
+    """*component* as a regex, tolerating the optional escape Git Bash writes before a space.
+
+    An unquoted path with a space is written ``/c/Users/John\\ Smith`` — the same directory as
+    ``John Smith``. Escaping alone (``re.escape``) leaves the literal space, so a profile whose name
+    contains one never folded and a ``sed -i`` of its config.yaml passed as safe.
+    """
+    return re.escape(component).replace(r"\ ", r"\\? ")
+
+
 @functools.lru_cache(maxsize=64)
 def _home_prefix_fold_regex(path: str):
     """Compile a regex matching *path* as an absolute directory prefix.
@@ -41,7 +51,7 @@ def _home_prefix_fold_regex(path: str):
     sep = r"(?:\\?/)" if len(components) == 1 and facts.os_family() != "win32" and path.startswith("/") else r"[/\\]"
     lead = r"(?<![\w.~$}/\\-])" + sep + "+" if len(components) == 1 else sep + "*"
     tail = _PATH_TAIL if sep == r"[/\\]" else r"(?P<tail>(?:\\?/[^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
-    return re.compile(lead + (sep + "+").join(re.escape(c) for c in components) + tail)
+    return re.compile(lead + (sep + "+").join(_spell_component(c) for c in components) + tail)
 
 
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
@@ -146,5 +156,5 @@ def _bare_home_fold_regex(path: str):
     if len(components) < 2:
         return None
     return re.compile(
-        r"(?<![^\s'\"`=;|&<>(])[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components)
+        r"(?<![^\s'\"`=;|&<>(])[/\\]*" + r"[/\\]+".join(_spell_component(c) for c in components)
         + r"[/\\]?(?=[" + _PATH_TOKEN_STOP + r"*]|$)")

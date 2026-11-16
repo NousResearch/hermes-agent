@@ -699,6 +699,8 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
+The [managed scope](./managed-scope.md) can set the same list (an administrator's, or a sandbox launcher's for the variables its children need); a managed list replaces the profile's, and provider credentials are refused from either.
+
 Both lists apply to `terminal`, `execute_code` and `no_agent` cron scripts alike. A declared variable is forwarded with the value of the profile the child runs for: when one process serves several profiles (multi-profile gateway, Desktop/dashboard backend) each profile's declared value comes from its own `.env` / secret sources, never from the process environment the launch profile populated, and the launch profile's `.env` credentials are dropped from a served profile's children.
 
 ### Credential File Passthrough (OAuth tokens, etc.) {#credential-file-passthrough}
@@ -886,6 +888,8 @@ security:
   fake_ip_ranges:
     - 198.18.0.0/15
 ```
+
+The [managed scope](./managed-scope.md) can declare the block too, for example a sandbox launcher whose proxy answers DNS this way; the rules below apply to a managed entry the same way.
 
 Empty by default, and narrower than `allow_private_urls`: only the declared blocks get the
 exemption, they should be ranges the local proxy owns (the dial still goes to the proxy, which

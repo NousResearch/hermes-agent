@@ -537,6 +537,7 @@ class CLIInitMixin:
         except Exception:
             self._composer_placeholder = ""
         self._command_palette_state = self._secret_state = None
+        self._temp_chat_state = None  # /tmp ephemeral popup: each message is a fresh no-context agent
         self._pending_resume_sessions = None  # armed by a bare `/resume`; the next bare number selects
         self._pending_agent_seed = None  # one-shot seed from a slash handler
         self._secret_deadline = 0

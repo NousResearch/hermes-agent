@@ -137,6 +137,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<prompt>", busy_policy="dispatch"),
     CommandDef("btw", "Ask a side question about the current conversation without interrupting it", "Session",
                args_hint="<question>", busy_policy="dispatch"),
+    CommandDef("tmp", "Open an ephemeral popup chat (no context; each message is independent; ESC closes)",
+               "Session", aliases=("temp",), cli_only=True, desktop="terminal", busy_policy="dispatch"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",), busy_policy="dispatch"),
     CommandDef("journey", "Open the learning journey timeline",

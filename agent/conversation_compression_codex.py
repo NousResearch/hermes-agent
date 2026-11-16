@@ -124,6 +124,9 @@ def _compress_context_via_codex_app_server(
         if hasattr(agent.context_compressor, "update_from_response"):
             _record_codex_app_server_usage(agent, result, messages=messages)
     _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
+    # Codex compacts its remote thread; the local message list stays unchanged.
+    if guard := getattr(agent, "_tool_guardrails", None):
+        guard.forget_results_after_compaction()
     logger.info(
         "codex app-server compaction done: session=%s thread=%s turn=%s", _sid,
         getattr(result, "thread_id", None) or "", getattr(result, "turn_id", None) or "",

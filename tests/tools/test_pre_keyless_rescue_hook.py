@@ -181,8 +181,10 @@ class TestPreKeylessRescueHook:
         assert result["data"]["rescued_from"] == "keenable"
         assert "pre_keyless_rescue" not in json.dumps(result)
 
-    def test_callback_exception_fails_open_and_logs(self, _isolated_home, _web_tool_setup,
-                                                    monkeypatch, caplog):
+    def test_callback_exception_fails_closed_and_logs(self, _isolated_home, _web_tool_setup,
+                                                      monkeypatch, caplog):
+        # Like pre_tool_call: a guard that raised made no decision, so the data stays home. The
+        # call keeps its own error, which is what it returns without the rescue anyway.
         _write_plugin(
             _isolated_home,
             "pre-keyless-rescue-raise",
@@ -195,18 +197,11 @@ class TestPreKeylessRescueHook:
             """,
         )
         with pytest.MonkeyPatch.context() as patcher:
-            patcher.setattr(
-                keyless_mcp,
-                "search_with_failover",
-                lambda provider_name, query, limit: {
-                    "success": True,
-                    "data": {"web": [{"url": "https://ring.example"}]},
-                },
-            )
+            patcher.setattr(keyless_mcp, "search_with_failover", _forbid_ring)
             with caplog.at_level("WARNING"):
                 result = _dispatch_search(patcher, _RaisingProvider())
-        assert result["success"] is True
-        assert result["data"]["rescued_from"] == "keenable"
+        assert result["success"] is False
+        assert "connection reset by peer" in result["error"] and "kaboom" in result["error"]
         assert any("kaboom" in record.message or "pre_keyless_rescue" in record.message for record in caplog.records)
 
     def test_signature_inspection_allows_kind_only_callback(self, _isolated_home, _web_tool_setup,
@@ -228,3 +223,118 @@ class TestPreKeylessRescueHook:
             result = _dispatch_search(patcher, _KeylessRescueBoomProvider())
         assert result["success"] is True
         assert result["data"]["rescued_from"] == "keenable"
+
+
+# --- Directive contract: the same shape and the same human gate as pre_tool_call ----------------------
+
+
+def _record_ring(calls):
+    def search(provider_name, query, limit):
+        calls.append(("search", query))
+        return {"success": True, "data": {"web": [{"url": "https://ring.example"}]}}
+
+    def extract(provider_name, urls):
+        calls.extend(("page", url) for url in urls)
+        return [{"url": url, "title": url, "content": "fetched by the vendor"} for url in urls]
+    return search, extract
+
+
+def _plugin_returning(home, name, returned):
+    _write_plugin(
+        home,
+        name,
+        f"""
+        def register(ctx):
+            def hook(kind, backend_name, error, **kwargs):
+                return {returned}
+
+            ctx.register_hook("pre_keyless_rescue", hook)
+        """,
+    )
+
+
+async def _both(patcher, provider, calls):
+    search, extract = _record_ring(calls)
+    patcher.setattr(keyless_mcp, "search_with_failover", search)
+    patcher.setattr(keyless_mcp, "extract_with_failover", extract)
+    return _dispatch_search(patcher, provider), await _dispatch_extract(patcher, provider)
+
+
+class TestPreKeylessRescueDirectives:
+    @pytest.mark.asyncio
+    async def test_block_directive_keeps_the_data_home(self, _isolated_home, _web_tool_setup, monkeypatch):
+        _plugin_returning(_isolated_home, "rescue-block",
+                          '{"action": "block", "message": "kept on this machine by the plugin"}')
+        calls = []
+        with pytest.MonkeyPatch.context() as patcher:
+            search, extract = await _both(patcher, _KeylessRescueBoomProvider(), calls)
+        assert calls == []
+        assert search["success"] is False and "kept on this machine by the plugin" in search["error"]
+        assert all("kept on this machine by the plugin" in e.get("error", "") for e in extract)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("approved", [True, False])
+    async def test_approve_directive_asks_the_human_gate(self, _isolated_home, _web_tool_setup, monkeypatch,
+                                                         approved):
+        _plugin_returning(_isolated_home, "rescue-approve",
+                          '{"action": "approve", "message": "send it to an outside service?", '
+                          '"rule_key": "probe:keyless_rescue"}')
+        asked = []
+
+        def gate(tool_name, reason, *, rule_key="", approval_callback=None):
+            asked.append((tool_name, reason, rule_key))
+            return {"approved": approved, "message": "BLOCKED: Action denied by user."}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", gate)
+        calls = []
+        with pytest.MonkeyPatch.context() as patcher:
+            search, extract = await _both(patcher, _KeylessRescueBoomProvider(), calls)
+        assert [a[0] for a in asked] == ["web_search", "web_extract"]
+        assert all(a[1] == "send it to an outside service?" and a[2] == "probe:keyless_rescue" for a in asked)
+        if approved:
+            assert [kind for kind, _ in calls] == ["search", "page", "page"]
+            assert search["success"] is True
+        else:
+            assert calls == []
+            assert "denied by user" in search["error"]
+            assert all("denied by user" in e.get("error", "") for e in extract)
+
+    @pytest.mark.asyncio
+    async def test_approve_with_nobody_to_answer_fails_closed(self, _isolated_home, _web_tool_setup,
+                                                              monkeypatch):
+        # The real gate: no CLI, no gateway, no approval bridge in this process.
+        _plugin_returning(_isolated_home, "rescue-approve-unattended",
+                          '{"action": "approve", "message": "send it to an outside service?"}')
+        calls = []
+        with pytest.MonkeyPatch.context() as patcher:
+            search, extract = await _both(patcher, _KeylessRescueBoomProvider(), calls)
+        assert calls == []
+        assert search["success"] is False and "BLOCKED" in search["error"]
+
+    @pytest.mark.asyncio
+    async def test_callback_that_raises_keeps_the_data_home(self, _isolated_home, _web_tool_setup,
+                                                            monkeypatch):
+        _write_plugin(
+            _isolated_home,
+            "rescue-raise",
+            """
+            def register(ctx):
+                def boom(**kwargs):
+                    raise RuntimeError("kaboom")
+
+                ctx.register_hook("pre_keyless_rescue", boom)
+            """,
+        )
+        calls = []
+        with pytest.MonkeyPatch.context() as patcher:
+            search, extract = await _both(patcher, _KeylessRescueBoomProvider(), calls)
+        assert calls == []
+        assert "kaboom" in search["error"] and "HTTP 500 upstream exploded" in search["error"]
+
+    @pytest.mark.asyncio
+    async def test_none_is_no_opinion(self, _isolated_home, _web_tool_setup, monkeypatch):
+        _plugin_returning(_isolated_home, "rescue-none", "None")
+        calls = []
+        with pytest.MonkeyPatch.context() as patcher:
+            search, _ = await _both(patcher, _KeylessRescueBoomProvider(), calls)
+        assert [kind for kind, _ in calls] == ["search", "page", "page"] and search["success"] is True

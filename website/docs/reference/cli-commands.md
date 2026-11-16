@@ -1225,10 +1225,25 @@ Restore a previously created Hermes backup into your Hermes home directory. All 
 | Option | Description |
 |--------|-------------|
 | `-f`, `--force` | Skip the existing-installation confirmation prompt. |
+| `--keep-host` | Replace this agent with the backup but keep what its host set up (a Hermes Cloud agent's Nous Portal sign-in and platform settings). Takes a full backup of this agent first: the undo point. See below. |
 
 :::warning
-Stop the gateway before importing to avoid conflicts with running processes.
+Stop the gateway before importing to avoid conflicts with running processes. `--keep-host` inside the Docker image (Hermes Cloud) pauses and restarts the gateway itself.
 :::
+
+### `--keep-host`: replace an agent but keep its host's setup
+
+This is how Settings ▸ [Backup & Transfer](../user-guide/backup-and-transfer.md) replaces a Hermes Cloud agent with a local one. The backup's memory, persona, skills, conversations, scheduled jobs, settings, `.env` keys and `auth.json` logins all come over. The agent keeps:
+
+- **`auth.json`**: its own Nous Portal sign-in (`providers.nous`, the `nous` credential-pool rows, and `active_provider` when either side uses Nous). The backup's Nous tokens are never written. `shared/nous_auth.json` is never taken from the backup.
+- **`config.yaml`**: its own top-level `model`, `providers`, `fallback_providers`, `fallback`, `auxiliary`, `nous`, `auth`, `web`, `image_gen`, `video_gen`, `tts`, `stt`, `dashboard`, `webapp`, `cron` (scheduler settings; the jobs come from the backup), `max_concurrent_sessions` and `max_live_sessions`. Every other key comes from the backup.
+- **`.env`**: its own `NOUS_*`, `HERMES_*`, `TOOL_GATEWAY_*` and `API_SERVER_KEY` lines.
+
+`skills/` and `memories/` become exactly the backup's: files the backup does not have are removed, so the result is a replacement, not a merge. Messaging bot tokens come over too. A bot token answers to one running Hermes at a time, so stop the gateway on the old machine.
+
+Before writing anything it backs up the agent to `backups/pre-transfer-<time>.zip` and prints the path. To put the agent back, run `hermes import <that zip> --force --keep-host`.
+
+Inside the Docker image the gateway owns `state.db`, so a plain `hermes import` refuses the session database while it runs. `--keep-host` asks the gateway to finish its in-flight turns and exit (the `pause-for-update` control-socket request `hermes update` uses). It first marks the gateway's s6 slot run-once so the supervisor does not restart it during the restore, then starts the slot again afterwards. Outside a container nothing is paused; stop the gateway first, as with any import.
 
 **Exit status:** `1` when the archive is damaged — before anything is written, every member is decompressed once and its CRC checked; if any fail, the command prints `Error: backup archive is damaged (N member(s) …)` with the offending members and stops with the Hermes home untouched. Also `1` when any file from the archive could not be restored (listed under `Warnings (N files skipped)` and summarised as `Import incomplete: …`). The files that did land stay in place, but a script or the dashboard will not report a partial restore as success. Runtime files the import deliberately keeps from this machine (`gateway.pid`, `gateway_state.json`, …) and the older-backup session warning below do not change the exit status.
 
@@ -1251,6 +1266,7 @@ Importing an older backup over newer work is still allowed, but it is no longer 
 ```bash
 hermes import ~/hermes-backup-20260423.zip           # Prompts before overwriting existing config
 hermes import ~/hermes-backup-20260423.zip --force   # Overwrite without prompting
+hermes import ~/hermes-backup-20260423.zip --keep-host   # Replace a cloud agent, keep its Nous sign-in
 ```
 
 ## `hermes logs`

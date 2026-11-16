@@ -779,10 +779,13 @@ def run_import(args) -> Optional[int]:
 
         t0 = time.monotonic()
         from gateway.runtime_ownership import OwnershipConflict
+        from hermes_cli.backup_keep_host import import_source
         try:
-            restored, restored_external, errors, skipped_runtime, db_shrunk = _import_members(
-                zf, members, prefix, hermes_root, file_count)
-        except OwnershipConflict as exc:
+            with import_source(args, zf, members, prefix, hermes_root) as (source, restoring, late_errors):
+                restored, restored_external, errors, skipped_runtime, db_shrunk = _import_members(
+                    source, restoring, prefix, hermes_root, file_count)
+            errors += late_errors
+        except (OwnershipConflict, OSError) as exc:
             print(f"\nImport refused; no files restored: {exc}")
             sys.exit(1)
         elapsed = time.monotonic() - t0
@@ -799,11 +802,7 @@ def run_import(args) -> Optional[int]:
             )
 
         if errors:
-            print(f"\n  Warnings ({len(errors)} files skipped):")
-            for e in errors[:10]:
-                print(e)
-            if len(errors) > 10:
-                print(f"  ... and {len(errors) - 10} more")
+            _print_capped(f"\n  Warnings ({len(errors)} files skipped):", errors, "")
 
         if db_shrunk:
             # The backup predates work that is now overwritten. Say so: the

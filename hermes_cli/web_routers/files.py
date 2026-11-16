@@ -1027,11 +1027,12 @@ async def stream_upload_to_path(
     too_large: str,
     not_writable: str,
     write_failed: str,
+    max_bytes: int | None = None,
 ) -> int:
     """Stream a multipart upload to ``target`` in chunks; returns bytes written.
 
     Writes a sibling temp file first so a partial/aborted upload never clobbers
-    an existing file, enforces ``_MANAGED_FILE_MAX_BYTES`` as it goes (413
+    an existing file, enforces ``max_bytes`` (default ``_MANAGED_FILE_MAX_BYTES``) as it goes (413
     ``too_large``), then atomically renames into place. The temp file is
     removed on EVERY non-success exit — including asyncio.CancelledError when a
     browser aborts a large upload mid-stream.
@@ -1048,7 +1049,7 @@ async def stream_upload_to_path(
                 if not chunk:
                     break
                 total += len(chunk)
-                if total > _MANAGED_FILE_MAX_BYTES:
+                if total > (max_bytes or _MANAGED_FILE_MAX_BYTES):
                     raise HTTPException(status_code=413, detail=too_large)
                 # Only the read stays on the event loop, so an abort still reaches the cleanup below.
                 await asyncio.to_thread(out.write, chunk)

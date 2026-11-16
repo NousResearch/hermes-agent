@@ -20,8 +20,9 @@ from fastapi.responses import JSONResponse
 
 from hermes_cli.web_deps import late
 from hermes_cli.config import cfg_get
+from hermes_cli.isolated_scope import scope_to_launch_profile
 from hermes_cli.web_server_cron import (
-    _create_cron_job_sync, _cron_optional_text, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job,
+    _create_cron_job_sync, _cron_optional_text, _cron_string_list, _keep_zero_tool_allowlist, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job, _validate_dashboard_cron_security,
 )
 from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
 from hermes_cli.web_routers._common import log as _log
@@ -51,6 +52,33 @@ def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")
 
 
+# The cronjob tool's user-editable surface. Everything else on a stored job is scheduler
+# bookkeeping (manual_run_prompt, run/fire claims, state, next_run_at, ...): update_job would
+# store it verbatim, and manual_run_prompt reaches the agent as extra_prompt unscanned.
+_DASHBOARD_UPDATABLE_FIELDS = frozenset({
+    "name", "prompt", "schedule", "deliver", "failure_deliver", "skills", "skill", "repeat",
+    "enabled", "model", "provider", "base_url", "reasoning_effort", "pinned", "script",
+    "monitor_script", "monitor_url", "interpreter", "context_from", "enabled_toolsets",
+    "attach_to_session", "workdir", "no_agent", "timezone", "grace_minutes", "catch_up", "wrap_response",
+})
+
+
+def _cron_list_form_field(value: Any, *, keep_empty: bool, field: str) -> Optional[list[str]]:
+    """Normalize one list-shaped form field, refusing a shape that would silently clear it.
+
+    ``CronJobUpdate.updates`` is a free-form dict, so the pydantic fields that vet the same
+    names on ``CronJobCreate`` never see this route: an object where a list belongs reached
+    ``_cron_string_list``, answered None and merged as "no restriction" / "no chain" — a
+    malformed payload silently WIDENING a stored allowlist (#148886 follow-up).
+    """
+    if value is not None and not isinstance(value, (str, list, tuple)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} must be a list, a delimited string, or null",
+        )
+    return _cron_string_list(value, keep_empty=keep_empty)
+
+
 def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Path) -> dict[str, Any]:
     """Normalize dashboard JSON into cron.jobs.update_job's storage shape.
 
@@ -59,22 +87,34 @@ def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Pat
     core functions already accept.
     """
     normalized = dict(updates or {})
+    internal = sorted(set(normalized) - _DASHBOARD_UPDATABLE_FIELDS)
+    if internal:
+        raise HTTPException(
+            status_code=400, detail=f"Cron job field(s) cannot be updated: {', '.join(internal)}")
     for key in ("model", "provider", "workdir"):
         if key in normalized:
             normalized[key] = _cron_optional_text(normalized[key])
-    if "script" in normalized:
-        normalized["script"] = _normalize_dashboard_cron_script(normalized["script"], profile_home)
+    for key in ("script", "monitor_script"):
+        if key in normalized:
+            normalized[key] = _normalize_dashboard_cron_script(normalized[key], profile_home)
     if "base_url" in normalized:
         normalized["base_url"] = _cron_optional_text(normalized["base_url"], strip_trailing_slash=True)
+    # The tool path's canonicalizer: a JSON list joins to "a,b" instead of a
+    # Python list repr that the bot-chat guard and the scheduler cannot parse.
+    from tools.cronjob_job_args import _normalize_deliver_param
     if "deliver" in normalized:
-        normalized["deliver"] = _cron_optional_text(normalized["deliver"]) or "local"
+        normalized["deliver"] = _normalize_deliver_param(normalized["deliver"]) or "local"
     if "failure_deliver" in normalized:
         # Same normalization as deliver, but empty CLEARS the override (failures
         # fall back to deliver) rather than coalescing — the field is optional.
-        normalized["failure_deliver"] = _cron_optional_text(normalized["failure_deliver"])
-    for key in ("context_from", "enabled_toolsets"):
-        if key in normalized:
-            normalized[key] = _cron_string_list(normalized[key])
+        normalized["failure_deliver"] = _normalize_deliver_param(normalized["failure_deliver"])
+    if "context_from" in normalized:
+        normalized["context_from"] = _cron_list_form_field(
+            normalized["context_from"], keep_empty=False, field="context_from")
+    if "enabled_toolsets" in normalized:
+        # [] is the zero-tool allowlist, not a clear — only context_from's [] collapses to null.
+        normalized["enabled_toolsets"] = _cron_list_form_field(
+            normalized["enabled_toolsets"], keep_empty=True, field="enabled_toolsets")
     return normalized
 
 
@@ -125,7 +165,7 @@ def _list_cron_jobs_sync(profile: str = "all"):
     # then resolve duplicates by id with default-profile priority, rather than
     # keeping whichever copy happened to be seen first during the profile loop.
     all_jobs: list[dict[str, Any]] = []
-    for item in _cron_profile_dicts():
+    for item in scope_to_launch_profile(_cron_profile_dicts(), lambda row: row.get("name")):
         name = str(item.get("name") or "")
         if not name:
             continue
@@ -660,13 +700,15 @@ def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[st
         profile_name, profile_home = _cron_profile_home(selected)
         existing = _found(_call_cron_for_profile(profile_name, "get_job", job_id))
         updates = _normalize_dashboard_cron_updates(body.updates, profile_home)
+        _keep_zero_tool_allowlist(updates, existing)
         if "context_from" in updates:
             _validate_dashboard_cron_context_from(updates.get("context_from"), profile_name)
+        effective = {**existing, **updates}
         if _EXECUTION_FIELDS.intersection(updates):
-            effective = {**existing, **updates}
             if "skills" in updates and "skill" not in updates:
                 effective["skill"] = None
             _validate_dashboard_cron_effective_job(effective)
+        _validate_dashboard_cron_security(profile_name, effective, updates)
         job = _mutate_cron_for_profile(profile_name, "update_job", job_id, updates)
     except HTTPException:
         raise
@@ -961,6 +1003,9 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
         # Blueprint jobs deliver to the dashboard's configured target by default;
         # the form's deliver slot overrides via spec["deliver"].
         spec.pop("origin", None)
+        # Slot values are user text interpolated into the stored prompt; the
+        # blueprint path must not bypass the tool path's prompt/deliver guards.
+        await _run_cron_dashboard_io(_validate_dashboard_cron_security, profile, spec)
         # Off-loop like the siblings; partial keeps **spec keys from colliding
         # with the wrapper's own parameters.
         _create = functools.partial(_call_cron_for_profile, profile, "create_job", **spec)

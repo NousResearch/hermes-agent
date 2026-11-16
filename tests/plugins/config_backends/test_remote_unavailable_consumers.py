@@ -182,7 +182,8 @@ def test_gateway_turn_owner_contains_the_outage_and_notifies():
     adapter = _make_adapter(_raising_handler(ConfigBackendUnavailable(OUTAGE)))
     event = _event()
     asyncio.run(adapter._process_message_background(event, build_session_key(event.source)))
-    assert adapter.sent and "error" in adapter.sent[0].lower()
+    # One generic notice; the outage detail (backend URL) stays in the gateway log (#38012).
+    assert len(adapter.sent) == 1 and "https://plane" not in adapter.sent[0]
 
 
 def test_gateway_api_server_answers_503():

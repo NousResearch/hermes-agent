@@ -391,14 +391,14 @@ class TestDelegationCleanup:
 
         from tools import delegate_tool
 
-        real_start_heartbeat = delegate_tool._start_heartbeat
+        real_heartbeat = delegate_tool._Heartbeat
 
         def start_gated_heartbeat(*args, **kwargs):
-            heartbeat = real_start_heartbeat(*args, **kwargs)
+            heartbeat = real_heartbeat(*args, **kwargs)
             heartbeat.settled = _GatedSettle()
             return heartbeat
 
-        monkeypatch.setattr(delegate_tool, "_start_heartbeat", start_gated_heartbeat)
+        monkeypatch.setattr(delegate_tool, "_Heartbeat", start_gated_heartbeat)
 
         def run_conversation(**kwargs):
             lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(

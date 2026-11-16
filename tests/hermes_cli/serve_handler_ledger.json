@@ -5,9 +5,9 @@
    "undecided": 345
   },
   "rpc": {
-   "authority": 108,
+   "authority": 112,
    "keep-host-wide": 1,
-   "undecided": 182
+   "undecided": 179
   },
   "websocket": {
    "undecided": 10
@@ -469,9 +469,9 @@
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "groups.send", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "groups.state", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "groups.stop", "kind": "rpc", "ref": ""},
-  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "handoff.fail", "kind": "rpc", "ref": "D3"},
-  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "handoff.request", "kind": "rpc", "ref": "D3"},
-  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "handoff.state", "kind": "rpc", "ref": "D3"},
+  {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "handoff.fail", "kind": "rpc", "ref": ""},
+  {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "handoff.request", "kind": "rpc", "ref": ""},
+  {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "handoff.state", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "i18n.catalog", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "i18n.languages", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "image.attach", "kind": "rpc", "ref": "D3"},
@@ -571,6 +571,7 @@
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "rollback.restore", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "rollback.session_diff", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "runtime.describe", "kind": "rpc", "ref": ""},
+  {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "session.account_usage", "kind": "rpc", "ref": ""},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.activate", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "session.active_list", "kind": "rpc", "ref": ""},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.archive", "kind": "rpc", "ref": "D3"},

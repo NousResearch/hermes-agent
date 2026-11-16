@@ -3,30 +3,14 @@
 ``gateway_state.json`` names each unit only while draining and its ``active_agents`` total leaves out
 async delegations, so a CLI asking "may I stop this gateway?" could not see a background subagent
 that ``stop()`` interrupts (``tools.async_delegation.interrupt_all``). The verb answers from the
-running process instead: the same units the drain report publishes plus every live delegation.
+running process instead: the same units the drain report publishes, every live delegation included.
 """
 
 from __future__ import annotations
 
 import os
 import threading
-import time
 from typing import Any, Callable
-
-
-def _delegation_units(now: float) -> list[dict[str, Any]]:
-    from tools.async_delegation import _LIVE_STATES, list_async_delegations
-
-    units = []
-    for record in list_async_delegations():
-        if record.get("status") not in _LIVE_STATES:
-            continue
-        unit: dict[str, Any] = {"kind": "delegation", "delegation_id": record.get("delegation_id"),
-                                "goal": str(record.get("goal") or "")[:80], "pid": os.getpid()}
-        if record.get("dispatched_at"):
-            unit["elapsed_s"] = round(now - float(record["dispatched_at"]), 1)
-        units.append(unit)
-    return units
 
 
 def _profile_units(runner, profile: str, units: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -61,7 +45,7 @@ def active_work_verb(runner, loop) -> Callable[[], dict[str, Any]]:
             # Everything that reads live authority state runs here, on the loop: a read on the socket
             # thread can race a worker being added and raise, and an error reads as "no work".
             try:
-                units = list(runner._describe_active_work()) + _delegation_units(time.time())
+                units = list(runner._describe_active_work())  # delegations included (restart_when_idle)
                 if scoped:
                     units = _profile_units(runner, profile, units)
                     box.append({"active_agents": len(units), "active_work": units, "profile": profile})

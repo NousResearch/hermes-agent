@@ -347,7 +347,6 @@ def is_base64_archive_roundtrip(finding: Finding, line: str) -> bool:
 # ``"sudo apt install x"``, ``"env | grep KEY"`` or ``"mkfs.ext4 /dev/sda1"`` inside a
 # ``subprocess.run(...)`` literal is how an attack is written and never qualifies. Only
 # word-shaped patterns are eligible.
-LITERAL_INERT_PATTERN_IDS = {"sudo_usage", "dump_all_env", "format_filesystem"}
 _LITERAL_SPANS = re.compile(
     r"""(?P<s>[rRbBuUfF]{0,2}"(?:[^"\\\n]|\\.)*"|[rRbBuUfF]{0,2}'(?:[^'\\\n]|\\.)*'|`(?:[^`\\\n]|\\.)*`)"""
     r"""|(?P<rx>(?<![\w)\]])/(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[dgimsuvy]*(?![A-Za-z]))"""  # js regex literal
@@ -472,7 +471,7 @@ def is_env_dump_in_safety_clause(finding: Finding, line: str) -> bool:
 # doc (comment / CHANGELOG), the phrase is a description of a defense, not an instruction — it caps to a
 # note rather than the one-step comment cap. An UNQUOTED injection in a README/SKILL.md prose line, or
 # a quoted phrase outside a comment/CHANGELOG, keeps full severity.
-_INJECTION_PHRASE_IDS = {"prompt_injection_ignore", "disregard_rules"}
+_INJECTION_PHRASE_IDS = {"prompt_injection_ignore", "disregard_rules", "forget_rules"}
 _QUOTED_SPAN = re.compile(r'"[^"\n]*"|\'[^\'\n]*\'|`[^`\n]*`|«[^»\n]*»|“[^”\n]*”|‘[^’\n]*’')
 
 
@@ -803,7 +802,6 @@ def is_own_proc_read(finding: Finding, line: str) -> bool:
 
 __all__ = [
     "DOC_PROSE_EXTENSIONS",
-    "LITERAL_INERT_PATTERN_IDS",
     "STEP_DOWN",
     "TEST_TREE_DIRS",
     "is_agent_facing",

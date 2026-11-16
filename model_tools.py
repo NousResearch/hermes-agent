@@ -855,11 +855,17 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
     dispatch_kwargs: dict[str, Any] = {
         "task_id": ids.task_id, "session_id": ids.session_id, "conversation_id": ids.conversation_id}
     if function_name == "execute_code":
+        dispatch_kwargs["turn_id"] = ids.turn_id
         # Prefer the caller's list so subagents can't overwrite the parent's
         # tool set via the process-global.
         dispatch_kwargs["enabled_tools"] = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
     else:
         dispatch_kwargs["user_task"] = user_task
+    from agent.plugin_session_fork import current_turn_origin
+    if (turn_origin := current_turn_origin()) is not None:
+        # Only inside a plugin session fork ("plugin_fork:<plugin id>"), so a plugin's tool can
+        # refuse calls the live agent makes; live-turn handlers see no new kwarg.
+        dispatch_kwargs["turn_origin"] = turn_origin
 
     def _dispatch(next_args: dict[str, Any]) -> Any:
         from tools.connectors import dispatch_connector_call, is_connector_name
@@ -950,10 +956,14 @@ def handle_function_call(
                 enabled_tools=enabled_tools, middleware_trace=trace,
                 enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
             ), duration_ms=_elapsed_ms(start))
+        # The caller's skip_* flags describe the WRAPPER call it already policed, never the
+        # underlying tool: forwarding them left the real tool with no pre_tool_call hook,
+        # no request middleware and no execution middleware at all. Same rule as the
+        # connector batch re-dispatch (tools/connectors/dispatch.py).
         return handle_function_call(
             *underlying, **asdict(ids), user_task=user_task, enabled_tools=enabled_tools,
-            skip_pre_tool_call_hook=skip_pre_tool_call_hook, skip_tool_request_middleware=skip_tool_request_middleware,
-            skip_tool_execution_middleware=skip_tool_execution_middleware, tool_request_middleware_trace=list(trace),
+            skip_pre_tool_call_hook=False, skip_tool_request_middleware=False,
+            skip_tool_execution_middleware=False, tool_request_middleware_trace=list(trace),
             enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         )
 

@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (
     _ChildRun, _attach_child, _build_child_goal_message, _close_child, _detach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
-    _lease_child_credential, _merge_late_steer, _register_child, _reserve_child_transcript, _start_heartbeat, _validate_child_output_schema,
+    _lease_child_credential, _merge_late_steer, _register_child, _reserve_child_transcript, _Heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
@@ -37,7 +37,7 @@ from tools.delegate_tool_config import (
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
 from tools.delegate_tool_progress import (
-    DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
+    SUBAGENT_FAILURE_STATUSES, _build_child_progress_callback,
     _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
     _safe_progress, format_batch_tag, format_subagent_failure_line,
 )
@@ -416,7 +416,7 @@ def _run_single_child(
         child_pool, leased_cred_id = _lease_child_credential(child)
         # Heartbeat keeps the parent's _last_activity_ts moving so the gateway inactivity timeout doesn't fire while
         # the child works; once the child looks stale (see _HEARTBEAT_STALE_CYCLES_*) it also ends await_child's wait.
-        heartbeat = _start_heartbeat(child, parent_agent, task_index)
+        heartbeat = _Heartbeat(child, parent_agent, task_index)
         # TUI/RPC registry entry (kill/pause/status by subagent_id); None for test
         # doubles without a stable id. Unregistered in the finally block.
         _subagent_id = _register_child(
@@ -436,6 +436,12 @@ def _run_single_child(
         heartbeat.start()
         _safe_progress(child_progress_cb, "subagent.start", preview=goal)
         run.seed_workspace()
+        if isinstance(cancelled := getattr(child, "_delegate_auto_cancelled", None), str):  # the parent's stop won
+            run.worktree_info = None  # still the parent's to keep or release; finalizing it here could prune it
+            # Never ran: not a terminal outcome. A cancel reports nothing; a failed start stays owed (next attempt or
+            # its give-up is the one report). ``unstarted_auto`` keeps the completion silent, ledger included.
+            entry = {**_fabricated_entry(task_index, "interrupted", cancelled, child), "unstarted_auto": True}
+            return run.settle(run.finish_failed(entry, run.close_steering(), preview=cancelled, summary=cancelled))
         result, failure_entry, _child_close_deferred = run.await_child()
         if failure_entry is not None:
             return run.settle(failure_entry)
@@ -665,6 +671,8 @@ def delegate_task(
         routes, err = _routes_for(task_list, cfg, credentials_cfg, parent_agent)
     if err:
         return tool_error(err)
+    from tools.delegate_tool_auto_resume import refuse_waiting_duplicates
+    routes = refuse_waiting_duplicates(task_list, routes, parent_agent)
     # Fail closed per task: a task its backend cannot route is refused alone (its entry carries the error); the call
     # is a tool error only when no task can run.
     runnable = [r for r in routes if not r.error]

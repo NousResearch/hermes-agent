@@ -144,11 +144,22 @@ def test_warm_summary_names_its_window_by_rows_the_replayed_history_contains(mon
     warm = SimpleNamespace(agent=SimpleNamespace(model=MODEL), history=history)
     SummaryDispatchMixin._warm_prefix_summary(compressor, warm, work[start:end], (2000, None, "", True))
     first, last = history[1:][start], history[1:][end - 1]
-    assert f"messages #{start + 1} through #{end}" in sent["prompt"]
     for row in (first, last):
         call_id = row.get("tool_call_id") or row["tool_calls"][0]["id"]
         assert call_id in sent["prompt"]
     assert "read file.py from line 1" not in sent["prompt"]  # never a pruned stub's text
+    assert "#" not in sent["prompt"].split("[The turns", 1)[1]  # prefill rows / merged results renumber the wire
+
+
+def test_a_repeated_text_boundary_is_named_by_its_occurrence_or_not_at_all():
+    from agent.context_compressor_summary import warm_window_pointer
+
+    go, done = {"role": "user", "content": "go"}, {"role": "assistant", "content": "Done."}
+    history = [go, done, {"role": "user", "content": "x"}, dict(go), dict(done), {"role": "user", "content": "y"}]
+    pointer = warm_window_pointer(history, [dict(m) for m in history[3:6]])
+    assert 'begins "go" (occurrence 2 of 2' in pointer and 'begins "y"' in pointer
+    # A window that fits two places equally well is not named at all: the normal summary call runs.
+    assert warm_window_pointer([go, done, dict(go), dict(done)], [dict(go), dict(done)]) is None
 
 
 def test_warm_summary_is_skipped_when_the_summary_model_is_cheaper(monkeypatch):

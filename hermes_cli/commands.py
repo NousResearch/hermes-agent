@@ -395,9 +395,19 @@ def desktop_surface_registry() -> dict[str, str | None]:
     }
 
 
-# Every name and alias -> its CommandDef.
+# Resolution has two deliberately separate maps: canonical names define the command surface,
+# while aliases exist only for backwards-compatible dispatch. Keeping them separate prevents a
+# compatibility spelling from becoming a discovery entry again when a new consumer is added.
+CANONICAL_COMMAND_LOOKUP: dict[str, CommandDef] = {
+    cmd.name: cmd for cmd in COMMAND_REGISTRY
+}
+COMMAND_ALIASES: dict[str, CommandDef] = {
+    alias: cmd for cmd in COMMAND_REGISTRY for alias in cmd.aliases
+}
 _COMMAND_LOOKUP: dict[str, CommandDef] = {
-    key: cmd for cmd in COMMAND_REGISTRY for key in (cmd.name, *cmd.aliases)}
+    **CANONICAL_COMMAND_LOOKUP,
+    **COMMAND_ALIASES,
+}
 
 
 def resolve_command(name: str) -> CommandDef | None:

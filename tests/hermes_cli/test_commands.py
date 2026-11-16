@@ -3,7 +3,10 @@
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
+from hermes_cli.commands import (COMMAND_ALIASES, COMMAND_REGISTRY, COMMANDS_BY_CATEGORY,
+                                 CANONICAL_COMMAND_LOOKUP, CommandDef, GATEWAY_KNOWN_COMMANDS,
+                                 command_desktop_meta, gateway_help_lines, infer_argument_mode,
+                                 resolve_command)
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
 from hermes_cli.commands_platforms import (_CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, discord_skill_commands_by_category, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands)
 
@@ -122,6 +125,12 @@ class TestDerivedDicts:
         resolved = resolve_command("reload_mcp")
         assert resolved is not None
         assert resolved.name == "reload-mcp"
+
+    def test_canonical_and_compatibility_lookups_are_separate(self):
+        assert "reload-mcp" in CANONICAL_COMMAND_LOOKUP
+        assert "reload_mcp" not in CANONICAL_COMMAND_LOOKUP
+        assert "reload_mcp" in COMMAND_ALIASES
+        assert COMMAND_ALIASES["reload_mcp"].name == "reload-mcp"
 
 
 # ---------------------------------------------------------------------------

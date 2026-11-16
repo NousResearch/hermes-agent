@@ -34,10 +34,11 @@ class _Backend:
     def create(self, session_id):
         self.store.sessions.create(NewSession(session_id=session_id, source="cli", model="model-a"))
 
-    def queue(self, session_id, input_tokens, model="model-a"):
+    def queue(self, session_id, input_tokens, model="model-a", clock=None):
         self.store.usage.queue_usage(session_id, UsageDelta(
             tokens=TokenCounts(input_tokens=input_tokens, output_tokens=1), api_call_count=1,
-            route=BillingRoute(model=model, billing_provider=PROVIDER, billing_base_url=BASE_URL), source="cli"))
+            route=BillingRoute(model=model, billing_provider=PROVIDER, billing_base_url=BASE_URL), source="cli",
+            prompt_cache_clock=clock))
 
     def flush(self, timeout=5.0):
         return self.store.usage.flush_usage(timeout)
@@ -159,6 +160,19 @@ def test_adjacent_same_route_deltas_coalesce(side, monkeypatch):
     assert calls == APPLIED
     assert side.totals(SESSION) == (15, 5, 5)
     assert side.route(SESSION) == ("model-a", PROVIDER, BASE_URL, None, 4)
+
+
+def test_deltas_with_different_clocks_never_coalesce(side, monkeypatch):
+    """The clock is keyed like a route field: adjacent deltas with equal clocks merge, a different clock starts a new
+    delta, so each cache event applies in order and the last one stays in the column."""
+    calls = []
+    with _busy_writer(side, monkeypatch, calls):
+        for tokens, clock in ((2, "c1"), (3, "c1"), (4, "c2"), (5, None)):
+            side.queue(SESSION, tokens, clock=clock)
+    assert side.flush() is True
+    assert calls == [(SESSION, 1, "model-a"), (SESSION, 5, "model-a"), (SESSION, 4, "model-a"), (SESSION, 5, "model-a")]
+    assert side.totals(SESSION) == (15, 5, 5)
+    assert side.store.usage.prompt_cache_clock(SESSION).clock == "c2"
 
 
 def test_a_stopped_writer_applies_the_delta_synchronously(side):

@@ -27,6 +27,27 @@ export const svOverrides: TranslationOverrides = {
     installed: 'Installerad',
     source: 'Källa'
   },
+  modelAssignment: {
+    saveFailed: 'Hermes sparade inte modelländringen.',
+    confirmTitle: 'Varning för modellval',
+    confirmDetail: 'Bekräfta bara om du godtar denna avvägning.',
+    confirmAction: 'Bekräfta',
+    declined: 'Modelländringen avbröts eftersom du avvisade varningen om dataträningsnivån.'
+  },
+  gatewayGroupOpen: {
+    opening: 'Öppnar gatewaygrupp…',
+    lookupFailed: 'Det gick inte att hitta gatewaygruppen.',
+    missing: 'Gatewaygruppen saknas.'
+  },
+  keepAwakeOffer: {
+    title: 'Datorn försattes i viloläge medan Hermes arbetade',
+    message: 'Hermes kan hålla datorn vaken medan en uppgift körs. Skärmen släcks ändå och på batteridrift kan datorn fortfarande försättas i viloläge.',
+    action: 'Håll datorn vaken medan arbete pågår'
+  },
+  connectorOffer: {
+    heading: 'Behåll dina anslutna appar',
+    body: 'Logga in med ett kostnadsfritt Nous-konto för att behålla anslutna appar, som Gmail och Slack, på kontot.'
+  },
   sharedMetrics: {
     consentTitle: 'Dela användningsstatistik?',
     dialogTitle: 'Användningsstatistik',
@@ -251,6 +272,7 @@ export const svOverrides: TranslationOverrides = {
     connect: 'Anslut',
     connecting: 'Ansluter',
     continue: 'Fortsätt',
+    bots: 'Botar',
     copied: 'Kopierat',
     copy: 'Kopiera',
     copyFailed: 'Det gick inte att kopiera',
@@ -278,6 +300,7 @@ export const svOverrides: TranslationOverrides = {
     off: 'Av'
   },
   butterbar: {
+    goTo: (index, total) => `Visa meddelande ${index} av ${total}`,
     legal: {
       before: 'Användningen av Hermes Agent omfattas av våra ',
       terms: 'användarvillkor',
@@ -448,7 +471,9 @@ export const svOverrides: TranslationOverrides = {
     renameLabel: 'Nytt namn',
     deleteTitle: name => `Ta bort ”${name}”?`,
     deleteBody: 'Detta kan inte ångras.',
-    pathCopied: 'Sökvägen kopierades'
+    pathCopied: 'Sökvägen kopierades',
+    revealMissing: 'Mappen finns inte på den här datorn',
+    revealUnavailable: 'Sökvägen finns inte på den här datorn utan på serverdatorn. Använd ”Visa i filträdet”.'
   },
   boot: {
     ready: 'Hermes Desktop är redo',
@@ -713,6 +738,7 @@ export const svOverrides: TranslationOverrides = {
     rebind: 'Ändra tangentbindning',
     reset: 'Återställ standard',
     resetAll: 'Återställ alla',
+    clear: 'Rensa',
     pressKey: 'Tryck på en tangent…',
     set: 'ange',
     conflictWith: label => `Är också bunden till ”${label}”`,
@@ -2753,6 +2779,8 @@ export const svOverrides: TranslationOverrides = {
     genericFailure: 'Något gick fel',
     boundaryTitle: 'Något gick sönder i gränssnittet',
     boundaryDesc: 'Vyn stötte på ett oväntat fel. Dina chattar och inställningar är säkra.',
+    boundaryDetails: 'Detaljer',
+    sendDiagnostics: 'Skicka diagnostik',
     reloadWindow: 'Läs om fönster',
     openLogs: 'Öppna loggar'
   },
@@ -2791,6 +2819,10 @@ export const svOverrides: TranslationOverrides = {
     noToolsetsTitle: 'Inga verktyg hittades',
     noToolsetsDesc: 'Prova en bredare sökning.',
     noDescription: 'Ingen beskrivning.',
+    lock: 'Lås',
+    locked: 'Låst',
+    lockHint: 'Agenten kan inte ändra den här skillen medan den är låst. Du kan fortfarande redigera den själv.',
+    unlockedHint: 'Lås för att hindra agenten från att ändra den här skillen. Du kan fortfarande redigera den själv.',
     configured: 'Konfigurerad',
     needsKeys: 'Kräver nycklar',
     visionModelHint:
@@ -3185,6 +3217,8 @@ export const svOverrides: TranslationOverrides = {
     versionDetailsUncommittedChanges: 'ej incheckade ändringar'
   },
   statusStack: {
+    hideStack: 'Dölj statuspanelen',
+    showStack: 'Visa statuspanelen',
     agents: 'Agenter',
     background: count => `${count} i bakgrunden`,
     goalActive: 'Mål aktivt',
@@ -3193,6 +3227,7 @@ export const svOverrides: TranslationOverrides = {
     goalWaiting: 'Mål väntar',
     subagents: count => `${count} underagent${count === 1 ? '' : 'er'}`,
     todos: (done, total) => `Uppgifter ${done}/${total}`,
+    previousTodos: (done, total) => `Tidigare uppgifter ${done}/${total}`,
     running: 'Körs',
     stop: 'Stoppa',
     dismiss: 'Avfärda',
@@ -3227,6 +3262,7 @@ export const svOverrides: TranslationOverrides = {
       scopeUncommitted: 'Ej incheckade',
       scopeBranch: 'Gren',
       scopeLastTurn: 'Senaste tur',
+      readOnlyScope: 'Skrivskyddad vy. Förbered, återställ och checka in gäller ej incheckade ändringar.',
       commit: 'Checka in',
       commitAndPush: 'Checka in och skicka',
       commitPlaceholder: shortcut => `Meddelande (${shortcut} för att checka in)`,
@@ -3316,6 +3352,7 @@ export const svOverrides: TranslationOverrides = {
       heartbeatEveryHours: hours => `med ${hours} h intervall`,
       heartbeatEverySeconds: seconds => `med ${seconds} s intervall`,
       heartbeatNext: time => `nästa ${time}`,
+      dueWaitingForIdle: 'förfaller – väntar på tomgång',
       heartbeatActions: 'Åtgärder för periodisk kontroll',
       pauseHeartbeat: 'Pausa periodisk kontroll',
       resumeHeartbeat: 'Återuppta periodisk kontroll',
@@ -3566,11 +3603,14 @@ export const svOverrides: TranslationOverrides = {
   },
   prompts: {
     gatewayDisconnected: 'Hermes-gatewayen är inte ansluten',
+    reconnect: 'Anslut igen',
     sudoSendFailed: 'Det gick inte att skicka sudo-lösenordet',
     secretSendFailed: 'Det gick inte att skicka hemligheten',
     sudoTitle: 'Administratörslösenord',
     sudoDesc:
       'Hermes behöver ditt sudo-lösenord för att köra ett privilegierat kommando. Det skickas endast till din lokala agent.',
+    sudoCommandUnavailable: 'Agenten lämnade inte kommandot. Avbryt om du inte kan kontrollera det i konversationen.',
+    sudoInstallDesc: 'Hermes behöver ditt sudo-lösenord för att installera Bot Screen-paketen (TigerVNC och Xfce) på gatewayvärden. Det skickas bara till den värden.',
     sudoPlaceholder: 'sudo-lösenord',
     secretTitle: 'Hemlighet krävs',
     secretDesc: 'Hermes behöver en inloggningsuppgift för att kunna fortsätta.',
@@ -4121,6 +4161,7 @@ export const svOverrides: TranslationOverrides = {
       gatewayDisconnected:
         'Hermes är offline just nu. Kommandot väntar fortfarande på ditt svar tills tiden för godkännande går ut. Anslut igen och skicka sedan svaret på nytt.',
       sendFailed: 'Det gick inte att skicka godkännandesvaret',
+      commandDetails: 'Kommandodetaljer',
       reconnect: 'Anslut igen',
       timedOutSystemLine:
         'Tiden för godkännandet gick ut och kommandot kördes inte. Be Hermes försöka igen eller ändra tidsgränsen under Inställningar → Säkerhet → Tidsgräns för godkännande.',
@@ -4141,6 +4182,7 @@ export const svOverrides: TranslationOverrides = {
       notReady: 'Förtydligandefrågan är inte klar ännu',
       gatewayDisconnected: 'Hermes gateway är inte ansluten',
       sendFailed: 'Det gick inte att skicka förtydligandet',
+      notDelivered: 'Förtydligandet kunde inte levereras',
       loadingQuestion: 'Läser in fråga…',
       other: 'Annat (skriv ditt svar)',
       placeholder: 'Skriv ditt svar…',
@@ -4789,6 +4831,8 @@ export const svOverrides: TranslationOverrides = {
     fieldSkillsPlaceholder: 'kommaseparerade skillsnamn (valfritt)',
     fieldDeliver: 'Leverera till',
     fieldDeliverOnly: 'Leverera endast nyttolasten',
+    fieldSignature: 'Signatur',
+    fieldSignatureHint: 'Det enda signaturschema som den här rutten accepterar. Leveranser från GitHub, GitLab och Linear behöver egna hemligheter.',
     fieldPrompt: 'Prompt',
     fieldPromptPlaceholder: 'Instruktioner till agenten när denna webhook utlöses (valfritt)',
     nameRequired: 'Namn krävs',
@@ -5494,6 +5538,7 @@ export const svOverrides: TranslationOverrides = {
     nav: {
       newChat: { title: 'Ny session', detail: 'Starta en ny session' },
       settings: { title: 'Inställningar', detail: 'Konfigurera Hermes Desktop' },
+      capabilities: { title: 'Funktioner', detail: 'Skills, verktyg, MCP-servrar och insticksprogram' },
       messaging: { title: 'Meddelanden', detail: 'Konfigurera Telegram, Slack, Discord med flera' },
       artifacts: { title: 'Artefakter', detail: 'Bläddra bland genererade utdata' }
     },
@@ -5517,6 +5562,7 @@ export const svOverrides: TranslationOverrides = {
     hermesActiveSessions: (version, count) => `Hermes ${version} · Aktiva sessioner: ${count}`,
     restartGateway: 'Starta om gatewayen',
     openBrowser: 'Öppna webbläsaren',
+    toggleBrowser: 'Växla webbläsaren',
     gatewayRestartFailed: 'Det gick inte att starta om gatewayen.',
     sharedGatewayRestartTitle: 'Starta om den delade gatewayen?',
     sharedGatewayRestartDescription: bots => `Alla botar på den här enheten återansluter: ${bots}`,
@@ -5562,6 +5608,9 @@ export const svOverrides: TranslationOverrides = {
       backupDesc: 'Zippar konfiguration, minnen, skills och sessioner',
       debugShare: 'Dela felsökning',
       debugShareDesc: 'Ladda upp en maskad rapport med loggar och få delbara länkar (tas bort automatiskt efter 6 h)',
+      debugShareConfirm: 'Ladda upp felsökningsrapporten till en offentlig klistringstjänst?',
+      debugShareConfirmDesc:
+        'En sammanfattning laddas upp: versioner av Hermes, Python och operativsystemet, namn på anslutna plattformar och verktygssamlingar, konfigurationsnycklars namn utan värden samt antal varningar och fel. Den innehåller inga loggrader eller meddelandetexter. Klistringar tas bort automatiskt efter 6 timmar. Om paste.rs inte kan nås används dpaste.com i stället, där de är offentliga i ett dygn och inte kan tas bort tidigare.',
       debugShareRunning: 'Laddar upp felsökningsrapport…',
       debugShareLinks: 'Delningslänkar',
       debugShareFailed: 'Felsökningsdelning misslyckades',
@@ -5995,7 +6044,9 @@ export const svOverrides: TranslationOverrides = {
     saveApply: 'Spara och tillämpa',
     notExpressible: 'den här ordningen är sammankopplad (vindkvarn) — kan ännu inte uttryckas som nästlade delningar',
     zoneCount: count => `${count} zoner`,
-    tabCount: count => `${count} flikar`
+    tabCount: count => `${count} flikar`,
+    zoneMenuLabel: 'Zonmeny',
+    tabActions: title => `Åtgärder för ${title}`
   },
   tips: {
     close: 'Visa inte detta tips igen',

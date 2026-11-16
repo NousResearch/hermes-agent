@@ -138,3 +138,105 @@ def test_a_peer_home_moves_on_only_from_an_unchanged_retired_attempt(hosted_owne
     finally:
         for s in servers:
             asyncio.run_coroutine_threadsafe(s.stop(), loop).result()
+
+
+def _run_drain(authority, loop, ref):
+    """Drive one drain to its first real claim; returns the payloads it reached, in order."""
+    from gateway import session_authority
+    claimed = []
+    original = session_authority.SessionAuthority._claim_next
+
+    async def claim(self, ref, live):
+        result = await original(self, ref, live)
+        claimed.append(result[1]['payload']['text'] if result and result[1] else None)
+        raise asyncio.CancelledError  # stop at the first real claim: the head it reached is the proof
+
+    async def drain():
+        try:
+            await authority._claim_with_retry(ref, authority.sessions[ref.session_id])
+        except asyncio.CancelledError:
+            pass
+
+    session_authority.SessionAuthority._claim_next = claim
+    try:
+        asyncio.run_coroutine_threadsafe(drain(), loop).result(10)
+    finally:
+        session_authority.SessionAuthority._claim_next = original
+    return claimed
+
+
+def test_a_hosted_head_whose_member_home_is_gone_is_refused_not_paused(hosted_owner, monkeypatch):
+    """#150885: a queued hosted turn whose member home is no longer served refuses every drain with
+    ``permission_denied`` -- a reason the drain only ever paused behind, so the member's FIFO stayed
+    stuck for good. That turn can never run: it is settled (its submitter still gets the refusal) and
+    the queue is usable again once the member is served."""
+    from gateway import hosted_room_driver as tasks
+    authority, loop, _, _ = hosted_owner
+    service, rpc, stale, _ = _queued_member_turn(hosted_owner, monkeypatch, 'stale', 'first ask')
+    ref = rpc.ref  # both transport shapes carry one; the union does not declare it
+    served = {'default': Path(authority.profile_id)}
+    monkeypatch.setattr(service, 'profile_homes', dict)  # the member's home is no longer served
+
+    _run_drain(authority, loop, ref)
+
+    rows = {r['payload']['text']: (r['status'], r['outcome'])
+            for r in list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)}
+    assert rows['first ask'] == ('terminal', 'cancelled')
+    # The FIFO is not paused behind it: the room stops that attempt and, once the member is served
+    # again, its next turn is claimed.
+    tasks.begin_task_cancel(authority.db.db_path, stale, cancel_id='stop-1', expected_cancel_generation=0,
+                            clock=time.time)
+    tasks.complete_task_cancel(authority.db.db_path, stale, cancel_id='stop-1', expected_cancel_generation=1,
+                               clock=time.time)
+    monkeypatch.setattr(service, 'profile_homes', lambda: served)
+    _queued_member_turn(hosted_owner, monkeypatch, 'live', 'second ask')
+    claimed = _run_drain(authority, loop, ref)
+    assert claimed and claimed[-1] == 'second ask'
+
+
+def test_a_queued_turn_whose_room_task_is_gone_reads_stale_not_denied(hosted_owner, monkeypatch):
+    """#150885: the attempt's own row can be gone (a pruned terminal task, or a source that dropped it).
+    That turn can never run, so the check says so -- ``stale_hosted_task`` -- instead of folding it into
+    the hard denial the drain would pause behind. A changed input is still a hard denial."""
+    import json
+    import pytest
+    from dataclasses import asdict
+    from gateway import hosted_room_driver as tasks
+    authority, _, _, _ = hosted_owner
+    service, rpc, _, _ = _queued_member_turn(hosted_owner, monkeypatch, 'task', 'frozen')
+    ref = rpc.ref
+    row, = [r for r in list_session_admissions(authority.db, session_id=ref.session_id) if r['status'] == 'queued']
+    gone = tasks.TaskIdentity('room', 'pruned', 'thread', 'pruned')
+    stale = {**row, 'request_id': 'hosted:' + json.dumps([asdict(gone), 1], sort_keys=True, separators=(',', ':'))}
+    with pytest.raises(RuntimeStoreError, match='stale_hosted_task'):
+        service.check_admission(ref, stale)
+    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        service.check_admission(ref, {**row, 'payload': {'text': 'changed'}})
+
+
+def test_a_remote_execute_at_an_unserved_home_reads_stale_not_denied(hosted_owner, monkeypatch):
+    """Across owner sockets the target asks ``attest``, not ``check_admission``: an unserved member home
+    has to answer the same ``stale_hosted_task`` verdict, or the target's queued head pauses under
+    ``permission_denied`` on every drain and the member's FIFO never moves. A new submit and a home that
+    comes back somewhere else stay hard denials -- the second is a moved binding, not a dead attempt."""
+    import pytest
+    from dataclasses import asdict
+    authority, _, _, _ = hosted_owner
+    service, _, identity, _ = _queued_member_turn(hosted_owner, monkeypatch, 'unserved', 'pending ask')
+    selector = {'room_id': 'room', 'member_id': 'one', 'profile': 'default'}
+    params = {'_target_home': str(authority.profile_id), 'task': asdict(identity), 'execution_generation': 1}
+
+    monkeypatch.setattr(service, 'profile_homes', dict)  # the member's bot is no longer served here
+    with pytest.raises(RuntimeStoreError) as unserved:
+        service.attest(selector, 'execute', params)
+    assert unserved.value.reason == 'stale_hosted_task'
+
+    with pytest.raises(RuntimeStoreError) as new_submit:
+        service.attest(selector, 'submit', params)
+    assert new_submit.value.reason == 'permission_denied'
+
+    moved = Path(authority.profile_id).parent / 'moved-home'
+    monkeypatch.setattr(service, 'profile_homes', lambda: {'default': moved})
+    with pytest.raises(RuntimeStoreError) as rebinding:
+        service.attest(selector, 'execute', params)
+    assert rebinding.value.reason == 'permission_denied'

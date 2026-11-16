@@ -27,6 +27,9 @@ Two things are deliberately NOT failed on:
   home's own tree and every profile's. It changes on an ordinary release, so it
   is advisory-only. The exception is ``skills/.archive/**``, which holds
   restorable *user* skills and therefore is judged like everything else.
+* ``profiles/<name>/cache/**`` holds derived data the product rebuilds (the
+  schema-columns memo moves whenever a release changes the session schema). The
+  root home's ``cache/`` is in no judged root, so a profile's is advisory too.
 
 Ownership: the ``plugins/**`` trees belong to verify-plugin-preservation.py —
 that contract (nothing deleted or modified, additions tolerated) is already
@@ -58,6 +61,7 @@ PROFILES_DIR = "profiles"
 PLUGIN_ROOT = "plugins"
 SKILLS_ROOT = "skills"
 SKILL_ARCHIVE = ".archive"
+CACHE_DIR = "cache"
 CHUNK = 1 << 20
 
 # Top-level files whose content must survive verbatim.
@@ -149,14 +153,29 @@ def _owns_plugins(rel: str, *, profiles: bool) -> bool:
 
 
 def _is_bundled_skill(rel: str, *, profiles: bool) -> bool:
-    """skills/** except skills/.archive/**, at both roots (see module docstring)."""
+    """skills/** except skills/.archive/**, at both roots (see module docstring),
+    plus a profile's cache/** (see _is_profile_cache)."""
     parts = rel.split("/")
     if not profiles:
         return parts[0] == SKILLS_ROOT and not (
             len(parts) > 1 and parts[1] == SKILL_ARCHIVE)
+    if _is_profile_cache(parts):
+        return True
     if len(parts) >= 3 and parts[2] == SKILLS_ROOT:
         return not (len(parts) > 3 and parts[3] == SKILL_ARCHIVE)
     return False
+
+
+def _is_profile_cache(parts: list[str]) -> bool:
+    """profiles/<name>/cache/**: derived data the product rebuilds, not user state.
+
+    The root home's cache/ is never walked (it is in no judged root), but every
+    entry under profiles/ is judged, so a profile's cache was. Its files move on an
+    ordinary release: cache/schema_columns.json is keyed by a hash of the session
+    schema and rewritten whenever a release changes that schema. Advisory, like the
+    root's, so the report still lists it.
+    """
+    return len(parts) >= 3 and parts[0] == PROFILES_DIR and parts[2] == CACHE_DIR
 
 
 def _env_key_hashes(path: str) -> dict[str, str]:

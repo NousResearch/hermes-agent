@@ -122,7 +122,6 @@ def plan_request_cache(agent: Any, api_messages: Any, tools: Any) -> Any:
         native_anthropic=agent._use_native_cache_layout,
         static_system_prefix=static_system_prefix if isinstance(static_system_prefix, str) else None,
         session_system_prompt=agent._cached_system_prompt,
-        unmarked_tail=getattr(agent, "_cache_unmarked_tail", 0),
         direct_native_tool_cache=agent._direct_native_anthropic_tool_cache_capability(),
         # LiteLLM-style envelope routes forward part-level markers into
         # tool_result.content[] → non-retryable 400.

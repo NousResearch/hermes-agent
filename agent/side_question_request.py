@@ -104,19 +104,14 @@ def has_server_side_tools(api_kwargs: dict[str, Any]) -> bool:
     return any(not (isinstance(p, dict) and p.get("id") in _ROUTING_ONLY_OPENROUTER_PLUGINS) for p in plugins)
 
 
-def _build_fork(parent: Any, capture: Optional[SideQuestionCapture] = None) -> Any:
-    """A never-routed cache-parity fork pinned to the captured request inputs (the parent's
-    current ones without a capture)."""
+def _build_fork(parent: Any, capture: SideQuestionCapture) -> Any:
+    """A never-routed cache-parity fork pinned to the captured request inputs."""
     from agent.background_review import build_cache_parity_fork
 
     # task_cfg={} = never route: the side question must hit the parent's warm cache.
     fork, _rt, _routed = build_cache_parity_fork(
         parent, {}, max_iterations=1, write_origin=SIDE_QUESTION_ORIGIN,
     )
-    if capture is None:
-        fork._cached_system_prompt_static = getattr(parent, "_cached_system_prompt_static", None)
-        fork._cache_ttl = getattr(parent, "_cache_ttl", fork._cache_ttl)  # the marker TTL is in the prefix
-        return fork
     fork._cached_system_prompt = capture.system_prompt
     # The static tier decides where the system-prompt cache breakpoint splits; rebuilding it on
     # the fork re-reads prompt files and can land the marker elsewhere.
@@ -127,14 +122,9 @@ def _build_fork(parent: Any, capture: Optional[SideQuestionCapture] = None) -> A
     return fork
 
 
-def _send(fork: Any, history: list[dict[str, Any]], prompt: str, audit: _Audit, *, turn_id: str,
-          aux_task: str = PLUGIN_SIDE_QUESTION_TASK, max_output_tokens: Optional[int] = None,
-          unmarked_tail: int = 0) -> Any:
-    """Assemble, build and perform ONE request on the fork (``history`` + ``prompt`` as the last
-    user message); the normalized reply, or None on refusal / a cancelled call.
-    ``max_output_tokens`` caps this request only (not part of any provider's cache key).
-    ``unmarked_tail`` > 0 keeps the cache breakpoints where the request without its last
-    ``unmarked_tail`` messages had them, so those messages are read uncached and never written."""
+def _send(fork: Any, capture: SideQuestionCapture, prompt: str, audit: _Audit) -> Any:
+    """Assemble, build and perform ONE request on the fork; the normalized reply, or None on
+    refusal / a cancelled call."""
     from agent import relay_llm
     from agent.auxiliary_hooks import finish_aux_call_hooks, start_aux_call_hooks
     from agent.side_question import trim_snapshot_for_fork
@@ -146,7 +136,7 @@ def _send(fork: Any, history: list[dict[str, Any]], prompt: str, audit: _Audit, 
     from agent.turn_truncation import normalize_response_for_agent
     from agent.turn_usage import record_response_usage
 
-    turn_id = f"{turn_id}:{SIDE_QUESTION_ORIGIN}"
+    turn_id = f"{capture.turn_id}:{SIDE_QUESTION_ORIGIN}"
     task_id = str(uuid.uuid4())
     api_request_id = f"{turn_id}:api:1"
     # Turn state a fork that never ran a turn lacks: the per-turn counters the request phases
@@ -157,10 +147,8 @@ def _send(fork: Any, history: list[dict[str, Any]], prompt: str, audit: _Audit, 
     fork._current_turn_timestamp = time.time()
     fork._current_turn_id, fork._current_task_id, fork._current_api_request_id = turn_id, task_id, api_request_id
     fork._disable_streaming = True
-    fork._ephemeral_max_output_tokens = max_output_tokens
-    fork._cache_unmarked_tail = unmarked_tail
 
-    messages = trim_snapshot_for_fork(history) + [{"role": "user", "content": prompt}]
+    messages = trim_snapshot_for_fork(capture.messages) + [{"role": "user", "content": prompt}]
     assembled = assemble_api_request(
         fork, messages=messages, current_turn_user_idx=len(messages) - 1, _ext_prefetch_cache=None,
         _plugin_user_context=None, moa_config=None, active_system_prompt=fork._cached_system_prompt,
@@ -175,7 +163,7 @@ def _send(fork: Any, history: list[dict[str, Any]], prompt: str, audit: _Audit, 
         audit.outcome = "refused:server_side_tools"
         return None
     hooks = start_aux_call_hooks(
-        aux_task=aux_task, metadata={"api_request_id": api_request_id, "plugin_id": audit.plugin_id},
+        aux_task=PLUGIN_SIDE_QUESTION_TASK, metadata={"api_request_id": api_request_id, "plugin_id": audit.plugin_id},
         client=fork.client,
         kwargs=built.api_kwargs, provider=str(fork.provider or ""), model=str(fork.model or ""),
         api_mode=str(fork.api_mode or ""), streaming=False,
@@ -278,7 +266,7 @@ def ask_text_only(
         if runtime_key(parent) != capture.runtime:
             audit.outcome = "refused:runtime_changed"
             return None
-        assistant_message = _send(fork, capture.messages, prompt, audit, turn_id=capture.turn_id)
+        assistant_message = _send(fork, capture, prompt, audit)
         if assistant_message is None:
             return None
         answer = _answer_text(fork, assistant_message)
@@ -298,52 +286,3 @@ def ask_text_only(
                 parent, fork, task=f"{PLUGIN_SIDE_QUESTION_TASK}:{plugin_id or '?'}",
                 session_id=capture.session_id)
         _log_audit(audit)
-
-
-def _interrupt_on_cancel(fork: Any, cancel_check: Any, done: threading.Event) -> None:
-    """Interrupt ``fork``'s request once ``cancel_check()`` holds (a non-streamed call watches only
-    the fork's own interrupt flag)."""
-    while not done.wait(0.25):
-        try:
-            cancelled = bool(cancel_check())
-        except Exception:  # health: allow BLE001 -- a broken check must not kill the watcher; keep polling
-            logger.debug("warm-prefix cancel check failed", exc_info=True)
-            continue
-        if cancelled:
-            fork.interrupt(None, tool_reason="compression cancelled")
-            return
-
-
-def ask_on_live_prefix(
-    agent: Any, history: list[dict[str, Any]], prompt: str, *, task: str, max_output_tokens: int,
-    cancel_check: Optional[Any] = None,
-) -> tuple[Any, dict[str, Any]]:
-    """One text-only request on a cache-parity fork of the live ``agent``: ``history`` (what its
-    last request sent, plus that reply) with ``prompt`` appended as the final user message, so the
-    request reads ``agent``'s warm prompt cache. ``(reply, usage)``: the normalized reply (None on
-    refusal or a cancelled call) and the fork's usage, billed to ``agent``'s session as ``task``.
-    ``cancel_check()`` turning true (a stop, a host deadline) interrupts the in-flight request.
-    Errors propagate; the fork is released either way."""
-    from agent.background_review import release_cache_parity_fork
-
-    audit = _Audit(task)
-    refusal = _agent_provider_refusal(agent)
-    if refusal is not None:
-        audit.outcome = f"refused:{refusal}"
-        _log_audit(audit)
-        return None, {}
-    fork = _build_fork(agent)
-    done = threading.Event()
-    if cancel_check is not None:
-        from agent.memory_provider import spawn_context_thread
-
-        spawn_context_thread(lambda: _interrupt_on_cancel(fork, cancel_check, done), name="warm-prefix-cancel").start()
-    try:
-        reply = _send(fork, history, prompt, audit, turn_id=str(getattr(agent, "_current_turn_id", None) or task),
-                      aux_task=task, max_output_tokens=max_output_tokens, unmarked_tail=2)
-        audit.outcome = "ok" if reply is not None else audit.outcome
-    finally:
-        done.set()
-        audit.usage = release_cache_parity_fork(agent, fork, task=task)
-        _log_audit(audit)
-    return reply, audit.usage

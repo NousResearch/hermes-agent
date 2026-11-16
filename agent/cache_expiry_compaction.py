@@ -22,20 +22,13 @@ Scope (by design):
 A committed compaction bumps the session's context generation, which makes the clock's window
 ``unknown`` (``compacted``), so one window fires at most once.
 
-The summary call is the reason to compact while warm: it goes to the conversation's own model as a
-cache-parity fork of the live agent (``agent.side_question_request.ask_on_live_prefix``), replaying
-the last request's system prompt, ``tools[]`` and messages with the summarize instruction appended
-as the final user message, so it reads the warm prefix at the cache-read rate instead of paying a
-fresh prompt on the auxiliary model. Everything else (lease, fence, commit, telemetry) is the
-normal compression pipeline; only the summary generation differs (:func:`warm_prefix_summary`).
+The summary uses the normal compression model (a ready prepared summary is reused).
 """
 
 from __future__ import annotations
 
-import contextlib
-import contextvars
 import time
-from typing import Any, Iterator, Optional
+from typing import Any, Optional
 
 #: Fire at this fraction of the cache window (54 minutes on a 1-hour tier).
 FIRE_FRACTION = 0.9
@@ -176,43 +169,9 @@ def claim_cache_expiry_compaction(agent: Any, *, now: Optional[float] = None) ->
     return due
 
 
-class WarmPrefix:
-    """The live agent whose warm prompt cache the summary call reuses, and the history its last
-    request sent (plus that reply). Single use: a retry of a failed summary goes the normal way."""
-
-    def __init__(self, agent: Any, history: list[dict[str, Any]]):
-        self.agent, self.history, self.used = agent, list(history), False
-
-    def take(self) -> Optional[WarmPrefix]:
-        if self.used:
-            return None
-        self.used = True
-        return self
-
-
-_WARM_PREFIX: contextvars.ContextVar[Optional[WarmPrefix]] = contextvars.ContextVar(
-    "cache_expiry_warm_prefix", default=None)
-
-
 def window_still_warm(agent: Any, *, now: Optional[float] = None) -> bool:
     """Whether *agent*'s cache window is still guaranteed warm: re-read at fire time, because the
     claim happened a tick (and a lease wait) earlier and a cold prefix makes the compaction moot."""
     from agent.prompt_cache_clock import cache_certainly_warm, cache_window
 
     return cache_certainly_warm(cache_window(agent), now=now)
-
-
-@contextlib.contextmanager
-def warm_prefix_summary(agent: Any, history: list[dict[str, Any]]) -> Iterator[None]:
-    """Route this context's compaction summary onto *agent*'s warm prefix (``history``)."""
-    token = _WARM_PREFIX.set(WarmPrefix(agent, history))
-    try:
-        yield
-    finally:
-        _WARM_PREFIX.reset(token)
-
-
-def take_warm_prefix() -> Optional[WarmPrefix]:
-    """The pending warm prefix for this summary call, consumed; None outside a cache-expiry run."""
-    pending = _WARM_PREFIX.get()
-    return pending.take() if pending is not None else None

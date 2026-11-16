@@ -107,7 +107,7 @@ async def test_standalone_gateway_compacts_inside_the_launch_profile_scope(make_
 
     runner._standalone_launch_scope = launch_scope
 
-    async def compress(source, entry, history, request, *, trigger=None, warm_prefix=None):
+    async def compress(source, entry, history, request, *, trigger=None):
         runner.compacted.append((entry.session_id, trigger, list(scope)))
     runner._run_manual_compression = compress
 
@@ -125,7 +125,7 @@ async def test_a_turn_claim_waits_for_the_compaction_holding_the_claim_gate(make
     live = runner.session_authority.sessions["s1"] = LiveSession(_source(), "k1")
     release, order = asyncio.Event(), []
 
-    async def compress(source, entry, history, request, *, trigger=None, warm_prefix=None):
+    async def compress(source, entry, history, request, *, trigger=None):
         order.append("summary started")
         await release.wait()
         order.append("summary committed")
@@ -157,7 +157,7 @@ async def test_a_slow_summary_neither_delays_another_chat_nor_holds_up_housekeep
     runner._last_session_store_prune_ts = float("inf")
     never = asyncio.Event()
 
-    async def compress(source, entry, history, request, *, trigger=None, warm_prefix=None):
+    async def compress(source, entry, history, request, *, trigger=None):
         runner.compacted.append(entry.session_id)
         if entry.session_id == "s-slow":
             await never.wait()
@@ -180,7 +180,7 @@ async def test_a_detached_desktop_conversation_without_a_routing_entry_is_compac
     runner = make_runner({}, [key], authority=True)
     runner.session_authority.sessions["s-det"] = LiveSession(_source(detached_route=key), key)
 
-    async def compress(source, entry, history, request, *, trigger=None, warm_prefix=None):
+    async def compress(source, entry, history, request, *, trigger=None):
         runner.compacted.append((entry.session_key, entry.session_id))
     runner._run_manual_compression = compress
 

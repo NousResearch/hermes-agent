@@ -228,18 +228,18 @@ def test_lean_tail_demotion_archives_the_demoted_originals(home):
     assert again == demoted and len(_archived(home)) == count
 
 
-@pytest.mark.parametrize("backend", ["docker", "ssh"])
-def test_sandboxed_backend_keeps_plain_stubs_and_writes_nothing(home, monkeypatch, summarizer, backend):
+@pytest.mark.parametrize("backend, archives", [("local", True), ("docker", False), ("ssh", False)])
+def test_only_a_backend_that_reads_host_files_gets_archive_pointers(home, monkeypatch, summarizer, backend, archives):
+    """The same compaction archives on the local backend and keeps plain stubs where the model cannot
+    ``read_file`` a host path; either way the summary input is demoted."""
     monkeypatch.setenv("TERMINAL_ENV", backend)
     msgs = _transcript()
     c = _compressor()
-    _working, pruned, start, end = c._plan_compaction_window(msgs)
-    assert pruned and start < end
 
     compressed = c.compress(msgs, current_tokens=c.threshold_tokens + 1)
 
     assert any(m.get(COMPRESSED_SUMMARY_METADATA_KEY) for m in compressed)
-    assert _archived(home) == []
     (prompt,) = summarizer
-    assert ARCHIVE_POINTER_SEP not in prompt
-    assert "x" * 5_000 not in prompt  # still demoted: the compaction reclaims as before
+    assert bool(_archived(home)) is archives
+    assert (ARCHIVE_POINTER_SEP in prompt) is archives
+    assert "x" * 5_000 not in prompt

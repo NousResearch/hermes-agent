@@ -725,7 +725,7 @@ button.portal-section-title:hover {
   }
 }
 
-/* ── Machines: a row like a pinned chat; an open machine becomes one card (set 16292:15581) ───── */
+/* ── Machines: each is one card (set 16292:15581); closing it folds the card down to its header ── */
 
 .portal-sidebar [data-slot='gateway-group'] {
   --portal-machine-tone: var(--portal-sidebar-meta);
@@ -733,7 +733,6 @@ button.portal-section-title:hover {
   position: relative;
 }
 
-/* 16px between a machine's text and the next card's edge: the row's own 8px plus this. */
 .portal-sidebar [data-slot='gateway-group'] + [data-slot='gateway-group'] {
   margin-top: var(--portal-sidebar-section-gap);
 }
@@ -757,9 +756,9 @@ button.portal-section-title:hover {
 
 .portal-machine-row {
   flex: 1;
-  min-height: var(--portal-sidebar-machine-row);
+  min-height: var(--portal-sidebar-machine-head);
   padding-inline-end: 0.25rem;
-  color: var(--portal-sidebar-machine-ink);
+  color: var(--ui-text-primary);
 }
 
 /* The machine's leading dot (16292:15573) wears its status tone; the status label at the end says it. */
@@ -830,23 +829,28 @@ button.portal-section-title:hover {
 }
 
 /* The card: 5px wider than the rows on each side, its own padding putting the header's dot back on
-   the inset. */
-.portal-sidebar [data-slot='gateway-group'][data-open='true'] {
+   the inset. Open or closed it is the same card, the same width and header; only its agents go. */
+.portal-sidebar [data-slot='gateway-group'] {
   margin-inline: calc(-1 * var(--portal-sidebar-machine-pad));
-  padding: 0 var(--portal-sidebar-machine-pad) var(--portal-sidebar-machine-pad);
+  padding-inline: var(--portal-sidebar-machine-pad);
   border-radius: var(--portal-sidebar-machine-radius);
   background: var(--portal-sidebar-machine-fill);
 }
 
-.portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading'] > .portal-machine-row {
-  min-height: var(--portal-sidebar-machine-head);
-  color: var(--ui-text-primary);
+.portal-sidebar [data-slot='gateway-group'][data-open='true'] {
+  padding-bottom: var(--portal-sidebar-machine-pad);
+}
+
+/* The header is the card's own top: it bleeds over the card's pad to both edges, so its hover and
+   press fill the card flush with its sides. A closed card is all header, and takes every corner. */
+.portal-sidebar [data-slot='gateway-group'] > [data-slot='gateway-heading'] {
+  margin-inline: calc(-1 * var(--portal-sidebar-machine-pad));
+  padding-inline: var(--portal-sidebar-machine-pad);
+  border-radius: var(--portal-sidebar-machine-radius);
 }
 
 /* The open machine's header stays at the top of the list while its agents scroll under it, until
-   its card ends. It is the card's own top: it bleeds over the card's pad to both edges and takes the
-   card's top corners, so its hover and press fill the card's head flush with its sides rather than
-   float inside it. Opaque, so rows never show through it, and painted as the panel itself is (its
+   its card ends, and takes only the card's top corners. Opaque, so rows never show through it, and painted as the panel itself is (its
    noise and veil over the window's art, portal-artwork.css) under the card's fill: a flat colour
    there read as a dark slab laid on the card. */
 .portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading'] {
@@ -855,8 +859,6 @@ button.portal-section-title:hover {
   position: sticky;
   top: 0;
   z-index: 1;
-  margin-inline: calc(-1 * var(--portal-sidebar-machine-pad));
-  padding-inline: var(--portal-sidebar-machine-pad);
   border-radius: var(--portal-sidebar-machine-radius) var(--portal-sidebar-machine-radius) 0 0;
   background:
     linear-gradient(var(--portal-machine-head-state), var(--portal-machine-head-state)),
@@ -1461,7 +1463,6 @@ button.portal-section-title:hover {
   html[data-hermes-desktop-host='browser'][data-shell='portal'] .portal-sidebar {
     --portal-sidebar-row: var(--portal-touch-target);
     --portal-sidebar-pin-row: var(--portal-touch-target);
-    --portal-sidebar-machine-row: var(--portal-touch-target);
     --portal-sidebar-chat-row: var(--portal-touch-target);
   }
 

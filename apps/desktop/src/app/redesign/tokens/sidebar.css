@@ -34,7 +34,6 @@
      text 16px apart (36 pitch, 04 · Workspace/Agent); an agent's chats are 40px (16292:15602). */
   --portal-sidebar-row: 2rem;
   --portal-sidebar-pin-row: 2.25rem;
-  --portal-sidebar-machine-row: 2.25rem;
   --portal-sidebar-chat-row: 2.5rem;
   --portal-sidebar-row-gap: 0px;
   --portal-sidebar-section-gap: 0.5rem;
@@ -88,7 +87,6 @@
   --portal-sidebar-machine-radius: 12px;
   --portal-sidebar-machine-pad: 0.3125rem;
   --portal-sidebar-machine-head: 3.25rem;
-  --portal-sidebar-machine-ink: color-mix(in srgb, var(--ui-base) 80%, transparent);
   /* Agent cards (16292:15592): radius 9, 6px leading pad (12 to the name past the 32px tile), 16px
      trailing, 12px over and under, a soft drop shadow. The open agent is the brand slab, white .10 /
      black .40 / blue (#2E2EA8); the others white .10 / black .60 / blue .30 (16292:15630). Both carry

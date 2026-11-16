@@ -330,10 +330,10 @@ mono captions with the disclosure chevron right after the label (Agents keeps it
 the end), separated by whitespace only, on a 32px text inset with row fills bleeding 12px past it.
 Pinned and group-chat rows are 20px of SemiBold title on a 36px pitch after a 5px leading dot (row ink
 at rest, full ink for the open chat, brand for unread news, the status tones while a turn runs or
-waits), their tags, ages and statuses in the mono font, 10px uppercase. Machines are rows like them,
-their dot in the machine's status tone and the status label at the end; an open machine is one radius-12
-card at 2% ink (set 16292:15581) whose header sticks to the top of the list while its agents scroll
-under it. Agents are cards inside it (16292:15592): radius 9, the agent's 32px colour tile (in its
+waits), their tags, ages and statuses in the mono font, 10px uppercase. A machine is one radius-12
+card at 2% ink (set 16292:15581) under a 52px header, its dot in the machine's status tone and the status
+label at the end. Closing it folds the card down to that header at the same width and height; open, the
+header sticks to the top of the list while its agents scroll under it. Agents are cards inside it (16292:15592): radius 9, the agent's 32px colour tile (in its
 snapped Figma primary, `lib/portal-profile-color.ts`; Figma's character avatars are not adopted) over
 the name and a mono second line (roster description, else the chat count), the caret at the end and the
 CRT texture dodged into the fill. The open agent is the brand slab (white .10 / black .40 / blue), the
@@ -976,7 +976,6 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-sidebar-actions-gap` | `1rem` | ″ |  |
 | `--portal-sidebar-row` | `2rem` | ″ | A caption sits 10px under what precedes it and 16px over its first row's text; rows are 20px of text 16px apart (36 pitch, 04 · Workspace/Agent); an agent's chats are 40px (16292:15602). |
 | `--portal-sidebar-pin-row` | `2.25rem` | ″ |  |
-| `--portal-sidebar-machine-row` | `2.25rem` | ″ |  |
 | `--portal-sidebar-chat-row` | `2.5rem` | ″ |  |
 | `--portal-sidebar-row-gap` | `0px` | ″ |  |
 | `--portal-sidebar-section-gap` | `0.5rem` | ″ |  |
@@ -1017,7 +1016,6 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-sidebar-machine-radius` | `12px` | ″ |  |
 | `--portal-sidebar-machine-pad` | `0.3125rem` | ″ |  |
 | `--portal-sidebar-machine-head` | `3.25rem` | ″ |  |
-| `--portal-sidebar-machine-ink` | `color-mix(in srgb, var(--ui-base) 80%, transparent)` | ″ |  |
 | `--portal-sidebar-agent-inset` | `0.375rem` | ″ | Agent cards (16292:15592): radius 9, 6px leading pad (12 to the name past the 32px tile), 16px trailing, 12px over and under, a soft drop shadow. The open agent is the brand slab, white .10 / black .40 / blue (#2E2EA8); the others white .10 / black .60 / blue .30 (16292:15630). Both carry the CRT texture at 5% colour-dodge. Light draws both as blue .10 on white .80 under a 1px brand rule, the open one solid brand, the others brand .10 (16292:25188, 16292:25226), the texture at 90%. |
 | `--portal-sidebar-agent-radius` | `9px` | ″ |  |
 | `--portal-sidebar-agent-pad-block` | `0.75rem` | ″ |  |

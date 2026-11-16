@@ -2703,7 +2703,14 @@ export const svOverrides: TranslationOverrides = {
     title: 'Modeller',
     search: 'Sök modeller',
     noAuthenticatedProviders: 'Inga autentiserade leverantörer.',
-    addProvider: 'Lägg till leverantör…'
+    addProvider: 'Lägg till leverantör…',
+    addCustomModel: 'Lägg till egen modell',
+    removeCustomModel: 'Ta bort egen modell',
+    resetToDefaults: 'Återställ standardvärden',
+    resetConfirm: 'Återställa modellernas synlighet till standardvärden?',
+    resetDescription:
+      'Dina synliga och dolda modellval rensas och varje leverantörs standardlista återställs. Egna modeller som du lagt till behålls och visas.',
+    resetAction: 'Återställ'
   },
   contextMenu: {
     link: {

@@ -10,6 +10,7 @@ import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
 import type { AppTourTranslations } from './types_app_tour'
+import type { ApprovalCopy } from './types_approval'
 import type { BackupTransferTranslations } from './types_backup_transfer'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
@@ -514,6 +515,12 @@ export interface Translations extends NoticeTranslations {
       approvalTitleNamed: (session: string) => string
       approveAction: string
       rejectAction: string
+      accessTitle: string
+      accessTitleNamed: (session: string) => string
+      networkTitle: string
+      networkTitleNamed: (session: string) => string
+      allowAction: string
+      denyAction: string
       inputTitle: string
       inputTitleNamed: (session: string) => string
       inputBody: string
@@ -4066,24 +4073,7 @@ export interface Translations extends NoticeTranslations {
       sendEdited: string
       attachingFile: string
     }
-    approval: {
-      gatewayDisconnected: string
-      sendFailed: string
-      reconnect: string
-      timedOutSystemLine: string
-      openSafetySettings: string
-      run: string
-      command: string
-      commandDetails: string
-      moreOptions: string
-      allowSession: string
-      alwaysAllowMenu: string
-      jumpToApproval: string
-      reject: string
-      alwaysTitle: string
-      alwaysDescription: (pattern: string) => string
-      alwaysAllow: string
-    }
+    approval: ApprovalCopy
     clarify: ClarifyCopy
     themePicker: ThemePickerCopy
     catalogInstall: CatalogInstallTranslations

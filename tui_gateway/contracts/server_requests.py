@@ -170,8 +170,25 @@ class ApprovalChoice(WireEnum):
     deny = "deny"
 
 
+class ApprovalKind(WireEnum):
+    command = "command"
+    access = "access"
+    network = "network"
+
+
+class ApprovalAccessLevel(WireEnum):
+    read = "read"
+    read_write = "read_write"
+
+
 class ApprovalRequestParams(ServerRequestParams):
-    """``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side."""
+    """``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side.
+
+    ``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with
+    ``access`` (``path``, and ``access`` read or read_write) and for a site with ``network``
+    (``host``, and an optional display ``label``). ``risk`` is one short line shown under the
+    folder or site. On those two kinds ``once`` allows until the sandbox is switched off and
+    ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``."""
 
     request_id: str
     command: str = ""
@@ -182,18 +199,27 @@ class ApprovalRequestParams(ServerRequestParams):
     smart_denied: bool | None = None
     tool_name: str | None = None
     session_id_hint: str | None = Field(default=None, alias="gateway_session_id")
+    kind: ApprovalKind | None = None
+    path: str | None = None
+    access: ApprovalAccessLevel | None = None
+    host: str | None = None
+    label: str | None = None
+    risk: str | None = None
     # The approval queue entry carries tool-specific context the card may render; the closed set
     # of keys is owned by tools/approval.py, so it stays open here.
     model_config = Params.model_config | {"extra": "allow"}
 
 
 class ApprovalResult(Result):
+    """``reason``: why the user denied an ``access`` or ``network`` card; command approvals ignore it."""
+
     choice: ApprovalChoice
     all: bool | None = None
+    reason: str | None = None
 
 
 server_request("approval", params=ApprovalRequestParams, result=ApprovalResult,
-               doc="A dangerous command awaits the user's decision.")
+               doc="A dangerous command, or a sandbox's folder or site request, awaits the user's decision.")
 
 
 # ── one-string prompts ────────────────────────────────────────────────────────────────────────

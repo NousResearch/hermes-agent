@@ -1,0 +1,23 @@
+name: relatedb-memory
+repo: https://github.com/loheander/hermes-relatedb
+sha: 3e47ce4696f6a4af0e5854e0cecaad8b58104e43
+description: "Bi-temporal long-term memory on an embedded RelateDB graph with local fastembed embeddings. Facts are superseded instead of overwritten, so the agent can recall what is true now, what it believed on a past date, and which conversation each fact came from. Six agent tools (remember, recall, forget, as_of, provenance, read-only Cypher). Disclosure: downloads the embedding model from Hugging Face on first use; no other network calls, no telemetry, no credentials. Conversation turns and Hermes memory writes are stored locally in the profile's memory/ directory."
+maintainer: loheander
+tier: community
+category: memory
+requires_hermes: ">=0.23.1"
+version: "1.0.0"
+docs_url: https://github.com/loheander/hermes-relatedb#readme
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+  - relatedb_remember
+  - relatedb_recall
+  - relatedb_forget
+  - relatedb_as_of
+  - relatedb_provenance
+  - relatedb_cypher
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

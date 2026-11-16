@@ -1,7 +1,7 @@
 name: hermes-ui
 title: Hermes UI
 repo: https://github.com/Ilyassbm/hermes-ui
-sha: f71e23ffc18b4ef5989586bb69e4a97daa0e9513
+sha: 0cdba122626b9d9291cd5855e8c7c04a347e927c
 subdir: ""
 description: "A bespoke chat workspace for Hermes Desktop and the Webapp: it takes over the app's home route and replaces it with a three-column page — a rail of bots (one row per profile, each with its own conversations), the conversation itself with folded reasoning and one working line that says what the bot is doing (tool calls are not listed; a call waiting for permission still shows its card), and a right panel for files, previews and session detail. Bots can answer with a structured block that the thread draws as rich components (status cards, tables, checklists, approval prompts) instead of prose, its questions answered in the thread with buttons, a multi-select and free text; links open in the OS browser; messages written while the bot works wait in a queue under the composer and go in order, slash commands, per-bot models and a settings page come with it (a model switch is sent to config.set without the confirmation flag; when the gateway asks to confirm a costly or data-policy-sensitive switch, its own message is shown in a dialog and the flag is sent only after the user clicks Switch), and media blocks render images, audio and video inline. Disclosure — takes over the Desktop/Webapp home route by default: opening home or a session from the native sidebar redirects into Hermes UI (a palette command turns this off). Its side panel previews files that replies name (MEDIA: lines, attached-image paths) by reading them through the plugin's own backend routes, which accept any path under the profile home or the user's home directory except core-refused and credential files (.env*, auth.json, config.yaml, credentials, webhook_subscriptions.json, private keys, .ssh/.aws/.gnupg, secrets, mcp-tokens and pairing folders); previews stay on the device. The bots rail reads each profile's state.db read-only. Changing a bot's look (shape, eyes, colour) writes ui_meta['hermes-ui'] in that profile's profile.yaml through Hermes' own profiles.configure. No telemetry."
 maintainer: Ilyassbm
@@ -13,12 +13,12 @@ version: "1.8.0"
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/9485d258682c838a2c74daae3ab7431ecfb1c679/docs/screenshots/01-intelligent-ui.jpg
-  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/9485d258682c838a2c74daae3ab7431ecfb1c679/docs/screenshots/02-table.jpg
-  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/9485d258682c838a2c74daae3ab7431ecfb1c679/docs/screenshots/03-tools-files.jpg
-  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/9485d258682c838a2c74daae3ab7431ecfb1c679/docs/screenshots/04-approval.jpg
-  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/9485d258682c838a2c74daae3ab7431ecfb1c679/docs/screenshots/05-model.jpg
-  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/9485d258682c838a2c74daae3ab7431ecfb1c679/docs/screenshots/06-slash.jpg
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/0cdba122626b9d9291cd5855e8c7c04a347e927c/docs/screenshots/01-intelligent-ui.jpg
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/0cdba122626b9d9291cd5855e8c7c04a347e927c/docs/screenshots/02-table.jpg
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/0cdba122626b9d9291cd5855e8c7c04a347e927c/docs/screenshots/03-tools-files.jpg
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/0cdba122626b9d9291cd5855e8c7c04a347e927c/docs/screenshots/04-approval.jpg
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/0cdba122626b9d9291cd5855e8c7c04a347e927c/docs/screenshots/05-model.jpg
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-ui/0cdba122626b9d9291cd5855e8c7c04a347e927c/docs/screenshots/06-slash.jpg
 known_issues:
   - The Desktop half of a unified package starts disabled per browser; enable it once in Capabilities ▸ Plugins.
   - On a shell that loads plugins late, the first paint can be the native home for a moment before the page takes over; the sidebar entry always opens it.

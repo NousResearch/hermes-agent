@@ -2134,7 +2134,8 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
     # A known model id answers from local data before the metadata waterfall: session.create must not
     # pay a 30 s probe for a window the catalog already carries. A local inference server is the
     # exception — Ollama/vLLM report a runtime-specific window that the catalog cannot know.
-    if not _answers_as_local_inference_server(base_url, api_key):
+    local_server = _answers_as_local_inference_server(base_url, api_key)
+    if not local_server:
         local_catalog = _local_catalog_context_length(model, provider)
         if local_catalog is not None:
             logger.info("Using local catalog context length %s for model %r at %s (no metadata probe)",
@@ -2142,7 +2143,9 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
             return local_catalog
     # A failing endpoint just paid the 30 s waterfall on the first session.create; answer the
     # next one from the local fallback instead of probing a dead route again.
-    cached_fallback = _context_fallback_get(model, base_url)
+    # A restarted local model server must supply its runtime window, even if an earlier
+    # unavailable-server attempt left a day-long default fallback in the memo.
+    cached_fallback = None if local_server else _context_fallback_get(model, base_url)
     if cached_fallback is not None:
         logger.debug("Using cached context fallback %s for %r at %s", f"{cached_fallback:,}", model, base_url)
         return cached_fallback

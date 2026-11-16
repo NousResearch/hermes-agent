@@ -720,7 +720,7 @@ def test_publish_unknown_parent_is_refused(backend, scope_a):
 
 def test_publish_heals_an_automatic_end_but_refuses_a_deliberate_one(backend, scope_a):
     store_a = backend.open(scope_a)
-    automatic = sorted(AUTOMATIC_END_REASONS)[0]
+    automatic = min(AUTOMATIC_END_REASONS)
     _parent_with_history(backend, scope_a, "cp-auto")
     store_a.sessions.end(SessionId("cp-auto"), automatic)
     _publish(backend, scope_a, "cp-auto", _child("cp-auto-c"), [_msg("s")])

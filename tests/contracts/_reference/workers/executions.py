@@ -40,7 +40,7 @@ _MODEL_USAGE_FIELDS = frozenset({
     "model", "billing_provider", "billing_base_url", "billing_mode", *TOKEN_COUNTERS, "estimated_cost_usd",
     "actual_cost_usd", "cost_status", "cost_source", "api_call_count",
 })
-_MAIN_USAGE_KEYS = _MODEL_USAGE_FIELDS | {"pricing_version", "absolute", "task"}
+_MAIN_USAGE_KEYS = _MODEL_USAGE_FIELDS | {"pricing_version", "absolute", "task", "prompt_cache_clock"}
 _AUX_USAGE_KEYS = (_MODEL_USAGE_FIELDS - {"billing_mode", "actual_cost_usd", "cost_status", "cost_source"}) | {"task"}
 
 

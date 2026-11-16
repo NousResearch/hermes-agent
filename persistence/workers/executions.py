@@ -130,6 +130,7 @@ class WorkerMainUsage(TypedDict, total=False):
     absolute: bool
     task: str
     source: str | None
+    prompt_cache_clock: str | None
 
 
 class WorkerAuxiliaryUsage(TypedDict, total=False):
@@ -203,7 +204,7 @@ class WorkerExecutionRepository(WorkerSessionVerbs, WorkerCompressionRepository,
         ...
 
     def record_usage(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, **usage: Unpack[WorkerMainUsage]) -> None:
-        """Operation ``usage.main``: ``source`` is set aside; the other keys must lie in :class:`WorkerMainUsage` within these bounds (counters ints in ``[0, 2**53]``, costs ``None`` or numbers in ``[0, 1e12]``, ``absolute`` a bool, text ``None`` or at most 4096 characters), else ``invalid_params``. The session's counters and route are updated as ``update_token_counts`` does (``absolute`` sets the counters and skips attribution), then ``source`` mapped through ``created_surface`` fills an unset ``created_source`` and the compression ancestors that share it."""
+        """Operation ``usage.main``: ``source`` is set aside; the other keys must lie in :class:`WorkerMainUsage` within these bounds (counters ints in ``[0, 2**53]``, costs ``None`` or numbers in ``[0, 1e12]``, ``absolute`` a bool, text ``None`` or at most 4096 characters), else ``invalid_params``. The session's counters and route are updated as ``update_token_counts`` does (``absolute`` sets the counters and skips attribution). A ``prompt_cache_clock`` other than ``None`` replaces the stored clock with the owner's durable context generation stamped in: when the text decodes to a JSON object its ``generation`` key is set to ``UsageRepository.prompt_cache_generation`` at commit and the object re-encoded compactly, otherwise the text is stored as sent; the digest covers the clock as sent. Then ``source`` mapped through ``created_surface`` fills an unset ``created_source`` and the compression ancestors that share it."""
         ...
 
     def record_auxiliary_usage(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, task: str, **usage: Unpack[WorkerAuxiliaryUsage]) -> None:

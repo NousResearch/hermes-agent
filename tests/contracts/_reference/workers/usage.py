@@ -5,15 +5,16 @@ Session counters, costs and the stored route live in the usage reference's ``_Se
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from typing import Any, Mapping
 
 from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
 from session_rules.surfaces import created_surface
 
-from ..conversation.usage import InMemoryUsageRepository, SessionBillingRoute, _add_cost, _add_tokens
+from ..conversation.usage import InMemoryUsageRepository, SessionBillingRoute, _add_cost, _add_tokens, archived_row_count
 
-__all__ = ["TOKEN_COUNTERS", "apply_auxiliary_usage", "apply_main_usage", "stamp_created_source"]
+__all__ = ["TOKEN_COUNTERS", "apply_auxiliary_usage", "apply_main_usage", "stamp_cache_generation", "stamp_created_source"]
 
 TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
 _UNSET_CREATED = (None, "", "unknown", "local")
@@ -37,6 +38,18 @@ def _session_usage(stored: Any, payload: Mapping[str, Any], absolute: bool) -> A
     return replace(stored, **counted, **texts)
 
 
+def stamp_cache_generation(store: Any, session_id: str, clock: str) -> str:
+    """The worker's prompt-cache event with the owner's durable context generation set; text that is not a JSON object is kept as sent."""
+    try:
+        event = json.loads(clock)
+    except ValueError:
+        return clock
+    if not isinstance(event, dict):
+        return clock
+    event["generation"] = archived_row_count(store, store.scope, session_id)
+    return json.dumps(event, separators=(",", ":"))
+
+
 def apply_main_usage(store: Any, session_id: str, payload: Mapping[str, Any]) -> None:
     """``_update_token_counts_in_transaction(**payload)`` on the worker's session."""
     usage: InMemoryUsageRepository = store.usage
@@ -55,6 +68,8 @@ def apply_main_usage(store: Any, session_id: str, payload: Mapping[str, Any]) ->
         row.route_model = model
         row.route = SessionBillingRoute(provider, payload.get("billing_base_url"), payload.get("billing_mode"))
     row.usage = _session_usage(row.usage, payload, bool(payload.get("absolute")))
+    if payload.get("prompt_cache_clock") is not None:
+        row.prompt_cache_clock = stamp_cache_generation(store, session_id, payload["prompt_cache_clock"])
     if accounted:
         stored = row.route
         row.route = SessionBillingRoute(*(getattr(stored, name) if getattr(stored, name) is not None else payload.get(name)

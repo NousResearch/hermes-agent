@@ -185,7 +185,7 @@ def _usage_columns(usage_row: Any) -> dict[str, Any]:
             "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0,
             "reasoning_tokens": 0, "api_call_count": 0, "estimated_cost_usd": None, "actual_cost_usd": None,
             "billing_provider": None, "billing_base_url": None, "billing_mode": None,
-            "cost_status": None, "cost_source": None, "pricing_version": None,
+            "cost_status": None, "cost_source": None, "pricing_version": None, "prompt_cache_clock": None,
         }
     usage, route = usage_row.usage, usage_row.route
     tokens = usage.tokens
@@ -197,6 +197,7 @@ def _usage_columns(usage_row: Any) -> dict[str, Any]:
         "billing_provider": route.billing_provider, "billing_base_url": route.billing_base_url,
         "billing_mode": route.billing_mode, "cost_status": usage.cost_status,
         "cost_source": usage.cost_source, "pricing_version": usage.pricing_version,
+        "prompt_cache_clock": usage_row.prompt_cache_clock,
     }
 
 

@@ -2,12 +2,12 @@
 
 ``UsageRepository`` is the token and cost accounting of one profile's store: per-call deltas queued onto the session row and its per-route attribution rows, auxiliary usage kept off the session counters, the stored billing route, and the reads the status, dashboard and one-shot callers use. Every verb acts on the handle's bound profile.
 
-Main-loop accounting: callers queue one :class:`UsageDelta` per API call (``queue_usage``; callers ``agent/turn_usage.py``, ``agent/codex_runtime.py``) and drain the queue with ``flush_usage`` (callers the CLI shutdown, ``agent/session_persistence.py`` at finalize, ``agent/managed_worker.py``, ``agent/insights.py``). The queue and its writer belong to the backend's shared store holder, not to the caller: deltas apply in queue order, a backend may merge adjacent deltas whose merge equals applying them in sequence (same session, route, cost fields, source and task), and an apply error is logged and the delta dropped, never raised into a turn. The exact readers (``SessionRepository.get``, ``get_model_config_value``, ``update_model``, ``replace_session_config``, ``set_billing_route``, ``recent_route``) drain the queue first, except that ``SessionRepository.get``, ``recent_route`` and the session listings, called on a thread running an asyncio event loop, read the committed totals without waiting for the writer; ``usage_totals`` and ``auxiliary_usage_by_task`` do not drain.
+Main-loop accounting: callers queue one :class:`UsageDelta` per API call (``queue_usage``; callers ``agent/turn_usage.py``, ``agent/codex_runtime.py``) and drain the queue with ``flush_usage`` (callers the CLI shutdown, ``agent/session_persistence.py`` at finalize, ``agent/managed_worker.py``, ``agent/insights.py``). The queue and its writer belong to the backend's shared store holder, not to the caller: deltas apply in queue order, a backend may merge adjacent deltas whose merge equals applying them in sequence (same session, route, cost fields, source, task and prompt-cache clock; deltas carrying different clocks are applied one after the other, never merged, so the last applied clock is the stored one), and an apply error is logged and the delta dropped, never raised into a turn. The exact readers (``SessionRepository.get``, ``get_model_config_value``, ``update_model``, ``replace_session_config``, ``set_billing_route``, ``recent_route``) drain the queue first, except that ``SessionRepository.get``, ``recent_route`` and the session listings, called on a thread running an asyncio event loop, read the committed totals without waiting for the writer; ``usage_totals`` and ``auxiliary_usage_by_task`` do not drain.
 
 Applying one delta:
 
 1. Row guard, its own write: a missing session row is inserted with the delta's ``source`` (``unknown`` without one) and the store owner's profile; an ``unknown`` placeholder takes a real source; a deleted session is not recreated (the apply fails and the delta is dropped).
-2. One write: the counters and ``api_call_count`` add; ``estimated_cost_usd`` adds with None as 0; ``actual_cost_usd`` adds only when the delta carries one; ``cost_status``, ``cost_source`` and ``pricing_version`` take the delta's value when it carries one. When the delta accounts usage (a counter, a call or a truthy estimated or actual cost), the row's billing provider, base URL, mode and model fill only while unset; but the first accounted main-loop delta (stored call count 0, no ``task``, model and provider set, either differing from the row) replaces the row's model and route. When the delta has usage (a counter, a call or a truthy estimate; an actual cost alone is not usage), the attribution row keyed by (model, provider, base URL, mode, task) adds the same counters, calls and costs and stamps ``last_seen``; missing main-loop route fields come from the session row, ``model`` ``unknown`` and the others empty when the row has none.
+2. One write: the counters and ``api_call_count`` add; ``estimated_cost_usd`` adds with None as 0; ``actual_cost_usd`` adds only when the delta carries one; ``cost_status``, ``cost_source`` and ``pricing_version`` take the delta's value when it carries one. When the delta accounts usage (a counter, a call or a truthy estimated or actual cost), the row's billing provider, base URL, mode and model fill only while unset; but the first accounted main-loop delta (stored call count 0, no ``task``, model and provider set, either differing from the row) replaces the row's model and route. A delta carrying a ``prompt_cache_clock`` replaces the stored clock with it; one without leaves it. When the delta has usage (a counter, a call or a truthy estimate; an actual cost alone is not usage), the attribution row keyed by (model, provider, base URL, mode, task) adds the same counters, calls and costs and stamps ``last_seen``; missing main-loop route fields come from the session row, ``model`` ``unknown`` and the others empty when the row has none.
 
 ``task`` on a delta names a per-turn route (``voice_chat``): its calls count in the session counters and land in their own attribution row, which never becomes the recent route and is summed by ``auxiliary_usage_by_task``.
 
@@ -24,6 +24,7 @@ from ..core.identity import JsonValue, SessionId
 __all__ = [
     "AuxiliaryTaskUsage",
     "BillingRoute",
+    "PromptCacheClockRecord",
     "RouteUsage",
     "TokenCounts",
     "UsageAnalytics",
@@ -62,7 +63,7 @@ class TokenCounts:
 
 @dataclass(frozen=True, slots=True)
 class UsageDelta:
-    """One API call's accounting: counters and costs to add, the route that served the call, the session's real ``source`` for the row guard, and the per-turn route ``task`` (empty for the main loop)."""
+    """One API call's accounting: counters and costs to add, the route that served the call, the session's real ``source`` for the row guard, the per-turn route ``task`` (empty for the main loop), and ``prompt_cache_clock``, the JSON text of the call's prompt-cache event that replaces the session's stored clock (``None`` keeps it)."""
 
     tokens: TokenCounts = field(default_factory=TokenCounts)
     api_call_count: int = 0
@@ -74,6 +75,7 @@ class UsageDelta:
     route: Optional[BillingRoute] = None
     source: Optional[str] = None
     task: str = ""
+    prompt_cache_clock: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.api_call_count < 0:
@@ -118,6 +120,15 @@ class AuxiliaryTaskUsage:
     api_call_count: int
     tokens: TokenCounts
     estimated_cost_usd: float
+
+
+@dataclass(frozen=True, slots=True)
+class PromptCacheClockRecord:
+    """The session's prompt-cache clock as one read serves it: the stored ``clock`` JSON text (``None`` when none was ever stored), the resume fallback ``last_assistant_at`` and the durable context ``generation`` (see ``UsageRepository.prompt_cache_generation``)."""
+
+    clock: Optional[str]
+    last_assistant_at: Optional[float]
+    generation: int
 
 
 @runtime_checkable
@@ -166,6 +177,17 @@ class UsageRepository(Protocol):
 
         The chain is the session and its ancestors over ``parent_session_id`` (at most 100, cycle-safe), cut at the explicit branch nearest the session, inclusive. Main-loop rows never count; an empty id reads as empty. The usage queue is not drained first.
         """
+        ...
+
+    def prompt_cache_clock(self, session_id: SessionId) -> Optional[PromptCacheClockRecord]:
+        """Drain the usage queue (not waiting on a thread running an event loop), then one read of the session's clock: the stored clock, ``last_assistant_at`` and the generation. ``None`` for an unknown session.
+
+        ``last_assistant_at`` is the resume fallback for sessions stored before the clock existed: the time of the newest active ``assistant`` row, and only while the session's cache read plus cache write tokens are above zero; ``None`` otherwise. The read is advisory for its callers: a store failure raises as any read does, and the clock's reader reports it as ``storage_unavailable`` rather than failing the turn.
+        """
+        ...
+
+    def prompt_cache_generation(self, session_id: SessionId) -> int:
+        """The session's durable context generation for the prompt-cache clock: how many of its transcript rows a compaction, micro-compaction or tool-result prune archived (inactive and compacted; a rewound row does not count). Every committed in-place rewrite of what the model sees archives at least one row and none is un-archived, so it only grows and survives restarts; a rotating compaction moves to a new session id instead. 0 for an unknown session. The usage queue is not drained first."""
         ...
 
     # ── queue and barrier (no transaction of their own) ───────────────────────

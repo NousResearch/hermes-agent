@@ -13,7 +13,10 @@ next provider request carried back to the model (the tool result the model saw):
   information-free ``params._meta: {}`` (#120923);
 * image results: a cacheable PNG reaches the model as a ``MEDIA:`` file that exists; formats the
   cache cannot store (SVG, AVIF, TIFF, HEIC, malformed base64) must degrade visibly, never vanish
-  (#120227).
+  (#120227);
+* MCP Apps: a tool whose ``_meta.ui.visibility`` lacks ``"model"`` never reaches the model's tool
+  list. The SDK's ``Apps`` extension lists every bound tool whatever the client negotiated, so an
+  app-only tool arrives even though Hermes hosts no views.
 
 ``tests/e2e/core/parity/test_mcp_lifecycle.py`` owns process lifecycle (death mid-call, reaping);
 this file owns what crosses the wire.
@@ -180,3 +183,12 @@ def test_uncacheable_image_is_reported_to_the_model(images: dict[str, Any], fmt:
     with known_gate(KNOWN, request.node.name, raises=KnownSymptom):
         symptom("image" in rest.lower(),
                 f"{fmt} image block vanished: the model got no sign the tool returned an image: {block}")
+
+
+# MCP Apps ------------------------------------------------------------------------------------------
+
+
+def test_app_only_mcp_app_tools_never_reach_the_model(tmp_path: Path) -> None:
+    obs = _run(tmp_path, [], extra={"tools": {"tool_search": {"enabled": "off"}}})
+    assert tool_name(SERVER, "view_probe") in obs["offered"], sorted(obs["offered"])
+    assert tool_name(SERVER, "app_only_probe") not in obs["offered"], sorted(obs["offered"])

@@ -65,14 +65,28 @@ def _key_env_secret(entry: dict[str, Any], label: str) -> str:
     return value
 
 
+def _is_model_base_url(model_cfg: dict[str, Any], base_url: str) -> bool:
+    cfg_base_url = _clean(model_cfg.get("base_url")).rstrip("/")
+    return bool(cfg_base_url) and cfg_base_url == _clean(base_url).rstrip("/")
+
+
 def _model_cfg_key_env_for(model_cfg: dict[str, Any], base_url: str) -> str:
     """``model.key_env`` for a bare ``provider: custom`` runtime, only when ``base_url`` IS the
     configured ``model.base_url`` — the key was declared for that endpoint, never for a direct alias
     or CUSTOM_BASE_URL pointing elsewhere."""
-    cfg_base_url = _clean(model_cfg.get("base_url")).rstrip("/")
-    if not cfg_base_url or cfg_base_url != _clean(base_url).rstrip("/"):
+    return _key_env_secret(model_cfg, "model") if _is_model_base_url(model_cfg, base_url) else ""
+
+
+def model_block_key_for(model_cfg: Any, base_url: str) -> str:
+    """The ``model:`` block's own credential for *base_url*: ``model.api_key``, else the variable
+    ``model.key_env`` names, only when *base_url* is the configured ``model.base_url``.
+
+    Metadata probes of the main endpoint (context length, the local server fingerprint, aux
+    pricing) send it, as the runtime does; a keyed endpoint answers 401 without it.
+    """
+    if not isinstance(model_cfg, dict) or not _is_model_base_url(model_cfg, base_url):
         return ""
-    return _key_env_secret(model_cfg, "model")
+    return _clean(model_cfg.get("api_key")) or _key_env_secret(model_cfg, "model")
 
 
 def _entry_url(entry: dict[str, Any]) -> str:

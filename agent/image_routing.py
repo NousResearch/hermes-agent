@@ -231,8 +231,13 @@ def _resolve_inference_api_key(cfg: Optional[dict[str, Any]], provider: str) -> 
 
     Mirrors :func:`_resolve_inference_base_url`'s resolution order (runtime value, then ``model.api_key``,
     then the providers blocks) so the key matches the base URL actually being probed. See #89863.
+    ``model.key_env`` backs the configured ``model.base_url`` last, as it does for the runtime.
     """
-    return _resolve_inference_value(cfg, provider, "api_key", runtime_ok=lambda _: True)
+    key = _resolve_inference_value(cfg, provider, "api_key", runtime_ok=lambda _: True)
+    if key or not isinstance(cfg, dict):
+        return key
+    from hermes_cli.runtime_provider_custom import model_block_key_for
+    return model_block_key_for(cfg.get("model"), _resolve_inference_base_url(cfg, provider))
 
 
 def _should_probe_ollama_vision(provider: str, base_url: str, api_key: str = "") -> bool:

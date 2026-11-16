@@ -119,6 +119,26 @@ export const svOverrides: TranslationOverrides = {
       signInToRemoteGateway: 'Logga in till fjärrgateway',
       signInWithProvider: provider => `Logga in med ${provider}`,
       identityProvider: 'din identitetsleverantör'
+    },
+    updateHold: {
+      title: 'En tidigare uppdatering håller fortfarande Hermes låst',
+      titleUnverified: 'Hermes kan inte bekräfta att den senaste uppdateringen är klar',
+      description: 'Hermes väntar med att starta så att inga filer läses in medan uppdateringen fortfarande kan ändra dem. Programmet startar automatiskt så snart låsningen släpps.',
+      heldByProcess: pid => `Uppdateringen (process ${pid}) har avslutats, men en process den startade håller fortfarande Hermes-installationen låst.`,
+      heldUnknown: 'En uppdatering har avslutats, men en process den startade håller fortfarande Hermes-installationen låst.',
+      unverified: 'Uppdateringshjälparen kan inte kontrollera vem som äger Hermes-installationen just nu. Hermes fortsätter kontrollera.',
+      since: time => `Väntar sedan ${time}`,
+      lastChecked: time => `Senast kontrollerad ${time}`,
+      recoveryHint: 'Detta brukar lösa sig inom några minuter. Om det inte gör det: avsluta Hermes, avsluta kvarvarande git- eller hermes-processer eller starta om datorn och öppna sedan Hermes igen.',
+      checkAgain: 'Kontrollera igen',
+      quit: 'Avsluta Hermes',
+      openLogs: 'Öppna loggar',
+      startAnyway: 'Starta ändå…',
+      confirmTitle: 'Starta Hermes trots att uppdateringen fortfarande håller den låst?',
+      confirmBody: 'Den kvarvarande uppdateringsprocessen kan fortfarande ändra Hermes-filer. Om programmet startas nu kan en halvuppdaterad installation läsas in och fungera fel tills uppdateringen körs igen. Hermes registrerar valet i loggen och behåller uppdateringsmarkeringen.',
+      confirmKeepWaiting: 'Fortsätt vänta',
+      confirmStart: 'Starta ändå',
+      startAnywayRefused: 'Det som håller installationen låst ändrades innan Hermes kunde starta. Granska det och försök igen.'
     }
   },
   notifications: {

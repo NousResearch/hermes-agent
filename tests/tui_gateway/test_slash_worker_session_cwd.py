@@ -205,6 +205,7 @@ def test_slash_worker_child_repins_the_session_cwd_after_the_cli_import(monkeypa
     monkeypatch.setattr(sys, "argv", ["slash_worker", "--session-key", "s",
                                       "--session-cwd", str(project)])
     from agent.runtime_cwd import clear_session_cwd, scoped_session_cwd
+    import hermes_cli.config as config_mod
     try:
         sw.main()
         assert os.environ["TERMINAL_CWD"] == str(project), \
@@ -212,4 +213,59 @@ def test_slash_worker_child_repins_the_session_cwd_after_the_cli_import(monkeypa
         assert scoped_session_cwd() == str(project), \
             "the session cwd ContextVar was never pinned in the child"
     finally:
+        clear_session_cwd()
+        # main() pinned for real: the env write and the bridge wrapper must not leak into a
+        # test appended after this one.
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        left = getattr(config_mod.apply_terminal_config_to_env, "__wrapped__", None)
+        if getattr(config_mod.apply_terminal_config_to_env, "_keeps_session_cwd_pin", False) and left is not None:
+            config_mod.apply_terminal_config_to_env = left
+
+
+def test_the_childs_pin_survives_the_real_terminal_config_bridge(monkeypatch):
+    """The discriminative twin of the re-pin test above: the clobberer is REAL. Every reload
+    funnels through ``apply_terminal_config_to_env`` — the ``import cli`` bridge, MCP
+    discovery's ``load_hermes_dotenv`` (the ``_prepare_slash_worker_runtime`` pass), and
+    terminal_tool's once-per-process launcher bridge — and an explicit ``terminal.cwd`` in
+    config.yaml rewrites ``TERMINAL_CWD`` over the spawn pin. The stubbed-prep main() test
+    above passes vacuously against that; here the pin must survive the actual bridge calls
+    (review finding 7, empirically reproduced)."""
+    from pathlib import Path
+
+    import hermes_cli.config as config_mod
+    from agent.runtime_cwd import clear_session_cwd, scoped_session_cwd
+    from hermes_constants import get_hermes_home
+    import tui_gateway.slash_worker as sw
+
+    project = Path(get_hermes_home()) / "pin-project"
+    project.mkdir()
+    configured = Path(get_hermes_home()) / "from-config-cwd"
+    configured.mkdir()
+    config_path = Path(get_hermes_home()) / "config.yaml"
+    config_path.write_text(f"terminal:\n  cwd: {configured}\n", encoding="utf-8")
+    original_bridge = config_mod.apply_terminal_config_to_env
+    try:
+        # A sibling test may have left ITS wrapper installed (main() pins for real); unwrap it
+        # so this test pins against the real bridge, not a previous test's project.
+        inherited = getattr(original_bridge, "__wrapped__", None)
+        if getattr(original_bridge, "_keeps_session_cwd_pin", False) and inherited is not None:
+            original_bridge = inherited
+            config_mod.apply_terminal_config_to_env = original_bridge
+        sw._pin_session_cwd(str(project))
+        assert os.environ["TERMINAL_CWD"] == str(project)
+        # The real damage, first via the discovery reload's funnel ...
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv()
+        assert os.environ["TERMINAL_CWD"] == str(project), \
+            "the dotenv reload's terminal bridge clobbered the session pin"
+        # ... and via the launcher bridge (terminal_tool fires it later with override=True) —
+        # through the module attribute, the seam every consumer late-imports through.
+        config_mod.apply_terminal_config_to_env(env=None, override=True)
+        assert os.environ["TERMINAL_CWD"] == str(project), \
+            "the launcher terminal bridge clobbered the session pin"
+        assert scoped_session_cwd() == str(project), \
+            "the session cwd ContextVar was never pinned in the child"
+    finally:
+        config_mod.apply_terminal_config_to_env = original_bridge
+        config_path.unlink(missing_ok=True)
         clear_session_cwd()

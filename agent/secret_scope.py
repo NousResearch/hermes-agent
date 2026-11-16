@@ -173,6 +173,8 @@ def set_secret_scope(secrets: Optional[Mapping[str, str]], *, profile_home: Opti
         if switched is not None:
             return switched
     bound = None if secrets is None else BoundSecrets(secrets, str(profile_home) if profile_home else None)
+    if bound is not None:
+        track_installed_scope(bound, profile_home)
     return push_state(secrets=bound)
 
 
@@ -492,6 +494,61 @@ def _is_process_home(hermes_home: Path) -> bool:
         return Path(hermes_home).resolve() == get_routing_process_hermes_home().resolve()
     except OSError:
         return False
+
+
+# Every installed scope, per profile home, held weakly: a secret store's refresh
+# (``hermes_secret_routing.view_changed``) moves the names it changed in each of them, in place.
+# Installed scopes live in other tasks' and threads' contexts, where nothing else could reach them;
+# a finished activity's scope is dropped from here when the last context holding it goes.
+_INSTALLED_SCOPES: dict[str, list] = {}
+_INSTALLED_SCOPES_LOCK = threading.Lock()
+
+
+def track_installed_scope(bound, profile_home) -> None:
+    """Record *bound* (a ``hermes_scope.BoundSecrets`` about to be installed) under the home it was
+    built for: *profile_home*, or the launch profile when unstamped."""
+    import weakref
+
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+    key = hermes_home_key(Path(profile_home) if profile_home else get_routing_process_hermes_home())
+
+    def _forget(ref, key=key):
+        with _INSTALLED_SCOPES_LOCK:
+            refs = _INSTALLED_SCOPES.get(key)
+            if refs is not None:
+                refs[:] = [r for r in refs if r is not ref]
+                if not refs:
+                    _INSTALLED_SCOPES.pop(key, None)
+
+    ref = weakref.ref(bound, _forget)
+    with _INSTALLED_SCOPES_LOCK:
+        _INSTALLED_SCOPES.setdefault(key, []).append(ref)
+
+
+def update_installed_scopes(hermes_home: Path, old: Mapping[str, str], new: Mapping[str, str]) -> int:
+    """A secret store's view of *hermes_home* moved from *old* to *new*: carry that into every
+    installed scope built for the home, in place. A name moves only where the scope still holds
+    the store's previous value (or, for a new name, nothing): a value a higher layer supplied
+    (managed ``.env``, a secret source, the launch environment) stays. Changed and added names are
+    written first, then removed ones dropped, so a concurrent reader never sees a gap. Returns how
+    many scopes changed."""
+    from hermes_constants import hermes_home_key
+    with _INSTALLED_SCOPES_LOCK:
+        refs = list(_INSTALLED_SCOPES.get(hermes_home_key(Path(hermes_home)), ()))
+    updated = 0
+    for ref in refs:
+        bound = ref()
+        scope = bound.mapping if bound is not None else None
+        if not isinstance(scope, dict):
+            continue
+        changed = {name: value for name, value in new.items()
+                   if old.get(name) != value and scope.get(name) in (None, old.get(name))}
+        gone = [name for name, value in old.items() if name not in new and scope.get(name) == value]
+        scope.update(changed)
+        for name in gone:
+            scope.pop(name, None)
+        updated += bool(changed or gone)
+    return updated
 
 
 def refresh_installed_secret_scope(hermes_home: Path) -> bool:

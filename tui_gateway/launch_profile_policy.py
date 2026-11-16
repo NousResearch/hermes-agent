@@ -114,6 +114,22 @@ def _revoke_launch_env_write(home: str, name: str) -> None:
             _snapshot[name] = rec[2]
 
 
+def move_launch_env(old: dict[str, str], new: dict[str, str]) -> None:
+    """The launch profile's secret store view moved from *old* to *new* after the launch env was
+    frozen: move the frozen copy with it (changed and added names first, then removed ones), only
+    where it still holds the store's previous value, so a revoked name cannot come back in the
+    next launch-profile scope. Nothing before the freeze: the live env is read then."""
+    with _lock:
+        if _snapshot is None:
+            return
+        for name, value in new.items():
+            if old.get(name) != value and _snapshot.get(name) in (None, old.get(name)):
+                _snapshot[name] = value
+        for name, value in old.items():
+            if name not in new and _snapshot.get(name) == value:
+                _snapshot.pop(name, None)
+
+
 def activate_multi_profile_hosting() -> None:
     """This process now hosts a profile home other than its launch home: freeze the launch env
     and make unscoped credential reads fail closed (``get_secret`` raises instead of borrowing)."""

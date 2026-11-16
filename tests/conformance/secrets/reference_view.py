@@ -26,6 +26,7 @@ class MemoryViewProvider(SecretStoreProvider):
     def __init__(self) -> None:
         self.remote: dict[str, dict[str, Any]] = {}   # home key -> {"env": {}, "auth": {}, "version": int}
         self.seen: dict[str, dict[str, Any]] = {}     # home key -> the snapshot the process reads
+        self.homes: dict[str, Path] = {}              # home key -> the home path it was read for
         self.booted: list[str] = []
         self.writes: list[dict[str, Any]] = []        # every write's names (never values)
         self.failing = False
@@ -56,13 +57,25 @@ class MemoryViewProvider(SecretStoreProvider):
         return hermes_home_key(Path(home))
 
     def _remote(self, home: Any) -> dict[str, Any]:
+        self.homes.setdefault(self._key(home), Path(home))
         return self.remote.setdefault(self._key(home), {"env": {}, "auth": {}, "version": 1})
 
     def refresh(self, home: Any = None) -> None:
+        """Re-read the "remote" side, telling the router (``view_changed``) about each home whose
+        env names moved, as a store's poller does."""
+        moved = []
         with self._lock:
             keys = [self._key(home)] if home is not None else list(self.remote)
+            if home is not None:
+                self.homes[keys[0]] = Path(home)
             for key in keys:
+                before = self.seen.get(key)
                 self.seen[key] = copy.deepcopy(self.remote.get(key) or {"env": {}, "auth": {}, "version": 1})
+                if before is not None and before["env"] != self.seen[key]["env"] and key in self.homes:
+                    moved.append((self.homes[key], dict(before["env"]), dict(self.seen[key]["env"])))
+        from hermes_secret_routing import view_changed
+        for path, old_env, new_env in moved:
+            view_changed(path, old_env, new_env)
 
     def _seen(self, home: Any) -> dict[str, Any]:
         key = self._key(home)

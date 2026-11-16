@@ -130,6 +130,8 @@ def bind_state(
             secrets = owner_secret_scope(Path(home))
     kept = current_state()
     bound_secrets = BoundSecrets(secrets, home if stamp_home else None)
+    from agent.secret_scope import track_installed_scope
+    track_installed_scope(bound_secrets, home)
     if terminal_policy is not None:
         policy = terminal_policy
     elif terminal and defer_terminal:

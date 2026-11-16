@@ -117,10 +117,107 @@ def test_a_view_change_moves_os_environ_for_the_published_home_only(store, monke
     from hermes_cli.env_loader import load_hermes_dotenv
     load_hermes_dotenv(hermes_home=home)
     monkeypatch.setenv("SHELL_OWNED", "mine")
-    routing.view_changed(home, {"ROTATING_KEY": MARK})
+    provider.remote[provider._key(home)]["env"] = {"ROTATING_KEY": MARK}
+    provider.refresh(home)
     assert os.environ["ROTATING_KEY"] == MARK and "GONE_KEY" not in os.environ
-    routing.view_changed(home.parent / "other", {"SHELL_OWNED": "theirs"})
+    routing.view_changed(home.parent / "other", {}, {"SHELL_OWNED": "theirs"})
     assert os.environ["SHELL_OWNED"] == "mine"
+
+
+def _hold_scope_on_a_thread(home, names):
+    """Install *home*'s scope on a worker thread (its own context), park it there, and return a
+    function that wakes it and reports what ``get_secret`` resolves for *names* in that scope."""
+    import threading
+    from agent.secret_scope import build_profile_secret_scope, get_secret, reset_secret_scope, set_secret_scope
+    installed, wake, done = threading.Event(), threading.Event(), threading.Event()
+    seen = {}
+
+    def worker():
+        token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+        try:
+            installed.set()
+            wake.wait(10)
+            seen.update({n: get_secret(n) for n in names})
+        finally:
+            reset_secret_scope(token)
+            done.set()
+
+    threading.Thread(target=worker, daemon=True).start()
+    assert installed.wait(10)
+
+    def read():
+        wake.set()
+        assert done.wait(10)
+        return seen
+    return read
+
+
+def test_a_view_change_reaches_a_scope_already_installed_on_another_thread(store, monkeypatch):
+    provider, home = store
+    for name in ("ROTATING_KEY", "REVOKED_KEY", "ADDED_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    provider.seed_external(home, {"ROTATING_KEY": "before", "REVOKED_KEY": "revoked"})
+    provider.refresh(home)
+    read = _hold_scope_on_a_thread(home, ("ROTATING_KEY", "REVOKED_KEY", "ADDED_KEY"))
+    provider.remote[provider._key(home)]["env"] = {"ROTATING_KEY": MARK, "ADDED_KEY": "added"}
+    provider.refresh(home)
+    assert read() == {"ROTATING_KEY": MARK, "REVOKED_KEY": None, "ADDED_KEY": "added"}
+
+
+def test_a_view_change_keeps_a_value_a_higher_layer_put_in_the_scope(store):
+    provider, home = store
+    provider.seed_external(home, {"POLICY_KEY": "store-old"})
+    provider.refresh(home)
+    from agent.secret_scope import build_profile_secret_scope, current_secret_scope, reset_secret_scope, set_secret_scope
+    scope = build_profile_secret_scope(home)
+    scope["POLICY_KEY"] = "managed-wins"  # a managed .env value composed over the store's
+    token = set_secret_scope(scope, profile_home=str(home))
+    try:
+        provider.remote[provider._key(home)]["env"] = {"POLICY_KEY": "store-new"}
+        provider.refresh(home)
+        assert current_secret_scope()["POLICY_KEY"] == "managed-wins"
+        provider.remote[provider._key(home)]["env"] = {}
+        provider.refresh(home)
+        assert current_secret_scope()["POLICY_KEY"] == "managed-wins"
+    finally:
+        reset_secret_scope(token)
+
+
+def test_a_finished_scope_is_not_kept_alive_by_the_roster(store):
+    import gc
+    _provider, home = store
+    from agent import secret_scope
+    from hermes_constants import hermes_home_key
+    token = secret_scope.set_secret_scope({"K": "v"}, profile_home=str(home))
+    secret_scope.reset_secret_scope(token)
+    del token
+    gc.collect()
+    assert hermes_home_key(home) not in secret_scope._INSTALLED_SCOPES
+
+
+def test_under_multiplexing_a_view_change_never_writes_os_environ(store, monkeypatch):
+    provider, home = store
+    for name in ("ROTATING_KEY", "REVOKED_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    provider.seed_external(home, {"ROTATING_KEY": "before", "REVOKED_KEY": "revoked"})
+    from hermes_cli.env_loader import load_hermes_dotenv
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["ROTATING_KEY"] == "before"
+    from agent import secret_scope
+    from tui_gateway import launch_profile_policy
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    launch_profile_policy.capture_launch_env()
+    environ_before = dict(os.environ)
+    read = _hold_scope_on_a_thread(home, ("ROTATING_KEY", "REVOKED_KEY"))
+    provider.remote[provider._key(home)]["env"] = {"ROTATING_KEY": MARK}
+    provider.refresh(home)
+    assert dict(os.environ) == environ_before
+    assert read() == {"ROTATING_KEY": MARK, "REVOKED_KEY": None}
+    frozen = launch_profile_policy.capture_launch_env()
+    assert frozen["ROTATING_KEY"] == MARK and "REVOKED_KEY" not in frozen
+    launch_scope = launch_profile_policy.launch_secret_scope(home)
+    assert launch_scope["ROTATING_KEY"] == MARK and "REVOKED_KEY" not in launch_scope
 
 
 def test_the_auth_store_keeps_bootstrap_records_local_and_the_rest_in_the_store(store):
@@ -172,3 +269,18 @@ def test_the_selector_in_the_launch_env_is_published_before_the_first_read(store
     from hermes_cli.env_loader import apply_config_bootstrap_env
     apply_config_bootstrap_env(lambda kind: frozenset(), home, None)
     assert os.environ["HERMES_SECRET_STORE"] == "memview" and os.environ["VIEW_STORE_URL"] == "https://store.test"
+
+
+def test_a_view_change_reaches_a_bound_profile_scope(store, monkeypatch):
+    provider, home = store
+    monkeypatch.delenv("ROTATING_KEY", raising=False)
+    provider.seed_external(home, {"ROTATING_KEY": "before"})
+    provider.refresh(home)
+    from agent.runtime_scope import bind_profile_scope
+    from agent.secret_scope import get_secret
+    with bind_profile_scope(home):
+        assert get_secret("ROTATING_KEY") == "before"
+        provider.remote[provider._key(home)]["env"] = {"ROTATING_KEY": MARK}
+        provider.refresh(home)
+        assert get_secret("ROTATING_KEY") == MARK
+

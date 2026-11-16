@@ -223,12 +223,38 @@ def scope_store(scope: Scope | None) -> str | None:
     return hermes_home_key(f"{scope.agent.rstrip('/')}/state.db")
 
 
-class BoundSecrets(NamedTuple):
+class BoundSecrets:
     """An installed secret mapping plus the home it was built for, when the binder declared one:
-    the provenance ``serves_routed_profile`` needs when a binding skips the home override."""
+    the provenance ``serves_routed_profile`` needs when a binding skips the home override.
+
+    Immutable, and weakly referenceable (a plain tuple is not): ``agent.secret_scope`` keeps a
+    weak roster of installed scopes per home so a secret store's refresh reaches them without
+    keeping a finished activity's scope alive."""
+
+    __slots__ = ("__weakref__", "mapping", "profile_home")
 
     mapping: Mapping[str, str]
     profile_home: str | None
+
+    def __init__(self, mapping: Mapping[str, str], profile_home: str | None) -> None:
+        object.__setattr__(self, "mapping", mapping)
+        object.__setattr__(self, "profile_home", profile_home)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("BoundSecrets is immutable")
+
+    def __iter__(self):
+        return iter((self.mapping, self.profile_home))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, BoundSecrets):
+            return NotImplemented
+        return (self.mapping, self.profile_home) == (other.mapping, other.profile_home)
+
+    __hash__ = None  # type: ignore[assignment]  # holds a mutable mapping, as the tuple did
+
+    def __repr__(self) -> str:
+        return f"BoundSecrets(<{len(self.mapping)} names>, profile_home={self.profile_home!r})"
 
 
 @dataclass(frozen=True)

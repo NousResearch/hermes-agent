@@ -242,26 +242,42 @@ def boot_secret_store(home: Path) -> Optional[dict[str, str]]:
     return view
 
 
-def view_changed(home: Path, new_env: Mapping[str, str]) -> None:
-    """A store's refresh found *home*'s env view changed: drop every env cache, and when this
-    process published *home*'s view into ``os.environ`` (its own profile, single-profile), move
-    the changed and removed names there too — only where ``os.environ`` still holds what was
-    published, so a value another owner set since (shell, managed ``.env``) stays theirs."""
-    from agent.secret_scope import invalidate_env_file_cache
+def view_changed(home: Path, old_env: Mapping[str, str], new_env: Mapping[str, str]) -> None:
+    """A store's refresh moved *home*'s env view from *old_env* to *new_env*. Drops every env
+    cache and carries the change, name by name, into every secret scope already installed for
+    *home* (on any thread: ``agent.secret_scope.update_installed_scopes``). When this process
+    published *home*'s view into ``os.environ`` (its own profile) the changed and removed names
+    move there too, only where ``os.environ`` still holds what was published, so a value another
+    owner set since (shell, managed ``.env``) stays theirs. Under multiplexing ``os.environ`` is
+    never written (it is no profile's); the frozen launch environment the launch profile's scopes
+    are built from moves instead, by the same rule."""
+    from agent.secret_scope import invalidate_env_file_cache, is_multiplex_active, update_installed_scopes
     from hermes_constants import hermes_home_key
+    provider = routed_provider()
+    keep = (lambda name: stays_local(provider, name)) if provider is not None else (lambda name: False)
+    old = {k: v for k, v in old_env.items() if not keep(k)}
+    new = {k: v for k, v in new_env.items() if not keep(k)}
     invalidate_env_file_cache()
+    update_installed_scopes(Path(home), old, new)
     key = hermes_home_key(home)
+    if is_multiplex_active():
+        with _PUBLISH_LOCK:
+            published = key in _PUBLISHED
+        if published:
+            from tui_gateway.launch_profile_policy import move_launch_env
+            move_launch_env(old, new)
+        return
     with _PUBLISH_LOCK:
-        old = _PUBLISHED.get(key)
-        if old is None:
+        published_view = _PUBLISHED.get(key)
+        if published_view is None:
             return
-        _PUBLISHED[key] = dict(new_env)
-    for name, value in old.items():
-        if name not in new_env and os.environ.get(name) == value:
+        _PUBLISHED[key] = dict(new)
+    for name, value in published_view.items():
+        if name not in new and os.environ.get(name) == value:
             os.environ.pop(name, None)
     changed = {}
-    for name, value in new_env.items():
-        if old.get(name) != value and os.environ.get(name) in (None, old.get(name)):
+    for name, value in new.items():
+        if published_view.get(name) != value and os.environ.get(name) in (None, published_view.get(name)):
             changed[name] = value
     if changed:
         from hermes_cli.env_loader import publish_routed_env

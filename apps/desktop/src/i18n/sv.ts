@@ -715,6 +715,16 @@ export const svOverrides: TranslationOverrides = {
         declined: 'Ditt kort nekades. Försök med ett annat kort på portalen.',
         failedBody: reason => `Debiteringen gick inte igenom (${reason}).`
       },
+      stepUp: {
+        openVerification: 'Öppna verifieringssidan',
+        dismiss: 'Avfärda',
+        waiting: 'Väntar på verifieringslänk …',
+        verify: 'Verifiera för att fortsätta',
+        deniedTitle: 'Verifieringen godkändes inte',
+        deniedBody: 'Verifieringen slutfördes utan att Remote Spending tilläts för den här terminalen.',
+        successTitle: 'Verifieringen är klar',
+        successBody: 'Remote Spending är tillåtet för den här terminalen.'
+      },
       state: {
         notice: {
           loggedOut: {
